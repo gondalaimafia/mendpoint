@@ -1,0 +1,6 @@
+{
+  "name": "shop-app",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Sample consumer of Acme Payments API"
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@mendpoint/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mendpoint/branding": "*",
+    "@mendpoint/catalog": "*",
+    "@mendpoint/db": "*",
+    "@mendpoint/github": "*",
+    "@mendpoint/graph": "*",
+    "@mendpoint/pipeline": "*",
+    "@mendpoint/agent": "*",
+    "@mendpoint/repair": "*",
+    "@mendpoint/shared": "*",
+    "@hono/node-server": "^1.14.1",
+    "hono": "^4.7.5"
+  },
+
+  "devDependencies": {
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

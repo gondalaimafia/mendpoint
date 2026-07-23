@@ -1,0 +1,36 @@
+{
+  "vendor": "stripe",
+  "type": "breaking",
+  "title": "Stripe customers.list pagination token rename",
+  "description": "starting_after is deprecated in favor of page; Go clients using stripe-go must update ListParams.",
+  "migration": "Replace StartingAfter with Page (or equivalent cursor field) on customer list calls.",
+  "searchTokens": ["stripe", "customers.list", "StartingAfter", "starting_after", "CustomerListParams"],
+  "ops": [
+    {
+      "op": "request_field_renamed",
+      "path": "/v1/customers",
+      "method": "GET",
+      "fromField": "StartingAfter",
+      "toField": "Page",
+      "field": "StartingAfter",
+      "breaking": true,
+      "detail": "Pagination cursor renamed StartingAfter → Page (Go stripe-go)"
+    },
+    {
+      "op": "request_field_renamed",
+      "path": "/v1/customers",
+      "method": "GET",
+      "fromField": "CustomerListParams",
+      "toField": "CustomerListParams",
+      "field": "CustomerListParams",
+      "breaking": true,
+      "detail": "CustomerListParams still used; audit StartingAfter fields"
+    },
+    {
+      "op": "sdk_method",
+      "path": "customers.list",
+      "breaking": true,
+      "detail": "stripe.CustomerListParams.StartingAfter → Page"
+    }
+  ]
+}

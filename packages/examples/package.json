@@ -1,0 +1,23 @@
+{
+  "name": "@mendpoint/examples",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "tsx src/run-examples.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@mendpoint/change-intel": "*",
+    "@mendpoint/code-impact": "*",
+    "@mendpoint/codebase-index": "*",
+    "@mendpoint/egraph": "*",
+    "@mendpoint/generation": "*",
+    "@mendpoint/shared": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.9"
+  }
+}

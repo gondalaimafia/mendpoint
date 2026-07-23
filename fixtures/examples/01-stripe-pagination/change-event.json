@@ -1,0 +1,47 @@
+{
+  "id": "stripe-customers-list-cursor-2026",
+  "vendor": "stripe",
+  "surface": "GET /v1/customers",
+  "sdkSurface": "stripe.customers.list",
+  "type": "breaking",
+  "recommended": true,
+  "title": "Offset-based pagination deprecated for Customer list",
+  "description": "Offset-based pagination (`starting_after` / `ending_before` with integer offsets) is deprecated. Cursor-based pagination using page cursors is now required for lists larger than 100.",
+  "migration": "Replace starting_after / limit loop patterns with autoPagingToArray or the new cursor iterator helpers.",
+  "docsUrl": "https://stripe.com/docs/api/pagination",
+  "ops": [
+    {
+      "op": "request_field_removed",
+      "path": "/v1/customers",
+      "method": "get",
+      "field": "offset",
+      "breaking": true,
+      "detail": "Integer offset pagination removed"
+    },
+    {
+      "op": "request_field_renamed",
+      "path": "/v1/customers",
+      "method": "get",
+      "fromField": "starting_after",
+      "toField": "starting_after",
+      "breaking": false,
+      "detail": "starting_after still accepted temporarily; prefer auto-paging helpers"
+    },
+    {
+      "op": "method_added",
+      "path": "/v1/customers",
+      "method": "get",
+      "field": "autoPagingToArray",
+      "breaking": false,
+      "detail": "New auto-paging helper recommended"
+    }
+  ],
+  "searchTokens": [
+    "customers.list",
+    "starting_after",
+    "ending_before",
+    "stripe.customers",
+    "/v1/customers"
+  ],
+  "egraphRules": ["legacy_page_to_cursor", "prefer_auto_paging"]
+}

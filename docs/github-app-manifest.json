@@ -1,0 +1,25 @@
+{
+  "name": "Mendpoint",
+  "url": "https://github.com/mendpoint/mendpoint",
+  "hook_attributes": {
+    "url": "https://YOUR_HOST/webhooks/github",
+    "active": true
+  },
+  "redirect_url": "https://YOUR_HOST/github/setup",
+  "callback_urls": ["https://YOUR_HOST/github/callback"],
+  "setup_url": "https://YOUR_HOST/github/setup",
+  "description": "Mendpoint — API impact analysis and migration PRs. Never auto-merges.",
+  "public": false,
+  "default_events": [
+    "installation",
+    "installation_repositories",
+    "pull_request",
+    "push"
+  ],
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "metadata": "read",
+    "checks": "write"
+  }
+}

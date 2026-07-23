@@ -1,0 +1,26 @@
+{
+  "id": "stripe-list-auto-paging-helper",
+  "vendor": "stripe",
+  "surface": "stripe.customers.listAutoPaging",
+  "type": "new_capability",
+  "title": "Optional adoption: listAutoPaging helper",
+  "description": "New helper simplifies iteration and reduces rate-limit risk. Non-breaking.",
+  "migration": "Optional: replace manual pagination loops with listAutoPaging / autoPagingToArray.",
+  "docsUrl": "https://stripe.com/docs/api/pagination/auto-pagination",
+  "ops": [
+    {
+      "op": "method_added",
+      "path": "/v1/customers",
+      "method": "get",
+      "breaking": false,
+      "detail": "listAutoPaging helper available"
+    }
+  ],
+  "searchTokens": [
+    "customers.list",
+    "starting_after",
+    "has_more",
+    "autoPaging"
+  ],
+  "adoption": true
+}

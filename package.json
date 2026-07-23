@@ -1,0 +1,48 @@
+{
+  "name": "mendpoint",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mendpoint — structured API change intelligence → impact analysis → migration PRs",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev:api": "npm run dev -w @mendpoint/api",
+    "dev:web": "npm run dev -w @mendpoint/web",
+    "demo": "tsx scripts/demo.ts",
+    "examples": "tsx packages/examples/src/run-examples.ts",
+    "phase-a": "tsx packages/phase-a/src/ship.ts",
+    "phase-a:harness": "tsx packages/phase-a/src/harness.ts",
+    "phase-c:python": "tsx packages/phase-a/src/harness-python.ts",
+    "phase-d:go": "tsx packages/phase-a/src/harness-go.ts",
+    "phase-e:java": "tsx packages/phase-a/src/harness-java.ts",
+    "phase-e:ruby": "tsx packages/phase-a/src/harness-ruby.ts",
+    "db:seed": "tsx scripts/seed.ts",
+    "worker": "tsx apps/worker/src/cli.ts",
+    "worker:poll": "tsx apps/worker/src/cli.ts poll-once --local",
+    "worker:jobs": "tsx apps/worker/src/cli.ts process-jobs",
+    "eval:partners": "tsx packages/eval/src/run.ts",
+    "repair:test": "npm test -w @mendpoint/repair",
+    "agent:test": "npm test -w @mendpoint/agent",
+    "agent:demo": "tsx scripts/agent-demo.ts"
+  },
+  "dependencies": {
+    "@mendpoint/db": "*",
+    "@mendpoint/pipeline": "*",
+    "@mendpoint/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.9"
+  },
+
+  "engines": {
+    "node": ">=20"
+  }
+}

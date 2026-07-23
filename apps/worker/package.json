@@ -1,0 +1,21 @@
+{
+  "name": "@mendpoint/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mendpoint/agent": "*",
+    "@mendpoint/catalog": "*",
+    "@mendpoint/pipeline": "*",
+    "@mendpoint/db": "*",
+    "@mendpoint/shared": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

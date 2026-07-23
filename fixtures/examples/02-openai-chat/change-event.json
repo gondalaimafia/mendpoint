@@ -1,0 +1,37 @@
+{
+  "id": "openai-chat-max-completion-tokens-2026",
+  "vendor": "openai",
+  "surface": "chat.completions.create",
+  "sdkSurface": "client.chat.completions.create",
+  "type": "breaking",
+  "title": "Chat Completions parameter rename + response shape",
+  "description": "max_tokens → max_completion_tokens; choices[0].text removed in favor of choices[0].message.content.",
+  "migration": "Rename parameter; read message.content; update helpers and stubs.",
+  "docsUrl": "https://platform.openai.com/docs/api-reference/chat",
+  "ops": [
+    {
+      "op": "request_field_renamed",
+      "path": "/v1/chat/completions",
+      "method": "post",
+      "fromField": "max_tokens",
+      "toField": "max_completion_tokens",
+      "breaking": true,
+      "detail": "max_tokens renamed to max_completion_tokens"
+    },
+    {
+      "op": "response_field_removed",
+      "path": "/v1/chat/completions",
+      "method": "post",
+      "field": "text",
+      "breaking": true,
+      "detail": "choices[].text removed; use message.content"
+    }
+  ],
+  "searchTokens": [
+    "max_tokens",
+    "chat.completions",
+    "completions.create",
+    "choices[0].text",
+    ".text"
+  ]
+}

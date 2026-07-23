@@ -1,0 +1,7 @@
+{
+  "name": "mendpoint-phase-a-consumer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase A sandbox consumer with intentional legacy API usage"
+}

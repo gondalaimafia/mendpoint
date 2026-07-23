@@ -1,0 +1,30 @@
+{
+  "vendor": "stripe",
+  "type": "breaking",
+  "title": "Stripe Ruby customers.list starting_after rename",
+  "description": "starting_after hash key on Stripe::Customer.list is deprecated in favor of page.",
+  "migration": "Replace starting_after: cursor with page: cursor in list params.",
+  "searchTokens": ["stripe", "Customer.list", "starting_after", "Stripe::Customer"],
+  "ops": [
+    {
+      "op": "request_field_renamed",
+      "path": "/v1/customers",
+      "method": "GET",
+      "fromField": "starting_after",
+      "toField": "page",
+      "field": "starting_after",
+      "breaking": true,
+      "detail": "Ruby hash key starting_after → page"
+    },
+    {
+      "op": "request_field_renamed",
+      "path": "/v1/customers",
+      "method": "GET",
+      "fromField": "Customer.list",
+      "toField": "Customer.list",
+      "field": "Customer.list",
+      "breaking": true,
+      "detail": "Stripe::Customer.list call sites"
+    }
+  ]
+}

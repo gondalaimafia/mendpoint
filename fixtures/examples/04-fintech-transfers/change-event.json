@@ -1,0 +1,32 @@
+{
+  "id": "payments-api-transfers-v2-idempotency",
+  "vendor": "payments-api",
+  "surface": "POST /v2/transfers",
+  "type": "breaking",
+  "title": "Required idempotency_key + Bearer auth",
+  "description": "New required field idempotency_key (UUID). Auth header X-API-Key → Authorization: Bearer. Error shape standardized.",
+  "migration": "Add idempotency_key; update shared client factory auth; adjust error handling.",
+  "docsUrl": "https://internal.example/docs/transfers-v2",
+  "ops": [
+    {
+      "op": "request_field_added_required",
+      "path": "/v2/transfers",
+      "method": "post",
+      "field": "idempotency_key",
+      "breaking": true,
+      "detail": "Required UUID idempotency_key"
+    },
+    {
+      "op": "security_changed",
+      "path": "/v2/transfers",
+      "breaking": true,
+      "detail": "X-API-Key replaced by Authorization Bearer"
+    }
+  ],
+  "searchTokens": [
+    "/v2/transfers",
+    "X-API-Key",
+    "idempotency_key",
+    "transfers"
+  ]
+}

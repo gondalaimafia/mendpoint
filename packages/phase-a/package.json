@@ -1,0 +1,25 @@
+{
+  "name": "@mendpoint/phase-a",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ship": "tsx src/ship.ts",
+    "harness": "tsx src/harness.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@mendpoint/change-intel": "*",
+    "@mendpoint/code-impact": "*",
+    "@mendpoint/db": "*",
+    "@mendpoint/egraph": "*",
+    "@mendpoint/generation": "*",
+    "@mendpoint/github": "*",
+    "@mendpoint/shared": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.9"
+  }
+}

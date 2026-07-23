@@ -1,0 +1,40 @@
+{
+  "vendor": "stripe",
+  "type": "breaking",
+  "title": "Stripe Java CustomerListParams startingAfter rename",
+  "description": "startingAfter on CustomerListParams is deprecated in favor of page cursor.",
+  "migration": "Replace setStartingAfter with setPage on CustomerListParams.",
+  "searchTokens": ["stripe", "CustomerListParams", "startingAfter", "setStartingAfter", "customers.list"],
+  "ops": [
+    {
+      "op": "request_field_renamed",
+      "path": "/v1/customers",
+      "method": "GET",
+      "fromField": "startingAfter",
+      "toField": "page",
+      "field": "startingAfter",
+      "breaking": true,
+      "detail": "Java SDK CustomerListParams.startingAfter → page"
+    },
+    {
+      "op": "request_field_renamed",
+      "path": "/v1/customers",
+      "method": "GET",
+      "fromField": "setStartingAfter",
+      "toField": "setPage",
+      "field": "setStartingAfter",
+      "breaking": true,
+      "detail": "Setter rename setStartingAfter → setPage"
+    },
+    {
+      "op": "request_field_renamed",
+      "path": "/v1/customers",
+      "method": "GET",
+      "fromField": "CustomerListParams",
+      "toField": "CustomerListParams",
+      "field": "CustomerListParams",
+      "breaking": true,
+      "detail": "CustomerListParams list surface"
+    }
+  ]
+}

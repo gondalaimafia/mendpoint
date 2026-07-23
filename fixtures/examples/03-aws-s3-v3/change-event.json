@@ -1,0 +1,38 @@
+{
+  "id": "aws-s3-sdk-v3-modular",
+  "vendor": "aws-sdk",
+  "surface": "S3Client + GetObjectCommand",
+  "sdkSurface": "AWS.S3",
+  "type": "breaking",
+  "title": "AWS SDK v2 S3 → modular v3 client",
+  "description": "Old AWS.S3 constructor removed. Use @aws-sdk/client-s3. Body is a stream.",
+  "migration": "Rewrite client construction and getObject to command style; stream Body to string/buffer.",
+  "docsUrl": "https://docs.aws.amazon.com/sdk-for-javascript/v3/developer-guide/migrating-to-v3.html",
+  "ops": [
+    {
+      "op": "method_removed",
+      "path": "AWS.S3",
+      "breaking": true,
+      "detail": "Monolithic AWS.S3 constructor removed"
+    },
+    {
+      "op": "method_added",
+      "path": "S3Client",
+      "breaking": false,
+      "detail": "Modular S3Client + GetObjectCommand"
+    },
+    {
+      "op": "response_field_removed",
+      "field": "Body",
+      "breaking": true,
+      "detail": "Body is no longer a Buffer; it is a stream"
+    }
+  ],
+  "searchTokens": [
+    "AWS.S3",
+    "aws-sdk",
+    "getObject",
+    ".Body",
+    "new AWS"
+  ]
+}
