@@ -9,6 +9,7 @@ import { pathBlocked, commandBlocked } from "./policies.js";
 import { executeTool, type ToolContext } from "./tools.js";
 import { classifyFailures, FAILURE_CATEGORIES, FAILURE_MODES } from "./knowledge.js";
 import { proposeWardenFix } from "./fixes.js";
+import { discoverVerifyCommand } from "./discover-verify.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const dirs: string[] = [];
@@ -222,3 +223,33 @@ console.log("ok");
     expect(result.stoppedReason).toMatch(/already_passing|verify/);
   });
 });
+
+describe("discoverVerifyCommand", () => {
+  it("detects npm test, check.mjs, pytest, and go test", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-discover-"));
+    dirs.push(dir);
+
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
+    expect(discoverVerifyCommand(dir)).toBe("npm test");
+
+    const dir2 = mkdtempSync(join(tmpdir(), "mendpoint-discover2-"));
+    dirs.push(dir2);
+    writeFileSync(join(dir2, "check.mjs"), "console.log('ok')\n");
+    expect(discoverVerifyCommand(dir2)).toBe("node check.mjs");
+
+    const dir3 = mkdtempSync(join(tmpdir(), "mendpoint-discover3-"));
+    dirs.push(dir3);
+    writeFileSync(join(dir3, "pytest.ini"), "[pytest]\n");
+    expect(discoverVerifyCommand(dir3)).toBe("pytest");
+
+    const dir4 = mkdtempSync(join(tmpdir(), "mendpoint-discover4-"));
+    dirs.push(dir4);
+    writeFileSync(join(dir4, "go.mod"), "module example.com/x\n\ngo 1.22\n");
+    expect(discoverVerifyCommand(dir4)).toBe("go test ./...");
+
+    const empty = mkdtempSync(join(tmpdir(), "mendpoint-discover-empty-"));
+    dirs.push(empty);
+    expect(discoverVerifyCommand(empty)).toBeUndefined();
+  });
+});
+

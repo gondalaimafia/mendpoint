@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mendpoint/agent": "*",
     "@mendpoint/change-intel": "*",
     "@mendpoint/code-impact": "*",
     "@mendpoint/generation": "*",

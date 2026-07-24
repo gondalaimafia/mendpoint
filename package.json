@@ -2,7 +2,7 @@
   "name": "mendpoint",
   "version": "0.1.0",
   "private": true,
-  "description": "Mendpoint — structured API change intelligence → impact analysis → migration PRs",
+  "description": "Mendpoint \u2014 structured API change intelligence \u2192 impact analysis \u2192 migration PRs",
   "workspaces": [
     "packages/*",
     "apps/*"
@@ -28,7 +28,8 @@
     "eval:partners": "tsx packages/eval/src/run.ts",
     "repair:test": "npm test -w @mendpoint/repair",
     "agent:test": "npm test -w @mendpoint/agent",
-    "agent:demo": "tsx scripts/agent-demo.ts"
+    "agent:demo": "tsx scripts/agent-demo.ts",
+    "eval:warden": "tsx packages/eval/src/warden-bench.ts"
   },
   "dependencies": {
     "@mendpoint/db": "*",
@@ -41,7 +42,6 @@
     "typescript": "^5.8.2",
     "vitest": "^3.0.9"
   },
-
   "engines": {
     "node": ">=20"
   }

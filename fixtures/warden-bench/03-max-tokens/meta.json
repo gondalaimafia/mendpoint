@@ -1,0 +1,4 @@
+{
+  "verify": "node check.mjs",
+  "timeoutSec": 60
+}

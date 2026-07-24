@@ -24,3 +24,4 @@ export {
 } from "./knowledge.js";
 export { proposeWardenFix } from "./fixes.js";
 export { runWarden, runWelder, runApiBugAgent } from "./agent.js";
+export { discoverVerifyCommand } from "./discover-verify.js";
