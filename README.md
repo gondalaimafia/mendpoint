@@ -1,10 +1,10 @@
 # Mendpoint
 
-**Warden** is Mendpoint’s API integration teammate: graph-leaned impact analysis, reviewable migration PRs, and an on-demand API debug agent. Continuous multi-repo watch and public benchmarks are on the design-partner track. Never auto-merges by default.
+**Warden** is Mendpoint’s API integration teammate. **Graph engineering** is the go-to agentic approach: specialized loop-nodes (change intel → call-graph expand → generate → verify → human review), not one overloaded agent. Continuous multi-repo watch and public benchmarks are on the design-partner track. Never auto-merges by default.
 
 When an API provider ships a breaking change or a high-value capability, Mendpoint (with explicit customer permission) can scan the relevant codebase and open a **reviewable** PR. Customers review and merge.
 
-> Platform: **Mendpoint**. Product teammate: **Warden**. Monorepo package root `mendpoint`, npm workspaces `@mendpoint/*`. Claim-safe language: [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md).
+> Platform: **Mendpoint**. Product teammate: **Warden**. Agentic doctrine: [`docs/GRAPH_ENGINEERING.md`](./docs/GRAPH_ENGINEERING.md). Claim-safe language: [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md).
 
 ## Quickstart
 
@@ -72,7 +72,10 @@ See `docs/ARCHITECTURE.md` for the full design and `docs/EXAMPLES.md` for concre
 | `packages/github` | Mock + real Octokit PR delivery |
 | `packages/policy` | Path denylist, no auto-merge, auth review labels |
 | `packages/catalog` | Vendor catalog + lockfile/import auto-detect + **feed poll** |
-| `packages/pipeline` | Orchestrates full loop + policy + learning + audit |
+| `packages/pipeline` | Executes product stages (aligned to agent graph nodes) + policy + audit |
+| `packages/orchestrator` | **Graph engineering**: topology, routing, shared state (`wardenProductGraph`) |
+| `packages/graph` | Domain product graphs (change / impact / API surface) |
+| `packages/agent` | **Warden** — verify loop-node (API debug) |
 | `packages/phase-a` | Real PR ship + TS/Python/Go quality harnesses |
 | `apps/api` | Hono JSON API (webhooks, keys, feeds) |
 | `apps/web` | Next.js provider/consumer/**feeds** dashboards |

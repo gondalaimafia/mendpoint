@@ -99,6 +99,13 @@ import {
   buildProductKnowledgeGraph,
   invalidateGraphCaches,
 } from "@mendpoint/graph";
+import {
+  wardenProductGraph,
+  wardenDebugGraph,
+  graphToMermaid,
+  graphToProductShape,
+  runAgentGraph,
+} from "@mendpoint/orchestrator";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
 import { runRepairSession, runAgenticRepairLoop } from "@mendpoint/repair";
@@ -195,6 +202,37 @@ app.get("/graph/consumers/:id", (c) => {
       500,
     );
   }
+});
+
+/** Agent orchestration graph (graph engineering) — topology, not domain code graph */
+app.get("/graph/agent", (c) => {
+  const which = c.req.query("which") ?? "product";
+  const g = which === "debug" ? wardenDebugGraph() : wardenProductGraph();
+  return c.json({
+    ...graphToProductShape(g),
+    mermaid: graphToMermaid(g),
+    doctrine: "graph-engineering",
+    docs: "docs/GRAPH_ENGINEERING.md",
+  });
+});
+
+app.get("/graph/agent/mermaid", (c) => {
+  const which = c.req.query("which") ?? "product";
+  const g = which === "debug" ? wardenDebugGraph() : wardenProductGraph();
+  return c.text(graphToMermaid(g), 200, { "Content-Type": "text/plain; charset=utf-8" });
+});
+
+/** Dry-run topology walk (no side effects) for demos / health */
+app.post("/graph/agent/dry-run", async (c) => {
+  const body = await c.req.json().catch(() => ({})) as { which?: string };
+  const g = body.which === "debug" ? wardenDebugGraph() : wardenProductGraph();
+  const result = await runAgentGraph({ graph: g, handlers: {}, dryRunMissing: true });
+  return c.json({
+    ok: result.ok || result.state.trace.length > 0,
+    stoppedAt: result.stoppedAt,
+    steps: result.state.trace.length,
+    trace: result.state.trace,
+  });
 });
 
 app.get("/graph/product", (c) => {

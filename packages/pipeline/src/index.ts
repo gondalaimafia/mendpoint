@@ -88,8 +88,10 @@ export type PipelineReport = {
 };
 
 /**
- * Core product loop aligned to impact architecture:
- * Change Normalizer → Index → Candidates → Expand → Confirm → Generate PR
+ * Core product agent GRAPH (graph engineering), not one overloaded loop:
+ * change_intel → index → candidates → expand (fan-out) → confirm → generate → verify → review_gate
+ * Topology: wardenProductGraph() in @mendpoint/orchestrator. Each stage is a specialized node.
+ * @see docs/GRAPH_ENGINEERING.md
  */
 export async function runChangePipeline(input: PipelineInput): Promise<PipelineReport> {
   const db = input.db ?? createDb();

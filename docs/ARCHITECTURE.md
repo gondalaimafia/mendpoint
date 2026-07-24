@@ -1,26 +1,37 @@
 # Mendpoint — Architecture
 
+## Agentic approach: graph engineering first
+
+**Go-to paradigm:** [graph engineering](./GRAPH_ENGINEERING.md) — specialized **nodes** (each a loop with its own verifier), **edges** (explicit routing), **shared state** along edges.  
+
+We do **not** run one overloaded agent that discovers, patches, and self-reviews in a single muddy context.  
+
+- **Loop engineering** = how each node works (Warden, repair, confirm).  
+- **Graph engineering** = how the product is wired (change intel → fan-out expand → confirm → generate → verify → human review).  
+
+Domain **code/API graphs** (call-graph, e-graph, product graph) and the **agent orchestration graph** (`@mendpoint/orchestrator`) are both first-class.
+
 ## Why impact analysis is the core
 
 Impact analysis answers: *Given a concrete API change, which exact locations in this customer’s codebase are affected, with what confidence, and with enough context to generate a correct migration PR?*
 
-A pure LLM scan of the entire repository is too expensive, non-deterministic, and incomplete at scale. Pure static analysis is precise on well-typed SDK-heavy code but fails on dynamic HTTP, wrappers, and generated clients. **Mendpoint uses a hybrid multi-stage pipeline.**
+A pure LLM scan of the entire repository is too expensive, non-deterministic, and incomplete at scale. Pure static analysis is precise on well-typed SDK-heavy code but fails on dynamic HTTP, wrappers, and generated clients. **Mendpoint uses a hybrid multi-stage pipeline expressed as an agent graph.**
 
-## High-level pipeline
+## High-level agent graph (product topology)
 
 ```mermaid
 flowchart TD
-  A[Provider Change Event] --> B[Structured Change Normalizer]
-  B --> C[Impactable Surfaces]
-  C --> D[Customer Codebase Index]
-  D --> E[Candidate Discovery]
-  E --> F[Context Expansion]
-  F --> G[Deep Confirmation]
-  G --> H[Impact Report]
-  H --> I[PR Generation]
-  I --> J[GitHub Delivery PR-only]
-  J --> K[Human review + feedback]
+  A[change_intel] --> B[index_code]
+  B --> C[candidates]
+  C -->|fan-out| D[expand call-graph]
+  D -->|fan-in| E[confirm]
+  E --> F[generate]
+  F --> G[verify Warden/repair loop]
+  G -->|fail| F
+  G -->|pass| H[review_gate human]
 ```
+
+Canonical definition: `wardenProductGraph()` in `@mendpoint/orchestrator`. See `docs/GRAPH_ENGINEERING.md`.
 
 | Stage | Package | Role |
 |-------|---------|------|
@@ -40,6 +51,7 @@ flowchart TD
 | **Learning** | `suppressed_patterns` | Closed PR feedback suppresses re-proposals |
 | Delivery | `@mendpoint/github` | Mock or Octokit; **never** direct push to protected branches |
 | Orchestration | `@mendpoint/pipeline` | Persist + policy + learning + audit |
+| **Agent graph** | `@mendpoint/orchestrator` | Topology, routing, shared state, Mermaid/export |
 
 
 

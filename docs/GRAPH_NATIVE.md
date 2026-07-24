@@ -3,7 +3,9 @@
 ## North star
 
 **Mendpoint is a graph of API change → code impact → human decision.**  
-The product loop still ships PRs; the graph is how you see, query, and trust that loop.
+The product still ships reviewable PRs; **graphs** are how we reason, orchestrate agents, and earn trust.
+
+This covers **domain graphs** (code/API/product). For **agent orchestration graphs** (graph engineering vs loop engineering), see [`GRAPH_ENGINEERING.md`](./GRAPH_ENGINEERING.md) — that is the go-to agentic approach.
 
 ## Phases
 
@@ -57,12 +59,14 @@ type ProductGraph = {
 
 ## Invariants
 
-1. Graph is **read-mostly**; mutations go through pipeline + PR  
+1. Domain graph is **read-mostly**; mutations go through pipeline + PR  
 2. Code nodes carry evidence (file, line, confidence)  
 3. No auto-merge  
-4. Loop remains change → impact → PR → feedback  
+4. Product control flow is an **agent graph** (not one free-roam loop); each stage is a loop node  
+5. Fan-out expand / fan-in confirm preferred over sequential whole-repo mud  
 
 ## Implementation packages
 
-- `@mendpoint/graph` — builders + serializers  
+- `@mendpoint/graph` — builders + serializers (domain product graphs)  
+- `@mendpoint/orchestrator` — agent graph topology + runner  
 - Reuses `@mendpoint/call-graph`, `change-intel`, `db`, `codebase-index`

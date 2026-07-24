@@ -51,4 +51,4 @@ Expanded forms (same meaning, for long-form copy) live in [`docs/WARDEN_VISION_G
 
 ## Suggested public one-liner
 
-**Warden** is Mendpoint’s API integration teammate: graph-leaned impact analysis, reviewable migration PRs, and an on-demand API debug agent. Continuous multi-repo watch and public benchmarks are on the design-partner track. Never auto-merges by default.
+**Warden** is Mendpoint’s API integration teammate: **graph engineering** (specialized verify-backed nodes, not one mega-agent), reviewable migration PRs, and an on-demand API debug loop-node. Continuous multi-repo watch and public benchmarks are on the design-partner track. Never auto-merges by default.

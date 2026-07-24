@@ -1,5 +1,7 @@
 /**
- * Warden — Mendpoint's Devin-style API debug agent.
+ * Warden — specialized LOOP NODE in Mendpoint's agent GRAPH.
+ * Graph engineering: other nodes do change intel / expand / generate;
+ * this node is discover → plan → act → VERIFY for API client bugs.
  * Tool loop with API-domain heuristics (+ optional LLM).
  */
 import { newId } from "@mendpoint/shared";

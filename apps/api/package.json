@@ -14,6 +14,7 @@
     "@mendpoint/db": "*",
     "@mendpoint/github": "*",
     "@mendpoint/graph": "*",
+    "@mendpoint/orchestrator": "*",
     "@mendpoint/pipeline": "*",
     "@mendpoint/agent": "*",
     "@mendpoint/repair": "*",
