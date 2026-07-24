@@ -35,3 +35,8 @@ export {
   SDK_PROVIDER_MAP,
   type SdkSignal,
 } from "./sdk-signals.js";
+
+export {
+  parseChangelogEntry,
+  type ChangelogParseResult,
+} from "./changelog-parse.js";

@@ -1,0 +1,191 @@
+/**
+ * Consumer exposure report — APIs you depend on + open risks + PR posture.
+ * Pre-customer batch A2: JSON + markdown share pack (Warden).
+ */
+import type { AppDb } from "./index.js";
+
+export type ExposureReport = {
+  consumerId: string;
+  consumerName: string;
+  generatedAt: string;
+  monitoredApis: Array<{ providerSlug: string; providerName: string }>;
+  openChanges: number;
+  findingsCount: number;
+  prsOpen: number;
+  prsMerged: number;
+  topRisks: Array<{ changeId: string; risk: string; summary: string }>;
+  markdown: string;
+};
+
+const RISK_RANK: Record<string, number> = {
+  breaking: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  none: 4,
+};
+
+function riskRank(risk: string): number {
+  return RISK_RANK[risk.toLowerCase()] ?? 5;
+}
+
+export function buildExposureReport(db: AppDb, consumerId: string): ExposureReport | null {
+  const consumer = db.raw
+    .prepare(`SELECT id, name FROM consumers WHERE id = ?`)
+    .get(consumerId) as { id: string; name: string } | undefined;
+  if (!consumer) return null;
+
+  const monitoredRows = db.raw
+    .prepare(
+      `SELECT p.slug as provider_slug, p.name as provider_name, m.provider_id as provider_id
+       FROM monitored_apis m
+       JOIN providers p ON p.id = m.provider_id
+       WHERE m.consumer_id = ?
+       ORDER BY p.slug`,
+    )
+    .all(consumerId) as Array<{
+    provider_slug: string;
+    provider_name: string;
+    provider_id: string;
+  }>;
+
+  const monitoredApis = monitoredRows.map((r) => ({
+    providerSlug: r.provider_slug,
+    providerName: r.provider_name,
+  }));
+  const monitoredProviderIds = new Set(monitoredRows.map((r) => r.provider_id));
+
+  const changes = (
+    db.raw
+      .prepare(
+        `SELECT id, provider_id, risk, summary, created_at FROM api_changes ORDER BY created_at DESC`,
+      )
+      .all() as Array<{
+      id: string;
+      provider_id: string;
+      risk: string;
+      summary: string;
+      created_at: string;
+    }>
+  ).filter((c) => monitoredProviderIds.has(c.provider_id));
+
+  const prs = db.raw
+    .prepare(`SELECT change_id, status FROM migration_prs WHERE consumer_id = ?`)
+    .all(consumerId) as Array<{ change_id: string; status: string }>;
+
+  const prsOpen = prs.filter((p) => p.status === "open" || p.status === "draft").length;
+  const prsMerged = prs.filter((p) => p.status === "merged").length;
+
+  const mergedChangeIds = new Set(
+    prs.filter((p) => p.status === "merged").map((p) => p.change_id),
+  );
+  const openChangeRows = changes.filter((c) => !mergedChangeIds.has(c.id));
+  const openChanges = openChangeRows.length;
+
+  const findingsCount = (
+    db.raw
+      .prepare(`SELECT COUNT(*) as c FROM impact_findings WHERE consumer_id = ?`)
+      .get(consumerId) as { c: number }
+  ).c;
+
+  const topRisks = [...openChangeRows]
+    .sort(
+      (a, b) =>
+        riskRank(a.risk) - riskRank(b.risk) || b.created_at.localeCompare(a.created_at),
+    )
+    .slice(0, 10)
+    .map((c) => ({
+      changeId: c.id,
+      risk: c.risk,
+      summary: c.summary,
+    }));
+
+  const generatedAt = new Date().toISOString();
+  const markdown = renderMarkdown({
+    consumerName: consumer.name,
+    consumerId: consumer.id,
+    generatedAt,
+    monitoredApis,
+    openChanges,
+    findingsCount,
+    prsOpen,
+    prsMerged,
+    topRisks,
+  });
+
+  return {
+    consumerId: consumer.id,
+    consumerName: consumer.name,
+    generatedAt,
+    monitoredApis,
+    openChanges,
+    findingsCount,
+    prsOpen,
+    prsMerged,
+    topRisks,
+    markdown,
+  };
+}
+
+function renderMarkdown(opts: {
+  consumerName: string;
+  consumerId: string;
+  generatedAt: string;
+  monitoredApis: Array<{ providerSlug: string; providerName: string }>;
+  openChanges: number;
+  findingsCount: number;
+  prsOpen: number;
+  prsMerged: number;
+  topRisks: Array<{ changeId: string; risk: string; summary: string }>;
+}): string {
+  const lines: string[] = [
+    "## Exposure report (Warden)",
+    "",
+    `**Consumer:** ${opts.consumerName} (\`${opts.consumerId}\`)`,
+    `**Generated:** ${opts.generatedAt}`,
+    "",
+    "### Monitored APIs",
+    "",
+  ];
+
+  if (!opts.monitoredApis.length) {
+    lines.push("_No monitored APIs._", "");
+  } else {
+    for (const a of opts.monitoredApis) {
+      lines.push(`- **${a.providerName}** (\`${a.providerSlug}\`)`);
+    }
+    lines.push("");
+  }
+
+  lines.push(
+    "### Summary",
+    "",
+    `| Metric | Count |`,
+    `| --- | ---: |`,
+    `| Open changes | ${opts.openChanges} |`,
+    `| Impact findings | ${opts.findingsCount} |`,
+    `| PRs open | ${opts.prsOpen} |`,
+    `| PRs merged | ${opts.prsMerged} |`,
+    "",
+    "### Top risks",
+    "",
+  );
+
+  if (!opts.topRisks.length) {
+    lines.push("_No open risks for monitored APIs._", "");
+  } else {
+    for (const r of opts.topRisks) {
+      lines.push(`- **${r.risk}** — ${r.summary} (\`${r.changeId}\`)`);
+    }
+    lines.push("");
+  }
+
+  lines.push(
+    "---",
+    "",
+    "_Generated by Warden (Mendpoint). Human review required before any merge._",
+    "",
+  );
+
+  return lines.join("\n");
+}

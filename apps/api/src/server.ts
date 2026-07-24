@@ -66,6 +66,7 @@ import {
   listAgentRuns,
   getAgentRun,
   agentRunToApi,
+  buildExposureReport,
 } from "@mendpoint/db";
 import {
   detectVendors,
@@ -742,6 +743,22 @@ app.get("/metrics", (c) => c.json(computeProductMetrics(db)));
 
 /** Design-partner metrics (gap closure) */
 app.get("/metrics/design-partner", (c) => c.json(computeDesignPartnerMetrics(db)));
+
+/** Pre-customer A2: consumer exposure report (Warden) */
+app.get("/consumers/:id/exposure", (c) => {
+  const report = buildExposureReport(db, c.req.param("id"));
+  if (!report) return c.json({ error: "not found" }, 404);
+  return c.json(report);
+});
+
+app.get("/consumers/:id/exposure.md", (c) => {
+  const report = buildExposureReport(db, c.req.param("id"));
+  if (!report) return c.text("not found", 404);
+  return c.body(report.markdown, 200, {
+    "Content-Type": "text/markdown; charset=utf-8",
+  });
+});
+
 
 /** Audit export for enterprise / compliance */
 app.get("/audit/export", (c) => {

@@ -24,10 +24,12 @@ export const VENDOR_CATALOG: VendorEntry[] = [
     website: "https://stripe.com/docs/api",
     npm: ["stripe", "@stripe/stripe-js"],
     pypi: ["stripe"],
-    // Public OpenAPI is not stable; override via DB provider.openapi_url or env.
-    openapiUrl: process.env.STRIPE_OPENAPI_URL,
+    // Env override preferred; file: fixture for localOnly / offline demos
+    openapiUrl:
+      process.env.STRIPE_OPENAPI_URL ??
+      "file:fixtures/providers/stripe-flagship/openapi-v2.json",
     changelogUrl: "https://stripe.com/docs/upgrades",
-    defaultSearchTokens: ["stripe", "customers.list", "starting_after", "/v1/"],
+    defaultSearchTokens: ["stripe", "customers.list", "starting_after", "/v1/", "amount_cents"],
   },
   {
     slug: "openai",
@@ -35,7 +37,9 @@ export const VENDOR_CATALOG: VendorEntry[] = [
     website: "https://platform.openai.com/docs",
     npm: ["openai"],
     pypi: ["openai"],
-    openapiUrl: process.env.OPENAI_OPENAPI_URL,
+    openapiUrl:
+      process.env.OPENAI_OPENAPI_URL ??
+      "file:fixtures/providers/openai-flagship/openapi-v2.json",
     changelogUrl: "https://platform.openai.com/docs/changelog",
     defaultSearchTokens: ["openai", "chat.completions", "max_tokens", "max_completion_tokens"],
   },
@@ -45,7 +49,10 @@ export const VENDOR_CATALOG: VendorEntry[] = [
     website: "https://docs.aws.amazon.com/sdk-for-javascript/",
     npm: ["aws-sdk", "@aws-sdk/client-s3", "@aws-sdk/client-sts"],
     pypi: ["boto3", "botocore"],
-    defaultSearchTokens: ["AWS.S3", "S3Client", "getObject", "boto3"],
+    openapiUrl:
+      process.env.AWS_S3_OPENAPI_URL ??
+      "file:fixtures/providers/aws-s3-flagship/openapi-v2.json",
+    defaultSearchTokens: ["AWS.S3", "S3Client", "getObject", "boto3", "x-amz-meta-filename"],
   },
   {
     slug: "acme-payments",
@@ -71,8 +78,22 @@ export const VENDOR_CATALOG: VendorEntry[] = [
     website: "https://www.twilio.com/docs",
     npm: ["twilio"],
     pypi: ["twilio"],
-    openapiUrl: process.env.TWILIO_OPENAPI_URL,
-    defaultSearchTokens: ["twilio", "messages.create"],
+    openapiUrl:
+      process.env.TWILIO_OPENAPI_URL ??
+      "file:fixtures/providers/twilio-flagship/openapi-v2.json",
+    defaultSearchTokens: ["twilio", "messages.create", "Body", "Content"],
+  },
+  {
+    slug: "plaid",
+    name: "Plaid",
+    website: "https://plaid.com/docs/",
+    npm: ["plaid"],
+    pypi: ["plaid-python"],
+    openapiUrl:
+      process.env.PLAID_OPENAPI_URL ??
+      "file:fixtures/providers/plaid-flagship/openapi-v2.json",
+    changelogUrl: "https://plaid.com/docs/api/versioning/",
+    defaultSearchTokens: ["plaid", "account_id", "account_ids", "access_token"],
   },
   {
     slug: "github",

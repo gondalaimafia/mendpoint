@@ -715,6 +715,9 @@ export function getPoliciesMap(db: AppDb, consumerId: string): Record<string, un
 export { computeProductMetrics } from "./metrics.js";
 export type { ProductMetrics } from "./metrics.js";
 
+export { buildExposureReport } from "./exposure.js";
+export type { ExposureReport } from "./exposure.js";
+
 export type SuppressedPattern = {
   id: string;
   consumer_id: string | null;

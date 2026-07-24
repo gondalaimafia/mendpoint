@@ -1,0 +1,71 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "AWS S3 API (flagship fixture)",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/{Bucket}/{Key+}": {
+      "get": {
+        "operationId": "GetObject",
+        "summary": "Get object",
+        "parameters": [
+          {
+            "name": "Bucket",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "Key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "headers": {
+              "x-amz-meta-filename": {
+                "schema": { "type": "string" },
+                "description": "Original filename metadata"
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": { "type": "string", "format": "binary" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "PutObject",
+        "summary": "Put object",
+        "parameters": [
+          {
+            "name": "Bucket",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "Key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "headers": {
+              "ETag": { "schema": { "type": "string" } }
+            }
+          }
+        }
+      }
+    }
+  }
+}
