@@ -1,5 +1,6 @@
 /**
- * Devin-style API bug agent — tool loop with API-domain heuristics (+ optional LLM).
+ * Welder — Mendpoint's Devin-style API debug agent.
+ * Tool loop with API-domain heuristics (+ optional LLM).
  */
 import { newId } from "@mendpoint/shared";
 import { executeTool, executeToolAsync, type ToolContext } from "./tools.js";
@@ -21,7 +22,7 @@ async function llmSuggestTool(
     ? `${base}/chat/completions`
     : `${base}/v1/chat/completions`;
 
-  const system = `You are Mendpoint API Bug Agent (Devin-style, API-focused).
+  const system = `You are Welder, Mendpoint's API debug agent (Devin-style, API-focused).
 Reply with JSON only:
 {"tool":"search|read_file|replace_in_file|run_command|list_dir|finish","args":{...},"thought":"..."}
 Tools only. Prefer minimal edits. Never touch secrets/.env. Never claim merge.`;
@@ -72,7 +73,7 @@ Tools only. Prefer minimal edits. Never touch secrets/.env. Never claim merge.`;
 
 function formatReport(r: Omit<AgentRunResult, "reportMarkdown">): string {
   return [
-    "### Mendpoint API Bug Agent",
+    "### Welder (Mendpoint API debug agent)",
     "",
     `- **Goal:** ${r.goal}`,
     `- **Status:** ${r.ok ? "✅ fixed (verify passed or edits applied)" : "❌ needs human"}`,
@@ -96,9 +97,10 @@ function formatReport(r: Omit<AgentRunResult, "reportMarkdown">): string {
 }
 
 /**
- * Run the API bug agent to completion (bounded steps).
+ * Run Welder (API debug agent) to completion (bounded steps).
+ * `runApiBugAgent` is kept as a stable alias.
  */
-export async function runApiBugAgent(task: AgentTask): Promise<AgentRunResult> {
+export async function runWelder(task: AgentTask): Promise<AgentRunResult> {
   const sessionId = task.sessionId ?? newId();
   const maxSteps = task.maxSteps ?? 20;
   const steps: AgentStep[] = [];
@@ -234,3 +236,6 @@ export async function runApiBugAgent(task: AgentTask): Promise<AgentRunResult> {
   };
   return { ...base, reportMarkdown: formatReport(base) };
 }
+
+/** @deprecated Prefer `runWelder` — same implementation. */
+export const runApiBugAgent = runWelder;

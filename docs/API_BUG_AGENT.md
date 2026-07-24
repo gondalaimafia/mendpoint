@@ -1,6 +1,6 @@
-# API Bug Agent (Devin-style, API-focused)
+# Welder — API debug agent
 
-A tool-using agent that **explores a repo, edits code, and re-runs a verify command** until an API-related bug is fixed — or attempts are exhausted.
+**Welder** is Mendpoint’s first agentic product: a Devin-style debug agent that **explores a repo, edits code, and re-runs a verify command** until an API-related bug is fixed — or attempts are exhausted.
 
 This is **not** a general “fix any software bug” agent. It is specialized for:
 
@@ -93,10 +93,12 @@ Heuristics run first; LLM may suggest tools after step 2.
 
 ## vs `@mendpoint/repair`
 
-| | Repair | API Bug Agent |
+| | Repair | **Welder** |
 |--|--------|----------------|
 | Style | Batch diagnose → plan → apply | Multi-step tool loop (Devin-like) |
 | Scope | Migration leftovers + CI log | Broader API client bugs |
 | Exploration | Limited tree scan | Active search/read/edit |
 
-Use **repair** after migration PRs. Use **agent** for open-ended “this API integration is broken” tickets.
+Use **repair** after migration PRs. Use **Welder** for open-ended “this API integration is broken” tickets.
+
+Package entry: `runWelder` (alias `runApiBugAgent`) from `@mendpoint/agent`.

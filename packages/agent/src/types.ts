@@ -1,5 +1,5 @@
 /**
- * Devin-style agent focused on API-related bugs.
+ * Welder — Mendpoint's debug agent for API-related bugs.
  * Tool-using loop: observe → think → act → verify. Never auto-merges.
  */
 

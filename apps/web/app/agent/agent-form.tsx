@@ -66,7 +66,7 @@ export function AgentForm({
 
   return (
     <section className="card">
-      <h2>New agent run</h2>
+      <h2>New Welder run</h2>
       <div className="stack">
         <div className="btn-row">
           <button
@@ -150,7 +150,7 @@ export function AgentForm({
           disabled={busy || (mode === "path" ? !repoPath : !consumerId)}
           onClick={run}
         >
-          {busy ? "Agent running…" : "Run API Bug Agent"}
+          {busy ? "Welder running…" : "Run Welder"}
         </button>
         {err && <p className="error">{err}</p>}
         {out && <pre className="code-block">{out}</pre>}

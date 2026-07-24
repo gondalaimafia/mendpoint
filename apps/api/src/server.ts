@@ -100,7 +100,7 @@ import {
 } from "@mendpoint/graph";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { runRepairSession, runAgenticRepairLoop } from "@mendpoint/repair";
-import { runApiBugAgent } from "@mendpoint/agent";
+import { runWelder } from "@mendpoint/agent";
 import { createAuthMiddleware } from "./auth.js";
 
 const db = createDb();
@@ -814,7 +814,7 @@ app.post("/jobs/process-one", async (c) => {
         sessionId?: string;
       };
       const started = nowIso();
-      const result = await runApiBugAgent({
+      const result = await runWelder({
         goal: payload.goal,
         repoRoot: payload.repoPath,
         verifyCommand: payload.verifyCommand,
@@ -903,7 +903,7 @@ app.get("/agent/runs/:id", (c) => {
 });
 
 /**
- * Run API-focused bug agent (tool loop).
+ * Run Welder — Mendpoint API debug agent (tool loop).
  * Body: { goal, repoPath|consumerId, verifyCommand?, errorLog?, maxSteps?, dryRun?, useLlm?, allowNetwork?, async? }
  * When async=true, enqueues job type agent.run and returns 202.
  */
@@ -968,13 +968,14 @@ app.post("/agent/runs", async (c) => {
         action: "agent.run.queued",
         resourceType: "agent_run",
         resourceId: sessionId,
-        metadata: { jobId },
+        metadata: { jobId, product: "welder" },
       });
       return c.json(
         {
           sessionId,
           jobId,
           status: "queued",
+          product: "welder",
           message: "Drain with POST /jobs/process-one or worker process-jobs",
         },
         202,
@@ -982,7 +983,7 @@ app.post("/agent/runs", async (c) => {
     }
 
     const started = nowIso();
-    const result = await runApiBugAgent({
+    const result = await runWelder({
       goal: body.goal,
       repoRoot: repoPath,
       verifyCommand: body.verifyCommand,

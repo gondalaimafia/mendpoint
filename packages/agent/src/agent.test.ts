@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { runApiBugAgent } from "./agent.js";
+import { runWelder } from "./agent.js";
 import { extractHints, extractRenames, extractApiPaths } from "./heuristics.js";
 import { pathBlocked, commandBlocked } from "./policies.js";
 import { executeTool, type ToolContext } from "./tools.js";
@@ -68,7 +68,7 @@ describe("tools sandbox", () => {
   });
 });
 
-describe("api bug agent", () => {
+describe("Welder (API debug agent)", () => {
   it("fixes path typo and amount_cents on fixture", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-"));
     dirs.push(dir);
@@ -76,7 +76,7 @@ describe("api bug agent", () => {
     cpSync(join(fixture, "client.js"), join(dir, "client.js"));
     cpSync(join(fixture, "check.mjs"), join(dir, "check.mjs"));
 
-    const result = await runApiBugAgent({
+    const result = await runWelder({
       goal: "API returns 404: path typo chargess. Also rename amount_cents to amount for the charges API.",
       repoRoot: dir,
       verifyCommand: "node check.mjs",
@@ -91,7 +91,7 @@ describe("api bug agent", () => {
     expect(src).toContain("amount");
     expect(result.ok).toBe(true);
     expect(result.filesChanged.length).toBeGreaterThan(0);
-    expect(result.reportMarkdown).toContain("API Bug Agent");
+    expect(result.reportMarkdown).toContain("Welder");
   }, 60_000);
 
   it("fixes rename-only goal without canned amount_cents special-case text", async () => {
@@ -110,7 +110,7 @@ if (!s.includes("max_completion_tokens")) process.exit(1);
 console.log("ok");
 `,
     );
-    const result = await runApiBugAgent({
+    const result = await runWelder({
       goal: "rename max_tokens to max_completion_tokens (deprecated OpenAI field)",
       repoRoot: dir,
       verifyCommand: "node check.mjs",
@@ -134,7 +134,7 @@ console.log("ok");
       join(dir, "check.mjs"),
       `import { readFileSync } from "fs";\nconst s=readFileSync("client.js","utf8");\nif(s.includes("chargess")||/amount_cents/.test(s)) process.exit(1);\nconsole.log("ok");\n`,
     );
-    const result = await runApiBugAgent({
+    const result = await runWelder({
       goal: "ensure charges client is correct",
       repoRoot: dir,
       verifyCommand: "node check.mjs",

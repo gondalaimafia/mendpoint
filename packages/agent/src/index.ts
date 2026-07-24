@@ -15,4 +15,4 @@ export {
   extractApiPaths,
   nextHeuristicCall,
 } from "./heuristics.js";
-export { runApiBugAgent } from "./agent.js";
+export { runWelder, runApiBugAgent } from "./agent.js";

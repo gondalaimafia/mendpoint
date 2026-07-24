@@ -13,7 +13,7 @@ import {
 } from "@mendpoint/db";
 import { pollAllFeeds, listCatalogFeeds, probeKnownSdks } from "@mendpoint/catalog";
 import { nowIso } from "@mendpoint/shared";
-import { runApiBugAgent } from "@mendpoint/agent";
+import { runWelder } from "@mendpoint/agent";
 
 async function demo() {
   const report = await runChangePipeline({ providerSlug: "acme-payments" });
@@ -127,7 +127,7 @@ async function processJobsOnce(db = createDb()) {
         };
         console.log(`Job ${job.id} agent.run ${payload.repoPath}`);
         const started = nowIso();
-        const result = await runApiBugAgent({
+        const result = await runWelder({
           goal: payload.goal,
           repoRoot: payload.repoPath,
           verifyCommand: payload.verifyCommand,
@@ -150,6 +150,7 @@ async function processJobsOnce(db = createDb()) {
           resultJson: JSON.stringify({
             stoppedReason: result.stoppedReason,
             jobId: job.id,
+            product: "welder",
           }),
           createdAt: started,
           finishedAt: nowIso(),
@@ -163,11 +164,12 @@ async function processJobsOnce(db = createDb()) {
             steps: result.steps.length,
             filesChanged: result.filesChanged,
             stoppedReason: result.stoppedReason,
+            product: "welder",
           },
           nowIso(),
         );
         console.log(
-          `  agent ${result.ok ? "ok" : "failed"} session=${result.sessionId} steps=${result.steps.length}`,
+          `  welder ${result.ok ? "ok" : "failed"} session=${result.sessionId} steps=${result.steps.length}`,
         );
         continue;
       }
