@@ -20,11 +20,14 @@ export type CiCheckInput = {
   risk?: string;
   findings?: number;
   policyNotes?: string[];
+  /** Product name in header; defaults to Warden */
+  product?: string;
 };
 
 export function formatCiCheckComment(input: CiCheckInput): string {
+  const product = input.product ?? "Warden";
   const lines = [
-    "### Mendpoint CI check",
+    `### ${product} CI check (Mendpoint)`,
     "",
     input.risk ? `- **Change risk:** ${input.risk}` : null,
     input.findings != null ? `- **Impact findings:** ${input.findings}` : null,
@@ -51,7 +54,7 @@ export function formatCiCheckComment(input: CiCheckInput): string {
   }
 
   lines.push(
-    "_This is an advisory check. Mendpoint never auto-merges. Human review required._",
+    `Opened by **${product}**. Never auto-merges. Human review required.`,
   );
   return lines.join("\n");
 }

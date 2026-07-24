@@ -99,6 +99,7 @@ import {
   invalidateGraphCaches,
 } from "@mendpoint/graph";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
+import { notifyWardenEvent } from "@mendpoint/notify";
 import { runRepairSession, runAgenticRepairLoop } from "@mendpoint/repair";
 import { runWarden } from "@mendpoint/agent";
 import { createAuthMiddleware } from "./auth.js";
@@ -319,6 +320,10 @@ app.post("/providers/:slug/publish", async (c) => {
       mode: body.mode,
     });
     invalidateGraphCaches();
+    void notifyWardenEvent(
+      "warden_finished",
+      `${c.req.param("slug")} change ${report.changeId} risk=${report.risk}`,
+    ).catch(() => undefined);
     return c.json(report, 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);

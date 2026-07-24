@@ -93,10 +93,21 @@ export function evaluatePolicy(
   const labels: string[] = ["mendpoint"];
   const blockedFiles: string[] = [];
 
-  // Never auto-merge by default
-  const allowAutoMerge = policy.autoMergeLowRisk === true && draft.risk === "non_breaking";
+  // Never auto-merge by default — env hard-off unless ALLOW_AUTO_MERGE is explicitly enabled
+  let allowAutoMerge = policy.autoMergeLowRisk === true && draft.risk === "non_breaking";
+  if (
+    process.env.ALLOW_AUTO_MERGE !== "1" &&
+    process.env.ALLOW_AUTO_MERGE !== "true"
+  ) {
+    if (allowAutoMerge) {
+      reasons.push("auto-merge hard-off (set ALLOW_AUTO_MERGE=1 to enable eligibility)");
+    }
+    allowAutoMerge = false;
+  }
   if (!allowAutoMerge) {
-    reasons.push("auto-merge disabled (human review required)");
+    if (!reasons.some((r) => r.includes("auto-merge"))) {
+      reasons.push("auto-merge disabled (human review required)");
+    }
     labels.push("needs-human-review");
   } else {
     labels.push("auto-merge-eligible");

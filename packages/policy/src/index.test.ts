@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_POLICY, evaluatePolicy, filterFindingsByPolicy } from "./index.js";
 
 const baseDraft = {
@@ -15,12 +15,36 @@ const baseDraft = {
   ],
 };
 
+afterEach(() => {
+  delete process.env.ALLOW_AUTO_MERGE;
+});
+
 describe("policy engine", () => {
   it("defaults never auto-merge", () => {
     expect(DEFAULT_POLICY.autoMergeLowRisk).toBe(false);
     const d = evaluatePolicy(baseDraft, []);
     expect(d.allowAutoMerge).toBe(false);
     expect(d.labels).toContain("needs-human-review");
+  });
+
+  it("hard-offs auto-merge even when policy flag true without env", () => {
+    const draft = { ...baseDraft, risk: "non_breaking" as const };
+    const d = evaluatePolicy(draft, [], {
+      policy: { autoMergeLowRisk: true },
+    });
+    expect(d.allowAutoMerge).toBe(false);
+    expect(d.labels).toContain("needs-human-review");
+    expect(d.reasons.some((r) => r.includes("auto-merge"))).toBe(true);
+  });
+
+  it("allows auto-merge only when env set and non_breaking with policy flag", () => {
+    process.env.ALLOW_AUTO_MERGE = "true";
+    const draft = { ...baseDraft, risk: "non_breaking" as const };
+    const d = evaluatePolicy(draft, [], {
+      policy: { autoMergeLowRisk: true },
+    });
+    expect(d.allowAutoMerge).toBe(true);
+    expect(d.labels).toContain("auto-merge-eligible");
   });
 
   it("blocks denylisted paths", () => {
