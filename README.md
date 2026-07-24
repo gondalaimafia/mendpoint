@@ -1,10 +1,10 @@
 # Mendpoint
 
-**Mendpoint** — structured API change intelligence → precise impact analysis → migration pull requests.
+**Warden** is Mendpoint’s API integration teammate: graph-leaned impact analysis, reviewable migration PRs, and an on-demand API debug agent. Continuous multi-repo watch and public benchmarks are on the design-partner track. Never auto-merges by default.
 
-When an API provider ships a breaking change or a high-value capability, Mendpoint (with explicit customer permission) scans the relevant codebase and opens a PR. Customers review and merge. Providers reduce support load; enterprises get continuous API hygiene.
+When an API provider ships a breaking change or a high-value capability, Mendpoint (with explicit customer permission) can scan the relevant codebase and open a **reviewable** PR. Customers review and merge.
 
-> Product: **Mendpoint**. Monorepo package root `mendpoint`, npm workspaces `@mendpoint/*`.
+> Platform: **Mendpoint**. Product teammate: **Warden**. Monorepo package root `mendpoint`, npm workspaces `@mendpoint/*`. Claim-safe language: [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md).
 
 ## Quickstart
 
@@ -23,10 +23,10 @@ npm run phase-e:java     # ≥70% Java impact recall
 npm run phase-e:ruby     # ≥70% Ruby impact recall
 npm run worker:poll      # poll local OpenAPI feeds once
 npm run worker:jobs      # drain fan-out job queue
-npm run eval:partners    # design-partner quality bar
+npm run eval:partners    # design-partner quality bar (internal fixtures)
 npm run repair:test      # agentic repair layer
-npm run agent:test       # Devin-style API bug agent
-npm run agent:demo       # end-to-end API bug agent on fixture
+npm run agent:test       # Warden on-demand API debug agent
+npm run agent:demo       # end-to-end Warden agent on fixture
 npm test
 npm run dev:api       # http://localhost:3001
 npm run dev:web       # http://localhost:3000  · /agent · /repair · /graph
@@ -86,6 +86,7 @@ See `docs/ARCHITECTURE.md` for the full design and `docs/EXAMPLES.md` for concre
 
 - `GITHUB_MODE=mock` by default — never requires GitHub credentials for local demos
 - PR-only policy language in every generated PR body
+- Human review required — never auto-merges by default
 - Low-confidence impacts are marked explicitly, not forced into “confident” PRs
 - Audit log for every pipeline step
 - Customer code is not used to train foundation models without explicit opt-in
@@ -118,17 +119,19 @@ This scaffold is a **thin, working slice** of every major layer from the Months 
 - [x] **Phase A:** harness ≥70% + real PR ship (`docs/PHASE_A.md`)
 - [x] **Phase B:** LLM confirm (budgeted), TS compiler index, policy engine, metrics (`docs/PHASE_B.md`)
 - [x] **Phase C:** provider publish UI, lockfile auto-detect, feedback learning, Python bar (`docs/PHASE_C.md`)
-- [x] **Phase D:** continuous feed poll, GitHub webhooks, API keys, Go harness, CI check (`docs/PHASE_D.md`)
+- [x] **Phase D:** OpenAPI feed poll, GitHub webhooks, API keys, Go harness, CI check (`docs/PHASE_D.md`)
 - [x] **Phase E:** GitHub App install wizard, tenants/plans stub, Java/Ruby bars, brand packs (`docs/PHASE_E.md`)
 - [x] **Phase F:** Graph-native explorer + APIs (`docs/GRAPH_NATIVE.md`, `/graph`)
 - [x] **Gap closure:** design-partner eval, GitHub App runtime, SDK feeds, severity, queue, notify-only, audit export (`docs/GAP_CLOSURE_PLAN.md`)
 - [x] **Agentic repair layer:** diagnose → plan → apply → verify (`docs/AGENTIC_REPAIR.md`, `/repair`, `AGENTIC_REPAIR=1`)
-- [x] **Welder** (API debug agent): trained on protocol/serialization/semantic/network/cascading/async/rate-limit failures (`docs/WELDER_TRAINING.md`, `/agent`, `@mendpoint/agent`)
+- [x] **Warden** (on-demand API debug agent): trained on protocol/serialization/semantic/network/cascading/async/rate-limit failures (`docs/WARDEN_TRAINING.md`, `/agent`, `@mendpoint/agent`)
+- [ ] Continuous multi-repo watch + changelog RSS intelligence (design-partner track)
+- [ ] Public Warden/API benchmark pack
 - [ ] Real payment processor invoices (plan flip is stubbed)
 - [ ] Enterprise SSO (SAML/OIDC)
 - [ ] GitLab / Bitbucket / FedRAMP
 
-See `docs/PRODUCT_SPEC.md` and `docs/ARCHITECTURE.md`.
+See `docs/PRODUCT_SPEC.md`, `docs/ARCHITECTURE.md`, and `docs/WARDEN_CLAIMS.md`.
 
 ## License
 
