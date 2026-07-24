@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { runWelder } from "./agent.js";
+import { runWarden } from "./agent.js";
 import { extractHints, extractRenames, extractApiPaths } from "./heuristics.js";
 import { pathBlocked, commandBlocked } from "./policies.js";
 import { executeTool, type ToolContext } from "./tools.js";
 import { classifyFailures, FAILURE_CATEGORIES, FAILURE_MODES } from "./knowledge.js";
-import { proposeWelderFix } from "./fixes.js";
+import { proposeWardenFix } from "./fixes.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const dirs: string[] = [];
@@ -39,7 +39,7 @@ describe("heuristics", () => {
   });
 });
 
-describe("Welder training knowledge", () => {
+describe("Warden training knowledge", () => {
   it("covers all seven communication failure categories", () => {
     const cats = Object.keys(FAILURE_CATEGORIES);
     expect(cats).toEqual(
@@ -74,7 +74,7 @@ describe("Welder training knowledge", () => {
     await fetch("/v1/x");
   }
 }`;
-    const backoff = proposeWelderFix(
+    const backoff = proposeWardenFix(
       retrySrc,
       "retry.js",
       "aggressive retry without backoff causes storms",
@@ -91,7 +91,7 @@ describe("Welder training knowledge", () => {
     body: "{}"
   });
 }`;
-    const idemp = proposeWelderFix(
+    const idemp = proposeWardenFix(
       postSrc,
       "pay.js",
       "prevent double-charge with idempotency",
@@ -104,7 +104,7 @@ describe("Welder training knowledge", () => {
   const data = await res.json();
   return data;
 }`;
-    const status = proposeWelderFix(
+    const status = proposeWardenFix(
       parseSrc,
       "load.js",
       "must check status before parse",
@@ -146,7 +146,7 @@ describe("tools sandbox", () => {
   });
 });
 
-describe("Welder (API debug agent)", () => {
+describe("Warden (API debug agent)", () => {
   it("fixes path typo and amount_cents on fixture", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-"));
     dirs.push(dir);
@@ -154,7 +154,7 @@ describe("Welder (API debug agent)", () => {
     cpSync(join(fixture, "client.js"), join(dir, "client.js"));
     cpSync(join(fixture, "check.mjs"), join(dir, "check.mjs"));
 
-    const result = await runWelder({
+    const result = await runWarden({
       goal: "API returns 404: path typo chargess. Also rename amount_cents to amount for the charges API.",
       repoRoot: dir,
       verifyCommand: "node check.mjs",
@@ -169,7 +169,7 @@ describe("Welder (API debug agent)", () => {
     expect(src).toContain("amount");
     expect(result.ok).toBe(true);
     expect(result.filesChanged.length).toBeGreaterThan(0);
-    expect(result.reportMarkdown).toContain("Welder");
+    expect(result.reportMarkdown).toContain("Warden");
   }, 60_000);
 
   it("fixes rename-only goal without canned amount_cents special-case text", async () => {
@@ -188,7 +188,7 @@ if (!s.includes("max_completion_tokens")) process.exit(1);
 console.log("ok");
 `,
     );
-    const result = await runWelder({
+    const result = await runWarden({
       goal: "rename max_tokens to max_completion_tokens (deprecated OpenAI field)",
       repoRoot: dir,
       verifyCommand: "node check.mjs",
@@ -212,7 +212,7 @@ console.log("ok");
       join(dir, "check.mjs"),
       `import { readFileSync } from "fs";\nconst s=readFileSync("client.js","utf8");\nif(s.includes("chargess")||/amount_cents/.test(s)) process.exit(1);\nconsole.log("ok");\n`,
     );
-    const result = await runWelder({
+    const result = await runWarden({
       goal: "ensure charges client is correct",
       repoRoot: dir,
       verifyCommand: "node check.mjs",

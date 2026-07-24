@@ -1,5 +1,5 @@
 /**
- * Welder — Mendpoint's Devin-style API debug agent.
+ * Warden — Mendpoint's Devin-style API debug agent.
  * Tool loop with API-domain heuristics (+ optional LLM).
  */
 import { newId } from "@mendpoint/shared";
@@ -8,7 +8,7 @@ import { nextHeuristicCall, type HeuristicState } from "./heuristics.js";
 import { DEFAULT_NEVER_TOUCH } from "./policies.js";
 import {
   classifyFailures,
-  welderPlaybook,
+  wardenPlaybook,
   type FailureMode,
 } from "./knowledge.js";
 import type { AgentRunResult, AgentStep, AgentTask, ToolCall } from "./types.js";
@@ -28,7 +28,7 @@ async function llmSuggestTool(
     : `${base}/v1/chat/completions`;
 
   const diagnosed = classifyFailures(task.goal, task.errorLog);
-  const system = `${welderPlaybook()}
+  const system = `${wardenPlaybook()}
 
 Reply with JSON only:
 {"tool":"search|read_file|replace_in_file|run_command|list_dir|finish","args":{...},"thought":"..."}
@@ -89,7 +89,7 @@ function formatReport(
   diagnosed: FailureMode[],
 ): string {
   return [
-    "### Welder (Mendpoint API debug agent)",
+    "### Warden (Mendpoint API debug agent)",
     "",
     `- **Goal:** ${r.goal}`,
     `- **Status:** ${r.ok ? "✅ fixed (verify passed or edits applied)" : "❌ needs FDE / human"}`,
@@ -125,10 +125,10 @@ function formatReport(
 }
 
 /**
- * Run Welder (API debug agent) to completion (bounded steps).
+ * Run Warden (API debug agent) to completion (bounded steps).
  * `runApiBugAgent` is kept as a stable alias.
  */
-export async function runWelder(task: AgentTask): Promise<AgentRunResult> {
+export async function runWarden(task: AgentTask): Promise<AgentRunResult> {
   const sessionId = task.sessionId ?? newId();
   const maxSteps = task.maxSteps ?? 24;
   const steps: AgentStep[] = [];
@@ -271,5 +271,8 @@ export async function runWelder(task: AgentTask): Promise<AgentRunResult> {
   return { ...base, reportMarkdown: formatReport(base, diagnosed) };
 }
 
-/** @deprecated Prefer `runWelder` — same implementation. */
-export const runApiBugAgent = runWelder;
+/** @deprecated Prefer `runWarden` — same implementation. */
+export const runApiBugAgent = runWarden;
+
+/** @deprecated Renamed to `runWarden`. */
+export const runWelder = runWarden;

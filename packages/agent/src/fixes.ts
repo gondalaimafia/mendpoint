@@ -1,5 +1,5 @@
 /**
- * Welder fix proposers — code-level repairs for trained failure modes.
+ * Warden fix proposers — code-level repairs for trained failure modes.
  */
 import type { ToolCall } from "./types.js";
 import { extractApiPaths, extractRenames } from "./heuristics-core.js";
@@ -31,7 +31,7 @@ function tryReplace(
 /**
  * Propose one API communication fix for the given file content.
  */
-export function proposeWelderFix(
+export function proposeWardenFix(
   content: string,
   path: string,
   goal: string,
@@ -328,7 +328,7 @@ export function proposeWelderFix(
   ) {
     const m = content.match(/(for\s*\(\s*let\s+attempt\s*=\s*0;\s*attempt\s*<\s*\d+;\s*attempt\+\+\s*\)\s*\{)/);
     if (m) {
-      const injection = `${m[1]}\n  await new Promise(r => setTimeout(r, Math.min(8000, 100 * 2 ** attempt) + Math.random() * 100)); // Welder: exp backoff + jitter`;
+      const injection = `${m[1]}\n  await new Promise(r => setTimeout(r, Math.min(8000, 100 * 2 ** attempt) + Math.random() * 100)); // Warden: exp backoff + jitter`;
       const p = tryReplace(
         path,
         m[1]!,
@@ -372,7 +372,7 @@ export function proposeWelderFix(
   ) {
     const m = content.match(/(if\s*\([^)]*429[^)]*\)\s*\{)/);
     if (m) {
-      const injection = `${m[1]}\n  const ra = Number(res.headers?.get?.("retry-after") ?? res.headers?.["retry-after"] ?? 1);\n  await new Promise(r => setTimeout(r, (Number.isFinite(ra) ? ra : 1) * 1000)); // Welder: honor Retry-After`;
+      const injection = `${m[1]}\n  const ra = Number(res.headers?.get?.("retry-after") ?? res.headers?.["retry-after"] ?? 1);\n  await new Promise(r => setTimeout(r, (Number.isFinite(ra) ? ra : 1) * 1000)); // Warden: honor Retry-After`;
       const p = tryReplace(
         path,
         m[1]!,
@@ -395,7 +395,7 @@ export function proposeWelderFix(
   ) {
     const m = content.match(/(const\s+\w+\s*=\s*await\s+res(?:ponse)?\.json\(\))/);
     if (m) {
-      const injection = `if (!res.ok) throw new Error(\`HTTP \${res.status}\`); // Welder: check status before parse\n  ${m[1]}`;
+      const injection = `if (!res.ok) throw new Error(\`HTTP \${res.status}\`); // Warden: check status before parse\n  ${m[1]}`;
       const p = tryReplace(
         path,
         m[1]!,
@@ -420,7 +420,7 @@ export function proposeWelderFix(
     ) {
       const m = content.match(/(async\s+function\s+\w*webhook\w*\s*\([^)]*\)\s*\{|function\s+\w*webhook\w*\s*\([^)]*\)\s*\{)/i);
       if (m) {
-        const injection = `${m[1]}\n  const _welderSeen = globalThis.__welderWebhookSeen ??= new Set();\n  const _eid = body?.id ?? body?.event_id ?? headers?.["x-delivery-id"];\n  if (_eid && _welderSeen.has(_eid)) return { ok: true, duplicate: true };\n  if (_eid) _welderSeen.add(_eid); // Welder: webhook idempotency`;
+        const injection = `${m[1]}\n  const _wardenSeen = globalThis.__wardenWebhookSeen ??= new Set();\n  const _eid = body?.id ?? body?.event_id ?? headers?.["x-delivery-id"];\n  if (_eid && _wardenSeen.has(_eid)) return { ok: true, duplicate: true };\n  if (_eid) _wardenSeen.add(_eid); // Warden: webhook idempotency`;
         const p = tryReplace(
           path,
           m[1]!,

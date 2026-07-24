@@ -1,5 +1,5 @@
 /**
- * Demo: Welder (API debug agent) on fixtures/agent-bugs/broken-charges
+ * Demo: Warden (API debug agent) on fixtures/agent-bugs/broken-charges
  *
  *   npm run agent:demo
  */
@@ -7,7 +7,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runWelder } from "@mendpoint/agent";
+import { runWarden } from "@mendpoint/agent";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = join(root, "fixtures/agent-bugs/broken-charges");
@@ -21,7 +21,7 @@ async function main() {
     console.log("Repo:", dir);
     console.log("Before:\n", readFileSync(join(dir, "client.js"), "utf8"));
 
-    const result = await runWelder({
+    const result = await runWarden({
       goal: "Fix API 404 path typo chargess. Rename amount_cents to amount for charges API.",
       repoRoot: dir,
       verifyCommand: "node check.mjs",

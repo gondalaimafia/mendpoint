@@ -8,7 +8,7 @@ const LINKS = [
   { href: "/consumer", label: "Consumer" },
   { href: "/graph", label: "Graph" },
   { href: "/repair", label: "Repair" },
-  { href: "/agent", label: "Welder" },
+  { href: "/agent", label: "Warden" },
   { href: "/feeds", label: "Feeds" },
   { href: "/install", label: "Install" },
   { href: "/brands", label: "Brands" },

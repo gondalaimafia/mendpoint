@@ -20,7 +20,7 @@ export {
   FAILURE_CATEGORIES,
   classifyFailures,
   categoryCoverageSummary,
-  welderPlaybook,
+  wardenPlaybook,
 } from "./knowledge.js";
-export { proposeWelderFix } from "./fixes.js";
-export { runWelder, runApiBugAgent } from "./agent.js";
+export { proposeWardenFix } from "./fixes.js";
+export { runWarden, runWelder, runApiBugAgent } from "./agent.js";

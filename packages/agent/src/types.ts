@@ -1,5 +1,5 @@
 /**
- * Welder — Mendpoint's debug agent for API-related bugs.
+ * Warden — Mendpoint's debug agent for API-related bugs.
  * Tool-using loop: observe → think → act → verify. Never auto-merges.
  */
 

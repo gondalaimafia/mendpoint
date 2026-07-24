@@ -1,10 +1,10 @@
 /**
- * Welder heuristic planner — no LLM required.
+ * Warden heuristic planner — no LLM required.
  * Turns goal + observations into tool calls across API communication failure modes.
  */
 import type { ToolCall, ToolResult } from "./types.js";
 import { extractHints } from "./heuristics-core.js";
-import { proposeWelderFix } from "./fixes.js";
+import { proposeWardenFix } from "./fixes.js";
 import { classifyFailures } from "./knowledge.js";
 
 export type HeuristicState = {
@@ -68,13 +68,13 @@ export function nextHeuristicCall(state: HeuristicState): ToolCall {
   if (lastRead?.ok && (state.phase === "read" || state.phase === "fix" || state.focusFile)) {
     const content = String((lastRead.data as { content?: string })?.content ?? "");
     const path = String((lastRead.data as { path?: string })?.path ?? state.focusFile ?? "");
-    const fix = proposeWelderFix(content, path, state.goal, state.errorLog, state.triedFixes);
+    const fix = proposeWardenFix(content, path, state.goal, state.errorLog, state.triedFixes);
     if (fix) {
       state.phase = "fix";
       state.triedFixes.add(fix.key);
       return {
         ...fix.call,
-        thought: fix.call.thought ?? `Apply Welder fix${fix.modeId ? ` [${fix.modeId}]` : ""}`,
+        thought: fix.call.thought ?? `Apply Warden fix${fix.modeId ? ` [${fix.modeId}]` : ""}`,
       };
     }
     const idx = state.candidates.indexOf(path);
@@ -168,7 +168,7 @@ export function nextHeuristicCall(state: HeuristicState): ToolCall {
     args: {
       ok,
       message: ok
-        ? `Applied Welder API fixes${modes ? ` (${modes})` : ""}`
+        ? `Applied Warden API fixes${modes ? ` (${modes})` : ""}`
         : `Could not fully resolve — FDE review needed${modes ? ` · modes: ${modes}` : ""}`,
     },
     thought: "Stop: max heuristic path",

@@ -1,10 +1,10 @@
-# Welder training — API communication failures
+# Warden training — API communication failures
 
-**Welder** is Mendpoint’s API debug agent. It is trained on the full stack of **API communication failure modes** (protocol/contract, serialization, semantics, network, cascading errors, async/webhooks, rate limits) — not just path typos.
+**Warden** is Mendpoint’s API debug agent. It is trained on the full stack of **API communication failure modes** (protocol/contract, serialization, semantics, network, cascading errors, async/webhooks, rate limits) — not just path typos.
 
 ## Categories
 
-| Category | Client-fixable (Welder) | FDE / infra |
+| Category | Client-fixable (Warden) | FDE / infra |
 |----------|--------------------------|-------------|
 | Protocol & contract | Paths, Content-Type, Accept, version headers, GraphQL body shape, trailing slash, gRPC/JSON hints | Mesh, gateway schema translation |
 | Serialization drift | Field renames, enum/date hints, snake/camel when stated | Producer versioning governance |
@@ -17,8 +17,8 @@
 ## Runtime model
 
 1. **`classifyFailures(goal, errorLog, code)`** → ranked mode ids  
-2. **Heuristic tool loop** (list → search → read → `proposeWelderFix` → verify)  
-3. Optional **LLM planner** seeded with `welderPlaybook()` + diagnosed modes  
+2. **Heuristic tool loop** (list → search → read → `proposeWardenFix` → verify)  
+3. Optional **LLM planner** seeded with `wardenPlaybook()` + diagnosed modes  
 4. Report lists **diagnosed modes** and FDE handoff flags  
 
 Code:
@@ -26,16 +26,16 @@ Code:
 - `packages/agent/src/knowledge.ts` — mode catalog  
 - `packages/agent/src/fixes.ts` — surgical code fixes  
 - `packages/agent/src/heuristics.ts` — planner  
-- Entry: `runWelder()`  
+- Entry: `runWarden()`  
 
-## What Welder will *not* pretend to fix alone
+## What Warden will *not* pretend to fix alone
 
 - Production gateway misconfiguration without client repro  
 - NTP/clock skew on identity infrastructure  
 - CAP/partition strategy across data centers  
 - Cross-org semantic dictionary design  
 
-Those surface as **FDE handoff** in the Welder report.
+Those surface as **FDE handoff** in the Warden report.
 
 ## Verify
 

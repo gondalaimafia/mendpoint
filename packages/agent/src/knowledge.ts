@@ -1,9 +1,9 @@
 /**
- * Welder training knowledge — API communication failure modes.
+ * Warden training knowledge — API communication failure modes.
  * Source map: protocol/contract, serialization, semantic, network,
  * cascading errors, async/webhooks, rate limiting.
  *
- * Categories marked `client_fixable` can be repaired by Welder edits.
+ * Categories marked `client_fixable` can be repaired by Warden edits.
  * Others surface as diagnosis + FDE guidance (infra / multi-service).
  */
 
@@ -24,9 +24,9 @@ export type FailureMode = {
   signals: RegExp[];
   /** Typical HTTP/status symptoms */
   symptoms: string[];
-  /** What Welder tries in-repo */
+  /** What Warden tries in-repo */
   clientFix: string;
-  /** When Welder should hand off */
+  /** When Warden should hand off */
   fdeWhen?: string;
   clientFixable: boolean;
 };
@@ -380,8 +380,8 @@ export function categoryCoverageSummary(): string {
 }
 
 /** Compact playbook injected into LLM planner. */
-export function welderPlaybook(): string {
-  return `You are Welder, Mendpoint's API debug agent. Fix client-side API communication bugs only.
+export function wardenPlaybook(): string {
+  return `You are Warden, Mendpoint's API debug agent. Fix client-side API communication bugs only.
 Never auto-merge. Prefer minimal surgical edits. Never touch secrets/.env.
 
 Failure categories you handle:

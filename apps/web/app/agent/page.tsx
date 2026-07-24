@@ -31,7 +31,7 @@ export default async function AgentPage() {
   return (
     <main className="page">
       <div className="page-header">
-        <h1>Welder</h1>
+        <h1>Warden</h1>
         <p className="muted">
           Mendpoint&apos;s API debug agent — Devin-style tool loop for wrong paths, field renames,
           auth headers, pagination. Explores the repo, edits code, re-runs your verify command.

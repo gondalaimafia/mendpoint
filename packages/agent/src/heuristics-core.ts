@@ -1,4 +1,4 @@
-/** Shared extractors for Welder (no fix/heuristic imports — avoid cycles). */
+/** Shared extractors for Warden (no fix/heuristic imports — avoid cycles). */
 
 export function extractRenames(text: string): Array<{ from: string; to: string }> {
   const out: Array<{ from: string; to: string }> = [];

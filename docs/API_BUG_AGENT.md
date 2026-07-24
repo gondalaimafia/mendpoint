@@ -1,10 +1,10 @@
-# Welder — API debug agent
+# Warden — API debug agent
 
-**Welder** is Mendpoint’s first agentic product: a Devin-style debug agent that **explores a repo, edits code, and re-runs a verify command** until an API-related bug is fixed — or attempts are exhausted.
+**Warden** is Mendpoint’s first agentic product: a Devin-style debug agent that **explores a repo, edits code, and re-runs a verify command** until an API-related bug is fixed — or attempts are exhausted.
 
 This is **not** a general “fix any software bug” agent. It is trained on **API communication failures**:
 
-| Area | Examples Welder targets |
+| Area | Examples Warden targets |
 |------|-------------------------|
 | Protocol / contract | Paths, Content-Type, Accept, version headers, GraphQL vs REST shape |
 | Serialization | Field renames, pagination keys, enum/date/null semantics |
@@ -14,7 +14,7 @@ This is **not** a general “fix any software bug” agent. It is trained on **A
 | Async / webhooks | Delivery dedupe, signature-related patterns |
 | Rate limiting | 429 + Retry-After |
 
-Full catalog: [`WELDER_TRAINING.md`](./WELDER_TRAINING.md).
+Full catalog: [`WARDEN_TRAINING.md`](./WARDEN_TRAINING.md).
 
 ## Loop
 
@@ -99,12 +99,12 @@ Heuristics run first; LLM may suggest tools after step 2.
 
 ## vs `@mendpoint/repair`
 
-| | Repair | **Welder** |
+| | Repair | **Warden** |
 |--|--------|----------------|
 | Style | Batch diagnose → plan → apply | Multi-step tool loop (Devin-like) |
 | Scope | Migration leftovers + CI log | Broader API client bugs |
 | Exploration | Limited tree scan | Active search/read/edit |
 
-Use **repair** after migration PRs. Use **Welder** for open-ended “this API integration is broken” tickets.
+Use **repair** after migration PRs. Use **Warden** for open-ended “this API integration is broken” tickets.
 
-Package entry: `runWelder` (alias `runApiBugAgent`) from `@mendpoint/agent`.
+Package entry: `runWarden` (alias `runApiBugAgent`) from `@mendpoint/agent`.
