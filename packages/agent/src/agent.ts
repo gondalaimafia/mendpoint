@@ -6,6 +6,11 @@ import { newId } from "@mendpoint/shared";
 import { executeTool, executeToolAsync, type ToolContext } from "./tools.js";
 import { nextHeuristicCall, type HeuristicState } from "./heuristics.js";
 import { DEFAULT_NEVER_TOUCH } from "./policies.js";
+import {
+  classifyFailures,
+  welderPlaybook,
+  type FailureMode,
+} from "./knowledge.js";
 import type { AgentRunResult, AgentStep, AgentTask, ToolCall } from "./types.js";
 
 async function llmSuggestTool(
@@ -22,7 +27,9 @@ async function llmSuggestTool(
     ? `${base}/chat/completions`
     : `${base}/v1/chat/completions`;
 
-  const system = `You are Welder, Mendpoint's API debug agent (Devin-style, API-focused).
+  const diagnosed = classifyFailures(task.goal, task.errorLog);
+  const system = `${welderPlaybook()}
+
 Reply with JSON only:
 {"tool":"search|read_file|replace_in_file|run_command|list_dir|finish","args":{...},"thought":"..."}
 Tools only. Prefer minimal edits. Never touch secrets/.env. Never claim merge.`;
@@ -31,6 +38,12 @@ Tools only. Prefer minimal edits. Never touch secrets/.env. Never claim merge.`;
     goal: task.goal,
     errorLog: task.errorLog?.slice(0, 2000),
     verifyCommand: task.verifyCommand,
+    diagnosedModes: diagnosed.map((m) => ({
+      id: m.id,
+      category: m.category,
+      title: m.title,
+      clientFix: m.clientFix,
+    })),
     recentSteps: steps.slice(-6).map((s) => ({
       thought: s.thought,
       tool: s.call.tool,
@@ -71,15 +84,26 @@ Tools only. Prefer minimal edits. Never touch secrets/.env. Never claim merge.`;
   }
 }
 
-function formatReport(r: Omit<AgentRunResult, "reportMarkdown">): string {
+function formatReport(
+  r: Omit<AgentRunResult, "reportMarkdown">,
+  diagnosed: FailureMode[],
+): string {
   return [
     "### Welder (Mendpoint API debug agent)",
     "",
     `- **Goal:** ${r.goal}`,
-    `- **Status:** ${r.ok ? "✅ fixed (verify passed or edits applied)" : "❌ needs human"}`,
+    `- **Status:** ${r.ok ? "✅ fixed (verify passed or edits applied)" : "❌ needs FDE / human"}`,
     `- **Steps:** ${r.steps.length}`,
     `- **Files changed:** ${r.filesChanged.length ? r.filesChanged.map((f) => `\`${f}\``).join(", ") : "_(none)_"}`,
     `- **Stop:** ${r.stoppedReason}`,
+    "",
+    "#### Diagnosed failure modes",
+    ...(diagnosed.length
+      ? diagnosed.slice(0, 8).map(
+          (m) =>
+            `- **${m.title}** (\`${m.id}\` / ${m.category})${m.clientFixable ? "" : " · *infra/FDE*"} — ${m.clientFix}`,
+        )
+      : ["- _(no strong signal — general API client pass)_"]),
     "",
     "#### Trace",
     ...r.steps.slice(-12).map(
@@ -87,12 +111,16 @@ function formatReport(r: Omit<AgentRunResult, "reportMarkdown">): string {
         `${s.step}. *${s.thought}* → \`${s.call.tool}\` ${s.result.ok ? "ok" : "fail"} — ${s.result.summary}`,
     ),
     "",
+    "#### Trained coverage",
+    "- Protocol/contract · Serialization drift · Semantic mismatch",
+    "- Network/latency · Cascading errors · Async/webhooks · Rate limiting",
+    "",
     "#### Policy",
     "- Never auto-merges",
     "- Path denylist for secrets/lockfiles",
-    "- API-focused tools only (code + optional http_probe)",
+    "- API communication fixes only (code + optional http_probe)",
     "",
-    "_Human review required before merge._",
+    "_Human / FDE review required before merge._",
   ].join("\n");
 }
 
@@ -102,7 +130,7 @@ function formatReport(r: Omit<AgentRunResult, "reportMarkdown">): string {
  */
 export async function runWelder(task: AgentTask): Promise<AgentRunResult> {
   const sessionId = task.sessionId ?? newId();
-  const maxSteps = task.maxSteps ?? 20;
+  const maxSteps = task.maxSteps ?? 24;
   const steps: AgentStep[] = [];
   const changed = new Set<string>();
   const ctx: ToolContext = {
@@ -112,6 +140,8 @@ export async function runWelder(task: AgentTask): Promise<AgentRunResult> {
     allowNetwork: task.allowNetwork ?? false,
     changedFiles: changed,
   };
+
+  let diagnosed = classifyFailures(task.goal, task.errorLog);
 
   const hState: HeuristicState = {
     goal: task.goal,
@@ -123,6 +153,7 @@ export async function runWelder(task: AgentTask): Promise<AgentRunResult> {
     phase: "explore",
     candidates: [],
     triedFixes: new Set(),
+    diagnosedModes: diagnosed.map((m) => m.id),
   };
 
   let stoppedReason = "max_steps";
@@ -151,13 +182,15 @@ export async function runWelder(task: AgentTask): Promise<AgentRunResult> {
         ok: true,
         goal: task.goal,
         steps,
-        filesChanged: [],
+        filesChanged: [] as string[],
         verifyOutput: String((seed.data as { stdout?: string })?.stdout ?? ""),
         stoppedReason,
       };
-      return { ...base, reportMarkdown: formatReport(base) };
+      return { ...base, reportMarkdown: formatReport(base, diagnosed) };
     }
     hState.errorLog = seed.error ?? JSON.stringify(seed.data);
+    diagnosed = classifyFailures(task.goal, hState.errorLog);
+    hState.diagnosedModes = diagnosed.map((m) => m.id);
   }
 
   for (let i = 1; i <= maxSteps; i++) {
@@ -225,6 +258,7 @@ export async function runWelder(task: AgentTask): Promise<AgentRunResult> {
     }
   }
 
+  diagnosed = classifyFailures(task.goal, hState.errorLog ?? task.errorLog);
   const base: Omit<AgentRunResult, "reportMarkdown"> = {
     sessionId,
     ok,
@@ -234,7 +268,7 @@ export async function runWelder(task: AgentTask): Promise<AgentRunResult> {
     verifyOutput,
     stoppedReason,
   };
-  return { ...base, reportMarkdown: formatReport(base) };
+  return { ...base, reportMarkdown: formatReport(base, diagnosed) };
 }
 
 /** @deprecated Prefer `runWelder` — same implementation. */

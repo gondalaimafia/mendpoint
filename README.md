@@ -123,7 +123,7 @@ This scaffold is a **thin, working slice** of every major layer from the Months 
 - [x] **Phase F:** Graph-native explorer + APIs (`docs/GRAPH_NATIVE.md`, `/graph`)
 - [x] **Gap closure:** design-partner eval, GitHub App runtime, SDK feeds, severity, queue, notify-only, audit export (`docs/GAP_CLOSURE_PLAN.md`)
 - [x] **Agentic repair layer:** diagnose → plan → apply → verify (`docs/AGENTIC_REPAIR.md`, `/repair`, `AGENTIC_REPAIR=1`)
-- [x] **Welder** (API debug agent): Devin-style tool loop for API bugs (`docs/API_BUG_AGENT.md`, `/agent`, `@mendpoint/agent`)
+- [x] **Welder** (API debug agent): trained on protocol/serialization/semantic/network/cascading/async/rate-limit failures (`docs/WELDER_TRAINING.md`, `/agent`, `@mendpoint/agent`)
 - [ ] Real payment processor invoices (plan flip is stubbed)
 - [ ] Enterprise SSO (SAML/OIDC)
 - [ ] GitLab / Bitbucket / FedRAMP

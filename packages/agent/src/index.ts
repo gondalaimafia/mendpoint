@@ -15,4 +15,12 @@ export {
   extractApiPaths,
   nextHeuristicCall,
 } from "./heuristics.js";
+export {
+  FAILURE_MODES,
+  FAILURE_CATEGORIES,
+  classifyFailures,
+  categoryCoverageSummary,
+  welderPlaybook,
+} from "./knowledge.js";
+export { proposeWelderFix } from "./fixes.js";
 export { runWelder, runApiBugAgent } from "./agent.js";

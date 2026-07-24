@@ -2,13 +2,19 @@
 
 **Welder** is Mendpoint’s first agentic product: a Devin-style debug agent that **explores a repo, edits code, and re-runs a verify command** until an API-related bug is fixed — or attempts are exhausted.
 
-This is **not** a general “fix any software bug” agent. It is specialized for:
+This is **not** a general “fix any software bug” agent. It is trained on **API communication failures**:
 
-- Wrong HTTP paths / typos (`chargess` → `charges`)
-- Field renames (`amount_cents` → `amount`, pagination keys)
-- Auth header mistakes (Bearer, API keys)
-- SDK parameter deprecations (`max_tokens` → `max_completion_tokens`)
-- Obvious URL/ssl path bugs
+| Area | Examples Welder targets |
+|------|-------------------------|
+| Protocol / contract | Paths, Content-Type, Accept, version headers, GraphQL vs REST shape |
+| Serialization | Field renames, pagination keys, enum/date/null semantics |
+| Semantic | Units (cents), epoch ms vs s, docs vs live errors |
+| Network | https, timeouts, request-id headers |
+| Cascading errors | Backoff+jitter, 4xx vs 5xx retries, Idempotency-Key, status checks |
+| Async / webhooks | Delivery dedupe, signature-related patterns |
+| Rate limiting | 429 + Retry-After |
+
+Full catalog: [`WELDER_TRAINING.md`](./WELDER_TRAINING.md).
 
 ## Loop
 

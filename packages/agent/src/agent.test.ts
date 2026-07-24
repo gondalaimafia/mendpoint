@@ -7,6 +7,8 @@ import { runWelder } from "./agent.js";
 import { extractHints, extractRenames, extractApiPaths } from "./heuristics.js";
 import { pathBlocked, commandBlocked } from "./policies.js";
 import { executeTool, type ToolContext } from "./tools.js";
+import { classifyFailures, FAILURE_CATEGORIES, FAILURE_MODES } from "./knowledge.js";
+import { proposeWelderFix } from "./fixes.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const dirs: string[] = [];
@@ -34,6 +36,82 @@ describe("heuristics", () => {
     const renames = extractRenames("rename amount_cents to amount and max_tokens → max_completion_tokens");
     expect(renames.some((r) => r.from === "amount_cents" && r.to === "amount")).toBe(true);
     expect(extractApiPaths("GET /v1/chargess returned 404")).toContain("/v1/chargess");
+  });
+});
+
+describe("Welder training knowledge", () => {
+  it("covers all seven communication failure categories", () => {
+    const cats = Object.keys(FAILURE_CATEGORIES);
+    expect(cats).toEqual(
+      expect.arrayContaining([
+        "protocol_contract",
+        "serialization_drift",
+        "semantic_mismatch",
+        "network_latency",
+        "cascading_errors",
+        "async_webhooks",
+        "rate_limiting",
+      ]),
+    );
+    expect(FAILURE_MODES.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it("classifies protocol, rate limit, and webhook modes", () => {
+    const a = classifyFailures("404 on /v1/chargess", "HTTP 404 Not Found");
+    expect(a.some((m) => m.category === "protocol_contract")).toBe(true);
+
+    const b = classifyFailures("handle rate limits", "HTTP 429 Too Many Requests Retry-After: 2");
+    expect(b.some((m) => m.id === "rate_limit_429")).toBe(true);
+
+    const c = classifyFailures("webhook duplicate deliveries", "event_id already processed");
+    expect(c.some((m) => m.category === "async_webhooks")).toBe(true);
+  });
+
+  it("proposes backoff, idempotency, and status-check fixes", () => {
+    const tried = new Set<string>();
+    const retrySrc = `async function call() {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await fetch("/v1/x");
+  }
+}`;
+    const backoff = proposeWelderFix(
+      retrySrc,
+      "retry.js",
+      "aggressive retry without backoff causes storms",
+      "retry storm no backoff",
+      tried,
+    );
+    expect(backoff?.call.tool).toBe("replace_in_file");
+    expect(String(backoff?.call.args.to)).toMatch(/setTimeout|2 \*\*/);
+
+    const postSrc = `export function pay() {
+  return fetch("/v1/charges", {
+    method: "POST",
+    headers: { "Authorization": "Bearer x" },
+    body: "{}"
+  });
+}`;
+    const idemp = proposeWelderFix(
+      postSrc,
+      "pay.js",
+      "prevent double-charge with idempotency",
+      "duplicate payment",
+      new Set(),
+    );
+    expect(String(idemp?.call.args.to)).toMatch(/Idempotency-Key/);
+
+    const parseSrc = `async function load(res) {
+  const data = await res.json();
+  return data;
+}`;
+    const status = proposeWelderFix(
+      parseSrc,
+      "load.js",
+      "must check status before parse",
+      "did not check status assumed 200",
+      new Set(),
+    );
+    expect(String(status?.call.args.to)).toMatch(/res\.ok/);
   });
 });
 
