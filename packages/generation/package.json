@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mendpoint/branding": "*",
     "@mendpoint/egraph": "*",
     "@mendpoint/shared": "*"
   },
@@ -22,6 +23,4 @@
     "typescript": "^5.8.2",
     "vitest": "^3.0.9"
   }
-
-
 }

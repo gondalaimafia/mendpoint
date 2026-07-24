@@ -24,6 +24,7 @@ import { createGitHubDelivery, type GitHubDelivery } from "@mendpoint/github";
 import { evaluatePolicy, type PolicyConfig } from "@mendpoint/policy";
 import {
   applyBrandPack,
+  ensureWardenFooter,
   getBrandPack,
   getBrandPackForProvider,
 } from "@mendpoint/branding";
@@ -249,6 +250,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       const branded = applyBrandPack(brandPack, { title: draft.title, body: draft.body });
       draft = { ...draft, title: branded.title, body: branded.body };
       brandLabels = branded.labels;
+    } else {
+      draft = { ...draft, body: ensureWardenFooter(draft.body) };
     }
 
     // Phase B: policy engine — never auto-merge; denylist paths; auth labels
@@ -459,10 +462,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       resourceType: "migration_pr",
       resourceId: prId,
       metadata: {
+        product: "warden",
         prUrl,
         findings: findings.length,
         strategy: impactReport.strategySummary,
         repair: repairMeta ?? null,
+        brandPackId: brandPack?.id ?? null,
       },
     });
 

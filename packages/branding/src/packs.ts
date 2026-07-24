@@ -27,6 +27,29 @@ export type BrandedAgentPack = {
   requiresPlan: "free" | "pro" | "enterprise";
 };
 
+/** Neutral product footer for pipeline / migration PRs (no first-party brand pack). */
+export const WARDEN_PR_FOOTER = [
+  "---",
+  "_Opened by **Warden** (Mendpoint). Graph-leaned API impact · human review required · never auto-merged by default._",
+].join("\n");
+
+const WARDEN_MENPOINT_LINE =
+  "_Powered by **Warden** / Mendpoint. Human review required · never auto-merged by default._";
+
+/**
+ * Ensure a PR body carries Warden / Mendpoint attribution.
+ * - No attribution → full WARDEN_PR_FOOTER
+ * - Mendpoint only (typical brand pack) → short Warden/Mendpoint line
+ * - Already mentions Warden → unchanged
+ */
+export function ensureWardenFooter(body: string): string {
+  if (/\bWarden\b/i.test(body)) return body;
+  if (/\bMendpoint\b/i.test(body)) {
+    return `${body.trimEnd()}\n\n${WARDEN_MENPOINT_LINE}`;
+  }
+  return `${body.trimEnd()}\n\n${WARDEN_PR_FOOTER}`;
+}
+
 export const BRAND_PACKS: BrandedAgentPack[] = [
   {
     id: "stripe-update-agent",
@@ -110,7 +133,7 @@ export function getBrandPackForProvider(providerSlug: string): BrandedAgentPack 
   return BRAND_PACKS.find((p) => p.providerSlug === providerSlug);
 }
 
-/** Apply brand packaging to a generated PR title/body. */
+/** Apply brand packaging to a generated PR title/body. Always ensures Warden attribution. */
 export function applyBrandPack(
   pack: BrandedAgentPack,
   draft: { title: string; body: string },
@@ -119,8 +142,9 @@ export function applyBrandPack(
     ? draft.title
     : `${pack.prTitlePrefix} ${draft.title}`;
   const footer = pack.prFooterLines.join("\n");
-  const body = draft.body.includes(pack.displayName)
+  const withPack = draft.body.includes(pack.displayName)
     ? draft.body
     : `${draft.body}\n\n${footer}`;
+  const body = ensureWardenFooter(withPack);
   return { title, body, labels: [...pack.labels] };
 }
