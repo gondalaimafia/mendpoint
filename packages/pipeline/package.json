@@ -16,9 +16,11 @@
     "@mendpoint/branding": "*",
     "@mendpoint/change-intel": "*",
     "@mendpoint/code-impact": "*",
+    "@mendpoint/contract": "*",
     "@mendpoint/db": "*",
     "@mendpoint/generation": "*",
     "@mendpoint/github": "*",
+    "@mendpoint/orchestrator": "*",
     "@mendpoint/policy": "*",
     "@mendpoint/repair": "*",
     "@mendpoint/shared": "*"

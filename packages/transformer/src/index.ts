@@ -16,3 +16,6 @@ export {
   planFromCampaign,
   diffOutputs,
 } from "./campaign.js";
+
+export type { RepoAgentAssignment, MultiRepoPlan } from "./multi-repo.js";
+export { planMultiRepoAgents, formatMultiRepoMarkdown } from "./multi-repo.js";

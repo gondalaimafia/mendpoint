@@ -12,9 +12,9 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 
 | Product | Role in matrix | Maturity | Verdict |
 |---------|----------------|----------|---------|
-| **Warden** (API engineer) | Spec-first design/build/evolve/test/secure/operate APIs + consumer impact | **~2.8 / 5** as *API change → consumer migration*; **~1.5 / 5** as full API engineer | Strong on **consumer-side impact + repair**, weak on **provider-side design/operate**, live-service sandbox, contract fuzz |
-| **Transformer** (legacy migration) | COBOL/VB6/.NET-Fx/Py2/monolith → modern; BSG + DAG campaigns | **~0.5 / 5** | Only adjacent graph/pipeline primitives; **no BSG, DAG campaigns, differential traces, multi-runtime** |
-| **Shared platform** | Planner/executor, sandbox VM, 4-layer memory, knowledge store, multi-SCM | **~2.0 / 5** | Graph orchestrator + tool harness + GitHub adapters exist; no Devin-class sandbox VM or memory layers |
+| **Warden** (API engineer) | Spec-first design/build/evolve/test/secure/operate APIs + consumer impact | **~3.4 / 5** post-matrix-build (consumer PR + plans/gates/registry/critic; sandbox local-only) | Spec plan, contract gates, critic, registry wired; VM/in-cluster still stub |
+| **Transformer** (legacy migration) | COBOL/VB6/.NET-Fx/Py2/monolith → modern; BSG + DAG campaigns | **~1.5 / 5** | BSG/DAG/campaign + multi-repo router + output diff; no COBOL/mainframe engines |
+| **Shared platform** | Planner/executor, sandbox VM, 4-layer memory, knowledge store, multi-SCM | **~3.0 / 5** | Plan harness, local sandbox, 4-layer memory, knowledge seed, canary hooks; no real multi-SCM |
 
 **Strategic fit:** Current monorepo is closest to **Warden Dimension 5 (cross-repo consumers) + patch/verify loops**, not full “AI API engineer” nor “Transformer.” Matrix is a **north star**; build order below closes **Warden P0 wedge first**, then **shared harness**, then **Transformer scaffold**.
 

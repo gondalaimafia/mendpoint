@@ -112,7 +112,21 @@ import {
   planToMarkdown,
 } from "@mendpoint/orchestrator";
 import { evaluatePrGates, reviewOpenApiDesign } from "@mendpoint/contract";
-import { createCampaign, planFromCampaign } from "@mendpoint/transformer";
+import {
+  createCampaign,
+  planFromCampaign,
+  planMultiRepoAgents,
+  formatMultiRepoMarkdown,
+} from "@mendpoint/transformer";
+import {
+  createSandbox,
+  sandboxManifest,
+  seedMemoryForAgent,
+  createMemory,
+  memoryForPlanner,
+  evaluateCanary,
+  RUNTIME_MATRIX,
+} from "@mendpoint/platform";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
 import { runRepairSession, runAgenticRepairLoop } from "@mendpoint/repair";
@@ -376,10 +390,63 @@ app.post("/transformer/campaigns", async (c) => {
       })),
     });
     const plan = planFromCampaign(campaign);
-    return c.json({ campaign, plan, markdown: planToMarkdown(plan) }, 201);
+    const multi = planMultiRepoAgents(campaign);
+    return c.json(
+      {
+        campaign,
+        plan,
+        markdown: planToMarkdown(plan),
+        multiRepo: multi,
+        multiRepoMarkdown: formatMultiRepoMarkdown(multi),
+      },
+      201,
+    );
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
+});
+
+/** Local sandbox (live-service interface; local workdir today) */
+app.post("/platform/sandbox", async (c) => {
+  const body = await c.req.json().catch(() => ({})) as {
+    files?: Record<string, string>;
+    serviceBaseUrl?: string;
+  };
+  const sbx = createSandbox({
+    files: body.files,
+    serviceBaseUrl: body.serviceBaseUrl,
+    mocks: [{ name: "upstream-stub" }],
+  });
+  const manifest = sandboxManifest(sbx);
+  // Dispose immediately after manifest for API safety; real sessions would keep handle
+  sbx.dispose();
+  return c.json({ ...manifest, disposed: true, runtimes: RUNTIME_MATRIX });
+});
+
+/** Seeded memory / style guide for planner prompts */
+app.get("/platform/memory/seed", (c) => {
+  const agent = (c.req.query("agent") === "transformer" ? "transformer" : "warden") as
+    | "warden"
+    | "transformer";
+  let mem = createMemory();
+  mem = seedMemoryForAgent(agent, mem);
+  return c.json({
+    agent,
+    plannerContext: memoryForPlanner(mem),
+    layers: {
+      knowledge: mem.knowledge.length,
+      working: mem.working.length,
+    },
+  });
+});
+
+/** Canary decision (hooks only — no auto production deploy) */
+app.post("/platform/canary/evaluate", async (c) => {
+  const body = await c.req.json().catch(() => ({})) as {
+    humanApproved?: boolean;
+    observedErrorRate?: number;
+  };
+  return c.json(evaluateCanary(body));
 });
 
 /** Agent orchestration graph (graph engineering) — topology, not domain code graph */

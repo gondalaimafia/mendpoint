@@ -4,6 +4,7 @@ import {
   diffOutputs,
   orderDag,
   planFromCampaign,
+  planMultiRepoAgents,
 } from "./index.js";
 
 describe("transformer DAG + campaign", () => {
@@ -59,5 +60,22 @@ describe("transformer DAG + campaign", () => {
   it("diffs outputs", () => {
     expect(diffOutputs({ a: 1 }, { a: 1 }).equal).toBe(true);
     expect(diffOutputs({ a: 1 }, { a: 2 }).equal).toBe(false);
+  });
+
+  it("assigns one agent per repo and waves", () => {
+    const c = createCampaign({
+      name: "m",
+      sourceSystem: "legacy",
+      targetStack: "node",
+      dag: [
+        { id: "1", title: "A", repoKey: "repo-a", dependsOn: [] },
+        { id: "2", title: "B", repoKey: "repo-b", dependsOn: ["1"] },
+        { id: "3", title: "A2", repoKey: "repo-a", dependsOn: ["1"] },
+      ],
+    });
+    const mp = planMultiRepoAgents(c);
+    expect(mp.assignments.length).toBe(2);
+    expect(mp.waves[0]).toContain("1");
+    expect(mp.waves.length).toBeGreaterThanOrEqual(2);
   });
 });

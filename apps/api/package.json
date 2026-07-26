@@ -17,6 +17,7 @@
     "@mendpoint/orchestrator": "*",
     "@mendpoint/contract": "*",
     "@mendpoint/transformer": "*",
+    "@mendpoint/platform": "*",
     "@mendpoint/pipeline": "*",
     "@mendpoint/agent": "*",
     "@mendpoint/repair": "*",

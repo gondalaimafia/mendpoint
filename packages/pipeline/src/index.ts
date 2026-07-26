@@ -14,6 +14,8 @@ import {
   insertImpactFinding,
   insertMigrationPr,
   updateMigrationPrStatus,
+  listConsumersForProvider,
+  registrySummaryMarkdown,
   type AppDb,
 } from "@mendpoint/db";
 
@@ -29,6 +31,8 @@ import {
   getBrandPackForProvider,
 } from "@mendpoint/branding";
 import { runRepairSession } from "@mendpoint/repair";
+import { planFromSpecDiff, planToMarkdown } from "@mendpoint/orchestrator";
+import { evaluatePrGates, reviewOpenApiDesign } from "@mendpoint/contract";
 import {
   newId,
   nowIso,
@@ -140,6 +144,24 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     createdAt: nowIso(),
   });
 
+  // Spec-first plan-of-record (Warden matrix P0)
+  const specPlan = planFromSpecDiff({
+    providerSlug: provider.slug,
+    providerName: provider.name,
+    fromVersion: from.version_label,
+    toVersion: to.version_label,
+    diff,
+    surfaces,
+  });
+  const registryHits = listConsumersForProvider(db, provider.slug);
+  const registryMd = registrySummaryMarkdown(registryHits, provider.slug);
+  const apiReview = reviewOpenApiDesign(newSpec);
+  const gates = evaluatePrGates({
+    oldSpec,
+    newSpec,
+    providerSlug: provider.slug,
+  });
+
   recordAudit(db, {
     actor: "pipeline",
     action: "change.normalized",
@@ -149,6 +171,11 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       risk: diff.risk,
       summary: diff.summary,
       surfaceCount: surfaces.length,
+      planId: specPlan.id,
+      planSteps: specPlan.steps.length,
+      registryConsumers: registryHits.length,
+      gateOk: gates.ok,
+      apiReviewScore: apiReview.score,
     },
   });
 
@@ -293,9 +320,17 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       },
     });
 
-    // Enforce: never claim auto-merge in PR body
+    // Enforce: never claim auto-merge in PR body; attach plan + registry + gates + critic
     const prBody = [
       draft.body,
+      "",
+      planToMarkdown(specPlan),
+      "",
+      registryMd,
+      "",
+      gates.reportMarkdown,
+      "",
+      apiReview.markdown,
       "",
       "### Policy",
       `- **Severity:** ${severity}`,
