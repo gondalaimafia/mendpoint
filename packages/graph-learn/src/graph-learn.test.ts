@@ -6,6 +6,7 @@ import {
   openGraphLearnMemory,
   runGraphQuery,
   formatQueryForPlanner,
+  runGraphBenchmark,
 } from "./index.js";
 import type { StructuralDiff, ImpactableSurface } from "@mendpoint/shared";
 
@@ -82,5 +83,11 @@ describe("graph-learn substrate", () => {
     });
     const r = runGraphQuery(db, { op: "outcomes_for_pattern", pattern: "amount" });
     expect(r.summary).toMatch(/outcome/i);
+  });
+
+  it("benchmark pack hits ≥18/20", () => {
+    const b = runGraphBenchmark();
+    expect(b.total).toBe(20);
+    expect(b.passed).toBeGreaterThanOrEqual(18);
   });
 });

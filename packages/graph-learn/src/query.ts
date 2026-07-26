@@ -134,6 +134,114 @@ export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult
         rows: path.map((id, i) => ({ step: i, nodeId: id })),
       };
     }
+    case "neighborhood": {
+      return runGraphQuery(db, {
+        op: "blast_radius",
+        nodeId: q.nodeId,
+        maxHops: q.k ?? 1,
+      });
+    }
+    case "callers": {
+      // Inbound calls edges to symbol
+      const edges = edgesTo(db, q.symbolId, ["calls", "impacts"]);
+      const ids = new Set<string>([q.symbolId, ...edges.map((e) => e.source)]);
+      return {
+        op: q.op,
+        nodes: collectNodes(db, ids),
+        edges,
+        summary: `${edges.length} caller edge(s) into ${q.symbolId}`,
+        rows: edges.map((e) => ({ from: e.source, kind: e.kind })),
+      };
+    }
+    case "path": {
+      // BFS path from → to
+      const maxHops = q.maxHops ?? 6;
+      const prev = new Map<string, { id: string; edge?: GlEdge }>();
+      prev.set(q.fromId, { id: q.fromId });
+      let frontier = [q.fromId];
+      let found = false;
+      for (let h = 0; h < maxHops && !found; h++) {
+        const next: string[] = [];
+        for (const id of frontier) {
+          for (const e of edgesFrom(db, id)) {
+            if (prev.has(e.target)) continue;
+            prev.set(e.target, { id: e.target, edge: e });
+            if (e.target === q.toId) {
+              found = true;
+              break;
+            }
+            next.push(e.target);
+          }
+          if (found) break;
+        }
+        frontier = next;
+      }
+      if (!found) {
+        return {
+          op: q.op,
+          nodes: [],
+          edges: [],
+          summary: `no path ${q.fromId} → ${q.toId}`,
+        };
+      }
+      const pathIds: string[] = [];
+      const pathEdges: GlEdge[] = [];
+      let cur: string | undefined = q.toId;
+      while (cur) {
+        pathIds.unshift(cur);
+        const p = prev.get(cur);
+        if (p?.edge) pathEdges.unshift(p.edge);
+        if (cur === q.fromId) break;
+        cur = p?.edge?.source;
+        if (cur === undefined) break;
+      }
+      return {
+        op: q.op,
+        nodes: collectNodes(db, pathIds),
+        edges: pathEdges,
+        summary: `path length ${pathEdges.length}`,
+        rows: pathIds.map((id, i) => ({ step: i, nodeId: id })),
+      };
+    }
+    case "pattern_success_rates": {
+      const minS = q.minSamples ?? 1;
+      const stats = new Map<string, { ok: number; fail: number }>();
+      for (const c of listNodesByKind(db, "consumer")) {
+        for (const e of edgesFrom(db, c.id, [
+          "outcome_merged",
+          "outcome_closed",
+          "outcome_broke",
+          "outcome_waived",
+        ])) {
+          const pattern =
+            String((e.props as { pattern?: string } | undefined)?.pattern ?? e.target);
+          const s = stats.get(pattern) ?? { ok: 0, fail: 0 };
+          if (e.kind === "outcome_merged" || e.kind === "outcome_waived") s.ok++;
+          else s.fail++;
+          stats.set(pattern, s);
+        }
+      }
+      const rows = [...stats.entries()]
+        .map(([pattern, s]) => {
+          const n = s.ok + s.fail;
+          return {
+            pattern,
+            samples: n,
+            successRate: n ? s.ok / n : 0,
+            ok: s.ok,
+            fail: s.fail,
+          };
+        })
+        .filter((r) => r.samples >= minS)
+        .sort((a, b) => b.successRate - a.successRate);
+      return {
+        op: q.op,
+        nodes: [],
+        edges: [],
+        summary: `${rows.length} pattern(s) with ≥${minS} samples`,
+        rows,
+      };
+    }
     case "outcomes_for_pattern": {
       const allOut = [
         ...listNodesByKind(db, "pr"),
@@ -189,8 +297,12 @@ export const GRAPH_RAG_TOOLS = [
   "who_consumes_endpoint",
   "blast_radius",
   "neighbors",
+  "neighborhood",
+  "callers",
+  "path",
   "depends_on_path",
   "outcomes_for_pattern",
+  "pattern_success_rates",
   "stats",
 ] as const;
 

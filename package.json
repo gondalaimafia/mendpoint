@@ -29,7 +29,9 @@
     "repair:test": "npm test -w @mendpoint/repair",
     "agent:test": "npm test -w @mendpoint/agent",
     "agent:demo": "tsx scripts/agent-demo.ts",
-    "eval:warden": "tsx packages/eval/src/warden-bench.ts"
+    "eval:warden": "tsx packages/eval/src/warden-bench.ts",
+    "platform:dev": "tsx scripts/platform-dev.ts",
+    "graph:bench": "tsx -e \"import { runGraphBenchmark } from '@mendpoint/graph-learn'; const b=runGraphBenchmark(); console.log(b.passed+'/'+b.total); process.exit(b.passed>=18?0:1)\""
   },
   "dependencies": {
     "@mendpoint/db": "*",

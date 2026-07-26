@@ -69,8 +69,12 @@ export type GraphQuery =
   | { op: "who_consumes_endpoint"; providerSlug: string; path: string; method?: string }
   | { op: "blast_radius"; nodeId: string; maxHops?: number }
   | { op: "neighbors"; nodeId: string; edgeKinds?: GlEdgeKind[]; direction?: "out" | "in" | "both" }
+  | { op: "neighborhood"; nodeId: string; k?: number }
+  | { op: "callers"; symbolId: string; maxHops?: number }
+  | { op: "path"; fromId: string; toId: string; maxHops?: number }
   | { op: "depends_on_path"; nodeId: string; maxHops?: number }
   | { op: "outcomes_for_pattern"; pattern: string }
+  | { op: "pattern_success_rates"; minSamples?: number }
   | { op: "stats" };
 
 export type GraphQueryResult = {

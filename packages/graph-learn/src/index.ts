@@ -35,3 +35,5 @@ export {
 } from "./query.js";
 
 export { getGraphLearnDb, resetGraphLearnDbForTests } from "./singleton.js";
+
+export { runGraphBenchmark, BENCH_CASES } from "./benchmark.js";
