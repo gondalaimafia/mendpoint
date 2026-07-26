@@ -15,6 +15,8 @@
     "@mendpoint/github": "*",
     "@mendpoint/graph": "*",
     "@mendpoint/orchestrator": "*",
+    "@mendpoint/contract": "*",
+    "@mendpoint/transformer": "*",
     "@mendpoint/pipeline": "*",
     "@mendpoint/agent": "*",
     "@mendpoint/repair": "*",

@@ -1254,6 +1254,15 @@ export function agentRunToApi(r: AgentRunRow) {
   };
 }
 
+export {
+  listConsumersForProvider,
+  listConsumersImpactedByChange,
+  listRegistryEdges,
+  registrySummaryMarkdown,
+  countMonitoredForConsumer,
+  type RegistryHit,
+} from "./registry.js";
+
 export function computeDesignPartnerMetrics(db: AppDb) {
   const base = computeProductMetrics(db);
   const suppressed = (

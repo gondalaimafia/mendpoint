@@ -17,6 +17,10 @@ Use this file when writing README blurbs, launch copy, sales one-pagers, or PR f
 | **OpenAPI feed poll** | Worker/API poll of versioned OpenAPI (and SDK signals) — not full changelog RSS intelligence |
 | **Migration PRs (review-first)** | Generated migration / adopt PRs via mock or real GitHub; customers review and merge |
 | **Warden on-demand tool loop** | Goal-driven API debug agent (`@mendpoint/agent`, `/agent`) with bounded multi-step tools |
+| **Spec-first plan-of-record** | OpenAPI diff → JSON plan steps (`POST /warden/plans/from-spec`) |
+| **Contract gates + API critic** | `@mendpoint/contract` (breaking-change, suite, design review) |
+| **Consumer registry** | Who monitors a provider (`GET /registry/providers/:slug/consumers`) |
+| **Transformer scaffold** | BSG + DAG campaign types (`@mendpoint/transformer`) — not full migration engine yet |
 | **Never auto-merge by default** | Policy defaults to human review; no auto-merge without explicit experimental policy |
 
 ---

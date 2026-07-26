@@ -76,6 +76,8 @@ See `docs/ARCHITECTURE.md` for the full design and `docs/EXAMPLES.md` for concre
 | `packages/orchestrator` | **Graph engineering**: topology, routing, shared state (`wardenProductGraph`) |
 | `packages/graph` | Domain product graphs (change / impact / API surface) |
 | `packages/agent` | **Warden** — verify loop-node (API debug) |
+| `packages/contract` | Contract suite, oas-breaking gates, API design critic |
+| `packages/transformer` | **Transformer** scaffold — BSG + migration DAG campaigns |
 | `packages/phase-a` | Real PR ship + TS/Python/Go quality harnesses |
 | `apps/api` | Hono JSON API (webhooks, keys, feeds) |
 | `apps/web` | Next.js provider/consumer/**feeds** dashboards |

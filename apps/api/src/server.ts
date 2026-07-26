@@ -67,6 +67,9 @@ import {
   getAgentRun,
   agentRunToApi,
   buildExposureReport,
+  listConsumersForProvider,
+  listConsumersImpactedByChange,
+  registrySummaryMarkdown,
 } from "@mendpoint/db";
 import {
   detectVendors,
@@ -105,11 +108,16 @@ import {
   graphToMermaid,
   graphToProductShape,
   runAgentGraph,
+  planFromSpecDiff,
+  planToMarkdown,
 } from "@mendpoint/orchestrator";
+import { evaluatePrGates, reviewOpenApiDesign } from "@mendpoint/contract";
+import { createCampaign, planFromCampaign } from "@mendpoint/transformer";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
 import { runRepairSession, runAgenticRepairLoop } from "@mendpoint/repair";
 import { runWarden } from "@mendpoint/agent";
+import { normalizeChange } from "@mendpoint/change-intel";
 import { createAuthMiddleware } from "./auth.js";
 
 const db = createDb();
@@ -201,6 +209,176 @@ app.get("/graph/consumers/:id", (c) => {
       { error: "graph_build_failed", message: e instanceof Error ? e.message : String(e) },
       500,
     );
+  }
+});
+
+// ─── Warden matrix P0: plans, contracts, registry, transformer scaffold ──────
+
+/** Spec-first plan-of-record from provider OpenAPI pair */
+app.post("/warden/plans/from-spec", async (c) => {
+  try {
+    const body = await c.req.json<{
+      providerSlug: string;
+      fromVersion?: string;
+      toVersion?: string;
+      goal?: string;
+    }>();
+    if (!body.providerSlug) return c.json({ error: "providerSlug required" }, 400);
+    const provider = getProviderBySlug(db, body.providerSlug);
+    if (!provider) return c.json({ error: "provider not found" }, 404);
+    const versions = listVersionsForProvider(db, provider.id);
+    if (versions.length < 2) {
+      return c.json({ error: "provider needs ≥2 versions" }, 400);
+    }
+    const from =
+      (body.fromVersion
+        ? versions.find((v) => v.version_label === body.fromVersion)
+        : versions[versions.length - 2]) ?? versions[versions.length - 2]!;
+    const to =
+      (body.toVersion
+        ? versions.find((v) => v.version_label === body.toVersion)
+        : versions[versions.length - 1]) ?? versions[versions.length - 1]!;
+    const oldSpec = JSON.parse(from.openapi_json);
+    const newSpec = JSON.parse(to.openapi_json);
+    const { diff, surfaces } = normalizeChange(oldSpec, newSpec, {
+      providerSlug: provider.slug,
+      providerNotes: to.changelog_md ?? undefined,
+    });
+    const plan = planFromSpecDiff({
+      providerSlug: provider.slug,
+      providerName: provider.name,
+      fromVersion: from.version_label,
+      toVersion: to.version_label,
+      diff,
+      surfaces,
+      goal: body.goal,
+    });
+    const consumers = listConsumersForProvider(db, provider.slug);
+    return c.json({
+      plan,
+      markdown: planToMarkdown(plan),
+      registry: consumers,
+      registryMarkdown: registrySummaryMarkdown(consumers, provider.slug),
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+  }
+});
+
+/** PR gates: oas-breaking + contract suite + security stub */
+app.post("/warden/gates", async (c) => {
+  try {
+    const body = await c.req.json<{
+      providerSlug?: string;
+      oldSpec?: unknown;
+      newSpec?: unknown;
+      contractCases?: Array<{
+        id: string;
+        name: string;
+        requiredKeys?: string[];
+        responseBody?: unknown;
+        requireAuth?: boolean;
+        requestHeaders?: Record<string, string>;
+      }>;
+      securityScanOk?: boolean;
+    }>();
+    let oldSpec = body.oldSpec;
+    let newSpec = body.newSpec;
+    if (body.providerSlug && (!oldSpec || !newSpec)) {
+      const provider = getProviderBySlug(db, body.providerSlug);
+      if (!provider) return c.json({ error: "provider not found" }, 404);
+      const versions = listVersionsForProvider(db, provider.id);
+      if (versions.length >= 2) {
+        oldSpec = JSON.parse(versions[versions.length - 2]!.openapi_json);
+        newSpec = JSON.parse(versions[versions.length - 1]!.openapi_json);
+      }
+    }
+    const result = evaluatePrGates({
+      oldSpec,
+      newSpec,
+      providerSlug: body.providerSlug,
+      contractCases: body.contractCases,
+      securityScanOk: body.securityScanOk,
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+  }
+});
+
+/** Read-only API design critic */
+app.post("/warden/review", async (c) => {
+  try {
+    const body = await c.req.json<{
+      providerSlug?: string;
+      spec?: unknown;
+    }>();
+    let spec = body.spec;
+    if (!spec && body.providerSlug) {
+      const provider = getProviderBySlug(db, body.providerSlug);
+      if (!provider) return c.json({ error: "provider not found" }, 404);
+      const versions = listVersionsForProvider(db, provider.id);
+      if (!versions.length) return c.json({ error: "no versions" }, 400);
+      spec = JSON.parse(versions[versions.length - 1]!.openapi_json);
+    }
+    if (!spec) return c.json({ error: "spec or providerSlug required" }, 400);
+    return c.json(reviewOpenApiDesign(spec));
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+  }
+});
+
+/** Consumer registry for a provider */
+app.get("/registry/providers/:slug/consumers", (c) => {
+  const slug = c.req.param("slug");
+  const hits = listConsumersForProvider(db, slug);
+  return c.json({
+    providerSlug: slug,
+    consumers: hits,
+    markdown: registrySummaryMarkdown(hits, slug),
+  });
+});
+
+app.get("/registry/changes/:id/consumers", (c) => {
+  const id = c.req.param("id");
+  return c.json({
+    changeId: id,
+    consumers: listConsumersImpactedByChange(db, id),
+  });
+});
+
+/** Transformer campaign scaffold */
+app.post("/transformer/campaigns", async (c) => {
+  try {
+    const body = await c.req.json<{
+      name: string;
+      sourceSystem: string;
+      targetStack: string;
+      dag: Array<{
+        id: string;
+        title: string;
+        repoKey: string;
+        dependsOn?: string[];
+      }>;
+    }>();
+    if (!body.name || !body.sourceSystem || !body.targetStack) {
+      return c.json({ error: "name, sourceSystem, targetStack required" }, 400);
+    }
+    const campaign = createCampaign({
+      name: body.name,
+      sourceSystem: body.sourceSystem,
+      targetStack: body.targetStack,
+      dag: (body.dag ?? []).map((d) => ({
+        id: d.id,
+        title: d.title,
+        repoKey: d.repoKey,
+        dependsOn: d.dependsOn ?? [],
+      })),
+    });
+    const plan = planFromCampaign(campaign);
+    return c.json({ campaign, plan, markdown: planToMarkdown(plan) }, 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
 });
 
