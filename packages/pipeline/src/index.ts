@@ -34,6 +34,15 @@ import { runRepairSession } from "@mendpoint/repair";
 import { planFromSpecDiff, planToMarkdown } from "@mendpoint/orchestrator";
 import { evaluatePrGates, reviewOpenApiDesign } from "@mendpoint/contract";
 import {
+  getGraphLearnDb,
+  ingestControlPlane,
+  ingestSpecDiff,
+  ingestImpactFindings,
+  labelPrOutcome,
+  runGraphQuery,
+  formatQueryForPlanner,
+} from "@mendpoint/graph-learn";
+import {
   newId,
   nowIso,
   type ImpactReport,
@@ -162,6 +171,34 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     providerSlug: provider.slug,
   });
 
+  // Dimension 6: graph learning substrate ingest + blast-radius query for planner
+  const gldb = getGraphLearnDb();
+  ingestControlPlane(gldb, {
+    provider: { id: provider.id, slug: provider.slug, name: provider.name },
+    consumers: registryHits.map((h) => ({
+      id: h.consumerId,
+      name: h.consumerName,
+      githubOwner: h.githubOwner,
+      githubRepo: h.githubRepo,
+    })),
+    monitors: registryHits.map((h) => ({
+      consumerId: h.consumerId,
+      providerId: provider.id,
+    })),
+  });
+  ingestSpecDiff(gldb, {
+    providerSlug: provider.slug,
+    changeId,
+    diff,
+    surfaces,
+  });
+  const blast = runGraphQuery(gldb, {
+    op: "blast_radius",
+    nodeId: `change:${changeId}`,
+    maxHops: 2,
+  });
+  const graphRagMd = formatQueryForPlanner(blast);
+
   recordAudit(db, {
     actor: "pipeline",
     action: "change.normalized",
@@ -176,6 +213,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       registryConsumers: registryHits.length,
       gateOk: gates.ok,
       apiReviewScore: apiReview.score,
+      graphNodes: blast.nodes.length,
+      graphEdges: blast.edges.length,
     },
   });
 
@@ -204,6 +243,15 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     });
 
     const rawFindings = reportToFindings(impactReport);
+    ingestImpactFindings(gldb, {
+      changeId,
+      consumerId: consumer.id,
+      findings: rawFindings.map((f) => ({
+        filePath: f.filePath,
+        symbol: f.symbol,
+        confidence: f.confidence,
+      })),
+    });
     // Phase C: feedback learning — drop suppressed patterns (closed PRs taught us)
     const findings = rawFindings.filter((f) => {
       const keys = [f.symbol, f.filePath, f.fixHint ?? "", ...(f.relatedOps ?? [])];
@@ -327,6 +375,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       planToMarkdown(specPlan),
       "",
       registryMd,
+      "",
+      graphRagMd,
       "",
       gates.reportMarkdown,
       "",
@@ -541,9 +591,24 @@ export async function applyPrFeedback(
     resourceId: prId,
   });
 
+  const pr = getPr(db, prId);
+  // Dimension 6: label outcome edges for graph learning / future GNN
+  if (pr && (outcome === "merged" || outcome === "closed")) {
+    try {
+      labelPrOutcome(getGraphLearnDb(), {
+        prId,
+        changeId: pr.change_id,
+        consumerId: pr.consumer_id,
+        outcome: outcome === "merged" ? "merged" : "closed",
+        title: pr.title,
+      });
+    } catch {
+      /* non-fatal */
+    }
+  }
+
   // Phase C learning: closed PRs suppress similar symbols for this consumer
   if (outcome === "closed") {
-    const pr = getPr(db, prId);
     if (pr) {
       const patterns = extractPatternsFromPrBody(pr.body);
       for (const pattern of patterns) {
@@ -556,12 +621,23 @@ export async function applyPrFeedback(
           createdAt: nowIso(),
         });
       }
+      try {
+        labelPrOutcome(getGraphLearnDb(), {
+          prId,
+          changeId: pr.change_id,
+          consumerId: pr.consumer_id,
+          outcome: "broke",
+          title: pr.title,
+        });
+      } catch {
+        /* */
+      }
       recordAudit(db, {
         actor: "learning",
         action: "patterns.suppressed",
         resourceType: "migration_pr",
         resourceId: prId,
-        metadata: { patterns, count: patterns.length },
+        metadata: { patterns, count: patterns.length, graphLabeled: true },
       });
     }
   }

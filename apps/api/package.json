@@ -18,6 +18,7 @@
     "@mendpoint/contract": "*",
     "@mendpoint/transformer": "*",
     "@mendpoint/platform": "*",
+    "@mendpoint/graph-learn": "*",
     "@mendpoint/pipeline": "*",
     "@mendpoint/agent": "*",
     "@mendpoint/repair": "*",

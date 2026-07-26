@@ -79,6 +79,7 @@ See `docs/ARCHITECTURE.md` for the full design and `docs/EXAMPLES.md` for concre
 | `packages/contract` | Contract suite, oas-breaking gates, API design critic |
 | `packages/transformer` | **Transformer** — BSG, DAG campaigns, multi-repo agent plan |
 | `packages/platform` | Shared sandbox, 4-layer memory, knowledge, canary hooks |
+| `packages/graph-learn` | **Dim 6** durable KG + graph-RAG + PR outcome labels |
 | `packages/phase-a` | Real PR ship + TS/Python/Go quality harnesses |
 | `apps/api` | Hono JSON API (webhooks, keys, feeds) |
 | `apps/web` | Next.js provider/consumer/**feeds** dashboards |

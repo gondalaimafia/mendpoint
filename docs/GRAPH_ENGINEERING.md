@@ -137,9 +137,10 @@ Both are required. Domain graphs make impact **true**. Orchestration graphs make
 | Canonical product topology | `wardenProductGraph()` in orchestrator |
 | Domain call/impact graphs | `@mendpoint/call-graph`, `@mendpoint/code-impact` |
 | Product UI graphs | `@mendpoint/graph`, `/graph` |
+| **Graph learning substrate (Dim 6)** | `@mendpoint/graph-learn` — durable KG, graph-RAG, outcome labels ([GRAPH_LEARNING.md](./GRAPH_LEARNING.md)) |
 | Loop node: API debug | `@mendpoint/agent` `runWarden` |
 | Loop node: batch repair | `@mendpoint/repair` |
-| Pipeline execution | `@mendpoint/pipeline` (stages align to graph nodes) |
+| Pipeline execution | `@mendpoint/pipeline` (stages align to graph nodes; ingests + queries graph-learn) |
 
 ---
 

@@ -52,6 +52,7 @@ Canonical definition: `wardenProductGraph()` in `@mendpoint/orchestrator`. See `
 | Delivery | `@mendpoint/github` | Mock or Octokit; **never** direct push to protected branches |
 | Orchestration | `@mendpoint/pipeline` | Persist + policy + learning + audit |
 | **Agent graph** | `@mendpoint/orchestrator` | Topology, routing, shared state, Mermaid/export |
+| **Graph learning** | `@mendpoint/graph-learn` | Durable API/code KG, graph-RAG, PR outcome labels (Dim 6) |
 
 
 

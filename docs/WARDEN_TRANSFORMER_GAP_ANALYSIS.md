@@ -16,7 +16,7 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 | **Transformer** (legacy migration) | COBOL/VB6/.NET-Fx/Py2/monolith → modern; BSG + DAG campaigns | **~1.5 / 5** | BSG/DAG/campaign + multi-repo router + output diff; no COBOL/mainframe engines |
 | **Shared platform** | Planner/executor, sandbox VM, 4-layer memory, knowledge store, multi-SCM | **~3.0 / 5** | Plan harness, local sandbox, 4-layer memory, knowledge seed, canary hooks; no real multi-SCM |
 
-**Strategic fit:** Current monorepo is closest to **Warden Dimension 5 (cross-repo consumers) + patch/verify loops**, not full “AI API engineer” nor “Transformer.” Matrix is a **north star**; build order below closes **Warden P0 wedge first**, then **shared harness**, then **Transformer scaffold**.
+**Strategic fit:** Monorepo now includes **Dimension 6 graph learning substrate** (`@mendpoint/graph-learn`): durable KG, graph-RAG, PR outcome labels. Registry/multi-repo become graph queries. GNN deferred to v1.5. See `docs/GRAPH_LEARNING.md`.
 
 ---
 

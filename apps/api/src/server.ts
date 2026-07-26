@@ -127,6 +127,14 @@ import {
   evaluateCanary,
   RUNTIME_MATRIX,
 } from "@mendpoint/platform";
+import {
+  getGraphLearnDb,
+  runGraphQuery,
+  formatQueryForPlanner,
+  GRAPH_RAG_TOOLS,
+  countStats,
+  type GraphQuery,
+} from "@mendpoint/graph-learn";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
 import { runRepairSession, runAgenticRepairLoop } from "@mendpoint/repair";
@@ -447,6 +455,25 @@ app.post("/platform/canary/evaluate", async (c) => {
     observedErrorRate?: number;
   };
   return c.json(evaluateCanary(body));
+});
+
+/** Dimension 6 — Graph learning / graph-RAG */
+app.get("/graph-learn/stats", (c) => {
+  return c.json({ ...countStats(getGraphLearnDb()), tools: GRAPH_RAG_TOOLS });
+});
+
+app.post("/graph-learn/query", async (c) => {
+  try {
+    const body = (await c.req.json()) as GraphQuery;
+    if (!body?.op) return c.json({ error: "op required" }, 400);
+    const result = runGraphQuery(getGraphLearnDb(), body);
+    return c.json({
+      ...result,
+      markdown: formatQueryForPlanner(result),
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+  }
 });
 
 /** Agent orchestration graph (graph engineering) — topology, not domain code graph */

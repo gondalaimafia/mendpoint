@@ -3,6 +3,8 @@ dist/
 .next/
 data/
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.sqlite-journal
 *.sqlite-shm
 *.sqlite-wal
