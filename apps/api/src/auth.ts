@@ -27,13 +27,31 @@ export function authMode(): AuthMode {
 }
 
 export function isExemptPath(path: string): boolean {
-  if (path === "/health" || path === "/") return true;
+  if (
+    path === "/health" ||
+    path === "/ready" ||
+    path === "/live" ||
+    path === "/version" ||
+    path === "/status" ||
+    path === "/"
+  )
+    return true;
   if (path.startsWith("/webhooks/")) return true;
   // GitHub App install wizard (public entry + mock callback)
   if (path.startsWith("/github/app/")) return true;
   if (path === "/billing/plans") return true;
   if (path === "/brands") return true;
   return false;
+}
+
+/** Production default: require API keys when NODE_ENV=production unless explicitly overridden. */
+export function effectiveAuthMode(): AuthMode {
+  const explicit = process.env.API_AUTH;
+  if (explicit !== undefined && explicit !== "") return authMode();
+  if ((process.env.NODE_ENV ?? "").toLowerCase() === "production") {
+    return "required";
+  }
+  return authMode();
 }
 
 export function createAuthMiddleware(db: AppDb) {
@@ -43,7 +61,7 @@ export function createAuthMiddleware(db: AppDb) {
       return next();
     }
 
-    const mode = authMode();
+    const mode = effectiveAuthMode();
     const active = countActiveApiKeys(db);
     const needAuth =
       mode === "required" || (mode === "auto" && active > 0);

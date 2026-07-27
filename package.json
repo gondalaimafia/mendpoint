@@ -1,6 +1,6 @@
 {
   "name": "mendpoint",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Mendpoint \u2014 structured API change intelligence \u2192 impact analysis \u2192 migration PRs",
   "workspaces": [
@@ -36,12 +36,15 @@
     "graph:slo": "tsx scripts/slo-report.ts",
     "dogfood:report": "tsx scripts/dogfood-report.ts",
     "trajectory:list": "tsx scripts/trajectory-view.ts",
-    "trajectory:view": "tsx scripts/trajectory-view.ts"
+    "trajectory:view": "tsx scripts/trajectory-view.ts",
+    "ga:check": "tsx scripts/ga-check.ts",
+    "start:api": "npm run start -w @mendpoint/api"
   },
   "dependencies": {
     "@mendpoint/db": "*",
     "@mendpoint/pipeline": "*",
-    "@mendpoint/shared": "*"
+    "@mendpoint/shared": "*",
+    "@mendpoint/ops": "*"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

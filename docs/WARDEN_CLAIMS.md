@@ -56,3 +56,17 @@ Expanded forms (same meaning, for long-form copy) live in [`docs/WARDEN_VISION_G
 ## Suggested public one-liner
 
 **Warden** is Mendpoint’s API integration teammate: **graph engineering** (specialized verify-backed nodes, not one mega-agent), reviewable migration PRs, and an on-demand API debug loop-node. Continuous multi-repo watch and public benchmarks are on the design-partner track. Never auto-merges by default.
+
+---
+
+## GA 1.0 public language
+
+**Generally available** for **self-hosted** and **API-key multi-tenant control planes**:
+
+- OpenAPI change → graph impact → **review-first** migration PR  
+- Consumer registry + contract gates + Warden debug loop  
+- Production probes (`/ready`, `/live`), rate limits, auth required in `NODE_ENV=production`  
+
+**Do not say “GA” for:** Transformer full migration product, Firecracker isolation, GNN training, unprompted multi-repo hunting, or public benchmark leadership.
+
+Full runbook: [`docs/PRODUCTION_GA.md`](./PRODUCTION_GA.md).

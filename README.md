@@ -1,10 +1,10 @@
 # Mendpoint
 
-**Warden** is Mendpoint’s API integration teammate. **Graph engineering** is the go-to agentic approach: specialized loop-nodes (change intel → call-graph expand → generate → verify → human review), not one overloaded agent. Continuous multi-repo watch and public benchmarks are on the design-partner track. Never auto-merges by default.
+**Warden** is Mendpoint’s API integration teammate — **GA 1.0**. **Graph engineering** is the go-to agentic approach: specialized loop-nodes (change intel → call-graph expand → generate → verify → human review), not one overloaded agent. Never auto-merges by default.
 
 When an API provider ships a breaking change or a high-value capability, Mendpoint (with explicit customer permission) can scan the relevant codebase and open a **reviewable** PR. Customers review and merge.
 
-> Platform: **Mendpoint**. Product teammate: **Warden**. Agentic doctrine: [`docs/GRAPH_ENGINEERING.md`](./docs/GRAPH_ENGINEERING.md). Claim-safe language: [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md).
+> Platform: **Mendpoint**. Product: **Warden GA 1.0**. Production: [`docs/PRODUCTION_GA.md`](./docs/PRODUCTION_GA.md). Claims: [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md). Doctrine: [`docs/GRAPH_ENGINEERING.md`](./docs/GRAPH_ENGINEERING.md).
 
 ## Quickstart
 
@@ -13,23 +13,22 @@ git clone https://github.com/gondalaimafia/mendpoint.git
 cd mendpoint
 npm install
 npm run db:seed
+npm run ga:check      # production GA preflight
 npm run demo          # OpenAPI diff → impact → mock PR (Acme fixture)
-npm run examples      # Concrete migrations: Stripe, OpenAI, AWS S3, fintech, adoption
-npm run phase-a:harness  # ≥70% TS impact recall on 3 samples
-npm run phase-a          # REAL GitHub PR (requires gh auth)
-npm run phase-c:python   # ≥70% Python impact recall
-npm run phase-d:go       # ≥70% Go impact recall
-npm run phase-e:java     # ≥70% Java impact recall
-npm run phase-e:ruby     # ≥70% Ruby impact recall
-npm run worker:poll      # poll local OpenAPI feeds once
-npm run worker:jobs      # drain fan-out job queue
-npm run eval:partners    # design-partner quality bar (internal fixtures)
-npm run repair:test      # agentic repair layer
-npm run agent:test       # Warden on-demand API debug agent
-npm run agent:demo       # end-to-end Warden agent on fixture
+npm run examples      # Stripe, OpenAI, AWS S3, fintech, multi-lang
+npm run agent:demo    # Warden on-demand debug loop
 npm test
-npm run dev:api       # http://localhost:3001
-npm run dev:web       # http://localhost:3000  · /agent · /repair · /graph
+npm run dev:api       # http://localhost:3001/status
+npm run dev:web       # http://localhost:3000
+```
+
+### Production (self-hosted)
+
+```bash
+export NODE_ENV=production API_AUTH=required
+npm run ga:check
+docker compose up --build   # API :3001 + web :3000
+# or: npm run start:api
 ```
 
 

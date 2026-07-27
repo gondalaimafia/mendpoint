@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: npm ci || npm install
+      - name: Unit tests (core GA path)
+        run: |
+          npm test -w @mendpoint/ops
+          npm test -w @mendpoint/shared --if-present
+          npm test -w @mendpoint/graph-learn
+          npm test -w @mendpoint/pipeline
+          npm test -w @mendpoint/harness
+          npm test -w @mendpoint/platform
+          npm test -w @mendpoint/contract --if-present
+          npm test -w @mendpoint/sdk
+      - name: GA preflight
+        run: npm run ga:check
+      - name: Demo smoke (offline)
+        run: npm run demo
+        env:
+          GITHUB_MODE: mock
+
+  typecheck-ops:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci || npm install
+      - run: npm run typecheck -w @mendpoint/ops --if-present

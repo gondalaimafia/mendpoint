@@ -175,16 +175,37 @@ import { notifyWardenEvent } from "@mendpoint/notify";
 import { runRepairSession, runAgenticRepairLoop } from "@mendpoint/repair";
 import { runWarden } from "@mendpoint/agent";
 import { normalizeChange } from "@mendpoint/change-intel";
-import { createAuthMiddleware } from "./auth.js";
+import { createAuthMiddleware, effectiveAuthMode } from "./auth.js";
+import {
+  assertApiEnvOrExit,
+  liveness,
+  readiness,
+  RELEASE,
+  releaseBanner,
+  featureMatrix,
+  isProduction,
+} from "@mendpoint/ops";
+import {
+  requestIdMiddleware,
+  securityHeadersMiddleware,
+  rateLimitMiddleware,
+  corsOrigins,
+} from "./production.js";
+
+// Fail fast in production if env invalid
+assertApiEnvOrExit();
 
 const db = createDb();
 const app = new Hono();
 const startedAt = Date.now();
 
+app.use("*", requestIdMiddleware());
+app.use("*", securityHeadersMiddleware());
+
 app.use(
   "*",
   cors({
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
+    origin: corsOrigins(),
     allowMethods: ["GET", "POST", "PATCH", "OPTIONS", "DELETE"],
     allowHeaders: [
       "Content-Type",
@@ -193,6 +214,7 @@ app.use(
       "X-Role",
       "X-Tenant-Id",
       "X-User-Id",
+      "X-Request-Id",
     ],
   }),
 );
@@ -220,6 +242,8 @@ app.use("*", async (c, next) => {
   }
 });
 
+// Rate limit before auth so credential stuffing is throttled
+app.use("*", rateLimitMiddleware());
 app.use("*", createAuthMiddleware(db));
 
 /** Broader RBAC — role headers; default engineer when API_AUTH off */
@@ -267,14 +291,68 @@ app.get("/health", (c) =>
   c.json({
     ok: true,
     service: "mendpoint-api",
-    product: "Mendpoint",
-    phase: "F",
-    auth: process.env.API_AUTH ?? "off",
+    product: RELEASE.product,
+    platform: RELEASE.platform,
+    version: RELEASE.version,
+    channel: RELEASE.channel,
+    banner: releaseBanner(),
+    auth: effectiveAuthMode(),
     graphNative: true,
     rbac: true,
+    production: isProduction(),
     uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
   }),
 );
+
+/** Kubernetes-style probes */
+app.get("/live", (c) => c.json(liveness()));
+
+app.get("/ready", (c) => {
+  const r = readiness({
+    dbPing: () => {
+      db.raw.prepare("SELECT 1").get();
+      return true;
+    },
+  });
+  return c.json(r, r.status === "fail" ? 503 : 200);
+});
+
+app.get("/version", (c) =>
+  c.json({
+    ...RELEASE,
+    banner: releaseBanner(),
+    features: featureMatrix(),
+  }),
+);
+
+app.get("/status", (c) => {
+  const r = readiness({
+    dbPing: () => {
+      try {
+        db.raw.prepare("SELECT 1").get();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  });
+  return c.json({
+    ...r,
+    ga: {
+      version: RELEASE.version,
+      channel: RELEASE.channel,
+      gaFeatures: RELEASE.gaFeatures,
+      experimental: RELEASE.experimentalFeatures,
+    },
+    endpoints: {
+      health: "/health",
+      live: "/live",
+      ready: "/ready",
+      version: "/version",
+      metrics: "/metrics",
+    },
+  });
+});
 
 // ─── Phase F: Graph native APIs ──────────────────────────────────────────────
 
@@ -1996,5 +2074,29 @@ app.post("/brands/:id/preview", async (c) => {
 
 const port = Number(process.env.API_PORT ?? 3001);
 
-console.log(`Mendpoint API listening on http://localhost:${port}`);
-serve({ fetch: app.fetch, port });
+const server = serve({ fetch: app.fetch, port }, () => {
+  console.log(releaseBanner());
+  console.log(`Mendpoint API listening on http://localhost:${port}`);
+  console.log(
+    `probes: /health /live /ready /version /status · auth=${effectiveAuthMode()} · channel=${RELEASE.channel}`,
+  );
+});
+
+function shutdown(signal: string) {
+  console.log(`[mendpoint] ${signal} — graceful shutdown`);
+  try {
+    // @hono/node-server Server
+    const s = server as { close?: (cb?: () => void) => void };
+    if (typeof s.close === "function") {
+      s.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 5000).unref();
+      return;
+    }
+  } catch {
+    /* */
+  }
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

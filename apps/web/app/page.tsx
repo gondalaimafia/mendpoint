@@ -3,11 +3,15 @@ import Link from "next/link";
 export default function HomePage() {
   return (
     <div>
-      <h1>Mendpoint</h1>
+      <h1>Mendpoint · Warden GA</h1>
       <p className="lead">
-        When providers ship breaking changes or high-value capabilities, Mendpoint scans
-        connected codebases and opens migration PRs. Humans review. Nothing touches{" "}
-        <code>main</code> by default.
+        Production-ready API change intelligence: OpenAPI diff → graph impact →{" "}
+        <strong>review-first migration PRs</strong>, plus Warden on-demand debug.
+        Humans review. Nothing touches <code>main</code> by default.
+      </p>
+      <p className="muted small">
+        Channel <strong>GA 1.0</strong> ·{" "}
+        <Link href="/status">System status</Link>
       </p>
       <div className="hero-actions">
         <Link className="btn primary" href="/provider">
@@ -15,6 +19,9 @@ export default function HomePage() {
         </Link>
         <Link className="btn" href="/consumer">
           Consumer dashboard
+        </Link>
+        <Link className="btn" href="/agent">
+          Warden agent
         </Link>
         <Link className="btn" href="/trust">
           Trust model
