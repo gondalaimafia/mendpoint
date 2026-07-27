@@ -70,6 +70,15 @@ export function exportGnnFeatures(db: GraphLearnDb): GnnExport {
     for (const n of listNodesByKind(db, kind)) {
       if (seen.has(n.id)) continue;
       seen.add(n.id);
+      const embRaw =
+        n.embedding ??
+        (Array.isArray(n.props?.embedding)
+          ? (n.props!.embedding as number[])
+          : null);
+      const emb = embRaw?.slice(0, 16) ?? [];
+      // Pad/truncate embedding so feature dim is stable
+      const embPad = [...emb];
+      while (embPad.length < 8) embPad.push(0);
       nodes.push({
         id: n.id,
         kind: n.kind,
@@ -78,9 +87,10 @@ export function exportGnnFeatures(db: GraphLearnDb): GnnExport {
         repo_id: n.repo_id,
         x: [
           kindIndex[n.kind] ?? 0,
-          n.label.length,
+          n.label.length / 100,
           n.repo_id ? 1 : 0,
-          Object.keys(n.props ?? {}).length,
+          Object.keys(n.props ?? {}).length / 10,
+          ...embPad.slice(0, 8),
         ],
       });
       for (const e of edgesFrom(db, n.id)) {

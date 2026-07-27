@@ -45,10 +45,11 @@ export type EmbedResult = {
 
 /**
  * Fill embedding on nodes missing one (stored in props.embedding for SQLite).
+ * @param force recompute even if present
  */
 export function embedGraphNodes(
   db: GraphLearnDb,
-  opts?: { dim?: number; kinds?: GlNodeKind[]; limit?: number },
+  opts?: { dim?: number; kinds?: GlNodeKind[]; limit?: number; force?: boolean },
 ): EmbedResult {
   const dim = opts?.dim ?? DEFAULT_DIM;
   const kinds = opts?.kinds ?? KINDS;
@@ -57,13 +58,21 @@ export function embedGraphNodes(
   for (const kind of kinds) {
     for (const node of listNodesByKind(db, kind)) {
       if (n >= limit) break;
-      if (node.embedding?.length || node.props?.embedding) continue;
-      const text = `${node.kind}|${node.id}|${node.label}|${JSON.stringify(node.props ?? {})}`;
+      if (
+        !opts?.force &&
+        (node.embedding?.length || Array.isArray(node.props?.embedding))
+      )
+        continue;
+      // Strip prior embedding from hash input for stability
+      const propsForHash = { ...(node.props ?? {}) };
+      delete propsForHash.embedding;
+      delete propsForHash.embedding_dim;
+      const text = `${node.kind}|${node.id}|${node.label}|${JSON.stringify(propsForHash)}`;
       const emb = hashEmbedding(text, dim);
       upsertNode(db, {
         ...node,
         embedding: emb,
-        props: { ...(node.props ?? {}), embedding: emb, embedding_dim: dim },
+        props: { ...propsForHash, embedding: emb, embedding_dim: dim },
       });
       n++;
     }

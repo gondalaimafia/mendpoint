@@ -600,7 +600,7 @@ export function resolveExperimentArm(
   }
   const env = process.env.MENDPOINT_EXPERIMENT_DEFAULT?.toLowerCase();
   if (env === "control" || env === "treatment") return env;
-  // Stable assignment from pr body length for untagged (still tagged in graph)
+  // Untagged: explicit control (A/B measureAbLift is tagged-only by default)
   return "control";
 }
 

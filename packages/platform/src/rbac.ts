@@ -138,13 +138,20 @@ export function permissionForRoute(
   if (path.startsWith("/billing/plans") || path === "/brands") return null;
 
   if (m === "GET" || m === "HEAD" || m === "OPTIONS") {
+    // Sensitive reads still permission-mapped when X-Role is present (middleware enforces)
     if (path.startsWith("/platform/dogfood") || path.startsWith("/platform/alerts"))
       return "dogfood:read";
     if (path.startsWith("/platform/plans") || path.startsWith("/warden/plans"))
       return "plan:read";
-    if (path.startsWith("/graph") || path.startsWith("/graph-learn"))
+    if (
+      path.startsWith("/graph-learn") ||
+      path.startsWith("/graph/") ||
+      path === "/graph"
+    )
       return "graph:read";
-    return null; // default GET open when API_AUTH off / viewer ok
+    if (path.startsWith("/keys") || path.startsWith("/tenants"))
+      return "tenant:admin";
+    return null; // public GETs when no sensitive surface
   }
 
   // Mutations

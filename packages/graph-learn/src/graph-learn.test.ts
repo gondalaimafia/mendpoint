@@ -39,7 +39,7 @@ import {
   exportSqliteToKuzuScript,
 } from "./index.js";
 import type { StructuralDiff, ImpactableSurface } from "@mendpoint/shared";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, unlinkSync } from "node:fs";
 
 describe("graph-learn substrate", () => {
   it("ingests control plane and answers who_consumes_provider", () => {
@@ -351,10 +351,58 @@ export function bar() { return 1; }
       });
       expect(third.changed).toEqual(["a.ts"]);
       expect(third.unchanged).toBe(1);
+
+      // remove b.ts → hard subgraph delete
+      unlinkSync(join(dir, "b.ts"));
+      const fourth = incrementalReingest(db, {
+        repoPath: dir,
+        repoId: "inc",
+        snapshotPath: snap,
+      });
+      expect(fourth.removed).toContain("b.ts");
+      expect(fourth.deletedSubgraphs).toBeGreaterThan(0);
+      expect(getNode(db, "file:inc:b.ts")).toBeUndefined();
     } finally {
       clearSnapshot(snap);
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("A/B is tagged-only with p-values", () => {
+    const db = openGraphLearnMemory();
+    for (let i = 0; i < 8; i++) {
+      labelPrOutcome(db, {
+        prId: `t${i}`,
+        changeId: "ch",
+        consumerId: "c1",
+        outcome: i % 2 === 0 ? "merged" : "closed",
+        title: "pat",
+        experiment: "treatment",
+      });
+      labelPrOutcome(db, {
+        prId: `c${i}`,
+        changeId: "ch",
+        consumerId: "c2",
+        outcome: "closed",
+        title: "pat",
+        experiment: "control",
+      });
+    }
+    // untagged should not pollute arms
+    labelPrOutcome(db, {
+      prId: "u1",
+      changeId: "ch",
+      consumerId: "c3",
+      outcome: "merged",
+      title: "pat",
+    });
+    const ab = measureAbLift(db);
+    expect(ab.taggedOnly).toBe(true);
+    expect(ab.untaggedSkipped).toBeGreaterThanOrEqual(1);
+    expect(ab.control.samples).toBe(8);
+    expect(ab.treatment.samples).toBe(8);
+    expect(typeof ab.pValue).toBe("number");
+    expect(ab.control.ci95).toHaveLength(2);
   });
 
   it("embeddings and kuzu export path", () => {

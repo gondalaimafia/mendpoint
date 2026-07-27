@@ -47,13 +47,19 @@ function ensureLoaded(): void {
   if (!existsSync(path)) return;
   try {
     const lines = readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean);
-    for (const line of lines.slice(-200)) {
+    const seen = new Set(buffer.map((a) => a.id));
+    for (const line of lines.slice(-500)) {
       try {
-        buffer.push(JSON.parse(line) as Alert);
+        const a = JSON.parse(line) as Alert;
+        if (a?.id && !seen.has(a.id)) {
+          buffer.push(a);
+          seen.add(a.id);
+        }
       } catch {
         /* skip */
       }
     }
+    if (buffer.length > 500) buffer.splice(0, buffer.length - 500);
   } catch {
     /* */
   }

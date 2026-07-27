@@ -45,14 +45,14 @@ SDK: `createPlatform()` exposes `pickQuery`, `ingestAst`, `ingestLsp`, `incremen
 
 | Item | How |
 |------|-----|
-| Per-file incremental | `incrementalReingest` hashes each file; only changed paths re-AST |
+| Per-file incremental | Hash delta + **replace subgraph** on change; **hard-delete** removed files |
 | Multi-SCM | GitHub/GitLab/Bitbucket/ADO adapters — mock without token, live with env |
-| Harness tools | Real `@mendpoint/contract` / `transformer` / `graph-learn` (no `stub_ok`) |
-| PR experiment → A/B | Body tags `[experiment:treatment]` `[plan:id]` or `POST /prs/:id/feedback` body |
-| Alerts | JSONL at `data/alerts.jsonl` (`MENDPOINT_ALERTS_PATH`) |
-| RBAC | `X-Role` + `permissionForRoute` on mutations (viewer denied plan:edit) |
-| Embeddings | `POST /graph-learn/embed` hash vectors |
-| Kùzu path | `GET /graph-learn/kuzu` status + SQLite→script export (`npm i kuzu` optional) |
+| Harness tools | Real contract/transformer/graph-learn; `graph.stats` / `graph.query` |
+| PR experiment → A/B | Tagged-only lift + Wilson CI + two-proportion **z/p-value** |
+| Alerts | JSONL dedupe load at `data/alerts.jsonl` |
+| RBAC | Sensitive GETs + mutations via `permissionForRoute` |
+| Embeddings | Stable hash vectors (force recompute option); included in GNN `x` |
+| Kùzu path | `createRequire` status + export script + optional `tryOpenKuzu` |
 
 ## Platform SDK (`@mendpoint/sdk`)
 

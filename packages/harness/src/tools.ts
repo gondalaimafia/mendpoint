@@ -148,28 +148,47 @@ export function runSpecialistTool(
     case "impact.fanout_prs": {
       try {
         const db = getGraphLearnDb();
+        const slug = String(meta.providerSlug ?? "acme");
         const q = runGraphQuery(db, {
           op: "who_consumes_provider",
-          providerSlug: String(meta.providerSlug ?? "acme"),
+          providerSlug: slug,
         });
+        const n = q.rows?.length ?? 0;
+        const requireConsumers = meta.requireConsumers === true;
         return {
-          ok: true,
+          ok: !requireConsumers || n > 0,
           output: JSON.stringify({
             action: step.action,
-            consumers: q.rows?.length ?? 0,
+            providerSlug: slug,
+            consumers: n,
             markdown: formatQueryForPlanner(q).slice(0, 600),
           }),
+          error:
+            requireConsumers && n === 0
+              ? `no consumers for provider ${slug}`
+              : undefined,
         };
       } catch (e) {
         return {
-          ok: true,
-          output: JSON.stringify({
-            action: step.action,
-            note: "graph empty or unavailable",
-            error: e instanceof Error ? e.message : String(e),
-          }),
+          ok: false,
+          output: "",
+          error: e instanceof Error ? e.message : String(e),
         };
       }
+    }
+
+    case "graph.stats": {
+      const q = runGraphQuery(getGraphLearnDb(), { op: "stats" });
+      return { ok: true, output: JSON.stringify({ action: step.action, ...q.rows?.[0], summary: q.summary }) };
+    }
+
+    case "graph.query": {
+      const op = String(meta.op ?? "stats") as "stats";
+      const q = runGraphQuery(getGraphLearnDb(), (meta.query as never) ?? { op });
+      return {
+        ok: true,
+        output: formatQueryForPlanner(q).slice(0, 1200),
+      };
     }
 
     case "bsg.lock": {

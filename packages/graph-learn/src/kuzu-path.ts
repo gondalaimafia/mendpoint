@@ -3,6 +3,7 @@
  * - Without `kuzu` npm package: returns DDL + status, SQLite remains default.
  * - With `kuzu` installed: open/close helpers for dual-write experiments.
  */
+import { createRequire } from "node:module";
 import { KUZU_DDL_V0 } from "./schema.js";
 import type { GraphLearnDb } from "./store.js";
 import { listNodesByKind, edgesFrom } from "./store.js";
@@ -15,14 +16,14 @@ export type KuzuStatus = {
   packageName: string;
 };
 
+const requireFromHere = createRequire(import.meta.url);
+
 export function kuzuStatus(): KuzuStatus {
   try {
-    // Optional peer dependency — do not hard-require
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    require.resolve("kuzu");
+    requireFromHere.resolve("kuzu");
     return {
       available: true,
-      reason: "kuzu package resolvable",
+      reason: "kuzu package resolvable (native open via tryOpenKuzu)",
       ddl: KUZU_DDL_V0,
       packageName: "kuzu",
     };

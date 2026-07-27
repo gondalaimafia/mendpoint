@@ -4,7 +4,12 @@
  */
 import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join, relative, extname } from "node:path";
-import { upsertEdge, upsertNode, type GraphLearnDb } from "./store.js";
+import {
+  upsertEdge,
+  upsertNode,
+  deleteFileSubgraph,
+  type GraphLearnDb,
+} from "./store.js";
 
 export type AstIngestResult = {
   repoId: string;
@@ -171,8 +176,12 @@ export function ingestAstFile(
     repoId: string;
     absPath: string;
     relPath?: string;
+    /** Content hash to store on File props */
+    contentHash?: string;
+    /** Wipe prior DEFINES/CALLS for this file before write (default true) */
+    replace?: boolean;
   },
-): { symbols: number; calls: number; language: string } {
+): { symbols: number; calls: number; language: string; fileId: string } {
   const rel =
     opts.relPath ?? relative(opts.repoPath, opts.absPath).replace(/\\/g, "/");
   const lang = langOf(opts.absPath);
@@ -180,15 +189,23 @@ export function ingestAstFile(
   try {
     source = readFileSync(opts.absPath, "utf8").slice(0, 200_000);
   } catch {
-    return { symbols: 0, calls: 0, language: lang };
+    return { symbols: 0, calls: 0, language: lang, fileId: `file:${opts.repoId}:${rel}` };
   }
   const fileId = `file:${opts.repoId}:${rel}`;
+  if (opts.replace !== false) {
+    deleteFileSubgraph(db, fileId);
+  }
   upsertNode(db, {
     id: fileId,
     kind: "File",
     label: rel,
     repo_id: opts.repoId,
-    props: { path: rel, language: lang, content_hash: undefined },
+    props: {
+      path: rel,
+      language: lang,
+      content_hash: opts.contentHash,
+      deleted: false,
+    },
   });
   upsertEdge(db, {
     id: `CONTAINS:${opts.repoId}:${rel}`.slice(0, 240),
@@ -245,7 +262,7 @@ export function ingestAstFile(
     });
     calls++;
   }
-  return { symbols, calls, language: lang };
+  return { symbols, calls, language: lang, fileId };
 }
 
 export function ingestAstRepo(

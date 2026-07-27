@@ -1,7 +1,7 @@
 /**
  * Real per-file incremental graph-learn reingest.
  * Only re-processes files whose content hash changed vs snapshot.
- * Target: <30s for typical PR-sized deltas.
+ * Replaces file subgraph on change; hard-deletes removed files.
  */
 import { createHash } from "node:crypto";
 import {
@@ -18,7 +18,7 @@ import {
   type AstIngestResult,
 } from "./ast-ingest.js";
 import type { GraphLearnDb } from "./store.js";
-import { upsertNode } from "./store.js";
+import { upsertNode, deleteFileSubgraph } from "./store.js";
 
 export type FileHashSnapshot = {
   repoId: string;
@@ -37,6 +37,7 @@ export type IncrementalResult = {
   symbols: number;
   calls: number;
   fullRebuild: boolean;
+  deletedSubgraphs: number;
   ast?: AstIngestResult;
 };
 
@@ -69,7 +70,8 @@ function fileHash(absPath: string): string | null {
 /**
  * Per-file incremental reingest.
  * - First run / forceFull: ingest all files and write hashes
- * - Subsequent: only ingestAstFile for changed/new paths; drop hashes for deleted files
+ * - Subsequent: only ingestAstFile for changed/new paths (replace subgraph)
+ * - Removed paths: hard deleteFileSubgraph
  */
 export function incrementalReingest(
   db: GraphLearnDb,
@@ -114,7 +116,7 @@ export function incrementalReingest(
       if (prevHashes[rel] !== h) changed.push(rel);
     }
     for (const rel of Object.keys(prevHashes)) {
-      if (!(rel in currentHashes) && rel !== "__gen") removed.push(rel);
+      if (!(rel in currentHashes)) removed.push(rel);
     }
   }
 
@@ -128,6 +130,8 @@ export function incrementalReingest(
       last_incremental: new Date().toISOString(),
       under30s_target: true,
       mode: fullRebuild ? "full" : "delta",
+      changed: changed.length,
+      removed: removed.length,
     },
   });
 
@@ -141,20 +145,18 @@ export function incrementalReingest(
       repoId,
       absPath: abs,
       relPath: rel,
+      contentHash: currentHashes[rel],
+      replace: true,
     });
     symbols += r.symbols;
     calls += r.calls;
   }
 
-  // Mark removed files in graph (label only — soft tombstone)
+  let deletedSubgraphs = 0;
   for (const rel of removed) {
-    upsertNode(db, {
-      id: `file:${repoId}:${rel}`,
-      kind: "File",
-      label: rel,
-      repo_id: repoId,
-      props: { path: rel, deleted: true },
-    });
+    const fileId = `file:${repoId}:${rel}`;
+    const d = deleteFileSubgraph(db, fileId);
+    deletedSubgraphs += d.nodes;
   }
 
   const snap: FileHashSnapshot = {
@@ -165,7 +167,10 @@ export function incrementalReingest(
   saveSnapshot(snapPath, snap);
 
   const durationMs = Date.now() - t0;
-  const unchanged = Math.max(0, Object.keys(currentHashes).length - changed.length);
+  const unchanged = Math.max(
+    0,
+    Object.keys(currentHashes).length - changed.length,
+  );
 
   return {
     repoId,
@@ -177,6 +182,7 @@ export function incrementalReingest(
     symbols,
     calls,
     fullRebuild,
+    deletedSubgraphs,
     ast: {
       repoId,
       files: changed.length,

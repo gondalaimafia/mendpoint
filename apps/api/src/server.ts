@@ -1330,8 +1330,14 @@ app.post("/webhooks/github", async (c) => {
           (p.github_pr_url && p.github_pr_url === event.htmlUrl),
       );
       if (match) {
-        await applyPrFeedback(db, match.id, outcome);
-        return c.json({ ok: true, applied: outcome, prId: match.id });
+        // Experiment/plan from migration PR body tags; webhook does not override
+        await applyPrFeedback(db, match.id, outcome, {});
+        return c.json({
+          ok: true,
+          applied: outcome,
+          prId: match.id,
+          note: "experiment/plan taken from PR body tags if present",
+        });
       }
       return c.json({ ok: true, applied: null, reason: "no matching migration PR" });
     }

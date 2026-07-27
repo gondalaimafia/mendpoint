@@ -238,6 +238,52 @@ export function getNode(db: GraphLearnDb, id: string): GlNode | undefined {
   return row ? rowToNode(row) : undefined;
 }
 
+export function deleteNode(db: GraphLearnDb, id: string): void {
+  db.raw.prepare(`DELETE FROM gl_edges WHERE source = ? OR target = ?`).run(id, id);
+  db.raw.prepare(`DELETE FROM gl_nodes WHERE id = ?`).run(id);
+}
+
+export function deleteEdge(db: GraphLearnDb, id: string): void {
+  db.raw.prepare(`DELETE FROM gl_edges WHERE id = ?`).run(id);
+}
+
+/** Remove node and all incident edges; also drop DEFINES/CALLS targets that become orphaned under this file. */
+export function deleteFileSubgraph(
+  db: GraphLearnDb,
+  fileId: string,
+): { nodes: number; edges: number } {
+  const outEdges = edgesFrom(db, fileId);
+  let nodes = 0;
+  let edges = 0;
+  for (const e of outEdges) {
+    if (e.kind === "DEFINES" || e.kind === "DECLARES") {
+      // remove symbol and its outbound CALLS
+      const symEdges = [
+        ...edgesFrom(db, e.target),
+        ...edgesTo(db, e.target),
+      ];
+      for (const se of symEdges) {
+        deleteEdge(db, se.id);
+        edges++;
+      }
+      deleteNode(db, e.target);
+      nodes++;
+    } else {
+      deleteEdge(db, e.id);
+      edges++;
+    }
+  }
+  for (const e of edgesTo(db, fileId)) {
+    deleteEdge(db, e.id);
+    edges++;
+  }
+  if (getNode(db, fileId)) {
+    db.raw.prepare(`DELETE FROM gl_nodes WHERE id = ?`).run(fileId);
+    nodes++;
+  }
+  return { nodes, edges };
+}
+
 export function listNodesByKind(db: GraphLearnDb, kind: GlNodeKind): GlNode[] {
   // Match both PascalCase and legacy lowercase
   const legacy = Object.entries(
