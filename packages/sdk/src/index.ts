@@ -8,10 +8,24 @@ import {
   labelPrOutcome,
   runGraphQuery,
   formatQueryForPlanner,
+  backfillGitTemporal,
+  checkSlos,
+  formatLatencyReport,
+  latencyReport,
   type GraphQuery,
   type GraphQueryResult,
+  type GitTemporalOptions,
+  type GitTemporalResult,
 } from "@mendpoint/graph-learn";
-import { executePlan, helloWorldRun, type ExecuteResult } from "@mendpoint/harness";
+import {
+  executePlan,
+  helloWorldRun,
+  collectDogfood,
+  formatDogfoodReport,
+  writeDogfoodReport,
+  type ExecuteResult,
+  type DogfoodReport,
+} from "@mendpoint/harness";
 import {
   planFromSpecDiff,
   planToMarkdown,
@@ -50,6 +64,16 @@ export type PlatformClient = {
   }) => void;
   plannerContext: (agent: "warden" | "transformer") => string;
   planToMarkdown: typeof planToMarkdown;
+  /** Git temporal backfill into graph-learn (12mo default) */
+  backfillGit: (opts: GitTemporalOptions) => GitTemporalResult;
+  /** p50/p99 SLO snapshot */
+  latencySlo: () => {
+    report: ReturnType<typeof latencyReport>;
+    check: ReturnType<typeof checkSlos>;
+    markdown: string;
+  };
+  /** Dogfood volume + ok-rate gates (Day-90) */
+  dogfood: (baseDir?: string) => DogfoodReport & { markdown: string; reportPath: string };
 };
 
 export function createPlatform(): PlatformClient {
@@ -110,6 +134,27 @@ export function createPlatform(): PlatformClient {
       return memoryForPlanner(mem);
     },
     planToMarkdown,
+    backfillGit(opts) {
+      return backfillGitTemporal(getGraphLearnDb(), opts);
+    },
+    latencySlo() {
+      const report = latencyReport();
+      const check = checkSlos(3);
+      return {
+        report,
+        check,
+        markdown: formatLatencyReport(report),
+      };
+    },
+    dogfood(baseDir = process.cwd()) {
+      const report = collectDogfood(baseDir);
+      const reportPath = writeDogfoodReport(baseDir, report);
+      return {
+        ...report,
+        markdown: formatDogfoodReport(report),
+        reportPath,
+      };
+    },
   };
 }
 

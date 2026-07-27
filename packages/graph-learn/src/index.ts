@@ -23,6 +23,7 @@ export {
   listNodesByKind,
   edgesFrom,
   edgesTo,
+  edgesByKindAt,
   countStats,
   type GraphLearnDb,
 } from "./store.js";
@@ -44,3 +45,25 @@ export {
 export { getGraphLearnDb, resetGraphLearnDbForTests } from "./singleton.js";
 
 export { runGraphBenchmark, BENCH_CASES } from "./benchmark.js";
+
+export {
+  backfillGitTemporal,
+  seedSyntheticTemporal,
+  parseGitLog,
+  type GitTemporalOptions,
+  type GitTemporalResult,
+} from "./git-temporal.js";
+
+export {
+  recordLatency,
+  resetLatencySamples,
+  latencyReport,
+  latencyForOp,
+  checkSlos,
+  formatLatencyReport,
+  setSloTargets,
+  percentile,
+  DEFAULT_SLO_TARGETS,
+  type SloTarget,
+  type OpLatency,
+} from "./slo.js";

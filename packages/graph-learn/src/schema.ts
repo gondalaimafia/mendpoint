@@ -216,6 +216,8 @@ export type GraphQuery =
   | { op: "migration_ready_units"; campaignId: string; batchSize?: number }
   | { op: "invariants_for_symbol"; qualifiedName: string }
   | { op: "time_travel_calls"; at: string }
+  | { op: "time_travel_modifies"; at: string; repoId?: string }
+  | { op: "latency_stats" }
   | { op: "stats" };
 
 export type GraphQueryResult = {

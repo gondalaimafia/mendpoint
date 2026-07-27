@@ -22,6 +22,7 @@ import {
   type RunPaths,
   type RunScore,
 } from "./trajectory.js";
+import { appendDogfoodLedger } from "./dogfood.js";
 
 export type ExecuteOptions = {
   /** Base directory for runs/ (default cwd) */
@@ -211,6 +212,20 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
     score.ok = true;
   }
   writeScore(paths, score);
+  try {
+    appendDogfoodLedger(baseDir, {
+      runId,
+      ok: score.ok,
+      durationMs: score.durationMs,
+      stepsTotal: score.stepsTotal,
+      stepsFailed: score.stepsFailed,
+      recoveredFromFailure: score.recoveredFromFailure,
+      graphQueries: score.graphQueries,
+      source: "harness",
+    });
+  } catch {
+    /* ledger is best-effort */
+  }
   appendTrace(paths, {
     ts: new Date().toISOString(),
     type: "info",

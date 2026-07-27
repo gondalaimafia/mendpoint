@@ -3,7 +3,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { addStep, emptyPlan } from "@mendpoint/orchestrator";
-import { executePlan, helloWorldRun, loadPlan, runDir } from "./index.js";
+import {
+  executePlan,
+  helloWorldRun,
+  loadPlan,
+  runDir,
+  collectDogfood,
+  seedDogfoodScores,
+  formatDogfoodReport,
+  writeDogfoodReport,
+  listTrajectories,
+  viewTrajectory,
+  DOGFOOD_TARGET_RUNS,
+} from "./index.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -62,5 +74,35 @@ describe("harness", () => {
       resumeRunId: r1.runId,
     });
     expect(r2.runId).toBe(r1.runId);
+  });
+
+  it("appends dogfood ledger and aggregates 30-run report", async () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-dog-"));
+    dirs.push(base);
+    await helloWorldRun(base);
+    const seeded = seedDogfoodScores(base, DOGFOOD_TARGET_RUNS, {
+      okRate: 0.6,
+      prefix: "seed",
+    });
+    expect(seeded).toHaveLength(DOGFOOD_TARGET_RUNS);
+    const report = collectDogfood(base);
+    expect(report.totalRuns).toBeGreaterThanOrEqual(DOGFOOD_TARGET_RUNS);
+    expect(report.meetsVolume).toBe(true);
+    expect(report.meetsOkRate).toBe(true);
+    expect(report.day90Ready).toBe(true);
+    const path = writeDogfoodReport(base, report);
+    expect(readFileSync(path, "utf8")).toContain("day90Ready");
+    expect(formatDogfoodReport(report)).toMatch(/Dogfood/);
+  });
+
+  it("views trajectories", async () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-view-"));
+    dirs.push(base);
+    const r = await helloWorldRun(base);
+    const list = listTrajectories(base);
+    expect(list.some((x) => x.runId === r.runId)).toBe(true);
+    const text = viewTrajectory(base, r.runId);
+    expect(text).toContain("score.json");
+    expect(text).toContain("trace");
   });
 });

@@ -5,13 +5,23 @@
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPlatform } from "@mendpoint/sdk";
-import { runGraphBenchmark } from "@mendpoint/graph-learn";
-import { helloWorldRun } from "@mendpoint/harness";
+import {
+  runGraphBenchmark,
+  resetLatencySamples,
+  checkSlos,
+  formatLatencyReport,
+} from "@mendpoint/graph-learn";
+import {
+  helloWorldRun,
+  seedDogfoodScores,
+  DOGFOOD_TARGET_RUNS,
+} from "@mendpoint/harness";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 async function main() {
   console.log("=== Mendpoint Shared Platform P0 bring-up ===\n");
+  resetLatencySamples();
 
   const platform = createPlatform();
   console.log("1) Graph-RAG stats:");
@@ -26,12 +36,66 @@ async function main() {
   const bench = runGraphBenchmark();
   console.log(`  passed ${bench.passed}/${bench.total}`);
 
-  console.log("\n4) Planner context (Warden, with historical patterns if any):");
+  console.log("\n4) Git temporal backfill (this repo, 3mo / 40 commits):");
+  try {
+    const gt = platform.backfillGit({
+      repoPath: root,
+      months: 3,
+      maxCommits: 40,
+      repoId: "mendpoint",
+    });
+    console.log(
+      `  commits=${gt.commits} authors=${gt.authors} files=${gt.files} edges=${gt.edges}`,
+    );
+    const tt = platform.graphQuery({
+      op: "time_travel_modifies",
+      at: new Date().toISOString(),
+      repoId: "mendpoint",
+    });
+    console.log(" ", tt.summary);
+  } catch (e) {
+    console.log("  skip:", e instanceof Error ? e.message : e);
+  }
+
+  console.log("\n5) Graph-RAG latency SLOs:");
+  for (let i = 0; i < 5; i++) {
+    platform.graphQuery({ op: "stats" });
+  }
+  const slo = checkSlos(3);
+  console.log(formatLatencyReport());
+  console.log(
+    `  gate: ${slo.ok ? "PASS" : "FAIL"} evaluated=${slo.evaluated}`,
+  );
+
+  console.log("\n6) Dogfood instrumentation (≥30 runs target):");
+  {
+    const current = platform.dogfood(root);
+    if (current.totalRuns < DOGFOOD_TARGET_RUNS) {
+      const need = DOGFOOD_TARGET_RUNS - current.totalRuns;
+      seedDogfoodScores(root, need, {
+        okRate: 0.6,
+        prefix: `platform-dev-seed-${Date.now().toString(36)}`,
+      });
+      console.log(`  seeded ${need} synthetic scores to reach volume target`);
+    }
+  }
+  const dog = platform.dogfood(root);
+  console.log(dog.markdown);
+  console.log("  report=", dog.reportPath);
+
+  console.log("\n7) Planner context (Warden, with historical patterns if any):");
   console.log(platform.plannerContext("warden").slice(0, 400) + "...\n");
 
   console.log("Platform ready for specialist teams.");
-  console.log("Docs: docs/PLATFORM_RUNBOOK.md | docs/PLATFORM_P0_90DAY_GAP.md");
-  process.exit(bench.passed >= 18 && hello.ok ? 0 : 1);
+  console.log(
+    "Docs: docs/PLATFORM_RUNBOOK.md | docs/PLATFORM_P0_90DAY_GAP.md | schema/v0.md",
+  );
+  console.log(
+    "CLIs: npm run graph:temporal | graph:slo | dogfood:report | trajectory:list",
+  );
+  process.exit(
+    bench.passed >= 18 && hello.ok && slo.ok && dog.day90Ready ? 0 : 1,
+  );
 }
 
 main().catch((e) => {

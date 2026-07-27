@@ -31,7 +31,12 @@
     "agent:demo": "tsx scripts/agent-demo.ts",
     "eval:warden": "tsx packages/eval/src/warden-bench.ts",
     "platform:dev": "tsx scripts/platform-dev.ts",
-    "graph:bench": "tsx -e \"import { runGraphBenchmark } from '@mendpoint/graph-learn'; const b=runGraphBenchmark(); console.log(b.passed+'/'+b.total); process.exit(b.passed>=18?0:1)\""
+    "graph:bench": "tsx -e \"import { runGraphBenchmark } from '@mendpoint/graph-learn'; const b=runGraphBenchmark(); console.log(b.passed+'/'+b.total); process.exit(b.passed>=18?0:1)\"",
+    "graph:temporal": "tsx scripts/git-temporal.ts",
+    "graph:slo": "tsx scripts/slo-report.ts",
+    "dogfood:report": "tsx scripts/dogfood-report.ts",
+    "trajectory:list": "tsx scripts/trajectory-view.ts",
+    "trajectory:view": "tsx scripts/trajectory-view.ts"
   },
   "dependencies": {
     "@mendpoint/db": "*",

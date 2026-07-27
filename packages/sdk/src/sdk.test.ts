@@ -52,4 +52,16 @@ describe("platform SDK", () => {
     const plan = planFromOpenApiPair("acme", v1, v2);
     expect(plan.kind).toBe("spec_diff");
   });
+
+  it("exposes backfillGit latencySlo dogfood", () => {
+    const p = createPlatform();
+    p.graphQuery({ op: "stats" });
+    p.graphQuery({ op: "stats" });
+    p.graphQuery({ op: "stats" });
+    const slo = p.latencySlo();
+    expect(slo.markdown).toMatch(/latency/i);
+    const dog = p.dogfood(root);
+    expect(dog.markdown).toMatch(/Dogfood/);
+    expect(typeof dog.reportPath).toBe("string");
+  });
 });

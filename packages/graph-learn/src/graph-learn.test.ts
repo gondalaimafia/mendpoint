@@ -17,6 +17,13 @@ import {
   normalizeEdgeKind,
   getNode,
   countStats,
+  seedSyntheticTemporal,
+  parseGitLog,
+  backfillGitTemporal,
+  resetLatencySamples,
+  checkSlos,
+  latencyReport,
+  percentile,
 } from "./index.js";
 import type { StructuralDiff, ImpactableSurface } from "@mendpoint/shared";
 
@@ -153,5 +160,76 @@ describe("graph-learn substrate", () => {
     expect(KUZU_DDL_V0).toContain("CREATE NODE TABLE");
     expect(normalizeNodeKind("provider")).toBe("Provider");
     expect(normalizeEdgeKind("monitors")).toBe("MONITORS");
+  });
+
+  it("parses git log and seeds synthetic temporal graph", () => {
+    const raw = [
+      "COMMIT\taaa111\tAlice\t2025-01-01T00:00:00Z\tfirst",
+      "src/a.ts",
+      "src/b.ts",
+      "COMMIT\tbbb222\tBob\t2025-06-01T00:00:00Z\tsecond",
+      "src/a.ts",
+    ].join("\n");
+    const parsed = parseGitLog(raw);
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]!.files).toEqual(["src/a.ts", "src/b.ts"]);
+
+    const db = openGraphLearnMemory();
+    seedSyntheticTemporal(db, "demo");
+    const mid = runGraphQuery(db, {
+      op: "time_travel_modifies",
+      at: "2025-03-01T00:00:00.000Z",
+      repoId: "demo",
+    });
+    expect(mid.edges.length).toBeGreaterThanOrEqual(1);
+    const calls = runGraphQuery(db, {
+      op: "time_travel_calls",
+      at: "2025-03-01T00:00:00.000Z",
+    });
+    expect(calls.summary).toMatch(/CALLS/);
+  });
+
+  it("backfills real git history when repo available", () => {
+    const db = openGraphLearnMemory();
+    // monorepo root two levels up from package
+    const repoPath = join(process.cwd(), "..", "..");
+    try {
+      const r = backfillGitTemporal(db, {
+        repoPath,
+        months: 1,
+        maxCommits: 15,
+        repoId: "mendpoint-test",
+      });
+      expect(r.commits).toBeGreaterThan(0);
+      expect(r.edges).toBeGreaterThan(0);
+      const stats = runGraphQuery(db, { op: "stats" });
+      expect(Number((stats.rows?.[0] as { nodes?: number })?.nodes)).toBeGreaterThan(
+        0,
+      );
+    } catch (e) {
+      // CI without git history — skip soft
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("not a git") || msg.includes("not found")) {
+        expect(true).toBe(true);
+      } else {
+        throw e;
+      }
+    }
+  });
+
+  it("records latency samples and evaluates SLOs", () => {
+    resetLatencySamples();
+    const db = openGraphLearnMemory();
+    for (let i = 0; i < 5; i++) {
+      runGraphQuery(db, { op: "stats" });
+    }
+    const report = latencyReport();
+    expect(report.totalSamples).toBeGreaterThanOrEqual(5);
+    expect(percentile([1, 2, 3, 4, 5], 50)).toBe(3);
+    const slo = checkSlos(3);
+    expect(slo.evaluated).toBeGreaterThanOrEqual(1);
+    const lat = runGraphQuery(db, { op: "latency_stats" });
+    expect(lat.rows?.length).toBeGreaterThan(0);
+    expect(lat.summary).toMatch(/latency/i);
   });
 });

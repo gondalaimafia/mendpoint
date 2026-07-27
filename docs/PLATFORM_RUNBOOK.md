@@ -4,9 +4,21 @@
 
 ```bash
 npm install
-npm run platform:dev    # seed graph + hello harness run + stats
+npm run platform:dev    # graph + harness + git temporal + SLO + dogfood seed
 npm test
 npm run dev:api         # optional API on :3001
+```
+
+## Day-90 ops CLIs
+
+```bash
+npm run graph:temporal -- . --months=12 --max=2000   # git → graph-learn
+npm run graph:slo                                     # p50/p99 latency gate
+npm run dogfood:report                                # ≥30 runs / ≥50% ok
+npm run dogfood:report -- --seed=30                   # offline seed scores
+npm run trajectory:list                               # list runs/
+npm run trajectory:view -- <runId>                    # plan/trace/score
+npm run graph:bench                                   # 20-query pack
 ```
 
 ## Platform SDK (`@mendpoint/sdk`)
@@ -19,6 +31,9 @@ p.graphQuery({ op: "stats" });
 const plan = p.planSpecDiff({ ... });
 const run = await p.executeHello();
 p.recordOutcome({ prId, changeId, consumerId, outcome: "merged" });
+p.backfillGit({ repoPath: ".", months: 12 });
+p.latencySlo();
+p.dogfood();
 ```
 
 ## Add a graph node/edge type

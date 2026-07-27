@@ -1,15 +1,22 @@
 /**
  * Graph-RAG query layer — deterministic multi-hop templates for planners.
+ * All queries record latency samples for SLO checks.
  */
 import type { GlEdge, GlNode, GraphQuery, GraphQueryResult } from "./schema.js";
 import {
   countStats,
+  edgesByKindAt,
   edgesFrom,
   edgesTo,
   getNode,
   listNodesByKind,
   type GraphLearnDb,
 } from "./store.js";
+import {
+  formatLatencyReport,
+  latencyReport,
+  recordLatency,
+} from "./slo.js";
 
 function collectNodes(db: GraphLearnDb, ids: Iterable<string>): GlNode[] {
   const out: GlNode[] = [];
@@ -48,6 +55,18 @@ export function blastRadius(
 }
 
 export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult {
+  const t0 = performance.now();
+  try {
+    return runGraphQueryInner(db, q);
+  } finally {
+    recordLatency(q.op, performance.now() - t0);
+  }
+}
+
+function runGraphQueryInner(
+  db: GraphLearnDb,
+  q: GraphQuery,
+): GraphQueryResult {
   switch (q.op) {
     case "stats": {
       const s = countStats(db);
@@ -57,6 +76,26 @@ export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult
         edges: [],
         summary: `${s.nodes} nodes, ${s.edges} edges`,
         rows: [s],
+      };
+    }
+    case "latency_stats": {
+      const report = latencyReport();
+      return {
+        op: "latency_stats",
+        nodes: [],
+        edges: [],
+        summary: formatLatencyReport(report),
+        rows: report.ops.map((o) => ({
+          op: o.op,
+          n: o.n,
+          p50Ms: Number(o.p50Ms.toFixed(2)),
+          p99Ms: Number(o.p99Ms.toFixed(2)),
+          maxMs: Number(o.maxMs.toFixed(2)),
+          p50Ok: o.p50Ok,
+          p99Ok: o.p99Ok,
+          targetP50: o.target.p50Ms,
+          targetP99: o.target.p99Ms,
+        })),
       };
     }
     case "who_consumes_provider": {
@@ -439,6 +478,33 @@ export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult
         summary: `${edges.length} CALLS edge(s) valid at ${q.at}`,
       };
     }
+    case "time_travel_modifies": {
+      let edges = edgesByKindAt(db, ["MODIFIES", "TOUCHES"], q.at, 5000);
+      if (q.repoId) {
+        const needle = q.repoId;
+        edges = edges.filter(
+          (e) => e.source.includes(needle) || e.target.includes(needle),
+        );
+      }
+      const ids = new Set<string>();
+      for (const e of edges) {
+        ids.add(e.source);
+        ids.add(e.target);
+      }
+      return {
+        op: q.op,
+        nodes: collectNodes(db, ids),
+        edges,
+        summary: `${edges.length} MODIFIES/TOUCHES edge(s) valid at ${q.at}`,
+        rows: edges.slice(0, 50).map((e) => ({
+          id: e.id,
+          from: e.source,
+          to: e.target,
+          valid_from: e.valid_from,
+          valid_to: e.valid_to,
+        })),
+      };
+    }
     default:
       return { op: "unknown", nodes: [], edges: [], summary: "unknown query" };
   }
@@ -461,6 +527,8 @@ export const GRAPH_RAG_TOOLS = [
   "migration_ready_units",
   "invariants_for_symbol",
   "time_travel_calls",
+  "time_travel_modifies",
+  "latency_stats",
   "stats",
 ] as const;
 

@@ -11,11 +11,11 @@ Scores: 0 absent · 1 stub · 2 partial · 3 working dogfood · 4 day-90 ready �
 
 | 90-day P0 pillar | Score | Status |
 |------------------|-------|--------|
-| Graph substrate | **4.0** | Schema v0 first-class (`schema/v0.md` + `@mendpoint/graph-learn`); PascalCase/SCREAMING_SNAKE; pre-v0 SQLite migrate; not yet full AST/LSP/git temporal |
-| Graph-RAG query layer | **4.0** | 16 templated multi-hop ops + 20-query bench; latency not formally SLO'd |
+| Graph substrate | **4.2** | Schema v0 + **git temporal backfill** (Commit/Author/File, MODIFIES valid_from/to); AST/LSP still light |
+| Graph-RAG query layer | **4.3** | Multi-hop ops + 20-query bench + **p50/p99 SLO ring buffer** (`latency_stats`, `npm run graph:slo`) |
 | Outcome-labeling pipeline | **3.0** | PR feedback → labeled edges; webhook PR→outcome attribution partial |
-| Devin-style base harness | **3.0** | Plan JSON, memory layers, local sandbox, recovery loops; no Firecracker VM; trajectories formalized this ship |
-| **Day-90 dogfoodable platform** | **~3.2** | Specialist teams can build on SDK + stubs **now**; true 100k-LOC LSP/git backfill and A/B lift remain open |
+| Devin-style base harness | **3.5** | Plan JSON, memory, sandbox, recovery; **dogfood ledger + trajectory viewer**; no Firecracker VM |
+| **Day-90 dogfoodable platform** | **~3.8** | SDK + stubs + git temporal + SLOs + **≥30-run dogfood report**; A/B lift + full LSP remain open |
 
 **Philosophy match:** Ship deterministic graph + harness first; GNN/meta-graph post-90 — **aligned**.
 
@@ -44,7 +44,7 @@ Scores: 0 absent · 1 stub · 2 partial · 3 working dogfood · 4 day-90 ready �
 |-------|------|-------|-------|
 | A | AST/tree-sitter ingest Py/TS/Java | 2–3 | codebase-index + call-graph → graph-learn ingest helpers |
 | A | LSP ingester | 1 | Not built; tree-sitter-ready path |
-| A | Git temporal 12mo | 1 | Schema supports props; no full backfill |
+| A | Git temporal 12mo | 3–4 | `backfillGitTemporal` + `npm run graph:temporal` (commit/file/author; CALLS still AST/LSP) |
 | A | Incremental <30s | 2 | call-graph incremental exists; graph-learn partial reingest helper |
 | A | 20-query benchmark | 4 | `graph-learn` 20-case pack covers v0 ops (consumers_of_field, time_travel_calls, migration_ready, …) |
 | B | 4-layer memory | 4 | `@mendpoint/platform` |
@@ -52,7 +52,7 @@ Scores: 0 absent · 1 stub · 2 partial · 3 working dogfood · 4 day-90 ready �
 | B | VM + build cache | 2 | Local sandbox + cacheKey; no gVisor |
 | B | HITL plan edit UI | 1 | API returns editable plan JSON; full UI stub light |
 | C | Graph-RAG templates | 4 | callers, consumers, blast_radius, path, neighborhood, pattern_success_rates, time_travel_calls, migration_ready_units, … |
-| C | p50/p99 latency SLOs | 1 | Not instrumented |
+| C | p50/p99 latency SLOs | 4 | Ring buffer + targets + `checkSlos` + `npm run graph:slo` |
 
 ---
 
@@ -64,7 +64,7 @@ Scores: 0 absent · 1 stub · 2 partial · 3 working dogfood · 4 day-90 ready �
 | Attribution plan↔nodes | 2 | PR/change/consumer edges; full plan id attribution improving |
 | Dashboards success rates | 2 | Metrics pages; pattern rates via graph query |
 | Specialist stubs on harness | 3 | Warden/Transformer hello specialists (this ship) |
-| Dogfood 30 runs | N/A | Process, not code |
+| Dogfood 30 runs | 4 | `collectDogfood` + ledger on every harness run + `npm run dogfood:report` |
 | Graph-RAG v1 LLM query pick | 1 | Templates only |
 | Ranking by outcome edges | 2 | Simple pattern success rates (this ship) |
 
@@ -75,7 +75,7 @@ Scores: 0 absent · 1 stub · 2 partial · 3 working dogfood · 4 day-90 ready �
 | Item | Score | Notes |
 |------|-------|-------|
 | SLOs + alerts | 1 | Documented targets only |
-| Trajectory viewer UI | 1 | Files on disk; scrub via CLI |
+| Trajectory viewer UI | 3 | CLI `trajectory:list` / `trajectory:view` (full UI still open) |
 | Cost accounting | 1 | score.json fields reserved |
 | Pattern extractor + planner inject | 3 | `@mendpoint/graph-learn` patterns (this ship) |
 | A/B lift | N/A | Needs dogfood volume |

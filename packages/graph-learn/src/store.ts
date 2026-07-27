@@ -337,6 +337,25 @@ function expandKinds(kinds: GlEdgeKind[]): string[] {
   return out;
 }
 
+/** Edges of given kinds valid at timestamp (SQL path for temporal queries). */
+export function edgesByKindAt(
+  db: GraphLearnDb,
+  kinds: GlEdgeKind[],
+  atTime: string,
+  limit = 5000,
+): GlEdge[] {
+  const expanded = expandKinds(kinds);
+  const sql = `SELECT * FROM gl_edges
+    WHERE kind IN (${expanded.map(() => "?").join(",")})
+      AND (valid_from IS NULL OR valid_from <= ?)
+      AND (valid_to IS NULL OR valid_to > ?)
+    LIMIT ?`;
+  const rows = db.raw
+    .prepare(sql)
+    .all(...expanded, atTime, atTime, limit) as EdgeRow[];
+  return rows.map(rowToEdge);
+}
+
 export function countStats(db: GraphLearnDb) {
   const n = (
     db.raw.prepare(`SELECT COUNT(*) as c FROM gl_nodes`).get() as { c: number }
