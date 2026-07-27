@@ -26,10 +26,13 @@ export type RunScore = {
   stepsFailed: number;
   recoveredFromFailure: boolean;
   durationMs: number;
-  /** Reserved for cost accounting (Day 76–90) */
+  /** Cost accounting */
   tokensEst?: number;
   sandboxMinutes?: number;
   graphQueries?: number;
+  costUsd?: number;
+  planId?: string;
+  tenantId?: string;
 };
 
 export type RunPaths = {

@@ -19,6 +19,7 @@
     "@mendpoint/transformer": "*",
     "@mendpoint/platform": "*",
     "@mendpoint/graph-learn": "*",
+    "@mendpoint/harness": "*",
     "@mendpoint/pipeline": "*",
     "@mendpoint/agent": "*",
     "@mendpoint/repair": "*",

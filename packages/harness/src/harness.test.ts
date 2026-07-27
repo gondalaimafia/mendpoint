@@ -15,6 +15,9 @@ import {
   listTrajectories,
   viewTrajectory,
   DOGFOOD_TARGET_RUNS,
+  savePlanHitl,
+  listPlans,
+  getPlan,
 } from "./index.js";
 
 const dirs: string[] = [];
@@ -104,5 +107,21 @@ describe("harness", () => {
     const text = viewTrajectory(base, r.runId);
     expect(text).toContain("score.json");
     expect(text).toContain("trace");
+  });
+
+  it("HITL plan edit + cost fields on score", async () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-hitl-"));
+    dirs.push(base);
+    const r = await helloWorldRun(base);
+    expect(r.score.costUsd).toBeGreaterThanOrEqual(0);
+    expect(r.score.tokensEst).toBeGreaterThan(0);
+    const plans = listPlans(base);
+    expect(plans.some((p) => p.runId === r.runId)).toBe(true);
+    const updated = savePlanHitl(base, r.runId, {
+      title: "Edited by human",
+      goal: "HITL goal",
+    });
+    expect(updated.title).toBe("Edited by human");
+    expect(getPlan(base, r.runId).goal).toBe("HITL goal");
   });
 });

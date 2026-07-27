@@ -27,3 +27,12 @@ export {
 
 export type { RunListItem } from "./viewer.js";
 export { listTrajectories, viewTrajectory, formatRunList } from "./viewer.js";
+
+export type { PlanPatch } from "./plan-hitl.js";
+export {
+  listPlans,
+  getPlan,
+  applyPlanPatch,
+  savePlanHitl,
+  createDraftPlan,
+} from "./plan-hitl.js";

@@ -1,5 +1,9 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
+export function apiBase(): string {
+  return API_URL;
+}
+
 const DEFAULT_TIMEOUT_MS = 12_000;
 
 async function fetchWithTimeout(

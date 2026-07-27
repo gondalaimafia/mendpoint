@@ -126,6 +126,16 @@ import {
   memoryForPlanner,
   evaluateCanary,
   RUNTIME_MATRIX,
+  createVmSandbox,
+  vmStatusReport,
+  startLiveSandbox,
+  listScmProviders,
+  recentAlerts,
+  evaluateLatencyAlerts,
+  evaluateDogfoodAlerts,
+  parsePrincipalFromHeaders,
+  can,
+  estimateCost,
 } from "@mendpoint/platform";
 import {
   getGraphLearnDb,
@@ -133,8 +143,27 @@ import {
   formatQueryForPlanner,
   GRAPH_RAG_TOOLS,
   countStats,
+  pickGraphQuery,
+  promotePatterns,
+  measureAbLift,
+  formatAbReport,
+  ingestAstRepo,
+  ingestLspSymbols,
+  incrementalReingest,
+  exportGnnFeatures,
+  checkSlos,
   type GraphQuery,
 } from "@mendpoint/graph-learn";
+import {
+  collectDogfood,
+  formatDogfoodReport,
+  listTrajectories,
+  viewTrajectory,
+  listPlans,
+  getPlan,
+  savePlanHitl,
+  type PlanPatch,
+} from "@mendpoint/harness";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
 import { runRepairSession, runAgenticRepairLoop } from "@mendpoint/repair";
@@ -474,6 +503,192 @@ app.post("/graph-learn/query", async (c) => {
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
+});
+
+/** Graph-RAG v1 natural-language query pick */
+app.post("/graph-learn/pick", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { q?: string; run?: boolean };
+  if (!body.q) return c.json({ error: "q required" }, 400);
+  const pick = pickGraphQuery(body.q);
+  if (body.run) {
+    const result = runGraphQuery(getGraphLearnDb(), pick.query);
+    return c.json({
+      pick,
+      result: { ...result, markdown: formatQueryForPlanner(result) },
+    });
+  }
+  return c.json({ pick });
+});
+
+app.post("/graph-learn/promote-patterns", (c) => {
+  const promotions = promotePatterns(getGraphLearnDb());
+  return c.json({ count: promotions.length, promotions });
+});
+
+app.get("/graph-learn/ab", (c) => {
+  const report = measureAbLift(getGraphLearnDb());
+  return c.json({ ...report, markdown: formatAbReport(report) });
+});
+
+app.post("/graph-learn/ast-ingest", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    repoPath?: string;
+    repoId?: string;
+    maxFiles?: number;
+  };
+  const repoPath = body.repoPath ?? process.cwd();
+  const r = ingestAstRepo(getGraphLearnDb(), {
+    repoPath,
+    repoId: body.repoId,
+    maxFiles: body.maxFiles ?? 100,
+  });
+  return c.json(r);
+});
+
+app.post("/graph-learn/lsp-ingest", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    repoPath?: string;
+    repoId?: string;
+  };
+  const r = ingestLspSymbols(getGraphLearnDb(), {
+    repoPath: body.repoPath ?? process.cwd(),
+    repoId: body.repoId,
+  });
+  return c.json(r);
+});
+
+app.post("/graph-learn/incremental", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    repoPath?: string;
+    repoId?: string;
+  };
+  const r = incrementalReingest(getGraphLearnDb(), {
+    repoPath: body.repoPath ?? process.cwd(),
+    repoId: body.repoId,
+    maxFiles: 150,
+  });
+  return c.json(r);
+});
+
+app.get("/graph-learn/gnn-export", (c) => {
+  const exp = exportGnnFeatures(getGraphLearnDb());
+  return c.json({
+    exportedAt: exp.exportedAt,
+    nodes: exp.nodes.length,
+    edges: exp.edges.length,
+    kindIndex: exp.kindIndex,
+    sampleNodes: exp.nodes.slice(0, 20),
+    sampleEdges: exp.edges.slice(0, 20),
+  });
+});
+
+app.get("/graph-learn/slo", (c) => {
+  const check = checkSlos(3);
+  evaluateLatencyAlerts({
+    ok: check.ok,
+    violations: check.violations,
+  });
+  return c.json(check);
+});
+
+/** Platform completeness APIs */
+app.get("/platform/vm", (c) => c.json(vmStatusReport()));
+
+app.post("/platform/vm/sandbox", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    backend?: "local" | "docker" | "firecracker";
+    cacheKey?: string;
+  };
+  const sbx = createVmSandbox({
+    backend: body.backend ?? "local",
+    cacheKey: body.cacheKey,
+    files: { "README": "vm sandbox\n" },
+  });
+  const out = {
+    id: sbx.id,
+    backend: sbx.backend,
+    fallback: sbx.fallback,
+    cacheHit: sbx.cacheHit,
+    root: sbx.root,
+    kind: sbx.kind,
+    manifestExtra: sbx.manifestExtra,
+  };
+  sbx.dispose();
+  return c.json(out);
+});
+
+app.post("/platform/live-sandbox", async (c) => {
+  const live = await startLiveSandbox();
+  const probe = await live.curl("/health");
+  const out = {
+    baseUrl: live.baseUrl,
+    port: live.port,
+    probe,
+    routes: live.routes.map((r) => `${r.method ?? "GET"} ${r.path}`),
+  };
+  live.dispose();
+  return c.json(out);
+});
+
+app.get("/platform/scm", (c) => c.json({ providers: listScmProviders() }));
+
+app.get("/platform/alerts", (c) => c.json({ alerts: recentAlerts(50) }));
+
+app.get("/platform/dogfood", (c) => {
+  const baseDir = process.cwd();
+  const report = collectDogfood(baseDir);
+  evaluateDogfoodAlerts(report);
+  return c.json({ ...report, markdown: formatDogfoodReport(report) });
+});
+
+app.get("/platform/trajectories", (c) => {
+  return c.json({ runs: listTrajectories(process.cwd()) });
+});
+
+app.get("/platform/trajectories/:runId", (c) => {
+  const text = viewTrajectory(process.cwd(), c.req.param("runId"));
+  return c.json({ runId: c.req.param("runId"), text });
+});
+
+app.get("/platform/plans", (c) => {
+  return c.json({ plans: listPlans(process.cwd()) });
+});
+
+app.get("/platform/plans/:runId", (c) => {
+  try {
+    const plan = getPlan(process.cwd(), c.req.param("runId"));
+    return c.json(plan);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 404);
+  }
+});
+
+app.patch("/platform/plans/:runId", async (c) => {
+  const principal = parsePrincipalFromHeaders({
+    "x-tenant-id": c.req.header("x-tenant-id") ?? undefined,
+    "x-role": c.req.header("x-role") ?? undefined,
+    "x-user-id": c.req.header("x-user-id") ?? undefined,
+  });
+  if (!can(principal, "plan:edit")) {
+    return c.json({ error: "rbac_denied", need: "plan:edit" }, 403);
+  }
+  const patch = (await c.req.json()) as PlanPatch;
+  try {
+    const plan = savePlanHitl(process.cwd(), c.req.param("runId"), patch);
+    return c.json({ ok: true, plan });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+  }
+});
+
+app.post("/platform/cost/estimate", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    tokensEst?: number;
+    sandboxMinutes?: number;
+    graphQueries?: number;
+    durationMs?: number;
+  };
+  return c.json(estimateCost(body));
 });
 
 /** Agent orchestration graph (graph engineering) — topology, not domain code graph */

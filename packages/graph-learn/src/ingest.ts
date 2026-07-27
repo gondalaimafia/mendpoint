@@ -240,15 +240,54 @@ export function labelPrOutcome(
     consumerId: string;
     outcome: "merged" | "closed" | "broke" | "waived";
     title?: string;
+    /** Plan-of-record attribution */
+    planId?: string;
+    /** A/B experiment arm */
+    experiment?: "control" | "treatment" | string;
   },
 ): void {
   const prNode = `pr:${input.prId}`;
+  const consumerNode = `consumer:${input.consumerId}`;
+  upsertNode(db, {
+    id: consumerNode,
+    kind: "Consumer",
+    label: input.consumerId,
+    props: { id: input.consumerId },
+  });
+  upsertNode(db, {
+    id: `change:${input.changeId}`,
+    kind: "Change",
+    label: input.changeId,
+    props: { id: input.changeId },
+  });
   upsertNode(db, {
     id: prNode,
     kind: "PullRequest",
     label: input.title ?? input.prId,
-    props: { outcome: input.outcome, number: input.prId },
+    props: {
+      outcome: input.outcome,
+      number: input.prId,
+      plan_id: input.planId,
+      experiment: input.experiment,
+    },
   });
+  if (input.planId) {
+    upsertNode(db, {
+      id: `plan:${input.planId}`,
+      kind: "Plan",
+      label: input.planId,
+      props: { plan_id: input.planId },
+    });
+    upsertEdge(db, {
+      id: `EXECUTED_PLAN:${input.prId}:${input.planId}`.slice(0, 240),
+      kind: "EXECUTED_PLAN",
+      source: prNode,
+      target: `plan:${input.planId}`,
+      source_system: "pr_outcome",
+      confidence: 1,
+      props: { change_id: input.changeId },
+    });
+  }
   const kindMap = {
     merged: "OUTCOME_MERGED" as const,
     closed: "OUTCOME_CLOSED" as const,
@@ -265,7 +304,12 @@ export function labelPrOutcome(
     target: `change:${input.changeId}`,
     source_system: "pr_outcome",
     confidence: 1,
-    props: { pr_id: input.prId, pattern: input.title },
+    props: {
+      pr_id: input.prId,
+      pattern: input.title,
+      plan_id: input.planId,
+      experiment: input.experiment,
+    },
     label,
   });
   // Schema v0 outcome family

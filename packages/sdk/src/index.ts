@@ -1,6 +1,6 @@
 /**
  * Stable platform SDK for Warden / Transformer specialist teams.
- * graph_query / plan / execute / record_outcome
+ * graph_query / plan / execute / record_outcome + Day-90 surface area
  */
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
@@ -12,10 +12,23 @@ import {
   checkSlos,
   formatLatencyReport,
   latencyReport,
+  pickGraphQuery,
+  promotePatterns,
+  measureAbLift,
+  formatAbReport,
+  ingestAstRepo,
+  ingestLspSymbols,
+  incrementalReingest,
+  exportGnnFeatures,
+  writeGnnExport,
   type GraphQuery,
   type GraphQueryResult,
   type GitTemporalOptions,
   type GitTemporalResult,
+  type QueryPick,
+  type AbReport,
+  type AstIngestResult,
+  type Promotion,
 } from "@mendpoint/graph-learn";
 import {
   executePlan,
@@ -23,8 +36,11 @@ import {
   collectDogfood,
   formatDogfoodReport,
   writeDogfoodReport,
+  listPlans,
+  savePlanHitl,
   type ExecuteResult,
   type DogfoodReport,
+  type PlanPatch,
 } from "@mendpoint/harness";
 import {
   planFromSpecDiff,
@@ -36,6 +52,15 @@ import {
   createMemory,
   memoryForPlanner,
   seedMemoryForAgent,
+  createVmSandbox,
+  startLiveSandbox,
+  vmStatusReport,
+  listScmProviders,
+  recentAlerts,
+  evaluateLatencyAlerts,
+  evaluateDogfoodAlerts,
+  estimateCost,
+  type CostBreakdown,
 } from "@mendpoint/platform";
 import { createCampaign, planFromCampaign } from "@mendpoint/transformer";
 
@@ -61,19 +86,40 @@ export type PlatformClient = {
     consumerId: string;
     outcome: "merged" | "closed" | "broke" | "waived";
     title?: string;
+    planId?: string;
+    experiment?: string;
   }) => void;
   plannerContext: (agent: "warden" | "transformer") => string;
   planToMarkdown: typeof planToMarkdown;
-  /** Git temporal backfill into graph-learn (12mo default) */
   backfillGit: (opts: GitTemporalOptions) => GitTemporalResult;
-  /** p50/p99 SLO snapshot */
   latencySlo: () => {
     report: ReturnType<typeof latencyReport>;
     check: ReturnType<typeof checkSlos>;
     markdown: string;
   };
-  /** Dogfood volume + ok-rate gates (Day-90) */
   dogfood: (baseDir?: string) => DogfoodReport & { markdown: string; reportPath: string };
+  pickQuery: (q: string) => QueryPick;
+  promotePatterns: () => Promotion[];
+  abLift: () => AbReport & { markdown: string };
+  ingestAst: (repoPath: string, repoId?: string) => AstIngestResult;
+  ingestLsp: (repoPath: string, repoId?: string) => ReturnType<typeof ingestLspSymbols>;
+  incremental: (repoPath: string, repoId?: string) => ReturnType<typeof incrementalReingest>;
+  gnnExport: (outPath?: string) => { nodes: number; edges: number; path?: string };
+  vmStatus: () => ReturnType<typeof vmStatusReport>;
+  createVm: (opts?: { backend?: "local" | "docker" | "firecracker"; cacheKey?: string }) => ReturnType<
+    typeof createVmSandbox
+  >;
+  liveSandbox: () => ReturnType<typeof startLiveSandbox>;
+  scmProviders: () => ReturnType<typeof listScmProviders>;
+  alerts: () => ReturnType<typeof recentAlerts>;
+  editPlan: (baseDir: string, runId: string, patch: PlanPatch) => AgentPlan;
+  listPlans: (baseDir?: string) => ReturnType<typeof listPlans>;
+  estimateCost: (input: {
+    tokensEst?: number;
+    sandboxMinutes?: number;
+    graphQueries?: number;
+    durationMs?: number;
+  }) => CostBreakdown;
 };
 
 export function createPlatform(): PlatformClient {
@@ -112,7 +158,6 @@ export function createPlatform(): PlatformClient {
     plannerContext(agent) {
       let mem = createMemory();
       mem = seedMemoryForAgent(agent, mem);
-      // Inject historical patterns when available
       try {
         const rates = runGraphQuery(getGraphLearnDb(), {
           op: "pattern_success_rates",
@@ -140,6 +185,7 @@ export function createPlatform(): PlatformClient {
     latencySlo() {
       const report = latencyReport();
       const check = checkSlos(3);
+      evaluateLatencyAlerts({ ok: check.ok, violations: check.violations });
       return {
         report,
         check,
@@ -148,12 +194,70 @@ export function createPlatform(): PlatformClient {
     },
     dogfood(baseDir = process.cwd()) {
       const report = collectDogfood(baseDir);
+      evaluateDogfoodAlerts(report);
       const reportPath = writeDogfoodReport(baseDir, report);
       return {
         ...report,
         markdown: formatDogfoodReport(report),
         reportPath,
       };
+    },
+    pickQuery(q) {
+      return pickGraphQuery(q);
+    },
+    promotePatterns() {
+      return promotePatterns(getGraphLearnDb());
+    },
+    abLift() {
+      const report = measureAbLift(getGraphLearnDb());
+      return { ...report, markdown: formatAbReport(report) };
+    },
+    ingestAst(repoPath, repoId) {
+      return ingestAstRepo(getGraphLearnDb(), { repoPath, repoId, maxFiles: 200 });
+    },
+    ingestLsp(repoPath, repoId) {
+      return ingestLspSymbols(getGraphLearnDb(), { repoPath, repoId });
+    },
+    incremental(repoPath, repoId) {
+      return incrementalReingest(getGraphLearnDb(), {
+        repoPath,
+        repoId,
+        maxFiles: 200,
+      });
+    },
+    gnnExport(outPath) {
+      if (outPath) {
+        return writeGnnExport(getGraphLearnDb(), outPath);
+      }
+      const exp = exportGnnFeatures(getGraphLearnDb());
+      return { nodes: exp.nodes.length, edges: exp.edges.length };
+    },
+    vmStatus() {
+      return vmStatusReport();
+    },
+    createVm(opts) {
+      return createVmSandbox({
+        backend: opts?.backend ?? "local",
+        cacheKey: opts?.cacheKey,
+      });
+    },
+    liveSandbox() {
+      return startLiveSandbox();
+    },
+    scmProviders() {
+      return listScmProviders();
+    },
+    alerts() {
+      return recentAlerts(50);
+    },
+    editPlan(baseDir, runId, patch) {
+      return savePlanHitl(baseDir, runId, patch);
+    },
+    listPlans(baseDir = process.cwd()) {
+      return listPlans(baseDir);
+    },
+    estimateCost(input) {
+      return estimateCost(input);
     },
   };
 }
@@ -177,4 +281,13 @@ export function planFromOpenApiPair(
 }
 
 export { normalizeChange };
-export type { AgentPlan, GraphQuery, GraphQueryResult, SpecPlanInput, ExecuteResult };
+export type {
+  AgentPlan,
+  GraphQuery,
+  GraphQueryResult,
+  SpecPlanInput,
+  ExecuteResult,
+  PlanPatch,
+  QueryPick,
+  AbReport,
+};

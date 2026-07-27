@@ -21,6 +21,26 @@ npm run trajectory:view -- <runId>                    # plan/trace/score
 npm run graph:bench                                   # 20-query pack
 ```
 
+## Platform API / web (outstanding closure)
+
+| Surface | Path |
+|---------|------|
+| Platform home | Web `/platform` |
+| Dogfood | `GET /platform/dogfood` · `/platform/dogfood` |
+| Trajectories | `GET /platform/trajectories` · UI |
+| HITL plans | `GET/PATCH /platform/plans/:runId` · `/platform/plans` |
+| VM status | `GET /platform/vm` |
+| Live sandbox | `POST /platform/live-sandbox` |
+| SCM adapters | `GET /platform/scm` |
+| Alerts | `GET /platform/alerts` |
+| NL graph pick | `POST /graph-learn/pick` `{ "q": "...", "run": true }` |
+| AST / LSP / incremental | `POST /graph-learn/ast-ingest` · `lsp-ingest` · `incremental` |
+| Meta-graph promote | `POST /graph-learn/promote-patterns` |
+| A/B lift | `GET /graph-learn/ab` |
+| GNN export | `GET /graph-learn/gnn-export` |
+
+SDK: `createPlatform()` exposes `pickQuery`, `ingestAst`, `ingestLsp`, `incremental`, `gnnExport`, `promotePatterns`, `abLift`, `createVm`, `liveSandbox`, `editPlan`, `estimateCost`, …
+
 ## Platform SDK (`@mendpoint/sdk`)
 
 ```ts

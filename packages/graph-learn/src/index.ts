@@ -67,3 +67,56 @@ export {
   type SloTarget,
   type OpLatency,
 } from "./slo.js";
+
+export {
+  extractSymbolsFromSource,
+  ingestAstRepo,
+  type AstIngestResult,
+} from "./ast-ingest.js";
+
+export {
+  heuristicTsBackend,
+  heuristicPythonBackend,
+  ingestLspSymbols,
+  lspSymbolsForFile,
+  lspWorkspaceRootHint,
+  type LspSymbol,
+  type LspBackend,
+  type LspIngestResult,
+} from "./lsp-ingest.js";
+
+export {
+  incrementalReingest,
+  loadSnapshot,
+  saveSnapshot,
+  type IncrementalResult,
+  type FileHashSnapshot,
+} from "./incremental.js";
+
+export {
+  pickGraphQuery,
+  rankOpsByOutcomes,
+  type QueryPick,
+} from "./query-pick.js";
+
+export {
+  exportGnnFeatures,
+  writeGnnExport,
+  type GnnExport,
+  type GnnNodeFeature,
+  type GnnEdgeFeature,
+} from "./gnn-export.js";
+
+export {
+  promotePatterns,
+  listPromotedPatterns,
+  type Promotion,
+  type PromoteOptions,
+} from "./meta-graph.js";
+
+export {
+  measureAbLift,
+  formatAbReport,
+  type AbReport,
+  type AbArm,
+} from "./ab.js";

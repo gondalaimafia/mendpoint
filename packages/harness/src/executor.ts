@@ -23,6 +23,10 @@ import {
   type RunScore,
 } from "./trajectory.js";
 import { appendDogfoodLedger } from "./dogfood.js";
+import {
+  estimateCost,
+  estimateTokensFromRun,
+} from "@mendpoint/platform";
 
 export type ExecuteOptions = {
   /** Base directory for runs/ (default cwd) */
@@ -197,6 +201,15 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
   }
 
   const prog = planProgress(plan);
+  const durationMs = Date.now() - started;
+  const tokensEst = estimateTokensFromRun({
+    steps: prog.total,
+    traceBytes: 0,
+    promptChars: (plan.goal?.length ?? 0) + (plan.title?.length ?? 0),
+  });
+  const sandboxMinutes = durationMs / 60_000;
+  const graphQueries = 0;
+  const cost = estimateCost({ tokensEst, sandboxMinutes, graphQueries, durationMs });
   const score: RunScore = {
     runId,
     ok: prog.failed === 0 && prog.pending === 0,
@@ -204,8 +217,12 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
     stepsDone: prog.done + (plan.steps.filter((s) => s.status === "skipped").length),
     stepsFailed: plan.steps.filter((s) => s.status === "failed").length,
     recoveredFromFailure: recovered,
-    durationMs: Date.now() - started,
-    graphQueries: 0,
+    durationMs,
+    graphQueries,
+    tokensEst,
+    sandboxMinutes,
+    costUsd: cost.totalUsd,
+    planId: plan.id,
   };
   // treat skipped-after-fail as recovered success path for harness demos
   if (recovered && prog.pending === 0) {

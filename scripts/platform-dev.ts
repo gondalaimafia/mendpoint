@@ -86,13 +86,36 @@ async function main() {
   console.log("\n7) Planner context (Warden, with historical patterns if any):");
   console.log(platform.plannerContext("warden").slice(0, 400) + "...\n");
 
-  console.log("Platform ready for specialist teams.");
+  console.log("\n8) Outstanding closure checks:");
+  console.log("  VM:", platform.vmStatus().capabilities.map((c) => `${c.backend}=${c.available}`).join(" "));
+  console.log("  SCM:", platform.scmProviders().map((p) => p.provider).join(","));
+  console.log("  pickQuery:", platform.pickQuery("blast radius of change:ch1").query.op);
+  try {
+    const live = await platform.liveSandbox();
+    const probe = await live.curl("/health");
+    console.log("  live-sandbox:", live.baseUrl, "probe.ok=", probe.ok);
+    live.dispose();
+  } catch (e) {
+    console.log("  live-sandbox skip:", e instanceof Error ? e.message : e);
+  }
+  try {
+    const ast = platform.ingestAst(join(root, "packages/graph-learn/src"), "gl-src");
+    console.log("  ast-ingest:", ast.files, "files", ast.symbols, "symbols");
+  } catch (e) {
+    console.log("  ast skip:", e instanceof Error ? e.message : e);
+  }
+  const ab = platform.abLift();
+  console.log(" ", ab.markdown.split("\n")[0]);
+  console.log("  cost sample:", platform.estimateCost({ tokensEst: 2_000, graphQueries: 5 }).totalUsd);
+
+  console.log("\nPlatform ready for specialist teams.");
   console.log(
     "Docs: docs/PLATFORM_RUNBOOK.md | docs/PLATFORM_P0_90DAY_GAP.md | schema/v0.md",
   );
   console.log(
     "CLIs: npm run graph:temporal | graph:slo | dogfood:report | trajectory:list",
   );
+  console.log("Web: /platform /platform/dogfood /platform/trajectories /platform/plans");
   process.exit(
     bench.passed >= 18 && hello.ok && slo.ok && dog.day90Ready ? 0 : 1,
   );

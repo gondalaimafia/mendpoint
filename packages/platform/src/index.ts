@@ -29,3 +29,47 @@ export {
   evaluateCanary,
   planCrossPrRollback,
 } from "./canary.js";
+
+export type { VmBackend, VmSandboxOpts, VmCapability } from "./vm.js";
+export {
+  createVmSandbox,
+  detectVmCapabilities,
+  vmStatusReport,
+  getBuildCacheStats,
+  clearBuildCache,
+  ensureBuildCacheDir,
+} from "./vm.js";
+
+export type { LiveRoute, LiveSandbox } from "./live-sandbox.js";
+export { startLiveSandbox } from "./live-sandbox.js";
+
+export type { CostRates, CostInput, CostBreakdown, CostLedgerEntry } from "./cost.js";
+export {
+  DEFAULT_COST_RATES,
+  estimateCost,
+  estimateTokensFromRun,
+  formatCost,
+} from "./cost.js";
+
+export type { Role, Permission, Principal } from "./rbac.js";
+export {
+  permissionsFor,
+  can,
+  assertCan,
+  assertTenant,
+  parsePrincipalFromHeaders,
+} from "./rbac.js";
+
+export type { ScmProvider, ScmPr, ScmAdapter } from "./scm.js";
+export { getScmAdapter, createGitHubAdapter, listScmProviders } from "./scm.js";
+
+export type { AlertSeverity, Alert, AlertSink } from "./alerts.js";
+export {
+  onAlert,
+  emitAlert,
+  recentAlerts,
+  clearAlerts,
+  evaluateLatencyAlerts,
+  evaluateDogfoodAlerts,
+  evaluateCostAlerts,
+} from "./alerts.js";
