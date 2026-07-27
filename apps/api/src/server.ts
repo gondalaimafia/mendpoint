@@ -135,7 +135,10 @@ import {
   evaluateDogfoodAlerts,
   parsePrincipalFromHeaders,
   can,
+  permissionForRoute,
   estimateCost,
+  setAlertPersistPath,
+  defaultAlertPath,
 } from "@mendpoint/platform";
 import {
   getGraphLearnDb,
@@ -152,6 +155,9 @@ import {
   incrementalReingest,
   exportGnnFeatures,
   checkSlos,
+  embedGraphNodes,
+  kuzuStatus,
+  exportSqliteToKuzuScript,
   type GraphQuery,
 } from "@mendpoint/graph-learn";
 import {
@@ -180,7 +186,14 @@ app.use(
   cors({
     origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
     allowMethods: ["GET", "POST", "PATCH", "OPTIONS", "DELETE"],
-    allowHeaders: ["Content-Type", "Authorization", "X-API-Key"],
+    allowHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-API-Key",
+      "X-Role",
+      "X-Tenant-Id",
+      "X-User-Id",
+    ],
   }),
 );
 
@@ -209,6 +222,47 @@ app.use("*", async (c, next) => {
 
 app.use("*", createAuthMiddleware(db));
 
+/** Broader RBAC — role headers; default engineer when API_AUTH off */
+app.use("*", async (c, next) => {
+  const path = new URL(c.req.url).pathname;
+  const method = c.req.method;
+  if (method === "OPTIONS") return next();
+  const need = permissionForRoute(method, path);
+  if (!need) return next();
+  // When API_AUTH=off, still honor explicit restrictive roles (viewer)
+  const principal = parsePrincipalFromHeaders({
+    "x-tenant-id": c.req.header("x-tenant-id") ?? undefined,
+    "x-role": c.req.header("x-role") ?? undefined,
+    "x-user-id": c.req.header("x-user-id") ?? undefined,
+  });
+  // If no x-role and auth off, treat as engineer (dev ergonomics)
+  const roleHeader = c.req.header("x-role");
+  const effective =
+    !roleHeader && (process.env.API_AUTH ?? "off") === "off"
+      ? { ...principal, role: "engineer" as const }
+      : principal;
+  if (!can(effective, need)) {
+    return c.json(
+      {
+        error: "rbac_denied",
+        need,
+        role: effective.role,
+        message: `role ${effective.role} lacks ${need}`,
+      },
+      403,
+    );
+  }
+  c.set("principal", effective);
+  return next();
+});
+
+// Persist alerts under data/
+try {
+  setAlertPersistPath(defaultAlertPath(process.cwd()));
+} catch {
+  /* */
+}
+
 app.get("/health", (c) =>
   c.json({
     ok: true,
@@ -217,6 +271,7 @@ app.get("/health", (c) =>
     phase: "F",
     auth: process.env.API_AUTH ?? "off",
     graphNative: true,
+    rbac: true,
     uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
   }),
 );
@@ -589,6 +644,24 @@ app.get("/graph-learn/slo", (c) => {
     violations: check.violations,
   });
   return c.json(check);
+});
+
+app.post("/graph-learn/embed", (c) => {
+  const r = embedGraphNodes(getGraphLearnDb());
+  return c.json(r);
+});
+
+app.get("/graph-learn/kuzu", (c) => {
+  const status = kuzuStatus();
+  const script = exportSqliteToKuzuScript(getGraphLearnDb(), { maxNodes: 100 });
+  return c.json({
+    ...status,
+    export: {
+      nodeInserts: script.nodeInserts.length,
+      edgeInserts: script.edgeInserts.length,
+      sample: script.nodeInserts.slice(0, 3),
+    },
+  });
 });
 
 /** Platform completeness APIs */
@@ -1067,8 +1140,15 @@ app.post("/prs/:id/feedback", async (c) => {
   const body = await c.req.json();
   const parsed = FeedbackOutcomeSchema.safeParse(body.outcome);
   if (!parsed.success) return c.json({ error: "invalid outcome" }, 400);
-  await applyPrFeedback(db, pr.id, parsed.data);
-  return c.json(prToApi(getPr(db, pr.id)!));
+  await applyPrFeedback(db, pr.id, parsed.data, {
+    experiment: body.experiment,
+    planId: body.planId,
+  });
+  return c.json({
+    ...prToApi(getPr(db, pr.id)!),
+    experiment: body.experiment ?? null,
+    planId: body.planId ?? null,
+  });
 });
 
 /** Phase D: advisory CI check body (and optional mock post) for a migration PR */

@@ -576,10 +576,48 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   return report;
 }
 
+export type PrFeedbackOpts = {
+  /** A/B arm — overrides body tag / env default */
+  experiment?: "control" | "treatment" | string;
+  /** Plan-of-record id for EXECUTED_PLAN edges */
+  planId?: string;
+};
+
+/** Parse experiment arm from PR body tags or env. */
+export function resolveExperimentArm(
+  body: string | undefined | null,
+  explicit?: string,
+): string {
+  if (explicit) return explicit;
+  const m = body?.match(
+    /\[experiment:\s*(control|treatment|a|b|learned|baseline)\]/i,
+  );
+  if (m) {
+    const v = m[1]!.toLowerCase();
+    if (v === "a" || v === "baseline") return "control";
+    if (v === "b" || v === "learned") return "treatment";
+    return v;
+  }
+  const env = process.env.MENDPOINT_EXPERIMENT_DEFAULT?.toLowerCase();
+  if (env === "control" || env === "treatment") return env;
+  // Stable assignment from pr body length for untagged (still tagged in graph)
+  return "control";
+}
+
+export function resolvePlanIdFromPr(
+  body: string | undefined | null,
+  explicit?: string,
+): string | undefined {
+  if (explicit) return explicit;
+  const m = body?.match(/\[plan:\s*([a-zA-Z0-9_-]+)\]/);
+  return m?.[1];
+}
+
 export async function applyPrFeedback(
   db: AppDb,
   prId: string,
   outcome: "merged" | "closed" | "modified",
+  opts?: PrFeedbackOpts,
 ) {
   const status = outcome === "modified" ? "open" : outcome;
   const resolvedAt = outcome === "merged" || outcome === "closed" ? nowIso() : null;
@@ -592,7 +630,10 @@ export async function applyPrFeedback(
   });
 
   const pr = getPr(db, prId);
-  // Dimension 6: label outcome edges for graph learning / future GNN
+  const experiment = resolveExperimentArm(pr?.body, opts?.experiment);
+  const planId = resolvePlanIdFromPr(pr?.body, opts?.planId);
+
+  // Dimension 6: label outcome edges with experiment + plan attribution
   if (pr && (outcome === "merged" || outcome === "closed")) {
     try {
       labelPrOutcome(getGraphLearnDb(), {
@@ -601,6 +642,8 @@ export async function applyPrFeedback(
         consumerId: pr.consumer_id,
         outcome: outcome === "merged" ? "merged" : "closed",
         title: pr.title,
+        experiment,
+        planId,
       });
     } catch {
       /* non-fatal */
@@ -628,6 +671,8 @@ export async function applyPrFeedback(
           consumerId: pr.consumer_id,
           outcome: "broke",
           title: pr.title,
+          experiment,
+          planId,
         });
       } catch {
         /* */
@@ -637,7 +682,13 @@ export async function applyPrFeedback(
         action: "patterns.suppressed",
         resourceType: "migration_pr",
         resourceId: prId,
-        metadata: { patterns, count: patterns.length, graphLabeled: true },
+        metadata: {
+          patterns,
+          count: patterns.length,
+          graphLabeled: true,
+          experiment,
+          planId,
+        },
       });
     }
   }

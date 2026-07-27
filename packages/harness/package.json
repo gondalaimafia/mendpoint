@@ -11,9 +11,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mendpoint/contract": "*",
+    "@mendpoint/graph-learn": "*",
     "@mendpoint/orchestrator": "*",
     "@mendpoint/platform": "*",
-    "@mendpoint/shared": "*"
+    "@mendpoint/shared": "*",
+    "@mendpoint/transformer": "*"
   },
   "devDependencies": {
     "typescript": "^5.8.2",

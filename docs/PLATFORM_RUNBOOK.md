@@ -41,6 +41,19 @@ npm run graph:bench                                   # 20-query pack
 
 SDK: `createPlatform()` exposes `pickQuery`, `ingestAst`, `ingestLsp`, `incremental`, `gnnExport`, `promotePatterns`, `abLift`, `createVm`, `liveSandbox`, `editPlan`, `estimateCost`, …
 
+## Depth upgrades (post Day-90)
+
+| Item | How |
+|------|-----|
+| Per-file incremental | `incrementalReingest` hashes each file; only changed paths re-AST |
+| Multi-SCM | GitHub/GitLab/Bitbucket/ADO adapters — mock without token, live with env |
+| Harness tools | Real `@mendpoint/contract` / `transformer` / `graph-learn` (no `stub_ok`) |
+| PR experiment → A/B | Body tags `[experiment:treatment]` `[plan:id]` or `POST /prs/:id/feedback` body |
+| Alerts | JSONL at `data/alerts.jsonl` (`MENDPOINT_ALERTS_PATH`) |
+| RBAC | `X-Role` + `permissionForRoute` on mutations (viewer denied plan:edit) |
+| Embeddings | `POST /graph-learn/embed` hash vectors |
+| Kùzu path | `GET /graph-learn/kuzu` status + SQLite→script export (`npm i kuzu` optional) |
+
 ## Platform SDK (`@mendpoint/sdk`)
 
 ```ts

@@ -1,6 +1,15 @@
 /**
- * SLO alerts — evaluate latency / dogfood / cost thresholds and emit structured alerts.
+ * SLO alerts — in-memory + durable JSONL persistence.
  */
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+
 export type AlertSeverity = "info" | "warn" | "critical";
 
 export type Alert = {
@@ -16,6 +25,49 @@ export type AlertSink = (a: Alert) => void;
 
 const buffer: Alert[] = [];
 const sinks: AlertSink[] = [];
+let persistPath: string | null = null;
+let loaded = false;
+
+export function setAlertPersistPath(path: string | null): void {
+  persistPath = path;
+  loaded = false;
+}
+
+export function defaultAlertPath(cwd = process.cwd()): string {
+  return (
+    process.env.MENDPOINT_ALERTS_PATH ??
+    join(cwd, "data", "alerts.jsonl")
+  );
+}
+
+function ensureLoaded(): void {
+  if (loaded) return;
+  loaded = true;
+  const path = persistPath ?? defaultAlertPath();
+  if (!existsSync(path)) return;
+  try {
+    const lines = readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean);
+    for (const line of lines.slice(-200)) {
+      try {
+        buffer.push(JSON.parse(line) as Alert);
+      } catch {
+        /* skip */
+      }
+    }
+  } catch {
+    /* */
+  }
+}
+
+function persist(a: Alert): void {
+  const path = persistPath ?? defaultAlertPath();
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, JSON.stringify(a) + "\n", "utf8");
+  } catch {
+    /* disk optional */
+  }
+}
 
 export function onAlert(sink: AlertSink): () => void {
   sinks.push(sink);
@@ -28,6 +80,7 @@ export function onAlert(sink: AlertSink): () => void {
 export function emitAlert(
   partial: Omit<Alert, "id" | "ts"> & { id?: string; ts?: string },
 ): Alert {
+  ensureLoaded();
   const a: Alert = {
     id: partial.id ?? `alert_${Date.now().toString(36)}`,
     ts: partial.ts ?? new Date().toISOString(),
@@ -37,7 +90,8 @@ export function emitAlert(
     data: partial.data,
   };
   buffer.push(a);
-  if (buffer.length > 200) buffer.splice(0, buffer.length - 200);
+  if (buffer.length > 500) buffer.splice(0, buffer.length - 500);
+  persist(a);
   for (const s of sinks) {
     try {
       s(a);
@@ -49,11 +103,20 @@ export function emitAlert(
 }
 
 export function recentAlerts(limit = 50): Alert[] {
+  ensureLoaded();
   return buffer.slice(-limit);
 }
 
-export function clearAlerts(): void {
+export function clearAlerts(opts?: { wipeFile?: boolean }): void {
   buffer.length = 0;
+  if (opts?.wipeFile) {
+    const path = persistPath ?? defaultAlertPath();
+    try {
+      writeFileSync(path, "", "utf8");
+    } catch {
+      /* */
+    }
+  }
 }
 
 export function evaluateLatencyAlerts(input: {

@@ -31,8 +31,15 @@ import {
   measureAbLift,
   exportGnnFeatures,
   ingestLspSymbols,
+  incrementalReingest,
+  clearSnapshot,
+  embedGraphNodes,
+  hashEmbedding,
+  kuzuStatus,
+  exportSqliteToKuzuScript,
 } from "./index.js";
 import type { StructuralDiff, ImpactableSurface } from "@mendpoint/shared";
+import { writeFileSync, mkdirSync } from "node:fs";
 
 describe("graph-learn substrate", () => {
   it("ingests control plane and answers who_consumes_provider", () => {
@@ -310,5 +317,62 @@ export function bar() { return 1; }
       // path layout may differ
       expect(true).toBe(true);
     }
+  });
+
+  it("per-file incremental only reprocesses changed files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "inc-"));
+    const snap = join(dir, "hash.json");
+    try {
+      writeFileSync(join(dir, "a.ts"), "export function a() { return 1; }\n");
+      writeFileSync(join(dir, "b.ts"), "export function b() { return 2; }\n");
+      const db = openGraphLearnMemory();
+      const first = incrementalReingest(db, {
+        repoPath: dir,
+        repoId: "inc",
+        snapshotPath: snap,
+      });
+      expect(first.fullRebuild).toBe(true);
+      expect(first.changed.length).toBe(2);
+
+      const second = incrementalReingest(db, {
+        repoPath: dir,
+        repoId: "inc",
+        snapshotPath: snap,
+      });
+      expect(second.fullRebuild).toBe(false);
+      expect(second.changed.length).toBe(0);
+      expect(second.unchanged).toBe(2);
+
+      writeFileSync(join(dir, "a.ts"), "export function a() { return 99; }\n");
+      const third = incrementalReingest(db, {
+        repoPath: dir,
+        repoId: "inc",
+        snapshotPath: snap,
+      });
+      expect(third.changed).toEqual(["a.ts"]);
+      expect(third.unchanged).toBe(1);
+    } finally {
+      clearSnapshot(snap);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("embeddings and kuzu export path", () => {
+    const db = openGraphLearnMemory();
+    labelPrOutcome(db, {
+      prId: "e1",
+      changeId: "ch",
+      consumerId: "c",
+      outcome: "merged",
+      title: "x",
+      experiment: "treatment",
+    });
+    const emb = embedGraphNodes(db, { dim: 8 });
+    expect(emb.nodes).toBeGreaterThan(0);
+    expect(hashEmbedding("hello", 4)).toHaveLength(4);
+    const kz = kuzuStatus();
+    expect(kz.ddl).toContain("CREATE");
+    const script = exportSqliteToKuzuScript(db, { maxNodes: 50 });
+    expect(script.nodeInserts.length).toBeGreaterThan(0);
   });
 });

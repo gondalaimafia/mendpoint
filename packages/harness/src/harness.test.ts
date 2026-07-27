@@ -124,4 +124,46 @@ describe("harness", () => {
     expect(updated.title).toBe("Edited by human");
     expect(getPlan(base, r.runId).goal).toBe("HITL goal");
   });
+
+  it("runs real specialist tools not stub_ok", async () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-real-"));
+    dirs.push(base);
+    let plan = emptyPlan({
+      kind: "generic",
+      title: "real tools",
+      goal: "no stubs",
+      agent: "warden",
+    });
+    plan = addStep(plan, {
+      title: "API review",
+      action: "critic.api_reviewer",
+      successCriteria: ["score"],
+    });
+    plan = addStep(plan, {
+      title: "BSG lock",
+      action: "bsg.lock",
+      successCriteria: ["bsg"],
+    });
+    plan = addStep(plan, {
+      title: "DAG unit",
+      action: "dag.pr_unit",
+      successCriteria: ["plan"],
+      notes: JSON.stringify({
+        name: "demo",
+        sourceSystem: "vb6",
+        targetStack: "node",
+      }),
+    });
+    plan = addStep(plan, {
+      title: "Fidelity",
+      action: "critic.bsg_fidelity",
+      successCriteria: ["equal"],
+      notes: JSON.stringify({ expected: "ok", actual: "ok" }),
+    });
+    const r = await executePlan({ baseDir: base, plan });
+    expect(r.ok).toBe(true);
+    const evidence = r.plan.steps.map((s) => s.evidence ?? "").join("\n");
+    expect(evidence).not.toContain("stub_ok");
+    expect(evidence).toMatch(/score|bsgId|campaignId|equal/);
+  });
 });

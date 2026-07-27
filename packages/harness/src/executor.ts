@@ -48,7 +48,7 @@ export type ExecuteResult = {
   ok: boolean;
 };
 
-type ToolResult = { ok: boolean; output: string; error?: string };
+import { runSpecialistTool, type ToolResult } from "./tools.js";
 
 function runTool(
   step: PlanStep,
@@ -62,48 +62,7 @@ function runTool(
       error: `structured_tool_error: injected failure on action=${step.action}`,
     };
   }
-  switch (step.action) {
-    case "echo":
-    case "harness.echo": {
-      const msg = step.notes ?? step.title;
-      const r = sbx.run(
-        process.platform === "win32"
-          ? `cmd /c echo ${JSON.stringify(msg)}`
-          : `echo ${JSON.stringify(msg)}`,
-      );
-      return { ok: r.ok, output: r.stdout || r.stderr };
-    }
-    case "harness.shell": {
-      const cmd = step.notes ?? "node -e \"console.log('ok')\"";
-      const r = sbx.run(cmd);
-      return {
-        ok: r.ok,
-        output: r.stdout,
-        error: r.ok ? undefined : r.stderr || "shell failed",
-      };
-    }
-    case "spec.lock_diff":
-    case "spec.evolve":
-    case "spec.evolve_field":
-    case "spec.breaking_change":
-    case "spec.add_capability":
-    case "gate.contract_suite":
-    case "impact.fanout_prs":
-    case "critic.api_reviewer":
-    case "bsg.lock":
-    case "dag.pr_unit":
-    case "critic.bsg_fidelity":
-      // Specialist steps: mark done with stub evidence (real logic in agent packages)
-      return {
-        ok: true,
-        output: `stub_ok action=${step.action} ref=${step.ref ?? ""}`,
-      };
-    default:
-      return {
-        ok: true,
-        output: `noop action=${step.action}`,
-      };
-  }
+  return runSpecialistTool(step, sbx);
 }
 
 /**

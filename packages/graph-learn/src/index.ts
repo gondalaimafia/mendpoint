@@ -71,6 +71,8 @@ export {
 export {
   extractSymbolsFromSource,
   ingestAstRepo,
+  ingestAstFile,
+  listCodeFiles,
   type AstIngestResult,
 } from "./ast-ingest.js";
 
@@ -89,9 +91,26 @@ export {
   incrementalReingest,
   loadSnapshot,
   saveSnapshot,
+  clearSnapshot,
   type IncrementalResult,
   type FileHashSnapshot,
 } from "./incremental.js";
+
+export {
+  hashEmbedding,
+  embedGraphNodes,
+  getNodeEmbedding,
+  cosineSimilarity,
+  type EmbedResult,
+} from "./embeddings.js";
+
+export {
+  kuzuStatus,
+  exportSqliteToKuzuScript,
+  tryOpenKuzu,
+  type KuzuStatus,
+  type KuzuExportScript,
+} from "./kuzu-path.js";
 
 export {
   pickGraphQuery,

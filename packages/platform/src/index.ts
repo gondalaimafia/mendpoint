@@ -58,10 +58,18 @@ export {
   assertCan,
   assertTenant,
   parsePrincipalFromHeaders,
+  permissionForRoute,
 } from "./rbac.js";
 
 export type { ScmProvider, ScmPr, ScmAdapter } from "./scm.js";
-export { getScmAdapter, createGitHubAdapter, listScmProviders } from "./scm.js";
+export {
+  getScmAdapter,
+  createGitHubAdapter,
+  createGitLabAdapter,
+  createBitbucketAdapter,
+  createAzureDevOpsAdapter,
+  listScmProviders,
+} from "./scm.js";
 
 export type { AlertSeverity, Alert, AlertSink } from "./alerts.js";
 export {
@@ -72,4 +80,6 @@ export {
   evaluateLatencyAlerts,
   evaluateDogfoodAlerts,
   evaluateCostAlerts,
+  setAlertPersistPath,
+  defaultAlertPath,
 } from "./alerts.js";

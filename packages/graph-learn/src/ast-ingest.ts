@@ -154,12 +154,108 @@ export function extractSymbolsFromSource(
   };
 }
 
+/** Export walk for incremental reingest */
+export function listCodeFiles(repoPath: string, maxFiles = 400): string[] {
+  return walk(repoPath).slice(0, maxFiles);
+}
+
+export function langOfPath(file: string): string {
+  return langOf(file);
+}
+
+/** Ingest a single relative file (absolute path) into the graph. */
+export function ingestAstFile(
+  db: GraphLearnDb,
+  opts: {
+    repoPath: string;
+    repoId: string;
+    absPath: string;
+    relPath?: string;
+  },
+): { symbols: number; calls: number; language: string } {
+  const rel =
+    opts.relPath ?? relative(opts.repoPath, opts.absPath).replace(/\\/g, "/");
+  const lang = langOf(opts.absPath);
+  let source = "";
+  try {
+    source = readFileSync(opts.absPath, "utf8").slice(0, 200_000);
+  } catch {
+    return { symbols: 0, calls: 0, language: lang };
+  }
+  const fileId = `file:${opts.repoId}:${rel}`;
+  upsertNode(db, {
+    id: fileId,
+    kind: "File",
+    label: rel,
+    repo_id: opts.repoId,
+    props: { path: rel, language: lang, content_hash: undefined },
+  });
+  upsertEdge(db, {
+    id: `CONTAINS:${opts.repoId}:${rel}`.slice(0, 240),
+    kind: "CONTAINS",
+    source: `repo:${opts.repoId}`,
+    target: fileId,
+    source_system: "ast",
+    confidence: 1,
+  });
+
+  let symbols = 0;
+  let calls = 0;
+  const extracted = extractSymbolsFromSource(source, lang);
+  for (const sym of extracted.symbols) {
+    const sid = `symbol:${opts.repoId}:${rel}:${sym}`;
+    upsertNode(db, {
+      id: sid,
+      kind: "Symbol",
+      label: sym,
+      repo_id: opts.repoId,
+      props: {
+        qualified_name: `${rel}::${sym}`,
+        symbol_kind: "function",
+        file: rel,
+      },
+    });
+    upsertEdge(db, {
+      id: `DEFINES:${sid}`.slice(0, 240),
+      kind: "DEFINES",
+      source: fileId,
+      target: sid,
+      source_system: "ast",
+      confidence: 0.85,
+    });
+    symbols++;
+  }
+  for (const c of extracted.calls) {
+    const fromId = `symbol:${opts.repoId}:${rel}:${c.from}`;
+    const toId = `symbol:${opts.repoId}:${c.to}`;
+    upsertNode(db, {
+      id: toId,
+      kind: "Symbol",
+      label: c.to,
+      repo_id: opts.repoId,
+      props: { qualified_name: c.to, unresolved: true },
+    });
+    upsertEdge(db, {
+      id: `CALLS:${fromId}:${c.to}`.slice(0, 240),
+      kind: "CALLS",
+      source: fromId,
+      target: toId,
+      source_system: "ast",
+      confidence: 0.6,
+    });
+    calls++;
+  }
+  return { symbols, calls, language: lang };
+}
+
 export function ingestAstRepo(
   db: GraphLearnDb,
   opts: {
     repoPath: string;
     repoId?: string;
     maxFiles?: number;
+    /** If set, only these absolute paths (must be under repoPath) */
+    onlyFiles?: string[];
   },
 ): AstIngestResult {
   if (!existsSync(opts.repoPath)) {
@@ -169,7 +265,8 @@ export function ingestAstRepo(
     opts.repoId ??
     opts.repoPath.replace(/\\/g, "/").split("/").filter(Boolean).pop() ??
     "repo";
-  const files = walk(opts.repoPath).slice(0, opts.maxFiles ?? 400);
+  const files =
+    opts.onlyFiles ?? walk(opts.repoPath).slice(0, opts.maxFiles ?? 400);
   const languages: Record<string, number> = {};
   let symbols = 0;
   let calls = 0;
@@ -184,76 +281,15 @@ export function ingestAstRepo(
 
   for (const abs of files) {
     const rel = relative(opts.repoPath, abs).replace(/\\/g, "/");
-    const lang = langOf(abs);
-    languages[lang] = (languages[lang] ?? 0) + 1;
-    let source = "";
-    try {
-      source = readFileSync(abs, "utf8").slice(0, 200_000);
-    } catch {
-      continue;
-    }
-    const fileId = `file:${repoId}:${rel}`;
-    upsertNode(db, {
-      id: fileId,
-      kind: "File",
-      label: rel,
-      repo_id: repoId,
-      props: { path: rel, language: lang },
+    const r = ingestAstFile(db, {
+      repoPath: opts.repoPath,
+      repoId,
+      absPath: abs,
+      relPath: rel,
     });
-    upsertEdge(db, {
-      id: `CONTAINS:${repoId}:${rel}`.slice(0, 240),
-      kind: "CONTAINS",
-      source: `repo:${repoId}`,
-      target: fileId,
-      source_system: "ast",
-      confidence: 1,
-    });
-
-    const extracted = extractSymbolsFromSource(source, lang);
-    for (const sym of extracted.symbols) {
-      const sid = `symbol:${repoId}:${rel}:${sym}`;
-      upsertNode(db, {
-        id: sid,
-        kind: "Symbol",
-        label: sym,
-        repo_id: repoId,
-        props: {
-          qualified_name: `${rel}::${sym}`,
-          symbol_kind: "function",
-          file: rel,
-        },
-      });
-      upsertEdge(db, {
-        id: `DEFINES:${sid}`.slice(0, 240),
-        kind: "DEFINES",
-        source: fileId,
-        target: sid,
-        source_system: "ast",
-        confidence: 0.85,
-      });
-      symbols++;
-    }
-    for (const c of extracted.calls) {
-      const fromId = `symbol:${repoId}:${rel}:${c.from}`;
-      const toId = `symbol:${repoId}:${c.to}`;
-      // ensure target placeholder
-      upsertNode(db, {
-        id: toId,
-        kind: "Symbol",
-        label: c.to,
-        repo_id: repoId,
-        props: { qualified_name: c.to, unresolved: true },
-      });
-      upsertEdge(db, {
-        id: `CALLS:${fromId}:${c.to}`.slice(0, 240),
-        kind: "CALLS",
-        source: fromId,
-        target: toId,
-        source_system: "ast",
-        confidence: 0.6,
-      });
-      calls++;
-    }
+    languages[r.language] = (languages[r.language] ?? 0) + 1;
+    symbols += r.symbols;
+    calls += r.calls;
   }
 
   return {

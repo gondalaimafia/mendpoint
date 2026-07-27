@@ -114,9 +114,54 @@ export function parsePrincipalFromHeaders(h: {
   "x-role"?: string;
   "x-user-id"?: string;
 }): Principal {
+  const roleRaw = (h["x-role"] ?? "engineer").toLowerCase();
+  const role: Role = (
+    ["owner", "admin", "engineer", "viewer", "fde", "agent"] as Role[]
+  ).includes(roleRaw as Role)
+    ? (roleRaw as Role)
+    : "engineer";
   return {
     id: h["x-user-id"] ?? "anonymous",
     tenantId: h["x-tenant-id"] ?? "default",
-    role: (h["x-role"] as Role) || "viewer",
+    role,
   };
+}
+
+/** Map HTTP method + path prefix → required permission (broader API RBAC). */
+export function permissionForRoute(
+  method: string,
+  path: string,
+): Permission | null {
+  const m = method.toUpperCase();
+  // Public / read-mostly
+  if (path === "/health" || path.startsWith("/webhooks/")) return null;
+  if (path.startsWith("/billing/plans") || path === "/brands") return null;
+
+  if (m === "GET" || m === "HEAD" || m === "OPTIONS") {
+    if (path.startsWith("/platform/dogfood") || path.startsWith("/platform/alerts"))
+      return "dogfood:read";
+    if (path.startsWith("/platform/plans") || path.startsWith("/warden/plans"))
+      return "plan:read";
+    if (path.startsWith("/graph") || path.startsWith("/graph-learn"))
+      return "graph:read";
+    return null; // default GET open when API_AUTH off / viewer ok
+  }
+
+  // Mutations
+  if (path.startsWith("/platform/plans") && (m === "PATCH" || m === "POST"))
+    return "plan:edit";
+  if (path.includes("/feedback") || path.includes("/outcome"))
+    return "outcome:label";
+  if (path.startsWith("/prs") && m === "POST") return "pr:write";
+  if (path.startsWith("/platform/vm") || path.startsWith("/platform/live-sandbox") || path.startsWith("/platform/sandbox"))
+    return "sandbox:run";
+  if (path.startsWith("/graph-learn") && m === "POST") return "graph:write";
+  if (path.startsWith("/platform/") && m === "POST") return "plan:execute";
+  if (path.startsWith("/warden/") || path.startsWith("/transformer/"))
+    return "plan:execute";
+  if (path.startsWith("/providers") || path.startsWith("/consumers") || path.startsWith("/changes"))
+    return "graph:write";
+  if (path.startsWith("/keys") || path.startsWith("/tenants"))
+    return "tenant:admin";
+  return "plan:execute";
 }

@@ -12,10 +12,12 @@ import {
   can,
   parsePrincipalFromHeaders,
   listScmProviders,
+  getScmAdapter,
   emitAlert,
   recentAlerts,
   clearAlerts,
   startLiveSandbox,
+  permissionForRoute,
 } from "./index.js";
 
 describe("platform memory", () => {
@@ -90,14 +92,17 @@ describe("vm + cost + rbac + scm + alerts", () => {
     expect(can(p, "plan:edit")).toBe(false);
   });
 
-  it("lists scm providers", () => {
-    expect(listScmProviders().length).toBeGreaterThanOrEqual(3);
+  it("lists scm providers with mock mode for all", () => {
+    const list = listScmProviders();
+    expect(list.length).toBe(4);
+    expect(list.every((p) => p.available)).toBe(true);
+    expect(list.every((p) => p.mode === "live" || p.mode === "mock")).toBe(true);
   });
 
-  it("emits alerts", () => {
-    clearAlerts();
+  it("emits alerts and can persist path", () => {
+    clearAlerts({ wipeFile: false });
     emitAlert({ severity: "info", source: "test", message: "hi" });
-    expect(recentAlerts().length).toBe(1);
+    expect(recentAlerts().length).toBeGreaterThanOrEqual(1);
   });
 
   it("starts live sandbox and probes health", async () => {
@@ -111,5 +116,26 @@ describe("vm + cost + rbac + scm + alerts", () => {
     } finally {
       live.dispose();
     }
+  });
+
+  it("gitlab mock createPr works without token", async () => {
+    const gl = getScmAdapter("gitlab");
+    const pr = await gl.createPr({
+      owner: "o",
+      repo: "r",
+      title: "t",
+      body: "b",
+      head: "feat",
+      base: "main",
+    });
+    expect(pr.provider).toBe("gitlab");
+    expect(pr.url).toContain("gitlab");
+  });
+
+  it("permissionForRoute maps mutations", () => {
+    expect(permissionForRoute("PATCH", "/platform/plans/x")).toBe("plan:edit");
+    expect(permissionForRoute("POST", "/prs/1/feedback")).toBe("outcome:label");
+    const viewer = parsePrincipalFromHeaders({ "x-role": "viewer" });
+    expect(can(viewer, "plan:edit")).toBe(false);
   });
 });
