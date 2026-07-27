@@ -61,8 +61,10 @@ export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult
     }
     case "who_consumes_provider": {
       const pId = `provider:${q.providerSlug}`;
-      const edges = edgesTo(db, pId, ["monitors"]);
-      const consumerIds = edges.map((e) => e.source);
+      const edges = [
+        ...edgesTo(db, pId, ["MONITORS", "CONSUMES"]),
+      ];
+      const consumerIds = [...new Set(edges.map((e) => e.source))];
       const nodes = collectNodes(db, [pId, ...consumerIds]);
       return {
         op: q.op,
@@ -74,16 +76,16 @@ export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult
     }
     case "who_consumes_endpoint": {
       const eid = `endpoint:${q.providerSlug}:${(q.method ?? "ANY").toUpperCase()}:${q.path}`;
-      // consumers that monitor provider (endpoint-level if we lack direct edge)
       const p = runGraphQuery(db, {
         op: "who_consumes_provider",
         providerSlug: q.providerSlug,
       });
-      const breakEdges = edgesTo(db, eid, ["breaks"]);
+      const breakEdges = edgesTo(db, eid, ["BREAKS"]);
+      const consumeEp = edgesTo(db, eid, ["CONSUMES"]);
       return {
         op: q.op,
         nodes: [...p.nodes, ...collectNodes(db, [eid])],
-        edges: [...p.edges, ...breakEdges],
+        edges: [...p.edges, ...breakEdges, ...consumeEp],
         summary: `endpoint ${q.method ?? ""} ${q.path} — ${p.rows?.length ?? 0} provider consumer(s); ${breakEdges.length} break edge(s)`,
         rows: p.rows,
       };
@@ -120,7 +122,7 @@ export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult
       const edges: GlEdge[] = [];
       let cur = q.nodeId;
       for (let i = 0; i < (q.maxHops ?? 8); i++) {
-        const deps = edgesFrom(db, cur, ["depends_on"]);
+        const deps = edgesFrom(db, cur, ["DEPENDS_ON"]);
         if (!deps.length) break;
         edges.push(deps[0]!);
         cur = deps[0]!.target;
@@ -142,8 +144,7 @@ export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult
       });
     }
     case "callers": {
-      // Inbound calls edges to symbol
-      const edges = edgesTo(db, q.symbolId, ["calls", "impacts"]);
+      const edges = edgesTo(db, q.symbolId, ["CALLS", "IMPACTS"]);
       const ids = new Set<string>([q.symbolId, ...edges.map((e) => e.source)]);
       return {
         op: q.op,
@@ -206,17 +207,18 @@ export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult
     case "pattern_success_rates": {
       const minS = q.minSamples ?? 1;
       const stats = new Map<string, { ok: number; fail: number }>();
-      for (const c of listNodesByKind(db, "consumer")) {
+      for (const c of listNodesByKind(db, "Consumer")) {
         for (const e of edgesFrom(db, c.id, [
-          "outcome_merged",
-          "outcome_closed",
-          "outcome_broke",
-          "outcome_waived",
+          "OUTCOME_MERGED",
+          "OUTCOME_CLOSED",
+          "OUTCOME_BROKE",
+          "OUTCOME_WAIVED",
         ])) {
-          const pattern =
-            String((e.props as { pattern?: string } | undefined)?.pattern ?? e.target);
+          const pattern = String(
+            (e.props as { pattern?: string } | undefined)?.pattern ?? e.target,
+          );
           const s = stats.get(pattern) ?? { ok: 0, fail: 0 };
-          if (e.kind === "outcome_merged" || e.kind === "outcome_waived") s.ok++;
+          if (e.kind === "OUTCOME_MERGED" || e.kind === "OUTCOME_WAIVED") s.ok++;
           else s.fail++;
           stats.set(pattern, s);
         }
@@ -238,15 +240,12 @@ export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult
         op: q.op,
         nodes: [],
         edges: [],
-        summary: `${rows.length} pattern(s) with ≥${minS} samples`,
+        summary: `${rows.length} pattern(s) with >=${minS} samples`,
         rows,
       };
     }
     case "outcomes_for_pattern": {
-      const allOut = [
-        ...listNodesByKind(db, "pr"),
-      ];
-      // edges with outcome kinds matching pattern in props
+      const allOut = [...listNodesByKind(db, "PullRequest")];
       const rows: Array<Record<string, unknown>> = [];
       const edges: GlEdge[] = [];
       const nodes: GlNode[] = [];
@@ -261,9 +260,12 @@ export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult
           rows.push({ pr: n.id, label: n.label, props: n.props });
         }
       }
-      // also scan outcome edges
-      for (const kind of ["outcome_merged", "outcome_closed", "outcome_broke"] as const) {
-        const consumers = listNodesByKind(db, "consumer");
+      for (const kind of [
+        "OUTCOME_MERGED",
+        "OUTCOME_CLOSED",
+        "OUTCOME_BROKE",
+      ] as const) {
+        const consumers = listNodesByKind(db, "Consumer");
         for (const c of consumers) {
           for (const e of edgesFrom(db, c.id, [kind])) {
             if (
@@ -286,6 +288,157 @@ export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult
         rows,
       };
     }
+    case "consumers_of_field": {
+      // Schema → HAS_FIELD → Field; Endpoint HAS_SCHEMA Schema; Consumer CONSUMES Endpoint
+      // v0 approximation: consumers of provider matching field in label/props
+      const fields = listNodesByKind(db, "Field").filter(
+        (f) =>
+          f.label === q.fieldName ||
+          String(f.props?.name) === q.fieldName,
+      );
+      const edges: GlEdge[] = [];
+      const nodeIds = new Set<string>();
+      for (const f of fields) {
+        nodeIds.add(f.id);
+        for (const e of edgesTo(db, f.id, ["HAS_FIELD"])) {
+          edges.push(e);
+          nodeIds.add(e.source);
+        }
+      }
+      // attach consumers via provider monitors
+      const consumers = listNodesByKind(db, "Consumer");
+      for (const c of consumers) {
+        for (const e of edgesFrom(db, c.id, ["MONITORS", "CONSUMES"])) {
+          edges.push(e);
+          nodeIds.add(c.id);
+        }
+      }
+      return {
+        op: q.op,
+        nodes: collectNodes(db, nodeIds),
+        edges,
+        summary: `field ${q.schemaName}.${q.fieldName}: ${fields.length} field node(s)`,
+        rows: fields.map((f) => ({ fieldId: f.id, label: f.label })),
+      };
+    }
+    case "broke_modes_for_endpoint": {
+      const eps = listNodesByKind(db, "Endpoint").filter(
+        (e) =>
+          String(e.props?.operation_id ?? e.label).includes(q.operationId) ||
+          e.id.includes(q.operationId),
+      );
+      const rows: Array<Record<string, unknown>> = [];
+      const edges: GlEdge[] = [];
+      for (const ep of eps) {
+        for (const e of edgesTo(db, ep.id, ["BREAKS", "BROKE"])) {
+          edges.push(e);
+          const mode = (e.props as { failure_mode?: string } | undefined)
+            ?.failure_mode ?? e.kind;
+          rows.push({ endpoint: ep.id, failure_mode: mode });
+        }
+        for (const e of edgesFrom(db, ep.id, ["BROKE"])) {
+          edges.push(e);
+        }
+      }
+      // also BROKE from PRs
+      for (const pr of listNodesByKind(db, "PullRequest")) {
+        for (const e of edgesFrom(db, pr.id, ["BROKE"])) {
+          edges.push(e);
+          rows.push({
+            pr: pr.id,
+            failure_mode: (e.props as { failure_mode?: string })?.failure_mode,
+          });
+        }
+      }
+      return {
+        op: q.op,
+        nodes: collectNodes(db, new Set(edges.flatMap((e) => [e.source, e.target]))),
+        edges,
+        summary: `${rows.length} break signal(s) for ${q.operationId}`,
+        rows,
+      };
+    }
+    case "migration_ready_units": {
+      const units = listNodesByKind(db, "MigrationUnit").filter(
+        (u) =>
+          String(u.props?.campaign_id) === q.campaignId &&
+          (u.props?.status === "pending" || !u.props?.status),
+      );
+      const ready = units.filter((u) => {
+        const deps = edgesFrom(db, u.id, ["DEPENDS_ON"]);
+        return deps.every((d) => {
+          const dep = getNode(db, d.target);
+          return dep?.props?.status === "merged" || deps.length === 0;
+        });
+      });
+      const batch = ready.slice(0, q.batchSize ?? 10);
+      return {
+        op: q.op,
+        nodes: batch,
+        edges: [],
+        summary: `${batch.length} ready MigrationUnit(s) for campaign ${q.campaignId}`,
+        rows: batch.map((u) => ({ id: u.id, label: u.label, props: u.props })),
+      };
+    }
+    case "invariants_for_symbol": {
+      const symbols = listNodesByKind(db, "Symbol").filter(
+        (s) =>
+          s.label === q.qualifiedName ||
+          String(s.props?.qualified_name) === q.qualifiedName,
+      );
+      const invs: GlNode[] = [];
+      const edges: GlEdge[] = [];
+      for (const s of symbols) {
+        for (const e of edgesFrom(db, s.id, ["PRESERVES_INVARIANT"])) {
+          edges.push(e);
+          const inv = getNode(db, e.target);
+          if (inv) invs.push(inv);
+        }
+        // via BSG: REALIZED_BY reverse
+        for (const e of edgesTo(db, s.id, ["REALIZED_BY"])) {
+          edges.push(e);
+          for (const e2 of edgesFrom(db, e.source, ["EXTRACTED_FROM"])) {
+            for (const e3 of edgesFrom(db, e2.target, ["PRESERVES_INVARIANT"])) {
+              edges.push(e3);
+              const inv = getNode(db, e3.target);
+              if (inv) invs.push(inv);
+            }
+          }
+        }
+      }
+      return {
+        op: q.op,
+        nodes: [...symbols, ...invs],
+        edges,
+        summary: `${invs.length} invariant(s) for ${q.qualifiedName}`,
+        rows: invs.map((i) => ({
+          id: i.id,
+          expression: i.props?.expression ?? i.label,
+          kind: i.props?.inv_kind,
+        })),
+      };
+    }
+    case "time_travel_calls": {
+      // All CALLS edges valid at timestamp t
+      const symbols = listNodesByKind(db, "Symbol");
+      const edges: GlEdge[] = [];
+      for (const s of symbols) {
+        for (const e of edgesFrom(db, s.id, ["CALLS"], q.at)) {
+          edges.push(e);
+        }
+      }
+      const ids = new Set<string>();
+      for (const e of edges) {
+        ids.add(e.source);
+        ids.add(e.target);
+      }
+      return {
+        op: q.op,
+        nodes: collectNodes(db, ids),
+        edges,
+        summary: `${edges.length} CALLS edge(s) valid at ${q.at}`,
+      };
+    }
     default:
       return { op: "unknown", nodes: [], edges: [], summary: "unknown query" };
   }
@@ -303,6 +456,11 @@ export const GRAPH_RAG_TOOLS = [
   "depends_on_path",
   "outcomes_for_pattern",
   "pattern_success_rates",
+  "consumers_of_field",
+  "broke_modes_for_endpoint",
+  "migration_ready_units",
+  "invariants_for_symbol",
+  "time_travel_calls",
   "stats",
 ] as const;
 

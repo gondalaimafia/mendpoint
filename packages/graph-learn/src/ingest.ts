@@ -1,5 +1,5 @@
 /**
- * Ingest API/code control-plane facts into the learning graph.
+ * Ingest API/code control-plane facts into graph schema v0.
  */
 import { newId } from "@mendpoint/shared";
 import type { ImpactableSurface, StructuralDiff } from "@mendpoint/shared";
@@ -13,32 +13,51 @@ export type IngestControlPlane = {
     githubOwner: string;
     githubRepo: string;
   }>;
-  /** consumerId → monitors provider */
   monitors: Array<{ consumerId: string; providerId: string }>;
 };
 
 export function ingestControlPlane(db: GraphLearnDb, data: IngestControlPlane): void {
   upsertNode(db, {
     id: `provider:${data.provider.slug}`,
-    kind: "provider",
+    kind: "Provider",
     label: data.provider.name,
     props: { id: data.provider.id, slug: data.provider.slug },
+  });
+  upsertNode(db, {
+    id: `service:${data.provider.slug}`,
+    kind: "Service",
+    label: data.provider.name,
+    props: { tier: "t1" },
   });
   for (const c of data.consumers) {
     upsertNode(db, {
       id: `consumer:${c.id}`,
-      kind: "consumer",
+      kind: "Consumer",
       label: c.name,
-      props: { github: `${c.githubOwner}/${c.githubRepo}` },
+      props: {
+        identifier: `${c.githubOwner}/${c.githubRepo}`,
+        github: `${c.githubOwner}/${c.githubRepo}`,
+      },
     });
   }
   for (const m of data.monitors) {
-    const provider = data.provider;
     upsertEdge(db, {
-      id: `monitors:${m.consumerId}:${provider.slug}`,
-      kind: "monitors",
+      id: `MONITORS:${m.consumerId}:${data.provider.slug}`,
+      kind: "MONITORS",
       source: `consumer:${m.consumerId}`,
-      target: `provider:${provider.slug}`,
+      target: `provider:${data.provider.slug}`,
+      source_system: "pipeline",
+      confidence: 1,
+    });
+    // Also CONSUMES placeholder for blast-radius Cypher shape
+    upsertEdge(db, {
+      id: `CONSUMES:${m.consumerId}:${data.provider.slug}`,
+      kind: "CONSUMES",
+      source: `consumer:${m.consumerId}`,
+      target: `provider:${data.provider.slug}`,
+      source_system: "pipeline",
+      confidence: 0.8,
+      props: { note: "provider-level until endpoint edges exist" },
     });
   }
 }
@@ -55,27 +74,29 @@ export function ingestSpecDiff(
   const pId = `provider:${input.providerSlug}`;
   upsertNode(db, {
     id: pId,
-    kind: "provider",
+    kind: "Provider",
     label: input.providerSlug,
   });
   upsertNode(db, {
     id: `change:${input.changeId}`,
-    kind: "change",
+    kind: "Change",
     label: input.diff.summary.slice(0, 120),
     props: { risk: input.diff.risk },
   });
   upsertEdge(db, {
-    id: `versions:${input.changeId}`,
-    kind: "versions_of",
+    id: `VERSIONS:${input.changeId}`,
+    kind: "VERSIONS",
     source: `change:${input.changeId}`,
     target: pId,
+    source_system: "spec",
+    confidence: 1,
   });
 
   for (const s of input.surfaces) {
     const sid = `surface:${s.canonicalId || s.id}`;
     upsertNode(db, {
       id: sid,
-      kind: "surface",
+      kind: "Surface",
       label: s.canonicalId,
       props: {
         severity: s.severity,
@@ -86,31 +107,51 @@ export function ingestSpecDiff(
       },
     });
     upsertEdge(db, {
-      id: `has_surface:${input.changeId}:${s.id}`,
-      kind: "related",
+      id: `RELATED:${input.changeId}:${s.id}`,
+      kind: "RELATED",
       source: `change:${input.changeId}`,
       target: sid,
+      source_system: "spec",
+      confidence: 1,
     });
     if (s.path) {
-      const eid = `endpoint:${input.providerSlug}:${s.method ?? "ANY"}:${s.path}`;
+      const method = (s.method ?? "ANY").toUpperCase();
+      const eid = `endpoint:${input.providerSlug}:${method}:${s.path}`;
       upsertNode(db, {
         id: eid,
-        kind: "endpoint",
-        label: `${(s.method ?? "").toUpperCase()} ${s.path}`,
-        props: { path: s.path, method: s.method },
+        kind: "Endpoint",
+        label: `${method} ${s.path}`,
+        props: {
+          path: s.path,
+          method,
+          protocol: "rest",
+          operation_id: s.canonicalId,
+        },
       });
       upsertEdge(db, {
-        id: `has_endpoint:${input.providerSlug}:${s.id}`,
-        kind: "has_endpoint",
+        id: `HAS_ENDPOINT:${input.providerSlug}:${s.id}`,
+        kind: "HAS_ENDPOINT",
         source: pId,
         target: eid,
+        source_system: "spec",
+        confidence: 1,
+      });
+      upsertEdge(db, {
+        id: `EXPOSES:${input.providerSlug}:${s.id}`,
+        kind: "EXPOSES",
+        source: `service:${input.providerSlug}`,
+        target: eid,
+        source_system: "spec",
+        confidence: 0.9,
       });
       if (s.severity === "breaking") {
         upsertEdge(db, {
-          id: `breaks:${input.changeId}:${s.id}`,
-          kind: "breaks",
+          id: `BREAKS:${input.changeId}:${s.id}`,
+          kind: "BREAKS",
           source: `change:${input.changeId}`,
           target: eid,
+          source_system: "spec",
+          confidence: 1,
           props: { surface: s.canonicalId },
           label: 1,
         });
@@ -121,15 +162,21 @@ export function ingestSpecDiff(
       const fid = `field:${input.providerSlug}:${fname}`;
       upsertNode(db, {
         id: fid,
-        kind: "field",
+        kind: "Field",
         label: fname,
-        props: { fromField: s.fromField, toField: s.toField },
+        props: {
+          name: fname,
+          from_field: s.fromField,
+          to_field: s.toField,
+        },
       });
       upsertEdge(db, {
-        id: `has_field:${sid}:${fname}`,
-        kind: "has_field",
+        id: `HAS_FIELD:${sid}:${fname}`,
+        kind: "HAS_FIELD",
         source: sid,
         target: fid,
+        source_system: "spec",
+        confidence: 1,
       });
     }
   }
@@ -145,33 +192,46 @@ export function ingestImpactFindings(
 ): void {
   const cId = `consumer:${input.consumerId}`;
   const chId = `change:${input.changeId}`;
-  upsertNode(db, { id: cId, kind: "consumer", label: input.consumerId });
+  upsertNode(db, { id: cId, kind: "Consumer", label: input.consumerId });
   upsertEdge(db, {
-    id: `impacts:${input.changeId}:${input.consumerId}`,
-    kind: "impacts",
+    id: `IMPACTS:${input.changeId}:${input.consumerId}`,
+    kind: "IMPACTS",
     source: chId,
     target: cId,
+    source_system: "pipeline",
+    confidence: 1,
     props: { findings: input.findings.length },
   });
   for (const f of input.findings.slice(0, 50)) {
     const fileId = `file:${input.consumerId}:${f.filePath}`;
     upsertNode(db, {
       id: fileId,
-      kind: "file",
+      kind: "File",
       label: f.filePath,
-      props: { consumerId: input.consumerId },
+      props: { path: f.filePath, consumer_id: input.consumerId },
     });
+    const conf =
+      f.confidence === "high" ? 1 : f.confidence === "medium" ? 0.7 : 0.4;
     upsertEdge(db, {
-      id: `impacts_file:${input.changeId}:${f.filePath}:${f.symbol}`.slice(0, 200),
-      kind: "impacts",
+      id: `IMPACTS_FILE:${input.changeId}:${f.filePath}:${f.symbol}`.slice(0, 200),
+      kind: "IMPACTS",
       source: chId,
       target: fileId,
+      source_system: "pipeline",
+      confidence: conf,
       props: { symbol: f.symbol, confidence: f.confidence },
+    });
+    upsertEdge(db, {
+      id: `TOUCHES:${input.changeId}:${f.filePath}`.slice(0, 200),
+      kind: "TOUCHES",
+      source: chId,
+      target: fileId,
+      source_system: "pipeline",
+      confidence: conf,
     });
   }
 }
 
-/** Label PR outcome — compounding learning signal. */
 export function labelPrOutcome(
   db: GraphLearnDb,
   input: {
@@ -185,33 +245,61 @@ export function labelPrOutcome(
   const prNode = `pr:${input.prId}`;
   upsertNode(db, {
     id: prNode,
-    kind: "pr",
+    kind: "PullRequest",
     label: input.title ?? input.prId,
-    props: { outcome: input.outcome },
+    props: { outcome: input.outcome, number: input.prId },
   });
-  const kind =
-    input.outcome === "merged"
-      ? "outcome_merged"
-      : input.outcome === "closed"
-        ? "outcome_closed"
-        : input.outcome === "broke"
-          ? "outcome_broke"
-          : "outcome_waived";
+  const kindMap = {
+    merged: "OUTCOME_MERGED" as const,
+    closed: "OUTCOME_CLOSED" as const,
+    broke: "OUTCOME_BROKE" as const,
+    waived: "OUTCOME_WAIVED" as const,
+  };
+  const kind = kindMap[input.outcome];
   const label =
     input.outcome === "merged" || input.outcome === "waived" ? 1 : 0;
   upsertEdge(db, {
-    id: `outcome:${input.prId}:${input.outcome}`,
+    id: `OUTCOME:${input.prId}:${input.outcome}`,
     kind,
     source: `consumer:${input.consumerId}`,
     target: `change:${input.changeId}`,
-    props: { prId: input.prId },
+    source_system: "pr_outcome",
+    confidence: 1,
+    props: { pr_id: input.prId, pattern: input.title },
     label,
   });
+  // Schema v0 outcome family
+  if (input.outcome === "merged") {
+    upsertEdge(db, {
+      id: `SUCCEEDED_ON:${input.prId}`,
+      kind: "SUCCEEDED_ON",
+      source: prNode,
+      target: `change:${input.changeId}`,
+      source_system: "pr_outcome",
+      confidence: 1,
+      props: { signal: "merged" },
+      label: 1,
+    });
+  }
+  if (input.outcome === "broke" || input.outcome === "closed") {
+    upsertEdge(db, {
+      id: `BROKE:${input.prId}`,
+      kind: "BROKE",
+      source: prNode,
+      target: `change:${input.changeId}`,
+      source_system: "pr_outcome",
+      confidence: 1,
+      props: { failure_mode: input.outcome },
+      label: 0,
+    });
+  }
   upsertEdge(db, {
-    id: `pr_for:${input.prId}`,
-    kind: "related",
+    id: `RELATED:pr:${input.prId}`,
+    kind: "RELATED",
     source: prNode,
     target: `change:${input.changeId}`,
+    source_system: "pr_outcome",
+    confidence: 1,
   });
 }
 

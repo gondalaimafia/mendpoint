@@ -11,8 +11,8 @@ Scores: 0 absent · 1 stub · 2 partial · 3 working dogfood · 4 day-90 ready �
 
 | 90-day P0 pillar | Score | Status |
 |------------------|-------|--------|
-| Graph substrate | **3.5** | SQLite property graph (Kùzu-shaped schema); ingest from pipeline; not yet full AST/LSP/git temporal |
-| Graph-RAG query layer | **3.5** | Templated multi-hop tools + API; latency not formally SLO'd |
+| Graph substrate | **4.0** | Schema v0 first-class (`schema/v0.md` + `@mendpoint/graph-learn`); PascalCase/SCREAMING_SNAKE; pre-v0 SQLite migrate; not yet full AST/LSP/git temporal |
+| Graph-RAG query layer | **4.0** | 16 templated multi-hop ops + 20-query bench; latency not formally SLO'd |
 | Outcome-labeling pipeline | **3.0** | PR feedback → labeled edges; webhook PR→outcome attribution partial |
 | Devin-style base harness | **3.0** | Plan JSON, memory layers, local sandbox, recovery loops; no Firecracker VM; trajectories formalized this ship |
 | **Day-90 dogfoodable platform** | **~3.2** | Specialist teams can build on SDK + stubs **now**; true 100k-LOC LSP/git backfill and A/B lift remain open |
@@ -27,8 +27,8 @@ Scores: 0 absent · 1 stub · 2 partial · 3 working dogfood · 4 day-90 ready �
 |-------------|-------|----------|
 | Monorepo scaffold + CI-ish tests | 4 | npm workspaces, vitest all packages |
 | One-command local bring-up | 3 | `npm run platform:dev` (this ship) |
-| Graph schema v0 | 4 | `docs/GRAPH_SCHEMA_V0.md` + `@mendpoint/graph-learn` DDL |
-| Kùzu DDL | 1 | Documented escape hatch; **SQLite implements schema** |
+| Graph schema v0 | 4 | Canonical `schema/v0.md` · code mirror in `@mendpoint/graph-learn` · pointer `docs/GRAPH_SCHEMA_V0.md` |
+| Kùzu DDL | 2 | `KUZU_DDL_V0` export + docs; **SQLite implements schema** |
 | Planner/executor + plan disk persist + resume | 3–4 | `@mendpoint/harness` (this ship) + orchestrator plans |
 | Ephemeral sandbox | 2–3 | Local workdir (`@mendpoint/platform`); not Firecracker |
 | Pilot repo selection | 3 | `fixtures/` + `docs/PILOT_REPOS.md` |
@@ -46,12 +46,12 @@ Scores: 0 absent · 1 stub · 2 partial · 3 working dogfood · 4 day-90 ready �
 | A | LSP ingester | 1 | Not built; tree-sitter-ready path |
 | A | Git temporal 12mo | 1 | Schema supports props; no full backfill |
 | A | Incremental <30s | 2 | call-graph incremental exists; graph-learn partial reingest helper |
-| A | 20-query benchmark | 3 | `graph-learn` benchmark pack (this ship) |
+| A | 20-query benchmark | 4 | `graph-learn` 20-case pack covers v0 ops (consumers_of_field, time_travel_calls, migration_ready, …) |
 | B | 4-layer memory | 4 | `@mendpoint/platform` |
 | B | Deterministic recovery | 3 | Warden/repair + plan step fail branches |
 | B | VM + build cache | 2 | Local sandbox + cacheKey; no gVisor |
 | B | HITL plan edit UI | 1 | API returns editable plan JSON; full UI stub light |
-| C | Graph-RAG templates | 4 | callers, consumers, blast_radius, path, neighborhood |
+| C | Graph-RAG templates | 4 | callers, consumers, blast_radius, path, neighborhood, pattern_success_rates, time_travel_calls, migration_ready_units, … |
 | C | p50/p99 latency SLOs | 1 | Not instrumented |
 
 ---
@@ -94,10 +94,11 @@ GNN, cross-campaign meta-graph auto-promotion, multi-tenant RBAC, Neo4j, full sp
 
 1. Formal **90-day gap map** (this doc)  
 2. **Harness** with plan persist/resume + trajectory artifacts  
-3. **Graph schema v0** doc + expanded queries + benchmark  
+3. **Graph schema v0** first-class — `schema/v0.md` SoT, full node/edge kinds, temporal edges, legacy migrate, KUZU_DDL_V0  
 4. **platform:dev** one-command demo  
 5. **SDK** + Warden/Transformer specialist stubs  
 6. **Learned signal v0** — pattern success rates from outcome edges  
+7. **20-query benchmark** on real v0 query shapes (not stats padding)
 
 ---
 

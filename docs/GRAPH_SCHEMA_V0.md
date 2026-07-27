@@ -1,44 +1,14 @@
 # Graph schema v0 (shared platform)
 
+**Canonical source of truth:** [`/schema/v0.md`](../schema/v0.md)
+
 **Store:** SQLite property graph via `@mendpoint/graph-learn` (Kùzu/Neo4j escape hatch).  
-**DDL:** applied on open (`gl_nodes`, `gl_edges`).
+**Naming:** `PascalCase` nodes · `SCREAMING_SNAKE` edges · `snake_case` properties · temporal `valid_from`/`valid_to`.
 
-## Nodes (kinds)
+See full node/edge families, Cypher shapes, indexes, evolution rules, and non-goals in **schema/v0.md**.
 
-| Kind | Description | Used by |
-|------|-------------|---------|
-| `file` | Source file | Both |
-| `symbol` | Function/class/type | Both |
-| `callsite` | Call site | Both |
-| `endpoint` | HTTP path+method | Warden |
-| `schema` / `field` | Request/response fields | Warden |
-| `provider` / `service` | API provider | Warden |
-| `consumer` | Downstream repo | Warden |
-| `change` / `surface` | Spec diff unit | Warden |
-| `pr` | Pull request | Both |
-| `pattern` | Plan/migration pattern | Both |
-| `bsg_node` / `invariant` / `business_rule` / `table` | BSG | Transformer |
+Quick spines:
+- **Warden:** Service → Endpoint → Field → Consumer (+ CONSUMES / BREAKS / OUTCOME_*)
+- **Transformer:** Campaign → MigrationUnit → BSGNode → Symbol (+ DEPENDS_ON / REALIZED_BY)
 
-## Edges (kinds)
-
-| Kind | Meaning |
-|------|---------|
-| `calls` / `imports` / `depends_on` | Code structure |
-| `has_endpoint` / `has_field` | Spec structure |
-| `monitors` | Consumer → provider |
-| `impacts` | Change → consumer/file |
-| `breaks` | Breaking change → endpoint |
-| `versions_of` | Change → provider |
-| `outcome_merged` / `outcome_closed` / `outcome_broke` / `outcome_waived` | Labeled PR outcomes (GNN fuel) |
-| `migrated_from` / `preserves_behavior` | Transformer |
-| `related` | Generic link |
-
-## Kùzu escape hatch (not built)
-
-```text
-// Pseudocode DDL shape — implement when multi-hop volume requires it
-CREATE NODE TABLE Node(id STRING, kind STRING, label STRING, props STRING, PRIMARY KEY(id));
-CREATE REL TABLE Edge(FROM Node TO Node, kind STRING, props STRING, label DOUBLE);
-```
-
-Migration: export SQLite → bulk load; keep query templates stable in `@mendpoint/graph-learn`.
+Kùzu DDL: `KUZU_DDL_V0` export from `@mendpoint/graph-learn`.

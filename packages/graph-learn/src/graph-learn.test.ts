@@ -1,12 +1,22 @@
 import { describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   ingestControlPlane,
   ingestSpecDiff,
   labelPrOutcome,
   openGraphLearnMemory,
+  openGraphLearnDb,
   runGraphQuery,
   formatQueryForPlanner,
   runGraphBenchmark,
+  KUZU_DDL_V0,
+  normalizeNodeKind,
+  normalizeEdgeKind,
+  getNode,
+  countStats,
 } from "./index.js";
 import type { StructuralDiff, ImpactableSurface } from "@mendpoint/shared";
 
@@ -89,5 +99,59 @@ describe("graph-learn substrate", () => {
     const b = runGraphBenchmark();
     expect(b.total).toBe(20);
     expect(b.passed).toBeGreaterThanOrEqual(18);
+  });
+
+  it("upgrades pre-v0 SQLite without repo_id column", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gl-v0-"));
+    const path = join(dir, "legacy.sqlite");
+    try {
+      const raw = new DatabaseSync(path);
+      raw.exec(`
+        CREATE TABLE gl_nodes (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          label TEXT NOT NULL,
+          props_json TEXT,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE gl_edges (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          source TEXT NOT NULL,
+          target TEXT NOT NULL,
+          props_json TEXT,
+          label REAL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      raw
+        .prepare(
+          `INSERT INTO gl_nodes (id, kind, label, props_json, updated_at) VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "provider:legacy",
+          "provider",
+          "Legacy",
+          null,
+          new Date().toISOString(),
+        );
+      raw.close();
+
+      // openGraphLearnDb must migrate columns + indexes without throwing
+      const db = openGraphLearnDb(path);
+      const n = getNode(db, "provider:legacy");
+      expect(n?.kind).toBe("Provider"); // legacy lowercase normalized
+      expect(n?.label).toBe("Legacy");
+      expect(countStats(db).schema).toBe("v0");
+      db.raw.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes KUZU_DDL_V0 and normalizes legacy kinds", () => {
+    expect(KUZU_DDL_V0).toContain("CREATE NODE TABLE");
+    expect(normalizeNodeKind("provider")).toBe("Provider");
+    expect(normalizeEdgeKind("monitors")).toBe("MONITORS");
   });
 });

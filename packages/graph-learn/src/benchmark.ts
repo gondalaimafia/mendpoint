@@ -184,19 +184,125 @@ export const BENCH_CASES: BenchCase[] = [
       return { ok: r.edges.length === 0, detail: r.summary };
     },
   },
-];
-
-// Expand to 20 by variants
-for (let i = 11; i <= 20; i++) {
-  BENCH_CASES.push({
-    id: `q${String(i).padStart(2, "0")}`,
-    name: `stats stable ${i}`,
+  {
+    id: "q11",
+    name: "consumers_of_field amount",
+    run: (db) => {
+      const r = runGraphQuery(db, {
+        op: "consumers_of_field",
+        schemaName: "Charge",
+        fieldName: "amount",
+      });
+      return { ok: (r.rows?.length ?? 0) >= 1, detail: r.summary };
+    },
+  },
+  {
+    id: "q12",
+    name: "broke_modes_for_endpoint",
+    run: (db) => {
+      const r = runGraphQuery(db, {
+        op: "broke_modes_for_endpoint",
+        operationId: "charges",
+      });
+      return { ok: r.summary.includes("break"), detail: r.summary };
+    },
+  },
+  {
+    id: "q13",
+    name: "depends_on_path empty-ok",
+    run: (db) => {
+      const r = runGraphQuery(db, {
+        op: "depends_on_path",
+        nodeId: "change:ch1",
+        maxHops: 3,
+      });
+      return { ok: r.summary.includes("depends_on"), detail: r.summary };
+    },
+  },
+  {
+    id: "q14",
+    name: "migration_ready_units empty campaign",
+    run: (db) => {
+      const r = runGraphQuery(db, {
+        op: "migration_ready_units",
+        campaignId: "camp-missing",
+      });
+      return { ok: (r.rows?.length ?? 0) === 0, detail: r.summary };
+    },
+  },
+  {
+    id: "q15",
+    name: "invariants_for_symbol empty-ok",
+    run: (db) => {
+      const r = runGraphQuery(db, {
+        op: "invariants_for_symbol",
+        qualifiedName: "com.acme.Charge",
+      });
+      return { ok: (r.rows?.length ?? 0) === 0, detail: r.summary };
+    },
+  },
+  {
+    id: "q16",
+    name: "time_travel_calls at now",
+    run: (db) => {
+      const r = runGraphQuery(db, {
+        op: "time_travel_calls",
+        at: new Date().toISOString(),
+      });
+      return { ok: r.summary.includes("CALLS"), detail: r.summary };
+    },
+  },
+  {
+    id: "q17",
+    name: "schema v0 PascalCase Provider kind",
+    run: (db) => {
+      const r = runGraphQuery(db, {
+        op: "who_consumes_provider",
+        providerSlug: "acme",
+      });
+      const hasProvider = r.nodes.some((n) => n.kind === "Provider");
+      return { ok: hasProvider, detail: r.nodes.map((n) => n.kind).join(",") };
+    },
+  },
+  {
+    id: "q18",
+    name: "schema v0 SCREAMING_SNAKE edges",
+    run: (db) => {
+      const r = runGraphQuery(db, {
+        op: "neighbors",
+        nodeId: "provider:acme",
+      });
+      const kinds = r.edges.map((e) => e.kind);
+      const ok = kinds.every((k) => k === k.toUpperCase());
+      return { ok: ok && kinds.length >= 1, detail: kinds.join(",") };
+    },
+  },
+  {
+    id: "q19",
+    name: "path or no-path is structured",
+    run: (db) => {
+      const r = runGraphQuery(db, {
+        op: "path",
+        fromId: "consumer:c1",
+        toId: "provider:acme",
+        maxHops: 3,
+      });
+      return {
+        ok: r.edges.length >= 1 || r.summary.includes("no path"),
+        detail: r.summary,
+      };
+    },
+  },
+  {
+    id: "q20",
+    name: "stats reports schema v0",
     run: (db) => {
       const r = runGraphQuery(db, { op: "stats" });
-      return { ok: r.summary.includes("nodes"), detail: r.summary };
+      const schema = (r.rows?.[0] as { schema?: string })?.schema;
+      return { ok: schema === "v0", detail: JSON.stringify(r.rows?.[0]) };
     },
-  });
-}
+  },
+];
 
 export function runGraphBenchmark(): {
   passed: number;
