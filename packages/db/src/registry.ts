@@ -19,6 +19,7 @@ export type RegistryHit = {
 export function listConsumersForProvider(
   db: AppDb,
   providerSlug: string,
+  tenantId?: string,
 ): RegistryHit[] {
   const rows = db.raw
     .prepare(
@@ -30,9 +31,10 @@ export function listConsumersForProvider(
        JOIN providers p ON p.id = m.provider_id
        LEFT JOIN consumer_repos cr ON cr.consumer_id = c.id
        WHERE p.slug = ?
+         AND (? IS NULL OR c.tenant_id = ?)
        ORDER BY c.name`,
     )
-    .all(providerSlug) as Array<{
+    .all(providerSlug, tenantId ?? null, tenantId ?? null) as Array<{
     consumer_id: string;
     consumer_name: string;
     github_owner: string;
@@ -60,6 +62,7 @@ export function listConsumersForProvider(
 export function listConsumersImpactedByChange(
   db: AppDb,
   changeId: string,
+  tenantId?: string,
 ): Array<{ consumerId: string; consumerName: string; findings: number }> {
   return db.raw
     .prepare(
@@ -67,10 +70,11 @@ export function listConsumersImpactedByChange(
        FROM impact_findings f
        JOIN consumers c ON c.id = f.consumer_id
        WHERE f.change_id = ?
+         AND (? IS NULL OR c.tenant_id = ?)
        GROUP BY c.id
        ORDER BY findings DESC`,
     )
-    .all(changeId) as Array<{
+    .all(changeId, tenantId ?? null, tenantId ?? null) as Array<{
     consumerId: string;
     consumerName: string;
     findings: number;

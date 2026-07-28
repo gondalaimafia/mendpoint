@@ -175,7 +175,12 @@ import { notifyWardenEvent } from "@mendpoint/notify";
 import { runRepairSession, runAgenticRepairLoop } from "@mendpoint/repair";
 import { runWarden } from "@mendpoint/agent";
 import { normalizeChange } from "@mendpoint/change-intel";
-import { createAuthMiddleware, effectiveAuthMode } from "./auth.js";
+import {
+  createAuthMiddleware,
+  effectiveAuthMode,
+  scopeAllows,
+  type ApiEnv,
+} from "./auth.js";
 import {
   assertApiEnvOrExit,
   liveness,
@@ -196,7 +201,7 @@ import {
 assertApiEnvOrExit();
 
 const db = createDb();
-const app = new Hono();
+const app = new Hono<ApiEnv>();
 const startedAt = Date.now();
 
 app.use("*", requestIdMiddleware());
@@ -211,9 +216,6 @@ app.use(
       "Content-Type",
       "Authorization",
       "X-API-Key",
-      "X-Role",
-      "X-Tenant-Id",
-      "X-User-Id",
       "X-Request-Id",
     ],
   }),
@@ -246,37 +248,41 @@ app.use("*", async (c, next) => {
 app.use("*", rateLimitMiddleware());
 app.use("*", createAuthMiddleware(db));
 
-/** Broader RBAC — role headers; default engineer when API_AUTH off */
+/** RBAC identity comes from the authenticated API key in protected modes. */
 app.use("*", async (c, next) => {
   const path = new URL(c.req.url).pathname;
   const method = c.req.method;
   if (method === "OPTIONS") return next();
   const need = permissionForRoute(method, path);
   if (!need) return next();
-  // When API_AUTH=off, still honor explicit restrictive roles (viewer)
-  const principal = parsePrincipalFromHeaders({
-    "x-tenant-id": c.req.header("x-tenant-id") ?? undefined,
-    "x-role": c.req.header("x-role") ?? undefined,
-    "x-user-id": c.req.header("x-user-id") ?? undefined,
-  });
-  // If no x-role and auth off, treat as engineer (dev ergonomics)
-  const roleHeader = c.req.header("x-role");
-  const effective =
-    !roleHeader && (process.env.API_AUTH ?? "off") === "off"
-      ? { ...principal, role: "engineer" as const }
-      : principal;
-  if (!can(effective, need)) {
+  const mode = effectiveAuthMode();
+  const authenticated = c.get("principal");
+  const principal =
+    authenticated ??
+    (mode === "off"
+      ? parsePrincipalFromHeaders({
+          "x-tenant-id": c.req.header("x-tenant-id") ?? undefined,
+          "x-role": c.req.header("x-role") ?? undefined,
+          "x-user-id": c.req.header("x-user-id") ?? undefined,
+        })
+      : undefined);
+  if (!principal) {
+    return c.json({ error: "unauthorized", message: "authenticated principal required" }, 401);
+  }
+  const scopes = c.get("authScopes");
+  const scopeAllowed = mode === "off" || scopeAllows(scopes, need);
+  if (!can(principal, need) || !scopeAllowed) {
     return c.json(
       {
         error: "rbac_denied",
         need,
-        role: effective.role,
-        message: `role ${effective.role} lacks ${need}`,
+        role: principal.role,
+        message: `role ${principal.role} or API key scope lacks ${need}`,
       },
       403,
     );
   }
-  c.set("principal", effective);
+  c.set("principal", principal);
   return next();
 });
 
@@ -437,7 +443,11 @@ app.post("/warden/plans/from-spec", async (c) => {
       surfaces,
       goal: body.goal,
     });
-    const consumers = listConsumersForProvider(db, provider.slug);
+    const consumers = listConsumersForProvider(
+      db,
+      provider.slug,
+      c.get("principal")?.tenantId,
+    );
     return c.json({
       plan,
       markdown: planToMarkdown(plan),
@@ -515,7 +525,11 @@ app.post("/warden/review", async (c) => {
 /** Consumer registry for a provider */
 app.get("/registry/providers/:slug/consumers", (c) => {
   const slug = c.req.param("slug");
-  const hits = listConsumersForProvider(db, slug);
+  const hits = listConsumersForProvider(
+    db,
+    slug,
+    c.get("principal")?.tenantId,
+  );
   return c.json({
     providerSlug: slug,
     consumers: hits,
@@ -527,7 +541,11 @@ app.get("/registry/changes/:id/consumers", (c) => {
   const id = c.req.param("id");
   return c.json({
     changeId: id,
-    consumers: listConsumersImpactedByChange(db, id),
+    consumers: listConsumersImpactedByChange(
+      db,
+      id,
+      c.get("principal")?.tenantId,
+    ),
   });
 });
 
@@ -815,12 +833,8 @@ app.get("/platform/plans/:runId", (c) => {
 });
 
 app.patch("/platform/plans/:runId", async (c) => {
-  const principal = parsePrincipalFromHeaders({
-    "x-tenant-id": c.req.header("x-tenant-id") ?? undefined,
-    "x-role": c.req.header("x-role") ?? undefined,
-    "x-user-id": c.req.header("x-user-id") ?? undefined,
-  });
-  if (!can(principal, "plan:edit")) {
+  const principal = c.get("principal");
+  if (!principal || !can(principal, "plan:edit")) {
     return c.json({ error: "rbac_denied", need: "plan:edit" }, 403);
   }
   const patch = (await c.req.json()) as PlanPatch;
@@ -1064,7 +1078,7 @@ app.get("/changes/:id", (c) => {
   const change = getChange(db, c.req.param("id"));
   if (!change) return c.json({ error: "not found" }, 404);
   const findings = listFindingsForChange(db, change.id).map(findingToApi);
-  const prs = listPrs(db)
+  const prs = listPrs(db, c.get("principal")?.tenantId)
     .filter((p) => p.change_id === change.id)
     .map(prToApi);
   return c.json({
@@ -1076,7 +1090,7 @@ app.get("/changes/:id", (c) => {
 });
 
 app.get("/consumers", (c) => {
-  const all = listConsumers(db).map((cons) => ({
+  const all = listConsumers(db, c.get("principal")?.tenantId).map((cons) => ({
     ...consumerToApi(cons),
     monitored: listMonitoredForConsumer(db, cons.id),
   }));
@@ -1084,6 +1098,8 @@ app.get("/consumers", (c) => {
 });
 
 app.post("/consumers", async (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
   const body = await c.req.json<{
     name: string;
     githubOwner: string;
@@ -1097,6 +1113,7 @@ app.post("/consumers", async (c) => {
     githubOwner: body.githubOwner,
     githubRepo: body.githubRepo,
     installationId: null,
+    tenantId: principal.tenantId,
     createdAt: nowIso(),
   });
   insertConsumerRepo(db, {
@@ -1110,7 +1127,11 @@ app.post("/consumers", async (c) => {
 });
 
 app.post("/consumers/:id/monitor", async (c) => {
-  const consumer = getConsumer(db, c.req.param("id"));
+  const consumer = getConsumer(
+    db,
+    c.req.param("id"),
+    c.get("principal")?.tenantId,
+  );
   if (!consumer) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<{ providerSlug: string }>();
   const p = getProviderBySlug(db, body.providerSlug);
@@ -1127,7 +1148,11 @@ app.post("/consumers/:id/monitor", async (c) => {
 
 /** Phase C: auto-detect vendors from consumer repo lockfiles/imports */
 app.post("/consumers/:id/detect", async (c) => {
-  const consumer = getConsumer(db, c.req.param("id"));
+  const consumer = getConsumer(
+    db,
+    c.req.param("id"),
+    c.get("principal")?.tenantId,
+  );
   if (!consumer) return c.json({ error: "not found" }, 404);
   const repo = getConsumerRepo(db, consumer.id);
   if (!repo) return c.json({ error: "no local repo path for consumer" }, 400);
@@ -1201,19 +1226,28 @@ app.post("/feeds/poll", async (c) => {
 
 app.get("/learning/suppressed", (c) => {
   const consumerId = c.req.query("consumerId") ?? undefined;
+  if (
+    consumerId &&
+    !getConsumer(db, consumerId, c.get("principal")?.tenantId)
+  ) {
+    return c.json({ error: "not found" }, 404);
+  }
   return c.json(listSuppressedPatterns(db, { consumerId }));
 });
 
-app.get("/prs", (c) => c.json(listPrs(db).map(prToApi)));
+app.get("/prs", (c) =>
+  c.json(listPrs(db, c.get("principal")?.tenantId).map(prToApi)),
+);
 
 app.get("/prs/:id", (c) => {
-  const pr = getPr(db, c.req.param("id"));
+  const pr = getPr(db, c.req.param("id"), c.get("principal")?.tenantId);
   if (!pr) return c.json({ error: "not found" }, 404);
   return c.json(prToApi(pr));
 });
 
 app.post("/prs/:id/feedback", async (c) => {
-  const pr = getPr(db, c.req.param("id"));
+  const tenantId = c.get("principal")?.tenantId;
+  const pr = getPr(db, c.req.param("id"), tenantId);
   if (!pr) return c.json({ error: "not found" }, 404);
   const body = await c.req.json();
   const parsed = FeedbackOutcomeSchema.safeParse(body.outcome);
@@ -1223,7 +1257,7 @@ app.post("/prs/:id/feedback", async (c) => {
     planId: body.planId,
   });
   return c.json({
-    ...prToApi(getPr(db, pr.id)!),
+    ...prToApi(getPr(db, pr.id, tenantId)!),
     experiment: body.experiment ?? null,
     planId: body.planId ?? null,
   });
@@ -1231,9 +1265,10 @@ app.post("/prs/:id/feedback", async (c) => {
 
 /** Phase D: advisory CI check body (and optional mock post) for a migration PR */
 app.post("/prs/:id/ci-check", async (c) => {
-  const pr = getPr(db, c.req.param("id"));
+  const tenantId = c.get("principal")?.tenantId;
+  const pr = getPr(db, c.req.param("id"), tenantId);
   if (!pr) return c.json({ error: "not found" }, 404);
-  const consumer = getConsumer(db, pr.consumer_id);
+  const consumer = getConsumer(db, pr.consumer_id, tenantId);
   if (!consumer) return c.json({ error: "consumer missing" }, 400);
   const findings = listFindingsForChange(db, pr.change_id);
   const body = await c.req
@@ -1283,15 +1318,21 @@ app.post("/prs/:id/ci-check", async (c) => {
 
 // ─── Phase D: API keys ───────────────────────────────────────────────────────
 
-app.get("/keys", (c) => c.json(listApiKeys(db).map(apiKeyToApi)));
+app.get("/keys", (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
+  return c.json(listApiKeys(db, principal.tenantId).map(apiKeyToApi));
+});
 
 app.post("/keys", async (c) => {
-  const body = await c.req.json<{ name: string; tenantId?: string; scopes?: string[] }>();
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
+  const body = await c.req.json<{ name: string; scopes?: string[] }>();
   if (!body.name) return c.json({ error: "name required" }, 400);
   const created = createApiKey(db, {
     id: newId(),
     name: body.name,
-    tenantId: body.tenantId,
+    tenantId: principal.tenantId,
     scopes: body.scopes,
     createdAt: nowIso(),
   });
@@ -1316,7 +1357,15 @@ app.post("/keys", async (c) => {
 });
 
 app.post("/keys/:id/revoke", async (c) => {
-  revokeApiKey(db, c.req.param("id"), nowIso());
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
+  const revoked = revokeApiKey(
+    db,
+    c.req.param("id"),
+    nowIso(),
+    principal.tenantId,
+  );
+  if (!revoked) return c.json({ error: "not found" }, 404);
   recordAudit(db, {
     actor: "api",
     action: "api_key.revoked",
@@ -1337,7 +1386,7 @@ app.post("/webhooks/github", async (c) => {
   const wh = parseWebhookHeaders(headers);
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
   const ok = verifyGitHubSignature(raw, wh.signature256, secret, {
-    requireSecret: Boolean(secret),
+    requireSecret: isProduction() || Boolean(secret),
   });
   if (!ok) {
     return c.json({ error: "invalid signature" }, 401);
@@ -1435,12 +1484,18 @@ app.get("/metrics/design-partner", (c) => c.json(computeDesignPartnerMetrics(db)
 
 /** Pre-customer A2: consumer exposure report (Warden) */
 app.get("/consumers/:id/exposure", (c) => {
+  if (!getConsumer(db, c.req.param("id"), c.get("principal")?.tenantId)) {
+    return c.json({ error: "not found" }, 404);
+  }
   const report = buildExposureReport(db, c.req.param("id"));
   if (!report) return c.json({ error: "not found" }, 404);
   return c.json(report);
 });
 
 app.get("/consumers/:id/exposure.md", (c) => {
+  if (!getConsumer(db, c.req.param("id"), c.get("principal")?.tenantId)) {
+    return c.text("not found", 404);
+  }
   const report = buildExposureReport(db, c.req.param("id"));
   if (!report) return c.text("not found", 404);
   return c.body(report.markdown, 200, {
@@ -1903,16 +1958,26 @@ app.get("/policies/defaults", (c) =>
 
 app.get("/billing/plans", (c) => c.json(BILLING_PLANS));
 
-app.get("/tenants", (c) => c.json(listTenants(db).map(tenantToApi)));
+app.get("/tenants", (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
+  const tenant = getTenant(db, principal.tenantId);
+  return c.json(tenant ? [tenantToApi(tenant)] : []);
+});
 
 app.get("/tenants/:idOrSlug", (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
   const key = c.req.param("idOrSlug");
   const t = getTenant(db, key) ?? getTenantBySlug(db, key);
   if (!t) return c.json({ error: "not found" }, 404);
+  if (t.id !== principal.tenantId) return c.json({ error: "not found" }, 404);
   return c.json(tenantToApi(t));
 });
 
 app.post("/tenants", async (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
   const body = await c.req.json<{ slug: string; name: string; plan?: string }>();
   if (!body.slug || !body.name) return c.json({ error: "slug and name required" }, 400);
   if (getTenantBySlug(db, body.slug)) return c.json({ error: "slug taken" }, 409);
@@ -1938,8 +2003,11 @@ app.post("/tenants", async (c) => {
 });
 
 app.post("/tenants/:id/plan", async (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
   const t = getTenant(db, c.req.param("id"));
   if (!t) return c.json({ error: "not found" }, 404);
+  if (t.id !== principal.tenantId) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<{ plan: string }>();
   if (!BILLING_PLANS.some((p) => p.id === body.plan)) {
     return c.json({ error: "invalid plan", plans: BILLING_PLANS.map((p) => p.id) }, 400);
@@ -1967,11 +2035,17 @@ app.get("/github/app/install-url", (c) => {
 });
 
 app.get("/github/app/installations", (c) =>
-  c.json(listGitHubInstallations(db).map(githubInstallationToApi)),
+  c.json(
+    listGitHubInstallations(db, c.get("principal")?.tenantId).map(
+      githubInstallationToApi,
+    ),
+  ),
 );
 
 /** Mock install entry (used when GITHUB_APP_ID unset). Real GitHub redirects to callback. */
 app.get("/github/app/mock-install", async (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
   const state = c.req.query("state") ?? "";
   const login = c.req.query("login") ?? "demo-org";
   return c.json({
@@ -1982,18 +2056,19 @@ app.get("/github/app/mock-install", async (c) => {
       installationId: "mock-10001",
       accountLogin: login,
       accountType: "Organization",
-      tenantId: "tenant_default",
+      tenantId: principal.tenantId,
       repositories: [{ owner: login, name: "shop-app" }],
     },
   });
 });
 
 app.post("/github/app/callback", async (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
   const body = await c.req.json<{
     installationId?: string;
     accountLogin: string;
     accountType?: "User" | "Organization";
-    tenantId?: string;
     repositories?: Array<{ owner: string; name: string }>;
     setupAction?: string;
   }>();
@@ -2004,7 +2079,7 @@ app.post("/github/app/callback", async (c) => {
     accountType: body.accountType,
     installationId: body.installationId,
     repositories: body.repositories,
-    tenantId: body.tenantId ?? "tenant_default",
+    tenantId: principal.tenantId,
   });
 
   const id = upsertGitHubInstallation(db, {

@@ -119,10 +119,10 @@ export function parsePrincipalFromHeaders(h: {
     ["owner", "admin", "engineer", "viewer", "fde", "agent"] as Role[]
   ).includes(roleRaw as Role)
     ? (roleRaw as Role)
-    : "engineer";
+    : "viewer";
   return {
     id: h["x-user-id"] ?? "anonymous",
-    tenantId: h["x-tenant-id"] ?? "default",
+    tenantId: h["x-tenant-id"] ?? "tenant_default",
     role,
   };
 }
@@ -149,7 +149,12 @@ export function permissionForRoute(
       path === "/graph"
     )
       return "graph:read";
-    if (path.startsWith("/keys") || path.startsWith("/tenants"))
+    if (
+      path.startsWith("/keys") ||
+      path.startsWith("/tenants") ||
+      path.startsWith("/github/app") ||
+      path.startsWith("/audit")
+    )
       return "tenant:admin";
     return null; // public GETs when no sensitive surface
   }
@@ -168,7 +173,11 @@ export function permissionForRoute(
     return "plan:execute";
   if (path.startsWith("/providers") || path.startsWith("/consumers") || path.startsWith("/changes"))
     return "graph:write";
-  if (path.startsWith("/keys") || path.startsWith("/tenants"))
+  if (
+    path.startsWith("/keys") ||
+    path.startsWith("/tenants") ||
+    path.startsWith("/github/app")
+  )
     return "tenant:admin";
   return "plan:execute";
 }

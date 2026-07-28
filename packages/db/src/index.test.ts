@@ -9,6 +9,7 @@ import {
   listProviders,
   listAudit,
   createApiKey,
+  listApiKeys,
   findApiKeyByToken,
   revokeApiKey,
   countActiveApiKeys,
@@ -84,7 +85,11 @@ describe("db", () => {
     expect(findApiKeyByToken(db, created.token)?.tenant_id).toBe("t1");
     expect(findApiKeyByToken(db, "me_nope")).toBeUndefined();
     expect(countActiveApiKeys(db)).toBe(1);
-    revokeApiKey(db, created.id, nowIso());
+    expect(revokeApiKey(db, created.id, nowIso(), "other-tenant")).toBe(false);
+    expect(findApiKeyByToken(db, created.token)).toBeDefined();
+    expect(listApiKeys(db, "other-tenant")).toEqual([]);
+    expect(listApiKeys(db, "t1")).toHaveLength(1);
+    expect(revokeApiKey(db, created.id, nowIso(), "t1")).toBe(true);
     expect(findApiKeyByToken(db, created.token)).toBeUndefined();
     expect(countActiveApiKeys(db)).toBe(0);
   });
@@ -133,6 +138,17 @@ describe("db", () => {
       updatedAt: nowIso(),
     });
     expect(listGitHubInstallations(db)).toHaveLength(1);
+    expect(listGitHubInstallations(db, id)).toHaveLength(1);
+    expect(listGitHubInstallations(db, "tenant_default")).toEqual([]);
+    expect(() =>
+      upsertGitHubInstallation(db, {
+        id: newId(),
+        installationId: "42",
+        accountLogin: "attacker",
+        tenantId: "tenant_default",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+      }),
+    ).toThrow("github_installation_tenant_mismatch");
   });
 });
-

@@ -135,7 +135,13 @@ describe("vm + cost + rbac + scm + alerts", () => {
   it("permissionForRoute maps mutations", () => {
     expect(permissionForRoute("PATCH", "/platform/plans/x")).toBe("plan:edit");
     expect(permissionForRoute("POST", "/prs/1/feedback")).toBe("outcome:label");
+    expect(permissionForRoute("GET", "/github/app/installations")).toBe(
+      "tenant:admin",
+    );
     const viewer = parsePrincipalFromHeaders({ "x-role": "viewer" });
     expect(can(viewer, "plan:edit")).toBe(false);
+    const invalid = parsePrincipalFromHeaders({ "x-role": "not-a-role" });
+    expect(invalid.role).toBe("viewer");
+    expect(can(invalid, "sandbox:run")).toBe(false);
   });
 });

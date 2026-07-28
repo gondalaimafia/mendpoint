@@ -52,7 +52,10 @@ describe("breaking change gate", () => {
       readFileSync(join(root, "fixtures/providers/acme-payments/openapi-v2.json"), "utf8"),
     );
     const g = breakingChangeGate(v1, v2, "acme-payments");
-    // Acme v2 is a breaking evolution — expect either violations or breaking risk
+    // Acme v2 is a breaking evolution.
+    expect(g.ok).toBe(false);
+    expect(g.violations.length).toBeGreaterThan(0);
+    expect(g.violations.every((violation) => violation.message.trim().length > 0)).toBe(true);
     expect(g.summary.length).toBeGreaterThan(0);
   });
 });

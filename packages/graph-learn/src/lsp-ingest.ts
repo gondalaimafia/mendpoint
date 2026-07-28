@@ -1,11 +1,15 @@
 /**
- * LSP-shaped ingester — Language Server Protocol adapter surface.
- * Default backend is heuristic (no process spawn); optional external lspCommand.
+ * LSP-shaped ingester using in-process document symbol backends.
+ * External language-server processes are rejected until a protocol client exists.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { upsertEdge, upsertNode, type GraphLearnDb } from "./store.js";
-import { extractSymbolsFromSource, ingestAstRepo } from "./ast-ingest.js";
+import {
+  extractSymbolsFromSource,
+  ingestAstRepo,
+  reconcileAstCallTargets,
+} from "./ast-ingest.js";
 
 export type LspSymbol = {
   name: string;
@@ -18,7 +22,7 @@ export type LspSymbol = {
 export type LspBackend = {
   /** language id */
   language: string;
-  /** Optional: spawn external LSP — not required for v0 */
+  /** Reserved for a future protocol client; currently rejected explicitly. */
   command?: string;
   /** Extract document symbols from text */
   documentSymbols: (file: string, text: string) => LspSymbol[];
@@ -68,7 +72,7 @@ export type LspIngestResult = {
   repoId: string;
   symbols: number;
   backends: string[];
-  mode: "heuristic" | "external";
+  mode: "heuristic" | "ast-fallback";
 };
 
 /**
@@ -92,6 +96,11 @@ export function ingestLspSymbols(
     heuristicTsBackend(),
     heuristicPythonBackend(),
   ];
+  if (backends.some((backend) => backend.command)) {
+    throw new Error(
+      "External LSP commands are not implemented; provide a documentSymbols backend",
+    );
+  }
   let symbols = 0;
 
   upsertNode(db, {
@@ -119,8 +128,8 @@ export function ingestLspSymbols(
     return {
       repoId,
       symbols: ast.symbols,
-      backends: backends.map((b) => b.language),
-      mode: "heuristic",
+      backends: [],
+      mode: "ast-fallback",
     };
   }
 
@@ -131,6 +140,7 @@ export function ingestLspSymbols(
     const backend =
       backends.find((b) => b.language === lang) ?? backends[0]!;
     const syms = backend.documentSymbols(f.path, f.text);
+    const localSymbols = new Set(syms.map((symbol) => symbol.name));
     const fileId = `file:${repoId}:${f.path}`;
     upsertNode(db, {
       id: fileId,
@@ -166,16 +176,30 @@ export function ingestLspSymbols(
     // also CALLS from extract
     const { calls } = extractSymbolsFromSource(f.text, lang);
     for (const c of calls.slice(0, 100)) {
+      const isLocal = localSymbols.has(c.to);
+      const target = isLocal
+        ? `symbol:${repoId}:${f.path}:${c.to}`
+        : `symbol:${repoId}:${c.to}`;
+      if (!isLocal) {
+        upsertNode(db, {
+          id: target,
+          kind: "Symbol",
+          label: c.to,
+          repo_id: repoId,
+          props: { qualified_name: c.to, unresolved: true },
+        });
+      }
       upsertEdge(db, {
         id: `CALLS:lsp:${repoId}:${f.path}:${c.from}:${c.to}`.slice(0, 240),
         kind: "CALLS",
         source: `symbol:${repoId}:${f.path}:${c.from}`,
-        target: `symbol:${repoId}:${c.to}`,
+        target,
         source_system: "lsp",
         confidence: 0.55,
       });
     }
   }
+  reconcileAstCallTargets(db, repoId);
 
   return {
     repoId,

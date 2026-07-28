@@ -217,11 +217,14 @@ export function runSpecialistTool(
         targetStack: String(meta.targetStack ?? "node"),
         dag: Array.isArray(meta.dag)
           ? (meta.dag as Array<{
-              id: string;
-              title: string;
-              repoKey: string;
-              dependsOn?: string[];
-            }>)
+                id: string;
+                title: string;
+                repoKey: string;
+                dependsOn?: string[];
+              }>).map((node) => ({
+                ...node,
+                dependsOn: node.dependsOn ?? [],
+              }))
           : [
               {
                 id: "u1",

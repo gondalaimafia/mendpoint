@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 type GNode = {
   id: string;
@@ -403,8 +403,8 @@ export function GraphExplorer({
                   ))}
               </ul>
             </div>
-            {selected.kind === "pr" && selected.meta?.url && (
-              <a className="btn primary" href={String(selected.meta.url)} target="_blank" rel="noreferrer">
+            {selected.kind === "pr" && typeof selected.meta?.url === "string" && (
+              <a className="btn primary" href={selected.meta.url} target="_blank" rel="noreferrer">
                 Open PR
               </a>
             )}

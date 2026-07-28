@@ -148,6 +148,10 @@ export function backfillGitTemporal(
     string,
     { edgeId: string; commitId: string; from: string }
   >();
+  const openTouch = new Map<
+    string,
+    { edgeId: string; commitId: string; from: string }
+  >();
 
   for (const c of commits) {
     if (!c.sha) {
@@ -247,6 +251,19 @@ export function backfillGitTemporal(
       openModify.set(path, { edgeId: modId, commitId, from: c.date });
 
       const touchId = `TOUCHES:${short}:${path}`.slice(0, 240);
+      const previousTouch = openTouch.get(path);
+      if (previousTouch) {
+        upsertEdge(db, {
+          id: previousTouch.edgeId,
+          kind: "TOUCHES",
+          source: previousTouch.commitId,
+          target: fileId,
+          valid_from: previousTouch.from,
+          valid_to: c.date,
+          source_system: "git",
+          confidence: 1,
+        });
+      }
       upsertEdge(db, {
         id: touchId,
         kind: "TOUCHES",
@@ -258,6 +275,11 @@ export function backfillGitTemporal(
         confidence: 1,
       });
       edges++;
+      openTouch.set(path, {
+        edgeId: touchId,
+        commitId,
+        from: c.date,
+      });
     }
   }
 

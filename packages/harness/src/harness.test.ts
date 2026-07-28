@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -42,7 +48,7 @@ describe("harness", () => {
     expect(score.runId).toBe(r.runId);
   });
 
-  it("recovers from injected failure and can resume", async () => {
+  it("preserves an injected failure across execution and resume", async () => {
     const base = mkdtempSync(join(tmpdir(), "harness-rec-"));
     dirs.push(base);
     let plan = emptyPlan({
@@ -68,7 +74,15 @@ describe("harness", () => {
       plan,
       injectFailureAction: "harness.echo",
     });
-    expect(r1.score.recoveredFromFailure).toBe(true);
+    expect(r1.score.recoveredFromFailure).toBe(false);
+    expect(r1.ok).toBe(false);
+    expect(r1.score.ok).toBe(false);
+    expect(r1.score.stepsDone).toBe(1);
+    expect(r1.score.stepsFailed).toBe(1);
+    expect(r1.plan.steps.map((step) => step.status)).toEqual(["failed", "done"]);
+    expect(readFileSync(r1.paths.tracePath, "utf8")).toContain(
+      '"continuation":"remaining_steps"',
+    );
 
     // resume: all steps should already be terminal
     const r2 = await executePlan({
@@ -77,6 +91,9 @@ describe("harness", () => {
       resumeRunId: r1.runId,
     });
     expect(r2.runId).toBe(r1.runId);
+    expect(r2.ok).toBe(false);
+    expect(r2.score.stepsFailed).toBe(1);
+    expect(r2.plan.steps[0]?.status).toBe("failed");
   });
 
   it("appends dogfood ledger and aggregates 30-run report", async () => {
@@ -125,6 +142,16 @@ describe("harness", () => {
     expect(getPlan(base, r.runId).goal).toBe("HITL goal");
   });
 
+  it("filters run directories without a readable plan", () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-plans-"));
+    dirs.push(base);
+    mkdirSync(join(base, "runs", "missing"), { recursive: true });
+    mkdirSync(join(base, "runs", "invalid"), { recursive: true });
+    writeFileSync(join(base, "runs", "invalid", "plan.json"), "{", "utf8");
+
+    expect(listPlans(base)).toEqual([]);
+  });
+
   it("runs real specialist tools not stub_ok", async () => {
     const base = mkdtempSync(join(tmpdir(), "harness-real-"));
     dirs.push(base);
@@ -152,6 +179,15 @@ describe("harness", () => {
         name: "demo",
         sourceSystem: "vb6",
         targetStack: "node",
+        dag: [
+          { id: "first", title: "First", repoKey: "core" },
+          {
+            id: "second",
+            title: "Second",
+            repoKey: "api",
+            dependsOn: ["first"],
+          },
+        ],
       }),
     });
     plan = addStep(plan, {

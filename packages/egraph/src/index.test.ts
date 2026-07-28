@@ -45,6 +45,13 @@ describe("e-graph core", () => {
     const matches = eg.ematch(app("field", v("f")));
     expect(matches.length).toBeGreaterThanOrEqual(2);
   });
+
+  it("represents null API literals", () => {
+    const eg = new EGraph();
+    const cursor = app("cursor", lit(null));
+    expect(eg.add(cursor)).toBeGreaterThan(0);
+    expect(pretty(cursor)).toBe("cursor(null)");
+  });
 });
 
 describe("equality saturation", () => {

@@ -10,6 +10,7 @@ export {
   rateLimit,
   rateLimitKeyFromRequest,
   clearRateLimits,
+  rateLimitBucketCount,
   type RateLimitResult,
   type RateLimitOpts,
 } from "./rate-limit.js";

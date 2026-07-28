@@ -58,11 +58,12 @@ export function embedGraphNodes(
   for (const kind of kinds) {
     for (const node of listNodesByKind(db, kind)) {
       if (n >= limit) break;
-      if (
-        !opts?.force &&
-        (node.embedding?.length || Array.isArray(node.props?.embedding))
-      )
-        continue;
+      const storedEmbedding =
+        node.embedding ??
+        (Array.isArray(node.props?.embedding)
+          ? node.props.embedding
+          : undefined);
+      if (!opts?.force && storedEmbedding?.length === dim) continue;
       // Strip prior embedding from hash input for stability
       const propsForHash = { ...(node.props ?? {}) };
       delete propsForHash.embedding;
@@ -93,7 +94,12 @@ export function getNodeEmbedding(
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
-  const len = Math.min(a.length, b.length);
+  if (a.length !== b.length) {
+    throw new RangeError(
+      `cosineSimilarity dimension mismatch: ${a.length} !== ${b.length}`,
+    );
+  }
+  const len = a.length;
   let dot = 0;
   let na = 0;
   let nb = 0;

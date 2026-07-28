@@ -47,7 +47,7 @@ export default async function PlansPage({
           {!plans.length && <li className="muted">No plans on disk</li>}
         </ul>
       </div>
-      {sp.runId && plan && (
+      {sp.runId && plan !== null && (
         <div className="card" style={{ marginTop: "1rem" }}>
           <h3>Edit {sp.runId}</h3>
           <PlanEditor runId={sp.runId} plan={plan as { title?: string; goal?: string }} />

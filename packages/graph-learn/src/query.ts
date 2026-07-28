@@ -34,13 +34,17 @@ export function blastRadius(
   maxHops = 2,
 ): { nodes: GlNode[]; edges: GlEdge[] } {
   const seen = new Set<string>([nodeId]);
+  const seenEdges = new Set<string>();
   const edgeAcc: GlEdge[] = [];
   let frontier = [nodeId];
   for (let h = 0; h < maxHops; h++) {
     const next: string[] = [];
     for (const id of frontier) {
       for (const e of [...edgesFrom(db, id), ...edgesTo(db, id)]) {
-        edgeAcc.push(e);
+        if (!seenEdges.has(e.id)) {
+          seenEdges.add(e.id);
+          edgeAcc.push(e);
+        }
         const other = e.source === id ? e.target : e.source;
         if (!seen.has(other)) {
           seen.add(other);
@@ -368,9 +372,11 @@ function runGraphQueryInner(
       );
       const rows: Array<Record<string, unknown>> = [];
       const edges: GlEdge[] = [];
+      const relatedChanges = new Set<string>();
       for (const ep of eps) {
         for (const e of edgesTo(db, ep.id, ["BREAKS", "BROKE"])) {
           edges.push(e);
+          if (e.kind === "BREAKS") relatedChanges.add(e.source);
           const mode = (e.props as { failure_mode?: string } | undefined)
             ?.failure_mode ?? e.kind;
           rows.push({ endpoint: ep.id, failure_mode: mode });
@@ -379,12 +385,13 @@ function runGraphQueryInner(
           edges.push(e);
         }
       }
-      // also BROKE from PRs
-      for (const pr of listNodesByKind(db, "PullRequest")) {
-        for (const e of edgesFrom(db, pr.id, ["BROKE"])) {
+      // A PR failure is relevant only when it targets a change that breaks
+      // the matched endpoint.
+      for (const changeId of relatedChanges) {
+        for (const e of edgesTo(db, changeId, ["BROKE"])) {
           edges.push(e);
           rows.push({
-            pr: pr.id,
+            pr: e.source,
             failure_mode: (e.props as { failure_mode?: string })?.failure_mode,
           });
         }
@@ -480,6 +487,16 @@ function runGraphQueryInner(
     }
     case "time_travel_modifies": {
       let edges = edgesByKindAt(db, ["MODIFIES", "TOUCHES"], q.at, 5000);
+      // Git emits both names for compatibility. Prefer MODIFIES so one commit
+      // and file pair is one temporal fact, and exclude non-git TOUCHES.
+      const temporal = new Map<string, GlEdge>();
+      for (const edge of edges) {
+        if (edge.source_system !== "git") continue;
+        const key = `${edge.source}\u0000${edge.target}`;
+        const current = temporal.get(key);
+        if (!current || edge.kind === "MODIFIES") temporal.set(key, edge);
+      }
+      edges = [...temporal.values()];
       if (q.repoId) {
         const needle = q.repoId;
         edges = edges.filter(
@@ -495,7 +512,7 @@ function runGraphQueryInner(
         op: q.op,
         nodes: collectNodes(db, ids),
         edges,
-        summary: `${edges.length} MODIFIES/TOUCHES edge(s) valid at ${q.at}`,
+        summary: `${edges.length} MODIFIES edge(s) valid at ${q.at}`,
         rows: edges.slice(0, 50).map((e) => ({
           id: e.id,
           from: e.source,

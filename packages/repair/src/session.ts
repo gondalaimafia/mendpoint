@@ -160,7 +160,8 @@ export async function runRepairSession(
         .filter((f) =>
           observations.some((o) => o.filePath && f.path.includes(o.filePath)),
         )
-        .slice(0, 6);
+        .slice(0, 6)
+        .map((f) => ({ filePath: f.path, content: f.content }));
       const llmPlan = await planRepairsWithLlm(observations, slices, { attempt });
       if (llmPlan?.actions.length) {
         plan = {

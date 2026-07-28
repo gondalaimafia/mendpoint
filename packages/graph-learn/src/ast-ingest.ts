@@ -7,7 +7,11 @@ import { join, relative, extname } from "node:path";
 import {
   upsertEdge,
   upsertNode,
+  deleteNode,
   deleteFileSubgraph,
+  edgesFrom,
+  edgesTo,
+  listNodesByKind,
   type GraphLearnDb,
 } from "./store.js";
 
@@ -75,33 +79,70 @@ export function extractSymbolsFromSource(
 ): { symbols: string[]; calls: Array<{ from: string; to: string }> } {
   const symbols: string[] = [];
   const calls: Array<{ from: string; to: string }> = [];
-  let current: string | null = null;
+  const ignoredCalls = new Set([
+    "if",
+    "for",
+    "while",
+    "switch",
+    "catch",
+    "def",
+    "class",
+    "return",
+    "print",
+    "function",
+    "typeof",
+    "new",
+    "await",
+  ]);
+  const addCalls = (from: string, body: string) => {
+    for (const m of body.matchAll(/\b([A-Za-z_][\w]*)\s*\(/g)) {
+      const callee = m[1]!;
+      if (!ignoredCalls.has(callee)) calls.push({ from, to: callee });
+    }
+  };
 
   if (lang === "python") {
-    for (const m of source.matchAll(/^\s*(?:async\s+)?def\s+([A-Za-z_][\w]*)/gm)) {
-      symbols.push(m[1]!);
-      current = m[1]!;
+    const lines = source.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const row = lines[i]!;
+      const m = row.match(/^(\s*)(?:async\s+)?def\s+([A-Za-z_][\w]*)\s*\(/);
+      if (!m) continue;
+      const indent = m[1]!.replace(/\t/g, "    ").length;
+      const name = m[2]!;
+      symbols.push(name);
+      const body: string[] = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        const candidate = lines[j]!;
+        if (!candidate.trim()) {
+          body.push(candidate);
+          continue;
+        }
+        const candidateIndent =
+          candidate.match(/^\s*/)![0].replace(/\t/g, "    ").length;
+        if (candidateIndent <= indent) break;
+        body.push(candidate);
+      }
+      addCalls(name, body.join("\n"));
     }
     for (const m of source.matchAll(/^\s*class\s+([A-Za-z_][\w]*)/gm)) {
       symbols.push(m[1]!);
     }
-    for (const m of source.matchAll(/\b([A-Za-z_][\w]*)\s*\(/g)) {
-      const name = m[1]!;
-      if (["if", "for", "while", "def", "class", "return", "print"].includes(name))
-        continue;
-      if (current) calls.push({ from: current, to: name });
-    }
   } else if (lang === "java") {
-    for (const m of source.matchAll(
-      /(?:public|private|protected|static|\s)+[\w<>,\[\]]+\s+([A-Za-z_][\w]*)\s*\(/g,
-    )) {
-      symbols.push(m[1]!);
-      current = m[1]!;
-    }
-    for (const m of source.matchAll(/\b([A-Za-z_][\w]*)\s*\(/g)) {
-      const name = m[1]!;
-      if (["if", "for", "while", "switch", "catch", "new"].includes(name)) continue;
-      if (current) calls.push({ from: current, to: name });
+    const methodRe =
+      /(?:public|private|protected|static|final|synchronized|native|abstract|\s)+[\w<>,.?\[\]]+\s+([A-Za-z_][\w]*)\s*\([^)]*\)\s*(?:throws[^{]+)?\{/g;
+    let method: RegExpExecArray | null;
+    while ((method = methodRe.exec(source))) {
+      const name = method[1]!;
+      symbols.push(name);
+      const bodyStart = method.index + method[0].length;
+      let depth = 1;
+      let i = bodyStart;
+      while (i < source.length && depth > 0) {
+        if (source[i] === "{") depth++;
+        else if (source[i] === "}") depth--;
+        i++;
+      }
+      addCalls(name, source.slice(bodyStart, i - 1));
     }
   } else {
     // TS/JS — per-function body scan so CALLS attach to the defining function
@@ -120,25 +161,7 @@ export function extractSymbolsFromSource(
         i++;
       }
       const body = source.slice(bodyStart, i - 1);
-      for (const m of body.matchAll(/\b([A-Za-z_][\w]*)\s*\(/g)) {
-        const callee = m[1]!;
-        if (
-          [
-            "if",
-            "for",
-            "while",
-            "switch",
-            "catch",
-            "function",
-            "return",
-            "typeof",
-            "new",
-            "await",
-          ].includes(callee)
-        )
-          continue;
-        calls.push({ from: name, to: callee });
-      }
+      addCalls(name, body);
     }
     for (const m of source.matchAll(
       /(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][\w]*)\s*=\s*(?:async\s*)?\(/g,
@@ -150,7 +173,6 @@ export function extractSymbolsFromSource(
     )) {
       symbols.push(m[1]!);
     }
-    void current;
   }
 
   return {
@@ -161,7 +183,7 @@ export function extractSymbolsFromSource(
 
 /** Export walk for incremental reingest */
 export function listCodeFiles(repoPath: string, maxFiles = 400): string[] {
-  return walk(repoPath).slice(0, maxFiles);
+  return walk(repoPath).sort().slice(0, maxFiles);
 }
 
 export function langOfPath(file: string): string {
@@ -219,6 +241,7 @@ export function ingestAstFile(
   let symbols = 0;
   let calls = 0;
   const extracted = extractSymbolsFromSource(source, lang);
+  const localDefinitions = new Set(extracted.symbols);
   for (const sym of extracted.symbols) {
     const sid = `symbol:${opts.repoId}:${rel}:${sym}`;
     upsertNode(db, {
@@ -244,14 +267,19 @@ export function ingestAstFile(
   }
   for (const c of extracted.calls) {
     const fromId = `symbol:${opts.repoId}:${rel}:${c.from}`;
-    const toId = `symbol:${opts.repoId}:${c.to}`;
-    upsertNode(db, {
-      id: toId,
-      kind: "Symbol",
-      label: c.to,
-      repo_id: opts.repoId,
-      props: { qualified_name: c.to, unresolved: true },
-    });
+    const isLocal = localDefinitions.has(c.to);
+    const toId = isLocal
+      ? `symbol:${opts.repoId}:${rel}:${c.to}`
+      : `symbol:${opts.repoId}:${c.to}`;
+    if (!isLocal) {
+      upsertNode(db, {
+        id: toId,
+        kind: "Symbol",
+        label: c.to,
+        repo_id: opts.repoId,
+        props: { qualified_name: c.to, unresolved: true },
+      });
+    }
     upsertEdge(db, {
       id: `CALLS:${fromId}:${c.to}`.slice(0, 240),
       kind: "CALLS",
@@ -263,6 +291,46 @@ export function ingestAstFile(
     calls++;
   }
   return { symbols, calls, language: lang, fileId };
+}
+
+/**
+ * Repoint unresolved call targets when the repository contains exactly one
+ * matching definition. Ambiguous names remain explicit unresolved symbols.
+ */
+export function reconcileAstCallTargets(
+  db: GraphLearnDb,
+  repoId: string,
+): number {
+  const symbols = listNodesByKind(db, "Symbol").filter(
+    (n) => n.repo_id === repoId,
+  );
+  const definitions = new Map<string, string[]>();
+  for (const symbol of symbols) {
+    if (symbol.props?.unresolved === true) continue;
+    const ids = definitions.get(symbol.label) ?? [];
+    ids.push(symbol.id);
+    definitions.set(symbol.label, ids);
+  }
+
+  let reconciled = 0;
+  for (const unresolved of symbols.filter(
+    (n) => n.props?.unresolved === true,
+  )) {
+    const matches = definitions.get(unresolved.label) ?? [];
+    if (matches.length !== 1) continue;
+    const incoming = edgesTo(db, unresolved.id, ["CALLS"]);
+    for (const edge of incoming) {
+      upsertEdge(db, { ...edge, target: matches[0]! });
+      reconciled++;
+    }
+    if (
+      edgesTo(db, unresolved.id).length === 0 &&
+      edgesFrom(db, unresolved.id).length === 0
+    ) {
+      deleteNode(db, unresolved.id);
+    }
+  }
+  return reconciled;
 }
 
 export function ingestAstRepo(
@@ -283,7 +351,8 @@ export function ingestAstRepo(
     opts.repoPath.replace(/\\/g, "/").split("/").filter(Boolean).pop() ??
     "repo";
   const files =
-    opts.onlyFiles ?? walk(opts.repoPath).slice(0, opts.maxFiles ?? 400);
+    opts.onlyFiles ??
+    walk(opts.repoPath).sort().slice(0, opts.maxFiles ?? 400);
   const languages: Record<string, number> = {};
   let symbols = 0;
   let calls = 0;
@@ -308,6 +377,7 @@ export function ingestAstRepo(
     symbols += r.symbols;
     calls += r.calls;
   }
+  reconcileAstCallTargets(db, repoId);
 
   return {
     repoId,

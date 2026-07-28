@@ -13,6 +13,22 @@ export type ScmPr = {
   provider: ScmProvider;
 };
 
+export class ScmRequestError extends Error {
+  readonly provider: ScmProvider;
+  readonly operation: "createPr";
+  readonly status: number;
+  readonly response: unknown;
+
+  constructor(provider: ScmProvider, status: number, response: unknown) {
+    super(`${provider} createPr failed with status ${status}`);
+    this.name = "ScmRequestError";
+    this.provider = provider;
+    this.operation = "createPr";
+    this.status = status;
+    this.response = response;
+  }
+}
+
 export type ScmAdapter = {
   provider: ScmProvider;
   available: boolean;
@@ -76,6 +92,15 @@ function mockPr(
   };
 }
 
+function assertCreatePrSucceeded(
+  provider: ScmProvider,
+  result: { ok: boolean; status: number; json: unknown },
+): void {
+  if (!result.ok) {
+    throw new ScmRequestError(provider, result.status, result.json);
+  }
+}
+
 export function createGitHubAdapter(fetchImpl: FetchJson = defaultFetch): ScmAdapter {
   const token = process.env.GITHUB_TOKEN;
   const api = process.env.GITHUB_API_URL ?? "https://api.github.com";
@@ -101,9 +126,7 @@ export function createGitHubAdapter(fetchImpl: FetchJson = defaultFetch): ScmAda
           base: input.base,
         }),
       });
-      if (!r.ok) {
-        return mockPr("github", { ...input, number: 0 });
-      }
+      assertCreatePrSucceeded("github", r);
       const j = r.json as { id?: number; number?: number; html_url?: string; state?: string };
       return {
         id: String(j.id ?? "gh"),
@@ -179,7 +202,7 @@ export function createGitLabAdapter(fetchImpl: FetchJson = defaultFetch): ScmAda
           target_branch: input.base,
         }),
       });
-      if (!r.ok) return mockPr("gitlab", { ...input, number: 0 });
+      assertCreatePrSucceeded("gitlab", r);
       const j = r.json as { id?: number; iid?: number; web_url?: string; state?: string };
       return {
         id: String(j.id ?? "gl"),
@@ -260,7 +283,7 @@ export function createBitbucketAdapter(fetchImpl: FetchJson = defaultFetch): Scm
           }),
         },
       );
-      if (!r.ok) return mockPr("bitbucket", { ...input, number: 0 });
+      assertCreatePrSucceeded("bitbucket", r);
       const j = r.json as {
         id?: number;
         links?: { html?: { href?: string } };
@@ -303,7 +326,9 @@ export function createBitbucketAdapter(fetchImpl: FetchJson = defaultFetch): Scm
         id: String(p.id),
         number: p.id,
         title: p.title,
-        url: p.links?.html?.href ?? mockPr("bitbucket", input).url,
+        url:
+          p.links?.html?.href ??
+          mockPr("bitbucket", { ...input, title: p.title }).url,
         state: "open" as const,
         provider: "bitbucket" as const,
       }));
@@ -339,7 +364,7 @@ export function createAzureDevOpsAdapter(
           targetRefName: `refs/heads/${input.base}`,
         }),
       });
-      if (!r.ok) return mockPr("azure_devops", { ...input, number: 0 });
+      assertCreatePrSucceeded("azure_devops", r);
       const j = r.json as {
         pullRequestId?: number;
         url?: string;
@@ -397,7 +422,9 @@ export function createAzureDevOpsAdapter(
         id: String(p.pullRequestId),
         number: p.pullRequestId,
         title: p.title,
-        url: p.url ?? mockPr("azure_devops", input).url,
+        url:
+          p.url ??
+          mockPr("azure_devops", { ...input, title: p.title }).url,
         state: "open" as const,
         provider: "azure_devops" as const,
       }));

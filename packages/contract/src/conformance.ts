@@ -154,7 +154,7 @@ export function breakingChangeGate(
   const violations: ContractViolation[] = breaking.slice(0, 30).map((s) => ({
     caseId: s.canonicalId ?? s.id ?? "surface",
     kind: "breaking_change" as const,
-    message: s.summary ?? s.canonicalId ?? "breaking surface",
+    message: s.explanation || s.canonicalId || "breaking surface",
     expected: "non_breaking or approved waiver",
     actual: s.severity ?? diff.risk,
   }));

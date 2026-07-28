@@ -2,11 +2,11 @@
  * Ephemeral VM sandbox backends.
  * - local: workdir (default)
  * - docker: docker run --rm when DOCKER available
- * - firecracker: stub interface (microVM metadata + local fallback)
+ * - firecracker: reserved until a real microVM runner is implemented
  * Build cache keyed by cacheKey across PR units.
  */
-import { execFileSync, execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -22,7 +22,7 @@ export type VmSandboxOpts = CreateSandboxOpts & {
   backend?: VmBackend;
   /** Docker image when backend=docker */
   image?: string;
-  /** Firecracker kernel/rootfs paths (stub — not launched without host support) */
+  /** Firecracker kernel/rootfs paths reserved for a future real microVM runner */
   firecracker?: { kernel?: string; rootfs?: string; vcpus?: number; memMb?: number };
 };
 
@@ -55,14 +55,10 @@ export function detectVmCapabilities(): VmCapability[] {
     available: dockerOk,
     reason: dockerOk ? "docker daemon reachable" : "docker not available",
   });
-  const fcBin =
-    process.env.FIRECRACKER_BIN && existsSync(process.env.FIRECRACKER_BIN);
   caps.push({
     backend: "firecracker",
-    available: !!fcBin,
-    reason: fcBin
-      ? "FIRECRACKER_BIN set"
-      : "stub only — set FIRECRACKER_BIN + kernel/rootfs for real microVM",
+    available: false,
+    reason: "not implemented: no microVM runner is available",
   });
   return caps;
 }
@@ -93,7 +89,8 @@ export function clearBuildCache(key?: string): void {
 }
 
 /**
- * Create sandbox with preferred backend. Falls back local when docker/fc unavailable.
+ * Create sandbox with preferred backend. Docker may fall back to local when unavailable.
+ * Firecracker fails closed until a real microVM runner is implemented.
  */
 export function createVmSandbox(opts: VmSandboxOpts = {}): SandboxHandle & {
   backend: VmBackend;
@@ -104,16 +101,20 @@ export function createVmSandbox(opts: VmSandboxOpts = {}): SandboxHandle & {
   const want = opts.backend ?? (process.env.MENDPOINT_VM_BACKEND as VmBackend) ?? "local";
   const caps = detectVmCapabilities();
   const docker = caps.find((c) => c.backend === "docker")?.available;
-  const fc = caps.find((c) => c.backend === "firecracker")?.available;
+
+  if (want === "firecracker") {
+    throw new Error(
+      "Firecracker backend is unavailable: no microVM runner is implemented",
+    );
+  }
 
   let backend: VmBackend = "local";
   let fallback = false;
   if (want === "docker" && docker) backend = "docker";
-  else if (want === "firecracker" && fc) backend = "firecracker";
   else if (want === "local") backend = "local";
   else {
     backend = "local";
-    fallback = want !== "local";
+    fallback = true;
   }
 
   let cacheHit = false;
@@ -123,8 +124,7 @@ export function createVmSandbox(opts: VmSandboxOpts = {}): SandboxHandle & {
     e.hits++;
   }
 
-  const kind: SandboxKind =
-    backend === "local" ? "local" : backend === "docker" ? "vm" : "vm";
+  const kind: SandboxKind = backend === "local" ? "local" : "vm";
 
   const base = createSandbox({
     ...opts,
@@ -161,8 +161,20 @@ export function createVmSandbox(opts: VmSandboxOpts = {}): SandboxHandle & {
       ? (cmd: string, runOpts?: { timeoutMs?: number }) => {
           try {
             const image = opts.image ?? "node:20-alpine";
-            const stdout = execSync(
-              `docker run --rm -v "${base.root}:/work" -w /work ${image} sh -c ${JSON.stringify(cmd)}`,
+            const stdout = execFileSync(
+              "docker",
+              [
+                "run",
+                "--rm",
+                "-v",
+                `${base.root}:/work`,
+                "-w",
+                "/work",
+                image,
+                "sh",
+                "-c",
+                cmd,
+              ],
               {
                 encoding: "utf8",
                 timeout: runOpts?.timeoutMs ?? 120_000,

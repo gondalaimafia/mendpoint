@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { newId, nowIso } from "@mendpoint/shared";
+import { computeProductMetrics } from "./metrics.js";
 import type {
   ApiChange,
   ApiKeyRow,
@@ -265,7 +266,12 @@ CREATE INDEX IF NOT EXISTS github_installations_login_idx ON github_installation
 export function resolveDbPath(urlOrPath?: string): string {
   const root = findMonorepoRoot();
   const fallback = join(root, "data", "mendpoint.sqlite");
-  const raw = urlOrPath ?? process.env.DATABASE_URL;
+  const raw =
+    urlOrPath ??
+    process.env.DATABASE_URL ??
+    (process.env.MENDPOINT_DATA_DIR
+      ? join(process.env.MENDPOINT_DATA_DIR, "mendpoint.sqlite")
+      : undefined);
   if (!raw) return fallback;
 
   const pathPart = raw.startsWith("file:") ? raw.slice("file:".length) : raw;
@@ -322,15 +328,15 @@ function migrateProvidersFeedColumns(db: AppDb) {
   }
 }
 
-function all<T>(db: AppDb, sql: string, params: unknown[] = []): T[] {
+function all<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T[] {
   return db.raw.prepare(sql).all(...params) as T[];
 }
 
-function get<T>(db: AppDb, sql: string, params: unknown[] = []): T | undefined {
+function get<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T | undefined {
   return db.raw.prepare(sql).get(...params) as T | undefined;
 }
 
-function run(db: AppDb, sql: string, params: unknown[] = []): void {
+function run(db: AppDb, sql: string, params: SQLInputValue[] = []): void {
   db.raw.prepare(sql).run(...params);
 }
 
@@ -641,12 +647,26 @@ export function getChange(db: AppDb, id: string): ApiChange | undefined {
   return get(db, `SELECT * FROM api_changes WHERE id = ?`, [id]);
 }
 
-export function listConsumers(db: AppDb): Consumer[] {
-  return all(db, `SELECT * FROM consumers ORDER BY created_at`);
+export function listConsumers(db: AppDb, tenantId?: string): Consumer[] {
+  return all(
+    db,
+    `SELECT * FROM consumers
+     ${tenantId ? "WHERE tenant_id = ?" : ""}
+     ORDER BY created_at`,
+    tenantId ? [tenantId] : [],
+  );
 }
 
-export function listPrs(db: AppDb): MigrationPrRow[] {
-  return all(db, `SELECT * FROM migration_prs ORDER BY created_at DESC`);
+export function listPrs(db: AppDb, tenantId?: string): MigrationPrRow[] {
+  return all(
+    db,
+    `SELECT pr.*
+     FROM migration_prs pr
+     JOIN consumers c ON c.id = pr.consumer_id
+     ${tenantId ? "WHERE c.tenant_id = ?" : ""}
+     ORDER BY pr.created_at DESC`,
+    tenantId ? [tenantId] : [],
+  );
 }
 
 export function listPrsForChange(db: AppDb, changeId: string): MigrationPrRow[] {
@@ -657,8 +677,19 @@ export function listPrsForChange(db: AppDb, changeId: string): MigrationPrRow[] 
   );
 }
 
-export function getPr(db: AppDb, id: string): MigrationPrRow | undefined {
-  return get(db, `SELECT * FROM migration_prs WHERE id = ?`, [id]);
+export function getPr(
+  db: AppDb,
+  id: string,
+  tenantId?: string,
+): MigrationPrRow | undefined {
+  return get(
+    db,
+    `SELECT pr.*
+     FROM migration_prs pr
+     JOIN consumers c ON c.id = pr.consumer_id
+     WHERE pr.id = ? ${tenantId ? "AND c.tenant_id = ?" : ""}`,
+    tenantId ? [id, tenantId] : [id],
+  );
 }
 
 export function listAudit(db: AppDb): AuditEvent[] {
@@ -687,8 +718,17 @@ export function getConsumerRepo(db: AppDb, consumerId: string): ConsumerRepo | u
   return get(db, `SELECT * FROM consumer_repos WHERE consumer_id = ?`, [consumerId]);
 }
 
-export function getConsumer(db: AppDb, id: string): Consumer | undefined {
-  return get(db, `SELECT * FROM consumers WHERE id = ?`, [id]);
+export function getConsumer(
+  db: AppDb,
+  id: string,
+  tenantId?: string,
+): Consumer | undefined {
+  return get(
+    db,
+    `SELECT * FROM consumers
+     WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`,
+    tenantId ? [id, tenantId] : [id],
+  );
 }
 
 export function listPoliciesForConsumer(db: AppDb, consumerId: string) {
@@ -712,7 +752,7 @@ export function getPoliciesMap(db: AppDb, consumerId: string): Record<string, un
   return out;
 }
 
-export { computeProductMetrics } from "./metrics.js";
+export { computeProductMetrics };
 export type { ProductMetrics } from "./metrics.js";
 
 export { buildExposureReport } from "./exposure.js";
@@ -818,7 +858,7 @@ export function createApiKey(
       row.name,
       keyHash,
       prefix,
-      row.tenantId ?? "default",
+      row.tenantId ?? "tenant_default",
       JSON.stringify(row.scopes ?? ["*"]),
       row.createdAt,
     ],
@@ -827,7 +867,7 @@ export function createApiKey(
     id: row.id,
     token,
     prefix,
-    tenantId: row.tenantId ?? "default",
+    tenantId: row.tenantId ?? "tenant_default",
   };
 }
 
@@ -844,16 +884,33 @@ export function touchApiKey(db: AppDb, id: string, at: string) {
   run(db, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, [at, id]);
 }
 
-export function listApiKeys(db: AppDb): Array<Omit<ApiKeyRow, "key_hash">> {
+export function listApiKeys(
+  db: AppDb,
+  tenantId?: string,
+): Array<Omit<ApiKeyRow, "key_hash">> {
   return all<ApiKeyRow>(
     db,
     `SELECT id, name, key_hash, key_prefix, tenant_id, scopes_json, created_at, last_used_at, revoked_at
-     FROM api_keys ORDER BY created_at DESC`,
+     FROM api_keys
+     ${tenantId ? "WHERE tenant_id = ?" : ""}
+     ORDER BY created_at DESC`,
+    tenantId ? [tenantId] : [],
   ).map(({ key_hash: _h, ...rest }) => rest);
 }
 
-export function revokeApiKey(db: AppDb, id: string, at: string) {
-  run(db, `UPDATE api_keys SET revoked_at = ? WHERE id = ?`, [at, id]);
+export function revokeApiKey(
+  db: AppDb,
+  id: string,
+  at: string,
+  tenantId?: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `UPDATE api_keys SET revoked_at = ?
+       WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`,
+    )
+    .run(...(tenantId ? [at, id, tenantId] : [at, id]));
+  return Number(result.changes) > 0;
 }
 
 export function countActiveApiKeys(db: AppDb): number {
@@ -1257,9 +1314,7 @@ export function agentRunToApi(r: AgentRunRow) {
 export {
   listConsumersForProvider,
   listConsumersImpactedByChange,
-  listRegistryEdges,
   registrySummaryMarkdown,
-  countMonitoredForConsumer,
   type RegistryHit,
 } from "./registry.js";
 
@@ -1424,6 +1479,13 @@ export function upsertGitHubInstallation(
     [row.installationId],
   );
   if (existing) {
+    if (
+      row.tenantId &&
+      existing.tenant_id &&
+      row.tenantId !== existing.tenant_id
+    ) {
+      throw new Error("github_installation_tenant_mismatch");
+    }
     run(
       db,
       `UPDATE github_installations
@@ -1462,8 +1524,17 @@ export function upsertGitHubInstallation(
   return row.id;
 }
 
-export function listGitHubInstallations(db: AppDb): GitHubInstallationRow[] {
-  return all(db, `SELECT * FROM github_installations ORDER BY updated_at DESC`);
+export function listGitHubInstallations(
+  db: AppDb,
+  tenantId?: string,
+): GitHubInstallationRow[] {
+  return all(
+    db,
+    `SELECT * FROM github_installations
+     ${tenantId ? "WHERE tenant_id = ?" : ""}
+     ORDER BY updated_at DESC`,
+    tenantId ? [tenantId] : [],
+  );
 }
 
 export function getGitHubInstallationByLogin(
@@ -1496,13 +1567,22 @@ export function linkConsumersToInstallation(
   accountLogin: string,
   installationId: string,
   tenantId?: string | null,
-) {
-  run(
-    db,
-    `UPDATE consumers SET installation_id = ?, tenant_id = COALESCE(?, tenant_id)
-     WHERE lower(github_owner) = lower(?)`,
-    [installationId, tenantId ?? null, accountLogin],
-  );
+): number {
+  const result = db.raw
+    .prepare(
+      `UPDATE consumers
+       SET installation_id = ?, tenant_id = COALESCE(tenant_id, ?)
+       WHERE lower(github_owner) = lower(?)
+         AND (? IS NULL OR tenant_id IS NULL OR tenant_id = ?)`,
+    )
+    .run(
+      installationId,
+      tenantId ?? null,
+      accountLogin,
+      tenantId ?? null,
+      tenantId ?? null,
+    );
+  return Number(result.changes);
 }
 
 export function prToApi(p: MigrationPrRow) {

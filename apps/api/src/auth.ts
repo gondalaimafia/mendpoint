@@ -16,8 +16,17 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
+import type { Permission, Principal, Role } from "@mendpoint/platform";
 
 export type AuthMode = "off" | "auto" | "required";
+export type ApiVariables = {
+  requestId: string;
+  tenantId?: string;
+  apiKeyId?: string;
+  authScopes?: string[];
+  principal?: Principal;
+};
+export type ApiEnv = { Variables: ApiVariables };
 
 export function authMode(): AuthMode {
   const m = (process.env.API_AUTH ?? "off").toLowerCase();
@@ -37,8 +46,6 @@ export function isExemptPath(path: string): boolean {
   )
     return true;
   if (path.startsWith("/webhooks/")) return true;
-  // GitHub App install wizard (public entry + mock callback)
-  if (path.startsWith("/github/app/")) return true;
   if (path === "/billing/plans") return true;
   if (path === "/brands") return true;
   return false;
@@ -54,8 +61,36 @@ export function effectiveAuthMode(): AuthMode {
   return authMode();
 }
 
+export function parseApiKeyScopes(scopesJson: string): string[] {
+  try {
+    const value = JSON.parse(scopesJson);
+    return Array.isArray(value)
+      ? value.filter((scope): scope is string => typeof scope === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function roleFromApiKeyScopes(scopes: string[]): Role {
+  if (scopes.includes("*")) return "owner";
+  const declared = scopes
+    .find((scope) => scope.startsWith("role:"))
+    ?.slice("role:".length)
+    .toLowerCase();
+  return (["owner", "admin", "engineer", "viewer", "fde", "agent"] as Role[])
+    .includes(declared as Role)
+    ? (declared as Role)
+    : "viewer";
+}
+
+export function scopeAllows(scopes: string[] | undefined, permission: Permission): boolean {
+  if (!scopes) return false;
+  return scopes.includes("*") || scopes.includes(permission);
+}
+
 export function createAuthMiddleware(db: AppDb) {
-  return async (c: Context, next: Next) => {
+  return async (c: Context<ApiEnv>, next: Next) => {
     const path = new URL(c.req.url).pathname;
     if (isExemptPath(path)) {
       return next();
@@ -86,8 +121,16 @@ export function createAuthMiddleware(db: AppDb) {
     }
 
     touchApiKey(db, key.id, nowIso());
+    const scopes = parseApiKeyScopes(key.scopes_json);
+    const principal: Principal = {
+      id: `api-key:${key.id}`,
+      tenantId: key.tenant_id,
+      role: roleFromApiKeyScopes(scopes),
+    };
     c.set("tenantId", key.tenant_id);
     c.set("apiKeyId", key.id);
+    c.set("authScopes", scopes);
+    c.set("principal", principal);
     return next();
   };
 }

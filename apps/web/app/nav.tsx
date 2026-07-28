@@ -31,9 +31,7 @@ export function Nav() {
         <nav className="nav-links" aria-label="Primary">
           {LINKS.map((l) => {
             const active =
-              l.href === "/"
-                ? pathname === "/"
-                : pathname === l.href || pathname.startsWith(l.href + "/");
+              pathname === l.href || pathname.startsWith(l.href + "/");
             return (
               <Link
                 key={l.href}

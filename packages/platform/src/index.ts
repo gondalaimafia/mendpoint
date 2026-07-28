@@ -63,6 +63,7 @@ export {
 
 export type { ScmProvider, ScmPr, ScmAdapter } from "./scm.js";
 export {
+  ScmRequestError,
   getScmAdapter,
   createGitHubAdapter,
   createGitLabAdapter,

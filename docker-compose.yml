@@ -1,15 +1,20 @@
 # Production-style local stack for Warden GA
 # Usage:
+#   docker compose run --rm api npm run auth:bootstrap
+#   Set the printed key as MENDPOINT_API_KEY in .env
 #   docker compose up --build
 #   open http://localhost:3000  (web)  http://localhost:3001/status (API)
+# Ports bind to loopback because the web proxy holds an operator API key.
+# Remote exposure requires an external access gate in front of the web service.
 
 services:
   api:
     build:
       context: .
       dockerfile: Dockerfile
+      target: api
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
     environment:
       NODE_ENV: production
       API_PORT: "3001"
@@ -23,6 +28,7 @@ services:
     volumes:
       - mendpoint-data:/app/data
       - mendpoint-runs:/app/runs
+      - mendpoint-github:/app/.mendpoint
     healthcheck:
       test:
         [
@@ -37,19 +43,16 @@ services:
       start_period: 25s
 
   web:
-    image: node:22-bookworm-slim
-    working_dir: /app
-    command: sh -c "npm install && npm run build -w @mendpoint/web && npm run start -w @mendpoint/web"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       NODE_ENV: production
-      NEXT_PUBLIC_API_URL: http://localhost:3001
-    volumes:
-      - ./package.json:/app/package.json
-      - ./package-lock.json:/app/package-lock.json
-      - ./apps/web:/app/apps/web
-      - ./tsconfig.base.json:/app/tsconfig.base.json
+      MENDPOINT_API_URL: http://api:3001
+      MENDPOINT_API_KEY: ${MENDPOINT_API_KEY:-}
     depends_on:
       api:
         condition: service_healthy
@@ -57,3 +60,4 @@ services:
 volumes:
   mendpoint-data:
   mendpoint-runs:
+  mendpoint-github:

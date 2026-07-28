@@ -26,21 +26,20 @@ export function listPlans(baseDir: string): Array<{ runId: string; title?: strin
   if (!existsSync(root)) return [];
   return readdirSync(root, { withFileTypes: true })
     .filter((d) => d.isDirectory())
-    .map((d) => {
+    .flatMap((d) => {
       const p = runDir(baseDir, d.name).planPath;
-      if (!existsSync(p)) return null;
+      if (!existsSync(p)) return [];
       try {
         const plan = JSON.parse(readFileSync(p, "utf8")) as AgentPlan;
-        return {
+        return [{
           runId: d.name,
           title: plan.title,
           steps: plan.steps?.length ?? 0,
-        };
+        }];
       } catch {
-        return null;
+        return [];
       }
-    })
-    .filter((x): x is { runId: string; title?: string; steps: number } => !!x);
+    });
 }
 
 export function getPlan(baseDir: string, runId: string): AgentPlan {

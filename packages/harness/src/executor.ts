@@ -75,7 +75,6 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
   let plan = opts.plan;
   let runId = opts.runId ?? newId();
   let paths: RunPaths;
-  let recovered = false;
   let inject = opts.injectFailureAction;
 
   if (opts.resumeRunId && runExists(baseDir, opts.resumeRunId)) {
@@ -119,7 +118,6 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
       if (inject && step.action === inject) inject = undefined;
 
       if (!result.ok) {
-        recovered = true;
         plan = updateStep(plan, step.id, {
           status: "failed",
           evidence: result.error,
@@ -130,14 +128,12 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
           ts: new Date().toISOString(),
           type: "error",
           message: result.error ?? "step failed",
-          data: { stepId: step.id, recovery: "skip_and_continue" },
+          data: {
+            stepId: step.id,
+            outcome: "failed",
+            continuation: "remaining_steps",
+          },
         });
-        // Deterministic recovery: skip failed step and continue (or would ask-user)
-        plan = updateStep(plan, step.id, {
-          status: "skipped",
-          notes: `recovered: skipped after structured error`,
-        });
-        savePlan(paths, plan);
         stepsRun++;
         continue;
       }
@@ -173,9 +169,9 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
     runId,
     ok: prog.failed === 0 && prog.pending === 0,
     stepsTotal: prog.total,
-    stepsDone: prog.done + (plan.steps.filter((s) => s.status === "skipped").length),
+    stepsDone: prog.done,
     stepsFailed: plan.steps.filter((s) => s.status === "failed").length,
-    recoveredFromFailure: recovered,
+    recoveredFromFailure: false,
     durationMs,
     graphQueries,
     tokensEst,
@@ -183,10 +179,6 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
     costUsd: cost.totalUsd,
     planId: plan.id,
   };
-  // treat skipped-after-fail as recovered success path for harness demos
-  if (recovered && prog.pending === 0) {
-    score.ok = true;
-  }
   writeScore(paths, score);
   try {
     appendDogfoodLedger(baseDir, {

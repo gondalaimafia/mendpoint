@@ -98,7 +98,10 @@ function twoPropZ(
   const se = Math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2));
   if (se === 0) return { z: 0, p: 1 };
   const z = (p2 - p1) / se;
-  const pValue = 2 * (1 - normalCdf(Math.abs(z)));
+  const pValue = Math.max(
+    0,
+    Math.min(1, 2 * (1 - normalCdf(Math.abs(z)))),
+  );
   return { z, p: pValue };
 }
 

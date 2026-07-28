@@ -17,17 +17,9 @@ jobs:
           node-version: "22"
           cache: npm
       - name: Install
-        run: npm ci || npm install
-      - name: Unit tests (core GA path)
-        run: |
-          npm test -w @mendpoint/ops
-          npm test -w @mendpoint/shared --if-present
-          npm test -w @mendpoint/graph-learn
-          npm test -w @mendpoint/pipeline
-          npm test -w @mendpoint/harness
-          npm test -w @mendpoint/platform
-          npm test -w @mendpoint/contract --if-present
-          npm test -w @mendpoint/sdk
+        run: npm ci
+      - name: Unit tests
+        run: npm test
       - name: GA preflight
         run: npm run ga:check
       - name: Demo smoke (offline)
@@ -35,13 +27,71 @@ jobs:
         env:
           GITHUB_MODE: mock
 
-  typecheck-ops:
+  release-gates:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-      - run: npm ci || npm install
-      - run: npm run typecheck -w @mendpoint/ops --if-present
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Production build
+        run: npm run build
+      - name: API startup smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          export NODE_ENV=production
+          export API_AUTH=required
+          export GITHUB_MODE=mock
+          export MENDPOINT_DATA_DIR="$RUNNER_TEMP/mendpoint-smoke"
+          bootstrap_output="$(npm run --silent auth:bootstrap)"
+          api_key="$(printf '%s\n' "$bootstrap_output" | sed -n 's/^token=//p')"
+          test -n "$api_key"
+          npm run start:api >"$RUNNER_TEMP/api-smoke.log" 2>&1 &
+          api_pid=$!
+          cleanup() {
+            kill "$api_pid" 2>/dev/null || true
+            wait "$api_pid" 2>/dev/null || true
+            cat "$RUNNER_TEMP/api-smoke.log"
+          }
+          trap cleanup EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3001/ready >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$api_pid" 2>/dev/null; then
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent \
+            -H "Authorization: Bearer $api_key" \
+            http://127.0.0.1:3001/keys >/dev/null
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -H 'Authorization: Bearer invalid' \
+            -H 'X-Role: owner' \
+            -H 'X-Tenant-Id: tenant_default' \
+            http://127.0.0.1:3001/keys)" = "401"
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -X POST \
+            -H 'Content-Type: application/json' \
+            -H 'X-GitHub-Event: installation' \
+            -H 'X-GitHub-Delivery: ci-smoke' \
+            --data '{"action":"deleted","installation":{"id":1}}' \
+            http://127.0.0.1:3001/webhooks/github)" = "401"
+
+  container-builds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API image
+        run: docker build --target api -t mendpoint-api:ci .
+      - name: Build web image
+        run: docker build --target web -t mendpoint-web:ci .

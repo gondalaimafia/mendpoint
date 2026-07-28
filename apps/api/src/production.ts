@@ -1,15 +1,17 @@
 /**
  * Production middleware: security headers, rate limit, request id.
  */
+import { createHash } from "node:crypto";
 import type { Context, Next } from "hono";
 import {
   rateLimit,
   rateLimitKeyFromRequest,
   isProduction,
 } from "@mendpoint/ops";
+import type { ApiEnv } from "./auth.js";
 
 export function requestIdMiddleware() {
-  return async (c: Context, next: Next) => {
+  return async (c: Context<ApiEnv>, next: Next) => {
     const id =
       c.req.header("x-request-id") ??
       `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -20,7 +22,7 @@ export function requestIdMiddleware() {
 }
 
 export function securityHeadersMiddleware() {
-  return async (c: Context, next: Next) => {
+  return async (c: Context<ApiEnv>, next: Next) => {
     await next();
     c.header("X-Content-Type-Options", "nosniff");
     c.header("X-Frame-Options", "DENY");
@@ -32,8 +34,26 @@ export function securityHeadersMiddleware() {
   };
 }
 
+function credentialFingerprint(c: Context<ApiEnv>): string | undefined {
+  const header =
+    c.req.header("authorization") ??
+    c.req.header("Authorization") ??
+    c.req.header("x-api-key");
+  if (!header) return undefined;
+  return createHash("sha256").update(header).digest("hex").slice(0, 24);
+}
+
+function trustedClientIp(c: Context<ApiEnv>): string {
+  if (process.env.TRUST_PROXY !== "1") return "direct";
+  return (
+    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
+    c.req.header("x-real-ip") ??
+    "proxy-unknown"
+  );
+}
+
 export function rateLimitMiddleware() {
-  return async (c: Context, next: Next) => {
+  return async (c: Context<ApiEnv>, next: Next) => {
     const path = new URL(c.req.url).pathname;
     if (
       path === "/health" ||
@@ -43,12 +63,10 @@ export function rateLimitMiddleware() {
     ) {
       return next();
     }
-    const apiKeyId = c.get("apiKeyId") as string | undefined;
-    const ip =
-      c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
-      c.req.header("x-real-ip") ??
-      "local";
-    const key = rateLimitKeyFromRequest({ apiKeyId, ip });
+    const fingerprint = credentialFingerprint(c);
+    const key = fingerprint
+      ? `credential:${fingerprint}`
+      : rateLimitKeyFromRequest({ ip: trustedClientIp(c) });
     const r = rateLimit(key);
     c.header("X-RateLimit-Limit", String(r.limit));
     c.header("X-RateLimit-Remaining", String(r.remaining));

@@ -10,8 +10,10 @@ export type EnvReport = {
   values: Record<string, string | undefined>;
 };
 
-export function nodeEnv(): "development" | "production" | "test" {
-  const e = (process.env.NODE_ENV ?? "development").toLowerCase();
+export function nodeEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): "development" | "production" | "test" {
+  const e = (env.NODE_ENV ?? "development").toLowerCase();
   if (e === "production") return "production";
   if (e === "test") return "test";
   return "development";
@@ -26,7 +28,7 @@ export function isProduction(): boolean {
  * Production requires API_AUTH=required (or on) and a stable data dir.
  */
 export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport {
-  const mode = nodeEnv();
+  const mode = nodeEnv(env);
   const errors: string[] = [];
   const warnings: string[] = [];
   const values: Record<string, string | undefined> = {
@@ -36,6 +38,7 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     DATABASE_URL: env.DATABASE_URL,
     WEB_URL: env.WEB_URL,
     GITHUB_MODE: env.GITHUB_MODE,
+    GITHUB_WEBHOOK_SECRET: env.GITHUB_WEBHOOK_SECRET ? "[set]" : undefined,
     CORS_ORIGINS: env.CORS_ORIGINS,
   };
 
@@ -54,6 +57,10 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     if ((env.GITHUB_MODE ?? "mock") === "mock") {
       warnings.push(
         "GITHUB_MODE=mock — real PRs disabled (ok for private/self-hosted demos)",
+      );
+    } else if (!env.GITHUB_WEBHOOK_SECRET) {
+      errors.push(
+        "GITHUB_WEBHOOK_SECRET is required when GITHUB_MODE=real in production",
       );
     }
     if (!env.CORS_ORIGINS && !env.WEB_URL) {
