@@ -46,4 +46,10 @@ describe("poll", () => {
     expect(r.replace(/\\/g, "/")).toContain("repo");
     expect(r.replace(/\\/g, "/")).toContain("fixtures/x.json");
   });
+
+  it("does not resolve a POSIX absolute file path under the monorepo", () => {
+    const r = resolveFeedUrl("file:/tmp/spec.json", "C:\\repo");
+    expect(r.replace(/\\/g, "/")).not.toContain("repo/tmp/spec.json");
+    expect(r.replace(/\\/g, "/")).toMatch(/\/tmp\/spec\.json$/);
+  });
 });

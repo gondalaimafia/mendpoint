@@ -36,7 +36,7 @@ Full report: `C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\mendpoint
 - [x] Add root tests, build, typecheck, authenticated API startup, and container gates to CI.
 - [x] Add regression tests for every reviewed failure path.
 - [x] Run full tests, typecheck, build, authenticated API smoke, and GA verification.
-- [ ] Verify both container targets in GitHub Actions.
+- [x] Verify both container targets in GitHub Actions.
 - [x] Review the final diff and commit without unrelated changes.
 
 ## Remediation review
@@ -52,8 +52,8 @@ Local verification is green:
 - Invalid API key and unsigned production webhook each return 401
 - CI and Compose YAML parse successfully
 - CI startup smoke passes Bash syntax validation
+- GitHub Actions builds both API and web container targets
 - `git diff --check`
 
-Docker is not installed in the local environment. The CI container job now builds
-both the `api` and `web` targets, so that check remains open until the branch run
-completes.
+Docker is not installed in the local environment. GitHub Actions completed both
+the `api` and `web` target builds successfully.

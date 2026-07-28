@@ -25,9 +25,16 @@ export function contentHash(body: string): string {
 /** Resolve file: relative paths against monorepo root (or cwd). */
 export function resolveFeedUrl(url: string, monorepoRoot?: string): string {
   if (!url.startsWith("file:")) return url;
-  const pathPart = url.slice("file:".length).replace(/^\/*/, "");
-  if (/^[A-Za-z]:[\\/]/.test(pathPart) || pathPart.startsWith("/")) {
-    return `file:${resolve(pathPart)}`;
+  const pathPart = url.slice("file:".length);
+  const windowsFileUriPath =
+    pathPart.match(/^\/+([A-Za-z]:[\\/].*)$/)?.[1];
+  const absolutePath =
+    windowsFileUriPath ??
+    (/^[A-Za-z]:[\\/]/.test(pathPart) || pathPart.startsWith("/")
+      ? pathPart
+      : undefined);
+  if (absolutePath) {
+    return `file:${resolve(absolutePath)}`;
   }
   const root = monorepoRoot ?? process.cwd();
   return `file:${join(root, pathPart)}`;
