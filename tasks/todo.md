@@ -46,17 +46,19 @@ Local verification is green:
 - `npm test`
 - `npm run typecheck`
 - `npm run build`
-- `npm run ga:check`, including 20 of 20 graph benchmark cases
+- `npm run ga:check`, including the required graph benchmark threshold
 - Production API bootstrap and startup with `API_AUTH=required`
 - Authenticated `/keys` request returns 200
 - Invalid API key and unsigned production webhook each return 401
 - CI and Compose YAML parse successfully
 - CI startup smoke passes Bash syntax validation
-- GitHub Actions builds both API and web container targets
+- GitHub Actions builds the API, web, and worker container targets
+- GitHub Actions run 30589321642 passes the combined production startup smoke
 - `git diff --check`
 
-Docker is not installed in the local environment. GitHub Actions completed both
-the `api` and `web` target builds successfully.
+Docker is not installed in the local environment. GitHub Actions run 30589321642
+built all three production targets and passed the combined API, authenticated
+web session, protected proxy, and worker startup smoke.
 
 ## Whole repository debug
 
@@ -125,9 +127,10 @@ Full report:
 
 ## Customer launch review
 
-The code release gates pass locally. The supported first customer topology is one
-isolated Linux host per customer with the web, API, and worker on the same host.
-SQLite and repository mounts make a split or horizontally scaled deployment unsafe.
+The code release gates pass locally and in GitHub Actions run 30589321642. The
+supported first customer topology is one isolated Linux host per customer with
+the web, API, and worker on the same host. SQLite and repository mounts make a
+split or horizontally scaled deployment unsafe.
 
 Fly access is available, but there is no existing Mendpoint app, no deploy manifest,
 and no GitHub deployment secrets. A new Fly multi-machine deployment would separate
