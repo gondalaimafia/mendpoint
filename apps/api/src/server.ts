@@ -2432,10 +2432,11 @@ app.post("/brands/:id/preview", async (c) => {
 });
 
 const port = Number(process.env.API_PORT ?? 3001);
+const hostname = process.env.API_HOST?.trim() || "0.0.0.0";
 
-const server = serve({ fetch: app.fetch, port }, () => {
+const server = serve({ fetch: app.fetch, port, hostname }, () => {
   console.log(releaseBanner());
-  console.log(`Mendpoint API listening on http://localhost:${port}`);
+  console.log(`Mendpoint API listening on http://${hostname}:${port}`);
   console.log(
     `probes: /health /live /ready /version /status · auth=${effectiveAuthMode()} · channel=${RELEASE.channel}`,
   );

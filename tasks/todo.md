@@ -103,7 +103,7 @@ Full report:
 - [x] Resolve production dependency advisories without unsupported downgrades.
 - [x] Add regression tests for every confirmed root cause.
 - [x] Run focused regressions, full tests, typecheck, build, GA, and CI container gates.
-- [ ] Review the final diff, commit, push, and record production limits.
+- [x] Review the final diff, commit, push, and record production limits.
 
 ## Customer launch readiness
 
