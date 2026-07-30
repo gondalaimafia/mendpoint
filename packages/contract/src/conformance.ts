@@ -24,6 +24,7 @@ export type ContractViolation = {
     | "status_mismatch"
     | "schema_key_missing"
     | "auth_missing"
+    | "evidence_missing"
     | "breaking_change"
     | "spec_lint";
   message: string;
@@ -109,16 +110,38 @@ export function runContractSuite(
   opts?: { observedStatuses?: Record<string, number> },
 ): ConformanceReport {
   const violations: ContractViolation[] = [];
+  if (!cases.length) {
+    violations.push({
+      caseId: "contract-suite",
+      kind: "evidence_missing",
+      message: "no contract cases supplied",
+    });
+  }
   for (const c of cases) {
     if (c.requireAuth) {
       violations.push(...checkAuthHeaders(c.requestHeaders, c.id));
     }
-    if (c.requiredKeys?.length && c.responseBody !== undefined) {
-      violations.push(...checkRequiredKeys(c.responseBody, c.requiredKeys, c.id));
+    if (c.requiredKeys?.length) {
+      if (c.responseBody === undefined) {
+        violations.push({
+          caseId: c.id,
+          kind: "evidence_missing",
+          message: "response body evidence missing",
+        });
+      } else {
+        violations.push(...checkRequiredKeys(c.responseBody, c.requiredKeys, c.id));
+      }
     }
-    if (c.expectStatus != null && opts?.observedStatuses?.[c.id] != null) {
-      const actual = opts.observedStatuses[c.id]!;
-      if (actual !== c.expectStatus) {
+    if (c.expectStatus != null) {
+      const actual = opts?.observedStatuses?.[c.id];
+      if (actual == null) {
+        violations.push({
+          caseId: c.id,
+          kind: "evidence_missing",
+          message: `observed status missing for ${c.name}`,
+          expected: String(c.expectStatus),
+        });
+      } else if (actual !== c.expectStatus) {
         violations.push({
           caseId: c.id,
           kind: "status_mismatch",
@@ -208,8 +231,8 @@ export function evaluatePrGates(input: {
   } else {
     gates.push({
       id: "oas-breaking-change",
-      ok: true,
-      detail: "skipped (no spec pair)",
+      ok: false,
+      detail: "failed (no spec pair evidence)",
     });
   }
 
@@ -220,11 +243,11 @@ export function evaluatePrGates(input: {
     detail: suite.summary,
   });
 
-  const sec = input.securityScanOk !== false;
+  const sec = input.securityScanOk === true;
   gates.push({
     id: "security-scan",
     ok: sec,
-    detail: sec ? "pass or not configured" : "security scan failed",
+    detail: sec ? "security scan passed" : "security scan evidence missing or failed",
   });
 
   const ok = gates.every((g) => g.ok);

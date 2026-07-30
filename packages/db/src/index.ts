@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS api_versions (
   provider_id TEXT NOT NULL REFERENCES providers(id),
   version_label TEXT NOT NULL,
   openapi_json TEXT NOT NULL,
+  content_hash TEXT,
   changelog_md TEXT,
   published_at TEXT NOT NULL
 );
@@ -78,6 +79,7 @@ CREATE TABLE IF NOT EXISTS api_changes (
 );
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
   type TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
@@ -87,7 +89,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   result_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
-  finished_at TEXT
+  finished_at TEXT,
+  lease_owner TEXT,
+  lease_expires_at TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
 CREATE INDEX IF NOT EXISTS jobs_type_idx ON jobs(type);
@@ -95,6 +99,7 @@ CREATE INDEX IF NOT EXISTS jobs_type_idx ON jobs(type);
 -- Agentic repair sessions
 CREATE TABLE IF NOT EXISTS repair_sessions (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
   consumer_id TEXT,
   repo_path TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -110,6 +115,7 @@ CREATE INDEX IF NOT EXISTS repair_sessions_created_idx ON repair_sessions(create
 
 CREATE TABLE IF NOT EXISTS agent_runs (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
   goal TEXT NOT NULL,
   repo_path TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -130,7 +136,7 @@ CREATE TABLE IF NOT EXISTS consumers (
   github_owner TEXT NOT NULL,
   github_repo TEXT NOT NULL,
   installation_id TEXT,
-  tenant_id TEXT,
+  tenant_id TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS consumer_repos (
@@ -179,7 +185,11 @@ CREATE INDEX IF NOT EXISTS migration_prs_consumer_idx ON migration_prs(consumer_
 CREATE INDEX IF NOT EXISTS impact_findings_consumer_idx ON impact_findings(consumer_id);
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
   actor TEXT NOT NULL,
+  principal_id TEXT,
+  api_key_id TEXT,
+  request_id TEXT,
   action TEXT NOT NULL,
   resource_type TEXT NOT NULL,
   resource_id TEXT,
@@ -194,6 +204,7 @@ CREATE TABLE IF NOT EXISTS policies (
 );
 CREATE TABLE IF NOT EXISTS suppressed_patterns (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
   consumer_id TEXT,
   provider_slug TEXT,
   pattern TEXT NOT NULL,
@@ -260,6 +271,21 @@ CREATE TABLE IF NOT EXISTS github_installations (
 );
 CREATE INDEX IF NOT EXISTS github_installations_tenant_idx ON github_installations(tenant_id);
 CREATE INDEX IF NOT EXISTS github_installations_login_idx ON github_installations(account_login);
+
+CREATE TABLE IF NOT EXISTS github_install_states (
+  state_hash TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS github_install_states_tenant_idx ON github_install_states(tenant_id);
+
+CREATE TABLE IF NOT EXISTS github_webhook_deliveries (
+  delivery_id TEXT PRIMARY KEY,
+  event TEXT NOT NULL,
+  received_at TEXT NOT NULL
+);
 `;
 
 
@@ -316,6 +342,106 @@ function migrateProvidersFeedColumns(db: AppDb) {
   if (!chcols.includes("severity")) {
     run(db, `ALTER TABLE api_changes ADD COLUMN severity TEXT DEFAULT 'recommended'`);
   }
+  const versionColumns = all<{ name: string }>(
+    db,
+    `PRAGMA table_info(api_versions)`,
+  ).map((c) => c.name);
+  if (!versionColumns.includes("content_hash")) {
+    run(db, `ALTER TABLE api_versions ADD COLUMN content_hash TEXT`);
+  }
+  const versionsMissingHash = all<{
+    id: string;
+    provider_id: string;
+    openapi_json: string;
+  }>(
+    db,
+    `SELECT id, provider_id, openapi_json
+     FROM api_versions
+     WHERE content_hash IS NULL
+     ORDER BY published_at, id`,
+  );
+  for (const version of versionsMissingHash) {
+    const contentHash = createHash("sha256")
+      .update(version.openapi_json)
+      .digest("hex");
+    const existing = get<{ id: string }>(
+      db,
+      `SELECT id FROM api_versions
+       WHERE provider_id = ? AND content_hash = ? LIMIT 1`,
+      [version.provider_id, contentHash],
+    );
+    if (!existing) {
+      run(db, `UPDATE api_versions SET content_hash = ? WHERE id = ?`, [
+        contentHash,
+        version.id,
+      ]);
+    }
+  }
+  run(
+    db,
+    `CREATE UNIQUE INDEX IF NOT EXISTS api_versions_provider_content_uidx
+     ON api_versions(provider_id, content_hash)
+     WHERE content_hash IS NOT NULL`,
+  );
+  const additiveColumns: Array<{
+    table: string;
+    name: string;
+    sql: string;
+  }> = [
+    { table: "jobs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "jobs", name: "lease_owner", sql: "TEXT" },
+    { table: "jobs", name: "lease_expires_at", sql: "TEXT" },
+    { table: "repair_sessions", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "agent_runs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "audit_events", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "audit_events", name: "principal_id", sql: "TEXT" },
+    { table: "audit_events", name: "api_key_id", sql: "TEXT" },
+    { table: "audit_events", name: "request_id", sql: "TEXT" },
+    { table: "suppressed_patterns", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+  ];
+  for (const column of additiveColumns) {
+    const columns = all<{ name: string }>(
+      db,
+      `PRAGMA table_info(${column.table})`,
+    ).map((c) => c.name);
+    if (!columns.includes(column.name)) {
+      run(db, `ALTER TABLE ${column.table} ADD COLUMN ${column.name} ${column.sql}`);
+    }
+  }
+  for (const table of [
+    "consumers",
+    "jobs",
+    "repair_sessions",
+    "agent_runs",
+    "audit_events",
+    "suppressed_patterns",
+  ]) {
+    run(
+      db,
+      `UPDATE ${table}
+       SET tenant_id = 'tenant_default'
+       WHERE tenant_id IS NULL OR tenant_id = ''`,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_insert
+       BEFORE INSERT ON ${table}
+       WHEN NEW.tenant_id IS NULL OR NEW.tenant_id = ''
+       BEGIN
+         SELECT RAISE(ABORT, 'tenant_id_required');
+       END`,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_update
+       BEFORE UPDATE OF tenant_id ON ${table}
+       WHEN NEW.tenant_id IS NULL OR NEW.tenant_id = ''
+       BEGIN
+         SELECT RAISE(ABORT, 'tenant_id_required');
+       END`,
+    );
+  }
+  run(db, `CREATE INDEX IF NOT EXISTS jobs_tenant_status_idx ON jobs(tenant_id, status)`);
   // Ensure default tenant exists
   const t = get<{ id: string }>(db, `SELECT id FROM tenants WHERE slug = 'default'`);
   if (!t) {
@@ -343,7 +469,11 @@ function run(db: AppDb, sql: string, params: SQLInputValue[] = []): void {
 export function recordAudit(
   db: AppDb,
   input: {
+    tenantId: string;
     actor: string;
+    principalId?: string | null;
+    apiKeyId?: string | null;
+    requestId?: string | null;
     action: string;
     resourceType: string;
     resourceId?: string | null;
@@ -352,11 +482,16 @@ export function recordAudit(
 ) {
   run(
     db,
-    `INSERT INTO audit_events (id, actor, action, resource_type, resource_id, metadata_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO audit_events
+     (id, tenant_id, actor, principal_id, api_key_id, request_id, action, resource_type, resource_id, metadata_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newId(),
+      input.tenantId,
       input.actor,
+      input.principalId ?? null,
+      input.apiKeyId ?? null,
+      input.requestId ?? null,
       input.action,
       input.resourceType,
       input.resourceId ?? null,
@@ -421,19 +556,51 @@ export function insertApiVersion(
     publishedAt: string;
   },
 ) {
-  run(
-    db,
-    `INSERT INTO api_versions (id, provider_id, version_label, openapi_json, changelog_md, published_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
+  const result = insertApiVersionIfAbsent(db, row);
+  if (!result.inserted) {
+    throw new Error(`api_version_content_exists:${result.id}`);
+  }
+}
+
+export function insertApiVersionIfAbsent(
+  db: AppDb,
+  row: {
+    id: string;
+    providerId: string;
+    versionLabel: string;
+    openapiJson: string;
+    changelogMd?: string | null;
+    publishedAt: string;
+  },
+): { inserted: boolean; id: string; contentHash: string } {
+  const contentHash = createHash("sha256").update(row.openapiJson).digest("hex");
+  const result = db.raw
+    .prepare(
+      `INSERT INTO api_versions
+       (id, provider_id, version_label, openapi_json, content_hash, changelog_md, published_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`,
+    )
+    .run(
       row.id,
       row.providerId,
       row.versionLabel,
       row.openapiJson,
+      contentHash,
       row.changelogMd ?? null,
       row.publishedAt,
-    ],
+    );
+  if (Number(result.changes) === 1) {
+    return { inserted: true, id: row.id, contentHash };
+  }
+  const existing = get<{ id: string }>(
+    db,
+    `SELECT id FROM api_versions
+     WHERE provider_id = ? AND content_hash = ? LIMIT 1`,
+    [row.providerId, contentHash],
   );
+  if (!existing) throw new Error("api_version_insert_conflict");
+  return { inserted: false, id: existing.id, contentHash };
 }
 
 export function insertConsumer(
@@ -444,7 +611,7 @@ export function insertConsumer(
     githubOwner: string;
     githubRepo: string;
     installationId?: string | null;
-    tenantId?: string | null;
+    tenantId: string;
     createdAt: string;
   },
 ) {
@@ -458,7 +625,7 @@ export function insertConsumer(
       row.githubOwner,
       row.githubRepo,
       row.installationId ?? null,
-      row.tenantId ?? "tenant_default",
+      row.tenantId,
       row.createdAt,
     ],
   );
@@ -540,6 +707,44 @@ export function insertApiChange(
       row.createdAt,
     ],
   );
+}
+
+export function getOrInsertApiChange(
+  db: AppDb,
+  row: {
+    id: string;
+    providerId: string;
+    fromVersionId: string;
+    toVersionId: string;
+    risk: string;
+    summary: string;
+    diffJson: string;
+    severity?: string;
+    createdAt: string;
+  },
+): { change: ApiChange; inserted: boolean } {
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = get<ApiChange>(
+      db,
+      `SELECT * FROM api_changes
+       WHERE provider_id = ? AND from_version_id = ? AND to_version_id = ?
+       ORDER BY created_at LIMIT 1`,
+      [row.providerId, row.fromVersionId, row.toVersionId],
+    );
+    if (existing) {
+      db.raw.exec("COMMIT");
+      return { change: existing, inserted: false };
+    }
+    insertApiChange(db, row);
+    const inserted = get<ApiChange>(db, `SELECT * FROM api_changes WHERE id = ?`, [row.id]);
+    if (!inserted) throw new Error("api_change_insert_failed");
+    db.raw.exec("COMMIT");
+    return { change: inserted, inserted: true };
+  } catch (error) {
+    db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function updateChangeSeverity(db: AppDb, changeId: string, severity: string) {
@@ -631,6 +836,34 @@ export function updateMigrationPrStatus(
   ]);
 }
 
+export function updateMigrationPrDelivery(
+  db: AppDb,
+  id: string,
+  row: {
+    status: string;
+    githubPrNumber?: number | null;
+    githubPrUrl?: string | null;
+    body?: string;
+  },
+) {
+  run(
+    db,
+    `UPDATE migration_prs
+     SET status = ?,
+         github_pr_number = ?,
+         github_pr_url = ?,
+         body = COALESCE(?, body)
+     WHERE id = ?`,
+    [
+      row.status,
+      row.githubPrNumber ?? null,
+      row.githubPrUrl ?? null,
+      row.body ?? null,
+      id,
+    ],
+  );
+}
+
 export function listProviders(db: AppDb): Provider[] {
   return all(db, `SELECT * FROM providers ORDER BY created_at`);
 }
@@ -669,11 +902,18 @@ export function listPrs(db: AppDb, tenantId?: string): MigrationPrRow[] {
   );
 }
 
-export function listPrsForChange(db: AppDb, changeId: string): MigrationPrRow[] {
+export function listPrsForChange(
+  db: AppDb,
+  changeId: string,
+  tenantId?: string,
+): MigrationPrRow[] {
   return all(
     db,
-    `SELECT * FROM migration_prs WHERE change_id = ? ORDER BY created_at DESC`,
-    [changeId],
+    `SELECT pr.* FROM migration_prs pr
+     JOIN consumers c ON c.id = pr.consumer_id
+     WHERE pr.change_id = ? ${tenantId ? "AND c.tenant_id = ?" : ""}
+     ORDER BY pr.created_at DESC`,
+    tenantId ? [changeId, tenantId] : [changeId],
   );
 }
 
@@ -692,12 +932,48 @@ export function getPr(
   );
 }
 
-export function listAudit(db: AppDb): AuditEvent[] {
-  return all(db, `SELECT * FROM audit_events ORDER BY created_at DESC`);
+export function listAudit(db: AppDb, tenantId?: string): AuditEvent[] {
+  return all(
+    db,
+    `SELECT * FROM audit_events
+     ${tenantId ? "WHERE tenant_id = ?" : ""}
+     ORDER BY created_at DESC`,
+    tenantId ? [tenantId] : [],
+  );
 }
 
-export function listFindingsForChange(db: AppDb, changeId: string): ImpactFindingRow[] {
-  return all(db, `SELECT * FROM impact_findings WHERE change_id = ?`, [changeId]);
+export function findPrByRepositoryAndNumber(
+  db: AppDb,
+  owner: string,
+  repo: string,
+  number: number,
+): MigrationPrRow | undefined {
+  return get(
+    db,
+    `SELECT pr.*
+     FROM migration_prs pr
+     JOIN consumers c ON c.id = pr.consumer_id
+     WHERE lower(c.github_owner) = lower(?)
+       AND lower(c.github_repo) = lower(?)
+       AND pr.github_pr_number = ?
+     ORDER BY pr.created_at DESC
+     LIMIT 1`,
+    [owner, repo, number],
+  );
+}
+
+export function listFindingsForChange(
+  db: AppDb,
+  changeId: string,
+  tenantId?: string,
+): ImpactFindingRow[] {
+  return all(
+    db,
+    `SELECT f.* FROM impact_findings f
+     JOIN consumers c ON c.id = f.consumer_id
+     WHERE f.change_id = ? ${tenantId ? "AND c.tenant_id = ?" : ""}`,
+    tenantId ? [changeId, tenantId] : [changeId],
+  );
 }
 
 export function listVersionsForProvider(db: AppDb, providerId: string): ApiVersion[] {
@@ -706,16 +982,36 @@ export function listVersionsForProvider(db: AppDb, providerId: string): ApiVersi
   ]);
 }
 
-export function listMonitoredForProvider(db: AppDb, providerId: string): MonitoredApi[] {
-  return all(db, `SELECT * FROM monitored_apis WHERE provider_id = ?`, [providerId]);
+export function listMonitoredForProvider(
+  db: AppDb,
+  providerId: string,
+  tenantId?: string,
+): MonitoredApi[] {
+  return all(
+    db,
+    `SELECT m.* FROM monitored_apis m
+     JOIN consumers c ON c.id = m.consumer_id
+     WHERE m.provider_id = ? ${tenantId ? "AND c.tenant_id = ?" : ""}`,
+    tenantId ? [providerId, tenantId] : [providerId],
+  );
 }
 
 export function listMonitoredForConsumer(db: AppDb, consumerId: string): MonitoredApi[] {
   return all(db, `SELECT * FROM monitored_apis WHERE consumer_id = ?`, [consumerId]);
 }
 
-export function getConsumerRepo(db: AppDb, consumerId: string): ConsumerRepo | undefined {
-  return get(db, `SELECT * FROM consumer_repos WHERE consumer_id = ?`, [consumerId]);
+export function getConsumerRepo(
+  db: AppDb,
+  consumerId: string,
+  tenantId?: string,
+): ConsumerRepo | undefined {
+  return get(
+    db,
+    `SELECT r.* FROM consumer_repos r
+     JOIN consumers c ON c.id = r.consumer_id
+     WHERE r.consumer_id = ? ${tenantId ? "AND c.tenant_id = ?" : ""}`,
+    tenantId ? [consumerId, tenantId] : [consumerId],
+  );
 }
 
 export function getConsumer(
@@ -731,16 +1027,26 @@ export function getConsumer(
   );
 }
 
-export function listPoliciesForConsumer(db: AppDb, consumerId: string) {
+export function listPoliciesForConsumer(
+  db: AppDb,
+  consumerId: string,
+  tenantId?: string,
+) {
   return all<{ id: string; consumer_id: string; key: string; value_json: string }>(
     db,
-    `SELECT * FROM policies WHERE consumer_id = ?`,
-    [consumerId],
+    `SELECT p.* FROM policies p
+     JOIN consumers c ON c.id = p.consumer_id
+     WHERE p.consumer_id = ? ${tenantId ? "AND c.tenant_id = ?" : ""}`,
+    tenantId ? [consumerId, tenantId] : [consumerId],
   );
 }
 
-export function getPoliciesMap(db: AppDb, consumerId: string): Record<string, unknown> {
-  const rows = listPoliciesForConsumer(db, consumerId);
+export function getPoliciesMap(
+  db: AppDb,
+  consumerId: string,
+  tenantId?: string,
+): Record<string, unknown> {
+  const rows = listPoliciesForConsumer(db, consumerId, tenantId);
   const out: Record<string, unknown> = {};
   for (const r of rows) {
     try {
@@ -760,6 +1066,7 @@ export type { ExposureReport } from "./exposure.js";
 
 export type SuppressedPattern = {
   id: string;
+  tenant_id: string;
   consumer_id: string | null;
   provider_slug: string | null;
   pattern: string;
@@ -772,6 +1079,7 @@ export function insertSuppressedPattern(
   db: AppDb,
   row: {
     id: string;
+    tenantId: string;
     consumerId?: string | null;
     providerSlug?: string | null;
     pattern: string;
@@ -782,10 +1090,12 @@ export function insertSuppressedPattern(
 ) {
   run(
     db,
-    `INSERT INTO suppressed_patterns (id, consumer_id, provider_slug, pattern, reason, source_pr_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO suppressed_patterns
+     (id, tenant_id, consumer_id, provider_slug, pattern, reason, source_pr_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
+      row.tenantId,
       row.consumerId ?? null,
       row.providerSlug ?? null,
       row.pattern,
@@ -798,29 +1108,40 @@ export function insertSuppressedPattern(
 
 export function listSuppressedPatterns(
   db: AppDb,
-  opts?: { consumerId?: string; providerSlug?: string },
+  opts?: { consumerId?: string; providerSlug?: string; tenantId?: string },
 ): SuppressedPattern[] {
+  const tenantWhere = opts?.tenantId ? "tenant_id = ?" : "1 = 1";
+  const tenantParams = opts?.tenantId ? [opts.tenantId] : [];
   if (opts?.consumerId && opts?.providerSlug) {
     return all(
       db,
-      `SELECT * FROM suppressed_patterns WHERE consumer_id = ? OR provider_slug = ? OR consumer_id IS NULL ORDER BY created_at DESC`,
-      [opts.consumerId, opts.providerSlug],
+      `SELECT * FROM suppressed_patterns
+       WHERE ${tenantWhere}
+         AND (consumer_id = ? OR provider_slug = ? OR consumer_id IS NULL)
+       ORDER BY created_at DESC`,
+      [...tenantParams, opts.consumerId, opts.providerSlug],
     );
   }
   if (opts?.consumerId) {
     return all(
       db,
-      `SELECT * FROM suppressed_patterns WHERE consumer_id = ? OR consumer_id IS NULL ORDER BY created_at DESC`,
-      [opts.consumerId],
+      `SELECT * FROM suppressed_patterns
+       WHERE ${tenantWhere} AND (consumer_id = ? OR consumer_id IS NULL)
+       ORDER BY created_at DESC`,
+      [...tenantParams, opts.consumerId],
     );
   }
-  return all(db, `SELECT * FROM suppressed_patterns ORDER BY created_at DESC`);
+  return all(
+    db,
+    `SELECT * FROM suppressed_patterns WHERE ${tenantWhere} ORDER BY created_at DESC`,
+    tenantParams,
+  );
 }
 
 export function isPatternSuppressed(
   db: AppDb,
   pattern: string,
-  opts?: { consumerId?: string; providerSlug?: string },
+  opts?: { consumerId?: string; providerSlug?: string; tenantId?: string },
 ): boolean {
   const rows = listSuppressedPatterns(db, opts);
   const p = pattern.toLowerCase();
@@ -841,7 +1162,7 @@ export function createApiKey(
   row: {
     id: string;
     name: string;
-    tenantId?: string;
+    tenantId: string;
     scopes?: string[];
     createdAt: string;
   },
@@ -858,7 +1179,7 @@ export function createApiKey(
       row.name,
       keyHash,
       prefix,
-      row.tenantId ?? "tenant_default",
+      row.tenantId,
       JSON.stringify(row.scopes ?? ["*"]),
       row.createdAt,
     ],
@@ -867,7 +1188,7 @@ export function createApiKey(
     id: row.id,
     token,
     prefix,
-    tenantId: row.tenantId ?? "tenant_default",
+    tenantId: row.tenantId,
   };
 }
 
@@ -1040,6 +1361,7 @@ export function changeToApi(c: ApiChange) {
 
 export type JobRow = {
   id: string;
+  tenant_id: string;
   type: string;
   payload_json: string;
   status: string;
@@ -1050,12 +1372,15 @@ export type JobRow = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  lease_owner: string | null;
+  lease_expires_at: string | null;
 };
 
 export function enqueueJob(
   db: AppDb,
   row: {
     id: string;
+    tenantId: string;
     type: string;
     payload: unknown;
     maxAttempts?: number;
@@ -1064,29 +1389,107 @@ export function enqueueJob(
 ) {
   run(
     db,
-    `INSERT INTO jobs (id, type, payload_json, status, attempts, max_attempts, created_at)
-     VALUES (?, ?, ?, 'pending', 0, ?, ?)`,
-    [row.id, row.type, JSON.stringify(row.payload), row.maxAttempts ?? 3, row.createdAt],
+    `INSERT INTO jobs
+     (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at)
+     VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)`,
+    [
+      row.id,
+      row.tenantId,
+      row.type,
+      JSON.stringify(row.payload),
+      row.maxAttempts ?? 3,
+      row.createdAt,
+    ],
   );
 }
 
-export function claimNextJob(db: AppDb, types?: string[]): JobRow | undefined {
+export function recoverExpiredJobs(
+  db: AppDb,
+  now = new Date().toISOString(),
+  tenantId?: string,
+): number {
+  const result = db.raw
+    .prepare(
+      `UPDATE jobs
+       SET status = CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END,
+           error = CASE
+             WHEN attempts < max_attempts THEN 'lease_expired'
+             ELSE 'lease_expired_max_attempts'
+           END,
+           finished_at = CASE WHEN attempts < max_attempts THEN NULL ELSE ? END,
+           lease_owner = NULL,
+           lease_expires_at = NULL
+       WHERE status = 'running'
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at <= ?
+         ${tenantId ? "AND tenant_id = ?" : ""}`,
+    )
+    .run(...(tenantId ? [now, now, tenantId] : [now, now]));
+  return Number(result.changes);
+}
+
+export function claimNextJob(
+  db: AppDb,
+  types?: string[],
+  opts?: {
+    tenantId?: string;
+    workerId?: string;
+    leaseMs?: number;
+    now?: string;
+  },
+): JobRow | undefined {
   const typeFilter = types?.length
     ? `AND type IN (${types.map(() => "?").join(",")})`
     : "";
-  const params = types?.length ? types : [];
-  const job = get<JobRow>(
-    db,
-    `SELECT * FROM jobs WHERE status = 'pending' ${typeFilter} ORDER BY created_at LIMIT 1`,
-    params,
-  );
-  if (!job) return undefined;
-  run(
-    db,
-    `UPDATE jobs SET status = 'running', attempts = attempts + 1, started_at = ? WHERE id = ? AND status = 'pending'`,
-    [new Date().toISOString(), job.id],
-  );
-  return get(db, `SELECT * FROM jobs WHERE id = ?`, [job.id]);
+  const tenantFilter = opts?.tenantId ? "AND tenant_id = ?" : "";
+  const now = opts?.now ?? new Date().toISOString();
+  const workerId =
+    opts?.workerId ?? `worker:${process.pid}:${randomBytes(8).toString("hex")}`;
+  const leaseExpiresAt = new Date(
+    Date.parse(now) + Math.max(1_000, opts?.leaseMs ?? 60_000),
+  ).toISOString();
+  const params: SQLInputValue[] = [
+    ...(types?.length ? types : []),
+    ...(opts?.tenantId ? [opts.tenantId] : []),
+  ];
+
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    recoverExpiredJobs(db, now, opts?.tenantId);
+    const job = get<JobRow>(
+      db,
+      `SELECT * FROM jobs
+       WHERE status = 'pending' ${typeFilter} ${tenantFilter}
+       ORDER BY created_at, id LIMIT 1`,
+      params,
+    );
+    if (!job) {
+      db.raw.exec("COMMIT");
+      return undefined;
+    }
+    const claimed = db.raw
+      .prepare(
+        `UPDATE jobs
+         SET status = 'running',
+             attempts = attempts + 1,
+             started_at = ?,
+             finished_at = NULL,
+             lease_owner = ?,
+             lease_expires_at = ?
+         WHERE id = ? AND status = 'pending'`,
+      )
+      .run(now, workerId, leaseExpiresAt, job.id);
+    if (Number(claimed.changes) !== 1) {
+      db.raw.exec("ROLLBACK");
+      return undefined;
+    }
+    const out = get<JobRow>(db, `SELECT * FROM jobs WHERE id = ?`, [job.id]);
+    db.raw.exec("COMMIT");
+    return out;
+  } catch (error) {
+    db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function completeJob(
@@ -1097,7 +1500,10 @@ export function completeJob(
 ) {
   run(
     db,
-    `UPDATE jobs SET status = 'done', result_json = ?, finished_at = ?, error = NULL WHERE id = ?`,
+    `UPDATE jobs
+     SET status = 'done', result_json = ?, finished_at = ?, error = NULL,
+         lease_owner = NULL, lease_expires_at = NULL
+     WHERE id = ?`,
     [JSON.stringify(result), finishedAt, id],
   );
 }
@@ -1108,20 +1514,31 @@ export function failJob(db: AppDb, id: string, error: string, finishedAt: string
   const retry = job.attempts < job.max_attempts;
   run(
     db,
-    `UPDATE jobs SET status = ?, error = ?, finished_at = ? WHERE id = ?`,
+    `UPDATE jobs
+     SET status = ?, error = ?, finished_at = ?,
+         lease_owner = NULL, lease_expires_at = NULL
+     WHERE id = ?`,
     [retry ? "pending" : "failed", error, finishedAt, id],
   );
 }
 
-export function listJobs(db: AppDb, limit = 50): JobRow[] {
-  return all(db, `SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?`, [limit]);
+export function listJobs(db: AppDb, limit = 50, tenantId?: string): JobRow[] {
+  return all(
+    db,
+    `SELECT * FROM jobs
+     ${tenantId ? "WHERE tenant_id = ?" : ""}
+     ORDER BY created_at DESC LIMIT ?`,
+    tenantId ? [tenantId, limit] : [limit],
+  );
 }
 
-export function exportAuditJson(db: AppDb, limit = 5000) {
+export function exportAuditJson(db: AppDb, limit = 5000, tenantId?: string) {
   const rows = all(
     db,
-    `SELECT * FROM audit_events ORDER BY created_at DESC LIMIT ?`,
-    [limit],
+    `SELECT * FROM audit_events
+     ${tenantId ? "WHERE tenant_id = ?" : ""}
+     ORDER BY created_at DESC LIMIT ?`,
+    tenantId ? [tenantId, limit] : [limit],
   );
   return {
     exportedAt: new Date().toISOString(),
@@ -1130,22 +1547,42 @@ export function exportAuditJson(db: AppDb, limit = 5000) {
   };
 }
 
-export function exportAuditCsv(db: AppDb, limit = 5000): string {
+export function exportAuditCsv(db: AppDb, limit = 5000, tenantId?: string): string {
   const rows = all(
     db,
-    `SELECT id, actor, action, resource_type, resource_id, created_at FROM audit_events ORDER BY created_at DESC LIMIT ?`,
-    [limit],
+    `SELECT id, tenant_id, actor, principal_id, api_key_id, request_id,
+            action, resource_type, resource_id, created_at
+     FROM audit_events
+     ${tenantId ? "WHERE tenant_id = ?" : ""}
+     ORDER BY created_at DESC LIMIT ?`,
+    tenantId ? [tenantId, limit] : [limit],
   ) as Array<{
     id: string;
+    tenant_id: string;
     actor: string;
+    principal_id: string | null;
+    api_key_id: string | null;
+    request_id: string | null;
     action: string;
     resource_type: string;
     resource_id: string | null;
     created_at: string;
   }>;
-  const header = "id,actor,action,resource_type,resource_id,created_at";
+  const header =
+    "id,tenant_id,actor,principal_id,api_key_id,request_id,action,resource_type,resource_id,created_at";
   const lines = rows.map((r) =>
-    [r.id, r.actor, r.action, r.resource_type, r.resource_id ?? "", r.created_at]
+    [
+      r.id,
+      r.tenant_id,
+      r.actor,
+      r.principal_id ?? "",
+      r.api_key_id ?? "",
+      r.request_id ?? "",
+      r.action,
+      r.resource_type,
+      r.resource_id ?? "",
+      r.created_at,
+    ]
       .map((c) => `"${String(c).replace(/"/g, '""')}"`)
       .join(","),
   );
@@ -1154,6 +1591,7 @@ export function exportAuditCsv(db: AppDb, limit = 5000): string {
 
 export type RepairSessionRow = {
   id: string;
+  tenant_id: string;
   consumer_id: string | null;
   repo_path: string;
   status: string;
@@ -1170,6 +1608,7 @@ export function insertRepairSession(
   db: AppDb,
   row: {
     id: string;
+    tenantId: string;
     consumerId?: string | null;
     repoPath: string;
     status: string;
@@ -1185,10 +1624,11 @@ export function insertRepairSession(
   run(
     db,
     `INSERT INTO repair_sessions
-     (id, consumer_id, repo_path, status, attempts, edits_count, ok, report_md, result_json, created_at, finished_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     (id, tenant_id, consumer_id, repo_path, status, attempts, edits_count, ok, report_md, result_json, created_at, finished_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
+      row.tenantId,
       row.consumerId ?? null,
       row.repoPath,
       row.status,
@@ -1203,17 +1643,37 @@ export function insertRepairSession(
   );
 }
 
-export function listRepairSessions(db: AppDb, limit = 30): RepairSessionRow[] {
-  return all(db, `SELECT * FROM repair_sessions ORDER BY created_at DESC LIMIT ?`, [limit]);
+export function listRepairSessions(
+  db: AppDb,
+  limit = 30,
+  tenantId?: string,
+): RepairSessionRow[] {
+  return all(
+    db,
+    `SELECT * FROM repair_sessions
+     ${tenantId ? "WHERE tenant_id = ?" : ""}
+     ORDER BY created_at DESC LIMIT ?`,
+    tenantId ? [tenantId, limit] : [limit],
+  );
 }
 
-export function getRepairSession(db: AppDb, id: string): RepairSessionRow | undefined {
-  return get(db, `SELECT * FROM repair_sessions WHERE id = ?`, [id]);
+export function getRepairSession(
+  db: AppDb,
+  id: string,
+  tenantId?: string,
+): RepairSessionRow | undefined {
+  return get(
+    db,
+    `SELECT * FROM repair_sessions
+     WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`,
+    tenantId ? [id, tenantId] : [id],
+  );
 }
 
 export function repairSessionToApi(r: RepairSessionRow) {
   return {
     id: r.id,
+    tenantId: r.tenant_id,
     consumerId: r.consumer_id,
     repoPath: r.repo_path,
     status: r.status,
@@ -1229,6 +1689,7 @@ export function repairSessionToApi(r: RepairSessionRow) {
 
 export type AgentRunRow = {
   id: string;
+  tenant_id: string;
   goal: string;
   repo_path: string;
   status: string;
@@ -1245,6 +1706,7 @@ export function insertAgentRun(
   db: AppDb,
   row: {
     id: string;
+    tenantId: string;
     goal: string;
     repoPath: string;
     status: string;
@@ -1261,9 +1723,10 @@ export function insertAgentRun(
   run(
     db,
     `INSERT INTO agent_runs
-     (id, goal, repo_path, status, ok, steps, files_changed_json, report_md, result_json, created_at, finished_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     (id, tenant_id, goal, repo_path, status, ok, steps, files_changed_json, report_md, result_json, created_at, finished_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
+       tenant_id = excluded.tenant_id,
        status = excluded.status,
        ok = excluded.ok,
        steps = excluded.steps,
@@ -1273,6 +1736,7 @@ export function insertAgentRun(
        finished_at = excluded.finished_at`,
     [
       row.id,
+      row.tenantId,
       row.goal,
       row.repoPath,
       row.status,
@@ -1287,17 +1751,37 @@ export function insertAgentRun(
   );
 }
 
-export function listAgentRuns(db: AppDb, limit = 30): AgentRunRow[] {
-  return all(db, `SELECT * FROM agent_runs ORDER BY created_at DESC LIMIT ?`, [limit]);
+export function listAgentRuns(
+  db: AppDb,
+  limit = 30,
+  tenantId?: string,
+): AgentRunRow[] {
+  return all(
+    db,
+    `SELECT * FROM agent_runs
+     ${tenantId ? "WHERE tenant_id = ?" : ""}
+     ORDER BY created_at DESC LIMIT ?`,
+    tenantId ? [tenantId, limit] : [limit],
+  );
 }
 
-export function getAgentRun(db: AppDb, id: string): AgentRunRow | undefined {
-  return get(db, `SELECT * FROM agent_runs WHERE id = ?`, [id]);
+export function getAgentRun(
+  db: AppDb,
+  id: string,
+  tenantId?: string,
+): AgentRunRow | undefined {
+  return get(
+    db,
+    `SELECT * FROM agent_runs
+     WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`,
+    tenantId ? [id, tenantId] : [id],
+  );
 }
 
 export function agentRunToApi(r: AgentRunRow) {
   return {
     id: r.id,
+    tenantId: r.tenant_id,
     goal: r.goal,
     repoPath: r.repo_path,
     status: r.status,
@@ -1318,26 +1802,52 @@ export {
   type RegistryHit,
 } from "./registry.js";
 
-export function computeDesignPartnerMetrics(db: AppDb) {
-  const base = computeProductMetrics(db);
+export function computeDesignPartnerMetrics(db: AppDb, tenantId?: string) {
+  const base = computeProductMetrics(db, tenantId);
   const suppressed = (
-    db.raw.prepare(`SELECT COUNT(*) as c FROM suppressed_patterns`).get() as { c: number }
+    db.raw
+      .prepare(
+        `SELECT COUNT(*) as c FROM suppressed_patterns
+         ${tenantId ? "WHERE tenant_id = ?" : ""}`,
+      )
+      .get(...(tenantId ? [tenantId] : [])) as { c: number }
   ).c;
   const consumers = (
-    db.raw.prepare(`SELECT COUNT(*) as c FROM consumers`).get() as { c: number }
+    db.raw
+      .prepare(
+        `SELECT COUNT(*) as c FROM consumers
+         ${tenantId ? "WHERE tenant_id = ?" : ""}`,
+      )
+      .get(...(tenantId ? [tenantId] : [])) as { c: number }
   ).c;
   const monitored = (
-    db.raw.prepare(`SELECT COUNT(*) as c FROM monitored_apis`).get() as { c: number }
+    db.raw
+      .prepare(
+        `SELECT COUNT(*) as c FROM monitored_apis m
+         JOIN consumers c ON c.id = m.consumer_id
+         ${tenantId ? "WHERE c.tenant_id = ?" : ""}`,
+      )
+      .get(...(tenantId ? [tenantId] : [])) as { c: number }
   ).c;
   const changes = (
-    db.raw.prepare(`SELECT COUNT(*) as c FROM api_changes`).get() as { c: number }
+    db.raw
+      .prepare(
+        `SELECT COUNT(DISTINCT ch.id) as c
+         FROM api_changes ch
+         LEFT JOIN impact_findings f ON f.change_id = ch.id
+         LEFT JOIN consumers c ON c.id = f.consumer_id
+         ${tenantId ? "WHERE c.tenant_id = ?" : ""}`,
+      )
+      .get(...(tenantId ? [tenantId] : [])) as { c: number }
   ).c;
   const notifications = (
     db.raw
       .prepare(
-        `SELECT COUNT(*) as c FROM audit_events WHERE action = 'pr.notification_only' OR action = 'pipeline.notification_only'`,
+        `SELECT COUNT(*) as c FROM audit_events
+         WHERE (action = 'pr.notification_only' OR action = 'pipeline.notification_only')
+         ${tenantId ? "AND tenant_id = ?" : ""}`,
       )
-      .get() as { c: number }
+      .get(...(tenantId ? [tenantId] : [])) as { c: number }
   ).c;
   return {
     ...base,
@@ -1585,6 +2095,93 @@ export function linkConsumersToInstallation(
   return Number(result.changes);
 }
 
+export function getGitHubInstallationByInstallationId(
+  db: AppDb,
+  installationId: string,
+): GitHubInstallationRow | undefined {
+  return get(
+    db,
+    `SELECT * FROM github_installations WHERE installation_id = ?`,
+    [installationId],
+  );
+}
+
+export function listTenantIdsForGitHubOwner(
+  db: AppDb,
+  owner: string,
+): string[] {
+  return all<{ tenant_id: string }>(
+    db,
+    `SELECT DISTINCT tenant_id
+     FROM consumers
+     WHERE lower(github_owner) = lower(?)
+       AND tenant_id IS NOT NULL`,
+    [owner],
+  ).map((row) => row.tenant_id);
+}
+
+function hashInstallState(state: string): string {
+  return createHash("sha256").update(state).digest("hex");
+}
+
+export function createGitHubInstallState(
+  db: AppDb,
+  input: {
+    state: string;
+    tenantId: string;
+    createdAt: string;
+    expiresAt: string;
+  },
+): void {
+  run(
+    db,
+    `INSERT INTO github_install_states
+     (state_hash, tenant_id, created_at, expires_at, consumed_at)
+     VALUES (?, ?, ?, ?, NULL)`,
+    [
+      hashInstallState(input.state),
+      input.tenantId,
+      input.createdAt,
+      input.expiresAt,
+    ],
+  );
+}
+
+export function consumeGitHubInstallState(
+  db: AppDb,
+  state: string,
+  tenantId: string,
+  now: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `UPDATE github_install_states
+       SET consumed_at = ?
+       WHERE state_hash = ?
+         AND tenant_id = ?
+         AND consumed_at IS NULL
+         AND expires_at > ?`,
+    )
+    .run(now, hashInstallState(state), tenantId, now);
+  return Number(result.changes) === 1;
+}
+
+export function recordGitHubWebhookDelivery(
+  db: AppDb,
+  deliveryId: string,
+  event: string,
+  receivedAt: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `INSERT INTO github_webhook_deliveries (delivery_id, event, received_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(delivery_id) DO NOTHING`,
+    )
+    .run(deliveryId, event, receivedAt);
+  return Number(result.changes) === 1;
+}
+
 export function prToApi(p: MigrationPrRow) {
   return {
     id: p.id,
@@ -1620,7 +2217,11 @@ export function findingToApi(f: ImpactFindingRow) {
 export function auditToApi(a: AuditEvent) {
   return {
     id: a.id,
+    tenantId: a.tenant_id,
     actor: a.actor,
+    principalId: a.principal_id,
+    apiKeyId: a.api_key_id,
+    requestId: a.request_id,
     action: a.action,
     resourceType: a.resource_type,
     resourceId: a.resource_id,

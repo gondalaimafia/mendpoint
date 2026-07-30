@@ -10,6 +10,8 @@ export {
 export type { SandboxKind, MockUpstream, SandboxHandle, CreateSandboxOpts } from "./sandbox.js";
 export {
   createSandbox,
+  clearSandboxCache,
+  getSandboxCacheStats,
   sandboxManifest,
   RUNTIME_MATRIX,
 } from "./sandbox.js";

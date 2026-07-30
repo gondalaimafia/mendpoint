@@ -8,6 +8,7 @@ const originalEnv = {
   RATE_LIMIT_MAX: process.env.RATE_LIMIT_MAX,
   RATE_LIMIT_WINDOW_MS: process.env.RATE_LIMIT_WINDOW_MS,
   TRUST_PROXY: process.env.TRUST_PROXY,
+  TRUST_PROXY_SECRET: process.env.TRUST_PROXY_SECRET,
 };
 
 afterEach(() => {
@@ -42,7 +43,7 @@ describe("production rate limit identity", () => {
     expect(second.status).toBe(429);
   });
 
-  it("uses a stable credential fingerprint before authentication", async () => {
+  it("does not let callers rotate unverified credentials to evade a network bucket", async () => {
     process.env.RATE_LIMIT_MAX = "1";
     const app = limitedApp();
 
@@ -59,13 +60,78 @@ describe("production rate limit identity", () => {
           headers: { Authorization: "Bearer key-two" },
         })
       ).status,
-    ).toBe(200);
+    ).toBe(429);
     expect(
       (
         await app.request("/private", {
           headers: { Authorization: "Bearer key-one" },
         })
       ).status,
+    ).toBe(429);
+  });
+
+  it("trusts forwarding headers only with the configured proxy secret", async () => {
+    process.env.RATE_LIMIT_MAX = "1";
+    process.env.TRUST_PROXY = "1";
+    process.env.TRUST_PROXY_SECRET = "proxy-secret";
+    const app = limitedApp();
+
+    expect(
+      (
+        await app.request("/private", {
+          headers: { "X-Forwarded-For": "198.51.100.1" },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await app.request("/private", {
+          headers: { "X-Forwarded-For": "198.51.100.2" },
+        })
+      ).status,
+    ).toBe(429);
+
+    clearRateLimits();
+    expect(
+      (
+        await app.request("/private", {
+          headers: {
+            "X-Forwarded-For": "198.51.100.1",
+            "X-Mendpoint-Proxy-Secret": "proxy-secret",
+          },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await app.request("/private", {
+          headers: {
+            "X-Forwarded-For": "198.51.100.2",
+            "X-Mendpoint-Proxy-Secret": "proxy-secret",
+          },
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("applies a second bucket using the authenticated stored API key id", async () => {
+    process.env.RATE_LIMIT_MAX = "1";
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("apiKeyId", c.req.header("x-test-key-id") ?? undefined);
+      await next();
+    });
+    app.use("*", rateLimitMiddleware({ identity: "principal" }));
+    app.get("/private", (c) => c.json({ ok: true }));
+
+    expect(
+      (await app.request("/private", { headers: { "X-Test-Key-Id": "key-a" } })).status,
+    ).toBe(200);
+    expect(
+      (await app.request("/private", { headers: { "X-Test-Key-Id": "key-b" } })).status,
+    ).toBe(200);
+    expect(
+      (await app.request("/private", { headers: { "X-Test-Key-Id": "key-a" } })).status,
     ).toBe(429);
   });
 });

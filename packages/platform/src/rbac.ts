@@ -156,7 +156,8 @@ export function permissionForRoute(
       path.startsWith("/audit")
     )
       return "tenant:admin";
-    return null; // public GETs when no sensitive surface
+    // Authenticated reads fail closed. Public reads must be explicitly listed above.
+    return "graph:read";
   }
 
   // Mutations

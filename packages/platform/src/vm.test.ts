@@ -7,7 +7,12 @@ const childProcess = vi.hoisted(() => ({
 
 vi.mock("node:child_process", () => childProcess);
 
-import { createVmSandbox, detectVmCapabilities } from "./vm.js";
+import {
+  clearBuildCache,
+  createVmSandbox,
+  detectVmCapabilities,
+  ensureBuildCacheDir,
+} from "./vm.js";
 
 describe("vm backend isolation", () => {
   beforeEach(() => {
@@ -67,5 +72,22 @@ describe("vm backend isolation", () => {
         firecracker: { kernel: "kernel", rootfs: "rootfs" },
       }),
     ).toThrow(/Firecracker backend is unavailable/);
+  });
+
+  it("fails closed when Docker is requested but unavailable", () => {
+    childProcess.execFileSync.mockImplementation(() => {
+      throw new Error("docker unavailable");
+    });
+    expect(() => createVmSandbox({ backend: "docker" })).toThrow(
+      /Docker daemon is unavailable/i,
+    );
+  });
+
+  it("rejects cache key path traversal and clears cached roots", () => {
+    expect(() => ensureBuildCacheDir("../escape")).toThrow(/safe characters/i);
+    const key = `vm-test-${Date.now()}`;
+    const sbx = createVmSandbox({ backend: "local", cacheKey: key });
+    sbx.dispose();
+    expect(() => clearBuildCache(key)).not.toThrow();
   });
 });

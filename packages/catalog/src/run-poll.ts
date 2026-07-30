@@ -6,11 +6,13 @@ import {
   createDb,
   findMonorepoRoot,
   getProviderBySlug,
-  insertApiVersion,
+  insertApiVersionIfAbsent,
   insertFeedPoll,
   insertProvider,
   latestSuccessfulHash,
+  latestFeedPollForSlug,
   listProviders,
+  listVersionsForProvider,
   recordAudit,
   updateProviderFeedUrls,
   type AppDb,
@@ -38,6 +40,8 @@ export type PollOneResult = {
 
 export type PollAllOptions = {
   db?: AppDb;
+  /** Tenant receiving pipeline and audit results for this poll. */
+  tenantId: string;
   monorepoRoot?: string;
   /** Run change pipeline when a new version is stored (default true if ≥2 versions). */
   runPipeline?: boolean;
@@ -91,11 +95,39 @@ function ensureProvider(db: AppDb, feed: PollableFeed) {
   return p;
 }
 
+const pollLocks = new WeakMap<object, Map<string, Promise<void>>>();
+
 export async function pollOneFeed(
   feed: PollableFeed,
-  opts: PollAllOptions = {},
+  opts: PollAllOptions,
 ): Promise<PollOneResult> {
   const db = opts.db ?? createDb();
+  let locks = pollLocks.get(db);
+  if (!locks) {
+    locks = new Map();
+    pollLocks.set(db, locks);
+  }
+  const prior = locks.get(feed.slug) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = prior.then(() => gate);
+  locks.set(feed.slug, tail);
+  await prior;
+  try {
+    return await pollOneFeedUnlocked(feed, { ...opts, db });
+  } finally {
+    release();
+    if (locks.get(feed.slug) === tail) locks.delete(feed.slug);
+  }
+}
+
+async function pollOneFeedUnlocked(
+  feed: PollableFeed,
+  opts: PollAllOptions & { db: AppDb },
+): Promise<PollOneResult> {
+  const db = opts.db;
   const root = opts.monorepoRoot ?? findMonorepoRoot();
   const url = feed.openapiUrl;
 
@@ -117,6 +149,60 @@ export async function pollOneFeed(
       polledAt: nowIso(),
     });
     return { slug: feed.slug, url, status: "error", error: err };
+  }
+
+  const latest = latestFeedPollForSlug(db, feed.slug);
+  if (
+    latest?.content_hash === fetched.contentHash &&
+    latest.error &&
+    opts.runPipeline !== false &&
+    opts.pipeline
+  ) {
+    try {
+      const report = await opts.pipeline(feed.slug, db);
+      insertFeedPoll(db, {
+        id: newId(),
+        providerSlug: feed.slug,
+        openapiUrl: url,
+        contentHash: fetched.contentHash,
+        versionLabel: latest.version_label,
+        status: "pipeline_ran",
+        versionId: latest.version_id,
+        pipelineChangeId: report.changeId,
+        polledAt: nowIso(),
+      });
+      return {
+        slug: feed.slug,
+        url,
+        status: "pipeline_ran",
+        contentHash: fetched.contentHash,
+        versionLabel: latest.version_label ?? undefined,
+        versionId: latest.version_id ?? undefined,
+        changeId: report.changeId,
+      };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      insertFeedPoll(db, {
+        id: newId(),
+        providerSlug: feed.slug,
+        openapiUrl: url,
+        contentHash: fetched.contentHash,
+        versionLabel: latest.version_label,
+        status: "new_version",
+        versionId: latest.version_id,
+        error,
+        polledAt: nowIso(),
+      });
+      return {
+        slug: feed.slug,
+        url,
+        status: "new_version",
+        contentHash: fetched.contentHash,
+        versionLabel: latest.version_label ?? undefined,
+        versionId: latest.version_id ?? undefined,
+        error,
+      };
+    }
   }
 
   const prev = latestSuccessfulHash(db, feed.slug);
@@ -141,42 +227,46 @@ export async function pollOneFeed(
     };
   }
 
-  const versionId = newId();
   const versionLabel = fetched.versionLabel ?? `polled-${fetched.contentHash.slice(0, 8)}`;
-  // Disambiguate if label already exists for this provider
   let label = versionLabel;
   const existingLabels = new Set(
-    (
-      db.raw
-        .prepare(`SELECT version_label FROM api_versions WHERE provider_id = ?`)
-        .all(provider.id) as Array<{ version_label: string }>
-    ).map((r) => r.version_label),
+    listVersionsForProvider(db, provider.id).map((row) => row.version_label),
   );
   if (existingLabels.has(label)) {
     label = `${versionLabel}+${fetched.contentHash.slice(0, 6)}`;
   }
-
-  insertApiVersion(db, {
-    id: versionId,
+  const versionInsert = insertApiVersionIfAbsent(db, {
+    id: newId(),
     providerId: provider.id,
     versionLabel: label,
     openapiJson: fetched.body,
     changelogMd: null,
     publishedAt: nowIso(),
   });
+  const versionId = versionInsert.id;
+  const insertedVersion = versionInsert.inserted;
+  if (!insertedVersion) {
+    const existing = listVersionsForProvider(db, provider.id).find(
+      (row) => row.id === versionId,
+    );
+    if (existing) label = existing.version_label;
+  }
 
-  recordAudit(db, {
-    actor: "worker",
-    action: "feed.new_version",
-    resourceType: "provider",
-    resourceId: provider.id,
-    metadata: {
-      slug: feed.slug,
-      versionLabel: label,
-      contentHash: fetched.contentHash,
-      url,
-    },
-  });
+  if (insertedVersion) {
+    recordAudit(db, {
+      tenantId: opts.tenantId,
+      actor: "worker",
+      action: "feed.new_version",
+      resourceType: "provider",
+      resourceId: provider.id,
+      metadata: {
+        slug: feed.slug,
+        versionLabel: label,
+        contentHash: fetched.contentHash,
+        url,
+      },
+    });
+  }
 
   let changeId: string | undefined;
   let status: PollOneResult["status"] = "new_version";
@@ -235,7 +325,7 @@ export async function pollOneFeed(
   };
 }
 
-export async function pollAllFeeds(opts: PollAllOptions = {}): Promise<PollOneResult[]> {
+export async function pollAllFeeds(opts: PollAllOptions): Promise<PollOneResult[]> {
   const db = opts.db ?? createDb();
   let feeds = collectFeeds(db);
   if (opts.slugs?.length) {

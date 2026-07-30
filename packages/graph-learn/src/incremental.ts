@@ -26,6 +26,8 @@ export type FileHashSnapshot = {
   updatedAt: string;
   /** rel path → content hash */
   hashes: Record<string, string>;
+  /** Next sorted-file offset to process when maxFiles caps a run. */
+  cursor?: number;
 };
 
 export type IncrementalResult = {
@@ -93,8 +95,18 @@ export function incrementalReingest(
     opts.snapshotPath ?? join(opts.repoPath, ".mendpoint", "graph-hash.json");
   const prev = loadSnapshot(snapPath);
   const allAbsFiles = listCodeFiles(opts.repoPath, Number.MAX_SAFE_INTEGER);
-  const maxFiles = opts.maxFiles ?? 400;
-  const absFiles = allAbsFiles.slice(0, maxFiles);
+  const maxFiles = Math.max(1, opts.maxFiles ?? 400);
+  const start =
+    allAbsFiles.length > 0
+      ? (opts.forceFull ? 0 : Math.max(0, prev?.cursor ?? 0)) % allAbsFiles.length
+      : 0;
+  const absFiles =
+    allAbsFiles.length <= maxFiles
+      ? allAbsFiles
+      : Array.from(
+          { length: Math.min(maxFiles, allAbsFiles.length) },
+          (_, index) => allAbsFiles[(start + index) % allAbsFiles.length]!,
+        );
   const allCurrentPaths = new Set(
     allAbsFiles.map((abs) =>
       relative(opts.repoPath, abs).replace(/\\/g, "/"),
@@ -182,6 +194,10 @@ export function incrementalReingest(
     repoId,
     updatedAt: new Date().toISOString(),
     hashes: nextHashes,
+    cursor:
+      allAbsFiles.length > maxFiles
+        ? (start + absFiles.length) % allAbsFiles.length
+        : 0,
   };
   saveSnapshot(snapPath, snap);
 

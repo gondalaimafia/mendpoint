@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -21,7 +24,16 @@ jobs:
       - name: Unit tests
         run: npm test
       - name: GA preflight
-        run: npm run ga:check
+        shell: bash
+        run: |
+          mkdir -p "$MENDPOINT_DATA_DIR" "$MENDPOINT_REPOS_DIR"
+          npm run ga:check
+        env:
+          NODE_ENV: production
+          API_AUTH: required
+          GITHUB_MODE: mock
+          MENDPOINT_DATA_DIR: ${{ runner.temp }}/mendpoint-ga
+          MENDPOINT_REPOS_DIR: ${{ runner.temp }}/mendpoint-repos
       - name: Demo smoke (offline)
         run: npm run demo
         env:
@@ -38,6 +50,8 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci
+      - name: Production dependency audit
+        run: npm audit --omit=dev
       - name: Typecheck
         run: npm run typecheck
       - name: Production build
@@ -50,6 +64,8 @@ jobs:
           export API_AUTH=required
           export GITHUB_MODE=mock
           export MENDPOINT_DATA_DIR="$RUNNER_TEMP/mendpoint-smoke"
+          export MENDPOINT_REPOS_DIR="$RUNNER_TEMP/mendpoint-repos"
+          mkdir -p "$MENDPOINT_REPOS_DIR"
           bootstrap_output="$(npm run --silent auth:bootstrap)"
           api_key="$(printf '%s\n' "$bootstrap_output" | sed -n 's/^token=//p')"
           test -n "$api_key"
@@ -95,3 +111,81 @@ jobs:
         run: docker build --target api -t mendpoint-api:ci .
       - name: Build web image
         run: docker build --target web -t mendpoint-web:ci .
+      - name: Build worker image
+        run: docker build --target worker -t mendpoint-worker:ci .
+      - name: Start production images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker network create mendpoint-ci
+          docker volume create mendpoint-ci-data
+          cleanup() {
+            docker logs mendpoint-web-ci 2>/dev/null || true
+            docker logs mendpoint-api-ci 2>/dev/null || true
+            docker rm --force mendpoint-web-ci mendpoint-api-ci 2>/dev/null || true
+            docker volume rm mendpoint-ci-data 2>/dev/null || true
+            docker network rm mendpoint-ci 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          bootstrap_output="$(docker run --rm \
+            -v mendpoint-ci-data:/app/data \
+            mendpoint-api:ci npm run --silent auth:bootstrap)"
+          api_key="$(printf '%s\n' "$bootstrap_output" | sed -n 's/^token=//p')"
+          test -n "$api_key"
+          docker run --detach \
+            --name mendpoint-api-ci \
+            --network mendpoint-ci \
+            --publish 127.0.0.1:3001:3001 \
+            -e GITHUB_MODE=mock \
+            -e MENDPOINT_REPOS_DIR=/workspace/repos \
+            -v mendpoint-ci-data:/app/data \
+            mendpoint-api:ci
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3001/ready >/dev/null; then
+              break
+            fi
+            test "$attempt" -lt 30
+            sleep 1
+          done
+          curl --fail --silent \
+            -H "Authorization: Bearer $api_key" \
+            http://127.0.0.1:3001/keys >/dev/null
+          web_access_token=ci-web-access-token
+          docker run --detach \
+            --name mendpoint-web-ci \
+            --network mendpoint-ci \
+            --publish 127.0.0.1:3000:3000 \
+            -e MENDPOINT_API_URL=http://mendpoint-api-ci:3001 \
+            -e MENDPOINT_API_KEY="$api_key" \
+            -e MENDPOINT_WEB_ACCESS_TOKEN="$web_access_token" \
+            -e MENDPOINT_WEB_ALLOWED_ORIGINS=http://127.0.0.1:3000 \
+            mendpoint-web:ci
+          for attempt in {1..30}; do
+            if test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              http://127.0.0.1:3000/access)" = "200"; then
+              break
+            fi
+            test "$attempt" -lt 30
+            sleep 1
+          done
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:3000/status)" = "307"
+          curl --fail --silent \
+            --cookie-jar "$RUNNER_TEMP/mendpoint-web.cookies" \
+            -H "Origin: http://127.0.0.1:3000" \
+            -H "Content-Type: application/json" \
+            --data "{\"token\":\"$web_access_token\"}" \
+            http://127.0.0.1:3000/api/session >/dev/null
+          curl --fail --silent \
+            --cookie "$RUNNER_TEMP/mendpoint-web.cookies" \
+            http://127.0.0.1:3000/status >/dev/null
+          curl --fail --silent \
+            --cookie "$RUNNER_TEMP/mendpoint-web.cookies" \
+            http://127.0.0.1:3000/api/status >/dev/null
+          docker run --rm \
+            --network mendpoint-ci \
+            -e GITHUB_MODE=mock \
+            -e MENDPOINT_TENANT_ID=tenant_default \
+            -v mendpoint-ci-data:/app/data \
+            mendpoint-worker:ci \
+            node --import tsx apps/worker/src/cli.ts process-jobs

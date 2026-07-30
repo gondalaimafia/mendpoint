@@ -57,3 +57,83 @@ Local verification is green:
 
 Docker is not installed in the local environment. GitHub Actions completed both
 the `api` and `web` target builds successfully.
+
+## Whole repository debug
+
+- [x] Reconfirm the current branch, upstream state, and clean baseline.
+- [x] Run the complete test, typecheck, build, GA, demo, and dependency checks.
+- [x] Exercise production API authentication, tenancy, webhook, and rate limits.
+- [x] Exercise web proxy, standalone runtime, worker, CLI, and persistence paths.
+- [x] Audit graph, harness, platform, SCM, and sandbox failure boundaries.
+- [x] Reproduce suspected defects and identify their root causes.
+- [x] Rerun the representative release matrix.
+- [x] Record root causes, verification evidence, and deployment limits.
+
+## Whole repository debug review
+
+Diagnosis is complete. No product fixes were applied in this pass.
+
+- Full tests, typecheck, build, and GA preflight pass.
+- Targeted probes confirmed production blockers in tenant isolation, host command
+  containment, the web credential proxy, release gates, and repair delivery.
+- Additional defects were reproduced in job recovery, GitHub attribution,
+  sandbox caching, catalog retry and validation, graph ingestion, SCM handling,
+  demo data isolation, and runtime configuration.
+- `npm audit --omit=dev` reports three high and one moderate production
+  dependency findings.
+- Docker remains unavailable locally, so the existing green GitHub container
+  builds were not started in this pass.
+
+Full report:
+`C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\mendpoint-whole-repo-debug-2026-07-28.md`
+
+## Whole repository remediation
+
+- [x] Add required tenant ownership to request facing data and graph queries.
+- [x] Complete route permission mapping, audit attribution, and two tenant tests.
+- [x] Correct GitHub webhook identity, installation state, and tenant attribution.
+- [x] Secure the web proxy and route plan editing through the protected boundary.
+- [x] Remove caller controlled host paths and commands from tenant API operations.
+- [x] Enforce real filesystem containment and honest sandbox capabilities.
+- [x] Make job claims atomic, leased, recoverable, and tenant scoped.
+- [x] Add worker topology and validate runtime configuration strictly.
+- [x] Isolate demo data and make seed behavior idempotent.
+- [x] Make orchestration, contract, harness, and repair delivery fail closed.
+- [x] Repair catalog retries, OpenAPI validation, SCM validation, and graph correctness.
+- [x] Resolve production dependency advisories without unsupported downgrades.
+- [x] Add regression tests for every confirmed root cause.
+- [x] Run focused regressions, full tests, typecheck, build, GA, and CI container gates.
+- [ ] Review the final diff, commit, push, and record production limits.
+
+## Customer launch readiness
+
+- [x] Recheck the full repository after remediation.
+- [x] Repair the existing database upgrade path.
+- [x] Repair the API to worker job contract.
+- [x] Pass contract and security evidence through synchronous and queued pipelines.
+- [x] Restrict production repositories to an authenticated tenant directory.
+- [x] Block production feed SSRF, local file reads, unsafe redirects, and oversized bodies.
+- [x] Require the PAT that the real delivery path actually uses.
+- [x] Disable the incomplete GitHub App install path in production.
+- [x] Protect the entire web surface with a server side session.
+- [x] Add production dependency, build, runtime, auth, web session, and worker container gates.
+- [x] Inspect available hosting and repository deployment credentials.
+- [ ] Provision the isolated production host, TLS routes, durable mounts, backup job, and uptime checks.
+- [ ] Add the customer scoped GitHub token, webhook secret, API key, and web access secret.
+- [ ] Mount the approved customer repository and run the first real change to PR smoke.
+- [ ] Browser verify the live web surface.
+
+## Customer launch review
+
+The code release gates pass locally. The supported first customer topology is one
+isolated Linux host per customer with the web, API, and worker on the same host.
+SQLite and repository mounts make a split or horizontally scaled deployment unsafe.
+
+Fly access is available, but there is no existing Mendpoint app, no deploy manifest,
+and no GitHub deployment secrets. A new Fly multi-machine deployment would separate
+the shared SQLite database and repository filesystem, so it is not an acceptable
+production target for this release.
+
+Online provisioning remains blocked on an approved single-host target, public
+hostnames, and customer-scoped secrets. These are external launch inputs, not code
+failures, and must be supplied before a real customer repository can be connected.

@@ -133,16 +133,30 @@ function trimGraph(g: ProductGraph, maxNodes = MAX_GRAPH_NODES): ProductGraph {
 export function buildChangeImpactGraph(
   db: AppDb,
   changeId: string,
-  opts?: { consumerId?: string; includeApiGraph?: boolean; maxFindings?: number },
+  opts?: {
+    consumerId?: string;
+    tenantId?: string;
+    includeApiGraph?: boolean;
+    maxFindings?: number;
+  },
 ): ProductGraph | null {
-  const cacheKey = `chg:${changeId}:${opts?.consumerId ?? ""}:${opts?.includeApiGraph !== false}`;
+  const cacheKey =
+    `chg:${opts?.tenantId ?? "global"}:${changeId}:` +
+    `${opts?.consumerId ?? ""}:${opts?.includeApiGraph !== false}`;
   const cached = changeGraphCache.get(cacheKey) as ProductGraph | undefined;
   if (cached) return cached;
 
   const change = getChange(db, changeId);
   if (!change) return null;
 
-  let findings = listFindingsForChange(db, changeId);
+  if (
+    opts?.consumerId &&
+    !getConsumer(db, opts.consumerId, opts.tenantId)
+  ) {
+    return null;
+  }
+
+  let findings = listFindingsForChange(db, changeId, opts?.tenantId);
   if (opts?.consumerId) {
     findings = findings.filter((f) => f.consumer_id === opts.consumerId);
   }
@@ -156,9 +170,9 @@ export function buildChangeImpactGraph(
   let consumerName: string | undefined;
   const consumerId = opts?.consumerId ?? findings[0]?.consumer_id;
   if (consumerId) {
-    const cons = getConsumer(db, consumerId);
+    const cons = getConsumer(db, consumerId, opts?.tenantId);
     consumerName = cons?.name;
-    const repo = getConsumerRepo(db, consumerId);
+    const repo = getConsumerRepo(db, consumerId, opts?.tenantId);
     if (repo?.local_path) {
       callGraph = loadCallGraph(repo.local_path);
     }
@@ -187,7 +201,7 @@ export function buildChangeImpactGraph(
     maxCallerDepth: 2,
   });
 
-  const prs = listPrsForChange(db, changeId);
+  const prs = listPrsForChange(db, changeId, opts?.tenantId);
   for (const pr of prs) {
     if (opts?.consumerId && pr.consumer_id !== opts.consumerId) continue;
     impact.nodes.push({

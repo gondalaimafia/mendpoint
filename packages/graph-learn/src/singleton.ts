@@ -18,5 +18,10 @@ export function getGraphLearnDb(explicitPath?: string): GraphLearnDb {
 }
 
 export function resetGraphLearnDbForTests(): void {
+  try {
+    _db?.raw.close();
+  } catch {
+    /* already closed */
+  }
   _db = null;
 }

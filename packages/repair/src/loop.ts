@@ -6,6 +6,7 @@ import { runCiLoop, type CiLoopResult } from "@mendpoint/ci-loop";
 import type { PrCommenter, CiCheckInput } from "@mendpoint/github";
 import { MockPrCommenter, postCiCheck } from "@mendpoint/github";
 import { runRepairSession } from "./session.js";
+import { validateVerificationCommands } from "./verify.js";
 import type { RepairSessionResult } from "./types.js";
 
 export type AgenticRepairLoopInput = {
@@ -34,6 +35,13 @@ export type AgenticRepairLoopResult = {
 export async function runAgenticRepairLoop(
   input: AgenticRepairLoopInput,
 ): Promise<AgenticRepairLoopResult> {
+  const validated = validateVerificationCommands(
+    input.verifyCommands ?? [],
+    input.repoRoot,
+  );
+  if (!validated.ok) {
+    throw new Error(validated.error);
+  }
   // First capture failure log from verify if commands given
   let seedFailureLog: string | undefined;
   if (input.verifyCommands?.length && !input.dryRun) {

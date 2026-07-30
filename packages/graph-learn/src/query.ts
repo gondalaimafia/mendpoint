@@ -332,8 +332,6 @@ function runGraphQueryInner(
       };
     }
     case "consumers_of_field": {
-      // Schema → HAS_FIELD → Field; Endpoint HAS_SCHEMA Schema; Consumer CONSUMES Endpoint
-      // v0 approximation: consumers of provider matching field in label/props
       const fields = listNodesByKind(db, "Field").filter(
         (f) =>
           f.label === q.fieldName ||
@@ -341,27 +339,82 @@ function runGraphQueryInner(
       );
       const edges: GlEdge[] = [];
       const nodeIds = new Set<string>();
+      const schemaIds = new Set<string>();
       for (const f of fields) {
-        nodeIds.add(f.id);
         for (const e of edgesTo(db, f.id, ["HAS_FIELD"])) {
+          const schema = getNode(db, e.source);
+          if (
+            !schema ||
+            !(
+              schema.label === q.schemaName ||
+              schema.id === q.schemaName ||
+              schema.id.endsWith(`:${q.schemaName}`) ||
+              String(schema.props?.name) === q.schemaName
+            )
+          ) {
+            continue;
+          }
+          nodeIds.add(f.id);
           edges.push(e);
           nodeIds.add(e.source);
+          schemaIds.add(e.source);
         }
       }
-      // attach consumers via provider monitors
-      const consumers = listNodesByKind(db, "Consumer");
-      for (const c of consumers) {
-        for (const e of edgesFrom(db, c.id, ["MONITORS", "CONSUMES"])) {
-          edges.push(e);
-          nodeIds.add(c.id);
+
+      const endpointIds = new Set<string>();
+      for (const schemaId of schemaIds) {
+        for (const edge of edgesTo(db, schemaId, ["HAS_SCHEMA"])) {
+          edges.push(edge);
+          endpointIds.add(edge.source);
+          nodeIds.add(edge.source);
+        }
+        const schema = getNode(db, schemaId);
+        const path = String(schema?.props?.path ?? "");
+        const method = String(schema?.props?.method ?? "").toUpperCase();
+        if (path) {
+          for (const endpoint of listNodesByKind(db, "Endpoint")) {
+            if (
+              String(endpoint.props?.path) === path &&
+              (!method || String(endpoint.props?.method).toUpperCase() === method)
+            ) {
+              endpointIds.add(endpoint.id);
+              nodeIds.add(endpoint.id);
+            }
+          }
         }
       }
+
+      const providerIds = new Set<string>();
+      const consumerIds = new Set<string>();
+      for (const endpointId of endpointIds) {
+        for (const edge of edgesTo(db, endpointId, ["HAS_ENDPOINT"])) {
+          edges.push(edge);
+          providerIds.add(edge.source);
+          nodeIds.add(edge.source);
+        }
+        for (const edge of edgesTo(db, endpointId, ["CONSUMES"])) {
+          edges.push(edge);
+          consumerIds.add(edge.source);
+        }
+      }
+      for (const providerId of providerIds) {
+        for (const edge of edgesTo(db, providerId, ["MONITORS", "CONSUMES"])) {
+          edges.push(edge);
+          consumerIds.add(edge.source);
+        }
+      }
+      for (const id of consumerIds) nodeIds.add(id);
+
       return {
         op: q.op,
         nodes: collectNodes(db, nodeIds),
         edges,
-        summary: `field ${q.schemaName}.${q.fieldName}: ${fields.length} field node(s)`,
-        rows: fields.map((f) => ({ fieldId: f.id, label: f.label })),
+        summary: `field ${q.schemaName}.${q.fieldName}: ${consumerIds.size} consumer(s)`,
+        rows: [...consumerIds].map((id) => ({
+          consumerId: id.replace(/^consumer:/, ""),
+          schemaName: q.schemaName,
+          fieldName: q.fieldName,
+        })),
       };
     }
     case "broke_modes_for_endpoint": {

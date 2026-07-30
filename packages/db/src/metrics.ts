@@ -36,13 +36,17 @@ function median(nums: number[]): number | null {
   return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
 }
 
-export function computeProductMetrics(db: AppDb): ProductMetrics {
+export function computeProductMetrics(db: AppDb, tenantId?: string): ProductMetrics {
   const prs = db.raw
     .prepare(
-      `SELECT id, title, status, risk, github_pr_url, github_pr_number, created_at, resolved_at, branch_name
-       FROM migration_prs ORDER BY created_at DESC`,
+      `SELECT pr.id, pr.title, pr.status, pr.risk, pr.github_pr_url,
+              pr.github_pr_number, pr.created_at, pr.resolved_at, pr.branch_name
+       FROM migration_prs pr
+       ${tenantId ? "JOIN" : "LEFT JOIN"} consumers c ON c.id = pr.consumer_id
+       ${tenantId ? "WHERE c.tenant_id = ?" : ""}
+       ORDER BY pr.created_at DESC`,
     )
-    .all() as Array<{
+    .all(...(tenantId ? [tenantId] : [])) as Array<{
     id: string;
     title: string;
     status: string;
@@ -55,7 +59,12 @@ export function computeProductMetrics(db: AppDb): ProductMetrics {
   }>;
 
   const auditCount = (
-    db.raw.prepare(`SELECT COUNT(*) as c FROM audit_events`).get() as { c: number }
+    db.raw
+      .prepare(
+        `SELECT COUNT(*) as c FROM audit_events
+         ${tenantId ? "WHERE tenant_id = ?" : ""}`,
+      )
+      .get(...(tenantId ? [tenantId] : [])) as { c: number }
   ).c;
 
   let merged = 0;
@@ -92,8 +101,12 @@ export function computeProductMetrics(db: AppDb): ProductMetrics {
   // Refine real vs mock using audit
   const realAudit = (
     db.raw
-      .prepare(`SELECT COUNT(*) as c FROM audit_events WHERE action = 'pr.opened.real'`)
-      .get() as { c: number }
+      .prepare(
+        `SELECT COUNT(*) as c FROM audit_events
+         WHERE action = 'pr.opened.real'
+         ${tenantId ? "AND tenant_id = ?" : ""}`,
+      )
+      .get(...(tenantId ? [tenantId] : [])) as { c: number }
   ).c;
 
   const decided = merged + closed;

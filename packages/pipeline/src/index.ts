@@ -10,11 +10,14 @@ import {
   insertSuppressedPattern,
   isPatternSuppressed,
   recordAudit,
-  insertApiChange,
+  getOrInsertApiChange,
   insertImpactFinding,
   insertMigrationPr,
   updateMigrationPrStatus,
+  updateMigrationPrDelivery,
   listConsumersForProvider,
+  listFindingsForChange,
+  listPrsForChange,
   registrySummaryMarkdown,
   type AppDb,
 } from "@mendpoint/db";
@@ -32,7 +35,11 @@ import {
 } from "@mendpoint/branding";
 import { runRepairSession } from "@mendpoint/repair";
 import { planFromSpecDiff, planToMarkdown } from "@mendpoint/orchestrator";
-import { evaluatePrGates, reviewOpenApiDesign } from "@mendpoint/contract";
+import {
+  evaluatePrGates,
+  reviewOpenApiDesign,
+  type ContractCase,
+} from "@mendpoint/contract";
 import {
   getGraphLearnDb,
   ingestControlPlane,
@@ -41,6 +48,7 @@ import {
   labelPrOutcome,
   runGraphQuery,
   formatQueryForPlanner,
+  type GraphLearnDb,
 } from "@mendpoint/graph-learn";
 import {
   newId,
@@ -51,11 +59,14 @@ import {
 
 
 export type PipelineInput = {
+  /** Authenticated tenant boundary for all consumer reads and writes. */
+  tenantId: string;
   providerSlug: string;
   fromVersionLabel?: string;
   toVersionLabel?: string;
   consumerIds?: string[];
   db?: AppDb;
+  graphDb?: GraphLearnDb;
   github?: GitHubDelivery;
   persistIndex?: boolean;
   /** First-party brand pack id, or true to auto-pick by provider */
@@ -72,6 +83,10 @@ export type PipelineInput = {
    */
   agenticRepair?: boolean;
   repairVerifyCommands?: string[];
+  /** Recorded contract evidence required before PR delivery. */
+  contractCases?: ContractCase[];
+  /** Explicit security scan result required before PR delivery. */
+  securityScanOk?: boolean;
 };
 
 export type PipelineReport = {
@@ -107,6 +122,7 @@ export type PipelineReport = {
  * @see docs/GRAPH_ENGINEERING.md
  */
 export async function runChangePipeline(input: PipelineInput): Promise<PipelineReport> {
+  if (!input.tenantId.trim()) throw new Error("tenantId is required");
   const db = input.db ?? createDb();
   const github = input.github ?? createGitHubDelivery();
 
@@ -118,14 +134,25 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     throw new Error(`Provider ${input.providerSlug} needs at least 2 API versions`);
   }
 
-  const from =
-    (input.fromVersionLabel
-      ? versions.find((v) => v.version_label === input.fromVersionLabel)
-      : versions[versions.length - 2]) ?? versions[versions.length - 2];
-  const to =
-    (input.toVersionLabel
-      ? versions.find((v) => v.version_label === input.toVersionLabel)
-      : versions[versions.length - 1]) ?? versions[versions.length - 1];
+  const from = input.fromVersionLabel
+    ? versions.find((v) => v.version_label === input.fromVersionLabel)
+    : versions[versions.length - 2];
+  const to = input.toVersionLabel
+    ? versions.find((v) => v.version_label === input.toVersionLabel)
+    : versions[versions.length - 1];
+  if (!from) {
+    throw new Error(
+      `Unknown from version ${input.fromVersionLabel} for provider ${input.providerSlug}`,
+    );
+  }
+  if (!to) {
+    throw new Error(
+      `Unknown to version ${input.toVersionLabel} for provider ${input.providerSlug}`,
+    );
+  }
+  if (from.id === to.id) {
+    throw new Error(`Pipeline versions must be distinct for provider ${input.providerSlug}`);
+  }
 
   const oldSpec = JSON.parse(from.openapi_json);
   const newSpec = JSON.parse(to.openapi_json);
@@ -136,13 +163,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     providerNotes: to.changelog_md ?? undefined,
   });
 
-  const changeId = newId();
   const severity =
     input.severity ??
     (diff.risk === "breaking" ? "required" : diff.risk === "new_capability" ? "optional" : "recommended");
 
-  insertApiChange(db, {
-    id: changeId,
+  const changeResult = getOrInsertApiChange(db, {
+    id: newId(),
     providerId: provider.id,
     fromVersionId: from.id,
     toVersionId: to.id,
@@ -152,6 +178,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     diffJson: JSON.stringify({ ...diff, surfaces, severity }),
     createdAt: nowIso(),
   });
+  const changeId = changeResult.change.id;
 
   // Spec-first plan-of-record (Warden matrix P0)
   const specPlan = planFromSpecDiff({
@@ -162,32 +189,45 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     diff,
     surfaces,
   });
-  const registryHits = listConsumersForProvider(db, provider.slug);
+  const registryHits = listConsumersForProvider(db, provider.slug, input.tenantId);
   const registryMd = registrySummaryMarkdown(registryHits, provider.slug);
   const apiReview = reviewOpenApiDesign(newSpec);
   const gates = evaluatePrGates({
     oldSpec,
     newSpec,
     providerSlug: provider.slug,
+    contractCases: input.contractCases,
+    securityScanOk: input.securityScanOk,
   });
+  // Provider breaking changes are the reason migration PRs exist. Delivery
+  // fails closed on missing runtime contract/security evidence, while the
+  // source-spec breaking-change result remains visible in the PR report.
+  const deliveryEvidenceOk = gates.gates
+    .filter((gate) => gate.id === "contract-suite" || gate.id === "security-scan")
+    .every((gate) => gate.ok);
 
   // Dimension 6: graph learning substrate ingest + blast-radius query for planner
-  const gldb = getGraphLearnDb();
+  const gldb = input.graphDb ?? getGraphLearnDb();
+  const graphProviderSlug = `${input.tenantId}:${provider.slug}`;
   ingestControlPlane(gldb, {
-    provider: { id: provider.id, slug: provider.slug, name: provider.name },
+    provider: {
+      id: `${input.tenantId}:${provider.id}`,
+      slug: graphProviderSlug,
+      name: provider.name,
+    },
     consumers: registryHits.map((h) => ({
-      id: h.consumerId,
+      id: `${input.tenantId}:${h.consumerId}`,
       name: h.consumerName,
       githubOwner: h.githubOwner,
       githubRepo: h.githubRepo,
     })),
     monitors: registryHits.map((h) => ({
-      consumerId: h.consumerId,
-      providerId: provider.id,
+      consumerId: `${input.tenantId}:${h.consumerId}`,
+      providerId: `${input.tenantId}:${provider.id}`,
     })),
   });
   ingestSpecDiff(gldb, {
-    providerSlug: provider.slug,
+    providerSlug: graphProviderSlug,
     changeId,
     diff,
     surfaces,
@@ -200,6 +240,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   const graphRagMd = formatQueryForPlanner(blast);
 
   recordAudit(db, {
+    tenantId: input.tenantId,
     actor: "pipeline",
     action: "change.normalized",
     resourceType: "api_change",
@@ -218,7 +259,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     },
   });
 
-  let monitored = listMonitoredForProvider(db, provider.id);
+  let monitored = listMonitoredForProvider(db, provider.id, input.tenantId);
   if (input.consumerIds?.length) {
     monitored = monitored.filter((m) => input.consumerIds!.includes(m.consumer_id));
   }
@@ -231,11 +272,37 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     surfaces: surfaces.length,
     consumers: [],
   };
+  const findingKeys = new Set(
+    listFindingsForChange(db, changeId, input.tenantId).map(
+      (finding) =>
+        `${finding.consumer_id}\u0000${finding.file_path}\u0000${finding.line_start}\u0000${finding.line_end}\u0000${finding.symbol}`,
+    ),
+  );
+  const existingPrByConsumer = new Map(
+    listPrsForChange(db, changeId, input.tenantId).map((pr) => [pr.consumer_id, pr]),
+  );
 
   for (const mon of monitored) {
-    const consumer = getConsumer(db, mon.consumer_id);
-    const repo = getConsumerRepo(db, mon.consumer_id);
+    const consumer = getConsumer(db, mon.consumer_id, input.tenantId);
+    const repo = getConsumerRepo(db, mon.consumer_id, input.tenantId);
     if (!consumer || !repo) continue;
+    const existingPr = existingPrByConsumer.get(consumer.id);
+    if (existingPr) {
+      const existingFindings = [...findingKeys].filter((key) =>
+        key.startsWith(`${consumer.id}\u0000`),
+      ).length;
+      report.consumers.push({
+        consumerId: consumer.id,
+        name: consumer.name,
+        findings: existingFindings,
+        candidates: 0,
+        confirmed: 0,
+        prId: existingPr.id,
+        prStatus: existingPr.status,
+        prUrl: existingPr.github_pr_url ?? undefined,
+      });
+      continue;
+    }
 
     // Stages 2–6: Index → Candidates → Expand → Confirm → ImpactReport
     const impactReport = await analyzeImpact(repo.local_path, surfaces, {
@@ -245,7 +312,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     const rawFindings = reportToFindings(impactReport);
     ingestImpactFindings(gldb, {
       changeId,
-      consumerId: consumer.id,
+      consumerId: `${input.tenantId}:${consumer.id}`,
       findings: rawFindings.map((f) => ({
         filePath: f.filePath,
         symbol: f.symbol,
@@ -258,14 +325,17 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       return !keys.some((k) =>
         k
           ? isPatternSuppressed(db, k, {
-              consumerId: consumer.id,
-              providerSlug: provider.slug,
+            consumerId: consumer.id,
+            providerSlug: provider.slug,
+            tenantId: input.tenantId,
             })
           : false,
       );
     });
     const suppressedCount = rawFindings.length - findings.length;
     for (const f of findings) {
+      const findingKey = `${consumer.id}\u0000${f.filePath}\u0000${f.lineStart}\u0000${f.lineEnd}\u0000${f.symbol}`;
+      if (findingKeys.has(findingKey)) continue;
       insertImpactFinding(db, {
         id: newId(),
         changeId,
@@ -277,10 +347,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         confidence: f.confidence,
         evidenceJson: JSON.stringify(f),
       });
+      findingKeys.add(findingKey);
     }
 
 
     recordAudit(db, {
+      tenantId: input.tenantId,
       actor: "pipeline",
       action: "impact.analyzed",
       resourceType: "consumer",
@@ -354,6 +426,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     const allLabels = [...new Set([...decision.labels, ...brandLabels])];
 
     recordAudit(db, {
+      tenantId: input.tenantId,
       actor: "pipeline",
       action: "policy.evaluated",
       resourceType: "consumer",
@@ -399,6 +472,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     let prUrl: string | undefined;
     let prNumber: number | undefined;
     let prBodyFinal = prBody;
+    let deliveryError: string | undefined;
 
     // Build rename map from structural diff for agentic repair
     const renameMap: Record<string, string> = {};
@@ -409,6 +483,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     }
 
     let repairMeta: { sessionId: string; ok: boolean; attempts: number; edits: number } | undefined;
+    let repairBlockedDelivery = false;
     const wantRepair =
       input.agenticRepair === true ||
       process.env.AGENTIC_REPAIR === "1" ||
@@ -420,13 +495,43 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       decision.allowedEdits.length > 0
     ) {
       // Write draft edits to working tree first so repair sees post-migration state
-      const { writeFileSync, mkdirSync, readFileSync } = await import("node:fs");
+      const { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } =
+        await import("node:fs");
       const { dirname, join } = await import("node:path");
+      const initialFiles = new Map<
+        string,
+        { absolutePath: string; existed: boolean; content: string }
+      >();
       for (const ed of decision.allowedEdits) {
         const abs = join(repo.local_path, ed.path);
+        initialFiles.set(ed.path, {
+          absolutePath: abs,
+          existed: existsSync(abs),
+          content: existsSync(abs) ? readFileSync(abs, "utf8") : "",
+        });
         mkdirSync(dirname(abs), { recursive: true });
         writeFileSync(abs, ed.updated, "utf8");
       }
+      const rollbackInitialFiles = () => {
+        for (const initial of initialFiles.values()) {
+          if (initial.existed) {
+            mkdirSync(dirname(initial.absolutePath), { recursive: true });
+            writeFileSync(initial.absolutePath, initial.content, "utf8");
+          } else if (existsSync(initial.absolutePath)) {
+            rmSync(initial.absolutePath, { force: true });
+          }
+        }
+      };
+      const rollbackRepairOnlyFiles = (
+        edits: Array<{ filePath: string; original: string }>,
+      ) => {
+        for (const edit of edits) {
+          if (initialFiles.has(edit.filePath)) continue;
+          const abs = join(repo.local_path, edit.filePath);
+          mkdirSync(dirname(abs), { recursive: true });
+          writeFileSync(abs, edit.original, "utf8");
+        }
+      };
       try {
         const repair = await runRepairSession({
           repoRoot: repo.local_path,
@@ -441,26 +546,37 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           attempts: repair.attempts,
           edits: repair.edits.length,
         };
-        // Refresh allowed edits from disk after repair
-        for (const ed of decision.allowedEdits) {
-          const abs = join(repo.local_path, ed.path);
-          try {
-            ed.updated = readFileSync(abs, "utf8");
-          } catch {
-            /* keep */
+        if (!repair.ok) {
+          repairBlockedDelivery = true;
+          rollbackInitialFiles();
+          rollbackRepairOnlyFiles(repair.edits);
+        } else {
+          // Refresh allowed edits from disk only after verification succeeds.
+          for (const ed of decision.allowedEdits) {
+            const abs = join(repo.local_path, ed.path);
+            try {
+              ed.updated = readFileSync(abs, "utf8");
+            } catch {
+              /* keep */
+            }
           }
-        }
-        for (const re of repair.edits) {
-          if (!decision.allowedEdits.some((e) => e.path === re.filePath)) {
-            decision.allowedEdits.push({
-              path: re.filePath,
-              original: re.original,
-              updated: re.updated,
-            });
+          for (const re of repair.edits) {
+            if (!decision.allowedEdits.some((e) => e.path === re.filePath)) {
+              decision.allowedEdits.push({
+                path: re.filePath,
+                original: re.original,
+                updated: re.updated,
+              });
+            }
           }
+          // Delivery uses the captured edit payloads. Keep the checkout clean
+          // regardless of later SCM success or failure.
+          rollbackInitialFiles();
+          rollbackRepairOnlyFiles(repair.edits);
         }
         prBodyFinal = [prBody, "", repair.reportMarkdown].join("\n");
         recordAudit(db, {
+          tenantId: input.tenantId,
           actor: "repair",
           action: repair.ok ? "repair.ok" : "repair.failed",
           resourceType: "consumer",
@@ -468,7 +584,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           metadata: repairMeta,
         });
       } catch (e) {
+        repairBlockedDelivery = true;
+        rollbackInitialFiles();
         recordAudit(db, {
+          tenantId: input.tenantId,
           actor: "repair",
           action: "repair.error",
           resourceType: "consumer",
@@ -478,38 +597,22 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       }
     }
 
-    if (
+    const shouldDeliver =
       hasActionable &&
       decision.allowPr &&
+      deliveryEvidenceOk &&
       decision.allowedEdits.length > 0 &&
-      !policyOverrides.notificationsOnly
-    ) {
-      await github.createBranch(
-        consumer.github_owner,
-        consumer.github_repo,
-        draft.branchName,
-      );
-      await github.commitFiles(
-        consumer.github_owner,
-        consumer.github_repo,
-        draft.branchName,
-        draft.title,
-        decision.allowedEdits.map((e) => ({ path: e.path, content: e.updated })),
-      );
-      const pr = await github.openPullRequest(
-        consumer.github_owner,
-        consumer.github_repo,
-        draft.branchName,
-        draft.title,
-        prBodyFinal,
-        repo.default_branch,
-      );
-      prUrl = pr.url;
-      prNumber = pr.number;
-      status = "open";
+      !policyOverrides.notificationsOnly &&
+      !repairBlockedDelivery;
+
+    if (repairBlockedDelivery) {
+      status = "repair_failed";
+    } else if (!deliveryEvidenceOk) {
+      status = "gates_failed";
     } else if (policyOverrides.notificationsOnly) {
       status = "notification_only";
       recordAudit(db, {
+        tenantId: input.tenantId,
         actor: "pipeline",
         action: "pipeline.notification_only",
         resourceType: "consumer",
@@ -520,7 +623,6 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       status = "low_confidence";
     }
 
-
     const prId = newId();
     insertMigrationPr(db, {
       id: prId,
@@ -529,7 +631,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       title: draft.title,
       body: prBodyFinal,
       branchName: draft.branchName,
-      status,
+      status: shouldDeliver ? "delivery_pending" : status,
       risk: draft.risk,
       patchUnified: draft.patch,
       githubPrNumber: prNumber ?? null,
@@ -537,15 +639,59 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       createdAt: nowIso(),
       resolvedAt: null,
     });
+    if (shouldDeliver) {
+      try {
+        await github.createBranch(
+          consumer.github_owner,
+          consumer.github_repo,
+          draft.branchName,
+        );
+        await github.commitFiles(
+          consumer.github_owner,
+          consumer.github_repo,
+          draft.branchName,
+          draft.title,
+          decision.allowedEdits.map((e) => ({ path: e.path, content: e.updated })),
+        );
+        const pr = await github.openPullRequest(
+          consumer.github_owner,
+          consumer.github_repo,
+          draft.branchName,
+          draft.title,
+          prBodyFinal,
+          repo.default_branch,
+        );
+        prUrl = pr.url;
+        prNumber = pr.number;
+        status = "open";
+        updateMigrationPrDelivery(db, prId, {
+          status,
+          githubPrNumber: prNumber,
+          githubPrUrl: prUrl,
+          body: prBodyFinal,
+        });
+      } catch (error) {
+        status = "delivery_failed";
+        deliveryError = error instanceof Error ? error.message : String(error);
+        updateMigrationPrDelivery(db, prId, { status });
+      }
+    }
 
     recordAudit(db, {
+      tenantId: input.tenantId,
       actor: "pipeline",
       action:
         status === "low_confidence"
           ? "pr.low_confidence"
           : status === "notification_only"
             ? "pr.notification_only"
-            : "pr.opened",
+            : status === "gates_failed"
+              ? "pr.gates_failed"
+              : status === "repair_failed"
+                ? "pr.repair_failed"
+                : status === "delivery_failed"
+                  ? "pr.delivery_failed"
+                  : "pr.opened",
       resourceType: "migration_pr",
       resourceId: prId,
       metadata: {
@@ -555,6 +701,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         strategy: impactReport.strategySummary,
         repair: repairMeta ?? null,
         brandPackId: brandPack?.id ?? null,
+        deliveryError: deliveryError ?? null,
       },
     });
 
@@ -577,6 +724,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
 }
 
 export type PrFeedbackOpts = {
+  tenantId: string;
+  graphDb?: GraphLearnDb;
   /** A/B arm — overrides body tag / env default */
   experiment?: "control" | "treatment" | string;
   /** Plan-of-record id for EXECUTED_PLAN edges */
@@ -617,26 +766,29 @@ export async function applyPrFeedback(
   db: AppDb,
   prId: string,
   outcome: "merged" | "closed" | "modified",
-  opts?: PrFeedbackOpts,
+  opts: PrFeedbackOpts,
 ) {
+  const pr = getPr(db, prId, opts.tenantId);
+  if (!pr) throw new Error(`Unknown migration PR ${prId} for tenant`);
   const status = outcome === "modified" ? "open" : outcome;
   const resolvedAt = outcome === "merged" || outcome === "closed" ? nowIso() : null;
   updateMigrationPrStatus(db, prId, status, resolvedAt);
   recordAudit(db, {
+    tenantId: opts.tenantId,
     actor: "consumer",
     action: `pr.feedback.${outcome}`,
     resourceType: "migration_pr",
     resourceId: prId,
   });
 
-  const pr = getPr(db, prId);
-  const experiment = resolveExperimentArm(pr?.body, opts?.experiment);
-  const planId = resolvePlanIdFromPr(pr?.body, opts?.planId);
+  const experiment = resolveExperimentArm(pr.body, opts.experiment);
+  const planId = resolvePlanIdFromPr(pr.body, opts.planId);
+  const graphDb = opts.graphDb ?? getGraphLearnDb();
 
   // Dimension 6: label outcome edges with experiment + plan attribution
   if (pr && (outcome === "merged" || outcome === "closed")) {
     try {
-      labelPrOutcome(getGraphLearnDb(), {
+      labelPrOutcome(graphDb, {
         prId,
         changeId: pr.change_id,
         consumerId: pr.consumer_id,
@@ -657,6 +809,7 @@ export async function applyPrFeedback(
       for (const pattern of patterns) {
         insertSuppressedPattern(db, {
           id: newId(),
+          tenantId: opts.tenantId,
           consumerId: pr.consumer_id,
           pattern,
           reason: "closed_pr_feedback",
@@ -665,7 +818,7 @@ export async function applyPrFeedback(
         });
       }
       try {
-        labelPrOutcome(getGraphLearnDb(), {
+        labelPrOutcome(graphDb, {
           prId,
           changeId: pr.change_id,
           consumerId: pr.consumer_id,
@@ -678,6 +831,7 @@ export async function applyPrFeedback(
         /* */
       }
       recordAudit(db, {
+        tenantId: opts.tenantId,
         actor: "learning",
         action: "patterns.suppressed",
         resourceType: "migration_pr",

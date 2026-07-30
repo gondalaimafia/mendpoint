@@ -1,7 +1,6 @@
 /**
  * Agentic repair session — the product loop.
  */
-import { execSync } from "node:child_process";
 import { newId } from "@mendpoint/shared";
 import { diagnoseFailureLog, diagnoseWorkingTree } from "./diagnose.js";
 import { planRepairs, planRepairsWithLlm } from "./plan.js";
@@ -14,6 +13,7 @@ import type {
   RepairSessionResult,
   VerifyResult,
 } from "./types.js";
+import { runVerificationCommand } from "./verify.js";
 
 function runVerify(repoRoot: string, commands: string[], dryRun?: boolean): VerifyResult {
   if (dryRun || !commands.length) {
@@ -26,25 +26,11 @@ function runVerify(repoRoot: string, commands: string[], dryRun?: boolean): Veri
   }
   const outputs: string[] = [];
   for (const cmd of commands) {
-    try {
-      const out = execSync(cmd, {
-        cwd: repoRoot,
-        encoding: "utf8",
-        timeout: 120_000,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      outputs.push(`$ ${cmd}\n${out}`);
-    } catch (e: unknown) {
-      const stderr =
-        e && typeof e === "object" && "stderr" in e
-          ? String((e as { stderr?: Buffer }).stderr ?? "")
-          : "";
-      const stdout =
-        e && typeof e === "object" && "stdout" in e
-          ? String((e as { stdout?: Buffer }).stdout ?? "")
-          : "";
-      const msg = e instanceof Error ? e.message : String(e);
-      const combined = `${stdout}\n${stderr}\n${msg}`;
+    const execution = runVerificationCommand(cmd, repoRoot);
+    if (execution.ok) {
+      outputs.push(`$ ${cmd}\n${execution.stdout}`);
+    } else {
+      const combined = `${execution.stdout}\n${execution.stderr}\n${execution.error ?? ""}`;
       outputs.push(`$ ${cmd}\n${combined}`);
       return {
         ok: false,

@@ -140,6 +140,7 @@ export async function runWarden(task: AgentTask): Promise<AgentRunResult> {
     dryRun: task.dryRun,
     neverTouchPaths: task.neverTouchPaths ?? DEFAULT_NEVER_TOUCH,
     allowNetwork: task.allowNetwork ?? false,
+    allowedCommands: task.verifyCommand ? [task.verifyCommand] : [],
     changedFiles: changed,
   };
 

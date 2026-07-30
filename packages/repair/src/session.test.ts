@@ -6,6 +6,7 @@ import { runRepairSession } from "./session.js";
 import { diagnoseFailureLog } from "./diagnose.js";
 import { planRepairs } from "./plan.js";
 import { runAgenticRepairLoop } from "./loop.js";
+import { parseVerificationCommand, runVerificationCommand } from "./verify.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -77,15 +78,31 @@ describe("repair session", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-loop-"));
     dirs.push(dir);
     writeFileSync(join(dir, "x.ts"), `const amount_cents = 1;\n`, "utf8");
+    writeFileSync(join(dir, "check.mjs"), "console.log('ok')\n", "utf8");
     const r = await runAgenticRepairLoop({
       repoRoot: dir,
       renameMap: { amount_cents: "amount" },
       dryRun: true,
-      verifyCommands: ["echo ok"],
+      verifyCommands: ["node check.mjs"],
       maxAttempts: 1,
     });
     // dry-run may not write files but should produce a plan/edits in memory
     expect(r.repair.plans.length).toBeGreaterThanOrEqual(0);
     expect(r.repair.reportMarkdown).toBeTruthy();
+  });
+
+  it("rejects arbitrary shell commands and runs supported verification profiles", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-verify-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "check.mjs"), "console.log('ok')\n", "utf8");
+
+    expect(parseVerificationCommand("node check.mjs", dir)?.profile).toBe("node-check");
+    expect(runVerificationCommand("node check.mjs", dir).ok).toBe(true);
+    expect(parseVerificationCommand("node -e process.exit(0)", dir)).toBeUndefined();
+    expect(parseVerificationCommand("npm test && whoami", dir)).toBeUndefined();
+    expect(runVerificationCommand("whoami", dir)).toMatchObject({
+      ok: false,
+      exitCode: 126,
+    });
   });
 });

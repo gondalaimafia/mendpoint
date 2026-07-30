@@ -8,7 +8,7 @@ import {
   readFileSync,
   existsSync,
 } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { AgentPlan } from "@mendpoint/orchestrator";
 
 export type TraceEvent = {
@@ -42,8 +42,22 @@ export type RunPaths = {
   scorePath: string;
 };
 
+function validRunId(runId: string): boolean {
+  return (
+    /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runId) &&
+    runId !== "." &&
+    runId !== ".."
+  );
+}
+
 export function runDir(baseDir: string, runId: string): RunPaths {
-  const root = join(baseDir, "runs", runId);
+  if (!validRunId(runId)) throw new Error("Invalid run id");
+  const runsRoot = resolve(baseDir, "runs");
+  const root = resolve(runsRoot, runId);
+  const rel = relative(runsRoot, root);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error("Run path is outside the runs directory");
+  }
   return {
     root,
     planPath: join(root, "plan.json"),

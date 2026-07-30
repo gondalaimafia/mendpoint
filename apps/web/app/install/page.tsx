@@ -7,6 +7,8 @@ type AppConfig = {
   appName: string;
   configured: boolean;
   mockMode: boolean;
+  installEnabled: boolean;
+  disabledReason: string | null;
   permissions: Record<string, string>;
   events: string[];
 };
@@ -35,8 +37,8 @@ export default async function InstallPage() {
       <div className="page-header">
         <h1>Install Mendpoint</h1>
         <p className="muted">
-          GitHub App install wizard — connect an org or user so Mendpoint can open migration PRs.
-          Never auto-merges.
+          Pilot pull request delivery uses an approved repository scoped GitHub token.
+          GitHub App installation remains experimental.
         </p>
       </div>
 
@@ -46,12 +48,20 @@ export default async function InstallPage() {
         </div>
       )}
 
-      {config && <InstallWizard config={config} initialInstallations={installations} />}
+      {config?.installEnabled && (
+        <InstallWizard config={config} initialInstallations={installations} />
+      )}
+      {config && !config.installEnabled && (
+        <section className="card">
+          <h2>GitHub App installation unavailable</h2>
+          <p className="muted">{config.disabledReason}</p>
+        </section>
+      )}
 
       <section className="card">
         <h2>Existing installations</h2>
         {installations.length === 0 ? (
-          <p className="muted">None yet — complete the wizard above.</p>
+          <p className="muted">No GitHub App installations are recorded.</p>
         ) : (
           <table className="table">
             <thead>

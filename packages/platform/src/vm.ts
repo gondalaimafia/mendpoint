@@ -6,10 +6,17 @@
  * Build cache keyed by cacheKey across PR units.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  clearSandboxCache,
   createSandbox,
   type CreateSandboxOpts,
   type SandboxHandle,
@@ -33,6 +40,17 @@ export type VmCapability = {
 };
 
 const buildCache = new Map<string, { root: string; hits: number; createdAt: string }>();
+
+function isWithin(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function pruneMissingBuildCacheEntries(): void {
+  for (const [key, entry] of buildCache) {
+    if (!existsSync(entry.root)) buildCache.delete(key);
+  }
+}
 
 export function detectVmCapabilities(): VmCapability[] {
   const caps: VmCapability[] = [
@@ -64,6 +82,7 @@ export function detectVmCapabilities(): VmCapability[] {
 }
 
 export function getBuildCacheStats() {
+  pruneMissingBuildCacheEntries();
   return [...buildCache.entries()].map(([key, v]) => ({
     cacheKey: key,
     root: v.root,
@@ -77,6 +96,7 @@ export function clearBuildCache(key?: string): void {
     const e = buildCache.get(key);
     if (e) {
       try {
+        clearSandboxCache(key);
         rmSync(e.root, { recursive: true, force: true });
       } catch {
         /* */
@@ -98,6 +118,7 @@ export function createVmSandbox(opts: VmSandboxOpts = {}): SandboxHandle & {
   cacheHit: boolean;
   manifestExtra: Record<string, unknown>;
 } {
+  pruneMissingBuildCacheEntries();
   const want = opts.backend ?? (process.env.MENDPOINT_VM_BACKEND as VmBackend) ?? "local";
   const caps = detectVmCapabilities();
   const docker = caps.find((c) => c.backend === "docker")?.available;
@@ -108,27 +129,34 @@ export function createVmSandbox(opts: VmSandboxOpts = {}): SandboxHandle & {
     );
   }
 
-  let backend: VmBackend = "local";
-  let fallback = false;
-  if (want === "docker" && docker) backend = "docker";
-  else if (want === "local") backend = "local";
-  else {
-    backend = "local";
-    fallback = true;
+  if (!["local", "docker", "firecracker"].includes(want)) {
+    throw new Error(`Unknown VM backend: ${want}`);
+  }
+  if (want === "docker" && !docker) {
+    throw new Error("Docker backend requested but the Docker daemon is unavailable");
   }
 
+  const backend: VmBackend = want;
+  const fallback = false;
+
   let cacheHit = false;
-  if (opts.cacheKey && buildCache.has(opts.cacheKey)) {
+  if (
+    opts.cacheKey &&
+    buildCache.has(opts.cacheKey) &&
+    existsSync(buildCache.get(opts.cacheKey)!.root)
+  ) {
     cacheHit = true;
     const e = buildCache.get(opts.cacheKey)!;
     e.hits++;
+  } else if (opts.cacheKey) {
+    buildCache.delete(opts.cacheKey);
   }
 
   const kind: SandboxKind = backend === "local" ? "local" : "vm";
 
   const base = createSandbox({
     ...opts,
-    kind,
+    kind: "local",
     prefix: opts.prefix ?? `mendpoint-${backend}-`,
   });
 
@@ -154,7 +182,15 @@ export function createVmSandbox(opts: VmSandboxOpts = {}): SandboxHandle & {
     image: opts.image ?? "node:20-alpine",
     capabilities: caps,
   };
-  writeFileSync(join(base.root, ".mendpoint-vm.json"), JSON.stringify(meta, null, 2));
+  const metadataPath = join(base.root, ".mendpoint-vm.json");
+  if (
+    existsSync(metadataPath) &&
+    !isWithin(realpathSync(base.root), realpathSync(metadataPath))
+  ) {
+    base.dispose();
+    throw new Error("VM metadata path resolves outside sandbox root");
+  }
+  writeFileSync(metadataPath, JSON.stringify(meta, null, 2));
 
   const run =
     backend === "docker" && docker
@@ -218,6 +254,10 @@ export function vmStatusReport() {
 
 /** Ensure a named cache dir under tmp for transformer multi-PR builds */
 export function ensureBuildCacheDir(cacheKey: string): string {
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(cacheKey)) {
+    throw new Error("Build cache key must use 1 to 128 safe characters");
+  }
+  pruneMissingBuildCacheEntries();
   const root = join(tmpdir(), "mendpoint-build-cache", cacheKey);
   mkdirSync(root, { recursive: true });
   if (!buildCache.has(cacheKey)) {

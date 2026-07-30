@@ -1,4 +1,13 @@
-import { mkdtempSync, cpSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  cpSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,7 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runWarden } from "./agent.js";
 import { extractHints, extractRenames, extractApiPaths } from "./heuristics.js";
 import { pathBlocked, commandBlocked } from "./policies.js";
-import { executeTool, type ToolContext } from "./tools.js";
+import { executeTool, executeToolAsync, type ToolContext } from "./tools.js";
 import { classifyFailures, FAILURE_CATEGORIES, FAILURE_MODES } from "./knowledge.js";
 import { proposeWardenFix } from "./fixes.js";
 import { discoverVerifyCommand } from "./discover-verify.js";
@@ -144,6 +153,87 @@ describe("tools sandbox", () => {
       args: { path: ".env", content: "SECRET=1" },
     });
     expect(envWrite.ok).toBe(false);
+  });
+
+  it("blocks sibling prefix and symlink or junction escapes", () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-agent-boundary-"));
+    dirs.push(parent);
+    const repo = join(parent, "repo");
+    const sibling = join(parent, "repo-secrets");
+    mkdirSync(repo);
+    mkdirSync(sibling);
+    writeFileSync(join(sibling, "secret.js"), "export const secret = true;\n");
+    symlinkSync(sibling, join(repo, "linked"), process.platform === "win32" ? "junction" : "dir");
+    const ctx: ToolContext = { repoRoot: repo, changedFiles: new Set() };
+
+    expect(
+      executeTool(ctx, { tool: "list_dir", args: { path: "../repo-secrets" } }).ok,
+    ).toBe(false);
+    expect(
+      executeTool(ctx, { tool: "read_file", args: { path: "linked/secret.js" } }).ok,
+    ).toBe(false);
+    expect(
+      executeTool(ctx, {
+        tool: "write_file",
+        args: { path: "linked/new.js", content: "outside\n" },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("runs only the task verification command through a supported profile", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-command-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "check.mjs"), "console.log('verified')\n");
+    const ctx: ToolContext = {
+      repoRoot: dir,
+      allowedCommands: ["node check.mjs", "node -e console.log(1)"],
+      changedFiles: new Set(),
+    };
+
+    expect(
+      executeTool(ctx, { tool: "run_command", args: { command: "node check.mjs" } }).ok,
+    ).toBe(true);
+    expect(
+      executeTool(ctx, { tool: "run_command", args: { command: "whoami" } }).ok,
+    ).toBe(false);
+    expect(
+      executeTool(ctx, {
+        tool: "run_command",
+        args: { command: "node -e console.log(1)" },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("keeps the HTTP timeout active while reading the body", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.write("partial");
+      setTimeout(() => res.end("late"), 500);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing test port");
+      const result = await executeToolAsync(
+        {
+          repoRoot: process.cwd(),
+          allowNetwork: true,
+          changedFiles: new Set(),
+        },
+        {
+          tool: "http_probe",
+          args: {
+            url: `http://127.0.0.1:${address.port}/slow`,
+            timeoutMs: 100,
+          },
+        },
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/abort/i);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

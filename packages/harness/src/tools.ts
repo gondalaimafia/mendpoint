@@ -39,14 +39,16 @@ export function runSpecialistTool(
     case "echo":
     case "harness.echo": {
       const msg = step.notes ?? step.title;
-      const r = sbx.run(
-        process.platform === "win32"
-          ? `cmd /c echo ${JSON.stringify(msg)}`
-          : `echo ${JSON.stringify(msg)}`,
-      );
-      return { ok: r.ok, output: r.stdout || r.stderr };
+      return { ok: true, output: msg };
     }
     case "harness.shell": {
+      if (sbx.kind === "local") {
+        return {
+          ok: false,
+          output: "",
+          error: "harness.shell requires a real isolated sandbox backend",
+        };
+      }
       const cmd = step.notes ?? "node -e \"console.log('ok')\"";
       const r = sbx.run(cmd);
       return {
@@ -78,7 +80,7 @@ export function runSpecialistTool(
         providerSlug: String(meta.providerSlug ?? "demo"),
       });
       return {
-        ok: gates.ok || step.action !== "spec.breaking_change",
+        ok: gates.ok,
         output: JSON.stringify({
           action: step.action,
           ref,
@@ -265,10 +267,11 @@ export function runSpecialistTool(
 
     default:
       return {
-        ok: true,
-        output: JSON.stringify({
+        ok: false,
+        output: "",
+        error: JSON.stringify({
           action: step.action,
-          note: "unknown action — recorded as noop",
+          error: "unknown action",
           ref,
         }),
       };

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   blastRadius,
   backfillGitTemporal,
@@ -14,6 +14,7 @@ import {
   extractSymbolsFromSource,
   getNode,
   getNodeEmbedding,
+  getGraphLearnDb,
   incrementalReingest,
   ingestAstRepo,
   ingestLspSymbols,
@@ -23,10 +24,16 @@ import {
   measureAbLift,
   openGraphLearnMemory,
   runGraphQuery,
+  resetGraphLearnDbForTests,
   upsertEdge,
   upsertNode,
 } from "./index.js";
 import type { ImpactableSurface, StructuralDiff } from "@mendpoint/shared";
+
+afterEach(() => {
+  resetGraphLearnDbForTests();
+  vi.unstubAllEnvs();
+});
 
 describe("GA review regressions", () => {
   it("does not treat capped files as deleted and removes stale files on forceFull", () => {
@@ -67,6 +74,109 @@ describe("GA review regressions", () => {
       clearSnapshot(snap);
       db.raw.close();
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rotates the capped ingestion window so later files are not starved", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gl-cursor-"));
+    const snap = join(dir, "graph-hash.json");
+    const db = openGraphLearnMemory();
+    try {
+      for (const name of ["a.ts", "b.ts", "c.ts"]) {
+        writeFileSync(join(dir, name), `export function ${name[0]}() { return 1; }\n`);
+      }
+      const seen = new Set<string>();
+      for (let i = 0; i < 3; i++) {
+        const run = incrementalReingest(db, {
+          repoPath: dir,
+          repoId: "cursor",
+          snapshotPath: snap,
+          maxFiles: 1,
+        });
+        run.changed.forEach((file) => seen.add(file));
+      }
+      expect([...seen].sort()).toEqual(["a.ts", "b.ts", "c.ts"]);
+    } finally {
+      clearSnapshot(snap);
+      db.raw.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("closes the process singleton when tests reset it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gl-singleton-"));
+    try {
+      vi.stubEnv("GRAPH_LEARN_DB", join(dir, "graph.sqlite"));
+      const db = getGraphLearnDb();
+      resetGraphLearnDbForTests();
+      expect(() => db.raw.prepare("SELECT 1").get()).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("correlates field consumers through the matching schema and provider", () => {
+    const db = openGraphLearnMemory();
+    try {
+      for (const node of [
+        { id: "field:amount", kind: "Field", label: "amount" },
+        {
+          id: "schema:Charge",
+          kind: "Schema",
+          label: "Charge",
+          props: { name: "Charge" },
+        },
+        { id: "endpoint:charges", kind: "Endpoint", label: "POST /charges" },
+        { id: "provider:acme", kind: "Provider", label: "Acme" },
+        { id: "consumer:shop", kind: "Consumer", label: "Shop" },
+        { id: "consumer:other", kind: "Consumer", label: "Other" },
+      ] as const) {
+        upsertNode(db, node);
+      }
+      for (const edge of [
+        {
+          id: "has-field",
+          kind: "HAS_FIELD",
+          source: "schema:Charge",
+          target: "field:amount",
+        },
+        {
+          id: "has-schema",
+          kind: "HAS_SCHEMA",
+          source: "endpoint:charges",
+          target: "schema:Charge",
+        },
+        {
+          id: "has-endpoint",
+          kind: "HAS_ENDPOINT",
+          source: "provider:acme",
+          target: "endpoint:charges",
+        },
+        {
+          id: "shop-monitors",
+          kind: "MONITORS",
+          source: "consumer:shop",
+          target: "provider:acme",
+        },
+        {
+          id: "other-monitors",
+          kind: "MONITORS",
+          source: "consumer:other",
+          target: "provider:other",
+        },
+      ] as const) {
+        upsertEdge(db, edge);
+      }
+      const result = runGraphQuery(db, {
+        op: "consumers_of_field",
+        schemaName: "Charge",
+        fieldName: "amount",
+      });
+      expect(result.rows).toEqual([
+        { consumerId: "shop", schemaName: "Charge", fieldName: "amount" },
+      ]);
+    } finally {
+      db.raw.close();
     }
   });
 

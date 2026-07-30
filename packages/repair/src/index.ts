@@ -13,6 +13,13 @@ export { diagnoseFailureLog, diagnoseWorkingTree } from "./diagnose.js";
 export { planRepairs, planRepairsWithLlm } from "./plan.js";
 export { applyActions, listCodeFilesWithContent } from "./apply.js";
 export { runRepairSession } from "./session.js";
+export {
+  parseVerificationCommand,
+  runVerificationCommand,
+  validateVerificationCommands,
+  type VerificationExecution,
+  type VerificationInvocation,
+} from "./verify.js";
 
 /** Integrate with CI loop: repair then re-verify */
 export { runAgenticRepairLoop } from "./loop.js";

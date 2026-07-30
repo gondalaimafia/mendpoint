@@ -53,6 +53,8 @@ export type NormalizedWebhookAction =
       installationId: number;
       accountLogin?: string;
       repos?: Array<{ owner: string; name: string }>;
+      reposAdded?: Array<{ owner: string; name: string }>;
+      reposRemoved?: Array<{ owner: string; name: string }>;
     }
   | {
       type: "pull_request";
@@ -89,19 +91,22 @@ export function normalizeGitHubEvent(
     const inst = payload.installation as
       | { id?: number; account?: { login?: string } }
       | undefined;
-    const repos = (
-      (payload.repositories as Array<{ name?: string; full_name?: string }> | undefined) ?? []
+    const normalizeRepos = (value: unknown) => (
+      (value as Array<{ name?: string; full_name?: string }> | undefined) ?? []
     ).map((r) => {
       const full = r.full_name ?? "";
       const [owner, name] = full.split("/");
       return { owner: owner ?? "", name: name ?? r.name ?? "" };
     });
+    const repos = normalizeRepos(payload.repositories);
     return {
       type: "installation",
       action: String(payload.action ?? ""),
       installationId: Number(inst?.id ?? 0),
       accountLogin: inst?.account?.login,
       repos,
+      reposAdded: normalizeRepos(payload.repositories_added),
+      reposRemoved: normalizeRepos(payload.repositories_removed),
     };
   }
 

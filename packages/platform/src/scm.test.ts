@@ -73,4 +73,29 @@ describe("live SCM failures", () => {
       });
     },
   );
+
+  it("rejects a successful create response with missing identity fields", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "token");
+    const adapter = createGitHubAdapter(async () => ({
+      ok: true,
+      status: 201,
+      json: { state: "open" },
+    }));
+    await expect(adapter.createPr(input)).rejects.toMatchObject({
+      name: "ScmRequestError",
+      operation: "createPr",
+      status: 201,
+    });
+  });
+
+  it("propagates list and comment request failures", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "token");
+    const adapter = createGitHubAdapter(failedFetch);
+    await expect(
+      adapter.commentOnPr({ owner: "owner", repo: "repo", number: 1, body: "x" }),
+    ).rejects.toMatchObject({ operation: "commentOnPr", status: 503 });
+    await expect(
+      adapter.listOpenPrs({ owner: "owner", repo: "repo" }),
+    ).rejects.toMatchObject({ operation: "listOpenPrs", status: 503 });
+  });
 });

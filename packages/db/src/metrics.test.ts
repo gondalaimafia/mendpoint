@@ -58,6 +58,7 @@ describe("product metrics", () => {
       resolvedAt: t0,
     });
     recordAudit(db, {
+      tenantId: "tenant_default",
       actor: "phase-a",
       action: "pr.opened.real",
       resourceType: "migration_pr",

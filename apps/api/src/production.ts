@@ -1,7 +1,6 @@
 /**
  * Production middleware: security headers, rate limit, request id.
  */
-import { createHash } from "node:crypto";
 import type { Context, Next } from "hono";
 import {
   rateLimit,
@@ -34,17 +33,13 @@ export function securityHeadersMiddleware() {
   };
 }
 
-function credentialFingerprint(c: Context<ApiEnv>): string | undefined {
-  const header =
-    c.req.header("authorization") ??
-    c.req.header("Authorization") ??
-    c.req.header("x-api-key");
-  if (!header) return undefined;
-  return createHash("sha256").update(header).digest("hex").slice(0, 24);
-}
-
 function trustedClientIp(c: Context<ApiEnv>): string {
-  if (process.env.TRUST_PROXY !== "1") return "direct";
+  const proxySecret = process.env.TRUST_PROXY_SECRET;
+  const trusted =
+    process.env.TRUST_PROXY === "1" &&
+    Boolean(proxySecret) &&
+    c.req.header("x-mendpoint-proxy-secret") === proxySecret;
+  if (!trusted) return "direct";
   return (
     c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
     c.req.header("x-real-ip") ??
@@ -52,7 +47,9 @@ function trustedClientIp(c: Context<ApiEnv>): string {
   );
 }
 
-export function rateLimitMiddleware() {
+export function rateLimitMiddleware(
+  opts: { identity?: "network" | "principal" } = {},
+) {
   return async (c: Context<ApiEnv>, next: Next) => {
     const path = new URL(c.req.url).pathname;
     if (
@@ -63,10 +60,16 @@ export function rateLimitMiddleware() {
     ) {
       return next();
     }
-    const fingerprint = credentialFingerprint(c);
-    const key = fingerprint
-      ? `credential:${fingerprint}`
-      : rateLimitKeyFromRequest({ ip: trustedClientIp(c) });
+    const identity = opts.identity ?? "network";
+    const apiKeyId = c.get("apiKeyId");
+    if (identity === "principal" && !apiKeyId) {
+      return next();
+    }
+    // Preauthentication buckets never depend on unverified credentials.
+    const key =
+      identity === "principal"
+        ? `principal:${apiKeyId}`
+        : `preauth:${rateLimitKeyFromRequest({ ip: trustedClientIp(c) })}`;
     const r = rateLimit(key);
     c.header("X-RateLimit-Limit", String(r.limit));
     c.header("X-RateLimit-Remaining", String(r.remaining));

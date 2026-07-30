@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { apiBase } from "../../../lib/api";
 
 export function PlanEditor({
   runId,
@@ -18,14 +17,11 @@ export function PlanEditor({
     setMsg("saving…");
     try {
       const res = await fetch(
-        `${apiBase()}/platform/plans/${encodeURIComponent(runId)}`,
+        `/api/platform/plans/${encodeURIComponent(runId)}`,
         {
           method: "PATCH",
           headers: {
             "content-type": "application/json",
-            "x-role": "engineer",
-            "x-tenant-id": "default",
-            "x-user-id": "hitl-ui",
           },
           body: JSON.stringify({ title, goal }),
         },

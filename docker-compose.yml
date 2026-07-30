@@ -1,11 +1,14 @@
 # Production-style local stack for Warden GA
 # Usage:
-#   docker compose run --rm api npm run auth:bootstrap
-#   Set the printed key as MENDPOINT_API_KEY in .env
+#   Set GITHUB_MODE and MENDPOINT_WEB_ACCESS_TOKEN in .env
+#   Bootstrap an API key into the mendpoint-data volume, then set MENDPOINT_API_KEY
 #   docker compose up --build
 #   open http://localhost:3000  (web)  http://localhost:3001/status (API)
 # Ports bind to loopback because the web proxy holds an operator API key.
 # Remote exposure requires an external access gate in front of the web service.
+# The default mount exposes fixtures to the configured pilot account.
+# Set MENDPOINT_REPOS_HOST_DIR to that tenant's repository directory.
+# Register repository keys below that tenant directory in /workspace/repos.
 
 services:
   api:
@@ -19,16 +22,23 @@ services:
       NODE_ENV: production
       API_PORT: "3001"
       API_AUTH: required
-      WEB_URL: http://localhost:3000
-      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
-      GITHUB_MODE: mock
+      WEB_URL: ${WEB_URL:-http://localhost:3000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      GITHUB_MODE: ${GITHUB_MODE:?Set GITHUB_MODE to mock or real}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-}
       RATE_LIMIT_MAX: "300"
       RATE_LIMIT_WINDOW_MS: "60000"
       MENDPOINT_DATA_DIR: /app/data
+      MENDPOINT_REPOS_DIR: /workspace/repos
     volumes:
       - mendpoint-data:/app/data
       - mendpoint-runs:/app/runs
       - mendpoint-github:/app/.mendpoint
+      - ${MENDPOINT_REPOS_HOST_DIR:-./fixtures/consumers}:/workspace/repos/${MENDPOINT_TENANT_ID:-tenant_default}
     healthcheck:
       test:
         [
@@ -53,9 +63,35 @@ services:
       NODE_ENV: production
       MENDPOINT_API_URL: http://api:3001
       MENDPOINT_API_KEY: ${MENDPOINT_API_KEY:-}
+      MENDPOINT_WEB_ACCESS_TOKEN: ${MENDPOINT_WEB_ACCESS_TOKEN:?Set MENDPOINT_WEB_ACCESS_TOKEN}
+      MENDPOINT_WEB_ALLOWED_ORIGINS: ${MENDPOINT_WEB_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     depends_on:
       api:
         condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    environment:
+      NODE_ENV: production
+      GITHUB_MODE: ${GITHUB_MODE:?Set GITHUB_MODE to mock or real}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      MENDPOINT_DATA_DIR: /app/data
+      MENDPOINT_REPOS_DIR: /workspace/repos
+      MENDPOINT_TENANT_ID: ${MENDPOINT_TENANT_ID:-tenant_default}
+      POLL_INTERVAL_MS: "5000"
+      JOB_LEASE_MS: "900000"
+    volumes:
+      - mendpoint-data:/app/data
+      - mendpoint-runs:/app/runs
+      - mendpoint-github:/app/.mendpoint
+      - ${MENDPOINT_REPOS_HOST_DIR:-./fixtures/consumers}:/workspace/repos/${MENDPOINT_TENANT_ID:-tenant_default}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   mendpoint-data:

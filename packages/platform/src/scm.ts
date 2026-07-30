@@ -15,15 +15,21 @@ export type ScmPr = {
 
 export class ScmRequestError extends Error {
   readonly provider: ScmProvider;
-  readonly operation: "createPr";
+  readonly operation: "createPr" | "commentOnPr" | "listOpenPrs";
   readonly status: number;
   readonly response: unknown;
 
-  constructor(provider: ScmProvider, status: number, response: unknown) {
-    super(`${provider} createPr failed with status ${status}`);
+  constructor(
+    provider: ScmProvider,
+    status: number,
+    response: unknown,
+    operation: ScmRequestError["operation"] = "createPr",
+    reason?: string,
+  ) {
+    super(`${provider} ${operation} failed with status ${status}${reason ? `: ${reason}` : ""}`);
     this.name = "ScmRequestError";
     this.provider = provider;
-    this.operation = "createPr";
+    this.operation = operation;
     this.status = status;
     this.response = response;
   }
@@ -92,13 +98,49 @@ function mockPr(
   };
 }
 
-function assertCreatePrSucceeded(
+function assertRequestSucceeded(
   provider: ScmProvider,
   result: { ok: boolean; status: number; json: unknown },
+  operation: ScmRequestError["operation"],
 ): void {
   if (!result.ok) {
-    throw new ScmRequestError(provider, result.status, result.json);
+    throw new ScmRequestError(provider, result.status, result.json, operation);
   }
+}
+
+function malformed(
+  provider: ScmProvider,
+  operation: ScmRequestError["operation"],
+  result: { status: number; json: unknown },
+  reason: string,
+): never {
+  throw new ScmRequestError(provider, result.status, result.json, operation, reason);
+}
+
+function requireString(
+  provider: ScmProvider,
+  operation: ScmRequestError["operation"],
+  result: { status: number; json: unknown },
+  value: unknown,
+  field: string,
+): string {
+  if (typeof value !== "string" || !value.trim()) {
+    return malformed(provider, operation, result, `missing ${field}`);
+  }
+  return value;
+}
+
+function requirePositiveNumber(
+  provider: ScmProvider,
+  operation: ScmRequestError["operation"],
+  result: { status: number; json: unknown },
+  value: unknown,
+  field: string,
+): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return malformed(provider, operation, result, `missing ${field}`);
+  }
+  return value;
 }
 
 export function createGitHubAdapter(fetchImpl: FetchJson = defaultFetch): ScmAdapter {
@@ -126,13 +168,16 @@ export function createGitHubAdapter(fetchImpl: FetchJson = defaultFetch): ScmAda
           base: input.base,
         }),
       });
-      assertCreatePrSucceeded("github", r);
+      assertRequestSucceeded("github", r, "createPr");
       const j = r.json as { id?: number; number?: number; html_url?: string; state?: string };
+      const id = requirePositiveNumber("github", "createPr", r, j.id, "id");
+      const number = requirePositiveNumber("github", "createPr", r, j.number, "number");
+      const url = requireString("github", "createPr", r, j.html_url, "html_url");
       return {
-        id: String(j.id ?? "gh"),
-        number: j.number ?? 0,
+        id: String(id),
+        number,
         title: input.title,
-        url: j.html_url ?? mockPr("github", input).url,
+        url,
         state: j.state === "closed" ? "closed" : "open",
         provider: "github",
       };
@@ -151,7 +196,15 @@ export function createGitHubAdapter(fetchImpl: FetchJson = defaultFetch): ScmAda
           body: JSON.stringify({ body: input.body }),
         },
       );
-      return { ok: r.ok, id: String((r.json as { id?: number })?.id ?? "") };
+      assertRequestSucceeded("github", r, "commentOnPr");
+      const id = requirePositiveNumber(
+        "github",
+        "commentOnPr",
+        r,
+        (r.json as { id?: number })?.id,
+        "id",
+      );
+      return { ok: true, id: String(id) };
     },
     async listOpenPrs(input) {
       if (!token) return [mockPr("github", { ...input, title: "mock open pr" })];
@@ -164,13 +217,14 @@ export function createGitHubAdapter(fetchImpl: FetchJson = defaultFetch): ScmAda
           },
         },
       );
-      if (!r.ok || !Array.isArray(r.json)) return [];
-      return (r.json as Array<{ id: number; number: number; title: string; html_url: string }>).map(
+      assertRequestSucceeded("github", r, "listOpenPrs");
+      if (!Array.isArray(r.json)) malformed("github", "listOpenPrs", r, "response is not an array");
+      return (r.json as Array<{ id?: number; number?: number; title?: string; html_url?: string }>).map(
         (p) => ({
-          id: String(p.id),
-          number: p.number,
-          title: p.title,
-          url: p.html_url,
+          id: String(requirePositiveNumber("github", "listOpenPrs", r, p.id, "id")),
+          number: requirePositiveNumber("github", "listOpenPrs", r, p.number, "number"),
+          title: requireString("github", "listOpenPrs", r, p.title, "title"),
+          url: requireString("github", "listOpenPrs", r, p.html_url, "html_url"),
           state: "open" as const,
           provider: "github" as const,
         }),
@@ -202,13 +256,16 @@ export function createGitLabAdapter(fetchImpl: FetchJson = defaultFetch): ScmAda
           target_branch: input.base,
         }),
       });
-      assertCreatePrSucceeded("gitlab", r);
+      assertRequestSucceeded("gitlab", r, "createPr");
       const j = r.json as { id?: number; iid?: number; web_url?: string; state?: string };
+      const id = requirePositiveNumber("gitlab", "createPr", r, j.id, "id");
+      const number = requirePositiveNumber("gitlab", "createPr", r, j.iid, "iid");
+      const url = requireString("gitlab", "createPr", r, j.web_url, "web_url");
       return {
-        id: String(j.id ?? "gl"),
-        number: j.iid ?? 0,
+        id: String(id),
+        number,
         title: input.title,
-        url: j.web_url ?? mockPr("gitlab", input).url,
+        url,
         state: j.state === "merged" ? "merged" : j.state === "closed" ? "closed" : "open",
         provider: "gitlab",
       };
@@ -227,7 +284,15 @@ export function createGitLabAdapter(fetchImpl: FetchJson = defaultFetch): ScmAda
           body: JSON.stringify({ body: input.body }),
         },
       );
-      return { ok: r.ok, id: String((r.json as { id?: number })?.id ?? "") };
+      assertRequestSucceeded("gitlab", r, "commentOnPr");
+      const id = requirePositiveNumber(
+        "gitlab",
+        "commentOnPr",
+        r,
+        (r.json as { id?: number })?.id,
+        "id",
+      );
+      return { ok: true, id: String(id) };
     },
     async listOpenPrs(input) {
       if (!token) return [mockPr("gitlab", { ...input, title: "mock open mr" })];
@@ -236,13 +301,14 @@ export function createGitLabAdapter(fetchImpl: FetchJson = defaultFetch): ScmAda
         `${api}/projects/${project}/merge_requests?state=opened&per_page=20`,
         { headers: { "PRIVATE-TOKEN": token } },
       );
-      if (!r.ok || !Array.isArray(r.json)) return [];
-      return (r.json as Array<{ id: number; iid: number; title: string; web_url: string }>).map(
+      assertRequestSucceeded("gitlab", r, "listOpenPrs");
+      if (!Array.isArray(r.json)) malformed("gitlab", "listOpenPrs", r, "response is not an array");
+      return (r.json as Array<{ id?: number; iid?: number; title?: string; web_url?: string }>).map(
         (p) => ({
-          id: String(p.id),
-          number: p.iid,
-          title: p.title,
-          url: p.web_url,
+          id: String(requirePositiveNumber("gitlab", "listOpenPrs", r, p.id, "id")),
+          number: requirePositiveNumber("gitlab", "listOpenPrs", r, p.iid, "iid"),
+          title: requireString("gitlab", "listOpenPrs", r, p.title, "title"),
+          url: requireString("gitlab", "listOpenPrs", r, p.web_url, "web_url"),
           state: "open" as const,
           provider: "gitlab" as const,
         }),
@@ -283,17 +349,25 @@ export function createBitbucketAdapter(fetchImpl: FetchJson = defaultFetch): Scm
           }),
         },
       );
-      assertCreatePrSucceeded("bitbucket", r);
+      assertRequestSucceeded("bitbucket", r, "createPr");
       const j = r.json as {
         id?: number;
         links?: { html?: { href?: string } };
         state?: string;
       };
+      const id = requirePositiveNumber("bitbucket", "createPr", r, j.id, "id");
+      const url = requireString(
+        "bitbucket",
+        "createPr",
+        r,
+        j.links?.html?.href,
+        "links.html.href",
+      );
       return {
-        id: String(j.id ?? "bb"),
-        number: j.id ?? 0,
+        id: String(id),
+        number: id,
         title: input.title,
-        url: j.links?.html?.href ?? mockPr("bitbucket", input).url,
+        url,
         state: j.state === "MERGED" ? "merged" : j.state === "DECLINED" ? "closed" : "open",
         provider: "bitbucket",
       };
@@ -311,7 +385,15 @@ export function createBitbucketAdapter(fetchImpl: FetchJson = defaultFetch): Scm
           body: JSON.stringify({ content: { raw: input.body } }),
         },
       );
-      return { ok: r.ok, id: String((r.json as { id?: number })?.id ?? "") };
+      assertRequestSucceeded("bitbucket", r, "commentOnPr");
+      const id = requirePositiveNumber(
+        "bitbucket",
+        "commentOnPr",
+        r,
+        (r.json as { id?: number })?.id,
+        "id",
+      );
+      return { ok: true, id: String(id) };
     },
     async listOpenPrs(input) {
       if (!auth) return [mockPr("bitbucket", { ...input, title: "mock open pr" })];
@@ -321,14 +403,21 @@ export function createBitbucketAdapter(fetchImpl: FetchJson = defaultFetch): Scm
       );
       const values = (r.json as { values?: Array<{ id: number; title: string; links?: { html?: { href?: string } } }> })
         ?.values;
-      if (!r.ok || !values) return [];
+      assertRequestSucceeded("bitbucket", r, "listOpenPrs");
+      if (!Array.isArray(values)) {
+        malformed("bitbucket", "listOpenPrs", r, "missing values array");
+      }
       return values.map((p) => ({
-        id: String(p.id),
-        number: p.id,
-        title: p.title,
-        url:
-          p.links?.html?.href ??
-          mockPr("bitbucket", { ...input, title: p.title }).url,
+        id: String(requirePositiveNumber("bitbucket", "listOpenPrs", r, p.id, "id")),
+        number: requirePositiveNumber("bitbucket", "listOpenPrs", r, p.id, "id"),
+        title: requireString("bitbucket", "listOpenPrs", r, p.title, "title"),
+        url: requireString(
+          "bitbucket",
+          "listOpenPrs",
+          r,
+          p.links?.html?.href,
+          "links.html.href",
+        ),
         state: "open" as const,
         provider: "bitbucket" as const,
       }));
@@ -364,17 +453,25 @@ export function createAzureDevOpsAdapter(
           targetRefName: `refs/heads/${input.base}`,
         }),
       });
-      assertCreatePrSucceeded("azure_devops", r);
+      assertRequestSucceeded("azure_devops", r, "createPr");
       const j = r.json as {
         pullRequestId?: number;
         url?: string;
         status?: string;
       };
+      const id = requirePositiveNumber(
+        "azure_devops",
+        "createPr",
+        r,
+        j.pullRequestId,
+        "pullRequestId",
+      );
+      const url = requireString("azure_devops", "createPr", r, j.url, "url");
       return {
-        id: String(j.pullRequestId ?? "ado"),
-        number: j.pullRequestId ?? 0,
+        id: String(id),
+        number: id,
         title: input.title,
-        url: j.url ?? mockPr("azure_devops", input).url,
+        url,
         state: j.status === "completed" ? "merged" : "open",
         provider: "azure_devops",
       };
@@ -398,7 +495,15 @@ export function createAzureDevOpsAdapter(
           }),
         },
       );
-      return { ok: r.ok, id: String((r.json as { id?: number })?.id ?? "") };
+      assertRequestSucceeded("azure_devops", r, "commentOnPr");
+      const id = requirePositiveNumber(
+        "azure_devops",
+        "commentOnPr",
+        r,
+        (r.json as { id?: number })?.id,
+        "id",
+      );
+      return { ok: true, id: String(id) };
     },
     async listOpenPrs(input) {
       if (!token || (!org && !apiBase)) {
@@ -417,14 +522,29 @@ export function createAzureDevOpsAdapter(
       );
       const values = (r.json as { value?: Array<{ pullRequestId: number; title: string; url?: string }> })
         ?.value;
-      if (!r.ok || !values) return [];
+      assertRequestSucceeded("azure_devops", r, "listOpenPrs");
+      if (!Array.isArray(values)) {
+        malformed("azure_devops", "listOpenPrs", r, "missing value array");
+      }
       return values.map((p) => ({
-        id: String(p.pullRequestId),
-        number: p.pullRequestId,
-        title: p.title,
-        url:
-          p.url ??
-          mockPr("azure_devops", { ...input, title: p.title }).url,
+        id: String(
+          requirePositiveNumber(
+            "azure_devops",
+            "listOpenPrs",
+            r,
+            p.pullRequestId,
+            "pullRequestId",
+          ),
+        ),
+        number: requirePositiveNumber(
+          "azure_devops",
+          "listOpenPrs",
+          r,
+          p.pullRequestId,
+          "pullRequestId",
+        ),
+        title: requireString("azure_devops", "listOpenPrs", r, p.title, "title"),
+        url: requireString("azure_devops", "listOpenPrs", r, p.url, "url"),
         state: "open" as const,
         provider: "azure_devops" as const,
       }));

@@ -32,6 +32,30 @@ describe("warden product graph topology", () => {
     expect(edge?.to).toBe("review_gate");
   });
 
+  it("does not traverse a success edge after a node fails", () => {
+    const g = wardenProductGraph();
+    expect(pickNextEdge(g, "change_intel", false)).toBeUndefined();
+  });
+
+  it("stops unsuccessfully when a failed node has no failure edge", async () => {
+    const g = wardenDebugGraph();
+    const result = await runAgentGraph({
+      graph: g,
+      maxSteps: 3,
+      dryRunMissing: false,
+      handlers: {
+        verify: (state: GraphState) => {
+          state.verifyOk = false;
+          state.nodeOutputs.verify = { ok: false };
+          return state;
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.stoppedAt).toBe("verify");
+    expect(result.state.trace).toHaveLength(1);
+  });
+
   it("exports mermaid and product shape", () => {
     const g = wardenProductGraph();
     const m = graphToMermaid(g);
