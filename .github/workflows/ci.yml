@@ -141,10 +141,19 @@ jobs:
             -v mendpoint-ci-data:/app/data \
             mendpoint-api:ci
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:3001/ready >/dev/null; then
+            ready_status="$(curl --silent \
+              --output "$RUNNER_TEMP/mendpoint-api-ready.json" \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:3001/ready || true)"
+            if test "$ready_status" = "200"; then
               break
             fi
-            test "$attempt" -lt 30
+            if test "$attempt" -eq 30; then
+              echo "API readiness failed with HTTP $ready_status"
+              cat "$RUNNER_TEMP/mendpoint-api-ready.json" 2>/dev/null || true
+              docker inspect mendpoint-api-ci
+              exit 1
+            fi
             sleep 1
           done
           curl --fail --silent \
