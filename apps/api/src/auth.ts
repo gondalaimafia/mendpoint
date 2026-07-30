@@ -16,7 +16,12 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
-import type { Permission, Principal, Role } from "@mendpoint/platform";
+import {
+  isPublicRoute,
+  type Permission,
+  type Principal,
+  type Role,
+} from "@mendpoint/platform";
 
 export type AuthMode = "off" | "auto" | "required";
 export type ApiVariables = {
@@ -35,20 +40,8 @@ export function authMode(): AuthMode {
   return "off";
 }
 
-export function isExemptPath(path: string): boolean {
-  if (
-    path === "/health" ||
-    path === "/ready" ||
-    path === "/live" ||
-    path === "/version" ||
-    path === "/status" ||
-    path === "/"
-  )
-    return true;
-  if (path.startsWith("/webhooks/")) return true;
-  if (path === "/billing/plans") return true;
-  if (path === "/brands") return true;
-  return false;
+export function isExemptPath(path: string, method = "GET"): boolean {
+  return isPublicRoute(method, path);
 }
 
 /** Production default: require API keys when NODE_ENV=production unless explicitly overridden. */
@@ -92,7 +85,7 @@ export function scopeAllows(scopes: string[] | undefined, permission: Permission
 export function createAuthMiddleware(db: AppDb) {
   return async (c: Context<ApiEnv>, next: Next) => {
     const path = new URL(c.req.url).pathname;
-    if (isExemptPath(path)) {
+    if (isExemptPath(path, c.req.method)) {
       return next();
     }
 

@@ -151,6 +151,22 @@ describe("vm + cost + rbac + scm + alerts", () => {
     expect(can(invalid, "sandbox:run")).toBe(false);
   });
 
+  it("keeps health probes public while protected reads fail closed", () => {
+    for (const path of [
+      "/",
+      "/health",
+      "/live",
+      "/ready",
+      "/version",
+      "/status",
+    ]) {
+      expect(permissionForRoute("GET", path)).toBeNull();
+      expect(permissionForRoute("HEAD", path)).toBeNull();
+    }
+    expect(permissionForRoute("POST", "/ready")).toBe("plan:execute");
+    expect(permissionForRoute("GET", "/keys")).toBe("tenant:admin");
+  });
+
   it("fails closed for unimplemented kinds and escaping seed paths", () => {
     expect(() => createSandbox({ kind: "vm" })).toThrow(/real backend/i);
     expect(() =>

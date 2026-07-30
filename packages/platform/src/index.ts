@@ -60,6 +60,7 @@ export {
   assertCan,
   assertTenant,
   parsePrincipalFromHeaders,
+  isPublicRoute,
   permissionForRoute,
 } from "./rbac.js";
 

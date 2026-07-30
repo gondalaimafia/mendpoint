@@ -127,15 +127,30 @@ export function parsePrincipalFromHeaders(h: {
   };
 }
 
+const PUBLIC_READ_PATHS = new Set([
+  "/",
+  "/health",
+  "/live",
+  "/ready",
+  "/version",
+  "/status",
+  "/billing/plans",
+  "/brands",
+]);
+
+export function isPublicRoute(method: string, path: string): boolean {
+  const m = method.toUpperCase();
+  if (path.startsWith("/webhooks/")) return true;
+  return (m === "GET" || m === "HEAD") && PUBLIC_READ_PATHS.has(path);
+}
+
 /** Map HTTP method + path prefix → required permission (broader API RBAC). */
 export function permissionForRoute(
   method: string,
   path: string,
 ): Permission | null {
   const m = method.toUpperCase();
-  // Public / read-mostly
-  if (path === "/health" || path.startsWith("/webhooks/")) return null;
-  if (path.startsWith("/billing/plans") || path === "/brands") return null;
+  if (isPublicRoute(m, path)) return null;
 
   if (m === "GET" || m === "HEAD" || m === "OPTIONS") {
     // Sensitive reads still permission-mapped when X-Role is present (middleware enforces)

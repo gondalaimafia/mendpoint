@@ -91,4 +91,10 @@ describe("API authentication identity", () => {
     expect(isExemptPath("/github/app/installations")).toBe(false);
     expect(isExemptPath("/github/app/callback")).toBe(false);
   });
+
+  it("uses the shared public route policy for probes", () => {
+    expect(isExemptPath("/ready")).toBe(true);
+    expect(isExemptPath("/status", "HEAD")).toBe(true);
+    expect(isExemptPath("/ready", "POST")).toBe(false);
+  });
 });
