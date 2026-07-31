@@ -10,6 +10,7 @@ import {
   listProviders,
   listAudit,
   createApiKey,
+  createApiKeyFromToken,
   listApiKeys,
   findApiKeyByToken,
   revokeApiKey,
@@ -153,6 +154,25 @@ describe("db", () => {
     expect(revokeApiKey(db, created.id, nowIso(), "t1")).toBe(true);
     expect(findApiKeyByToken(db, created.token)).toBeUndefined();
     expect(countActiveApiKeys(db)).toBe(0);
+  });
+
+  it("stores a deployment-provided API key by hash", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-configured-key-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "configured.sqlite"));
+    dbs.push(db);
+    const token = `me_${"a".repeat(40)}`;
+    const created = createApiKeyFromToken(db, {
+      id: newId(),
+      name: "deployment",
+      tenantId: "tenant_default",
+      token,
+      createdAt: nowIso(),
+    });
+
+    expect(created.prefix).toBe(token.slice(0, 10));
+    expect(findApiKeyByToken(db, token)?.tenant_id).toBe("tenant_default");
+    expect(JSON.stringify(listApiKeys(db))).not.toContain(token);
   });
 
   it("feed poll ledger", () => {

@@ -60,3 +60,25 @@ RUN mkdir -p /workspace/repos && chown node:node /workspace/repos
 USER node
 HEALTHCHECK NONE
 CMD ["node", "--import", "tsx", "apps/worker/src/cli.ts", "run-jobs", "--interval", "5000"]
+
+FROM api AS fly
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+  && rm -rf /var/lib/apt/lists/* \
+  && rm -rf /app/runs /app/.mendpoint \
+  && ln -s /data/runs /app/runs \
+  && ln -s /data/state/mendpoint /app/.mendpoint
+COPY --from=web --chown=node:node /app /web
+COPY --chown=root:root scripts/start-fly.mjs /app/scripts/start-fly.mjs
+ENV API_HOST=127.0.0.1
+ENV MENDPOINT_DATA_DIR=/data/db
+ENV MENDPOINT_REPOS_DIR=/data/repos
+ENV MENDPOINT_WORKER_HEARTBEAT_PATH=/data/state/worker-heartbeat.json
+ENV GRAPH_LEARN_DB=/data/db/graph-learn.sqlite
+ENV MENDPOINT_ALERTS_PATH=/data/state/alerts.jsonl
+ENV MENDPOINT_API_URL=http://127.0.0.1:3001
+ENV POLL_INTERVAL_MS=5000
+EXPOSE 3000
+HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "scripts/start-fly.mjs"]

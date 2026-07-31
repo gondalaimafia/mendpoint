@@ -140,3 +140,22 @@ production target for this release.
 Online provisioning remains blocked on an approved single-host target, public
 hostnames, and customer-scoped secrets. These are external launch inputs, not code
 failures, and must be supplied before a real customer repository can be connected.
+
+## YC customer readiness and online pilot
+
+- [x] Reconcile the one pager and YC application promises with the live product path.
+- [x] Make GitHub delivery create reviewable draft PRs and allow safe failed-run retries.
+- [x] Make verification fail closed when no approved command profile is configured.
+- [x] Run queued work in one persistent worker with a durable heartbeat.
+- [x] Add an idempotent secret-backed API key bootstrap for first deployment.
+- [x] Add a single-Machine Fly runtime for web, API, and worker over one volume.
+- [x] Expose only public health, access, and signed GitHub webhook routes.
+- [x] Add focused regressions and extend the production container CI gate.
+- [x] Run the full release matrix and review the final diff.
+- [ ] Provision the Fly app and volume, deploy the branch, and verify the live surface.
+- [ ] Update the customer readiness report with closed gaps and external blockers.
+- [ ] Commit and push all implementation and evidence.
+
+## YC customer readiness review
+
+Pending implementation and live verification.

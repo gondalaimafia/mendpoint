@@ -210,7 +210,15 @@ export class GitHubAppDelivery implements GitHubDelivery {
       };
     }
     try {
-      const { data } = await o.pulls.create({ owner, repo, title, head: branch, base, body });
+      const { data } = await o.pulls.create({
+        owner,
+        repo,
+        title,
+        head: branch,
+        base,
+        body,
+        draft: true,
+      });
       return { number: data.number, url: data.html_url, branch, title: data.title };
     } catch {
       const { data } = await o.pulls.create({
@@ -220,6 +228,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
         head: branch,
         base: "master",
         body,
+        draft: true,
       });
       return { number: data.number, url: data.html_url, branch, title: data.title };
     }

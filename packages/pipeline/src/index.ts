@@ -278,8 +278,19 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         `${finding.consumer_id}\u0000${finding.file_path}\u0000${finding.line_start}\u0000${finding.line_end}\u0000${finding.symbol}`,
     ),
   );
+  const nonRetryableStatuses = new Set([
+    "delivery_pending",
+    "draft",
+    "open",
+    "closed",
+    "merged",
+    "notification_only",
+    "low_confidence",
+  ]);
   const existingPrByConsumer = new Map(
-    listPrsForChange(db, changeId, input.tenantId).map((pr) => [pr.consumer_id, pr]),
+    listPrsForChange(db, changeId, input.tenantId)
+      .filter((pr) => nonRetryableStatuses.has(pr.status))
+      .map((pr) => [pr.consumer_id, pr]),
   );
 
   for (const mon of monitored) {
@@ -663,7 +674,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         );
         prUrl = pr.url;
         prNumber = pr.number;
-        status = "open";
+        status = "draft";
         updateMigrationPrDelivery(db, prId, {
           status,
           githubPrNumber: prNumber,
@@ -691,7 +702,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
                 ? "pr.repair_failed"
                 : status === "delivery_failed"
                   ? "pr.delivery_failed"
-                  : "pr.opened",
+                  : "pr.draft_opened",
       resourceType: "migration_pr",
       resourceId: prId,
       metadata: {

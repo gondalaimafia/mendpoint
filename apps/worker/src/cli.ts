@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runChangePipeline } from "@mendpoint/pipeline";
 import {
@@ -32,6 +39,32 @@ export type JobDrainResult = {
   failed: number;
   retried: number;
 };
+
+export type WorkerHeartbeat = {
+  ok: true;
+  workerId: string;
+  recordedAt: string;
+  jobs: JobDrainResult;
+  feedPollingEnabled: boolean;
+  feedPollOk: boolean;
+};
+
+export function writeWorkerHeartbeat(
+  heartbeatPath: string,
+  heartbeat: WorkerHeartbeat,
+): void {
+  if (!isAbsolute(heartbeatPath)) {
+    throw new Error("Worker heartbeat path must be absolute");
+  }
+  const parent = dirname(heartbeatPath);
+  mkdirSync(parent, { recursive: true });
+  const temporary = `${heartbeatPath}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(heartbeat)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  renameSync(temporary, heartbeatPath);
+}
 
 export function parseIntervalMs(
   value: string | number | undefined,
@@ -384,6 +417,7 @@ export async function processJobsOnce(
         notificationsOnly?: boolean;
         contractCases?: ContractCase[];
         securityScanOk?: boolean;
+        repairVerifyCommands?: string[];
       };
       console.log(`Job ${job.id} pipeline.fanout ${payload.providerSlug}`);
       const report = await runChangePipeline({
@@ -394,6 +428,7 @@ export async function processJobsOnce(
         notificationsOnly: payload.notificationsOnly,
         contractCases: payload.contractCases,
         securityScanOk: payload.securityScanOk,
+        repairVerifyCommands: payload.repairVerifyCommands,
       });
       completeJob(db, job.id, { changeId: report.changeId }, nowIso());
       result.succeeded++;
@@ -422,6 +457,58 @@ async function runJobWorker(intervalMs: number) {
       failures++;
       console.error(error);
     }
+    const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, delay));
+  }
+}
+
+async function runService(intervalMs: number) {
+  const db = createDb();
+  const heartbeatPath = process.env.MENDPOINT_WORKER_HEARTBEAT_PATH;
+  if (!heartbeatPath) {
+    throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH is required for run-service");
+  }
+  let failures = 0;
+  for (;;) {
+    const feedPollingEnabled =
+      process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
+    let feedPollOk = true;
+    if (feedPollingEnabled) {
+      try {
+        const feedResults = await runFeedPoll({
+          db,
+          localOnly: process.env.POLL_LOCAL_ONLY === "1",
+          runPipeline: true,
+        });
+        feedPollOk = feedResults.every((result) => result.status !== "error");
+      } catch (error) {
+        feedPollOk = false;
+        console.error(error);
+      }
+    }
+
+    let jobs: JobDrainResult = {
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+      retried: 0,
+    };
+    try {
+      jobs = await processJobsOnce(db);
+    } catch (error) {
+      jobs.failed++;
+      console.error(error);
+    }
+    const healthy = feedPollOk && jobs.failed === 0;
+    failures = healthy ? 0 : failures + 1;
+    writeWorkerHeartbeat(heartbeatPath, {
+      ok: true,
+      workerId: WORKER_ID,
+      recordedAt: nowIso(),
+      jobs,
+      feedPollingEnabled,
+      feedPollOk,
+    });
     const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
     await new Promise((resolveSleep) => setTimeout(resolveSleep, delay));
   }
@@ -489,14 +576,17 @@ async function main() {
     if (result.failed > 0) process.exitCode = 1;
   } else if (cmd === "run-jobs") {
     await runJobWorker(args.intervalMs);
+  } else if (cmd === "run-service") {
+    await runService(args.intervalMs);
   } else if (cmd === "sdk-signals") {
     console.log(JSON.stringify(await probeKnownSdks({ localOnly: args.localOnly }), null, 2));
   } else {
-    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|sdk-signals]
+    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|sdk-signals]
   poll-once [--local] [--no-pipeline] [--slug acme-payments]
   poll [--local] [--interval 60000]
   process-jobs
   run-jobs [--interval 5000]
+  run-service [--interval 5000]
   sdk-signals [--local]`);
     process.exitCode = 1;
   }

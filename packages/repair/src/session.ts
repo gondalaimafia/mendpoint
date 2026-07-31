@@ -16,12 +16,25 @@ import type {
 import { runVerificationCommand } from "./verify.js";
 
 function runVerify(repoRoot: string, commands: string[], dryRun?: boolean): VerifyResult {
-  if (dryRun || !commands.length) {
+  if (dryRun) {
     return {
       ok: true,
       commands,
-      output: dryRun ? "dry-run skip verify" : "no commands",
+      output: "dry-run skip verify",
       failures: [],
+    };
+  }
+  if (!commands.length) {
+    return {
+      ok: false,
+      commands,
+      output: "verification failed closed: no approved command profile configured",
+      failures: [
+        {
+          kind: "unknown",
+          message: "No approved verification command profile is configured",
+        },
+      ],
     };
   }
   const outputs: string[] = [];

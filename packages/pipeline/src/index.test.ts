@@ -242,10 +242,10 @@ describe("pipeline", () => {
     expect(report.consumers.length).toBe(1);
     expect(report.consumers[0].findings).toBeGreaterThan(0);
     expect(report.consumers[0].candidates).toBeGreaterThan(0);
-    expect(report.consumers[0].prStatus).toBe("open");
+    expect(report.consumers[0].prStatus).toBe("draft");
     expect(listPrs(db).length).toBe(1);
     expect(listAudit(db).some((a) => a.action === "change.normalized")).toBe(true);
-    expect(listAudit(db).some((a) => a.action === "pr.opened")).toBe(true);
+    expect(listAudit(db).some((a) => a.action === "pr.draft_opened")).toBe(true);
 
     writeFileSync(join(dir, "ok"), "1");
   });
@@ -414,7 +414,7 @@ describe("pipeline", () => {
 
     const first = await runChangePipeline({ ...common, graphDb: testGraphDb() });
     expect(first.consumers.map((consumer) => consumer.prStatus)).toEqual([
-      "open",
+      "draft",
       "delivery_failed",
     ]);
     expect(github.opened).toEqual(["a-shop", "b-shop"]);
@@ -429,11 +429,11 @@ describe("pipeline", () => {
     const second = await runChangePipeline({ ...common, graphDb: testGraphDb() });
     expect(second.changeId).toBe(first.changeId);
     expect(second.consumers.map((consumer) => consumer.prStatus)).toEqual([
-      "open",
+      "draft",
       "delivery_failed",
     ]);
-    expect(github.opened).toEqual(["a-shop", "b-shop"]);
-    expect(listPrs(db, "tenant_default")).toHaveLength(2);
+    expect(github.opened).toEqual(["a-shop", "b-shop", "b-shop"]);
+    expect(listPrs(db, "tenant_default")).toHaveLength(3);
     expect(listChanges(db)).toHaveLength(1);
     expect(
       listFindingsForChange(db, first.changeId, "tenant_default"),

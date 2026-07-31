@@ -1112,6 +1112,7 @@ app.post("/providers/:slug/publish-version", async (c) => {
     runPipeline?: boolean;
     contractCases?: ContractCase[];
     securityScanOk?: boolean;
+    repairVerifyCommands?: string[];
   }>();
   if (!body.versionLabel || body.openapi === undefined) {
     return c.json({ error: "versionLabel and openapi required" }, 400);
@@ -1134,28 +1135,29 @@ app.post("/providers/:slug/publish-version", async (c) => {
     metadata: { versionLabel: body.versionLabel, versionId: id },
   });
   if (body.runPipeline) {
-    try {
-      const report = await runChangePipeline({
+    const jobId = newId();
+    enqueueJob(db, {
+      id: jobId,
+      tenantId: requestTenantId(c),
+      type: "pipeline.fanout",
+      payload: {
         providerSlug: p.slug,
-        db,
-        tenantId: requestTenantId(c),
-        consumerIds: requestConsumerIds(c),
         contractCases: body.contractCases,
         securityScanOk: body.securityScanOk,
-      });
-      invalidateGraphCaches();
-      return c.json({ versionId: id, versionLabel: body.versionLabel, pipeline: report }, 201);
-    } catch (e) {
-      invalidateGraphCaches();
-      return c.json(
-        {
-          versionId: id,
-          versionLabel: body.versionLabel,
-          pipelineError: e instanceof Error ? e.message : String(e),
-        },
-        201,
-      );
-    }
+        repairVerifyCommands: body.repairVerifyCommands,
+      },
+      createdAt: nowIso(),
+    });
+    invalidateGraphCaches();
+    return c.json(
+      {
+        versionId: id,
+        versionLabel: body.versionLabel,
+        jobId,
+        status: "pending",
+      },
+      202,
+    );
   }
   invalidateGraphCaches();
   return c.json({ versionId: id, versionLabel: body.versionLabel }, 201);
@@ -1726,6 +1728,7 @@ app.post("/jobs/fanout", async (c) => {
     notificationsOnly?: boolean;
     contractCases?: ContractCase[];
     securityScanOk?: boolean;
+    repairVerifyCommands?: string[];
   }>();
   if (!body.providerSlug) return c.json({ error: "providerSlug required" }, 400);
   const id = newId();
@@ -1740,6 +1743,7 @@ app.post("/jobs/fanout", async (c) => {
       notificationsOnly: body.notificationsOnly,
       contractCases: body.contractCases,
       securityScanOk: body.securityScanOk,
+      repairVerifyCommands: body.repairVerifyCommands,
     },
     createdAt: nowIso(),
   });
@@ -1833,6 +1837,7 @@ app.post("/jobs/process-one", async (c) => {
       notificationsOnly?: boolean;
       contractCases?: ContractCase[];
       securityScanOk?: boolean;
+      repairVerifyCommands?: string[];
     };
     const report = await runChangePipeline({
       providerSlug: payload.providerSlug,
@@ -1843,6 +1848,7 @@ app.post("/jobs/process-one", async (c) => {
       notificationsOnly: payload.notificationsOnly,
       contractCases: payload.contractCases,
       securityScanOk: payload.securityScanOk,
+      repairVerifyCommands: payload.repairVerifyCommands,
     });
     completeJob(db, job.id, report, nowIso());
     invalidateGraphCaches();

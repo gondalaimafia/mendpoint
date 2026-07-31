@@ -1,0 +1,62 @@
+app = "mendpoint-talal"
+primary_region = "sjc"
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  dockerfile = "Dockerfile"
+  target = "fly"
+
+[env]
+  NODE_ENV = "production"
+  API_AUTH = "required"
+  API_HOST = "127.0.0.1"
+  API_PORT = "3001"
+  HOSTNAME = "0.0.0.0"
+  PORT = "3000"
+  GITHUB_MODE = "mock"
+  MENDPOINT_TENANT_ID = "tenant_default"
+  MENDPOINT_DATA_DIR = "/data/db"
+  MENDPOINT_REPOS_DIR = "/data/repos"
+  MENDPOINT_WORKER_HEARTBEAT_PATH = "/data/state/worker-heartbeat.json"
+  MENDPOINT_WORKER_HEARTBEAT_MAX_AGE_MS = "30000"
+  GRAPH_LEARN_DB = "/data/db/graph-learn.sqlite"
+  MENDPOINT_ALERTS_PATH = "/data/state/alerts.jsonl"
+  MENDPOINT_API_URL = "http://127.0.0.1:3001"
+  MENDPOINT_PILOT_SEED = "1"
+  MENDPOINT_VERIFY_FIRST = "1"
+  AGENTIC_REPAIR = "1"
+  POLL_LOCAL_ONLY = "1"
+  MENDPOINT_FEED_POLLING_ENABLED = "0"
+  POLL_INTERVAL_MS = "5000"
+  JOB_LEASE_MS = "900000"
+  RATE_LIMIT_MAX = "120"
+  RATE_LIMIT_WINDOW_MS = "60000"
+  WEB_URL = "https://mendpoint-talal.fly.dev"
+  CORS_ORIGINS = "https://mendpoint-talal.fly.dev"
+  MENDPOINT_WEB_ALLOWED_ORIGINS = "https://mendpoint-talal.fly.dev"
+
+[[mounts]]
+  source = "mendpoint_data"
+  destination = "/data"
+  initial_size = "20gb"
+  snapshot_retention = 14
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "45s"
+    interval = "15s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"

@@ -2,6 +2,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -25,6 +26,7 @@ import {
   retryDelayMs,
   validateWorkerProductionEnv,
   runUnseenVersion,
+  writeWorkerHeartbeat,
 } from "./cli.js";
 
 const dirs: string[] = [];
@@ -47,6 +49,36 @@ describe("worker runtime", () => {
     expect(parseLeaseMs("900000")).toBe(900_000);
     expect(() => parseLeaseMs("NaN")).toThrow(/JOB_LEASE_MS/);
     expect(parseArgs(["--interval", "2000"]).intervalMs).toBe(2000);
+  });
+
+  it("writes an atomic worker heartbeat", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-worker-heartbeat-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "state", "worker-heartbeat.json");
+    writeWorkerHeartbeat(heartbeatPath, {
+      ok: true,
+      workerId: "worker-test",
+      recordedAt: "2026-07-30T00:00:00.000Z",
+      jobs: { claimed: 1, succeeded: 1, failed: 0, retried: 0 },
+      feedPollingEnabled: true,
+      feedPollOk: true,
+    });
+
+    expect(JSON.parse(readFileSync(heartbeatPath, "utf8"))).toMatchObject({
+      ok: true,
+      workerId: "worker-test",
+      feedPollOk: true,
+    });
+    expect(() =>
+      writeWorkerHeartbeat("relative.json", {
+        ok: true,
+        workerId: "worker-test",
+        recordedAt: "2026-07-30T00:00:00.000Z",
+        jobs: { claimed: 0, succeeded: 0, failed: 0, retried: 0 },
+        feedPollingEnabled: false,
+        feedPollOk: true,
+      }),
+    ).toThrow(/absolute/i);
   });
 
   it("requires production repositories to stay under the configured mount", () => {

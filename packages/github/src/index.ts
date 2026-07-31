@@ -84,6 +84,7 @@ export class MockGitHubDelivery implements GitHubDelivery {
       title,
       body,
       base,
+      draft: true,
       id: newId(),
       createdAt: new Date().toISOString(),
     };
@@ -247,6 +248,7 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
         head: branch,
         base,
         body,
+        draft: true,
       });
       return {
         number: data.number,
@@ -264,6 +266,7 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
           head: branch,
           base: "master",
           body,
+          draft: true,
         });
         return {
           number: data.number,
@@ -343,4 +346,3 @@ export {
   type AppCredentials,
   type InstallationToken,
 } from "./app-runtime.js";
-

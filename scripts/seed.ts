@@ -23,6 +23,7 @@ export type SeedOptions = {
   dbPath?: string;
   root?: string;
   tenantId?: string;
+  consumerRepoPath?: string;
 };
 
 export type SeedResult = {
@@ -64,7 +65,11 @@ export function seedDatabase(opts: SeedOptions = {}): SeedResult {
   let changed = false;
 
   const acmeDir = join(root, "fixtures/providers/acme-payments");
-  const shopDir = join(root, "fixtures/consumers/shop-app");
+  const shopDir = resolve(
+    opts.consumerRepoPath ??
+      process.env.MENDPOINT_SEED_REPO_PATH ??
+      join(root, "fixtures/consumers/shop-app"),
+  );
   let provider = getProviderBySlug(db, "acme-payments");
   if (!provider) {
     const providerId = newId();

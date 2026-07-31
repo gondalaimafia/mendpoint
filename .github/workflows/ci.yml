@@ -113,6 +113,8 @@ jobs:
         run: docker build --target web -t mendpoint-web:ci .
       - name: Build worker image
         run: docker build --target worker -t mendpoint-worker:ci .
+      - name: Build Fly image
+        run: docker build --target fly -t mendpoint-fly:ci .
       - name: Start production images
         shell: bash
         run: |
@@ -120,10 +122,11 @@ jobs:
           docker network create mendpoint-ci
           docker volume create mendpoint-ci-data
           cleanup() {
+            docker logs mendpoint-fly-ci 2>/dev/null || true
             docker logs mendpoint-web-ci 2>/dev/null || true
             docker logs mendpoint-api-ci 2>/dev/null || true
-            docker rm --force mendpoint-web-ci mendpoint-api-ci 2>/dev/null || true
-            docker volume rm mendpoint-ci-data 2>/dev/null || true
+            docker rm --force mendpoint-fly-ci mendpoint-web-ci mendpoint-api-ci 2>/dev/null || true
+            docker volume rm mendpoint-fly-ci-data mendpoint-ci-data 2>/dev/null || true
             docker network rm mendpoint-ci 2>/dev/null || true
           }
           trap cleanup EXIT
@@ -198,3 +201,33 @@ jobs:
             -v mendpoint-ci-data:/app/data \
             mendpoint-worker:ci \
             node --import tsx apps/worker/src/cli.ts process-jobs
+          docker volume create mendpoint-fly-ci-data
+          fly_api_key="me_$(printf 'a%.0s' {1..40})"
+          docker run --detach \
+            --name mendpoint-fly-ci \
+            --publish 127.0.0.1:3002:3000 \
+            -e GITHUB_MODE=mock \
+            -e MENDPOINT_API_KEY="$fly_api_key" \
+            -e MENDPOINT_WEB_ACCESS_TOKEN=ci-fly-web-access-token \
+            -e MENDPOINT_WEB_ALLOWED_ORIGINS=http://127.0.0.1:3002 \
+            -e WEB_URL=http://127.0.0.1:3002 \
+            -e CORS_ORIGINS=http://127.0.0.1:3002 \
+            -e MENDPOINT_PILOT_SEED=1 \
+            -e POLL_LOCAL_ONLY=1 \
+            -v mendpoint-fly-ci-data:/data \
+            mendpoint-fly:ci
+          for attempt in {1..60}; do
+            fly_status="$(curl --silent --output "$RUNNER_TEMP/mendpoint-fly-health.json" \
+              --write-out '%{http_code}' http://127.0.0.1:3002/healthz || true)"
+            if test "$fly_status" = "200"; then
+              break
+            fi
+            if test "$attempt" -eq 60; then
+              cat "$RUNNER_TEMP/mendpoint-fly-health.json" 2>/dev/null || true
+              docker inspect mendpoint-fly-ci
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:3002/status)" = "307"

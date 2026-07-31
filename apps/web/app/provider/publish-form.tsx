@@ -39,8 +39,10 @@ export function PublishForm({ providers }: { providers: Array<{ slug: string; na
       const json = await res.json();
       if (!res.ok) throw new Error(JSON.stringify(json));
       setMsg(
-        json.pipeline
-          ? `Published ${json.versionLabel}. Pipeline change ${json.pipeline.changeId} · ${json.pipeline.consumers?.length ?? 0} consumer(s).`
+        json.jobId
+          ? `Version ${json.versionLabel} saved. Analysis job ${json.jobId} is queued.`
+          : json.pipeline
+            ? `Published ${json.versionLabel}. Pipeline change ${json.pipeline.changeId} · ${json.pipeline.consumers?.length ?? 0} consumer(s).`
           : json.pipelineError
             ? `Version saved; pipeline: ${json.pipelineError}`
             : `Version ${json.versionLabel} uploaded (pipeline not run).`,
@@ -57,7 +59,7 @@ export function PublishForm({ providers }: { providers: Array<{ slug: string; na
     <form className="card stack" onSubmit={submit} style={{ gap: "0.75rem" }}>
       <h3 style={{ margin: 0 }}>Publish OpenAPI version</h3>
       <p className="muted" style={{ margin: 0 }}>
-        Upload a new schema and optionally run the impact → PR pipeline for monitored consumers.
+        Upload a new schema and optionally queue impact analysis for monitored consumers.
       </p>
       <label className="muted">
         Provider{" "}
@@ -108,7 +110,7 @@ export function PublishForm({ providers }: { providers: Array<{ slug: string; na
           checked={runPipeline}
           onChange={(e) => setRunPipeline(e.target.checked)}
         />
-        Run impact pipeline after upload
+        Queue impact analysis after upload
       </label>
       <button className="primary" type="submit" disabled={busy || !providers.length}>
         {busy ? "Publishing…" : "Publish version"}

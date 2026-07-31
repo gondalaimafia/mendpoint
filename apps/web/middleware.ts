@@ -14,6 +14,8 @@ function publicPath(pathname: string): boolean {
   return (
     pathname === "/access" ||
     pathname === "/api/session" ||
+    pathname === "/healthz" ||
+    pathname === "/webhooks/github" ||
     pathname.startsWith("/_next/") ||
     pathname === "/favicon.ico"
   );

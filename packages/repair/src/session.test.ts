@@ -57,12 +57,13 @@ describe("repair session", () => {
       `export function charge(amount_cents: number) {\n  return amount_cents;\n}\n// FIXME(mendpoint): endpoint removed — /v1/old\n`,
       "utf8",
     );
+    writeFileSync(join(dir, "check.mjs"), "console.log('ok')\n", "utf8");
 
     const result = await runRepairSession({
       repoRoot: dir,
       renameMap: { amount_cents: "amount" },
       maxAttempts: 2,
-      verifyCommands: [], // no shell verify in unit test
+      verifyCommands: ["node check.mjs"],
     });
 
     expect(result.edits.length).toBeGreaterThan(0);
@@ -72,6 +73,21 @@ describe("repair session", () => {
     expect(text).not.toContain("FIXME(mendpoint)");
     expect(result.ok).toBe(true);
     expect(result.reportMarkdown).toContain("agentic repair");
+  });
+
+  it("fails closed when no verification command profile is configured", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-no-verify-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "pay.ts"), "export const amount = 1;\n", "utf8");
+
+    const result = await runRepairSession({
+      repoRoot: dir,
+      verifyCommands: [],
+      maxAttempts: 1,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.finalVerify?.output).toContain("failed closed");
   });
 
   it("agentic loop dry-run succeeds", async () => {

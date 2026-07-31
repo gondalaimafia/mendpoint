@@ -1192,6 +1192,36 @@ export function createApiKey(
   };
 }
 
+/** Store a caller-generated deployment secret without ever logging it. */
+export function createApiKeyFromToken(
+  db: AppDb,
+  row: {
+    id: string;
+    name: string;
+    tenantId: string;
+    token: string;
+    scopes?: string[];
+    createdAt: string;
+  },
+): { id: string; prefix: string; tenantId: string } {
+  const prefix = row.token.slice(0, 10);
+  run(
+    db,
+    `INSERT INTO api_keys (id, name, key_hash, key_prefix, tenant_id, scopes_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      row.id,
+      row.name,
+      hashApiKey(row.token),
+      prefix,
+      row.tenantId,
+      JSON.stringify(row.scopes ?? ["*"]),
+      row.createdAt,
+    ],
+  );
+  return { id: row.id, prefix, tenantId: row.tenantId };
+}
+
 export function findApiKeyByToken(db: AppDb, token: string): ApiKeyRow | undefined {
   const keyHash = hashApiKey(token);
   return get<ApiKeyRow>(
