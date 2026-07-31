@@ -21,6 +21,7 @@ import {
   registrySummaryMarkdown,
   type AppDb,
 } from "@mendpoint/db";
+import { createHash } from "node:crypto";
 
 import { normalizeChange } from "@mendpoint/change-intel";
 import { analyzeImpact, reportToFindings } from "@mendpoint/code-impact";
@@ -33,7 +34,12 @@ import {
   getBrandPack,
   getBrandPackForProvider,
 } from "@mendpoint/branding";
-import { runRepairSession } from "@mendpoint/repair";
+import {
+  applyActions,
+  rollbackPristineFiles,
+  runRepairSession,
+  type PristineFile,
+} from "@mendpoint/repair";
 import { planFromSpecDiff, planToMarkdown } from "@mendpoint/orchestrator";
 import {
   evaluatePrGates,
@@ -87,6 +93,8 @@ export type PipelineInput = {
   contractCases?: ContractCase[];
   /** Explicit security scan result required before PR delivery. */
   securityScanOk?: boolean;
+  /** Cooperative cancellation checked before each customer mutation or delivery. */
+  shouldContinue?: () => boolean;
 };
 
 export type PipelineReport = {
@@ -105,6 +113,7 @@ export type PipelineReport = {
     prId?: string;
     prStatus?: string;
     prUrl?: string;
+    deliveryError?: string;
     impactReport?: ImpactReport;
     repair?: {
       sessionId: string;
@@ -279,7 +288,6 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     ),
   );
   const nonRetryableStatuses = new Set([
-    "delivery_pending",
     "draft",
     "open",
     "closed",
@@ -292,8 +300,21 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       .filter((pr) => nonRetryableStatuses.has(pr.status))
       .map((pr) => [pr.consumer_id, pr]),
   );
+  const retryablePrByConsumer = new Map(
+    listPrsForChange(db, changeId, input.tenantId)
+      .filter((pr) =>
+        ["delivery_pending", "delivery_failed"].includes(pr.status),
+      )
+      .map((pr) => [pr.consumer_id, pr]),
+  );
+  const assertActive = () => {
+    if (input.shouldContinue?.() === false) {
+      throw new Error("lease_lost_during_pipeline");
+    }
+  };
 
   for (const mon of monitored) {
+    assertActive();
     const consumer = getConsumer(db, mon.consumer_id, input.tenantId);
     const repo = getConsumerRepo(db, mon.consumer_id, input.tenantId);
     if (!consumer || !repo) continue;
@@ -319,6 +340,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     const impactReport = await analyzeImpact(repo.local_path, surfaces, {
       persistIndex: input.persistIndex ?? true,
     });
+    assertActive();
 
     const rawFindings = reportToFindings(impactReport);
     ingestImpactFindings(gldb, {
@@ -505,44 +527,44 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       !policyOverrides.notificationsOnly &&
       decision.allowedEdits.length > 0
     ) {
-      // Write draft edits to working tree first so repair sees post-migration state
-      const { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } =
-        await import("node:fs");
-      const { dirname, join } = await import("node:path");
-      const initialFiles = new Map<
-        string,
-        { absolutePath: string; existed: boolean; content: string }
-      >();
-      for (const ed of decision.allowedEdits) {
-        const abs = join(repo.local_path, ed.path);
-        initialFiles.set(ed.path, {
-          absolutePath: abs,
-          existed: existsSync(abs),
-          content: existsSync(abs) ? readFileSync(abs, "utf8") : "",
-        });
-        mkdirSync(dirname(abs), { recursive: true });
-        writeFileSync(abs, ed.updated, "utf8");
-      }
-      const rollbackInitialFiles = () => {
-        for (const initial of initialFiles.values()) {
-          if (initial.existed) {
-            mkdirSync(dirname(initial.absolutePath), { recursive: true });
-            writeFileSync(initial.absolutePath, initial.content, "utf8");
-          } else if (existsSync(initial.absolutePath)) {
-            rmSync(initial.absolutePath, { force: true });
-          }
-        }
-      };
-      const rollbackRepairOnlyFiles = (
-        edits: Array<{ filePath: string; original: string }>,
+      // Stage generated edits through the same canonical containment boundary as repair.
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const pristineFiles = new Map<string, PristineFile>();
+      applyActions(
+        decision.allowedEdits.map((edit) => ({
+          type: "write_file" as const,
+          filePath: edit.path,
+          content: edit.updated,
+          reason: "generated migration draft",
+        })),
+        {
+          repoRoot: repo.local_path,
+          neverTouchPaths: policyOverrides.neverTouchPaths,
+          maxActions: decision.allowedEdits.length,
+          maxFilesChanged: decision.allowedEdits.length,
+          pristineFiles,
+        },
+      );
+      const captureRepairPristine = (
+        edits: Array<{
+          filePath: string;
+          original: string;
+          existed?: boolean;
+        }>,
       ) => {
         for (const edit of edits) {
-          if (initialFiles.has(edit.filePath)) continue;
-          const abs = join(repo.local_path, edit.filePath);
-          mkdirSync(dirname(abs), { recursive: true });
-          writeFileSync(abs, edit.original, "utf8");
+          if (pristineFiles.has(edit.filePath)) continue;
+          pristineFiles.set(edit.filePath, {
+            filePath: edit.filePath,
+            absolutePath: join(repo.local_path, edit.filePath),
+            existed: edit.existed ?? true,
+            content: edit.original,
+          });
         }
       };
+      const rollbackAll = () =>
+        rollbackPristineFiles(repo.local_path, pristineFiles);
       try {
         const repair = await runRepairSession({
           repoRoot: repo.local_path,
@@ -550,6 +572,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           maxAttempts: Number(process.env.AGENTIC_REPAIR_ATTEMPTS ?? 3),
           verifyCommands: input.repairVerifyCommands ?? [],
           useLlm: process.env.LLM_REPAIR === "1",
+          neverTouchPaths: policyOverrides.neverTouchPaths,
+          allowBroadSearch: false,
+          shouldContinue: input.shouldContinue,
         });
         repairMeta = {
           sessionId: repair.sessionId,
@@ -557,10 +582,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           attempts: repair.attempts,
           edits: repair.edits.length,
         };
+        captureRepairPristine(repair.edits);
         if (!repair.ok) {
           repairBlockedDelivery = true;
-          rollbackInitialFiles();
-          rollbackRepairOnlyFiles(repair.edits);
+          rollbackAll();
         } else {
           // Refresh allowed edits from disk only after verification succeeds.
           for (const ed of decision.allowedEdits) {
@@ -582,8 +607,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           }
           // Delivery uses the captured edit payloads. Keep the checkout clean
           // regardless of later SCM success or failure.
-          rollbackInitialFiles();
-          rollbackRepairOnlyFiles(repair.edits);
+          rollbackAll();
         }
         prBodyFinal = [prBody, "", repair.reportMarkdown].join("\n");
         recordAudit(db, {
@@ -596,7 +620,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         });
       } catch (e) {
         repairBlockedDelivery = true;
-        rollbackInitialFiles();
+        rollbackAll();
         recordAudit(db, {
           tenantId: input.tenantId,
           actor: "repair",
@@ -634,29 +658,39 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       status = "low_confidence";
     }
 
-    const prId = newId();
-    insertMigrationPr(db, {
-      id: prId,
-      changeId,
-      consumerId: consumer.id,
-      title: draft.title,
-      body: prBodyFinal,
-      branchName: draft.branchName,
-      status: shouldDeliver ? "delivery_pending" : status,
-      risk: draft.risk,
-      patchUnified: draft.patch,
-      githubPrNumber: prNumber ?? null,
-      githubPrUrl: prUrl ?? null,
-      createdAt: nowIso(),
-      resolvedAt: null,
-    });
+    const retryablePr = retryablePrByConsumer.get(consumer.id);
+    const prId = retryablePr?.id ?? newId();
+    if (retryablePr) {
+      updateMigrationPrDelivery(db, prId, {
+        status: shouldDeliver ? "delivery_pending" : status,
+        body: prBodyFinal,
+      });
+    } else {
+      insertMigrationPr(db, {
+        id: prId,
+        changeId,
+        consumerId: consumer.id,
+        title: draft.title,
+        body: prBodyFinal,
+        branchName: draft.branchName,
+        status: shouldDeliver ? "delivery_pending" : status,
+        risk: draft.risk,
+        patchUnified: draft.patch,
+        githubPrNumber: prNumber ?? null,
+        githubPrUrl: prUrl ?? null,
+        createdAt: nowIso(),
+        resolvedAt: null,
+      });
+    }
     if (shouldDeliver) {
+      assertActive();
       try {
         await github.createBranch(
           consumer.github_owner,
           consumer.github_repo,
           draft.branchName,
         );
+        assertActive();
         await github.commitFiles(
           consumer.github_owner,
           consumer.github_repo,
@@ -664,6 +698,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           draft.title,
           decision.allowedEdits.map((e) => ({ path: e.path, content: e.updated })),
         );
+        assertActive();
         const pr = await github.openPullRequest(
           consumer.github_owner,
           consumer.github_repo,
@@ -672,6 +707,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           prBodyFinal,
           repo.default_branch,
         );
+        assertActive();
         prUrl = pr.url;
         prNumber = pr.number;
         status = "draft";
@@ -726,6 +762,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       prId,
       prStatus: status,
       prUrl,
+      deliveryError,
       impactReport,
       repair: repairMeta,
     });
@@ -779,12 +816,17 @@ export async function applyPrFeedback(
   outcome: "merged" | "closed" | "modified",
   opts: PrFeedbackOpts,
 ) {
+  const replayId = (kind: string, value = "") =>
+    `feedback:${createHash("sha256")
+      .update([opts.tenantId, prId, outcome, kind, value].join("\u0000"))
+      .digest("hex")}`;
   const pr = getPr(db, prId, opts.tenantId);
   if (!pr) throw new Error(`Unknown migration PR ${prId} for tenant`);
   const status = outcome === "modified" ? "open" : outcome;
   const resolvedAt = outcome === "merged" || outcome === "closed" ? nowIso() : null;
   updateMigrationPrStatus(db, prId, status, resolvedAt);
   recordAudit(db, {
+    id: replayId("pr_feedback"),
     tenantId: opts.tenantId,
     actor: "consumer",
     action: `pr.feedback.${outcome}`,
@@ -819,7 +861,7 @@ export async function applyPrFeedback(
       const patterns = extractPatternsFromPrBody(pr.body);
       for (const pattern of patterns) {
         insertSuppressedPattern(db, {
-          id: newId(),
+          id: replayId("suppressed_pattern", pattern),
           tenantId: opts.tenantId,
           consumerId: pr.consumer_id,
           pattern,
@@ -842,6 +884,7 @@ export async function applyPrFeedback(
         /* */
       }
       recordAudit(db, {
+        id: replayId("patterns_suppressed"),
         tenantId: opts.tenantId,
         actor: "learning",
         action: "patterns.suppressed",

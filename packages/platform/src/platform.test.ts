@@ -144,6 +144,8 @@ describe("vm + cost + rbac + scm + alerts", () => {
     expect(permissionForRoute("GET", "/metrics")).toBe("graph:read");
     expect(permissionForRoute("GET", "/jobs")).toBe("graph:read");
     expect(permissionForRoute("GET", "/repair/sessions")).toBe("graph:read");
+    expect(permissionForRoute("POST", "/jobs/job-1/retry")).toBe("tenant:admin");
+    expect(permissionForRoute("POST", "/jobs/job-1/cancel")).toBe("tenant:admin");
     const viewer = parsePrincipalFromHeaders({ "x-role": "viewer" });
     expect(can(viewer, "plan:edit")).toBe(false);
     const invalid = parsePrincipalFromHeaders({ "x-role": "not-a-role" });

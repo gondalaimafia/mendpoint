@@ -51,14 +51,6 @@ export function planRepairs(
       }
     }
 
-    if (obs.kind === "fixme_mendpoint" && obs.filePath) {
-      actions.push({
-        type: "remove_fixme",
-        filePath: obs.filePath,
-        reason: "Strip stale FIXME after addressing or acknowledging migration",
-      });
-    }
-
     // Parse suggestion rename X to Y
     if (obs.suggestion) {
       const m =

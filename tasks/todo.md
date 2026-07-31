@@ -175,3 +175,111 @@ or scoped token was supplied. Immutable repository synchronization, internally
 produced contract and security evidence, a real draft pull request canary, and
 an off host restore drill remain P0 launch gates. The current gap report is
 `C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\mendpoint-customer-readiness-gap-2026-07-30.md`.
+
+## Self healing control plane
+
+- [x] Require an approved or safely discovered verifier before Warden or repair can succeed.
+- [x] Roll back every failed Warden and repair mutation to the exact pre-run checkout.
+- [x] Enforce repository containment, symlink rejection, attempt bounds, edit bounds, and no-progress stops.
+- [x] Persist due times, retry classes, dead-letter state, and fenced lease generations for jobs.
+- [x] Renew active leases and reject completion from stale workers.
+- [x] Continue past poison jobs while applying durable exponential retry delays.
+- [x] Expose tenant-safe recovery summaries, sanitized job state, retry, and cancellation controls.
+- [x] Show recovery state and bounded automation policy in the authenticated web product.
+- [x] Separate process liveness from operational recovery degradation.
+- [x] Remove force-reset behavior from existing GitHub recovery branches.
+- [x] Add regressions for rollback, verifier absence, traversal, no progress, backoff, dead letter, fencing, and replay.
+- [ ] Run the full release matrix, review the final diff, commit, push, deploy, and verify live.
+
+## Self healing acceptance criteria
+
+- A failed or unverified automated run leaves the customer checkout byte for byte unchanged.
+- An automated run cannot report success without an approved verification command passing.
+- Repair stops on repeated failure fingerprints, repeated patches, policy violations, or exhausted bounded budgets.
+- Only the current lease generation can renew, complete, or fail a running job.
+- Retryable failures receive a persisted future due time. Terminal or exhausted failures enter dead letter.
+- A poison job cannot block later due work.
+- Owners can retry or cancel eligible work without seeing raw payloads or host filesystem paths.
+- Health distinguishes an alive process from queued recovery work that needs attention.
+- All generated GitHub changes remain reviewable drafts. Self healing never merges.
+
+## Self healing review
+
+Local implementation and verification are complete.
+
+- Warden and repair run through the durable worker in production. The legacy
+  inline executor was removed.
+- Failed, cancelled, stale lease, and unverified mutations roll back. Verified
+  mutations remain in the tenant checkout and are never merged automatically.
+- Claims use due times, renewable leases, generation fences, bounded retry
+  backoff, cancellation, and dead letter state.
+- The worker continues after poison jobs and reports active work plus recovery
+  counts in its heartbeat.
+- Process liveness checks the web, API, and worker without conflating a dead
+  letter with a crashed process. Operational health still reports recovery
+  degradation.
+- Recovery actions require tenant administration permission. API responses do
+  not expose job payloads or host repository paths.
+- Production verifier execution fails closed. A read only root `check.mjs`,
+  `check.cjs`, or `check.js` runs with a scrubbed environment and Node
+  filesystem permissions. Arbitrary repository scripts require a separate
+  isolated runner and remain disabled by default.
+- The pilot fixture includes a protected verifier. The startup migration adds
+  it only when it is missing.
+- Existing GitHub recovery branches are never reset. A retry proceeds only when
+  the branch contents already match the intended patch; divergent work requires
+  human reconciliation.
+
+Verification:
+
+- `npm test`
+- `npm run typecheck`
+- `npm run build`
+- `npm run ga:check`
+- `npm audit --omit=dev`
+- Production API startup smoke with `/ready` and `/health` returning 200
+- `git diff --check`
+
+Docker is not installed locally. Container verification will run in GitHub
+Actions and the Fly deployment build before live promotion.
+
+## End to end deployment gate
+
+- [x] Define deterministic critical journeys across access, session, API, worker, persistence, recovery, and webhooks.
+- [x] Add a production combined runtime harness with bounded waits and isolated test state.
+- [x] Add browser assertions for access control, authenticated status, and recovery visibility.
+- [x] Add API assertions for tenant authentication, queue completion, retry controls, and sanitized results.
+- [x] Add signed webhook assertions for invalid signatures, completed delivery replay, and duplicate suppression.
+- [x] Retain traces, screenshots, runtime logs, and machine readable results on CI failure.
+- [x] Make the suite a required CI dependency before the production deploy job can run.
+- [ ] Run the suite locally where supported, in GitHub Actions, and against the deployed pilot.
+
+## End to end acceptance criteria
+
+- The suite starts the exact combined production image used by Fly.
+- Unauthenticated protected pages redirect to access and invalid API credentials fail.
+- A valid server side web session reaches authenticated status without exposing the API key.
+- The worker claims and completes a real queued job, with bounded polling and durable state.
+- Recovery responses contain no job payloads, host paths, source content, or verifier logs.
+- Invalid webhook signatures fail and repeated completed delivery IDs do not repeat side effects.
+- Liveness remains available while operational health reports recovery degradation accurately.
+- A failing assertion prevents deployment and uploads enough evidence to reproduce the failure.
+
+## End to end deployment gate review
+
+Playwright discovers one serial critical journey against the exact combined Fly
+image. It covers production operator login, protected API behavior, secure
+server side session state, signed webhook validation and replay, browser queued
+repair, operator cancellation and retry, forced container loss, durable volume
+recovery, worker completion, sanitized job responses, and recovery visibility.
+
+The job uploads browser traces, screenshots, video, JUnit output, and runtime
+logs on failure. Production deployment from main depends on all unit, type,
+build, audit, container, and Playwright jobs. Local Docker is unavailable, so
+the production image journey must pass on the GitHub Linux runner before this
+section is complete.
+
+Webhook processing failure recovery is covered below the HTTP boundary because
+there is no production fault injection endpoint. Adding such an endpoint would
+weaken the deployed surface. Post deployment verification remains read only so
+the pilot cannot accumulate synthetic customer work.

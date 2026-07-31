@@ -25,6 +25,7 @@ kill_timeout = 30
   MENDPOINT_API_URL = "http://127.0.0.1:3001"
   MENDPOINT_PILOT_SEED = "1"
   MENDPOINT_VERIFY_FIRST = "1"
+  MENDPOINT_APPROVED_VERIFIER_SHA256S = "644da6b3198cc32ca95595c7a3af09c9a8444cedd27917a03c3d3bcc775a4a7d"
   AGENTIC_REPAIR = "1"
   POLL_LOCAL_ONLY = "1"
   MENDPOINT_FEED_POLLING_ENABLED = "0"
@@ -54,7 +55,7 @@ kill_timeout = 30
     grace_period = "45s"
     interval = "15s"
     method = "GET"
-    path = "/healthz"
+    path = "/livez"
     timeout = "5s"
 
 [[vm]]

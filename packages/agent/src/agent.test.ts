@@ -1,6 +1,7 @@
 import {
   mkdtempSync,
   cpSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -11,11 +12,16 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWarden } from "./agent.js";
 import { extractHints, extractRenames, extractApiPaths } from "./heuristics.js";
 import { pathBlocked, commandBlocked } from "./policies.js";
-import { executeTool, executeToolAsync, type ToolContext } from "./tools.js";
+import {
+  executeTool,
+  executeToolAsync,
+  rollbackToolWrites,
+  type ToolContext,
+} from "./tools.js";
 import { classifyFailures, FAILURE_CATEGORIES, FAILURE_MODES } from "./knowledge.js";
 import { proposeWardenFix } from "./fixes.js";
 import { discoverVerifyCommand } from "./discover-verify.js";
@@ -180,7 +186,51 @@ describe("tools sandbox", () => {
     ).toBe(false);
   });
 
-  it("runs only the task verification command through a supported profile", () => {
+  it("applies blocked path policy to an in-repository symlink target", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-internal-link-"));
+    dirs.push(dir);
+    const secrets = join(dir, "secrets");
+    mkdirSync(secrets);
+    writeFileSync(join(secrets, "value.ts"), "SECRET=unchanged\n");
+    symlinkSync(
+      secrets,
+      join(dir, "safe"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const ctx: ToolContext = { repoRoot: dir, changedFiles: new Set() };
+
+    expect(
+      executeTool(ctx, {
+        tool: "write_file",
+        args: { path: "safe/value.ts", content: "SECRET=changed\n" },
+      }).ok,
+    ).toBe(false);
+    expect(readFileSync(join(secrets, "value.ts"), "utf8")).toBe("SECRET=unchanged\n");
+  });
+
+  it("rejects writes through a dangling repository link", () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-agent-dangling-link-"));
+    dirs.push(parent);
+    const repo = join(parent, "repo");
+    const outside = join(parent, "outside");
+    mkdirSync(repo);
+    symlinkSync(
+      outside,
+      join(repo, "dangling"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const ctx: ToolContext = { repoRoot: repo, changedFiles: new Set() };
+
+    expect(
+      executeTool(ctx, {
+        tool: "write_file",
+        args: { path: "dangling/value.ts", content: "outside\n" },
+      }).ok,
+    ).toBe(false);
+    expect(existsSync(join(outside, "value.ts"))).toBe(false);
+  });
+
+  it("runs only the task verification command through a supported profile", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-command-"));
     dirs.push(dir);
     writeFileSync(join(dir, "check.mjs"), "console.log('verified')\n");
@@ -191,17 +241,61 @@ describe("tools sandbox", () => {
     };
 
     expect(
-      executeTool(ctx, { tool: "run_command", args: { command: "node check.mjs" } }).ok,
+      (await executeToolAsync(ctx, {
+        tool: "run_command",
+        args: { command: "node check.mjs" },
+      })).ok,
     ).toBe(true);
     expect(
-      executeTool(ctx, { tool: "run_command", args: { command: "whoami" } }).ok,
+      (await executeToolAsync(ctx, {
+        tool: "run_command",
+        args: { command: "whoami" },
+      })).ok,
     ).toBe(false);
     expect(
-      executeTool(ctx, {
+      (await executeToolAsync(ctx, {
         tool: "run_command",
         args: { command: "node -e console.log(1)" },
-      }).ok,
+      })).ok,
     ).toBe(false);
+  });
+
+  it("captures one pristine original and restores it after multiple writes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-rollback-"));
+    dirs.push(dir);
+    const source = join(dir, "client.js");
+    writeFileSync(source, "export const value = 1;\n");
+    const ctx: ToolContext = {
+      repoRoot: dir,
+      changedFiles: new Set(),
+    };
+
+    expect(
+      executeTool(ctx, {
+        tool: "replace_in_file",
+        args: { path: "client.js", from: "value = 1", to: "value = 2" },
+      }).ok,
+    ).toBe(true);
+    expect(
+      executeTool(ctx, {
+        tool: "replace_in_file",
+        args: { path: "client.js", from: "value = 2", to: "value = 3" },
+      }).ok,
+    ).toBe(true);
+    expect(
+      executeTool(ctx, {
+        tool: "write_file",
+        args: { path: "generated.js", content: "export const generated = true;\n" },
+      }).ok,
+    ).toBe(true);
+
+    expect(rollbackToolWrites(ctx)).toEqual({
+      performed: true,
+      restoredFiles: ["client.js", "generated.js"],
+      failedFiles: [],
+    });
+    expect(readFileSync(source, "utf8")).toBe("export const value = 1;\n");
+    expect(existsSync(join(dir, "generated.js"))).toBe(false);
   });
 
   it("keeps the HTTP timeout active while reading the body", async () => {
@@ -311,6 +405,206 @@ console.log("ok");
     });
     expect(result.ok).toBe(true);
     expect(result.stoppedReason).toMatch(/already_passing|verify/);
+  });
+
+  it("discovers a safe verifier when one is not provided", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-auto-verify-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "sdk.js"), "export const payload = { max_tokens: 100 };\n");
+    writeFileSync(
+      join(dir, "check.mjs"),
+      `import { readFileSync } from "node:fs";
+const source = readFileSync("sdk.js", "utf8");
+if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
+`,
+    );
+
+    const result = await runWarden({
+      goal: "rename max_tokens to max_completion_tokens",
+      repoRoot: dir,
+      errorLog: "max_tokens is deprecated",
+      maxSteps: 12,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.verifier).toMatchObject({
+      command: "node check.mjs",
+      source: "discovered",
+      status: "passed",
+    });
+    expect(result.rollback.performed).toBe(false);
+    expect(result.reportMarkdown).toContain("node check.mjs");
+  });
+
+  it("stops before mutation when no safe verifier exists", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-no-verify-"));
+    dirs.push(dir);
+    const source = join(dir, "sdk.js");
+    writeFileSync(source, "export const payload = { max_tokens: 100 };\n");
+
+    const result = await runWarden({
+      goal: "rename max_tokens to max_completion_tokens",
+      repoRoot: dir,
+      errorLog: "max_tokens is deprecated",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.stoppedReason).toBe("verifier_missing");
+    expect(result.steps).toEqual([]);
+    expect(result.filesChanged).toEqual([]);
+    expect(result.verifier).toMatchObject({ source: "none", status: "not_run" });
+    expect(readFileSync(source, "utf8")).toContain("max_tokens");
+  });
+
+  it("rolls back every write when verification never passes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-failed-verify-"));
+    dirs.push(dir);
+    const source = join(dir, "sdk.js");
+    const original = "export const payload = { max_tokens: 100 };\n";
+    writeFileSync(source, original);
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+
+    const result = await runWarden({
+      goal: "rename max_tokens to max_completion_tokens",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "max_tokens is deprecated",
+      maxSteps: 12,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.verifier.status).toBe("failed");
+    expect(result.rollback).toEqual({
+      performed: true,
+      restoredFiles: ["sdk.js"],
+      failedFiles: [],
+    });
+    expect(readFileSync(source, "utf8")).toBe(original);
+    expect(result.reportMarkdown).toContain("Rollback:");
+  });
+
+  it("keeps dry runs simulated and never reports verified success", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-dry-run-"));
+    dirs.push(dir);
+    const source = join(dir, "sdk.js");
+    const original = "export const payload = { max_tokens: 100 };\n";
+    writeFileSync(source, original);
+    writeFileSync(join(dir, "check.mjs"), "process.exit(0);\n");
+
+    const result = await runWarden({
+      goal: "rename max_tokens to max_completion_tokens",
+      repoRoot: dir,
+      errorLog: "max_tokens is deprecated",
+      dryRun: true,
+      maxSteps: 12,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.stoppedReason).toBe("dry_run_complete");
+    expect(result.verifier).toMatchObject({
+      source: "discovered",
+      status: "simulated",
+    });
+    expect(result.rollback.performed).toBe(false);
+    expect(readFileSync(source, "utf8")).toBe(original);
+  });
+
+  it("stops repeated identical calls with an unchanged state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-no-progress-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    process.env.LLM_AGENT_URL = "https://llm.invalid/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  tool: "read_file",
+                  args: { path: "client.js" },
+                  thought: "read it again",
+                }),
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    try {
+      const result = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 20,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.stoppedReason).toBe("no_progress");
+      expect(result.steps.length).toBeLessThan(20);
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+    }
+  });
+
+  it("hard clamps an untrusted maxSteps value", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-step-clamp-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    process.env.LLM_AGENT_URL = "https://llm.invalid/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls++;
+        return Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  tool: "search",
+                  args: { query: `unique${calls}` },
+                  thought: "bounded exploration",
+                }),
+              },
+            },
+          ],
+        });
+      }),
+    );
+    try {
+      const result = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: Number.MAX_SAFE_INTEGER,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.stoppedReason).toBe("max_steps");
+      expect(result.steps).toHaveLength(48);
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+    }
   });
 });
 

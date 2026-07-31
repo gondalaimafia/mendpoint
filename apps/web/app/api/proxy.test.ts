@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { GET, PATCH } from "./[...path]/route.js";
+import { GET, PATCH, POST } from "./[...path]/route.js";
 import {
   DELETE as logout,
   POST as login,
@@ -116,6 +116,38 @@ describe("web credential proxy", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ready: true });
     expect(upstream).toHaveBeenCalledOnce();
+  });
+
+  it("allows authenticated recovery reads and controls", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn(async () => Response.json({ ok: true }));
+    vi.stubGlobal("fetch", upstream);
+
+    const summary = await GET(
+      new NextRequest("https://console.example/api/recovery/summary", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["recovery", "summary"] }) },
+    );
+    expect(summary.status).toBe(200);
+
+    const retry = await POST(
+      new NextRequest("https://console.example/api/jobs/job-1/retry", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ reason: "test" }),
+      }),
+      { params: Promise.resolve({ path: ["jobs", "job-1", "retry"] }) },
+    );
+    expect(retry.status).toBe(200);
+    expect(upstream).toHaveBeenCalledTimes(2);
   });
 
   it("rejects unauthenticated and cross-origin mutations", async () => {

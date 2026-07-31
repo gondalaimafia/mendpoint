@@ -15,10 +15,13 @@ import {
   completeJob,
   createDb,
   failJob,
+  renewJobLease,
   findMonorepoRoot,
   getConsumer,
   getConsumerRepo,
+  getJobRecoverySummary,
   insertAgentRun,
+  insertRepairSession,
   listFeedPolls,
   listJobs,
   listProviders,
@@ -28,6 +31,7 @@ import {
 import { listCatalogFeeds, pollAllFeeds, probeKnownSdks } from "@mendpoint/catalog";
 import { nowIso } from "@mendpoint/shared";
 import { runWarden } from "@mendpoint/agent";
+import { runRepairSession } from "@mendpoint/repair";
 import type { ContractCase } from "@mendpoint/contract";
 
 const WORKER_ID =
@@ -45,6 +49,14 @@ export type WorkerHeartbeat = {
   workerId: string;
   recordedAt: string;
   jobs: JobDrainResult;
+  activeJob?: { id: string; type: string; leaseGeneration: number } | null;
+  recovery?: {
+    due: number;
+    scheduled: number;
+    running: number;
+    deadLetter: number;
+    expiredLeases: number;
+  };
   feedPollingEnabled: boolean;
   feedPollOk: boolean;
 };
@@ -87,6 +99,36 @@ export function retryDelayMs(
 ): number {
   const exponent = Math.max(0, Math.min(consecutiveFailures - 1, 8));
   return Math.min(maxMs, baseMs * 2 ** exponent);
+}
+
+function classifyJobFailure(error: unknown): {
+  message: string;
+  errorCode: string;
+  retryable: boolean;
+} {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  const authorizationFailure =
+    /auth|permission|forbidden|unauthorized/.test(normalized);
+  const retryable =
+    !authorizationFailure &&
+    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed/.test(
+        normalized,
+      );
+  const errorCode = retryable
+    ? /rate.?limit|429/.test(normalized)
+      ? "rate_limited"
+      : /sqlite_busy/.test(normalized)
+        ? "database_busy"
+        : /lease/.test(normalized)
+          ? "lease_lost"
+          : "transient_dependency"
+    : authorizationFailure
+      ? "authorization_failed"
+      : /verify|repair|warden|gate/.test(normalized)
+        ? "verification_failed"
+        : "job_failed";
+  return { message, errorCode, retryable };
 }
 
 export function parseLeaseMs(value: string | number | undefined): number {
@@ -305,27 +347,65 @@ export async function processJobsOnce(
     tenantId?: string;
     workerId?: string;
     leaseMs?: number;
+    maxJobs?: number;
+    onActiveJob?: (
+      job: { id: string; type: string; leaseGeneration: number } | null,
+    ) => void;
   } = {},
 ): Promise<JobDrainResult> {
+  const workerId = opts.workerId ?? WORKER_ID;
+  const leaseMs = parseLeaseMs(opts.leaseMs ?? process.env.JOB_LEASE_MS);
+  const maxJobs = Math.max(1, Math.min(opts.maxJobs ?? 25, 100));
   const result: JobDrainResult = {
     claimed: 0,
     succeeded: 0,
     failed: 0,
     retried: 0,
   };
-  for (;;) {
-    const job = claimNextJob(db, ["pipeline.fanout", "agent.run"], {
+  for (; result.claimed < maxJobs; ) {
+    const job = claimNextJob(db, ["pipeline.fanout", "agent.run", "repair.run"], {
       tenantId: opts.tenantId ?? process.env.MENDPOINT_TENANT_ID,
-      workerId: opts.workerId ?? WORKER_ID,
-      leaseMs: parseLeaseMs(opts.leaseMs ?? process.env.JOB_LEASE_MS),
+      workerId,
+      leaseMs,
     });
     if (!job) break;
     result.claimed++;
+    opts.onActiveJob?.({
+      id: job.id,
+      type: job.type,
+      leaseGeneration: job.lease_generation,
+    });
+    const fence = {
+      workerId,
+      leaseGeneration: job.lease_generation,
+    };
+    let leaseLost = false;
+    const renewal = setInterval(() => {
+      try {
+        if (
+          !renewJobLease(db, job.id, {
+            ...fence,
+            leaseMs,
+          })
+        ) {
+          leaseLost = true;
+        }
+      } catch (error) {
+        leaseLost = true;
+        console.error(
+          `  lease renewal failed job=${job.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }, Math.max(1_000, Math.floor(leaseMs / 3)));
+    renewal.unref();
     try {
       if (job.type === "agent.run") {
         const payload = JSON.parse(job.payload_json) as {
           goal: string;
           consumerId: string;
+          verifyCommand?: string;
           errorLog?: string;
           maxSteps?: number;
           dryRun?: boolean;
@@ -352,13 +432,18 @@ export async function processJobsOnce(
         const warden = await runWarden({
           goal: payload.goal,
           repoRoot: repoPath,
+          verifyCommand: payload.verifyCommand,
           errorLog: payload.errorLog,
           maxSteps: payload.maxSteps ?? 20,
           dryRun: payload.dryRun,
           useLlm: payload.useLlm ?? process.env.LLM_AGENT === "1",
           allowNetwork: false,
           sessionId: payload.sessionId,
+          shouldContinue: () => !leaseLost,
         });
+        if (leaseLost || warden.stoppedReason === "lease_lost") {
+          throw new Error("lease_lost_during_warden");
+        }
         insertAgentRun(db, {
           id: warden.sessionId,
           tenantId: job.tenant_id,
@@ -369,44 +454,174 @@ export async function processJobsOnce(
           steps: warden.steps.length,
           filesChanged: warden.filesChanged,
           reportMd: warden.reportMarkdown,
-          resultJson: JSON.stringify({
-            stoppedReason: warden.stoppedReason,
-            jobId: job.id,
-            product: "warden",
+           resultJson: JSON.stringify({
+             stoppedReason: warden.stoppedReason,
+             verifier: warden.verifier,
+             rollback: warden.rollback,
+             jobId: job.id,
+             product: "warden",
           }),
           createdAt: started,
           finishedAt: nowIso(),
         });
         if (!warden.ok) {
-          failJob(
+          if (warden.verifier.status === "simulated") {
+            if (
+              !completeJob(
+                db,
+                job.id,
+                {
+                  sessionId: warden.sessionId,
+                  ok: false,
+                  simulated: true,
+                  stoppedReason: warden.stoppedReason,
+                },
+                nowIso(),
+                fence,
+              )
+            ) {
+              throw new Error("lease_lost_before_simulation_completion");
+            }
+            result.succeeded++;
+            continue;
+          }
+          const failure = failJob(
             db,
             job.id,
             `Warden failed: ${warden.stoppedReason}`,
             nowIso(),
+            {
+              ...fence,
+              errorCode: "warden_needs_human",
+              retryable: false,
+            },
           );
           result.failed++;
-          if (job.attempts < job.max_attempts) result.retried++;
           console.error(
             `  Warden failed session=${warden.sessionId} steps=${warden.steps.length}`,
           );
-          break;
+          if (!failure.applied) {
+            console.error(`  stale lease ignored job=${job.id}`);
+          }
+          continue;
         }
-        completeJob(
-          db,
-          job.id,
-          {
-            sessionId: warden.sessionId,
-            ok: true,
-            steps: warden.steps.length,
-            filesChanged: warden.filesChanged,
-            stoppedReason: warden.stoppedReason,
-            product: "warden",
-          },
-          nowIso(),
-        );
+        if (leaseLost) throw new Error("lease_lost_before_warden_completion");
+        if (
+          !completeJob(
+            db,
+            job.id,
+            {
+              sessionId: warden.sessionId,
+              ok: true,
+              steps: warden.steps.length,
+              filesChanged: warden.filesChanged,
+              stoppedReason: warden.stoppedReason,
+              verifier: warden.verifier,
+              product: "warden",
+            },
+            nowIso(),
+            fence,
+          )
+        ) {
+          throw new Error("lease_lost_before_warden_completion");
+        }
         result.succeeded++;
         console.log(
           `  Warden ok session=${warden.sessionId} steps=${warden.steps.length}`,
+        );
+        continue;
+      }
+
+      if (job.type === "repair.run") {
+        const payload = JSON.parse(job.payload_json) as {
+          sessionId: string;
+          consumerId: string;
+          renameMap?: Record<string, string>;
+          maxAttempts?: number;
+          dryRun?: boolean;
+          useLlm?: boolean;
+        };
+        const consumer = getConsumer(db, payload.consumerId, job.tenant_id);
+        if (!consumer) throw new Error("repair consumer was not found for the job tenant");
+        const consumerRepo = getConsumerRepo(db, consumer.id, job.tenant_id);
+        if (!consumerRepo) throw new Error("repair consumer repository was not found");
+        const repoPath = resolveWorkerRepoPath(consumerRepo.local_path, job.tenant_id);
+        const started = nowIso();
+        const repair = await runRepairSession({
+          sessionId: payload.sessionId,
+          repoRoot: repoPath,
+          renameMap: payload.renameMap,
+          maxAttempts: payload.maxAttempts,
+          dryRun: payload.dryRun,
+          useLlm: payload.useLlm,
+          shouldContinue: () => !leaseLost,
+        });
+        if (leaseLost || repair.stopReason === "lease_lost") {
+          throw new Error("lease_lost_during_repair");
+        }
+        insertRepairSession(db, {
+          id: repair.sessionId,
+          tenantId: job.tenant_id,
+          consumerId: consumer.id,
+          repoPath,
+          status: repair.simulated ? "simulated" : repair.ok ? "verified" : "needs_human",
+          attempts: repair.attempts,
+          editsCount: repair.edits.length,
+          ok: repair.ok,
+          reportMd: repair.reportMarkdown,
+          resultJson: JSON.stringify({
+            jobId: job.id,
+            stopReason: repair.stopReason,
+            simulated: repair.simulated,
+            plans: repair.plans,
+            edits: repair.edits.map((edit) => ({
+              filePath: edit.filePath,
+              reason: edit.reason,
+            })),
+            failureFingerprints: repair.failureFingerprints,
+            actionFingerprints: repair.actionFingerprints,
+            policyNotes: repair.policyNotes,
+          }),
+          createdAt: started,
+          finishedAt: nowIso(),
+        });
+        if (!repair.ok && !repair.simulated) {
+          const failure = failJob(
+            db,
+            job.id,
+            `Repair needs human review: ${repair.stopReason}`,
+            nowIso(),
+            {
+              ...fence,
+              errorCode: "repair_needs_human",
+              retryable: false,
+            },
+          );
+          result.failed++;
+          if (!failure.applied) console.error(`  stale lease ignored job=${job.id}`);
+          continue;
+        }
+        if (leaseLost) throw new Error("lease_lost_before_repair_completion");
+        if (
+          !completeJob(
+            db,
+            job.id,
+            {
+              sessionId: repair.sessionId,
+              ok: repair.ok,
+              simulated: repair.simulated,
+              stopReason: repair.stopReason,
+              edits: repair.edits.length,
+            },
+            nowIso(),
+            fence,
+          )
+        ) {
+          throw new Error("lease_lost_before_repair_completion");
+        }
+        result.succeeded++;
+        console.log(
+          `  repair ${repair.simulated ? "simulated" : "verified"} session=${repair.sessionId}`,
         );
         continue;
       }
@@ -429,17 +644,51 @@ export async function processJobsOnce(
         contractCases: payload.contractCases,
         securityScanOk: payload.securityScanOk,
         repairVerifyCommands: payload.repairVerifyCommands,
+        shouldContinue: () => !leaseLost,
       });
-      completeJob(db, job.id, { changeId: report.changeId }, nowIso());
+      const deliveryFailures = report.consumers.filter(
+        (consumer) => consumer.prStatus === "delivery_failed",
+      );
+      if (deliveryFailures.length) {
+        throw new Error(
+          `pipeline_delivery_failed:${deliveryFailures
+            .map(
+              (consumer) =>
+                `${consumer.consumerId}:${consumer.deliveryError ?? "unknown delivery error"}`,
+            )
+            .join("|")}`,
+        );
+      }
+      if (leaseLost) throw new Error("lease_lost_before_pipeline_completion");
+      if (
+        !completeJob(
+          db,
+          job.id,
+          { changeId: report.changeId, consumers: report.consumers },
+          nowIso(),
+          fence,
+        )
+      ) {
+        throw new Error("lease_lost_before_pipeline_completion");
+      }
       result.succeeded++;
       console.log(`  done change=${report.changeId}`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      failJob(db, job.id, message, nowIso());
+      const classified = classifyJobFailure(error);
+      const failure = failJob(db, job.id, classified.message, nowIso(), {
+        ...fence,
+        errorCode: classified.errorCode,
+        retryable: classified.retryable,
+        baseDelayMs: 5_000,
+        maxDelayMs: 300_000,
+      });
       result.failed++;
-      if (job.attempts < job.max_attempts) result.retried++;
-      console.error(`  failed: ${message}`);
-      break;
+      if (failure.status === "pending") result.retried++;
+      console.error(`  failed: ${classified.message}`);
+      if (!failure.applied) console.error(`  stale lease ignored job=${job.id}`);
+    } finally {
+      clearInterval(renewal);
+      opts.onActiveJob?.(null);
     }
   }
   if (!result.claimed) console.log("No pending jobs");
@@ -469,10 +718,48 @@ async function runService(intervalMs: number) {
     throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH is required for run-service");
   }
   let failures = 0;
+  let feedPollingEnabled = process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
+  let feedPollOk = true;
+  let jobs: JobDrainResult = {
+    claimed: 0,
+    succeeded: 0,
+    failed: 0,
+    retried: 0,
+  };
+  let activeJob: WorkerHeartbeat["activeJob"] = null;
+  const tenantId = process.env.MENDPOINT_TENANT_ID ?? "tenant_default";
+  const emitHeartbeat = () => {
+    try {
+      const recovery = getJobRecoverySummary(db, tenantId);
+      writeWorkerHeartbeat(heartbeatPath, {
+        ok: true,
+        workerId: WORKER_ID,
+        recordedAt: nowIso(),
+        jobs,
+        activeJob,
+        recovery: {
+          due: recovery.due,
+          scheduled: recovery.scheduled,
+          running: recovery.running,
+          deadLetter: recovery.deadLetter,
+          expiredLeases: recovery.expiredLeases,
+        },
+        feedPollingEnabled,
+        feedPollOk,
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  };
+  emitHeartbeat();
+  const heartbeatTimer = setInterval(
+    emitHeartbeat,
+    Math.max(1_000, Math.min(intervalMs, 5_000)),
+  );
+  heartbeatTimer.unref();
   for (;;) {
-    const feedPollingEnabled =
-      process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
-    let feedPollOk = true;
+    feedPollingEnabled = process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
+    feedPollOk = true;
     if (feedPollingEnabled) {
       try {
         const feedResults = await runFeedPoll({
@@ -487,28 +774,26 @@ async function runService(intervalMs: number) {
       }
     }
 
-    let jobs: JobDrainResult = {
+    jobs = {
       claimed: 0,
       succeeded: 0,
       failed: 0,
       retried: 0,
     };
     try {
-      jobs = await processJobsOnce(db);
+      jobs = await processJobsOnce(db, {
+        onActiveJob: (job) => {
+          activeJob = job;
+          emitHeartbeat();
+        },
+      });
     } catch (error) {
       jobs.failed++;
       console.error(error);
     }
     const healthy = feedPollOk && jobs.failed === 0;
     failures = healthy ? 0 : failures + 1;
-    writeWorkerHeartbeat(heartbeatPath, {
-      ok: true,
-      workerId: WORKER_ID,
-      recordedAt: nowIso(),
-      jobs,
-      feedPollingEnabled,
-      feedPollOk,
-    });
+    emitHeartbeat();
     const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
     await new Promise((resolveSleep) => setTimeout(resolveSleep, delay));
   }

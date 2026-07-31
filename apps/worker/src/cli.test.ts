@@ -14,6 +14,7 @@ import {
   enqueueJob,
   insertConsumer,
   insertConsumerRepo,
+  getRepairSession,
   listJobs,
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
@@ -129,15 +130,14 @@ describe("worker runtime", () => {
     ).toThrow(/MENDPOINT_REPOS_DIR/);
   });
 
-  it("reports failed jobs and defers a retry to the next drain", async () => {
+  it("dead letters an unrepairable Warden run without preserving writes", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-worker-job-"));
     dirs.push(parent);
     const repo = join(parent, "repo");
-    const marker = join(parent, "command-ran");
     mkdirSync(repo);
     writeFileSync(
       join(repo, "check.mjs"),
-      `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "ran");\n`,
+      "process.exit(1);\n",
     );
     const db = createDb(join(parent, "jobs.sqlite"));
     insertConsumer(db, {
@@ -167,6 +167,35 @@ describe("worker runtime", () => {
         maxSteps: 1,
       },
     });
+    const healthyRepo = join(parent, "healthy-repo");
+    mkdirSync(healthyRepo);
+    writeFileSync(join(healthyRepo, "check.mjs"), "process.exit(0);\n");
+    insertConsumer(db, {
+      id: "consumer-runtime-healthy",
+      name: "Healthy runtime test",
+      githubOwner: "acme",
+      githubRepo: "runtime-healthy",
+      tenantId: "tenant_test",
+      createdAt: new Date(Date.now() + 1).toISOString(),
+    });
+    insertConsumerRepo(db, {
+      id: "repo-runtime-healthy",
+      consumerId: "consumer-runtime-healthy",
+      localPath: healthyRepo,
+      createdAt: nowIso(),
+    });
+    enqueueJob(db, {
+      id: "job-runtime-healthy",
+      tenantId: "tenant_test",
+      type: "agent.run",
+      createdAt: new Date(Date.now() + 1).toISOString(),
+      payload: {
+        goal: "verify a healthy fixture",
+        consumerId: "consumer-runtime-healthy",
+        verifyCommand: "node check.mjs",
+        maxSteps: 1,
+      },
+    });
 
     const result = await processJobsOnce(db, {
       tenantId: "tenant_test",
@@ -174,17 +203,87 @@ describe("worker runtime", () => {
       leaseMs: 5_000,
     });
     expect(result).toEqual({
-      claimed: 1,
-      succeeded: 0,
+      claimed: 2,
+      succeeded: 1,
       failed: 1,
-      retried: 1,
+      retried: 0,
     });
-    expect(listJobs(db, 10, "tenant_test")[0]).toMatchObject({
-      status: "pending",
+    const jobs = listJobs(db, 10, "tenant_test");
+    expect(jobs.find((job) => job.id === "job-runtime-test")).toMatchObject({
+      status: "dead_letter",
+      attempts: 1,
+      lease_owner: null,
+      error_code: "warden_needs_human",
+    });
+    expect(jobs.find((job) => job.id === "job-runtime-healthy")).toMatchObject({
+      status: "done",
       attempts: 1,
       lease_owner: null,
     });
-    expect(existsSync(marker)).toBe(false);
+    db.raw.close();
+  });
+
+  it("runs a queued repair through verification and persists the recovered session", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-worker-repair-"));
+    dirs.push(parent);
+    const repo = join(parent, "repo");
+    mkdirSync(repo);
+    writeFileSync(join(repo, "client.ts"), "export const oldField = 1;\n");
+    writeFileSync(
+      join(repo, "check.mjs"),
+      "import { readFileSync } from 'node:fs'; const s=readFileSync('client.ts','utf8'); process.exit(s.includes('newField')&&!s.includes('oldField')?0:1);\n",
+    );
+    const db = createDb(join(parent, "jobs.sqlite"));
+    insertConsumer(db, {
+      id: "consumer-repair-test",
+      name: "Repair runtime test",
+      githubOwner: "acme",
+      githubRepo: "repair-test",
+      tenantId: "tenant_test",
+      createdAt: nowIso(),
+    });
+    insertConsumerRepo(db, {
+      id: "repo-repair-test",
+      consumerId: "consumer-repair-test",
+      localPath: repo,
+      createdAt: nowIso(),
+    });
+    enqueueJob(db, {
+      id: "job-repair-test",
+      tenantId: "tenant_test",
+      type: "repair.run",
+      maxAttempts: 5,
+      createdAt: nowIso(),
+      payload: {
+        sessionId: "session-repair-test",
+        consumerId: "consumer-repair-test",
+        renameMap: { oldField: "newField" },
+        maxAttempts: 3,
+      },
+    });
+
+    await expect(
+      processJobsOnce(db, {
+        tenantId: "tenant_test",
+        workerId: "worker-test",
+        leaseMs: 5_000,
+      }),
+    ).resolves.toEqual({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      retried: 0,
+    });
+    expect(readFileSync(join(repo, "client.ts"), "utf8")).toContain("newField");
+    expect(listJobs(db, 10, "tenant_test")[0]).toMatchObject({
+      id: "job-repair-test",
+      status: "done",
+      attempts: 1,
+    });
+    expect(getRepairSession(db, "session-repair-test", "tenant_test")).toMatchObject({
+      status: "verified",
+      ok: 1,
+    });
     db.raw.close();
   });
 

@@ -83,6 +83,11 @@ if (process.env.MENDPOINT_PILOT_SEED === "1") {
     cpSync("/app/fixtures/consumers/shop-app", demoRepo, { recursive: true });
     chownTree(demoRepo);
   }
+  const demoVerifier = resolve(demoRepo, "check.mjs");
+  if (!existsSync(demoVerifier)) {
+    cpSync("/app/fixtures/consumers/shop-app/check.mjs", demoVerifier);
+    chownSync(demoVerifier, 1000, 1000);
+  }
   runSetup(["--import", "tsx", "scripts/seed.ts"], {
     MENDPOINT_SEED_REPO_PATH: demoRepo,
   });

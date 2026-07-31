@@ -6,7 +6,6 @@ export const dynamic = "force-dynamic";
 type Session = {
   id: string;
   consumerId: string | null;
-  repoPath: string;
   status: string;
   attempts: number;
   editsCount: number;
@@ -39,8 +38,9 @@ export default async function RepairPage() {
       <div className="page-header">
         <h1>Agentic repair</h1>
         <p className="muted">
-          Diagnose CI / leftover renames / FIXMEs → plan → apply → verify. Bounded attempts. Never
-          auto-merges.
+          Detect, diagnose, repair, and verify with bounded attempts. Every unverified mutation is
+          rolled back. Verified work remains in the tenant checkout for review and is never merged
+          automatically.
         </p>
       </div>
 
@@ -63,7 +63,7 @@ export default async function RepairPage() {
               <th>Status</th>
               <th>Attempts</th>
               <th>Edits</th>
-              <th>Repo</th>
+              <th>Consumer</th>
             </tr>
           </thead>
           <tbody>
@@ -77,7 +77,7 @@ export default async function RepairPage() {
                 </td>
                 <td>{s.attempts}</td>
                 <td>{s.editsCount}</td>
-                <td className="mono small truncate">{s.repoPath}</td>
+                <td className="mono small truncate">{s.consumerId ?? "unassigned"}</td>
               </tr>
             ))}
           </tbody>

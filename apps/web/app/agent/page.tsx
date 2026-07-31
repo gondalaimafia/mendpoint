@@ -6,7 +6,6 @@ export const dynamic = "force-dynamic";
 type Run = {
   id: string;
   goal: string;
-  repoPath: string;
   status: string;
   ok: boolean;
   steps: number;

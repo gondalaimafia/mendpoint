@@ -14,10 +14,11 @@ import {
   listChanges,
   listFindingsForChange,
   listAudit,
+  listSuppressedPatterns,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
 import { MockGitHubDelivery } from "@mendpoint/github";
-import { runChangePipeline } from "./index.js";
+import { applyPrFeedback, runChangePipeline } from "./index.js";
 import {
   openGraphLearnMemory,
   resetGraphLearnDbForTests,
@@ -220,11 +221,12 @@ describe("pipeline", () => {
     });
 
     const ghRoot = join(dir, "gh");
+    const graphDb = testGraphDb();
     const report = await runChangePipeline({
       tenantId: "tenant_default",
       providerSlug: "acme-payments",
       db,
-      graphDb: testGraphDb(),
+      graphDb,
       github: new MockGitHubDelivery(ghRoot),
       contractCases: [
         {
@@ -246,6 +248,28 @@ describe("pipeline", () => {
     expect(listPrs(db).length).toBe(1);
     expect(listAudit(db).some((a) => a.action === "change.normalized")).toBe(true);
     expect(listAudit(db).some((a) => a.action === "pr.draft_opened")).toBe(true);
+
+    const prId = report.consumers[0].prId!;
+    await applyPrFeedback(db, prId, "closed", {
+      tenantId: "tenant_default",
+      graphDb,
+    });
+    const suppressionCount = listSuppressedPatterns(db, {
+      tenantId: "tenant_default",
+    }).length;
+    await applyPrFeedback(db, prId, "closed", {
+      tenantId: "tenant_default",
+      graphDb,
+    });
+    expect(listSuppressedPatterns(db, { tenantId: "tenant_default" })).toHaveLength(
+      suppressionCount,
+    );
+    expect(
+      listAudit(db).filter((event) => event.action === "pr.feedback.closed"),
+    ).toHaveLength(1);
+    expect(
+      listAudit(db).filter((event) => event.action === "patterns.suppressed"),
+    ).toHaveLength(1);
 
     writeFileSync(join(dir, "ok"), "1");
   });
@@ -433,7 +457,7 @@ describe("pipeline", () => {
       "delivery_failed",
     ]);
     expect(github.opened).toEqual(["a-shop", "b-shop", "b-shop"]);
-    expect(listPrs(db, "tenant_default")).toHaveLength(3);
+    expect(listPrs(db, "tenant_default")).toHaveLength(2);
     expect(listChanges(db)).toHaveLength(1);
     expect(
       listFindingsForChange(db, first.changeId, "tenant_default"),

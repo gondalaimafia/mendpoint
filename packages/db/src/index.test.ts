@@ -25,18 +25,30 @@ import {
   listGitHubInstallations,
   enqueueJob,
   claimNextJob,
+  renewJobLease,
+  completeJob,
+  failJob,
+  retryJob,
+  cancelJob,
   recoverExpiredJobs,
+  getJobRecoverySummary,
+  jobToApi,
   listJobs,
   insertAgentRun,
   listAgentRuns,
   insertRepairSession,
+  getRepairSession,
   listRepairSessions,
+  repairSessionToApi,
+  agentRunToApi,
   insertSuppressedPattern,
   listSuppressedPatterns,
   listFindingsForChange,
   createGitHubInstallState,
   consumeGitHubInstallState,
   recordGitHubWebhookDelivery,
+  completeGitHubWebhookDelivery,
+  failGitHubWebhookDelivery,
   findPrByRepositoryAndNumber,
   insertApiVersionIfAbsent,
 } from "./index.js";
@@ -100,14 +112,34 @@ describe("db", () => {
       .prepare("PRAGMA index_list(jobs)")
       .all() as Array<{ name: string }>;
     expect(columns.map((column) => column.name)).toEqual(
-      expect.arrayContaining(["tenant_id", "lease_owner", "lease_expires_at"]),
+      expect.arrayContaining([
+        "tenant_id",
+        "lease_owner",
+        "lease_expires_at",
+        "available_at",
+        "lease_generation",
+        "error_code",
+        "last_error_at",
+        "dead_at",
+        "cancelled_at",
+      ]),
     );
     expect(
-      db.raw.prepare("SELECT tenant_id FROM jobs WHERE id = ?").get("legacy-job"),
-    ).toEqual({ tenant_id: "tenant_default" });
+      db.raw
+        .prepare(
+          `SELECT tenant_id, available_at, lease_generation
+           FROM jobs WHERE id = ?`,
+        )
+        .get("legacy-job"),
+    ).toEqual({
+      tenant_id: "tenant_default",
+      available_at: "2026-01-01T00:00:00.000Z",
+      lease_generation: 0,
+    });
     expect(indexes.map((index) => index.name)).toContain(
       "jobs_tenant_status_idx",
     );
+    expect(indexes.map((index) => index.name)).toContain("jobs_due_idx");
   });
 
   it("creates tables and records audit", () => {
@@ -354,6 +386,389 @@ describe("db", () => {
     });
     expect(retried?.attempts).toBe(2);
     expect(retried?.lease_owner).toBe("worker-b");
+    expect(retried?.lease_generation).toBe(2);
+  });
+
+  it("claims only due jobs and reports tenant recovery state", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-due-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    enqueueJob(db, {
+      id: "job-future",
+      tenantId: "tenant-a",
+      type: "agent.run",
+      payload: { secret: "not-for-api" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      availableAt: "2026-01-01T00:10:00.000Z",
+    });
+    enqueueJob(db, {
+      id: "job-due",
+      tenantId: "tenant-a",
+      type: "agent.run",
+      payload: {},
+      createdAt: "2026-01-01T00:01:00.000Z",
+      availableAt: "2026-01-01T00:01:00.000Z",
+    });
+
+    const claimed = claimNextJob(db, ["agent.run"], {
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      now: "2026-01-01T00:02:00.000Z",
+    });
+    expect(claimed?.id).toBe("job-due");
+    expect(
+      getJobRecoverySummary(db, "tenant-a", "2026-01-01T00:02:00.000Z"),
+    ).toMatchObject({
+      pending: 1,
+      due: 0,
+      scheduled: 1,
+      running: 1,
+      deadLetter: 0,
+    });
+  });
+
+  it("counts verified edits as recoveries but excludes already green work", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-recovered-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    for (const id of ["already-green", "repaired"]) {
+      enqueueJob(db, {
+        id,
+        tenantId: "tenant-a",
+        type: "agent.run",
+        payload: {},
+        createdAt: id === "already-green"
+          ? "2026-01-01T00:00:00.000Z"
+          : "2026-01-01T00:00:01.000Z",
+      });
+      const job = claimNextJob(db, ["agent.run"], {
+        tenantId: "tenant-a",
+        workerId: "worker-a",
+        now: "2026-01-01T00:00:02.000Z",
+      });
+      expect(job?.id).toBe(id);
+      expect(
+        completeJob(
+          db,
+          id,
+          {
+            ok: true,
+            filesChanged: id === "repaired" ? ["client.ts"] : [],
+            stoppedReason: id === "repaired" ? "verify_passed" : "already_passing",
+          },
+          "2026-01-01T00:00:03.000Z",
+          {
+            workerId: "worker-a",
+            leaseGeneration: job!.lease_generation,
+          },
+        ),
+      ).toBe(true);
+    }
+
+    expect(getJobRecoverySummary(db, "tenant-a")).toMatchObject({
+      done: 2,
+      recovered: 1,
+    });
+  });
+
+  it("fences stale workers and renews the current lease holder", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-fence-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    enqueueJob(db, {
+      id: "job-fenced",
+      tenantId: "tenant-a",
+      type: "agent.run",
+      payload: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const first = claimNextJob(db, ["agent.run"], {
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      leaseMs: 1_000,
+      now: "2026-01-01T00:00:00.000Z",
+    })!;
+    recoverExpiredJobs(db, "2026-01-01T00:00:02.000Z", "tenant-a");
+    const second = claimNextJob(db, ["agent.run"], {
+      tenantId: "tenant-a",
+      workerId: "worker-b",
+      leaseMs: 1_000,
+      now: "2026-01-01T00:00:03.000Z",
+    })!;
+
+    expect(
+      renewJobLease(db, first.id, {
+        workerId: "worker-a",
+        leaseGeneration: first.lease_generation,
+        now: "2026-01-01T00:00:03.250Z",
+        leaseMs: 2_000,
+      }),
+    ).toBe(false);
+    expect(
+      completeJob(db, first.id, { stale: true }, "2026-01-01T00:00:03.250Z", {
+        workerId: "worker-a",
+        leaseGeneration: first.lease_generation,
+      }),
+    ).toBe(false);
+    expect(
+      failJob(db, first.id, "stale failure", "2026-01-01T00:00:03.250Z", {
+        workerId: "worker-a",
+        leaseGeneration: first.lease_generation,
+      }).applied,
+    ).toBe(false);
+    expect(
+      renewJobLease(db, second.id, {
+        workerId: "worker-b",
+        leaseGeneration: second.lease_generation,
+        now: "2026-01-01T00:00:03.500Z",
+        leaseMs: 2_000,
+      }),
+    ).toBe(true);
+    expect(
+      completeJob(db, second.id, { ok: true }, "2026-01-01T00:00:04.000Z", {
+        workerId: "worker-b",
+        leaseGeneration: second.lease_generation,
+      }),
+    ).toBe(true);
+    expect(listJobs(db, 10, "tenant-a")[0].status).toBe("done");
+  });
+
+  it("dead-letters exhausted jobs and supports explicit retry and cancellation", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-recovery-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    enqueueJob(db, {
+      id: "job-poison",
+      tenantId: "tenant-a",
+      type: "agent.run",
+      payload: { token: "must-not-leak" },
+      maxAttempts: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const claimed = claimNextJob(db, ["agent.run"], {
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      now: "2026-01-01T00:00:00.000Z",
+    })!;
+    const failed = failJob(
+      db,
+      claimed.id,
+      "remote response included a credential",
+      "2026-01-01T00:00:01.000Z",
+      {
+        workerId: "worker-a",
+        leaseGeneration: claimed.lease_generation,
+        errorCode: "github 5xx",
+      },
+    );
+    expect(failed).toEqual({
+      applied: true,
+      status: "dead_letter",
+      availableAt: null,
+      deadAt: "2026-01-01T00:00:01.000Z",
+    });
+    const dead = listJobs(db, 10, "tenant-a")[0];
+    expect(dead).toMatchObject({
+      status: "dead_letter",
+      error_code: "github_5xx",
+      dead_at: "2026-01-01T00:00:01.000Z",
+    });
+    const apiJob = jobToApi(dead);
+    expect(apiJob).toMatchObject({
+      id: "job-poison",
+      status: "dead_letter",
+      errorCode: "github_5xx",
+    });
+    expect(apiJob).not.toHaveProperty("payload_json");
+    expect(apiJob).not.toHaveProperty("error");
+    expect(apiJob).not.toHaveProperty("lease_owner");
+    expect(getJobRecoverySummary(db, "tenant-a").deadLetter).toBe(1);
+
+    expect(
+      retryJob(db, "job-poison", {
+        tenantId: "tenant-a",
+        now: "2026-01-01T00:01:00.000Z",
+      }),
+    ).toBe(true);
+    expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      dead_at: null,
+    });
+    expect(
+      cancelJob(db, "job-poison", "2026-01-01T00:01:01.000Z", {
+        tenantId: "tenant-a",
+        reason: "operator cancelled",
+      }),
+    ).toBe(true);
+    const cancelled = listJobs(db, 10, "tenant-a")[0];
+    expect(cancelled).toMatchObject({
+      status: "cancelled",
+      error_code: "job_cancelled",
+      cancelled_at: "2026-01-01T00:01:01.000Z",
+    });
+    expect(
+      claimNextJob(db, ["agent.run"], {
+        tenantId: "tenant-a",
+        now: "2026-01-01T00:02:00.000Z",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("schedules retry backoff durably", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-backoff-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    enqueueJob(db, {
+      id: "job-backoff",
+      tenantId: "tenant-a",
+      type: "agent.run",
+      payload: {},
+      maxAttempts: 3,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const claimed = claimNextJob(db, ["agent.run"], {
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      now: "2026-01-01T00:00:00.000Z",
+    })!;
+    const failure = failJob(
+      db,
+      claimed.id,
+      "transient",
+      "2026-01-01T00:00:01.000Z",
+      {
+        workerId: "worker-a",
+        leaseGeneration: claimed.lease_generation,
+        baseDelayMs: 2_000,
+        maxDelayMs: 10_000,
+      },
+    );
+    expect(failure).toMatchObject({
+      applied: true,
+      status: "pending",
+      availableAt: "2026-01-01T00:00:03.000Z",
+    });
+    expect(
+      claimNextJob(db, ["agent.run"], {
+        tenantId: "tenant-a",
+        now: "2026-01-01T00:00:02.999Z",
+      }),
+    ).toBeUndefined();
+    expect(
+      claimNextJob(db, ["agent.run"], {
+        tenantId: "tenant-a",
+        now: "2026-01-01T00:00:03.000Z",
+      })?.id,
+    ).toBe("job-backoff");
+  });
+
+  it("upserts a queued repair session with its completed result", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-upsert-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    insertRepairSession(db, {
+      id: "repair-one",
+      tenantId: "tenant_default",
+      repoPath: "C:\\repo",
+      status: "queued",
+      attempts: 0,
+      editsCount: 0,
+      ok: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    insertRepairSession(db, {
+      id: "repair-one",
+      tenantId: "tenant_default",
+      repoPath: "C:\\repo",
+      status: "ok",
+      attempts: 2,
+      editsCount: 1,
+      ok: true,
+      reportMd: "verified",
+      resultJson: "{\"ok\":true}",
+      createdAt: "2026-01-01T00:00:05.000Z",
+      finishedAt: "2026-01-01T00:01:00.000Z",
+    });
+
+    expect(getRepairSession(db, "repair-one", "tenant_default")).toMatchObject({
+      status: "ok",
+      attempts: 2,
+      edits_count: 1,
+      ok: 1,
+      report_md: "verified",
+      created_at: "2026-01-01T00:00:00.000Z",
+      finished_at: "2026-01-01T00:01:00.000Z",
+    });
+  });
+
+  it("sanitizes repair and agent results for tenant API responses", () => {
+    const repair = repairSessionToApi({
+      id: "repair-safe",
+      tenant_id: "tenant-a",
+      consumer_id: "consumer-a",
+      repo_path: "C:\\customer\\private",
+      status: "ok",
+      attempts: 2,
+      edits_count: 1,
+      ok: 1,
+      report_md: "verified",
+      result_json: JSON.stringify({
+        jobId: "job-repair",
+        stopReason: "verify_passed",
+        plans: [{ source: "private source", verifierOutput: "private log" }],
+        failureFingerprints: ["failure"],
+        actionFingerprints: ["action"],
+      }),
+      created_at: "2026-01-01T00:00:00.000Z",
+      finished_at: "2026-01-01T00:01:00.000Z",
+    });
+    const agent = agentRunToApi({
+      id: "agent-safe",
+      tenant_id: "tenant-a",
+      goal: "repair the API call",
+      repo_path: "C:\\customer\\private",
+      status: "ok",
+      ok: 1,
+      steps: 3,
+      files_changed_json: "[\"src/client.ts\"]",
+      report_md: "verified",
+      result_json: JSON.stringify({
+        jobId: "job-agent",
+        stoppedReason: "verify_passed",
+        steps: [{ source: "private source" }],
+        verifier: {
+          command: "node check.mjs",
+          source: "discovered",
+          status: "passed",
+          output: "private log",
+        },
+        rollback: {
+          performed: true,
+          restoredFiles: ["private file"],
+          failedFiles: [],
+        },
+      }),
+      created_at: "2026-01-01T00:00:00.000Z",
+      finished_at: "2026-01-01T00:01:00.000Z",
+    });
+
+    expect(JSON.stringify(repair)).not.toContain("private source");
+    expect(JSON.stringify(repair)).not.toContain("private log");
+    expect(repair.result).toMatchObject({ planCount: 1, actionCount: 1 });
+    expect(JSON.stringify(agent)).not.toContain("private source");
+    expect(JSON.stringify(agent)).not.toContain("private log");
+    expect(agent.result?.rollback).toEqual({
+      performed: true,
+      restoredCount: 1,
+      failedCount: 0,
+    });
   });
 
   it("consumes install state and webhook deliveries once", () => {
@@ -391,8 +806,69 @@ describe("db", () => {
         "2026-01-01T00:02:00.000Z",
       ),
     ).toBe(false);
-    expect(recordGitHubWebhookDelivery(db, "delivery-1", "ping", nowIso())).toBe(true);
-    expect(recordGitHubWebhookDelivery(db, "delivery-1", "ping", nowIso())).toBe(false);
+    expect(
+      recordGitHubWebhookDelivery(
+        db,
+        "delivery-1",
+        "ping",
+        "2026-01-01T00:00:00.000Z",
+      ),
+    ).toBe(true);
+    expect(
+      recordGitHubWebhookDelivery(
+        db,
+        "delivery-1",
+        "ping",
+        "2026-01-01T00:01:00.000Z",
+      ),
+    ).toBe(false);
+    expect(
+      recordGitHubWebhookDelivery(
+        db,
+        "delivery-stale",
+        "push",
+        "2026-01-01T00:00:00.000Z",
+      ),
+    ).toBe(true);
+    expect(
+      recordGitHubWebhookDelivery(
+        db,
+        "delivery-stale",
+        "push",
+        "2026-01-01T00:06:00.000Z",
+      ),
+    ).toBe(true);
+    expect(
+      failGitHubWebhookDelivery(
+        db,
+        "delivery-1",
+        "2026-01-01T00:01:01.000Z",
+        "transient",
+      ),
+    ).toBe(true);
+    expect(
+      recordGitHubWebhookDelivery(
+        db,
+        "delivery-1",
+        "ping",
+        "2026-01-01T00:01:02.000Z",
+      ),
+    ).toBe(true);
+    expect(
+      completeGitHubWebhookDelivery(
+        db,
+        "delivery-1",
+        "2026-01-01T00:01:03.000Z",
+      ),
+    ).toBe(true);
+    expect(
+      recordGitHubWebhookDelivery(
+        db,
+        "delivery-1",
+        "ping",
+        "2026-01-01T00:10:00.000Z",
+      ),
+    ).toBe(false);
   });
 
   it("matches webhook pull requests by repository and number", () => {

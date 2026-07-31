@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { waitForJob } from "../../lib/job-poll";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
@@ -34,11 +35,23 @@ export function RepairForm({
           renameMap,
           dryRun,
           maxAttempts: 3,
-          agenticLoop: false,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? res.statusText);
+      if (res.status === 202 || data.status === "queued") {
+        setResult(
+          `QUEUED · session ${data.sessionId} · job ${data.jobId}\n\nMendpoint will repair in a bounded worker, verify the result, and roll back every unverified mutation.`,
+        );
+        const job = await waitForJob(API_URL, data.jobId);
+        setResult((current) =>
+          job
+            ? `${current ?? ""}\n\nCompleted with status: ${job.status}`
+            : `${current ?? ""}\n\nStill running. Status remains available on the recovery page.`,
+        );
+        router.refresh();
+        return;
+      }
       setResult(
         `${data.ok ? "OK" : "NEEDS HUMAN"} · session ${data.sessionId} · ${data.editsCount} edits · ${data.attempts} attempts\n\n${data.reportMarkdown ?? ""}`,
       );
@@ -93,7 +106,7 @@ export function RepairForm({
           onClick={run}
           disabled={busy || !consumerId}
         >
-          {busy ? "Repairing…" : "Start agentic repair"}
+          {busy ? "Queueing…" : "Start verified repair"}
         </button>
         {error && <p className="error">{error}</p>}
         {result && <pre className="code-block">{result}</pre>}

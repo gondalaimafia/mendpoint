@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Octokit } from "@octokit/rest";
 import { newId } from "@mendpoint/shared";
 
@@ -34,12 +34,70 @@ export interface GitHubDelivery {
 export class MockGitHubDelivery implements GitHubDelivery {
   constructor(private rootDir = join(process.cwd(), ".mendpoint/mock-github")) {}
 
+  private containedPathFrom(baseDir: string, ...segments: string[]) {
+    const root = resolve(this.rootDir);
+    const base = resolve(baseDir);
+    const baseRel = relative(root, base);
+    if (baseRel.startsWith("..") || isAbsolute(baseRel)) {
+      throw new Error("Mock GitHub base path escapes its root");
+    }
+    const candidate = resolve(base, ...segments);
+    const childRel = relative(base, candidate);
+    if (childRel.startsWith("..") || isAbsolute(childRel)) {
+      throw new Error("Mock GitHub path escapes its root");
+    }
+    const rel = relative(root, candidate);
+    let cursor = root;
+    for (const segment of rel.split(/[\\/]/).filter(Boolean)) {
+      cursor = join(cursor, segment);
+      try {
+        if (lstatSync(cursor).isSymbolicLink()) {
+          throw new Error("Mock GitHub path contains a symbolic link");
+        }
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "Mock GitHub path contains a symbolic link"
+        ) {
+          throw error;
+        }
+        break;
+      }
+    }
+    return candidate;
+  }
+
+  private containedPath(...segments: string[]) {
+    return this.containedPathFrom(resolve(this.rootDir), ...segments);
+  }
+
+  private branchDir(owner: string, repo: string, branch: string) {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(branch) ||
+      branch.includes("..") ||
+      branch.includes("//") ||
+      branch.endsWith("/") ||
+      branch.endsWith(".lock")
+    ) {
+      throw new Error("Invalid GitHub branch name");
+    }
+    return this.containedPathFrom(this.repoDir(owner, repo), "branches", branch);
+  }
+
   private repoDir(owner: string, repo: string) {
-    return join(this.rootDir, owner, repo);
+    if (
+      !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(owner) ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(repo) ||
+      repo === "." ||
+      repo === ".."
+    ) {
+      throw new Error("Invalid GitHub owner or repository name");
+    }
+    return this.containedPath(owner, repo);
   }
 
   async createBranch(owner: string, repo: string, branch: string): Promise<void> {
-    const dir = join(this.repoDir(owner, repo), "branches", branch);
+    const dir = this.branchDir(owner, repo, branch);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, ".branch"), branch, "utf8");
   }
@@ -51,10 +109,10 @@ export class MockGitHubDelivery implements GitHubDelivery {
     message: string,
     files: FileEdit[],
   ): Promise<void> {
-    const dir = join(this.repoDir(owner, repo), "branches", branch);
+    const dir = this.branchDir(owner, repo, branch);
     mkdirSync(dir, { recursive: true });
     for (const f of files) {
-      const target = join(dir, f.path);
+      const target = this.containedPathFrom(dir, f.path);
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, f.content, "utf8");
     }
@@ -69,7 +127,11 @@ export class MockGitHubDelivery implements GitHubDelivery {
     body: string,
     base = "main",
   ): Promise<PullRequestResult> {
-    const prsDir = join(this.repoDir(owner, repo), "pulls");
+    this.branchDir(owner, repo, branch);
+    const prsDir = this.containedPath(
+      relative(resolve(this.rootDir), this.repoDir(owner, repo)),
+      "pulls",
+    );
     mkdirSync(prsDir, { recursive: true });
     const counterFile = join(prsDir, "_counter");
     let n = 1;
@@ -100,6 +162,7 @@ export class MockGitHubDelivery implements GitHubDelivery {
  */
 export class OctokitGitHubDelivery implements GitHubDelivery {
   private octokit: Octokit;
+  private readonly existingBranches = new Set<string>();
 
   constructor(token?: string) {
     const t = token ?? process.env.GITHUB_TOKEN;
@@ -118,6 +181,33 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
       ref: ref.startsWith("heads/") ? ref : `heads/${ref}`,
     });
     return data.object.sha;
+  }
+
+  private async branchMatchesFiles(
+    owner: string,
+    repo: string,
+    branch: string,
+    files: FileEdit[],
+  ): Promise<boolean> {
+    try {
+      const matches = await Promise.all(
+        files.map(async (file) => {
+          const { data } = await this.octokit.repos.getContent({
+            owner,
+            repo,
+            path: file.path.replace(/\\/g, "/"),
+            ref: branch,
+          });
+          if (Array.isArray(data) || !("content" in data) || typeof data.content !== "string") {
+            return false;
+          }
+          return Buffer.from(data.content, "base64").toString("utf8") === file.content;
+        }),
+      );
+      return matches.every(Boolean);
+    } catch {
+      return false;
+    }
   }
 
   async createBranch(
@@ -143,15 +233,10 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      // Branch may already exist — update is ok for idempotent re-runs on same name
+      // A prior attempt may already own this deterministic branch. Preserve its
+      // current head so recovery never overwrites customer or reviewer work.
       if (/Reference already exists/i.test(msg)) {
-        await this.octokit.git.updateRef({
-          owner,
-          repo,
-          ref: `heads/${branch}`,
-          sha: baseSha,
-          force: true,
-        });
+        this.existingBranches.add(`${owner}/${repo}:${branch}`);
         return;
       }
       throw e;
@@ -166,6 +251,13 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
     files: FileEdit[],
   ): Promise<void> {
     if (!files.length) return;
+    const branchKey = `${owner}/${repo}:${branch}`;
+    if (this.existingBranches.has(branchKey)) {
+      if (await this.branchMatchesFiles(owner, repo, branch, files)) return;
+      throw new Error(
+        "Recovery branch content differs from the intended patch; human reconciliation required",
+      );
+    }
 
     const branchSha = await this.refSha(owner, repo, branch);
     const { data: baseCommit } = await this.octokit.git.getCommit({

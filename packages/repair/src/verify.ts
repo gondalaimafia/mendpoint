@@ -1,6 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 export type VerificationInvocation = {
   executable: string;
@@ -29,6 +31,36 @@ export type VerificationExecution = {
 
 const SIMPLE_TOKEN = /^[A-Za-z0-9_./:@+-]+$/;
 const NODE_CHECK = /^check\.(?:mjs|cjs|js)$/;
+
+export function discoverVerificationCommands(repoRoot: string): string[] {
+  for (const file of ["check.mjs", "check.cjs", "check.js"]) {
+    if (existsSync(join(repoRoot, file))) return [`node ${file}`];
+  }
+  const packagePath = join(repoRoot, "package.json");
+  if (existsSync(packagePath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(packagePath, "utf8")) as {
+        scripts?: Record<string, unknown>;
+      };
+      const commands = ["typecheck", "test", "build"]
+        .filter((name) => typeof pkg.scripts?.[name] === "string")
+        .map((name) => (name === "test" || name === "build" ? `npm ${name}` : `npm run ${name}`));
+      if (commands.length) return commands;
+    } catch {
+      return [];
+    }
+  }
+  if (
+    existsSync(join(repoRoot, "pytest.ini")) ||
+    existsSync(join(repoRoot, "conftest.py")) ||
+    existsSync(join(repoRoot, "tests"))
+  ) {
+    return ["pytest"];
+  }
+  if (existsSync(join(repoRoot, "go.mod"))) return ["go test ./..."];
+  if (existsSync(join(repoRoot, "Cargo.toml"))) return ["cargo test"];
+  return [];
+}
 
 function executable(name: string): string {
   if (process.platform !== "win32") return name;
@@ -155,11 +187,11 @@ export function validateVerificationCommands(
   return { ok: true, invocations };
 }
 
-export function runVerificationCommand(
+export async function runVerificationCommand(
   command: string,
   repoRoot: string,
   timeoutMs = 120_000,
-): VerificationExecution {
+): Promise<VerificationExecution> {
   const invocation = parseVerificationCommand(command, repoRoot);
   if (!invocation) {
     return {
@@ -171,29 +203,96 @@ export function runVerificationCommand(
     };
   }
   const boundedTimeout = Math.max(1_000, Math.min(timeoutMs, 300_000));
-  try {
-    const stdout = execFileSync(invocation.executable, invocation.args, {
+  const production = process.env.NODE_ENV === "production";
+  if (
+    production &&
+    invocation.profile !== "node-check" &&
+    process.env.MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION !== "1"
+  ) {
+    return {
+      ok: false,
+      stdout: "",
+      stderr: "",
+      exitCode: 126,
+      error:
+        "Production verification requires the read-only node-check profile or an explicit operator override",
+    };
+  }
+  if (production && invocation.profile === "node-check") {
+    const verifierPath = realpathSync(resolve(repoRoot, invocation.args[0]!));
+    const verifierHash = createHash("sha256")
+      .update(readFileSync(verifierPath))
+      .digest("hex");
+    const approvedHashes = new Set(
+      (process.env.MENDPOINT_APPROVED_VERIFIER_SHA256S ?? "")
+        .split(",")
+        .map((hash) => hash.trim().toLowerCase())
+        .filter((hash) => /^[a-f0-9]{64}$/.test(hash)),
+    );
+    if (!approvedHashes.has(verifierHash)) {
+      return {
+        ok: false,
+        stdout: "",
+        stderr: "",
+        exitCode: 126,
+        error: "Production node-check verifier content is not approved",
+      };
+    }
+  }
+  const args =
+    production && invocation.profile === "node-check"
+      ? [
+          process.allowedNodeEnvironmentFlags.has("--permission")
+            ? "--permission"
+            : "--experimental-permission",
+          "--experimental-strip-types",
+          `--allow-fs-read=${realpathSync(resolve(repoRoot))}`,
+          `--allow-fs-write=${tmpdir()}`,
+          ...invocation.args,
+        ]
+      : invocation.args;
+  const env = production
+    ? Object.fromEntries(
+        [
+          "PATH",
+          "Path",
+          "PATHEXT",
+          "SystemRoot",
+          "COMSPEC",
+          "TMP",
+          "TEMP",
+          "TMPDIR",
+        ]
+          .map((key) => [key, process.env[key]])
+          .filter((entry): entry is [string, string] => Boolean(entry[1])),
+      )
+    : process.env;
+  return await new Promise<VerificationExecution>((resolveExecution) => {
+    execFile(invocation.executable, args, {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: boundedTimeout,
-      stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       maxBuffer: 2 * 1024 * 1024,
+      env,
+    }, (error, stdout, stderr) => {
+      if (!error) {
+        resolveExecution({
+          ok: true,
+          stdout: String(stdout),
+          stderr: String(stderr),
+          exitCode: 0,
+        });
+        return;
+      }
+      const failure = error as Error & { code?: number | string };
+      resolveExecution({
+        ok: false,
+        stdout: String(stdout),
+        stderr: String(stderr),
+        exitCode: Number.isInteger(failure.code) ? Number(failure.code) : 1,
+        error: failure.message,
+      });
     });
-    return { ok: true, stdout: String(stdout), stderr: "", exitCode: 0 };
-  } catch (error: unknown) {
-    const failure = error as {
-      stdout?: Buffer | string;
-      stderr?: Buffer | string;
-      status?: number;
-      message?: string;
-    };
-    return {
-      ok: false,
-      stdout: String(failure.stdout ?? ""),
-      stderr: String(failure.stderr ?? ""),
-      exitCode: Number.isInteger(failure.status) ? Number(failure.status) : 1,
-      error: failure.message ?? String(error),
-    };
-  }
+  });
 }

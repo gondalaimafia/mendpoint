@@ -12,6 +12,7 @@
     "@mendpoint/agent": "*",
     "@mendpoint/catalog": "*",
     "@mendpoint/pipeline": "*",
+    "@mendpoint/repair": "*",
     "@mendpoint/db": "*",
     "@mendpoint/shared": "*"
   },

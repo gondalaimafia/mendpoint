@@ -26,6 +26,23 @@ describe("github mock delivery", () => {
     expect(saved.title).toBe("title");
     expect(saved.draft).toBe(true);
   });
+
+  it("contains every mock owner, branch, and file path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-gh-contained-"));
+    const gh = new MockGitHubDelivery(root);
+
+    await expect(gh.createBranch("..", "shop", "mendpoint/test")).rejects.toThrow(
+      /invalid github/i,
+    );
+    await expect(
+      gh.createBranch("acme", "shop", "../../../outside"),
+    ).rejects.toThrow(/invalid github branch/i);
+    await expect(
+      gh.commitFiles("acme", "shop", "mendpoint/test", "msg", [
+        { path: "../../../../outside.ts", content: "bad\n" },
+      ]),
+    ).rejects.toThrow(/escapes its root/i);
+  });
 });
 
 describe("octokit real delivery", () => {
@@ -65,5 +82,81 @@ describe("octokit real delivery", () => {
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({ draft: true, base: "main" }),
     );
+  });
+
+  it("never overwrites an existing recovery branch without an open pull request", async () => {
+    const delivery = new OctokitGitHubDelivery("test-token");
+    const createBlob = vi.fn();
+    (
+      delivery as unknown as {
+        octokit: {
+          git: {
+            getRef: () => Promise<{ data: { object: { sha: string } } }>;
+            createRef: () => Promise<never>;
+            createBlob: typeof createBlob;
+          };
+          repos: { getContent: () => Promise<{ data: { content: string } }> };
+        };
+      }
+    ).octokit = {
+      git: {
+        getRef: async () => ({ data: { object: { sha: "base" } } }),
+        createRef: async () => {
+          throw new Error("Reference already exists");
+        },
+        createBlob,
+      },
+      repos: {
+        getContent: async () => ({
+          data: { content: Buffer.from("reviewer change\n").toString("base64") },
+        }),
+      },
+    };
+
+    await delivery.createBranch("acme", "shop", "mendpoint/change");
+    await expect(
+      delivery.commitFiles("acme", "shop", "mendpoint/change", "Fix", [
+        { path: "src/a.ts", content: "changed\n" },
+      ]),
+    ).rejects.toThrow(/human reconciliation required/);
+    expect(createBlob).not.toHaveBeenCalled();
+  });
+
+  it("continues a lost delivery when the existing branch already has the intended patch", async () => {
+    const delivery = new OctokitGitHubDelivery("test-token");
+    const createBlob = vi.fn();
+    (
+      delivery as unknown as {
+        octokit: {
+          git: {
+            getRef: () => Promise<{ data: { object: { sha: string } } }>;
+            createRef: () => Promise<never>;
+            createBlob: typeof createBlob;
+          };
+          repos: { getContent: () => Promise<{ data: { content: string } }> };
+        };
+      }
+    ).octokit = {
+      git: {
+        getRef: async () => ({ data: { object: { sha: "base" } } }),
+        createRef: async () => {
+          throw new Error("Reference already exists");
+        },
+        createBlob,
+      },
+      repos: {
+        getContent: async () => ({
+          data: { content: Buffer.from("changed\n").toString("base64") },
+        }),
+      },
+    };
+
+    await delivery.createBranch("acme", "shop", "mendpoint/change");
+    await expect(
+      delivery.commitFiles("acme", "shop", "mendpoint/change", "Fix", [
+        { path: "src/a.ts", content: "changed\n" },
+      ]),
+    ).resolves.toBeUndefined();
+    expect(createBlob).not.toHaveBeenCalled();
   });
 });

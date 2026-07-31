@@ -30,6 +30,7 @@ export type ApiVariables = {
   apiKeyId?: string;
   authScopes?: string[];
   principal?: Principal;
+  webhookDeliveryId?: string;
 };
 export type ApiEnv = { Variables: ApiVariables };
 

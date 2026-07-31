@@ -4,17 +4,15 @@ export const dynamic = "force-dynamic";
 
 export async function GET(): Promise<Response> {
   const checks = {
-    apiReady: false,
-    apiAuthenticated: false,
-    worker: await workerCheck(),
+    api: false,
+    worker: await workerCheck(false),
   };
   try {
-    checks.apiReady = await apiCheck("/ready");
-    checks.apiAuthenticated = await apiCheck("/keys", true);
+    checks.api = await apiCheck("/live");
   } catch {
-    // The structured response below is the operational signal.
+    // The structured response below is the process recovery signal.
   }
-  const ok = checks.apiReady && checks.apiAuthenticated && checks.worker.ok;
+  const ok = checks.api && checks.worker.ok;
   return Response.json(
     {
       ok,

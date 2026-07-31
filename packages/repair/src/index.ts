@@ -11,10 +11,16 @@ export type {
 
 export { diagnoseFailureLog, diagnoseWorkingTree } from "./diagnose.js";
 export { planRepairs, planRepairsWithLlm } from "./plan.js";
-export { applyActions, listCodeFilesWithContent } from "./apply.js";
+export {
+  applyActions,
+  listCodeFilesWithContent,
+  rollbackPristineFiles,
+  type PristineFile,
+} from "./apply.js";
 export { runRepairSession } from "./session.js";
 export {
   parseVerificationCommand,
+  discoverVerificationCommands,
   runVerificationCommand,
   validateVerificationCommands,
   type VerificationExecution,

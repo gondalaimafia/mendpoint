@@ -1,7 +1,7 @@
 import { serve } from "@hono/node-server";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   createDb,
   listProviders,
@@ -30,9 +30,10 @@ import {
   updateChangeSeverity,
   enqueueJob,
   listJobs,
-  claimNextJob,
-  completeJob,
-  failJob,
+  jobToApi,
+  getJobRecoverySummary,
+  retryJob,
+  cancelJob,
   listSuppressedPatterns,
   getConsumerRepo,
   providerToApi,
@@ -63,6 +64,8 @@ import {
   createGitHubInstallState,
   consumeGitHubInstallState,
   recordGitHubWebhookDelivery,
+  completeGitHubWebhookDelivery,
+  failGitHubWebhookDelivery,
   githubInstallationToApi,
   linkConsumersToInstallation,
   insertRepairSession,
@@ -183,7 +186,6 @@ import {
 } from "@mendpoint/harness";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
-import { runRepairSession, runAgenticRepairLoop } from "@mendpoint/repair";
 import { runWarden } from "@mendpoint/agent";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
@@ -276,7 +278,29 @@ app.use("*", async (c, next) => {
   const t0 = Date.now();
   try {
     await next();
+    const webhookDeliveryId = c.get("webhookDeliveryId");
+    if (webhookDeliveryId) {
+      if (c.res.status >= 400) {
+        failGitHubWebhookDelivery(
+          db,
+          webhookDeliveryId,
+          nowIso(),
+          `HTTP ${c.res.status}`,
+        );
+      } else {
+        completeGitHubWebhookDelivery(db, webhookDeliveryId, nowIso());
+      }
+    }
   } catch (e) {
+    const webhookDeliveryId = c.get("webhookDeliveryId");
+    if (webhookDeliveryId) {
+      failGitHubWebhookDelivery(
+        db,
+        webhookDeliveryId,
+        nowIso(),
+        e instanceof Error ? e.message : String(e),
+      );
+    }
     console.error("[api]", c.req.method, c.req.path, e);
     return c.json(
       {
@@ -1198,6 +1222,14 @@ app.post("/consumers", async (c) => {
     githubRepo: string;
     repoKey: string;
   }>();
+  if (
+    !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(body.githubOwner ?? "") ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(body.githubRepo ?? "") ||
+    body.githubRepo === "." ||
+    body.githubRepo === ".."
+  ) {
+    return c.json({ error: "invalid GitHub owner or repository name" }, 400);
+  }
   let localPath: string;
   try {
     localPath = resolveRepoKey(body.repoKey, principal.tenantId);
@@ -1516,19 +1548,19 @@ app.post("/webhooks/github", async (c) => {
   if (!wh.delivery && isProduction()) {
     return c.json({ error: "delivery id required" }, 400);
   }
-  if (
-    wh.delivery &&
-    !recordGitHubWebhookDelivery(db, wh.delivery, wh.event, nowIso())
-  ) {
-    return c.json({ ok: true, duplicate: true });
-  }
-
   let payload: Record<string, unknown> = {};
   try {
     payload = JSON.parse(raw) as Record<string, unknown>;
   } catch {
     return c.json({ error: "invalid json" }, 400);
   }
+  if (
+    wh.delivery &&
+    !recordGitHubWebhookDelivery(db, wh.delivery, wh.event, nowIso())
+  ) {
+    return c.json({ ok: true, duplicate: true });
+  }
+  if (wh.delivery) c.set("webhookDeliveryId", wh.delivery);
 
   const event = normalizeGitHubEvent(wh.event, payload);
 
@@ -1622,6 +1654,11 @@ app.post("/webhooks/github", async (c) => {
           tenantId: consumer.tenant_id,
         });
         recordAudit(db, {
+          id: wh.delivery
+            ? `webhook_${createHash("sha256")
+                .update(`${wh.delivery}\0pr.${outcome}`)
+                .digest("hex")}`
+            : undefined,
           tenantId: consumer.tenant_id,
           actor: "github_webhook",
           action: `pr.${outcome}`,
@@ -1751,115 +1788,57 @@ app.post("/jobs/fanout", async (c) => {
 });
 
 app.get("/jobs", (c) =>
-  c.json(listJobs(db, 50, requestTenantId(c))),
+  c.json(listJobs(db, 50, requestTenantId(c)).map(jobToApi)),
 );
 
-/** Process one pending job (also available on worker) */
-app.post("/jobs/process-one", async (c) => {
-  const tenantId = requestTenantId(c);
-  const job = claimNextJob(db, ["pipeline.fanout", "agent.run"], {
-    tenantId,
-    workerId: `api:${c.get("requestId")}`,
+app.get("/recovery/summary", (c) => {
+  const now = nowIso();
+  const summary = getJobRecoverySummary(db, requestTenantId(c), now);
+  const oldestPendingAgeMs = summary.oldestPendingAt
+    ? Math.max(0, Date.parse(now) - Date.parse(summary.oldestPendingAt))
+    : null;
+  return c.json({
+    ...summary,
+    retryScheduled: summary.scheduled,
+    oldestPendingAgeMs,
   });
-  if (!job) return c.json({ processed: false });
-  try {
-    if (job.type === "agent.run") {
-      const payload = JSON.parse(job.payload_json) as {
-        goal: string;
-        consumerId: string;
-        errorLog?: string;
-        maxSteps?: number;
-        dryRun?: boolean;
-        useLlm?: boolean;
-        sessionId?: string;
-      };
-      const owned = tenantConsumerRepo(payload.consumerId, job.tenant_id);
-      if (!owned) {
-        throw new Error("agent_job_consumer_not_owned");
-      }
-      const { repo } = owned;
-      const started = nowIso();
-      const result = await runWarden({
-        goal: payload.goal,
-        repoRoot: repo.local_path,
-        errorLog: payload.errorLog,
-        maxSteps: payload.maxSteps ?? 20,
-        dryRun: payload.dryRun,
-        useLlm: payload.useLlm ?? process.env.LLM_AGENT === "1",
-        allowNetwork: false,
-        sessionId: payload.sessionId,
-      });
-      insertAgentRun(db, {
-        id: result.sessionId,
-        tenantId,
-        goal: payload.goal,
-        repoPath: repo.local_path,
-        status: result.ok ? "ok" : "failed",
-        ok: result.ok,
-        steps: result.steps.length,
-        filesChanged: result.filesChanged,
-        reportMd: result.reportMarkdown,
-        resultJson: JSON.stringify({
-          stoppedReason: result.stoppedReason,
-          jobId: job.id,
-        }),
-        createdAt: started,
-        finishedAt: nowIso(),
-      });
-      if (!result.ok) {
-        throw new Error(`agent_run_failed:${result.stoppedReason}`);
-      }
-      completeJob(
-        db,
-        job.id,
-        {
-          sessionId: result.sessionId,
-          ok: result.ok,
-          steps: result.steps.length,
-          filesChanged: result.filesChanged,
-          stoppedReason: result.stoppedReason,
-        },
-        nowIso(),
-      );
-      return c.json({
-        processed: true,
-        jobId: job.id,
-        type: "agent.run",
-        sessionId: result.sessionId,
-        ok: result.ok,
-      });
-    }
+});
 
-    const payload = JSON.parse(job.payload_json) as {
-      providerSlug: string;
-      tenantId?: string;
-      severity?: "required" | "recommended" | "optional";
-      notificationsOnly?: boolean;
-      contractCases?: ContractCase[];
-      securityScanOk?: boolean;
-      repairVerifyCommands?: string[];
-    };
-    const report = await runChangePipeline({
-      providerSlug: payload.providerSlug,
-      db,
-      tenantId: job.tenant_id,
-      consumerIds: listConsumers(db, job.tenant_id).map((consumer) => consumer.id),
-      severity: payload.severity,
-      notificationsOnly: payload.notificationsOnly,
-      contractCases: payload.contractCases,
-      securityScanOk: payload.securityScanOk,
-      repairVerifyCommands: payload.repairVerifyCommands,
-    });
-    completeJob(db, job.id, report, nowIso());
-    invalidateGraphCaches();
-    return c.json({ processed: true, jobId: job.id, report });
-  } catch (e) {
-    failJob(db, job.id, e instanceof Error ? e.message : String(e), nowIso());
-    return c.json(
-      { processed: true, jobId: job.id, error: e instanceof Error ? e.message : String(e) },
-      500,
-    );
-  }
+app.post("/jobs/:id/retry", async (c) => {
+  const body = await c.req
+    .json<{ reason?: string }>()
+    .catch((): { reason?: string } => ({}));
+  const tenantId = requestTenantId(c);
+  const retried = retryJob(db, c.req.param("id"), { tenantId, now: nowIso() });
+  if (!retried) return c.json({ error: "job is not eligible for retry" }, 409);
+  requestAudit(c, {
+    actor: "operator",
+    action: "job.retry_requested",
+    resourceType: "job",
+    resourceId: c.req.param("id"),
+    metadata: { reason: body.reason?.slice(0, 500) ?? null },
+  });
+  return c.json({ ok: true, id: c.req.param("id"), status: "pending" });
+});
+
+app.post("/jobs/:id/cancel", async (c) => {
+  const body = await c.req
+    .json<{ reason?: string }>()
+    .catch((): { reason?: string } => ({}));
+  const tenantId = requestTenantId(c);
+  const cancelled = cancelJob(db, c.req.param("id"), nowIso(), {
+    tenantId,
+    reason: body.reason,
+  });
+  if (!cancelled) return c.json({ error: "job is not eligible for cancellation" }, 409);
+  requestAudit(c, {
+    actor: "operator",
+    action: "job.cancelled",
+    resourceType: "job",
+    resourceId: c.req.param("id"),
+    metadata: { reason: body.reason?.slice(0, 500) ?? null },
+  });
+  return c.json({ ok: true, id: c.req.param("id"), status: "cancelled" });
 });
 
 /** SDK registry signals (live or local stub) */
@@ -1910,7 +1889,7 @@ app.post("/agent/runs", async (c) => {
     const { consumer, repo } = owned;
     const repoPath = repo.local_path;
 
-    if (body.async) {
+    if (isProduction() || body.async !== false) {
       const jobId = newId();
       const sessionId = newId();
       enqueueJob(db, {
@@ -1956,7 +1935,7 @@ app.post("/agent/runs", async (c) => {
           jobId,
           status: "queued",
           product: "warden",
-          message: "Drain with POST /jobs/process-one or worker process-jobs",
+          message: "The recovery worker will process this job",
         },
         202,
       );
@@ -2047,8 +2026,8 @@ app.get("/repair/sessions/:id", (c) => {
 });
 
 /**
- * Run agentic repair against a consumer checkout (or explicit path).
- * Body: { consumerId?, repoPath?, renameMap?, verifyCommands?, maxAttempts?, dryRun?, useLlm? }
+ * Queue bounded repair against a tenant-owned consumer checkout.
+ * The worker owns execution so a web timeout cannot orphan a mutation.
  */
 app.post("/repair/sessions", async (c) => {
   try {
@@ -2058,7 +2037,6 @@ app.post("/repair/sessions", async (c) => {
       maxAttempts?: number;
       dryRun?: boolean;
       useLlm?: boolean;
-      agenticLoop?: boolean;
     }>();
 
     const tenantId = requestTenantId(c);
@@ -2072,77 +2050,57 @@ app.post("/repair/sessions", async (c) => {
     const consumerId = consumer.id;
 
     const sessionId = newId();
+    const jobId = newId();
     const started = nowIso();
-
-    const result = body.agenticLoop
-      ? (
-          await runAgenticRepairLoop({
-            repoRoot: repoPath,
-            renameMap: body.renameMap,
-            maxAttempts: body.maxAttempts ?? 3,
-            dryRun: body.dryRun,
-            useLlm: body.useLlm ?? process.env.LLM_REPAIR === "1",
-          })
-        ).repair
-      : await runRepairSession({
-          sessionId,
-          repoRoot: repoPath,
-          renameMap: body.renameMap,
-          maxAttempts: body.maxAttempts ?? 3,
-          dryRun: body.dryRun,
-          useLlm: body.useLlm ?? process.env.LLM_REPAIR === "1",
-        });
-
+    enqueueJob(db, {
+      id: jobId,
+      tenantId,
+      type: "repair.run",
+      payload: {
+        sessionId,
+        consumerId,
+        renameMap: body.renameMap,
+        maxAttempts: Math.max(1, Math.min(body.maxAttempts ?? 3, 5)),
+        dryRun: body.dryRun === true,
+        useLlm: body.useLlm ?? process.env.LLM_REPAIR === "1",
+      },
+      maxAttempts: 5,
+      createdAt: started,
+    });
     insertRepairSession(db, {
-      id: result.sessionId,
+      id: sessionId,
       tenantId,
       consumerId,
       repoPath,
-      status: result.ok ? "ok" : "failed",
-      attempts: result.attempts,
-      editsCount: result.edits.length,
-      ok: result.ok,
-      reportMd: result.reportMarkdown,
-      resultJson: JSON.stringify({
-        plans: result.plans,
-        edits: result.edits.map((e) => ({
-          filePath: e.filePath,
-          reason: e.reason,
-        })),
-        policyNotes: result.policyNotes,
-      }),
+      status: "queued",
+      attempts: 0,
+      editsCount: 0,
+      ok: false,
+      reportMd: null,
+      resultJson: JSON.stringify({ jobId }),
       createdAt: started,
-      finishedAt: nowIso(),
+      finishedAt: null,
     });
 
     requestAudit(c, {
       actor: "repair",
-      action: result.ok ? "repair.session.ok" : "repair.session.failed",
+      action: "repair.session.queued",
       resourceType: "repair_session",
-      resourceId: result.sessionId,
+      resourceId: sessionId,
       metadata: {
-        attempts: result.attempts,
-        edits: result.edits.length,
+        jobId,
         consumerId,
       },
     });
 
     return c.json(
       {
-        sessionId: result.sessionId,
-        ok: result.ok,
-        attempts: result.attempts,
-        editsCount: result.edits.length,
-        reportMarkdown: result.reportMarkdown,
-        edits: result.edits.map((e) => ({ path: e.filePath, reason: e.reason })),
-        plans: result.plans.map((p) => ({
-          attempt: p.attempt,
-          strategy: p.strategy,
-          summary: p.summary,
-          actions: p.actions.length,
-        })),
+        sessionId,
+        jobId,
+        status: "queued",
+        message: "Repair queued for bounded verified execution",
       },
-      201,
+      202,
     );
   } catch (e) {
     return c.json(

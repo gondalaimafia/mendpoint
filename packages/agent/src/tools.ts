@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -25,6 +26,22 @@ export type ToolContext = {
   changedFiles: Set<string>;
 };
 
+type OriginalFileSnapshot = {
+  existed: boolean;
+  content?: string;
+};
+
+export type ToolRollbackResult = {
+  performed: boolean;
+  restoredFiles: string[];
+  failedFiles: string[];
+};
+
+const originalFilesByContext = new WeakMap<
+  ToolContext,
+  Map<string, OriginalFileSnapshot>
+>();
+
 function isWithin(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -34,10 +51,20 @@ function safeRel(repoRoot: string, p: string, allowMissing = false): string | nu
   const root = realpathSync(resolve(repoRoot));
   const abs = resolve(root, p);
   if (!isWithin(root, abs)) return null;
+  let cursor = root;
+  for (const segment of relative(root, abs).split(/[\\/]/).filter(Boolean)) {
+    cursor = join(cursor, segment);
+    try {
+      if (lstatSync(cursor).isSymbolicLink()) return null;
+    } catch {
+      break;
+    }
+  }
 
   if (existsSync(abs)) {
     const real = realpathSync(abs);
     if (!isWithin(root, real)) return null;
+    return relative(root, real).replace(/\\/g, "/") || ".";
   } else if (allowMissing) {
     let parent = dirname(abs);
     while (!existsSync(parent)) {
@@ -78,6 +105,62 @@ function walk(dir: string, root: string, out: string[] = [], depth = 0): string[
     else if (isCodeExt(name)) out.push(rel);
   }
   return out;
+}
+
+function captureOriginal(
+  ctx: ToolContext,
+  safe: string,
+  absolutePath: string,
+): void {
+  let originals = originalFilesByContext.get(ctx);
+  if (!originals) {
+    originals = new Map();
+    originalFilesByContext.set(ctx, originals);
+  }
+  if (originals.has(safe)) return;
+  if (existsSync(absolutePath)) {
+    originals.set(safe, {
+      existed: true,
+      content: readFileSync(absolutePath, "utf8"),
+    });
+  } else {
+    originals.set(safe, { existed: false });
+  }
+}
+
+export function rollbackToolWrites(ctx: ToolContext): ToolRollbackResult {
+  const restoredFiles: string[] = [];
+  const failedFiles: string[] = [];
+  const originals = originalFilesByContext.get(ctx);
+  if (!originals?.size || ctx.dryRun) {
+    return { performed: false, restoredFiles, failedFiles };
+  }
+
+  for (const [rel, original] of originals) {
+    try {
+      const safe = safeRel(ctx.repoRoot, rel, true);
+      if (!safe || safe !== rel || pathBlocked(safe, ctx.neverTouchPaths ?? DEFAULT_NEVER_TOUCH)) {
+        failedFiles.push(rel);
+        continue;
+      }
+      const absolutePath = join(ctx.repoRoot, safe);
+      if (original.existed) {
+        mkdirSync(dirname(absolutePath), { recursive: true });
+        writeFileSync(absolutePath, original.content ?? "", "utf8");
+      } else if (existsSync(absolutePath)) {
+        rmSync(absolutePath, { force: true });
+      }
+      restoredFiles.push(rel);
+    } catch {
+      failedFiles.push(rel);
+    }
+  }
+
+  return {
+    performed: restoredFiles.length > 0 || failedFiles.length > 0,
+    restoredFiles,
+    failedFiles,
+  };
 }
 
 export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
@@ -162,11 +245,25 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         if (!safe || pathBlocked(safe, never)) {
           return { ok: false, tool, summary: "blocked path", error: "policy" };
         }
+        const abs = join(ctx.repoRoot, safe);
+        if (existsSync(abs) && readFileSync(abs, "utf8") === content) {
+          return {
+            ok: false,
+            tool,
+            summary: `no change for ${safe}`,
+            error: "no_change",
+          };
+        }
+        captureOriginal(ctx, safe, abs);
         if (ctx.dryRun) {
           ctx.changedFiles.add(safe);
-          return { ok: true, tool, summary: `dry-run write ${safe}`, data: { path: safe } };
+          return {
+            ok: true,
+            tool,
+            summary: `dry-run write ${safe}`,
+            data: { path: safe, simulated: true },
+          };
         }
-        const abs = join(ctx.repoRoot, safe);
         mkdirSync(dirname(abs), { recursive: true });
         writeFileSync(abs, content, "utf8");
         ctx.changedFiles.add(safe);
@@ -194,13 +291,22 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
           return { ok: false, tool, summary: `pattern not found in ${safe}`, error: "no_match" };
         }
         const updated = original.replace(re, to);
+        if (updated === original) {
+          return {
+            ok: false,
+            tool,
+            summary: `no change for ${safe}`,
+            error: "no_change",
+          };
+        }
+        captureOriginal(ctx, safe, abs);
         if (ctx.dryRun) {
           ctx.changedFiles.add(safe);
           return {
             ok: true,
             tool,
             summary: `dry-run replace in ${safe}`,
-            data: { path: safe, preview: updated.slice(0, 500) },
+            data: { path: safe, preview: updated.slice(0, 500), simulated: true },
           };
         }
         writeFileSync(abs, updated, "utf8");
@@ -209,45 +315,11 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
       }
 
       case "run_command": {
-        const cmd = String(args.command ?? "");
-        if (!cmd) return { ok: false, tool, summary: "command required", error: "args" };
-        if (
-          commandBlocked(cmd) ||
-          !ctx.allowedCommands?.includes(cmd)
-        ) {
-          return { ok: false, tool, summary: "command blocked by policy", error: "policy" };
-        }
-        if (ctx.dryRun) {
-          return { ok: true, tool, summary: `dry-run: ${cmd}`, data: { stdout: "" } };
-        }
-        const execution = runVerificationCommand(
-          cmd,
-          ctx.repoRoot,
-          Number(args.timeoutMs ?? 60_000),
-        );
-        if (execution.ok) {
-          return {
-            ok: true,
-            tool,
-            summary: `exit 0: ${cmd}`,
-            data: { stdout: execution.stdout.slice(0, 8000), exitCode: 0 },
-          };
-        }
         return {
           ok: false,
           tool,
-          summary: `exit ${execution.exitCode}: ${cmd}`,
-          error: (
-            execution.stderr ||
-            execution.stdout ||
-            execution.error ||
-            "verification failed"
-          ).slice(0, 4000),
-          data: {
-            stdout: execution.stdout.slice(0, 4000),
-            stderr: execution.stderr.slice(0, 4000),
-            exitCode: execution.exitCode,
-          },
+          summary: "command requires asynchronous execution",
+          error: "async_required",
         };
       }
 
@@ -297,6 +369,57 @@ export async function executeToolAsync(
   ctx: ToolContext,
   call: ToolCall,
 ): Promise<ToolResult> {
+  if (call.tool === "run_command") {
+    const cmd = String(call.args.command ?? "");
+    if (!cmd) {
+      return { ok: false, tool: "run_command", summary: "command required", error: "args" };
+    }
+    if (commandBlocked(cmd) || !ctx.allowedCommands?.includes(cmd)) {
+      return {
+        ok: false,
+        tool: "run_command",
+        summary: "command blocked by policy",
+        error: "policy",
+      };
+    }
+    if (ctx.dryRun) {
+      return {
+        ok: true,
+        tool: "run_command",
+        summary: `dry-run: ${cmd}`,
+        data: { stdout: "", simulated: true },
+      };
+    }
+    const execution = await runVerificationCommand(
+      cmd,
+      ctx.repoRoot,
+      Number(call.args.timeoutMs ?? 60_000),
+    );
+    if (execution.ok) {
+      return {
+        ok: true,
+        tool: "run_command",
+        summary: `exit 0: ${cmd}`,
+        data: { stdout: execution.stdout.slice(0, 8000), exitCode: 0 },
+      };
+    }
+    return {
+      ok: false,
+      tool: "run_command",
+      summary: `exit ${execution.exitCode}: ${cmd}`,
+      error: (
+        execution.stderr ||
+        execution.stdout ||
+        execution.error ||
+        "verification failed"
+      ).slice(0, 4000),
+      data: {
+        stdout: execution.stdout.slice(0, 4000),
+        stderr: execution.stderr.slice(0, 4000),
+        exitCode: execution.exitCode,
+      },
+    };
+  }
   if (call.tool === "http_probe") {
     if (!ctx.allowNetwork) {
       return {

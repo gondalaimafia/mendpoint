@@ -181,6 +181,11 @@ export function permissionForRoute(
   if (path.includes("/feedback") || path.includes("/outcome"))
     return "outcome:label";
   if (path.startsWith("/prs") && m === "POST") return "pr:write";
+  if (
+    m === "POST" &&
+    /^\/jobs\/[^/]+\/(?:retry|cancel)$/.test(path)
+  )
+    return "tenant:admin";
   if (path.startsWith("/platform/vm") || path.startsWith("/platform/live-sandbox") || path.startsWith("/platform/sandbox"))
     return "sandbox:run";
   if (path.startsWith("/graph-learn") && m === "POST") return "graph:write";

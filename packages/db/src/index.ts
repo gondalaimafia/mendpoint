@@ -91,7 +91,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   started_at TEXT,
   finished_at TEXT,
   lease_owner TEXT,
-  lease_expires_at TEXT
+  lease_expires_at TEXT,
+  available_at TEXT,
+  lease_generation INTEGER NOT NULL DEFAULT 0,
+  error_code TEXT,
+  last_error_at TEXT,
+  dead_at TEXT,
+  cancelled_at TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
 CREATE INDEX IF NOT EXISTS jobs_type_idx ON jobs(type);
@@ -284,7 +290,11 @@ CREATE INDEX IF NOT EXISTS github_install_states_tenant_idx ON github_install_st
 CREATE TABLE IF NOT EXISTS github_webhook_deliveries (
   delivery_id TEXT PRIMARY KEY,
   event TEXT NOT NULL,
-  received_at TEXT NOT NULL
+  received_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'processing',
+  updated_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  last_error TEXT
 );
 `;
 
@@ -391,6 +401,12 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "jobs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
     { table: "jobs", name: "lease_owner", sql: "TEXT" },
     { table: "jobs", name: "lease_expires_at", sql: "TEXT" },
+    { table: "jobs", name: "available_at", sql: "TEXT" },
+    { table: "jobs", name: "lease_generation", sql: "INTEGER NOT NULL DEFAULT 0" },
+    { table: "jobs", name: "error_code", sql: "TEXT" },
+    { table: "jobs", name: "last_error_at", sql: "TEXT" },
+    { table: "jobs", name: "dead_at", sql: "TEXT" },
+    { table: "jobs", name: "cancelled_at", sql: "TEXT" },
     { table: "repair_sessions", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
     { table: "agent_runs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
     { table: "audit_events", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
@@ -398,6 +414,10 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "audit_events", name: "api_key_id", sql: "TEXT" },
     { table: "audit_events", name: "request_id", sql: "TEXT" },
     { table: "suppressed_patterns", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "github_webhook_deliveries", name: "status", sql: "TEXT NOT NULL DEFAULT 'completed'" },
+    { table: "github_webhook_deliveries", name: "updated_at", sql: "TEXT" },
+    { table: "github_webhook_deliveries", name: "attempts", sql: "INTEGER NOT NULL DEFAULT 1" },
+    { table: "github_webhook_deliveries", name: "last_error", sql: "TEXT" },
   ];
   for (const column of additiveColumns) {
     const columns = all<{ name: string }>(
@@ -408,6 +428,12 @@ function migrateProvidersFeedColumns(db: AppDb) {
       run(db, `ALTER TABLE ${column.table} ADD COLUMN ${column.name} ${column.sql}`);
     }
   }
+  run(
+    db,
+    `UPDATE jobs
+     SET available_at = created_at
+     WHERE available_at IS NULL`,
+  );
   for (const table of [
     "consumers",
     "jobs",
@@ -442,6 +468,11 @@ function migrateProvidersFeedColumns(db: AppDb) {
     );
   }
   run(db, `CREATE INDEX IF NOT EXISTS jobs_tenant_status_idx ON jobs(tenant_id, status)`);
+  run(
+    db,
+    `CREATE INDEX IF NOT EXISTS jobs_due_idx
+     ON jobs(tenant_id, status, available_at, created_at)`,
+  );
   // Ensure default tenant exists
   const t = get<{ id: string }>(db, `SELECT id FROM tenants WHERE slug = 'default'`);
   if (!t) {
@@ -469,6 +500,7 @@ function run(db: AppDb, sql: string, params: SQLInputValue[] = []): void {
 export function recordAudit(
   db: AppDb,
   input: {
+    id?: string;
     tenantId: string;
     actor: string;
     principalId?: string | null;
@@ -482,11 +514,11 @@ export function recordAudit(
 ) {
   run(
     db,
-    `INSERT INTO audit_events
+    `INSERT OR IGNORE INTO audit_events
      (id, tenant_id, actor, principal_id, api_key_id, request_id, action, resource_type, resource_id, metadata_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      newId(),
+      input.id ?? newId(),
       input.tenantId,
       input.actor,
       input.principalId ?? null,
@@ -1090,7 +1122,7 @@ export function insertSuppressedPattern(
 ) {
   run(
     db,
-    `INSERT INTO suppressed_patterns
+    `INSERT OR IGNORE INTO suppressed_patterns
      (id, tenant_id, consumer_id, provider_slug, pattern, reason, source_pr_id, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
@@ -1404,7 +1436,64 @@ export type JobRow = {
   finished_at: string | null;
   lease_owner: string | null;
   lease_expires_at: string | null;
+  available_at: string | null;
+  lease_generation: number;
+  error_code: string | null;
+  last_error_at: string | null;
+  dead_at: string | null;
+  cancelled_at: string | null;
 };
+
+export type JobLeaseFence = {
+  workerId: string;
+  leaseGeneration: number;
+};
+
+export type JobFailureOptions = Partial<JobLeaseFence> & {
+  errorCode?: string;
+  retryable?: boolean;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+};
+
+export type JobFailureResult = {
+  applied: boolean;
+  status: "pending" | "dead_letter" | string;
+  availableAt: string | null;
+  deadAt: string | null;
+};
+
+export type JobRecoverySummary = {
+  tenantId: string;
+  pending: number;
+  due: number;
+  scheduled: number;
+  running: number;
+  expiredLeases: number;
+  done: number;
+  recovered: number;
+  simulated: number;
+  deadLetter: number;
+  cancelled: number;
+  oldestPendingAt: string | null;
+};
+
+function boundedDelayMs(attempts: number, baseMs = 1_000, maxMs = 300_000): number {
+  const base = Math.max(1_000, Math.min(baseMs, 86_400_000));
+  const ceiling = Math.max(base, Math.min(maxMs, 86_400_000));
+  const exponent = Math.max(0, Math.min(attempts - 1, 16));
+  return Math.min(ceiling, base * 2 ** exponent);
+}
+
+function normalizeJobErrorCode(value: string | undefined): string {
+  const normalized = value
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+  return normalized || "job_failed";
+}
 
 export function enqueueJob(
   db: AppDb,
@@ -1415,13 +1504,15 @@ export function enqueueJob(
     payload: unknown;
     maxAttempts?: number;
     createdAt: string;
+    availableAt?: string;
   },
 ) {
   run(
     db,
     `INSERT INTO jobs
-     (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at)
-     VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)`,
+     (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at,
+      available_at, lease_generation)
+     VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?, 0)`,
     [
       row.id,
       row.tenantId,
@@ -1429,6 +1520,7 @@ export function enqueueJob(
       JSON.stringify(row.payload),
       row.maxAttempts ?? 3,
       row.createdAt,
+      row.availableAt ?? row.createdAt,
     ],
   );
 }
@@ -1441,12 +1533,19 @@ export function recoverExpiredJobs(
   const result = db.raw
     .prepare(
       `UPDATE jobs
-       SET status = CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END,
+       SET status = CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'dead_letter' END,
            error = CASE
              WHEN attempts < max_attempts THEN 'lease_expired'
              ELSE 'lease_expired_max_attempts'
            END,
+           error_code = CASE
+             WHEN attempts < max_attempts THEN 'lease_expired'
+             ELSE 'lease_expired_max_attempts'
+           END,
+           last_error_at = ?,
+           available_at = CASE WHEN attempts < max_attempts THEN ? ELSE NULL END,
            finished_at = CASE WHEN attempts < max_attempts THEN NULL ELSE ? END,
+           dead_at = CASE WHEN attempts < max_attempts THEN NULL ELSE ? END,
            lease_owner = NULL,
            lease_expires_at = NULL
        WHERE status = 'running'
@@ -1454,7 +1553,7 @@ export function recoverExpiredJobs(
          AND lease_expires_at <= ?
          ${tenantId ? "AND tenant_id = ?" : ""}`,
     )
-    .run(...(tenantId ? [now, now, tenantId] : [now, now]));
+    .run(...(tenantId ? [now, now, now, now, now, tenantId] : [now, now, now, now, now]));
   return Number(result.changes);
 }
 
@@ -1481,6 +1580,7 @@ export function claimNextJob(
   const params: SQLInputValue[] = [
     ...(types?.length ? types : []),
     ...(opts?.tenantId ? [opts.tenantId] : []),
+    now,
   ];
 
   db.raw.exec("BEGIN IMMEDIATE");
@@ -1490,7 +1590,9 @@ export function claimNextJob(
       db,
       `SELECT * FROM jobs
        WHERE status = 'pending' ${typeFilter} ${tenantFilter}
-       ORDER BY created_at, id LIMIT 1`,
+         AND cancelled_at IS NULL
+         AND (available_at IS NULL OR available_at <= ?)
+       ORDER BY available_at, created_at, id LIMIT 1`,
       params,
     );
     if (!job) {
@@ -1505,7 +1607,8 @@ export function claimNextJob(
              started_at = ?,
              finished_at = NULL,
              lease_owner = ?,
-             lease_expires_at = ?
+             lease_expires_at = ?,
+             lease_generation = lease_generation + 1
          WHERE id = ? AND status = 'pending'`,
       )
       .run(now, workerId, leaseExpiresAt, job.id);
@@ -1527,29 +1630,180 @@ export function completeJob(
   id: string,
   result: unknown,
   finishedAt: string,
-) {
-  run(
-    db,
-    `UPDATE jobs
-     SET status = 'done', result_json = ?, finished_at = ?, error = NULL,
-         lease_owner = NULL, lease_expires_at = NULL
-     WHERE id = ?`,
-    [JSON.stringify(result), finishedAt, id],
-  );
+  fence?: JobLeaseFence,
+): boolean {
+  const completed = db.raw
+    .prepare(
+      `UPDATE jobs
+       SET status = 'done', result_json = ?, finished_at = ?, error = NULL,
+           error_code = NULL, available_at = NULL,
+           lease_owner = NULL, lease_expires_at = NULL
+       WHERE id = ? AND status = 'running'
+         ${fence ? "AND lease_owner = ? AND lease_generation = ?" : ""}`,
+    )
+    .run(
+      JSON.stringify(result),
+      finishedAt,
+      id,
+      ...(fence ? [fence.workerId, fence.leaseGeneration] : []),
+    );
+  return Number(completed.changes) === 1;
 }
 
-export function failJob(db: AppDb, id: string, error: string, finishedAt: string) {
+export function renewJobLease(
+  db: AppDb,
+  id: string,
+  opts: JobLeaseFence & { now?: string; leaseMs?: number },
+): boolean {
+  const now = opts.now ?? new Date().toISOString();
+  const leaseMs = Math.max(1_000, Math.min(opts.leaseMs ?? 60_000, 86_400_000));
+  const leaseExpiresAt = new Date(Date.parse(now) + leaseMs).toISOString();
+  const renewed = db.raw
+    .prepare(
+      `UPDATE jobs
+       SET lease_expires_at = ?
+       WHERE id = ?
+         AND status = 'running'
+         AND lease_owner = ?
+         AND lease_generation = ?
+         AND lease_expires_at > ?`,
+    )
+    .run(leaseExpiresAt, id, opts.workerId, opts.leaseGeneration, now);
+  return Number(renewed.changes) === 1;
+}
+
+export function failJob(
+  db: AppDb,
+  id: string,
+  error: string,
+  finishedAt: string,
+  opts: JobFailureOptions = {},
+): JobFailureResult {
+  const hasWorkerId = opts.workerId !== undefined;
+  const hasLeaseGeneration = opts.leaseGeneration !== undefined;
+  if (hasWorkerId !== hasLeaseGeneration) {
+    throw new Error("Job failure fencing requires workerId and leaseGeneration");
+  }
   const job = get<JobRow>(db, `SELECT * FROM jobs WHERE id = ?`, [id]);
-  if (!job) return;
-  const retry = job.attempts < job.max_attempts;
-  run(
-    db,
-    `UPDATE jobs
-     SET status = ?, error = ?, finished_at = ?,
-         lease_owner = NULL, lease_expires_at = NULL
-     WHERE id = ?`,
-    [retry ? "pending" : "failed", error, finishedAt, id],
-  );
+  if (!job) {
+    return { applied: false, status: "missing", availableAt: null, deadAt: null };
+  }
+  const retry = opts.retryable !== false && job.attempts < job.max_attempts;
+  const delayMs = retry
+    ? boundedDelayMs(job.attempts, opts.baseDelayMs, opts.maxDelayMs)
+    : 0;
+  const availableAt = retry
+    ? new Date(Date.parse(finishedAt) + delayMs).toISOString()
+    : null;
+  const status = retry ? "pending" : "dead_letter";
+  const errorCode = normalizeJobErrorCode(opts.errorCode);
+  const failed = db.raw
+    .prepare(
+      `UPDATE jobs
+       SET status = ?,
+           error = ?,
+           error_code = ?,
+           last_error_at = ?,
+           available_at = ?,
+           finished_at = ?,
+           dead_at = ?,
+           lease_owner = NULL,
+           lease_expires_at = NULL
+       WHERE id = ? AND status = 'running'
+         ${
+           hasWorkerId && hasLeaseGeneration
+             ? "AND lease_owner = ? AND lease_generation = ?"
+             : ""
+         }`,
+    )
+    .run(
+      status,
+      error,
+      errorCode,
+      finishedAt,
+      availableAt,
+      retry ? null : finishedAt,
+      retry ? null : finishedAt,
+      id,
+      ...(hasWorkerId && hasLeaseGeneration
+        ? [opts.workerId!, opts.leaseGeneration!]
+        : []),
+    );
+  const applied = Number(failed.changes) === 1;
+  return {
+    applied,
+    status: applied ? status : job.status,
+    availableAt: applied ? availableAt : job.available_at,
+    deadAt: applied && !retry ? finishedAt : job.dead_at,
+  };
+}
+
+export function retryJob(
+  db: AppDb,
+  id: string,
+  opts: {
+    tenantId?: string;
+    now?: string;
+    resetAttempts?: boolean;
+  } = {},
+): boolean {
+  const now = opts.now ?? new Date().toISOString();
+  const retried = db.raw
+    .prepare(
+      `UPDATE jobs
+       SET status = 'pending',
+           attempts = CASE WHEN ? THEN 0 ELSE attempts END,
+           error = NULL,
+           result_json = NULL,
+           error_code = NULL,
+           last_error_at = NULL,
+           available_at = ?,
+           started_at = NULL,
+           finished_at = NULL,
+           dead_at = NULL,
+           cancelled_at = NULL,
+           lease_owner = NULL,
+           lease_expires_at = NULL
+       WHERE id = ?
+         AND status IN ('dead_letter', 'failed', 'cancelled')
+         ${opts.tenantId ? "AND tenant_id = ?" : ""}`,
+    )
+    .run(opts.resetAttempts === false ? 0 : 1, now, id, ...(opts.tenantId ? [opts.tenantId] : []));
+  return Number(retried.changes) === 1;
+}
+
+export function cancelJob(
+  db: AppDb,
+  id: string,
+  cancelledAt: string,
+  opts: { tenantId?: string; reason?: string } = {},
+): boolean {
+  const cancelled = db.raw
+    .prepare(
+      `UPDATE jobs
+       SET status = 'cancelled',
+           error = ?,
+           error_code = 'job_cancelled',
+           last_error_at = ?,
+           available_at = NULL,
+           finished_at = ?,
+           dead_at = NULL,
+           cancelled_at = ?,
+           lease_owner = NULL,
+           lease_expires_at = NULL
+       WHERE id = ?
+          AND status = 'pending'
+         ${opts.tenantId ? "AND tenant_id = ?" : ""}`,
+    )
+    .run(
+      opts.reason?.slice(0, 500) ?? "cancelled",
+      cancelledAt,
+      cancelledAt,
+      cancelledAt,
+      id,
+      ...(opts.tenantId ? [opts.tenantId] : []),
+    );
+  return Number(cancelled.changes) === 1;
 }
 
 export function listJobs(db: AppDb, limit = 50, tenantId?: string): JobRow[] {
@@ -1560,6 +1814,89 @@ export function listJobs(db: AppDb, limit = 50, tenantId?: string): JobRow[] {
      ORDER BY created_at DESC LIMIT ?`,
     tenantId ? [tenantId, limit] : [limit],
   );
+}
+
+export function getJobRecoverySummary(
+  db: AppDb,
+  tenantId: string,
+  now = new Date().toISOString(),
+): JobRecoverySummary {
+  const row = get<{
+    pending: number;
+    due: number;
+    scheduled: number;
+    running: number;
+    expired_leases: number;
+    done: number;
+    recovered: number;
+    simulated: number;
+    dead_letter: number;
+    cancelled: number;
+    oldest_pending_at: string | null;
+  }>(
+    db,
+    `SELECT
+       SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+       SUM(CASE WHEN status = 'pending' AND (available_at IS NULL OR available_at <= ?) THEN 1 ELSE 0 END) AS due,
+       SUM(CASE WHEN status = 'pending' AND available_at > ? THEN 1 ELSE 0 END) AS scheduled,
+       SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+       SUM(CASE WHEN status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ? THEN 1 ELSE 0 END) AS expired_leases,
+       SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+       SUM(CASE
+         WHEN status = 'done'
+          AND type IN ('agent.run', 'repair.run')
+          AND COALESCE(json_extract(result_json, '$.ok'), 0) = 1
+          AND COALESCE(json_extract(result_json, '$.simulated'), 0) = 0
+          AND (
+            (type = 'agent.run' AND COALESCE(json_array_length(json_extract(result_json, '$.filesChanged')), 0) > 0)
+            OR
+            (type = 'repair.run' AND COALESCE(json_extract(result_json, '$.edits'), 0) > 0)
+          )
+         THEN 1 ELSE 0 END) AS recovered,
+       SUM(CASE
+         WHEN status = 'done'
+          AND COALESCE(json_extract(result_json, '$.simulated'), 0) = 1
+         THEN 1 ELSE 0 END) AS simulated,
+       SUM(CASE WHEN status IN ('dead_letter', 'failed') THEN 1 ELSE 0 END) AS dead_letter,
+       SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
+       MIN(CASE WHEN status = 'pending' THEN created_at END) AS oldest_pending_at
+     FROM jobs
+     WHERE tenant_id = ?`,
+    [now, now, now, tenantId],
+  );
+  return {
+    tenantId,
+    pending: Number(row?.pending ?? 0),
+    due: Number(row?.due ?? 0),
+    scheduled: Number(row?.scheduled ?? 0),
+    running: Number(row?.running ?? 0),
+    expiredLeases: Number(row?.expired_leases ?? 0),
+    done: Number(row?.done ?? 0),
+    recovered: Number(row?.recovered ?? 0),
+    simulated: Number(row?.simulated ?? 0),
+    deadLetter: Number(row?.dead_letter ?? 0),
+    cancelled: Number(row?.cancelled ?? 0),
+    oldestPendingAt: row?.oldest_pending_at ?? null,
+  };
+}
+
+export function jobToApi(job: JobRow) {
+  return {
+    id: job.id,
+    type: job.type,
+    status: job.status,
+    attempts: job.attempts,
+    maxAttempts: job.max_attempts,
+    createdAt: job.created_at,
+    startedAt: job.started_at,
+    finishedAt: job.finished_at,
+    availableAt: job.available_at,
+    leaseExpiresAt: job.lease_expires_at,
+    errorCode: job.error_code ?? (job.error ? "job_failed" : null),
+    lastErrorAt: job.last_error_at,
+    deadAt: job.dead_at,
+    cancelledAt: job.cancelled_at,
+  };
 }
 
 export function exportAuditJson(db: AppDb, limit = 5000, tenantId?: string) {
@@ -1655,7 +1992,19 @@ export function insertRepairSession(
     db,
     `INSERT INTO repair_sessions
      (id, tenant_id, consumer_id, repo_path, status, attempts, edits_count, ok, report_md, result_json, created_at, finished_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       tenant_id = excluded.tenant_id,
+       consumer_id = excluded.consumer_id,
+       repo_path = excluded.repo_path,
+       status = excluded.status,
+       attempts = excluded.attempts,
+       edits_count = excluded.edits_count,
+       ok = excluded.ok,
+       report_md = excluded.report_md,
+       result_json = excluded.result_json,
+       finished_at = excluded.finished_at
+     WHERE repair_sessions.tenant_id = excluded.tenant_id`,
     [
       row.id,
       row.tenantId,
@@ -1701,17 +2050,33 @@ export function getRepairSession(
 }
 
 export function repairSessionToApi(r: RepairSessionRow) {
+  const rawResult = r.result_json
+    ? (JSON.parse(r.result_json) as Record<string, unknown>)
+    : null;
   return {
     id: r.id,
     tenantId: r.tenant_id,
     consumerId: r.consumer_id,
-    repoPath: r.repo_path,
     status: r.status,
     attempts: r.attempts,
     editsCount: r.edits_count,
     ok: Boolean(r.ok),
     reportMd: r.report_md,
-    result: r.result_json ? JSON.parse(r.result_json) : null,
+    result: rawResult
+      ? {
+          jobId: typeof rawResult.jobId === "string" ? rawResult.jobId : null,
+          stopReason:
+            typeof rawResult.stopReason === "string" ? rawResult.stopReason : null,
+          simulated: rawResult.simulated === true,
+          planCount: Array.isArray(rawResult.plans) ? rawResult.plans.length : 0,
+          failureCount: Array.isArray(rawResult.failureFingerprints)
+            ? rawResult.failureFingerprints.length
+            : 0,
+          actionCount: Array.isArray(rawResult.actionFingerprints)
+            ? rawResult.actionFingerprints.length
+            : 0,
+        }
+      : null,
     createdAt: r.created_at,
     finishedAt: r.finished_at,
   };
@@ -1809,17 +2174,60 @@ export function getAgentRun(
 }
 
 export function agentRunToApi(r: AgentRunRow) {
+  const rawResult = r.result_json
+    ? (JSON.parse(r.result_json) as Record<string, unknown>)
+    : null;
+  const rawVerifier =
+    rawResult?.verifier && typeof rawResult.verifier === "object"
+      ? (rawResult.verifier as Record<string, unknown>)
+      : null;
+  const rawRollback =
+    rawResult?.rollback && typeof rawResult.rollback === "object"
+      ? (rawResult.rollback as Record<string, unknown>)
+      : null;
   return {
     id: r.id,
     tenantId: r.tenant_id,
     goal: r.goal,
-    repoPath: r.repo_path,
     status: r.status,
     ok: Boolean(r.ok),
     steps: r.steps,
     filesChanged: r.files_changed_json ? JSON.parse(r.files_changed_json) : [],
     reportMd: r.report_md,
-    result: r.result_json ? JSON.parse(r.result_json) : null,
+    result: rawResult
+      ? {
+          jobId: typeof rawResult.jobId === "string" ? rawResult.jobId : null,
+          stoppedReason:
+            typeof rawResult.stoppedReason === "string"
+              ? rawResult.stoppedReason
+              : null,
+          product:
+            typeof rawResult.product === "string" ? rawResult.product : null,
+          verifier: rawVerifier
+            ? {
+                command:
+                  typeof rawVerifier.command === "string"
+                    ? rawVerifier.command
+                    : null,
+                source:
+                  typeof rawVerifier.source === "string" ? rawVerifier.source : null,
+                status:
+                  typeof rawVerifier.status === "string" ? rawVerifier.status : null,
+              }
+            : null,
+          rollback: rawRollback
+            ? {
+                performed: rawRollback.performed === true,
+                restoredCount: Array.isArray(rawRollback.restoredFiles)
+                  ? rawRollback.restoredFiles.length
+                  : 0,
+                failedCount: Array.isArray(rawRollback.failedFiles)
+                  ? rawRollback.failedFiles.length
+                  : 0,
+              }
+            : null,
+        }
+      : null,
     createdAt: r.created_at,
     finishedAt: r.finished_at,
   };
@@ -2202,13 +2610,56 @@ export function recordGitHubWebhookDelivery(
   event: string,
   receivedAt: string,
 ): boolean {
+  const staleBefore = new Date(Date.parse(receivedAt) - 5 * 60_000).toISOString();
   const result = db.raw
     .prepare(
-      `INSERT INTO github_webhook_deliveries (delivery_id, event, received_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(delivery_id) DO NOTHING`,
+      `INSERT INTO github_webhook_deliveries
+         (delivery_id, event, received_at, status, updated_at, attempts, last_error)
+       VALUES (?, ?, ?, 'processing', ?, 1, NULL)
+       ON CONFLICT(delivery_id) DO UPDATE SET
+         event = excluded.event,
+         status = 'processing',
+         updated_at = excluded.updated_at,
+         attempts = github_webhook_deliveries.attempts + 1,
+         last_error = NULL
+       WHERE github_webhook_deliveries.status = 'failed'
+          OR (
+            github_webhook_deliveries.status = 'processing'
+            AND COALESCE(github_webhook_deliveries.updated_at, github_webhook_deliveries.received_at) <= ?
+          )`,
     )
-    .run(deliveryId, event, receivedAt);
+    .run(deliveryId, event, receivedAt, receivedAt, staleBefore);
+  return Number(result.changes) === 1;
+}
+
+export function completeGitHubWebhookDelivery(
+  db: AppDb,
+  deliveryId: string,
+  completedAt: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `UPDATE github_webhook_deliveries
+       SET status = 'completed', updated_at = ?, last_error = NULL
+       WHERE delivery_id = ? AND status = 'processing'`,
+    )
+    .run(completedAt, deliveryId);
+  return Number(result.changes) === 1;
+}
+
+export function failGitHubWebhookDelivery(
+  db: AppDb,
+  deliveryId: string,
+  failedAt: string,
+  error: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `UPDATE github_webhook_deliveries
+       SET status = 'failed', updated_at = ?, last_error = ?
+       WHERE delivery_id = ? AND status = 'processing'`,
+    )
+    .run(failedAt, error.slice(0, 1000), deliveryId);
   return Number(result.changes) === 1;
 }
 

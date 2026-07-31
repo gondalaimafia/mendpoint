@@ -63,4 +63,36 @@ describe("public deployment health", () => {
       checks: { worker: { ok: false } },
     });
   });
+
+  it("keeps dead letter recovery visible as an operational failure", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-dead-letter-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    writeFileSync(
+      heartbeatPath,
+      JSON.stringify({
+        ok: true,
+        recordedAt: new Date().toISOString(),
+        feedPollingEnabled: false,
+        feedPollOk: true,
+        jobs: { failed: 0 },
+        recovery: { due: 0, scheduled: 0, running: 0, deadLetter: 1, expiredLeases: 0 },
+      }),
+    );
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    const response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      checks: {
+        worker: {
+          ok: false,
+          recovery: { deadLetter: 1 },
+        },
+      },
+    });
+  });
 });

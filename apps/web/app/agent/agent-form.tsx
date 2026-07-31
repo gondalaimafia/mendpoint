@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { waitForJob } from "../../lib/job-poll";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
@@ -18,7 +19,6 @@ export function AgentForm({
   const [errorLog, setErrorLog] = useState(
     "HTTP 404 /v1/chargess\nerror: amount_cents is not allowed",
   );
-  const [asyncMode, setAsyncMode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -33,7 +33,7 @@ export function AgentForm({
         consumerId,
         errorLog: errorLog || undefined,
         maxSteps: 20,
-        async: asyncMode || undefined,
+        async: true,
       };
       const res = await fetch(`${API_URL}/agent/runs`, {
         method: "POST",
@@ -44,14 +44,21 @@ export function AgentForm({
       if (!res.ok) throw new Error(data.error ?? res.statusText);
       if (res.status === 202 || data.status === "queued") {
         setOut(
-          `QUEUED · session ${data.sessionId} · job ${data.jobId}\nDrain with worker process-jobs or POST /jobs/process-one`,
+          `QUEUED · session ${data.sessionId} · job ${data.jobId}\nThe recovery worker will process this job`,
         );
+        const job = await waitForJob(API_URL, data.jobId);
+        setOut((current) =>
+          job
+            ? `${current ?? ""}\nCompleted with status: ${job.status}`
+            : `${current ?? ""}\nStill running. Status remains available on the recovery page.`,
+        );
+        router.refresh();
       } else {
         setOut(
           `${data.ok ? "OK" : "NEEDS HUMAN"} · ${data.steps} steps · files: ${(data.filesChanged ?? []).join(", ") || "—"}\n\n${data.reportMarkdown ?? ""}`,
         );
       }
-      router.refresh();
+      if (res.status !== 202 && data.status !== "queued") router.refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -94,14 +101,6 @@ export function AgentForm({
             value={errorLog}
             onChange={(e) => setErrorLog(e.target.value)}
           />
-        </label>
-        <label className="row" style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-          <input
-            type="checkbox"
-            checked={asyncMode}
-            onChange={(e) => setAsyncMode(e.target.checked)}
-          />
-          Queue async (worker job)
         </label>
         <button
           type="button"
