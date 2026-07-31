@@ -214,6 +214,7 @@ jobs:
             -e CORS_ORIGINS=http://127.0.0.1:3002 \
             -e MENDPOINT_PILOT_SEED=1 \
             -e POLL_LOCAL_ONLY=1 \
+            -e MENDPOINT_FEED_POLLING_ENABLED=0 \
             -v mendpoint-fly-ci-data:/data \
             mendpoint-fly:ci
           for attempt in {1..60}; do

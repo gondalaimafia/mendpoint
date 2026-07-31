@@ -78,6 +78,7 @@ ENV GRAPH_LEARN_DB=/data/db/graph-learn.sqlite
 ENV MENDPOINT_ALERTS_PATH=/data/state/alerts.jsonl
 ENV MENDPOINT_API_URL=http://127.0.0.1:3001
 ENV POLL_INTERVAL_MS=5000
+ENV MENDPOINT_FEED_POLLING_ENABLED=0
 EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
