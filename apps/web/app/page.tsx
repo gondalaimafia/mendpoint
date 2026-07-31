@@ -3,14 +3,14 @@ import Link from "next/link";
 export default function HomePage() {
   return (
     <div>
-      <h1>Mendpoint · Warden GA</h1>
+      <h1>Mendpoint · Design partner pilot</h1>
       <p className="lead">
-        Production-ready API change intelligence: OpenAPI diff → graph impact →{" "}
-        <strong>review-first migration PRs</strong>, plus Warden on-demand debug.
+        Live API change intelligence: OpenAPI diff → graph impact →{" "}
+        <strong>review first migration pull requests</strong>, plus Warden on demand debug.
         Humans review. Nothing touches <code>main</code> by default.
       </p>
       <p className="muted small">
-        Channel <strong>GA 1.0</strong> ·{" "}
+        Stage <strong>Design partner</strong> ·{" "}
         <Link href="/status">System status</Link>
       </p>
       <div className="hero-actions">
@@ -35,13 +35,16 @@ export default function HomePage() {
         <div className="card">
           <h3>2. Graph impact</h3>
           <p className="muted">
-            Blast radius via call graph —{" "}
+            Blast radius via call graph:{" "}
             <Link href="/graph">explore the graph</Link>.
           </p>
         </div>
         <div className="card">
-          <h3>3. PR, not silent write</h3>
-          <p className="muted">Generated patches open as PRs with risk, evidence, and audit.</p>
+          <h3>3. Review, not silent write</h3>
+          <p className="muted">
+            Verified changes are packaged as draft pull requests when a customer repository is
+            connected.
+          </p>
         </div>
       </div>
     </div>
