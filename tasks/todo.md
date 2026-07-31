@@ -152,10 +152,26 @@ failures, and must be supplied before a real customer repository can be connecte
 - [x] Expose only public health, access, and signed GitHub webhook routes.
 - [x] Add focused regressions and extend the production container CI gate.
 - [x] Run the full release matrix and review the final diff.
-- [ ] Provision the Fly app and volume, deploy the branch, and verify the live surface.
-- [ ] Update the customer readiness report with closed gaps and external blockers.
-- [ ] Commit and push all implementation and evidence.
+- [x] Provision the Fly app and volume, deploy the branch, and verify the live surface.
+- [x] Update the customer readiness report with closed gaps and external blockers.
+- [x] Commit and push all implementation and evidence.
 
 ## YC customer readiness review
 
-Pending implementation and live verification.
+Mendpoint is online at `https://mendpoint-talal.fly.dev` as a design partner
+pilot. Fly runs one Machine in `sjc` with one encrypted 20 GB volume and a
+passing health check. The health route verifies API readiness, API key access,
+and a fresh worker heartbeat. Signed webhook verification passed for invalid,
+valid, and duplicate deliveries. Browser login reached the authenticated home
+page with no console warnings or errors.
+
+All repository tests, typechecks, the production build, the GA check, and the
+production dependency audit pass. GitHub Actions run 30604903683 passes tests,
+release gates, all container builds, and the combined Fly runtime smoke.
+
+The deployment remains a demo, not a first customer environment:
+`GITHUB_MODE=mock`, fixture feed polling is disabled, and no customer repository
+or scoped token was supplied. Immutable repository synchronization, internally
+produced contract and security evidence, a real draft pull request canary, and
+an off host restore drill remain P0 launch gates. The current gap report is
+`C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\mendpoint-customer-readiness-gap-2026-07-30.md`.
