@@ -54,6 +54,20 @@ describe("github webhooks", () => {
       expect(n.repos?.[0]?.name).toBe("shop");
     }
   });
+
+  it("normalizes repository additions and removals", () => {
+    const n = normalizeGitHubEvent("installation_repositories", {
+      action: "removed",
+      installation: { id: 99, account: { login: "acme" } },
+      repositories_added: [{ full_name: "acme/new" }],
+      repositories_removed: [{ full_name: "acme/old" }],
+    });
+    expect(n.type).toBe("installation");
+    if (n.type === "installation") {
+      expect(n.reposAdded).toEqual([{ owner: "acme", name: "new" }]);
+      expect(n.reposRemoved).toEqual([{ owner: "acme", name: "old" }]);
+    }
+  });
 });
 
 describe("ci check comment", () => {

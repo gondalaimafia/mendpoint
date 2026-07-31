@@ -2,7 +2,7 @@
   "name": "mendpoint",
   "version": "1.0.0",
   "private": true,
-  "description": "Mendpoint \u2014 structured API change intelligence \u2192 impact analysis \u2192 migration PRs",
+  "description": "Mendpoint — structured API change intelligence → impact analysis → migration PRs",
   "workspaces": [
     "packages/*",
     "apps/*"
@@ -10,6 +10,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "e2e:deployment": "playwright test tests/e2e/deployment.spec.ts",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dev:api": "npm run dev -w @mendpoint/api",
     "dev:web": "npm run dev -w @mendpoint/web",
@@ -38,21 +39,31 @@
     "trajectory:list": "tsx scripts/trajectory-view.ts",
     "trajectory:view": "tsx scripts/trajectory-view.ts",
     "ga:check": "tsx scripts/ga-check.ts",
+    "auth:bootstrap": "tsx scripts/bootstrap-key.ts",
     "start:api": "npm run start -w @mendpoint/api"
   },
   "dependencies": {
     "@mendpoint/db": "*",
+    "@mendpoint/ops": "*",
     "@mendpoint/pipeline": "*",
     "@mendpoint/shared": "*",
-    "@mendpoint/ops": "*"
+    "next": "^15.5.22",
+    "tsx": "^4.19.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.1",
     "@types/node": "^22.13.10",
-    "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vitest": "^3.0.9"
   },
+  "overrides": {
+    "next": {
+      ".": "$next",
+      "postcss": "8.5.24",
+      "sharp": "0.35.3"
+    }
+  },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.5.0"
   }
 }

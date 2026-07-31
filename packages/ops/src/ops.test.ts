@@ -4,6 +4,7 @@ import {
   validateApiEnv,
   rateLimit,
   clearRateLimits,
+  rateLimitBucketCount,
   isFeatureEnabled,
   featureMatrix,
   liveness,
@@ -34,6 +35,77 @@ describe("ops GA", () => {
     else delete process.env.API_AUTH;
   });
 
+  it("production real GitHub mode requires a webhook secret", () => {
+    const r = validateApiEnv({
+      NODE_ENV: "production",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.includes("GITHUB_WEBHOOK_SECRET"))).toBe(true);
+  });
+
+  it("rejects typoed GitHub mode and unsupported database URLs", () => {
+    const r = validateApiEnv({
+      NODE_ENV: "production",
+      API_AUTH: "required",
+      GITHUB_MODE: "rea1",
+      DATABASE_URL: "postgres://db.example/mendpoint",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.includes("GITHUB_MODE"))).toBe(true);
+    expect(r.errors.some((e) => e.includes("SQLite"))).toBe(true);
+  });
+
+  it("rejects an implicit production GitHub mode", () => {
+    const r = validateApiEnv({
+      NODE_ENV: "production",
+      API_AUTH: "required",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(r.errors.some((e) => e.includes("explicitly set"))).toBe(true);
+  });
+
+  it("accepts a durable mock mode production configuration", () => {
+    const r = validateApiEnv({
+      NODE_ENV: "production",
+      API_AUTH: "required",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("requires a PAT for real GitHub delivery", () => {
+    const appOnly = validateApiEnv({
+      NODE_ENV: "production",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: "private-key",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(appOnly.errors.some((e) => e.includes("GITHUB_TOKEN"))).toBe(true);
+
+    const patBacked = validateApiEnv({
+      NODE_ENV: "production",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      GITHUB_TOKEN: "fine-grained-pat",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(patBacked.ok).toBe(true);
+  });
+
   it("rate limits after max", () => {
     for (let i = 0; i < 5; i++) {
       const r = rateLimit("t1", { limit: 5, windowMs: 60_000 });
@@ -41,6 +113,20 @@ describe("ops GA", () => {
     }
     const blocked = rateLimit("t1", { limit: 5, windowMs: 60_000 });
     expect(blocked.allowed).toBe(false);
+  });
+
+  it("bounds retained rate limit identities", () => {
+    const previous = process.env.RATE_LIMIT_MAX_BUCKETS;
+    process.env.RATE_LIMIT_MAX_BUCKETS = "3";
+    try {
+      for (let i = 0; i < 10; i++) {
+        rateLimit(`identity-${i}`, { limit: 1, windowMs: 60_000 });
+      }
+      expect(rateLimitBucketCount()).toBeLessThanOrEqual(3);
+    } finally {
+      if (previous === undefined) delete process.env.RATE_LIMIT_MAX_BUCKETS;
+      else process.env.RATE_LIMIT_MAX_BUCKETS = previous;
+    }
   });
 
   it("GA features on; experimental off by default", () => {

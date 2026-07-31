@@ -7,6 +7,8 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  LEGACY_EDGE_KIND,
+  LEGACY_NODE_KIND,
   normalizeEdgeKind,
   normalizeNodeKind,
   type GlEdge,
@@ -285,31 +287,15 @@ export function deleteFileSubgraph(
 }
 
 export function listNodesByKind(db: GraphLearnDb, kind: GlNodeKind): GlNode[] {
-  // Match both PascalCase and legacy lowercase
-  const legacy = Object.entries(
-    // reverse lookup
-    Object.fromEntries(
-      Object.entries(
-        // inline reverse of LEGACY
-        {
-          Provider: "provider",
-          Consumer: "consumer",
-          Endpoint: "endpoint",
-          Field: "field",
-          Change: "change",
-          Surface: "surface",
-          PullRequest: "pr",
-          File: "file",
-          Symbol: "symbol",
-          Pattern: "pattern",
-        } as Record<string, string>,
-      ),
-    ),
-  );
-  const alt = legacy.find(([k]) => k === kind)?.[1];
+  const legacyKinds = Object.entries(LEGACY_NODE_KIND)
+    .filter(([, normalized]) => normalized === kind)
+    .map(([legacy]) => legacy);
+  const accepted = [kind, ...legacyKinds];
   const rows = db.raw
-    .prepare(`SELECT * FROM gl_nodes WHERE kind = ? OR kind = ?`)
-    .all(kind, alt ?? kind) as NodeRow[];
+    .prepare(
+      `SELECT * FROM gl_nodes WHERE kind IN (${accepted.map(() => "?").join(",")})`,
+    )
+    .all(...accepted) as NodeRow[];
   return rows.map(rowToNode);
 }
 
@@ -359,28 +345,14 @@ export function edgesTo(
 }
 
 function expandKinds(kinds: GlEdgeKind[]): string[] {
-  const legacy: Record<string, string> = {
-    CALLS: "calls",
-    DEPENDS_ON: "depends_on",
-    MONITORS: "monitors",
-    IMPACTS: "impacts",
-    BREAKS: "breaks",
-    HAS_FIELD: "has_field",
-    HAS_ENDPOINT: "has_endpoint",
-    VERSIONS: "versions_of",
-    OUTCOME_MERGED: "outcome_merged",
-    OUTCOME_CLOSED: "outcome_closed",
-    OUTCOME_BROKE: "outcome_broke",
-    OUTCOME_WAIVED: "outcome_waived",
-    RELATED: "related",
-    IMPORTS: "imports",
-  };
-  const out: string[] = [];
+  const out = new Set<string>();
   for (const k of kinds) {
-    out.push(k);
-    if (legacy[k]) out.push(legacy[k]!);
+    out.add(k);
+    for (const [legacy, normalized] of Object.entries(LEGACY_EDGE_KIND)) {
+      if (normalized === k) out.add(legacy);
+    }
   }
-  return out;
+  return [...out];
 }
 
 /** Edges of given kinds valid at timestamp (SQL path for temporal queries). */

@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -11,37 +14,277 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
       - name: Install
-        run: npm ci || npm install
-      - name: Unit tests (core GA path)
-        run: |
-          npm test -w @mendpoint/ops
-          npm test -w @mendpoint/shared --if-present
-          npm test -w @mendpoint/graph-learn
-          npm test -w @mendpoint/pipeline
-          npm test -w @mendpoint/harness
-          npm test -w @mendpoint/platform
-          npm test -w @mendpoint/contract --if-present
-          npm test -w @mendpoint/sdk
+        run: npm ci
+      - name: Unit tests
+        run: npm test
       - name: GA preflight
-        run: npm run ga:check
+        shell: bash
+        run: |
+          mkdir -p "$MENDPOINT_DATA_DIR" "$MENDPOINT_REPOS_DIR"
+          npm run ga:check
+        env:
+          NODE_ENV: production
+          API_AUTH: required
+          GITHUB_MODE: mock
+          MENDPOINT_DATA_DIR: ${{ runner.temp }}/mendpoint-ga
+          MENDPOINT_REPOS_DIR: ${{ runner.temp }}/mendpoint-repos
       - name: Demo smoke (offline)
         run: npm run demo
         env:
           GITHUB_MODE: mock
 
-  typecheck-ops:
+  release-gates:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
-      - run: npm ci || npm install
-      - run: npm run typecheck -w @mendpoint/ops --if-present
+      - name: Install
+        run: npm ci
+      - name: Production dependency audit
+        run: npm audit --omit=dev
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Production build
+        run: npm run build
+      - name: API startup smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          export NODE_ENV=production
+          export API_AUTH=required
+          export GITHUB_MODE=mock
+          export MENDPOINT_DATA_DIR="$RUNNER_TEMP/mendpoint-smoke"
+          export MENDPOINT_REPOS_DIR="$RUNNER_TEMP/mendpoint-repos"
+          mkdir -p "$MENDPOINT_REPOS_DIR"
+          bootstrap_output="$(npm run --silent auth:bootstrap)"
+          api_key="$(printf '%s\n' "$bootstrap_output" | sed -n 's/^token=//p')"
+          test -n "$api_key"
+          npm run start:api >"$RUNNER_TEMP/api-smoke.log" 2>&1 &
+          api_pid=$!
+          cleanup() {
+            kill "$api_pid" 2>/dev/null || true
+            wait "$api_pid" 2>/dev/null || true
+            cat "$RUNNER_TEMP/api-smoke.log"
+          }
+          trap cleanup EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3001/ready >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$api_pid" 2>/dev/null; then
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent \
+            -H "Authorization: Bearer $api_key" \
+            http://127.0.0.1:3001/keys >/dev/null
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -H 'Authorization: Bearer invalid' \
+            -H 'X-Role: owner' \
+            -H 'X-Tenant-Id: tenant_default' \
+            http://127.0.0.1:3001/keys)" = "401"
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -X POST \
+            -H 'Content-Type: application/json' \
+            -H 'X-GitHub-Event: installation' \
+            -H 'X-GitHub-Delivery: ci-smoke' \
+            --data '{"action":"deleted","installation":{"id":1}}' \
+            http://127.0.0.1:3001/webhooks/github)" = "401"
+
+  container-builds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build API image
+        run: docker build --target api -t mendpoint-api:ci .
+      - name: Build web image
+        run: docker build --target web -t mendpoint-web:ci .
+      - name: Build worker image
+        run: docker build --target worker -t mendpoint-worker:ci .
+      - name: Build Fly image
+        run: docker build --target fly -t mendpoint-fly:ci .
+      - name: Start production images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker network create mendpoint-ci
+          docker volume create mendpoint-ci-data
+          cleanup() {
+            docker logs mendpoint-fly-ci 2>/dev/null || true
+            docker logs mendpoint-web-ci 2>/dev/null || true
+            docker logs mendpoint-api-ci 2>/dev/null || true
+            docker rm --force mendpoint-fly-ci mendpoint-web-ci mendpoint-api-ci 2>/dev/null || true
+            docker volume rm mendpoint-fly-ci-data mendpoint-ci-data 2>/dev/null || true
+            docker network rm mendpoint-ci 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          bootstrap_output="$(docker run --rm \
+            -v mendpoint-ci-data:/app/data \
+            mendpoint-api:ci npm run --silent auth:bootstrap)"
+          api_key="$(printf '%s\n' "$bootstrap_output" | sed -n 's/^token=//p')"
+          test -n "$api_key"
+          docker run --detach \
+            --name mendpoint-api-ci \
+            --network mendpoint-ci \
+            --publish 127.0.0.1:3001:3001 \
+            -e GITHUB_MODE=mock \
+            -e MENDPOINT_REPOS_DIR=/workspace/repos \
+            -v mendpoint-ci-data:/app/data \
+            mendpoint-api:ci
+          for attempt in {1..30}; do
+            ready_status="$(curl --silent \
+              --output "$RUNNER_TEMP/mendpoint-api-ready.json" \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:3001/ready || true)"
+            if test "$ready_status" = "200"; then
+              break
+            fi
+            if test "$attempt" -eq 30; then
+              echo "API readiness failed with HTTP $ready_status"
+              cat "$RUNNER_TEMP/mendpoint-api-ready.json" 2>/dev/null || true
+              docker inspect mendpoint-api-ci
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent \
+            -H "Authorization: Bearer $api_key" \
+            http://127.0.0.1:3001/keys >/dev/null
+          web_access_token=ci-web-access-token
+          docker run --detach \
+            --name mendpoint-web-ci \
+            --network mendpoint-ci \
+            --publish 127.0.0.1:3000:3000 \
+            -e MENDPOINT_API_URL=http://mendpoint-api-ci:3001 \
+            -e MENDPOINT_API_KEY="$api_key" \
+            -e MENDPOINT_WEB_ACCESS_TOKEN="$web_access_token" \
+            -e MENDPOINT_WEB_ALLOWED_ORIGINS=http://127.0.0.1:3000 \
+            mendpoint-web:ci
+          for attempt in {1..30}; do
+            if test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              http://127.0.0.1:3000/access)" = "200"; then
+              break
+            fi
+            test "$attempt" -lt 30
+            sleep 1
+          done
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:3000/status)" = "307"
+          curl --fail --silent \
+            --cookie-jar "$RUNNER_TEMP/mendpoint-web.cookies" \
+            -H "Origin: http://127.0.0.1:3000" \
+            -H "Content-Type: application/json" \
+            --data "{\"token\":\"$web_access_token\"}" \
+            http://127.0.0.1:3000/api/session >/dev/null
+          curl --fail --silent \
+            --cookie "$RUNNER_TEMP/mendpoint-web.cookies" \
+            http://127.0.0.1:3000/status >/dev/null
+          curl --fail --silent \
+            --cookie "$RUNNER_TEMP/mendpoint-web.cookies" \
+            http://127.0.0.1:3000/api/status >/dev/null
+          docker run --rm \
+            --network mendpoint-ci \
+            -e GITHUB_MODE=mock \
+            -e MENDPOINT_TENANT_ID=tenant_default \
+            -v mendpoint-ci-data:/app/data \
+            mendpoint-worker:ci \
+            node --import tsx apps/worker/src/cli.ts process-jobs
+          docker volume create mendpoint-fly-ci-data
+          fly_api_key="me_$(printf 'a%.0s' {1..40})"
+          docker run --detach \
+            --name mendpoint-fly-ci \
+            --publish 127.0.0.1:3002:3000 \
+            -e GITHUB_MODE=mock \
+            -e MENDPOINT_API_KEY="$fly_api_key" \
+            -e MENDPOINT_WEB_ACCESS_TOKEN=ci-fly-web-access-token \
+            -e MENDPOINT_WEB_ALLOWED_ORIGINS=http://127.0.0.1:3002 \
+            -e WEB_URL=http://127.0.0.1:3002 \
+            -e CORS_ORIGINS=http://127.0.0.1:3002 \
+            -e MENDPOINT_PILOT_SEED=1 \
+            -e POLL_LOCAL_ONLY=1 \
+            -e MENDPOINT_FEED_POLLING_ENABLED=0 \
+            -v mendpoint-fly-ci-data:/data \
+            mendpoint-fly:ci
+          for attempt in {1..60}; do
+            fly_status="$(curl --silent --output "$RUNNER_TEMP/mendpoint-fly-health.json" \
+              --write-out '%{http_code}' http://127.0.0.1:3002/healthz || true)"
+            if test "$fly_status" = "200"; then
+              break
+            fi
+            if test "$attempt" -eq 60; then
+              cat "$RUNNER_TEMP/mendpoint-fly-health.json" 2>/dev/null || true
+              docker inspect mendpoint-fly-ci
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:3002/status)" = "307"
+
+  deployment-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+      - name: Build production image
+        run: docker build --target fly -t mendpoint-fly:e2e .
+      - name: Production journey and crash recovery
+        run: npm run e2e:deployment
+      - name: Upload browser and runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: deployment-e2e-evidence
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, release-gates, container-builds, deployment-e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: mendpoint-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy verified revision
+        run: flyctl deploy --remote-only --app mendpoint-talal
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Verify production health
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..60}; do
+            if curl --fail --silent https://mendpoint-talal.fly.dev/livez >/dev/null; then
+              break
+            fi
+            test "$attempt" -lt 60
+            sleep 2
+          done
+          curl --fail --silent https://mendpoint-talal.fly.dev/healthz >/dev/null

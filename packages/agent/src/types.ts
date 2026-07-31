@@ -51,6 +51,21 @@ export type AgentTask = {
   /** Optional LLM planner */
   useLlm?: boolean;
   sessionId?: string;
+  /** Cooperative cancellation checked around every awaited or mutating phase. */
+  shouldContinue?: () => boolean;
+};
+
+export type AgentVerifierState = {
+  command?: string;
+  source: "provided" | "discovered" | "none";
+  status: "not_run" | "passed" | "failed" | "simulated" | "invalid";
+  output?: string;
+};
+
+export type AgentRollbackState = {
+  performed: boolean;
+  restoredFiles: string[];
+  failedFiles: string[];
 };
 
 export type AgentRunResult = {
@@ -60,6 +75,8 @@ export type AgentRunResult = {
   steps: AgentStep[];
   filesChanged: string[];
   verifyOutput?: string;
+  verifier: AgentVerifierState;
+  rollback: AgentRollbackState;
   reportMarkdown: string;
   stoppedReason: string;
 };

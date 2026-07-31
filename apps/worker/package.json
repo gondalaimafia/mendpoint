@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/cli.ts",
+    "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@mendpoint/agent": "*",
     "@mendpoint/catalog": "*",
     "@mendpoint/pipeline": "*",
+    "@mendpoint/repair": "*",
     "@mendpoint/db": "*",
     "@mendpoint/shared": "*"
   },

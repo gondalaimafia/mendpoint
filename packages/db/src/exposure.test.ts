@@ -77,7 +77,7 @@ describe("buildExposureReport", () => {
       id: v2,
       providerId,
       versionLabel: "2.0.0",
-      openapiJson: "{}",
+      openapiJson: "{\"openapi\":\"3.1.0\"}",
       publishedAt: t0,
     });
 
@@ -99,6 +99,7 @@ describe("buildExposureReport", () => {
       name: "Shop App",
       githubOwner: "acme",
       githubRepo: "shop",
+      tenantId: "tenant_default",
       createdAt: t0,
     });
     insertMonitoredApi(db, {
@@ -176,7 +177,7 @@ describe("buildExposureReport", () => {
       id: v2,
       providerId,
       versionLabel: "2",
-      openapiJson: "{}",
+      openapiJson: "{\"openapi\":\"3.1.0\"}",
       publishedAt: t0,
     });
     const changeId = newId();
@@ -196,6 +197,7 @@ describe("buildExposureReport", () => {
       name: "Pay",
       githubOwner: "o",
       githubRepo: "r",
+      tenantId: "tenant_default",
       createdAt: t0,
     });
     insertMonitoredApi(db, {

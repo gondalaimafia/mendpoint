@@ -8,21 +8,39 @@ export type GitHubAppConfig = {
   appName: string;
   configured: boolean;
   mockMode: boolean;
+  installEnabled: boolean;
+  disabledReason: string | null;
   webhookPath: string;
   setupCallbackPath: string;
   permissions: Record<string, string>;
   events: string[];
 };
 
-export function getGitHubAppConfig(): GitHubAppConfig {
-  const appId = process.env.GITHUB_APP_ID ?? null;
-  const appSlug = process.env.GITHUB_APP_SLUG ?? "mendpoint";
+export function getGitHubAppConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): GitHubAppConfig {
+  const appId = env.GITHUB_APP_ID ?? null;
+  const appSlug = env.GITHUB_APP_SLUG ?? "mendpoint";
+  const mockMode = !appId || env.GITHUB_APP_MOCK === "1";
+  const hasAppCredentials =
+    Boolean(appId) &&
+    Boolean(env.GITHUB_APP_PRIVATE_KEY || env.GITHUB_APP_PRIVATE_KEY_PATH);
+  const configured =
+    hasAppCredentials &&
+    !mockMode &&
+    env.GITHUB_APP_INSTALL_EXPERIMENTAL === "1";
+  const installEnabled =
+    configured || (env.NODE_ENV !== "production" && mockMode);
   return {
     appId,
     appSlug,
-    appName: process.env.GITHUB_APP_NAME ?? "Mendpoint",
-    configured: Boolean(appId),
-    mockMode: !appId || process.env.GITHUB_APP_MOCK === "1",
+    appName: env.GITHUB_APP_NAME ?? "Mendpoint",
+    configured,
+    mockMode,
+    installEnabled,
+    disabledReason: installEnabled
+      ? null
+      : "GitHub App installation is unavailable for this pilot. Real pull request delivery uses an approved repository scoped GitHub token.",
     webhookPath: "/webhooks/github",
     setupCallbackPath: "/github/app/callback",
     permissions: {
@@ -43,10 +61,17 @@ export function getGitHubAppConfig(): GitHubAppConfig {
 export function buildInstallUrl(opts?: {
   state?: string;
   baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
 }): { url: string; mock: boolean; state: string } {
-  const cfg = getGitHubAppConfig();
+  const env = opts?.env ?? process.env;
+  const cfg = getGitHubAppConfig(env);
+  if (!cfg.installEnabled) {
+    throw new Error(
+      cfg.disabledReason ?? "GitHub App installation is unavailable",
+    );
+  }
   const state = opts?.state ?? `st_${Date.now().toString(36)}`;
-  const base = (opts?.baseUrl ?? process.env.PUBLIC_API_URL ?? "http://localhost:3001").replace(
+  const base = (opts?.baseUrl ?? env.PUBLIC_API_URL ?? "http://localhost:3001").replace(
     /\/$/,
     "",
   );

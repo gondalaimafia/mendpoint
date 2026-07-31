@@ -76,6 +76,7 @@ export {
   ingestAstRepo,
   ingestAstFile,
   listCodeFiles,
+  reconcileAstCallTargets,
   type AstIngestResult,
 } from "./ast-ingest.js";
 

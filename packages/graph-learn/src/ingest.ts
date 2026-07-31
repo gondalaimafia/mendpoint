@@ -3,7 +3,14 @@
  */
 import { newId } from "@mendpoint/shared";
 import type { ImpactableSurface, StructuralDiff } from "@mendpoint/shared";
-import { upsertEdge, upsertNode, type GraphLearnDb } from "./store.js";
+import {
+  deleteEdge,
+  edgesFrom,
+  listNodesByKind,
+  upsertEdge,
+  upsertNode,
+  type GraphLearnDb,
+} from "./store.js";
 
 export type IngestControlPlane = {
   provider: { id: string; slug: string; name: string };
@@ -248,6 +255,28 @@ export function labelPrOutcome(
 ): void {
   const prNode = `pr:${input.prId}`;
   const consumerNode = `consumer:${input.consumerId}`;
+  const outcomeKinds = [
+    "OUTCOME_MERGED",
+    "OUTCOME_CLOSED",
+    "OUTCOME_BROKE",
+    "OUTCOME_WAIVED",
+  ] as const;
+  // Reconcile legacy outcome IDs that included the mutable outcome label.
+  // A PR contributes exactly one current sample, even when webhook events
+  // relabel it from closed to merged.
+  for (const consumer of listNodesByKind(db, "Consumer")) {
+    for (const edge of edgesFrom(db, consumer.id, [...outcomeKinds])) {
+      if (
+        String(
+          (edge.props as { pr_id?: string } | undefined)?.pr_id ?? "",
+        ) === input.prId
+      ) {
+        deleteEdge(db, edge.id);
+      }
+    }
+  }
+  deleteEdge(db, `SUCCEEDED_ON:${input.prId}`);
+  deleteEdge(db, `BROKE:${input.prId}`);
   upsertNode(db, {
     id: consumerNode,
     kind: "Consumer",
@@ -298,7 +327,7 @@ export function labelPrOutcome(
   const label =
     input.outcome === "merged" || input.outcome === "waived" ? 1 : 0;
   upsertEdge(db, {
-    id: `OUTCOME:${input.prId}:${input.outcome}`,
+    id: `OUTCOME:${input.prId}`,
     kind,
     source: `consumer:${input.consumerId}`,
     target: `change:${input.changeId}`,

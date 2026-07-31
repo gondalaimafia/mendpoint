@@ -38,6 +38,7 @@ export type FeedPollRow = {
 export type ApiVersion = {
   id: string;
   provider_id: string;
+  content_hash: string | null;
   version_label: string;
   openapi_json: string;
   changelog_md: string | null;
@@ -63,7 +64,7 @@ export type Consumer = {
   github_owner: string;
   github_repo: string;
   installation_id: string | null;
-  tenant_id?: string | null;
+  tenant_id: string;
   created_at: string;
 };
 
@@ -134,7 +135,11 @@ export type MigrationPrRow = {
 
 export type AuditEvent = {
   id: string;
+  tenant_id: string;
   actor: string;
+  principal_id: string | null;
+  api_key_id: string | null;
+  request_id: string | null;
   action: string;
   resource_type: string;
   resource_id: string | null;

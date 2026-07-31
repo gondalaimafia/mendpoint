@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,6 +25,7 @@ import {
   listPlans,
   getPlan,
 } from "./index.js";
+import type { SandboxHandle } from "@mendpoint/platform";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -42,7 +49,7 @@ describe("harness", () => {
     expect(score.runId).toBe(r.runId);
   });
 
-  it("recovers from injected failure and can resume", async () => {
+  it("preserves an injected failure across execution and resume", async () => {
     const base = mkdtempSync(join(tmpdir(), "harness-rec-"));
     dirs.push(base);
     let plan = emptyPlan({
@@ -60,7 +67,7 @@ describe("harness", () => {
     plan = addStep(plan, {
       title: "Still runs",
       action: "harness.echo",
-      successCriteria: ["y"],
+      successCriteria: ["stdout contains after"],
       notes: "after",
     });
     const r1 = await executePlan({
@@ -68,7 +75,15 @@ describe("harness", () => {
       plan,
       injectFailureAction: "harness.echo",
     });
-    expect(r1.score.recoveredFromFailure).toBe(true);
+    expect(r1.score.recoveredFromFailure).toBe(false);
+    expect(r1.ok).toBe(false);
+    expect(r1.score.ok).toBe(false);
+    expect(r1.score.stepsDone).toBe(1);
+    expect(r1.score.stepsFailed).toBe(1);
+    expect(r1.plan.steps.map((step) => step.status)).toEqual(["failed", "done"]);
+    expect(readFileSync(r1.paths.tracePath, "utf8")).toContain(
+      '"continuation":"remaining_steps"',
+    );
 
     // resume: all steps should already be terminal
     const r2 = await executePlan({
@@ -77,6 +92,9 @@ describe("harness", () => {
       resumeRunId: r1.runId,
     });
     expect(r2.runId).toBe(r1.runId);
+    expect(r2.ok).toBe(false);
+    expect(r2.score.stepsFailed).toBe(1);
+    expect(r2.plan.steps[0]?.status).toBe("failed");
   });
 
   it("appends dogfood ledger and aggregates 30-run report", async () => {
@@ -125,6 +143,24 @@ describe("harness", () => {
     expect(getPlan(base, r.runId).goal).toBe("HITL goal");
   });
 
+  it("filters run directories without a readable plan", () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-plans-"));
+    dirs.push(base);
+    mkdirSync(join(base, "runs", "missing"), { recursive: true });
+    mkdirSync(join(base, "runs", "invalid"), { recursive: true });
+    writeFileSync(join(base, "runs", "invalid", "plan.json"), "{", "utf8");
+
+    expect(listPlans(base)).toEqual([]);
+  });
+
+  it("rejects run identifiers that can escape the runs directory", () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-path-"));
+    dirs.push(base);
+    expect(() => runDir(base, "../outside")).toThrow(/Invalid run id/);
+    expect(() => runDir(base, "nested/run")).toThrow(/Invalid run id/);
+    expect(runDir(base, "run-1").root).toBe(join(base, "runs", "run-1"));
+  });
+
   it("runs real specialist tools not stub_ok", async () => {
     const base = mkdtempSync(join(tmpdir(), "harness-real-"));
     dirs.push(base);
@@ -152,6 +188,15 @@ describe("harness", () => {
         name: "demo",
         sourceSystem: "vb6",
         targetStack: "node",
+        dag: [
+          { id: "first", title: "First", repoKey: "core" },
+          {
+            id: "second",
+            title: "Second",
+            repoKey: "api",
+            dependsOn: ["first"],
+          },
+        ],
       }),
     });
     plan = addStep(plan, {
@@ -165,5 +210,80 @@ describe("harness", () => {
     const evidence = r.plan.steps.map((s) => s.evidence ?? "").join("\n");
     expect(evidence).not.toContain("stub_ok");
     expect(evidence).toMatch(/score|bsgId|campaignId|equal/);
+  });
+
+  it("fails unknown actions and unmet success criteria", async () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-gates-"));
+    dirs.push(base);
+    let plan = emptyPlan({
+      kind: "generic",
+      title: "strict gates",
+      goal: "fail closed",
+      agent: "shared",
+    });
+    plan = addStep(plan, {
+      title: "Unknown",
+      action: "does.not.exist",
+      successCriteria: ["ok"],
+    });
+    plan = addStep(plan, {
+      title: "Unmet",
+      action: "harness.echo",
+      successCriteria: ["stdout contains impossible"],
+      notes: "actual",
+    });
+
+    const r = await executePlan({ baseDir: base, plan });
+    expect(r.ok).toBe(false);
+    expect(r.plan.steps.map((step) => step.status)).toEqual(["failed", "failed"]);
+    expect(r.plan.steps[0]?.evidence).toContain("unknown action");
+    expect(r.plan.steps[1]?.evidence).toContain("success criterion not met");
+  });
+
+  it("does not execute shell commands in the local workdir sandbox", async () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-local-shell-"));
+    dirs.push(base);
+    let plan = emptyPlan({
+      kind: "generic",
+      title: "local shell",
+      goal: "fail closed",
+      agent: "shared",
+    });
+    plan = addStep(plan, {
+      title: "Shell",
+      action: "harness.shell",
+      successCriteria: ["output is non-empty"],
+      notes: "node --version",
+    });
+    const result = await executePlan({ baseDir: base, plan });
+    expect(result.ok).toBe(false);
+    expect(result.plan.steps[0]?.evidence).toContain("real isolated sandbox");
+  });
+
+  it("allows shell execution only through an isolated backend handle", async () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-vm-shell-"));
+    dirs.push(base);
+    const sandbox: SandboxHandle = {
+      id: "vm-test",
+      kind: "vm",
+      root: base,
+      mocks: [],
+      dispose: () => undefined,
+      run: () => ({ ok: true, stdout: "v20.0.0", stderr: "" }),
+    };
+    let plan = emptyPlan({
+      kind: "generic",
+      title: "vm shell",
+      goal: "isolated execution",
+      agent: "shared",
+    });
+    plan = addStep(plan, {
+      title: "Shell",
+      action: "harness.shell",
+      successCriteria: ["stdout contains v20"],
+      notes: "node --version",
+    });
+    const result = await executePlan({ baseDir: base, plan, sandbox });
+    expect(result.ok).toBe(true);
   });
 });

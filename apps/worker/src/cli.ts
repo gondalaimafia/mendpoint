@@ -1,49 +1,308 @@
+import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runChangePipeline } from "@mendpoint/pipeline";
 import {
-  createDb,
-  listProviders,
-  listVersionsForProvider,
-  listFeedPolls,
-  findMonorepoRoot,
   claimNextJob,
   completeJob,
+  createDb,
   failJob,
-  listJobs,
+  renewJobLease,
+  findMonorepoRoot,
+  getConsumer,
+  getConsumerRepo,
+  getJobRecoverySummary,
   insertAgentRun,
+  insertRepairSession,
+  listFeedPolls,
+  listJobs,
+  listProviders,
+  listVersionsForProvider,
+  type AppDb,
 } from "@mendpoint/db";
-import { pollAllFeeds, listCatalogFeeds, probeKnownSdks } from "@mendpoint/catalog";
+import { listCatalogFeeds, pollAllFeeds, probeKnownSdks } from "@mendpoint/catalog";
 import { nowIso } from "@mendpoint/shared";
 import { runWarden } from "@mendpoint/agent";
+import { runRepairSession } from "@mendpoint/repair";
+import type { ContractCase } from "@mendpoint/contract";
+
+const WORKER_ID =
+  process.env.MENDPOINT_WORKER_ID ?? `worker:${process.pid}:${randomUUID()}`;
+
+export type JobDrainResult = {
+  claimed: number;
+  succeeded: number;
+  failed: number;
+  retried: number;
+};
+
+export type WorkerHeartbeat = {
+  ok: true;
+  workerId: string;
+  recordedAt: string;
+  jobs: JobDrainResult;
+  activeJob?: { id: string; type: string; leaseGeneration: number } | null;
+  recovery?: {
+    due: number;
+    scheduled: number;
+    running: number;
+    deadLetter: number;
+    expiredLeases: number;
+  };
+  feedPollingEnabled: boolean;
+  feedPollOk: boolean;
+};
+
+export function writeWorkerHeartbeat(
+  heartbeatPath: string,
+  heartbeat: WorkerHeartbeat,
+): void {
+  if (!isAbsolute(heartbeatPath)) {
+    throw new Error("Worker heartbeat path must be absolute");
+  }
+  const parent = dirname(heartbeatPath);
+  mkdirSync(parent, { recursive: true });
+  const temporary = `${heartbeatPath}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(heartbeat)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  renameSync(temporary, heartbeatPath);
+}
+
+export function parseIntervalMs(
+  value: string | number | undefined,
+  fallback = 60_000,
+): number {
+  const parsed = value === undefined ? fallback : Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    throw new Error("Worker interval must be an integer number of milliseconds");
+  }
+  if (parsed < 1_000 || parsed > 86_400_000) {
+    throw new Error("Worker interval must be between 1000 and 86400000 milliseconds");
+  }
+  return parsed;
+}
+
+export function retryDelayMs(
+  consecutiveFailures: number,
+  baseMs: number,
+  maxMs = 300_000,
+): number {
+  const exponent = Math.max(0, Math.min(consecutiveFailures - 1, 8));
+  return Math.min(maxMs, baseMs * 2 ** exponent);
+}
+
+function classifyJobFailure(error: unknown): {
+  message: string;
+  errorCode: string;
+  retryable: boolean;
+} {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  const authorizationFailure =
+    /auth|permission|forbidden|unauthorized/.test(normalized);
+  const retryable =
+    !authorizationFailure &&
+    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed/.test(
+        normalized,
+      );
+  const errorCode = retryable
+    ? /rate.?limit|429/.test(normalized)
+      ? "rate_limited"
+      : /sqlite_busy/.test(normalized)
+        ? "database_busy"
+        : /lease/.test(normalized)
+          ? "lease_lost"
+          : "transient_dependency"
+    : authorizationFailure
+      ? "authorization_failed"
+      : /verify|repair|warden|gate/.test(normalized)
+        ? "verification_failed"
+        : "job_failed";
+  return { message, errorCode, retryable };
+}
+
+export function parseLeaseMs(value: string | number | undefined): number {
+  const parsed = value === undefined ? 900_000 : Number(value);
+  if (
+    !Number.isFinite(parsed) ||
+    !Number.isInteger(parsed) ||
+    parsed < 1_000 ||
+    parsed > 86_400_000
+  ) {
+    throw new Error("JOB_LEASE_MS must be between 1000 and 86400000 milliseconds");
+  }
+  return parsed;
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return Boolean(
+    rel &&
+      rel !== ".." &&
+      !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) &&
+      !isAbsolute(rel),
+  );
+}
+
+function safeTenantId(tenantId: string): string {
+  if (
+    tenantId === "." ||
+    tenantId === ".." ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(tenantId)
+  ) {
+    throw new Error("Worker tenant ID is not path safe");
+  }
+  return tenantId;
+}
+
+export function resolveWorkerRepoPath(
+  repoPath: string,
+  tenantId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (!repoPath || !isAbsolute(repoPath) || !existsSync(repoPath)) {
+    throw new Error(`Worker repository path is unavailable: ${repoPath}`);
+  }
+  const realRepo = realpathSync(resolve(repoPath));
+  if (!statSync(realRepo).isDirectory()) {
+    throw new Error(`Worker repository path is not a directory: ${repoPath}`);
+  }
+  const configuredRoot = env.MENDPOINT_REPOS_DIR;
+  if (env.NODE_ENV === "production" && !configuredRoot) {
+    throw new Error("MENDPOINT_REPOS_DIR is required for production worker execution");
+  }
+  if (configuredRoot) {
+    if (!isAbsolute(configuredRoot) || !existsSync(configuredRoot)) {
+      throw new Error("MENDPOINT_REPOS_DIR must be an existing absolute directory");
+    }
+    const realRoot = realpathSync(resolve(configuredRoot));
+    const boundary =
+      env.NODE_ENV === "production"
+        ? realpathSync(resolve(realRoot, safeTenantId(tenantId)))
+        : realRoot;
+    if (!isWithin(boundary, realRepo)) {
+      throw new Error("Worker repository path is outside the tenant repository root");
+    }
+  }
+  return realRepo;
+}
+
+export function validateWorkerProductionEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  if (env.NODE_ENV !== "production") return [];
+  const errors: string[] = [];
+  if (env.GITHUB_MODE !== "mock" && env.GITHUB_MODE !== "real") {
+    errors.push("GITHUB_MODE must be explicitly set to mock or real");
+  }
+  if (env.GITHUB_MODE === "real" && !env.GITHUB_TOKEN?.trim()) {
+    errors.push("GITHUB_TOKEN is required for real worker delivery");
+  }
+  if (!env.DATABASE_URL && !env.MENDPOINT_DATA_DIR) {
+    errors.push("DATABASE_URL or MENDPOINT_DATA_DIR is required");
+  }
+  const reposDir = env.MENDPOINT_REPOS_DIR;
+  if (!reposDir || !isAbsolute(reposDir) || !existsSync(reposDir)) {
+    errors.push("MENDPOINT_REPOS_DIR must be an existing absolute directory");
+  }
+  return errors;
+}
 
 async function demo() {
-  const report = await runChangePipeline({ providerSlug: "acme-payments" });
+  const report = await runChangePipeline({
+    tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+    providerSlug: "acme-payments",
+  });
   console.log(JSON.stringify(report, null, 2));
 }
 
+export async function runUnseenVersion<T>(
+  seen: Set<string>,
+  key: string,
+  run: () => Promise<T>,
+): Promise<T | undefined> {
+  if (seen.has(key)) return undefined;
+  const result = await run();
+  seen.add(key);
+  return result;
+}
+
 async function watch(intervalMs = 30_000) {
-  console.log(`Watching for providers with ≥2 versions every ${intervalMs}ms (Ctrl+C to stop)`);
+  console.log(`Watching for providers with 2 or more versions every ${intervalMs}ms`);
   const db = createDb();
   const seen = new Set<string>();
   for (;;) {
-    for (const p of listProviders(db)) {
-      const versions = listVersionsForProvider(db, p.id);
+    for (const provider of listProviders(db)) {
+      const versions = listVersionsForProvider(db, provider.id);
       if (versions.length < 2) continue;
-      const key = `${p.slug}:${versions.map((v) => v.version_label).join(">")}`;
+      const key = `${provider.slug}:${versions.map((version) => version.version_label).join(">")}`;
       if (seen.has(key)) continue;
-      seen.add(key);
-      console.log(`Running pipeline for ${p.slug}...`);
+      console.log(`Running pipeline for ${provider.slug}`);
       try {
-        const report = await runChangePipeline({ providerSlug: p.slug, db });
+        const report = await runUnseenVersion(seen, key, () =>
+          runChangePipeline({
+            tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+            providerSlug: provider.slug,
+            db,
+          }),
+        );
+        if (!report) continue;
         console.log(
           `  change ${report.changeId} risk=${report.risk} consumers=${report.consumers.length}`,
         );
-      } catch (e) {
-        console.error(e);
+      } catch (error) {
+        console.error(error);
       }
     }
     await processJobsOnce(db);
-    await new Promise((r) => setTimeout(r, intervalMs));
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, intervalMs));
   }
+}
+
+async function runFeedPoll(opts: {
+  db: AppDb;
+  localOnly: boolean;
+  runPipeline: boolean;
+  slugs?: string[];
+}) {
+  const root = findMonorepoRoot();
+  const results = await pollAllFeeds({
+    db: opts.db,
+    tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+    monorepoRoot: root,
+    localOnly: opts.localOnly,
+    runPipeline: opts.runPipeline,
+    slugs: opts.slugs,
+    pipeline: async (slug, database) => {
+      const report = await runChangePipeline({
+        tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+        providerSlug: slug,
+        db: database,
+      });
+      return { changeId: report.changeId };
+    },
+  });
+  for (const result of results) {
+    const extra = result.error ? ` err=${result.error}` : "";
+    console.log(
+      `  ${result.slug}: ${result.status}${result.versionLabel ? ` v=${result.versionLabel}` : ""}${result.changeId ? ` change=${result.changeId}` : ""}${extra}`,
+    );
+  }
+  const signals = await probeKnownSdks({ localOnly: opts.localOnly });
+  console.log(
+    `  sdk signals: ${signals.map((signal) => `${signal.packageName}@${signal.latestVersion ?? "?"}`).join(", ")}`,
+  );
+  return results;
 }
 
 async function pollFeeds(opts: {
@@ -58,118 +317,311 @@ async function pollFeeds(opts: {
   console.log(
     `Feed poll ${opts.loop ? "loop" : "once"} localOnly=${opts.localOnly} pipeline=${opts.runPipeline} root=${root}`,
   );
-  console.log(
-    `Catalog feeds: ${listCatalogFeeds()
-      .map((f) => f.slug)
-      .join(", ")}`,
-  );
-
-  const run = async () => {
-    const results = await pollAllFeeds({
-      db,
-      monorepoRoot: root,
-      localOnly: opts.localOnly,
-      runPipeline: opts.runPipeline,
-      slugs: opts.slugs,
-      pipeline: async (slug, d) => {
-        const report = await runChangePipeline({ providerSlug: slug, db: d });
-        return { changeId: report.changeId };
-      },
-    });
-    for (const r of results) {
-      const extra = r.error ? ` err=${r.error}` : "";
-      console.log(
-        `  ${r.slug}: ${r.status}${r.versionLabel ? ` v=${r.versionLabel}` : ""}${r.changeId ? ` change=${r.changeId}` : ""}${extra}`,
-      );
-    }
-    // SDK signals alongside OpenAPI
-    const signals = await probeKnownSdks({ localOnly: opts.localOnly });
-    console.log(
-      `  sdk-signals: ${signals.map((s) => `${s.packageName}@${s.latestVersion ?? "?"}`).join(", ")}`,
-    );
-    return results;
-  };
+  console.log(`Catalog feeds: ${listCatalogFeeds().map((feed) => feed.slug).join(", ")}`);
 
   if (!opts.loop) {
-    await run();
+    await runFeedPoll({ ...opts, db });
     return;
   }
 
+  let failures = 0;
   for (;;) {
     try {
-      await run();
+      await runFeedPoll({ ...opts, db });
       await processJobsOnce(db);
-    } catch (e) {
-      console.error(e);
+      failures = 0;
+    } catch (error) {
+      failures++;
+      console.error(error);
     }
-    await new Promise((r) => setTimeout(r, opts.intervalMs));
+    const delay = failures
+      ? retryDelayMs(failures, opts.intervalMs)
+      : opts.intervalMs;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, delay));
   }
 }
 
-async function processJobsOnce(db = createDb()) {
-  let n = 0;
-  for (;;) {
-    const job = claimNextJob(db, ["pipeline.fanout", "agent.run"]);
+export async function processJobsOnce(
+  db = createDb(),
+  opts: {
+    tenantId?: string;
+    workerId?: string;
+    leaseMs?: number;
+    maxJobs?: number;
+    onActiveJob?: (
+      job: { id: string; type: string; leaseGeneration: number } | null,
+    ) => void;
+  } = {},
+): Promise<JobDrainResult> {
+  const workerId = opts.workerId ?? WORKER_ID;
+  const leaseMs = parseLeaseMs(opts.leaseMs ?? process.env.JOB_LEASE_MS);
+  const maxJobs = Math.max(1, Math.min(opts.maxJobs ?? 25, 100));
+  const result: JobDrainResult = {
+    claimed: 0,
+    succeeded: 0,
+    failed: 0,
+    retried: 0,
+  };
+  for (; result.claimed < maxJobs; ) {
+    const job = claimNextJob(db, ["pipeline.fanout", "agent.run", "repair.run"], {
+      tenantId: opts.tenantId ?? process.env.MENDPOINT_TENANT_ID,
+      workerId,
+      leaseMs,
+    });
     if (!job) break;
-    n++;
+    result.claimed++;
+    opts.onActiveJob?.({
+      id: job.id,
+      type: job.type,
+      leaseGeneration: job.lease_generation,
+    });
+    const fence = {
+      workerId,
+      leaseGeneration: job.lease_generation,
+    };
+    let leaseLost = false;
+    const renewal = setInterval(() => {
+      try {
+        if (
+          !renewJobLease(db, job.id, {
+            ...fence,
+            leaseMs,
+          })
+        ) {
+          leaseLost = true;
+        }
+      } catch (error) {
+        leaseLost = true;
+        console.error(
+          `  lease renewal failed job=${job.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }, Math.max(1_000, Math.floor(leaseMs / 3)));
+    renewal.unref();
     try {
       if (job.type === "agent.run") {
         const payload = JSON.parse(job.payload_json) as {
           goal: string;
-          repoPath: string;
+          consumerId: string;
           verifyCommand?: string;
           errorLog?: string;
           maxSteps?: number;
           dryRun?: boolean;
           useLlm?: boolean;
-          allowNetwork?: boolean;
           sessionId?: string;
         };
-        console.log(`Job ${job.id} agent.run ${payload.repoPath}`);
+        if (!payload.consumerId) {
+          throw new Error("agent.run consumerId is required");
+        }
+        const consumer = getConsumer(db, payload.consumerId, job.tenant_id);
+        if (!consumer) {
+          throw new Error("agent.run consumer was not found for the job tenant");
+        }
+        const consumerRepo = getConsumerRepo(db, consumer.id, job.tenant_id);
+        if (!consumerRepo) {
+          throw new Error("agent.run consumer repository was not found");
+        }
+        const repoPath = resolveWorkerRepoPath(
+          consumerRepo.local_path,
+          job.tenant_id,
+        );
+        console.log(`Job ${job.id} agent.run ${repoPath}`);
         const started = nowIso();
-        const result = await runWarden({
+        const warden = await runWarden({
           goal: payload.goal,
-          repoRoot: payload.repoPath,
+          repoRoot: repoPath,
           verifyCommand: payload.verifyCommand,
           errorLog: payload.errorLog,
           maxSteps: payload.maxSteps ?? 20,
           dryRun: payload.dryRun,
           useLlm: payload.useLlm ?? process.env.LLM_AGENT === "1",
-          allowNetwork: payload.allowNetwork ?? false,
+          allowNetwork: false,
           sessionId: payload.sessionId,
+          shouldContinue: () => !leaseLost,
         });
+        if (leaseLost || warden.stoppedReason === "lease_lost") {
+          throw new Error("lease_lost_during_warden");
+        }
         insertAgentRun(db, {
-          id: result.sessionId,
+          id: warden.sessionId,
+          tenantId: job.tenant_id,
           goal: payload.goal,
-          repoPath: payload.repoPath,
-          status: result.ok ? "ok" : "failed",
-          ok: result.ok,
-          steps: result.steps.length,
-          filesChanged: result.filesChanged,
-          reportMd: result.reportMarkdown,
-          resultJson: JSON.stringify({
-            stoppedReason: result.stoppedReason,
-            jobId: job.id,
-            product: "warden",
+          repoPath,
+          status: warden.ok ? "ok" : "failed",
+          ok: warden.ok,
+          steps: warden.steps.length,
+          filesChanged: warden.filesChanged,
+          reportMd: warden.reportMarkdown,
+           resultJson: JSON.stringify({
+             stoppedReason: warden.stoppedReason,
+             verifier: warden.verifier,
+             rollback: warden.rollback,
+             jobId: job.id,
+             product: "warden",
           }),
           createdAt: started,
           finishedAt: nowIso(),
         });
-        completeJob(
-          db,
-          job.id,
-          {
-            sessionId: result.sessionId,
-            ok: result.ok,
-            steps: result.steps.length,
-            filesChanged: result.filesChanged,
-            stoppedReason: result.stoppedReason,
-            product: "warden",
-          },
-          nowIso(),
-        );
+        if (!warden.ok) {
+          if (warden.verifier.status === "simulated") {
+            if (
+              !completeJob(
+                db,
+                job.id,
+                {
+                  sessionId: warden.sessionId,
+                  ok: false,
+                  simulated: true,
+                  stoppedReason: warden.stoppedReason,
+                },
+                nowIso(),
+                fence,
+              )
+            ) {
+              throw new Error("lease_lost_before_simulation_completion");
+            }
+            result.succeeded++;
+            continue;
+          }
+          const failure = failJob(
+            db,
+            job.id,
+            `Warden failed: ${warden.stoppedReason}`,
+            nowIso(),
+            {
+              ...fence,
+              errorCode: "warden_needs_human",
+              retryable: false,
+            },
+          );
+          result.failed++;
+          console.error(
+            `  Warden failed session=${warden.sessionId} steps=${warden.steps.length}`,
+          );
+          if (!failure.applied) {
+            console.error(`  stale lease ignored job=${job.id}`);
+          }
+          continue;
+        }
+        if (leaseLost) throw new Error("lease_lost_before_warden_completion");
+        if (
+          !completeJob(
+            db,
+            job.id,
+            {
+              sessionId: warden.sessionId,
+              ok: true,
+              steps: warden.steps.length,
+              filesChanged: warden.filesChanged,
+              stoppedReason: warden.stoppedReason,
+              verifier: warden.verifier,
+              product: "warden",
+            },
+            nowIso(),
+            fence,
+          )
+        ) {
+          throw new Error("lease_lost_before_warden_completion");
+        }
+        result.succeeded++;
         console.log(
-          `  Warden ${result.ok ? "ok" : "failed"} session=${result.sessionId} steps=${result.steps.length}`,
+          `  Warden ok session=${warden.sessionId} steps=${warden.steps.length}`,
+        );
+        continue;
+      }
+
+      if (job.type === "repair.run") {
+        const payload = JSON.parse(job.payload_json) as {
+          sessionId: string;
+          consumerId: string;
+          renameMap?: Record<string, string>;
+          maxAttempts?: number;
+          dryRun?: boolean;
+          useLlm?: boolean;
+        };
+        const consumer = getConsumer(db, payload.consumerId, job.tenant_id);
+        if (!consumer) throw new Error("repair consumer was not found for the job tenant");
+        const consumerRepo = getConsumerRepo(db, consumer.id, job.tenant_id);
+        if (!consumerRepo) throw new Error("repair consumer repository was not found");
+        const repoPath = resolveWorkerRepoPath(consumerRepo.local_path, job.tenant_id);
+        const started = nowIso();
+        const repair = await runRepairSession({
+          sessionId: payload.sessionId,
+          repoRoot: repoPath,
+          renameMap: payload.renameMap,
+          maxAttempts: payload.maxAttempts,
+          dryRun: payload.dryRun,
+          useLlm: payload.useLlm,
+          shouldContinue: () => !leaseLost,
+        });
+        if (leaseLost || repair.stopReason === "lease_lost") {
+          throw new Error("lease_lost_during_repair");
+        }
+        insertRepairSession(db, {
+          id: repair.sessionId,
+          tenantId: job.tenant_id,
+          consumerId: consumer.id,
+          repoPath,
+          status: repair.simulated ? "simulated" : repair.ok ? "verified" : "needs_human",
+          attempts: repair.attempts,
+          editsCount: repair.edits.length,
+          ok: repair.ok,
+          reportMd: repair.reportMarkdown,
+          resultJson: JSON.stringify({
+            jobId: job.id,
+            stopReason: repair.stopReason,
+            simulated: repair.simulated,
+            plans: repair.plans,
+            edits: repair.edits.map((edit) => ({
+              filePath: edit.filePath,
+              reason: edit.reason,
+            })),
+            failureFingerprints: repair.failureFingerprints,
+            actionFingerprints: repair.actionFingerprints,
+            policyNotes: repair.policyNotes,
+          }),
+          createdAt: started,
+          finishedAt: nowIso(),
+        });
+        if (!repair.ok && !repair.simulated) {
+          const failure = failJob(
+            db,
+            job.id,
+            `Repair needs human review: ${repair.stopReason}`,
+            nowIso(),
+            {
+              ...fence,
+              errorCode: "repair_needs_human",
+              retryable: false,
+            },
+          );
+          result.failed++;
+          if (!failure.applied) console.error(`  stale lease ignored job=${job.id}`);
+          continue;
+        }
+        if (leaseLost) throw new Error("lease_lost_before_repair_completion");
+        if (
+          !completeJob(
+            db,
+            job.id,
+            {
+              sessionId: repair.sessionId,
+              ok: repair.ok,
+              simulated: repair.simulated,
+              stopReason: repair.stopReason,
+              edits: repair.edits.length,
+            },
+            nowIso(),
+            fence,
+          )
+        ) {
+          throw new Error("lease_lost_before_repair_completion");
+        }
+        result.succeeded++;
+        console.log(
+          `  repair ${repair.simulated ? "simulated" : "verified"} session=${repair.sessionId}`,
         );
         continue;
       }
@@ -178,89 +630,256 @@ async function processJobsOnce(db = createDb()) {
         providerSlug: string;
         severity?: "required" | "recommended" | "optional";
         notificationsOnly?: boolean;
+        contractCases?: ContractCase[];
+        securityScanOk?: boolean;
+        repairVerifyCommands?: string[];
       };
       console.log(`Job ${job.id} pipeline.fanout ${payload.providerSlug}`);
       const report = await runChangePipeline({
+        tenantId: job.tenant_id,
         providerSlug: payload.providerSlug,
         db,
         severity: payload.severity,
         notificationsOnly: payload.notificationsOnly,
+        contractCases: payload.contractCases,
+        securityScanOk: payload.securityScanOk,
+        repairVerifyCommands: payload.repairVerifyCommands,
+        shouldContinue: () => !leaseLost,
       });
-      completeJob(db, job.id, { changeId: report.changeId }, nowIso());
+      const deliveryFailures = report.consumers.filter(
+        (consumer) => consumer.prStatus === "delivery_failed",
+      );
+      if (deliveryFailures.length) {
+        throw new Error(
+          `pipeline_delivery_failed:${deliveryFailures
+            .map(
+              (consumer) =>
+                `${consumer.consumerId}:${consumer.deliveryError ?? "unknown delivery error"}`,
+            )
+            .join("|")}`,
+        );
+      }
+      if (leaseLost) throw new Error("lease_lost_before_pipeline_completion");
+      if (
+        !completeJob(
+          db,
+          job.id,
+          { changeId: report.changeId, consumers: report.consumers },
+          nowIso(),
+          fence,
+        )
+      ) {
+        throw new Error("lease_lost_before_pipeline_completion");
+      }
+      result.succeeded++;
       console.log(`  done change=${report.changeId}`);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      failJob(db, job.id, msg, nowIso());
-      console.error(`  failed: ${msg}`);
+    } catch (error) {
+      const classified = classifyJobFailure(error);
+      const failure = failJob(db, job.id, classified.message, nowIso(), {
+        ...fence,
+        errorCode: classified.errorCode,
+        retryable: classified.retryable,
+        baseDelayMs: 5_000,
+        maxDelayMs: 300_000,
+      });
+      result.failed++;
+      if (failure.status === "pending") result.retried++;
+      console.error(`  failed: ${classified.message}`);
+      if (!failure.applied) console.error(`  stale lease ignored job=${job.id}`);
+    } finally {
+      clearInterval(renewal);
+      opts.onActiveJob?.(null);
     }
   }
-  if (!n) console.log("No pending jobs");
-  return n;
+  if (!result.claimed) console.log("No pending jobs");
+  return result;
 }
 
-function parseArgs(argv: string[]) {
+async function runJobWorker(intervalMs: number) {
+  const db = createDb();
+  let failures = 0;
+  for (;;) {
+    try {
+      const result = await processJobsOnce(db);
+      failures = result.failed > 0 ? failures + 1 : 0;
+    } catch (error) {
+      failures++;
+      console.error(error);
+    }
+    const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, delay));
+  }
+}
+
+async function runService(intervalMs: number) {
+  const db = createDb();
+  const heartbeatPath = process.env.MENDPOINT_WORKER_HEARTBEAT_PATH;
+  if (!heartbeatPath) {
+    throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH is required for run-service");
+  }
+  let failures = 0;
+  let feedPollingEnabled = process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
+  let feedPollOk = true;
+  let jobs: JobDrainResult = {
+    claimed: 0,
+    succeeded: 0,
+    failed: 0,
+    retried: 0,
+  };
+  let activeJob: WorkerHeartbeat["activeJob"] = null;
+  const tenantId = process.env.MENDPOINT_TENANT_ID ?? "tenant_default";
+  const emitHeartbeat = () => {
+    try {
+      const recovery = getJobRecoverySummary(db, tenantId);
+      writeWorkerHeartbeat(heartbeatPath, {
+        ok: true,
+        workerId: WORKER_ID,
+        recordedAt: nowIso(),
+        jobs,
+        activeJob,
+        recovery: {
+          due: recovery.due,
+          scheduled: recovery.scheduled,
+          running: recovery.running,
+          deadLetter: recovery.deadLetter,
+          expiredLeases: recovery.expiredLeases,
+        },
+        feedPollingEnabled,
+        feedPollOk,
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  };
+  emitHeartbeat();
+  const heartbeatTimer = setInterval(
+    emitHeartbeat,
+    Math.max(1_000, Math.min(intervalMs, 5_000)),
+  );
+  heartbeatTimer.unref();
+  for (;;) {
+    feedPollingEnabled = process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
+    feedPollOk = true;
+    if (feedPollingEnabled) {
+      try {
+        const feedResults = await runFeedPoll({
+          db,
+          localOnly: process.env.POLL_LOCAL_ONLY === "1",
+          runPipeline: true,
+        });
+        feedPollOk = feedResults.every((result) => result.status !== "error");
+      } catch (error) {
+        feedPollOk = false;
+        console.error(error);
+      }
+    }
+
+    jobs = {
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+      retried: 0,
+    };
+    try {
+      jobs = await processJobsOnce(db, {
+        onActiveJob: (job) => {
+          activeJob = job;
+          emitHeartbeat();
+        },
+      });
+    } catch (error) {
+      jobs.failed++;
+      console.error(error);
+    }
+    const healthy = feedPollOk && jobs.failed === 0;
+    failures = healthy ? 0 : failures + 1;
+    emitHeartbeat();
+    const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, delay));
+  }
+}
+
+export function parseArgs(argv: string[]) {
   const flags = new Set(argv);
   const get = (name: string) => {
-    const i = argv.indexOf(name);
-    return i >= 0 ? argv[i + 1] : undefined;
+    const index = argv.indexOf(name);
+    return index >= 0 ? argv[index + 1] : undefined;
   };
   return {
     localOnly: flags.has("--local") || process.env.POLL_LOCAL_ONLY === "1",
     noPipeline: flags.has("--no-pipeline"),
-    intervalMs: Number(get("--interval") ?? process.env.POLL_INTERVAL_MS ?? 60_000),
+    intervalMs: parseIntervalMs(
+      get("--interval") ?? process.env.POLL_INTERVAL_MS,
+      60_000,
+    ),
     slugs: get("--slug") ? [get("--slug")!] : undefined,
   };
 }
 
-const cmd = process.argv[2] ?? "demo";
-const rest = process.argv.slice(3);
-const args = parseArgs(rest);
+function isMain(): boolean {
+  return Boolean(process.argv[1]) &&
+    resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+}
 
-if (cmd === "demo") {
-  demo().catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
-} else if (cmd === "watch") {
-  watch(args.intervalMs).catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
-} else if (cmd === "poll-once" || cmd === "poll") {
-  pollFeeds({
-    loop: cmd === "poll",
-    intervalMs: args.intervalMs,
-    localOnly: args.localOnly || cmd === "poll-once",
-    runPipeline: !args.noPipeline,
-    slugs: args.slugs,
-  }).catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
-} else if (cmd === "feeds") {
-  const db = createDb();
-  console.log(JSON.stringify({ catalog: listCatalogFeeds(), recent: listFeedPolls(db, 20) }, null, 2));
-} else if (cmd === "jobs" || cmd === "process-jobs") {
-  processJobsOnce()
-    .then((n) => {
-      if (cmd === "jobs") {
-        console.log(JSON.stringify(listJobs(createDb(), 20), null, 2));
-      }
-      console.log(`processed=${n}`);
-    })
-    .catch((e) => {
-      console.error(e);
-      process.exit(1);
+async function main() {
+  const envErrors = validateWorkerProductionEnv();
+  if (envErrors.length) {
+    throw new Error(`Worker production configuration failed: ${envErrors.join("; ")}`);
+  }
+  const cmd = process.argv[2] ?? "demo";
+  const args = parseArgs(process.argv.slice(3));
+
+  if (cmd === "demo") {
+    await demo();
+  } else if (cmd === "watch") {
+    await watch(args.intervalMs);
+  } else if (cmd === "poll-once" || cmd === "poll") {
+    await pollFeeds({
+      loop: cmd === "poll",
+      intervalMs: args.intervalMs,
+      localOnly: args.localOnly || cmd === "poll-once",
+      runPipeline: !args.noPipeline,
+      slugs: args.slugs,
     });
-} else if (cmd === "sdk-signals") {
-  probeKnownSdks({ localOnly: args.localOnly }).then((s) => {
-    console.log(JSON.stringify(s, null, 2));
-  });
-} else {
-  console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|sdk-signals]
+  } else if (cmd === "feeds") {
+    const db = createDb();
+    console.log(
+      JSON.stringify({ catalog: listCatalogFeeds(), recent: listFeedPolls(db, 20) }, null, 2),
+    );
+  } else if (cmd === "jobs" || cmd === "process-jobs") {
+    const result = await processJobsOnce();
+    if (cmd === "jobs") {
+      console.log(
+        JSON.stringify(
+          listJobs(createDb(), 20, process.env.MENDPOINT_TENANT_ID),
+          null,
+          2,
+        ),
+      );
+    }
+    console.log(JSON.stringify(result));
+    if (result.failed > 0) process.exitCode = 1;
+  } else if (cmd === "run-jobs") {
+    await runJobWorker(args.intervalMs);
+  } else if (cmd === "run-service") {
+    await runService(args.intervalMs);
+  } else if (cmd === "sdk-signals") {
+    console.log(JSON.stringify(await probeKnownSdks({ localOnly: args.localOnly }), null, 2));
+  } else {
+    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|sdk-signals]
   poll-once [--local] [--no-pipeline] [--slug acme-payments]
   poll [--local] [--interval 60000]
-  process-jobs   # drain pipeline.fanout + agent.run queue
+  process-jobs
+  run-jobs [--interval 5000]
+  run-service [--interval 5000]
   sdk-signals [--local]`);
-  process.exit(1);
+    process.exitCode = 1;
+  }
+}
+
+if (isMain()) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
 }

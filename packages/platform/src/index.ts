@@ -10,6 +10,8 @@ export {
 export type { SandboxKind, MockUpstream, SandboxHandle, CreateSandboxOpts } from "./sandbox.js";
 export {
   createSandbox,
+  clearSandboxCache,
+  getSandboxCacheStats,
   sandboxManifest,
   RUNTIME_MATRIX,
 } from "./sandbox.js";
@@ -58,11 +60,13 @@ export {
   assertCan,
   assertTenant,
   parsePrincipalFromHeaders,
+  isPublicRoute,
   permissionForRoute,
 } from "./rbac.js";
 
 export type { ScmProvider, ScmPr, ScmAdapter } from "./scm.js";
 export {
+  ScmRequestError,
   getScmAdapter,
   createGitHubAdapter,
   createGitLabAdapter,

@@ -67,6 +67,8 @@ export type AppliedEdit = {
   original: string;
   updated: string;
   reason: string;
+  /** Whether the path existed before the repair session started. */
+  existed?: boolean;
 };
 
 export type VerifyResult = {
@@ -79,10 +81,25 @@ export type VerifyResult = {
 export type RepairSessionResult = {
   sessionId: string;
   ok: boolean;
+  /** Dry runs are proposals only and are never verified repairs. */
+  simulated: boolean;
+  stopReason:
+    | "verified"
+    | "already_green"
+    | "simulated"
+    | "no_actions"
+    | "no_edits"
+    | "repeated_failure"
+    | "repeated_actions"
+    | "max_attempts"
+    | "policy_violation"
+    | "lease_lost";
   attempts: number;
   maxAttempts: number;
   plans: RepairPlan[];
   edits: AppliedEdit[];
+  failureFingerprints: string[];
+  actionFingerprints: string[];
   finalVerify?: VerifyResult;
   /** PR comment body for human review */
   reportMarkdown: string;
@@ -95,6 +112,12 @@ export type RepairSessionInput = {
   /** Verify commands (e.g. npm test, tsc --noEmit) */
   verifyCommands?: string[];
   maxAttempts?: number;
+  /** Maximum planned actions in one attempt. Hard-clamped by the repair core. */
+  maxActionsPerAttempt?: number;
+  /** Maximum distinct files changed by the complete session. */
+  maxFilesChanged?: number;
+  /** Maximum applied edit records across the complete session. */
+  maxTotalEdits?: number;
   /** Structural renames still pending in tree */
   renameMap?: Record<string, string>;
   /** Optional LLM endpoint for hybrid repairs */
@@ -106,4 +129,6 @@ export type RepairSessionInput = {
   seedFailureLog?: string;
   /** Allow writing outside findings (default true within neverTouch) */
   allowBroadSearch?: boolean;
+  /** Cooperative cancellation checked around every awaited or mutating phase. */
+  shouldContinue?: () => boolean;
 };

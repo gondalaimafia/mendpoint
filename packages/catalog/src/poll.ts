@@ -3,7 +3,9 @@
  * Fetches catalog / provider openapiUrl, content-hashes, records new versions when changed.
  */
 import { createHash } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { existsSync, readFileSync } from "node:fs";
+import { BlockList, isIP } from "node:net";
 import { join, resolve } from "node:path";
 import { VENDOR_CATALOG, type VendorEntry } from "./vendors.js";
 
@@ -25,18 +27,145 @@ export function contentHash(body: string): string {
 /** Resolve file: relative paths against monorepo root (or cwd). */
 export function resolveFeedUrl(url: string, monorepoRoot?: string): string {
   if (!url.startsWith("file:")) return url;
-  const pathPart = url.slice("file:".length).replace(/^\/*/, "");
-  if (/^[A-Za-z]:[\\/]/.test(pathPart) || pathPart.startsWith("/")) {
-    return `file:${resolve(pathPart)}`;
+  const pathPart = url.slice("file:".length);
+  const windowsFileUriPath =
+    pathPart.match(/^\/+([A-Za-z]:[\\/].*)$/)?.[1];
+  const absolutePath =
+    windowsFileUriPath ??
+    (/^[A-Za-z]:[\\/]/.test(pathPart) || pathPart.startsWith("/")
+      ? pathPart
+      : undefined);
+  if (absolutePath) {
+    return `file:${resolve(absolutePath)}`;
   }
   const root = monorepoRoot ?? process.cwd();
   return `file:${join(root, pathPart)}`;
 }
 
+type HostResolver = (hostname: string) => Promise<string[]>;
+
+export type FetchOpenApiOptions = {
+  monorepoRoot?: string;
+  timeoutMs?: number;
+  maxBytes?: number;
+  production?: boolean;
+  fetchImpl?: typeof fetch;
+  resolveHostname?: HostResolver;
+};
+
+const remoteBlockList = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["224.0.0.0", 4],
+] as const) {
+  remoteBlockList.addSubnet(network, prefix, "ipv4");
+}
+for (const [network, prefix] of [
+  ["::", 128],
+  ["::1", 128],
+  ["fc00::", 7],
+  ["fe80::", 10],
+  ["ff00::", 8],
+] as const) {
+  remoteBlockList.addSubnet(network, prefix, "ipv6");
+}
+
+function blockedRemoteAddress(address: string): boolean {
+  const normalized = address.toLowerCase().split("%", 1)[0]!;
+  if (normalized.startsWith("::ffff:")) return true;
+  const family = isIP(normalized);
+  if (family === 4) return remoteBlockList.check(normalized, "ipv4");
+  if (family === 6) return remoteBlockList.check(normalized, "ipv6");
+  return true;
+}
+
+async function defaultResolveHostname(hostname: string): Promise<string[]> {
+  return (await lookup(hostname, { all: true, verbatim: true })).map(
+    (entry) => entry.address,
+  );
+}
+
+async function validateProductionRemoteUrl(
+  input: URL,
+  resolveHostname: HostResolver,
+): Promise<void> {
+  if (input.protocol !== "https:") {
+    throw new Error("production feed URLs must use https");
+  }
+  if (input.username || input.password) {
+    throw new Error("production feed URLs must not contain credentials");
+  }
+  const hostname = input.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname === "metadata" ||
+    hostname === "metadata.google.internal" ||
+    hostname === "instance-data"
+  ) {
+    throw new Error("production feed URL resolves to a blocked host");
+  }
+  const addresses = isIP(hostname)
+    ? [hostname]
+    : await resolveHostname(hostname);
+  if (!addresses.length || addresses.some(blockedRemoteAddress)) {
+    throw new Error("production feed URL resolves to a blocked address");
+  }
+}
+
+async function boundedResponseText(
+  response: Response,
+  maxBytes: number,
+  controller: AbortController,
+): Promise<string> {
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    controller.abort();
+    throw new Error(`feed response exceeds ${maxBytes} bytes`);
+  }
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > maxBytes) {
+        controller.abort();
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`feed response exceeds ${maxBytes} bytes`);
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, size).toString("utf8");
+}
+
 export async function fetchOpenApiDocument(
   url: string,
-  opts?: { monorepoRoot?: string; timeoutMs?: number },
+  opts?: FetchOpenApiOptions,
 ): Promise<FetchOpenApiResult> {
+  const production =
+    opts?.production ?? process.env.NODE_ENV === "production";
+  if (production && url.startsWith("file:")) {
+    return {
+      ok: false,
+      url,
+      error: "file feed URLs are disabled in production",
+    };
+  }
   const resolved = resolveFeedUrl(url, opts?.monorepoRoot);
   try {
     if (resolved.startsWith("file:")) {
@@ -48,27 +177,67 @@ export async function fetchOpenApiDocument(
       return parseOpenApiBody(resolved, body);
     }
 
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), opts?.timeoutMs ?? 30_000);
-    try {
-      const res = await fetch(resolved, {
-        signal: ctrl.signal,
-        headers: { Accept: "application/json, application/yaml, text/yaml, */*" },
-      });
-      const body = await res.text();
-      if (!res.ok) {
-        return {
-          ok: false,
-          url: resolved,
-          status: res.status,
-          error: `HTTP ${res.status}`,
-          body,
-        };
+    const fetchImpl = opts?.fetchImpl ?? fetch;
+    const resolveHostname = opts?.resolveHostname ?? defaultResolveHostname;
+    const maxBytes = opts?.maxBytes ?? 5 * 1024 * 1024;
+    let current = new URL(resolved);
+    for (let redirects = 0; redirects <= 5; redirects++) {
+      if (production) {
+        await validateProductionRemoteUrl(current, resolveHostname);
       }
-      return parseOpenApiBody(resolved, body, res.status);
-    } finally {
-      clearTimeout(t);
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), opts?.timeoutMs ?? 30_000);
+      let res: Response;
+      try {
+        res = await fetchImpl(current, {
+          signal: ctrl.signal,
+          redirect: "manual",
+          headers: {
+            Accept: "application/json, application/yaml, text/yaml, */*",
+          },
+        });
+        if (res.status >= 300 && res.status < 400) {
+          const location = res.headers.get("location");
+          if (!location) {
+            return {
+              ok: false,
+              url: current.href,
+              status: res.status,
+              error: `HTTP ${res.status} redirect missing location`,
+            };
+          }
+          if (redirects === 5) {
+            return {
+              ok: false,
+              url: current.href,
+              status: res.status,
+              error: "too many feed redirects",
+            };
+          }
+          await res.body?.cancel().catch(() => undefined);
+          current = new URL(location, current);
+          continue;
+        }
+        const body = await boundedResponseText(res, maxBytes, ctrl);
+        if (!res.ok) {
+          return {
+            ok: false,
+            url: current.href,
+            status: res.status,
+            error: `HTTP ${res.status}`,
+            body,
+          };
+        }
+        return parseOpenApiBody(current.href, body, res.status);
+      } finally {
+        clearTimeout(t);
+      }
     }
+    return {
+      ok: false,
+      url: current.href,
+      error: "too many feed redirects",
+    };
   } catch (e) {
     return {
       ok: false,
@@ -94,6 +263,44 @@ function parseOpenApiBody(
       status,
       body,
       error: "OpenAPI body is not valid JSON (YAML feeds need conversion)",
+    };
+  }
+  if (!openapi || typeof openapi !== "object" || Array.isArray(openapi)) {
+    return {
+      ok: false,
+      url,
+      status,
+      body,
+      error: "OpenAPI document must be a JSON object",
+    };
+  }
+  const doc = openapi as Record<string, unknown>;
+  const version = doc.openapi ?? doc.swagger;
+  if (typeof version !== "string" || !version.trim()) {
+    return {
+      ok: false,
+      url,
+      status,
+      body,
+      error: "OpenAPI document is missing openapi or swagger version",
+    };
+  }
+  if (!doc.info || typeof doc.info !== "object" || Array.isArray(doc.info)) {
+    return {
+      ok: false,
+      url,
+      status,
+      body,
+      error: "OpenAPI document is missing info object",
+    };
+  }
+  if (!doc.paths || typeof doc.paths !== "object" || Array.isArray(doc.paths)) {
+    return {
+      ok: false,
+      url,
+      status,
+      body,
+      error: "OpenAPI document is missing paths object",
     };
   }
   const hash = contentHash(body);

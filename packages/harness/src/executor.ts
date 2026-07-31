@@ -38,6 +38,8 @@ export type ExecuteOptions = {
   /** Inject a failure on first matching action for recovery tests */
   injectFailureAction?: string;
   maxSteps?: number;
+  /** Pre-created isolated backend for shell-capable plans. */
+  sandbox?: SandboxHandle;
 };
 
 export type ExecuteResult = {
@@ -62,7 +64,32 @@ function runTool(
       error: `structured_tool_error: injected failure on action=${step.action}`,
     };
   }
-  return runSpecialistTool(step, sbx);
+  const result = runSpecialistTool(step, sbx);
+  if (!result.ok) return result;
+  if (!step.successCriteria.length) {
+    return {
+      ok: false,
+      output: result.output,
+      error: "success criteria missing",
+    };
+  }
+  const evidence = result.output.trim();
+  for (const criterion of step.successCriteria) {
+    const contains = criterion.match(/^(?:stdout|output|evidence)\s+contains\s+(.+)$/i);
+    const ok = /^output\s+is\s+non-empty$/i.test(criterion)
+      ? evidence.length > 0
+      : contains
+        ? evidence.toLowerCase().includes(contains[1]!.trim().toLowerCase())
+        : evidence.toLowerCase().includes(criterion.trim().toLowerCase());
+    if (!ok) {
+      return {
+        ok: false,
+        output: result.output,
+        error: `success criterion not met: ${criterion}`,
+      };
+    }
+  }
+  return result;
 }
 
 /**
@@ -75,7 +102,6 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
   let plan = opts.plan;
   let runId = opts.runId ?? newId();
   let paths: RunPaths;
-  let recovered = false;
   let inject = opts.injectFailureAction;
 
   if (opts.resumeRunId && runExists(baseDir, opts.resumeRunId)) {
@@ -91,11 +117,14 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
     paths = initRun(baseDir, runId, plan);
   }
 
-  const sbx = createSandbox({
-    prefix: "harness-",
-    cacheKey: `harness-${runId}`,
-    files: { "README.sbx": "mendpoint harness sandbox\n" },
-  });
+  const ownsSandbox = !opts.sandbox;
+  const sbx =
+    opts.sandbox ??
+    createSandbox({
+      prefix: "harness-",
+      cacheKey: `harness-${runId}`,
+      files: { "README.sbx": "mendpoint harness sandbox\n" },
+    });
 
   let stepsRun = 0;
   const maxSteps = opts.maxSteps ?? 50;
@@ -119,7 +148,6 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
       if (inject && step.action === inject) inject = undefined;
 
       if (!result.ok) {
-        recovered = true;
         plan = updateStep(plan, step.id, {
           status: "failed",
           evidence: result.error,
@@ -130,14 +158,12 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
           ts: new Date().toISOString(),
           type: "error",
           message: result.error ?? "step failed",
-          data: { stepId: step.id, recovery: "skip_and_continue" },
+          data: {
+            stepId: step.id,
+            outcome: "failed",
+            continuation: "remaining_steps",
+          },
         });
-        // Deterministic recovery: skip failed step and continue (or would ask-user)
-        plan = updateStep(plan, step.id, {
-          status: "skipped",
-          notes: `recovered: skipped after structured error`,
-        });
-        savePlan(paths, plan);
         stepsRun++;
         continue;
       }
@@ -156,7 +182,7 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
       stepsRun++;
     }
   } finally {
-    sbx.dispose();
+    if (ownsSandbox) sbx.dispose();
   }
 
   const prog = planProgress(plan);
@@ -173,9 +199,9 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
     runId,
     ok: prog.failed === 0 && prog.pending === 0,
     stepsTotal: prog.total,
-    stepsDone: prog.done + (plan.steps.filter((s) => s.status === "skipped").length),
+    stepsDone: prog.done,
     stepsFailed: plan.steps.filter((s) => s.status === "failed").length,
-    recoveredFromFailure: recovered,
+    recoveredFromFailure: false,
     durationMs,
     graphQueries,
     tokensEst,
@@ -183,10 +209,6 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
     costUsd: cost.totalUsd,
     planId: plan.id,
   };
-  // treat skipped-after-fail as recovered success path for harness demos
-  if (recovered && prog.pending === 0) {
-    score.ok = true;
-  }
   writeScore(paths, score);
   try {
     appendDogfoodLedger(baseDir, {
@@ -228,10 +250,10 @@ export async function helloWorldRun(baseDir = process.cwd()) {
     notes: "hello from mendpoint harness",
   });
   plan = addStep(plan, {
-    title: "Shell node version",
-    action: "harness.shell",
-    successCriteria: ["node runs"],
-    notes: "node -e \"console.log(process.version)\"",
+    title: "Echo sandbox readiness",
+    action: "harness.echo",
+    successCriteria: ["stdout contains sandbox ready"],
+    notes: "sandbox ready",
   });
   return executePlan({ baseDir, plan });
 }

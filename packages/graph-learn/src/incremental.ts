@@ -15,6 +15,7 @@ import { join, dirname, relative } from "node:path";
 import {
   ingestAstFile,
   listCodeFiles,
+  reconcileAstCallTargets,
   type AstIngestResult,
 } from "./ast-ingest.js";
 import type { GraphLearnDb } from "./store.js";
@@ -25,6 +26,8 @@ export type FileHashSnapshot = {
   updatedAt: string;
   /** rel path → content hash */
   hashes: Record<string, string>;
+  /** Next sorted-file offset to process when maxFiles caps a run. */
+  cursor?: number;
 };
 
 export type IncrementalResult = {
@@ -91,7 +94,24 @@ export function incrementalReingest(
   const snapPath =
     opts.snapshotPath ?? join(opts.repoPath, ".mendpoint", "graph-hash.json");
   const prev = loadSnapshot(snapPath);
-  const absFiles = listCodeFiles(opts.repoPath, opts.maxFiles ?? 400);
+  const allAbsFiles = listCodeFiles(opts.repoPath, Number.MAX_SAFE_INTEGER);
+  const maxFiles = Math.max(1, opts.maxFiles ?? 400);
+  const start =
+    allAbsFiles.length > 0
+      ? (opts.forceFull ? 0 : Math.max(0, prev?.cursor ?? 0)) % allAbsFiles.length
+      : 0;
+  const absFiles =
+    allAbsFiles.length <= maxFiles
+      ? allAbsFiles
+      : Array.from(
+          { length: Math.min(maxFiles, allAbsFiles.length) },
+          (_, index) => allAbsFiles[(start + index) % allAbsFiles.length]!,
+        );
+  const allCurrentPaths = new Set(
+    allAbsFiles.map((abs) =>
+      relative(opts.repoPath, abs).replace(/\\/g, "/"),
+    ),
+  );
 
   const currentHashes: Record<string, string> = {};
   const relToAbs = new Map<string, string>();
@@ -115,8 +135,10 @@ export function incrementalReingest(
     for (const [rel, h] of Object.entries(currentHashes)) {
       if (prevHashes[rel] !== h) changed.push(rel);
     }
+  }
+  if (prev?.repoId === repoId) {
     for (const rel of Object.keys(prevHashes)) {
-      if (!(rel in currentHashes)) removed.push(rel);
+      if (!allCurrentPaths.has(rel)) removed.push(rel);
     }
   }
 
@@ -151,6 +173,7 @@ export function incrementalReingest(
     symbols += r.symbols;
     calls += r.calls;
   }
+  reconcileAstCallTargets(db, repoId);
 
   let deletedSubgraphs = 0;
   for (const rel of removed) {
@@ -159,10 +182,22 @@ export function incrementalReingest(
     deletedSubgraphs += d.nodes;
   }
 
+  // A cap limits processing, not repository truth. Preserve hashes for files
+  // that still exist but fell outside this run's processing window.
+  const nextHashes = { ...currentHashes };
+  for (const [rel, hash] of Object.entries(prevHashes)) {
+    if (allCurrentPaths.has(rel) && !(rel in nextHashes)) {
+      nextHashes[rel] = hash;
+    }
+  }
   const snap: FileHashSnapshot = {
     repoId,
     updatedAt: new Date().toISOString(),
-    hashes: currentHashes,
+    hashes: nextHashes,
+    cursor:
+      allAbsFiles.length > maxFiles
+        ? (start + absFiles.length) % allAbsFiles.length
+        : 0,
   };
   saveSnapshot(snapPath, snap);
 

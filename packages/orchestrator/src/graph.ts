@@ -50,12 +50,11 @@ export function pickNextEdge(
   const outs = outgoing(graph, from);
   if (!outs.length) return undefined;
   if (!ok) {
-    const fail = outs.find((e) => e.kind === "on_failure");
-    if (fail) return fail;
+    return outs.find((e) => e.kind === "on_failure");
   }
   const success = outs.find((e) => e.kind === "on_success" || e.kind === "sequence");
   if (success) return success;
-  return outs[0];
+  return outs.find((e) => e.kind === "branch" || e.kind === "fan_out" || e.kind === "fan_in");
 }
 
 export type RunGraphOptions = {

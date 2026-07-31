@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 type AppConfig = {
   appId: string | null;
@@ -34,14 +34,16 @@ export function InstallWizard({
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [installUrl, setInstallUrl] = useState<string | null>(null);
+  const [installState, setInstallState] = useState<string | null>(null);
 
   async function fetchInstallUrl() {
     setBusy(true);
     setMsg(null);
     try {
       const res = await fetch(`${API_URL}/github/app/install-url`);
-      const data = (await res.json()) as { url: string; mock: boolean };
+      const data = (await res.json()) as { url: string; mock: boolean; state: string };
       setInstallUrl(data.url);
+      setInstallState(data.state);
       setStep(2);
       setMsg(data.mock ? "Mock mode — install completes without GitHub OAuth." : "Open GitHub to install.");
     } catch (e) {
@@ -59,6 +61,7 @@ export function InstallWizard({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          state: installState,
           accountLogin: login,
           accountType: "Organization",
           tenantId: "tenant_default",
@@ -125,7 +128,7 @@ export function InstallWizard({
                   type="button"
                   className="btn primary"
                   onClick={completeMockInstall}
-                  disabled={busy || !login}
+                  disabled={busy || !login || !installState}
                 >
                   {busy ? "Installing…" : "Complete mock install"}
                 </button>

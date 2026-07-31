@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   createMemory,
   createSandbox,
+  clearSandboxCache,
+  getSandboxCacheStats,
   evaluateCanary,
   memoryForPlanner,
   planCrossPrRollback,
@@ -135,7 +137,54 @@ describe("vm + cost + rbac + scm + alerts", () => {
   it("permissionForRoute maps mutations", () => {
     expect(permissionForRoute("PATCH", "/platform/plans/x")).toBe("plan:edit");
     expect(permissionForRoute("POST", "/prs/1/feedback")).toBe("outcome:label");
+    expect(permissionForRoute("GET", "/github/app/installations")).toBe(
+      "tenant:admin",
+    );
+    expect(permissionForRoute("GET", "/changes/1")).toBe("graph:read");
+    expect(permissionForRoute("GET", "/metrics")).toBe("graph:read");
+    expect(permissionForRoute("GET", "/jobs")).toBe("graph:read");
+    expect(permissionForRoute("GET", "/repair/sessions")).toBe("graph:read");
+    expect(permissionForRoute("POST", "/jobs/job-1/retry")).toBe("tenant:admin");
+    expect(permissionForRoute("POST", "/jobs/job-1/cancel")).toBe("tenant:admin");
     const viewer = parsePrincipalFromHeaders({ "x-role": "viewer" });
     expect(can(viewer, "plan:edit")).toBe(false);
+    const invalid = parsePrincipalFromHeaders({ "x-role": "not-a-role" });
+    expect(invalid.role).toBe("viewer");
+    expect(can(invalid, "sandbox:run")).toBe(false);
+  });
+
+  it("keeps health probes public while protected reads fail closed", () => {
+    for (const path of [
+      "/",
+      "/health",
+      "/live",
+      "/ready",
+      "/version",
+      "/status",
+    ]) {
+      expect(permissionForRoute("GET", path)).toBeNull();
+      expect(permissionForRoute("HEAD", path)).toBeNull();
+    }
+    expect(permissionForRoute("POST", "/ready")).toBe("plan:execute");
+    expect(permissionForRoute("GET", "/keys")).toBe("tenant:admin");
+  });
+
+  it("fails closed for unimplemented kinds and escaping seed paths", () => {
+    expect(() => createSandbox({ kind: "vm" })).toThrow(/real backend/i);
+    expect(() =>
+      createSandbox({ files: { "../outside.txt": "blocked" } }),
+    ).toThrow(/escapes root/i);
+  });
+
+  it("provides explicit lifecycle control for persistent cache roots", () => {
+    const key = `platform-test-${Date.now()}`;
+    const sbx = createSandbox({ cacheKey: key, files: { "cached.txt": "ok" } });
+    const root = sbx.root;
+    sbx.dispose();
+    expect(getSandboxCacheStats().some((entry) => entry.cacheKey === key)).toBe(true);
+    clearSandboxCache(key);
+    expect(getSandboxCacheStats().some((entry) => entry.cacheKey === key)).toBe(false);
+    expect(() => createSandbox({ kind: "in_cluster" })).toThrow(/unavailable/i);
+    expect(root).toBeTruthy();
   });
 });

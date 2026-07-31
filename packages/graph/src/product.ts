@@ -28,6 +28,7 @@ export type ProductGraphFocus =
 export function buildProductKnowledgeGraph(
   db: AppDb,
   focus: ProductGraphFocus = { type: "all" },
+  tenantId?: string,
 ): ProductGraph {
   const focusKey =
     focus.type === "all"
@@ -35,7 +36,8 @@ export function buildProductKnowledgeGraph(
       : focus.type === "provider"
         ? `provider:${focus.slug}`
         : `${focus.type}:${focus.id}`;
-  const cached = productGraphCache.get(focusKey) as ProductGraph | undefined;
+  const tenantFocusKey = `${tenantId ?? "global"}:${focusKey}`;
+  const cached = productGraphCache.get(tenantFocusKey) as ProductGraph | undefined;
   if (cached) return cached;
 
   const nodes = new Map<string, GraphNode>();
@@ -43,11 +45,11 @@ export function buildProductKnowledgeGraph(
   let ei = 0;
 
   const providers = listProviders(db);
-  const consumers = listConsumers(db);
+  const consumers = listConsumers(db, tenantId);
   const changes = listChanges(db);
-  const prs = listPrs(db);
-  const tenants = listTenants(db);
-  const installs = listGitHubInstallations(db);
+  const prs = listPrs(db, tenantId);
+  const tenants = listTenants(db).filter((tenant) => !tenantId || tenant.id === tenantId);
+  const installs = listGitHubInstallations(db, tenantId);
 
   let providerFilter: Set<string> | null = null;
   let consumerFilter: Set<string> | null = null;
@@ -220,6 +222,6 @@ export function buildProductKnowledgeGraph(
     nodes: nodeList,
     edges: trimmedEdges,
   });
-  productGraphCache.set(focusKey, out);
+  productGraphCache.set(tenantFocusKey, out);
   return out;
 }

@@ -61,18 +61,18 @@ POST /agent/runs
   "maxSteps": 20,
   "useLlm": false,
   "allowNetwork": false,
-  "async": false
+  "async": true
 }
 
 GET /agent/runs
 GET /agent/runs/:id
 ```
 
-Set `"async": true` to enqueue job type `agent.run` (202). Drain with:
+Runs queue as `agent.run` jobs by default. The worker owns execution, lease renewal,
+retry scheduling, and dead letter handling. For local development, drain with:
 
 ```bash
 npm run worker:jobs
-# or POST /jobs/process-one
 ```
 
 ## UI

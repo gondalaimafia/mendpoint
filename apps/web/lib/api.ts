@@ -1,4 +1,7 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+const API_URL =
+  process.env.MENDPOINT_API_URL ??
+  process.env.NEXT_PUBLIC_API_URL ??
+  "http://localhost:3001";
 
 export function apiBase(): string {
   return API_URL;
@@ -14,8 +17,14 @@ async function fetchWithTimeout(
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
+    const headers = new Headers(init?.headers);
+    const apiKey = process.env.MENDPOINT_API_KEY?.trim();
+    if (apiKey && !headers.has("Authorization")) {
+      headers.set("Authorization", `Bearer ${apiKey}`);
+    }
     return await fetch(url, {
       ...init,
+      headers,
       signal: ctrl.signal,
       cache: init?.cache ?? "no-store",
     });

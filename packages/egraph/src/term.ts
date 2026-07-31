@@ -8,7 +8,7 @@
 export type Term =
   | { kind: "var"; name: string }
   | { kind: "app"; op: string; children: Term[] }
-  | { kind: "lit"; value: string | number | boolean };
+  | { kind: "lit"; value: string | number | boolean | null };
 
 export type Pattern = Term; // vars act as pattern variables
 
@@ -20,7 +20,7 @@ export function app(op: string, ...children: Term[]): Term {
   return { kind: "app", op, children };
 }
 
-export function lit(value: string | number | boolean): Term {
+export function lit(value: string | number | boolean | null): Term {
   return { kind: "lit", value };
 }
 

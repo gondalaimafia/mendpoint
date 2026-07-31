@@ -3,8 +3,16 @@
  * Warden: live-service hooks (mock upstreams, optional base URL).
  * Transformer: multi-runtime matrix descriptors + cache keys.
  */
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 
@@ -41,61 +49,148 @@ export type CreateSandboxOpts = {
   cacheKey?: string;
 };
 
-const cacheRoots = new Map<string, string>();
+type CacheEntry = {
+  root: string;
+  createdAt: number;
+  lastUsedAt: number;
+  refs: number;
+};
+
+const cacheRoots = new Map<string, CacheEntry>();
+const MAX_CACHE_ROOTS = 32;
+
+function isWithin(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function seedPath(root: string, rel: string): string {
+  if (!rel || isAbsolute(rel)) throw new Error(`Sandbox seed path must be relative: ${rel}`);
+  const abs = resolve(root, rel);
+  if (!isWithin(root, abs)) throw new Error(`Sandbox seed path escapes root: ${rel}`);
+  const realRoot = realpathSync(root);
+  if (existsSync(abs) && !isWithin(realRoot, realpathSync(abs))) {
+    throw new Error(`Sandbox seed path resolves outside root: ${rel}`);
+  }
+  let parent = dirname(abs);
+  while (!existsSync(parent)) parent = dirname(parent);
+  if (!isWithin(realRoot, realpathSync(parent))) {
+    throw new Error(`Sandbox seed path resolves outside root: ${rel}`);
+  }
+  return abs;
+}
+
+function evictOldestCache(): void {
+  if (cacheRoots.size < MAX_CACHE_ROOTS) return;
+  const oldest = [...cacheRoots.entries()]
+    .filter(([, entry]) => entry.refs === 0)
+    .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt)[0];
+  if (oldest) clearSandboxCache(oldest[0]);
+}
+
+export function clearSandboxCache(cacheKey?: string): void {
+  const keys = cacheKey ? [cacheKey] : [...cacheRoots.keys()];
+  for (const key of keys) {
+    const entry = cacheRoots.get(key);
+    if (!entry) continue;
+    try {
+      rmSync(entry.root, { recursive: true, force: true });
+    } catch {
+      /* best effort cleanup */
+    }
+    cacheRoots.delete(key);
+  }
+}
+
+export function getSandboxCacheStats() {
+  return [...cacheRoots.entries()].map(([cacheKey, entry]) => ({
+    cacheKey,
+    root: entry.root,
+    createdAt: new Date(entry.createdAt).toISOString(),
+    lastUsedAt: new Date(entry.lastUsedAt).toISOString(),
+    activeHandles: entry.refs,
+  }));
+}
 
 export function createSandbox(opts: CreateSandboxOpts = {}): SandboxHandle {
   const kind = opts.kind ?? "local";
   if (kind !== "local") {
-    // Interface reserved for VM / in-cluster — fall back to local with annotation
+    throw new Error(
+      `Sandbox kind ${kind} is unavailable through createSandbox; use a real backend`,
+    );
   }
   let root: string;
-  if (opts.cacheKey && cacheRoots.has(opts.cacheKey)) {
-    root = cacheRoots.get(opts.cacheKey)!;
+  const cached = opts.cacheKey ? cacheRoots.get(opts.cacheKey) : undefined;
+  if (cached && existsSync(cached.root)) {
+    root = cached.root;
+    cached.lastUsedAt = Date.now();
+    cached.refs++;
   } else {
+    if (cached && opts.cacheKey) cacheRoots.delete(opts.cacheKey);
+    if (opts.cacheKey) evictOldestCache();
     root = mkdtempSync(join(tmpdir(), opts.prefix ?? "mendpoint-sbx-"));
-    if (opts.cacheKey) cacheRoots.set(opts.cacheKey, root);
+    if (opts.cacheKey) {
+      const now = Date.now();
+      cacheRoots.set(opts.cacheKey, {
+        root,
+        createdAt: now,
+        lastUsedAt: now,
+        refs: 1,
+      });
+    }
   }
 
-  for (const [rel, content] of Object.entries(opts.files ?? {})) {
-    const abs = join(root, rel);
-    mkdirSync(join(abs, ".."), { recursive: true });
-    // fix path: mkdir parent of file
-  }
-  for (const [rel, content] of Object.entries(opts.files ?? {})) {
-    const abs = join(root, rel);
-    const parent = abs.includes("\\") || abs.includes("/")
-      ? abs.replace(/[/\\][^/\\]+$/, "")
-      : root;
-    mkdirSync(parent, { recursive: true });
-    writeFileSync(abs, content, "utf8");
+  try {
+    for (const [rel, content] of Object.entries(opts.files ?? {})) {
+      const abs = seedPath(root, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, content, "utf8");
+    }
+  } catch (error) {
+    if (opts.cacheKey) clearSandboxCache(opts.cacheKey);
+    else rmSync(root, { recursive: true, force: true });
+    throw error;
   }
 
   // Write mock upstream manifest for agents
   const mocks = opts.mocks ?? [];
   if (mocks.length) {
     writeFileSync(
-      join(root, ".mendpoint-mocks.json"),
+      seedPath(root, ".mendpoint-mocks.json"),
       JSON.stringify({ mocks, serviceBaseUrl: opts.serviceBaseUrl }, null, 2),
       "utf8",
     );
   }
 
-  const id = `sbx_${Date.now().toString(36)}`;
+  const id = `sbx_${randomUUID()}`;
   return {
     id,
-    kind: kind === "local" ? "local" : kind,
+    kind: "local",
     root,
     serviceBaseUrl: opts.serviceBaseUrl,
     mocks,
     runtime: opts.runtime,
-    dispose: () => {
-      if (opts.cacheKey) return; // persistent cache
-      try {
-        rmSync(root, { recursive: true, force: true });
-      } catch {
-        /* */
-      }
-    },
+    dispose: (() => {
+      let disposed = false;
+      return () => {
+        if (disposed) return;
+        disposed = true;
+        if (opts.cacheKey) {
+          const entry = cacheRoots.get(opts.cacheKey);
+          if (entry) {
+            entry.refs = Math.max(0, entry.refs - 1);
+            entry.lastUsedAt = Date.now();
+            if (cacheRoots.size > MAX_CACHE_ROOTS) evictOldestCache();
+          }
+          return;
+        }
+        try {
+          rmSync(root, { recursive: true, force: true });
+        } catch {
+          /* */
+        }
+      };
+    })(),
     run: (cmd, runOpts) => {
       try {
         const stdout = execSync(cmd, {
@@ -136,7 +231,7 @@ export function sandboxManifest(h: SandboxHandle) {
     runtime: h.runtime,
     note:
       h.kind === "local"
-        ? "Local workdir sandbox — VM/in-cluster kinds reserved"
+        ? "Local workdir only; this is not process or network isolation"
         : `Sandbox kind ${h.kind}`,
   };
 }

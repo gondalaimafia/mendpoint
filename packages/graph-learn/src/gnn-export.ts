@@ -63,7 +63,7 @@ export function exportGnnFeatures(db: GraphLearnDb): GnnExport {
   const kindIndex = kindIndexOf(NODE_KINDS as string[]);
   const edgeKinds = new Set<string>();
   const nodes: GnnNodeFeature[] = [];
-  const edges: GnnEdgeFeature[] = [];
+  const candidateEdges: GnnEdgeFeature[] = [];
   const seen = new Set<string>();
 
   for (const kind of NODE_KINDS) {
@@ -94,8 +94,7 @@ export function exportGnnFeatures(db: GraphLearnDb): GnnExport {
         ],
       });
       for (const e of edgesFrom(db, n.id)) {
-        edgeKinds.add(e.kind);
-        edges.push({
+        candidateEdges.push({
           source: e.source,
           target: e.target,
           kind: e.kind,
@@ -108,6 +107,10 @@ export function exportGnnFeatures(db: GraphLearnDb): GnnExport {
     }
   }
 
+  const edges = candidateEdges.filter(
+    (edge) => seen.has(edge.source) && seen.has(edge.target),
+  );
+  for (const edge of edges) edgeKinds.add(edge.kind);
   const edgeKindIndex = kindIndexOf([...edgeKinds].sort());
   for (const e of edges) {
     e.kindId = edgeKindIndex[e.kind] ?? 0;

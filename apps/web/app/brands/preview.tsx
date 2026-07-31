@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 export function BrandPreview({ packId, cta }: { packId: string; cta: string }) {
   const [preview, setPreview] = useState<{ title: string; body: string } | null>(null);

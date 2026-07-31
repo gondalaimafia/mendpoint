@@ -119,12 +119,29 @@ export function parsePrincipalFromHeaders(h: {
     ["owner", "admin", "engineer", "viewer", "fde", "agent"] as Role[]
   ).includes(roleRaw as Role)
     ? (roleRaw as Role)
-    : "engineer";
+    : "viewer";
   return {
     id: h["x-user-id"] ?? "anonymous",
-    tenantId: h["x-tenant-id"] ?? "default",
+    tenantId: h["x-tenant-id"] ?? "tenant_default",
     role,
   };
+}
+
+const PUBLIC_READ_PATHS = new Set([
+  "/",
+  "/health",
+  "/live",
+  "/ready",
+  "/version",
+  "/status",
+  "/billing/plans",
+  "/brands",
+]);
+
+export function isPublicRoute(method: string, path: string): boolean {
+  const m = method.toUpperCase();
+  if (path.startsWith("/webhooks/")) return true;
+  return (m === "GET" || m === "HEAD") && PUBLIC_READ_PATHS.has(path);
 }
 
 /** Map HTTP method + path prefix → required permission (broader API RBAC). */
@@ -133,9 +150,7 @@ export function permissionForRoute(
   path: string,
 ): Permission | null {
   const m = method.toUpperCase();
-  // Public / read-mostly
-  if (path === "/health" || path.startsWith("/webhooks/")) return null;
-  if (path.startsWith("/billing/plans") || path === "/brands") return null;
+  if (isPublicRoute(m, path)) return null;
 
   if (m === "GET" || m === "HEAD" || m === "OPTIONS") {
     // Sensitive reads still permission-mapped when X-Role is present (middleware enforces)
@@ -149,9 +164,15 @@ export function permissionForRoute(
       path === "/graph"
     )
       return "graph:read";
-    if (path.startsWith("/keys") || path.startsWith("/tenants"))
+    if (
+      path.startsWith("/keys") ||
+      path.startsWith("/tenants") ||
+      path.startsWith("/github/app") ||
+      path.startsWith("/audit")
+    )
       return "tenant:admin";
-    return null; // public GETs when no sensitive surface
+    // Authenticated reads fail closed. Public reads must be explicitly listed above.
+    return "graph:read";
   }
 
   // Mutations
@@ -160,6 +181,11 @@ export function permissionForRoute(
   if (path.includes("/feedback") || path.includes("/outcome"))
     return "outcome:label";
   if (path.startsWith("/prs") && m === "POST") return "pr:write";
+  if (
+    m === "POST" &&
+    /^\/jobs\/[^/]+\/(?:retry|cancel)$/.test(path)
+  )
+    return "tenant:admin";
   if (path.startsWith("/platform/vm") || path.startsWith("/platform/live-sandbox") || path.startsWith("/platform/sandbox"))
     return "sandbox:run";
   if (path.startsWith("/graph-learn") && m === "POST") return "graph:write";
@@ -168,7 +194,11 @@ export function permissionForRoute(
     return "plan:execute";
   if (path.startsWith("/providers") || path.startsWith("/consumers") || path.startsWith("/changes"))
     return "graph:write";
-  if (path.startsWith("/keys") || path.startsWith("/tenants"))
+  if (
+    path.startsWith("/keys") ||
+    path.startsWith("/tenants") ||
+    path.startsWith("/github/app")
+  )
     return "tenant:admin";
   return "plan:execute";
 }

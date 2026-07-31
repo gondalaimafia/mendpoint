@@ -52,8 +52,35 @@ describe("breaking change gate", () => {
       readFileSync(join(root, "fixtures/providers/acme-payments/openapi-v2.json"), "utf8"),
     );
     const g = breakingChangeGate(v1, v2, "acme-payments");
-    // Acme v2 is a breaking evolution — expect either violations or breaking risk
+    // Acme v2 is a breaking evolution.
+    expect(g.ok).toBe(false);
+    expect(g.violations.length).toBeGreaterThan(0);
+    expect(g.violations.every((violation) => violation.message.trim().length > 0)).toBe(true);
     expect(g.summary.length).toBeGreaterThan(0);
+  });
+
+  it("fails closed when expected response evidence is absent", () => {
+    const r = runContractSuite(
+      [
+        {
+          id: "c1",
+          name: "missing",
+          expectStatus: 200,
+          requiredKeys: ["id"],
+        },
+      ],
+      { observedStatuses: {} },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.violations.filter((v) => v.kind === "evidence_missing")).toHaveLength(2);
+  });
+
+  it("fails closed when the contract suite has no cases", () => {
+    const r = runContractSuite([]);
+    expect(r.ok).toBe(false);
+    expect(r.violations).toContainEqual(
+      expect.objectContaining({ caseId: "contract-suite", kind: "evidence_missing" }),
+    );
   });
 });
 
@@ -81,6 +108,8 @@ describe("api reviewer", () => {
 describe("pr gates", () => {
   it("aggregates gates markdown", () => {
     const r = evaluatePrGates({
+      oldSpec: { openapi: "3.0.0", paths: {} },
+      newSpec: { openapi: "3.0.0", paths: {} },
       contractCases: [
         {
           id: "a",
@@ -89,8 +118,20 @@ describe("pr gates", () => {
           responseBody: { x: 1 },
         },
       ],
+      securityScanOk: true,
     });
     expect(r.reportMarkdown).toContain("Warden PR gates");
     expect(r.ok).toBe(true);
+  });
+
+  it("fails closed when gate evidence is not supplied", () => {
+    const r = evaluatePrGates({});
+    expect(r.ok).toBe(false);
+    expect(r.gates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "oas-breaking-change", ok: false }),
+        expect.objectContaining({ id: "security-scan", ok: false }),
+      ]),
+    );
   });
 });

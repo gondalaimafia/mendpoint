@@ -110,11 +110,49 @@ describe("product knowledge graph", () => {
       name: "Shop",
       githubOwner: "o",
       githubRepo: "r",
+      tenantId: "tenant_default",
       createdAt: nowIso(),
     });
     const g = buildProductKnowledgeGraph(db);
     expect(g.nodes.some((n) => n.kind === "provider")).toBe(true);
     expect(g.nodes.some((n) => n.kind === "consumer")).toBe(true);
+  });
+
+  it("does not project another tenant's consumers or installations", () => {
+    const dir = mkdtempSync(join(tmpdir(), "graph-tenant-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "g.sqlite"));
+    dbs.push(db);
+    const at = nowIso();
+    for (const suffix of ["a", "b"]) {
+      insertConsumer(db, {
+        id: `consumer-${suffix}`,
+        name: `secret-${suffix}`,
+        githubOwner: `owner-${suffix}`,
+        githubRepo: `repo-${suffix}`,
+        tenantId: `tenant-${suffix}`,
+        createdAt: at,
+      });
+      db.raw
+        .prepare(
+          `INSERT INTO github_installations
+           (id, installation_id, account_login, tenant_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          `install-${suffix}`,
+          `installation-${suffix}`,
+          `account-${suffix}`,
+          `tenant-${suffix}`,
+          at,
+          at,
+        );
+    }
+    const g = buildProductKnowledgeGraph(db, { type: "all" }, "tenant-a");
+    expect(g.nodes.some((n) => n.label === "secret-a")).toBe(true);
+    expect(g.nodes.some((n) => n.label === "account-a")).toBe(true);
+    expect(g.nodes.some((n) => n.label === "secret-b")).toBe(false);
+    expect(g.nodes.some((n) => n.label === "account-b")).toBe(false);
   });
 });
 
@@ -146,7 +184,7 @@ describe("change impact from db", () => {
       id: v2,
       providerId: pid,
       versionLabel: "2.0",
-      openapiJson: "{}",
+      openapiJson: "{\"openapi\":\"3.1.0\"}",
       publishedAt: nowIso(),
     });
     insertApiChange(db, {
@@ -185,6 +223,7 @@ describe("change impact from db", () => {
       name: "Shop",
       githubOwner: "o",
       githubRepo: "shop",
+      tenantId: "tenant_default",
       createdAt: nowIso(),
     });
     insertConsumerRepo(db, {

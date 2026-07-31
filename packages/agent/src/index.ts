@@ -5,6 +5,8 @@ export type {
   AgentStep,
   AgentTask,
   AgentRunResult,
+  AgentVerifierState,
+  AgentRollbackState,
 } from "./types.js";
 
 export { DEFAULT_NEVER_TOUCH, pathBlocked, commandBlocked } from "./policies.js";
