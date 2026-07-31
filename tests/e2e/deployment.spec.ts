@@ -159,7 +159,9 @@ test("production image protects operators and recovers queued work after a crash
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page).toHaveURL(/\/status$/);
     await expect(page.getByRole("heading", { name: "System status" })).toBeVisible();
-    await expect(page.getByText("Operational", { exact: true })).toBeVisible();
+    await expect(page.getByText("degraded", { exact: true })).toBeVisible();
+    await expect(page.getByText(/GITHUB_MODE=mock/)).toBeVisible();
+    await expect(page.getByText("db_ping", { exact: true })).toBeVisible();
 
     const cookies = await page.context().cookies();
     const sessionCookie = cookies.find((cookie) => cookie.name === "mendpoint_web_session");
