@@ -189,7 +189,7 @@ an off host restore drill remain P0 launch gates. The current gap report is
 - [x] Separate process liveness from operational recovery degradation.
 - [x] Remove force-reset behavior from existing GitHub recovery branches.
 - [x] Add regressions for rollback, verifier absence, traversal, no progress, backoff, dead letter, fencing, and replay.
-- [ ] Run the full release matrix, review the final diff, commit, push, deploy, and verify live.
+- [x] Run the full release matrix, review the final diff, commit, push, deploy, and verify live.
 
 ## Self healing acceptance criteria
 
@@ -240,7 +240,7 @@ Verification:
 - Production API startup smoke with `/ready` and `/health` returning 200
 - `git diff --check`
 
-Docker is not installed locally. Container verification will run in GitHub
+Docker is not installed locally. Container verification passed in GitHub
 Actions and the Fly deployment build before live promotion.
 
 ## End to end deployment gate
@@ -252,7 +252,7 @@ Actions and the Fly deployment build before live promotion.
 - [x] Add signed webhook assertions for invalid signatures, completed delivery replay, and duplicate suppression.
 - [x] Retain traces, screenshots, runtime logs, and machine readable results on CI failure.
 - [x] Make the suite a required CI dependency before the production deploy job can run.
-- [ ] Run the suite locally where supported, in GitHub Actions, and against the deployed pilot.
+- [x] Run the suite locally where supported, in GitHub Actions, and against the deployed pilot.
 
 ## End to end acceptance criteria
 
@@ -276,10 +276,22 @@ recovery, worker completion, sanitized job responses, and recovery visibility.
 The job uploads browser traces, screenshots, video, JUnit output, and runtime
 logs on failure. Production deployment from main depends on all unit, type,
 build, audit, container, and Playwright jobs. Local Docker is unavailable, so
-the production image journey must pass on the GitHub Linux runner before this
-section is complete.
+the production image journey ran on the GitHub Linux runner. Run 30667255540
+passed the exact Fly image journey in 1 minute 55 seconds and all other release
+jobs. The same revision was deployed to the pilot.
 
 Webhook processing failure recovery is covered below the HTTP boundary because
 there is no production fault injection endpoint. Adding such an endpoint would
 weaken the deployed surface. Post deployment verification remains read only so
 the pilot cannot accumulate synthetic customer work.
+
+Live verification returned 200 from `/livez` and `/healthz`, with API readiness,
+API authentication, a fresh worker heartbeat, and no dead letters or expired
+leases. The authenticated status page rendered the recovery panel with no
+browser console warnings or errors. The saved screenshot is
+`C:\Users\Talal\.codex\visualizations\2026\07\28\019faa95-ac3a-7743-af3d-4dcfed07ca3a\mendpoint-live-status-2026-07-31.png`.
+
+The original pilot web access token appeared in a browser DOM snapshot during
+verification and was rotated immediately. The exposed value is invalid. The
+replacement was used only in memory and did not appear in output or a saved
+artifact.
