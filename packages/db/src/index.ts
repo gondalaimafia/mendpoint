@@ -150,6 +150,10 @@ CREATE TABLE IF NOT EXISTS consumer_repos (
   consumer_id TEXT NOT NULL REFERENCES consumers(id),
   local_path TEXT NOT NULL,
   default_branch TEXT NOT NULL DEFAULT 'main',
+  scm_connection_id TEXT,
+  connected_repository_id TEXT,
+  snapshot_id TEXT,
+  exact_commit TEXT,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS monitored_apis (
@@ -385,6 +389,83 @@ CREATE TABLE IF NOT EXISTS domain_events (
   UNIQUE (tenant_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS domain_events_aggregate_idx ON domain_events(tenant_id, aggregate_type, aggregate_id, event_sequence);
+
+CREATE TABLE IF NOT EXISTS scm_connections (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK (provider IN ('github', 'gitlab', 'local_git')),
+  credential_ref TEXT NOT NULL,
+  external_account_id TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT,
+  UNIQUE (tenant_id, provider, external_account_id)
+);
+CREATE INDEX IF NOT EXISTS scm_connections_tenant_idx ON scm_connections(tenant_id, provider);
+
+CREATE TABLE IF NOT EXISTS connected_repositories (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL REFERENCES scm_connections(id),
+  remote_id TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  name TEXT NOT NULL,
+  default_branch TEXT NOT NULL,
+  selected_branch TEXT NOT NULL,
+  environment TEXT NOT NULL,
+  retention_days INTEGER NOT NULL CHECK (retention_days > 0),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'degraded', 'revoked')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, connection_id, remote_id)
+);
+CREATE INDEX IF NOT EXISTS connected_repositories_tenant_idx ON connected_repositories(tenant_id, status);
+
+CREATE TABLE IF NOT EXISTS repository_snapshots (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  repository_id TEXT NOT NULL REFERENCES connected_repositories(id),
+  requested_ref TEXT NOT NULL,
+  resolved_sha TEXT NOT NULL,
+  manifest_sha256 TEXT NOT NULL,
+  storage_path TEXT NOT NULL,
+  submodules_policy TEXT NOT NULL CHECK (submodules_policy IN ('reject', 'pinned')),
+  lfs_policy TEXT NOT NULL CHECK (lfs_policy IN ('reject', 'pointer_only', 'fetch')),
+  sparse_paths_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  UNIQUE (tenant_id, repository_id, resolved_sha, manifest_sha256)
+);
+CREATE INDEX IF NOT EXISTS repository_snapshots_tenant_idx ON repository_snapshots(tenant_id, repository_id, created_at);
+
+CREATE TABLE IF NOT EXISTS repository_snapshot_policies (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL UNIQUE REFERENCES repository_snapshots(id),
+  codeowners_json TEXT NOT NULL,
+  ci_files_json TEXT NOT NULL,
+  verification_commands_json TEXT NOT NULL,
+  protected_branch_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scm_connection_health (
+  connection_id TEXT PRIMARY KEY REFERENCES scm_connections(id),
+  tenant_id TEXT NOT NULL,
+  configured INTEGER NOT NULL,
+  authenticated INTEGER NOT NULL,
+  read_access INTEGER NOT NULL,
+  write_access INTEGER NOT NULL,
+  webhook_ok INTEGER NOT NULL,
+  ci_visible INTEGER NOT NULL,
+  last_sync_at TEXT,
+  last_delivery_at TEXT,
+  revoked INTEGER NOT NULL,
+  error_code TEXT,
+  checked_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS scm_connection_health_tenant_idx ON scm_connection_health(tenant_id, checked_at);
 `;
 
 
@@ -510,6 +591,10 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "github_webhook_deliveries", name: "updated_at", sql: "TEXT" },
     { table: "github_webhook_deliveries", name: "attempts", sql: "INTEGER NOT NULL DEFAULT 1" },
     { table: "github_webhook_deliveries", name: "last_error", sql: "TEXT" },
+    { table: "consumer_repos", name: "scm_connection_id", sql: "TEXT" },
+    { table: "consumer_repos", name: "connected_repository_id", sql: "TEXT" },
+    { table: "consumer_repos", name: "snapshot_id", sql: "TEXT" },
+    { table: "consumer_repos", name: "exact_commit", sql: "TEXT" },
   ];
   for (const column of additiveColumns) {
     const columns = all<{ name: string }>(
@@ -674,6 +759,8 @@ function installTrustImmutability(db: AppDb) {
     "evidence_records",
     "review_decisions",
     "domain_events",
+    "repository_snapshots",
+    "repository_snapshot_policies",
   ]) {
     run(
       db,
@@ -1430,6 +1517,25 @@ export {
   listReviewDecisions,
   verifyDomainEventIntegrity,
 } from "./trust.js";
+
+export {
+  bindConsumerRepoSnapshot,
+  getConnectedRepository,
+  getRepositorySnapshotPolicy,
+  getScmConnection,
+  getLatestRepositorySnapshot,
+  getScmConnectionHealth,
+  insertConnectedRepository,
+  insertRepositorySnapshot,
+  insertRepositorySnapshotPolicy,
+  listConnectedRepositories,
+  listRepositorySnapshots,
+  listScmConnections,
+  revokeScmConnection,
+  setScmConnectionHealth,
+  updateConnectedRepositoryStatus,
+  upsertScmConnection,
+} from "./repository.js";
 
 export type SuppressedPattern = {
   id: string;

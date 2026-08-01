@@ -422,12 +422,12 @@ Execution contract: `C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\me
 - [ ] Add attributable human and service actor identities without weakening existing API key authentication.
 - [ ] Make immutable source, snapshot, evidence, verification, candidate, review, artifact, and typed event contracts tenant scoped.
 - [ ] Add audit correlation, causation, integrity chaining, retention, and replay verification.
-- [ ] Add a credential provider abstraction with rotation, expiry, revocation, and access audit boundaries.
+- [x] Add a credential provider abstraction with rotation, expiry, revocation, and access audit boundaries.
 - [ ] Add adversarial tenant isolation tests across API, queue, database, graph, artifacts, snapshots, webhooks, caches, and logs.
 
 ### Gate 2: Production repository connections
 
-- [ ] Add an SCM neutral installation, repository, branch, exact commit snapshot, environment, ownership, and health model.
+- [x] Add an SCM neutral installation, repository, branch, exact commit snapshot, environment, ownership, and health model.
 - [ ] Add isolated exact commit checkout with branch drift, submodule, LFS, sparse checkout, retention, and deletion policies.
 - [ ] Bind GitHub App installation credentials to snapshot and draft pull request delivery.
 - [ ] Discover and version CODEOWNERS, protected branch expectations, CI definitions, and approved verification commands.
@@ -529,4 +529,13 @@ Gate 1 and Gate 2 safety slice in progress:
 - Scoped graph query, natural language query execution, pattern promotion, and GNN export to the authenticated tenant graph view.
 - Preserved divergent GitHub App recovery branches for human reconciliation and used the connected repository default branch for delivery.
 
-Focused evidence: database trust tests, legacy audit migration, Warden pipeline evidence assertions, API CI evidence tests, GitHub App recovery tests, graph tenant isolation tests, and all affected package typechecks pass. The gate remains open for full human session and membership identity, credential lifecycle, complete storage boundary isolation, retention, SCM neutral repository connections, exact commit snapshots, and a private canary.
+Focused evidence: database trust tests, legacy audit migration, Warden pipeline evidence assertions, API CI evidence tests, GitHub App recovery tests, graph tenant isolation tests, and all affected package typechecks pass. The gates remain open for full human session and membership identity, complete storage boundary isolation, snapshot deletion enforcement, remote GitHub and GitLab snapshot adapters, and a private canary.
+
+Gate 1 to Gate 3 implementation update:
+
+- Added an audited credential broker with provider references, audience checks, expiry, immutable revocation metadata, rotation state, redacted material, and fail closed audit behavior.
+- Added a provider neutral repository source contract and a deterministic local Git provider with exact SHA resolution, branch drift checks, content hashed read only snapshots, and explicit dirty worktree, submodule, LFS, symlink, traversal, collision, mutation, and size policies.
+- Added tenant scoped connection, repository, snapshot, discovered policy, and capability health persistence. API responses omit credentials and local storage paths.
+- Added admin protected repository connection APIs and replaced the static platform readiness claim with observed per capability status.
+- Added complete bounded dependency path enumeration with stable ordering, cycle terminals, tenant isolation, and explicit truncation evidence.
+- A local Git integration canary passes from clean repository through exact commit snapshot, ownership and CI discovery, persistence, consumer binding, and truthful platform health. Real GitHub and GitLab snapshot adapters and a private customer canary remain external acceptance gates.

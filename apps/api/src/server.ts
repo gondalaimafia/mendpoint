@@ -145,7 +145,6 @@ import {
   createVmSandbox,
   vmStatusReport,
   startLiveSandbox,
-  listScmProviders,
   recentAlerts,
   evaluateLatencyAlerts,
   evaluateDogfoodAlerts,
@@ -217,6 +216,13 @@ import {
   corsOrigins,
 } from "./production.js";
 import { canonicalRepoPath, resolveRepoKey } from "./repo-path.js";
+import {
+  materializeConnectedRepository,
+  registerConnectedRepository,
+  registerScmConnection,
+  revokeConnection,
+  scmOverview,
+} from "./repository-connections.js";
 
 // Fail fast in production if env invalid
 assertApiEnvOrExit();
@@ -899,7 +905,113 @@ app.post("/platform/live-sandbox", async (c) => {
   return c.json(out);
 });
 
-app.get("/platform/scm", (c) => c.json({ providers: listScmProviders() }));
+app.get("/platform/scm", (c) => c.json(scmOverview(db, requestTenantId(c))));
+
+app.post("/platform/scm/connections", async (c) => {
+  try {
+    const body = await c.req.json<{
+      provider?: unknown;
+      credentialRef?: unknown;
+      externalAccountId?: unknown;
+      displayName?: unknown;
+    }>();
+    const connection = registerScmConnection(db, {
+      tenantId: requestTenantId(c),
+      provider: body.provider,
+      credentialRef: body.credentialRef,
+      externalAccountId: body.externalAccountId,
+      displayName: body.displayName,
+    });
+    requestAudit(c, {
+      actor: "operator",
+      action: "scm.connection.registered",
+      resourceType: "scm_connection",
+      resourceId: connection.id,
+      metadata: { provider: connection.provider },
+    });
+    return c.json(connection, 201);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+  }
+});
+
+app.post("/platform/scm/repositories", async (c) => {
+  try {
+    const body = await c.req.json<{
+      connectionId?: string;
+      remoteId?: unknown;
+      owner?: unknown;
+      name?: unknown;
+      defaultBranch?: unknown;
+      selectedBranch?: unknown;
+      environment?: unknown;
+      retentionDays?: unknown;
+    }>();
+    const repository = registerConnectedRepository(db, {
+      tenantId: requestTenantId(c),
+      connectionId: body.connectionId ?? "",
+      remoteId: body.remoteId,
+      owner: body.owner,
+      name: body.name,
+      defaultBranch: body.defaultBranch,
+      selectedBranch: body.selectedBranch,
+      environment: body.environment,
+      retentionDays: body.retentionDays,
+    });
+    requestAudit(c, {
+      actor: "operator",
+      action: "scm.repository.registered",
+      resourceType: "connected_repository",
+      resourceId: repository.id,
+      metadata: { connectionId: repository.connection_id },
+    });
+    return c.json(repository, 201);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+  }
+});
+
+app.post("/platform/scm/repositories/:id/snapshots", async (c) => {
+  try {
+    const body = await c.req
+      .json<{ consumerRepoId?: string }>()
+      .catch((): { consumerRepoId?: string } => ({}));
+    const result = await materializeConnectedRepository(db, {
+      tenantId: requestTenantId(c),
+      repositoryId: c.req.param("id"),
+      consumerRepoId: body.consumerRepoId,
+    });
+    requestAudit(c, {
+      actor: "operator",
+      action: "repository.snapshot.materialized",
+      resourceType: "repository_snapshot",
+      resourceId: result.snapshot.id,
+      metadata: {
+        exactCommit: result.snapshot.exactCommit,
+        manifestSha256: result.snapshot.manifestSha256,
+        reused: result.reused,
+      },
+    });
+    return c.json(result, result.reused ? 200 : 201);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+  }
+});
+
+app.post("/platform/scm/connections/:id/revoke", (c) => {
+  try {
+    const connection = revokeConnection(db, requestTenantId(c), c.req.param("id"));
+    requestAudit(c, {
+      actor: "operator",
+      action: "scm.connection.revoked",
+      resourceType: "scm_connection",
+      resourceId: connection.id,
+    });
+    return c.json(connection);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+  }
+});
 
 app.get("/platform/alerts", (c) => c.json({ alerts: recentAlerts(50) }));
 

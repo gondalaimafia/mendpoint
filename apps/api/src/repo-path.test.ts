@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { canonicalRepoPath, resolveRepoKey } from "./repo-path.js";
+import {
+  canonicalRepoPath,
+  repositorySnapshotDestination,
+  resolveRepoKey,
+} from "./repo-path.js";
 
 const roots: string[] = [];
 
@@ -64,5 +68,27 @@ describe("consumer repository tenant boundary", () => {
     expect(() => resolveRepoKey(".", "tenant-a", env)).toThrow(
       "repo_path_outside_tenant_root",
     );
+  });
+
+  it("allocates tenant isolated snapshot destinations", () => {
+    const root = fixtureRoot();
+    expect(
+      repositorySnapshotDestination("snapshot-1", "tenant-a", {
+        NODE_ENV: "production",
+        MENDPOINT_REPOS_DIR: root,
+      }),
+    ).toBe(join(root, "tenant-a", ".mendpoint-snapshots", "snapshot-1"));
+    expect(
+      repositorySnapshotDestination("snapshot-1", "tenant-a", {
+        NODE_ENV: "test",
+        MENDPOINT_REPOS_DIR: root,
+      }),
+    ).toBe(join(root, ".mendpoint-snapshots", "tenant-a", "snapshot-1"));
+    expect(() =>
+      repositorySnapshotDestination("../escape", "tenant-a", {
+        NODE_ENV: "test",
+        MENDPOINT_REPOS_DIR: root,
+      }),
+    ).toThrow("snapshot_id_not_path_safe");
   });
 });

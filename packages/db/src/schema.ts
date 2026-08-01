@@ -95,7 +95,81 @@ export type ConsumerRepo = {
   consumer_id: string;
   local_path: string;
   default_branch: string;
+  scm_connection_id: string | null;
+  connected_repository_id: string | null;
+  snapshot_id: string | null;
+  exact_commit: string | null;
   created_at: string;
+};
+
+export type ScmConnectionRow = {
+  id: string;
+  tenant_id: string;
+  provider: "github" | "gitlab" | "local_git";
+  credential_ref: string;
+  external_account_id: string;
+  display_name: string;
+  created_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+};
+
+export type ConnectedRepositoryRow = {
+  id: string;
+  tenant_id: string;
+  connection_id: string;
+  remote_id: string;
+  owner: string;
+  name: string;
+  default_branch: string;
+  selected_branch: string;
+  environment: string;
+  retention_days: number;
+  status: "pending" | "ready" | "degraded" | "revoked";
+  created_at: string;
+  updated_at: string;
+};
+
+export type RepositorySnapshotRow = {
+  id: string;
+  tenant_id: string;
+  repository_id: string;
+  requested_ref: string;
+  resolved_sha: string;
+  manifest_sha256: string;
+  storage_path: string;
+  submodules_policy: "reject" | "pinned";
+  lfs_policy: "reject" | "pointer_only" | "fetch";
+  sparse_paths_json: string;
+  created_at: string;
+  expires_at: string;
+};
+
+export type RepositorySnapshotPolicyRow = {
+  id: string;
+  tenant_id: string;
+  snapshot_id: string;
+  codeowners_json: string;
+  ci_files_json: string;
+  verification_commands_json: string;
+  protected_branch_json: string;
+  created_at: string;
+};
+
+export type ScmConnectionHealthRow = {
+  connection_id: string;
+  tenant_id: string;
+  configured: number;
+  authenticated: number;
+  read_access: number;
+  write_access: number;
+  webhook_ok: number;
+  ci_visible: number;
+  last_sync_at: string | null;
+  last_delivery_at: string | null;
+  revoked: number;
+  error_code: string | null;
+  checked_at: string;
 };
 
 export type MonitoredApi = {

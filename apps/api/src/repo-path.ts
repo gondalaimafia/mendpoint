@@ -75,3 +75,18 @@ export function resolveRepoKey(
       : resolve(root, repoKey);
   return canonicalRepoPath(candidate, tenantId, env);
 }
+
+export function repositorySnapshotDestination(
+  snapshotId: string,
+  tenantId: string,
+  env: RepoPathEnv = process.env,
+): string {
+  const root = configuredReposRoot(env);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(snapshotId)) {
+    throw new Error("snapshot_id_not_path_safe");
+  }
+  const safeTenant = safeTenantId(tenantId);
+  return env.NODE_ENV === "production"
+    ? resolve(root, safeTenant, ".mendpoint-snapshots", snapshotId)
+    : resolve(root, ".mendpoint-snapshots", safeTenant, snapshotId);
+}
