@@ -63,4 +63,5 @@ export type DifferentialResult = {
   targetOutput: unknown;
   equal: boolean;
   diffSummary: string;
+  comparisonError?: string;
 };
