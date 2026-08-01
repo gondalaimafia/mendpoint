@@ -7,6 +7,7 @@ import { dirname } from "node:path";
 import type { GraphLearnDb } from "./store.js";
 import { listNodesByKind, edgesFrom } from "./store.js";
 import type { GlNodeKind } from "./schema.js";
+import { createTenantGraphView, type GraphTenantScope } from "./tenant-scope.js";
 
 const NODE_KINDS: GlNodeKind[] = [
   "Provider",
@@ -59,7 +60,18 @@ function kindIndexOf(kinds: string[]): Record<string, number> {
   return m;
 }
 
-export function exportGnnFeatures(db: GraphLearnDb): GnnExport {
+export function exportGnnFeatures(
+  db: GraphLearnDb,
+  scope?: GraphTenantScope,
+): GnnExport {
+  if (scope) {
+    const tenantView = createTenantGraphView(db, scope);
+    try {
+      return exportGnnFeatures(tenantView);
+    } finally {
+      tenantView.raw.close();
+    }
+  }
   const kindIndex = kindIndexOf(NODE_KINDS as string[]);
   const edgeKinds = new Set<string>();
   const nodes: GnnNodeFeature[] = [];

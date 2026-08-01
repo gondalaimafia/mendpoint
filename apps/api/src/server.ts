@@ -175,6 +175,7 @@ import {
   kuzuStatus,
   exportSqliteToKuzuScript,
   type GraphQuery,
+  type GraphTenantScope,
 } from "@mendpoint/graph-learn";
 import {
   collectDogfood,
@@ -186,6 +187,10 @@ import {
   savePlanHitl,
   type PlanPatch,
 } from "@mendpoint/harness";
+import {
+  resolveCiHarnessEvidence,
+  type CiHarnessEvidence,
+} from "./ci-check.js";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
 import { runWarden } from "@mendpoint/agent";
@@ -243,6 +248,13 @@ function requestTenantId(c: Context<ApiEnv>): string {
 
 function requestConsumerIds(c: Context<ApiEnv>): string[] {
   return listConsumers(db, requestTenantId(c)).map((consumer) => consumer.id);
+}
+
+function requestGraphTenantScope(c: Context<ApiEnv>): GraphTenantScope {
+  return {
+    tenantId: requestTenantId(c),
+    consumerIds: requestConsumerIds(c),
+  };
 }
 
 function tenantConsumerRepo(consumerId: string, tenantId: string) {
@@ -708,7 +720,11 @@ app.post("/graph-learn/query", async (c) => {
   try {
     const body = (await c.req.json()) as GraphQuery;
     if (!body?.op) return c.json({ error: "op required" }, 400);
-    const result = runGraphQuery(getGraphLearnDb(), body);
+    const result = runGraphQuery(
+      getGraphLearnDb(),
+      body,
+      requestGraphTenantScope(c),
+    );
     return c.json({
       ...result,
       markdown: formatQueryForPlanner(result),
@@ -724,7 +740,11 @@ app.post("/graph-learn/pick", async (c) => {
   if (!body.q) return c.json({ error: "q required" }, 400);
   const pick = pickGraphQuery(body.q);
   if (body.run) {
-    const result = runGraphQuery(getGraphLearnDb(), pick.query);
+    const result = runGraphQuery(
+      getGraphLearnDb(),
+      pick.query,
+      requestGraphTenantScope(c),
+    );
     return c.json({
       pick,
       result: { ...result, markdown: formatQueryForPlanner(result) },
@@ -734,7 +754,11 @@ app.post("/graph-learn/pick", async (c) => {
 });
 
 app.post("/graph-learn/promote-patterns", (c) => {
-  const promotions = promotePatterns(getGraphLearnDb());
+  const promotions = promotePatterns(
+    getGraphLearnDb(),
+    {},
+    requestGraphTenantScope(c),
+  );
   return c.json({ count: promotions.length, promotions });
 });
 
@@ -795,7 +819,10 @@ app.post("/graph-learn/incremental", async (c) => {
 });
 
 app.get("/graph-learn/gnn-export", (c) => {
-  const exp = exportGnnFeatures(getGraphLearnDb());
+  const exp = exportGnnFeatures(
+    getGraphLearnDb(),
+    requestGraphTenantScope(c),
+  );
   return c.json({
     exportedAt: exp.exportedAt,
     nodes: exp.nodes.length,
@@ -1404,13 +1431,7 @@ app.post("/prs/:id/ci-check", async (c) => {
   const findings = listFindingsForChange(db, pr.change_id, requestTenantId(c));
   const body = await c.req
     .json<{
-      harness?: Array<{
-        name: string;
-        passed: boolean;
-        recall?: number;
-        threshold?: number;
-        detail?: string;
-      }>;
+      harness?: CiHarnessEvidence[];
       post?: boolean;
     }>()
     .catch(() => ({} as { harness?: never; post?: boolean }));
@@ -1422,13 +1443,7 @@ app.post("/prs/:id/ci-check", async (c) => {
     title: pr.title,
     risk: pr.risk,
     findings: findings.length,
-    harness: body.harness ?? [
-      { name: "TypeScript", passed: true, recall: 1, threshold: 0.7 },
-      { name: "Python", passed: true, recall: 1, threshold: 0.7 },
-      { name: "Go", passed: true, recall: 1, threshold: 0.7 },
-      { name: "Java", passed: true, recall: 1, threshold: 0.7 },
-      { name: "Ruby", passed: true, recall: 1, threshold: 0.7 },
-    ],
+    harness: resolveCiHarnessEvidence(body.harness),
     policyNotes: ["Auto-merge disabled", "Human review required"],
   };
   const commentBody = formatCiCheckComment(input);

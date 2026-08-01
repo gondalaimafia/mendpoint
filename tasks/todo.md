@@ -518,3 +518,15 @@ Gate 0 implementation is complete pending the full repository matrix and protect
 `npm run spec:check` validates the manifest, exact ID inventory, workstream references, acceptance and evidence lineage, release and claim consistency, evidence paths, and canonical specification digest. `npm run ga:check` invokes this validator. The existing CI deployment job depends on the release gate, so contract drift blocks deployment without a deploy workflow change.
 
 No later gate is complete yet. Code scaffolds and fixture only tests do not close customer proof, billing, identity provider, model training, infrastructure, security review, or compliance gates.
+
+Gate 1 and Gate 2 safety slice in progress:
+
+- Added tenant scoped human, service, API key, and webhook principal contracts.
+- Added immutable artifact, evidence, review, and typed domain event records with tenant ownership and append only database enforcement.
+- Added per tenant sequence and SHA 256 integrity chains for domain events and the existing audit ledger, including legacy row migration, conflicting replay rejection, and integrity verification.
+- Wired Warden source OpenAPI documents, candidate edits, verification bundles, evidence records, service attribution, and status transitions into the immutable trust store.
+- Removed fabricated passing CI evidence. Missing verifier evidence now fails closed.
+- Scoped graph query, natural language query execution, pattern promotion, and GNN export to the authenticated tenant graph view.
+- Preserved divergent GitHub App recovery branches for human reconciliation and used the connected repository default branch for delivery.
+
+Focused evidence: database trust tests, legacy audit migration, Warden pipeline evidence assertions, API CI evidence tests, GitHub App recovery tests, graph tenant isolation tests, and all affected package typechecks pass. The gate remains open for full human session and membership identity, credential lifecycle, complete storage boundary isolation, retention, SCM neutral repository connections, exact commit snapshots, and a private canary.

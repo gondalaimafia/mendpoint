@@ -23,6 +23,8 @@ export {
   deleteNode,
   deleteEdge,
   deleteFileSubgraph,
+  listAllNodes,
+  listAllEdges,
   listNodesByKind,
   edgesFrom,
   edgesTo,
@@ -30,6 +32,13 @@ export {
   countStats,
   type GraphLearnDb,
 } from "./store.js";
+
+export {
+  createTenantGraphView,
+  graphNodeBelongsToTenant,
+  tenantPatternSuccessRows,
+  type GraphTenantScope,
+} from "./tenant-scope.js";
 
 export {
   ingestControlPlane,

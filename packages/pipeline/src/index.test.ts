@@ -14,7 +14,12 @@ import {
   listChanges,
   listFindingsForChange,
   listAudit,
+  listArtifactManifests,
+  listDomainEvents,
+  listEvidenceRecords,
   listSuppressedPatterns,
+  verifyAuditIntegrity,
+  verifyDomainEventIntegrity,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
 import { MockGitHubDelivery } from "@mendpoint/github";
@@ -71,7 +76,13 @@ function seedProviderVersions() {
 function addMonitoredConsumer(
   db: ReturnType<typeof createDb>,
   providerId: string,
-  input: { name: string; repo: string; localPath: string; tenantId?: string },
+  input: {
+    name: string;
+    repo: string;
+    localPath: string;
+    tenantId?: string;
+    defaultBranch?: string;
+  },
 ) {
   const consumerId = newId();
   insertConsumer(db, {
@@ -87,7 +98,7 @@ function addMonitoredConsumer(
     id: newId(),
     consumerId,
     localPath: input.localPath,
-    defaultBranch: "main",
+    defaultBranch: input.defaultBranch ?? "main",
     createdAt: nowIso(),
   });
   insertMonitoredApi(db, {
@@ -141,6 +152,60 @@ describe("pipeline", () => {
         graphDb: testGraphDb(),
       }),
     ).rejects.toThrow("Unknown from version missing");
+  });
+
+  it("creates the migration branch from the persisted default branch", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, {
+      name: "Trunk Shop",
+      repo: "trunk-shop",
+      localPath: shop,
+      defaultBranch: "trunk",
+    });
+
+    class RecordingDelivery extends MockGitHubDelivery {
+      readonly sourceBranches: Array<string | undefined> = [];
+
+      override async createBranch(
+        owner: string,
+        repo: string,
+        branch: string,
+        fromBranch?: string,
+      ): Promise<void> {
+        this.sourceBranches.push(fromBranch);
+        await super.createBranch(owner, repo, branch);
+      }
+    }
+
+    const deliveryRoot = join(
+      tmpdir(),
+      `mendpoint-pipe-default-branch-${Date.now()}-${Math.random()}`,
+    );
+    dirs.push(deliveryRoot);
+    const github = new RecordingDelivery(deliveryRoot);
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github,
+      persistIndex: false,
+      contractCases: [
+        {
+          id: "fixture",
+          name: "fixture",
+          requiredKeys: ["id"],
+          responseBody: { id: "ok" },
+        },
+      ],
+      securityScanOk: true,
+    });
+
+    expect(report.consumers[0]?.prStatus).toBe("draft");
+    expect(github.sourceBranches).toEqual(["trunk"]);
   });
 
   it("runs end-to-end on fixtures", async () => {
@@ -250,6 +315,30 @@ describe("pipeline", () => {
     expect(listAudit(db).some((a) => a.action === "pr.draft_opened")).toBe(true);
 
     const prId = report.consumers[0].prId!;
+    const artifacts = listArtifactManifests(db, "tenant_default");
+    expect(artifacts.map((artifact) => artifact.kind)).toEqual(
+      expect.arrayContaining([
+        "change-source-openapi",
+        "candidate-edit",
+        "verification-result",
+      ]),
+    );
+    expect(artifacts.every((artifact) => artifact.content_text)).toBe(true);
+    const evidence = listEvidenceRecords(
+      db,
+      "tenant_default",
+      "migration_pr",
+      prId,
+    );
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0].verdict).toBe("passed");
+    expect(listArtifactManifests(db, "tenant_other")).toEqual([]);
+    expect(listDomainEvents(db, "tenant_default", "migration_pr", prId).map((event) => event.event_type)).toEqual([
+      "migration_pr.candidate_recorded",
+      "migration_pr.draft",
+    ]);
+    expect(verifyDomainEventIntegrity(db, "tenant_default").ok).toBe(true);
+    expect(verifyAuditIntegrity(db, "tenant_default").ok).toBe(true);
     await applyPrFeedback(db, prId, "closed", {
       tenantId: "tenant_default",
       graphDb,

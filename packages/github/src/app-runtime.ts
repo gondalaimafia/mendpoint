@@ -93,6 +93,7 @@ export async function defaultFetchInstallationToken(
 
 export class GitHubAppDelivery implements GitHubDelivery {
   private tokenCache = new Map<string, { token: string; expires: number }>();
+  private readonly existingBranches = new Set<string>();
 
   constructor(
     private creds: AppCredentials,
@@ -115,6 +116,34 @@ export class GitHubAppDelivery implements GitHubDelivery {
     return new Octokit({ auth: tok.token, userAgent: "mendpoint-app" });
   }
 
+  private async branchMatchesFiles(
+    octokit: Octokit,
+    owner: string,
+    repo: string,
+    branch: string,
+    files: FileEdit[],
+  ): Promise<boolean> {
+    try {
+      const matches = await Promise.all(
+        files.map(async (file) => {
+          const { data } = await octokit.repos.getContent({
+            owner,
+            repo,
+            path: file.path.replace(/\\/g, "/"),
+            ref: branch,
+          });
+          if (Array.isArray(data) || !("content" in data) || typeof data.content !== "string") {
+            return false;
+          }
+          return Buffer.from(data.content, "base64").toString("utf8") === file.content;
+        }),
+      );
+      return matches.every(Boolean);
+    } catch {
+      return false;
+    }
+  }
+
   async createBranch(
     owner: string,
     repo: string,
@@ -135,7 +164,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/already exists/i.test(msg)) {
-        await o.git.updateRef({ owner, repo, ref: `heads/${branch}`, sha: baseSha, force: true });
+        this.existingBranches.add(`${owner}/${repo}:${branch}`);
         return;
       }
       throw e;
@@ -151,6 +180,13 @@ export class GitHubAppDelivery implements GitHubDelivery {
   ): Promise<void> {
     if (!files.length) return;
     const o = await this.octokit();
+    const branchKey = `${owner}/${repo}:${branch}`;
+    if (this.existingBranches.has(branchKey)) {
+      if (await this.branchMatchesFiles(o, owner, repo, branch, files)) return;
+      throw new Error(
+        "Recovery branch content differs from the intended patch; human reconciliation required",
+      );
+    }
     const { data: ref } = await o.git.getRef({ owner, repo, ref: `heads/${branch}` });
     const branchSha = ref.object.sha;
     const { data: baseCommit } = await o.git.getCommit({ owner, repo, commit_sha: branchSha });

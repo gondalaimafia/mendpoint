@@ -192,6 +192,11 @@ CREATE INDEX IF NOT EXISTS impact_findings_consumer_idx ON impact_findings(consu
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
+  event_sequence INTEGER,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  prev_hash TEXT,
+  event_hash TEXT,
+  metadata_sha256 TEXT,
   actor TEXT NOT NULL,
   principal_id TEXT,
   api_key_id TEXT,
@@ -296,6 +301,90 @@ CREATE TABLE IF NOT EXISTS github_webhook_deliveries (
   attempts INTEGER NOT NULL DEFAULT 1,
   last_error TEXT
 );
+
+CREATE TABLE IF NOT EXISTS principals (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('human', 'service', 'api_key', 'webhook')),
+  subject TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  audience TEXT,
+  expires_at TEXT,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, kind, subject)
+);
+CREATE INDEX IF NOT EXISTS principals_tenant_idx ON principals(tenant_id, kind);
+
+CREATE TABLE IF NOT EXISTS artifact_manifests (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  media_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  storage_ref TEXT NOT NULL,
+  content_text TEXT,
+  producer_principal_id TEXT REFERENCES principals(id),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, kind, sha256)
+);
+CREATE INDEX IF NOT EXISTS artifact_manifests_tenant_idx ON artifact_manifests(tenant_id, kind, created_at);
+
+CREATE TABLE IF NOT EXISTS evidence_records (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  subject_type TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  artifact_id TEXT NOT NULL REFERENCES artifact_manifests(id),
+  input_artifact_id TEXT REFERENCES artifact_manifests(id),
+  producer_principal_id TEXT REFERENCES principals(id),
+  tool TEXT NOT NULL,
+  command TEXT,
+  tool_version TEXT,
+  commit_sha TEXT,
+  verdict TEXT NOT NULL CHECK (verdict IN ('passed', 'failed', 'unknown', 'waived')),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS evidence_records_subject_idx ON evidence_records(tenant_id, subject_type, subject_id, created_at);
+
+CREATE TABLE IF NOT EXISTS review_decisions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  subject_type TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  candidate_artifact_id TEXT NOT NULL REFERENCES artifact_manifests(id),
+  reviewer_principal_id TEXT NOT NULL REFERENCES principals(id),
+  decision TEXT NOT NULL CHECK (decision IN ('approve', 'reject', 'request_changes', 'regenerate', 'waive')),
+  rationale TEXT NOT NULL,
+  waiver_expires_at TEXT,
+  supersedes_id TEXT REFERENCES review_decisions(id),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS review_decisions_subject_idx ON review_decisions(tenant_id, subject_type, subject_id, created_at);
+
+CREATE TABLE IF NOT EXISTS domain_events (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  event_sequence INTEGER NOT NULL,
+  schema_version INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  aggregate_type TEXT NOT NULL,
+  aggregate_id TEXT NOT NULL,
+  actor_principal_id TEXT NOT NULL REFERENCES principals(id),
+  correlation_id TEXT NOT NULL,
+  causation_id TEXT,
+  idempotency_key TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  payload_sha256 TEXT NOT NULL,
+  prev_hash TEXT,
+  event_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, event_sequence),
+  UNIQUE (tenant_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS domain_events_aggregate_idx ON domain_events(tenant_id, aggregate_type, aggregate_id, event_sequence);
 `;
 
 
@@ -332,6 +421,9 @@ export function createDb(urlOrPath?: string): AppDb {
   raw.exec("PRAGMA temp_store = MEMORY;");
   raw.exec(DDL);
   migrateProvidersFeedColumns({ raw });
+  migrateAuditIntegrity({ raw });
+  migrateArtifactContent({ raw });
+  installTrustImmutability({ raw });
   return { raw };
 }
 
@@ -485,6 +577,133 @@ function migrateProvidersFeedColumns(db: AppDb) {
   }
 }
 
+function hashJson(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function auditHash(input: {
+  tenantId: string;
+  sequence: number;
+  schemaVersion: number;
+  previousHash: string | null;
+  id: string;
+  actor: string;
+  principalId: string | null;
+  apiKeyId: string | null;
+  requestId: string | null;
+  action: string;
+  resourceType: string;
+  resourceId: string | null;
+  metadataSha256: string;
+  createdAt: string;
+}): string {
+  return hashJson(input);
+}
+
+function migrateAuditIntegrity(db: AppDb) {
+  const additions = [
+    { name: "event_sequence", sql: "INTEGER" },
+    { name: "schema_version", sql: "INTEGER NOT NULL DEFAULT 1" },
+    { name: "prev_hash", sql: "TEXT" },
+    { name: "event_hash", sql: "TEXT" },
+    { name: "metadata_sha256", sql: "TEXT" },
+  ];
+  const columns = all<{ name: string }>(db, `PRAGMA table_info(audit_events)`).map(
+    (column) => column.name,
+  );
+  for (const addition of additions) {
+    if (!columns.includes(addition.name)) {
+      run(db, `ALTER TABLE audit_events ADD COLUMN ${addition.name} ${addition.sql}`);
+    }
+  }
+
+  const missing = get<{ count: number }>(
+    db,
+    `SELECT COUNT(*) AS count FROM audit_events
+     WHERE event_sequence IS NULL OR event_hash IS NULL OR metadata_sha256 IS NULL`,
+  )?.count ?? 0;
+  if (missing > 0) {
+    const rows = all<AuditEvent>(
+      db,
+      `SELECT * FROM audit_events ORDER BY tenant_id, created_at, id`,
+    );
+    const sequences = new Map<string, number>();
+    const previousHashes = new Map<string, string | null>();
+    for (const row of rows) {
+      const sequence = (sequences.get(row.tenant_id) ?? 0) + 1;
+      const previousHash = previousHashes.get(row.tenant_id) ?? null;
+      const metadataSha256 = hashJson(row.metadata_json ?? null);
+      const eventHash = auditHash({
+        tenantId: row.tenant_id,
+        sequence,
+        schemaVersion: 1,
+        previousHash,
+        id: row.id,
+        actor: row.actor,
+        principalId: row.principal_id,
+        apiKeyId: row.api_key_id,
+        requestId: row.request_id,
+        action: row.action,
+        resourceType: row.resource_type,
+        resourceId: row.resource_id,
+        metadataSha256,
+        createdAt: row.created_at,
+      });
+      run(
+        db,
+        `UPDATE audit_events
+         SET event_sequence = ?, schema_version = 1, prev_hash = ?, event_hash = ?, metadata_sha256 = ?
+         WHERE id = ?`,
+        [sequence, previousHash, eventHash, metadataSha256, row.id],
+      );
+      sequences.set(row.tenant_id, sequence);
+      previousHashes.set(row.tenant_id, eventHash);
+    }
+  }
+  run(
+    db,
+    `CREATE UNIQUE INDEX IF NOT EXISTS audit_events_tenant_sequence_uidx
+     ON audit_events(tenant_id, event_sequence)`,
+  );
+}
+
+function installTrustImmutability(db: AppDb) {
+  for (const table of [
+    "audit_events",
+    "artifact_manifests",
+    "evidence_records",
+    "review_decisions",
+    "domain_events",
+  ]) {
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_append_only_update
+       BEFORE UPDATE ON ${table}
+       BEGIN
+         SELECT RAISE(ABORT, '${table}_append_only');
+       END`,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_append_only_delete
+       BEFORE DELETE ON ${table}
+       BEGIN
+         SELECT RAISE(ABORT, '${table}_append_only');
+       END`,
+    );
+  }
+}
+
+function migrateArtifactContent(db: AppDb) {
+  const columns = all<{ name: string }>(
+    db,
+    `PRAGMA table_info(artifact_manifests)`,
+  ).map((column) => column.name);
+  if (!columns.includes("content_text")) {
+    run(db, `ALTER TABLE artifact_manifests ADD COLUMN content_text TEXT`);
+  }
+}
+
 function all<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T[] {
   return db.raw.prepare(sql).all(...params) as T[];
 }
@@ -511,26 +730,129 @@ export function recordAudit(
     resourceId?: string | null;
     metadata?: unknown;
   },
-) {
-  run(
+): string {
+  const id = input.id ?? newId();
+  const principalId = input.principalId ?? null;
+  const apiKeyId = input.apiKeyId ?? null;
+  const requestId = input.requestId ?? null;
+  const resourceId = input.resourceId ?? null;
+  const metadataJson = input.metadata === undefined ? null : JSON.stringify(input.metadata);
+  const metadataSha256 = hashJson(metadataJson);
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = get<AuditEvent>(db, `SELECT * FROM audit_events WHERE id = ?`, [id]);
+    if (existing) {
+      const same =
+        existing.tenant_id === input.tenantId &&
+        existing.actor === input.actor &&
+        existing.principal_id === principalId &&
+        existing.api_key_id === apiKeyId &&
+        existing.request_id === requestId &&
+        existing.action === input.action &&
+        existing.resource_type === input.resourceType &&
+        existing.resource_id === resourceId &&
+        existing.metadata_sha256 === metadataSha256;
+      if (!same) throw new Error("audit_event_id_conflict");
+      db.raw.exec("COMMIT");
+      return id;
+    }
+    const previous = get<{ event_sequence: number; event_hash: string }>(
+      db,
+      `SELECT event_sequence, event_hash FROM audit_events
+       WHERE tenant_id = ? ORDER BY event_sequence DESC LIMIT 1`,
+      [input.tenantId],
+    );
+    const sequence = (previous?.event_sequence ?? 0) + 1;
+    const previousHash = previous?.event_hash ?? null;
+    const createdAt = nowIso();
+    const eventHash = auditHash({
+      tenantId: input.tenantId,
+      sequence,
+      schemaVersion: 1,
+      previousHash,
+      id,
+      actor: input.actor,
+      principalId,
+      apiKeyId,
+      requestId,
+      action: input.action,
+      resourceType: input.resourceType,
+      resourceId,
+      metadataSha256,
+      createdAt,
+    });
+    run(
+      db,
+      `INSERT INTO audit_events
+       (id, tenant_id, event_sequence, schema_version, prev_hash, event_hash, metadata_sha256,
+        actor, principal_id, api_key_id, request_id, action, resource_type, resource_id,
+        metadata_json, created_at)
+       VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.tenantId,
+        sequence,
+        previousHash,
+        eventHash,
+        metadataSha256,
+        input.actor,
+        principalId,
+        apiKeyId,
+        requestId,
+        input.action,
+        input.resourceType,
+        resourceId,
+        metadataJson,
+        createdAt,
+      ],
+    );
+    db.raw.exec("COMMIT");
+    return id;
+  } catch (error) {
+    db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function verifyAuditIntegrity(
+  db: AppDb,
+  tenantId: string,
+): { ok: boolean; checked: number; error?: string } {
+  const rows = all<AuditEvent>(
     db,
-    `INSERT OR IGNORE INTO audit_events
-     (id, tenant_id, actor, principal_id, api_key_id, request_id, action, resource_type, resource_id, metadata_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      input.id ?? newId(),
-      input.tenantId,
-      input.actor,
-      input.principalId ?? null,
-      input.apiKeyId ?? null,
-      input.requestId ?? null,
-      input.action,
-      input.resourceType,
-      input.resourceId ?? null,
-      input.metadata ? JSON.stringify(input.metadata) : null,
-      nowIso(),
-    ],
+    `SELECT * FROM audit_events WHERE tenant_id = ? ORDER BY event_sequence`,
+    [tenantId],
   );
+  let previousHash: string | null = null;
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    const expectedSequence = index + 1;
+    if (row.event_sequence !== expectedSequence || row.prev_hash !== previousHash) {
+      return { ok: false, checked: index, error: `audit_chain_sequence:${row.id}` };
+    }
+    const metadataSha256 = hashJson(row.metadata_json ?? null);
+    const expectedHash = auditHash({
+      tenantId: row.tenant_id,
+      sequence: expectedSequence,
+      schemaVersion: row.schema_version,
+      previousHash,
+      id: row.id,
+      actor: row.actor,
+      principalId: row.principal_id,
+      apiKeyId: row.api_key_id,
+      requestId: row.request_id,
+      action: row.action,
+      resourceType: row.resource_type,
+      resourceId: row.resource_id,
+      metadataSha256,
+      createdAt: row.created_at,
+    });
+    if (row.metadata_sha256 !== metadataSha256 || row.event_hash !== expectedHash) {
+      return { ok: false, checked: index, error: `audit_chain_hash:${row.id}` };
+    }
+    previousHash = row.event_hash;
+  }
+  return { ok: true, checked: rows.length };
 }
 
 export function insertProvider(
@@ -1095,6 +1417,19 @@ export type { ProductMetrics } from "./metrics.js";
 
 export { buildExposureReport } from "./exposure.js";
 export type { ExposureReport } from "./exposure.js";
+
+export {
+  appendDomainEvent,
+  insertArtifactManifest,
+  insertEvidenceRecord,
+  insertPrincipal,
+  insertReviewDecision,
+  listArtifactManifests,
+  listDomainEvents,
+  listEvidenceRecords,
+  listReviewDecisions,
+  verifyDomainEventIntegrity,
+} from "./trust.js";
 
 export type SuppressedPattern = {
   id: string;

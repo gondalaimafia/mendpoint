@@ -3,6 +3,7 @@
  */
 import { upsertEdge, upsertNode, listNodesByKind, type GraphLearnDb } from "./store.js";
 import { runGraphQuery } from "./query.js";
+import { graphNodeBelongsToTenant, type GraphTenantScope } from "./tenant-scope.js";
 
 export type Promotion = {
   pattern: string;
@@ -23,13 +24,15 @@ export type PromoteOptions = {
 export function promotePatterns(
   db: GraphLearnDb,
   opts: PromoteOptions = {},
+  scope?: GraphTenantScope,
 ): Promotion[] {
   const minSamples = opts.minSamples ?? 2;
   const minSuccessRate = opts.minSuccessRate ?? 0.6;
-  const rates = runGraphQuery(db, {
-    op: "pattern_success_rates",
-    minSamples,
-  });
+  const rates = runGraphQuery(
+    db,
+    { op: "pattern_success_rates", minSamples },
+    scope,
+  );
   const out: Promotion[] = [];
 
   for (const row of rates.rows ?? []) {
@@ -37,12 +40,14 @@ export function promotePatterns(
     const successRate = Number(row.successRate ?? 0);
     const samples = Number(row.samples ?? 0);
     if (!pattern) continue;
-    const id = `pattern:${pattern.slice(0, 80).replace(/\s+/g, "_")}`;
+    const tenantPrefix = scope ? `${scope.tenantId}:` : "";
+    const id = `pattern:${tenantPrefix}${pattern.slice(0, 80).replace(/\s+/g, "_")}`;
     const promoted = successRate >= minSuccessRate && samples >= minSamples;
     upsertNode(db, {
       id,
       kind: "Pattern",
       label: pattern.slice(0, 120),
+      repo_id: scope ? `${scope.tenantId}:patterns` : undefined,
       props: {
         name: pattern,
         success_rate: successRate,
@@ -73,7 +78,10 @@ export function promotePatterns(
   }
 
   // Link campaigns to promoted patterns when present
-  for (const camp of listNodesByKind(db, "Campaign")) {
+  const campaigns = listNodesByKind(db, "Campaign").filter(
+    (campaign) => !scope || graphNodeBelongsToTenant(campaign, scope),
+  );
+  for (const camp of campaigns) {
     for (const p of out.filter((x) => x.promoted)) {
       upsertEdge(db, {
         id: `MATCHED_PATTERN:${camp.id}:${p.patternNodeId}`.slice(0, 240),
