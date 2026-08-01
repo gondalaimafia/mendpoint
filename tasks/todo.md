@@ -350,8 +350,8 @@ console warnings, errors, or document overflow at the desktop viewport.
 - [x] Train Transformer behavior through dependency aware planning, compatibility, rollout, rollback, and resume scenarios.
 - [x] Add capability, regression, and safety evaluators with release thresholds and actionable reports.
 - [x] Wire deterministic critical scenarios into the release gate without requiring live model credentials.
-- [ ] Run focused tests, full tests, typecheck, build, GA preflight, audit, and container E2E.
-- [ ] Commit, push, deploy through the protected release path, and verify production health.
+- [x] Run focused tests, full tests, typecheck, build, GA preflight, audit, and container E2E.
+- [x] Commit, push, deploy through the protected release path, and verify production health.
 
 ## Warden and Transformer capability acceptance criteria
 
@@ -389,5 +389,15 @@ input limits and graph validation live at the domain boundary; invalid API
 requests return a client error.
 
 The CI capability gate has no model or network dependency and fails on any
-corpus regression or critical safety failure. Full release verification and the
-protected deployment remain the final gate.
+corpus regression or critical safety failure. Pull request 3 passed unit tests,
+the capability gate, GA preflight, audit, typecheck, production build, API
+startup smoke, all production container builds, and the Playwright production
+journey with crash recovery. Main run 30717940803 deployed commit `ac5cb4d` and
+passed its production health step.
+
+Direct live verification returned 200 from `/livez` and `/healthz`. API
+readiness, API authentication, and the worker were healthy, with no active job,
+due recovery work, scheduled recovery work, dead letters, or expired leases.
+The public root returned the intended 307 redirect to access. Browser review
+rendered the operator access page with no console logs. Evidence is saved at
+`C:\Users\Talal\.codex\visualizations\2026\07\28\019faa95-ac3a-7743-af3d-4dcfed07ca3a\mendpoint-warden-transformer-live-2026-08-01.png`.
