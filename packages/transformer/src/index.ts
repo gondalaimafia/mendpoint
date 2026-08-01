@@ -61,3 +61,25 @@ export {
   type TransformerEvent,
   type TransformerEntityKind,
 } from "./control-plane-store.js";
+
+export type {
+  MigrationRecipeContract,
+  RecipeApplication,
+  RecipeFiles,
+  RecipeOperation,
+  RecipePrecondition,
+  RecipeReference,
+  RecipeTransform,
+  RecipeVerificationCommand,
+} from "./recipe.js";
+export {
+  NODE_RUNTIME_18_TO_20_RECIPE,
+  applyInverseOperations,
+  applyRecipe,
+  assertRecipePathAllowed,
+  getRecipe,
+  recipeFilesDigest,
+  recipeReference,
+  resolveRecipe,
+  validateRecipe,
+} from "./recipe.js";
