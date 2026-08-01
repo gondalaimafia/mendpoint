@@ -52,6 +52,16 @@ import {
   feedPollToApi,
   updateProviderFeedUrls,
   BILLING_PLANS,
+  adjustUsage,
+  createUsageEntitlement,
+  createUsagePriceVersion,
+  creditUsage,
+  getUsageSummary,
+  listUsageLedger,
+  reconcileUsageLedger,
+  releaseUsageReservation,
+  reserveUsage,
+  settleUsageReservation,
   listTenants,
   getTenant,
   getTenantBySlug,
@@ -152,6 +162,7 @@ import {
   can,
   permissionForRoute,
   estimateCost,
+  MCU_VERSION,
   setAlertPersistPath,
   defaultAlertPath,
 } from "@mendpoint/platform";
@@ -2332,6 +2343,265 @@ app.get("/policies/defaults", (c) =>
 // ─── Phase E: tenants + billing ──────────────────────────────────────────────
 
 app.get("/billing/plans", (c) => c.json(BILLING_PLANS));
+
+app.get("/billing/usage", (c) => {
+  const tenantId = requestTenantId(c);
+  const at = c.req.query("at") ?? nowIso();
+  try {
+    return c.json({
+      summary: getUsageSummary(db, tenantId, at),
+      entries: listUsageLedger(db, tenantId, 200),
+      reconciliation: reconcileUsageLedger(db, tenantId),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_query_failed";
+    return c.json({ error: message }, 400);
+  }
+});
+
+app.post("/billing/price-versions", async (c) => {
+  const body = await c.req.json<{
+    id?: string;
+    currency?: string;
+    pricePerMcuMoneyMicros?: number;
+    effectiveAt?: string;
+    expiresAt?: string | null;
+    contractReference?: string;
+  }>().catch(() => ({} as {
+    id?: string;
+    currency?: string;
+    pricePerMcuMoneyMicros?: number;
+    effectiveAt?: string;
+    expiresAt?: string | null;
+    contractReference?: string;
+  }));
+  try {
+    const price = createUsagePriceVersion(db, {
+      id: body.id ?? "",
+      tenantId: requestTenantId(c),
+      formulaVersion: MCU_VERSION,
+      currency: body.currency ?? "",
+      pricePerMcuMoneyMicros: body.pricePerMcuMoneyMicros ?? -1,
+      effectiveAt: body.effectiveAt ?? "",
+      expiresAt: body.expiresAt,
+      contractReference: body.contractReference ?? "",
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: "billing.price_version_created",
+      resourceType: "usage_price_version",
+      resourceId: price.id,
+      metadata: { formulaVersion: price.formulaVersion, currency: price.currency },
+    });
+    return c.json(price, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_price_failed";
+    return c.json({ error: message }, message.endsWith("_conflict") ? 409 : 400);
+  }
+});
+
+app.post("/billing/entitlements", async (c) => {
+  const body = await c.req.json<{
+    id?: string;
+    priceVersionId?: string;
+    quotaMcuMicros?: number;
+    features?: string[];
+    contractReference?: string;
+    periodStart?: string;
+    periodEnd?: string;
+  }>().catch(() => ({} as {
+    id?: string;
+    priceVersionId?: string;
+    quotaMcuMicros?: number;
+    features?: string[];
+    contractReference?: string;
+    periodStart?: string;
+    periodEnd?: string;
+  }));
+  try {
+    const entitlement = createUsageEntitlement(db, {
+      id: body.id ?? "",
+      tenantId: requestTenantId(c),
+      priceVersionId: body.priceVersionId ?? "",
+      quotaMcuMicros: body.quotaMcuMicros ?? -1,
+      features: body.features ?? [],
+      contractReference: body.contractReference ?? "",
+      periodStart: body.periodStart ?? "",
+      periodEnd: body.periodEnd ?? "",
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: "billing.entitlement_created",
+      resourceType: "usage_entitlement",
+      resourceId: entitlement.id,
+      metadata: { version: entitlement.version, quotaMcuMicros: entitlement.quotaMcuMicros },
+    });
+    return c.json(entitlement, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_entitlement_failed";
+    return c.json({ error: message }, message.endsWith("_conflict") ? 409 : 400);
+  }
+});
+
+app.post("/billing/usage/reservations", async (c) => {
+  const body = await c.req.json<{
+    idempotencyKey?: string;
+    taskId?: string;
+    campaignId?: string | null;
+    mcuMicros?: number;
+    reason?: string;
+  }>().catch(() => ({} as {
+    idempotencyKey?: string;
+    taskId?: string;
+    campaignId?: string | null;
+    mcuMicros?: number;
+    reason?: string;
+  }));
+  try {
+    const entry = reserveUsage(db, {
+      id: newId(),
+      tenantId: requestTenantId(c),
+      idempotencyKey: body.idempotencyKey ?? "",
+      taskId: body.taskId ?? "",
+      campaignId: body.campaignId,
+      mcuMicros: body.mcuMicros ?? -1,
+      reason: body.reason ?? "",
+      actorPrincipalId: c.get("trustPrincipalId"),
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: "billing.usage_reserved",
+      resourceType: "usage_ledger_entry",
+      resourceId: entry.id,
+      metadata: { taskId: entry.taskId, mcuMicros: entry.reservedMcuMicrosDelta },
+    });
+    return c.json(entry, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_reservation_failed";
+    return c.json(
+      { error: message },
+      message.includes("conflict") || message.includes("quota") || message.includes("required")
+        ? 409
+        : 400,
+    );
+  }
+});
+
+app.post("/billing/usage/reservations/:id/settle", async (c) => {
+  const body = await c.req.json<{
+    idempotencyKey?: string;
+    actualMcuMicros?: number;
+    invoiceReference?: string | null;
+    reason?: string;
+  }>().catch(() => ({} as {
+    idempotencyKey?: string;
+    actualMcuMicros?: number;
+    invoiceReference?: string | null;
+    reason?: string;
+  }));
+  try {
+    const entry = settleUsageReservation(db, {
+      id: newId(),
+      tenantId: requestTenantId(c),
+      idempotencyKey: body.idempotencyKey ?? "",
+      reservationId: c.req.param("id"),
+      actualMcuMicros: body.actualMcuMicros ?? -1,
+      invoiceReference: body.invoiceReference,
+      reason: body.reason ?? "",
+      actorPrincipalId: c.get("trustPrincipalId"),
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: "billing.usage_settled",
+      resourceType: "usage_ledger_entry",
+      resourceId: entry.id,
+      metadata: { reservationId: entry.reservationId, mcuMicros: entry.consumedMcuMicrosDelta },
+    });
+    return c.json(entry, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_settlement_failed";
+    return c.json({ error: message }, message.includes("not_found") ? 404 : 409);
+  }
+});
+
+app.post("/billing/usage/reservations/:id/release", async (c) => {
+  const body = await c.req.json<{ idempotencyKey?: string; reason?: string }>()
+    .catch(() => ({} as { idempotencyKey?: string; reason?: string }));
+  try {
+    const entry = releaseUsageReservation(db, {
+      id: newId(),
+      tenantId: requestTenantId(c),
+      idempotencyKey: body.idempotencyKey ?? "",
+      reservationId: c.req.param("id"),
+      reason: body.reason ?? "",
+      actorPrincipalId: c.get("trustPrincipalId"),
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: "billing.usage_released",
+      resourceType: "usage_ledger_entry",
+      resourceId: entry.id,
+      metadata: { reservationId: entry.reservationId },
+    });
+    return c.json(entry, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_release_failed";
+    return c.json({ error: message }, message.includes("not_found") ? 404 : 409);
+  }
+});
+
+app.post("/billing/usage/:kind", async (c) => {
+  const kind = c.req.param("kind");
+  if (kind !== "adjustments" && kind !== "credits") {
+    return c.json({ error: "usage_entry_kind_invalid" }, 404);
+  }
+  const body = await c.req.json<{
+    idempotencyKey?: string;
+    taskId?: string;
+    campaignId?: string | null;
+    mcuMicrosDelta?: number;
+    invoiceReference?: string | null;
+    reason?: string;
+  }>().catch(() => ({} as {
+    idempotencyKey?: string;
+    taskId?: string;
+    campaignId?: string | null;
+    mcuMicrosDelta?: number;
+    invoiceReference?: string | null;
+    reason?: string;
+  }));
+  try {
+    const operation = kind === "credits" ? creditUsage : adjustUsage;
+    const entry = operation(db, {
+      id: newId(),
+      tenantId: requestTenantId(c),
+      idempotencyKey: body.idempotencyKey ?? "",
+      taskId: body.taskId ?? "",
+      campaignId: body.campaignId,
+      mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
+      invoiceReference: body.invoiceReference,
+      reason: body.reason ?? "",
+      actorPrincipalId: c.get("trustPrincipalId"),
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: `billing.usage_${entry.entryType}`,
+      resourceType: "usage_ledger_entry",
+      resourceId: entry.id,
+      metadata: { taskId: entry.taskId, mcuMicros: entry.consumedMcuMicrosDelta },
+    });
+    return c.json(entry, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_adjustment_failed";
+    return c.json({ error: message }, message.includes("conflict") ? 409 : 400);
+  }
+});
 
 app.get("/tenants", (c) => {
   const principal = c.get("principal");

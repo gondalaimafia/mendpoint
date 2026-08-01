@@ -9,11 +9,13 @@
  * Exempt paths: /health, /webhooks/*
  */
 import type { Context, Next } from "hono";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
   countActiveApiKeys,
   claimDelegatedRequestNonce,
   findApiKeyByToken,
+  getPrincipalBySubject,
+  insertPrincipal,
   touchApiKey,
   type AppDb,
 } from "@mendpoint/db";
@@ -32,6 +34,7 @@ export type ApiVariables = {
   apiKeyId?: string;
   authScopes?: string[];
   principal?: Principal;
+  trustPrincipalId?: string;
   webhookDeliveryId?: string;
 };
 export type ApiEnv = { Variables: ApiVariables };
@@ -239,10 +242,27 @@ export function createAuthMiddleware(db: AppDb) {
       tenantId: key.tenant_id,
       role: roleFromApiKeyScopes(scopes),
     };
+    const trustKind = delegatedActor ? "human" : "api_key";
+    const trustSubject = delegatedActor ?? key.id;
+    const trustPrincipal =
+      getPrincipalBySubject(db, key.tenant_id, trustKind, trustSubject) ??
+      insertPrincipal(db, {
+        id: `principal-${createHash("sha256")
+          .update(`${key.tenant_id}\n${trustKind}\n${trustSubject}`)
+          .digest("hex")
+          .slice(0, 32)}`,
+        tenantId: key.tenant_id,
+        kind: trustKind,
+        subject: trustSubject,
+        displayName: delegatedActor ?? key.name,
+        audience: delegatedActor ? "operator-session" : "mendpoint-api",
+        createdAt: nowIso(),
+      });
     c.set("tenantId", key.tenant_id);
     c.set("apiKeyId", key.id);
     c.set("authScopes", scopes);
     c.set("principal", principal);
+    c.set("trustPrincipalId", trustPrincipal.id);
     return next();
   };
 }

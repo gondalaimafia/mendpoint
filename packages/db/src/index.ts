@@ -361,6 +361,92 @@ CREATE TABLE IF NOT EXISTS evidence_records (
   verdict TEXT NOT NULL CHECK (verdict IN ('passed', 'failed', 'unknown', 'waived')),
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS usage_price_versions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  formula_version TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  price_per_mcu_money_micros INTEGER NOT NULL CHECK (price_per_mcu_money_micros >= 0),
+  effective_at TEXT NOT NULL,
+  expires_at TEXT,
+  contract_reference TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, effective_at, id)
+);
+CREATE INDEX IF NOT EXISTS usage_price_versions_effective_idx
+  ON usage_price_versions(tenant_id, effective_at, expires_at);
+
+CREATE TABLE IF NOT EXISTS usage_entitlements (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  version INTEGER NOT NULL CHECK (version > 0),
+  price_version_id TEXT NOT NULL REFERENCES usage_price_versions(id),
+  quota_mcu_micros INTEGER NOT NULL CHECK (quota_mcu_micros >= 0),
+  features_json TEXT NOT NULL,
+  contract_reference TEXT NOT NULL,
+  period_start TEXT NOT NULL,
+  period_end TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, version)
+);
+CREATE INDEX IF NOT EXISTS usage_entitlements_period_idx
+  ON usage_entitlements(tenant_id, period_start, period_end, version);
+
+CREATE TABLE IF NOT EXISTS usage_ledger_entries (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  entry_type TEXT NOT NULL CHECK (
+    entry_type IN ('reservation', 'settlement', 'release', 'adjustment', 'credit')
+  ),
+  entitlement_id TEXT NOT NULL REFERENCES usage_entitlements(id),
+  idempotency_key TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  campaign_id TEXT,
+  reservation_id TEXT REFERENCES usage_ledger_entries(id),
+  price_version TEXT NOT NULL,
+  reserved_mcu_micros_delta INTEGER NOT NULL,
+  consumed_mcu_micros_delta INTEGER NOT NULL,
+  invoice_reference TEXT,
+  reason TEXT NOT NULL,
+  actor_principal_id TEXT,
+  entry_sequence INTEGER NOT NULL,
+  prev_hash TEXT,
+  entry_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, idempotency_key),
+  UNIQUE (tenant_id, entry_sequence)
+);
+CREATE INDEX IF NOT EXISTS usage_ledger_tenant_time_idx
+  ON usage_ledger_entries(tenant_id, entitlement_id, created_at, id);
+CREATE INDEX IF NOT EXISTS usage_ledger_task_idx
+  ON usage_ledger_entries(tenant_id, task_id, campaign_id);
+CREATE INDEX IF NOT EXISTS usage_ledger_reservation_idx
+  ON usage_ledger_entries(tenant_id, reservation_id);
+CREATE TRIGGER IF NOT EXISTS usage_entitlements_append_only_update
+BEFORE UPDATE ON usage_entitlements BEGIN
+  SELECT RAISE(ABORT, 'usage_entitlements_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_price_versions_append_only_update
+BEFORE UPDATE ON usage_price_versions BEGIN
+  SELECT RAISE(ABORT, 'usage_price_versions_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_price_versions_append_only_delete
+BEFORE DELETE ON usage_price_versions BEGIN
+  SELECT RAISE(ABORT, 'usage_price_versions_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_entitlements_append_only_delete
+BEFORE DELETE ON usage_entitlements BEGIN
+  SELECT RAISE(ABORT, 'usage_entitlements_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_ledger_entries_append_only_update
+BEFORE UPDATE ON usage_ledger_entries BEGIN
+  SELECT RAISE(ABORT, 'usage_ledger_entries_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_ledger_entries_append_only_delete
+BEFORE DELETE ON usage_ledger_entries BEGIN
+  SELECT RAISE(ABORT, 'usage_ledger_entries_append_only');
+END;
 CREATE INDEX IF NOT EXISTS evidence_records_subject_idx ON evidence_records(tenant_id, subject_type, subject_id, created_at);
 
 CREATE TABLE IF NOT EXISTS review_decisions (
@@ -1573,6 +1659,27 @@ export {
   updateConnectedRepositoryStatus,
   upsertScmConnection,
 } from "./repository.js";
+
+export type {
+  UsagePriceVersion,
+  UsageEntitlement,
+  UsageLedgerEntry,
+  UsageSummary,
+} from "./usage.js";
+export {
+  createUsagePriceVersion,
+  getUsagePriceVersion,
+  createUsageEntitlement,
+  getActiveUsageEntitlement,
+  reserveUsage,
+  settleUsageReservation,
+  releaseUsageReservation,
+  adjustUsage,
+  creditUsage,
+  getUsageSummary,
+  listUsageLedger,
+  reconcileUsageLedger,
+} from "./usage.js";
 
 export type SuppressedPattern = {
   id: string;

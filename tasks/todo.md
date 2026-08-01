@@ -490,7 +490,7 @@ Execution contract: `C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\me
 ### Gate 9: Economics and billing
 
 - [ ] Define a versioned migration compute unit formula and price change policy.
-- [ ] Add idempotent reservation, settlement, adjustment, credit, quota, entitlement, invoice reference, and reconciliation ledgers.
+- [x] Add idempotent reservation, settlement, adjustment, credit, quota, entitlement, invoice reference, and reconciliation ledgers.
 - [ ] Add contract pricing, invoice export or payment processor integration, taxes, credits, payment state, and dunning policy.
 - [ ] Add customer usage and finance gross margin views with independently reproducible invoice lines.
 
@@ -545,3 +545,4 @@ Gate 1 to Gate 3 implementation update:
 - The shared router now has a structured task and policy snapshot, deterministic executor selection, privacy, region, risk, quality, latency, and budget filters, provider and executor circuit breakers, policy bound fallbacks, and mandatory human handoff. Adversarial tests cover outage, exhausted budget, privacy bypass, policy weakening, malformed runtime input, and deterministic replay. Durable ledgers and Warden plus Transformer integration remain open.
 - The operator console now issues HMAC signed, eight hour sessions carrying a validated operator ID. Its API bridge binds that operator, request ID, method, and path to every upstream request, and the API rejects expired, tampered, replayed, or malformed delegation. This is accountable shared secret operator attribution, not enterprise human authentication; independent login, membership, SSO, and SCIM remain open.
 - Pull request review actions now require a delegated human identity, bind approve, reject, request changes, and regenerate decisions to the latest immutable candidate, preserve a supersession chain, and append an attributed domain event and audit record. The consumer review page exposes rationale and immutable history. Reviewer assignment, comments, native SCM reconciliation, and the separately signed expiring waiver workflow remain open.
+- Economics now has the versioned MCU v1 calculator, immutable tenant price versions and period entitlements, atomic quota reservation, idempotent settlement and release, adjustments, credits, invoice references, hash chained ledger integrity, reconciliation, attributable API mutations, and a tenant customer usage view. Formula change control and examples, reservation expiry, component actual evidence, processor or invoice export integration, tax and dunning policy, provider COGS, and the finance margin view remain open.

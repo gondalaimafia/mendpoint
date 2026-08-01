@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
-import { createApiKey, createDb } from "@mendpoint/db";
+import { createApiKey, createDb, getPrincipalBySubject } from "@mendpoint/db";
 import {
   createAuthMiddleware,
   delegatedActorSignature,
@@ -80,6 +80,9 @@ describe("API authentication identity", () => {
       role: "owner",
     });
     expect(body.scopes).toEqual(["*"]);
+    expect(getPrincipalBySubject(db, "tenant-a", "api_key", created.id)).toMatchObject({
+      audience: "mendpoint-api",
+    });
   });
 
   it("fails closed for malformed scopes and enforces explicit permissions", () => {
@@ -122,6 +125,9 @@ describe("API authentication identity", () => {
     expect(accepted.status).toBe(200);
     await expect(accepted.json()).resolves.toMatchObject({
       principal: { id: `human:${actor}`, tenantId: "tenant-a", role: "owner" },
+    });
+    expect(getPrincipalBySubject(db, "tenant-a", "human", actor)).toMatchObject({
+      audience: "operator-session",
     });
 
     const tampered = await app.request("/reviews", {

@@ -53,6 +53,14 @@ export {
   formatCost,
 } from "./cost.js";
 
+export type { McuWork, McuBreakdown } from "./mcu.js";
+export {
+  MCU_VERSION,
+  MCU_MICROS,
+  calculateMcuV1,
+  formatMcu,
+} from "./mcu.js";
+
 export type { Role, Permission, Principal } from "./rbac.js";
 export {
   permissionsFor,

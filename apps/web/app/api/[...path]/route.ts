@@ -34,6 +34,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["GET", /^jobs$/],
     ["GET", /^jobs\/[^/]+$/],
     ["GET", /^recovery\/summary$/],
+    ["GET", /^billing\/usage$/],
     ["GET", /^github\/app\/install-url$/],
     ["GET", /^graph\//],
     ["GET", /^prs\/[^/]+\/reviews$/],
