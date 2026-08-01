@@ -131,3 +131,28 @@ export {
   MemorySecretProvider,
   CredentialBroker,
 } from "./credentials.js";
+
+export {
+  ExecutorRegistry,
+  ExecutorCircuitBreaker,
+  routeTask,
+  selectPolicyBoundFallback,
+  type DataClassification,
+  type TaskRisk,
+  type RouterTaskSpec,
+  type RouterPolicySnapshot,
+  type ExecutorDescriptor,
+  type CircuitBreakerConfig,
+  type CircuitBreakerState,
+  type RoutingExclusionReason,
+  type ExecutorEvaluation,
+  type PolicyBoundExecutorRoute,
+  type RoutingPlan,
+  type HumanHandoffReason,
+  type HumanHandoff,
+  type RoutingDecisionRecord,
+  type ExecutionActualTelemetryRecord,
+  type RoutingOutcome,
+  type RouteTaskInput,
+  type SelectFallbackInput,
+} from "./router.js";
