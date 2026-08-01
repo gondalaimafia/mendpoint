@@ -623,7 +623,7 @@ button:hover,
 
 .nav-group-label {
   padding: 0 0.65rem 0.35rem;
-  color: #60756c;
+  color: var(--muted);
   font-size: 0.67rem;
   font-weight: 700;
   letter-spacing: 0.11em;
