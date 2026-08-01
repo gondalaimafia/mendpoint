@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import {
-  authenticatedWebSession,
+  authenticatedWebSubject,
   isAllowedMutationOrigin,
 } from "../../../lib/proxy-auth";
 
@@ -36,6 +36,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["GET", /^recovery\/summary$/],
     ["GET", /^github\/app\/install-url$/],
     ["GET", /^graph\//],
+    ["GET", /^prs\/[^/]+\/reviews$/],
     ["POST", /^tenants\/[^/]+\/plan$/],
     ["POST", /^brands\/[^/]+\/preview$/],
     ["POST", /^agent\/runs$/],
@@ -45,6 +46,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["POST", /^jobs\/[^/]+\/retry$/],
     ["POST", /^jobs\/[^/]+\/cancel$/],
     ["POST", /^prs\/[^/]+\/feedback$/],
+    ["POST", /^prs\/[^/]+\/reviews$/],
     ["POST", /^providers\/[^/]+\/publish-version$/],
     ["POST", /^github\/app\/callback$/],
     ["POST", /^changes\/[^/]+\/severity$/],
@@ -61,7 +63,8 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
   if (!matchesAllowedRoute(request.method, decodedPath)) {
     return Response.json({ error: "proxy_route_not_allowed" }, { status: 404 });
   }
-  if (!authenticatedWebSession(request)) {
+  const subject = await authenticatedWebSubject(request);
+  if (!subject) {
     return Response.json({ error: "web_session_required" }, { status: 401 });
   }
   const mutation = request.method !== "GET" && request.method !== "HEAD";
@@ -98,6 +101,20 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     return Response.json({ error: "proxy_api_key_not_configured" }, { status: 503 });
   }
   headers.set("Authorization", `Bearer ${apiKey}`);
+  const actorTimestamp = new Date().toISOString();
+  const actorCanonical = [
+    subject.operatorId,
+    actorTimestamp,
+    requestId,
+    request.method.toUpperCase(),
+    upstreamUrl.pathname,
+  ].join("\n");
+  const actorSignature = createHmac("sha256", apiKey)
+    .update(actorCanonical, "utf8")
+    .digest("hex");
+  headers.set("X-Mendpoint-Actor", subject.operatorId);
+  headers.set("X-Mendpoint-Actor-Timestamp", actorTimestamp);
+  headers.set("X-Mendpoint-Actor-Signature", actorSignature);
 
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   const requestBody = hasBody ? await request.arrayBuffer() : undefined;

@@ -9,6 +9,7 @@ import {
   createDb,
   insertArtifactManifest,
   insertEvidenceRecord,
+  getLatestCandidateArtifactForSubject,
   insertPrincipal,
   insertReviewDecision,
   listArtifactManifests,
@@ -185,7 +186,7 @@ describe("trust records", () => {
     insertArtifactManifest(db, {
       id: "candidate-a",
       tenantId: "tenant-a",
-      kind: "candidate-patch",
+      kind: "candidate-edit",
       schemaVersion: 1,
       sha256: sha("patch-a"),
       mediaType: "text/x-diff",
@@ -206,6 +207,20 @@ describe("trust records", () => {
         createdAt: at,
       }),
     ).toThrow("review_waiver_expiry_required");
+    expect(() =>
+      insertReviewDecision(db, {
+        id: "waiver-expired",
+        tenantId: "tenant-a",
+        subjectType: "migration_pr",
+        subjectId: "pr-a",
+        candidateArtifactId: "candidate-a",
+        reviewerPrincipalId: "principal-tenant-a",
+        decision: "waive",
+        rationale: "Expired exception",
+        waiverExpiresAt: at,
+        createdAt: at,
+      }),
+    ).toThrow("review_waiver_expiry_invalid");
     insertReviewDecision(db, {
       id: "review-a",
       tenantId: "tenant-a",
@@ -217,7 +232,47 @@ describe("trust records", () => {
       rationale: "Verified evidence is complete",
       createdAt: at,
     });
-    expect(listReviewDecisions(db, "tenant-a", "migration_pr", "pr-a")).toHaveLength(1);
+    expect(() =>
+      insertReviewDecision(db, {
+        id: "review-stale",
+        tenantId: "tenant-a",
+        subjectType: "migration_pr",
+        subjectId: "pr-a",
+        candidateArtifactId: "candidate-a",
+        reviewerPrincipalId: "principal-tenant-a",
+        decision: "request_changes",
+        rationale: "Missing the required supersession link",
+        createdAt: "2026-08-01T12:01:00.000Z",
+      }),
+    ).toThrow("review_supersedes_latest_required");
+    insertReviewDecision(db, {
+      id: "review-b",
+      tenantId: "tenant-a",
+      subjectType: "migration_pr",
+      subjectId: "pr-a",
+      candidateArtifactId: "candidate-a",
+      reviewerPrincipalId: "principal-tenant-a",
+      decision: "request_changes",
+      rationale: "Add a rollback assertion",
+      supersedesId: "review-a",
+      createdAt: "2026-08-01T12:01:00.000Z",
+    });
+    insertEvidenceRecord(db, {
+      id: "candidate-evidence-a",
+      tenantId: "tenant-a",
+      subjectType: "migration_pr",
+      subjectId: "pr-a",
+      artifactId: "candidate-a",
+      inputArtifactId: "candidate-a",
+      producerPrincipalId: "principal-tenant-a",
+      tool: "test",
+      verdict: "passed",
+      createdAt: at,
+    });
+    expect(
+      getLatestCandidateArtifactForSubject(db, "tenant-a", "migration_pr", "pr-a")?.id,
+    ).toBe("candidate-a");
+    expect(listReviewDecisions(db, "tenant-a", "migration_pr", "pr-a")).toHaveLength(2);
     expect(() =>
       db.raw.prepare("UPDATE review_decisions SET rationale = 'changed' WHERE id = 'review-a'").run(),
     ).toThrow("review_decisions_append_only");

@@ -9,8 +9,10 @@
  * Exempt paths: /health, /webhooks/*
  */
 import type { Context, Next } from "hono";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   countActiveApiKeys,
+  claimDelegatedRequestNonce,
   findApiKeyByToken,
   touchApiKey,
   type AppDb,
@@ -83,6 +85,80 @@ export function scopeAllows(scopes: string[] | undefined, permission: Permission
   return scopes.includes("*") || scopes.includes(permission);
 }
 
+const ACTOR = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
+const SIGNATURE = /^[a-f0-9]{64}$/;
+const DELEGATION_MAX_SKEW_MS = 5 * 60 * 1000;
+
+export function delegatedActorSignature(
+  apiKey: string,
+  input: {
+    actor: string;
+    timestamp: string;
+    requestId: string;
+    method: string;
+    path: string;
+  },
+): string {
+  const canonical = [
+    input.actor,
+    input.timestamp,
+    input.requestId,
+    input.method.toUpperCase(),
+    input.path,
+  ].join("\n");
+  return createHmac("sha256", apiKey).update(canonical, "utf8").digest("hex");
+}
+
+export function verifyDelegatedActor(
+  apiKey: string,
+  input: {
+    actor?: string;
+    timestamp?: string;
+    signature?: string;
+    requestId: string;
+    method: string;
+    path: string;
+    now?: Date;
+  },
+): string | null {
+  const supplied = [input.actor, input.timestamp, input.signature];
+  if (supplied.every((value) => value === undefined)) return null;
+  if (
+    !input.actor ||
+    !ACTOR.test(input.actor) ||
+    !input.timestamp ||
+    !input.signature ||
+    !SIGNATURE.test(input.signature)
+  ) {
+    throw new Error("delegated_actor_invalid");
+  }
+  const timestamp = Date.parse(input.timestamp);
+  const now = (input.now ?? new Date()).getTime();
+  if (
+    !Number.isFinite(timestamp) ||
+    !Number.isFinite(now) ||
+    Math.abs(now - timestamp) > DELEGATION_MAX_SKEW_MS
+  ) {
+    throw new Error("delegated_actor_expired");
+  }
+  const expected = delegatedActorSignature(apiKey, {
+    actor: input.actor,
+    timestamp: input.timestamp,
+    requestId: input.requestId,
+    method: input.method,
+    path: input.path,
+  });
+  const actualBytes = Buffer.from(input.signature, "hex");
+  const expectedBytes = Buffer.from(expected, "hex");
+  if (
+    actualBytes.length !== expectedBytes.length ||
+    !timingSafeEqual(actualBytes, expectedBytes)
+  ) {
+    throw new Error("delegated_actor_signature_invalid");
+  }
+  return input.actor;
+}
+
 export function createAuthMiddleware(db: AppDb) {
   return async (c: Context<ApiEnv>, next: Next) => {
     const path = new URL(c.req.url).pathname;
@@ -116,8 +192,50 @@ export function createAuthMiddleware(db: AppDb) {
 
     touchApiKey(db, key.id, nowIso());
     const scopes = parseApiKeyScopes(key.scopes_json);
+    let delegatedActor: string | null;
+    try {
+      delegatedActor = verifyDelegatedActor(raw, {
+        actor: c.req.header("x-mendpoint-actor"),
+        timestamp: c.req.header("x-mendpoint-actor-timestamp"),
+        signature: c.req.header("x-mendpoint-actor-signature"),
+        requestId: c.get("requestId") ?? c.req.header("x-request-id") ?? "",
+        method: c.req.method,
+        path,
+      });
+    } catch (error) {
+      return c.json(
+        {
+          error: "unauthorized",
+          message: error instanceof Error ? error.message : "delegated_actor_invalid",
+        },
+        401,
+      );
+    }
+    if (delegatedActor) {
+      try {
+        const claimed = claimDelegatedRequestNonce(db, {
+          apiKeyId: key.id,
+          requestId: c.get("requestId") ?? c.req.header("x-request-id") ?? "",
+          signatureSha256: createHmac("sha256", raw)
+            .update(c.req.header("x-mendpoint-actor-signature") ?? "")
+            .digest("hex"),
+          createdAt: nowIso(),
+        });
+        if (!claimed) {
+          return c.json(
+            { error: "unauthorized", message: "delegated_actor_replay_detected" },
+            401,
+          );
+        }
+      } catch {
+        return c.json(
+          { error: "unauthorized", message: "delegated_actor_request_invalid" },
+          401,
+        );
+      }
+    }
     const principal: Principal = {
-      id: `api-key:${key.id}`,
+      id: delegatedActor ? `human:${delegatedActor}` : `api-key:${key.id}`,
       tenantId: key.tenant_id,
       role: roleFromApiKeyScopes(scopes),
     };

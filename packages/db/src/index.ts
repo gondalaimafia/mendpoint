@@ -245,6 +245,16 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE INDEX IF NOT EXISTS api_keys_hash_idx ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS api_keys_tenant_idx ON api_keys(tenant_id);
 
+CREATE TABLE IF NOT EXISTS delegated_request_nonces (
+  api_key_id TEXT NOT NULL REFERENCES api_keys(id),
+  request_id TEXT NOT NULL,
+  signature_sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (api_key_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS delegated_request_nonces_created_idx
+  ON delegated_request_nonces(created_at);
+
 -- Phase D: continuous feed poll ledger
 CREATE TABLE IF NOT EXISTS feed_polls (
   id TEXT PRIMARY KEY,
@@ -367,6 +377,14 @@ CREATE TABLE IF NOT EXISTS review_decisions (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS review_decisions_subject_idx ON review_decisions(tenant_id, subject_type, subject_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS review_decisions_chain_idx
+  ON review_decisions(
+    tenant_id,
+    subject_type,
+    subject_id,
+    candidate_artifact_id,
+    COALESCE(supersedes_id, '')
+  );
 
 CREATE TABLE IF NOT EXISTS domain_events (
   id TEXT PRIMARY KEY,
@@ -1520,7 +1538,9 @@ export type { ExposureReport } from "./exposure.js";
 
 export {
   appendDomainEvent,
+  getPrincipal,
   getPrincipalBySubject,
+  getLatestCandidateArtifactForSubject,
   insertArtifactManifest,
   insertEvidenceRecord,
   insertPrincipal,
@@ -1723,6 +1743,36 @@ export function findApiKeyByToken(db: AppDb, token: string): ApiKeyRow | undefin
 
 export function touchApiKey(db: AppDb, id: string, at: string) {
   run(db, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, [at, id]);
+}
+
+export function claimDelegatedRequestNonce(
+  db: AppDb,
+  input: {
+    apiKeyId: string;
+    requestId: string;
+    signatureSha256: string;
+    createdAt: string;
+  },
+): boolean {
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(input.requestId)) {
+    throw new Error("delegated_request_id_invalid");
+  }
+  if (!/^[a-f0-9]{64}$/.test(input.signatureSha256)) {
+    throw new Error("delegated_signature_hash_invalid");
+  }
+  try {
+    db.raw
+      .prepare(
+        `INSERT INTO delegated_request_nonces
+         (api_key_id, request_id, signature_sha256, created_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(input.apiKeyId, input.requestId, input.signatureSha256, input.createdAt);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && /UNIQUE|PRIMARY KEY/i.test(error.message)) return false;
+    throw error;
+  }
 }
 
 export function listApiKeys(

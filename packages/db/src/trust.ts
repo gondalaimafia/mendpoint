@@ -115,6 +115,18 @@ export function getPrincipalBySubject(
   );
 }
 
+export function getPrincipal(
+  db: AppDb,
+  tenantId: string,
+  id: string,
+): PrincipalRow | undefined {
+  return one(
+    db,
+    `SELECT * FROM principals WHERE tenant_id = ? AND id = ?`,
+    [tenantId, id],
+  );
+}
+
 export function insertArtifactManifest(
   db: AppDb,
   input: {
@@ -312,11 +324,26 @@ export function insertReviewDecision(
   if (input.decision === "waive" && !input.waiverExpiresAt) {
     throw new Error("review_waiver_expiry_required");
   }
+  if (
+    input.decision === "waive" &&
+    (!Number.isFinite(Date.parse(input.waiverExpiresAt!)) ||
+      Date.parse(input.waiverExpiresAt!) <= Date.parse(input.createdAt))
+  ) {
+    throw new Error("review_waiver_expiry_invalid");
+  }
   requireText("review_rationale", input.rationale);
   requireTenantRecord(db, "artifact_manifests", input.candidateArtifactId, input.tenantId);
   requireTenantRecord(db, "principals", input.reviewerPrincipalId, input.tenantId);
-  if (input.supersedesId) {
-    requireTenantRecord(db, "review_decisions", input.supersedesId, input.tenantId);
+  const previous = one<ReviewDecisionRow>(
+    db,
+    `SELECT * FROM review_decisions
+     WHERE tenant_id = ? AND subject_type = ? AND subject_id = ?
+       AND candidate_artifact_id = ?
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    [input.tenantId, input.subjectType, input.subjectId, input.candidateArtifactId],
+  );
+  if (previous?.id !== (input.supersedesId ?? undefined)) {
+    throw new Error("review_supersedes_latest_required");
   }
   db.raw
     .prepare(
@@ -339,6 +366,23 @@ export function insertReviewDecision(
       input.createdAt,
     );
   return one<ReviewDecisionRow>(db, `SELECT * FROM review_decisions WHERE id = ?`, [input.id])!;
+}
+
+export function getLatestCandidateArtifactForSubject(
+  db: AppDb,
+  tenantId: string,
+  subjectType: string,
+  subjectId: string,
+): ArtifactManifestRow | undefined {
+  return one(
+    db,
+    `SELECT a.* FROM evidence_records e
+     JOIN artifact_manifests a ON a.id = e.input_artifact_id
+     WHERE e.tenant_id = ? AND e.subject_type = ? AND e.subject_id = ?
+       AND a.tenant_id = e.tenant_id AND a.kind = 'candidate-edit'
+     ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1`,
+    [tenantId, subjectType, subjectId],
+  );
 }
 
 export function listReviewDecisions(

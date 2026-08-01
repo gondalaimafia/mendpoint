@@ -190,6 +190,12 @@ import {
   resolveCiHarnessEvidence,
   type CiHarnessEvidence,
 } from "./ci-check.js";
+import {
+  HUMAN_REVIEW_DECISIONS,
+  listMigrationPrReviews,
+  submitMigrationPrReview,
+  type HumanReviewDecision,
+} from "./reviews.js";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
 import { runWarden } from "@mendpoint/agent";
@@ -1531,6 +1537,66 @@ app.get("/prs/:id", (c) => {
   const pr = getPr(db, c.req.param("id"), c.get("principal")?.tenantId);
   if (!pr) return c.json({ error: "not found" }, 404);
   return c.json(prToApi(pr));
+});
+
+app.get("/prs/:id/reviews", (c) => {
+  const tenantId = requestTenantId(c);
+  const pr = getPr(db, c.req.param("id"), tenantId);
+  if (!pr) return c.json({ error: "not found" }, 404);
+  return c.json({ reviews: listMigrationPrReviews(db, tenantId, pr.id) });
+});
+
+app.post("/prs/:id/reviews", async (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
+  const pr = getPr(db, c.req.param("id"), principal.tenantId);
+  if (!pr) return c.json({ error: "not found" }, 404);
+  const body = await c.req
+    .json<{ decision?: string; rationale?: string }>()
+    .catch(() => ({} as { decision?: string; rationale?: string }));
+  if (
+    typeof body.decision !== "string" ||
+    !HUMAN_REVIEW_DECISIONS.includes(body.decision as HumanReviewDecision)
+  ) {
+    return c.json({ error: "review_decision_invalid" }, 400);
+  }
+  try {
+    const review = submitMigrationPrReview(db, {
+      tenantId: principal.tenantId,
+      prId: pr.id,
+      authenticatedPrincipalId: principal.id,
+      decision: body.decision as HumanReviewDecision,
+      rationale: typeof body.rationale === "string" ? body.rationale : "",
+      reviewId: newId(),
+      eventId: newId(),
+      correlationId: c.get("requestId"),
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: principal.id,
+      action: `migration_pr.review.${review.decision}`,
+      resourceType: "migration_pr",
+      resourceId: pr.id,
+      metadata: {
+        reviewId: review.id,
+        candidateArtifactId: review.candidateArtifactId,
+        supersedesId: review.supersedesId,
+      },
+    });
+    return c.json(review, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "review_failed";
+    if (message === "human_review_identity_required") {
+      return c.json({ error: message }, 403);
+    }
+    if (message === "review_candidate_not_found") {
+      return c.json({ error: message }, 409);
+    }
+    if (message === "review_rationale_invalid") {
+      return c.json({ error: message }, 400);
+    }
+    throw error;
+  }
 });
 
 app.post("/prs/:id/feedback", async (c) => {
