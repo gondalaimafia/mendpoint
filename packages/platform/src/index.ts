@@ -87,3 +87,47 @@ export {
   setAlertPersistPath,
   defaultAlertPath,
 } from "./alerts.js";
+
+export type {
+  RepositorySourcePolicy,
+  RepositoryProbe,
+  ResolvedRepositoryRef,
+  SnapshotFile,
+  SnapshotSubmodule,
+  ImmutableRepositorySnapshot,
+  DiscoveredDocument,
+  DiscoveredCiConfig,
+  DiscoveredVerificationCommand,
+  RepositoryDiscovery,
+  RepositorySource,
+  RepositorySourceErrorCode,
+} from "./repository-source.js";
+export {
+  RepositorySourceError,
+  validateRepositoryRelativePath,
+  createLocalGitRepositorySource,
+} from "./repository-source.js";
+
+export type {
+  SecretReference,
+  EnvSecretReference,
+  MemorySecretReference,
+  CredentialRotationMetadata,
+  CredentialRevocation,
+  CredentialDescriptor,
+  SecretProvider,
+  CredentialAccessReason,
+  CredentialAccessAuditEvent,
+  CredentialAccessAudit,
+  CredentialAccessRequest,
+  CredentialAccessErrorCode,
+  ResolvedCredential,
+  CredentialBrokerOptions,
+} from "./credentials.js";
+export {
+  CredentialAccessError,
+  SecretMaterial,
+  EnvSecretProvider,
+  MemorySecretProvider,
+  CredentialBroker,
+} from "./credentials.js";
