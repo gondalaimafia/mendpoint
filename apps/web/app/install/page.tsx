@@ -25,15 +25,19 @@ export default async function InstallPage() {
   let config: AppConfig | null = null;
   let installations: Installation[] = [];
   let error: string | null = null;
-  try {
-    config = await apiGet<AppConfig>("/github/app/config");
-    installations = await apiGet<Installation[]>("/github/app/installations");
-  } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
-  }
+  const [configResult, installationsResult] = await Promise.allSettled([
+    apiGet<AppConfig>("/github/app/config"),
+    apiGet<Installation[]>("/github/app/installations"),
+  ]);
+  if (configResult.status === "fulfilled") config = configResult.value;
+  if (installationsResult.status === "fulfilled") installations = installationsResult.value;
+  error = [
+    configResult.status === "rejected" ? String(configResult.reason) : null,
+    installationsResult.status === "rejected" ? String(installationsResult.reason) : null,
+  ].filter(Boolean).join(". ") || null;
 
   return (
-    <main className="page">
+    <div className="page">
       <div className="page-header">
         <h1>Install Mendpoint</h1>
         <p className="muted">
@@ -64,6 +68,7 @@ export default async function InstallPage() {
           <p className="muted">No GitHub App installations are recorded.</p>
         ) : (
           <table className="table">
+            <caption className="sr-only">Existing GitHub App installations</caption>
             <thead>
               <tr>
                 <th>Account</th>
@@ -87,6 +92,6 @@ export default async function InstallPage() {
           </table>
         )}
       </section>
-    </main>
+    </div>
   );
 }

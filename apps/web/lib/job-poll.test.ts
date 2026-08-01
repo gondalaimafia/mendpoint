@@ -6,10 +6,10 @@ describe("waitForJob", () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(
-        Response.json([{ id: "job-1", status: "running" }]),
+        Response.json({ id: "job-1", status: "running" }),
       )
       .mockResolvedValueOnce(
-        Response.json([{ id: "job-1", status: "done" }]),
+        Response.json({ id: "job-1", status: "done" }),
       );
 
     await expect(
@@ -19,13 +19,17 @@ describe("waitForJob", () => {
       }),
     ).resolves.toMatchObject({ id: "job-1", status: "done" });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenLastCalledWith(
+      "/api/jobs/job-1",
+      expect.objectContaining({ cache: "no-store" }),
+    );
   });
 
   it("stops after the bounded polling window", async () => {
     const fetchImpl = vi
       .fn()
       .mockImplementation(async () =>
-        Response.json([{ id: "job-1", status: "pending" }]),
+        Response.json({ id: "job-1", status: "pending" }),
       );
 
     await expect(

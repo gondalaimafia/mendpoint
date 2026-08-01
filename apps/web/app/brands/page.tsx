@@ -24,7 +24,7 @@ export default async function BrandsPage() {
   }
 
   return (
-    <main className="page">
+    <div className="page">
       <div className="page-header">
         <h1>First-party agents</h1>
         <p className="muted">
@@ -60,6 +60,6 @@ export default async function BrandsPage() {
           </div>
         ))}
       </div>
-    </main>
+    </div>
   );
 }

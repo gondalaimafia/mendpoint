@@ -25,13 +25,12 @@ export async function waitForJob(
       new Promise<void>((resolveSleep) => setTimeout(resolveSleep, milliseconds)));
 
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const response = await fetchImpl(`${apiUrl}/jobs`, {
+    const response = await fetchImpl(`${apiUrl}/jobs/${encodeURIComponent(jobId)}`, {
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
     if (!response.ok) throw new Error(`Job status request failed: ${response.status}`);
-    const jobs = (await response.json()) as PolledJob[];
-    const job = jobs.find((candidate) => candidate.id === jobId);
+    const job = (await response.json()) as PolledJob;
     if (job && TERMINAL.has(job.status)) return job;
     if (attempt + 1 < attempts) await sleep(intervalMs);
   }

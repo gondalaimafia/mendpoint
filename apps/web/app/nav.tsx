@@ -3,48 +3,98 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const LINKS = [
-  { href: "/provider", label: "Provider" },
-  { href: "/consumer", label: "Consumer" },
-  { href: "/graph", label: "Graph" },
-  { href: "/repair", label: "Repair" },
-  { href: "/agent", label: "Warden" },
-  { href: "/feeds", label: "Feeds" },
-  { href: "/install", label: "Install" },
-  { href: "/brands", label: "Brands" },
-  { href: "/billing", label: "Billing" },
-  { href: "/metrics", label: "Metrics" },
-  { href: "/platform", label: "Platform" },
-  { href: "/status", label: "Status" },
-  { href: "/trust", label: "Trust" },
+const GROUPS = [
+  {
+    label: "Workspace",
+    links: [
+      { href: "/", label: "Overview", glyph: "O" },
+      { href: "/provider", label: "API changes", glyph: "C" },
+      { href: "/consumer", label: "Repositories", glyph: "R" },
+      { href: "/graph", label: "Impact graph", glyph: "G" },
+    ],
+  },
+  {
+    label: "Automation",
+    links: [
+      { href: "/agent", label: "Warden runs", glyph: "W" },
+      { href: "/repair", label: "Verified repair", glyph: "V" },
+      { href: "/feeds", label: "Change feeds", glyph: "F" },
+    ],
+  },
+  {
+    label: "Operations",
+    links: [
+      { href: "/status", label: "System status", glyph: "S" },
+      { href: "/metrics", label: "Metrics", glyph: "M" },
+      { href: "/platform", label: "Platform", glyph: "P" },
+    ],
+  },
+  {
+    label: "Setup",
+    links: [
+      { href: "/install", label: "Connect GitHub", glyph: "I" },
+      { href: "/brands", label: "Brand packs", glyph: "B" },
+      { href: "/billing", label: "Billing", glyph: "$" },
+      { href: "/trust", label: "Trust model", glyph: "T" },
+    ],
+  },
 ] as const;
 
 export function Nav() {
   const pathname = usePathname() ?? "/";
 
-  return (
-    <header className="nav">
-      <div className="nav-inner">
-        <Link href="/" className="brand" aria-label="Mendpoint home">
+  if (pathname === "/access") {
+    return (
+      <header className="access-header">
+        <Link href="/" className="brand" aria-label="Mendpoint home" prefetch={false}>
+          <span className="brand-mark" aria-hidden />
           Mendpoint
         </Link>
-        <nav className="nav-links" aria-label="Primary">
-          {LINKS.map((l) => {
-            const active =
-              pathname === l.href || pathname.startsWith(l.href + "/");
-            return (
-              <Link
-                key={l.href}
-                href={l.href}
-                className={active ? "active" : undefined}
-                aria-current={active ? "page" : undefined}
-              >
-                {l.label}
-              </Link>
-            );
-          })}
-        </nav>
+        <span className="muted small">Design partner access</span>
+      </header>
+    );
+  }
+
+  return (
+    <aside className="app-sidebar">
+      <div className="sidebar-head">
+        <Link href="/" className="brand" aria-label="Mendpoint home" prefetch={false}>
+          <span className="brand-mark" aria-hidden />
+          Mendpoint
+        </Link>
+        <p>API change operations</p>
       </div>
-    </header>
+      <nav className="sidebar-nav" aria-label="Primary navigation">
+        {GROUPS.map((group) => (
+          <div className="nav-group" key={group.label}>
+            <div className="nav-group-label">{group.label}</div>
+            <div className="nav-group-links">
+              {group.links.map((link) => {
+                const active =
+                  pathname === link.href ||
+                  (link.href !== "/" && pathname.startsWith(`${link.href}/`));
+                return (
+                  <Link
+                    key={link.href}
+                    href={link.href}
+                    prefetch={false}
+                    className={active ? "active" : undefined}
+                    aria-current={active ? "page" : undefined}
+                  >
+                    <span className="nav-glyph" aria-hidden>{link.glyph}</span>
+                    <span>{link.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </nav>
+      <div className="sidebar-foot">
+        <span className="status-dot ok-dot" aria-hidden />
+        <span>Design partner pilot</span>
+        <span className="sidebar-foot-note">Review required</span>
+      </div>
+    </aside>
   );
 }

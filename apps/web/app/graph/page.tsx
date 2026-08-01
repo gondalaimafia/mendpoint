@@ -56,7 +56,7 @@ export default async function GraphPage({
   }
 
   return (
-    <main className="page">
+    <div className="page">
       <div className="page-header">
         <h1>Graph explorer</h1>
         <p className="muted">
@@ -105,6 +105,6 @@ export default async function GraphPage({
           </div>
         )
       )}
-    </main>
+    </div>
   );
 }

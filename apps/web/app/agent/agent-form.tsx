@@ -67,9 +67,15 @@ export function AgentForm({
   }
 
   return (
-    <section className="card">
+    <section className="card" aria-busy={busy}>
       <h2>New Warden run</h2>
-      <div className="stack">
+      <form
+        className="stack"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void run();
+        }}
+      >
         <label>
           Consumer
           <select
@@ -103,16 +109,16 @@ export function AgentForm({
           />
         </label>
         <button
-          type="button"
+          type="submit"
           className="btn primary"
           disabled={busy || !consumerId}
           onClick={run}
         >
           {busy ? "Warden running…" : "Run Warden"}
         </button>
-        {err && <p className="error">{err}</p>}
-        {out && <pre className="code-block">{out}</pre>}
-      </div>
+        {err && <p className="error" role="alert">{err}</p>}
+        {out && <pre className="code-block" role="status" aria-live="polite">{out}</pre>}
+      </form>
     </section>
   );
 }

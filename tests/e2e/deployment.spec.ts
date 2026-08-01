@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -19,6 +20,16 @@ const verifierHash = createHash("sha256")
   .digest("hex");
 
 type Json = Record<string, unknown>;
+
+async function expectNoBlockingAccessibilityViolations(page: Page): Promise<void> {
+  const result = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+    .analyze();
+  const blocking = result.violations.filter(
+    (violation) => violation.impact === "critical" || violation.impact === "serious",
+  );
+  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
+}
 
 function docker(args: string[], options: { allowFailure?: boolean } = {}): string {
   try {
@@ -170,6 +181,23 @@ test("production image protects operators and recovers queued work after a crash
     expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
     expect(await page.content()).not.toContain(apiKey);
 
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Keep every API change moving" })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeVisible();
+    await expect(page.getByText("Workspace", { exact: true })).toBeVisible();
+    await expect(page.getByText("Automation", { exact: true })).toBeVisible();
+    await expect(page.getByText("Operations", { exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Review system" })).toBeVisible();
+    await expectNoBlockingAccessibilityViolations(page);
+    await page.setViewportSize({ width: 375, height: 812 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(1);
+    await expect(page.getByRole("heading", { name: "Keep every API change moving" })).toBeVisible();
+    await page.setViewportSize({ width: 1440, height: 900 });
+
     const delivery = `ping-${suffix}`;
     const ping = await signedWebhook(page.request, "ping", delivery, { zen: "keep it bounded" });
     expect(ping.status()).toBe(200);
@@ -195,9 +223,9 @@ test("production image protects operators and recovers queued work after a crash
     await expect
       .poll(
         async () => {
-          const response = await page.request.get("/api/jobs");
-          const jobs = (await response.json()) as Array<{ id: string; status: string }>;
-          return jobs.find((job) => job.id === queuedBody.jobId)?.status;
+          const response = await page.request.get(`/api/jobs/${queuedBody.jobId}`);
+          const job = (await response.json()) as { id: string; status: string };
+          return job.status;
         },
         { timeout: 10_000 },
       )
@@ -238,22 +266,19 @@ test("production image protects operators and recovers queued work after a crash
     await expect
       .poll(
         async () => {
-          const response = await page.request.get("/api/jobs");
+          const response = await page.request.get(`/api/jobs/${queuedBody.jobId}`);
           if (!response.ok()) return `http_${response.status()}`;
-          const jobs = (await response.json()) as Array<{
+          const job = (await response.json()) as {
             id: string;
             status: string;
             error?: unknown;
             payload?: unknown;
             leaseToken?: unknown;
-          }>;
-          const job = jobs.find((candidate) => candidate.id === queuedBody.jobId);
-          if (job) {
-            expect(job.error).toBeUndefined();
-            expect(job.payload).toBeUndefined();
-            expect(job.leaseToken).toBeUndefined();
-          }
-          return job?.status;
+          };
+          expect(job.error).toBeUndefined();
+          expect(job.payload).toBeUndefined();
+          expect(job.leaseToken).toBeUndefined();
+          return job.status;
         },
         { timeout: 60_000, intervals: [250, 500, 1_000, 2_000] },
       )
@@ -274,6 +299,7 @@ test("production image protects operators and recovers queued work after a crash
     await page.goto("/status");
     await expect(page.getByRole("heading", { name: "Self healing recovery" })).toBeVisible();
     await expect(page.getByText("Simulations: 1.")).toBeVisible();
+    await expectNoBlockingAccessibilityViolations(page);
   } finally {
     saveRuntimeLogs();
     stopRuntime();

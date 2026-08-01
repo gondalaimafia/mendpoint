@@ -15,10 +15,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <a className="skip-link" href="#main">
           Skip to content
         </a>
-        <Nav />
-        <main id="main" className="container">
-          {children}
-        </main>
+        <div className="app-shell">
+          <Nav />
+          <main id="main" className="app-content">
+            {children}
+          </main>
+        </div>
       </body>
     </html>
   );

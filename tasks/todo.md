@@ -295,3 +295,71 @@ The original pilot web access token appeared in a browser DOM snapshot during
 verification and was rotated immediately. The exposed value is invalid. The
 replacement was used only in memory and did not appear in output or a saved
 artifact.
+
+## Devin inspired UX and performance pass
+
+- [x] Research the latest official Cognition and Devin interaction patterns.
+- [x] Audit the current Mendpoint journeys, information architecture, accessibility, and rendering cost.
+- [x] Replace the flat navigation with a task oriented workspace shell that remains usable on mobile.
+- [x] Turn the home page into an operational command center with clear attention, activity, and action states.
+- [x] Standardize page hierarchy, status language, empty states, tables, and responsive behavior.
+- [x] Reduce unnecessary route prefetching and rendering work without hiding live operational state.
+- [x] Add regression coverage for the new shell and critical command center states.
+- [x] Run typecheck, tests, production build, release checks, accessibility checks, and browser verification.
+- [ ] Commit, push, deploy through the existing gate, and verify production health.
+
+## UX and performance acceptance criteria
+
+- The first screen answers what needs attention, what is running, and what the operator can do next.
+- Core workflows are grouped by intent instead of presented as an undifferentiated list.
+- Every operational state has visible text, not color alone, and every interactive control has a keyboard focus state.
+- Desktop navigation stays persistent while narrow screens receive a compact, scrollable workspace bar.
+- Long lists and below fold panels avoid unnecessary initial paint work.
+- Navigation does not prefetch every dynamic operational route on initial load.
+- Loading and failure states keep the shell stable and provide a recovery action.
+- Existing authentication, recovery controls, and deployment E2E behavior remain intact.
+
+## UX and performance review
+
+The operator workspace now leads with attention, current work, evidence, and a
+single next action. Navigation is grouped by operator intent and remains usable
+at a 375 pixel viewport without document overflow. Loading and failure
+boundaries preserve the shell, tables expose accessible names, and the release
+browser test now rejects serious or critical WCAG A and AA violations.
+
+Job polling now requests one sanitized job record instead of repeatedly loading
+the latest 50 jobs. Independent server reads run concurrently, provider pull
+request matching uses an indexed lookup, and graph retries receive the newly
+created retry identifier. The shared client bundle remained 103 kB before and
+after the pass.
+
+Local evidence: full tests, full typecheck, production build, GA preflight,
+Playwright discovery, dependency audit, desktop browser review, and 375 pixel
+browser review passed. GitHub deployment E2E and production verification remain
+the final gate.
+
+## Warden and Transformer capability training
+
+- [ ] Research current primary standards and real world failure patterns for API repair and multi repository migrations.
+- [ ] Inventory existing Warden, Transformer, and evaluation behavior against the researched taxonomy.
+- [ ] Define a versioned corpus of common, edge, adversarial, recovery, and safety scenarios.
+- [ ] Train Warden behavior through generalized diagnosis and repair policies backed by deterministic scenarios.
+- [ ] Train Transformer behavior through dependency aware planning, compatibility, rollout, rollback, and resume scenarios.
+- [ ] Add capability, regression, and safety evaluators with release thresholds and actionable reports.
+- [ ] Wire deterministic critical scenarios into the release gate without requiring live model credentials.
+- [ ] Run focused tests, full tests, typecheck, build, GA preflight, audit, and container E2E.
+- [ ] Commit, push, deploy through the protected release path, and verify production health.
+
+## Warden and Transformer capability acceptance criteria
+
+- Common and edge scenarios are traceable to current primary sources or observed repository behavior.
+- Every scenario has explicit expected evidence, safe action, refusal boundary, and recovery behavior.
+- Critical safety failures score zero and fail the release gate even when aggregate quality passes.
+- Evaluation is deterministic in CI and mirrors the production policy and repair path.
+- Warden does not propose speculative edits without evidence or bypass verification and policy gates.
+- Transformer plans preserve dependency order, compatibility windows, resumability, approvals, and rollback.
+- Reports separate unsupported capability from regression, infrastructure failure, and model variance.
+
+## Warden and Transformer capability review
+
+Pending research, implementation, and verification.

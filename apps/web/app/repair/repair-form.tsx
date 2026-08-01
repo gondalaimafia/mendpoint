@@ -64,9 +64,15 @@ export function RepairForm({
   }
 
   return (
-    <section className="card">
+    <section className="card" aria-busy={busy}>
       <h2>Run repair</h2>
-      <div className="stack">
+      <form
+        className="stack"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void run();
+        }}
+      >
         <label>
           Consumer
           <select
@@ -101,16 +107,16 @@ export function RepairForm({
           Dry run (plan only, no writes)
         </label>
         <button
-          type="button"
+          type="submit"
           className="btn primary"
           onClick={run}
           disabled={busy || !consumerId}
         >
           {busy ? "Queueing…" : "Start verified repair"}
         </button>
-        {error && <p className="error">{error}</p>}
-        {result && <pre className="code-block">{result}</pre>}
-      </div>
+        {error && <p className="error" role="alert">{error}</p>}
+        {result && <pre className="code-block" role="status" aria-live="polite">{result}</pre>}
+      </form>
     </section>
   );
 }
