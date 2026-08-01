@@ -401,3 +401,120 @@ due recovery work, scheduled recovery work, dead letters, or expired leases.
 The public root returned the intended 307 redirect to access. Browser review
 rendered the operator access page with no console logs. Evidence is saved at
 `C:\Users\Talal\.codex\visualizations\2026\07\28\019faa95-ac3a-7743-af3d-4dcfed07ca3a\mendpoint-warden-transformer-live-2026-08-01.png`.
+
+## Foundational product specification closure
+
+Source of truth: `C:\Users\Talal\Downloads\mendpoint_product_spec.md`
+
+Execution contract: `C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\mendpoint-foundational-spec-gap-analysis-and-plan-2026-08-01.md`
+
+### Gate 0: Testable product contract
+
+- [x] Version the complete foundational specification in the repository and mark the compressed predecessor as superseded.
+- [x] Assign stable requirement IDs and one release tier, owner, status, and acceptance evidence definition to every requirement.
+- [x] Define source artifact, change, repository snapshot, impact, candidate edit, verification, pull request, review, job, campaign, and usage state machines.
+- [x] Add the metric dictionary, workload tiers, performance objectives, and explicit open product decisions.
+- [x] Add deterministic traceability validation and make it part of the release checks.
+- [x] Verify every foundational requirement maps to an executable test, an external evidence gate, or an approved later tier.
+
+### Gate 1: Customer trust foundation
+
+- [ ] Add attributable human and service actor identities without weakening existing API key authentication.
+- [ ] Make immutable source, snapshot, evidence, verification, candidate, review, artifact, and typed event contracts tenant scoped.
+- [ ] Add audit correlation, causation, integrity chaining, retention, and replay verification.
+- [ ] Add a credential provider abstraction with rotation, expiry, revocation, and access audit boundaries.
+- [ ] Add adversarial tenant isolation tests across API, queue, database, graph, artifacts, snapshots, webhooks, caches, and logs.
+
+### Gate 2: Production repository connections
+
+- [ ] Add an SCM neutral installation, repository, branch, exact commit snapshot, environment, ownership, and health model.
+- [ ] Add isolated exact commit checkout with branch drift, submodule, LFS, sparse checkout, retention, and deletion policies.
+- [ ] Bind GitHub App installation credentials to snapshot and draft pull request delivery.
+- [ ] Discover and version CODEOWNERS, protected branch expectations, CI definitions, and approved verification commands.
+- [ ] Report configured, authenticated, read, write, webhook, CI, sync, delivery, and revocation health independently.
+- [ ] Wire GitLab through the same contract after the GitHub canary path is stable.
+- [ ] Prove a clean private canary connection to verified draft pull request flow with real credentials.
+
+### Gate 3: Safe Warden remediation
+
+- [ ] Unify uploads, polls, releases, SDK registries, announcements, and incidents into immutable source artifacts.
+- [ ] Complete the versioned compatibility taxonomy and evidence preserving ingestion adapters.
+- [ ] Add payments first signed recipes with semantic edits, preconditions, postconditions, rollback, and outcome telemetry.
+- [ ] Add versioned graph snapshots, complete bounded dependency paths, evidence provenance, coverage, and held out benchmarks.
+- [ ] Persist baseline and post edit compile, lint, test, security, and contract verification artifacts.
+- [ ] Fail pull request delivery closed unless verification passes or an attributable scoped expiring waiver is approved.
+- [ ] Deliver a structured pull request package with source, snapshot, finding, edit, verification, policy, owner, and rollback links.
+
+### Gate 4: Warden review and campaign operations
+
+- [ ] Add reviewer assignment, comments, approve, reject, request changes, regenerate, waiver, expiry, and immutable candidate versions.
+- [ ] Reconcile native SCM reviews, checks, merges, closures, and branch drift.
+- [ ] Add durable campaigns, targets, dependency order, stages, attempts, exceptions, owners, concurrency, pause, resume, cancel, retry, rollback, and completion policy.
+- [ ] Add exact Warden metric events, definitions, data quality tests, and support telemetry.
+- [ ] Complete a consented payments or fintech design partner run, including rollback drill and observed outcome.
+
+### Gate 5: Transformer control plane
+
+- [ ] Select and declare one bounded first migration across two to five repositories.
+- [ ] Freeze and persist task, blueprint, behavioral specification graph, recipe, evidence, campaign, unit, wave, attempt, artifact, approval, exception, pull request, and event contracts.
+- [ ] Extract a nonempty source linked behavioral specification graph from code, tests, schemas, traces, and approved human additions.
+- [ ] Ingest organization conventions with explicit precedence and evidence.
+- [ ] Generate a reviewable blueprint with risks, unknowns, owners, verification coverage, rollback, and approval gating.
+- [ ] Add durable Transformer blueprint and campaign workspaces.
+
+### Gate 6: Governed Transformer execution
+
+- [ ] Implement one executable versioned migration recipe in isolated repository workspaces.
+- [ ] Execute fenced jobs and stage verified draft pull requests by dependency wave.
+- [ ] Reconcile webhooks and support pause, resume, retry, exception, drift, partial merge, and exactly once recovery.
+- [ ] Generate and execute reverse dependency rollback plans.
+- [ ] Pass a three repository real campaign with injected crash, CI failure, drift, partial merge, and verified rollback evidence.
+
+### Gate 7: Shared vertical router
+
+- [ ] Use one structured task specification across Warden and Transformer.
+- [ ] Add a versioned executor registry for rules, recipes, open models, adapters, and frontier models.
+- [ ] Enforce tenant privacy, region, risk, quality, latency, and budget policy on every route and fallback.
+- [ ] Add typed fallback, limits, circuit breakers, redaction, validation, human handoff, and deterministic replay.
+- [ ] Persist decision rationale, actual cost, latency, retries, fallback, verification, and outcome.
+- [ ] Pass held out quality, outage, security, fail closed, and accepted output cost gates.
+
+### Gate 8: Governed learning and adapter lifecycle
+
+- [ ] Persist proposed and accepted patches, reviewer deltas, comments, verification, regressions, routes, recipes, and costs.
+- [ ] Add opt in consent, provenance, redaction, deletion, residency, temporal split, contamination, and dataset version controls.
+- [ ] Add model and adapter artifact, license, lineage, evaluation, shadow, canary, promotion, monitoring, rollback, and retirement contracts.
+- [ ] Require a consented representative data sufficiency gate before training.
+- [ ] Prove the first adapter improves verified acceptance cost without a security regression.
+
+### Gate 9: Economics and billing
+
+- [ ] Define a versioned migration compute unit formula and price change policy.
+- [ ] Add idempotent reservation, settlement, adjustment, credit, quota, entitlement, invoice reference, and reconciliation ledgers.
+- [ ] Add contract pricing, invoice export or payment processor integration, taxes, credits, payment state, and dunning policy.
+- [ ] Add customer usage and finance gross margin views with independently reproducible invoice lines.
+
+### Gate 10: Enterprise release tier
+
+- [ ] Finish supported self hosted sizing, TLS, upgrade, migration, backup, restore, rollback, monitoring, air gap, and support lifecycle.
+- [ ] Add horizontally safe cloud queue, quota, lock, control plane, performance, load, soak, and outage behavior.
+- [ ] Build a VPC reference architecture with private connectivity, network policy, BYOK, residency, and customer logs.
+- [ ] Add human login, SSO, SCIM, policy packs, customer managed keys, and enterprise audit exports.
+- [ ] Add privacy, security, resilience, vulnerability, SBOM, penetration, incident, continuity, and SOC 2 evidence controls.
+- [ ] Pass an enterprise security review using generated evidence.
+
+### Release and deployment
+
+- [ ] Keep every external dependency explicit: private canary, design partner, payment account, SSO tenant, consented dataset, cloud infrastructure, penetration test, and compliance attestation.
+- [ ] Land each coherent gate slice as a separate verified commit.
+- [ ] Run focused tests after each slice and the full test, typecheck, build, GA, audit, API smoke, container, and deployment journey before merge.
+- [ ] Push a pull request, require protected CI, merge only passing code, wait for the production deployment, then verify live health and the affected browser journeys.
+- [ ] Record exact commits, checks, live probes, screenshots, unresolved external gates, and rollback instructions in this review section.
+
+### Foundational closure review
+
+Gate 0 implementation is complete pending the full repository matrix and protected CI. The canonical specification is versioned with a pinned digest. The machine register contains all 84 closure requirements with stable IDs, gap lineage, owner, target release, current availability and implementation state, acceptance assertion, evidence state, workstream, claim boundary, and named external blockers. The release contract freezes product tiers, shared state machines, metric definitions, workload objectives, the initial MCU formula, learning governance, and open external decisions.
+
+`npm run spec:check` validates the manifest, exact ID inventory, workstream references, acceptance and evidence lineage, release and claim consistency, evidence paths, and canonical specification digest. `npm run ga:check` invokes this validator. The existing CI deployment job depends on the release gate, so contract drift blocks deployment without a deploy workflow change.
+
+No later gate is complete yet. Code scaffolds and fixture only tests do not close customer proof, billing, identity provider, model training, infrastructure, security review, or compliance gates.
