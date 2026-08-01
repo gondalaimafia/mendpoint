@@ -41,6 +41,14 @@ export {
 } from "./tenant-scope.js";
 
 export {
+  enumerateDependencyPaths,
+  type DependencyPath,
+  type DependencyPathEnumeration,
+  type DependencyPathTerminal,
+  type DependencyPathTruncation,
+} from "./dependency-paths.js";
+
+export {
   ingestControlPlane,
   ingestSpecDiff,
   ingestImpactFindings,

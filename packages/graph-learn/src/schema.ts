@@ -208,7 +208,7 @@ export type GraphQuery =
   | { op: "neighborhood"; nodeId: string; k?: number }
   | { op: "callers"; symbolId: string; maxHops?: number }
   | { op: "path"; fromId: string; toId: string; maxHops?: number }
-  | { op: "depends_on_path"; nodeId: string; maxHops?: number }
+  | { op: "depends_on_path"; nodeId: string; maxHops?: number; maxPaths?: number }
   | { op: "outcomes_for_pattern"; pattern: string }
   | { op: "pattern_success_rates"; minSamples?: number }
   | { op: "consumers_of_field"; schemaName: string; fieldName: string }
@@ -226,6 +226,14 @@ export type GraphQueryResult = {
   edges: GlEdge[];
   summary: string;
   rows?: Array<Record<string, unknown>>;
+  truncation?: {
+    truncated: boolean;
+    reasons: Array<"max_hops" | "max_paths">;
+    maxHops: number;
+    maxPaths: number;
+    pathsReturned: number;
+    omittedPathsAtLeast: number;
+  };
 };
 
 /** Kùzu-shaped DDL string for escape hatch docs / generators */

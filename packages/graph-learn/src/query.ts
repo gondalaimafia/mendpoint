@@ -22,6 +22,7 @@ import {
   tenantPatternSuccessRows,
   type GraphTenantScope,
 } from "./tenant-scope.js";
+import { enumerateDependencyPaths } from "./dependency-paths.js";
 
 function collectNodes(db: GraphLearnDb, ids: Iterable<string>): GlNode[] {
   const out: GlNode[] = [];
@@ -184,22 +185,20 @@ function runGraphQueryInner(
       };
     }
     case "depends_on_path": {
-      const path: string[] = [q.nodeId];
-      const edges: GlEdge[] = [];
-      let cur = q.nodeId;
-      for (let i = 0; i < (q.maxHops ?? 8); i++) {
-        const deps = edgesFrom(db, cur, ["DEPENDS_ON"]);
-        if (!deps.length) break;
-        edges.push(deps[0]!);
-        cur = deps[0]!.target;
-        path.push(cur);
-      }
+      const enumeration = enumerateDependencyPaths(db, q.nodeId, {
+        maxHops: q.maxHops,
+        maxPaths: q.maxPaths,
+      });
+      const reason = enumeration.truncation.truncated
+        ? `; truncated by ${enumeration.truncation.reasons.join(",")}`
+        : "; complete within bounds";
       return {
         op: q.op,
-        nodes: collectNodes(db, path),
-        edges,
-        summary: `depends_on path length ${path.length - 1}`,
-        rows: path.map((id, i) => ({ step: i, nodeId: id })),
+        nodes: collectNodes(db, enumeration.nodeIds),
+        edges: enumeration.edges,
+        summary: `depends_on ${enumeration.paths.length} terminal path(s) from ${q.nodeId}${reason}`,
+        rows: enumeration.paths,
+        truncation: enumeration.truncation,
       };
     }
     case "neighborhood": {
