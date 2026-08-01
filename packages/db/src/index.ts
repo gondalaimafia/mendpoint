@@ -447,6 +447,43 @@ CREATE TRIGGER IF NOT EXISTS usage_ledger_entries_append_only_delete
 BEFORE DELETE ON usage_ledger_entries BEGIN
   SELECT RAISE(ABORT, 'usage_ledger_entries_append_only');
 END;
+
+CREATE TABLE IF NOT EXISTS warden_campaigns (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  name TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('draft', 'running', 'paused', 'cancelling', 'cancelled', 'completed', 'failed', 'rolling_back', 'rolled_back')),
+  owner_principal_id TEXT NOT NULL REFERENCES principals(id),
+  concurrency_limit INTEGER NOT NULL CHECK (concurrency_limit > 0),
+  completion_policy TEXT NOT NULL CHECK (completion_policy IN ('all', 'continue_on_failure')),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS warden_campaigns_tenant_status_idx
+  ON warden_campaigns(tenant_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS warden_campaign_targets (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  campaign_id TEXT NOT NULL REFERENCES warden_campaigns(id),
+  repository_id TEXT NOT NULL REFERENCES connected_repositories(id),
+  snapshot_id TEXT NOT NULL REFERENCES repository_snapshots(id),
+  package_artifact_id TEXT REFERENCES artifact_manifests(id),
+  owner_principal_id TEXT NOT NULL REFERENCES principals(id),
+  stage TEXT NOT NULL CHECK (stage IN ('queued', 'analyzing', 'editing', 'verifying', 'review', 'delivering', 'completed', 'blocked', 'failed', 'cancelled', 'rolling_back', 'rolled_back')),
+  depends_on_json TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  max_attempts INTEGER NOT NULL CHECK (max_attempts > 0),
+  exception_code TEXT,
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, campaign_id, repository_id)
+);
+CREATE INDEX IF NOT EXISTS warden_targets_campaign_stage_idx
+  ON warden_campaign_targets(tenant_id, campaign_id, stage, created_at);
 CREATE INDEX IF NOT EXISTS evidence_records_subject_idx ON evidence_records(tenant_id, subject_type, subject_id, created_at);
 
 CREATE TABLE IF NOT EXISTS review_decisions (
@@ -1666,6 +1703,22 @@ export type {
   UsageLedgerEntry,
   UsageSummary,
 } from "./usage.js";
+
+export type {
+  WardenCampaign,
+  WardenCampaignStatus,
+  WardenCampaignTarget,
+  WardenTargetStage,
+} from "./warden-campaign.js";
+export {
+  addWardenCampaignTarget,
+  claimReadyWardenTargets,
+  createWardenCampaign,
+  listWardenCampaignTargets,
+  planWardenRollback,
+  transitionWardenCampaign,
+  transitionWardenTarget,
+} from "./warden-campaign.js";
 export {
   createUsagePriceVersion,
   getUsagePriceVersion,

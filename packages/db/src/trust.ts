@@ -438,7 +438,8 @@ export function appendDomainEvent(
   requireTenantRecord(db, "principals", input.actorPrincipalId, input.tenantId);
   const payloadJson = JSON.stringify(input.payload);
   const payloadSha256 = digest(payloadJson);
-  db.raw.exec("BEGIN IMMEDIATE");
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const existing = one<DomainEventRow>(
       db,
@@ -453,7 +454,7 @@ export function appendDomainEvent(
         existing.actor_principal_id === input.actorPrincipalId &&
         existing.payload_sha256 === payloadSha256;
       if (!same) throw new Error("domain_event_idempotency_conflict");
-      db.raw.exec("COMMIT");
+      if (ownsTransaction) db.raw.exec("COMMIT");
       return { row: existing, inserted: false };
     }
     const previous = one<{ event_sequence: number; event_hash: string }>(
@@ -507,10 +508,10 @@ export function appendDomainEvent(
         input.createdAt,
       );
     const row = one<DomainEventRow>(db, `SELECT * FROM domain_events WHERE id = ?`, [input.id])!;
-    db.raw.exec("COMMIT");
+    if (ownsTransaction) db.raw.exec("COMMIT");
     return { row, inserted: true };
   } catch (error) {
-    db.raw.exec("ROLLBACK");
+    if (ownsTransaction) db.raw.exec("ROLLBACK");
     throw error;
   }
 }

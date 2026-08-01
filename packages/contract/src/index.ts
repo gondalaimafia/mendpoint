@@ -52,3 +52,18 @@ export {
   type VerificationWaiverStatus,
   type VerificationWaiverEvaluation,
 } from "./verification-waiver.js";
+
+export {
+  assertStructuredPrPackageV1,
+  canonicalStructuredPrPackageDigest,
+  createStructuredPrPackageV1,
+  validateStructuredPrPackageV1,
+  verifyStructuredPrPackageV1,
+  type StructuredPrCandidateEditLink,
+  type StructuredPrFindingLink,
+  type StructuredPrPackageIssue,
+  type StructuredPrPackageIssueCode,
+  type StructuredPrPackageV1,
+  type StructuredPrPackageV1Input,
+  type StructuredPrScopedRef,
+} from "./warden-operations.js";
