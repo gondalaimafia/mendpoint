@@ -33,7 +33,7 @@ export default async function FeedsPage() {
   }
 
   return (
-    <main className="page">
+    <div className="page">
       <div className="page-header">
         <h1>Continuous feeds</h1>
         <p className="muted">
@@ -119,6 +119,6 @@ export default async function FeedsPage() {
           </tbody>
         </table>
       </section>
-    </main>
+    </div>
   );
 }

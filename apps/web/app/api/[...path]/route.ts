@@ -32,6 +32,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
   const rules: Array<[string, RegExp]> = [
     ["GET", /^status$/],
     ["GET", /^jobs$/],
+    ["GET", /^jobs\/[^/]+$/],
     ["GET", /^recovery\/summary$/],
     ["GET", /^github\/app\/install-url$/],
     ["GET", /^graph\//],

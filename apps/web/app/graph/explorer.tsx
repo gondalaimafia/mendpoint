@@ -111,6 +111,7 @@ export function GraphExplorer({
   const [selected, setSelected] = useState<GNode | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [requestedChangeId, setRequestedChangeId] = useState(selectedChangeId ?? "");
   const [filter, setFilter] = useState("");
   const debouncedFilter = useDebounced(filter, 120);
   const [kindFilter, setKindFilter] = useState<string>("all");
@@ -119,7 +120,8 @@ export function GraphExplorer({
     setGraph(initial);
     setSelected(null);
     setError(null);
-  }, [initial]);
+    setRequestedChangeId(selectedChangeId ?? "");
+  }, [initial, selectedChangeId]);
 
   const kindsPresent = useMemo(() => {
     const s = new Set(graph.nodes.map((n) => n.kind));
@@ -155,6 +157,7 @@ export function GraphExplorer({
 
   const loadChange = useCallback(
     async (id: string) => {
+      setRequestedChangeId(id);
       setBusy(true);
       setError(null);
       try {
@@ -193,7 +196,7 @@ export function GraphExplorer({
           <select
             className="input"
             style={{ maxWidth: 280 }}
-            value={selectedChangeId ?? ""}
+            value={requestedChangeId}
             onChange={(e) => loadChange(e.target.value)}
             disabled={busy}
             aria-label="Select change or product overview"
@@ -210,7 +213,7 @@ export function GraphExplorer({
         {error && (
           <div className="banner-error" role="alert">
             {error}
-            <button type="button" className="btn" style={{ marginLeft: 8 }} onClick={() => loadChange(selectedChangeId ?? "")}>
+            <button type="button" className="btn" style={{ marginLeft: 8 }} onClick={() => loadChange(requestedChangeId)}>
               Retry
             </button>
           </div>

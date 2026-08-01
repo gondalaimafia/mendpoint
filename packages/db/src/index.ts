@@ -1816,6 +1816,14 @@ export function listJobs(db: AppDb, limit = 50, tenantId?: string): JobRow[] {
   );
 }
 
+export function getJob(db: AppDb, id: string, tenantId?: string): JobRow | undefined {
+  return get<JobRow>(
+    db,
+    `SELECT * FROM jobs WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`,
+    tenantId ? [id, tenantId] : [id],
+  );
+}
+
 export function getJobRecoverySummary(
   db: AppDb,
   tenantId: string,

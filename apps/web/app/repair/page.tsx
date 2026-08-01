@@ -26,15 +26,19 @@ export default async function RepairPage() {
   let sessions: Session[] = [];
   let consumers: Consumer[] = [];
   let error: string | null = null;
-  try {
-    sessions = await apiGet<Session[]>("/repair/sessions");
-    consumers = await apiGet<Consumer[]>("/consumers");
-  } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
-  }
+  const [sessionsResult, consumersResult] = await Promise.allSettled([
+    apiGet<Session[]>("/repair/sessions"),
+    apiGet<Consumer[]>("/consumers"),
+  ]);
+  if (sessionsResult.status === "fulfilled") sessions = sessionsResult.value;
+  if (consumersResult.status === "fulfilled") consumers = consumersResult.value;
+  error = [
+    sessionsResult.status === "rejected" ? `Sessions unavailable: ${String(sessionsResult.reason)}` : null,
+    consumersResult.status === "rejected" ? `Repositories unavailable: ${String(consumersResult.reason)}` : null,
+  ].filter(Boolean).join(". ") || null;
 
   return (
-    <main className="page">
+    <div className="page">
       <div className="page-header">
         <h1>Agentic repair</h1>
         <p className="muted">
@@ -57,6 +61,7 @@ export default async function RepairPage() {
         <h2>Recent sessions</h2>
         {!sessions.length && <p className="muted">No repair sessions yet.</p>}
         <table className="table">
+          <caption className="sr-only">Recent verified repair sessions</caption>
           <thead>
             <tr>
               <th>When</th>
@@ -88,6 +93,6 @@ export default async function RepairPage() {
           </pre>
         )}
       </section>
-    </main>
+    </div>
   );
 }

@@ -23,15 +23,19 @@ export default async function BillingPage() {
   let plans: Plan[] = [];
   let tenants: Tenant[] = [];
   let error: string | null = null;
-  try {
-    plans = await apiGet<Plan[]>("/billing/plans");
-    tenants = await apiGet<Tenant[]>("/tenants");
-  } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
-  }
+  const [plansResult, tenantsResult] = await Promise.allSettled([
+    apiGet<Plan[]>("/billing/plans"),
+    apiGet<Tenant[]>("/tenants"),
+  ]);
+  if (plansResult.status === "fulfilled") plans = plansResult.value;
+  if (tenantsResult.status === "fulfilled") tenants = tenantsResult.value;
+  error = [
+    plansResult.status === "rejected" ? String(plansResult.reason) : null,
+    tenantsResult.status === "rejected" ? String(tenantsResult.reason) : null,
+  ].filter(Boolean).join(". ") || null;
 
   return (
-    <main className="page">
+    <div className="page">
       <div className="page-header">
         <h1>Billing & workspaces</h1>
         <p className="muted">
@@ -82,6 +86,6 @@ export default async function BillingPage() {
         ))}
         {!tenants.length && <p className="muted">No tenants yet.</p>}
       </section>
-    </main>
+    </div>
   );
 }

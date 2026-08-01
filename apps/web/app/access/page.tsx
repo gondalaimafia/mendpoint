@@ -22,7 +22,7 @@ export default function AccessPage() {
   }
 
   return (
-    <main className="page">
+    <div className="page">
       <section className="card" style={{ maxWidth: 480, margin: "4rem auto" }}>
         <h1>Operator access</h1>
         <p className="muted">Enter the configured web access token.</p>
@@ -41,6 +41,6 @@ export default function AccessPage() {
         </button>
         {message && <p className="muted small">{message}</p>}
       </section>
-    </main>
+    </div>
   );
 }

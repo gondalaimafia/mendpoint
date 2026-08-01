@@ -79,6 +79,7 @@ export default async function ConsumerPage() {
 
       <h2>Pending PRs</h2>
       <table>
+        <caption className="sr-only">Migration pull requests waiting for review</caption>
         <thead>
           <tr>
             <th>Status</th>

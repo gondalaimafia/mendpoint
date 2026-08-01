@@ -33,6 +33,7 @@ import {
   recoverExpiredJobs,
   getJobRecoverySummary,
   jobToApi,
+  getJob,
   listJobs,
   insertAgentRun,
   listAgentRuns,
@@ -332,6 +333,8 @@ describe("db", () => {
     }
 
     expect(listJobs(db, 50, "tenant-a").map((row) => row.id)).toEqual(["job-a"]);
+    expect(getJob(db, "job-a", "tenant-a")?.id).toBe("job-a");
+    expect(getJob(db, "job-b", "tenant-a")).toBeUndefined();
     expect(listAgentRuns(db, 50, "tenant-a").map((row) => row.id)).toEqual(["agent-a"]);
     expect(listRepairSessions(db, 50, "tenant-a").map((row) => row.id)).toEqual([
       "repair-a",

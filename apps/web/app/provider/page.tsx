@@ -20,6 +20,13 @@ export default async function ProviderPage() {
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
+  const prsByChange = new Map<string, { total: number; merged: number }>();
+  for (const pr of prs) {
+    const summary = prsByChange.get(pr.changeId) ?? { total: 0, merged: 0 };
+    summary.total += 1;
+    if (pr.status === "merged") summary.merged += 1;
+    prsByChange.set(pr.changeId, summary);
+  }
 
   return (
     <div>
@@ -65,6 +72,7 @@ export default async function ProviderPage() {
         <code>notificationsOnly</code> publish. Export audit at <code>/audit/export</code>.
       </p>
       <table>
+        <caption className="sr-only">Recent API changes and migration pull request progress</caption>
         <thead>
           <tr>
             <th>Risk</th>
@@ -75,8 +83,7 @@ export default async function ProviderPage() {
         </thead>
         <tbody>
           {changes.map((ch) => {
-            const related = prs.filter((p) => p.changeId === ch.id);
-            const merged = related.filter((p) => p.status === "merged").length;
+            const related = prsByChange.get(ch.id) ?? { total: 0, merged: 0 };
             return (
               <tr key={ch.id}>
                 <td>
@@ -84,7 +91,7 @@ export default async function ProviderPage() {
                 </td>
                 <td>{ch.summary}</td>
                 <td className="muted">
-                  {merged}/{related.length} merged
+                  {related.merged}/{related.total} merged
                 </td>
                 <td>
                   <Link href={`/provider/changes/${ch.id}`}>Open</Link>

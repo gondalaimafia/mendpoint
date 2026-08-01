@@ -20,15 +20,19 @@ export default async function AgentPage() {
   let runs: Run[] = [];
   let consumers: Consumer[] = [];
   let error: string | null = null;
-  try {
-    runs = await apiGet<Run[]>("/agent/runs");
-    consumers = await apiGet<Consumer[]>("/consumers");
-  } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
-  }
+  const [runsResult, consumersResult] = await Promise.allSettled([
+    apiGet<Run[]>("/agent/runs"),
+    apiGet<Consumer[]>("/consumers"),
+  ]);
+  if (runsResult.status === "fulfilled") runs = runsResult.value;
+  if (consumersResult.status === "fulfilled") consumers = consumersResult.value;
+  error = [
+    runsResult.status === "rejected" ? `Runs unavailable: ${String(runsResult.reason)}` : null,
+    consumersResult.status === "rejected" ? `Repositories unavailable: ${String(consumersResult.reason)}` : null,
+  ].filter(Boolean).join(". ") || null;
 
   return (
-    <main className="page">
+    <div className="page">
       <div className="page-header">
         <h1>Warden</h1>
         <p className="muted">
@@ -50,6 +54,7 @@ export default async function AgentPage() {
         <h2>Recent runs</h2>
         {!runs.length && <p className="muted">No agent runs yet.</p>}
         <table className="table">
+          <caption className="sr-only">Recent Warden runs</caption>
           <thead>
             <tr>
               <th>When</th>
@@ -79,6 +84,6 @@ export default async function AgentPage() {
           </pre>
         )}
       </section>
-    </main>
+    </div>
   );
 }

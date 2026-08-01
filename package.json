@@ -51,6 +51,7 @@
     "tsx": "^4.19.3"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@playwright/test": "^1.55.1",
     "@types/node": "^22.13.10",
     "typescript": "^5.8.2",

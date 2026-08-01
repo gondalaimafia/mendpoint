@@ -154,7 +154,7 @@ export default async function StatusPage() {
         </>
       )}
       {recovery && (
-        <section className="card" style={{ marginTop: "1rem" }}>
+        <section id="recovery" className="card" style={{ marginTop: "1rem" }}>
           <h2>Self healing recovery</h2>
           <p className="muted">
             Automated repair is bounded and verified. Failed work stays visible until it is
@@ -190,9 +190,10 @@ export default async function StatusPage() {
         </section>
       )}
       {jobs.length > 0 && (
-        <section className="card" style={{ marginTop: "1rem" }}>
+        <section id="work" className="card" style={{ marginTop: "1rem" }}>
           <h2>Recent recovery work</h2>
           <table className="table">
+            <caption className="sr-only">Recent self healing recovery work</caption>
             <thead>
               <tr>
                 <th>Created</th>

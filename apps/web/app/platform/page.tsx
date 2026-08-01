@@ -26,14 +26,20 @@ export default async function PlatformPage() {
   let scm: { providers?: Array<{ provider: string; available: boolean }> } | null =
     null;
   let error: string | null = null;
-  try {
-    dog = await apiGet<Dogfood>("/platform/dogfood");
-    slo = await apiGet<Slo>("/graph-learn/slo");
-    vm = await apiGet("/platform/vm");
-    scm = await apiGet("/platform/scm");
-  } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
-  }
+  const [dogResult, sloResult, vmResult, scmResult] = await Promise.allSettled([
+    apiGet<Dogfood>("/platform/dogfood"),
+    apiGet<Slo>("/graph-learn/slo"),
+    apiGet<{ capabilities?: Array<{ backend: string; available: boolean }> }>("/platform/vm"),
+    apiGet<{ providers?: Array<{ provider: string; available: boolean }> }>("/platform/scm"),
+  ]);
+  if (dogResult.status === "fulfilled") dog = dogResult.value;
+  if (sloResult.status === "fulfilled") slo = sloResult.value;
+  if (vmResult.status === "fulfilled") vm = vmResult.value;
+  if (scmResult.status === "fulfilled") scm = scmResult.value;
+  error = [dogResult, sloResult, vmResult, scmResult]
+    .filter((result) => result.status === "rejected")
+    .map((result) => String(result.reason))
+    .join(". ") || null;
 
   return (
     <div>

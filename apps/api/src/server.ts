@@ -30,6 +30,7 @@ import {
   updateChangeSeverity,
   enqueueJob,
   listJobs,
+  getJob,
   jobToApi,
   getJobRecoverySummary,
   retryJob,
@@ -1790,6 +1791,12 @@ app.post("/jobs/fanout", async (c) => {
 app.get("/jobs", (c) =>
   c.json(listJobs(db, 50, requestTenantId(c)).map(jobToApi)),
 );
+
+app.get("/jobs/:id", (c) => {
+  const job = getJob(db, c.req.param("id"), requestTenantId(c));
+  if (!job) return c.json({ error: "not found" }, 404);
+  return c.json(jobToApi(job));
+});
 
 app.get("/recovery/summary", (c) => {
   const now = nowIso();
