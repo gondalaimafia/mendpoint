@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +9,16 @@ import {
 } from "./repository-source.js";
 
 const temporaryDirectories: string[] = [];
+
+async function makeWritable(path: string): Promise<void> {
+  const entries = await readdir(path, { withFileTypes: true }).catch(() => []);
+  await chmod(path, 0o755).catch(() => undefined);
+  await Promise.all(entries.map(async (entry) => {
+    const child = join(path, entry.name);
+    if (entry.isDirectory()) await makeWritable(child);
+    else await chmod(child, 0o644).catch(() => undefined);
+  }));
+}
 
 function git(repository: string, ...args: string[]): string {
   return execFileSync("git", ["-C", repository, ...args], {
@@ -35,7 +45,7 @@ function commit(root: string, message = "fixture"): string {
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map(async (directory) => {
-      await chmod(directory, 0o755).catch(() => undefined);
+      await makeWritable(directory);
       await rm(directory, { recursive: true, force: true });
     }),
   );

@@ -163,6 +163,7 @@ test("production image protects operators and recovers queued work after a crash
 
     await page.goto("/status");
     await expect(page).toHaveURL(/\/access\?next=%2Fstatus$/);
+    await page.getByLabel("Operator ID").fill("deployment-test");
     await page.getByLabel("Access token").fill("wrong-token");
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page.getByText("Access denied")).toBeVisible();
