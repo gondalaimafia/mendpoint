@@ -484,6 +484,127 @@ CREATE TABLE IF NOT EXISTS warden_campaign_targets (
 );
 CREATE INDEX IF NOT EXISTS warden_targets_campaign_stage_idx
   ON warden_campaign_targets(tenant_id, campaign_id, stage, created_at);
+
+CREATE TABLE IF NOT EXISTS learning_consents (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  consent_version INTEGER NOT NULL CHECK (consent_version > 0),
+  action TEXT NOT NULL CHECK (action IN ('granted', 'revoked')),
+  purpose TEXT NOT NULL,
+  residency_region TEXT NOT NULL,
+  authorized_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  supersedes_consent_id TEXT REFERENCES learning_consents(id),
+  effective_at TEXT NOT NULL,
+  expires_at TEXT,
+  reason TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, purpose, residency_region, consent_version),
+  UNIQUE (tenant_id, idempotency_key),
+  CHECK (action != 'revoked' OR (supersedes_consent_id IS NOT NULL AND expires_at IS NULL))
+);
+CREATE INDEX IF NOT EXISTS learning_consents_scope_idx
+  ON learning_consents(tenant_id, purpose, residency_region, consent_version);
+
+CREATE TABLE IF NOT EXISTS learning_records (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  consent_id TEXT NOT NULL REFERENCES learning_consents(id),
+  purpose TEXT NOT NULL,
+  residency_region TEXT NOT NULL,
+  source_object_type TEXT NOT NULL,
+  source_object_id TEXT NOT NULL,
+  source_artifact_id TEXT NOT NULL REFERENCES artifact_manifests(id),
+  redacted_artifact_id TEXT NOT NULL REFERENCES artifact_manifests(id),
+  redaction_evidence_id TEXT NOT NULL REFERENCES evidence_records(id),
+  verification_evidence_id TEXT NOT NULL REFERENCES evidence_records(id),
+  contamination_evidence_id TEXT NOT NULL REFERENCES evidence_records(id),
+  accepted_review_id TEXT NOT NULL REFERENCES review_decisions(id),
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  provenance_sha256 TEXT NOT NULL CHECK (length(provenance_sha256) = 64),
+  observed_at TEXT NOT NULL,
+  admitted_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS learning_records_consent_time_idx
+  ON learning_records(tenant_id, consent_id, observed_at);
+CREATE INDEX IF NOT EXISTS learning_records_content_idx
+  ON learning_records(tenant_id, content_sha256);
+
+CREATE TABLE IF NOT EXISTS learning_dataset_versions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  purpose TEXT NOT NULL,
+  residency_region TEXT NOT NULL,
+  version INTEGER NOT NULL CHECK (version > 0),
+  temporal_cutoff_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('draft', 'sealed')),
+  dataset_sha256 TEXT CHECK (dataset_sha256 IS NULL OR length(dataset_sha256) = 64),
+  created_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  sealed_by_principal_id TEXT REFERENCES principals(id),
+  sealed_at TEXT,
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, purpose, residency_region, version),
+  UNIQUE (tenant_id, idempotency_key),
+  CHECK ((status = 'draft' AND dataset_sha256 IS NULL AND sealed_by_principal_id IS NULL AND sealed_at IS NULL)
+    OR (status = 'sealed' AND dataset_sha256 IS NOT NULL AND sealed_by_principal_id IS NOT NULL AND sealed_at IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS learning_dataset_members (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  dataset_version_id TEXT NOT NULL REFERENCES learning_dataset_versions(id),
+  learning_record_id TEXT NOT NULL REFERENCES learning_records(id),
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, idempotency_key),
+  UNIQUE (tenant_id, dataset_version_id, learning_record_id),
+  UNIQUE (tenant_id, dataset_version_id, content_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS learning_deletion_events (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  learning_record_id TEXT NOT NULL REFERENCES learning_records(id),
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  action TEXT NOT NULL CHECK (action = 'deleted'),
+  reason TEXT NOT NULL,
+  requested_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, idempotency_key),
+  UNIQUE (tenant_id, learning_record_id, action)
+);
+
+CREATE TRIGGER IF NOT EXISTS learning_consents_append_only_update BEFORE UPDATE ON learning_consents
+BEGIN SELECT RAISE(ABORT, 'learning_consents_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_consents_append_only_delete BEFORE DELETE ON learning_consents
+BEGIN SELECT RAISE(ABORT, 'learning_consents_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_records_append_only_update BEFORE UPDATE ON learning_records
+BEGIN SELECT RAISE(ABORT, 'learning_records_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_records_append_only_delete BEFORE DELETE ON learning_records
+BEGIN SELECT RAISE(ABORT, 'learning_records_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_dataset_versions_sealed_update BEFORE UPDATE ON learning_dataset_versions
+WHEN OLD.status = 'sealed' BEGIN SELECT RAISE(ABORT, 'learning_dataset_versions_sealed'); END;
+CREATE TRIGGER IF NOT EXISTS learning_dataset_versions_sealed_delete BEFORE DELETE ON learning_dataset_versions
+WHEN OLD.status = 'sealed' BEGIN SELECT RAISE(ABORT, 'learning_dataset_versions_sealed'); END;
+CREATE TRIGGER IF NOT EXISTS learning_dataset_members_append_only_update BEFORE UPDATE ON learning_dataset_members
+BEGIN SELECT RAISE(ABORT, 'learning_dataset_members_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_dataset_members_append_only_delete BEFORE DELETE ON learning_dataset_members
+BEGIN SELECT RAISE(ABORT, 'learning_dataset_members_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_deletion_events_append_only_update BEFORE UPDATE ON learning_deletion_events
+BEGIN SELECT RAISE(ABORT, 'learning_deletion_events_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_deletion_events_append_only_delete BEFORE DELETE ON learning_deletion_events
+BEGIN SELECT RAISE(ABORT, 'learning_deletion_events_append_only'); END;
 CREATE INDEX IF NOT EXISTS evidence_records_subject_idx ON evidence_records(tenant_id, subject_type, subject_id, created_at);
 
 CREATE TABLE IF NOT EXISTS review_decisions (
@@ -1710,6 +1831,24 @@ export type {
   WardenCampaignTarget,
   WardenTargetStage,
 } from "./warden-campaign.js";
+
+export type {
+  LearningConsentRow,
+  LearningDatasetMemberRow,
+  LearningDatasetVersionRow,
+  LearningDeletionEventRow,
+  LearningRecordRow,
+} from "./learning.js";
+export {
+  addLearningDatasetMember,
+  admitLearningRecord,
+  createLearningDatasetVersion,
+  deleteLearningRecord,
+  grantLearningConsent,
+  listEligibleLearningDatasetMembers,
+  revokeLearningConsent,
+  sealLearningDatasetVersion,
+} from "./learning.js";
 export {
   addWardenCampaignTarget,
   claimReadyWardenTargets,
