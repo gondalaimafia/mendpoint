@@ -218,6 +218,7 @@ import {
 import { canonicalRepoPath, resolveRepoKey } from "./repo-path.js";
 import {
   materializeConnectedRepository,
+  purgeExpiredSnapshots,
   registerConnectedRepository,
   registerScmConnection,
   revokeConnection,
@@ -974,12 +975,13 @@ app.post("/platform/scm/repositories", async (c) => {
 app.post("/platform/scm/repositories/:id/snapshots", async (c) => {
   try {
     const body = await c.req
-      .json<{ consumerRepoId?: string }>()
-      .catch((): { consumerRepoId?: string } => ({}));
+      .json<{ consumerRepoId?: string; sparsePaths?: string[] }>()
+      .catch((): { consumerRepoId?: string; sparsePaths?: string[] } => ({}));
     const result = await materializeConnectedRepository(db, {
       tenantId: requestTenantId(c),
       repositoryId: c.req.param("id"),
       consumerRepoId: body.consumerRepoId,
+      sparsePaths: body.sparsePaths,
     });
     requestAudit(c, {
       actor: "operator",
@@ -1011,6 +1013,23 @@ app.post("/platform/scm/connections/:id/revoke", (c) => {
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
   }
+});
+
+app.post("/platform/scm/snapshots/purge", async (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
+  const result = await purgeExpiredSnapshots(db, {
+    tenantId: principal.tenantId,
+    actorPrincipalId: principal.id,
+  });
+  requestAudit(c, {
+    actor: "operator",
+    action: "repository.snapshots.retention_evaluated",
+    resourceType: "repository_snapshot",
+    resourceId: principal.tenantId,
+    metadata: result,
+  });
+  return c.json(result);
 });
 
 app.get("/platform/alerts", (c) => c.json({ alerts: recentAlerts(50) }));

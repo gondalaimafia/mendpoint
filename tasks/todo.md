@@ -428,7 +428,7 @@ Execution contract: `C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\me
 ### Gate 2: Production repository connections
 
 - [x] Add an SCM neutral installation, repository, branch, exact commit snapshot, environment, ownership, and health model.
-- [ ] Add isolated exact commit checkout with branch drift, submodule, LFS, sparse checkout, retention, and deletion policies.
+- [x] Add isolated exact commit checkout with branch drift, submodule, LFS, sparse checkout, retention, and deletion policies.
 - [ ] Bind GitHub App installation credentials to snapshot and draft pull request delivery.
 - [ ] Discover and version CODEOWNERS, protected branch expectations, CI definitions, and approved verification commands.
 - [ ] Report configured, authenticated, read, write, webhook, CI, sync, delivery, and revocation health independently.
@@ -539,3 +539,4 @@ Gate 1 to Gate 3 implementation update:
 - Added admin protected repository connection APIs and replaced the static platform readiness claim with observed per capability status.
 - Added complete bounded dependency path enumeration with stable ordering, cycle terminals, tenant isolation, and explicit truncation evidence.
 - A local Git integration canary passes from clean repository through exact commit snapshot, ownership and CI discovery, persistence, consumer binding, and truthful platform health. Real GitHub and GitLab snapshot adapters and a private customer canary remain external acceptance gates.
+- Snapshot retention now uses append only planned, deleted, and failed lifecycle events. Purge revalidates the exact tenant destination before changing filesystem state, records attributable outcomes, preserves metadata evidence, and can retry interrupted failures. Sparse path policy is part of the content manifest and persisted snapshot contract.

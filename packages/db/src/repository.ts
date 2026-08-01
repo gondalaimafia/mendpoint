@@ -4,6 +4,7 @@ import type { AppDb } from "./index.js";
 import type {
   ConnectedRepositoryRow,
   RepositorySnapshotPolicyRow,
+  RepositorySnapshotDeletionRow,
   RepositorySnapshotRow,
   ScmConnectionHealthRow,
   ScmConnectionRow,
@@ -406,6 +407,84 @@ export function getRepositorySnapshotPolicy(
   return one(
     db,
     `SELECT * FROM repository_snapshot_policies WHERE tenant_id = ? AND snapshot_id = ?`,
+    [tenantId, snapshotId],
+  );
+}
+
+export function listExpiredRepositorySnapshots(
+  db: AppDb,
+  tenantId: string,
+  asOf: string,
+): RepositorySnapshotRow[] {
+  timestamp("snapshot_expiry_as_of", asOf);
+  return many(
+    db,
+    `SELECT s.* FROM repository_snapshots s
+     WHERE s.tenant_id = ? AND s.expires_at <= ?
+       AND NOT EXISTS (
+         SELECT 1 FROM repository_snapshot_deletions d
+         WHERE d.tenant_id = s.tenant_id AND d.snapshot_id = s.id AND d.status = 'deleted'
+       )
+     ORDER BY s.expires_at, s.id`,
+    [tenantId, asOf],
+  );
+}
+
+export function recordRepositorySnapshotDeletion(
+  db: AppDb,
+  input: {
+    id: string;
+    tenantId: string;
+    snapshotId: string;
+    status: RepositorySnapshotDeletionRow["status"];
+    actorPrincipalId: string;
+    errorCode?: string | null;
+    createdAt: string;
+  },
+): RepositorySnapshotDeletionRow {
+  const snapshot = one<RepositorySnapshotRow>(
+    db,
+    `SELECT * FROM repository_snapshots WHERE id = ? AND tenant_id = ?`,
+    [input.snapshotId, input.tenantId],
+  );
+  if (!snapshot) throw new Error("repository_snapshot_tenant_mismatch");
+  if (!["planned", "deleted", "failed"].includes(input.status)) {
+    throw new Error("repository_snapshot_deletion_status_invalid");
+  }
+  required("snapshot_deletion_actor", input.actorPrincipalId);
+  timestamp("snapshot_deletion_created_at", input.createdAt);
+  db.raw
+    .prepare(
+      `INSERT INTO repository_snapshot_deletions
+       (id, tenant_id, snapshot_id, status, actor_principal_id, error_code, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.id,
+      input.tenantId,
+      input.snapshotId,
+      input.status,
+      input.actorPrincipalId,
+      input.errorCode ?? null,
+      input.createdAt,
+    );
+  return one<RepositorySnapshotDeletionRow>(
+    db,
+    `SELECT * FROM repository_snapshot_deletions WHERE id = ?`,
+    [input.id],
+  )!;
+}
+
+export function getRepositorySnapshotDeletionStatus(
+  db: AppDb,
+  tenantId: string,
+  snapshotId: string,
+): RepositorySnapshotDeletionRow | undefined {
+  return one(
+    db,
+    `SELECT * FROM repository_snapshot_deletions
+     WHERE tenant_id = ? AND snapshot_id = ?
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     [tenantId, snapshotId],
   );
 }

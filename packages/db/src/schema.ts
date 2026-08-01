@@ -172,6 +172,16 @@ export type ScmConnectionHealthRow = {
   checked_at: string;
 };
 
+export type RepositorySnapshotDeletionRow = {
+  id: string;
+  tenant_id: string;
+  snapshot_id: string;
+  status: "planned" | "deleted" | "failed";
+  actor_principal_id: string;
+  error_code: string | null;
+  created_at: string;
+};
+
 export type MonitoredApi = {
   id: string;
   consumer_id: string;

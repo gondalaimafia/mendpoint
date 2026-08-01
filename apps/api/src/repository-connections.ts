@@ -1,17 +1,20 @@
-import { chmod, mkdir, rm } from "node:fs/promises";
-import { dirname } from "node:path";
+import { chmod, lstat, mkdir, readdir, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { AppDb } from "@mendpoint/db";
 import {
   bindConsumerRepoSnapshot,
   getScmConnection,
   getScmConnectionHealth,
+  getRepositorySnapshotDeletionStatus,
   insertConnectedRepository,
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
   listConnectedRepositories,
+  listExpiredRepositorySnapshots,
   listRepositorySnapshots,
   listScmConnections,
   revokeScmConnection,
+  recordRepositorySnapshotDeletion,
   setScmConnectionHealth,
   updateConnectedRepositoryStatus,
   upsertScmConnection,
@@ -19,6 +22,7 @@ import {
 import { createLocalGitRepositorySource } from "@mendpoint/platform";
 import { newId, nowIso } from "@mendpoint/shared";
 import {
+  assertRepositorySnapshotPath,
   repositorySnapshotDestination,
   resolveRepoKey,
 } from "./repo-path.js";
@@ -169,6 +173,7 @@ export async function materializeConnectedRepository(
     tenantId: string;
     repositoryId: string;
     consumerRepoId?: string;
+    sparsePaths?: string[];
   },
 ) {
   const repository = listConnectedRepositories(db, input.tenantId).find(
@@ -183,7 +188,10 @@ export async function materializeConnectedRepository(
   }
 
   const sourcePath = resolveRepoKey(repository.remote_id, input.tenantId);
-  const source = await createLocalGitRepositorySource({ repositoryPath: sourcePath });
+  const source = await createLocalGitRepositorySource({
+    repositoryPath: sourcePath,
+    policy: { sparsePaths: input.sparsePaths },
+  });
   const probe = await source.probe();
   const resolved = await source.resolveRef(repository.selected_branch);
   const snapshotId = newId();
@@ -208,7 +216,7 @@ export async function materializeConnectedRepository(
         storagePath: snapshot.root,
         submodulesPolicy: snapshot.submodules.length ? "pinned" : "reject",
         lfsPolicy: snapshot.lfsPointers.length ? "pointer_only" : "reject",
-        sparsePaths: [],
+        sparsePaths: [...snapshot.sparsePaths],
         createdAt,
         expiresAt,
       });
@@ -308,6 +316,61 @@ export function revokeConnection(db: AppDb, tenantId: string, connectionId: stri
   return publicConnection(db, connection, tenantId);
 }
 
+export async function purgeExpiredSnapshots(
+  db: AppDb,
+  input: { tenantId: string; actorPrincipalId: string; at?: string },
+) {
+  const at = input.at ?? nowIso();
+  const expired = listExpiredRepositorySnapshots(db, input.tenantId, at);
+  const results: Array<{ snapshotId: string; status: "deleted" | "failed"; errorCode: string | null }> = [];
+  for (const snapshot of expired) {
+    recordRepositorySnapshotDeletion(db, {
+      id: newId(),
+      tenantId: input.tenantId,
+      snapshotId: snapshot.id,
+      status: "planned",
+      actorPrincipalId: input.actorPrincipalId,
+      createdAt: at,
+    });
+    try {
+      const target = assertRepositorySnapshotPath(
+        snapshot.storage_path,
+        snapshot.id,
+        input.tenantId,
+      );
+      await makeTreeWritable(target);
+      await rm(target, { recursive: true, force: true });
+      recordRepositorySnapshotDeletion(db, {
+        id: newId(),
+        tenantId: input.tenantId,
+        snapshotId: snapshot.id,
+        status: "deleted",
+        actorPrincipalId: input.actorPrincipalId,
+        createdAt: at,
+      });
+      results.push({ snapshotId: snapshot.id, status: "deleted", errorCode: null });
+    } catch (error) {
+      const errorCode = retentionErrorCode(error);
+      recordRepositorySnapshotDeletion(db, {
+        id: newId(),
+        tenantId: input.tenantId,
+        snapshotId: snapshot.id,
+        status: "failed",
+        actorPrincipalId: input.actorPrincipalId,
+        errorCode,
+        createdAt: at,
+      });
+      results.push({ snapshotId: snapshot.id, status: "failed", errorCode });
+    }
+  }
+  return {
+    evaluated: expired.length,
+    deleted: results.filter((item) => item.status === "deleted").length,
+    failed: results.filter((item) => item.status === "failed").length,
+    results,
+  };
+}
+
 export function scmOverview(db: AppDb, tenantId: string) {
   const connections = listScmConnections(db, tenantId).map((connection) =>
     publicConnection(db, connection, tenantId),
@@ -323,14 +386,19 @@ export function scmOverview(db: AppDb, tenantId: string) {
     environment: repository.environment,
     retentionDays: repository.retention_days,
     status: repository.status,
-    snapshots: listRepositorySnapshots(db, tenantId, repository.id).map((snapshot) => ({
-      id: snapshot.id,
-      requestedRef: snapshot.requested_ref,
-      exactCommit: snapshot.resolved_sha,
-      manifestSha256: snapshot.manifest_sha256,
-      createdAt: snapshot.created_at,
-      expiresAt: snapshot.expires_at,
-    })),
+    snapshots: listRepositorySnapshots(db, tenantId, repository.id).map((snapshot) => {
+      const deletion = getRepositorySnapshotDeletionStatus(db, tenantId, snapshot.id);
+      return {
+        id: snapshot.id,
+        requestedRef: snapshot.requested_ref,
+        exactCommit: snapshot.resolved_sha,
+        manifestSha256: snapshot.manifest_sha256,
+        createdAt: snapshot.created_at,
+        expiresAt: snapshot.expires_at,
+        available: deletion?.status !== "deleted",
+        retentionStatus: deletion?.status ?? "retained",
+      };
+    }),
   }));
   return {
     providers: [
@@ -375,6 +443,27 @@ function publicConnection(
 }
 
 async function removeSnapshot(root: string): Promise<void> {
-  await chmod(root, 0o755).catch(() => undefined);
+  await makeTreeWritable(root);
   await rm(root, { recursive: true, force: true });
+}
+
+async function makeTreeWritable(root: string): Promise<void> {
+  const stat = await lstat(root).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat) return;
+  if (stat.isDirectory()) {
+    await chmod(root, 0o755);
+    for (const entry of await readdir(root)) {
+      await makeTreeWritable(join(root, entry));
+    }
+  } else if (!stat.isSymbolicLink()) {
+    await chmod(root, 0o644);
+  }
+}
+
+function retentionErrorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : "snapshot_purge_failed";
+  return /^[a-z0-9_]{1,80}$/.test(message) ? message : "snapshot_purge_failed";
 }

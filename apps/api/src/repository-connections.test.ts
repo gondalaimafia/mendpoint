@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,10 +9,12 @@ import {
   getRepositorySnapshotPolicy,
   insertConsumer,
   insertConsumerRepo,
+  listRepositorySnapshots,
   type AppDb,
 } from "@mendpoint/db";
 import {
   materializeConnectedRepository,
+  purgeExpiredSnapshots,
   registerConnectedRepository,
   registerScmConnection,
   revokeConnection,
@@ -123,6 +125,28 @@ describe("repository connection service", () => {
     });
     expect(overview.repositories[0]?.snapshots[0]?.exactCommit).toBe(sha);
     expect(scmOverview(db, "tenant-b")).toMatchObject({ connections: [], repositories: [] });
+
+    const storedPath = listRepositorySnapshots(db, "tenant-a", repository.id)[0]!.storage_path;
+    expect(existsSync(storedPath)).toBe(true);
+    await expect(
+      purgeExpiredSnapshots(db, {
+        tenantId: "tenant-b",
+        actorPrincipalId: "service:retention",
+        at: "2027-08-01T00:00:00.000Z",
+      }),
+    ).resolves.toMatchObject({ evaluated: 0, deleted: 0 });
+    await expect(
+      purgeExpiredSnapshots(db, {
+        tenantId: "tenant-a",
+        actorPrincipalId: "service:retention",
+        at: "2027-08-01T00:00:00.000Z",
+      }),
+    ).resolves.toMatchObject({ evaluated: 1, deleted: 1, failed: 0 });
+    expect(existsSync(storedPath)).toBe(false);
+    expect(scmOverview(db, "tenant-a").repositories[0]?.snapshots[0]).toMatchObject({
+      available: false,
+      retentionStatus: "deleted",
+    });
   });
 
   it("revokes a connection without exposing or reactivating its credential", () => {

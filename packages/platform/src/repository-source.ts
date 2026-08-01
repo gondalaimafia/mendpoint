@@ -20,6 +20,7 @@ export type RepositorySourcePolicy = {
   allowSymlinks?: boolean;
   maxFileBytes?: number;
   maxSnapshotBytes?: number;
+  sparsePaths?: string[];
 };
 
 export type RepositoryProbe = {
@@ -64,6 +65,7 @@ export type ImmutableRepositorySnapshot = {
   files: readonly SnapshotFile[];
   submodules: readonly SnapshotSubmodule[];
   lfsPointers: readonly string[];
+  sparsePaths: readonly string[];
 };
 
 export type DiscoveredDocument = {
@@ -277,11 +279,16 @@ function validateSymlinkTarget(linkPath: string, target: string): void {
   }
 }
 
-function manifestDigest(files: readonly SnapshotFile[], submodules: readonly SnapshotSubmodule[]): string {
+function manifestDigest(
+  files: readonly SnapshotFile[],
+  submodules: readonly SnapshotSubmodule[],
+  sparsePaths: readonly string[],
+): string {
   return sha256(
     JSON.stringify({
       files: [...files].sort((a, b) => a.path.localeCompare(b.path)),
       submodules: [...submodules].sort((a, b) => a.path.localeCompare(b.path)),
+      sparsePaths: [...sparsePaths].sort(),
     }),
   );
 }
@@ -382,6 +389,8 @@ export async function createLocalGitRepositorySource(input: {
   const repositoryId = `local-git:${repositoryPath}`;
   const maxFileBytes = policy.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const maxSnapshotBytes = policy.maxSnapshotBytes ?? DEFAULT_MAX_SNAPSHOT_BYTES;
+  const sparsePaths = [...new Set((policy.sparsePaths ?? []).map(validateRepositoryRelativePath))]
+    .sort();
   if (maxFileBytes <= 0 || maxSnapshotBytes <= 0 || maxFileBytes > maxSnapshotBytes) {
     throw new RepositorySourceError("SNAPSHOT_LIMIT_EXCEEDED", "Invalid snapshot size policy");
   }
@@ -477,7 +486,11 @@ export async function createLocalGitRepositorySource(input: {
         if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
       }
 
-      const entries = treeAt(repositoryPath, ref.sha);
+      const entries = treeAt(repositoryPath, ref.sha).filter(
+        (entry) =>
+          sparsePaths.length === 0 ||
+          sparsePaths.some((path) => entry.path === path || entry.path.startsWith(`${path}/`)),
+      );
       const seenPortablePaths = new Set<string>();
       const files: SnapshotFile[] = [];
       const submodules: SnapshotSubmodule[] = [];
@@ -568,10 +581,11 @@ export async function createLocalGitRepositorySource(input: {
           requestedRef: ref.requestedRef,
           sha: ref.sha,
           root: await realpath(targetRoot),
-          manifestSha256: manifestDigest(files, submodules),
+          manifestSha256: manifestDigest(files, submodules, sparsePaths),
           files: Object.freeze(files.map((file) => Object.freeze({ ...file }))),
           submodules: Object.freeze(submodules.map((item) => Object.freeze({ ...item }))),
           lfsPointers: Object.freeze([...lfsPointers]),
+          sparsePaths: Object.freeze([...sparsePaths]),
         };
         await freezeSnapshot(targetRoot);
         return Object.freeze(snapshot);
@@ -589,7 +603,10 @@ export async function createLocalGitRepositorySource(input: {
           "Snapshot belongs to a different repository source",
         );
       }
-      if (manifestDigest(snapshot.files, snapshot.submodules) !== snapshot.manifestSha256) {
+      if (
+        manifestDigest(snapshot.files, snapshot.submodules, snapshot.sparsePaths) !==
+        snapshot.manifestSha256
+      ) {
         throw new RepositorySourceError("SNAPSHOT_MUTATED", "Snapshot manifest has changed");
       }
       const snapshotRoot = await realpath(snapshot.root);

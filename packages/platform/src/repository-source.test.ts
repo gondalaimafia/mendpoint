@@ -95,6 +95,19 @@ describe("local Git repository source", () => {
         { command: "npm run typecheck", source: "package.json", kind: "typecheck" },
       ]),
     );
+
+    const sparse = await createLocalGitRepositorySource({
+      repositoryPath: root,
+      policy: { sparsePaths: ["service.ts"] },
+    });
+    const sparseSnapshot = await sparse.materialize(
+      await sparse.resolveRef(sha),
+      join(root, "..", `${root.split(/[\\/]/).pop()}-sparse-snapshot`),
+    );
+    temporaryDirectories.push(sparseSnapshot.root);
+    expect(sparseSnapshot.files.map((file) => file.path)).toEqual(["service.ts"]);
+    expect(sparseSnapshot.sparsePaths).toEqual(["service.ts"]);
+    expect(sparseSnapshot.manifestSha256).not.toBe(snapshot.manifestSha256);
   });
 
   it("rejects dirty worktree ambiguity unless explicitly allowed", async () => {

@@ -466,6 +466,18 @@ CREATE TABLE IF NOT EXISTS scm_connection_health (
   checked_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS scm_connection_health_tenant_idx ON scm_connection_health(tenant_id, checked_at);
+
+CREATE TABLE IF NOT EXISTS repository_snapshot_deletions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL REFERENCES repository_snapshots(id),
+  status TEXT NOT NULL CHECK (status IN ('planned', 'deleted', 'failed')),
+  actor_principal_id TEXT NOT NULL,
+  error_code TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS repository_snapshot_deletions_tenant_idx
+  ON repository_snapshot_deletions(tenant_id, snapshot_id, created_at);
 `;
 
 
@@ -761,6 +773,7 @@ function installTrustImmutability(db: AppDb) {
     "domain_events",
     "repository_snapshots",
     "repository_snapshot_policies",
+    "repository_snapshot_deletions",
   ]) {
     run(
       db,
@@ -1522,6 +1535,7 @@ export {
   bindConsumerRepoSnapshot,
   getConnectedRepository,
   getRepositorySnapshotPolicy,
+  getRepositorySnapshotDeletionStatus,
   getScmConnection,
   getLatestRepositorySnapshot,
   getScmConnectionHealth,
@@ -1530,8 +1544,10 @@ export {
   insertRepositorySnapshotPolicy,
   listConnectedRepositories,
   listRepositorySnapshots,
+  listExpiredRepositorySnapshots,
   listScmConnections,
   revokeScmConnection,
+  recordRepositorySnapshotDeletion,
   setScmConnectionHealth,
   updateConnectedRepositoryStatus,
   upsertScmConnection,

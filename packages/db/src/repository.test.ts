@@ -8,6 +8,7 @@ import {
   getConnectedRepository,
   getConsumerRepo,
   getLatestRepositorySnapshot,
+  getRepositorySnapshotDeletionStatus,
   getScmConnectionHealth,
   insertConnectedRepository,
   insertConsumer,
@@ -15,9 +16,11 @@ import {
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
   listConnectedRepositories,
+  listExpiredRepositorySnapshots,
   listRepositorySnapshots,
   listScmConnections,
   revokeScmConnection,
+  recordRepositorySnapshotDeletion,
   setScmConnectionHealth,
   upsertScmConnection,
 } from "./index.js";
@@ -149,6 +152,10 @@ describe("repository connections", () => {
     expect(getLatestRepositorySnapshot(db, "tenant-a", "repository-a")?.resolved_sha).toBe(
       "a".repeat(40),
     );
+    expect(listExpiredRepositorySnapshots(db, "tenant-a", at)).toEqual([]);
+    expect(
+      listExpiredRepositorySnapshots(db, "tenant-a", "2026-10-01T12:00:00.000Z"),
+    ).toHaveLength(1);
     insertRepositorySnapshotPolicy(db, {
       id: "policy-a",
       tenantId: "tenant-a",
@@ -164,6 +171,33 @@ describe("repository connections", () => {
         .prepare("UPDATE repository_snapshots SET requested_ref = 'main' WHERE id = 'snapshot-a'")
         .run(),
     ).toThrow("repository_snapshots_append_only");
+    recordRepositorySnapshotDeletion(db, {
+      id: "deletion-planned",
+      tenantId: "tenant-a",
+      snapshotId: "snapshot-a",
+      status: "planned",
+      actorPrincipalId: "service:retention",
+      createdAt: "2026-10-01T12:00:00.000Z",
+    });
+    recordRepositorySnapshotDeletion(db, {
+      id: "deletion-complete",
+      tenantId: "tenant-a",
+      snapshotId: "snapshot-a",
+      status: "deleted",
+      actorPrincipalId: "service:retention",
+      createdAt: "2026-10-01T12:00:01.000Z",
+    });
+    expect(getRepositorySnapshotDeletionStatus(db, "tenant-a", "snapshot-a")?.status).toBe(
+      "deleted",
+    );
+    expect(
+      listExpiredRepositorySnapshots(db, "tenant-a", "2026-10-02T12:00:00.000Z"),
+    ).toEqual([]);
+    expect(() =>
+      db.raw
+        .prepare("UPDATE repository_snapshot_deletions SET status = 'failed' WHERE id = 'deletion-complete'")
+        .run(),
+    ).toThrow("repository_snapshot_deletions_append_only");
 
     setScmConnectionHealth(db, {
       connectionId: "connection-a",

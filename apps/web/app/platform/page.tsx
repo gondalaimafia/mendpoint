@@ -47,7 +47,7 @@ type Scm = {
     name: string;
     status: string;
     selectedBranch: string;
-    snapshots: Array<{ exactCommit: string; expiresAt: string }>;
+    snapshots: Array<{ exactCommit: string; expiresAt: string; available: boolean }>;
   }>;
 };
 
@@ -146,7 +146,8 @@ export default async function PlatformPage() {
           )}
           <p className="muted small">
             {(scm?.repositories ?? []).length} repositories, {scm?.repositories?.reduce(
-              (count, repository) => count + repository.snapshots.length,
+              (count, repository) =>
+                count + repository.snapshots.filter((snapshot) => snapshot.available).length,
               0,
             ) ?? 0} exact commit snapshots
           </p>
