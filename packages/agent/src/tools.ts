@@ -12,6 +12,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { runVerificationCommand } from "@mendpoint/repair";
 import { commandBlocked, isCodeExt, pathBlocked, DEFAULT_NEVER_TOUCH } from "./policies.js";
@@ -22,9 +24,67 @@ export type ToolContext = {
   dryRun?: boolean;
   neverTouchPaths?: string[];
   allowNetwork?: boolean;
+  /** Test and explicitly trusted development use only. */
+  allowPrivateNetwork?: boolean;
   allowedCommands?: string[];
   changedFiles: Set<string>;
 };
+
+const SENSITIVE_HEADER = /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token)$/i;
+
+function isPrivateAddress(address: string): boolean {
+  const normalized = address.toLowerCase().split("%")[0]!;
+  if (normalized === "::" || normalized === "::1") return true;
+  if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
+  if (/^fe[89ab]/.test(normalized)) return true;
+  if (normalized.startsWith("::ffff:")) return isPrivateAddress(normalized.slice(7));
+  if (isIP(normalized) !== 4) return false;
+  const parts = normalized.split(".").map(Number);
+  const [a, b] = parts;
+  return a === 0 || a === 10 || a === 127 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b! >= 16 && b! <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 100 && b! >= 64 && b! <= 127) ||
+    (a! >= 224);
+}
+
+async function validateProbeTarget(url: URL, allowPrivateNetwork: boolean): Promise<void> {
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("probe protocol is not allowed");
+  }
+  const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost")) {
+    if (!allowPrivateNetwork) throw new Error("private network probe blocked");
+    return;
+  }
+  const addresses = isIP(hostname)
+    ? [{ address: hostname }]
+    : await lookup(hostname, { all: true, verbatim: true });
+  if (!addresses.length) throw new Error("probe target did not resolve");
+  if (!allowPrivateNetwork && addresses.some((entry) => isPrivateAddress(entry.address))) {
+    throw new Error("private network probe blocked");
+  }
+}
+
+function safeProbeHeaders(value: unknown): Headers {
+  const headers = new Headers();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return headers;
+  for (const [name, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (SENSITIVE_HEADER.test(name) || typeof raw !== "string") continue;
+    if (["accept", "content-type", "user-agent", "x-request-id", "traceparent", "tracestate"]
+      .includes(name.toLowerCase())) {
+      headers.set(name, raw.slice(0, 1000));
+    }
+  }
+  return headers;
+}
+
+function redactProbeText(value: string): string {
+  return value
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*\b/gi, "Bearer [redacted]")
+    .replace(/\b(sk|rk)_(live|test)_[A-Za-z0-9_-]+\b/g, "[redacted key]");
+}
 
 type OriginalFileSnapshot = {
   existed: boolean;
@@ -431,6 +491,14 @@ export async function executeToolAsync(
     }
     const url = String(call.args.url ?? "");
     const method = String(call.args.method ?? "GET").toUpperCase();
+    if (!new Set(["GET", "HEAD"]).has(method)) {
+      return {
+        ok: false,
+        tool: "http_probe",
+        summary: "probe method blocked by policy",
+        error: "policy",
+      };
+    }
     try {
       const ctrl = new AbortController();
       const timeoutMs = Math.max(
@@ -439,12 +507,30 @@ export async function executeToolAsync(
       );
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
-        const res = await fetch(url, {
-          method,
-          signal: ctrl.signal,
-          headers: (call.args.headers as Record<string, string>) ?? undefined,
-          body: call.args.body ? String(call.args.body) : undefined,
-        });
+        let target = new URL(url);
+        let res: Response | undefined;
+        const headers = safeProbeHeaders(call.args.headers);
+        for (let redirectCount = 0; redirectCount <= 3; redirectCount++) {
+          await validateProbeTarget(target, ctx.allowPrivateNetwork ?? false);
+          res = await fetch(target, {
+            method,
+            signal: ctrl.signal,
+            headers,
+            redirect: "manual",
+          });
+          if (![301, 302, 303, 307, 308].includes(res.status)) break;
+          const location = res.headers.get("location");
+          if (!location) break;
+          if (redirectCount === 3) throw new Error("probe redirect limit exceeded");
+          const next = new URL(location, target);
+          if (next.origin !== target.origin) {
+            for (const name of [...headers.keys()]) {
+              if (name !== "accept" && name !== "user-agent") headers.delete(name);
+            }
+          }
+          target = next;
+        }
+        if (!res) throw new Error("probe did not produce a response");
         const reader = res.body?.getReader();
         let text = "";
         if (reader) {
@@ -462,8 +548,12 @@ export async function executeToolAsync(
           summary: `${method} ${url} → ${res.status}`,
           data: {
             status: res.status,
-            body: text.slice(0, 2000),
-            headers: Object.fromEntries([...res.headers.entries()].slice(0, 20)),
+            body: redactProbeText(text.slice(0, 2000)),
+            headers: Object.fromEntries(
+              [...res.headers.entries()]
+                .filter(([name]) => !SENSITIVE_HEADER.test(name))
+                .slice(0, 20),
+            ),
           },
         };
       } finally {

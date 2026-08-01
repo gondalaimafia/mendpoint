@@ -306,7 +306,7 @@ artifact.
 - [x] Reduce unnecessary route prefetching and rendering work without hiding live operational state.
 - [x] Add regression coverage for the new shell and critical command center states.
 - [x] Run typecheck, tests, production build, release checks, accessibility checks, and browser verification.
-- [ ] Commit, push, deploy through the existing gate, and verify production health.
+- [x] Commit, push, deploy through the existing gate, and verify production health.
 
 ## UX and performance acceptance criteria
 
@@ -335,18 +335,21 @@ after the pass.
 
 Local evidence: full tests, full typecheck, production build, GA preflight,
 Playwright discovery, dependency audit, desktop browser review, and 375 pixel
-browser review passed. GitHub deployment E2E and production verification remain
-the final gate.
+browser review passed. Pull request 2 merged after all release jobs passed. Main
+run 30716051102 passed the exact container journey, deployed the pilot, and
+verified production health. Direct live checks returned 200 from `/livez` and
+`/healthz`. The public root redirected to access as designed, with no browser
+console warnings, errors, or document overflow at the desktop viewport.
 
 ## Warden and Transformer capability training
 
-- [ ] Research current primary standards and real world failure patterns for API repair and multi repository migrations.
-- [ ] Inventory existing Warden, Transformer, and evaluation behavior against the researched taxonomy.
-- [ ] Define a versioned corpus of common, edge, adversarial, recovery, and safety scenarios.
-- [ ] Train Warden behavior through generalized diagnosis and repair policies backed by deterministic scenarios.
-- [ ] Train Transformer behavior through dependency aware planning, compatibility, rollout, rollback, and resume scenarios.
-- [ ] Add capability, regression, and safety evaluators with release thresholds and actionable reports.
-- [ ] Wire deterministic critical scenarios into the release gate without requiring live model credentials.
+- [x] Research current primary standards and real world failure patterns for API repair and multi repository migrations.
+- [x] Inventory existing Warden, Transformer, and evaluation behavior against the researched taxonomy.
+- [x] Define a versioned corpus of common, edge, adversarial, recovery, and safety scenarios.
+- [x] Train Warden behavior through generalized diagnosis and repair policies backed by deterministic scenarios.
+- [x] Train Transformer behavior through dependency aware planning, compatibility, rollout, rollback, and resume scenarios.
+- [x] Add capability, regression, and safety evaluators with release thresholds and actionable reports.
+- [x] Wire deterministic critical scenarios into the release gate without requiring live model credentials.
 - [ ] Run focused tests, full tests, typecheck, build, GA preflight, audit, and container E2E.
 - [ ] Commit, push, deploy through the protected release path, and verify production health.
 
@@ -362,4 +365,29 @@ the final gate.
 
 ## Warden and Transformer capability review
 
-Pending research, implementation, and verification.
+Research and implementation are complete. The versioned corpus contains 102
+deterministic cases: 55 for Warden and 47 for Transformer. The Warden set maps
+all 50 known failure modes and five end to end repository cases. The Transformer
+set maps 32 compatibility rules plus 15 graph and differential behaviors.
+
+Warden now treats issue text, logs, source, and tool output as untrusted. It
+redacts secrets before model calls, validates model tool output, protects tests,
+verifiers, fixtures, snapshots, and package manifests from generated edits, and
+blocks private network, metadata, mutating, and unsafe redirect probes. Repairs
+that cannot be proven locally produce an explicit safe handoff instead of a
+speculative patch. The strict repository benchmark requires all five cases to
+pass and enforces expected outcome, diagnosis, allowed files, forbidden files,
+and bounded execution time.
+
+Transformer now rejects malformed dependency graphs, produces deterministic
+topological plans and stable repository assignments, covers every node exactly
+once, serializes work for the same repository, and compares JSON like outputs
+structurally. Compatibility classification spans source, wire, semantic, state,
+security, and operational behavior across REST, GraphQL, protobuf, databases,
+dependencies, runtimes, Kubernetes, Terraform, webhooks, and OAuth. Campaign
+input limits and graph validation live at the domain boundary; invalid API
+requests return a client error.
+
+The CI capability gate has no model or network dependency and fails on any
+corpus regression or critical safety failure. Full release verification and the
+protected deployment remain the final gate.

@@ -7,6 +7,26 @@ import { classifyFailures } from "./knowledge.js";
 
 export type FixProposal = { key: string; call: ToolCall; modeId?: string };
 
+const AUTOMATIC_REPAIR_MODES = new Set([
+  "field_rename",
+  "wrong_http_path",
+  "header_preservation",
+  "content_type_json",
+  "accept_header",
+  "api_version_header",
+  "tls_https",
+  "trailing_slash",
+  "retry_no_backoff",
+  "retry_4xx",
+  "rate_limit_429",
+  "no_status_check",
+  "timezone_semantic",
+]);
+
+export function hasAutomaticWardenRepair(modeId: string): boolean {
+  return AUTOMATIC_REPAIR_MODES.has(modeId);
+}
+
 function tryReplace(
   path: string,
   from: string,
@@ -298,27 +318,7 @@ export function proposeWardenFix(
     }
   }
 
-  // 14) Idempotency-Key on POST
-  if (
-    (/idempotenc|double.?charg|duplicate (order|payment)/i.test(goalErr) ||
-      modes.some((m) => m.id === "missing_idempotency")) &&
-    /method:\s*["']POST["']|\.post\(/i.test(content) &&
-    /headers\s*:\s*\{/.test(content) &&
-    !/Idempotency-Key|idempotency.key/i.test(content)
-  ) {
-    const p = tryReplace(
-      path,
-      "headers: {",
-      'headers: { "Idempotency-Key": crypto.randomUUID?.() ?? String(Date.now()),',
-      `${path}:idempotency`,
-      "resilience: add Idempotency-Key on mutating request",
-      tried,
-      "missing_idempotency",
-    );
-    if (p) return p;
-  }
-
-  // 15) Naive retry without delay → add backoff sleep comment pattern
+  // 14) Naive retry without delay → add backoff sleep comment pattern
   //     Replace `for (let attempt = 0; attempt < 5; attempt++) {` body first line with backoff
   if (
     (/retry storm|no backoff|aggressive retry|without backoff/i.test(goalErr) ||
@@ -342,7 +342,7 @@ export function proposeWardenFix(
     }
   }
 
-  // 16) Retry only on 5xx/429 — flag status < 500 retries
+  // 15) Retry only on 5xx/429 — flag status < 500 retries
   if (
     (/retry.*4\d\d|do not retry 4xx|only retry 5xx/i.test(goalErr) ||
       modes.some((m) => m.id === "retry_4xx")) &&
@@ -364,7 +364,7 @@ export function proposeWardenFix(
     }
   }
 
-  // 17) 429 Retry-After handling — inject after status === 429
+  // 16) 429 Retry-After handling — inject after status === 429
   if (
     (/\b429\b|rate.?limit|retry-after/i.test(goalErr) || modes.some((m) => m.id === "rate_limit_429")) &&
     /status\s*===?\s*429|status\s*==\s*429/.test(content) &&
@@ -372,7 +372,7 @@ export function proposeWardenFix(
   ) {
     const m = content.match(/(if\s*\([^)]*429[^)]*\)\s*\{)/);
     if (m) {
-      const injection = `${m[1]}\n  const ra = Number(res.headers?.get?.("retry-after") ?? res.headers?.["retry-after"] ?? 1);\n  await new Promise(r => setTimeout(r, (Number.isFinite(ra) ? ra : 1) * 1000)); // Warden: honor Retry-After`;
+      const injection = `${m[1]}\n  const rawRetryAfter = res.headers?.get?.("retry-after") ?? res.headers?.["retry-after"] ?? "1";\n  const retryAfterSeconds = Number(rawRetryAfter);\n  const retryAfterDate = Date.parse(String(rawRetryAfter));\n  const retryDelayMs = Number.isFinite(retryAfterSeconds)\n    ? retryAfterSeconds * 1000\n    : Math.max(0, retryAfterDate - Date.now());\n  await new Promise(r => setTimeout(r, Math.min(60000, retryDelayMs))); // Warden: honor Retry-After seconds or HTTP date`;
       const p = tryReplace(
         path,
         m[1]!,
@@ -386,7 +386,7 @@ export function proposeWardenFix(
     }
   }
 
-  // 18) Check res.ok before json()
+  // 17) Check res.ok before json()
   if (
     (/did not check status|check status|res\.ok|assumed 200/i.test(goalErr) ||
       modes.some((m) => m.id === "no_status_check")) &&
@@ -409,77 +409,7 @@ export function proposeWardenFix(
     }
   }
 
-  // 19) Webhook event id dedupe stub
-  if (
-    (/webhook/i.test(blob) && /duplicate|idempoten|already processed|event_id/i.test(goalErr)) ||
-    (modes.some((m) => m.id === "webhook_idempotency") && /webhook/i.test(content))
-  ) {
-    if (
-      /function\s+handleWebhook|exports\.handler|async\s+function\s+webhook/i.test(content) &&
-      !/processedEvents|seenEvents|idempoten/i.test(content)
-    ) {
-      const m = content.match(/(async\s+function\s+\w*webhook\w*\s*\([^)]*\)\s*\{|function\s+\w*webhook\w*\s*\([^)]*\)\s*\{)/i);
-      if (m) {
-        const injection = `${m[1]}\n  const _wardenSeen = globalThis.__wardenWebhookSeen ??= new Set();\n  const _eid = body?.id ?? body?.event_id ?? headers?.["x-delivery-id"];\n  if (_eid && _wardenSeen.has(_eid)) return { ok: true, duplicate: true };\n  if (_eid) _wardenSeen.add(_eid); // Warden: webhook idempotency`;
-        const p = tryReplace(
-          path,
-          m[1]!,
-          injection,
-          `${path}:webhook-dedupe`,
-          "async: dedupe webhook deliveries by event id",
-          tried,
-          "webhook_idempotency",
-        );
-        if (p) return p;
-      }
-    }
-  }
-
-  // 20) GraphQL body shape — REST { data } mistaken
-  if (
-    (/graphql/i.test(blob) || modes.some((m) => m.id === "graphql_vs_rest")) &&
-    /\/graphql/.test(content) &&
-    /body:\s*\{[^}]*data\s*:/.test(content) &&
-    !/query\s*:/.test(content)
-  ) {
-    // Too risky to rewrite freely; only if clear pattern body: { data:
-    if (content.includes("body: { data:")) {
-      const p = tryReplace(
-        path,
-        "body: { data:",
-        "body: { query:",
-        `${path}:gql-query`,
-        "protocol: GraphQL expects query, not REST data field",
-        tried,
-        "graphql_vs_rest",
-      );
-      if (p) return p;
-    }
-  }
-
-  // 21) Timeout constant bump when goal says timeout too low
-  if (
-    (/timeout/i.test(goalErr) || modes.some((m) => m.id === "timeouts")) &&
-    /timeout\s*[:=]\s*\d{1,4}\b/.test(content)
-  ) {
-    const m = content.match(/timeout\s*[:=]\s*(\d{1,4})\b/);
-    if (m && Number(m[1]) < 10_000) {
-      const from = m[0];
-      const to = from.replace(m[1]!, "30000");
-      const p = tryReplace(
-        path,
-        from,
-        to,
-        `${path}:timeout`,
-        "network: raise client timeout to 30s",
-        tried,
-        "timeouts",
-      );
-      if (p) return p;
-    }
-  }
-
-  // 22) Epoch seconds vs ms
+  // 18) Epoch seconds vs ms
   if (
     /epoch|milliseconds|seconds since/i.test(goalErr) &&
     /Date\.now\(\)/.test(content) &&
@@ -498,7 +428,7 @@ export function proposeWardenFix(
     if (p) return p;
   }
 
-  // 23) Correlation / request id header
+  // 19) Correlation / request id header
   if (
     (/x-request-id|correlation|traceparent/i.test(goalErr) ||
       modes.some((m) => m.id === "header_preservation")) &&

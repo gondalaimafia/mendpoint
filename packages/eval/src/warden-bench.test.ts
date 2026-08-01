@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { runWardenBench } from "./warden-bench.js";
 
 describe("warden-bench v0", () => {
-  it("runs ≥5 cases and at least one passes end-to-end", async () => {
+  it("requires every repair and safe handoff case to pass", async () => {
     const report = await runWardenBench();
     expect(report.total).toBeGreaterThanOrEqual(5);
-    expect(report.passed).toBeGreaterThanOrEqual(1);
+    expect(report.passed).toBe(report.total);
     expect(report.cases.every((c) => typeof c.id === "string" && c.id.length > 0)).toBe(
       true,
     );

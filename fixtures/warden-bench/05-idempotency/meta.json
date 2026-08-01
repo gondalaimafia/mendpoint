@@ -1,4 +1,7 @@
 {
   "verify": "node check.mjs",
-  "timeoutSec": 60
+  "timeoutSec": 60,
+  "expected": "safe_handoff",
+  "expectedMode": "missing_idempotency",
+  "forbiddenFiles": ["check.mjs"]
 }

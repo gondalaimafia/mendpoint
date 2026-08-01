@@ -129,6 +129,7 @@ import {
 } from "@mendpoint/contract";
 import {
   createCampaign,
+  CampaignValidationError,
   planFromCampaign,
   planMultiRepoAgents,
   formatMultiRepoMarkdown,
@@ -629,32 +630,12 @@ app.get("/registry/changes/:id/consumers", (c) => {
 
 /** Transformer campaign scaffold */
 app.post("/transformer/campaigns", async (c) => {
+  const body = await c.req.json<unknown>().catch(() => undefined);
+  if (body === undefined) {
+    return c.json({ error: "campaign body must be valid JSON" }, 400);
+  }
   try {
-    const body = await c.req.json<{
-      name: string;
-      sourceSystem: string;
-      targetStack: string;
-      dag: Array<{
-        id: string;
-        title: string;
-        repoKey: string;
-        dependsOn?: string[];
-      }>;
-    }>();
-    if (!body.name || !body.sourceSystem || !body.targetStack) {
-      return c.json({ error: "name, sourceSystem, targetStack required" }, 400);
-    }
-    const campaign = createCampaign({
-      name: body.name,
-      sourceSystem: body.sourceSystem,
-      targetStack: body.targetStack,
-      dag: (body.dag ?? []).map((d) => ({
-        id: d.id,
-        title: d.title,
-        repoKey: d.repoKey,
-        dependsOn: d.dependsOn ?? [],
-      })),
-    });
+    const campaign = createCampaign(body);
     const plan = planFromCampaign(campaign);
     const multi = planMultiRepoAgents(campaign);
     return c.json(
@@ -668,6 +649,9 @@ app.post("/transformer/campaigns", async (c) => {
       201,
     );
   } catch (e) {
+    if (e instanceof CampaignValidationError) {
+      return c.json({ error: e.message }, 400);
+    }
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
 });

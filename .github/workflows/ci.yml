@@ -23,6 +23,8 @@ jobs:
         run: npm ci
       - name: Unit tests
         run: npm test
+      - name: Warden and Transformer capability gate
+        run: npm run eval:capabilities
       - name: GA preflight
         shell: bash
         run: |

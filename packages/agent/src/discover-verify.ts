@@ -31,6 +31,11 @@ function hasGoMod(repoRoot: string): boolean {
   return existsSync(join(repoRoot, "go.mod"));
 }
 
+function hasRubySpecs(repoRoot: string): boolean {
+  return existsSync(join(repoRoot, "Gemfile")) &&
+    (existsSync(join(repoRoot, "spec")) || existsSync(join(repoRoot, ".rspec")));
+}
+
 /**
  * Infer a verify command from common project layouts.
  *
@@ -39,6 +44,9 @@ function hasGoMod(repoRoot: string): boolean {
  * 2. check.mjs (repo root) → `node check.mjs`
  * 3. Python test layout → `pytest` / `python -m pytest`
  * 4. go.mod → `go test ./...`
+ * 5. Cargo.toml → `cargo test`
+ * 6. Maven or Gradle project → its standard test task
+ * 7. Ruby specs → `bundle exec rspec`
  */
 export function discoverVerifyCommand(repoRoot: string): string | undefined {
   const pkgPath = join(repoRoot, "package.json");
@@ -71,6 +79,31 @@ export function discoverVerifyCommand(repoRoot: string): string | undefined {
 
   if (hasGoMod(repoRoot)) {
     return "go test ./...";
+  }
+
+  if (existsSync(join(repoRoot, "Cargo.toml"))) {
+    return "cargo test";
+  }
+
+  if (existsSync(join(repoRoot, "pom.xml"))) {
+    return "mvn test";
+  }
+
+  if (existsSync(join(repoRoot, "gradlew"))) {
+    return "./gradlew test";
+  }
+  if (existsSync(join(repoRoot, "gradlew.bat"))) {
+    return "gradlew.bat test";
+  }
+  if (
+    existsSync(join(repoRoot, "build.gradle")) ||
+    existsSync(join(repoRoot, "build.gradle.kts"))
+  ) {
+    return "gradle test";
+  }
+
+  if (hasRubySpecs(repoRoot)) {
+    return "bundle exec rspec";
   }
 
   // Nested single-package: package.json in only subdir is out of scope for v0

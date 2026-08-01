@@ -1,7 +1,6 @@
 /**
  * One-agent-per-repo + routing orchestrator (Transformer P0 pattern).
  */
-import { newId } from "@mendpoint/shared";
 import type { MigrationCampaign, MigrationDagNode } from "./types.js";
 import { orderDag } from "./campaign.js";
 
@@ -21,6 +20,16 @@ export type MultiRepoPlan = {
   waves: string[][];
 };
 
+function stableAgentId(campaignId: string, repoKey: string): string {
+  const input = `${campaignId}:${repoKey}`;
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index++) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `repo-agent-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
 /**
  * Group DAG nodes by repoKey and produce parallel waves by topology levels.
  */
@@ -35,38 +44,40 @@ export function planMultiRepoAgents(campaign: MigrationCampaign): MultiRepoPlan 
 
   const assignments: RepoAgentAssignment[] = [...byRepo.entries()].map(
     ([repoKey, nodes]) => ({
-      agentId: newId(),
+      agentId: stableAgentId(campaign.id, repoKey),
       repoKey,
       nodeIds: nodes.map((n) => n.id),
       status: "idle" as const,
     }),
   );
 
-  // Waves: process nodes in topo order; group independent nodes
+  // Process independent repositories in parallel while serializing work per repository.
   const done = new Set<string>();
   const waves: string[][] = [];
   const remaining = new Set(ordered.map((n) => n.id));
   while (remaining.size) {
     const wave: string[] = [];
+    const reposInWave = new Set<string>();
     for (const n of ordered) {
       if (!remaining.has(n.id)) continue;
-      if (n.dependsOn.every((d) => done.has(d) || !remaining.has(d) && done.has(d))) {
-        if (n.dependsOn.every((d) => done.has(d))) wave.push(n.id);
-      }
+      if (!n.dependsOn.every((dependencyId) => done.has(dependencyId))) continue;
+      if (reposInWave.has(n.repoKey)) continue;
+      wave.push(n.id);
+      reposInWave.add(n.repoKey);
     }
-    // fix: dependsOn all in done
-    const wave2 = ordered
-      .filter((n) => remaining.has(n.id) && n.dependsOn.every((d) => done.has(d)))
-      .map((n) => n.id);
-    if (!wave2.length) {
-      // cycle already prevented by orderDag; break safety
-      break;
+    if (!wave.length) {
+      throw new Error("Migration campaign could not produce a complete execution wave");
     }
-    for (const id of wave2) {
+    for (const id of wave) {
       remaining.delete(id);
       done.add(id);
     }
-    waves.push(wave2);
+    waves.push(wave);
+  }
+
+  const planned = waves.flat();
+  if (planned.length !== ordered.length || new Set(planned).size !== ordered.length) {
+    throw new Error("Migration campaign plan does not cover every DAG node exactly once");
   }
 
   return {

@@ -23,6 +23,10 @@ const BENCH_ROOT = join(root, "fixtures/warden-bench");
 export type WardenBenchCaseMeta = {
   verify?: string;
   timeoutSec?: number;
+  expected?: "verified" | "safe_handoff";
+  expectedMode?: string;
+  allowedFiles?: string[];
+  forbiddenFiles?: string[];
 };
 
 export type WardenBenchCaseResult = {
@@ -75,6 +79,8 @@ async function runCase(id: string, caseDir: string): Promise<WardenBenchCaseResu
   const verifyCommand = meta.verify ?? "node check.mjs";
   const work = mkdtempSync(join(tmpdir(), `warden-bench-${id}-`));
   const started = Date.now();
+  const timeoutMs = Math.max(1, Math.min(meta.timeoutSec ?? 60, 300)) * 1000;
+  const deadline = started + timeoutMs;
 
   try {
     cpSync(join(caseDir, "repo"), work, { recursive: true });
@@ -83,13 +89,36 @@ async function runCase(id: string, caseDir: string): Promise<WardenBenchCaseResu
       repoRoot: work,
       verifyCommand,
       maxSteps: 20,
+      shouldContinue: () => Date.now() <= deadline,
     });
+    const expected = meta.expected ?? "verified";
+    const allowedFiles = new Set(meta.allowedFiles ?? []);
+    const unexpectedFiles = allowedFiles.size
+      ? result.filesChanged.filter((file) => !allowedFiles.has(file))
+      : [];
+    const forbiddenFiles = result.filesChanged.filter((file) =>
+      (meta.forbiddenFiles ?? []).some((forbidden) => file.includes(forbidden)),
+    );
+    const outcomeMatches = expected === "verified"
+      ? result.ok
+      : !result.ok && result.filesChanged.length === 0;
+    const modeMatches = !meta.expectedMode || result.reportMarkdown.includes(`\`${meta.expectedMode}\``);
+    const timedOut = Date.now() > deadline + 2_000;
+    const ok = outcomeMatches && modeMatches && !unexpectedFiles.length && !forbiddenFiles.length && !timedOut;
+    const errors = [
+      !outcomeMatches ? `expected ${expected}, received ${result.stoppedReason}` : undefined,
+      !modeMatches ? `expected diagnosis ${meta.expectedMode}` : undefined,
+      unexpectedFiles.length ? `unexpected files: ${unexpectedFiles.join(", ")}` : undefined,
+      forbiddenFiles.length ? `forbidden files: ${forbiddenFiles.join(", ")}` : undefined,
+      timedOut ? `case exceeded ${timeoutMs}ms` : undefined,
+    ].filter(Boolean);
     return {
       id,
-      ok: result.ok,
+      ok,
       steps: result.steps.length,
       filesChanged: result.filesChanged,
       stoppedReason: result.stoppedReason,
+      ...(errors.length ? { error: errors.join("; ") } : {}),
       durationMs: Date.now() - started,
     };
   } catch (e) {
@@ -157,13 +186,12 @@ function printTable(report: WardenBenchReport) {
 async function main() {
   const report = await runWardenBench();
   printTable(report);
-  // At least some cases should pass on heuristics alone
-  if (report.passed < 1) {
-    console.error("warden-bench FAILED: expected at least 1 passing case");
-    process.exit(1);
-  }
   if (report.total < 5) {
     console.error("warden-bench FAILED: expected ≥5 cases");
+    process.exit(1);
+  }
+  if (report.passed !== report.total) {
+    console.error(`warden-bench FAILED: ${report.total - report.passed} capability cases failed`);
     process.exit(1);
   }
   process.exit(0);
