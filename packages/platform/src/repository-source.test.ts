@@ -250,7 +250,7 @@ describe("local Git repository source", () => {
     git(root, "commit", "-m", "add unsafe symlink");
     const source = await createLocalGitRepositorySource({
       repositoryPath: root,
-      policy: { allowSymlinks: true },
+      policy: { allowDirtyWorktree: true, allowSymlinks: true },
     });
     await expect(
       source.materialize(
