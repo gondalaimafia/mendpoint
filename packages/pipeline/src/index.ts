@@ -21,6 +21,7 @@ import {
   appendDomainEvent,
   insertArtifactManifest,
   insertEvidenceRecord,
+  getPrincipalBySubject,
   insertPrincipal,
   registrySummaryMarkdown,
   type AppDb,
@@ -46,9 +47,11 @@ import {
 } from "@mendpoint/repair";
 import { planFromSpecDiff, planToMarkdown } from "@mendpoint/orchestrator";
 import {
+  evaluateVerificationWaiver,
   evaluatePrGates,
   reviewOpenApiDesign,
   type ContractCase,
+  type VerificationWaiver,
 } from "@mendpoint/contract";
 import {
   getGraphLearnDb,
@@ -105,6 +108,12 @@ export type PipelineInput = {
   contractCases?: ContractCase[];
   /** Explicit security scan result required before PR delivery. */
   securityScanOk?: boolean;
+  /** Signed human waiver for one tenant, run, and verification check. */
+  verificationWaiver?: {
+    runId: string;
+    waiver: VerificationWaiver;
+    signingKey: string | Uint8Array;
+  };
   /** Cooperative cancellation checked before each customer mutation or delivery. */
   shouldContinue?: () => boolean;
 };
@@ -362,7 +371,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   const retryablePrByConsumer = new Map(
     listPrsForChange(db, changeId, input.tenantId)
       .filter((pr) =>
-        ["delivery_pending", "delivery_failed"].includes(pr.status),
+        ["delivery_pending", "delivery_failed", "gates_failed"].includes(pr.status),
       )
       .map((pr) => [pr.consumer_id, pr]),
   );
@@ -691,17 +700,31 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       }
     }
 
+    const waiverEvaluation = input.verificationWaiver
+      ? evaluateVerificationWaiver({
+          waiver: input.verificationWaiver.waiver,
+          context: {
+            tenantId: input.tenantId,
+            runId: input.verificationWaiver.runId,
+            checkId: "delivery-verification",
+          },
+          now: nowIso(),
+          signingKey: input.verificationWaiver.signingKey,
+          policy: { requireHumanActor: true },
+        })
+      : null;
+    const verificationAccepted = deliveryEvidenceOk || waiverEvaluation?.accepted === true;
     const shouldDeliver =
       hasActionable &&
       decision.allowPr &&
-      deliveryEvidenceOk &&
+      verificationAccepted &&
       decision.allowedEdits.length > 0 &&
       !policyOverrides.notificationsOnly &&
       !repairBlockedDelivery;
 
     if (repairBlockedDelivery) {
       status = "repair_failed";
-    } else if (!deliveryEvidenceOk) {
+    } else if (!verificationAccepted) {
       status = "gates_failed";
     } else if (policyOverrides.notificationsOnly) {
       status = "notification_only";
@@ -750,6 +773,49 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       producerPrincipalId: pipelinePrincipal.id,
       createdAt: nowIso(),
     });
+    let waiverArtifactId: string | null = null;
+    if (waiverEvaluation?.accepted && input.verificationWaiver) {
+      const waiverContent = JSON.stringify(input.verificationWaiver.waiver);
+      waiverArtifactId = trustId(
+        "artifact",
+        input.tenantId,
+        input.verificationWaiver.waiver.waiverId,
+        input.verificationWaiver.waiver.integrity.digest,
+      );
+      const waiverPrincipal =
+        getPrincipalBySubject(
+          db,
+          input.tenantId,
+          input.verificationWaiver.waiver.issuedBy.kind,
+          input.verificationWaiver.waiver.issuedBy.id,
+        ) ??
+        insertPrincipal(db, {
+          id: trustId(
+            "principal",
+            input.tenantId,
+            input.verificationWaiver.waiver.issuedBy.kind,
+            input.verificationWaiver.waiver.issuedBy.id,
+          ),
+          tenantId: input.tenantId,
+          kind: input.verificationWaiver.waiver.issuedBy.kind,
+          subject: input.verificationWaiver.waiver.issuedBy.id,
+          displayName: input.verificationWaiver.waiver.issuedBy.id,
+          createdAt: nowIso(),
+        });
+      insertArtifactManifest(db, {
+        id: waiverArtifactId,
+        tenantId: input.tenantId,
+        kind: "verification-waiver",
+        schemaVersion: 1,
+        sha256: textDigest(waiverContent),
+        mediaType: "application/vnd.mendpoint.verification-waiver+json",
+        sizeBytes: Buffer.byteLength(waiverContent, "utf8"),
+        storageRef: `sqlite://artifact_manifests/${waiverArtifactId}#content_text`,
+        content: waiverContent,
+        producerPrincipalId: waiverPrincipal.id,
+        createdAt: nowIso(),
+      });
+    }
     const verificationContent = JSON.stringify({
       schemaVersion: 1,
       changeId,
@@ -758,6 +824,14 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       gateReport: gates.reportMarkdown,
       repair: repairMeta ?? null,
       deliveryEvidenceOk,
+      verificationAccepted,
+      waiver: waiverEvaluation
+        ? {
+            status: waiverEvaluation.status,
+            waiverId: input.verificationWaiver?.waiver.waiverId ?? null,
+            artifactId: waiverArtifactId,
+          }
+        : null,
       repairBlockedDelivery,
     });
     const verificationArtifactId = trustId(
@@ -797,7 +871,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       producerPrincipalId: pipelinePrincipal.id,
       tool: "mendpoint-pr-gates",
       toolVersion: "1",
-      verdict: deliveryEvidenceOk && !repairBlockedDelivery ? "passed" : "failed",
+      verdict:
+        verificationAccepted && !repairBlockedDelivery
+          ? deliveryEvidenceOk
+            ? "passed"
+            : "waived"
+          : "failed",
       createdAt: nowIso(),
     });
     prBodyFinal = [
@@ -806,8 +885,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       "### Immutable evidence",
       `- Candidate artifact: \`${candidateArtifactId}\``,
       `- Verification artifact: \`${verificationArtifactId}\``,
+      waiverArtifactId ? `- Waiver artifact: \`${waiverArtifactId}\`` : "",
       `- Evidence record: \`${evidenceId}\``,
-    ].join("\n");
+    ].filter(Boolean).join("\n");
     appendDomainEvent(db, {
       id: trustId("event", input.tenantId, prId, candidateArtifactId),
       tenantId: input.tenantId,
@@ -824,6 +904,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         verificationArtifactId,
         evidenceId,
         verificationPassed: deliveryEvidenceOk && !repairBlockedDelivery,
+        verificationWaived:
+          !deliveryEvidenceOk && waiverEvaluation?.accepted === true && !repairBlockedDelivery,
+        waiverArtifactId,
       },
       createdAt: nowIso(),
     });

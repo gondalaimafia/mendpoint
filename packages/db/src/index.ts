@@ -1520,6 +1520,7 @@ export type { ExposureReport } from "./exposure.js";
 
 export {
   appendDomainEvent,
+  getPrincipalBySubject,
   insertArtifactManifest,
   insertEvidenceRecord,
   insertPrincipal,

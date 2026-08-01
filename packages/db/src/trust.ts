@@ -102,6 +102,19 @@ export function insertPrincipal(
   return one<PrincipalRow>(db, `SELECT * FROM principals WHERE id = ?`, [input.id])!;
 }
 
+export function getPrincipalBySubject(
+  db: AppDb,
+  tenantId: string,
+  kind: PrincipalRow["kind"],
+  subject: string,
+): PrincipalRow | undefined {
+  return one(
+    db,
+    `SELECT * FROM principals WHERE tenant_id = ? AND kind = ? AND subject = ?`,
+    [tenantId, kind, subject],
+  );
+}
+
 export function insertArtifactManifest(
   db: AppDb,
   input: {

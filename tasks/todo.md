@@ -442,7 +442,7 @@ Execution contract: `C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\me
 - [ ] Add payments first signed recipes with semantic edits, preconditions, postconditions, rollback, and outcome telemetry.
 - [ ] Add versioned graph snapshots, complete bounded dependency paths, evidence provenance, coverage, and held out benchmarks.
 - [ ] Persist baseline and post edit compile, lint, test, security, and contract verification artifacts.
-- [ ] Fail pull request delivery closed unless verification passes or an attributable scoped expiring waiver is approved.
+- [x] Fail pull request delivery closed unless verification passes or an attributable scoped expiring waiver is approved.
 - [ ] Deliver a structured pull request package with source, snapshot, finding, edit, verification, policy, owner, and rollback links.
 
 ### Gate 4: Warden review and campaign operations
@@ -540,3 +540,4 @@ Gate 1 to Gate 3 implementation update:
 - Added complete bounded dependency path enumeration with stable ordering, cycle terminals, tenant isolation, and explicit truncation evidence.
 - A local Git integration canary passes from clean repository through exact commit snapshot, ownership and CI discovery, persistence, consumer binding, and truthful platform health. Real GitHub and GitLab snapshot adapters and a private customer canary remain external acceptance gates.
 - Snapshot retention now uses append only planned, deleted, and failed lifecycle events. Purge revalidates the exact tenant destination before changing filesystem state, records attributable outcomes, preserves metadata evidence, and can retry interrupted failures. Sparse path policy is part of the content manifest and persisted snapshot contract.
+- Warden delivery now accepts only a signed, human attributed waiver bound to the exact tenant, run, and verification check while it is active. The canonical waiver is persisted as an immutable artifact, the evidence verdict is explicitly waived, wrong scope or tampering fails closed, and an expired waiver is rechecked before each customer delivery.

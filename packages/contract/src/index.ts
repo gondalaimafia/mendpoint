@@ -31,3 +31,24 @@ export {
   type ProductRequirementValidationOptions,
   type ProductTargetRelease,
 } from "./product-requirements.js";
+
+export {
+  VERIFICATION_WAIVER_SCOPE_DIMENSIONS,
+  VerificationWaiverValidationError,
+  canonicalVerificationWaiverDigest,
+  validateVerificationWaiver,
+  issueVerificationWaiver,
+  verifyVerificationWaiverDigest,
+  evaluateVerificationWaiver,
+  type VerificationWaiverScopeDimension,
+  type VerificationWaiverScope,
+  type VerificationWaiverActor,
+  type VerificationWaiverInput,
+  type VerificationWaiver,
+  type VerificationWaiverPolicy,
+  type VerificationWaiverIssueCode,
+  type VerificationWaiverIssue,
+  type VerificationWaiverEvaluationContext,
+  type VerificationWaiverStatus,
+  type VerificationWaiverEvaluation,
+} from "./verification-waiver.js";

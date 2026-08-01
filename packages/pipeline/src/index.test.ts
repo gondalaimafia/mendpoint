@@ -23,6 +23,7 @@ import {
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
 import { MockGitHubDelivery } from "@mendpoint/github";
+import { issueVerificationWaiver } from "@mendpoint/contract";
 import { applyPrFeedback, runChangePipeline } from "./index.js";
 import {
   openGraphLearnMemory,
@@ -469,6 +470,46 @@ describe("pipeline", () => {
     });
     expect(report.consumers[0]?.prStatus).toBe("gates_failed");
     expect(existsSync(join(deliveryRoot, "org", "gated-shop", "pulls"))).toBe(false);
+
+    const signingKey = "test-waiver-signing-key-with-sufficient-entropy";
+    const issuedAt = new Date(Date.now() - 60_000).toISOString();
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    const waiver = issueVerificationWaiver(
+      {
+        waiverId: "waiver-gated-shop",
+        scope: {
+          tenantId: "tenant_default",
+          runId: "run-gated-shop",
+          checkId: "delivery-verification",
+        },
+        issuedBy: { kind: "human", id: "reviewer-1" },
+        reason: "The provider test environment is unavailable for this bounded pilot run.",
+        issuedAt,
+        expiresAt,
+      },
+      signingKey,
+      { requireHumanActor: true },
+    );
+    const waived = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(deliveryRoot),
+      persistIndex: false,
+      verificationWaiver: { runId: "run-gated-shop", waiver, signingKey },
+    });
+    expect(waived.consumers[0]?.prStatus).toBe("draft");
+    expect(existsSync(join(deliveryRoot, "org", "gated-shop", "pulls"))).toBe(true);
+    expect(
+      listArtifactManifests(db, "tenant_default").some(
+        (artifact) => artifact.kind === "verification-waiver",
+      ),
+    ).toBe(true);
+    expect(
+      listEvidenceRecords(db, "tenant_default", "migration_pr", waived.consumers[0]!.prId!)
+        .some((evidence) => evidence.verdict === "waived"),
+    ).toBe(true);
   });
 
   it("persists delivery failure and does not duplicate completed consumers on rerun", async () => {
