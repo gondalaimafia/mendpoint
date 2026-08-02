@@ -10,6 +10,29 @@ export {
   type CapabilityEvalReport,
   type CapabilityCaseResult,
 } from "./capability-eval.js";
+export {
+  AGENT_EVAL_VERSION,
+  agentEvalDigest,
+  evalGrade,
+  runAgentEvalScenarios,
+  type AgentEvalBudget,
+  type AgentEvalDisposition,
+  type AgentEvalGrade,
+  type AgentEvalMetrics,
+  type AgentEvalObservation,
+  type AgentEvalProduct,
+  type AgentEvalReport,
+  type AgentEvalScenario,
+  type AgentEvalScenarioResult,
+  type AgentEvalTier,
+  type AgentEvalTrial,
+} from "./agent-eval-contract.js";
+export {
+  runWardenTransformerEval,
+  type WardenTransformerEvalReport,
+} from "./agent-eval.js";
+export { WARDEN_AGENT_EVAL_SCENARIOS } from "./warden-agent-eval.js";
+export { TRANSFORMER_AGENT_EVAL_SCENARIOS } from "./transformer-agent-eval.js";
 export { WARDEN_CAPABILITY_CASES } from "./corpus/warden-v1.js";
 export { TRANSFORMER_CAPABILITY_CASES } from "./corpus/transformer-v1.js";
 export type * from "./corpus/types.js";

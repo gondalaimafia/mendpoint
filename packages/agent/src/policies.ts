@@ -14,6 +14,15 @@ export const DEFAULT_NEVER_TOUCH = [
   "Cargo.lock",
   "node_modules/",
   ".git/",
+  ".github/",
+  ".husky/",
+  ".githooks/",
+  ".vscode/",
+  ".idea/",
+  ".npmrc",
+  ".yarnrc",
+  ".pnpmfile",
+  ".gitlab-ci",
 ];
 
 export function pathBlocked(relPath: string, neverTouch: string[] = DEFAULT_NEVER_TOUCH): boolean {

@@ -23,8 +23,16 @@ jobs:
         run: npm ci
       - name: Unit tests
         run: npm test
-      - name: Warden and Transformer capability gate
-        run: npm run eval:capabilities
+      - name: Warden and Transformer agent eval gate
+        run: npm run eval:agents -- --repetitions=3 --output=test-results/agent-evals/report.json
+      - name: Upload agent eval evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: agent-eval-evidence
+          path: test-results/agent-evals/report.json
+          if-no-files-found: error
+          retention-days: 30
       - name: GA preflight
         shell: bash
         run: |

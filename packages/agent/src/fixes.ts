@@ -250,7 +250,9 @@ export function proposeWardenFix(
   // 10) API version header (when goal names it)
   {
     const vm = goalErr.match(
-      /(?:add|set|send|include)\s+[`'"]?([A-Za-z0-9_-]*(?:[Vv]ersion)[A-Za-z0-9_-]*)[`'"]?\s*(?:header)?\s*[:=]?\s*[`'"]?([A-Za-z0-9._-]+)[`'"]?/,
+      /(?:add|set|send|include)\s+[`'"]?([A-Za-z0-9_-]*(?:[Vv]ersion)[A-Za-z0-9_-]*)[`'"]?\s+header\s*[:=]?\s*[`'"]?([A-Za-z0-9._-]+)[`'"]?/i,
+    ) ?? goalErr.match(
+      /(?:add|set|send|include)\s+[`'"]?([A-Za-z0-9_-]*(?:[Vv]ersion)[A-Za-z0-9_-]*)[`'"]?\s*[:=]\s*[`'"]?([A-Za-z0-9._-]+)[`'"]?/i,
     );
     if (vm && /headers\s*:\s*\{/.test(content) && !content.includes(vm[1]!)) {
       const header = vm[1]!;
@@ -349,12 +351,13 @@ export function proposeWardenFix(
     /status\s*(?:Code)?\s*[<>=!]+\s*400/.test(content)
   ) {
     // Broaden: if `if (status >= 400) retry` → only 408/429/5xx
-    const bad = content.match(/if\s*\(\s*(?:res(?:ponse)?\.)?status\s*>=\s*400\s*\)/);
+    const bad = content.match(/if\s*\(\s*(res(?:ponse)?)\.status\s*>=\s*400\s*\)/i);
     if (bad) {
+      const responseVariable = bad[1]!;
       const p = tryReplace(
         path,
         bad[0],
-        "if ([408, 429].includes(res.status) || res.status >= 500)",
+        `if ([408, 429].includes(${responseVariable}.status) || ${responseVariable}.status >= 500)`,
         `${path}:retry4xx`,
         "resilience: only retry 408/429/5xx (not all 4xx)",
         tried,
@@ -370,9 +373,10 @@ export function proposeWardenFix(
     /status\s*===?\s*429|status\s*==\s*429/.test(content) &&
     !/Retry-After|retry-after/i.test(content)
   ) {
-    const m = content.match(/(if\s*\([^)]*429[^)]*\)\s*\{)/);
+    const m = content.match(/(if\s*\(\s*(res(?:ponse)?)\.status\s*===?\s*429\s*\)\s*\{)/i);
     if (m) {
-      const injection = `${m[1]}\n  const rawRetryAfter = res.headers?.get?.("retry-after") ?? res.headers?.["retry-after"] ?? "1";\n  const retryAfterSeconds = Number(rawRetryAfter);\n  const retryAfterDate = Date.parse(String(rawRetryAfter));\n  const retryDelayMs = Number.isFinite(retryAfterSeconds)\n    ? retryAfterSeconds * 1000\n    : Math.max(0, retryAfterDate - Date.now());\n  await new Promise(r => setTimeout(r, Math.min(60000, retryDelayMs))); // Warden: honor Retry-After seconds or HTTP date`;
+      const responseVariable = m[2]!;
+      const injection = `${m[1]}\n  const rawRetryAfter = ${responseVariable}.headers?.get?.("retry-after") ?? ${responseVariable}.headers?.["retry-after"] ?? "1";\n  const retryAfterSeconds = Number(rawRetryAfter);\n  const retryAfterDate = Date.parse(String(rawRetryAfter));\n  const retryDelayMs = Number.isFinite(retryAfterSeconds)\n    ? retryAfterSeconds * 1000\n    : Math.max(0, retryAfterDate - Date.now());\n  await new Promise(r => setTimeout(r, Math.min(60000, retryDelayMs))); // Warden: honor Retry-After seconds or HTTP date`;
       const p = tryReplace(
         path,
         m[1]!,
@@ -393,9 +397,10 @@ export function proposeWardenFix(
     /await\s+res(?:ponse)?\.json\(\)/.test(content) &&
     !/res(?:ponse)?\.ok|status\s*!==?\s*200|status\s*>=\s*400/.test(content)
   ) {
-    const m = content.match(/(const\s+\w+\s*=\s*await\s+res(?:ponse)?\.json\(\))/);
+    const m = content.match(/(const\s+\w+\s*=\s*await\s+(res(?:ponse)?)\.json\(\))/i);
     if (m) {
-      const injection = `if (!res.ok) throw new Error(\`HTTP \${res.status}\`); // Warden: check status before parse\n  ${m[1]}`;
+      const responseVariable = m[2]!;
+      const injection = `if (!${responseVariable}.ok) throw new Error(\`HTTP \${${responseVariable}.status}\`); // Warden: check status before parse\n  ${m[1]}`;
       const p = tryReplace(
         path,
         m[1]!,

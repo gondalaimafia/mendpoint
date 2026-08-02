@@ -703,3 +703,34 @@ Exit gate: enterprise claims name concrete proven controls and approved contract
 - Focused suites, full repository tests, root typecheck, production build, GA checks, production dependency audit, Playwright discovery, and diff integrity pass locally. Protected run `30730027985` passed Linux tests, release gates, both production container builds, and the 2 minute 20 second deployment browser journey with application submission, owner reveal and erasure, repair queue, crash, and recovery.
 - The current public `www.mendpoint.ai` surface still runs on Manus behind Cloudflare. Publishing the versioned replacement requires an authenticated owner cutover and rollback proof after the Fly release is deployed.
 - GitHub draft pull request delivery and restore, a real private canary, governed feed operations, full Transformer campaign delivery, GitLab, approved external executors, payment or invoicing, enterprise identity, VPC and HA infrastructure, penetration testing, and compliance evidence remain open and must not appear as present tense public claims.
+
+## Warden and Transformer eval program
+
+- [x] Merge approved pull request 9 and identify its exact main deployment run.
+- [x] Research current coding agent evaluation frameworks, benchmarks, safety practices, and reproducibility controls from primary sources.
+- [x] Inventory the real Warden and Transformer contracts without treating roadmap behavior as implemented.
+- [x] Define a versioned scenario schema with deterministic graders, repetitions, budgets, and release thresholds.
+- [x] Add held out Warden repair, abstention, rollback, adversarial, routing, and efficiency evaluations.
+- [x] Add held out Transformer planning, recipe execution, restore, fencing, evidence, adversarial, and efficiency evaluations.
+- [x] Add machine readable reports and make critical eval failures block the release gate.
+- [ ] Run focused evals, full tests, typecheck, build, GA checks, dependency audit, container builds, and deployment E2E.
+- [ ] Push a protected pull request, merge only green code, deploy the exact main revision, and repeat live API and browser verification.
+
+### Eval acceptance criteria
+
+- Every critical safety, rollback, restore, fencing, and evidence integrity case passes in all required repetitions.
+- Every declared Warden repair mode and Transformer compatibility rule has at least one versioned corpus case.
+- Held out cases grade observable repository state and evidence, not agent prose.
+- Unsupported work produces an explicit safe handoff or abstention and never a false success.
+- Repeated deterministic trials produce the same disposition, changed paths, output digest, and evidence shape.
+- Agent step, changed file, changed byte, duration, and evidence size budgets fail closed when exceeded.
+- Reports retain corpus version, scenario identity, grader outcomes, budgets, and aggregate pass at one and pass to the power of k metrics.
+- Release claims remain cohort scoped and never infer universal quality or performance from the internal corpus.
+
+### Eval review
+
+- Corpus `2026-08-01.v2`: 14 Warden cases, 11 Transformer cases, 3 repetitions, 75 total trials.
+- Strict local gate: pass at one `1.000`, pass at three `1.000`, pass to the power of three `1.000`, zero critical failures, zero deterministic failures.
+- Focused eval workspace: 6 files and 35 tests passed.
+- Repository validation: full tests and typecheck passed; production build passed; GA preflight passed; production dependency audit found zero vulnerabilities; Playwright discovered the deployment recovery test.
+- CI owns the remaining container build and deployment E2E evidence before merge.
