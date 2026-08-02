@@ -16,6 +16,7 @@ function publicPath(pathname: string): boolean {
     pathname === "/api/session" ||
     pathname === "/livez" ||
     pathname === "/healthz" ||
+    pathname === "/icon.svg" ||
     pathname === "/login" ||
     pathname === "/opengraph-image" ||
     pathname === "/robots.txt" ||

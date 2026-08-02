@@ -82,6 +82,11 @@ describe("web credential proxy", () => {
       }),
     );
     expect(allowed.headers.get("x-middleware-next")).toBe("1");
+
+    const icon = await middleware(
+      new NextRequest("https://console.example/icon.svg"),
+    );
+    expect(icon.headers.get("x-middleware-next")).toBe("1");
   });
 
   it("creates and clears a same-origin HttpOnly session", async () => {
