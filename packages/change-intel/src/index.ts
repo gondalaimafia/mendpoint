@@ -7,6 +7,33 @@ import type {
 } from "@mendpoint/shared";
 import { newId } from "@mendpoint/shared";
 
+export {
+  canonicalChangeSourceContentHash,
+  confirmCustomerIncident,
+  createChangeSourceArtifact,
+  escalateCustomerIncident,
+  getChangeSourceArtifact,
+  listChangeSourceEvents,
+  listChangeSourceRevisions,
+  openChangeSourceStore,
+  requireApprovedChangeSourceForFanout,
+  reviewChangeSourceArtifact,
+  verifyChangeSourceEventIntegrity,
+  type ChangeSourceArtifact,
+  type ChangeSourceEvent,
+  type ChangeSourceEvidence,
+  type ChangeSourceInput,
+  type ChangeSourceKind,
+  type ChangeSourceProvenance,
+  type ChangeSourceReviewerOverride,
+  type ChangeSourceReviewState,
+  type ChangeSourceRevision,
+  type ChangeSourceStore,
+  type CustomerIncidentInput,
+  type IncidentConfirmationState,
+  type ManualProviderAnnouncementInput,
+} from "./change-source-store.js";
+
 type Json = Record<string, unknown>;
 
 function asObj(v: unknown): Json {

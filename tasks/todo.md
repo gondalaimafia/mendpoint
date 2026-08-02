@@ -561,3 +561,26 @@ Release evidence:
 - External gates remain open for a private customer canary and scoped SCM credentials, a consented design partner campaign, payment processor and tax accounts, an SSO tenant, a representative consented learning dataset, enterprise cloud infrastructure, a penetration test, and compliance attestation.
 - The product requirement register still reports 10 verified, 40 partial, 7 scaffold, 26 unimplemented, and 1 blocked external requirements. The release is materially safer and online, but the foundational specification is not fully closed and customer readiness claims must remain bounded to the implemented evidence.
 - Rollback is the normal Fly release rollback to the prior healthy image or a revert of merge commit `bd0c5ef6e8e07de65c90972a4c725c3867e913b5`, followed by the same protected CI and production health gates.
+
+### Foundational closure continuation 2
+
+- [x] Reconcile the executable requirement register with the implementation evidence already merged for repository snapshots, Transformer persistence, and shared routing.
+- [x] Complete the durable Transformer campaign contract with source linked BSGs, frozen recipe references, typed blueprint policy, attributable revisions, and idempotent tenant scoped mutations.
+- [x] Add authenticated durable Transformer campaign API operations and focused restart, isolation, replay, stale revision, and sanitized response tests.
+- [x] Normalize manual announcements and customer incidents into immutable, deduplicated, approval gated source artifacts with provenance and redaction evidence.
+- [x] Persist attributable actual execution costs and reconcile them to MCU revenue without estimating missing attribution.
+- [ ] Add focused tests for every slice, then run full tests, typecheck, production build, GA checks, production dependency audit, container builds, deployment E2E, and diff integrity.
+- [ ] Push a protected pull request, merge only green code, deploy the exact main revision, and repeat independent live and browser verification.
+- [x] Keep private customer proof, production SCM credentials, payment and tax accounts, SSO, external training infrastructure, VPC infrastructure, penetration testing, and compliance attestation explicitly external.
+
+### Foundational closure continuation 2 review
+
+- The executable register passes with all 84 requirements and now reports 10 verified, 52 partial, 7 scaffold, 14 unimplemented, and 1 blocked external. The status changes are evidence backed and remain conservative.
+- Transformer campaign creation and review are atomic across campaign, blueprint, BSG, event, revision, and idempotency records. Fault injection proves rollback and safe retry after a later write fails.
+- Authenticated Transformer routes persist tenant scoped campaigns, exact recipe references, source linked BSGs, attributable evidence, transitions, and exceptions. Cross tenant reads fail closed and responses redact secrets and local paths.
+- Manual announcements and customer incidents persist as append only, content addressed source artifacts. The API binds tenant and actor to authentication, rejects unsafe sources and raw incident material, blocks fanout before approval and customer confirmation, and reconciles a crash between the domain append and request ledger completion.
+- Actual execution cost records are immutable and hash chained. The API owns tenant, actor, timestamp, and idempotency. Gross margin remains null whenever cost, accepted outcome, settlement, campaign, currency, or ledger integrity attribution is incomplete.
+- Focused contract, Transformer, source intake, database, and API tests pass. Full tests, typecheck, production build, GA check, current production dependency audit, capability corpus, offline demo, and production API smoke pass.
+- Local Docker is unavailable in this Windows environment. The protected Linux workflow remains the authoritative gate for all four image builds, production container startup, deployment E2E, crash recovery, and Fly deployment.
+- Local production API smoke returned 200 for readiness, authenticated keys, execution cost listing, and gross margin; tenant scoped missing Transformer and source records returned 404; invalid authentication returned 401.
+- The remaining 14 unimplemented requirements are not represented as complete. Three require named external infrastructure or independent evidence; the remaining internal execution, workspace, identity, recovery, performance, value proof, and pilot contract gaps continue in later closure tranches.
