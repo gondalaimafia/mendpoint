@@ -1,14 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const SESSION_COOKIE = "mendpoint_web_session";
-
-async function sessionValue(accessToken: string): Promise<string> {
-  const bytes = new TextEncoder().encode(`mendpoint-web-session-v1:${accessToken}`);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  let binary = "";
-  for (const byte of new Uint8Array(digest)) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
+import { authenticatedWebSubject } from "./lib/proxy-auth";
 
 function publicPath(pathname: string): boolean {
   return (
@@ -28,9 +19,7 @@ export async function middleware(request: NextRequest) {
   if (!accessToken) {
     return new NextResponse("Web access is not configured", { status: 503 });
   }
-  const expected = await sessionValue(accessToken);
-  const actual = request.cookies.get(SESSION_COOKIE)?.value;
-  if (actual === expected) return NextResponse.next();
+  if (await authenticatedWebSubject(request)) return NextResponse.next();
 
   if (request.nextUrl.pathname.startsWith("/api/")) {
     return NextResponse.json({ error: "web_session_required" }, { status: 401 });

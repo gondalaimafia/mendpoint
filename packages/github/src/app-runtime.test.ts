@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createAppJwt,
   deliverToManyRepos,
@@ -45,6 +45,46 @@ describe("github app runtime", () => {
     expect(hasGitHubAppCredentials({} as NodeJS.ProcessEnv)).toBe(false);
     void delivery;
     expect(fetched).toBe(false);
+  });
+
+  it("preserves a divergent existing recovery branch for human reconciliation", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const delivery = new GitHubAppDelivery(
+      { appId: "99", privateKeyPem: pem },
+      42,
+    );
+    const createBlob = vi.fn();
+    const updateRef = vi.fn();
+    const fakeOctokit = {
+      git: {
+        getRef: async () => ({ data: { object: { sha: "base" } } }),
+        createRef: async () => {
+          throw new Error("Reference already exists");
+        },
+        createBlob,
+        updateRef,
+      },
+      repos: {
+        getContent: async () => ({
+          data: { content: Buffer.from("reviewer change\n").toString("base64") },
+        }),
+      },
+    };
+    (
+      delivery as unknown as {
+        octokit: () => Promise<typeof fakeOctokit>;
+      }
+    ).octokit = async () => fakeOctokit;
+
+    await delivery.createBranch("acme", "shop", "mendpoint/change", "trunk");
+    await expect(
+      delivery.commitFiles("acme", "shop", "mendpoint/change", "Fix", [
+        { path: "src/a.ts", content: "intended change\n" },
+      ]),
+    ).rejects.toThrow(/human reconciliation required/);
+    expect(updateRef).not.toHaveBeenCalled();
+    expect(createBlob).not.toHaveBeenCalled();
   });
 
   it("delivers to many repos via mock delivery", async () => {

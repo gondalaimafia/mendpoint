@@ -33,3 +33,53 @@ export {
   MIGRATION_COMPATIBILITY_RULES,
   classifyMigrationChange,
 } from "./compatibility.js";
+
+export {
+  TransformerControlPlaneStore,
+  type CampaignState,
+  type BlueprintState,
+  type BsgState,
+  type UnitState,
+  type WaveState,
+  type AttemptState,
+  type ApprovalState,
+  type ExceptionState,
+  type PullRequestState,
+  type Versioned,
+  type CampaignContract,
+  type BlueprintContract,
+  type BsgNodeContract,
+  type BsgEdgeContract,
+  type BsgContract,
+  type UnitContract,
+  type WaveContract,
+  type AttemptContract,
+  type ApprovalContract,
+  type ExceptionContract,
+  type ArtifactContract,
+  type PullRequestContract,
+  type TransformerEvent,
+  type TransformerEntityKind,
+} from "./control-plane-store.js";
+
+export type {
+  MigrationRecipeContract,
+  RecipeApplication,
+  RecipeFiles,
+  RecipeOperation,
+  RecipePrecondition,
+  RecipeReference,
+  RecipeTransform,
+  RecipeVerificationCommand,
+} from "./recipe.js";
+export {
+  NODE_RUNTIME_18_TO_20_RECIPE,
+  applyInverseOperations,
+  applyRecipe,
+  assertRecipePathAllowed,
+  getRecipe,
+  recipeFilesDigest,
+  recipeReference,
+  resolveRecipe,
+  validateRecipe,
+} from "./recipe.js";

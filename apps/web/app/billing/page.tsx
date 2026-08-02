@@ -19,19 +19,65 @@ type Tenant = {
   createdAt: string;
 };
 
+type UsageEntry = {
+  id: string;
+  entryType: "reservation" | "settlement" | "release" | "adjustment" | "credit";
+  taskId: string;
+  campaignId: string | null;
+  reservedMcuMicrosDelta: number;
+  consumedMcuMicrosDelta: number;
+  invoiceReference: string | null;
+  reason: string;
+  createdAt: string;
+};
+
+type UsageResponse = {
+  summary: {
+    entitlement: {
+      quotaMcuMicros: number;
+      periodStart: string;
+      periodEnd: string;
+    } | null;
+    reservedMcuMicros: number;
+    consumedMcuMicros: number;
+    creditedMcuMicros: number;
+    availableMcuMicros: number | null;
+    billableMoneyMicros: number | null;
+    currency: string | null;
+  };
+  entries: UsageEntry[];
+  reconciliation: { ok: boolean; checked: number; error?: string };
+};
+
+function mcu(value: number | null): string {
+  return value === null ? "Not configured" : (value / 1_000_000).toFixed(3);
+}
+
+function money(value: number | null, currency: string | null): string {
+  if (value === null || !currency) return "Not configured";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+  }).format(value / 1_000_000);
+}
+
 export default async function BillingPage() {
   let plans: Plan[] = [];
   let tenants: Tenant[] = [];
+  let usage: UsageResponse | null = null;
   let error: string | null = null;
-  const [plansResult, tenantsResult] = await Promise.allSettled([
+  const [plansResult, tenantsResult, usageResult] = await Promise.allSettled([
     apiGet<Plan[]>("/billing/plans"),
     apiGet<Tenant[]>("/tenants"),
+    apiGet<UsageResponse>("/billing/usage"),
   ]);
   if (plansResult.status === "fulfilled") plans = plansResult.value;
   if (tenantsResult.status === "fulfilled") tenants = tenantsResult.value;
+  if (usageResult.status === "fulfilled") usage = usageResult.value;
   error = [
     plansResult.status === "rejected" ? String(plansResult.reason) : null,
     tenantsResult.status === "rejected" ? String(tenantsResult.reason) : null,
+    usageResult.status === "rejected" ? String(usageResult.reason) : null,
   ].filter(Boolean).join(". ") || null;
 
   return (
@@ -39,8 +85,8 @@ export default async function BillingPage() {
       <div className="page-header">
         <h1>Billing & workspaces</h1>
         <p className="muted">
-          Multi-tenant plans (stub). No real charges — plan changes are immediate for local demos.
-          SSO and invoices are enterprise roadmap.
+          Review plan access, quota, reservations, settled migration compute units, credits, and invoice references.
+          External payment processing and tax handling are not configured.
         </p>
       </div>
 
@@ -48,6 +94,73 @@ export default async function BillingPage() {
         <div className="card">
           <p className="error">{error}</p>
         </div>
+      )}
+
+      {usage && (
+        <>
+          <section className="metrics-strip" aria-label="Current usage period">
+            <div className="metric-card">
+              <span className="metric-label">Reserved MCU</span>
+              <strong>{mcu(usage.summary.reservedMcuMicros)}</strong>
+            </div>
+            <div className="metric-card">
+              <span className="metric-label">Consumed MCU</span>
+              <strong>{mcu(usage.summary.consumedMcuMicros)}</strong>
+            </div>
+            <div className="metric-card">
+              <span className="metric-label">Available MCU</span>
+              <strong>{mcu(usage.summary.availableMcuMicros)}</strong>
+            </div>
+            <div className="metric-card">
+              <span className="metric-label">Current billable usage</span>
+              <strong>{money(usage.summary.billableMoneyMicros, usage.summary.currency)}</strong>
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="row-between">
+              <div>
+                <h2>Usage ledger</h2>
+                <p className="muted small">
+                  Integrity check: {usage.reconciliation.ok ? "passed" : "needs review"}, {usage.reconciliation.checked} entries checked
+                </p>
+              </div>
+              <span className={`badge ${usage.reconciliation.ok ? "high" : "breaking"}`}>
+                {usage.reconciliation.ok ? "Reconciled" : "Mismatch"}
+              </span>
+            </div>
+            {usage.entries.length ? (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Type</th>
+                      <th>Task</th>
+                      <th>Reserved</th>
+                      <th>Consumed</th>
+                      <th>Invoice</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {usage.entries.map((entry) => (
+                      <tr key={entry.id}>
+                        <td>{new Date(entry.createdAt).toLocaleString()}</td>
+                        <td>{entry.entryType}</td>
+                        <td><code>{entry.taskId}</code></td>
+                        <td>{mcu(entry.reservedMcuMicrosDelta)}</td>
+                        <td>{mcu(entry.consumedMcuMicrosDelta)}</td>
+                        <td>{entry.invoiceReference ?? "Pending"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="muted">No usage has been recorded for this workspace.</p>
+            )}
+          </section>
+        </>
       )}
 
       <section className="grid">

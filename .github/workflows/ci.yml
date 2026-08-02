@@ -188,7 +188,7 @@ jobs:
             --cookie-jar "$RUNNER_TEMP/mendpoint-web.cookies" \
             -H "Origin: http://127.0.0.1:3000" \
             -H "Content-Type: application/json" \
-            --data "{\"token\":\"$web_access_token\"}" \
+            --data "{\"operatorId\":\"container-ci\",\"token\":\"$web_access_token\"}" \
             http://127.0.0.1:3000/api/session >/dev/null
           curl --fail --silent \
             --cookie "$RUNNER_TEMP/mendpoint-web.cookies" \

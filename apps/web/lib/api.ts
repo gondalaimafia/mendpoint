@@ -95,6 +95,19 @@ export type MigrationPr = {
   createdAt: string;
 };
 
+export type MigrationPrReview = {
+  id: string;
+  subjectType: "migration_pr";
+  subjectId: string;
+  candidateArtifactId: string;
+  reviewer: { subject: string; displayName: string };
+  decision: "approve" | "reject" | "request_changes" | "regenerate";
+  rationale: string;
+  waiverExpiresAt: string | null;
+  supersedesId: string | null;
+  createdAt: string;
+};
+
 export type Consumer = {
   id: string;
   name: string;

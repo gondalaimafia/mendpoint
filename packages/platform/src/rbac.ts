@@ -158,6 +158,8 @@ export function permissionForRoute(
       return "dogfood:read";
     if (path.startsWith("/platform/plans") || path.startsWith("/warden/plans"))
       return "plan:read";
+    if (path.startsWith("/platform/scm")) return "tenant:admin";
+    if (path.startsWith("/billing/")) return "tenant:admin";
     if (
       path.startsWith("/graph-learn") ||
       path.startsWith("/graph/") ||
@@ -178,6 +180,8 @@ export function permissionForRoute(
   // Mutations
   if (path.startsWith("/platform/plans") && (m === "PATCH" || m === "POST"))
     return "plan:edit";
+  if (path.startsWith("/platform/scm")) return "tenant:admin";
+  if (path.startsWith("/billing/")) return "tenant:admin";
   if (path.includes("/feedback") || path.includes("/outcome"))
     return "outcome:label";
   if (path.startsWith("/prs") && m === "POST") return "pr:write";

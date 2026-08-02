@@ -146,6 +146,10 @@ describe("vm + cost + rbac + scm + alerts", () => {
     expect(permissionForRoute("GET", "/repair/sessions")).toBe("graph:read");
     expect(permissionForRoute("POST", "/jobs/job-1/retry")).toBe("tenant:admin");
     expect(permissionForRoute("POST", "/jobs/job-1/cancel")).toBe("tenant:admin");
+    expect(permissionForRoute("GET", "/platform/scm")).toBe("tenant:admin");
+    expect(permissionForRoute("GET", "/billing/usage")).toBe("tenant:admin");
+    expect(permissionForRoute("POST", "/billing/usage/reservations")).toBe("tenant:admin");
+    expect(permissionForRoute("POST", "/platform/scm/connections")).toBe("tenant:admin");
     const viewer = parsePrincipalFromHeaders({ "x-role": "viewer" });
     expect(can(viewer, "plan:edit")).toBe(false);
     const invalid = parsePrincipalFromHeaders({ "x-role": "not-a-role" });

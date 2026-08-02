@@ -52,6 +52,16 @@ import {
   feedPollToApi,
   updateProviderFeedUrls,
   BILLING_PLANS,
+  adjustUsage,
+  createUsageEntitlement,
+  createUsagePriceVersion,
+  creditUsage,
+  getUsageSummary,
+  listUsageLedger,
+  reconcileUsageLedger,
+  releaseUsageReservation,
+  reserveUsage,
+  settleUsageReservation,
   listTenants,
   getTenant,
   getTenantBySlug,
@@ -145,7 +155,6 @@ import {
   createVmSandbox,
   vmStatusReport,
   startLiveSandbox,
-  listScmProviders,
   recentAlerts,
   evaluateLatencyAlerts,
   evaluateDogfoodAlerts,
@@ -153,6 +162,7 @@ import {
   can,
   permissionForRoute,
   estimateCost,
+  MCU_VERSION,
   setAlertPersistPath,
   defaultAlertPath,
 } from "@mendpoint/platform";
@@ -175,6 +185,7 @@ import {
   kuzuStatus,
   exportSqliteToKuzuScript,
   type GraphQuery,
+  type GraphTenantScope,
 } from "@mendpoint/graph-learn";
 import {
   collectDogfood,
@@ -186,6 +197,16 @@ import {
   savePlanHitl,
   type PlanPatch,
 } from "@mendpoint/harness";
+import {
+  resolveCiHarnessEvidence,
+  type CiHarnessEvidence,
+} from "./ci-check.js";
+import {
+  HUMAN_REVIEW_DECISIONS,
+  listMigrationPrReviews,
+  submitMigrationPrReview,
+  type HumanReviewDecision,
+} from "./reviews.js";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
 import { runWarden } from "@mendpoint/agent";
@@ -212,6 +233,14 @@ import {
   corsOrigins,
 } from "./production.js";
 import { canonicalRepoPath, resolveRepoKey } from "./repo-path.js";
+import {
+  materializeConnectedRepository,
+  purgeExpiredSnapshots,
+  registerConnectedRepository,
+  registerScmConnection,
+  revokeConnection,
+  scmOverview,
+} from "./repository-connections.js";
 
 // Fail fast in production if env invalid
 assertApiEnvOrExit();
@@ -243,6 +272,13 @@ function requestTenantId(c: Context<ApiEnv>): string {
 
 function requestConsumerIds(c: Context<ApiEnv>): string[] {
   return listConsumers(db, requestTenantId(c)).map((consumer) => consumer.id);
+}
+
+function requestGraphTenantScope(c: Context<ApiEnv>): GraphTenantScope {
+  return {
+    tenantId: requestTenantId(c),
+    consumerIds: requestConsumerIds(c),
+  };
 }
 
 function tenantConsumerRepo(consumerId: string, tenantId: string) {
@@ -708,7 +744,11 @@ app.post("/graph-learn/query", async (c) => {
   try {
     const body = (await c.req.json()) as GraphQuery;
     if (!body?.op) return c.json({ error: "op required" }, 400);
-    const result = runGraphQuery(getGraphLearnDb(), body);
+    const result = runGraphQuery(
+      getGraphLearnDb(),
+      body,
+      requestGraphTenantScope(c),
+    );
     return c.json({
       ...result,
       markdown: formatQueryForPlanner(result),
@@ -724,7 +764,11 @@ app.post("/graph-learn/pick", async (c) => {
   if (!body.q) return c.json({ error: "q required" }, 400);
   const pick = pickGraphQuery(body.q);
   if (body.run) {
-    const result = runGraphQuery(getGraphLearnDb(), pick.query);
+    const result = runGraphQuery(
+      getGraphLearnDb(),
+      pick.query,
+      requestGraphTenantScope(c),
+    );
     return c.json({
       pick,
       result: { ...result, markdown: formatQueryForPlanner(result) },
@@ -734,7 +778,11 @@ app.post("/graph-learn/pick", async (c) => {
 });
 
 app.post("/graph-learn/promote-patterns", (c) => {
-  const promotions = promotePatterns(getGraphLearnDb());
+  const promotions = promotePatterns(
+    getGraphLearnDb(),
+    {},
+    requestGraphTenantScope(c),
+  );
   return c.json({ count: promotions.length, promotions });
 });
 
@@ -795,7 +843,10 @@ app.post("/graph-learn/incremental", async (c) => {
 });
 
 app.get("/graph-learn/gnn-export", (c) => {
-  const exp = exportGnnFeatures(getGraphLearnDb());
+  const exp = exportGnnFeatures(
+    getGraphLearnDb(),
+    requestGraphTenantScope(c),
+  );
   return c.json({
     exportedAt: exp.exportedAt,
     nodes: exp.nodes.length,
@@ -872,7 +923,131 @@ app.post("/platform/live-sandbox", async (c) => {
   return c.json(out);
 });
 
-app.get("/platform/scm", (c) => c.json({ providers: listScmProviders() }));
+app.get("/platform/scm", (c) => c.json(scmOverview(db, requestTenantId(c))));
+
+app.post("/platform/scm/connections", async (c) => {
+  try {
+    const body = await c.req.json<{
+      provider?: unknown;
+      credentialRef?: unknown;
+      externalAccountId?: unknown;
+      displayName?: unknown;
+    }>();
+    const connection = registerScmConnection(db, {
+      tenantId: requestTenantId(c),
+      provider: body.provider,
+      credentialRef: body.credentialRef,
+      externalAccountId: body.externalAccountId,
+      displayName: body.displayName,
+    });
+    requestAudit(c, {
+      actor: "operator",
+      action: "scm.connection.registered",
+      resourceType: "scm_connection",
+      resourceId: connection.id,
+      metadata: { provider: connection.provider },
+    });
+    return c.json(connection, 201);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+  }
+});
+
+app.post("/platform/scm/repositories", async (c) => {
+  try {
+    const body = await c.req.json<{
+      connectionId?: string;
+      remoteId?: unknown;
+      owner?: unknown;
+      name?: unknown;
+      defaultBranch?: unknown;
+      selectedBranch?: unknown;
+      environment?: unknown;
+      retentionDays?: unknown;
+    }>();
+    const repository = registerConnectedRepository(db, {
+      tenantId: requestTenantId(c),
+      connectionId: body.connectionId ?? "",
+      remoteId: body.remoteId,
+      owner: body.owner,
+      name: body.name,
+      defaultBranch: body.defaultBranch,
+      selectedBranch: body.selectedBranch,
+      environment: body.environment,
+      retentionDays: body.retentionDays,
+    });
+    requestAudit(c, {
+      actor: "operator",
+      action: "scm.repository.registered",
+      resourceType: "connected_repository",
+      resourceId: repository.id,
+      metadata: { connectionId: repository.connection_id },
+    });
+    return c.json(repository, 201);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+  }
+});
+
+app.post("/platform/scm/repositories/:id/snapshots", async (c) => {
+  try {
+    const body = await c.req
+      .json<{ consumerRepoId?: string; sparsePaths?: string[] }>()
+      .catch((): { consumerRepoId?: string; sparsePaths?: string[] } => ({}));
+    const result = await materializeConnectedRepository(db, {
+      tenantId: requestTenantId(c),
+      repositoryId: c.req.param("id"),
+      consumerRepoId: body.consumerRepoId,
+      sparsePaths: body.sparsePaths,
+    });
+    requestAudit(c, {
+      actor: "operator",
+      action: "repository.snapshot.materialized",
+      resourceType: "repository_snapshot",
+      resourceId: result.snapshot.id,
+      metadata: {
+        exactCommit: result.snapshot.exactCommit,
+        manifestSha256: result.snapshot.manifestSha256,
+        reused: result.reused,
+      },
+    });
+    return c.json(result, result.reused ? 200 : 201);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+  }
+});
+
+app.post("/platform/scm/connections/:id/revoke", (c) => {
+  try {
+    const connection = revokeConnection(db, requestTenantId(c), c.req.param("id"));
+    requestAudit(c, {
+      actor: "operator",
+      action: "scm.connection.revoked",
+      resourceType: "scm_connection",
+      resourceId: connection.id,
+    });
+    return c.json(connection);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+  }
+});
+
+app.post("/platform/scm/snapshots/purge", async (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
+  const result = await purgeExpiredSnapshots(db, {
+    tenantId: principal.tenantId,
+    actorPrincipalId: principal.id,
+  });
+  requestAudit(c, {
+    actor: "operator",
+    action: "repository.snapshots.retention_evaluated",
+    resourceType: "repository_snapshot",
+    resourceId: principal.tenantId,
+    metadata: result,
+  });
+  return c.json(result);
+});
 
 app.get("/platform/alerts", (c) => c.json({ alerts: recentAlerts(50) }));
 
@@ -1375,6 +1550,66 @@ app.get("/prs/:id", (c) => {
   return c.json(prToApi(pr));
 });
 
+app.get("/prs/:id/reviews", (c) => {
+  const tenantId = requestTenantId(c);
+  const pr = getPr(db, c.req.param("id"), tenantId);
+  if (!pr) return c.json({ error: "not found" }, 404);
+  return c.json({ reviews: listMigrationPrReviews(db, tenantId, pr.id) });
+});
+
+app.post("/prs/:id/reviews", async (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
+  const pr = getPr(db, c.req.param("id"), principal.tenantId);
+  if (!pr) return c.json({ error: "not found" }, 404);
+  const body = await c.req
+    .json<{ decision?: string; rationale?: string }>()
+    .catch(() => ({} as { decision?: string; rationale?: string }));
+  if (
+    typeof body.decision !== "string" ||
+    !HUMAN_REVIEW_DECISIONS.includes(body.decision as HumanReviewDecision)
+  ) {
+    return c.json({ error: "review_decision_invalid" }, 400);
+  }
+  try {
+    const review = submitMigrationPrReview(db, {
+      tenantId: principal.tenantId,
+      prId: pr.id,
+      authenticatedPrincipalId: principal.id,
+      decision: body.decision as HumanReviewDecision,
+      rationale: typeof body.rationale === "string" ? body.rationale : "",
+      reviewId: newId(),
+      eventId: newId(),
+      correlationId: c.get("requestId"),
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: principal.id,
+      action: `migration_pr.review.${review.decision}`,
+      resourceType: "migration_pr",
+      resourceId: pr.id,
+      metadata: {
+        reviewId: review.id,
+        candidateArtifactId: review.candidateArtifactId,
+        supersedesId: review.supersedesId,
+      },
+    });
+    return c.json(review, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "review_failed";
+    if (message === "human_review_identity_required") {
+      return c.json({ error: message }, 403);
+    }
+    if (message === "review_candidate_not_found") {
+      return c.json({ error: message }, 409);
+    }
+    if (message === "review_rationale_invalid") {
+      return c.json({ error: message }, 400);
+    }
+    throw error;
+  }
+});
+
 app.post("/prs/:id/feedback", async (c) => {
   const tenantId = c.get("principal")?.tenantId;
   const pr = getPr(db, c.req.param("id"), tenantId);
@@ -1404,13 +1639,7 @@ app.post("/prs/:id/ci-check", async (c) => {
   const findings = listFindingsForChange(db, pr.change_id, requestTenantId(c));
   const body = await c.req
     .json<{
-      harness?: Array<{
-        name: string;
-        passed: boolean;
-        recall?: number;
-        threshold?: number;
-        detail?: string;
-      }>;
+      harness?: CiHarnessEvidence[];
       post?: boolean;
     }>()
     .catch(() => ({} as { harness?: never; post?: boolean }));
@@ -1422,13 +1651,7 @@ app.post("/prs/:id/ci-check", async (c) => {
     title: pr.title,
     risk: pr.risk,
     findings: findings.length,
-    harness: body.harness ?? [
-      { name: "TypeScript", passed: true, recall: 1, threshold: 0.7 },
-      { name: "Python", passed: true, recall: 1, threshold: 0.7 },
-      { name: "Go", passed: true, recall: 1, threshold: 0.7 },
-      { name: "Java", passed: true, recall: 1, threshold: 0.7 },
-      { name: "Ruby", passed: true, recall: 1, threshold: 0.7 },
-    ],
+    harness: resolveCiHarnessEvidence(body.harness),
     policyNotes: ["Auto-merge disabled", "Human review required"],
   };
   const commentBody = formatCiCheckComment(input);
@@ -2120,6 +2343,265 @@ app.get("/policies/defaults", (c) =>
 // ─── Phase E: tenants + billing ──────────────────────────────────────────────
 
 app.get("/billing/plans", (c) => c.json(BILLING_PLANS));
+
+app.get("/billing/usage", (c) => {
+  const tenantId = requestTenantId(c);
+  const at = c.req.query("at") ?? nowIso();
+  try {
+    return c.json({
+      summary: getUsageSummary(db, tenantId, at),
+      entries: listUsageLedger(db, tenantId, 200),
+      reconciliation: reconcileUsageLedger(db, tenantId),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_query_failed";
+    return c.json({ error: message }, 400);
+  }
+});
+
+app.post("/billing/price-versions", async (c) => {
+  const body = await c.req.json<{
+    id?: string;
+    currency?: string;
+    pricePerMcuMoneyMicros?: number;
+    effectiveAt?: string;
+    expiresAt?: string | null;
+    contractReference?: string;
+  }>().catch(() => ({} as {
+    id?: string;
+    currency?: string;
+    pricePerMcuMoneyMicros?: number;
+    effectiveAt?: string;
+    expiresAt?: string | null;
+    contractReference?: string;
+  }));
+  try {
+    const price = createUsagePriceVersion(db, {
+      id: body.id ?? "",
+      tenantId: requestTenantId(c),
+      formulaVersion: MCU_VERSION,
+      currency: body.currency ?? "",
+      pricePerMcuMoneyMicros: body.pricePerMcuMoneyMicros ?? -1,
+      effectiveAt: body.effectiveAt ?? "",
+      expiresAt: body.expiresAt,
+      contractReference: body.contractReference ?? "",
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: "billing.price_version_created",
+      resourceType: "usage_price_version",
+      resourceId: price.id,
+      metadata: { formulaVersion: price.formulaVersion, currency: price.currency },
+    });
+    return c.json(price, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_price_failed";
+    return c.json({ error: message }, message.endsWith("_conflict") ? 409 : 400);
+  }
+});
+
+app.post("/billing/entitlements", async (c) => {
+  const body = await c.req.json<{
+    id?: string;
+    priceVersionId?: string;
+    quotaMcuMicros?: number;
+    features?: string[];
+    contractReference?: string;
+    periodStart?: string;
+    periodEnd?: string;
+  }>().catch(() => ({} as {
+    id?: string;
+    priceVersionId?: string;
+    quotaMcuMicros?: number;
+    features?: string[];
+    contractReference?: string;
+    periodStart?: string;
+    periodEnd?: string;
+  }));
+  try {
+    const entitlement = createUsageEntitlement(db, {
+      id: body.id ?? "",
+      tenantId: requestTenantId(c),
+      priceVersionId: body.priceVersionId ?? "",
+      quotaMcuMicros: body.quotaMcuMicros ?? -1,
+      features: body.features ?? [],
+      contractReference: body.contractReference ?? "",
+      periodStart: body.periodStart ?? "",
+      periodEnd: body.periodEnd ?? "",
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: "billing.entitlement_created",
+      resourceType: "usage_entitlement",
+      resourceId: entitlement.id,
+      metadata: { version: entitlement.version, quotaMcuMicros: entitlement.quotaMcuMicros },
+    });
+    return c.json(entitlement, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_entitlement_failed";
+    return c.json({ error: message }, message.endsWith("_conflict") ? 409 : 400);
+  }
+});
+
+app.post("/billing/usage/reservations", async (c) => {
+  const body = await c.req.json<{
+    idempotencyKey?: string;
+    taskId?: string;
+    campaignId?: string | null;
+    mcuMicros?: number;
+    reason?: string;
+  }>().catch(() => ({} as {
+    idempotencyKey?: string;
+    taskId?: string;
+    campaignId?: string | null;
+    mcuMicros?: number;
+    reason?: string;
+  }));
+  try {
+    const entry = reserveUsage(db, {
+      id: newId(),
+      tenantId: requestTenantId(c),
+      idempotencyKey: body.idempotencyKey ?? "",
+      taskId: body.taskId ?? "",
+      campaignId: body.campaignId,
+      mcuMicros: body.mcuMicros ?? -1,
+      reason: body.reason ?? "",
+      actorPrincipalId: c.get("trustPrincipalId"),
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: "billing.usage_reserved",
+      resourceType: "usage_ledger_entry",
+      resourceId: entry.id,
+      metadata: { taskId: entry.taskId, mcuMicros: entry.reservedMcuMicrosDelta },
+    });
+    return c.json(entry, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_reservation_failed";
+    return c.json(
+      { error: message },
+      message.includes("conflict") || message.includes("quota") || message.includes("required")
+        ? 409
+        : 400,
+    );
+  }
+});
+
+app.post("/billing/usage/reservations/:id/settle", async (c) => {
+  const body = await c.req.json<{
+    idempotencyKey?: string;
+    actualMcuMicros?: number;
+    invoiceReference?: string | null;
+    reason?: string;
+  }>().catch(() => ({} as {
+    idempotencyKey?: string;
+    actualMcuMicros?: number;
+    invoiceReference?: string | null;
+    reason?: string;
+  }));
+  try {
+    const entry = settleUsageReservation(db, {
+      id: newId(),
+      tenantId: requestTenantId(c),
+      idempotencyKey: body.idempotencyKey ?? "",
+      reservationId: c.req.param("id"),
+      actualMcuMicros: body.actualMcuMicros ?? -1,
+      invoiceReference: body.invoiceReference,
+      reason: body.reason ?? "",
+      actorPrincipalId: c.get("trustPrincipalId"),
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: "billing.usage_settled",
+      resourceType: "usage_ledger_entry",
+      resourceId: entry.id,
+      metadata: { reservationId: entry.reservationId, mcuMicros: entry.consumedMcuMicrosDelta },
+    });
+    return c.json(entry, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_settlement_failed";
+    return c.json({ error: message }, message.includes("not_found") ? 404 : 409);
+  }
+});
+
+app.post("/billing/usage/reservations/:id/release", async (c) => {
+  const body = await c.req.json<{ idempotencyKey?: string; reason?: string }>()
+    .catch(() => ({} as { idempotencyKey?: string; reason?: string }));
+  try {
+    const entry = releaseUsageReservation(db, {
+      id: newId(),
+      tenantId: requestTenantId(c),
+      idempotencyKey: body.idempotencyKey ?? "",
+      reservationId: c.req.param("id"),
+      reason: body.reason ?? "",
+      actorPrincipalId: c.get("trustPrincipalId"),
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: "billing.usage_released",
+      resourceType: "usage_ledger_entry",
+      resourceId: entry.id,
+      metadata: { reservationId: entry.reservationId },
+    });
+    return c.json(entry, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_release_failed";
+    return c.json({ error: message }, message.includes("not_found") ? 404 : 409);
+  }
+});
+
+app.post("/billing/usage/:kind", async (c) => {
+  const kind = c.req.param("kind");
+  if (kind !== "adjustments" && kind !== "credits") {
+    return c.json({ error: "usage_entry_kind_invalid" }, 404);
+  }
+  const body = await c.req.json<{
+    idempotencyKey?: string;
+    taskId?: string;
+    campaignId?: string | null;
+    mcuMicrosDelta?: number;
+    invoiceReference?: string | null;
+    reason?: string;
+  }>().catch(() => ({} as {
+    idempotencyKey?: string;
+    taskId?: string;
+    campaignId?: string | null;
+    mcuMicrosDelta?: number;
+    invoiceReference?: string | null;
+    reason?: string;
+  }));
+  try {
+    const operation = kind === "credits" ? creditUsage : adjustUsage;
+    const entry = operation(db, {
+      id: newId(),
+      tenantId: requestTenantId(c),
+      idempotencyKey: body.idempotencyKey ?? "",
+      taskId: body.taskId ?? "",
+      campaignId: body.campaignId,
+      mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
+      invoiceReference: body.invoiceReference,
+      reason: body.reason ?? "",
+      actorPrincipalId: c.get("trustPrincipalId"),
+      createdAt: nowIso(),
+    });
+    requestAudit(c, {
+      actor: c.get("principal")!.id,
+      action: `billing.usage_${entry.entryType}`,
+      resourceType: "usage_ledger_entry",
+      resourceId: entry.id,
+      metadata: { taskId: entry.taskId, mcuMicros: entry.consumedMcuMicrosDelta },
+    });
+    return c.json(entry, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "usage_adjustment_failed";
+    return c.json({ error: message }, message.includes("conflict") ? 409 : 400);
+  }
+});
 
 app.get("/tenants", (c) => {
   const principal = c.get("principal");

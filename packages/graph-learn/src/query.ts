@@ -17,6 +17,12 @@ import {
   latencyReport,
   recordLatency,
 } from "./slo.js";
+import {
+  createTenantGraphView,
+  tenantPatternSuccessRows,
+  type GraphTenantScope,
+} from "./tenant-scope.js";
+import { enumerateDependencyPaths } from "./dependency-paths.js";
 
 function collectNodes(db: GraphLearnDb, ids: Iterable<string>): GlNode[] {
   const out: GlNode[] = [];
@@ -58,11 +64,29 @@ export function blastRadius(
   return { nodes: collectNodes(db, seen), edges: edgeAcc };
 }
 
-export function runGraphQuery(db: GraphLearnDb, q: GraphQuery): GraphQueryResult {
+export function runGraphQuery(
+  db: GraphLearnDb,
+  q: GraphQuery,
+  scope?: GraphTenantScope,
+): GraphQueryResult {
   const t0 = performance.now();
+  let tenantView: GraphLearnDb | undefined;
   try {
-    return runGraphQueryInner(db, q);
+    if (scope && q.op === "pattern_success_rates") {
+      const minSamples = q.minSamples ?? 1;
+      const rows = tenantPatternSuccessRows(db, scope, minSamples);
+      return {
+        op: q.op,
+        nodes: [],
+        edges: [],
+        summary: `${rows.length} pattern(s) with >=${minSamples} samples`,
+        rows,
+      };
+    }
+    tenantView = scope ? createTenantGraphView(db, scope) : undefined;
+    return runGraphQueryInner(tenantView ?? db, q);
   } finally {
+    tenantView?.raw.close();
     recordLatency(q.op, performance.now() - t0);
   }
 }
@@ -161,22 +185,20 @@ function runGraphQueryInner(
       };
     }
     case "depends_on_path": {
-      const path: string[] = [q.nodeId];
-      const edges: GlEdge[] = [];
-      let cur = q.nodeId;
-      for (let i = 0; i < (q.maxHops ?? 8); i++) {
-        const deps = edgesFrom(db, cur, ["DEPENDS_ON"]);
-        if (!deps.length) break;
-        edges.push(deps[0]!);
-        cur = deps[0]!.target;
-        path.push(cur);
-      }
+      const enumeration = enumerateDependencyPaths(db, q.nodeId, {
+        maxHops: q.maxHops,
+        maxPaths: q.maxPaths,
+      });
+      const reason = enumeration.truncation.truncated
+        ? `; truncated by ${enumeration.truncation.reasons.join(",")}`
+        : "; complete within bounds";
       return {
         op: q.op,
-        nodes: collectNodes(db, path),
-        edges,
-        summary: `depends_on path length ${path.length - 1}`,
-        rows: path.map((id, i) => ({ step: i, nodeId: id })),
+        nodes: collectNodes(db, enumeration.nodeIds),
+        edges: enumeration.edges,
+        summary: `depends_on ${enumeration.paths.length} terminal path(s) from ${q.nodeId}${reason}`,
+        rows: enumeration.paths,
+        truncation: enumeration.truncation,
       };
     }
     case "neighborhood": {

@@ -233,6 +233,17 @@ function rowToEdge(r: EdgeRow): GlEdge {
   };
 }
 
+/** Complete graph snapshots for constructing read-only tenant views. */
+export function listAllNodes(db: GraphLearnDb): GlNode[] {
+  const rows = db.raw.prepare(`SELECT * FROM gl_nodes`).all() as NodeRow[];
+  return rows.map(rowToNode);
+}
+
+export function listAllEdges(db: GraphLearnDb): GlEdge[] {
+  const rows = db.raw.prepare(`SELECT * FROM gl_edges`).all() as EdgeRow[];
+  return rows.map(rowToEdge);
+}
+
 export function getNode(db: GraphLearnDb, id: string): GlNode | undefined {
   const row = db.raw.prepare(`SELECT * FROM gl_nodes WHERE id = ?`).get(id) as
     | NodeRow

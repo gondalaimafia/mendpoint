@@ -18,19 +18,51 @@ type Slo = {
   violations: string[];
 };
 
+type Scm = {
+  providers?: Array<{
+    provider: string;
+    connection: boolean;
+    snapshots: boolean;
+    pullRequests: boolean;
+  }>;
+  connections?: Array<{
+    id: string;
+    provider: string;
+    displayName: string;
+    revokedAt: string | null;
+    health: null | {
+      configured: boolean;
+      authenticated: boolean;
+      readAccess: boolean;
+      writeAccess: boolean;
+      webhookOk: boolean;
+      ciVisible: boolean;
+      errorCode: string | null;
+      checkedAt: string;
+    };
+  }>;
+  repositories?: Array<{
+    id: string;
+    owner: string;
+    name: string;
+    status: string;
+    selectedBranch: string;
+    snapshots: Array<{ exactCommit: string; expiresAt: string; available: boolean }>;
+  }>;
+};
+
 export default async function PlatformPage() {
   let dog: Dogfood | null = null;
   let slo: Slo | null = null;
   let vm: { capabilities?: Array<{ backend: string; available: boolean }> } | null =
     null;
-  let scm: { providers?: Array<{ provider: string; available: boolean }> } | null =
-    null;
+  let scm: Scm | null = null;
   let error: string | null = null;
   const [dogResult, sloResult, vmResult, scmResult] = await Promise.allSettled([
     apiGet<Dogfood>("/platform/dogfood"),
     apiGet<Slo>("/graph-learn/slo"),
     apiGet<{ capabilities?: Array<{ backend: string; available: boolean }> }>("/platform/vm"),
-    apiGet<{ providers?: Array<{ provider: string; available: boolean }> }>("/platform/scm"),
+    apiGet<Scm>("/platform/scm"),
   ]);
   if (dogResult.status === "fulfilled") dog = dogResult.value;
   if (sloResult.status === "fulfilled") slo = sloResult.value;
@@ -95,14 +127,30 @@ export default async function PlatformPage() {
           </ul>
         </div>
         <div className="card">
-          <h3>SCM</h3>
-          <ul className="small">
-            {(scm?.providers ?? []).map((p) => (
-              <li key={p.provider}>
-                {p.provider}: {p.available ? "ready" : "stub"}
-              </li>
-            ))}
-          </ul>
+          <h3>Repository connections</h3>
+          {(scm?.connections?.length ?? 0) > 0 ? (
+            <ul className="small">
+              {(scm?.connections ?? []).map((connection) => (
+                <li key={connection.id}>
+                  {connection.displayName}: {connection.revokedAt
+                    ? "revoked"
+                    : connection.health?.authenticated && connection.health.readAccess
+                      ? "read access verified"
+                      : "verification required"}
+                  {connection.health?.errorCode ? `, ${connection.health.errorCode}` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted small">No repository connection is configured.</p>
+          )}
+          <p className="muted small">
+            {(scm?.repositories ?? []).length} repositories, {scm?.repositories?.reduce(
+              (count, repository) =>
+                count + repository.snapshots.filter((snapshot) => snapshot.available).length,
+              0,
+            ) ?? 0} exact commit snapshots
+          </p>
         </div>
       </div>
       <div className="card" style={{ marginTop: "1rem" }}>

@@ -53,6 +53,14 @@ export {
   formatCost,
 } from "./cost.js";
 
+export type { McuWork, McuBreakdown } from "./mcu.js";
+export {
+  MCU_VERSION,
+  MCU_MICROS,
+  calculateMcuV1,
+  formatMcu,
+} from "./mcu.js";
+
 export type { Role, Permission, Principal } from "./rbac.js";
 export {
   permissionsFor,
@@ -87,3 +95,72 @@ export {
   setAlertPersistPath,
   defaultAlertPath,
 } from "./alerts.js";
+
+export type {
+  RepositorySourcePolicy,
+  RepositoryProbe,
+  ResolvedRepositoryRef,
+  SnapshotFile,
+  SnapshotSubmodule,
+  ImmutableRepositorySnapshot,
+  DiscoveredDocument,
+  DiscoveredCiConfig,
+  DiscoveredVerificationCommand,
+  RepositoryDiscovery,
+  RepositorySource,
+  RepositorySourceErrorCode,
+} from "./repository-source.js";
+export {
+  RepositorySourceError,
+  validateRepositoryRelativePath,
+  createLocalGitRepositorySource,
+} from "./repository-source.js";
+
+export type {
+  SecretReference,
+  EnvSecretReference,
+  MemorySecretReference,
+  CredentialRotationMetadata,
+  CredentialRevocation,
+  CredentialDescriptor,
+  SecretProvider,
+  CredentialAccessReason,
+  CredentialAccessAuditEvent,
+  CredentialAccessAudit,
+  CredentialAccessRequest,
+  CredentialAccessErrorCode,
+  ResolvedCredential,
+  CredentialBrokerOptions,
+} from "./credentials.js";
+export {
+  CredentialAccessError,
+  SecretMaterial,
+  EnvSecretProvider,
+  MemorySecretProvider,
+  CredentialBroker,
+} from "./credentials.js";
+
+export {
+  ExecutorRegistry,
+  ExecutorCircuitBreaker,
+  routeTask,
+  selectPolicyBoundFallback,
+  type DataClassification,
+  type TaskRisk,
+  type RouterTaskSpec,
+  type RouterPolicySnapshot,
+  type ExecutorDescriptor,
+  type CircuitBreakerConfig,
+  type CircuitBreakerState,
+  type RoutingExclusionReason,
+  type ExecutorEvaluation,
+  type PolicyBoundExecutorRoute,
+  type RoutingPlan,
+  type HumanHandoffReason,
+  type HumanHandoff,
+  type RoutingDecisionRecord,
+  type ExecutionActualTelemetryRecord,
+  type RoutingOutcome,
+  type RouteTaskInput,
+  type SelectFallbackInput,
+} from "./router.js";

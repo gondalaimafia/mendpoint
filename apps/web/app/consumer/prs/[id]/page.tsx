@@ -1,6 +1,11 @@
 import Link from "next/link";
-import { apiGet, type MigrationPr } from "../../../../lib/api";
+import {
+  apiGet,
+  type MigrationPr,
+  type MigrationPrReview,
+} from "../../../../lib/api";
 import { FeedbackButtons } from "./feedback";
+import { ReviewPanel } from "./reviews";
 
 export const dynamic = "force-dynamic";
 
@@ -11,9 +16,13 @@ export default async function PrDetailPage({
 }) {
   const { id } = await params;
   let pr: MigrationPr | null = null;
+  let reviews: MigrationPrReview[] = [];
   let error: string | null = null;
   try {
     pr = await apiGet<MigrationPr>(`/prs/${id}`);
+    reviews = (
+      await apiGet<{ reviews: MigrationPrReview[] }>(`/prs/${id}/reviews`)
+    ).reviews;
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
@@ -48,6 +57,8 @@ export default async function PrDetailPage({
 
       <h2>Patch</h2>
       <pre>{pr.patchUnified || "(empty patch)"}</pre>
+
+      <ReviewPanel prId={pr.id} initialReviews={reviews} />
 
       <h2>Feedback</h2>
       <p className="muted">Learning signal for future generations (merge / close / request changes).</p>

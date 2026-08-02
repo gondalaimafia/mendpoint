@@ -15,6 +15,8 @@ import {
   KUZU_DDL_V0,
   normalizeNodeKind,
   normalizeEdgeKind,
+  upsertNode,
+  upsertEdge,
   getNode,
   countStats,
   seedSyntheticTemporal,
@@ -114,6 +116,102 @@ describe("graph-learn substrate", () => {
     });
     const r = runGraphQuery(db, { op: "outcomes_for_pattern", pattern: "amount" });
     expect(r.summary).toMatch(/outcome/i);
+  });
+
+  it("does not expose another tenant through graph query or GNN export", () => {
+    const db = openGraphLearnMemory();
+    try {
+      for (const tenant of ["tenant-a", "tenant-b"]) {
+        upsertNode(db, {
+          id: `file:${tenant}:index.ts`,
+          kind: "File",
+          label: `${tenant}/index.ts`,
+          repo_id: `${tenant}:consumer`,
+        });
+        upsertNode(db, {
+          id: `symbol:${tenant}:run`,
+          kind: "Symbol",
+          label: `${tenant}.run`,
+          repo_id: `${tenant}:consumer`,
+        });
+        upsertEdge(db, {
+          id: `DEFINES:${tenant}:run`,
+          kind: "DEFINES",
+          source: `file:${tenant}:index.ts`,
+          target: `symbol:${tenant}:run`,
+        });
+      }
+
+      const scope = { tenantId: "tenant-a", consumerIds: ["consumer-a"] };
+      const foreign = runGraphQuery(
+        db,
+        { op: "neighbors", nodeId: "file:tenant-b:index.ts" },
+        scope,
+      );
+      expect(foreign.nodes).toEqual([]);
+      expect(foreign.edges).toEqual([]);
+
+      const own = runGraphQuery(
+        db,
+        { op: "neighbors", nodeId: "file:tenant-a:index.ts" },
+        scope,
+      );
+      expect(own.nodes.map((node) => node.id).sort()).toEqual([
+        "file:tenant-a:index.ts",
+        "symbol:tenant-a:run",
+      ]);
+      const exported = exportGnnFeatures(db, scope);
+      expect(exported.nodes.map((node) => node.id).sort()).toEqual([
+        "file:tenant-a:index.ts",
+        "symbol:tenant-a:run",
+      ]);
+      expect(exported.edges).toHaveLength(1);
+      expect(JSON.stringify(exported)).not.toContain("tenant-b");
+    } finally {
+      db.raw.close();
+    }
+  });
+
+  it("does not promote patterns learned from another tenant", () => {
+    const db = openGraphLearnMemory();
+    try {
+      labelPrOutcome(db, {
+        prId: "pr-a",
+        changeId: "change-a",
+        consumerId: "consumer-a",
+        outcome: "merged",
+        title: "safe a",
+      });
+      labelPrOutcome(db, {
+        prId: "pr-b",
+        changeId: "change-b",
+        consumerId: "consumer-b",
+        outcome: "merged",
+        title: "secret b",
+      });
+
+      const scope = { tenantId: "tenant-a", consumerIds: ["consumer-a"] };
+      const rates = runGraphQuery(
+        db,
+        { op: "pattern_success_rates", minSamples: 1 },
+        scope,
+      );
+      expect(rates.rows?.map((row) => row.pattern)).toEqual(["safe a"]);
+
+      const promoted = promotePatterns(
+        db,
+        { minSamples: 1, minSuccessRate: 0.6 },
+        scope,
+      );
+      expect(promoted.map((pattern) => pattern.pattern)).toEqual(["safe a"]);
+      expect(getNode(db, "pattern:tenant-a:safe_a")?.repo_id).toBe(
+        "tenant-a:patterns",
+      );
+      expect(getNode(db, "pattern:tenant-a:secret_b")).toBeUndefined();
+      expect(getNode(db, "pattern:tenant-b:secret_b")).toBeUndefined();
+    } finally {
+      db.raw.close();
+    }
   });
 
   it("benchmark pack hits ≥18/20", () => {

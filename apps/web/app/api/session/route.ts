@@ -2,16 +2,19 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import {
   WEB_SESSION_COOKIE,
-  authenticatedWebSession,
+  WEB_SESSION_MAX_AGE_SECONDS,
+  authenticatedWebSubject,
+  createWebSessionV2,
   isAllowedMutationOrigin,
   secureEqual,
-  webSessionValue,
+  validOperatorId,
 } from "../../../lib/proxy-auth";
 
 export const dynamic = "force-dynamic";
 
-export function GET(request: NextRequest): Response {
-  return Response.json({ authenticated: authenticatedWebSession(request) });
+export async function GET(request: NextRequest): Promise<Response> {
+  const subject = await authenticatedWebSubject(request);
+  return Response.json({ authenticated: Boolean(subject), subject });
 }
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -26,18 +29,28 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (declaredLength > 8_192) {
     return Response.json({ error: "payload_too_large" }, { status: 413 });
   }
-  const body = await request.json().catch(() => null) as { token?: string } | null;
-  if (!body?.token || !secureEqual(body.token, expected)) {
+  const body = await request.json().catch(() => null) as {
+    token?: string;
+    operatorId?: string;
+  } | null;
+  if (!body?.token || !(await secureEqual(body.token, expected))) {
     return Response.json({ error: "invalid_access_token" }, { status: 401 });
   }
+  if (!validOperatorId(body.operatorId)) {
+    return Response.json({ error: "invalid_operator_id" }, { status: 400 });
+  }
   const response = NextResponse.json({ authenticated: true });
-  response.cookies.set(WEB_SESSION_COOKIE, webSessionValue(expected), {
+  response.cookies.set(
+    WEB_SESSION_COOKIE,
+    await createWebSessionV2({ operatorId: body.operatorId, accessToken: expected }),
+    {
     httpOnly: true,
     sameSite: "strict",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 8 * 60 * 60,
-  });
+    maxAge: WEB_SESSION_MAX_AGE_SECONDS,
+    },
+  );
   return response;
 }
 

@@ -150,6 +150,10 @@ CREATE TABLE IF NOT EXISTS consumer_repos (
   consumer_id TEXT NOT NULL REFERENCES consumers(id),
   local_path TEXT NOT NULL,
   default_branch TEXT NOT NULL DEFAULT 'main',
+  scm_connection_id TEXT,
+  connected_repository_id TEXT,
+  snapshot_id TEXT,
+  exact_commit TEXT,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS monitored_apis (
@@ -192,6 +196,11 @@ CREATE INDEX IF NOT EXISTS impact_findings_consumer_idx ON impact_findings(consu
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
+  event_sequence INTEGER,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  prev_hash TEXT,
+  event_hash TEXT,
+  metadata_sha256 TEXT,
   actor TEXT NOT NULL,
   principal_id TEXT,
   api_key_id TEXT,
@@ -235,6 +244,16 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 CREATE INDEX IF NOT EXISTS api_keys_hash_idx ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS api_keys_tenant_idx ON api_keys(tenant_id);
+
+CREATE TABLE IF NOT EXISTS delegated_request_nonces (
+  api_key_id TEXT NOT NULL REFERENCES api_keys(id),
+  request_id TEXT NOT NULL,
+  signature_sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (api_key_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS delegated_request_nonces_created_idx
+  ON delegated_request_nonces(created_at);
 
 -- Phase D: continuous feed poll ledger
 CREATE TABLE IF NOT EXISTS feed_polls (
@@ -296,6 +315,431 @@ CREATE TABLE IF NOT EXISTS github_webhook_deliveries (
   attempts INTEGER NOT NULL DEFAULT 1,
   last_error TEXT
 );
+
+CREATE TABLE IF NOT EXISTS principals (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('human', 'service', 'api_key', 'webhook')),
+  subject TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  audience TEXT,
+  expires_at TEXT,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, kind, subject)
+);
+CREATE INDEX IF NOT EXISTS principals_tenant_idx ON principals(tenant_id, kind);
+
+CREATE TABLE IF NOT EXISTS artifact_manifests (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  media_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  storage_ref TEXT NOT NULL,
+  content_text TEXT,
+  producer_principal_id TEXT REFERENCES principals(id),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, kind, sha256)
+);
+CREATE INDEX IF NOT EXISTS artifact_manifests_tenant_idx ON artifact_manifests(tenant_id, kind, created_at);
+
+CREATE TABLE IF NOT EXISTS evidence_records (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  subject_type TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  artifact_id TEXT NOT NULL REFERENCES artifact_manifests(id),
+  input_artifact_id TEXT REFERENCES artifact_manifests(id),
+  producer_principal_id TEXT REFERENCES principals(id),
+  tool TEXT NOT NULL,
+  command TEXT,
+  tool_version TEXT,
+  commit_sha TEXT,
+  verdict TEXT NOT NULL CHECK (verdict IN ('passed', 'failed', 'unknown', 'waived')),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS usage_price_versions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  formula_version TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  price_per_mcu_money_micros INTEGER NOT NULL CHECK (price_per_mcu_money_micros >= 0),
+  effective_at TEXT NOT NULL,
+  expires_at TEXT,
+  contract_reference TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, effective_at, id)
+);
+CREATE INDEX IF NOT EXISTS usage_price_versions_effective_idx
+  ON usage_price_versions(tenant_id, effective_at, expires_at);
+
+CREATE TABLE IF NOT EXISTS usage_entitlements (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  version INTEGER NOT NULL CHECK (version > 0),
+  price_version_id TEXT NOT NULL REFERENCES usage_price_versions(id),
+  quota_mcu_micros INTEGER NOT NULL CHECK (quota_mcu_micros >= 0),
+  features_json TEXT NOT NULL,
+  contract_reference TEXT NOT NULL,
+  period_start TEXT NOT NULL,
+  period_end TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, version)
+);
+CREATE INDEX IF NOT EXISTS usage_entitlements_period_idx
+  ON usage_entitlements(tenant_id, period_start, period_end, version);
+
+CREATE TABLE IF NOT EXISTS usage_ledger_entries (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  entry_type TEXT NOT NULL CHECK (
+    entry_type IN ('reservation', 'settlement', 'release', 'adjustment', 'credit')
+  ),
+  entitlement_id TEXT NOT NULL REFERENCES usage_entitlements(id),
+  idempotency_key TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  campaign_id TEXT,
+  reservation_id TEXT REFERENCES usage_ledger_entries(id),
+  price_version TEXT NOT NULL,
+  reserved_mcu_micros_delta INTEGER NOT NULL,
+  consumed_mcu_micros_delta INTEGER NOT NULL,
+  invoice_reference TEXT,
+  reason TEXT NOT NULL,
+  actor_principal_id TEXT,
+  entry_sequence INTEGER NOT NULL,
+  prev_hash TEXT,
+  entry_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, idempotency_key),
+  UNIQUE (tenant_id, entry_sequence)
+);
+CREATE INDEX IF NOT EXISTS usage_ledger_tenant_time_idx
+  ON usage_ledger_entries(tenant_id, entitlement_id, created_at, id);
+CREATE INDEX IF NOT EXISTS usage_ledger_task_idx
+  ON usage_ledger_entries(tenant_id, task_id, campaign_id);
+CREATE INDEX IF NOT EXISTS usage_ledger_reservation_idx
+  ON usage_ledger_entries(tenant_id, reservation_id);
+CREATE TRIGGER IF NOT EXISTS usage_entitlements_append_only_update
+BEFORE UPDATE ON usage_entitlements BEGIN
+  SELECT RAISE(ABORT, 'usage_entitlements_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_price_versions_append_only_update
+BEFORE UPDATE ON usage_price_versions BEGIN
+  SELECT RAISE(ABORT, 'usage_price_versions_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_price_versions_append_only_delete
+BEFORE DELETE ON usage_price_versions BEGIN
+  SELECT RAISE(ABORT, 'usage_price_versions_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_entitlements_append_only_delete
+BEFORE DELETE ON usage_entitlements BEGIN
+  SELECT RAISE(ABORT, 'usage_entitlements_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_ledger_entries_append_only_update
+BEFORE UPDATE ON usage_ledger_entries BEGIN
+  SELECT RAISE(ABORT, 'usage_ledger_entries_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_ledger_entries_append_only_delete
+BEFORE DELETE ON usage_ledger_entries BEGIN
+  SELECT RAISE(ABORT, 'usage_ledger_entries_append_only');
+END;
+
+CREATE TABLE IF NOT EXISTS warden_campaigns (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  name TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('draft', 'running', 'paused', 'cancelling', 'cancelled', 'completed', 'failed', 'rolling_back', 'rolled_back')),
+  owner_principal_id TEXT NOT NULL REFERENCES principals(id),
+  concurrency_limit INTEGER NOT NULL CHECK (concurrency_limit > 0),
+  completion_policy TEXT NOT NULL CHECK (completion_policy IN ('all', 'continue_on_failure')),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS warden_campaigns_tenant_status_idx
+  ON warden_campaigns(tenant_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS warden_campaign_targets (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  campaign_id TEXT NOT NULL REFERENCES warden_campaigns(id),
+  repository_id TEXT NOT NULL REFERENCES connected_repositories(id),
+  snapshot_id TEXT NOT NULL REFERENCES repository_snapshots(id),
+  package_artifact_id TEXT REFERENCES artifact_manifests(id),
+  owner_principal_id TEXT NOT NULL REFERENCES principals(id),
+  stage TEXT NOT NULL CHECK (stage IN ('queued', 'analyzing', 'editing', 'verifying', 'review', 'delivering', 'completed', 'blocked', 'failed', 'cancelled', 'rolling_back', 'rolled_back')),
+  depends_on_json TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  max_attempts INTEGER NOT NULL CHECK (max_attempts > 0),
+  exception_code TEXT,
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, campaign_id, repository_id)
+);
+CREATE INDEX IF NOT EXISTS warden_targets_campaign_stage_idx
+  ON warden_campaign_targets(tenant_id, campaign_id, stage, created_at);
+
+CREATE TABLE IF NOT EXISTS learning_consents (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  consent_version INTEGER NOT NULL CHECK (consent_version > 0),
+  action TEXT NOT NULL CHECK (action IN ('granted', 'revoked')),
+  purpose TEXT NOT NULL,
+  residency_region TEXT NOT NULL,
+  authorized_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  supersedes_consent_id TEXT REFERENCES learning_consents(id),
+  effective_at TEXT NOT NULL,
+  expires_at TEXT,
+  reason TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, purpose, residency_region, consent_version),
+  UNIQUE (tenant_id, idempotency_key),
+  CHECK (action != 'revoked' OR (supersedes_consent_id IS NOT NULL AND expires_at IS NULL))
+);
+CREATE INDEX IF NOT EXISTS learning_consents_scope_idx
+  ON learning_consents(tenant_id, purpose, residency_region, consent_version);
+
+CREATE TABLE IF NOT EXISTS learning_records (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  consent_id TEXT NOT NULL REFERENCES learning_consents(id),
+  purpose TEXT NOT NULL,
+  residency_region TEXT NOT NULL,
+  source_object_type TEXT NOT NULL,
+  source_object_id TEXT NOT NULL,
+  source_artifact_id TEXT NOT NULL REFERENCES artifact_manifests(id),
+  redacted_artifact_id TEXT NOT NULL REFERENCES artifact_manifests(id),
+  redaction_evidence_id TEXT NOT NULL REFERENCES evidence_records(id),
+  verification_evidence_id TEXT NOT NULL REFERENCES evidence_records(id),
+  contamination_evidence_id TEXT NOT NULL REFERENCES evidence_records(id),
+  accepted_review_id TEXT NOT NULL REFERENCES review_decisions(id),
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  provenance_sha256 TEXT NOT NULL CHECK (length(provenance_sha256) = 64),
+  observed_at TEXT NOT NULL,
+  admitted_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS learning_records_consent_time_idx
+  ON learning_records(tenant_id, consent_id, observed_at);
+CREATE INDEX IF NOT EXISTS learning_records_content_idx
+  ON learning_records(tenant_id, content_sha256);
+
+CREATE TABLE IF NOT EXISTS learning_dataset_versions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  purpose TEXT NOT NULL,
+  residency_region TEXT NOT NULL,
+  version INTEGER NOT NULL CHECK (version > 0),
+  temporal_cutoff_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('draft', 'sealed')),
+  dataset_sha256 TEXT CHECK (dataset_sha256 IS NULL OR length(dataset_sha256) = 64),
+  created_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  sealed_by_principal_id TEXT REFERENCES principals(id),
+  sealed_at TEXT,
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, purpose, residency_region, version),
+  UNIQUE (tenant_id, idempotency_key),
+  CHECK ((status = 'draft' AND dataset_sha256 IS NULL AND sealed_by_principal_id IS NULL AND sealed_at IS NULL)
+    OR (status = 'sealed' AND dataset_sha256 IS NOT NULL AND sealed_by_principal_id IS NOT NULL AND sealed_at IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS learning_dataset_members (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  dataset_version_id TEXT NOT NULL REFERENCES learning_dataset_versions(id),
+  learning_record_id TEXT NOT NULL REFERENCES learning_records(id),
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, idempotency_key),
+  UNIQUE (tenant_id, dataset_version_id, learning_record_id),
+  UNIQUE (tenant_id, dataset_version_id, content_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS learning_deletion_events (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  learning_record_id TEXT NOT NULL REFERENCES learning_records(id),
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  action TEXT NOT NULL CHECK (action = 'deleted'),
+  reason TEXT NOT NULL,
+  requested_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, idempotency_key),
+  UNIQUE (tenant_id, learning_record_id, action)
+);
+
+CREATE TRIGGER IF NOT EXISTS learning_consents_append_only_update BEFORE UPDATE ON learning_consents
+BEGIN SELECT RAISE(ABORT, 'learning_consents_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_consents_append_only_delete BEFORE DELETE ON learning_consents
+BEGIN SELECT RAISE(ABORT, 'learning_consents_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_records_append_only_update BEFORE UPDATE ON learning_records
+BEGIN SELECT RAISE(ABORT, 'learning_records_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_records_append_only_delete BEFORE DELETE ON learning_records
+BEGIN SELECT RAISE(ABORT, 'learning_records_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_dataset_versions_sealed_update BEFORE UPDATE ON learning_dataset_versions
+WHEN OLD.status = 'sealed' BEGIN SELECT RAISE(ABORT, 'learning_dataset_versions_sealed'); END;
+CREATE TRIGGER IF NOT EXISTS learning_dataset_versions_sealed_delete BEFORE DELETE ON learning_dataset_versions
+WHEN OLD.status = 'sealed' BEGIN SELECT RAISE(ABORT, 'learning_dataset_versions_sealed'); END;
+CREATE TRIGGER IF NOT EXISTS learning_dataset_members_append_only_update BEFORE UPDATE ON learning_dataset_members
+BEGIN SELECT RAISE(ABORT, 'learning_dataset_members_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_dataset_members_append_only_delete BEFORE DELETE ON learning_dataset_members
+BEGIN SELECT RAISE(ABORT, 'learning_dataset_members_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_deletion_events_append_only_update BEFORE UPDATE ON learning_deletion_events
+BEGIN SELECT RAISE(ABORT, 'learning_deletion_events_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS learning_deletion_events_append_only_delete BEFORE DELETE ON learning_deletion_events
+BEGIN SELECT RAISE(ABORT, 'learning_deletion_events_append_only'); END;
+CREATE INDEX IF NOT EXISTS evidence_records_subject_idx ON evidence_records(tenant_id, subject_type, subject_id, created_at);
+
+CREATE TABLE IF NOT EXISTS review_decisions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  subject_type TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  candidate_artifact_id TEXT NOT NULL REFERENCES artifact_manifests(id),
+  reviewer_principal_id TEXT NOT NULL REFERENCES principals(id),
+  decision TEXT NOT NULL CHECK (decision IN ('approve', 'reject', 'request_changes', 'regenerate', 'waive')),
+  rationale TEXT NOT NULL,
+  waiver_expires_at TEXT,
+  supersedes_id TEXT REFERENCES review_decisions(id),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS review_decisions_subject_idx ON review_decisions(tenant_id, subject_type, subject_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS review_decisions_chain_idx
+  ON review_decisions(
+    tenant_id,
+    subject_type,
+    subject_id,
+    candidate_artifact_id,
+    COALESCE(supersedes_id, '')
+  );
+
+CREATE TABLE IF NOT EXISTS domain_events (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  event_sequence INTEGER NOT NULL,
+  schema_version INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  aggregate_type TEXT NOT NULL,
+  aggregate_id TEXT NOT NULL,
+  actor_principal_id TEXT NOT NULL REFERENCES principals(id),
+  correlation_id TEXT NOT NULL,
+  causation_id TEXT,
+  idempotency_key TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  payload_sha256 TEXT NOT NULL,
+  prev_hash TEXT,
+  event_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, event_sequence),
+  UNIQUE (tenant_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS domain_events_aggregate_idx ON domain_events(tenant_id, aggregate_type, aggregate_id, event_sequence);
+
+CREATE TABLE IF NOT EXISTS scm_connections (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK (provider IN ('github', 'gitlab', 'local_git')),
+  credential_ref TEXT NOT NULL,
+  external_account_id TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT,
+  UNIQUE (tenant_id, provider, external_account_id)
+);
+CREATE INDEX IF NOT EXISTS scm_connections_tenant_idx ON scm_connections(tenant_id, provider);
+
+CREATE TABLE IF NOT EXISTS connected_repositories (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL REFERENCES scm_connections(id),
+  remote_id TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  name TEXT NOT NULL,
+  default_branch TEXT NOT NULL,
+  selected_branch TEXT NOT NULL,
+  environment TEXT NOT NULL,
+  retention_days INTEGER NOT NULL CHECK (retention_days > 0),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'degraded', 'revoked')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, connection_id, remote_id)
+);
+CREATE INDEX IF NOT EXISTS connected_repositories_tenant_idx ON connected_repositories(tenant_id, status);
+
+CREATE TABLE IF NOT EXISTS repository_snapshots (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  repository_id TEXT NOT NULL REFERENCES connected_repositories(id),
+  requested_ref TEXT NOT NULL,
+  resolved_sha TEXT NOT NULL,
+  manifest_sha256 TEXT NOT NULL,
+  storage_path TEXT NOT NULL,
+  submodules_policy TEXT NOT NULL CHECK (submodules_policy IN ('reject', 'pinned')),
+  lfs_policy TEXT NOT NULL CHECK (lfs_policy IN ('reject', 'pointer_only', 'fetch')),
+  sparse_paths_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  UNIQUE (tenant_id, repository_id, resolved_sha, manifest_sha256)
+);
+CREATE INDEX IF NOT EXISTS repository_snapshots_tenant_idx ON repository_snapshots(tenant_id, repository_id, created_at);
+
+CREATE TABLE IF NOT EXISTS repository_snapshot_policies (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL UNIQUE REFERENCES repository_snapshots(id),
+  codeowners_json TEXT NOT NULL,
+  ci_files_json TEXT NOT NULL,
+  verification_commands_json TEXT NOT NULL,
+  protected_branch_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scm_connection_health (
+  connection_id TEXT PRIMARY KEY REFERENCES scm_connections(id),
+  tenant_id TEXT NOT NULL,
+  configured INTEGER NOT NULL,
+  authenticated INTEGER NOT NULL,
+  read_access INTEGER NOT NULL,
+  write_access INTEGER NOT NULL,
+  webhook_ok INTEGER NOT NULL,
+  ci_visible INTEGER NOT NULL,
+  last_sync_at TEXT,
+  last_delivery_at TEXT,
+  revoked INTEGER NOT NULL,
+  error_code TEXT,
+  checked_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS scm_connection_health_tenant_idx ON scm_connection_health(tenant_id, checked_at);
+
+CREATE TABLE IF NOT EXISTS repository_snapshot_deletions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL REFERENCES repository_snapshots(id),
+  status TEXT NOT NULL CHECK (status IN ('planned', 'deleted', 'failed')),
+  actor_principal_id TEXT NOT NULL,
+  error_code TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS repository_snapshot_deletions_tenant_idx
+  ON repository_snapshot_deletions(tenant_id, snapshot_id, created_at);
 `;
 
 
@@ -332,6 +776,9 @@ export function createDb(urlOrPath?: string): AppDb {
   raw.exec("PRAGMA temp_store = MEMORY;");
   raw.exec(DDL);
   migrateProvidersFeedColumns({ raw });
+  migrateAuditIntegrity({ raw });
+  migrateArtifactContent({ raw });
+  installTrustImmutability({ raw });
   return { raw };
 }
 
@@ -418,6 +865,10 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "github_webhook_deliveries", name: "updated_at", sql: "TEXT" },
     { table: "github_webhook_deliveries", name: "attempts", sql: "INTEGER NOT NULL DEFAULT 1" },
     { table: "github_webhook_deliveries", name: "last_error", sql: "TEXT" },
+    { table: "consumer_repos", name: "scm_connection_id", sql: "TEXT" },
+    { table: "consumer_repos", name: "connected_repository_id", sql: "TEXT" },
+    { table: "consumer_repos", name: "snapshot_id", sql: "TEXT" },
+    { table: "consumer_repos", name: "exact_commit", sql: "TEXT" },
   ];
   for (const column of additiveColumns) {
     const columns = all<{ name: string }>(
@@ -485,6 +936,136 @@ function migrateProvidersFeedColumns(db: AppDb) {
   }
 }
 
+function hashJson(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function auditHash(input: {
+  tenantId: string;
+  sequence: number;
+  schemaVersion: number;
+  previousHash: string | null;
+  id: string;
+  actor: string;
+  principalId: string | null;
+  apiKeyId: string | null;
+  requestId: string | null;
+  action: string;
+  resourceType: string;
+  resourceId: string | null;
+  metadataSha256: string;
+  createdAt: string;
+}): string {
+  return hashJson(input);
+}
+
+function migrateAuditIntegrity(db: AppDb) {
+  const additions = [
+    { name: "event_sequence", sql: "INTEGER" },
+    { name: "schema_version", sql: "INTEGER NOT NULL DEFAULT 1" },
+    { name: "prev_hash", sql: "TEXT" },
+    { name: "event_hash", sql: "TEXT" },
+    { name: "metadata_sha256", sql: "TEXT" },
+  ];
+  const columns = all<{ name: string }>(db, `PRAGMA table_info(audit_events)`).map(
+    (column) => column.name,
+  );
+  for (const addition of additions) {
+    if (!columns.includes(addition.name)) {
+      run(db, `ALTER TABLE audit_events ADD COLUMN ${addition.name} ${addition.sql}`);
+    }
+  }
+
+  const missing = get<{ count: number }>(
+    db,
+    `SELECT COUNT(*) AS count FROM audit_events
+     WHERE event_sequence IS NULL OR event_hash IS NULL OR metadata_sha256 IS NULL`,
+  )?.count ?? 0;
+  if (missing > 0) {
+    const rows = all<AuditEvent>(
+      db,
+      `SELECT * FROM audit_events ORDER BY tenant_id, created_at, id`,
+    );
+    const sequences = new Map<string, number>();
+    const previousHashes = new Map<string, string | null>();
+    for (const row of rows) {
+      const sequence = (sequences.get(row.tenant_id) ?? 0) + 1;
+      const previousHash = previousHashes.get(row.tenant_id) ?? null;
+      const metadataSha256 = hashJson(row.metadata_json ?? null);
+      const eventHash = auditHash({
+        tenantId: row.tenant_id,
+        sequence,
+        schemaVersion: 1,
+        previousHash,
+        id: row.id,
+        actor: row.actor,
+        principalId: row.principal_id,
+        apiKeyId: row.api_key_id,
+        requestId: row.request_id,
+        action: row.action,
+        resourceType: row.resource_type,
+        resourceId: row.resource_id,
+        metadataSha256,
+        createdAt: row.created_at,
+      });
+      run(
+        db,
+        `UPDATE audit_events
+         SET event_sequence = ?, schema_version = 1, prev_hash = ?, event_hash = ?, metadata_sha256 = ?
+         WHERE id = ?`,
+        [sequence, previousHash, eventHash, metadataSha256, row.id],
+      );
+      sequences.set(row.tenant_id, sequence);
+      previousHashes.set(row.tenant_id, eventHash);
+    }
+  }
+  run(
+    db,
+    `CREATE UNIQUE INDEX IF NOT EXISTS audit_events_tenant_sequence_uidx
+     ON audit_events(tenant_id, event_sequence)`,
+  );
+}
+
+function installTrustImmutability(db: AppDb) {
+  for (const table of [
+    "audit_events",
+    "artifact_manifests",
+    "evidence_records",
+    "review_decisions",
+    "domain_events",
+    "repository_snapshots",
+    "repository_snapshot_policies",
+    "repository_snapshot_deletions",
+  ]) {
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_append_only_update
+       BEFORE UPDATE ON ${table}
+       BEGIN
+         SELECT RAISE(ABORT, '${table}_append_only');
+       END`,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_append_only_delete
+       BEFORE DELETE ON ${table}
+       BEGIN
+         SELECT RAISE(ABORT, '${table}_append_only');
+       END`,
+    );
+  }
+}
+
+function migrateArtifactContent(db: AppDb) {
+  const columns = all<{ name: string }>(
+    db,
+    `PRAGMA table_info(artifact_manifests)`,
+  ).map((column) => column.name);
+  if (!columns.includes("content_text")) {
+    run(db, `ALTER TABLE artifact_manifests ADD COLUMN content_text TEXT`);
+  }
+}
+
 function all<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T[] {
   return db.raw.prepare(sql).all(...params) as T[];
 }
@@ -511,26 +1092,129 @@ export function recordAudit(
     resourceId?: string | null;
     metadata?: unknown;
   },
-) {
-  run(
+): string {
+  const id = input.id ?? newId();
+  const principalId = input.principalId ?? null;
+  const apiKeyId = input.apiKeyId ?? null;
+  const requestId = input.requestId ?? null;
+  const resourceId = input.resourceId ?? null;
+  const metadataJson = input.metadata === undefined ? null : JSON.stringify(input.metadata);
+  const metadataSha256 = hashJson(metadataJson);
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = get<AuditEvent>(db, `SELECT * FROM audit_events WHERE id = ?`, [id]);
+    if (existing) {
+      const same =
+        existing.tenant_id === input.tenantId &&
+        existing.actor === input.actor &&
+        existing.principal_id === principalId &&
+        existing.api_key_id === apiKeyId &&
+        existing.request_id === requestId &&
+        existing.action === input.action &&
+        existing.resource_type === input.resourceType &&
+        existing.resource_id === resourceId &&
+        existing.metadata_sha256 === metadataSha256;
+      if (!same) throw new Error("audit_event_id_conflict");
+      db.raw.exec("COMMIT");
+      return id;
+    }
+    const previous = get<{ event_sequence: number; event_hash: string }>(
+      db,
+      `SELECT event_sequence, event_hash FROM audit_events
+       WHERE tenant_id = ? ORDER BY event_sequence DESC LIMIT 1`,
+      [input.tenantId],
+    );
+    const sequence = (previous?.event_sequence ?? 0) + 1;
+    const previousHash = previous?.event_hash ?? null;
+    const createdAt = nowIso();
+    const eventHash = auditHash({
+      tenantId: input.tenantId,
+      sequence,
+      schemaVersion: 1,
+      previousHash,
+      id,
+      actor: input.actor,
+      principalId,
+      apiKeyId,
+      requestId,
+      action: input.action,
+      resourceType: input.resourceType,
+      resourceId,
+      metadataSha256,
+      createdAt,
+    });
+    run(
+      db,
+      `INSERT INTO audit_events
+       (id, tenant_id, event_sequence, schema_version, prev_hash, event_hash, metadata_sha256,
+        actor, principal_id, api_key_id, request_id, action, resource_type, resource_id,
+        metadata_json, created_at)
+       VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.tenantId,
+        sequence,
+        previousHash,
+        eventHash,
+        metadataSha256,
+        input.actor,
+        principalId,
+        apiKeyId,
+        requestId,
+        input.action,
+        input.resourceType,
+        resourceId,
+        metadataJson,
+        createdAt,
+      ],
+    );
+    db.raw.exec("COMMIT");
+    return id;
+  } catch (error) {
+    db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function verifyAuditIntegrity(
+  db: AppDb,
+  tenantId: string,
+): { ok: boolean; checked: number; error?: string } {
+  const rows = all<AuditEvent>(
     db,
-    `INSERT OR IGNORE INTO audit_events
-     (id, tenant_id, actor, principal_id, api_key_id, request_id, action, resource_type, resource_id, metadata_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      input.id ?? newId(),
-      input.tenantId,
-      input.actor,
-      input.principalId ?? null,
-      input.apiKeyId ?? null,
-      input.requestId ?? null,
-      input.action,
-      input.resourceType,
-      input.resourceId ?? null,
-      input.metadata ? JSON.stringify(input.metadata) : null,
-      nowIso(),
-    ],
+    `SELECT * FROM audit_events WHERE tenant_id = ? ORDER BY event_sequence`,
+    [tenantId],
   );
+  let previousHash: string | null = null;
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    const expectedSequence = index + 1;
+    if (row.event_sequence !== expectedSequence || row.prev_hash !== previousHash) {
+      return { ok: false, checked: index, error: `audit_chain_sequence:${row.id}` };
+    }
+    const metadataSha256 = hashJson(row.metadata_json ?? null);
+    const expectedHash = auditHash({
+      tenantId: row.tenant_id,
+      sequence: expectedSequence,
+      schemaVersion: row.schema_version,
+      previousHash,
+      id: row.id,
+      actor: row.actor,
+      principalId: row.principal_id,
+      apiKeyId: row.api_key_id,
+      requestId: row.request_id,
+      action: row.action,
+      resourceType: row.resource_type,
+      resourceId: row.resource_id,
+      metadataSha256,
+      createdAt: row.created_at,
+    });
+    if (row.metadata_sha256 !== metadataSha256 || row.event_hash !== expectedHash) {
+      return { ok: false, checked: index, error: `audit_chain_hash:${row.id}` };
+    }
+    previousHash = row.event_hash;
+  }
+  return { ok: true, checked: rows.length };
 }
 
 export function insertProvider(
@@ -1096,6 +1780,99 @@ export type { ProductMetrics } from "./metrics.js";
 export { buildExposureReport } from "./exposure.js";
 export type { ExposureReport } from "./exposure.js";
 
+export {
+  appendDomainEvent,
+  getPrincipal,
+  getPrincipalBySubject,
+  getLatestCandidateArtifactForSubject,
+  insertArtifactManifest,
+  insertEvidenceRecord,
+  insertPrincipal,
+  insertReviewDecision,
+  listArtifactManifests,
+  listDomainEvents,
+  listEvidenceRecords,
+  listReviewDecisions,
+  verifyDomainEventIntegrity,
+} from "./trust.js";
+
+export {
+  bindConsumerRepoSnapshot,
+  getConnectedRepository,
+  getRepositorySnapshotPolicy,
+  getRepositorySnapshotDeletionStatus,
+  getScmConnection,
+  getLatestRepositorySnapshot,
+  getScmConnectionHealth,
+  insertConnectedRepository,
+  insertRepositorySnapshot,
+  insertRepositorySnapshotPolicy,
+  listConnectedRepositories,
+  listRepositorySnapshots,
+  listExpiredRepositorySnapshots,
+  listScmConnections,
+  revokeScmConnection,
+  recordRepositorySnapshotDeletion,
+  setScmConnectionHealth,
+  updateConnectedRepositoryStatus,
+  upsertScmConnection,
+} from "./repository.js";
+
+export type {
+  UsagePriceVersion,
+  UsageEntitlement,
+  UsageLedgerEntry,
+  UsageSummary,
+} from "./usage.js";
+
+export type {
+  WardenCampaign,
+  WardenCampaignStatus,
+  WardenCampaignTarget,
+  WardenTargetStage,
+} from "./warden-campaign.js";
+
+export type {
+  LearningConsentRow,
+  LearningDatasetMemberRow,
+  LearningDatasetVersionRow,
+  LearningDeletionEventRow,
+  LearningRecordRow,
+} from "./learning.js";
+export {
+  addLearningDatasetMember,
+  admitLearningRecord,
+  createLearningDatasetVersion,
+  deleteLearningRecord,
+  grantLearningConsent,
+  listEligibleLearningDatasetMembers,
+  revokeLearningConsent,
+  sealLearningDatasetVersion,
+} from "./learning.js";
+export {
+  addWardenCampaignTarget,
+  claimReadyWardenTargets,
+  createWardenCampaign,
+  listWardenCampaignTargets,
+  planWardenRollback,
+  transitionWardenCampaign,
+  transitionWardenTarget,
+} from "./warden-campaign.js";
+export {
+  createUsagePriceVersion,
+  getUsagePriceVersion,
+  createUsageEntitlement,
+  getActiveUsageEntitlement,
+  reserveUsage,
+  settleUsageReservation,
+  releaseUsageReservation,
+  adjustUsage,
+  creditUsage,
+  getUsageSummary,
+  listUsageLedger,
+  reconcileUsageLedger,
+} from "./usage.js";
+
 export type SuppressedPattern = {
   id: string;
   tenant_id: string;
@@ -1265,6 +2042,36 @@ export function findApiKeyByToken(db: AppDb, token: string): ApiKeyRow | undefin
 
 export function touchApiKey(db: AppDb, id: string, at: string) {
   run(db, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, [at, id]);
+}
+
+export function claimDelegatedRequestNonce(
+  db: AppDb,
+  input: {
+    apiKeyId: string;
+    requestId: string;
+    signatureSha256: string;
+    createdAt: string;
+  },
+): boolean {
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(input.requestId)) {
+    throw new Error("delegated_request_id_invalid");
+  }
+  if (!/^[a-f0-9]{64}$/.test(input.signatureSha256)) {
+    throw new Error("delegated_signature_hash_invalid");
+  }
+  try {
+    db.raw
+      .prepare(
+        `INSERT INTO delegated_request_nonces
+         (api_key_id, request_id, signature_sha256, created_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(input.apiKeyId, input.requestId, input.signatureSha256, input.createdAt);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && /UNIQUE|PRIMARY KEY/i.test(error.message)) return false;
+    throw error;
+  }
 }
 
 export function listApiKeys(

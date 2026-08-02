@@ -39,12 +39,14 @@
     "dogfood:report": "tsx scripts/dogfood-report.ts",
     "trajectory:list": "tsx scripts/trajectory-view.ts",
     "trajectory:view": "tsx scripts/trajectory-view.ts",
-    "ga:check": "tsx scripts/ga-check.ts",
+    "spec:check": "tsx scripts/product-spec-check.ts",
+    "ga:check": "npm run spec:check && tsx scripts/ga-check.ts",
     "auth:bootstrap": "tsx scripts/bootstrap-key.ts",
     "start:api": "npm run start -w @mendpoint/api"
   },
   "dependencies": {
     "@mendpoint/db": "*",
+    "@mendpoint/contract": "*",
     "@mendpoint/ops": "*",
     "@mendpoint/pipeline": "*",
     "@mendpoint/shared": "*",
