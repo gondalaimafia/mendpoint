@@ -1,4 +1,11 @@
-import { chmodSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -110,10 +117,23 @@ function destination(name: string): string {
   return join(root, name);
 }
 
+function makeFixtureTreeWritable(path: string): void {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) return;
+  if (stat.isDirectory()) {
+    chmodSync(path, 0o755);
+    for (const entry of readdirSync(path)) {
+      makeFixtureTreeWritable(join(path, entry));
+    }
+    return;
+  }
+  chmodSync(path, 0o644);
+}
+
 afterEach(() => {
   while (roots.length) {
     const root = roots.pop()!;
-    chmodSync(root, 0o755);
+    makeFixtureTreeWritable(root);
     rmSync(root, { recursive: true, force: true });
   }
 });

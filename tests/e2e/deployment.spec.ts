@@ -125,10 +125,32 @@ async function expectPublicWebsite(page: Page, request: APIRequestContext): Prom
   const checkedExternalDestinations = new Set<string>();
   for (const destination of destinations) {
     expect(destination.name, `Link ${destination.href} should have an accessible name`).not.toBe("");
-    expect(destination.href, `${destination.name} should have a real destination`).not.toMatch(
-      /^(?:#|javascript:|$)/i,
+    const href = destination.href.trim();
+    expect(href, `${destination.name} should have a real destination`).not.toBe("");
+    expect(href, `${destination.name} should not use a JavaScript destination`).not.toMatch(
+      /^javascript:/i,
     );
-    const target = new URL(destination.href, webOrigin);
+    expect(href, `${destination.name} should not use an empty fragment`).not.toBe("#");
+    const target = new URL(href, page.url());
+    const current = new URL(page.url());
+    const targetsCurrentDocument =
+      target.origin === current.origin &&
+      target.pathname === current.pathname &&
+      target.search === current.search;
+    if (target.hash && targetsCurrentDocument) {
+      const fragment = target.hash.slice(1);
+      const resolves = await page.evaluate((encodedFragment) => {
+        try {
+          return document.getElementById(decodeURIComponent(encodedFragment)) !== null;
+        } catch {
+          return false;
+        }
+      }, fragment);
+      expect(
+        resolves,
+        `${destination.name} fragment ${target.hash} should resolve on the current page`,
+      ).toBe(true);
+    }
     if (target.origin === new URL(webOrigin).origin) {
       const path = `${target.pathname}${target.search}`;
       if (!checkedLocalDestinations.has(path)) {
