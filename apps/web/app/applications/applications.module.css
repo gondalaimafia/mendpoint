@@ -1,0 +1,155 @@
+.page {
+  display: grid;
+  gap: 1rem;
+}
+
+.header {
+  align-items: flex-end;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.notice {
+  color: var(--muted);
+  min-height: 1.5rem;
+}
+
+.layout {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(18rem, 0.8fr) minmax(0, 1.2fr);
+}
+
+.queue,
+.detail {
+  min-width: 0;
+}
+
+.list {
+  display: grid;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+
+.list button {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.85rem;
+  text-align: left;
+  width: 100%;
+}
+
+.list button:hover,
+.list button:focus-visible,
+.list .selected {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.list span {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.available,
+.erased {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.55rem;
+  width: fit-content;
+}
+
+.available {
+  color: var(--accent) !important;
+}
+
+.erased {
+  color: var(--muted) !important;
+}
+
+.metadata {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 1rem 0;
+}
+
+.metadata div {
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 0.2rem;
+  padding-bottom: 0.6rem;
+}
+
+.metadata dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.accessPanel,
+.erasurePanel {
+  align-items: flex-end;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.accessPanel label,
+.erasurePanel label {
+  color: var(--muted);
+  flex-basis: 100%;
+  font-size: 0.85rem;
+}
+
+.payload {
+  display: grid;
+  gap: 1rem;
+}
+
+.payload section {
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+.payload p {
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.erasedMessage {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  color: var(--muted);
+  padding: 1rem;
+}
+
+@media (max-width: 850px) {
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .layout,
+  .metadata {
+    grid-template-columns: 1fr;
+  }
+}

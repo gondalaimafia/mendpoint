@@ -3,10 +3,23 @@ import { authenticatedWebSubject } from "./lib/proxy-auth";
 
 function publicPath(pathname: string): boolean {
   return (
+    pathname === "/" ||
     pathname === "/access" ||
+    pathname === "/contact" ||
+    pathname === "/design-partners" ||
+    pathname === "/docs" ||
+    pathname === "/privacy" ||
+    pathname === "/security" ||
+    pathname === "/service-status" ||
+    pathname === "/terms" ||
+    pathname === "/api/design-partners" ||
     pathname === "/api/session" ||
     pathname === "/livez" ||
     pathname === "/healthz" ||
+    pathname === "/login" ||
+    pathname === "/opengraph-image" ||
+    pathname === "/robots.txt" ||
+    pathname === "/sitemap.xml" ||
     pathname === "/webhooks/github" ||
     pathname.startsWith("/_next/") ||
     pathname === "/favicon.ico"

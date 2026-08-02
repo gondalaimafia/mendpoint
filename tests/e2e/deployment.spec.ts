@@ -12,12 +12,39 @@ const suffix = `${process.pid}-${randomBytes(4).toString("hex")}`;
 const container = `mendpoint-e2e-${suffix}`;
 const volume = `mendpoint-e2e-data-${suffix}`;
 const apiKey = `me_${"a".repeat(40)}`;
+const applicationDataKey = "b".repeat(64);
 const webToken = "e2e-web-access-token";
 const webhookSecret = "e2e-webhook-secret";
 const tenantId = "tenant_default";
 const verifierHash = createHash("sha256")
   .update(readFileSync(resolve("fixtures/consumers/shop-app/check.mjs")))
   .digest("hex");
+
+const publicPages = [
+  {
+    path: "/",
+    heading:
+      "Turn submitted OpenAPI changes into evidence backed migration pull request candidates for supported GitHub repositories.",
+  },
+  { path: "/design-partners", heading: "Start with one bounded migration problem" },
+  { path: "/docs", heading: "Supported Warden pilot scope" },
+  { path: "/security", heading: "Concrete controls and visible limitations" },
+  { path: "/privacy", heading: "Private preview application data" },
+  { path: "/service-status", heading: /Pilot deployment (?:is operational|needs attention)/ },
+  { path: "/terms", heading: "Pilot website terms" },
+] as const;
+
+const unsupportedPublicClaims = [
+  /[$£€]\s*\d/,
+  /\b\d+(?:\.\d+)?\s*%/,
+  /\b\d[\d,]*(?:\+)?\s+(?:customers?|repositories?|migrations?|pull requests?)\b/i,
+  /\bunlimited\b/i,
+  /\b(?:zero|no) egress\b/i,
+  /\bproduction ready\b/i,
+  /\bgenerally available\b/i,
+  /\bGitLab (?:support|delivery) is available\b/i,
+  /\b(?:SSO|SAML) is available\b/i,
+] as const;
 
 type Json = Record<string, unknown>;
 
@@ -29,6 +56,163 @@ async function expectNoBlockingAccessibilityViolations(page: Page): Promise<void
     (violation) => violation.impact === "critical" || violation.impact === "serious",
   );
   expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
+}
+
+async function expectPublicWebsite(page: Page, request: APIRequestContext): Promise<string> {
+  for (const route of publicPages) {
+    const response = await page.goto(route.path);
+    expect(response?.status(), `${route.path} should render without authentication`).toBe(200);
+    await expect(page.getByRole("heading", { level: 1, name: route.heading })).toBeVisible();
+    await expect(
+      page.getByText("Private Design Partner Preview", { exact: false }).first(),
+    ).toBeVisible();
+    await expect(page.locator("main")).toBeVisible();
+    await expectNoBlockingAccessibilityViolations(page);
+
+    const renderedDocument = [
+      await page.locator("body").innerText(),
+      await page.title(),
+      (await page.locator('meta[name="description"]').getAttribute("content")) ?? "",
+      ...(await page.locator('script[type="application/ld+json"]').allTextContents()),
+    ].join("\n");
+    for (const unsupportedClaim of unsupportedPublicClaims) {
+      expect(renderedDocument, `${route.path} contains unsupported public wording`).not.toMatch(
+        unsupportedClaim,
+      );
+    }
+  }
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  for (const route of publicPages) {
+    await page.goto(route.path);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ),
+      `${route.path} should not overflow a mobile viewport horizontally`,
+    ).toBeLessThanOrEqual(1);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await page.goto("/");
+  await expect(page).toHaveTitle(/Evidence backed API migration candidates/);
+  await expect(page.locator('meta[name="description"]')).toHaveAttribute(
+    "content",
+    /Private design partner preview.*supported GitHub repositories/i,
+  );
+
+  const destinations = await page.locator("a[href]").evaluateAll((anchors) =>
+    anchors.map((anchor) => ({
+      href: anchor.getAttribute("href") ?? "",
+      name: (anchor.textContent ?? anchor.getAttribute("aria-label") ?? "").trim(),
+    })),
+  );
+  const expectedLocalDestinations = new Set([
+    "/",
+    "/access",
+    "/contact",
+    "/design-partners",
+    "/docs",
+    "/privacy",
+    "/security",
+    "/service-status",
+    "/terms",
+  ]);
+  const expectedExternalDestinations = new Set([
+    "https://github.com/gondalaimafia/mendpoint",
+  ]);
+  const checkedLocalDestinations = new Set<string>();
+  const checkedExternalDestinations = new Set<string>();
+  for (const destination of destinations) {
+    expect(destination.name, `Link ${destination.href} should have an accessible name`).not.toBe("");
+    expect(destination.href, `${destination.name} should have a real destination`).not.toMatch(
+      /^(?:#|javascript:|$)/i,
+    );
+    const target = new URL(destination.href, webOrigin);
+    if (target.origin === new URL(webOrigin).origin) {
+      const path = `${target.pathname}${target.search}`;
+      if (!checkedLocalDestinations.has(path)) {
+        const response = await request.get(path, { maxRedirects: 0 });
+        expect([200, 307, 308], `${destination.name} should resolve at ${path}`).toContain(response.status());
+        checkedLocalDestinations.add(path);
+      }
+    } else {
+      expect(target.protocol, `${destination.name} should use a secure external URL`).toBe("https:");
+      checkedExternalDestinations.add(target.href.replace(/\/$/, ""));
+    }
+  }
+  for (const destination of expectedLocalDestinations) {
+    expect(
+      checkedLocalDestinations.has(destination),
+      `Homepage or footer is missing ${destination}`,
+    ).toBe(true);
+  }
+  for (const destination of expectedExternalDestinations) {
+    expect(
+      checkedExternalDestinations.has(destination),
+      `Homepage or footer is missing ${destination}`,
+    ).toBe(true);
+  }
+
+  const structuredData = await page.locator('script[type="application/ld+json"]').allTextContents();
+  expect(structuredData.length).toBeGreaterThan(0);
+  const application = structuredData
+    .map((value) => JSON.parse(value) as Record<string, unknown>)
+    .find((value) => value["@type"] === "SoftwareApplication");
+  expect(application).toBeTruthy();
+  expect(application).toMatchObject({
+    offers: { availability: "https://schema.org/LimitedAvailability" },
+  });
+  expect(JSON.stringify(application)).not.toMatch(/"(?:price|priceCurrency|lowPrice|highPrice)"/i);
+
+  await page.goto("/design-partners");
+  let submitted = false;
+  await page.route("**/api/design-partners", async (route) => {
+    submitted = true;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "temporarily_unavailable" }),
+    });
+  });
+  await page.getByRole("button", { name: "Submit application" }).click();
+  expect(submitted, "Browser validation should prevent an empty application request").toBe(false);
+  expect(
+    await page.getByLabel("Name").evaluate((input: HTMLInputElement) => input.validity.valid),
+  ).toBe(false);
+
+  await page.getByLabel("Name").fill("Deployment Test");
+  await page.getByLabel("Work email").fill("deployment@example.com");
+  await page.getByLabel("Company").fill("Example Company");
+  await page.getByLabel("Role").fill("Engineering lead");
+  await page
+    .getByLabel("Provider change to validate")
+    .fill("Validate a bounded breaking API change in one service.");
+  await page
+    .getByLabel("Approved repository scope")
+    .fill("One approved GitHub repository and its configured checks.");
+  await page
+    .getByLabel("Measurable success criterion")
+    .fill("Produce one reviewable candidate that passes the configured checks.");
+  await page.getByLabel(/I am authorized/).check();
+  await page.getByLabel(/I agree that Mendpoint/).check();
+  await page.getByRole("button", { name: "Submit application" }).click();
+  await expect(page.getByRole("status")).toHaveText(
+    "We could not submit the application. Check the fields and try again.",
+  );
+  expect(submitted).toBe(true);
+  await page.unroute("**/api/design-partners");
+
+  await page.getByLabel("Work email").fill(`deployment-${suffix}@mendpoint.ai`);
+  await page.waitForTimeout(3_100);
+  await page.getByRole("button", { name: "Submit application" }).click();
+  const success = page.getByRole("status");
+  await expect(success).toContainText("Application received. Reference application-");
+  const applicationId = /Reference (application-[A-Za-z0-9-]+)\./.exec(
+    await success.innerText(),
+  )?.[1];
+  expect(applicationId).toBeTruthy();
+  return applicationId!;
 }
 
 function docker(args: string[], options: { allowFailure?: boolean } = {}): string {
@@ -55,6 +239,7 @@ function startRuntime(workerIntervalMs: number): void {
     GITHUB_MODE: "mock",
     GITHUB_WEBHOOK_SECRET: webhookSecret,
     MENDPOINT_API_KEY: apiKey,
+    MENDPOINT_APPLICATION_DATA_KEY: applicationDataKey,
     MENDPOINT_APPROVED_VERIFIER_SHA256S: verifierHash,
     MENDPOINT_FEED_POLLING_ENABLED: "0",
     MENDPOINT_PILOT_SEED: "1",
@@ -144,6 +329,16 @@ test("production image protects operators and recovers queued work after a crash
     await waitForHttp(request, "/livez", 200);
     await waitForHttp(request, "/healthz", 200);
 
+    for (const path of ["/livez", "/healthz"] as const) {
+      const publicHealth = await request.get(path, { maxRedirects: 0 });
+      expect(publicHealth.status(), `${path} should remain public`).toBe(200);
+    }
+
+    const applicationId = await expectPublicWebsite(page, request);
+
+    await page.goto("/console");
+    await expect(page).toHaveURL(/\/access\?next=%2Fconsole$/);
+
     const protectedApi = await request.get("/api/jobs", {
       headers: { "X-Role": "owner", "X-Tenant-Id": tenantId },
     });
@@ -182,22 +377,28 @@ test("production image protects operators and recovers queued work after a crash
     expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
     expect(await page.content()).not.toContain(apiKey);
 
-    await page.goto("/");
+    await page.goto("/console");
     await expect(page.getByRole("heading", { name: "Keep every API change moving" })).toBeVisible();
     await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeVisible();
     await expect(page.getByText("Workspace", { exact: true })).toBeVisible();
     await expect(page.getByText("Automation", { exact: true })).toBeVisible();
     await expect(page.getByText("Operations", { exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Review system" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Applications" })).toBeVisible();
     await expectNoBlockingAccessibilityViolations(page);
-    await page.setViewportSize({ width: 375, height: 812 });
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      ),
-    ).toBeLessThanOrEqual(1);
-    await expect(page.getByRole("heading", { name: "Keep every API change moving" })).toBeVisible();
-    await page.setViewportSize({ width: 1440, height: 900 });
+
+    await page.goto("/applications");
+    await expect(page.getByRole("heading", { name: "Design partner applications" })).toBeVisible();
+    const applicationButton = page.getByRole("button", { name: new RegExp(applicationId) });
+    await expect(applicationButton).toBeVisible();
+    await applicationButton.click();
+    await page.getByRole("button", { name: "Record access and reveal details" }).click();
+    await expect(page.getByText(`deployment-${suffix}@mendpoint.ai`, { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Erase applicant details" }).click();
+    await page.getByRole("button", { name: "Confirm permanent erasure" }).click();
+    await expect(page.getByRole("status")).toContainText("Applicant details were erased");
+    await expect(page.getByText(/Sensitive details are no longer recoverable/)).toBeVisible();
+    await expectNoBlockingAccessibilityViolations(page);
 
     const delivery = `ping-${suffix}`;
     const ping = await signedWebhook(page.request, "ping", delivery, { zen: "keep it bounded" });

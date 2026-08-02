@@ -19,7 +19,7 @@ export default function AccessPage() {
       return;
     }
     const next = new URLSearchParams(window.location.search).get("next");
-    window.location.assign(next?.startsWith("/") ? next : "/");
+    window.location.assign(next?.startsWith("/") ? next : "/console");
   }
 
   return (

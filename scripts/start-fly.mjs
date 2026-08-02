@@ -33,6 +33,9 @@ if (!process.env.MENDPOINT_API_KEY?.trim()) {
 if (!process.env.MENDPOINT_WEB_ACCESS_TOKEN?.trim()) {
   throw new Error("MENDPOINT_WEB_ACCESS_TOKEN is required");
 }
+if (!process.env.MENDPOINT_APPLICATION_DATA_KEY?.trim()) {
+  throw new Error("MENDPOINT_APPLICATION_DATA_KEY is required");
+}
 
 const childEnv = {
   ...process.env,

@@ -161,6 +161,8 @@ import {
   parsePrincipalFromHeaders,
   can,
   permissionForRoute,
+  CredentialBroker,
+  EnvSecretProvider,
   estimateCost,
   MCU_VERSION,
   setAlertPersistPath,
@@ -250,6 +252,7 @@ import {
   createChangeSourceRoutes,
 } from "./change-sources.js";
 import { createBillingEconomicsRoutes } from "./billing-economics.js";
+import { createDesignPartnerApplicationRoutes } from "./design-partner-applications.js";
 
 // Fail fast in production if env invalid
 assertApiEnvOrExit();
@@ -288,6 +291,38 @@ function requestGraphTenantScope(c: Context<ApiEnv>): GraphTenantScope {
   return {
     tenantId: requestTenantId(c),
     consumerIds: requestConsumerIds(c),
+  };
+}
+
+function repositoryCredentialDependencies(c: Context<ApiEnv>) {
+  const principal = c.get("principal");
+  if (!principal) throw new Error("authenticated_principal_required");
+  const credentialBroker = new CredentialBroker({
+    providers: [
+      new EnvSecretProvider({
+        GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+      }),
+    ],
+    audit: (event) =>
+      requestAudit(c, {
+        actor: "system",
+        action: `credential.access.${event.outcome}`,
+        resourceType: "scm_credential",
+        resourceId: event.credentialId,
+        metadata: {
+          provider: event.reference.provider,
+          audience: event.audience,
+          purpose: event.purpose,
+          reason: event.reason,
+          rotationGeneration: event.rotation.generation,
+          rotationDue: event.rotation.due,
+        },
+      }),
+  });
+  return {
+    credentialBroker,
+    actorId: principal.id,
+    requestId: c.get("requestId") ?? undefined,
   };
 }
 
@@ -414,6 +449,10 @@ app.use("*", async (c, next) => {
 registerTransformerControlPlaneRoutes(app, transformerCampaigns);
 app.route("/change-sources", createChangeSourceRoutes());
 app.route("/billing", createBillingEconomicsRoutes({ db }));
+app.route(
+  "/design-partner-applications",
+  createDesignPartnerApplicationRoutes({ db }),
+);
 
 // Persist alerts under data/
 try {
@@ -1015,7 +1054,7 @@ app.post("/platform/scm/repositories/:id/snapshots", async (c) => {
       repositoryId: c.req.param("id"),
       consumerRepoId: body.consumerRepoId,
       sparsePaths: body.sparsePaths,
-    });
+    }, repositoryCredentialDependencies(c));
     requestAudit(c, {
       actor: "operator",
       action: "repository.snapshot.materialized",

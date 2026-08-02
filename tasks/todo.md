@@ -590,3 +590,116 @@ Release evidence:
 - Unauthenticated requests to the live billing economics, change source, and Transformer control plane proxy routes returned 401, proving the new surfaces exist behind the session boundary.
 - The 1280 by 720 live browser check rendered a centered 480 pixel access card, matched document scroll width to client width at 1280 pixels, and reported no warnings or errors. Evidence is `C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\mendpoint-foundational-closure-2-production-viewport-2026-08-01.png`.
 - Rollback is the normal Fly release rollback to the prior healthy image or a revert of merge commit `0fd02baecf8c40f50f3fc0adc599af4b3b8db650`, followed by the same protected CI, health, and browser gates.
+
+## Website claim closure program
+
+### Program constraints
+
+- [x] Reconcile the 2026-08-01 website claim analysis from audited commit `7756d4c` to current `main` before changing implementation status.
+- [x] Keep public claim correction separate from product capability construction. A roadmap label closes a public truth gap but does not prove the capability.
+- [x] Keep customer proof, commercial agreements, compliance attestations, production identity providers, payment processors, cloud accounts, and external website credentials explicitly external until authoritative evidence exists.
+- [ ] Use the public Manus and Cloudflare surface only through an authenticated owner session. Do not infer access from the product repository.
+
+### Phase 0: Executable claim governance
+
+- [x] Add a machine checked public claim registry with exact wording, owner, evidence owner, state, scope, evidence, limitations, expiry, and required qualifier.
+- [x] Fail the release gate when a public claim lacks current evidence, contains an unapproved absolute, or references an expired statistic.
+- [x] Map every homepage, metadata, structured data, pricing, FAQ, CTA, documentation, and product link to the registry.
+
+Exit gate: every public statement is proven, limited availability, preview, roadmap, or thesis with current evidence and an explicit qualifier.
+
+### Phase 1: Truthful public site and acquisition path
+
+- [x] Build a versioned public site replacement that presents Mendpoint as a Private Design Partner Preview.
+- [x] Remove unsupported prices, statistics, annual spend ranges, unlimited scale, no egress, universal coverage, unsupported model stack, GitLab GA, SSO, and executable Transformer claims.
+- [x] Mark all demo figures as illustrative and publish supported Warden scope, limitations, verification profiles, providers, languages, and repository boundaries.
+- [x] Add one durable design partner application flow with validation, consent, spam controls, confirmation, failure handling, owner, response objective, and attribution events.
+- [x] Add working contact, privacy, terms, security, documentation, status, product login, and GitHub destinations.
+- [ ] Publish through the current Manus surface or cut over Cloudflare to the versioned replacement only after owner access and rollback are proven.
+
+Exit gate: every CTA completes a real path, every link resolves, the site has no unsupported present tense claim, and browser, accessibility, SEO, structured data, and responsive checks pass.
+
+### Phase 2: Verified Warden delivery and review
+
+- [ ] Complete GitHub installation scoped exact commit checkout, snapshot, branch, commit, draft pull request, webhook, CI, review, outcome, revocation, and recovery through the repository neutral contract.
+- [ ] Persist required baseline and post edit compile, lint, test, security, and contract artifacts for every delivered draft pull request.
+- [ ] Fail delivery closed unless required evidence passes or a human grants an attributable scoped expiring waiver.
+- [ ] Attach source, snapshot, impact, edit, policy, verifier, review, rollback, and outcome lineage to every candidate.
+- [ ] Complete reviewer assignment, comments, request changes, regeneration, approval synchronization, native SCM reconciliation, and immutable candidate history.
+- [ ] Finish the private GitHub canary with the repository scoped credential, degraded draft pull request, immutable restore, passed rerun, revocation, and retained evidence.
+
+Exit gate: a clean private GitHub repository completes exact snapshot to verified draft pull request to restore with disclosed evidence and human review.
+
+### Phase 3: Monitoring and measurable coverage
+
+- [ ] Enable governed production feed polling with configured sources, freshness objectives, deduplication, alerting, recovery, and operator health.
+- [ ] Version the supported OpenAPI change taxonomy, provider catalog, language frontends, repository limits, verification profiles, and abstention behavior.
+- [ ] Persist graph and evidence provenance, confidence, ambiguity, truncation, and unsupported classifications.
+- [ ] Define and measure feed freshness, precision, recall, abstention, change to draft time, verification pass rate, reviewer delta, merge outcome, and regression by cohort.
+
+Exit gate: coverage and speed claims use defined workloads and observed p50 or p95 evidence rather than universal wording.
+
+### Phase 4: Bounded Transformer product
+
+- [ ] Select one runtime migration with two to five disposable repositories and freeze its behavioral graph, recipe, organization policy, blueprint, verification, rollout, and rollback contract.
+- [ ] Execute the versioned recipe in isolated fenced workspaces with exact source snapshots and persisted attempts.
+- [ ] Stage verified draft pull requests by dependency wave and reconcile CI, review, drift, partial merge, retry, pause, resume, exception, and cancellation.
+- [ ] Build the Transformer workspace for objective intake, blueprint review, graph, semantic changes, progress, evidence, exceptions, approvals, retry, pause, and rollback.
+- [ ] Pass injected crash, CI failure, branch drift, partial merge, recovery, and reverse dependency rollback scenarios.
+
+Exit gate: one bounded migration campaign completes across real disposable repositories with verified staged draft pull requests and restore evidence.
+
+### Phase 5: GitLab end to end
+
+- [ ] Add GitLab OAuth or PAT connection, project selection, exact snapshot, branch, commit, merge request, pipeline, discussions, approvals, webhooks, revocation, recovery, and health through the shared repository contract.
+- [ ] Prove the same Warden delivery and restore journey in a private GitLab canary before changing the public claim from roadmap.
+
+Exit gate: a clean private GitLab project completes the same evidence backed candidate and restore flow as GitHub.
+
+### Phase 6: Router and model execution
+
+- [ ] Connect Warden and Transformer to the shared structured task and policy contract.
+- [ ] Add tested Anthropic and Gemini executors only if their credentials and data policy are approved.
+- [ ] Keep LiteLLM and Langfuse removed from public claims unless installed, configured, exercised, secured, and observable.
+- [ ] Persist route eligibility, rationale, privacy, region, budget, latency, retries, fallback, actual cost, verification, outcome, and deterministic replay.
+- [ ] Pass held out quality, outage, budget, privacy, security, handoff, and accepted output cost gates.
+
+Exit gate: only exercised executors and observability components can appear in present tense claims.
+
+### Phase 7: Commercial system
+
+- [ ] Freeze the billable outcome, MCU version, aggregation, retries, failures, credits, price changes, settlement, and cancellation policy.
+- [ ] Complete actual cost attribution, reservations, expiry, entitlements, invoice lines, credits, reconciliation, and customer and finance views.
+- [ ] Integrate one approved payment or invoice processor with tax, payment state, dunning, refund, and export policy.
+- [ ] Publish pricing only after the account, trial or contract, usage, invoice, cancellation, and support journeys pass end to end.
+
+Exit gate: every commercial number is generated by the canonical pricing and settlement system or is clearly labeled proposed.
+
+### Phase 8: Identity, self hosting, and enterprise controls
+
+- [ ] Add human users, memberships, MFA capable OIDC, reviewer identity, session controls, offboarding, service principals, and audit export.
+- [ ] Add SAML and SCIM only against an approved identity provider tenant with lifecycle acceptance evidence.
+- [ ] Publish and test self hosted sizing, TLS, upgrades, migrations, backup, restore, rollback, monitoring, dependencies, egress modes, offline mode, and support lifecycle.
+- [ ] Add vault backed secret lifecycle, tenant isolation proof, HA and outage behavior, VPC reference architecture, private connectivity, BYOK, residency, customer logs, SBOM, vulnerability, incident, continuity, penetration, and compliance evidence.
+
+Exit gate: enterprise claims name concrete proven controls and approved contractual commitments. External attestations remain blocked until independently supplied.
+
+### Integration and release
+
+- [ ] Land each independent phase slice as a focused commit with tests and migration compatibility.
+- [ ] Run focused tests after every slice and the full test, typecheck, build, GA, audit, capability corpus, production smoke, container, deployment E2E, accessibility, and click path matrix before merge.
+- [ ] Open a protected pull request, merge only green code, deploy the exact main revision, and repeat independent API and browser verification.
+- [ ] Record exact commits, checks, live probes, screenshots, claim status changes, unresolved external gates, and rollback instructions in this review.
+
+### Website claim closure review
+
+- Reconciliation used current `origin/main` revision `94c91d3e95dd6c85cb0b54d9131f0366ddcca9b3`; the earlier report remains valid for the external Manus site, while several product internals had advanced since audited revision `7756d4c`.
+- The repository now owns a truthful Private Design Partner Preview site, exact source mappings for 14 claims, a release claim gate, working public destinations, and responsive, accessibility, SEO, structured data, error, and application journey checks.
+- The application path now uses same origin validation, bounded payloads, abuse controls, authenticated server identity, per record encryption keys, 90 day access expiry, mandatory audited reveal, cryptographic erasure, immutable redacted metadata, and a protected owner queue.
+- GitHub repository intake now authorizes numeric installation and repository IDs, resolves an exact commit, rechecks branch drift, enforces size, path, symlink, submodule, LFS, sparse path, case collision, tenant, revocation, cleanup, and replay controls, and reports test transports as unproven.
+- Router work now has a selected executor bound Warden port, policy and availability snapshots, redacted deterministic evidence, retry and fallback controls, actual cost and verification outcomes, and replay. No unapproved model executor is registered or claimed.
+- Transformer now has a bounded Node 18 to Node 20 workspace executor with immutable recipe operations, lease fencing, fixed command execution, drift detection, redacted evidence, inverse restore, and disposal. Worker, campaign, and staged pull request integration remains open.
+- Coverage work now has a fail closed observed cohort contract for scope, provenance, uncertainty, abstention, feed freshness, precision, recall, draft latency, verification, reviewer delta, merge outcome, and regression. Live collectors, persistence, scheduling, and publishable customer evidence remain open.
+- Focused suites, full repository tests, root typecheck, production build, GA checks, production dependency audit, Playwright discovery, and diff integrity pass locally. Docker is not installed on this Windows host, so protected Linux image, deployment E2E, crash recovery, and browser gates remain required before merge.
+- The current public `www.mendpoint.ai` surface still runs on Manus behind Cloudflare. Publishing the versioned replacement requires an authenticated owner cutover and rollback proof after the Fly release is deployed.
+- GitHub draft pull request delivery and restore, a real private canary, governed feed operations, full Transformer campaign delivery, GitLab, approved external executors, payment or invoicing, enterprise identity, VPC and HA infrastructure, penetration testing, and compliance evidence remain open and must not appear as present tense public claims.

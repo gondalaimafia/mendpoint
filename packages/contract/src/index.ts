@@ -33,6 +33,17 @@ export {
 } from "./product-requirements.js";
 
 export {
+  validatePublicClaimRegistry,
+  type PublicClaim,
+  type PublicClaimEvidence,
+  type PublicClaimEvidenceType,
+  type PublicClaimIssue,
+  type PublicClaimRegistry,
+  type PublicClaimState,
+  type PublicDestination,
+} from "./public-claims.js";
+
+export {
   VERIFICATION_WAIVER_SCOPE_DIMENSIONS,
   VerificationWaiverValidationError,
   canonicalVerificationWaiverDigest,
