@@ -197,37 +197,51 @@ async function expectPublicWebsite(page: Page, request: APIRequestContext): Prom
       body: JSON.stringify({ error: "temporarily_unavailable" }),
     });
   });
-  await page.getByRole("button", { name: "Submit application" }).click();
+  await page.getByRole("button", { name: "Submit application", exact: true }).click();
   expect(submitted, "Browser validation should prevent an empty application request").toBe(false);
   expect(
-    await page.getByLabel("Name").evaluate((input: HTMLInputElement) => input.validity.valid),
+    await page
+      .getByRole("textbox", { name: "Name", exact: true })
+      .evaluate((input: HTMLInputElement) => input.validity.valid),
   ).toBe(false);
 
-  await page.getByLabel("Name").fill("Deployment Test");
-  await page.getByLabel("Work email").fill("deployment@example.com");
-  await page.getByLabel("Company").fill("Example Company");
-  await page.getByLabel("Role").fill("Engineering lead");
+  await page.getByRole("textbox", { name: "Name", exact: true }).fill("Deployment Test");
+  await page.getByRole("textbox", { name: "Work email", exact: true }).fill("deployment@example.com");
+  await page.getByRole("textbox", { name: "Company", exact: true }).fill("Example Company");
+  await page.getByRole("textbox", { name: "Role", exact: true }).fill("Engineering lead");
   await page
-    .getByLabel("Provider change to validate")
+    .getByRole("textbox", { name: "Provider change to validate", exact: true })
     .fill("Validate a bounded breaking API change in one service.");
   await page
-    .getByLabel("Approved repository scope")
+    .getByRole("textbox", { name: "Approved repository scope", exact: true })
     .fill("One approved GitHub repository and its configured checks.");
   await page
-    .getByLabel("Measurable success criterion")
+    .getByRole("textbox", { name: "Measurable success criterion", exact: true })
     .fill("Produce one reviewable candidate that passes the configured checks.");
-  await page.getByLabel(/I am authorized/).check();
-  await page.getByLabel(/I agree that Mendpoint/).check();
-  await page.getByRole("button", { name: "Submit application" }).click();
+  await page
+    .getByRole("checkbox", {
+      name: "I am authorized to discuss the company and repository scope described here.",
+      exact: true,
+    })
+    .check();
+  await page
+    .getByRole("checkbox", {
+      name: "I agree that Mendpoint may use this information to evaluate and respond to this application.",
+      exact: true,
+    })
+    .check();
+  await page.getByRole("button", { name: "Submit application", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText(
     "We could not submit the application. Check the fields and try again.",
   );
   expect(submitted).toBe(true);
   await page.unroute("**/api/design-partners");
 
-  await page.getByLabel("Work email").fill(`deployment-${suffix}@mendpoint.ai`);
+  await page
+    .getByRole("textbox", { name: "Work email", exact: true })
+    .fill(`deployment-${suffix}@mendpoint.ai`);
   await page.waitForTimeout(3_100);
-  await page.getByRole("button", { name: "Submit application" }).click();
+  await page.getByRole("button", { name: "Submit application", exact: true }).click();
   const success = page.getByRole("status");
   await expect(success).toContainText("Application received. Reference application-");
   const applicationId = /Reference (application-[A-Za-z0-9-]+)\./.exec(
@@ -380,11 +394,11 @@ test("production image protects operators and recovers queued work after a crash
 
     await page.goto("/status");
     await expect(page).toHaveURL(/\/access\?next=%2Fstatus$/);
-    await page.getByLabel("Operator ID").fill("deployment-test");
-    await page.getByLabel("Access token").fill("wrong-token");
+    await page.getByRole("textbox", { name: "Operator ID", exact: true }).fill("deployment-test");
+    await page.getByLabel("Access token", { exact: true }).fill("wrong-token");
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page.getByText("Access denied")).toBeVisible();
-    await page.getByLabel("Access token").fill(webToken);
+    await page.getByLabel("Access token", { exact: true }).fill(webToken);
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page).toHaveURL(/\/status$/);
     await expect(page.getByRole("heading", { name: "System status" })).toBeVisible();
@@ -431,8 +445,10 @@ test("production image protects operators and recovers queued work after a crash
     await page.waitForTimeout(6_000);
     await page.goto("/repair");
     await expect(page.getByRole("heading", { name: "Agentic repair" })).toBeVisible();
-    await expect(page.getByLabel("Consumer")).toHaveValue(/.+/);
-    await page.getByLabel(/Dry run/).check();
+    await expect(page.getByRole("combobox", { name: "Consumer", exact: true })).toHaveValue(/.+/);
+    await page
+      .getByRole("checkbox", { name: "Dry run (plan only, no writes)", exact: true })
+      .check();
     const queuedResponse = page.waitForResponse(
       (response) =>
         response.url().endsWith("/api/repair/sessions") && response.request().method() === "POST",
