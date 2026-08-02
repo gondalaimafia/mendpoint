@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type ProductTargetRelease =
   | "warden-pilot"
   | "warden-ga"
@@ -366,6 +368,12 @@ export function validateProductRequirements(
   }
 
   return issues.sort(compareIssues);
+}
+
+/** Stable digest for repository text regardless of the checkout's line endings. */
+export function canonicalTextSha256(value: string): string {
+  const canonical = value.replace(/\r\n?/g, "\n");
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
 function compareIssues(left: ProductRequirementIssue, right: ProductRequirementIssue) {

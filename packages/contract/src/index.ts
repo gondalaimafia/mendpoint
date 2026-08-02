@@ -17,6 +17,7 @@ export {
 } from "./api-reviewer.js";
 
 export {
+  canonicalTextSha256,
   FOUNDATIONAL_REQUIREMENT_IDS,
   validateProductRequirements,
   type ProductAcceptance,

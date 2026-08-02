@@ -3,7 +3,7 @@
   "spec": {
     "path": "docs/FOUNDATIONAL_PRODUCT_SPEC.md",
     "version": "1.0",
-    "sha256": "b06c7b9b0f9cfd057b39f8663cc513b2ba15ce323dee0cf84caa4f9e960ca4a5"
+    "sha256": "4a0a6fec8bb8d708513c7c01f8670ab7e37c330fe0621377b3d8d46d2db2c87e"
   },
   "closurePlan": {
     "source": "mendpoint-foundational-spec-gap-analysis-and-plan-2026-08-01.md",
