@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
+  canonicalTextSha256,
   validateProductRequirements,
   type ProductRequirementManifest,
 } from "@mendpoint/contract";
@@ -37,7 +37,7 @@ function main() {
   if (!existsSync(specPath)) {
     issues.push({ code: "SPEC_MISSING", subject: manifest.spec.path, message: "canonical spec does not exist" });
   } else {
-    const digest = createHash("sha256").update(readFileSync(specPath)).digest("hex");
+    const digest = canonicalTextSha256(readFileSync(specPath, "utf8"));
     if (digest !== manifest.spec.sha256) {
       issues.push({
         code: "SPEC_HASH_MISMATCH",

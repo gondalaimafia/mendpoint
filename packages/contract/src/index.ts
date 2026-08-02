@@ -17,6 +17,7 @@ export {
 } from "./api-reviewer.js";
 
 export {
+  canonicalTextSha256,
   FOUNDATIONAL_REQUIREMENT_IDS,
   validateProductRequirements,
   type ProductAcceptance,
@@ -31,6 +32,17 @@ export {
   type ProductRequirementValidationOptions,
   type ProductTargetRelease,
 } from "./product-requirements.js";
+
+export {
+  validatePublicClaimRegistry,
+  type PublicClaim,
+  type PublicClaimEvidence,
+  type PublicClaimEvidenceType,
+  type PublicClaimIssue,
+  type PublicClaimRegistry,
+  type PublicClaimState,
+  type PublicDestination,
+} from "./public-claims.js";
 
 export {
   VERIFICATION_WAIVER_SCOPE_DIMENSIONS,

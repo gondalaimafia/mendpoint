@@ -65,6 +65,7 @@ jobs:
           export NODE_ENV=production
           export API_AUTH=required
           export GITHUB_MODE=mock
+          export MENDPOINT_APPLICATION_DATA_KEY="$(printf 'b%.0s' {1..64})"
           export MENDPOINT_DATA_DIR="$RUNNER_TEMP/mendpoint-smoke"
           export MENDPOINT_REPOS_DIR="$RUNNER_TEMP/mendpoint-repos"
           mkdir -p "$MENDPOINT_REPOS_DIR"
@@ -142,6 +143,7 @@ jobs:
             --network mendpoint-ci \
             --publish 127.0.0.1:3001:3001 \
             -e GITHUB_MODE=mock \
+            -e MENDPOINT_APPLICATION_DATA_KEY="$(printf 'b%.0s' {1..64})" \
             -e MENDPOINT_REPOS_DIR=/workspace/repos \
             -v mendpoint-ci-data:/app/data \
             mendpoint-api:ci
@@ -209,6 +211,7 @@ jobs:
             --name mendpoint-fly-ci \
             --publish 127.0.0.1:3002:3000 \
             -e GITHUB_MODE=mock \
+            -e MENDPOINT_APPLICATION_DATA_KEY="$(printf 'b%.0s' {1..64})" \
             -e MENDPOINT_API_KEY="$fly_api_key" \
             -e MENDPOINT_WEB_ACCESS_TOKEN=ci-fly-web-access-token \
             -e MENDPOINT_WEB_ALLOWED_ORIGINS=http://127.0.0.1:3002 \

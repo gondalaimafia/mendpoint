@@ -34,6 +34,7 @@ services:
       RATE_LIMIT_WINDOW_MS: "60000"
       MENDPOINT_DATA_DIR: /app/data
       MENDPOINT_REPOS_DIR: /workspace/repos
+      MENDPOINT_APPLICATION_DATA_KEY: ${MENDPOINT_APPLICATION_DATA_KEY:?Set a distinct application data key}
     volumes:
       - mendpoint-data:/app/data
       - mendpoint-runs:/app/runs

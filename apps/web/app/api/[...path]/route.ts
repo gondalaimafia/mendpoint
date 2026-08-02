@@ -12,9 +12,11 @@ type RouteContext = {
 };
 
 const RESPONSE_HEADERS = [
+  "cache-control",
   "content-type",
   "content-disposition",
   "location",
+  "pragma",
   "retry-after",
   "server-timing",
   "x-request-id",
@@ -36,6 +38,8 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["GET", /^recovery\/summary$/],
     ["GET", /^billing\/usage$/],
     ["GET", /^github\/app\/install-url$/],
+    ["GET", /^design-partner-applications$/],
+    ["GET", /^design-partner-applications\/[^/]+$/],
     ["GET", /^graph\//],
     ["GET", /^prs\/[^/]+\/reviews$/],
     ["POST", /^tenants\/[^/]+\/plan$/],
@@ -51,6 +55,9 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["POST", /^providers\/[^/]+\/publish-version$/],
     ["POST", /^github\/app\/callback$/],
     ["POST", /^changes\/[^/]+\/severity$/],
+    ["POST", /^design-partner-applications\/[^/]+\/reveals$/],
+    ["POST", /^design-partner-applications\/[^/]+\/erasures$/],
+    ["POST", /^design-partner-applications\/retention-purges$/],
     ["PATCH", /^platform\/plans\/[^/]+$/],
   ];
   return rules.some(([allowedMethod, pattern]) =>

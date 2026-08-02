@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { validateProductRequirements } from "./product-requirements.js";
+import {
+  canonicalTextSha256,
+  validateProductRequirements,
+} from "./product-requirements.js";
 
 const ID = "ME-FND-001";
 
@@ -48,6 +51,14 @@ function validManifest() {
 }
 
 describe("product requirement validation", () => {
+  it("hashes LF, CRLF, and CR text identically", () => {
+    const lf = "# Product spec\n\nOne line\nTwo lines\n";
+    expect(canonicalTextSha256(lf.replaceAll("\n", "\r\n")))
+      .toBe(canonicalTextSha256(lf));
+    expect(canonicalTextSha256(lf.replaceAll("\n", "\r")))
+      .toBe(canonicalTextSha256(lf));
+  });
+
   it("accepts a complete traceable requirement", () => {
     expect(validateProductRequirements(validManifest(), { expectedIds: [ID] })).toEqual([]);
   });

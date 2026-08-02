@@ -4,8 +4,25 @@ import "./globals.css";
 import { Nav } from "./nav";
 
 export const metadata: Metadata = {
-  title: "Mendpoint",
-  description: "Mendpoint — structured API change intelligence to migration PRs",
+  metadataBase: new URL("https://www.mendpoint.ai"),
+  title: {
+    default: "Mendpoint: Evidence backed API migration candidates",
+    template: "%s | Mendpoint",
+  },
+  description: "Private design partner preview for supported GitHub repository migration workflows.",
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website",
+    url: "/",
+    siteName: "Mendpoint",
+    title: "Mendpoint: Evidence backed API migration candidates",
+    description: "Private design partner preview for supported GitHub repository migration workflows.",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Mendpoint: Evidence backed API migration candidates",
+    description: "Private design partner preview for supported GitHub repository migration workflows.",
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

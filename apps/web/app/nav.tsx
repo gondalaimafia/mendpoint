@@ -7,7 +7,7 @@ const GROUPS = [
   {
     label: "Workspace",
     links: [
-      { href: "/", label: "Overview", glyph: "O" },
+      { href: "/console", label: "Overview", glyph: "O" },
       { href: "/provider", label: "API changes", glyph: "C" },
       { href: "/consumer", label: "Repositories", glyph: "R" },
       { href: "/graph", label: "Impact graph", glyph: "G" },
@@ -25,6 +25,7 @@ const GROUPS = [
     label: "Operations",
     links: [
       { href: "/status", label: "System status", glyph: "S" },
+      { href: "/applications", label: "Applications", glyph: "A" },
       { href: "/metrics", label: "Metrics", glyph: "M" },
       { href: "/platform", label: "Platform", glyph: "P" },
     ],
@@ -43,10 +44,36 @@ const GROUPS = [
 export function Nav() {
   const pathname = usePathname() ?? "/";
 
+  const publicPaths = [
+    "/",
+    "/design-partners",
+    "/docs",
+    "/privacy",
+    "/security",
+    "/service-status",
+    "/terms",
+  ];
+  if (publicPaths.includes(pathname)) {
+    return (
+      <header className="public-nav">
+        <Link href="/" className="brand" aria-label="Mendpoint home" prefetch={false}>
+          <span className="brand-mark" aria-hidden />
+          Mendpoint
+        </Link>
+        <nav aria-label="Public navigation">
+          <Link href="/docs">Documentation</Link>
+          <Link href="/security">Security</Link>
+          <Link href="/design-partners">Apply</Link>
+          <Link className="btn" href="/access">Product login</Link>
+        </nav>
+      </header>
+    );
+  }
+
   if (pathname === "/access") {
     return (
       <header className="access-header">
-        <Link href="/" className="brand" aria-label="Mendpoint home" prefetch={false}>
+        <Link href="/console" className="brand" aria-label="Mendpoint workspace" prefetch={false}>
           <span className="brand-mark" aria-hidden />
           Mendpoint
         </Link>
@@ -58,7 +85,7 @@ export function Nav() {
   return (
     <aside className="app-sidebar">
       <div className="sidebar-head">
-        <Link href="/" className="brand" aria-label="Mendpoint home" prefetch={false}>
+        <Link href="/console" className="brand" aria-label="Mendpoint workspace" prefetch={false}>
           <span className="brand-mark" aria-hidden />
           Mendpoint
         </Link>
@@ -72,7 +99,7 @@ export function Nav() {
               {group.links.map((link) => {
                 const active =
                   pathname === link.href ||
-                  (link.href !== "/" && pathname.startsWith(`${link.href}/`));
+                  pathname.startsWith(`${link.href}/`);
                 return (
                   <Link
                     key={link.href}

@@ -19,7 +19,16 @@ import {
   updateConnectedRepositoryStatus,
   upsertScmConnection,
 } from "@mendpoint/db";
-import { createLocalGitRepositorySource } from "@mendpoint/platform";
+import {
+  CredentialAccessError,
+  RepositorySourceError,
+  createGitHubRepositorySource,
+  createLocalGitRepositorySource,
+  type CredentialBroker,
+  type CredentialDescriptor,
+  type GitHubRepositoryTransport,
+  type RepositorySource,
+} from "@mendpoint/platform";
 import { newId, nowIso } from "@mendpoint/shared";
 import {
   assertRepositorySnapshotPath,
@@ -32,6 +41,19 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,99}$/;
 const REPOSITORY_PART = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 type ConnectionProvider = "github" | "gitlab" | "local_git";
+
+type ScmConnection = NonNullable<ReturnType<typeof getScmConnection>>;
+
+export type RepositoryConnectionDependencies = Readonly<{
+  credentialBroker: CredentialBroker;
+  githubTransport?: GitHubRepositoryTransport;
+  credentialDescriptor?: (input: {
+    connection: ScmConnection;
+    tenantId: string;
+  }) => CredentialDescriptor;
+  actorId?: string;
+  requestId?: string;
+}>;
 
 function requireName(name: string, value: unknown): string {
   if (typeof value !== "string" || !NAME.test(value)) {
@@ -46,6 +68,24 @@ function requireRepositoryPart(name: string, value: unknown): string {
     value === "." ||
     value === ".." ||
     !REPOSITORY_PART.test(value)
+  ) {
+    throw new Error(`${name}_invalid`);
+  }
+  return value;
+}
+
+function requireBranch(name: string, value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > 255 ||
+    /[\x00-\x20\x7f~^:?*[\\]/.test(value) ||
+    value.includes("..") ||
+    value.includes("//") ||
+    value.startsWith("/") ||
+    value.endsWith("/") ||
+    value.endsWith(".") ||
+    value.endsWith(".lock")
   ) {
     throw new Error(`${name}_invalid`);
   }
@@ -83,6 +123,9 @@ export function registerScmConnection(
 ) {
   const provider = parseProvider(input.provider);
   const externalAccountId = requireName("external_account_id", input.externalAccountId);
+  if (provider === "github" && !/^[1-9][0-9]{0,19}$/.test(externalAccountId)) {
+    throw new Error("github_installation_id_invalid");
+  }
   const displayName = requireName("display_name", input.displayName);
   const credentialRef =
     provider === "local_git"
@@ -136,12 +179,14 @@ export function registerConnectedRepository(
   const remoteId = requireRemoteId(input.remoteId);
   if (connection.provider === "local_git") {
     resolveRepoKey(remoteId, input.tenantId);
+  } else if (connection.provider === "github" && !/^[1-9][0-9]{0,19}$/.test(remoteId)) {
+    throw new Error("github_repository_id_invalid");
   }
-  const defaultBranch = requireRepositoryPart("default_branch", input.defaultBranch);
+  const defaultBranch = requireBranch("default_branch", input.defaultBranch);
   const selectedBranch =
     input.selectedBranch === undefined
       ? defaultBranch
-      : requireRepositoryPart("selected_branch", input.selectedBranch);
+      : requireBranch("selected_branch", input.selectedBranch);
   const retentionDays = input.retentionDays === undefined ? 30 : Number(input.retentionDays);
   if (!Number.isSafeInteger(retentionDays) || retentionDays < 1 || retentionDays > 365) {
     throw new Error("repository_retention_invalid");
@@ -175,6 +220,7 @@ export async function materializeConnectedRepository(
     consumerRepoId?: string;
     sparsePaths?: string[];
   },
+  dependencies?: RepositoryConnectionDependencies,
 ) {
   const repository = listConnectedRepositories(db, input.tenantId).find(
     (candidate) => candidate.id === input.repositoryId,
@@ -183,21 +229,70 @@ export async function materializeConnectedRepository(
   const connection = getScmConnection(db, repository.connection_id, input.tenantId);
   if (!connection) throw new Error("scm_connection_tenant_mismatch");
   if (connection.revoked_at) throw new Error("scm_connection_revoked");
-  if (connection.provider !== "local_git") {
+  let source: RepositorySource;
+  let liveGitHubMaterialization = false;
+  if (connection.provider === "local_git") {
+    const sourcePath = resolveRepoKey(repository.remote_id, input.tenantId);
+    source = await createLocalGitRepositorySource({
+      repositoryPath: sourcePath,
+      policy: { sparsePaths: input.sparsePaths },
+    });
+  } else if (connection.provider === "github") {
+    if (!dependencies) throw new Error("github_credential_broker_required");
+    let resolvedCredential;
+    try {
+      const descriptor = dependencies.credentialDescriptor?.({
+        connection,
+        tenantId: input.tenantId,
+      }) ?? githubCredentialDescriptor(connection);
+      resolvedCredential = await dependencies.credentialBroker.access(descriptor, {
+        actorId: dependencies.actorId ?? "service:repository-snapshot",
+        audience: `github:installation:${connection.external_account_id}`,
+        purpose: "materialize_read_only_repository_snapshot",
+        requestId: dependencies.requestId,
+      });
+    } catch (error) {
+      recordGitHubHealthFailure(db, connection, input.tenantId, credentialErrorCode(error));
+      throw new Error(credentialErrorCode(error));
+    }
+    const transport = dependencies.githubTransport;
+    liveGitHubMaterialization = transport === undefined || transport.provenance === "live";
+    source = await createGitHubRepositorySource({
+      installationId: connection.external_account_id,
+      repositoryId: repository.remote_id,
+      owner: repository.owner,
+      name: repository.name,
+      credential: resolvedCredential.secret,
+      transport,
+      policy: { sparsePaths: input.sparsePaths },
+    });
+  } else {
     throw new Error("repository_source_not_implemented");
   }
 
-  const sourcePath = resolveRepoKey(repository.remote_id, input.tenantId);
-  const source = await createLocalGitRepositorySource({
-    repositoryPath: sourcePath,
-    policy: { sparsePaths: input.sparsePaths },
-  });
-  const probe = await source.probe();
-  const resolved = await source.resolveRef(repository.selected_branch);
+  let probe;
+  let resolved;
+  try {
+    probe = await source.probe();
+    resolved = await source.resolveRef(repository.selected_branch);
+  } catch (error) {
+    if (connection.provider === "github") {
+      recordGitHubHealthFailure(db, connection, input.tenantId, sourceErrorCode(error));
+    }
+    throw error;
+  }
   const snapshotId = newId();
   const destination = repositorySnapshotDestination(snapshotId, input.tenantId);
   await mkdir(dirname(destination), { recursive: true });
-  const snapshot = await source.materialize(resolved, destination);
+  let snapshot;
+  try {
+    snapshot = await source.materialize(resolved, destination);
+  } catch (error) {
+    if (connection.provider === "github") {
+      recordGitHubHealthFailure(db, connection, input.tenantId, sourceErrorCode(error));
+    }
+    throw error;
+  }
   try {
     const discovery = await source.discover(snapshot);
     const createdAt = nowIso();
@@ -255,14 +350,19 @@ export async function materializeConnectedRepository(
         connectionId: connection.id,
         tenantId: input.tenantId,
         configured: true,
-        authenticated: true,
-        readAccess: true,
+        authenticated: connection.provider !== "github" || liveGitHubMaterialization,
+        readAccess: connection.provider !== "github" || liveGitHubMaterialization,
         writeAccess: false,
         webhookOk: false,
         ciVisible: discovery.ci.length > 0,
-        lastSyncAt: createdAt,
+        lastSyncAt: connection.provider !== "github" || liveGitHubMaterialization ? createdAt : null,
         revoked: false,
-        errorCode: discovery.ci.length > 0 ? null : "ci_configuration_not_discovered",
+        errorCode:
+          connection.provider === "github" && !liveGitHubMaterialization
+            ? "github_snapshot_unproven"
+            : discovery.ci.length > 0
+              ? null
+              : "ci_configuration_not_discovered",
         checkedAt: createdAt,
       });
       db.raw.exec("COMMIT");
@@ -372,9 +472,21 @@ export async function purgeExpiredSnapshots(
 }
 
 export function scmOverview(db: AppDb, tenantId: string) {
-  const connections = listScmConnections(db, tenantId).map((connection) =>
+  const connectionRows = listScmConnections(db, tenantId);
+  const connections = connectionRows.map((connection) =>
     publicConnection(db, connection, tenantId),
   );
+  const githubSnapshotsProven = connectionRows.some((connection) => {
+    if (connection.provider !== "github") return false;
+    const health = getScmConnectionHealth(db, connection.id, tenantId);
+    return Boolean(
+      health?.authenticated &&
+      health.read_access &&
+      health.last_sync_at &&
+      !health.revoked &&
+      !connection.revoked_at,
+    );
+  });
   const repositories = listConnectedRepositories(db, tenantId).map((repository) => ({
     id: repository.id,
     connectionId: repository.connection_id,
@@ -403,7 +515,7 @@ export function scmOverview(db: AppDb, tenantId: string) {
   return {
     providers: [
       { provider: "local_git", connection: true, snapshots: true, pullRequests: false },
-      { provider: "github", connection: true, snapshots: false, pullRequests: true },
+      { provider: "github", connection: true, snapshots: githubSnapshotsProven, pullRequests: false },
       { provider: "gitlab", connection: true, snapshots: false, pullRequests: false },
     ],
     connections,
@@ -440,6 +552,55 @@ function publicConnection(
         }
       : null,
   };
+}
+
+function githubCredentialDescriptor(connection: ScmConnection): CredentialDescriptor {
+  const match = /^([a-z][a-z0-9_-]{0,31}):\/\/(.{1,512})$/i.exec(connection.credential_ref);
+  if (!match) throw new Error("github_credential_reference_invalid");
+  return {
+    credentialId: connection.id,
+    secret: { provider: match[1]!.toLowerCase(), id: match[2]! },
+    audiences: [`github:installation:${connection.external_account_id}`],
+    rotation: {
+      generation: 1,
+      issuedAt: connection.created_at,
+    },
+  };
+}
+
+function credentialErrorCode(error: unknown): string {
+  if (error instanceof CredentialAccessError) return `github_credential_${error.code}`;
+  const message = error instanceof Error ? error.message : "";
+  return /^github_credential_[a-z0-9_]{1,60}$/.test(message)
+    ? message
+    : "github_credential_resolution_failed";
+}
+
+function sourceErrorCode(error: unknown): string {
+  return error instanceof RepositorySourceError
+    ? `github_snapshot_${error.code.toLowerCase()}`
+    : "github_snapshot_failed";
+}
+
+function recordGitHubHealthFailure(
+  db: AppDb,
+  connection: ScmConnection,
+  tenantId: string,
+  errorCode: string,
+): void {
+  setScmConnectionHealth(db, {
+    connectionId: connection.id,
+    tenantId,
+    configured: true,
+    authenticated: false,
+    readAccess: false,
+    writeAccess: false,
+    webhookOk: false,
+    ciVisible: false,
+    revoked: false,
+    errorCode,
+    checkedAt: nowIso(),
+  });
 }
 
 async function removeSnapshot(root: string): Promise<void> {

@@ -15,6 +15,7 @@ FROM node:22-bookworm-slim AS web-build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY package.json package-lock.json tsconfig.base.json ./
+COPY docs/PUBLIC_CLAIMS.json ./docs/PUBLIC_CLAIMS.json
 COPY packages ./packages
 COPY apps ./apps
 RUN npm ci
