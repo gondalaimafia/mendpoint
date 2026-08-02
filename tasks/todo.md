@@ -749,7 +749,7 @@ Exit gate: enterprise claims name concrete proven controls and approved contract
 - [x] Implement Transformer recipe analysis and a bounded content addressed analysis cache without retaining customer source.
 - [x] Extend the held out evaluation corpus and machine readable report with the new safety and efficiency behaviors.
 - [x] Run focused tests, full tests, typecheck, production build, GA checks, dependency audit, and diff integrity.
-- [ ] Open a protected pull request, merge only green code, deploy the exact main revision, and repeat independent live and browser verification.
+- [x] Open a protected pull request, merge only green code, deploy the exact main revision, and repeat independent live and browser verification.
 
 ### Specialized agent acceptance criteria
 
@@ -769,4 +769,7 @@ Exit gate: enterprise claims name concrete proven controls and approved contract
 - Warden bench now rejects an already green verifier as a repair success and reports resolved, already green, safe handoff, wrong patch, timeout, and error separately.
 - Eval corpus `2026-08-01.v3`: 14 Warden scenarios, 12 Transformer scenarios, 3 repetitions, 78 trials. Pass at one, pass at three, and pass to the power of three are all `1.000`; critical and deterministic failures are zero.
 - Focused Warden, Transformer, and eval tests pass. Full repository tests, root typecheck, production build, GA checks, dependency audit, and diff integrity pass locally.
-- Protected Linux containers, deployment recovery, Fly promotion, and independent production verification remain pending the pull request workflow.
+- Pull request 12 passed every protected gate and merged as `f17354e402d0f4ed0ff4cabcdbc8d7281664eabc`. Exact main run `30734355042` repeated the unit, agent eval, GA, release, container, production journey, crash recovery, deploy, and health gates successfully.
+- Production browser verification exposed one unrelated missing public icon request. Pull requests 13 and 14 added the site icon and allowed only `/icon.svg` through the unauthenticated middleware boundary; pull request 14 merged as `ec2c819979c73806456ae842c95550fac62adeab`.
+- Exact main run `30735222962` passed every protected gate and deployed successfully. Independent probes returned `200` for `/`, `/livez`, `/healthz`, and `/icon.svg`; the icon response is `image/svg+xml` rather than a login redirect.
+- Final Chrome verification at 1280 by 900 and 375 by 812 returned `200` with no console issues, failed requests, HTTP failures, horizontal overflow, or layout shift. Observed LCP was 392 ms on desktop and 248 ms on mobile.
