@@ -206,6 +206,57 @@ describe("run-poll", () => {
     expect(dispatches).toBe(1);
   });
 
+  it("dispatches identical provider content once for each tenant", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "poll-tenants-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "p.sqlite"));
+    dbs.push(db);
+    db.raw
+      .prepare(
+        `INSERT INTO tenants
+           (id, slug, name, plan, billing_status, seat_limit, created_at)
+         VALUES ('tenant-b', 'tenant-b', 'Tenant B', 'pilot', 'active', 5, ?)`,
+      )
+      .run(new Date().toISOString());
+    const local = join(dir, "spec.json");
+    writeFileSync(
+      local,
+      JSON.stringify({
+        openapi: "3.0.0",
+        info: { title: "Tenant dispatch", version: "1.0.0" },
+        paths: {},
+      }),
+    );
+    const feed = {
+      slug: "tenant-dispatch",
+      name: "Tenant dispatch",
+      openapiUrl: `file:${local}`,
+      source: "provider" as const,
+    };
+    const dispatches: string[] = [];
+    const run = (tenantId: string) =>
+      pollOneFeed(feed, {
+        db,
+        tenantId,
+        pipeline: async (_slug, _database, context) => {
+          dispatches.push(context.tenantId);
+          return { jobId: `job-${context.tenantId}` };
+        },
+      });
+
+    expect(await run("tenant_default")).toMatchObject({
+      status: "pipeline_enqueued",
+      jobId: "job-tenant_default",
+    });
+    expect(await run("tenant-b")).toMatchObject({
+      status: "pipeline_enqueued",
+      jobId: "job-tenant-b",
+    });
+    expect((await run("tenant_default")).status).toBe("unchanged");
+    expect((await run("tenant-b")).status).toBe("unchanged");
+    expect(dispatches).toEqual(["tenant_default", "tenant-b"]);
+  });
+
   it("bounds concurrent feed polling and preserves result order", async () => {
     const dir = mkdtempSync(join(tmpdir(), "poll-bounded-"));
     dirs.push(dir);

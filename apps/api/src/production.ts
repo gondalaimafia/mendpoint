@@ -33,18 +33,28 @@ export function securityHeadersMiddleware() {
   };
 }
 
-function trustedClientIp(c: Context<ApiEnv>): string {
+function isTrustedProxy(c: Context<ApiEnv>): boolean {
   const proxySecret = process.env.TRUST_PROXY_SECRET;
-  const trusted =
+  return (
     process.env.TRUST_PROXY === "1" &&
     Boolean(proxySecret) &&
-    c.req.header("x-mendpoint-proxy-secret") === proxySecret;
-  if (!trusted) return "direct";
+    c.req.header("x-mendpoint-proxy-secret") === proxySecret
+  );
+}
+
+function trustedClientIp(c: Context<ApiEnv>): string {
+  if (!isTrustedProxy(c)) return "direct";
   return (
     c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
     c.req.header("x-real-ip") ??
     "proxy-unknown"
   );
+}
+
+function trustedWebSession(c: Context<ApiEnv>): string | undefined {
+  if (!isTrustedProxy(c)) return undefined;
+  const session = c.req.header("x-mendpoint-web-session")?.trim();
+  return session && /^[a-f0-9]{64}$/.test(session) ? session : undefined;
 }
 
 export function rateLimitMiddleware(
@@ -62,13 +72,16 @@ export function rateLimitMiddleware(
     }
     const identity = opts.identity ?? "network";
     const apiKeyId = c.get("apiKeyId");
-    if (identity === "principal" && !apiKeyId) {
+    const principalId = c.get("principal")?.id;
+    const principalIdentity =
+      trustedWebSession(c) ?? principalId ?? apiKeyId;
+    if (identity === "principal" && !principalIdentity) {
       return next();
     }
     // Preauthentication buckets never depend on unverified credentials.
     const key =
       identity === "principal"
-        ? `principal:${apiKeyId}`
+        ? `principal:${principalIdentity}`
         : `preauth:${rateLimitKeyFromRequest({ ip: trustedClientIp(c) })}`;
     const r = rateLimit(key);
     c.header("X-RateLimit-Limit", String(r.limit));

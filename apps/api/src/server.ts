@@ -10,12 +10,14 @@ import {
   getChange,
   listConsumers,
   listPrs,
+  listPrsForChange,
   getPr,
   findPrByRepositoryAndNumber,
   listAudit,
   listFindingsForChange,
   listVersionsForProvider,
   listMonitoredForConsumer,
+  listMonitoredForConsumers,
   getConsumer,
   insertProvider,
   insertApiVersion,
@@ -154,6 +156,7 @@ import {
   evaluateDogfoodAlerts,
   parsePrincipalFromHeaders,
   can,
+  canMutateSystemCatalog,
   permissionForRoute,
   CredentialBroker,
   EnvSecretProvider,
@@ -277,6 +280,42 @@ function requestTenantId(c: Context<ApiEnv>): string {
   const principal = c.get("principal");
   if (!principal) throw new Error("authenticated_principal_required");
   return principal.tenantId;
+}
+
+function requestListLimit(c: Context<ApiEnv>, fallback = 100, maximum = 200): number {
+  const requested = Number(c.req.query("limit"));
+  if (!Number.isInteger(requested) || requested < 1) return fallback;
+  return Math.min(requested, maximum);
+}
+
+function requestListOffset(c: Context<ApiEnv>): number {
+  const requested = Number(c.req.query("offset"));
+  return Number.isSafeInteger(requested) && requested >= 0 ? requested : 0;
+}
+
+function pagedJson<T>(c: Context<ApiEnv>, rows: T[], limit: number, offset: number) {
+  c.header("X-Page-Limit", String(limit));
+  c.header("X-Page-Offset", String(offset));
+  if (rows.length === limit) {
+    const next = new URL(c.req.url);
+    next.searchParams.set("limit", String(limit));
+    next.searchParams.set("offset", String(offset + limit));
+    c.header("Link", `<${next.pathname}${next.search}>; rel="next"`);
+  }
+  return c.json(rows);
+}
+
+function catalogMutationDenied(c: Context<ApiEnv>) {
+  if (effectiveAuthMode() === "off") return undefined;
+  const principal = c.get("principal");
+  if (principal && canMutateSystemCatalog(principal)) return undefined;
+  return c.json(
+    {
+      error: "catalog_authority_required",
+      message: "Shared provider catalog changes require system administrator authority",
+    },
+    403,
+  );
 }
 
 function requestConsumerIds(c: Context<ApiEnv>): string[] {
@@ -766,7 +805,12 @@ app.post("/platform/canary/evaluate", async (c) => {
 
 /** Dimension 6 — Graph learning / graph-RAG */
 app.get("/graph-learn/stats", (c) => {
-  return c.json({ ...countStats(getGraphLearnDb()), tools: GRAPH_RAG_TOOLS });
+  const result = runGraphQuery(
+    getGraphLearnDb(),
+    { op: "stats" },
+    requestGraphTenantScope(c),
+  );
+  return c.json({ ...(result.rows?.[0] ?? {}), tools: GRAPH_RAG_TOOLS });
 });
 
 app.post("/graph-learn/query", async (c) => {
@@ -816,7 +860,11 @@ app.post("/graph-learn/promote-patterns", (c) => {
 });
 
 app.get("/graph-learn/ab", (c) => {
-  const report = measureAbLift(getGraphLearnDb());
+  const report = measureAbLift(
+    getGraphLearnDb(),
+    undefined,
+    requestGraphTenantScope(c),
+  );
   return c.json({ ...report, markdown: formatAbReport(report) });
 });
 
@@ -896,13 +944,21 @@ app.get("/graph-learn/slo", (c) => {
 });
 
 app.post("/graph-learn/embed", (c) => {
-  const r = embedGraphNodes(getGraphLearnDb());
+  const r = embedGraphNodes(
+    getGraphLearnDb(),
+    undefined,
+    requestGraphTenantScope(c),
+  );
   return c.json(r);
 });
 
 app.get("/graph-learn/kuzu", (c) => {
   const status = kuzuStatus();
-  const script = exportSqliteToKuzuScript(getGraphLearnDb(), { maxNodes: 100 });
+  const script = exportSqliteToKuzuScript(
+    getGraphLearnDb(),
+    { maxNodes: 100 },
+    requestGraphTenantScope(c),
+  );
   return c.json({
     ...status,
     export: {
@@ -1206,7 +1262,11 @@ app.get("/graph/api/:providerSlug", (c) => {
 });
 
 
-app.get("/providers", (c) => c.json(listProviders(db).map(providerToApi)));
+app.get("/providers", (c) => {
+  const limit = requestListLimit(c);
+  const offset = requestListOffset(c);
+  return pagedJson(c, listProviders(db, limit, offset).map(providerToApi), limit, offset);
+});
 
 app.get("/providers/:slug", (c) => {
   const p = getProviderBySlug(db, c.req.param("slug"));
@@ -1216,6 +1276,8 @@ app.get("/providers/:slug", (c) => {
 });
 
 app.post("/providers", async (c) => {
+  const denied = catalogMutationDenied(c);
+  if (denied) return denied;
   const body = await c.req.json<{
     slug: string;
     name: string;
@@ -1243,6 +1305,8 @@ app.post("/providers", async (c) => {
 });
 
 app.patch("/providers/:slug/feed", async (c) => {
+  const denied = catalogMutationDenied(c);
+  if (denied) return denied;
   const p = getProviderBySlug(db, c.req.param("slug"));
   if (!p) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<{ openapiUrl?: string; changelogUrl?: string }>();
@@ -1254,6 +1318,8 @@ app.patch("/providers/:slug/feed", async (c) => {
 });
 
 app.post("/providers/:slug/versions", async (c) => {
+  const denied = catalogMutationDenied(c);
+  if (denied) return denied;
   const p = getProviderBySlug(db, c.req.param("slug"));
   if (!p) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<{
@@ -1274,6 +1340,8 @@ app.post("/providers/:slug/versions", async (c) => {
 });
 
 app.post("/providers/:slug/publish", async (c) => {
+  const denied = catalogMutationDenied(c);
+  if (denied) return denied;
   try {
     const body = await c.req
       .json<{
@@ -1316,6 +1384,8 @@ app.post("/providers/:slug/publish", async (c) => {
 
 /** Phase C: upload OpenAPI version and optionally publish (run pipeline) in one step */
 app.post("/providers/:slug/publish-version", async (c) => {
+  const denied = catalogMutationDenied(c);
+  if (denied) return denied;
   const p = getProviderBySlug(db, c.req.param("slug"));
   if (!p) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<{
@@ -1376,16 +1446,18 @@ app.post("/providers/:slug/publish-version", async (c) => {
   return c.json({ versionId: id, versionLabel: body.versionLabel }, 201);
 });
 
-app.get("/changes", (c) => c.json(listChanges(db).map(changeToApi)));
+app.get("/changes", (c) => {
+  const limit = requestListLimit(c);
+  const offset = requestListOffset(c);
+  return pagedJson(c, listChanges(db, limit, offset).map(changeToApi), limit, offset);
+});
 
 app.get("/changes/:id", (c) => {
   const change = getChange(db, c.req.param("id"));
   if (!change) return c.json({ error: "not found" }, 404);
   const tenantId = requestTenantId(c);
   const findings = listFindingsForChange(db, change.id, tenantId).map(findingToApi);
-  const prs = listPrs(db, tenantId)
-    .filter((p) => p.change_id === change.id)
-    .map(prToApi);
+  const prs = listPrsForChange(db, change.id, tenantId).map(prToApi);
   return c.json({
     ...changeToApi(change),
     diff: JSON.parse(change.diff_json),
@@ -1395,11 +1467,28 @@ app.get("/changes/:id", (c) => {
 });
 
 app.get("/consumers", (c) => {
-  const all = listConsumers(db, c.get("principal")?.tenantId).map((cons) => ({
+  const limit = requestListLimit(c);
+  const offset = requestListOffset(c);
+  const consumers = listConsumers(
+    db,
+    requestTenantId(c),
+    limit,
+    offset,
+  );
+  const monitoredByConsumer = new Map<string, ReturnType<typeof listMonitoredForConsumers>>();
+  for (const monitored of listMonitoredForConsumers(
+    db,
+    consumers.map((consumer) => consumer.id),
+  )) {
+    const current = monitoredByConsumer.get(monitored.consumer_id) ?? [];
+    current.push(monitored);
+    monitoredByConsumer.set(monitored.consumer_id, current);
+  }
+  const all = consumers.map((cons) => ({
     ...consumerToApi(cons),
-    monitored: listMonitoredForConsumer(db, cons.id),
+    monitored: monitoredByConsumer.get(cons.id) ?? [],
   }));
-  return c.json(all);
+  return pagedJson(c, all, limit, offset);
 });
 
 app.post("/consumers", async (c) => {
@@ -1526,7 +1615,7 @@ app.get("/catalog", (c) => c.json(listCatalog()));
 app.get("/feeds", (c) =>
   c.json({
     catalog: listCatalogFeeds(),
-    recentPolls: listFeedPolls(db, 40).map(feedPollToApi),
+    recentPolls: listFeedPolls(db, 40, requestTenantId(c)).map(feedPollToApi),
     monitoring: getFeedScheduleHealth(db, nowIso(), requestTenantId(c)),
   }),
 );
@@ -1570,9 +1659,16 @@ app.get("/learning/suppressed", (c) => {
   );
 });
 
-app.get("/prs", (c) =>
-  c.json(listPrs(db, c.get("principal")?.tenantId).map(prToApi)),
-);
+app.get("/prs", (c) => {
+  const limit = requestListLimit(c);
+  const offset = requestListOffset(c);
+  return pagedJson(
+    c,
+    listPrs(db, requestTenantId(c), limit, offset).map(prToApi),
+    limit,
+    offset,
+  );
+});
 
 app.get("/prs/:id", (c) => {
   const pr = getPr(db, c.req.param("id"), c.get("principal")?.tenantId);
@@ -1865,9 +1961,16 @@ app.post("/webhooks/github", async (c) => {
   return c.json({ ok: true, type: event.type });
 });
 
-app.get("/audit", (c) =>
-  c.json(listAudit(db, requestTenantId(c)).map(auditToApi)),
-);
+app.get("/audit", (c) => {
+  const limit = requestListLimit(c);
+  const offset = requestListOffset(c);
+  return pagedJson(
+    c,
+    listAudit(db, requestTenantId(c), limit, offset).map(auditToApi),
+    limit,
+    offset,
+  );
+});
 
 /** Phase B instrumentation */
 app.get("/metrics", (c) =>
@@ -1917,6 +2020,8 @@ app.get("/audit/export", (c) => {
 
 /** Provider severity on a change */
 app.post("/changes/:id/severity", async (c) => {
+  const denied = catalogMutationDenied(c);
+  if (denied) return denied;
   const body = await c.req.json<{ severity: string }>();
   if (!["required", "recommended", "optional"].includes(body.severity)) {
     return c.json({ error: "severity must be required|recommended|optional" }, 400);
@@ -2760,7 +2865,10 @@ app.post("/github/app/callback", async (c) => {
         409,
       );
     }
-    if (verified.tenant_id && verified.tenant_id !== principal.tenantId) {
+    if (!verified.tenant_id) {
+      return c.json({ error: "installation_tenant_unverified" }, 409);
+    }
+    if (verified.tenant_id !== principal.tenantId) {
       return c.json({ error: "installation_not_owned" }, 404);
     }
     normalized = {

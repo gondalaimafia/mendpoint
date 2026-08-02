@@ -24,6 +24,7 @@ export type ApiKeyRow = {
 
 export type FeedPollRow = {
   id: string;
+  tenant_id: string;
   provider_slug: string;
   openapi_url: string;
   content_hash: string | null;

@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  appendDomainEvent,
   insertArtifactManifest,
   insertEvidenceRecord,
+  insertPrincipal,
   listDomainEvents,
   type AppDb,
 } from "@mendpoint/db";
@@ -112,6 +114,46 @@ describe("migration pull request reviews", () => {
     expect(listMigrationPrReviews(db, "tenant-a", "pr-a")).toHaveLength(1);
     expect(listMigrationPrReviews(db, "tenant-b", "pr-a")).toEqual([]);
     expect(listDomainEvents(db, "tenant-a", "migration_pr", "pr-a")).toHaveLength(1);
+  });
+
+  it("rolls back the review when its immutable event cannot be appended", () => {
+    const db = setup();
+    insertPrincipal(db, {
+      id: "principal-reviewer",
+      tenantId: "tenant-a",
+      kind: "human",
+      subject: "reviewer@example.com",
+      displayName: "Reviewer",
+      createdAt: at,
+    });
+    appendDomainEvent(db, {
+      id: "event-collision",
+      tenantId: "tenant-a",
+      schemaVersion: 1,
+      eventType: "fixture.created",
+      aggregateType: "fixture",
+      aggregateId: "fixture-a",
+      actorPrincipalId: "principal-reviewer",
+      correlationId: "request-fixture",
+      idempotencyKey: "fixture:event-collision",
+      payload: {},
+      createdAt: at,
+    });
+
+    expect(() =>
+      submitMigrationPrReview(db, {
+        tenantId: "tenant-a",
+        prId: "pr-a",
+        authenticatedPrincipalId: "human:reviewer@example.com",
+        decision: "approve",
+        rationale: "Evidence is complete",
+        reviewId: "review-rolled-back",
+        eventId: "event-collision",
+        correlationId: "request-review",
+        createdAt: at,
+      }),
+    ).toThrow();
+    expect(listMigrationPrReviews(db, "tenant-a", "pr-a")).toEqual([]);
   });
 
   it("supersedes only the latest decision for the current candidate", () => {

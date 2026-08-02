@@ -127,6 +127,35 @@ describe("reset-recompute incremental updates", () => {
     }
   });
 
+  it("preserves prototype-named symbols during incremental rebuilds", () => {
+    const root = seedRepo();
+    const specialPath = join(root, "src", "prototype-names.ts");
+    writeFileSync(specialPath, `export function stable() { return 1; }\n`, "utf8");
+    const before = buildCallGraph(root);
+
+    writeFileSync(
+      specialPath,
+      `
+export function constructor() { return 1; }
+export function toString() { return constructor(); }
+export function hasOwnProperty() { return toString(); }
+export function __proto__() { return hasOwnProperty(); }
+`,
+      "utf8",
+    );
+    const after = buildCallGraphIncremental(
+      root,
+      before,
+      ["src/prototype-names.ts"],
+      { fullRebuildFileFraction: 1 },
+    );
+
+    for (const name of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+      expect(nodeByFileName(after, "src/prototype-names.ts", name)).toBeTruthy();
+      expect(after.byName[name]).toHaveLength(1);
+    }
+  });
+
   it("eager strategy may full-rebuild when region is large", () => {
     const root = seedRepo();
     const g0 = buildCallGraph(root);

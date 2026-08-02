@@ -101,17 +101,28 @@ function migrate(raw: DatabaseSync): void {
   raw.exec(DDL_INDEXES);
 }
 
+function configureConnection(raw: DatabaseSync, persistent: boolean): void {
+  raw.exec("PRAGMA busy_timeout = 5000");
+  raw.exec("PRAGMA foreign_keys = ON");
+  if (persistent) {
+    raw.exec("PRAGMA journal_mode = WAL");
+    raw.exec("PRAGMA synchronous = NORMAL");
+  }
+}
+
 export function openGraphLearnDb(dbPath?: string): GraphLearnDb {
   const path =
     dbPath ?? join(process.cwd(), "data", "graph-learn.sqlite");
   mkdirSync(dirname(path), { recursive: true });
   const raw = new DatabaseSync(path);
+  configureConnection(raw, true);
   migrate(raw);
   return { raw, path };
 }
 
 export function openGraphLearnMemory(): GraphLearnDb {
   const raw = new DatabaseSync(":memory:");
+  configureConnection(raw, false);
   migrate(raw);
   return { raw, path: ":memory:" };
 }

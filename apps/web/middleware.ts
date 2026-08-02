@@ -14,6 +14,9 @@ function publicPath(pathname: string): boolean {
     pathname === "/terms" ||
     pathname === "/api/design-partners" ||
     pathname === "/api/session" ||
+    pathname === "/api/oidc/start" ||
+    pathname === "/api/oidc/callback" ||
+    pathname === "/api/oidc/config" ||
     pathname === "/livez" ||
     pathname === "/healthz" ||
     pathname === "/icon.svg" ||

@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
-  authenticatedWebSubject,
+  authenticatedWebCredential,
   isAllowedMutationOrigin,
 } from "../../../lib/proxy-auth";
 
@@ -38,6 +38,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["GET", /^recovery\/summary$/],
     ["GET", /^billing\/usage$/],
     ["GET", /^billing\/config$/],
+    ["GET", /^audit\/export$/],
     ["GET", /^github\/app\/install-url$/],
     ["GET", /^design-partner-applications$/],
     ["GET", /^design-partner-applications\/[^/]+$/],
@@ -82,8 +83,8 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
   if (!matchesAllowedRoute(request.method, decodedPath)) {
     return Response.json({ error: "proxy_route_not_allowed" }, { status: 404 });
   }
-  const subject = await authenticatedWebSubject(request);
-  if (!subject) {
+  const credential = await authenticatedWebCredential(request);
+  if (!credential) {
     return Response.json({ error: "web_session_required" }, { status: 401 });
   }
   const mutation = request.method !== "GET" && request.method !== "HEAD";
@@ -123,10 +124,28 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
       : randomUUID();
   headers.set("X-Request-Id", requestId);
   const apiKey = process.env.MENDPOINT_API_KEY?.trim();
-  if (!apiKey) {
+  if (!credential.upstreamAccessToken && !apiKey) {
     return Response.json({ error: "proxy_api_key_not_configured" }, { status: 503 });
   }
-  headers.set("Authorization", `Bearer ${apiKey}`);
+  headers.set("Authorization", `Bearer ${credential.upstreamAccessToken ?? apiKey}`);
+  const proxySecret = process.env.TRUST_PROXY_SECRET?.trim();
+  if (proxySecret) {
+    const sessionCookie = request.cookies.get("mendpoint_web_session")?.value;
+    if (sessionCookie) {
+      headers.set(
+        "X-Mendpoint-Web-Session",
+        createHash("sha256").update(sessionCookie).digest("hex"),
+      );
+    }
+    const clientIp =
+      request.headers.get("fly-client-ip") ??
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+      request.headers.get("x-real-ip");
+    if (clientIp && /^[A-Fa-f0-9:.]{2,64}$/.test(clientIp)) {
+      headers.set("X-Forwarded-For", clientIp);
+    }
+    headers.set("X-Mendpoint-Proxy-Secret", proxySecret);
+  }
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   const requestBody = hasBody ? await request.arrayBuffer() : undefined;
   if (requestBody && requestBody.byteLength > MAX_REQUEST_BYTES) {

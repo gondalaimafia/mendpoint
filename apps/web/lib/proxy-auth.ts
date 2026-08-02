@@ -3,11 +3,24 @@ import type { NextRequest } from "next/server";
 export const WEB_SESSION_COOKIE = "mendpoint_web_session";
 export const WEB_SESSION_VERSION = 3 as const;
 export const WEB_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
+export const OIDC_SESSION_MAX_AGE_SECONDS = 60 * 60;
 
-export type WebSessionSubject = Readonly<{
-  kind: "preview_access";
-  issuedAt: string;
-  expiresAt: string;
+export type WebSessionSubject = Readonly<
+  | {
+      kind: "preview_access";
+      issuedAt: string;
+      expiresAt: string;
+    }
+  | {
+      kind: "human_oidc";
+      issuedAt: string;
+      expiresAt: string;
+    }
+>;
+
+export type AuthenticatedWebCredential = Readonly<{
+  subject: WebSessionSubject;
+  upstreamAccessToken: string | null;
 }>;
 
 type WebSessionPayloadV3 = {
@@ -18,6 +31,7 @@ type WebSessionPayloadV3 = {
 };
 
 const SESSION_PREFIX = "mendpoint-web-session-v3\n";
+const OIDC_SESSION_PREFIX = "mendpoint-web-oidc-session-v1\n";
 
 function bytesToBase64Url(bytes: Uint8Array): string {
   let binary = "";
@@ -37,6 +51,90 @@ function base64UrlToBytes(value: string): Uint8Array | null {
   } catch {
     return null;
   }
+}
+
+async function aesKey(secret: string, usage: KeyUsage[]): Promise<CryptoKey> {
+  const material = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`${OIDC_SESSION_PREFIX}${secret}`),
+  );
+  return crypto.subtle.importKey("raw", material, "AES-GCM", false, usage);
+}
+
+export async function createOidcWebSession(input: {
+  accessToken: string;
+  sessionSecret: string;
+  expiresInSeconds?: number;
+  now?: Date;
+}): Promise<string> {
+  if (!input.accessToken) throw new Error("oidc_access_token_required");
+  if (!input.sessionSecret) throw new Error("web_access_not_configured");
+  const issuedAt = (input.now ?? new Date()).getTime();
+  const requestedLifetime = Math.floor(input.expiresInSeconds ?? OIDC_SESSION_MAX_AGE_SECONDS);
+  const lifetime = Math.max(1, Math.min(requestedLifetime, OIDC_SESSION_MAX_AGE_SECONDS));
+  const payload = JSON.stringify({
+    v: 1,
+    kind: "human_oidc",
+    iat: issuedAt,
+    exp: issuedAt + lifetime * 1000,
+    accessToken: input.accessToken,
+  });
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(OIDC_SESSION_PREFIX) },
+    await aesKey(input.sessionSecret, ["encrypt"]),
+    new TextEncoder().encode(payload),
+  );
+  return `oidc1.${bytesToBase64Url(iv)}.${bytesToBase64Url(new Uint8Array(encrypted))}`;
+}
+
+async function readOidcWebSession(input: {
+  value: string;
+  sessionSecret: string;
+  now?: Date;
+}): Promise<AuthenticatedWebCredential | null> {
+  const parts = input.value.split(".");
+  if (parts.length !== 3 || parts[0] !== "oidc1") return null;
+  const iv = base64UrlToBytes(parts[1]!);
+  const encrypted = base64UrlToBytes(parts[2]!);
+  if (!iv || iv.length !== 12 || !encrypted) return null;
+  let payload: {
+    v?: number;
+    kind?: string;
+    iat?: number;
+    exp?: number;
+    accessToken?: string;
+  };
+  try {
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: new Uint8Array(iv), additionalData: new TextEncoder().encode(OIDC_SESSION_PREFIX) },
+      await aesKey(input.sessionSecret, ["decrypt"]),
+      new Uint8Array(encrypted),
+    );
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(decrypted));
+  } catch {
+    return null;
+  }
+  if (
+    payload.v !== 1 ||
+    payload.kind !== "human_oidc" ||
+    !Number.isSafeInteger(payload.iat) ||
+    !Number.isSafeInteger(payload.exp) ||
+    typeof payload.accessToken !== "string" ||
+    payload.accessToken.length < 20 ||
+    payload.exp! <= payload.iat! ||
+    payload.exp! - payload.iat! > OIDC_SESSION_MAX_AGE_SECONDS * 1000
+  ) return null;
+  const now = (input.now ?? new Date()).getTime();
+  if (!Number.isFinite(now) || now < payload.iat! || now >= payload.exp!) return null;
+  return Object.freeze({
+    subject: Object.freeze({
+      kind: "human_oidc" as const,
+      issuedAt: new Date(payload.iat!).toISOString(),
+      expiresAt: new Date(payload.exp!).toISOString(),
+    }),
+    upstreamAccessToken: payload.accessToken,
+  });
 }
 
 async function hmac(value: string, secret: string): Promise<Uint8Array> {
@@ -152,11 +250,23 @@ export async function authenticatedWebSubject(
   request: NextRequest,
   now = new Date(),
 ): Promise<WebSessionSubject | null> {
+  return (await authenticatedWebCredential(request, now))?.subject ?? null;
+}
+
+export async function authenticatedWebCredential(
+  request: NextRequest,
+  now = new Date(),
+): Promise<AuthenticatedWebCredential | null> {
   const accessToken = process.env.MENDPOINT_WEB_ACCESS_TOKEN?.trim();
   if (!accessToken) return null;
   const cookie = request.cookies.get(WEB_SESSION_COOKIE)?.value;
   if (!cookie) return null;
-  return readWebSessionV3({ value: cookie, accessToken, now });
+  const oidc = await readOidcWebSession({ value: cookie, sessionSecret: accessToken, now });
+  if (oidc) return oidc;
+  const preview = await readWebSessionV3({ value: cookie, accessToken, now });
+  return preview
+    ? Object.freeze({ subject: preview, upstreamAccessToken: null })
+    : null;
 }
 
 export async function authenticatedWebSession(request: NextRequest): Promise<boolean> {

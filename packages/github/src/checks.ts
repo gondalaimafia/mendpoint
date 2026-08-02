@@ -88,7 +88,11 @@ export class OctokitPrCommenter implements PrCommenter {
   constructor(token?: string) {
     const t = token ?? process.env.GITHUB_TOKEN;
     if (!t) throw new Error("GITHUB_TOKEN required for PR comments");
-    this.octokit = new Octokit({ auth: t, userAgent: "mendpoint-api" });
+    this.octokit = new Octokit({
+      auth: t,
+      userAgent: "mendpoint-api",
+      request: { timeout: 15_000 },
+    });
   }
 
   async commentOnPullRequest(

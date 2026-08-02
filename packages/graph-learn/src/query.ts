@@ -19,6 +19,7 @@ import {
 } from "./slo.js";
 import {
   createTenantGraphView,
+  tenantGraphStats,
   tenantPatternSuccessRows,
   type GraphTenantScope,
 } from "./tenant-scope.js";
@@ -91,6 +92,19 @@ export function runGraphQuery(
         summary: `${rows.length} pattern(s) with >=${minSamples} samples`,
         rows,
       };
+    }
+    if (scope && q.op === "stats") {
+      const stats = tenantGraphStats(db, scope);
+      return {
+        op: "stats",
+        nodes: [],
+        edges: [],
+        summary: `${stats.nodes} nodes, ${stats.edges} edges`,
+        rows: [stats],
+      };
+    }
+    if (scope && q.op === "latency_stats") {
+      return runGraphQueryInner(db, q);
     }
     tenantView = scope ? createTenantGraphView(db, scope) : undefined;
     return runGraphQueryInner(tenantView ?? db, q);

@@ -22,11 +22,14 @@ import {
   parseArgs,
   parseIntervalMs,
   parseLeaseMs,
+  parseJobConcurrency,
   enqueueFeedPipelineJob,
   processJobsOnce,
   resolveWorkerRepoPath,
   retryDelayMs,
+  waitForWorkerDelay,
   startIndependentWorkerLanes,
+  startConcurrentJobLanes,
   validateWorkerProductionEnv,
   runUnseenVersion,
   writeWorkerHeartbeat,
@@ -52,6 +55,9 @@ describe("worker runtime", () => {
     expect(parseLeaseMs("900000")).toBe(900_000);
     expect(() => parseLeaseMs("NaN")).toThrow(/JOB_LEASE_MS/);
     expect(parseArgs(["--interval", "2000"]).intervalMs).toBe(2000);
+    expect(parseJobConcurrency(undefined)).toBe(2);
+    expect(parseJobConcurrency("8")).toBe(8);
+    expect(() => parseJobConcurrency("9")).toThrow(/between 1 and 8/i);
   });
 
   it("writes an atomic worker heartbeat", () => {
@@ -104,6 +110,56 @@ describe("worker runtime", () => {
     ).resolves.toBe("job drained");
     releaseFeed();
     await expect(lanes.feeds).resolves.toBe("feed complete");
+  });
+
+  it("starts independent job lanes so slow work cannot block every tenant", async () => {
+    let releaseSlow!: () => void;
+    const slow = new Promise<string>((resolve) => {
+      releaseSlow = () => resolve("slow complete");
+    });
+    const started: number[] = [];
+    const lanes = startConcurrentJobLanes(2, async (lane) => {
+      started.push(lane);
+      return lane === 0 ? slow : "fast complete";
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(started).toEqual([0, 1]);
+    releaseSlow();
+    await expect(lanes).resolves.toEqual(["slow complete", "fast complete"]);
+  });
+
+  it("stops delay and job claiming immediately when service drain begins", async () => {
+    const controller = new AbortController();
+    const waiting = waitForWorkerDelay(60_000, controller.signal);
+    controller.abort();
+    await expect(waiting).resolves.toBeUndefined();
+
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-worker-drain-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    enqueueJob(db, {
+      id: "job-drain-test",
+      tenantId: "tenant-a",
+      type: "pipeline.fanout",
+      createdAt: nowIso(),
+      payload: { providerSlug: "acme" },
+    });
+    await expect(
+      processJobsOnce(db, {
+        allTenants: true,
+        shouldContinue: () => false,
+      }),
+    ).resolves.toEqual({
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+      retried: 0,
+    });
+    expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({
+      id: "job-drain-test",
+      status: "pending",
+    });
+    db.raw.close();
   });
 
   it("enqueues feed pipeline work idempotently", () => {

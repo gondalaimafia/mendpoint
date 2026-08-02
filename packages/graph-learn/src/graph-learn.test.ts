@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import {
   ingestControlPlane,
   ingestSpecDiff,
@@ -40,6 +41,7 @@ import {
   hashEmbedding,
   kuzuStatus,
   exportSqliteToKuzuScript,
+  createTenantGraphView,
 } from "./index.js";
 import type { StructuralDiff, ImpactableSurface } from "@mendpoint/shared";
 import { writeFileSync, unlinkSync } from "node:fs";
@@ -171,8 +173,93 @@ describe("graph-learn substrate", () => {
       ]);
       expect(exported.edges).toHaveLength(1);
       expect(JSON.stringify(exported)).not.toContain("tenant-b");
+
+      const stats = runGraphQuery(db, { op: "stats" }, scope);
+      expect(stats.rows?.[0]).toMatchObject({
+        nodes: 2,
+        edges: 1,
+        path: ":memory:",
+        exists: true,
+      });
+
+      const embedded = embedGraphNodes(db, { force: true }, scope);
+      expect(embedded.nodes).toBe(2);
+      expect(getNode(db, "file:tenant-a:index.ts")?.props?.embedding).toBeTruthy();
+      expect(getNode(db, "file:tenant-b:index.ts")?.props?.embedding).toBeUndefined();
+
+      const kuzu = exportSqliteToKuzuScript(db, { maxNodes: 100 }, scope);
+      expect(kuzu.nodeInserts).toHaveLength(2);
+      expect(kuzu.edgeInserts).toHaveLength(1);
+      expect(JSON.stringify(kuzu)).not.toContain("tenant-b");
     } finally {
       db.raw.close();
+    }
+  });
+
+  it("uses read only SQL views for persistent tenant projections", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gl-tenant-view-"));
+    const path = join(dir, "graph.sqlite");
+    const db = openGraphLearnDb(path);
+    let view: ReturnType<typeof createTenantGraphView> | undefined;
+    try {
+      for (const tenant of ["tenant-a", "tenant-b"]) {
+        upsertNode(db, {
+          id: `file:${tenant}:index.ts`,
+          kind: "File",
+          label: `${tenant}/index.ts`,
+          repo_id: `${tenant}:consumer`,
+        });
+        upsertNode(db, {
+          id: `symbol:${tenant}:run`,
+          kind: "Symbol",
+          label: `${tenant}.run`,
+          repo_id: `${tenant}:consumer`,
+        });
+        upsertEdge(db, {
+          id: `DEFINES:${tenant}:run`,
+          kind: "DEFINES",
+          source: `file:${tenant}:index.ts`,
+          target: `symbol:${tenant}:run`,
+        });
+      }
+      upsertNode(db, {
+        id: "file:shared:conflicting-owner.ts",
+        kind: "File",
+        label: "conflicting-owner.ts",
+        meta: { tenant_id: "tenant-b" },
+        props: { tenant_id: "tenant-a" },
+      });
+
+      view = createTenantGraphView(db, { tenantId: "tenant-a" });
+      expect(view.path).toBe(path);
+      expect(
+        view.raw
+          .prepare(
+            `SELECT name, type FROM sqlite_temp_master
+             WHERE name IN ('gl_nodes', 'gl_edges') ORDER BY name`,
+          )
+          .all(),
+      ).toEqual([
+        { name: "gl_edges", type: "view" },
+        { name: "gl_nodes", type: "view" },
+      ]);
+      expect(countStats(view)).toMatchObject({ nodes: 2, edges: 1 });
+      expect(JSON.stringify(runGraphQuery(view, {
+        op: "neighbors",
+        nodeId: "file:tenant-a:index.ts",
+      }))).not.toContain("tenant-b");
+      expect(() =>
+        upsertNode(view!, {
+          id: "file:tenant-a:forbidden.ts",
+          kind: "File",
+          label: "forbidden.ts",
+          repo_id: "tenant-a:consumer",
+        }),
+      ).toThrow();
+    } finally {
+      view?.raw.close();
+      db.raw.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
@@ -271,6 +358,78 @@ describe("graph-learn substrate", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("configures persistent graph storage for overlapping API and worker access", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gl-concurrency-"));
+    const path = join(dir, "graph.sqlite");
+    const db = openGraphLearnDb(path);
+    try {
+      expect(
+        (db.raw.prepare("PRAGMA journal_mode").get() as { journal_mode: string })
+          .journal_mode,
+      ).toBe("wal");
+      expect(
+        (db.raw.prepare("PRAGMA busy_timeout").get() as { timeout: number }).timeout,
+      ).toBe(5_000);
+
+      db.raw.exec("BEGIN IMMEDIATE");
+      upsertNode(db, { id: "node:first", kind: "File", label: "first" });
+      const storeUrl = new URL("./store.ts", import.meta.url).href;
+      const child = spawn(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "--input-type=module",
+          "-e",
+          `import { openGraphLearnDb, upsertNode } from ${JSON.stringify(storeUrl)};
+const db = openGraphLearnDb(${JSON.stringify(path)});
+console.log("ready");
+upsertNode(db, { id: "node:second", kind: "File", label: "second" });
+db.raw.close();`,
+        ],
+        { cwd: repositoryRootPath, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk: string) => {
+        stderr += chunk;
+      });
+      const ready = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error(`concurrent graph writer did not start: ${stderr}`)),
+          5_000,
+        );
+        child.stdout.on("data", () => {
+          if (stdout.includes("ready")) {
+            clearTimeout(timeout);
+            resolve();
+          }
+        });
+      });
+      const exited = new Promise<number | null>((resolve) => {
+        child.on("exit", resolve);
+      });
+      await ready;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      db.raw.exec("COMMIT");
+      expect(await exited, stderr).toBe(0);
+      expect(getNode(db, "node:second")?.label).toBe("second");
+    } finally {
+      try {
+        db.raw.exec("ROLLBACK");
+      } catch {
+        // Transaction was already committed.
+      }
+      db.raw.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 10_000);
 
   it("exposes KUZU_DDL_V0 and normalizes legacy kinds", () => {
     expect(KUZU_DDL_V0).toContain("CREATE NODE TABLE");

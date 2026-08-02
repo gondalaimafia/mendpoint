@@ -14,6 +14,7 @@ const originalEnv = {
   MENDPOINT_API_URL: process.env.MENDPOINT_API_URL,
   MENDPOINT_WEB_ACCESS_TOKEN: process.env.MENDPOINT_WEB_ACCESS_TOKEN,
   MENDPOINT_WEB_ALLOWED_ORIGINS: process.env.MENDPOINT_WEB_ALLOWED_ORIGINS,
+  TRUST_PROXY_SECRET: process.env.TRUST_PROXY_SECRET,
 };
 
 afterEach(() => {
@@ -179,6 +180,36 @@ describe("web credential proxy", () => {
     expect(upstream).toHaveBeenCalledOnce();
   });
 
+  it("exports tenant audit evidence through the authenticated same origin proxy", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn(async (url: URL) => {
+      expect(url.toString()).toBe(
+        "http://api.internal:3001/audit/export?format=json",
+      );
+      return new Response(JSON.stringify({ audit: [] }), {
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Disposition": 'attachment; filename="audit.json"',
+        },
+      });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await GET(
+      new NextRequest(
+        "https://console.example/api/audit/export?format=json",
+        { headers: { Cookie: cookie } },
+      ),
+      { params: Promise.resolve({ path: ["audit", "export"] }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toContain("audit.json");
+    await expect(response.json()).resolves.toEqual({ audit: [] });
+  });
+
   it("allows authenticated recovery reads and controls", async () => {
     const cookie = await sessionCookie();
     process.env.MENDPOINT_API_KEY = "api-secret";
@@ -336,6 +367,7 @@ describe("web credential proxy", () => {
     const cookie = await sessionCookie();
     process.env.MENDPOINT_API_KEY = "api-secret";
     process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    process.env.TRUST_PROXY_SECRET = "proxy-secret";
     let forwardedHeaders: Headers | undefined;
     vi.stubGlobal(
       "fetch",
@@ -360,6 +392,7 @@ describe("web credential proxy", () => {
       mutationRequest("https://console.example/api/platform/plans/run-1", {
         headers: {
           Cookie: cookie,
+          "Fly-Client-IP": "198.51.100.42",
           Origin: "https://console.example",
           "Sec-Fetch-Site": "same-origin",
           "X-Request-Id": "browser-request-1",
@@ -369,6 +402,11 @@ describe("web credential proxy", () => {
     );
     expect(response.status).toBe(200);
     expect(forwardedHeaders?.get("authorization")).toBe("Bearer api-secret");
+    expect(forwardedHeaders?.get("x-mendpoint-proxy-secret")).toBe("proxy-secret");
+    expect(forwardedHeaders?.get("x-forwarded-for")).toBe("198.51.100.42");
+    expect(forwardedHeaders?.get("x-mendpoint-web-session")).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
     expect(forwardedHeaders?.get("x-request-id")).toBe("browser-request-1");
     expect(forwardedHeaders?.get("x-mendpoint-actor")).toBeNull();
     expect(forwardedHeaders?.get("x-mendpoint-actor-timestamp")).toBeNull();

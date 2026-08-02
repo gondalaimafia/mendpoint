@@ -69,7 +69,10 @@ async function defaultFetch(
   init?: RequestInit,
 ): Promise<{ ok: boolean; status: number; json: unknown }> {
   try {
-    const res = await fetch(url, init);
+    const res = await fetch(url, {
+      ...init,
+      signal: init?.signal ?? AbortSignal.timeout(15_000),
+    });
     const json = await res.json().catch(() => ({}));
     return { ok: res.ok, status: res.status, json };
   } catch (e) {

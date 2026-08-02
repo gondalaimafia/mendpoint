@@ -340,6 +340,9 @@ export function createAuthMiddleware(
           role: membership.role,
           ...(membership.email ? { email: membership.email } : {}),
         });
+        // OIDC humans are authorized by their tenant membership role. API key
+        // scope attenuation applies only when an API key authenticated the request.
+        c.set("authScopes", ["*"]);
         c.set("trustPrincipalId", trustPrincipal.id);
         return next();
       } catch (error) {

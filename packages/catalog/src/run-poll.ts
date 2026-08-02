@@ -3,6 +3,8 @@
  * Lives in catalog as pure orchestration helpers; worker/API call with a DB handle.
  */
 import {
+  claimFeedTenantDispatch,
+  completeFeedTenantDispatch,
   createDb,
   findMonorepoRoot,
   getProviderBySlug,
@@ -76,6 +78,12 @@ export type PollAllOptions = {
     db: AppDb,
     context: FeedPipelineContext,
   ) => Promise<FeedPipelineDispatchResult>;
+  /** Request-scoped source cache used to share one provider fetch across tenant schedules. */
+  sourceFetches?: Map<string, Promise<FetchOpenApiResult>>;
+  sourceDocumentLoader?: (
+    url: string,
+    monorepoRoot: string,
+  ) => Promise<FetchOpenApiResult>;
 };
 
 function pipelineResult(
@@ -134,6 +142,7 @@ const pollLocks = new WeakMap<object, Map<string, Promise<void>>>();
 function persistPollOutcome(
   db: AppDb,
   feed: PollableFeed,
+  tenantId: string,
   fetched: FetchOpenApiResult,
   row: {
     status: PollOneResult["status"];
@@ -148,6 +157,7 @@ function persistPollOutcome(
   const polledAt = nowIso();
   insertFeedPoll(db, {
     id: newId(),
+    tenantId,
     providerSlug: feed.slug,
     openapiUrl: feed.openapiUrl,
     contentHash: row.contentHash,
@@ -164,6 +174,48 @@ function persistPollOutcome(
       status: row.validationStatus,
     }),
   });
+}
+
+async function dispatchTenantPipeline(
+  db: AppDb,
+  feed: PollableFeed,
+  opts: PollAllOptions,
+  context: FeedPipelineContext,
+): Promise<FeedPipelineDispatchResult | undefined> {
+  if (opts.runPipeline === false || !opts.pipeline) return undefined;
+  const attemptedAt = nowIso();
+  const leaseGeneration = claimFeedTenantDispatch(db, {
+    tenantId: opts.tenantId,
+    providerSlug: feed.slug,
+    contentHash: context.contentHash,
+    versionId: context.versionId,
+    attemptedAt,
+  });
+  if (leaseGeneration === null) return undefined;
+  try {
+    const result = await opts.pipeline(feed.slug, db, context);
+    completeFeedTenantDispatch(db, {
+      tenantId: opts.tenantId,
+      providerSlug: feed.slug,
+      contentHash: context.contentHash,
+      leaseGeneration,
+      succeeded: true,
+      pipelineRef: result.changeId ?? result.jobId,
+      completedAt: nowIso(),
+    });
+    return result;
+  } catch (error) {
+    completeFeedTenantDispatch(db, {
+      tenantId: opts.tenantId,
+      providerSlug: feed.slug,
+      contentHash: context.contentHash,
+      leaseGeneration,
+      succeeded: false,
+      error: error instanceof Error ? error.message : String(error),
+      completedAt: nowIso(),
+    });
+    throw error;
+  }
 }
 
 export async function pollOneFeed(
@@ -202,7 +254,7 @@ async function pollOneFeedUnlocked(
 
   if (opts.localOnly && !url.startsWith("file:")) {
     const error = "remote feed skipped in local-only mode";
-    persistPollOutcome(db, feed, { ok: false, url, error }, {
+    persistPollOutcome(db, feed, opts.tenantId, { ok: false, url, error }, {
       status: "skipped",
       error,
       validationStatus: "skipped",
@@ -212,10 +264,18 @@ async function pollOneFeedUnlocked(
 
   ensureProvider(db, feed);
 
-  const fetched = await fetchOpenApiDocument(url, { monorepoRoot: root });
+  const load = opts.sourceDocumentLoader
+    ? () => opts.sourceDocumentLoader!(url, root)
+    : () => fetchOpenApiDocument(url, { monorepoRoot: root });
+  let sourceFetch = opts.sourceFetches?.get(url);
+  if (!sourceFetch) {
+    sourceFetch = load();
+    opts.sourceFetches?.set(url, sourceFetch);
+  }
+  const fetched = await sourceFetch;
   if (!fetched.ok || !fetched.contentHash || !fetched.body) {
     const err = fetched.error ?? "fetch failed";
-    persistPollOutcome(db, feed, fetched, {
+    persistPollOutcome(db, feed, opts.tenantId, fetched, {
       status: "error",
       error: err,
       validationStatus: "rejected",
@@ -224,44 +284,45 @@ async function pollOneFeedUnlocked(
   }
 
   const latest = latestFeedPollForSlug(db, feed.slug);
-  if (
-    latest?.content_hash === fetched.contentHash &&
-    latest.error &&
-    opts.runPipeline !== false &&
-    opts.pipeline
-  ) {
+  const prev = latestSuccessfulHash(db, feed.slug);
+  const provider = getProviderBySlug(db, feed.slug)!;
+  if (prev === fetched.contentHash) {
+    const versions = listVersionsForProvider(db, provider.id);
+    const existingVersion =
+      versions.find((version) => version.id === latest?.version_id) ??
+      versions.at(-1);
     try {
-      const report = await opts.pipeline(feed.slug, db, {
+      const report = await dispatchTenantPipeline(db, feed, opts, {
         tenantId: opts.tenantId,
         contentHash: fetched.contentHash,
-        versionId: latest.version_id ?? undefined,
-        versionLabel: latest.version_label ?? undefined,
+        versionId: existingVersion?.id,
+        versionLabel: existingVersion?.version_label ?? fetched.versionLabel,
       });
-      const dispatched = pipelineResult(report);
-      persistPollOutcome(db, feed, fetched, {
+      const dispatched = report ? pipelineResult(report) : undefined;
+      persistPollOutcome(db, feed, opts.tenantId, fetched, {
         contentHash: fetched.contentHash,
-        versionLabel: latest.version_label,
-        status: dispatched.status,
-        versionId: latest.version_id,
-        pipelineChangeId: dispatched.changeId ?? dispatched.jobId,
+        versionLabel: existingVersion?.version_label ?? fetched.versionLabel,
+        status: dispatched?.status ?? "unchanged",
+        versionId: existingVersion?.id,
+        pipelineChangeId: dispatched?.changeId ?? dispatched?.jobId,
       });
       return {
         slug: feed.slug,
         url,
-        status: dispatched.status,
+        status: dispatched?.status ?? "unchanged",
         contentHash: fetched.contentHash,
-        versionLabel: latest.version_label ?? undefined,
-        versionId: latest.version_id ?? undefined,
-        changeId: dispatched.changeId,
-        jobId: dispatched.jobId,
+        versionLabel: existingVersion?.version_label ?? fetched.versionLabel,
+        versionId: existingVersion?.id,
+        changeId: dispatched?.changeId,
+        jobId: dispatched?.jobId,
       };
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
-      persistPollOutcome(db, feed, fetched, {
+      persistPollOutcome(db, feed, opts.tenantId, fetched, {
         contentHash: fetched.contentHash,
-        versionLabel: latest.version_label,
+        versionLabel: existingVersion?.version_label ?? fetched.versionLabel,
         status: "new_version",
-        versionId: latest.version_id,
+        versionId: existingVersion?.id,
         error,
       });
       return {
@@ -269,29 +330,11 @@ async function pollOneFeedUnlocked(
         url,
         status: "new_version",
         contentHash: fetched.contentHash,
-        versionLabel: latest.version_label ?? undefined,
-        versionId: latest.version_id ?? undefined,
+        versionLabel: existingVersion?.version_label ?? fetched.versionLabel,
+        versionId: existingVersion?.id,
         error,
       };
     }
-  }
-
-  const prev = latestSuccessfulHash(db, feed.slug);
-  // Also compare against last stored version body hash via version_label match
-  const provider = getProviderBySlug(db, feed.slug)!;
-  if (prev === fetched.contentHash) {
-    persistPollOutcome(db, feed, fetched, {
-      contentHash: fetched.contentHash,
-      versionLabel: fetched.versionLabel,
-      status: "unchanged",
-    });
-    return {
-      slug: feed.slug,
-      url,
-      status: "unchanged",
-      contentHash: fetched.contentHash,
-      versionLabel: fetched.versionLabel,
-    };
   }
 
   const versionLabel = fetched.versionLabel ?? `polled-${fetched.contentHash.slice(0, 8)}`;
@@ -339,22 +382,23 @@ async function pollOneFeedUnlocked(
   let jobId: string | undefined;
   let status: PollOneResult["status"] = "new_version";
 
-  const shouldPipe = opts.runPipeline !== false;
-  if (shouldPipe && opts.pipeline) {
+  if (opts.runPipeline !== false && opts.pipeline) {
     try {
-      const report = await opts.pipeline(feed.slug, db, {
+      const report = await dispatchTenantPipeline(db, feed, opts, {
         tenantId: opts.tenantId,
         contentHash: fetched.contentHash,
         versionId,
         versionLabel: label,
       });
-      const dispatched = pipelineResult(report);
-      changeId = dispatched.changeId;
-      jobId = dispatched.jobId;
-      status = dispatched.status;
+      if (report) {
+        const dispatched = pipelineResult(report);
+        changeId = dispatched.changeId;
+        jobId = dispatched.jobId;
+        status = dispatched.status;
+      }
     } catch (e) {
       // Version stored; pipeline may fail if only 1 version or no consumers
-      persistPollOutcome(db, feed, fetched, {
+      persistPollOutcome(db, feed, opts.tenantId, fetched, {
         contentHash: fetched.contentHash,
         versionLabel: label,
         status: "new_version",
@@ -373,7 +417,7 @@ async function pollOneFeedUnlocked(
     }
   }
 
-  persistPollOutcome(db, feed, fetched, {
+  persistPollOutcome(db, feed, opts.tenantId, fetched, {
     contentHash: fetched.contentHash,
     versionLabel: label,
     status,

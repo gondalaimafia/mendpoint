@@ -159,6 +159,7 @@ describe("API authentication identity", () => {
     app.use("*", createAuthMiddleware(db, { oidc: oidc.verifier }));
     app.get("/private", (c) => c.json({
       principal: c.get("principal"),
+      scopes: c.get("authScopes"),
       trustPrincipalId: c.get("trustPrincipalId"),
     }));
 
@@ -177,6 +178,7 @@ describe("API authentication identity", () => {
         role: "admin",
         email: "membership@example.com",
       },
+      scopes: ["*"],
       trustPrincipalId: expect.stringMatching(/^principal-human-/),
     });
     expect(

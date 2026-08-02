@@ -103,6 +103,18 @@ function requestMetadata(c: Context<ApiEnv>): MutationRequest {
   };
 }
 
+function requireTransformerWorker(c: Context<ApiEnv>): void {
+  const principal = c.get("principal");
+  const scopes = c.get("authScopes") ?? [];
+  if (
+    !principal?.id.startsWith("api-key:") ||
+    principal.role !== "agent" ||
+    (!scopes.includes("*") && !scopes.includes("transformer:worker"))
+  ) {
+    throw new Error("transformer_worker_principal_denied");
+  }
+}
+
 async function json(c: Context<ApiEnv>): Promise<unknown> {
   const body = await c.req.json<unknown>().catch(() => undefined);
   if (body === undefined) throw new Error("json_body_required");
@@ -114,6 +126,12 @@ function errorResponse(c: Context<ApiEnv>, error: unknown) {
   const code = detail.split(":", 1)[0]!;
   if (code === "authenticated_principal_required") {
     return c.json({ error: "unauthorized", message: "Authenticated principal required" }, 401);
+  }
+  if (code === "transformer_worker_principal_denied") {
+    return c.json(
+      { error: code, message: "Transformer worker principal required" },
+      403,
+    );
   }
   if (code.includes("gate_denied") || code.includes("delivery_denied")) {
     return c.json({ error: code, message: "Transformer authorization denied" }, 403);
@@ -381,9 +399,11 @@ export function registerTransformerPilotExecutionRoutes(
     path: string,
     operation: (request: MutationRequest, campaignId: string, body: unknown) => unknown,
     status: 200 | 201 = 200,
+    workerOnly = false,
   ) => {
     app.post(path, async (c) => {
       try {
+        if (workerOnly) requireTransformerWorker(c);
         const campaignId = requiredString(
           c.req.param("campaignId"),
           "transformer_pilot_campaign_invalid",
@@ -398,10 +418,10 @@ export function registerTransformerPilotExecutionRoutes(
 
   mutation("/transformer/executions/:campaignId/attempts/claim", (request, campaignId, body) => ({
     lease: service.claim(request, campaignId, body),
-  }));
-  mutation("/transformer/executions/:campaignId/attempts/complete", (request, campaignId, body) => service.complete(request, campaignId, body));
-  mutation("/transformer/executions/:campaignId/attempts/crash", (request, campaignId, body) => service.crash(request, campaignId, body));
-  mutation("/transformer/executions/:campaignId/observations", (request, campaignId, body) => service.observe(request, campaignId, body));
+  }), 200, true);
+  mutation("/transformer/executions/:campaignId/attempts/complete", (request, campaignId, body) => service.complete(request, campaignId, body), 200, true);
+  mutation("/transformer/executions/:campaignId/attempts/crash", (request, campaignId, body) => service.crash(request, campaignId, body), 200, true);
+  mutation("/transformer/executions/:campaignId/observations", (request, campaignId, body) => service.observe(request, campaignId, body), 200, true);
   mutation("/transformer/executions/:campaignId/control", (request, campaignId, body) => service.control(request, campaignId, body));
   mutation("/transformer/executions/:campaignId/drafts/authorize", (request, campaignId, body) => ({
     actions: service.authorizeDrafts(request, campaignId, body),

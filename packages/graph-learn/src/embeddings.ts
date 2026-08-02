@@ -6,6 +6,10 @@ import { createHash } from "node:crypto";
 import type { GraphLearnDb } from "./store.js";
 import { listNodesByKind, upsertNode, getNode } from "./store.js";
 import type { GlNodeKind } from "./schema.js";
+import {
+  graphNodeBelongsToTenant,
+  type GraphTenantScope,
+} from "./tenant-scope.js";
 
 const DEFAULT_DIM = 32;
 
@@ -50,6 +54,7 @@ export type EmbedResult = {
 export function embedGraphNodes(
   db: GraphLearnDb,
   opts?: { dim?: number; kinds?: GlNodeKind[]; limit?: number; force?: boolean },
+  scope?: GraphTenantScope,
 ): EmbedResult {
   const dim = opts?.dim ?? DEFAULT_DIM;
   const kinds = opts?.kinds ?? KINDS;
@@ -58,6 +63,7 @@ export function embedGraphNodes(
   for (const kind of kinds) {
     for (const node of listNodesByKind(db, kind)) {
       if (n >= limit) break;
+      if (scope && !graphNodeBelongsToTenant(node, scope)) continue;
       const storedEmbedding =
         node.embedding ??
         (Array.isArray(node.props?.embedding)

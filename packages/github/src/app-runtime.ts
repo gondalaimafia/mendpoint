@@ -7,6 +7,35 @@ import { readFileSync } from "node:fs";
 import { Octokit } from "@octokit/rest";
 import type { FileEdit, GitHubDelivery, PullRequestResult } from "./index.js";
 
+const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
+const GITHUB_FILE_CONCURRENCY = 8;
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  work: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      while (next < values.length) {
+        const index = next++;
+        results[index] = await work(values[index]!);
+      }
+    }),
+  );
+  return results;
+}
+
+function octokitFor(auth: string, userAgent?: string): Octokit {
+  return new Octokit({
+    auth,
+    userAgent,
+    request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
+  });
+}
+
 export type AppCredentials = {
   appId: string;
   /** PEM private key (PKCS#1 or PKCS#8) */
@@ -75,7 +104,7 @@ export async function defaultFetchInstallationToken(
   installationId: number,
   jwt: string,
 ): Promise<InstallationToken> {
-  const octokit = new Octokit({ auth: jwt });
+  const octokit = octokitFor(jwt);
   const { data } = await octokit.request(
     "POST /app/installations/{installation_id}/access_tokens",
     { installation_id: installationId },
@@ -105,7 +134,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
     const key = String(this.installationId);
     const cached = this.tokenCache.get(key);
     if (cached && cached.expires > Date.now() + 60_000) {
-      return new Octokit({ auth: cached.token, userAgent: "mendpoint-app" });
+      return octokitFor(cached.token, "mendpoint-app");
     }
     const jwt = createAppJwt(this.creds.appId, this.creds.privateKeyPem);
     const tok = await this.fetchToken(this.installationId, jwt);
@@ -113,7 +142,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
       token: tok.token,
       expires: Date.parse(tok.expiresAt) || Date.now() + 50 * 60_000,
     });
-    return new Octokit({ auth: tok.token, userAgent: "mendpoint-app" });
+    return octokitFor(tok.token, "mendpoint-app");
   }
 
   private async branchMatchesFiles(
@@ -124,8 +153,10 @@ export class GitHubAppDelivery implements GitHubDelivery {
     files: FileEdit[],
   ): Promise<boolean> {
     try {
-      const matches = await Promise.all(
-        files.map(async (file) => {
+      const matches = await mapWithConcurrency(
+        files,
+        GITHUB_FILE_CONCURRENCY,
+        async (file) => {
           const { data } = await octokit.repos.getContent({
             owner,
             repo,
@@ -136,7 +167,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
             return false;
           }
           return Buffer.from(data.content, "base64").toString("utf8") === file.content;
-        }),
+        },
       );
       return matches.every(Boolean);
     } catch {
@@ -190,8 +221,10 @@ export class GitHubAppDelivery implements GitHubDelivery {
     const { data: ref } = await o.git.getRef({ owner, repo, ref: `heads/${branch}` });
     const branchSha = ref.object.sha;
     const { data: baseCommit } = await o.git.getCommit({ owner, repo, commit_sha: branchSha });
-    const tree = await Promise.all(
-      files.map(async (f) => {
+    const tree = await mapWithConcurrency(
+      files,
+      GITHUB_FILE_CONCURRENCY,
+      async (f) => {
         const { data: blob } = await o.git.createBlob({
           owner,
           repo,
@@ -204,7 +237,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
           type: "blob" as const,
           sha: blob.sha,
         };
-      }),
+      },
     );
     const { data: newTree } = await o.git.createTree({
       owner,

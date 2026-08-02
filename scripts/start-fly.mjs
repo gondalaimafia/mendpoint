@@ -122,7 +122,7 @@ function shutdown(exitCode = 0) {
   const timer = setTimeout(() => {
     for (const child of children.values()) child.kill("SIGKILL");
     process.exit(exitCode);
-  }, 10_000);
+  }, 25_000);
   timer.unref();
   Promise.all(
     [...children.values()].map(

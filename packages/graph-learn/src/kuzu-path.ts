@@ -8,6 +8,10 @@ import { KUZU_DDL_V0 } from "./schema.js";
 import type { GraphLearnDb } from "./store.js";
 import { listNodesByKind, edgesFrom } from "./store.js";
 import type { GlNodeKind } from "./schema.js";
+import {
+  graphNodeBelongsToTenant,
+  type GraphTenantScope,
+} from "./tenant-scope.js";
 
 export type KuzuStatus = {
   available: boolean;
@@ -51,6 +55,7 @@ export type KuzuExportScript = {
 export function exportSqliteToKuzuScript(
   db: GraphLearnDb,
   opts?: { kinds?: GlNodeKind[]; maxNodes?: number },
+  scope?: GraphTenantScope,
 ): KuzuExportScript {
   const kinds =
     opts?.kinds ??
@@ -67,20 +72,27 @@ export function exportSqliteToKuzuScript(
   const max = opts?.maxNodes ?? 2000;
   const nodeInserts: string[] = [];
   const edgeInserts: string[] = [];
+  const allowedNodeIds = new Set<string>();
   let count = 0;
 
   for (const kind of kinds) {
     for (const n of listNodesByKind(db, kind)) {
+      if (scope && !graphNodeBelongsToTenant(n, scope)) continue;
       if (count++ >= max) break;
+      allowedNodeIds.add(n.id);
       const props = JSON.stringify(n.props ?? {}).replace(/'/g, "''");
       nodeInserts.push(
         `CREATE (n:Node {id: '${n.id.replace(/'/g, "''")}', kind: '${n.kind}', label: '${n.label.replace(/'/g, "''")}', repo_id: '${(n.repo_id ?? "").replace(/'/g, "''")}', props: '${props}'});`,
       );
-      for (const e of edgesFrom(db, n.id)) {
-        edgeInserts.push(
-          `MATCH (a:Node {id: '${e.source.replace(/'/g, "''")}'}), (b:Node {id: '${e.target.replace(/'/g, "''")}'}) CREATE (a)-[:Edge {kind: '${e.kind}', confidence: ${e.confidence ?? 1}}]->(b);`,
-        );
-      }
+    }
+  }
+
+  for (const source of allowedNodeIds) {
+    for (const e of edgesFrom(db, source)) {
+      if (!allowedNodeIds.has(e.target)) continue;
+      edgeInserts.push(
+        `MATCH (a:Node {id: '${e.source.replace(/'/g, "''")}'}), (b:Node {id: '${e.target.replace(/'/g, "''")}'}) CREATE (a)-[:Edge {kind: '${e.kind}', confidence: ${e.confidence ?? 1}}]->(b);`,
+      );
     }
   }
 

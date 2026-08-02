@@ -261,6 +261,7 @@ CREATE INDEX IF NOT EXISTS delegated_request_nonces_created_idx
 -- Phase D: continuous feed poll ledger
 CREATE TABLE IF NOT EXISTS feed_polls (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
   provider_slug TEXT NOT NULL,
   openapi_url TEXT NOT NULL,
   content_hash TEXT,
@@ -332,6 +333,22 @@ CREATE TABLE IF NOT EXISTS feed_schedule_windows (
 );
 CREATE INDEX IF NOT EXISTS feed_schedule_windows_schedule_idx
   ON feed_schedule_windows(schedule_id, window_started_at);
+
+CREATE TABLE IF NOT EXISTS feed_tenant_dispatches (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  provider_slug TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  version_id TEXT,
+  status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+  pipeline_ref TEXT,
+  error TEXT,
+  lease_generation INTEGER NOT NULL DEFAULT 1,
+  attempted_at TEXT NOT NULL,
+  completed_at TEXT,
+  PRIMARY KEY (tenant_id, provider_slug, content_hash)
+);
+CREATE INDEX IF NOT EXISTS feed_tenant_dispatches_status_idx
+  ON feed_tenant_dispatches(status, attempted_at);
 
 -- Phase E: multi-tenant orgs + plans
 CREATE TABLE IF NOT EXISTS tenants (
@@ -1037,6 +1054,8 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "audit_events", name: "api_key_id", sql: "TEXT" },
     { table: "audit_events", name: "request_id", sql: "TEXT" },
     { table: "suppressed_patterns", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "feed_polls", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "feed_tenant_dispatches", name: "lease_generation", sql: "INTEGER NOT NULL DEFAULT 1" },
     { table: "github_webhook_deliveries", name: "status", sql: "TEXT NOT NULL DEFAULT 'completed'" },
     { table: "github_webhook_deliveries", name: "updated_at", sql: "TEXT" },
     { table: "github_webhook_deliveries", name: "attempts", sql: "INTEGER NOT NULL DEFAULT 1" },
@@ -1054,6 +1073,22 @@ function migrateProvidersFeedColumns(db: AppDb) {
     if (!columns.includes(column.name)) {
       run(db, `ALTER TABLE ${column.table} ADD COLUMN ${column.name} ${column.sql}`);
     }
+  }
+  for (const statement of [
+    `CREATE INDEX IF NOT EXISTS feed_polls_tenant_polled_idx
+     ON feed_polls(tenant_id, polled_at)`,
+    `CREATE INDEX IF NOT EXISTS api_changes_created_idx
+     ON api_changes(created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS consumers_tenant_created_idx
+     ON consumers(tenant_id, created_at)`,
+    `CREATE INDEX IF NOT EXISTS monitored_apis_consumer_idx
+     ON monitored_apis(consumer_id)`,
+    `CREATE INDEX IF NOT EXISTS migration_prs_consumer_created_idx
+     ON migration_prs(consumer_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS audit_events_tenant_created_idx
+     ON audit_events(tenant_id, created_at DESC)`,
+  ]) {
+    run(db, statement);
   }
   run(
     db,
@@ -1758,41 +1793,59 @@ export function updateMigrationPrDelivery(
   );
 }
 
-export function listProviders(db: AppDb): Provider[] {
-  return all(db, `SELECT * FROM providers ORDER BY created_at`);
+export function listProviders(db: AppDb, limit?: number, offset = 0): Provider[] {
+  return all(
+    db,
+    `SELECT * FROM providers ORDER BY created_at, id ${limit ? "LIMIT ? OFFSET ?" : ""}`,
+    limit ? [limit, offset] : [],
+  );
 }
 
 export function getProviderBySlug(db: AppDb, slug: string): Provider | undefined {
   return get(db, `SELECT * FROM providers WHERE slug = ?`, [slug]);
 }
 
-export function listChanges(db: AppDb): ApiChange[] {
-  return all(db, `SELECT * FROM api_changes ORDER BY created_at DESC`);
+export function listChanges(db: AppDb, limit?: number, offset = 0): ApiChange[] {
+  return all(
+    db,
+    `SELECT * FROM api_changes ORDER BY created_at DESC, id DESC ${limit ? "LIMIT ? OFFSET ?" : ""}`,
+    limit ? [limit, offset] : [],
+  );
 }
 
 export function getChange(db: AppDb, id: string): ApiChange | undefined {
   return get(db, `SELECT * FROM api_changes WHERE id = ?`, [id]);
 }
 
-export function listConsumers(db: AppDb, tenantId?: string): Consumer[] {
+export function listConsumers(
+  db: AppDb,
+  tenantId?: string,
+  limit?: number,
+  offset = 0,
+): Consumer[] {
   return all(
     db,
     `SELECT * FROM consumers
      ${tenantId ? "WHERE tenant_id = ?" : ""}
-     ORDER BY created_at`,
-    tenantId ? [tenantId] : [],
+     ORDER BY created_at, id ${limit ? "LIMIT ? OFFSET ?" : ""}`,
+    tenantId ? (limit ? [tenantId, limit, offset] : [tenantId]) : limit ? [limit, offset] : [],
   );
 }
 
-export function listPrs(db: AppDb, tenantId?: string): MigrationPrRow[] {
+export function listPrs(
+  db: AppDb,
+  tenantId?: string,
+  limit?: number,
+  offset = 0,
+): MigrationPrRow[] {
   return all(
     db,
     `SELECT pr.*
      FROM migration_prs pr
      JOIN consumers c ON c.id = pr.consumer_id
      ${tenantId ? "WHERE c.tenant_id = ?" : ""}
-     ORDER BY pr.created_at DESC`,
-    tenantId ? [tenantId] : [],
+     ORDER BY pr.created_at DESC, pr.id DESC ${limit ? "LIMIT ? OFFSET ?" : ""}`,
+    tenantId ? (limit ? [tenantId, limit, offset] : [tenantId]) : limit ? [limit, offset] : [],
   );
 }
 
@@ -1826,13 +1879,18 @@ export function getPr(
   );
 }
 
-export function listAudit(db: AppDb, tenantId?: string): AuditEvent[] {
+export function listAudit(
+  db: AppDb,
+  tenantId?: string,
+  limit?: number,
+  offset = 0,
+): AuditEvent[] {
   return all(
     db,
     `SELECT * FROM audit_events
      ${tenantId ? "WHERE tenant_id = ?" : ""}
-     ORDER BY created_at DESC`,
-    tenantId ? [tenantId] : [],
+     ORDER BY created_at DESC, id DESC ${limit ? "LIMIT ? OFFSET ?" : ""}`,
+    tenantId ? (limit ? [tenantId, limit, offset] : [tenantId]) : limit ? [limit, offset] : [],
   );
 }
 
@@ -1892,6 +1950,19 @@ export function listMonitoredForProvider(
 
 export function listMonitoredForConsumer(db: AppDb, consumerId: string): MonitoredApi[] {
   return all(db, `SELECT * FROM monitored_apis WHERE consumer_id = ?`, [consumerId]);
+}
+
+export function listMonitoredForConsumers(
+  db: AppDb,
+  consumerIds: readonly string[],
+): MonitoredApi[] {
+  if (consumerIds.length === 0) return [];
+  const placeholders = consumerIds.map(() => "?").join(", ");
+  return all(
+    db,
+    `SELECT * FROM monitored_apis WHERE consumer_id IN (${placeholders})`,
+    [...consumerIds],
+  );
 }
 
 export function getConsumerRepo(
@@ -2348,6 +2419,7 @@ export function insertFeedPoll(
   db: AppDb,
   row: {
     id: string;
+    tenantId: string;
     providerSlug: string;
     openapiUrl: string;
     contentHash?: string | null;
@@ -2366,10 +2438,11 @@ export function insertFeedPoll(
     run(
       db,
       `INSERT INTO feed_polls
-       (id, provider_slug, openapi_url, content_hash, version_label, status, error, version_id, pipeline_change_id, polled_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, tenant_id, provider_slug, openapi_url, content_hash, version_label, status, error, version_id, pipeline_change_id, polled_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
+        row.tenantId,
         row.providerSlug,
         row.openapiUrl,
         row.contentHash ?? null,
@@ -2416,7 +2489,11 @@ export function insertFeedPoll(
   }
 }
 
-export function listFeedPolls(db: AppDb, limit = 50): FeedPollRow[] {
+export function listFeedPolls(
+  db: AppDb,
+  limit = 50,
+  tenantId?: string,
+): FeedPollRow[] {
   return all(
     db,
     `SELECT poll.*,
@@ -2434,9 +2511,115 @@ export function listFeedPolls(db: AppDb, limit = 50): FeedPollRow[] {
             evidence.observed_at AS validation_observed_at
      FROM feed_polls poll
      LEFT JOIN feed_validation_evidence evidence ON evidence.poll_id = poll.id
+     ${tenantId ? "WHERE poll.tenant_id = ?" : ""}
      ORDER BY poll.polled_at DESC LIMIT ?`,
-    [limit],
+    tenantId ? [tenantId, limit] : [limit],
   );
+}
+
+export function claimFeedTenantDispatch(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    providerSlug: string;
+    contentHash: string;
+    versionId?: string;
+    attemptedAt: string;
+    staleAfterMs?: number;
+  },
+): number | null {
+  const attemptedAtMs = Date.parse(input.attemptedAt);
+  if (!Number.isFinite(attemptedAtMs)) {
+    throw new Error("feed_dispatch_attempt_time_invalid");
+  }
+  const staleBefore = new Date(
+    attemptedAtMs - (input.staleAfterMs ?? 15 * 60_000),
+  ).toISOString();
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const inserted = db.raw
+      .prepare(
+        `INSERT INTO feed_tenant_dispatches
+         (tenant_id, provider_slug, content_hash, version_id, status, attempted_at)
+         VALUES (?, ?, ?, ?, 'running', ?)
+         ON CONFLICT (tenant_id, provider_slug, content_hash) DO NOTHING`,
+      )
+      .run(
+        input.tenantId,
+        input.providerSlug,
+        input.contentHash,
+        input.versionId ?? null,
+        input.attemptedAt,
+      );
+    let claimed = Number(inserted.changes) === 1;
+    if (!claimed) {
+      const reclaimed = db.raw
+        .prepare(
+          `UPDATE feed_tenant_dispatches
+           SET version_id = ?, status = 'running', pipeline_ref = NULL,
+               lease_generation = lease_generation + 1,
+               error = NULL, attempted_at = ?, completed_at = NULL
+           WHERE tenant_id = ? AND provider_slug = ? AND content_hash = ?
+             AND (status = 'failed' OR (status = 'running' AND attempted_at <= ?))`,
+        )
+        .run(
+          input.versionId ?? null,
+          input.attemptedAt,
+          input.tenantId,
+          input.providerSlug,
+          input.contentHash,
+          staleBefore,
+        );
+      claimed = Number(reclaimed.changes) === 1;
+    }
+    const generation = claimed
+      ? get<{ lease_generation: number }>(
+          db,
+          `SELECT lease_generation FROM feed_tenant_dispatches
+           WHERE tenant_id = ? AND provider_slug = ? AND content_hash = ?`,
+          [input.tenantId, input.providerSlug, input.contentHash],
+        )?.lease_generation ?? null
+      : null;
+    if (ownsTransaction) db.raw.exec("COMMIT");
+    return generation;
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function completeFeedTenantDispatch(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    providerSlug: string;
+    contentHash: string;
+    leaseGeneration: number;
+    succeeded: boolean;
+    completedAt: string;
+    pipelineRef?: string;
+    error?: string;
+  },
+): boolean {
+  const updated = db.raw
+    .prepare(
+      `UPDATE feed_tenant_dispatches
+       SET status = ?, pipeline_ref = ?, error = ?, completed_at = ?
+       WHERE tenant_id = ? AND provider_slug = ? AND content_hash = ?
+         AND status = 'running' AND lease_generation = ?`,
+    )
+    .run(
+      input.succeeded ? "succeeded" : "failed",
+      input.pipelineRef ?? null,
+      input.succeeded ? null : input.error ?? "feed_pipeline_failed",
+      input.completedAt,
+      input.tenantId,
+      input.providerSlug,
+      input.contentHash,
+      input.leaseGeneration,
+    );
+  return Number(updated.changes) === 1;
 }
 
 export function latestFeedPollForSlug(db: AppDb, slug: string): FeedPollRow | undefined {
@@ -2697,6 +2880,7 @@ export function providerToApi(p: Provider) {
 export function feedPollToApi(r: FeedPollRow) {
   return {
     id: r.id,
+    tenantId: r.tenant_id,
     providerSlug: r.provider_slug,
     openapiUrl: r.openapi_url,
     contentHash: r.content_hash,
@@ -2898,12 +3082,19 @@ export function claimNextJob(
     workerId?: string;
     leaseMs?: number;
     now?: string;
+    maxRunningPerTenant?: number;
   },
 ): JobRow | undefined {
   const typeFilter = types?.length
     ? `AND type IN (${types.map(() => "?").join(",")})`
     : "";
   const tenantFilter = opts?.tenantId ? "AND tenant_id = ?" : "";
+  const tenantCapacityFilter = opts?.maxRunningPerTenant
+    ? `AND (
+         SELECT COUNT(*) FROM jobs running
+         WHERE running.tenant_id = jobs.tenant_id AND running.status = 'running'
+       ) < ?`
+    : "";
   const now = opts?.now ?? new Date().toISOString();
   const workerId =
     opts?.workerId ?? `worker:${process.pid}:${randomBytes(8).toString("hex")}`;
@@ -2914,6 +3105,7 @@ export function claimNextJob(
     ...(types?.length ? types : []),
     ...(opts?.tenantId ? [opts.tenantId] : []),
     now,
+    ...(opts?.maxRunningPerTenant ? [opts.maxRunningPerTenant] : []),
   ];
 
   db.raw.exec("BEGIN IMMEDIATE");
@@ -2925,6 +3117,7 @@ export function claimNextJob(
        WHERE status = 'pending' ${typeFilter} ${tenantFilter}
          AND cancelled_at IS NULL
          AND (available_at IS NULL OR available_at <= ?)
+         ${tenantCapacityFilter}
        ORDER BY available_at, created_at, id LIMIT 1`,
       params,
     );
@@ -3159,7 +3352,7 @@ export function getJob(db: AppDb, id: string, tenantId?: string): JobRow | undef
 
 export function getJobRecoverySummary(
   db: AppDb,
-  tenantId: string,
+  tenantId?: string,
   now = new Date().toISOString(),
 ): JobRecoverySummary {
   const row = get<{
@@ -3202,11 +3395,11 @@ export function getJobRecoverySummary(
        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
        MIN(CASE WHEN status = 'pending' THEN created_at END) AS oldest_pending_at
      FROM jobs
-     WHERE tenant_id = ?`,
-    [now, now, now, tenantId],
+     ${tenantId ? "WHERE tenant_id = ?" : ""}`,
+    tenantId ? [now, now, now, tenantId] : [now, now, now],
   );
   return {
-    tenantId,
+    tenantId: tenantId ?? "*",
     pending: Number(row?.pending ?? 0),
     due: Number(row?.due ?? 0),
     scheduled: Number(row?.scheduled ?? 0),

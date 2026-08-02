@@ -59,6 +59,8 @@ import {
   failGitHubWebhookDelivery,
   findPrByRepositoryAndNumber,
   insertApiVersionIfAbsent,
+  claimFeedTenantDispatch,
+  completeFeedTenantDispatch,
 } from "./index.js";
 import { newId, nowIso } from "@mendpoint/shared";
 
@@ -172,6 +174,110 @@ describe("db", () => {
     expect(listAudit(db).some((a) => a.action === "ping")).toBe(true);
   });
 
+  it("retrieves stable collection pages beyond the first response", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-pages-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "pages.sqlite"));
+    dbs.push(db);
+    for (let index = 0; index < 5; index++) {
+      insertProvider(db, {
+        id: `provider-${index}`,
+        slug: `provider-${index}`,
+        name: `Provider ${index}`,
+        website: null,
+        createdAt: "2026-08-02T00:00:00.000Z",
+      });
+    }
+    expect(listProviders(db, 2, 0).map((row) => row.id)).toEqual([
+      "provider-0",
+      "provider-1",
+    ]);
+    expect(listProviders(db, 2, 2).map((row) => row.id)).toEqual([
+      "provider-2",
+      "provider-3",
+    ]);
+    expect(listProviders(db, 2, 4).map((row) => row.id)).toEqual(["provider-4"]);
+  });
+
+  it("fences stale feed dispatch completion after recovery", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-feed-fence-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "fence.sqlite"));
+    dbs.push(db);
+    const first = claimFeedTenantDispatch(db, {
+      tenantId: "tenant_default",
+      providerSlug: "acme",
+      contentHash: "hash-one",
+      attemptedAt: "2026-08-02T00:00:00.000Z",
+      staleAfterMs: 1_000,
+    });
+    const recovered = claimFeedTenantDispatch(db, {
+      tenantId: "tenant_default",
+      providerSlug: "acme",
+      contentHash: "hash-one",
+      attemptedAt: "2026-08-02T00:00:02.000Z",
+      staleAfterMs: 1_000,
+    });
+    expect(first).toBe(1);
+    expect(recovered).toBe(2);
+    expect(completeFeedTenantDispatch(db, {
+      tenantId: "tenant_default",
+      providerSlug: "acme",
+      contentHash: "hash-one",
+      leaseGeneration: first!,
+      succeeded: true,
+      completedAt: "2026-08-02T00:00:03.000Z",
+    })).toBe(false);
+    expect(completeFeedTenantDispatch(db, {
+      tenantId: "tenant_default",
+      providerSlug: "acme",
+      contentHash: "hash-one",
+      leaseGeneration: recovered!,
+      succeeded: true,
+      completedAt: "2026-08-02T00:00:03.000Z",
+    })).toBe(true);
+  });
+
+  it("keeps a noisy tenant from occupying every global worker lane", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-job-fairness-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "fairness.sqlite"));
+    dbs.push(db);
+    for (const tenantId of ["tenant-a", "tenant-b"]) {
+      insertTenant(db, {
+        id: tenantId,
+        slug: tenantId,
+        name: tenantId,
+        plan: "pilot",
+        seatLimit: 5,
+        createdAt: "2026-08-02T00:00:00.000Z",
+      });
+    }
+    for (const [id, tenantId, createdAt] of [
+      ["a-one", "tenant-a", "2026-08-02T00:00:00.000Z"],
+      ["a-two", "tenant-a", "2026-08-02T00:00:01.000Z"],
+      ["b-one", "tenant-b", "2026-08-02T00:00:02.000Z"],
+    ] as const) {
+      enqueueJob(db, {
+        id,
+        tenantId,
+        type: "agent.run",
+        payload: {},
+        createdAt,
+      });
+    }
+    const first = claimNextJob(db, ["agent.run"], {
+      workerId: "lane-one",
+      maxRunningPerTenant: 1,
+    });
+    const second = claimNextJob(db, ["agent.run"], {
+      workerId: "lane-two",
+      maxRunningPerTenant: 1,
+    });
+    expect(first).toMatchObject({ id: "a-one", tenant_id: "tenant-a" });
+    expect(second).toMatchObject({ id: "b-one", tenant_id: "tenant-b" });
+  });
+
   it("api keys hash and revoke", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-keys-"));
     dirs.push(dir);
@@ -223,6 +329,7 @@ describe("db", () => {
     const pollId = newId();
     insertFeedPoll(db, {
       id: pollId,
+      tenantId: "tenant_default",
       providerSlug: "acme-payments",
       openapiUrl: "file:x.json",
       contentHash: "abc123",

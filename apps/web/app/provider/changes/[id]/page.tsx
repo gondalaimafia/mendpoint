@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { apiGet, type MigrationPr } from "../../../../lib/api";
+import { ApiRequestError, apiGet, type MigrationPr } from "../../../../lib/api";
 import { SeverityForm } from "./severity-form";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +21,17 @@ type ChangeDetail = {
   prs: MigrationPr[];
 };
 
+function changeLoadMessage(error: unknown): string {
+  if (!(error instanceof ApiRequestError)) {
+    return "The change could not be loaded. Retry or check system status.";
+  }
+  if (error.status === 401) return "Your session has expired. Sign in again and retry.";
+  if (error.status === 403) return "You do not have access to this change.";
+  if (error.status === 404) return "This change was not found.";
+  if (error.status === 429) return "The service is busy. Wait a moment and retry.";
+  return `The change service is temporarily unavailable${error.requestId ? `. Request ${error.requestId}` : ""}.`;
+}
+
 export default async function ChangeDetailPage({
   params,
 }: {
@@ -28,17 +39,22 @@ export default async function ChangeDetailPage({
 }) {
   const { id } = await params;
   let data: ChangeDetail | null = null;
-  let error: string | null = null;
+  let error: unknown = null;
   try {
     data = await apiGet<ChangeDetail>(`/changes/${id}`);
   } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
+    error = e;
   }
 
   if (error || !data) {
     return (
       <div>
-        <p className="muted">{error ?? "Not found"}</p>
+        <h1>Change unavailable</h1>
+        <p className="muted">{changeLoadMessage(error)}</p>
+        <p className="btn-row">
+          <Link className="btn primary" href={`/provider/changes/${id}`}>Retry</Link>
+          <Link className="btn" href="/status">System status</Link>
+        </p>
         <Link href="/provider">← Back</Link>
       </div>
     );
@@ -53,7 +69,9 @@ export default async function ChangeDetailPage({
       <div className="btn-row">
         <span className={`badge ${data.risk}`}>{data.risk}</span>
         {data.severity && <span className="badge">{data.severity}</span>}
-        <span className="muted">{data.createdAt}</span>
+        <span className="muted">
+          {new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(data.createdAt))}
+        </span>
       </div>
       <p className="lead" style={{ marginTop: "1rem" }}>
         {data.summary}
@@ -62,7 +80,7 @@ export default async function ChangeDetailPage({
         <Link className="btn primary" href={`/graph?changeId=${data.id}`}>
           Open impact graph
         </Link>
-        <a className="btn" href="http://localhost:3001/audit/export?format=json" target="_blank" rel="noreferrer">
+        <a className="btn" href="/api/audit/export?format=json">
           Export audit (JSON)
         </a>
       </p>
@@ -84,7 +102,7 @@ export default async function ChangeDetailPage({
               <td>
                 <code>{String(e.op)}</code>
               </td>
-              <td className="muted">{String(e.path ?? "—")}</td>
+              <td className="muted">{String(e.path ?? "Not specified")}</td>
               <td>
                 {e.fromField
                   ? `${String(e.fromField)} → ${String(e.toField)}`
@@ -92,6 +110,13 @@ export default async function ChangeDetailPage({
               </td>
             </tr>
           ))}
+          {data.diff.entries.length === 0 && (
+            <tr>
+              <td colSpan={3} className="muted">
+                No structural diff entries are recorded. Confirm analysis completed before closing this change.
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
 
@@ -116,6 +141,13 @@ export default async function ChangeDetailPage({
               <td className="muted">{f.confidence}</td>
             </tr>
           ))}
+          {data.findings.length === 0 && (
+            <tr>
+              <td colSpan={3} className="muted">
+                No impact findings are recorded. Confirm pipeline completion before treating this as no impact.
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
 
@@ -128,6 +160,11 @@ export default async function ChangeDetailPage({
           </li>
         ))}
       </ul>
+      {data.prs.length === 0 && (
+        <p className="muted">
+          No customer pull request has been generated. Review pipeline status and impact findings for the next action.
+        </p>
+      )}
     </div>
   );
 }

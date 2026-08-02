@@ -75,7 +75,15 @@ function app(service: TransformerPilotExecutionService) {
     const tenantId = c.req.header("x-test-tenant");
     const principalId = c.req.header("x-test-principal");
     if (tenantId && principalId) {
-      c.set("principal", { id: principalId, tenantId, role: "owner" });
+      c.set("principal", {
+        id: principalId,
+        tenantId,
+        role: c.req.header("x-test-role") === "agent" ? "agent" : "owner",
+      });
+      c.set(
+        "authScopes",
+        c.req.header("x-test-scopes")?.split(",").filter(Boolean) ?? ["*"],
+      );
     }
     await next();
   });
@@ -91,6 +99,15 @@ function headers(key: string, tenantId = "tenant-a") {
     "x-test-principal": "human:transformer-owner@example.com",
     "idempotency-key": key,
     "x-mendpoint-evidence-refs": `evidence:api:${key}`,
+  };
+}
+
+function workerHeaders(key: string, tenantId = "tenant-a") {
+  return {
+    ...headers(key, tenantId),
+    "x-test-principal": "api-key:transformer-worker",
+    "x-test-role": "agent",
+    "x-test-scopes": "plan:execute,transformer:worker",
   };
 }
 
@@ -160,7 +177,9 @@ async function post(
 ) {
   return instance.request(path, {
     method: "POST",
-    headers: headers(key, tenantId),
+    headers: /\/(?:attempts|observations)(?:\/|$)/.test(path)
+      ? workerHeaders(key, tenantId)
+      : headers(key, tenantId),
     body: JSON.stringify(body),
   });
 }
@@ -197,6 +216,23 @@ function observation(unitId: string, state: "draft" | "merged", source: string, 
 }
 
 describe("Transformer pilot execution API", () => {
+  it("rejects human plan executors from worker result endpoints", async () => {
+    const instance = app(open(databasePath()));
+    expect((await post(instance, "/transformer/executions", "create-worker-auth", campaign())).status).toBe(201);
+    const denied = await instance.request(
+      "/transformer/executions/campaign-a/attempts/claim",
+      {
+        method: "POST",
+        headers: headers("human-claim"),
+        body: JSON.stringify({ leaseToken: "lease-token-human-00000001" }),
+      },
+    );
+    expect(denied.status).toBe(403);
+    await expect(denied.json()).resolves.toMatchObject({
+      error: "transformer_worker_principal_denied",
+    });
+  });
+
   it("defaults deny, requires authenticated identity, and restores exact campaign state after restart", async () => {
     const path = databasePath();
     const deniedService = open(path, "");

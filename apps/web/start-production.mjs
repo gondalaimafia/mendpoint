@@ -14,6 +14,15 @@ export function validateWebProductionEnv(env = process.env) {
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+  const oidcIssuer = env.OIDC_ISSUER?.trim();
+  const oidcAudience = env.OIDC_AUDIENCE?.trim();
+  const oidcJwks = env.OIDC_JWKS_URI?.trim();
+  const oidcClientId = env.OIDC_CLIENT_ID?.trim();
+  const oidcRedirectUri = env.OIDC_REDIRECT_URI?.trim();
+  const anyOidc = Boolean(
+    oidcIssuer || oidcAudience || oidcJwks || oidcClientId || oidcRedirectUri,
+  );
+  const customerReady = env.MENDPOINT_CUSTOMER_READY === "1";
 
   if (!apiUrl) {
     errors.push("MENDPOINT_API_URL is required");
@@ -46,6 +55,31 @@ export function validateWebProductionEnv(env = process.env) {
       }
     } catch {
       errors.push(`Invalid web origin: ${origin}`);
+    }
+  }
+  if (anyOidc) {
+    if (!oidcIssuer) errors.push("OIDC_ISSUER is required for browser identity");
+    if (!oidcAudience) errors.push("OIDC_AUDIENCE is required for browser identity");
+    if (!oidcJwks) errors.push("OIDC_JWKS_URI is required for browser identity");
+    if (!oidcClientId) errors.push("OIDC_CLIENT_ID is required for browser identity");
+    if (!oidcRedirectUri) errors.push("OIDC_REDIRECT_URI is required for browser identity");
+    for (const [name, value] of [
+      ["OIDC_ISSUER", oidcIssuer],
+      ["OIDC_JWKS_URI", oidcJwks],
+      ["OIDC_REDIRECT_URI", oidcRedirectUri],
+    ]) {
+      if (!value) continue;
+      try {
+        if (new URL(value).protocol !== "https:") errors.push(`${name} must use https`);
+      } catch {
+        errors.push(`${name} must be a valid URL`);
+      }
+    }
+  }
+  if (customerReady) {
+    if (!anyOidc) errors.push("Customer ready mode requires browser OIDC");
+    if (env.GITHUB_MODE?.trim() !== "real") {
+      errors.push("Customer ready mode requires GITHUB_MODE=real");
     }
   }
   return { ok: errors.length === 0, errors };
