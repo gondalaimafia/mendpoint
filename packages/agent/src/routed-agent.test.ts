@@ -20,6 +20,22 @@ const passedRun: AgentRunResult = {
   rollback: { performed: false, restoredFiles: [], failedFiles: [] },
   reportMarkdown: "verified",
   stoppedReason: "verify_passed",
+  metrics: {
+    durationMs: 1,
+    toolCalls: 1,
+    verifierCalls: 1,
+    model: {
+      calls: 0,
+      successfulCalls: 0,
+      failedCalls: 0,
+      timeouts: 0,
+      invalidResponses: 0,
+      responseBytes: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+    },
+  },
 };
 
 describe("policy routed Warden", () => {

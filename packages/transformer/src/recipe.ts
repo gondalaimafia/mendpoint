@@ -80,11 +80,24 @@ export type RecipeOperation = Readonly<{
 
 export type RecipeApplication = Readonly<{
   recipe: RecipeReference;
+  analysis: RecipeAnalysis;
   inputDigest: string;
   outputDigest: string;
   files: RecipeFiles;
   operations: readonly RecipeOperation[];
   verificationCommands: readonly RecipeVerificationCommand[];
+}>;
+
+export type RecipeApplicability = "applicable" | "already_applied" | "unsupported";
+
+export type RecipeAnalysis = Readonly<{
+  recipe: RecipeReference;
+  sourceDigest: string;
+  status: RecipeApplicability;
+  matchedPaths: readonly string[];
+  estimatedOperations: number;
+  reasons: readonly string[];
+  cacheHit: boolean;
 }>;
 
 type RecipeDefinition = Omit<MigrationRecipeContract, "digest">;
@@ -269,6 +282,194 @@ export function recipeFilesDigest(files: RecipeFiles): string {
   return sha256(framed);
 }
 
+type PreconditionState = Readonly<{
+  state: "source" | "target" | "neutral" | "unsupported";
+  reason?: string;
+}>;
+
+function preconditionFailure(precondition: RecipePrecondition): string {
+  return precondition.kind === "json_string_in"
+    ? `recipe_precondition_failed:${precondition.path}:${precondition.pointer}`
+    : `recipe_precondition_failed:${precondition.path}:node_major`;
+}
+
+function expectedTransform(
+  recipe: MigrationRecipeContract,
+  precondition: RecipePrecondition,
+): RecipeTransform | undefined {
+  return recipe.transforms.find((transform) => transform.path === precondition.path);
+}
+
+function preconditionState(
+  recipe: MigrationRecipeContract,
+  files: Record<string, string>,
+  precondition: RecipePrecondition,
+): PreconditionState {
+  const transform = expectedTransform(recipe, precondition);
+  if (precondition.kind === "json_string_in") {
+    let value: unknown;
+    try {
+      value = nodeEngineValue(readPackageJson(files, precondition.path));
+    } catch (error) {
+      return {
+        state: "unsupported",
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (typeof value === "string" && precondition.allowedValues.includes(value)) {
+      return { state: "source" };
+    }
+    if (transform?.kind === "json_string_set" && value === transform.value) {
+      return { state: "target" };
+    }
+    return {
+      state: "unsupported",
+      reason: preconditionFailure(precondition),
+    };
+  }
+
+  const content = files[precondition.path];
+  if (content === undefined) return { state: "neutral" };
+  if (precondition.kind === "optional_node_version") {
+    const major = content.trim().replace(/^v/, "").split(".")[0];
+    if (major === String(precondition.major)) return { state: "source" };
+    if (
+      transform?.kind === "node_version_set" &&
+      major === transform.value.trim().replace(/^v/, "").split(".")[0]
+    ) {
+      return { state: "target" };
+    }
+    return {
+      state: "unsupported",
+      reason: preconditionFailure(precondition),
+    };
+  }
+
+  const majors = [...content.matchAll(/^\s*FROM\s+node:(\d+)(?=[.\-\s]|$)/gim)].map(
+    (match) => Number(match[1]),
+  );
+  if (!majors.length) return { state: "neutral" };
+  if (majors.every((major) => major === precondition.major)) return { state: "source" };
+  if (
+    transform?.kind === "docker_node_major_set" &&
+    majors.every((major) => major === transform.toMajor)
+  ) {
+    return { state: "target" };
+  }
+  return {
+    state: "unsupported",
+    reason: preconditionFailure(precondition),
+  };
+}
+
+function analyzeRecipeUncached(
+  reference: RecipeReference,
+  input: RecipeFiles,
+): RecipeAnalysis {
+  const recipe = resolveRecipe(reference);
+  const files = normalizeFiles(input);
+  const sourceDigest = recipeFilesDigest(files);
+  const states = recipe.preconditions.map((precondition) => ({
+    path: precondition.path,
+    ...preconditionState(recipe, files, precondition),
+  }));
+  const reasons = [...new Set(states.flatMap((item) => item.reason ? [item.reason] : []))];
+  const hasSource = states.some((item) => item.state === "source");
+  const targetStates = states.filter((item) => item.state === "target");
+  if (!reasons.length && hasSource && targetStates.length) {
+    reasons.push(...targetStates.map((item) => {
+      const precondition = recipe.preconditions.find((entry) => entry.path === item.path)!;
+      return preconditionFailure(precondition);
+    }));
+  }
+  const matchedPaths = [...new Set(
+    states.filter((item) => item.state === "source").map((item) => item.path),
+  )].sort();
+  const status: RecipeApplicability = reasons.length
+    ? "unsupported"
+    : hasSource
+      ? "applicable"
+      : "already_applied";
+  return deepFreeze({
+    recipe: recipeReference(recipe),
+    sourceDigest,
+    status,
+    matchedPaths: status === "applicable" ? matchedPaths : [],
+    estimatedOperations: status === "applicable" ? matchedPaths.length : 0,
+    reasons,
+    cacheHit: false,
+  });
+}
+
+export function analyzeRecipe(
+  reference: RecipeReference,
+  input: RecipeFiles,
+): RecipeAnalysis {
+  return analyzeRecipeUncached(reference, input);
+}
+
+type CachedRecipeAnalysis = Omit<RecipeAnalysis, "cacheHit">;
+
+export class RecipeAnalysisCache {
+  readonly #maxEntries: number;
+  readonly #entries = new Map<string, CachedRecipeAnalysis>();
+  #hits = 0;
+  #misses = 0;
+
+  constructor(maxEntries = 128) {
+    if (!Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > 1024) {
+      throw new Error("recipe_analysis_cache_size_invalid");
+    }
+    this.#maxEntries = maxEntries;
+  }
+
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  get hits(): number {
+    return this.#hits;
+  }
+
+  get misses(): number {
+    return this.#misses;
+  }
+
+  analyze(scope: string, reference: RecipeReference, input: RecipeFiles): RecipeAnalysis {
+    if (!scope.trim()) throw new Error("recipe_analysis_scope_required");
+    const sourceDigest = recipeFilesDigest(input);
+    const key = sha256(`${scope.length}:${scope}${reference.digest}${sourceDigest}`);
+    const cached = this.#entries.get(key);
+    if (cached) {
+      this.#hits++;
+      this.#entries.delete(key);
+      this.#entries.set(key, cached);
+      return deepFreeze({ ...cached, cacheHit: true });
+    }
+    this.#misses++;
+    const analysis = analyzeRecipeUncached(reference, input);
+    const { cacheHit: _cacheHit, ...derived } = analysis;
+    const entry = deepFreeze(derived);
+    this.#entries.set(key, entry);
+    while (this.#entries.size > this.#maxEntries) {
+      const oldest = this.#entries.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.#entries.delete(oldest);
+    }
+    return analysis;
+  }
+
+  apply(scope: string, reference: RecipeReference, input: RecipeFiles): RecipeApplication {
+    const analysis = this.analyze(scope, reference, input);
+    return applyRecipeWithAnalysis(
+      reference,
+      input,
+      deepFreeze({ ...analysis, cacheHit: false }),
+    );
+  }
+
+}
+
 function readPackageJson(files: Record<string, string>, path: string): Record<string, unknown> {
   const content = files[path];
   if (content === undefined) throw new Error(`recipe_precondition_missing:${path}`);
@@ -286,33 +487,6 @@ function nodeEngineValue(value: Record<string, unknown>): unknown {
   return engines && typeof engines === "object" && !Array.isArray(engines)
     ? (engines as Record<string, unknown>).node
     : undefined;
-}
-
-function assertPreconditions(recipe: MigrationRecipeContract, files: Record<string, string>): void {
-  for (const precondition of recipe.preconditions) {
-    if (precondition.kind === "json_string_in") {
-      const value = nodeEngineValue(readPackageJson(files, precondition.path));
-      if (typeof value !== "string" || !precondition.allowedValues.includes(value)) {
-        throw new Error(`recipe_precondition_failed:${precondition.path}:${precondition.pointer}`);
-      }
-      continue;
-    }
-    const content = files[precondition.path];
-    if (content === undefined) continue;
-    if (precondition.kind === "optional_node_version") {
-      const major = content.trim().replace(/^v/, "").split(".")[0];
-      if (major !== String(precondition.major)) {
-        throw new Error(`recipe_precondition_failed:${precondition.path}:node_major`);
-      }
-      continue;
-    }
-    const majors = [...content.matchAll(/^\s*FROM\s+node:(\d+)(?=[.\-\s]|$)/gim)].map(
-      (match) => Number(match[1]),
-    );
-    if (majors.some((major) => major !== precondition.major)) {
-      throw new Error(`recipe_precondition_failed:${precondition.path}:node_major`);
-    }
-  }
 }
 
 function setNodeEngine(content: string, value: string): string {
@@ -335,10 +509,25 @@ function applyTransform(transform: RecipeTransform, files: Record<string, string
   }
 }
 
-export function applyRecipe(reference: RecipeReference, input: RecipeFiles): RecipeApplication {
+function applyRecipeWithAnalysis(
+  reference: RecipeReference,
+  input: RecipeFiles,
+  analysis: RecipeAnalysis,
+): RecipeApplication {
   const recipe = resolveRecipe(reference);
   const original = normalizeFiles(input);
-  assertPreconditions(recipe, original);
+  if (
+    analysis.recipe.id !== reference.id ||
+    analysis.recipe.version !== reference.version ||
+    analysis.recipe.digest !== reference.digest ||
+    analysis.sourceDigest !== recipeFilesDigest(original)
+  ) {
+    throw new Error("recipe_analysis_binding_mismatch");
+  }
+  if (analysis.status === "unsupported") {
+    throw new Error(analysis.reasons[0] ?? "recipe_precondition_failed");
+  }
+  if (analysis.status === "already_applied") throw new Error("recipe_already_applied");
   const output = { ...original };
   for (const transform of recipe.transforms) {
     assertRecipePathAllowed(recipe, transform.path);
@@ -364,12 +553,17 @@ export function applyRecipe(reference: RecipeReference, input: RecipeFiles): Rec
   const files = deepFreeze(normalizeFiles(output));
   return deepFreeze({
     recipe: recipeReference(recipe),
+    analysis,
     inputDigest: recipeFilesDigest(original),
     outputDigest: recipeFilesDigest(files),
     files,
     operations,
     verificationCommands: recipe.verificationCommands,
   });
+}
+
+export function applyRecipe(reference: RecipeReference, input: RecipeFiles): RecipeApplication {
+  return applyRecipeWithAnalysis(reference, input, analyzeRecipeUncached(reference, input));
 }
 
 export function applyInverseOperations(

@@ -37,6 +37,9 @@ export type WardenBenchCaseResult = {
   stoppedReason: string;
   error?: string;
   durationMs: number;
+  outcome: "resolved" | "already_green" | "safe_handoff" | "wrong_patch" | "timeout" | "error";
+  toolCalls: number;
+  modelCalls: number;
 };
 
 export type WardenBenchReport = {
@@ -99,14 +102,30 @@ async function runCase(id: string, caseDir: string): Promise<WardenBenchCaseResu
     const forbiddenFiles = result.filesChanged.filter((file) =>
       (meta.forbiddenFiles ?? []).some((forbidden) => file.includes(forbidden)),
     );
-    const outcomeMatches = expected === "verified"
-      ? result.ok
-      : !result.ok && result.filesChanged.length === 0;
+    const baseline = result.steps.find(
+      (step) => step.step === 0 && step.call.tool === "run_command",
+    );
+    const baselineFailed = baseline?.result.ok === false;
     const modeMatches = !meta.expectedMode || result.reportMarkdown.includes(`\`${meta.expectedMode}\``);
     const timedOut = Date.now() > deadline + 2_000;
+    const outcome: WardenBenchCaseResult["outcome"] = timedOut
+      ? "timeout"
+      : !baselineFailed && result.stoppedReason === "already_passing"
+        ? "already_green"
+        : baselineFailed && result.ok
+          ? "resolved"
+          : expected === "safe_handoff" && !result.ok && result.filesChanged.length === 0
+            ? "safe_handoff"
+            : "wrong_patch";
+    const outcomeMatches = expected === "verified"
+      ? outcome === "resolved"
+      : outcome === "safe_handoff";
     const ok = outcomeMatches && modeMatches && !unexpectedFiles.length && !forbiddenFiles.length && !timedOut;
     const errors = [
       !outcomeMatches ? `expected ${expected}, received ${result.stoppedReason}` : undefined,
+      expected === "verified" && !baselineFailed
+        ? "repair verifier did not fail before Warden ran"
+        : undefined,
       !modeMatches ? `expected diagnosis ${meta.expectedMode}` : undefined,
       unexpectedFiles.length ? `unexpected files: ${unexpectedFiles.join(", ")}` : undefined,
       forbiddenFiles.length ? `forbidden files: ${forbiddenFiles.join(", ")}` : undefined,
@@ -120,6 +139,9 @@ async function runCase(id: string, caseDir: string): Promise<WardenBenchCaseResu
       stoppedReason: result.stoppedReason,
       ...(errors.length ? { error: errors.join("; ") } : {}),
       durationMs: Date.now() - started,
+      outcome,
+      toolCalls: result.metrics.toolCalls,
+      modelCalls: result.metrics.model.calls,
     };
   } catch (e) {
     return {
@@ -130,6 +152,9 @@ async function runCase(id: string, caseDir: string): Promise<WardenBenchCaseResu
       stoppedReason: "error",
       error: e instanceof Error ? e.message : String(e),
       durationMs: Date.now() - started,
+      outcome: "error",
+      toolCalls: 0,
+      modelCalls: 0,
     };
   } finally {
     try {
@@ -167,12 +192,12 @@ function printTable(report: WardenBenchReport) {
   const pad = (s: string, n: number) => s.padEnd(n).slice(0, n);
   console.log("");
   console.log(
-    `${pad("CASE", 22)} ${pad("OK", 4)} ${pad("STEPS", 6)} ${pad("MS", 8)} ${pad("STOP", 18)} FILES`,
+    `${pad("CASE", 22)} ${pad("OK", 4)} ${pad("TOOLS", 6)} ${pad("MODEL", 6)} ${pad("MS", 8)} ${pad("OUTCOME", 14)} FILES`,
   );
   console.log("-".repeat(80));
   for (const c of report.cases) {
     console.log(
-      `${pad(c.id, 22)} ${pad(c.ok ? "✓" : "✗", 4)} ${pad(String(c.steps), 6)} ${pad(String(c.durationMs), 8)} ${pad(c.stoppedReason, 18)} ${c.filesChanged.join(",") || "-"}`,
+      `${pad(c.id, 22)} ${pad(c.ok ? "yes" : "no", 4)} ${pad(String(c.toolCalls), 6)} ${pad(String(c.modelCalls), 6)} ${pad(String(c.durationMs), 8)} ${pad(c.outcome, 14)} ${c.filesChanged.join(",") || "-"}`,
     );
     if (c.error) console.log(`  error: ${c.error}`);
   }

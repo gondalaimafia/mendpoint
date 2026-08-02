@@ -738,3 +738,35 @@ Exit gate: enterprise claims name concrete proven controls and approved contract
 - The downloaded main artifact records Warden `14/14`, Transformer `11/11`, 75 trials, pass at one `1.000`, pass at three `1.000`, pass to the power of three `1.000`, zero critical failures, and zero deterministic failures.
 - Independent production probes returned `200` for `/`, `/livez`, and `/healthz`; `/console` returned the expected `307` access redirect. Both health endpoints reported `ok: true`, the worker was current, and the recovery queues were empty.
 - The deployed public page rendered the private preview scope and known limits with no browser console messages; the verification screenshot is retained in the release handoff.
+
+## Specialized agent effectiveness and efficiency release
+
+- [x] Establish the exact `origin/main` baseline and record current Warden, Transformer, and evaluation behavior.
+- [x] Synthesize current primary source practices with the specialist audits and select only bounded, evidence backed improvements.
+- [x] Add failing Warden tests for model request limits, budget exhaustion, output bounds, and execution telemetry.
+- [x] Implement a fail closed Warden model gateway with explicit time, call, and response budgets plus attributable execution metrics.
+- [x] Add failing Transformer tests for applicability analysis, safe abstention, deterministic provenance, and repeated source reuse.
+- [x] Implement Transformer recipe analysis and a bounded content addressed analysis cache without retaining customer source.
+- [x] Extend the held out evaluation corpus and machine readable report with the new safety and efficiency behaviors.
+- [x] Run focused tests, full tests, typecheck, production build, GA checks, dependency audit, and diff integrity.
+- [ ] Open a protected pull request, merge only green code, deploy the exact main revision, and repeat independent live and browser verification.
+
+### Specialized agent acceptance criteria
+
+- Warden stops before a model call when its call budget is exhausted, aborts a slow request, rejects an oversized response, and reports calls, tool actions, elapsed time, and bytes without exposing prompts or repository content.
+- Transformer classifies a recipe as applicable, already applied, or unsupported before mutation and provides deterministic recipe and source digests, matched paths, operation estimates, and reasons.
+- Repeated Transformer analysis for the same immutable recipe and source snapshot avoids duplicate parsing while cache entries remain bounded and contain derived metadata only.
+- New held out cases grade observable limits, classifications, provenance, and determinism rather than agent prose.
+- No change expands autonomous permissions, adds automatic merge, claims unproven providers, or weakens human review.
+
+### Specialized agent review
+
+- Primary source research and three specialist audits converged on bounded agent interfaces, strict structured outputs, executable verifier feedback, immutable recipe provenance, idempotent analysis, and evals that separate agent failures from harness failures.
+- Warden now enforces call, request time, and response byte budgets for its optional model planner. It parses exact schema constrained JSON, records model and tool usage, and stops with an explicit reason on timeout, transport, size, invalid response, or budget exhaustion.
+- Model evidence contains paths and content hashes by default. A task must explicitly allow redacted source excerpts.
+- Transformer now classifies immutable snapshots as applicable, already applied, or unsupported before workspace creation. Execution evidence binds that analysis to the exact source and recipe.
+- Transformer analysis reuse is content addressed, tenant scoped, least recently used, capped at 128 entries in workspace execution, and stores derived metadata without customer source.
+- Warden bench now rejects an already green verifier as a repair success and reports resolved, already green, safe handoff, wrong patch, timeout, and error separately.
+- Eval corpus `2026-08-01.v3`: 14 Warden scenarios, 12 Transformer scenarios, 3 repetitions, 78 trials. Pass at one, pass at three, and pass to the power of three are all `1.000`; critical and deterministic failures are zero.
+- Focused Warden, Transformer, and eval tests pass. Full repository tests, root typecheck, production build, GA checks, dependency audit, and diff integrity pass locally.
+- Protected Linux containers, deployment recovery, Fly promotion, and independent production verification remain pending the pull request workflow.

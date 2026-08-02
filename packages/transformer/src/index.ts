@@ -69,6 +69,8 @@ export {
 export type {
   MigrationRecipeContract,
   RecipeApplication,
+  RecipeAnalysis,
+  RecipeApplicability,
   RecipeFiles,
   RecipeOperation,
   RecipePrecondition,
@@ -78,6 +80,8 @@ export type {
 } from "./recipe.js";
 export {
   NODE_RUNTIME_18_TO_20_RECIPE,
+  RecipeAnalysisCache,
+  analyzeRecipe,
   applyInverseOperations,
   applyRecipe,
   assertRecipePathAllowed,

@@ -679,6 +679,134 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     }
   });
 
+  it("enforces the model call budget before issuing another request", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-budget-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    process.env.LLM_AGENT_URL = "https://llm.invalid/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({
+      choices: [{ message: { content: JSON.stringify({
+        tool: "search",
+        args: { query: "first-model-search" },
+        thought: "bounded search",
+      }) } }],
+      usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const result = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 20,
+        modelBudget: { maxCalls: 1 },
+      });
+
+      expect(result.stoppedReason).toBe("model_call_budget_exhausted");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result.metrics.model).toMatchObject({
+        calls: 1,
+        successfulCalls: 1,
+        responseBytes: expect.any(Number),
+        promptTokens: 11,
+        completionTokens: 7,
+        totalTokens: 18,
+      });
+      expect(result.metrics.toolCalls).toBe(result.steps.length);
+      expect(result.metrics.verifierCalls).toBe(1);
+      const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(String(fetchMock.mock.calls[0]?.[1]?.body)).not.toContain("export const client");
+      expect(request.response_format).toMatchObject({
+        type: "json_schema",
+        json_schema: { name: "warden_tool_call", strict: true },
+      });
+      expect(request.response_format.json_schema.schema.oneOf).toHaveLength(8);
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+    }
+  });
+
+  it("aborts a slow model request within the configured deadline", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-timeout-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    process.env.LLM_AGENT_URL = "https://llm.invalid/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+    ));
+    try {
+      const result = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 12,
+        modelBudget: { requestTimeoutMs: 10 },
+      });
+
+      expect(result.stoppedReason).toBe("model_request_timeout");
+      expect(result.metrics.model).toMatchObject({ calls: 1, timeouts: 1, failedCalls: 1 });
+      expect(result.rollback.performed).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+    }
+  });
+
+  it("rejects an oversized model response before JSON parsing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-size-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    process.env.LLM_AGENT_URL = "https://llm.invalid/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("x".repeat(256))));
+    try {
+      const result = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 12,
+        modelBudget: { maxResponseBytes: 64 },
+      });
+
+      expect(result.stoppedReason).toBe("model_response_too_large");
+      expect(result.metrics.model).toMatchObject({ calls: 1, failedCalls: 1 });
+      expect(result.metrics.model.responseBytes).toBeLessThanOrEqual(64);
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+    }
+  });
+
   it("hard clamps an untrusted maxSteps value", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-step-clamp-"));
     dirs.push(dir);

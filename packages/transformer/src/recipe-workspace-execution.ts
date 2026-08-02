@@ -16,11 +16,12 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
+  RecipeAnalysisCache,
   applyInverseOperations,
-  applyRecipe,
   recipeFilesDigest,
   resolveRecipe,
   type RecipeApplication,
+  type RecipeAnalysis,
   type RecipeFiles,
   type RecipeOperation,
   type RecipeReference,
@@ -34,6 +35,7 @@ const MAX_COMMAND_TIMEOUT_MS = 30_000;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
+const WORKSPACE_ANALYSIS_CACHE = new RecipeAnalysisCache(128);
 
 export type RecipeExecutionFence = Readonly<{
   tenantId: string;
@@ -89,7 +91,7 @@ export type RecipeOperationEvidence = Readonly<{
 }>;
 
 export type RecipeExecutionEvidenceRecord = Readonly<{
-  schemaVersion: 1;
+  schemaVersion: 2;
   kind: "transformer.recipe.execution";
   evidenceId: string;
   observedAt: string;
@@ -100,6 +102,7 @@ export type RecipeExecutionEvidenceRecord = Readonly<{
     digest: string;
   }>;
   recipe: RecipeReference;
+  analysis: Readonly<Omit<RecipeAnalysis, "cacheHit">>;
   inputDigest: string;
   outputDigest: string;
   operationCount: number;
@@ -133,6 +136,7 @@ export type RecipeWorkspaceExecutionResult = Readonly<{
   fence: RecipeExecutionFenceEvidence;
   source: Readonly<Omit<ExactSourceSnapshot, "files">>;
   recipe: RecipeReference;
+  analysis: RecipeAnalysis;
   inputDigest: string;
   outputDigest: string;
   outputFiles: RecipeFiles;
@@ -566,10 +570,13 @@ function assertExecutionEvidenceIntegrity(execution: RecipeWorkspaceExecutionRes
     throw new Error("recipe_execution_evidence_record_mismatch");
   }
   const record = execution.evidence.record;
+  const { cacheHit: _cacheHit, ...analysisEvidence } = execution.analysis;
   if (
+    record.schemaVersion !== 2 ||
     record.kind !== "transformer.recipe.execution" ||
     stableJson(record.fence) !== stableJson(execution.fence) ||
     stableJson(record.recipe) !== stableJson(execution.recipe) ||
+    stableJson(record.analysis) !== stableJson(analysisEvidence) ||
     record.inputDigest !== execution.inputDigest ||
     record.outputDigest !== execution.outputDigest ||
     record.operationCount !== execution.operations.length ||
@@ -624,7 +631,11 @@ export async function executeRecipeInWorkspace(
   let operationsApplied = false;
   try {
     await assertCurrentFence(input.fence, input.assertFence);
-    application = applyRecipe(input.recipe, input.source.files);
+    application = WORKSPACE_ANALYSIS_CACHE.apply(
+      input.fence.tenantId,
+      input.recipe,
+      input.source.files,
+    );
     workspace = createWorkspace(input.tempRoot);
     materializeFiles(workspace, input.source.files);
     assertWorkspaceEquals(workspace, input.source.files, "materialized");
@@ -655,13 +666,15 @@ export async function executeRecipeInWorkspace(
       revision: input.source.revision,
       digest: input.source.digest,
     });
+    const { cacheHit: _cacheHit, ...analysisEvidence } = application.analysis;
     const recordWithoutId = deepFreeze({
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       kind: "transformer.recipe.execution" as const,
       observedAt: input.observedAt,
       fence: publicFence,
       source,
       recipe: application.recipe,
+      analysis: deepFreeze(analysisEvidence),
       inputDigest: application.inputDigest,
       outputDigest: application.outputDigest,
       operationCount: application.operations.length,
@@ -678,6 +691,7 @@ export async function executeRecipeInWorkspace(
       fence: publicFence,
       source,
       recipe: application.recipe,
+      analysis: application.analysis,
       inputDigest: application.inputDigest,
       outputDigest: application.outputDigest,
       outputFiles: application.files,

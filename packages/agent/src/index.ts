@@ -4,6 +4,8 @@ export type {
   ToolResult,
   AgentStep,
   AgentTask,
+  AgentModelBudget,
+  AgentExecutionMetrics,
   AgentRunResult,
   AgentVerifierState,
   AgentRollbackState,

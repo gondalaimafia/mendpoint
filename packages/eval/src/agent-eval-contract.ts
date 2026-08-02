@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const AGENT_EVAL_VERSION = "2026-08-01.v2" as const;
+export const AGENT_EVAL_VERSION = "2026-08-01.v3" as const;
 
 export type AgentEvalProduct = "warden" | "transformer";
 export type AgentEvalTier = "common" | "edge" | "adversarial" | "recovery";
@@ -20,6 +20,9 @@ export type AgentEvalMetrics = Readonly<{
   changedFiles: number;
   changedBytes: number;
   evidenceBytes: number;
+  toolCalls?: number;
+  modelCalls?: number;
+  cacheHits?: number;
 }>;
 
 export type AgentEvalGrade = Readonly<{
@@ -143,7 +146,11 @@ function budgetGrades(
       observed: metrics.durationMs,
     }),
   ];
-  const optional: Array<readonly [keyof AgentEvalMetrics, number | undefined, string]> = [
+  const optional: Array<readonly [
+    "steps" | "changedFiles" | "changedBytes" | "evidenceBytes",
+    number | undefined,
+    string,
+  ]> = [
     ["steps", budget.maxSteps, "budget.steps"],
     ["changedFiles", budget.maxChangedFiles, "budget.changed_files"],
     ["changedBytes", budget.maxChangedBytes, "budget.changed_bytes"],

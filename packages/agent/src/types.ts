@@ -50,10 +50,37 @@ export type AgentTask = {
   allowNetwork?: boolean;
   /** Optional LLM planner */
   useLlm?: boolean;
+  /** Allow redacted source excerpts in the model evidence packet. Default false. */
+  allowModelSource?: boolean;
+  /** Fail closed limits for the optional model planner. */
+  modelBudget?: Partial<AgentModelBudget>;
   sessionId?: string;
   /** Cooperative cancellation checked around every awaited or mutating phase. */
   shouldContinue?: () => boolean;
 };
+
+export type AgentModelBudget = Readonly<{
+  maxCalls: number;
+  requestTimeoutMs: number;
+  maxResponseBytes: number;
+}>;
+
+export type AgentExecutionMetrics = Readonly<{
+  durationMs: number;
+  toolCalls: number;
+  verifierCalls: number;
+  model: Readonly<{
+    calls: number;
+    successfulCalls: number;
+    failedCalls: number;
+    timeouts: number;
+    invalidResponses: number;
+    responseBytes: number;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  }>;
+}>;
 
 export type AgentVerifierState = {
   command?: string;
@@ -79,4 +106,5 @@ export type AgentRunResult = {
   rollback: AgentRollbackState;
   reportMarkdown: string;
   stoppedReason: string;
+  metrics: AgentExecutionMetrics;
 };
