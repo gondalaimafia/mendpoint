@@ -876,9 +876,9 @@ Acceptance: internal adapters can pass fixture and disposable repository tests b
 
 ### Current planning evidence
 
-- Exact main specification check passes structurally with 10 verified, 52 partial, 7 scaffold, 14 unimplemented, and 1 blocked external requirements.
-- Three specialist audits found stale statuses in both directions. Several SCM, Transformer, router cost, and learning controls are materially implemented, while multiple partial requirements have only planned evidence and should be downgraded.
-- The baseline full workspace test command exceeded the local 120 second command window. Focused audit tests found one root harness defect in `packages/graph-learn/src/graph-learn.test.ts`: repository root resolution can become `C:\` when invoked from the workspace root. This must be repaired before full release verification.
+- The initial audit found 10 verified, 52 partial, 7 scaffold, 14 unimplemented, and 1 blocked external requirements. That was a baseline, not the shipped state.
+- The shipped product contract records 41 verified, 40 partial, 2 scaffold, and 1 blocked external requirements. Every promotion is bound to current executable evidence.
+- The full workspace test, typecheck, production build, GA, specialist eval, dependency audit, container, crash recovery, deployment, live health, and browser gates pass on exact main revision `67275208425b5039d700bcd86b77e7d13cefabd8`.
 
 ## Customer readiness closure tranche 1
 
@@ -893,8 +893,8 @@ Acceptance: internal adapters can pass fixture and disposable repository tests b
 - [x] Complete cross boundary Transformer experimental gate verification.
 - [x] Complete billing contract and invoice export boundary verification.
 - [x] Run full tests, typecheck, production build, GA checks, specialist evals, dependency audit, and diff integrity locally.
-- [ ] Run container, deployment journey, crash recovery, and production browser gates in protected CI.
-- [ ] Commit focused slices, push the protected branch, merge only green CI, deploy exact main, and browser verify.
+- [x] Run container, deployment journey, crash recovery, and production browser gates in protected CI.
+- [x] Commit focused slices, push the protected branch, merge only green CI, deploy exact main, and browser verify.
 
 ### Tranche 1 evidence boundary
 
@@ -914,6 +914,14 @@ assessment, or public website cutover.
 - Production dependency audit reports zero vulnerabilities. Diff integrity and the source secret and banned language scan pass.
 - The combined audit found and fixed one stale web session payload type before release. Human review identity now derives from active OIDC membership, Transformer merge observation requires exact revision CI and review evidence, feed scheduling is durable and replay safe, and pilot contract mutations write audit evidence transactionally.
 - Live SCM execution, approved private repository drills, real customer outcome evidence, identity provider lifecycle, payment processing, cloud network deployment, regional recovery, independent security assessment, and public website owner cutover remain explicit acceptance gates.
+
+### Tranche 1 delivery evidence
+
+- Pull request 16 passed protected tests, release gates, production container builds, and the deployment crash recovery journey, then merged as exact main revision `67275208425b5039d700bcd86b77e7d13cefabd8`.
+- Exact main workflow `30759585732` repeated every protected gate and deployed successfully to Fly.
+- Fly machine version 23 is started in `sjc` with its health check passing. `/`, `/livez`, `/healthz`, and `/icon.svg` return 200. `/status` returns the expected 307 access redirect. Both health documents report `ok: true`, a current worker heartbeat, and empty recovery queues.
+- Public browser QA at 1440 by 900, 768 by 1024, and 375 by 812 found zero console messages, failed requests, HTTP failures, horizontal overflow, layout shift, or axe accessibility violations. Observed LCP was 572 ms, 456 ms, and 396 ms respectively.
+- Every public internal navigation destination resolves. `/contact` intentionally redirects to `/design-partners`.
 
 ## Post-audit closure sequence
 
