@@ -1,5 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -166,6 +176,30 @@ function fixture() {
   return { root, repositoryPath, db, sha: git(repositoryPath, "rev-parse", "HEAD") };
 }
 
+function makeFixtureTreeWritable(root: string): void {
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (stat.isSymbolicLink()) return;
+  if (!stat.isDirectory()) {
+    chmodSync(root, 0o644);
+    return;
+  }
+  chmodSync(root, 0o755);
+  for (const entry of readdirSync(root)) {
+    makeFixtureTreeWritable(join(root, entry));
+  }
+}
+
+function removeFixtureRoot(root: string): void {
+  makeFixtureTreeWritable(root);
+  rmSync(root, { recursive: true, force: true });
+}
+
 afterEach(() => {
   while (dbs.length) dbs.pop()?.raw.close();
   process.env.MENDPOINT_REPOS_DIR = previousReposDir;
@@ -173,8 +207,7 @@ afterEach(() => {
   while (roots.length) {
     const root = roots.pop();
     if (root) {
-      chmodSync(root, 0o755);
-      rmSync(root, { recursive: true, force: true });
+      removeFixtureRoot(root);
     }
   }
 });
@@ -300,6 +333,13 @@ describe("repository connection service", () => {
     });
     expect(second).toMatchObject({ reused: true, snapshot: { id: first.snapshot.id } });
     expect(listRepositorySnapshots(db, "tenant-a", repository.id)).toHaveLength(1);
+    const storedPackage = join(
+      listRepositorySnapshots(db, "tenant-a", repository.id)[0]!.storage_path,
+      "package.json",
+    );
+    if (process.platform !== "win32") {
+      expect(statSync(storedPackage).mode & 0o222).toBe(0);
+    }
     expect(runtime.audits.every((event) => event.outcome === "granted")).toBe(true);
     expect(runtime.audits[0]).toMatchObject({
       actorId: "operator:test",
@@ -325,6 +365,22 @@ describe("repository connection service", () => {
       tenantId: "tenant-b",
       repositoryId: repository.id,
     }, runtime.dependencies)).rejects.toThrow("connected_repository_tenant_mismatch");
+  });
+
+  it("removes an owned fixture tree after snapshot permissions make nested content read only", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-read-only-cleanup-"));
+    roots.push(root);
+    const nested = join(root, "snapshot", "nested");
+    mkdirSync(nested, { recursive: true });
+    const packagePath = join(nested, "package.json");
+    writeFileSync(packagePath, "{}\n");
+    chmodSync(packagePath, 0o444);
+    chmodSync(nested, 0o555);
+    chmodSync(join(root, "snapshot"), 0o555);
+
+    removeFixtureRoot(root);
+
+    expect(existsSync(root)).toBe(false);
   });
 
   it("fails closed on revoked credentials and GitHub permission loss", async () => {
