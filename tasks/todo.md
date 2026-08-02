@@ -713,8 +713,8 @@ Exit gate: enterprise claims name concrete proven controls and approved contract
 - [x] Add held out Warden repair, abstention, rollback, adversarial, routing, and efficiency evaluations.
 - [x] Add held out Transformer planning, recipe execution, restore, fencing, evidence, adversarial, and efficiency evaluations.
 - [x] Add machine readable reports and make critical eval failures block the release gate.
-- [ ] Run focused evals, full tests, typecheck, build, GA checks, dependency audit, container builds, and deployment E2E.
-- [ ] Push a protected pull request, merge only green code, deploy the exact main revision, and repeat live API and browser verification.
+- [x] Run focused evals, full tests, typecheck, build, GA checks, dependency audit, container builds, and deployment E2E.
+- [x] Push a protected pull request, merge only green code, deploy the exact main revision, and repeat live API and browser verification.
 
 ### Eval acceptance criteria
 
@@ -733,4 +733,8 @@ Exit gate: enterprise claims name concrete proven controls and approved contract
 - Strict local gate: pass at one `1.000`, pass at three `1.000`, pass to the power of three `1.000`, zero critical failures, zero deterministic failures.
 - Focused eval workspace: 6 files and 35 tests passed.
 - Repository validation: full tests and typecheck passed; production build passed; GA preflight passed; production dependency audit found zero vulnerabilities; Playwright discovered the deployment recovery test.
-- CI owns the remaining container build and deployment E2E evidence before merge.
+- Protected pull request 10 run `30732427791` passed Linux tests, the agent eval gate and evidence upload, release gates, every production container build, and the production crash recovery browser journey.
+- Pull request 10 merged as `e42b9c3cfa1fbb5aa0f3b4024ab28448395f1a90`. Exact main run `30732521117` repeated every gate and deployed successfully to Fly.
+- The downloaded main artifact records Warden `14/14`, Transformer `11/11`, 75 trials, pass at one `1.000`, pass at three `1.000`, pass to the power of three `1.000`, zero critical failures, and zero deterministic failures.
+- Independent production probes returned `200` for `/`, `/livez`, and `/healthz`; `/console` returned the expected `307` access redirect. Both health endpoints reported `ok: true`, the worker was current, and the recovery queues were empty.
+- The deployed public page rendered the private preview scope and known limits with no browser console messages; the verification screenshot is retained in the release handoff.
