@@ -323,7 +323,7 @@ export async function runWarden(task: AgentTask): Promise<AgentRunResult> {
     const base: Omit<AgentRunResult, "reportMarkdown"> = {
       sessionId,
       ok,
-      goal: task.goal,
+      goal: redactUntrustedText(task.goal, 4000) ?? "",
       steps,
       filesChanged: [...changed],
       verifyOutput,
@@ -533,7 +533,10 @@ export async function runWarden(task: AgentTask): Promise<AgentRunResult> {
     }
   }
 
-  diagnosed = classifyFailures(task.goal, hState.errorLog ?? task.errorLog);
+  diagnosed = classifyFailures(
+    task.goal,
+    [task.errorLog, hState.errorLog].filter(Boolean).join("\n"),
+  );
   return finalize(diagnosed);
 }
 
