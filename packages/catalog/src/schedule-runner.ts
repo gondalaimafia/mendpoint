@@ -17,7 +17,7 @@ import {
   type FeedPipelineContext,
   type PollOneResult,
 } from "./run-poll.js";
-import type { PollableFeed } from "./poll.js";
+import type { FetchOpenApiResult, PollableFeed } from "./poll.js";
 
 export type FeedScheduleExecution = {
   scheduleId: string;
@@ -31,7 +31,8 @@ export type FeedScheduleExecution = {
 
 export type FeedScheduleRunOptions = {
   db: AppDb;
-  tenantId: string;
+  /** Omit to service all existing tenant schedules without creating defaults. */
+  tenantId?: string;
   at?: string;
   defaultIntervalMs?: number;
   defaultStaleAfterMs?: number;
@@ -45,6 +46,10 @@ export type FeedScheduleRunOptions = {
   ) => Promise<FeedPipelineDispatchResult>;
   execute?: (feed: PollableFeed, schedule: FeedScheduleRow) => Promise<PollOneResult>;
   feeds?: readonly PollableFeed[];
+  sourceDocumentLoader?: (
+    url: string,
+    monorepoRoot: string,
+  ) => Promise<FetchOpenApiResult>;
 };
 
 function stableId(prefix: string, ...parts: string[]): string {
@@ -91,13 +96,16 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
   const staleAfterMs = options.defaultStaleAfterMs ?? intervalMs * 2;
   if (staleAfterMs < intervalMs) throw new Error("feed_schedule_stale_window_invalid");
   const feeds = [...(options.feeds ?? listPollableFeeds(options.db))];
-  ensureSchedules(options.db, options.tenantId, feeds, at, intervalMs, staleAfterMs);
+  if (options.tenantId) {
+    ensureSchedules(options.db, options.tenantId, feeds, at, intervalMs, staleAfterMs);
+  }
   getFeedScheduleHealth(options.db, at, options.tenantId);
 
   const feedBySlug = new Map(feeds.map((feed) => [feed.slug, feed]));
   const schedules = listFeedSchedules(options.db, options.tenantId).filter(
     (schedule) => schedule.enabled === 1,
   );
+  const sourceFetches = new Map<string, Promise<FetchOpenApiResult>>();
   const executions = await mapWithConcurrency(
     schedules,
     boundedConcurrency(options.maxConcurrency),
@@ -147,6 +155,8 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
               localOnly: options.localOnly,
               runPipeline: options.runPipeline,
               pipeline: options.pipeline,
+              sourceFetches,
+              sourceDocumentLoader: options.sourceDocumentLoader,
             });
         const succeeded = !new Set<PollOneResult["status"]>([
           "error",

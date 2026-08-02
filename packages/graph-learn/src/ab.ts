@@ -4,6 +4,10 @@
  */
 import type { GraphLearnDb } from "./store.js";
 import { listNodesByKind, edgesFrom } from "./store.js";
+import {
+  graphNodeBelongsToTenant,
+  type GraphTenantScope,
+} from "./tenant-scope.js";
 
 export type AbArm = {
   name: string;
@@ -125,6 +129,7 @@ export function measureAbLift(
     taggedOnly?: boolean;
     includeUntaggedAsControl?: boolean;
   },
+  scope?: GraphTenantScope,
 ): AbReport {
   const targetLift = opts?.targetLift ?? 0.1;
   const alpha = opts?.alpha ?? 0.05;
@@ -134,6 +139,7 @@ export function measureAbLift(
   let untaggedSkipped = 0;
 
   for (const c of listNodesByKind(db, "Consumer")) {
+    if (scope && !graphNodeBelongsToTenant(c, scope)) continue;
     for (const kind of OUTCOME_KINDS) {
       for (const e of edgesFrom(db, c.id, [kind])) {
         const raw = String(

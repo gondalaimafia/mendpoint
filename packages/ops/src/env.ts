@@ -48,6 +48,8 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     GITHUB_APP_PRIVATE_KEY: env.GITHUB_APP_PRIVATE_KEY ? "[set]" : undefined,
     GITHUB_APP_PRIVATE_KEY_PATH: env.GITHUB_APP_PRIVATE_KEY_PATH,
     CORS_ORIGINS: env.CORS_ORIGINS,
+    TRUST_PROXY: env.TRUST_PROXY,
+    TRUST_PROXY_SECRET: env.TRUST_PROXY_SECRET ? "[set]" : undefined,
   };
 
   const githubMode =
@@ -93,6 +95,9 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
       errors.push("MENDPOINT_REPOS_DIR is required in production");
     } else if (!isAbsolute(env.MENDPOINT_REPOS_DIR)) {
       errors.push("MENDPOINT_REPOS_DIR must be an absolute path in production");
+    }
+    if (env.TRUST_PROXY === "1" && !env.TRUST_PROXY_SECRET) {
+      errors.push("TRUST_PROXY_SECRET is required when TRUST_PROXY=1 in production");
     }
     if (githubMode === "mock") {
       warnings.push(

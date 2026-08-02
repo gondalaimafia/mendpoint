@@ -932,3 +932,39 @@ assessment, or public website cutover.
 - [ ] Land remaining Transformer slice: durable worker and SCM execution, reverse-order restore, constraint enforcement, outcome ingestion, and failure evaluations behind the default-deny gate.
 - [ ] Land the shared router service slice: registered executors, durable routing and fallback decisions, cost attribution, handoff, and outcome feedback.
 - [ ] Keep live customer, provider credential, IdP, payment processor, cloud network, regional recovery, penetration test, assessor, and website owner cutover gates blocked until the named authority and evidence exist.
+
+## Whole repository coherence and optimization audit: 2026-08-02
+
+Audited baseline: exact `origin/main` revision `f2da58b5e9376920a1ae8510adc3dfab52c38e7b`.
+
+- [x] Map package, API, worker, web, persistence, authentication, SCM, Warden, Transformer, router, billing, and operations boundaries and identify duplicated or conflicting authority.
+- [x] Run the full test, typecheck, production build, GA, specialist eval, dependency audit, diff integrity, API startup, container, deployment journey, and production health matrix.
+- [x] Review security, tenant isolation, authorization, secret handling, filesystem boundaries, injection surfaces, retry and recovery semantics, and unsafe default behavior.
+- [x] Review correctness, transactionality, idempotency, state transitions, concurrency, resource ceilings, error handling, and data migration compatibility.
+- [x] Review performance across database access, graph queries, feed polling, worker fanout, repository indexing, API pagination, web waterfalls, bundle output, and release pipeline duplication.
+- [x] Review product coherence, public claims, empty and failure states, responsive behavior, accessibility, navigation, protected workflows, and first customer readiness boundaries.
+- [x] Reproduce and rank every confirmed issue, synthesize the root cause, and implement the smallest coherent fixes with regression tests.
+- [ ] Repeat the complete release matrix, land through protected pull requests, deploy exact main, and independently verify production desktop and mobile behavior.
+
+Acceptance: no confirmed critical or high severity repository controlled defect remains; every code change has a regression test; all local and protected release gates pass; public and product claims remain within executable evidence; external acceptance gates remain explicit.
+
+### Whole repository audit review
+
+- Fixed the Warden prototype-key crash and indexed this repository successfully: 2,411 nodes and 7,605 edges.
+- Restored OIDC human authorization, scoped all graph operations, restricted shared catalog mutation, isolated web rate limits, and fail-closed unverified GitHub installation claims.
+- Made feed dispatch tenant-safe, removed the default-tenant worker pin, added two bounded job lanes, cooperative shutdown, graph WAL and busy handling, and in-place tenant graph statistics.
+- Bounded collection responses, removed consumer and change-detail scans, indexed tenant ordering paths, and added SCM deadlines plus fixed file upload concurrency.
+- Made review, event, and audit writes atomic. Restricted Transformer result mutations to scoped machine principals.
+- Repaired production audit export and replaced developer setup text with customer recovery actions. Structured evidence, verification, risk, rollback, ownership, and delivery controls are visible and required for approval.
+- Local release evidence: all workspace tests pass, all workspace typechecks pass, the 21 page production build passes, GA checks pass, 78 specialist trials pass with zero critical failures, production dependency audit reports zero vulnerabilities, and local health and readiness return 200.
+- Protected CI, exact-main deploy, production probes, and browser verification remain open until this branch is committed and pushed.
+
+### Whole repository remediation verification
+
+- Closed the independent follow-up findings: fenced feed dispatch recovery, fair all-tenant worker claims, shared feed fetches, stable offset pagination, fail-closed trusted proxy configuration, and the missing shared catalog publish guard.
+- Replaced per-request tenant graph copies with read-only SQLite projections for persistent stores. The 10,000 node benchmark returned the same result in 7.2 ms instead of 390.8 ms, about 54 times faster.
+- Added browser OIDC Authorization Code with PKCE, encrypted short-lived server sessions, exact bearer delegation, preview-only decision blocking, and a customer-ready startup gate that requires human identity plus real GitHub delivery.
+- Independent security, product, UX, performance, and reliability re-reviews report no remaining P0 or P1 repository-controlled findings.
+- Full tests, full typecheck, the 21 page production build, GA checks, 78 specialist eval trials, dependency audit, and diff integrity pass. Production dependencies report zero vulnerabilities.
+- Docker is not installed in this local environment. The production image and deployment journey remain protected CI gates.
+- Customer-ready promotion remains externally blocked until a valid identity provider configuration and a replacement scoped GitHub credential complete the private canary draft pull request and restore drill. The previously pasted token must not be reused.

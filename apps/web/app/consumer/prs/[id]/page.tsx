@@ -6,6 +6,7 @@ import {
 } from "../../../../lib/api";
 import { FeedbackButtons } from "./feedback";
 import { ReviewPanel } from "./reviews";
+import { parsePrEvidence } from "./evidence";
 
 export const dynamic = "force-dynamic";
 
@@ -17,26 +18,33 @@ export default async function PrDetailPage({
   const { id } = await params;
   let pr: MigrationPr | null = null;
   let reviews: MigrationPrReview[] = [];
-  let error: string | null = null;
+  let prError: string | null = null;
+  let reviewError: string | null = null;
   try {
-    const [prResult, reviewResult] = await Promise.all([
-      apiGet<MigrationPr>(`/prs/${id}`),
-      apiGet<{ reviews: MigrationPrReview[] }>(`/prs/${id}/reviews`),
-    ]);
-    pr = prResult;
-    reviews = reviewResult.reviews;
+    pr = await apiGet<MigrationPr>(`/prs/${id}`);
   } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
+    prError = e instanceof Error ? e.message : String(e);
+  }
+  if (pr) {
+    try {
+      reviews = (await apiGet<{ reviews: MigrationPrReview[] }>(`/prs/${id}/reviews`)).reviews;
+    } catch {
+      reviewError = "Review history is temporarily unavailable. Decisions are paused until it can be loaded.";
+    }
   }
 
-  if (error || !pr) {
+  if (prError || !pr) {
     return (
       <div>
-        <p className="muted">{error ?? "Not found"}</p>
+        <h1>Pull request unavailable</h1>
+        <p className="muted">The pull request could not be loaded. Retry or check system status.</p>
+        <p className="btn-row"><Link className="btn primary" href={`/consumer/prs/${id}`}>Retry</Link><Link className="btn" href="/status">System status</Link></p>
         <Link href="/consumer">← Back</Link>
       </div>
     );
   }
+
+  const evidence = parsePrEvidence(pr.body);
 
   return (
     <div>
@@ -54,13 +62,32 @@ export default async function PrDetailPage({
         )}
       </div>
 
-      <h2>PR body</h2>
-      <pre>{pr.body}</pre>
+      <h2>Review evidence</h2>
+      {evidence.complete ? (
+        <div className="grid">
+          {evidence.sections.map((section) => (
+            <section className="card" key={section.title}>
+              <h3>{section.title === "Evidence" ? "Source evidence" : section.title}</h3>
+              <pre>{section.content}</pre>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className="card" style={{ borderColor: "rgba(248,113,113,0.4)" }}>
+          <h3>Evidence package incomplete</h3>
+          <p className="muted">Approval is unavailable until verification, risks, rollback, ownership, and source evidence are recorded.</p>
+        </div>
+      )}
 
       <h2>Patch</h2>
       <pre>{pr.patchUnified || "(empty patch)"}</pre>
 
-      <ReviewPanel prId={pr.id} initialReviews={reviews} />
+      <ReviewPanel
+        prId={pr.id}
+        initialReviews={reviews}
+        evidenceReady={evidence.complete}
+        disabledReason={reviewError ?? undefined}
+      />
 
       <h2>Feedback</h2>
       <p className="muted">Learning signal for future generations (merge / close / request changes).</p>

@@ -12,6 +12,27 @@ export type PullRequestResult = {
 
 export type FileEdit = { path: string; content: string };
 
+const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
+const GITHUB_FILE_CONCURRENCY = 8;
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  work: (value: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      while (next < values.length) {
+        const index = next++;
+        results[index] = await work(values[index]!, index);
+      }
+    }),
+  );
+  return results;
+}
+
 export interface GitHubDelivery {
   createBranch(owner: string, repo: string, branch: string, fromBranch?: string): Promise<void>;
   commitFiles(
@@ -171,7 +192,11 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
         "GITHUB_MODE=real requires GITHUB_TOKEN (or pass a token). Use `gh auth token` or a classic PAT with `repo` scope.",
       );
     }
-    this.octokit = new Octokit({ auth: t, userAgent: "mendpoint-api" });
+    this.octokit = new Octokit({
+      auth: t,
+      userAgent: "mendpoint-api",
+      request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
+    });
   }
 
   private async refSha(owner: string, repo: string, ref: string): Promise<string> {
@@ -190,8 +215,10 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
     files: FileEdit[],
   ): Promise<boolean> {
     try {
-      const matches = await Promise.all(
-        files.map(async (file) => {
+      const matches = await mapWithConcurrency(
+        files,
+        GITHUB_FILE_CONCURRENCY,
+        async (file) => {
           const { data } = await this.octokit.repos.getContent({
             owner,
             repo,
@@ -202,7 +229,7 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
             return false;
           }
           return Buffer.from(data.content, "base64").toString("utf8") === file.content;
-        }),
+        },
       );
       return matches.every(Boolean);
     } catch {
@@ -267,8 +294,10 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
     });
     const baseTree = baseCommit.tree.sha;
 
-    const tree = await Promise.all(
-      files.map(async (f) => {
+    const tree = await mapWithConcurrency(
+      files,
+      GITHUB_FILE_CONCURRENCY,
+      async (f) => {
         const { data: blob } = await this.octokit.git.createBlob({
           owner,
           repo,
@@ -281,7 +310,7 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
           type: "blob" as const,
           sha: blob.sha,
         };
-      }),
+      },
     );
 
     const { data: newTree } = await this.octokit.git.createTree({

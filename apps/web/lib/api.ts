@@ -9,6 +9,17 @@ export function apiBase(): string {
 
 const DEFAULT_TIMEOUT_MS = 12_000;
 
+export class ApiRequestError extends Error {
+  constructor(
+    readonly path: string,
+    readonly status: number,
+    readonly requestId: string | null,
+  ) {
+    super(`API ${path} returned ${status}${requestId ? `, request ${requestId}` : ""}`);
+    this.name = "ApiRequestError";
+  }
+}
+
 async function fetchWithTimeout(
   url: string,
   init?: RequestInit,
@@ -41,8 +52,7 @@ async function fetchWithTimeout(
 export async function apiGet<T>(path: string, timeoutMs?: number): Promise<T> {
   const res = await fetchWithTimeout(`${API_URL}${path}`, undefined, timeoutMs);
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`API ${path} → ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+    throw new ApiRequestError(path, res.status, res.headers.get("x-request-id"));
   }
   return res.json() as Promise<T>;
 }
@@ -58,8 +68,7 @@ export async function apiPost<T>(path: string, body?: unknown, timeoutMs?: numbe
     timeoutMs,
   );
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${path} → ${res.status}: ${text.slice(0, 300)}`);
+    throw new ApiRequestError(path, res.status, res.headers.get("x-request-id"));
   }
   return res.json() as Promise<T>;
 }

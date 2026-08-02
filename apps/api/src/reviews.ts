@@ -97,20 +97,38 @@ export function listMigrationPrReviews(db: AppDb, tenantId: string, prId: string
   );
 }
 
+type SubmitMigrationPrReviewInput = {
+  tenantId: string;
+  prId: string;
+  authenticatedPrincipalId: string;
+  decision: HumanReviewDecision;
+  rationale: string;
+  reviewId: string;
+  eventId: string;
+  correlationId: string;
+  createdAt: string;
+  waiverExpiresAt?: string | null;
+};
+
 export function submitMigrationPrReview(
   db: AppDb,
-  input: {
-    tenantId: string;
-    prId: string;
-    authenticatedPrincipalId: string;
-    decision: HumanReviewDecision;
-    rationale: string;
-    reviewId: string;
-    eventId: string;
-    correlationId: string;
-    createdAt: string;
-    waiverExpiresAt?: string | null;
-  },
+  input: SubmitMigrationPrReviewInput,
+) {
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const result = submitMigrationPrReviewInTransaction(db, input);
+    if (ownsTransaction) db.raw.exec("COMMIT");
+    return result;
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function submitMigrationPrReviewInTransaction(
+  db: AppDb,
+  input: SubmitMigrationPrReviewInput,
 ) {
   if (!HUMAN_REVIEW_DECISIONS.includes(input.decision)) {
     throw new Error("review_decision_invalid");

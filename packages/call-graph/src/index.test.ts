@@ -116,4 +116,24 @@ describe("call-graph construction", () => {
     const callers = directCallers(g, leaf.id);
     expect(callers.some((c) => c.name === "PaymentService_charge")).toBe(true);
   });
+
+  it("indexes symbols whose names collide with object prototype properties", () => {
+    const root = writeFixture();
+    writeFileSync(
+      join(root, "src", "prototype-names.ts"),
+      `
+export function constructor() { return 1; }
+export function toString() { return constructor(); }
+export function hasOwnProperty() { return toString(); }
+export function __proto__() { return hasOwnProperty(); }
+`,
+      "utf8",
+    );
+
+    const graph = buildCallGraph(root);
+    for (const name of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+      expect(nodeByFileName(graph, "src/prototype-names.ts", name)).toBeTruthy();
+      expect(graph.byName[name]).toHaveLength(1);
+    }
+  });
 });

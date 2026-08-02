@@ -22,6 +22,10 @@ import type {
   TypeHierarchy,
 } from "./types.js";
 
+function emptyRecord<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
 const CODE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py"]);
 
 type Lang = FunctionNode["language"];
@@ -253,8 +257,8 @@ function extractHierarchy(text: string, language: Lang): {
   parents: Record<string, string[]>;
   methods: Record<string, string[]>;
 } {
-  const parents: Record<string, string[]> = {};
-  const methods: Record<string, string[]> = {};
+  const parents = emptyRecord<string[]>();
+  const methods = emptyRecord<string[]>();
   if (language === "python") {
     for (const m of text.matchAll(/class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?/g)) {
       const name = m[1]!;
@@ -402,7 +406,7 @@ export function buildCallGraph(
   const files = walk(repoRoot);
   const rawFns: RawFn[] = [];
   const allInstantiated: string[] = [];
-  const parentsOf: Record<string, string[]> = {};
+  const parentsOf = emptyRecord<string[]>();
 
   for (const abs of files) {
     const rel = relative(repoRoot, abs).replace(/\\/g, "/");
@@ -419,11 +423,11 @@ export function buildCallGraph(
   const hierarchy: TypeHierarchy = {
     parentsOf,
     instantiated: [...new Set(allInstantiated)],
-    methodsOfType: {},
+    methodsOfType: emptyRecord<string[]>(),
   };
 
-  const nodes: Record<string, FunctionNode> = {};
-  const byName: Record<string, FunctionNode[]> = {};
+  const nodes = emptyRecord<FunctionNode>();
+  const byName = emptyRecord<FunctionNode[]>();
 
   for (const fn of rawFns) {
     const id = nodeId(fn.filePath, fn.name, fn.lineStart);
@@ -460,8 +464,8 @@ export function buildCallGraph(
 
   const byNameMap: Record<string, FunctionNode[]> = byName;
   const edges: CallEdge[] = [];
-  const outEdges: Record<string, string[]> = {};
-  const inEdges: Record<string, string[]> = {};
+  const outEdges = emptyRecord<string[]>();
+  const inEdges = emptyRecord<string[]>();
   let directEdges = 0;
   let approxEdges = 0;
   const edgeKeys = new Set<string>();
@@ -497,7 +501,7 @@ export function buildCallGraph(
     }
   }
 
-  const byNameIds: Record<string, string[]> = {};
+  const byNameIds = emptyRecord<string[]>();
   for (const [name, list] of Object.entries(byNameMap)) {
     byNameIds[name] = list.map((n) => n.id);
   }
@@ -522,7 +526,11 @@ export function buildCallGraph(
 }
 
 export function emptyHierarchy(): TypeHierarchy {
-  return { parentsOf: {}, instantiated: [], methodsOfType: {} };
+  return {
+    parentsOf: emptyRecord<string[]>(),
+    instantiated: [],
+    methodsOfType: emptyRecord<string[]>(),
+  };
 }
 
 export function mergeHierarchies(a: TypeHierarchy, b: TypeHierarchy): TypeHierarchy {
@@ -537,9 +545,9 @@ export function mergeHierarchies(a: TypeHierarchy, b: TypeHierarchy): TypeHierar
 
 /** Rebuild outEdges/inEdges/byName/stats from nodes+edges. */
 export function rebuildAdjacency(graph: CallGraph): void {
-  const outEdges: Record<string, string[]> = {};
-  const inEdges: Record<string, string[]> = {};
-  const byName: Record<string, string[]> = {};
+  const outEdges = emptyRecord<string[]>();
+  const inEdges = emptyRecord<string[]>();
+  const byName = emptyRecord<string[]>();
   let directEdges = 0;
   let approxEdges = 0;
   for (const n of Object.values(graph.nodes)) {
@@ -605,7 +613,7 @@ export function reanalyzeFiles(
   }
   hierarchy.instantiated = [...new Set(allInstantiated)];
 
-  const newNodes: Record<string, FunctionNode> = {};
+  const newNodes = emptyRecord<FunctionNode>();
   for (const fn of rawFns) {
     const id = nodeId(fn.filePath, fn.name, fn.lineStart);
     const bodyH = hashBody(fn.body);
@@ -638,7 +646,7 @@ export function reanalyzeFiles(
 
   // Resolution universe = survivors + new
   const universe: Record<string, FunctionNode> = { ...survivorGraph.nodes, ...newNodes };
-  const byNameMap: Record<string, FunctionNode[]> = {};
+  const byNameMap = emptyRecord<FunctionNode[]>();
   for (const n of Object.values(universe)) {
     byNameMap[n.name] = byNameMap[n.name] ?? [];
     byNameMap[n.name]!.push(n);

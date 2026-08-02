@@ -79,6 +79,20 @@ describe("ops GA", () => {
     expect(r.ok).toBe(true);
   });
 
+  it("fails closed when trusted proxy mode has no shared secret", () => {
+    const r = validateApiEnv({
+      NODE_ENV: "production",
+      API_AUTH: "required",
+      GITHUB_MODE: "mock",
+      TRUST_PROXY: "1",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+    });
+    expect(r.errors).toContain(
+      "TRUST_PROXY_SECRET is required when TRUST_PROXY=1 in production",
+    );
+  });
+
   it("requires a PAT for real GitHub delivery", () => {
     const appOnly = validateApiEnv({
       NODE_ENV: "production",

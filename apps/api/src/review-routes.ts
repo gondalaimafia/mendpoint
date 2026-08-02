@@ -115,6 +115,8 @@ export function createMigrationPrReviewRoutes(deps: ReviewRouteDependencies) {
     ) {
       return c.json({ error: "review_waiver_expiry_invalid" }, 400);
     }
+    const ownsTransaction = !deps.db.raw.isTransaction;
+    if (ownsTransaction) deps.db.raw.exec("BEGIN IMMEDIATE");
     try {
       const review = submitMigrationPrReview(deps.db, {
         tenantId: principal.tenantId,
@@ -138,8 +140,12 @@ export function createMigrationPrReviewRoutes(deps: ReviewRouteDependencies) {
           supersedesId: review.supersedesId,
         },
       });
+      if (ownsTransaction) deps.db.raw.exec("COMMIT");
       return c.json(review, 201);
     } catch (error) {
+      if (ownsTransaction && deps.db.raw.isTransaction) {
+        deps.db.raw.exec("ROLLBACK");
+      }
       return reviewError(c, error);
     }
   });

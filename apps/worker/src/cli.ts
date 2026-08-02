@@ -57,6 +57,7 @@ export type WorkerHeartbeat = {
   recordedAt: string;
   jobs: JobDrainResult;
   activeJob?: { id: string; type: string; leaseGeneration: number } | null;
+  activeJobs?: Array<{ id: string; type: string; leaseGeneration: number }>;
   recovery?: {
     due: number;
     scheduled: number;
@@ -106,6 +107,37 @@ export function retryDelayMs(
 ): number {
   const exponent = Math.max(0, Math.min(consecutiveFailures - 1, 8));
   return Math.min(maxMs, baseMs * 2 ** exponent);
+}
+
+export function parseJobConcurrency(value: string | number | undefined): number {
+  const parsed = value === undefined ? 2 : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 8) {
+    throw new Error("MENDPOINT_JOB_CONCURRENCY must be an integer between 1 and 8");
+  }
+  return parsed;
+}
+
+export function startConcurrentJobLanes<T>(
+  concurrency: number,
+  start: (lane: number) => Promise<T>,
+): Promise<T[]> {
+  return Promise.all(Array.from({ length: concurrency }, (_, lane) => start(lane)));
+}
+
+export function waitForWorkerDelay(
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolveDelay) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolveDelay();
+    };
+    const timer = setTimeout(finish, delayMs);
+    signal.addEventListener("abort", finish, { once: true });
+  });
 }
 
 export function feedPipelineJobId(input: {
@@ -442,6 +474,9 @@ export async function processJobsOnce(
     workerId?: string;
     leaseMs?: number;
     maxJobs?: number;
+    allTenants?: boolean;
+    maxRunningPerTenant?: number;
+    shouldContinue?: () => boolean;
     onActiveJob?: (
       job: { id: string; type: string; leaseGeneration: number } | null,
     ) => void;
@@ -456,11 +491,14 @@ export async function processJobsOnce(
     failed: 0,
     retried: 0,
   };
-  for (; result.claimed < maxJobs; ) {
+  for (; result.claimed < maxJobs && opts.shouldContinue?.() !== false; ) {
     const job = claimNextJob(db, ["pipeline.fanout", "agent.run", "repair.run"], {
-      tenantId: opts.tenantId ?? process.env.MENDPOINT_TENANT_ID,
+      tenantId: opts.allTenants
+        ? undefined
+        : opts.tenantId ?? process.env.MENDPOINT_TENANT_ID,
       workerId,
       leaseMs,
+      maxRunningPerTenant: opts.maxRunningPerTenant,
     });
     if (!job) break;
     result.claimed++;
@@ -533,7 +571,8 @@ export async function processJobsOnce(
           useLlm: payload.useLlm ?? process.env.LLM_AGENT === "1",
           allowNetwork: false,
           sessionId: payload.sessionId,
-          shouldContinue: () => !leaseLost,
+          shouldContinue: () =>
+            !leaseLost && opts.shouldContinue?.() !== false,
         });
         if (leaseLost || warden.stoppedReason === "lease_lost") {
           throw new Error("lease_lost_during_warden");
@@ -648,7 +687,8 @@ export async function processJobsOnce(
           maxAttempts: payload.maxAttempts,
           dryRun: payload.dryRun,
           useLlm: payload.useLlm,
-          shouldContinue: () => !leaseLost,
+          shouldContinue: () =>
+            !leaseLost && opts.shouldContinue?.() !== false,
         });
         if (leaseLost || repair.stopReason === "lease_lost") {
           throw new Error("lease_lost_during_repair");
@@ -738,7 +778,8 @@ export async function processJobsOnce(
         contractCases: payload.contractCases,
         securityScanOk: payload.securityScanOk,
         repairVerifyCommands: payload.repairVerifyCommands,
-        shouldContinue: () => !leaseLost,
+        shouldContinue: () =>
+          !leaseLost && opts.shouldContinue?.() !== false,
       });
       const deliveryFailures = report.consumers.filter(
         (consumer) => consumer.prStatus === "delivery_failed",
@@ -807,8 +848,9 @@ async function runJobWorker(intervalMs: number) {
 
 async function runService(intervalMs: number) {
   const feedDb = createDb();
-  const jobDb = createDb();
   const heartbeatDb = createDb();
+  const jobConcurrency = parseJobConcurrency(process.env.MENDPOINT_JOB_CONCURRENCY);
+  const jobDbs = Array.from({ length: jobConcurrency }, () => createDb());
   const heartbeatPath = process.env.MENDPOINT_WORKER_HEARTBEAT_PATH;
   if (!heartbeatPath) {
     throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH is required for run-service");
@@ -821,17 +863,28 @@ async function runService(intervalMs: number) {
     failed: 0,
     retried: 0,
   };
-  let activeJob: WorkerHeartbeat["activeJob"] = null;
-  const tenantId = process.env.MENDPOINT_TENANT_ID ?? "tenant_default";
+  const activeJobs = new Map<number, NonNullable<WorkerHeartbeat["activeJob"]>>();
+  const laneJobs = Array.from({ length: jobConcurrency }, (): JobDrainResult => ({
+    claimed: 0,
+    succeeded: 0,
+    failed: 0,
+    retried: 0,
+  }));
+  const configuredTenantId = process.env.MENDPOINT_TENANT_ID?.trim() || undefined;
+  const shutdown = new AbortController();
+  const requestShutdown = () => shutdown.abort();
+  process.once("SIGTERM", requestShutdown);
+  process.once("SIGINT", requestShutdown);
   const emitHeartbeat = () => {
     try {
-      const recovery = getJobRecoverySummary(heartbeatDb, tenantId);
+      const recovery = getJobRecoverySummary(heartbeatDb, configuredTenantId);
       writeWorkerHeartbeat(heartbeatPath, {
         ok: true,
         workerId: WORKER_ID,
         recordedAt: nowIso(),
         jobs,
-        activeJob,
+        activeJob: activeJobs.values().next().value ?? null,
+        activeJobs: [...activeJobs.values()],
         recovery: {
           due: recovery.due,
           scheduled: recovery.scheduled,
@@ -855,14 +908,14 @@ async function runService(intervalMs: number) {
 
   const runFeedLane = async () => {
     let failures = 0;
-    for (;;) {
+    while (!shutdown.signal.aborted) {
       feedPollingEnabled = process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
       feedPollOk = true;
       if (feedPollingEnabled) {
         try {
           const scheduled = await runFeedSchedules({
             db: feedDb,
-            tenantId,
+            tenantId: configuredTenantId,
             defaultIntervalMs: parseIntervalMs(process.env.POLL_INTERVAL_MS, intervalMs),
             defaultStaleAfterMs: Number(process.env.POLL_STALE_AFTER_MS ?? intervalMs * 2),
             maxConcurrency: Number(process.env.MENDPOINT_FEED_CONCURRENCY ?? 4),
@@ -870,7 +923,7 @@ async function runService(intervalMs: number) {
             runPipeline: true,
             pipeline: async (slug, database, context) => ({
               jobId: enqueueFeedPipelineJob(database, {
-                tenantId,
+                tenantId: context.tenantId,
                 providerSlug: slug,
                 contentHash: context.contentHash,
                 versionId: context.versionId,
@@ -889,45 +942,65 @@ async function runService(intervalMs: number) {
       failures = feedPollOk ? 0 : failures + 1;
       emitHeartbeat();
       const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
-      await new Promise((resolveSleep) => setTimeout(resolveSleep, delay));
+      await waitForWorkerDelay(delay, shutdown.signal);
     }
   };
 
-  const runJobLane = async () => {
+  const runJobLane = async (lane: number) => {
     let failures = 0;
-    for (;;) {
-      jobs = {
+    while (!shutdown.signal.aborted) {
+      laneJobs[lane] = {
         claimed: 0,
         succeeded: 0,
         failed: 0,
         retried: 0,
       };
       try {
-        jobs = await processJobsOnce(jobDb, {
+        laneJobs[lane] = await processJobsOnce(jobDbs[lane]!, {
+          allTenants: !configuredTenantId,
+          tenantId: configuredTenantId,
+          workerId: `${WORKER_ID}:lane:${lane}`,
+          maxRunningPerTenant: configuredTenantId ? undefined : 1,
+          shouldContinue: () => !shutdown.signal.aborted,
           onActiveJob: (job) => {
-            activeJob = job;
+            if (job) activeJobs.set(lane, job);
+            else activeJobs.delete(lane);
             emitHeartbeat();
           },
         });
       } catch (error) {
-        jobs.failed++;
+        laneJobs[lane]!.failed++;
         console.error(error);
       }
-      failures = jobs.failed === 0 ? 0 : failures + 1;
+      jobs = laneJobs.reduce(
+        (total, laneResult) => ({
+          claimed: total.claimed + laneResult.claimed,
+          succeeded: total.succeeded + laneResult.succeeded,
+          failed: total.failed + laneResult.failed,
+          retried: total.retried + laneResult.retried,
+        }),
+        { claimed: 0, succeeded: 0, failed: 0, retried: 0 },
+      );
+      failures = laneJobs[lane]!.failed === 0 ? 0 : failures + 1;
       emitHeartbeat();
       const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
-      await new Promise((resolveSleep) => setTimeout(resolveSleep, delay));
+      await waitForWorkerDelay(delay, shutdown.signal);
     }
   };
 
   const lanes = startIndependentWorkerLanes({
     feeds: runFeedLane,
-    jobs: runJobLane,
+    jobs: () => startConcurrentJobLanes(jobConcurrency, runJobLane),
   });
   try {
     await Promise.all([lanes.feeds, lanes.jobs]);
   } finally {
     clearInterval(heartbeatTimer);
+    process.off("SIGTERM", requestShutdown);
+    process.off("SIGINT", requestShutdown);
+    feedDb.raw.close();
+    for (const jobDb of jobDbs) jobDb.raw.close();
+    heartbeatDb.raw.close();
   }
 }
 

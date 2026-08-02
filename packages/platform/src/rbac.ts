@@ -96,6 +96,15 @@ export function assertCan(principal: Principal, perm: Permission): void {
   }
 }
 
+export function canMutateSystemCatalog(
+  principal: Principal,
+  systemTenantId = process.env.MENDPOINT_SYSTEM_TENANT_ID ?? "tenant_default",
+): boolean {
+  return (
+    principal.tenantId === systemTenantId && can(principal, "tenant:admin")
+  );
+}
+
 /** Tenant isolation: resource must match principal tenant (or global empty). */
 export function assertTenant(
   principal: Principal,

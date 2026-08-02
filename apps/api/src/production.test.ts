@@ -134,4 +134,30 @@ describe("production rate limit identity", () => {
       (await app.request("/private", { headers: { "X-Test-Key-Id": "key-a" } })).status,
     ).toBe(429);
   });
+
+  it("isolates web sessions that authenticate through the same server API key", async () => {
+    process.env.RATE_LIMIT_MAX = "1";
+    process.env.TRUST_PROXY = "1";
+    process.env.TRUST_PROXY_SECRET = "proxy-secret";
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("apiKeyId", "shared-web-key");
+      c.set("principal", {
+        id: "api-key:shared-web-key",
+        tenantId: "tenant-a",
+        role: "owner",
+      });
+      await next();
+    });
+    app.use("*", rateLimitMiddleware({ identity: "principal" }));
+    app.get("/private", (c) => c.json({ ok: true }));
+    const headers = (session: string) => ({
+      "X-Mendpoint-Proxy-Secret": "proxy-secret",
+      "X-Mendpoint-Web-Session": session.repeat(64),
+    });
+
+    expect((await app.request("/private", { headers: headers("a") })).status).toBe(200);
+    expect((await app.request("/private", { headers: headers("b") })).status).toBe(200);
+    expect((await app.request("/private", { headers: headers("a") })).status).toBe(429);
+  });
 });

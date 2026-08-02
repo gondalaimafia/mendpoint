@@ -36,9 +36,11 @@ export default async function ProviderPage() {
       </p>
       {error && (
         <div className="card" style={{ borderColor: "rgba(248,113,113,0.4)" }}>
-          <p className="muted">
-            API unavailable ({error}). Start with <code>npm run db:seed</code> then{" "}
-            <code>npm run dev:api</code>.
+          <h2>Provider data is temporarily unavailable</h2>
+          <p className="muted">Retry this page. If the problem continues, check system status.</p>
+          <p className="btn-row">
+            <Link className="btn primary" href="/provider">Retry</Link>
+            <Link className="btn" href="/status">System status</Link>
           </p>
         </div>
       )}
@@ -63,7 +65,11 @@ export default async function ProviderPage() {
             </p>
           </div>
         ))}
-        {!providers.length && !error && <p className="muted">No providers yet.</p>}
+        {!providers.length && !error && (
+          <p className="muted">
+            No providers are connected. <Link href="/install">Connect a repository</Link> to begin a pilot.
+          </p>
+        )}
       </div>
 
       <h2>Recent changes</h2>
@@ -102,7 +108,7 @@ export default async function ProviderPage() {
           {!changes.length && (
             <tr>
               <td colSpan={4} className="muted">
-                No changes yet — run <code>npm run demo</code>.
+                No changes are available. Publish a provider version to start impact analysis.
               </td>
             </tr>
           )}

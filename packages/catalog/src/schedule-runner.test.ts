@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDb, type AppDb } from "@mendpoint/db";
+import { createDb, upsertFeedSchedule, type AppDb } from "@mendpoint/db";
 import { afterEach, describe, expect, it } from "vitest";
 import { runFeedSchedules } from "./schedule-runner.js";
 import type { PollableFeed } from "./poll.js";
@@ -133,5 +133,86 @@ describe("feed schedule runner", () => {
         }],
       },
     });
+  });
+
+  it("services existing schedules for every tenant when no tenant filter is configured", async () => {
+    const db = fixture();
+    const configuredFeeds = feeds(1);
+    for (const tenantId of ["tenant-a", "tenant-b"]) {
+      db.raw
+        .prepare(
+          `INSERT INTO tenants
+             (id, slug, name, plan, billing_status, seat_limit, created_at)
+           VALUES (?, ?, ?, 'pilot', 'active', 5, ?)`,
+        )
+        .run(tenantId, tenantId, tenantId, "2026-08-02T12:00:00.000Z");
+      upsertFeedSchedule(db, {
+        id: `schedule-${tenantId}`,
+        tenantId,
+        providerSlug: configuredFeeds[0]!.slug,
+        intervalMs: 60_000,
+        staleAfterMs: 120_000,
+        createdAt: "2026-08-02T12:00:00.000Z",
+      });
+    }
+    const serviced: string[] = [];
+
+    const result = await runFeedSchedules({
+      db,
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: configuredFeeds,
+      execute: async (feed, schedule) => {
+        serviced.push(schedule.tenant_id);
+        return { slug: feed.slug, url: feed.openapiUrl, status: "unchanged" };
+      },
+    });
+
+    expect(serviced.sort()).toEqual(["tenant-a", "tenant-b"]);
+    expect(result).toMatchObject({
+      claimed: 2,
+      succeeded: 2,
+      failed: 0,
+      health: { counts: { healthy: 2, stale: 0, failed: 0 } },
+    });
+  });
+
+  it("fetches one provider document per schedule cycle and dispatches every tenant", async () => {
+    const db = fixture();
+    const configuredFeeds = feeds(1);
+    for (const tenantId of ["tenant-a", "tenant-b"]) {
+      db.raw.prepare(
+        `INSERT INTO tenants
+           (id, slug, name, plan, billing_status, seat_limit, created_at)
+         VALUES (?, ?, ?, 'pilot', 'active', 5, ?)`,
+      ).run(tenantId, tenantId, tenantId, "2026-08-02T12:00:00.000Z");
+      upsertFeedSchedule(db, {
+        id: `shared-${tenantId}`,
+        tenantId,
+        providerSlug: configuredFeeds[0]!.slug,
+        intervalMs: 60_000,
+        staleAfterMs: 120_000,
+        createdAt: "2026-08-02T12:00:00.000Z",
+      });
+    }
+    let fetches = 0;
+    const result = await runFeedSchedules({
+      db,
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: configuredFeeds,
+      sourceDocumentLoader: async (url) => {
+        fetches++;
+        return {
+          ok: true,
+          url,
+          body: JSON.stringify({ openapi: "3.1.0", info: { title: "Shared", version: "1" }, paths: {} }),
+          contentHash: "shared-content-hash",
+          versionLabel: "1",
+          httpStatus: 200,
+          sizeBytes: 80,
+        };
+      },
+    });
+    expect(fetches).toBe(1);
+    expect(result).toMatchObject({ claimed: 2, succeeded: 2, failed: 0 });
   });
 });

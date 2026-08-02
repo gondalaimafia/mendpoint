@@ -12,6 +12,7 @@ import {
   detectVmCapabilities,
   estimateCost,
   can,
+  canMutateSystemCatalog,
   parsePrincipalFromHeaders,
   listScmProviders,
   getScmAdapter,
@@ -92,6 +93,30 @@ describe("vm + cost + rbac + scm + alerts", () => {
     });
     expect(can(p, "plan:read")).toBe(true);
     expect(can(p, "plan:edit")).toBe(false);
+  });
+
+  it("limits shared provider catalog mutations to system tenant administrators", () => {
+    expect(
+      canMutateSystemCatalog({
+        id: "system-owner",
+        tenantId: "tenant_default",
+        role: "owner",
+      }),
+    ).toBe(true);
+    expect(
+      canMutateSystemCatalog({
+        id: "customer-owner",
+        tenantId: "tenant-customer",
+        role: "owner",
+      }),
+    ).toBe(false);
+    expect(
+      canMutateSystemCatalog({
+        id: "system-engineer",
+        tenantId: "tenant_default",
+        role: "engineer",
+      }),
+    ).toBe(false);
   });
 
   it("lists scm providers with mock mode for all", () => {

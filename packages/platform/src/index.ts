@@ -65,6 +65,7 @@ export type { Role, Permission, Principal } from "./rbac.js";
 export {
   permissionsFor,
   can,
+  canMutateSystemCatalog,
   assertCan,
   assertTenant,
   parsePrincipalFromHeaders,
