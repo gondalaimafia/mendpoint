@@ -785,13 +785,15 @@ Program interpretation: close every repository controlled acceptance criterion i
 ### Stage 0: Evidence contract and release truth
 
 - [x] Reconcile all 84 requirement records and 14 public claims against exact main code and tests.
-- [ ] Reject `partial` requirements that contain only planned, external, or live evidence and no current implementation locator.
-- [ ] Reject malformed blocker types and require every external evidence record to match a named blocker.
-- [ ] Link every public claim to requirement IDs and prevent proven claims from depending on incomplete product capability.
-- [ ] Mark the repository website registry as a replacement candidate until authenticated owner cutover is proven.
-- [ ] Reconcile stale historical checklists without rewriting prior release evidence.
+- [x] Reject `partial` requirements that contain only planned, external, or live evidence and no current implementation locator.
+- [x] Reject malformed blocker types and require every external evidence record to match a named blocker.
+- [x] Link every public claim to requirement IDs and prevent proven claims from depending on incomplete product capability.
+- [x] Mark the repository website registry as a replacement candidate until authenticated owner cutover is proven.
+- [x] Reconcile stale historical checklists without rewriting prior release evidence.
 
 Acceptance: contract tests fail on unsupported partial status, malformed blockers, unmatched external evidence, missing claim requirement links, and capability claims that exceed requirement state. `spec:check`, `claims:check`, and `ga:check` pass on the corrected registries.
+
+Stage 0 review: commit `328c350` hardened both registries, corrected the evidence ledger, and repaired the root graph test harness. The contract workspace passes 69 tests, full typecheck passes, `spec:check` reports 18 verified, 40 partial, 13 scaffold, 12 unimplemented, and 1 blocked external, and `claims:check` passes 14 claims and 9 destinations. Public surface binding is now checked by claim ID so a registry entry cannot point only at an unrelated file.
 
 ### Stage 1: Warden private preview implementation
 
@@ -877,3 +879,48 @@ Acceptance: internal adapters can pass fixture and disposable repository tests b
 - Exact main specification check passes structurally with 10 verified, 52 partial, 7 scaffold, 14 unimplemented, and 1 blocked external requirements.
 - Three specialist audits found stale statuses in both directions. Several SCM, Transformer, router cost, and learning controls are materially implemented, while multiple partial requirements have only planned evidence and should be downgraded.
 - The baseline full workspace test command exceeded the local 120 second command window. Focused audit tests found one root harness defect in `packages/graph-learn/src/graph-learn.test.ts`: repository root resolution can become `C:\` when invoked from the workspace root. This must be repaired before full release verification.
+
+## Customer readiness closure tranche 1
+
+- [x] Harden product requirement and public claim evidence contracts.
+- [x] Add human OIDC identity and tenant membership enforcement without weakening API keys.
+- [x] Add runtime graph evidence, Warden rollout planning, and structured draft PR packages.
+- [x] Add a protected Transformer workspace, deterministic blueprints, source linked BSG extraction, and staged draft PR batches.
+- [x] Add signed provider recipes, held out router value proof, exact Warden metrics, and bounded performance probes.
+- [x] Add release and SDK ingestion fixtures, a GitLab fixture adapter, and adapter lifecycle promotion controls.
+- [x] Add pilot success contracts, disaster recovery drills, a VPC contract, and a compliance evidence catalog.
+- [x] Complete calibrated confidence and held out impact benchmark verification.
+- [x] Complete cross boundary Transformer experimental gate verification.
+- [x] Complete billing contract and invoice export boundary verification.
+- [x] Run full tests, typecheck, production build, GA checks, specialist evals, dependency audit, and diff integrity locally.
+- [ ] Run container, deployment journey, crash recovery, and production browser gates in protected CI.
+- [ ] Commit focused slices, push the protected branch, merge only green CI, deploy exact main, and browser verify.
+
+### Tranche 1 evidence boundary
+
+Repository controls are retained as internal or experimental unless live evidence
+exists. No code artifact satisfies real customer proof, approved credentials,
+cloud or network approval, legal approval, payment processing, identity provider
+lifecycle, production regional recovery, penetration testing, compliance
+assessment, or public website cutover.
+
+### Tranche 1 integration review
+
+- Product contract: 84 requirements, 41 verified, 40 partial, 2 scaffold, and 1 blocked external. The earlier blanket partial explanation was corrected; repository controlled gaps and named external gates are tracked separately.
+- Public claims: 14 claims and 9 destinations pass the evidence binding check.
+- Full workspace tests pass, including 41 catalog, 93 contract, 59 database, 28 web, and 15 worker tests.
+- Full workspace typecheck and the Next production build pass. The build emits 21 static pages and the protected Warden, Transformer, billing, graph, install, status, and review routes.
+- GA preflight passes with graph bench 19 of 20. Agent eval corpus `2026-08-01.v3` passes Warden 14 of 14 and Transformer 12 of 12 across 78 trials, with pass at one, pass at three, and pass to the power of three all 1.000 and zero critical or deterministic failures.
+- Production dependency audit reports zero vulnerabilities. Diff integrity and the source secret and banned language scan pass.
+- The combined audit found and fixed one stale web session payload type before release. Human review identity now derives from active OIDC membership, Transformer merge observation requires exact revision CI and review evidence, feed scheduling is durable and replay safe, and pilot contract mutations write audit evidence transactionally.
+- Live SCM execution, approved private repository drills, real customer outcome evidence, identity provider lifecycle, payment processing, cloud network deployment, regional recovery, independent security assessment, and public website owner cutover remain explicit acceptance gates.
+
+## Post-audit closure sequence
+
+- [ ] Land the Warden policy and review safety slice: durable versioned policy precedence, simulation, approvals, expiring waivers, reviewer activity, and replay evidence.
+- [ ] Land the unified change to impact slice: immutable source artifacts, complete change taxonomy, monitored ingestion health, ownership and CI enforcement, and runtime and deployment evidence collection.
+- [ ] Land the trust floor slice: adversarial tenant boundary tests, vault and key lifecycle, governed audit retention and export, and correlated service health.
+- [ ] Land remaining Warden execution slice: executable campaign attempts, baseline to post-edit comparison, recovery, and GitHub App lifecycle wiring.
+- [ ] Land remaining Transformer slice: durable worker and SCM execution, reverse-order restore, constraint enforcement, outcome ingestion, and failure evaluations behind the default-deny gate.
+- [ ] Land the shared router service slice: registered executors, durable routing and fallback decisions, cost attribution, handoff, and outcome feedback.
+- [ ] Keep live customer, provider credential, IdP, payment processor, cloud network, regional recovery, penetration test, assessor, and website owner cutover gates blocked until the named authority and evidence exist.

@@ -20,6 +20,20 @@ function task(overrides: Partial<RouterTaskSpec> = {}): RouterTaskSpec {
     idempotencyKey: "migration-1",
     inputArtifactIds: ["artifact-spec", "artifact-source"],
     requiredCapabilities: ["typescript", "verification"],
+    allowedTools: ["repository.read", "workspace.patch", "verification.run"],
+    context: { estimatedInputTokens: 8_000, maximumOutputTokens: 4_000 },
+    verification: {
+      requiredChecks: ["tests", "security"],
+      requireAll: true,
+      onFailure: "human_handoff",
+    },
+    fallbackPolicy: {
+      enabled: true,
+      maxAttempts: 3,
+      sameExecutorRetries: 1,
+      retryableFailures: ["timeout", "rate_limited", "provider_unavailable"],
+      fallbackFailures: ["timeout", "provider_unavailable"],
+    },
     privacy: { classification: "confidential", requiredRegion: "us-east" },
     risk: "medium",
     quality: { minimumScore: 0.8 },
@@ -59,9 +73,16 @@ function executor(
   return {
     executorId,
     providerId: `provider-${executorId}`,
+    kind: "frontier_model",
+    version: "2026-08-01",
     deployment: "internal",
     capabilities: ["typescript", "verification"],
+    tools: ["repository.read", "workspace.patch", "verification.run"],
     regions: ["us-east"],
+    price: { version: "price-2026-08", currency: "USD", effectiveAt: "2026-08-01T00:00:00.000Z" },
+    limits: { maximumInputTokens: 128_000, maximumOutputTokens: 16_000, maximumConcurrentTasks: 10 },
+    health: { status: "healthy", checkedAt: "2026-08-01T11:59:00.000Z", evidenceRef: `health:${executorId}` },
+    license: { id: "commercial-service", commercialUse: true, redistribution: "not_applicable" },
     maximumDataClassification: "restricted",
     maximumRisk: "medium",
     qualityScore: 0.9,
@@ -256,6 +277,50 @@ describe("Gate 7 policy router", () => {
     expect(first.decision).toEqual(second.decision);
   });
 
+  it("prefers an eligible deterministic recipe before higher scoring model executors", () => {
+    const outcome = routeTask({
+      task: task(),
+      policy: policy(),
+      registry: registry(
+        executor("frontier", { kind: "frontier_model", qualityScore: 0.99, estimatedCostUsd: 0.5 }),
+        executor("recipe", { kind: "deterministic_recipe", qualityScore: 0.81, estimatedCostUsd: 1 }),
+      ),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    if (outcome.action !== "execute") throw new Error("expected execution");
+    expect(outcome.plan.primary).toMatchObject({
+      executorId: "recipe",
+      executorKind: "deterministic_recipe",
+      executorVersion: "2026-08-01",
+      priceVersion: "price-2026-08",
+    });
+    expect(outcome.plan.fallbacks[0]?.executorId).toBe("frontier");
+  });
+
+  it("fails closed on tool, hard limit, health, and commercial license boundaries", () => {
+    const outcome = routeTask({
+      task: task(),
+      policy: policy(),
+      registry: registry(
+        executor("tool-missing", { tools: ["repository.read"] }),
+        executor("too-small", { limits: { maximumInputTokens: 1_000, maximumOutputTokens: 1_000, maximumConcurrentTasks: 1 } }),
+        executor("unavailable", { health: { status: "unavailable", checkedAt: "2026-08-01T11:59:00.000Z", evidenceRef: "health:unavailable" } }),
+        executor("unlicensed", { license: { id: "research-only", commercialUse: false, redistribution: "restricted" } }),
+      ),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    if (outcome.action !== "human_handoff") throw new Error("expected handoff");
+    const byId = new Map(outcome.decision.evaluations.map((item) => [item.executorId, item.reasons]));
+    expect(byId.get("tool-missing")).toContain("tool_missing");
+    expect(byId.get("too-small")).toContain("hard_limit_exceeded");
+    expect(byId.get("unavailable")).toContain("executor_unhealthy");
+    expect(byId.get("unlicensed")).toContain("license_disallowed");
+  });
+
   it("hands off when every executor violates at least one constraint", () => {
     const outcome = routeTask({
       task: task(),
@@ -296,5 +361,15 @@ describe("Gate 7 policy router", () => {
         decidedAt,
       }),
     ).toThrow("policy regions are invalid");
+    expect(() =>
+      routeTask({
+        task: task({ verification: { requiredChecks: [], requireAll: true, onFailure: "human_handoff" } }),
+        policy: policy(),
+        registry: registry(executor("executor-a")),
+        circuitBreaker: new ExecutorCircuitBreaker(),
+        remainingBudgetUsd: 5,
+        decidedAt,
+      }),
+    ).toThrow("Task verification policy is invalid");
   });
 });

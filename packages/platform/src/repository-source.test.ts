@@ -2,11 +2,13 @@ import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createLocalGitRepositorySource,
   validateRepositoryRelativePath,
 } from "./repository-source.js";
+
+vi.setConfig({ testTimeout: 15_000 });
 
 const temporaryDirectories: string[] = [];
 

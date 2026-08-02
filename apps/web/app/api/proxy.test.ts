@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { createHmac } from "node:crypto";
 import { GET, PATCH, POST } from "./[...path]/route.js";
 import {
   DELETE as logout,
@@ -43,7 +42,7 @@ function mutationRequest(
   });
 }
 
-async function sessionCookie(operatorId = "operator-123"): Promise<string> {
+async function sessionCookie(): Promise<string> {
   process.env.MENDPOINT_WEB_ACCESS_TOKEN = "web-secret";
   process.env.MENDPOINT_WEB_ALLOWED_ORIGINS = "https://console.example";
   const response = await login(
@@ -54,7 +53,7 @@ async function sessionCookie(operatorId = "operator-123"): Promise<string> {
         "Sec-Fetch-Site": "same-origin",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ operatorId, token: "web-secret" }),
+      body: JSON.stringify({ token: "web-secret" }),
     }),
   );
   expect(response.status).toBe(200);
@@ -62,7 +61,7 @@ async function sessionCookie(operatorId = "operator-123"): Promise<string> {
   expect(setCookie).toContain("HttpOnly");
   expect(setCookie).toContain("SameSite=strict");
   const cookie = setCookie.split(";")[0]!;
-  expect(cookie).toMatch(/^mendpoint_web_session=v2\./);
+  expect(cookie).toMatch(/^mendpoint_web_session=v3\./);
   return cookie;
 }
 
@@ -98,7 +97,7 @@ describe("web credential proxy", () => {
     );
     await expect(status.json()).resolves.toMatchObject({
       authenticated: true,
-      subject: { operatorId: "operator-123" },
+      subject: { kind: "preview_access" },
     });
 
     const response = logout(
@@ -114,10 +113,10 @@ describe("web credential proxy", () => {
     expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
   });
 
-  it("requires a validated operator identity and rejects v1, tampered, and expired cookies", async () => {
+  it("does not accept caller asserted identity and rejects legacy, tampered, and expired cookies", async () => {
     process.env.MENDPOINT_WEB_ACCESS_TOKEN = "web-secret";
     process.env.MENDPOINT_WEB_ALLOWED_ORIGINS = "https://console.example";
-    const missingOperator = await login(
+    const assertedIdentity = await login(
       new NextRequest("https://console.example/api/session", {
         method: "POST",
         headers: {
@@ -125,10 +124,11 @@ describe("web credential proxy", () => {
           "Sec-Fetch-Site": "same-origin",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ token: "web-secret" }),
+        body: JSON.stringify({ token: "web-secret", operatorId: "attacker@example.com" }),
       }),
     );
-    expect(missingOperator.status).toBe(400);
+    expect(assertedIdentity.status).toBe(200);
+    await expect(assertedIdentity.json()).resolves.toEqual({ authenticated: true });
 
     const legacy = await middleware(
       new NextRequest("https://console.example/metrics", {
@@ -211,13 +211,71 @@ describe("web credential proxy", () => {
     expect(upstream).toHaveBeenCalledTimes(2);
   });
 
-  it("allows attributed pull request review reads and decisions", async () => {
-    const cookie = await sessionCookie("reviewer-123");
+  it("allows tenant scoped Transformer reads and forwards required mutation evidence", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn(async (_url: URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("x-mendpoint-actor")).toBeNull();
+      if (init?.method === "POST") {
+        expect(headers.get("idempotency-key")).toBe("campaign-a-pause");
+        expect(headers.get("x-mendpoint-evidence-refs")).toBe("operator:pause");
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const gate = await GET(
+      new NextRequest("https://console.example/api/transformer/gate", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["transformer", "gate"] }) },
+    );
+    expect(gate.status).toBe(200);
+
+    const view = await GET(
+      new NextRequest("https://console.example/api/transformer/control-plane/campaigns/campaign-a", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["transformer", "control-plane", "campaigns", "campaign-a"] }) },
+    );
+    expect(view.status).toBe(200);
+
+    const events = await GET(
+      new NextRequest("https://console.example/api/transformer/control-plane/campaigns/campaign-a/events", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["transformer", "control-plane", "campaigns", "campaign-a", "events"] }) },
+    );
+    expect(events.status).toBe(200);
+
+    const pause = await POST(
+      new NextRequest("https://console.example/api/transformer/control-plane/campaigns/campaign-a/transitions", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "campaign-a-pause",
+          "X-Mendpoint-Evidence-Refs": "operator:pause",
+        },
+        body: JSON.stringify({ state: "paused", expectedRevision: 3 }),
+      }),
+      { params: Promise.resolve({ path: ["transformer", "control-plane", "campaigns", "campaign-a", "transitions"] }) },
+    );
+    expect(pause.status).toBe(200);
+    expect(upstream).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not turn preview access into a delegated human identity", async () => {
+    const cookie = await sessionCookie();
     process.env.MENDPOINT_API_KEY = "api-secret";
     process.env.MENDPOINT_API_URL = "http://api.internal:3001";
     const upstream = vi.fn(async (url: URL, init?: RequestInit) => {
       expect(url.pathname).toBe("/prs/pr-1/reviews");
-      expect(new Headers(init?.headers).get("x-mendpoint-actor")).toBe("reviewer-123");
+      expect(new Headers(init?.headers).get("x-mendpoint-actor")).toBeNull();
       return Response.json({ ok: true });
     });
     vi.stubGlobal("fetch", upstream);
@@ -275,7 +333,7 @@ describe("web credential proxy", () => {
   it("bounds the bridge and preserves safe observability headers", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-01T15:16:17.123Z"));
-    const cookie = await sessionCookie("operator-456");
+    const cookie = await sessionCookie();
     process.env.MENDPOINT_API_KEY = "api-secret";
     process.env.MENDPOINT_API_URL = "http://api.internal:3001";
     let forwardedHeaders: Headers | undefined;
@@ -312,20 +370,9 @@ describe("web credential proxy", () => {
     expect(response.status).toBe(200);
     expect(forwardedHeaders?.get("authorization")).toBe("Bearer api-secret");
     expect(forwardedHeaders?.get("x-request-id")).toBe("browser-request-1");
-    expect(forwardedHeaders?.get("x-mendpoint-actor")).toBe("operator-456");
-    expect(forwardedHeaders?.get("x-mendpoint-actor-timestamp")).toBe(
-      "2026-08-01T15:16:17.123Z",
-    );
-    const canonical = [
-      "operator-456",
-      "2026-08-01T15:16:17.123Z",
-      "browser-request-1",
-      "PATCH",
-      "/platform/plans/run-1",
-    ].join("\n");
-    expect(forwardedHeaders?.get("x-mendpoint-actor-signature")).toBe(
-      createHmac("sha256", "api-secret").update(canonical, "utf8").digest("hex"),
-    );
+    expect(forwardedHeaders?.get("x-mendpoint-actor")).toBeNull();
+    expect(forwardedHeaders?.get("x-mendpoint-actor-timestamp")).toBeNull();
+    expect(forwardedHeaders?.get("x-mendpoint-actor-signature")).toBeNull();
     expect(response.headers.get("content-disposition")).toContain("audit.json");
     expect(response.headers.get("x-ratelimit-remaining")).toBe("99");
     expect(response.headers.get("server-timing")).toBe("total;dur=4");

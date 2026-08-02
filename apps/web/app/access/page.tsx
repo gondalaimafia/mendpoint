@@ -3,7 +3,6 @@
 import { useState } from "react";
 
 export default function AccessPage() {
-  const [operatorId, setOperatorId] = useState("");
   const [token, setToken] = useState("");
   const [message, setMessage] = useState("");
 
@@ -12,7 +11,7 @@ export default function AccessPage() {
     const response = await fetch("/api/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ operatorId, token }),
+      body: JSON.stringify({ token }),
     });
     if (!response.ok) {
       setMessage("Access denied");
@@ -26,17 +25,9 @@ export default function AccessPage() {
     <div className="page">
       <section className="card" style={{ maxWidth: 480, margin: "4rem auto" }}>
         <h1>Operator access</h1>
-        <p className="muted">Enter the configured web access token.</p>
-        <label>
-          Operator ID
-          <input
-            className="input"
-            type="text"
-            autoComplete="username"
-            value={operatorId}
-            onChange={(event) => setOperatorId(event.target.value)}
-          />
-        </label>
+        <p className="muted">
+          Enter the configured preview access token. Human approvals require a verified identity session.
+        </p>
         <label>
           Access token
           <input
@@ -51,7 +42,7 @@ export default function AccessPage() {
           className="btn primary"
           type="button"
           onClick={signIn}
-          disabled={!operatorId || !token}
+          disabled={!token}
         >
           Sign in
         </button>

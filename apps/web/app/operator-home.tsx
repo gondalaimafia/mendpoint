@@ -1,4 +1,5 @@
 import Link from "next/link";
+import claimRegistry from "../../../docs/PUBLIC_CLAIMS.json";
 import { apiGet } from "../lib/api";
 
 export const dynamic = "force-dynamic";
@@ -55,6 +56,8 @@ function tone(status: string): string {
 }
 
 export default async function OperatorHome() {
+  const figuresClaim = claimRegistry.claims.find((claim) => claim.id === "CLM-011");
+  if (!figuresClaim) throw new Error("Missing public claim CLM-011");
   const [statusResult, recoveryResult, jobsResult] = await Promise.allSettled([
     apiGet<SystemStatus>("/status"),
     apiGet<RecoverySummary>("/recovery/summary"),
@@ -111,6 +114,7 @@ export default async function OperatorHome() {
           <span className="metric-detail">Successful recoveries</span>
         </Link>
       </section>
+      <p className="muted small">{figuresClaim.wording}</p>
 
       <div className="cockpit-grid">
         <section className="surface attention-surface">

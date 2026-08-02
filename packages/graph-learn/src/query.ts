@@ -72,6 +72,15 @@ export function runGraphQuery(
   const t0 = performance.now();
   let tenantView: GraphLearnDb | undefined;
   try {
+    if (q.op === "repository_evidence" && !scope) {
+      return {
+        op: q.op,
+        nodes: [],
+        edges: [],
+        summary: "tenant scope required",
+        rows: [],
+      };
+    }
     if (scope && q.op === "pattern_success_rates") {
       const minSamples = q.minSamples ?? 1;
       const rows = tenantPatternSuccessRows(db, scope, minSamples);
@@ -123,6 +132,94 @@ function runGraphQueryInner(
           p99Ok: o.p99Ok,
           targetP50: o.target.p50Ms,
           targetP99: o.target.p99Ms,
+        })),
+      };
+    }
+    case "repository_evidence": {
+      const snapshots = listNodesByKind(db, "RepositorySnapshot")
+        .filter(
+          (node) =>
+            node.props?.repository_id === q.repositoryId &&
+            (!q.snapshotId || node.props?.snapshot_id === q.snapshotId),
+        )
+        .sort((a, b) =>
+          String(b.props?.captured_at ?? "").localeCompare(
+            String(a.props?.captured_at ?? ""),
+          ),
+        );
+      const allowedTypes = q.evidenceTypes?.length
+        ? new Set(q.evidenceTypes)
+        : undefined;
+      const available = snapshots
+        .flatMap((snapshot) =>
+          edgesTo(db, snapshot.id, ["EVIDENCES"]).map((edge) => ({
+            snapshot,
+            edge,
+            evidence: getNode(db, edge.source),
+          })),
+        )
+        .filter(
+          (item) =>
+            item.evidence &&
+            (!allowedTypes ||
+              allowedTypes.has(
+                String(item.evidence.props?.evidence_type) as
+                  | "runtime_trace"
+                  | "test_coverage"
+                  | "codeowners"
+                  | "ci"
+                  | "deployment"
+                  | "collector",
+              )),
+        )
+        .sort((a, b) =>
+          String(a.evidence?.props?.observed_at ?? "").localeCompare(
+            String(b.evidence?.props?.observed_at ?? ""),
+          ),
+        );
+      const limit = Math.max(1, Math.min(100, q.limit ?? 50));
+      const selected = available.slice(0, limit);
+      const selectedSnapshotIds = new Set(selected.map((item) => item.snapshot.id));
+      const nodes = [
+        ...snapshots.filter((snapshot) => selectedSnapshotIds.has(snapshot.id)),
+        ...selected.flatMap((item) => (item.evidence ? [item.evidence] : [])),
+      ];
+      return {
+        op: q.op,
+        nodes,
+        edges: selected.map((item) => item.edge),
+        summary: `${selected.length} of ${available.length} repository evidence record(s)`,
+        rows: selected.map(({ evidence }) => ({
+          id: evidence!.props?.evidence_id,
+          type: evidence!.props?.evidence_type,
+          observedAt: evidence!.props?.observed_at,
+          repositoryId: evidence!.props?.repository_id,
+          snapshotId: evidence!.props?.snapshot_id,
+          exactCommit: evidence!.props?.exact_commit,
+          operation: evidence!.props?.operation,
+          status: evidence!.props?.status,
+          durationMs: evidence!.props?.duration_ms,
+          suite: evidence!.props?.suite,
+          linesPercent: evidence!.props?.lines_percent,
+          branchesPercent: evidence!.props?.branches_percent,
+          reportPath: evidence!.props?.report_path,
+          codeownersPath: evidence!.props?.codeowners_path,
+          owners: evidence!.props?.owners,
+          matchedPaths: evidence!.props?.matched_paths,
+          provider: evidence!.props?.provider,
+          workflow: evidence!.props?.workflow,
+          job: evidence!.props?.job,
+          conclusion: evidence!.props?.conclusion,
+          runId: evidence!.props?.run_id,
+          runUrl: evidence!.props?.run_url,
+          environment: evidence!.props?.environment,
+          deploymentId: evidence!.props?.deployment_id,
+          artifactSha256: evidence!.props?.artifact_sha256,
+          collectorId: evidence!.props?.collector_id,
+          collectorVersion: evidence!.props?.collector_version,
+          bindingKind: evidence!.props?.binding_kind,
+          boundEvidenceId: evidence!.props?.bound_evidence_id,
+          payloadSha256: evidence!.props?.payload_sha256,
         })),
       };
     }
@@ -621,6 +718,7 @@ export const GRAPH_RAG_TOOLS = [
   "time_travel_calls",
   "time_travel_modifies",
   "latency_stats",
+  "repository_evidence",
   "stats",
 ] as const;
 

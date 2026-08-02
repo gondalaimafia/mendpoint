@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { AppDb } from "./index.js";
 import { appendDomainEvent } from "./trust.js";
@@ -23,6 +24,46 @@ export type WardenCampaignTarget = Readonly<{
   revision: number; createdAt: string; updatedAt: string;
 }>;
 
+export type WardenRolloutTargetProfile = Readonly<{
+  targetId: string;
+  risk: "low" | "medium" | "high" | "critical";
+  environment: "development" | "test" | "staging" | "production";
+  verificationConfidence: number;
+  canaryEligible: boolean;
+  ownerGroup: string;
+  ownerMaxParallel: number;
+  maintenanceWindow: Readonly<{ start: string; end: string }>;
+}>;
+
+export type WardenRolloutStopConditions = Readonly<{
+  pauseFailureRate: number;
+  abortFailureRate: number;
+  minimumVerificationConfidence: number;
+  abortOnCriticalFailure: boolean;
+}>;
+
+export type WardenRolloutDecision = Readonly<{
+  id: string;
+  tenantId: string;
+  campaignId: string;
+  campaignRevision: number;
+  canaryTargetId: string;
+  maxCohortSize: number;
+  targetEvidence: readonly Readonly<WardenRolloutTargetProfile & { dependsOn: readonly string[] }>[];
+  cohorts: readonly Readonly<{
+    sequence: number;
+    kind: "canary" | "rollout";
+    targetIds: readonly string[];
+    notBefore: string;
+    notAfter: string;
+  }>[];
+  stopConditions: WardenRolloutStopConditions;
+  requiresHumanApproval: true;
+  decisionSha256: string;
+  createdByPrincipalId: string;
+  createdAt: string;
+}>;
+
 type CampaignRow = {
   id: string; tenant_id: string; name: string; status: WardenCampaignStatus;
   owner_principal_id: string; concurrency_limit: number;
@@ -34,6 +75,11 @@ type TargetRow = {
   package_artifact_id: string | null; owner_principal_id: string; stage: WardenTargetStage;
   depends_on_json: string; attempt_count: number; max_attempts: number; exception_code: string | null;
   revision: number; created_at: string; updated_at: string;
+};
+type RolloutDecisionRow = {
+  id: string; tenant_id: string; campaign_id: string; campaign_revision: number;
+  canary_target_id: string; max_cohort_size: number; decision_json: string;
+  decision_sha256: string; created_by_principal_id: string; created_at: string;
 };
 
 function one<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T | undefined {
@@ -221,6 +267,176 @@ export function transitionWardenTarget(db: AppDb, input: { tenantId: string; cam
 
 export function listWardenCampaignTargets(db: AppDb, tenantId: string, campaignId: string) {
   return all<TargetRow>(db, `SELECT * FROM warden_campaign_targets WHERE tenant_id = ? AND campaign_id = ? ORDER BY created_at, id`, [tenantId, campaignId]).map(target);
+}
+
+const RISK_ORDER: Record<WardenRolloutTargetProfile["risk"], number> = {
+  low: 0, medium: 1, high: 2, critical: 3,
+};
+const ENVIRONMENT_ORDER: Record<WardenRolloutTargetProfile["environment"], number> = {
+  development: 0, test: 1, staging: 2, production: 3,
+};
+
+function canonicalRolloutPayload(value: Omit<WardenRolloutDecision, "id" | "tenantId" | "decisionSha256" |
+  "createdByPrincipalId" | "createdAt">): string {
+  return JSON.stringify(value);
+}
+
+function rolloutDecision(row: RolloutDecisionRow): WardenRolloutDecision {
+  const stored = JSON.parse(row.decision_json) as Omit<WardenRolloutDecision, "id" | "tenantId" |
+    "decisionSha256" | "createdByPrincipalId" | "createdAt">;
+  const expected = createHash("sha256").update(canonicalRolloutPayload(stored), "utf8").digest("hex");
+  if (expected !== row.decision_sha256) throw new Error("warden_rollout_decision_corrupt");
+  return Object.freeze({
+    id: row.id, tenantId: row.tenant_id, ...stored, decisionSha256: row.decision_sha256,
+    createdByPrincipalId: row.created_by_principal_id, createdAt: row.created_at,
+  });
+}
+
+export function getWardenRolloutDecision(db: AppDb, tenantId: string, id: string): WardenRolloutDecision | undefined {
+  const row = one<RolloutDecisionRow>(db,
+    `SELECT * FROM warden_rollout_decisions WHERE id = ? AND tenant_id = ?`, [id, tenantId]);
+  return row ? rolloutDecision(row) : undefined;
+}
+
+export function planWardenRollout(db: AppDb, input: {
+  id: string; tenantId: string; campaignId: string; expectedCampaignRevision: number;
+  profiles: readonly WardenRolloutTargetProfile[]; canaryTargetId: string; maxCohortSize: number;
+  stopConditions: WardenRolloutStopConditions; actorPrincipalId: string; eventId: string;
+  idempotencyKey: string; correlationId: string; causationId?: string | null; createdAt: string;
+}): WardenRolloutDecision {
+  required("warden_rollout_decision_id", input.id);
+  assertPrincipal(db, input.tenantId, input.actorPrincipalId);
+  const planner = one<{ kind: string }>(
+    db,
+    `SELECT kind FROM principals WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL`,
+    [input.actorPrincipalId, input.tenantId],
+  );
+  if (planner?.kind !== "human") throw new Error("warden_human_planner_required");
+  if (
+    !Number.isFinite(Date.parse(input.createdAt)) ||
+    new Date(input.createdAt).toISOString() !== input.createdAt
+  ) {
+    throw new Error("warden_rollout_created_at_invalid");
+  }
+  if (!Number.isSafeInteger(input.maxCohortSize) || input.maxCohortSize < 1 || input.maxCohortSize > 100) {
+    throw new Error("warden_cohort_size_invalid");
+  }
+  const stop = input.stopConditions;
+  if (![stop.pauseFailureRate, stop.abortFailureRate, stop.minimumVerificationConfidence]
+    .every((value) => Number.isFinite(value) && value >= 0 && value <= 1) ||
+    stop.pauseFailureRate >= stop.abortFailureRate || typeof stop.abortOnCriticalFailure !== "boolean") {
+    throw new Error("warden_stop_conditions_invalid");
+  }
+  const parent = one<CampaignRow>(db, `SELECT * FROM warden_campaigns WHERE id = ? AND tenant_id = ?`,
+    [input.campaignId, input.tenantId]);
+  if (!parent) throw new Error("warden_campaign_not_found");
+  if (parent.status !== "draft") throw new Error("warden_campaign_not_draft");
+  if (parent.revision !== input.expectedCampaignRevision) throw new Error("warden_revision_conflict");
+  const targets = listWardenCampaignTargets(db, input.tenantId, input.campaignId);
+  const byTarget = new Map(targets.map((item) => [item.id, item]));
+  if (targets.length === 0) throw new Error("warden_rollout_targets_required");
+  if (input.profiles.length !== targets.length) throw new Error("warden_rollout_profiles_incomplete");
+  const profiles = new Map<string, WardenRolloutTargetProfile>();
+  const ownerLimits = new Map<string, number>();
+  for (const profile of input.profiles) {
+    if (!byTarget.has(profile.targetId) || profiles.has(profile.targetId)) throw new Error("warden_rollout_profile_invalid");
+    if (!(profile.risk in RISK_ORDER) || !(profile.environment in ENVIRONMENT_ORDER) ||
+      !Number.isFinite(profile.verificationConfidence) || profile.verificationConfidence < 0 ||
+      profile.verificationConfidence > 1 || !Number.isSafeInteger(profile.ownerMaxParallel) ||
+      profile.ownerMaxParallel < 1 || profile.ownerMaxParallel > 100) throw new Error("warden_rollout_profile_invalid");
+    required("warden_owner_group", profile.ownerGroup);
+    const start = Date.parse(profile.maintenanceWindow.start); const end = Date.parse(profile.maintenanceWindow.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end ||
+      new Date(start).toISOString() !== profile.maintenanceWindow.start ||
+      new Date(end).toISOString() !== profile.maintenanceWindow.end) throw new Error("warden_maintenance_window_invalid");
+    const knownLimit = ownerLimits.get(profile.ownerGroup);
+    if (knownLimit !== undefined && knownLimit !== profile.ownerMaxParallel) throw new Error("warden_owner_constraint_conflict");
+    ownerLimits.set(profile.ownerGroup, profile.ownerMaxParallel); profiles.set(profile.targetId, profile);
+  }
+  const canary = byTarget.get(input.canaryTargetId); const canaryProfile = profiles.get(input.canaryTargetId);
+  if (!canary || !canaryProfile || !canaryProfile.canaryEligible ||
+    canaryProfile.verificationConfidence < stop.minimumVerificationConfidence) throw new Error("warden_canary_ineligible");
+  if (canary.dependsOn.length > 0) throw new Error("warden_canary_has_dependencies");
+  if (
+    [...profiles.values()].some(
+      (profile) => profile.verificationConfidence < stop.minimumVerificationConfidence,
+    )
+  ) {
+    throw new Error("warden_verification_confidence_below_threshold");
+  }
+
+  const compare = (leftId: string, rightId: string) => {
+    const left = profiles.get(leftId)!; const right = profiles.get(rightId)!;
+    return RISK_ORDER[left.risk] - RISK_ORDER[right.risk] ||
+      ENVIRONMENT_ORDER[left.environment] - ENVIRONMENT_ORDER[right.environment] ||
+      right.verificationConfidence - left.verificationConfidence ||
+      left.maintenanceWindow.start.localeCompare(right.maintenanceWindow.start) ||
+      left.maintenanceWindow.end.localeCompare(right.maintenanceWindow.end) ||
+      left.ownerGroup.localeCompare(right.ownerGroup) || leftId.localeCompare(rightId);
+  };
+  const cohorts: Array<{ sequence: number; kind: "canary" | "rollout"; targetIds: string[];
+    notBefore: string; notAfter: string }> = [{ sequence: 0, kind: "canary", targetIds: [canary.id],
+      notBefore: canaryProfile.maintenanceWindow.start, notAfter: canaryProfile.maintenanceWindow.end }];
+  const scheduled = new Set([canary.id]); const remaining = new Set(targets.map((item) => item.id).filter((id) => id !== canary.id));
+  while (remaining.size > 0) {
+    const ready = [...remaining].filter((id) => byTarget.get(id)!.dependsOn.every((dependency) => scheduled.has(dependency))).sort(compare);
+    if (ready.length === 0) throw new Error("warden_dependency_cycle");
+    const selected: string[] = []; const ownerCounts = new Map<string, number>();
+    let notBefore = ""; let notAfter = "";
+    for (const id of ready) {
+      if (selected.length >= input.maxCohortSize) break;
+      const profile = profiles.get(id)!; const ownerCount = ownerCounts.get(profile.ownerGroup) ?? 0;
+      if (ownerCount >= profile.ownerMaxParallel) continue;
+      const candidateStart = notBefore > profile.maintenanceWindow.start ? notBefore : profile.maintenanceWindow.start;
+      const candidateEnd = !notAfter || notAfter > profile.maintenanceWindow.end ? profile.maintenanceWindow.end : notAfter;
+      if (candidateStart >= candidateEnd) continue;
+      selected.push(id); ownerCounts.set(profile.ownerGroup, ownerCount + 1);
+      notBefore = candidateStart; notAfter = candidateEnd;
+    }
+    if (selected.length === 0) {
+      const id = ready[0]!; const profile = profiles.get(id)!; selected.push(id);
+      notBefore = profile.maintenanceWindow.start; notAfter = profile.maintenanceWindow.end;
+    }
+    cohorts.push({ sequence: cohorts.length, kind: "rollout", targetIds: selected, notBefore, notAfter });
+    for (const id of selected) { remaining.delete(id); scheduled.add(id); }
+  }
+  const targetEvidence = [...byTarget.keys()].sort((left, right) => left.localeCompare(right)).map((targetId) => {
+    const profile = profiles.get(targetId)!; const item = byTarget.get(targetId)!;
+    return { targetId, risk: profile.risk, environment: profile.environment,
+      verificationConfidence: profile.verificationConfidence, canaryEligible: profile.canaryEligible,
+      ownerGroup: profile.ownerGroup, ownerMaxParallel: profile.ownerMaxParallel,
+      maintenanceWindow: { start: profile.maintenanceWindow.start, end: profile.maintenanceWindow.end },
+      dependsOn: [...item.dependsOn].sort((left, right) => left.localeCompare(right)) };
+  });
+  const payload = { campaignId: input.campaignId, campaignRevision: parent.revision,
+    canaryTargetId: canary.id, maxCohortSize: input.maxCohortSize, targetEvidence, cohorts,
+    stopConditions: { pauseFailureRate: stop.pauseFailureRate, abortFailureRate: stop.abortFailureRate,
+      minimumVerificationConfidence: stop.minimumVerificationConfidence,
+      abortOnCriticalFailure: stop.abortOnCriticalFailure }, requiresHumanApproval: true as const };
+  const decisionJson = canonicalRolloutPayload(payload);
+  const decisionSha256 = createHash("sha256").update(decisionJson, "utf8").digest("hex");
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = one<RolloutDecisionRow>(db, `SELECT * FROM warden_rollout_decisions WHERE id = ?`, [input.id]);
+    if (existing) {
+      if (existing.tenant_id !== input.tenantId || existing.decision_sha256 !== decisionSha256) {
+        throw new Error("warden_rollout_decision_id_conflict");
+      }
+      const value = rolloutDecision(existing); db.raw.exec("COMMIT"); return value;
+    }
+    db.raw.prepare(`INSERT INTO warden_rollout_decisions
+      (id, tenant_id, campaign_id, campaign_revision, canary_target_id, max_cohort_size,
+       decision_json, decision_sha256, created_by_principal_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(input.id, input.tenantId, input.campaignId,
+        parent.revision, canary.id, input.maxCohortSize, decisionJson, decisionSha256,
+        input.actorPrincipalId, input.createdAt);
+    event(db, { ...input, eventType: "warden.rollout.planned", payload: { decisionId: input.id,
+      decisionSha256, campaignRevision: parent.revision, canaryTargetId: canary.id,
+      cohortCount: cohorts.length, maxCohortSize: input.maxCohortSize, requiresHumanApproval: true } });
+    const value = rolloutDecision(one<RolloutDecisionRow>(db,
+      `SELECT * FROM warden_rollout_decisions WHERE id = ?`, [input.id])!);
+    db.raw.exec("COMMIT"); return value;
+  } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
 }
 
 export function planWardenRollback(db: AppDb, tenantId: string, campaignId: string): WardenCampaignTarget[] {

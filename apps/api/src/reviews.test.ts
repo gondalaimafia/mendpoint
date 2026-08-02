@@ -11,7 +11,10 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import {
+  assignMigrationPrReviewers,
+  commentOnMigrationPrReview,
   listMigrationPrReviews,
+  reconcileMigrationPrNativeReview,
   submitMigrationPrReview,
 } from "./reviews.js";
 
@@ -131,5 +134,214 @@ describe("migration pull request reviews", () => {
       decision: "approve",
       supersedesId: "review-0",
     });
+  });
+
+  it("persists reviewer assignments and attributed comments as replay safe events", () => {
+    const db = setup();
+    const assignment = assignMigrationPrReviewers(db, {
+      tenantId: "tenant-a",
+      prId: "pr-a",
+      authenticatedPrincipalId: "human:owner@example.com",
+      reviewerPrincipalIds: ["human:reviewer-b@example.com", "human:reviewer-a@example.com"],
+      requiredReviewerCount: 2,
+      eventId: "event-assignment",
+      correlationId: "request-assignment",
+      createdAt: at,
+    });
+    expect(assignment).toMatchObject({ candidateArtifactId: "candidate-a", requiredReviewerCount: 2 });
+    expect(assignment.reviewerPrincipalIds).toHaveLength(2);
+    const comment = commentOnMigrationPrReview(db, {
+      tenantId: "tenant-a",
+      prId: "pr-a",
+      authenticatedPrincipalId: "human:reviewer-a@example.com",
+      commentId: "comment-1",
+      body: "  Add a rollback assertion before approval.  ",
+      eventId: "event-comment",
+      correlationId: "request-assignment",
+      causationId: "event-assignment",
+      createdAt: "2026-08-01T18:01:00.000Z",
+    });
+    expect(comment.body).toBe("Add a rollback assertion before approval.");
+    expect(comment.bodySha256).toMatch(/^[0-9a-f]{64}$/);
+    const events = listDomainEvents(db, "tenant-a", "migration_pr", "pr-a");
+    expect(events.map((event) => event.event_type)).toEqual([
+      "migration_pr.reviewers.assigned",
+      "migration_pr.review.comment",
+    ]);
+    expect(events[1]?.causation_id).toBe("event-assignment");
+    expect(() => assignMigrationPrReviewers(db, {
+      ...{
+        tenantId: "tenant-a",
+        prId: "pr-a",
+        authenticatedPrincipalId: "human:owner@example.com",
+        reviewerPrincipalIds: ["human:reviewer-a@example.com"],
+        requiredReviewerCount: 2,
+        eventId: "event-bad-assignment",
+        correlationId: "request-bad-assignment",
+        createdAt: at,
+      },
+    })).toThrow("review_assignment_invalid");
+  });
+
+  it("records short lived human waivers and rejects expired or unrelated expiry", () => {
+    const db = setup();
+    const waiver = submitMigrationPrReview(db, {
+      tenantId: "tenant-a",
+      prId: "pr-a",
+      authenticatedPrincipalId: "human:security@example.com",
+      decision: "waive",
+      rationale: "Controlled exception for the scheduled release window",
+      waiverExpiresAt: "2026-08-01T20:00:00.000Z",
+      reviewId: "review-waiver",
+      eventId: "event-waiver",
+      correlationId: "request-waiver",
+      createdAt: at,
+    });
+    expect(waiver).toMatchObject({
+      decision: "waive",
+      waiverExpiresAt: "2026-08-01T20:00:00.000Z",
+    });
+    expect(() => submitMigrationPrReview(db, {
+      tenantId: "tenant-a",
+      prId: "pr-a",
+      authenticatedPrincipalId: "human:security@example.com",
+      decision: "approve",
+      rationale: "Evidence is complete",
+      waiverExpiresAt: "2026-08-01T20:00:00.000Z",
+      reviewId: "review-expiry-unexpected",
+      eventId: "event-expiry-unexpected",
+      correlationId: "request-expiry-unexpected",
+      createdAt: at,
+    })).toThrow("review_waiver_expiry_unexpected");
+  });
+
+  it("links a new candidate to the candidate version it supersedes", () => {
+    const db = setup();
+    submitMigrationPrReview(db, {
+      tenantId: "tenant-a",
+      prId: "pr-a",
+      authenticatedPrincipalId: "human:reviewer@example.com",
+      decision: "request_changes",
+      rationale: "Add rollback coverage",
+      reviewId: "review-old-candidate",
+      eventId: "event-old-candidate",
+      correlationId: "request-candidate-chain",
+      createdAt: at,
+    });
+    insertArtifactManifest(db, {
+      id: "candidate-b",
+      tenantId: "tenant-a",
+      kind: "candidate-edit",
+      schemaVersion: 1,
+      sha256: sha("candidate-b"),
+      mediaType: "application/json",
+      sizeBytes: 11,
+      storageRef: "artifact://tenant-a/candidate-b",
+      createdAt: "2026-08-01T18:02:00.000Z",
+    });
+    insertArtifactManifest(db, {
+      id: "verification-b",
+      tenantId: "tenant-a",
+      kind: "verification-result",
+      schemaVersion: 1,
+      sha256: sha("verification-b"),
+      mediaType: "application/json",
+      sizeBytes: 14,
+      storageRef: "artifact://tenant-a/verification-b",
+      createdAt: "2026-08-01T18:02:00.000Z",
+    });
+    insertEvidenceRecord(db, {
+      id: "evidence-b",
+      tenantId: "tenant-a",
+      subjectType: "migration_pr",
+      subjectId: "pr-a",
+      artifactId: "verification-b",
+      inputArtifactId: "candidate-b",
+      tool: "test",
+      verdict: "passed",
+      createdAt: "2026-08-01T18:02:00.000Z",
+    });
+    submitMigrationPrReview(db, {
+      tenantId: "tenant-a",
+      prId: "pr-a",
+      authenticatedPrincipalId: "human:reviewer@example.com",
+      decision: "approve",
+      rationale: "Rollback coverage is present",
+      reviewId: "review-new-candidate",
+      eventId: "event-new-candidate",
+      correlationId: "request-candidate-chain",
+      createdAt: "2026-08-01T18:03:00.000Z",
+    });
+    const events = listDomainEvents(db, "tenant-a", "migration_pr", "pr-a");
+    const superseded = events.find((event) => event.event_type === "migration_pr.candidate.superseded");
+    expect(JSON.parse(superseded!.payload_json)).toEqual({
+      candidateArtifactId: "candidate-b",
+      supersededCandidateArtifactId: "candidate-a",
+      supersededReviewId: "review-old-candidate",
+    });
+    expect(superseded?.causation_id).toBe("event-new-candidate");
+  });
+
+  it("reconciles authenticated native SCM observations against the current candidate", () => {
+    const db = setup();
+    submitMigrationPrReview(db, {
+      tenantId: "tenant-a",
+      prId: "pr-a",
+      authenticatedPrincipalId: "human:reviewer@example.com",
+      decision: "approve",
+      rationale: "Evidence is complete",
+      reviewId: "review-local",
+      eventId: "event-local",
+      correlationId: "request-native",
+      createdAt: at,
+    });
+    const matching = reconcileMigrationPrNativeReview(db, {
+      tenantId: "tenant-a",
+      prId: "pr-a",
+      authenticatedPrincipalId: "webhook:github-installation-42",
+      provider: "github",
+      externalReviewId: "native-review-9",
+      externalRevision: "revision-1",
+      candidateArtifactId: "candidate-a",
+      state: "approve",
+      nativeActor: "octocat",
+      evidenceArtifactId: "artifact-native-review-9",
+      eventId: "event-native-match",
+      correlationId: "request-native",
+      causationId: "event-local",
+      observedAt: "2026-08-01T18:04:00.000Z",
+    });
+    expect(matching).toEqual({ eventId: "event-native-match", localReviewId: "review-local", reconciled: true });
+    const mismatch = reconcileMigrationPrNativeReview(db, {
+      tenantId: "tenant-a",
+      prId: "pr-a",
+      authenticatedPrincipalId: "webhook:gitlab-project-42",
+      provider: "gitlab",
+      externalReviewId: "native-review-10",
+      externalRevision: "revision-1",
+      candidateArtifactId: "candidate-a",
+      state: "request_changes",
+      nativeActor: "reviewer-2",
+      evidenceArtifactId: "artifact-native-review-10",
+      eventId: "event-native-mismatch",
+      correlationId: "request-native",
+      observedAt: "2026-08-01T18:05:00.000Z",
+    });
+    expect(mismatch.reconciled).toBe(false);
+    expect(() => reconcileMigrationPrNativeReview(db, {
+      tenantId: "tenant-a",
+      prId: "pr-a",
+      authenticatedPrincipalId: "webhook:github-installation-42",
+      provider: "github",
+      externalReviewId: "native-review-stale",
+      externalRevision: "revision-1",
+      candidateArtifactId: "candidate-stale",
+      state: "approve",
+      nativeActor: "octocat",
+      evidenceArtifactId: "artifact-native-review-stale",
+      eventId: "event-native-stale",
+      correlationId: "request-native",
+      observedAt: "2026-08-01T18:06:00.000Z",
+    })).toThrow("native_review_candidate_stale");
   });
 });

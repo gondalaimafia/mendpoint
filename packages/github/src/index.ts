@@ -438,3 +438,18 @@ export {
   type AppCredentials,
   type InstallationToken,
 } from "./app-runtime.js";
+
+export {
+  GITHUB_DRAFT_DELIVERY_PERMISSIONS,
+  GitHubAppLifecycle,
+  GitHubAppLifecycleError,
+  GitHubInstallationTokenRejectedError,
+  type GitHubInstallationSeed,
+  type GitHubInstallationRecord,
+  type GitHubInstallationTokenRequest,
+  type GitHubInstallationToken,
+  type GitHubInstallationTokenAdapter,
+  type GitHubDraftDeliveryIntent,
+  type GitHubDraftDeliveryGrant,
+  type GitHubAppLifecycleErrorCode,
+} from "./app-lifecycle.js";

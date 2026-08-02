@@ -29,7 +29,8 @@
     "@mendpoint/ops": "*",
     "@hono/node-server": "^2.0.12",
     "hono": "^4.7.5",
-    "@mendpoint/notify": "*"
+    "@mendpoint/notify": "*",
+    "jose": "^6.2.7"
   },
   "devDependencies": {
     "tsx": "^4.19.3",

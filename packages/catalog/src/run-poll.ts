@@ -18,8 +18,26 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
-import { fetchOpenApiDocument, listCatalogFeeds, type PollableFeed } from "./poll.js";
+import { boundedConcurrency, mapWithConcurrency } from "./concurrency.js";
+import {
+  buildOpenApiValidationEvidence,
+  fetchOpenApiDocument,
+  listCatalogFeeds,
+  type FetchOpenApiResult,
+  type PollableFeed,
+} from "./poll.js";
 import { VENDOR_CATALOG } from "./vendors.js";
+
+export type FeedPipelineContext = {
+  tenantId: string;
+  contentHash: string;
+  versionId?: string;
+  versionLabel?: string;
+};
+
+export type FeedPipelineDispatchResult =
+  | { changeId: string; jobId?: never }
+  | { jobId: string; changeId?: never };
 
 export type PollOneResult = {
   slug: string;
@@ -28,6 +46,7 @@ export type PollOneResult = {
     | "unchanged"
     | "new_version"
     | "pipeline_ran"
+    | "pipeline_enqueued"
     | "error"
     | "no_url"
     | "skipped";
@@ -35,6 +54,7 @@ export type PollOneResult = {
   versionLabel?: string;
   versionId?: string;
   changeId?: string;
+  jobId?: string;
   error?: string;
 };
 
@@ -49,10 +69,24 @@ export type PollAllOptions = {
   slugs?: string[];
   /** Skip HTTP feeds (useful offline / tests). */
   localOnly?: boolean;
-  pipeline?: (slug: string, db: AppDb) => Promise<{ changeId: string }>;
+  /** Maximum number of feeds with remote work in flight (default 4, max 16). */
+  concurrency?: number;
+  pipeline?: (
+    slug: string,
+    db: AppDb,
+    context: FeedPipelineContext,
+  ) => Promise<FeedPipelineDispatchResult>;
 };
 
-function collectFeeds(db: AppDb): PollableFeed[] {
+function pipelineResult(
+  report: FeedPipelineDispatchResult,
+): Pick<PollOneResult, "status" | "changeId" | "jobId"> {
+  return "jobId" in report
+    ? { status: "pipeline_enqueued", jobId: report.jobId }
+    : { status: "pipeline_ran", changeId: report.changeId };
+}
+
+export function listPollableFeeds(db: AppDb): PollableFeed[] {
   const bySlug = new Map<string, PollableFeed>();
   for (const f of listCatalogFeeds()) {
     bySlug.set(f.slug, f);
@@ -97,6 +131,41 @@ function ensureProvider(db: AppDb, feed: PollableFeed) {
 
 const pollLocks = new WeakMap<object, Map<string, Promise<void>>>();
 
+function persistPollOutcome(
+  db: AppDb,
+  feed: PollableFeed,
+  fetched: FetchOpenApiResult,
+  row: {
+    status: PollOneResult["status"];
+    contentHash?: string | null;
+    versionLabel?: string | null;
+    error?: string | null;
+    versionId?: string | null;
+    pipelineChangeId?: string | null;
+    validationStatus?: "accepted" | "rejected" | "skipped";
+  },
+) {
+  const polledAt = nowIso();
+  insertFeedPoll(db, {
+    id: newId(),
+    providerSlug: feed.slug,
+    openapiUrl: feed.openapiUrl,
+    contentHash: row.contentHash,
+    versionLabel: row.versionLabel,
+    status: row.status,
+    error: row.error,
+    versionId: row.versionId,
+    pipelineChangeId: row.pipelineChangeId,
+    polledAt,
+    validationEvidence: buildOpenApiValidationEvidence(fetched, {
+      id: newId(),
+      source: feed.source,
+      observedAt: polledAt,
+      status: row.validationStatus,
+    }),
+  });
+}
+
 export async function pollOneFeed(
   feed: PollableFeed,
   opts: PollAllOptions,
@@ -132,6 +201,12 @@ async function pollOneFeedUnlocked(
   const url = feed.openapiUrl;
 
   if (opts.localOnly && !url.startsWith("file:")) {
+    const error = "remote feed skipped in local-only mode";
+    persistPollOutcome(db, feed, { ok: false, url, error }, {
+      status: "skipped",
+      error,
+      validationStatus: "skipped",
+    });
     return { slug: feed.slug, url, status: "skipped" };
   }
 
@@ -140,13 +215,10 @@ async function pollOneFeedUnlocked(
   const fetched = await fetchOpenApiDocument(url, { monorepoRoot: root });
   if (!fetched.ok || !fetched.contentHash || !fetched.body) {
     const err = fetched.error ?? "fetch failed";
-    insertFeedPoll(db, {
-      id: newId(),
-      providerSlug: feed.slug,
-      openapiUrl: url,
+    persistPollOutcome(db, feed, fetched, {
       status: "error",
       error: err,
-      polledAt: nowIso(),
+      validationStatus: "rejected",
     });
     return { slug: feed.slug, url, status: "error", error: err };
   }
@@ -159,39 +231,38 @@ async function pollOneFeedUnlocked(
     opts.pipeline
   ) {
     try {
-      const report = await opts.pipeline(feed.slug, db);
-      insertFeedPoll(db, {
-        id: newId(),
-        providerSlug: feed.slug,
-        openapiUrl: url,
+      const report = await opts.pipeline(feed.slug, db, {
+        tenantId: opts.tenantId,
+        contentHash: fetched.contentHash,
+        versionId: latest.version_id ?? undefined,
+        versionLabel: latest.version_label ?? undefined,
+      });
+      const dispatched = pipelineResult(report);
+      persistPollOutcome(db, feed, fetched, {
         contentHash: fetched.contentHash,
         versionLabel: latest.version_label,
-        status: "pipeline_ran",
+        status: dispatched.status,
         versionId: latest.version_id,
-        pipelineChangeId: report.changeId,
-        polledAt: nowIso(),
+        pipelineChangeId: dispatched.changeId ?? dispatched.jobId,
       });
       return {
         slug: feed.slug,
         url,
-        status: "pipeline_ran",
+        status: dispatched.status,
         contentHash: fetched.contentHash,
         versionLabel: latest.version_label ?? undefined,
         versionId: latest.version_id ?? undefined,
-        changeId: report.changeId,
+        changeId: dispatched.changeId,
+        jobId: dispatched.jobId,
       };
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
-      insertFeedPoll(db, {
-        id: newId(),
-        providerSlug: feed.slug,
-        openapiUrl: url,
+      persistPollOutcome(db, feed, fetched, {
         contentHash: fetched.contentHash,
         versionLabel: latest.version_label,
         status: "new_version",
         versionId: latest.version_id,
         error,
-        polledAt: nowIso(),
       });
       return {
         slug: feed.slug,
@@ -209,14 +280,10 @@ async function pollOneFeedUnlocked(
   // Also compare against last stored version body hash via version_label match
   const provider = getProviderBySlug(db, feed.slug)!;
   if (prev === fetched.contentHash) {
-    insertFeedPoll(db, {
-      id: newId(),
-      providerSlug: feed.slug,
-      openapiUrl: url,
+    persistPollOutcome(db, feed, fetched, {
       contentHash: fetched.contentHash,
       versionLabel: fetched.versionLabel,
       status: "unchanged",
-      polledAt: nowIso(),
     });
     return {
       slug: feed.slug,
@@ -269,26 +336,30 @@ async function pollOneFeedUnlocked(
   }
 
   let changeId: string | undefined;
+  let jobId: string | undefined;
   let status: PollOneResult["status"] = "new_version";
 
   const shouldPipe = opts.runPipeline !== false;
   if (shouldPipe && opts.pipeline) {
     try {
-      const report = await opts.pipeline(feed.slug, db);
-      changeId = report.changeId;
-      status = "pipeline_ran";
+      const report = await opts.pipeline(feed.slug, db, {
+        tenantId: opts.tenantId,
+        contentHash: fetched.contentHash,
+        versionId,
+        versionLabel: label,
+      });
+      const dispatched = pipelineResult(report);
+      changeId = dispatched.changeId;
+      jobId = dispatched.jobId;
+      status = dispatched.status;
     } catch (e) {
       // Version stored; pipeline may fail if only 1 version or no consumers
-      insertFeedPoll(db, {
-        id: newId(),
-        providerSlug: feed.slug,
-        openapiUrl: url,
+      persistPollOutcome(db, feed, fetched, {
         contentHash: fetched.contentHash,
         versionLabel: label,
         status: "new_version",
         versionId,
         error: e instanceof Error ? e.message : String(e),
-        polledAt: nowIso(),
       });
       return {
         slug: feed.slug,
@@ -302,16 +373,12 @@ async function pollOneFeedUnlocked(
     }
   }
 
-  insertFeedPoll(db, {
-    id: newId(),
-    providerSlug: feed.slug,
-    openapiUrl: url,
+  persistPollOutcome(db, feed, fetched, {
     contentHash: fetched.contentHash,
     versionLabel: label,
     status,
     versionId,
-    pipelineChangeId: changeId ?? null,
-    polledAt: nowIso(),
+    pipelineChangeId: changeId ?? jobId ?? null,
   });
 
   return {
@@ -322,12 +389,13 @@ async function pollOneFeedUnlocked(
     versionLabel: label,
     versionId,
     changeId,
+    jobId,
   };
 }
 
 export async function pollAllFeeds(opts: PollAllOptions): Promise<PollOneResult[]> {
   const db = opts.db ?? createDb();
-  let feeds = collectFeeds(db);
+  let feeds = listPollableFeeds(db);
   if (opts.slugs?.length) {
     const want = new Set(opts.slugs);
     feeds = feeds.filter((f) => want.has(f.slug));
@@ -336,9 +404,9 @@ export async function pollAllFeeds(opts: PollAllOptions): Promise<PollOneResult[
     feeds = feeds.filter((f) => f.openapiUrl.startsWith("file:"));
   }
 
-  const results: PollOneResult[] = [];
-  for (const feed of feeds) {
-    results.push(await pollOneFeed(feed, { ...opts, db }));
-  }
-  return results;
+  return mapWithConcurrency(
+    feeds,
+    boundedConcurrency(opts.concurrency),
+    (feed) => pollOneFeed(feed, { ...opts, db }),
+  );
 }

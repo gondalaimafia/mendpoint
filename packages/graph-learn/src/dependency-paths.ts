@@ -11,6 +11,7 @@ export type DependencyPath = {
   terminal: DependencyPathTerminal;
   cycleNodeId?: string;
   minConfidence: number;
+  repositoryIds: string[];
 };
 
 export type DependencyPathTruncation = {
@@ -81,6 +82,9 @@ export function enumerateDependencyPaths(
       minConfidence: edges.length
         ? Math.min(...edges.map((edge) => edge.confidence ?? 1))
         : 1,
+      repositoryIds: [...new Set(nodeIds
+        .map((id) => getNode(db, id)?.repo_id)
+        .filter((id): id is string => Boolean(id)))],
     });
   };
 

@@ -28,7 +28,7 @@ export type GlEdge = {
   target: string;
   valid_from?: string;
   valid_to?: string | null;
-  /** Provenance: ast | lsp | runtime | git | spec | pr_outcome | human | pipeline */
+  /** Provenance: ast | lsp | runtime | ci | git | spec | pr_outcome | human | pipeline */
   source_system?: string;
   confidence?: number;
   /** GNN / outcome label */
@@ -55,6 +55,7 @@ export type GlNodeKind =
   | "Pattern"
   | "Invariant"
   | "Trace"
+  | "Evidence"
   // Warden
   | "Service"
   | "Endpoint"
@@ -66,6 +67,7 @@ export type GlNodeKind =
   | "SLO"
   | "RateLimit"
   | "Deployment"
+  | "RepositorySnapshot"
   | "Provider"
   | "Change"
   | "Surface"
@@ -128,6 +130,7 @@ export type GlEdgeKind =
   | "TOUCHES"
   | "REVIEWED"
   | "PRODUCED"
+  | "EVIDENCES"
   | "EXECUTED_PLAN"
   | "RELATED"
   // outcome / learning
@@ -218,6 +221,13 @@ export type GraphQuery =
   | { op: "time_travel_calls"; at: string }
   | { op: "time_travel_modifies"; at: string; repoId?: string }
   | { op: "latency_stats" }
+  | {
+      op: "repository_evidence";
+      repositoryId: string;
+      snapshotId?: string;
+      evidenceTypes?: Array<"runtime_trace" | "test_coverage" | "codeowners" | "ci" | "deployment" | "collector">;
+      limit?: number;
+    }
   | { op: "stats" };
 
 export type GraphQueryResult = {

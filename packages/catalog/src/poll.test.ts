@@ -50,6 +50,19 @@ describe("poll", () => {
     expect(res.error).toContain("openapi or swagger");
   });
 
+  it("rejects unsupported OpenAPI schema versions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "poll-version-"));
+    const path = join(dir, "unsupported.json");
+    writeFileSync(
+      path,
+      JSON.stringify({ openapi: "4.0.0", info: { title: "Future", version: "1" }, paths: {} }),
+      "utf8",
+    );
+    const result = await fetchOpenApiDocument(`file:${path}`);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("unsupported");
+  });
+
   it("resolves relative file: against monorepo root", () => {
     const r = resolveFeedUrl("file:fixtures/x.json", "C:\\repo");
     expect(r.replace(/\\/g, "/")).toContain("repo");

@@ -50,6 +50,7 @@ import {
   apiKeyToApi,
   listFeedPolls,
   feedPollToApi,
+  getFeedScheduleHealth,
   updateProviderFeedUrls,
   BILLING_PLANS,
   adjustUsage,
@@ -138,13 +139,6 @@ import {
   type ContractCase,
 } from "@mendpoint/contract";
 import {
-  createCampaign,
-  CampaignValidationError,
-  planFromCampaign,
-  planMultiRepoAgents,
-  formatMultiRepoMarkdown,
-} from "@mendpoint/transformer";
-import {
   createSandbox,
   sandboxManifest,
   seedMemoryForAgent,
@@ -203,12 +197,6 @@ import {
   resolveCiHarnessEvidence,
   type CiHarnessEvidence,
 } from "./ci-check.js";
-import {
-  HUMAN_REVIEW_DECISIONS,
-  listMigrationPrReviews,
-  submitMigrationPrReview,
-  type HumanReviewDecision,
-} from "./reviews.js";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
 import { runWarden } from "@mendpoint/agent";
@@ -248,11 +236,18 @@ import {
   TransformerCampaignService,
 } from "./transformer-control-plane.js";
 import {
+  registerTransformerPilotExecutionRoutes,
+  TransformerPilotExecutionService,
+} from "./transformer-pilot-executions.js";
+import {
   closeDefaultChangeSourceStore,
   createChangeSourceRoutes,
 } from "./change-sources.js";
 import { createBillingEconomicsRoutes } from "./billing-economics.js";
+import { billingPlanChangeDecision } from "./billing-plan-control.js";
 import { createDesignPartnerApplicationRoutes } from "./design-partner-applications.js";
+import { createPilotSuccessContractRoutes } from "./pilot-success-contracts.js";
+import { createMigrationPrReviewRoutes } from "./review-routes.js";
 
 // Fail fast in production if env invalid
 assertApiEnvOrExit();
@@ -260,6 +255,7 @@ assertApiEnvOrExit();
 const db = createDb();
 const app = new Hono<ApiEnv>();
 const transformerCampaigns = new TransformerCampaignService();
+const transformerExecutions = new TransformerPilotExecutionService();
 const startedAt = Date.now();
 
 function requestAudit(
@@ -447,12 +443,18 @@ app.use("*", async (c, next) => {
 });
 
 registerTransformerControlPlaneRoutes(app, transformerCampaigns);
+registerTransformerPilotExecutionRoutes(app, transformerExecutions);
 app.route("/change-sources", createChangeSourceRoutes());
 app.route("/billing", createBillingEconomicsRoutes({ db }));
 app.route(
   "/design-partner-applications",
   createDesignPartnerApplicationRoutes({ db }),
 );
+app.route(
+  "/pilot-success-contracts",
+  createPilotSuccessContractRoutes({ db }),
+);
+app.route("/prs", createMigrationPrReviewRoutes({ db }));
 
 // Persist alerts under data/
 try {
@@ -717,34 +719,6 @@ app.get("/registry/changes/:id/consumers", (c) => {
       c.get("principal")?.tenantId,
     ),
   });
-});
-
-/** Transformer campaign scaffold */
-app.post("/transformer/campaigns", async (c) => {
-  const body = await c.req.json<unknown>().catch(() => undefined);
-  if (body === undefined) {
-    return c.json({ error: "campaign body must be valid JSON" }, 400);
-  }
-  try {
-    const campaign = createCampaign(body);
-    const plan = planFromCampaign(campaign);
-    const multi = planMultiRepoAgents(campaign);
-    return c.json(
-      {
-        campaign,
-        plan,
-        markdown: planToMarkdown(plan),
-        multiRepo: multi,
-        multiRepoMarkdown: formatMultiRepoMarkdown(multi),
-      },
-      201,
-    );
-  } catch (e) {
-    if (e instanceof CampaignValidationError) {
-      return c.json({ error: e.message }, 400);
-    }
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
-  }
 });
 
 /** Local sandbox (live-service interface; local workdir today) */
@@ -1553,6 +1527,7 @@ app.get("/feeds", (c) =>
   c.json({
     catalog: listCatalogFeeds(),
     recentPolls: listFeedPolls(db, 40).map(feedPollToApi),
+    monitoring: getFeedScheduleHealth(db, nowIso(), requestTenantId(c)),
   }),
 );
 
@@ -1603,66 +1578,6 @@ app.get("/prs/:id", (c) => {
   const pr = getPr(db, c.req.param("id"), c.get("principal")?.tenantId);
   if (!pr) return c.json({ error: "not found" }, 404);
   return c.json(prToApi(pr));
-});
-
-app.get("/prs/:id/reviews", (c) => {
-  const tenantId = requestTenantId(c);
-  const pr = getPr(db, c.req.param("id"), tenantId);
-  if (!pr) return c.json({ error: "not found" }, 404);
-  return c.json({ reviews: listMigrationPrReviews(db, tenantId, pr.id) });
-});
-
-app.post("/prs/:id/reviews", async (c) => {
-  const principal = c.get("principal");
-  if (!principal) return c.json({ error: "unauthorized" }, 401);
-  const pr = getPr(db, c.req.param("id"), principal.tenantId);
-  if (!pr) return c.json({ error: "not found" }, 404);
-  const body = await c.req
-    .json<{ decision?: string; rationale?: string }>()
-    .catch(() => ({} as { decision?: string; rationale?: string }));
-  if (
-    typeof body.decision !== "string" ||
-    !HUMAN_REVIEW_DECISIONS.includes(body.decision as HumanReviewDecision)
-  ) {
-    return c.json({ error: "review_decision_invalid" }, 400);
-  }
-  try {
-    const review = submitMigrationPrReview(db, {
-      tenantId: principal.tenantId,
-      prId: pr.id,
-      authenticatedPrincipalId: principal.id,
-      decision: body.decision as HumanReviewDecision,
-      rationale: typeof body.rationale === "string" ? body.rationale : "",
-      reviewId: newId(),
-      eventId: newId(),
-      correlationId: c.get("requestId"),
-      createdAt: nowIso(),
-    });
-    requestAudit(c, {
-      actor: principal.id,
-      action: `migration_pr.review.${review.decision}`,
-      resourceType: "migration_pr",
-      resourceId: pr.id,
-      metadata: {
-        reviewId: review.id,
-        candidateArtifactId: review.candidateArtifactId,
-        supersedesId: review.supersedesId,
-      },
-    });
-    return c.json(review, 201);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "review_failed";
-    if (message === "human_review_identity_required") {
-      return c.json({ error: message }, 403);
-    }
-    if (message === "review_candidate_not_found") {
-      return c.json({ error: message }, 409);
-    }
-    if (message === "review_rationale_invalid") {
-      return c.json({ error: message }, 400);
-    }
-    throw error;
-  }
 });
 
 app.post("/prs/:id/feedback", async (c) => {
@@ -2398,6 +2313,10 @@ app.get("/policies/defaults", (c) =>
 // ─── Phase E: tenants + billing ──────────────────────────────────────────────
 
 app.get("/billing/plans", (c) => c.json(BILLING_PLANS));
+app.get("/billing/config", (c) => c.json({
+  manualPlanChangesEnabled: process.env.MENDPOINT_MANUAL_PLAN_CHANGES_ENABLED === "1",
+  externalCollection: "disabled",
+}));
 
 app.get("/billing/usage", (c) => {
   const tenantId = requestTenantId(c);
@@ -2705,6 +2624,8 @@ app.post("/tenants", async (c) => {
 app.post("/tenants/:id/plan", async (c) => {
   const principal = c.get("principal");
   if (!principal) return c.json({ error: "unauthorized" }, 401);
+  const planDecision = billingPlanChangeDecision(principal.role);
+  if (!planDecision.allowed) return c.json({ error: planDecision.error }, planDecision.status);
   const t = getTenant(db, c.req.param("id"));
   if (!t) return c.json({ error: "not found" }, 404);
   if (t.id !== principal.tenantId) return c.json({ error: "not found" }, 404);
@@ -2712,14 +2633,13 @@ app.post("/tenants/:id/plan", async (c) => {
   if (!BILLING_PLANS.some((p) => p.id === body.plan)) {
     return c.json({ error: "invalid plan", plans: BILLING_PLANS.map((p) => p.id) }, 400);
   }
-  // Billing stub: no Stripe charge — plan flips immediately for local/dev
   updateTenantPlan(db, t.id, body.plan);
   requestAudit(c, {
     actor: "api",
     action: "tenant.plan_changed",
     resourceType: "tenant",
     resourceId: t.id,
-    metadata: { from: t.plan, to: body.plan, billing: "stub" },
+    metadata: { from: t.plan, to: body.plan, billing: planDecision.mode },
   });
   return c.json(tenantToApi(getTenant(db, t.id)!));
 });
@@ -2938,6 +2858,7 @@ let shuttingDown = false;
 
 function closeDurableStores() {
   transformerCampaigns.close();
+  transformerExecutions.close();
   closeDefaultChangeSourceStore();
 }
 

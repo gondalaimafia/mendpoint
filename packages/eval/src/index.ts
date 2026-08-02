@@ -52,3 +52,48 @@ export {
   type ScopedCapability,
   type VerificationProfileScope,
 } from "./coverage-metrics.js";
+export {
+  PERFORMANCE_CONTRACT_VERSION,
+  PERFORMANCE_PERCENTILE_METHOD,
+  WARDEN_PERFORMANCE_CONTRACT,
+  evaluatePerformanceRun,
+  validatePerformanceContract,
+  type PerformanceContract,
+  type PerformanceMetric,
+  type PerformanceMode,
+  type PerformanceObjective,
+  type PerformanceObservation,
+  type PerformanceReport,
+  type PerformanceTier,
+} from "./performance-contract.js";
+export {
+  createHttpPerformanceProbe,
+  persistPerformanceProbeReport,
+  runPerformanceProbe,
+  type PerformanceMetricMeasurement,
+  type PerformanceProbe,
+  type PerformanceProbeContext,
+  type PerformanceProbeMeasurement,
+  type PerformanceProbeReport,
+  type RunPerformanceProbeOptions,
+} from "./performance-runner.js";
+export {
+  ROUTER_VALUE_PROOF_VERSION,
+  evaluateRouterValueProof,
+  type RouterValueArm,
+  type RouterValueObservation,
+  type RouterValueProofContract,
+  type RouterValueProofReport,
+} from "./router-value-proof.js";
+export {
+  runRouterValueProofArtifact,
+  persistRouterValueProofReport,
+  type RouterValueProofInput,
+} from "./router-value-proof-runner.js";
+export {
+  WARDEN_METRICS_VERSION,
+  calculateWardenMetrics,
+  type WardenMetricObservation,
+  type WardenMetricsInput,
+  type WardenMetricsReport,
+} from "./warden-metrics.js";

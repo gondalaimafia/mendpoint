@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import claimRegistry from "../../../../docs/PUBLIC_CLAIMS.json";
 import { apiCheck, workerCheck } from "../../lib/health-checks";
 import { PublicFooter } from "../public-footer";
 
@@ -11,6 +12,8 @@ export const metadata: Metadata = {
 };
 
 export default async function ServiceStatusPage() {
+  const accessClaim = claimRegistry.claims.find((claim) => claim.id === "CLM-013");
+  if (!accessClaim) throw new Error("Missing public claim CLM-013");
   const worker = await workerCheck();
   const [apiReady, apiAuthenticated] = await Promise.all([
     apiCheck("/ready").catch(() => false),
@@ -24,7 +27,7 @@ export default async function ServiceStatusPage() {
         <p className="public-kicker">Service status</p>
         <h1>{operational ? "Pilot deployment is operational" : "Pilot deployment needs attention"}</h1>
         <p className="public-lead">
-          This page reports the API, authenticated control plane, and worker health for the private preview deployment.
+          {accessClaim.wording} This page reports the API, authenticated control plane, and worker health for the private preview deployment.
         </p>
       </header>
       <section className="public-grid three" aria-label="Service checks">

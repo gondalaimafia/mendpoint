@@ -34,6 +34,29 @@ export {
   type ManualProviderAnnouncementInput,
 } from "./change-source-store.js";
 
+export {
+  CHANGE_TAXONOMY_KINDS,
+  CHANGE_TAXONOMY_VERSION,
+  createUnifiedSourceArtifact,
+  getMonitorHealth,
+  getUnifiedSourceArtifact,
+  listUnifiedSourceArtifacts,
+  normalizeOpenApiSourceInput,
+  openUnifiedChangeEvidenceStore,
+  recordMonitorObservation,
+  registerMonitorSchedule,
+  taxonomySignalsFromOpenApi,
+  type ChangeTaxonomyKind,
+  type MonitorHealth,
+  type MonitorObservation,
+  type MonitorSchedule,
+  type TaxonomySignal,
+  type UnifiedChangeEvidenceStore,
+  type UnifiedChangeSourceKind,
+  type UnifiedSourceArtifact,
+  type UnifiedSourceInput,
+} from "./unified-change-evidence.js";
+
 type Json = Record<string, unknown>;
 
 function asObj(v: unknown): Json {

@@ -190,4 +190,27 @@ describe("complete dependency path query", () => {
       db.raw.close();
     }
   });
+
+  it("retains dependency ordered repository transitions for cross repository rollout", () => {
+    const db = openGraphLearnMemory();
+    try {
+      addNode(db, "unit:edge", "repo-edge");
+      addNode(db, "unit:service", "repo-service");
+      addNode(db, "unit:contract", "repo-contract");
+      addDependency(db, "unit:edge", "unit:service");
+      addDependency(db, "unit:service", "unit:contract");
+
+      const result = runGraphQuery(db, {
+        op: "depends_on_path",
+        nodeId: "unit:edge",
+      });
+
+      expect(result.rows?.[0]).toEqual(expect.objectContaining({
+        nodeIds: ["unit:edge", "unit:service", "unit:contract"],
+        repositoryIds: ["repo-edge", "repo-service", "repo-contract"],
+      }));
+    } finally {
+      db.raw.close();
+    }
+  });
 });

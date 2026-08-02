@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Stripe API updates</title>
+    <item>
+      <guid>charges-2026-08-01</guid>
+      <title>Charges request field update</title>
+      <link>https://docs.stripe.com/changelog/charges-2026-08-01</link>
+      <pubDate>Sat, 01 Aug 2026 12:00:00 GMT</pubDate>
+      <description>Deprecating request field amount_cents on 2026-12-01. Use amount.</description>
+    </item>
+  </channel>
+</rss>

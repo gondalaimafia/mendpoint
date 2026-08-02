@@ -22,6 +22,9 @@ export type StructuredPrPackageV1Input = Readonly<{
   tenantId: string;
   pullRequestId: string;
   createdAt: string;
+  summary: string;
+  rationale: string;
+  risks: readonly string[];
   source: Readonly<{
     artifacts: readonly StructuredPrScopedRef[];
   }>;
@@ -29,6 +32,7 @@ export type StructuredPrPackageV1Input = Readonly<{
     tenantId: string;
     snapshotId: string;
     repositoryId: string;
+    revisionKind: "git_commit" | "content_manifest";
     resolvedSha: string;
     manifestSha256: string;
   }>;
@@ -46,6 +50,11 @@ export type StructuredPrPackageV1Input = Readonly<{
     evidenceRecordIds: readonly string[];
     verdict: "passed" | "waived";
     waiverArtifactId: string | null;
+    results: readonly Readonly<{
+      checkId: string;
+      status: "passed" | "waived";
+      evidenceRecordIds: readonly string[];
+    }>[];
   }>;
   generation: Readonly<{
     kind: "recipe" | "model";
@@ -75,6 +84,12 @@ export type StructuredPrPackageV1Input = Readonly<{
     artifactId: string;
     strategy: "revert_commit" | "restore_snapshot" | "close_draft";
     verificationEvidenceRecordIds: readonly string[];
+    instructions: string;
+  }>;
+  delivery: Readonly<{
+    mode: "draft";
+    autoMerge: false;
+    autoDeploy: false;
   }>;
 }>;
 
@@ -118,6 +133,9 @@ const PAYLOAD_FIELDS = [
   "tenantId",
   "pullRequestId",
   "createdAt",
+  "summary",
+  "rationale",
+  "risks",
   "source",
   "snapshot",
   "findings",
@@ -128,6 +146,7 @@ const PAYLOAD_FIELDS = [
   "ownership",
   "review",
   "rollback",
+  "delivery",
 ] as const;
 const SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT_SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -238,6 +257,9 @@ function validatePayload(value: unknown): {
     : null;
   requiredText(record.packageId, "packageId", issues);
   requiredText(record.pullRequestId, "pullRequestId", issues);
+  requiredText(record.summary, "summary", issues);
+  requiredText(record.rationale, "rationale", issues);
+  stringList(record.risks, "risks", issues);
   if (
     !requiredText(record.createdAt, "createdAt", issues) ||
     !CANONICAL_TIME.test(record.createdAt) ||
@@ -277,13 +299,16 @@ function validatePayload(value: unknown): {
   if (snapshot) {
     rejectUnknown(
       snapshot,
-      ["tenantId", "snapshotId", "repositoryId", "resolvedSha", "manifestSha256"],
+      ["tenantId", "snapshotId", "repositoryId", "revisionKind", "resolvedSha", "manifestSha256"],
       "snapshot",
       issues,
     );
     exactTenant(snapshot.tenantId, tenantId, "snapshot.tenantId", issues);
     requiredText(snapshot.snapshotId, "snapshot.snapshotId", issues);
     requiredText(snapshot.repositoryId, "snapshot.repositoryId", issues);
+    if (snapshot.revisionKind !== "git_commit" && snapshot.revisionKind !== "content_manifest") {
+      issues.push(issue("INVALID_VALUE", "snapshot.revisionKind", "snapshot revision kind is invalid"));
+    }
     if (
       !requiredText(snapshot.resolvedSha, "snapshot.resolvedSha", issues) ||
       !COMMIT_SHA.test(snapshot.resolvedSha)
@@ -389,7 +414,7 @@ function validatePayload(value: unknown): {
   if (verification) {
     rejectUnknown(
       verification,
-      ["tenantId", "artifactIds", "evidenceRecordIds", "verdict", "waiverArtifactId"],
+      ["tenantId", "artifactIds", "evidenceRecordIds", "verdict", "waiverArtifactId", "results"],
       "verification",
       issues,
     );
@@ -417,6 +442,43 @@ function validatePayload(value: unknown): {
           "passing verification cannot link a waiver",
         ),
       );
+    }
+    if (!Array.isArray(verification.results) || verification.results.length === 0) {
+      issues.push(issue("LINK_REQUIRED", "verification.results", "verification results are required"));
+    } else {
+      const checkIds = new Set<string>();
+      for (const [index, raw] of verification.results.entries()) {
+        const result = asObject(raw, `verification.results[${index}]`, issues);
+        if (!result) continue;
+        rejectUnknown(
+          result,
+          ["checkId", "status", "evidenceRecordIds"],
+          `verification.results[${index}]`,
+          issues,
+        );
+        if (requiredText(result.checkId, `verification.results[${index}].checkId`, issues)) {
+          if (checkIds.has(result.checkId)) {
+            issues.push(issue("DUPLICATE_LINK", "verification.results", `duplicate verification check ${result.checkId}`));
+          }
+          checkIds.add(result.checkId);
+        }
+        if (result.status !== "passed" && result.status !== "waived") {
+          issues.push(issue("INVALID_VALUE", `verification.results[${index}].status`, "verification result status is invalid"));
+        }
+        for (const evidenceId of stringList(
+          result.evidenceRecordIds,
+          `verification.results[${index}].evidenceRecordIds`,
+          issues,
+        )) {
+          if (!verificationEvidenceIds.has(evidenceId)) {
+            issues.push(issue(
+              "CROSS_LINK_MISSING",
+              `verification.results[${index}].evidenceRecordIds`,
+              `verification result references undeclared evidence ${evidenceId}`,
+            ));
+          }
+        }
+      }
     }
   }
 
@@ -490,12 +552,13 @@ function validatePayload(value: unknown): {
   if (rollback) {
     rejectUnknown(
       rollback,
-      ["tenantId", "artifactId", "strategy", "verificationEvidenceRecordIds"],
+      ["tenantId", "artifactId", "strategy", "verificationEvidenceRecordIds", "instructions"],
       "rollback",
       issues,
     );
     exactTenant(rollback.tenantId, tenantId, "rollback.tenantId", issues);
     requiredText(rollback.artifactId, "rollback.artifactId", issues);
+    requiredText(rollback.instructions, "rollback.instructions", issues);
     if (!new Set(["revert_commit", "restore_snapshot", "close_draft"]).has(String(rollback.strategy))) {
       issues.push(issue("INVALID_VALUE", "rollback.strategy", "rollback strategy is invalid"));
     }
@@ -516,6 +579,20 @@ function validatePayload(value: unknown): {
     }
   }
 
+  const delivery = asObject(record.delivery, "delivery", issues);
+  if (delivery) {
+    rejectUnknown(delivery, ["mode", "autoMerge", "autoDeploy"], "delivery", issues);
+    if (delivery.mode !== "draft") {
+      issues.push(issue("INVALID_VALUE", "delivery.mode", "delivery mode must be draft"));
+    }
+    if (delivery.autoMerge !== false) {
+      issues.push(issue("INVALID_VALUE", "delivery.autoMerge", "automatic merge is forbidden"));
+    }
+    if (delivery.autoDeploy !== false) {
+      issues.push(issue("INVALID_VALUE", "delivery.autoDeploy", "automatic deployment is forbidden"));
+    }
+  }
+
   return { issues, record };
 }
 
@@ -526,6 +603,9 @@ function payloadFrom(value: StructuredPrPackageV1Input | StructuredPrPackageV1):
     tenantId: candidate.tenantId,
     pullRequestId: candidate.pullRequestId,
     createdAt: candidate.createdAt,
+    summary: candidate.summary,
+    rationale: candidate.rationale,
+    risks: candidate.risks,
     source: candidate.source,
     snapshot: candidate.snapshot,
     findings: candidate.findings,
@@ -536,6 +616,7 @@ function payloadFrom(value: StructuredPrPackageV1Input | StructuredPrPackageV1):
     ownership: candidate.ownership,
     review: candidate.review,
     rollback: candidate.rollback,
+    delivery: candidate.delivery,
   };
 }
 
@@ -549,6 +630,9 @@ function normalizedPayload(input: StructuredPrPackageV1Input): unknown {
     tenantId: input.tenantId,
     pullRequestId: input.pullRequestId,
     createdAt: input.createdAt,
+    summary: input.summary,
+    rationale: input.rationale,
+    risks: sorted(input.risks),
     source: {
       artifacts: [...input.source.artifacts]
         .map((item) => ({ tenantId: item.tenantId, id: item.id }))
@@ -577,6 +661,13 @@ function normalizedPayload(input: StructuredPrPackageV1Input): unknown {
       evidenceRecordIds: sorted(input.verification.evidenceRecordIds),
       verdict: input.verification.verdict,
       waiverArtifactId: input.verification.waiverArtifactId,
+      results: [...input.verification.results]
+        .map((result) => ({
+          checkId: result.checkId,
+          status: result.status,
+          evidenceRecordIds: sorted(result.evidenceRecordIds),
+        }))
+        .sort((left, right) => left.checkId.localeCompare(right.checkId)),
     },
     generation: { ...input.generation },
     policy: { ...input.policy },
@@ -596,7 +687,9 @@ function normalizedPayload(input: StructuredPrPackageV1Input): unknown {
       artifactId: input.rollback.artifactId,
       strategy: input.rollback.strategy,
       verificationEvidenceRecordIds: sorted(input.rollback.verificationEvidenceRecordIds),
+      instructions: input.rollback.instructions,
     },
+    delivery: { ...input.delivery },
   };
 }
 

@@ -31,14 +31,25 @@ const issues = validatePublicClaimRegistry(registry, {
   asOf: new Date(),
 });
 for (const claim of registry.claims ?? []) {
+  let boundSurface = false;
   for (const surfacePath of claim.surfacePaths ?? []) {
-    if (!existsSync(repositoryPath(repoRoot, surfacePath))) {
+    const resolvedSurface = repositoryPath(repoRoot, surfacePath);
+    if (!existsSync(resolvedSurface)) {
       issues.push({
         code: "SURFACE_PATH_MISSING",
         subject: claim.id,
         message: `${surfacePath} does not exist`,
       });
+    } else if (readFileSync(resolvedSurface, "utf8").includes(claim.id)) {
+      boundSurface = true;
     }
+  }
+  if (!boundSurface) {
+    issues.push({
+      code: "CLAIM_SURFACE_BINDING_MISSING",
+      subject: claim.id,
+      message: "at least one mapped surface must bind the claim by ID",
+    });
   }
   for (const evidence of claim.evidence ?? []) {
     if (["live", "external"].includes(evidence.type)) continue;

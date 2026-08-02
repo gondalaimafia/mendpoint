@@ -18,6 +18,13 @@ import {
   insertFeedPoll,
   listFeedPolls,
   latestSuccessfulHash,
+  feedPollToApi,
+  upsertFeedSchedule,
+  listFeedSchedules,
+  listFeedScheduleWindows,
+  claimFeedScheduleWindow,
+  completeFeedScheduleWindow,
+  getFeedScheduleHealth,
   insertTenant,
   listTenants,
   updateTenantPlan,
@@ -213,17 +220,147 @@ describe("db", () => {
     dirs.push(dir);
     const db = createDb(join(dir, "f.sqlite"));
     dbs.push(db);
+    const pollId = newId();
     insertFeedPoll(db, {
-      id: newId(),
+      id: pollId,
       providerSlug: "acme-payments",
       openapiUrl: "file:x.json",
       contentHash: "abc123",
       versionLabel: "2.0.0",
       status: "new_version",
       polledAt: nowIso(),
+      validationEvidence: {
+        id: "validation-1",
+        source: "catalog",
+        format: "json",
+        formatStatus: "accepted",
+        schemaVersion: "3.1.0",
+        schemaStatus: "accepted",
+        sizeBytes: 128,
+        contentSha256: "a".repeat(64),
+        status: "accepted",
+        observedAt: "2026-08-02T12:00:00.000Z",
+      },
     });
-    expect(listFeedPolls(db)).toHaveLength(1);
+    const polls = listFeedPolls(db);
+    expect(polls).toHaveLength(1);
+    expect(feedPollToApi(polls[0]!)).toMatchObject({
+      id: pollId,
+      validation: {
+        id: "validation-1",
+        source: "catalog",
+        schemaVersion: "3.1.0",
+        sizeBytes: 128,
+        contentSha256: "a".repeat(64),
+        status: "accepted",
+      },
+    });
     expect(latestSuccessfulHash(db, "acme-payments")).toBe("abc123");
+    expect(() =>
+      db.raw.prepare(`UPDATE feed_validation_evidence SET status = 'rejected' WHERE id = ?`).run(
+        "validation-1",
+      ),
+    ).toThrow("feed_validation_evidence_immutable");
+  });
+
+  it("opens a legacy feed poll ledger with null validation evidence", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-feed-legacy-"));
+    dirs.push(dir);
+    const path = join(dir, "legacy.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE feed_polls (
+        id TEXT PRIMARY KEY,
+        provider_slug TEXT NOT NULL,
+        openapi_url TEXT NOT NULL,
+        content_hash TEXT,
+        version_label TEXT,
+        status TEXT NOT NULL,
+        error TEXT,
+        version_id TEXT,
+        pipeline_change_id TEXT,
+        polled_at TEXT NOT NULL
+      );
+      INSERT INTO feed_polls
+        (id, provider_slug, openapi_url, status, polled_at)
+      VALUES
+        ('legacy-poll', 'legacy', 'file:legacy.json', 'error', '2026-01-01T00:00:00.000Z');
+    `);
+    legacy.close();
+    const db = createDb(path);
+    dbs.push(db);
+    expect(feedPollToApi(listFeedPolls(db)[0]!)).toMatchObject({
+      id: "legacy-poll",
+      validation: null,
+    });
+  });
+
+  it("claims schedule windows once and recovers stale and failed health", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-feed-schedule-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "schedule.sqlite"));
+    dbs.push(db);
+    const schedule = upsertFeedSchedule(db, {
+      id: "schedule-1",
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      intervalMs: 60_000,
+      staleAfterMs: 120_000,
+      createdAt: "2026-08-02T12:00:00.000Z",
+    });
+    expect(getFeedScheduleHealth(db, "2026-08-02T12:03:00.001Z")).toMatchObject({
+      status: "degraded",
+      counts: { stale: 1, failed: 0 },
+    });
+    const firstWindow = {
+      id: "window-1",
+      scheduleId: schedule.id,
+      windowStartedAt: "2026-08-02T12:03:00.000Z",
+      windowEndsAt: "2026-08-02T12:04:00.000Z",
+      attemptedAt: "2026-08-02T12:03:01.000Z",
+    };
+    expect(claimFeedScheduleWindow(db, firstWindow)).toBe(true);
+    expect(claimFeedScheduleWindow(db, { ...firstWindow, id: "window-replay" })).toBe(false);
+    expect(completeFeedScheduleWindow(db, {
+      scheduleId: schedule.id,
+      windowStartedAt: firstWindow.windowStartedAt,
+      succeeded: false,
+      error: "HTTP 503",
+      completedAt: "2026-08-02T12:03:02.000Z",
+    })).toBe(true);
+    expect(listFeedSchedules(db)[0]).toMatchObject({
+      alert_state: "failed",
+      consecutive_failures: 1,
+      last_error: "HTTP 503",
+    });
+
+    const recoveryWindow = {
+      id: "window-2",
+      scheduleId: schedule.id,
+      windowStartedAt: "2026-08-02T12:04:00.000Z",
+      windowEndsAt: "2026-08-02T12:05:00.000Z",
+      attemptedAt: "2026-08-02T12:04:01.000Z",
+    };
+    expect(claimFeedScheduleWindow(db, recoveryWindow)).toBe(true);
+    expect(completeFeedScheduleWindow(db, {
+      scheduleId: schedule.id,
+      windowStartedAt: recoveryWindow.windowStartedAt,
+      succeeded: true,
+      completedAt: "2026-08-02T12:04:02.000Z",
+    })).toBe(true);
+    expect(getFeedScheduleHealth(db, "2026-08-02T12:04:02.000Z")).toMatchObject({
+      status: "healthy",
+      schedules: [{
+        alertState: "healthy",
+        lastSuccessAt: "2026-08-02T12:04:02.000Z",
+        consecutiveFailures: 0,
+        lastError: null,
+      }],
+    });
+    expect(listFeedScheduleWindows(db, schedule.id).map((window) => window.status)).toEqual([
+      "failed",
+      "succeeded",
+    ]);
   });
 
   it("tenants and github installations", () => {

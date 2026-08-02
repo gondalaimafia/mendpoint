@@ -12,6 +12,9 @@ import type {
   Consumer,
   ConsumerRepo,
   FeedPollRow,
+  FeedScheduleRow,
+  FeedScheduleWindowRow,
+  FeedValidationEvidenceInput,
   GitHubInstallationRow,
   ImpactFindingRow,
   MigrationPrRow,
@@ -271,6 +274,65 @@ CREATE TABLE IF NOT EXISTS feed_polls (
 CREATE INDEX IF NOT EXISTS feed_polls_slug_idx ON feed_polls(provider_slug);
 CREATE INDEX IF NOT EXISTS feed_polls_polled_idx ON feed_polls(polled_at);
 
+CREATE TABLE IF NOT EXISTS feed_validation_evidence (
+  id TEXT PRIMARY KEY,
+  poll_id TEXT NOT NULL UNIQUE REFERENCES feed_polls(id),
+  provider_slug TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('catalog', 'provider', 'unknown')),
+  source_url TEXT NOT NULL,
+  format TEXT NOT NULL CHECK (format IN ('json', 'unknown')),
+  format_status TEXT NOT NULL CHECK (format_status IN ('accepted', 'rejected', 'not_observed')),
+  schema_version TEXT,
+  schema_status TEXT NOT NULL CHECK (schema_status IN ('accepted', 'rejected', 'not_observed')),
+  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  content_sha256 TEXT,
+  status TEXT NOT NULL CHECK (status IN ('accepted', 'rejected', 'skipped')),
+  error TEXT,
+  http_status INTEGER,
+  observed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS feed_validation_evidence_slug_idx
+  ON feed_validation_evidence(provider_slug, observed_at);
+CREATE TRIGGER IF NOT EXISTS feed_validation_evidence_no_update
+BEFORE UPDATE ON feed_validation_evidence
+BEGIN SELECT RAISE(ABORT, 'feed_validation_evidence_immutable'); END;
+CREATE TRIGGER IF NOT EXISTS feed_validation_evidence_no_delete
+BEFORE DELETE ON feed_validation_evidence
+BEGIN SELECT RAISE(ABORT, 'feed_validation_evidence_immutable'); END;
+
+CREATE TABLE IF NOT EXISTS feed_schedules (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  provider_slug TEXT NOT NULL,
+  interval_ms INTEGER NOT NULL CHECK (interval_ms >= 1000),
+  stale_after_ms INTEGER NOT NULL CHECK (stale_after_ms >= interval_ms),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  last_attempt_at TEXT,
+  last_success_at TEXT,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+  alert_state TEXT NOT NULL DEFAULT 'healthy' CHECK (alert_state IN ('healthy', 'stale', 'failed')),
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, provider_slug)
+);
+CREATE INDEX IF NOT EXISTS feed_schedules_tenant_idx
+  ON feed_schedules(tenant_id, enabled, provider_slug);
+
+CREATE TABLE IF NOT EXISTS feed_schedule_windows (
+  id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL REFERENCES feed_schedules(id),
+  window_started_at TEXT NOT NULL,
+  window_ends_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+  error TEXT,
+  attempted_at TEXT NOT NULL,
+  completed_at TEXT,
+  UNIQUE (schedule_id, window_started_at)
+);
+CREATE INDEX IF NOT EXISTS feed_schedule_windows_schedule_idx
+  ON feed_schedule_windows(schedule_id, window_started_at);
+
 -- Phase E: multi-tenant orgs + plans
 CREATE TABLE IF NOT EXISTS tenants (
   id TEXT PRIMARY KEY,
@@ -329,6 +391,24 @@ CREATE TABLE IF NOT EXISTS principals (
   UNIQUE (tenant_id, kind, subject)
 );
 CREATE INDEX IF NOT EXISTS principals_tenant_idx ON principals(tenant_id, kind);
+
+CREATE TABLE IF NOT EXISTS tenant_memberships (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  issuer TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  email TEXT,
+  display_name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'engineer', 'viewer', 'fde')),
+  status TEXT NOT NULL CHECK (status IN ('active', 'offboarded')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  offboarded_at TEXT,
+  PRIMARY KEY (tenant_id, issuer, subject),
+  CHECK ((status = 'active' AND offboarded_at IS NULL)
+    OR (status = 'offboarded' AND offboarded_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS tenant_memberships_subject_idx
+  ON tenant_memberships(issuer, subject, tenant_id, status);
 
 CREATE TABLE IF NOT EXISTS artifact_manifests (
   id TEXT PRIMARY KEY,
@@ -548,6 +628,22 @@ CREATE TABLE IF NOT EXISTS warden_campaign_targets (
 CREATE INDEX IF NOT EXISTS warden_targets_campaign_stage_idx
   ON warden_campaign_targets(tenant_id, campaign_id, stage, created_at);
 
+CREATE TABLE IF NOT EXISTS warden_rollout_decisions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  campaign_id TEXT NOT NULL REFERENCES warden_campaigns(id),
+  campaign_revision INTEGER NOT NULL CHECK (campaign_revision > 0),
+  canary_target_id TEXT NOT NULL REFERENCES warden_campaign_targets(id),
+  max_cohort_size INTEGER NOT NULL CHECK (max_cohort_size > 0),
+  decision_json TEXT NOT NULL,
+  decision_sha256 TEXT NOT NULL CHECK (length(decision_sha256) = 64),
+  created_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS warden_rollout_decisions_campaign_idx
+  ON warden_rollout_decisions(tenant_id, campaign_id, campaign_revision, created_at);
+
 CREATE TABLE IF NOT EXISTS learning_consents (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -692,6 +788,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS review_decisions_chain_idx
     candidate_artifact_id,
     COALESCE(supersedes_id, '')
   );
+
+CREATE TABLE IF NOT EXISTS pilot_success_contract_versions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  contract_id TEXT NOT NULL,
+  version INTEGER NOT NULL CHECK (version > 0),
+  parent_version_id TEXT REFERENCES pilot_success_contract_versions(id),
+  title TEXT NOT NULL,
+  artifact_id TEXT NOT NULL REFERENCES artifact_manifests(id),
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  created_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, contract_id, version),
+  UNIQUE (tenant_id, artifact_id)
+);
+CREATE INDEX IF NOT EXISTS pilot_success_contract_versions_tenant_idx
+  ON pilot_success_contract_versions(tenant_id, contract_id, version);
 
 CREATE TABLE IF NOT EXISTS domain_events (
   id TEXT PRIMARY KEY,
@@ -1095,6 +1208,7 @@ function installTrustImmutability(db: AppDb) {
     "artifact_manifests",
     "evidence_records",
     "review_decisions",
+    "pilot_success_contract_versions",
     "domain_events",
     "repository_snapshots",
     "repository_snapshot_policies",
@@ -1163,7 +1277,8 @@ export function recordAudit(
   const resourceId = input.resourceId ?? null;
   const metadataJson = input.metadata === undefined ? null : JSON.stringify(input.metadata);
   const metadataSha256 = hashJson(metadataJson);
-  db.raw.exec("BEGIN IMMEDIATE");
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const existing = get<AuditEvent>(db, `SELECT * FROM audit_events WHERE id = ?`, [id]);
     if (existing) {
@@ -1178,7 +1293,7 @@ export function recordAudit(
         existing.resource_id === resourceId &&
         existing.metadata_sha256 === metadataSha256;
       if (!same) throw new Error("audit_event_id_conflict");
-      db.raw.exec("COMMIT");
+      if (ownsTransaction) db.raw.exec("COMMIT");
       return id;
     }
     const previous = get<{ event_sequence: number; event_hash: string }>(
@@ -1231,10 +1346,10 @@ export function recordAudit(
         createdAt,
       ],
     );
-    db.raw.exec("COMMIT");
+    if (ownsTransaction) db.raw.exec("COMMIT");
     return id;
   } catch (error) {
-    db.raw.exec("ROLLBACK");
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
     throw error;
   }
 }
@@ -1860,6 +1975,25 @@ export {
 } from "./trust.js";
 
 export {
+  getTenantMembership,
+  putTenantMembership,
+  setTenantMembershipStatus,
+} from "./identity.js";
+
+export {
+  approvePilotSuccessContract,
+  createPilotSuccessContract,
+  getPilotSuccessContract,
+  listPilotSuccessContracts,
+  revisePilotSuccessContract,
+} from "./pilot-success-contract.js";
+export type {
+  PilotSuccessContract,
+  PilotSuccessContractApproval,
+  PilotSuccessContractDefinition,
+} from "./pilot-success-contract.js";
+
+export {
   bindConsumerRepoSnapshot,
   getConnectedRepository,
   getRepositorySnapshotPolicy,
@@ -1902,6 +2036,9 @@ export type {
   WardenCampaign,
   WardenCampaignStatus,
   WardenCampaignTarget,
+  WardenRolloutDecision,
+  WardenRolloutTargetProfile,
+  WardenRolloutStopConditions,
   WardenTargetStage,
 } from "./warden-campaign.js";
 
@@ -1926,7 +2063,9 @@ export {
   addWardenCampaignTarget,
   claimReadyWardenTargets,
   createWardenCampaign,
+  getWardenRolloutDecision,
   listWardenCampaignTargets,
+  planWardenRollout,
   planWardenRollback,
   transitionWardenCampaign,
   transitionWardenTarget,
@@ -1945,6 +2084,19 @@ export {
   listUsageLedger,
   reconcileUsageLedger,
 } from "./usage.js";
+export {
+  appendWardenRunEvent,
+  replayWardenRun,
+  WARDEN_RUN_EVENT_KINDS,
+} from "./warden-replay.js";
+export type {
+  WardenRunArtifactReference,
+  WardenRunCost,
+  WardenRunEventKind,
+  WardenRunReplayEnvelope,
+  WardenRunReplayEvidence,
+  WardenRunVersionReference,
+} from "./warden-replay.js";
 export {
   listActualExecutionCosts,
   reconcileGrossMargin,
@@ -2205,36 +2357,107 @@ export function insertFeedPoll(
     versionId?: string | null;
     pipelineChangeId?: string | null;
     polledAt: string;
+    validationEvidence?: FeedValidationEvidenceInput;
   },
 ) {
-  run(
-    db,
-    `INSERT INTO feed_polls
-     (id, provider_slug, openapi_url, content_hash, version_label, status, error, version_id, pipeline_change_id, polled_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      row.id,
-      row.providerSlug,
-      row.openapiUrl,
-      row.contentHash ?? null,
-      row.versionLabel ?? null,
-      row.status,
-      row.error ?? null,
-      row.versionId ?? null,
-      row.pipelineChangeId ?? null,
-      row.polledAt,
-    ],
-  );
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    run(
+      db,
+      `INSERT INTO feed_polls
+       (id, provider_slug, openapi_url, content_hash, version_label, status, error, version_id, pipeline_change_id, polled_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        row.id,
+        row.providerSlug,
+        row.openapiUrl,
+        row.contentHash ?? null,
+        row.versionLabel ?? null,
+        row.status,
+        row.error ?? null,
+        row.versionId ?? null,
+        row.pipelineChangeId ?? null,
+        row.polledAt,
+      ],
+    );
+    const evidence = row.validationEvidence;
+    if (evidence) {
+      run(
+        db,
+        `INSERT INTO feed_validation_evidence
+         (id, poll_id, provider_slug, source, source_url, format, format_status,
+          schema_version, schema_status, size_bytes, content_sha256, status, error,
+          http_status, observed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          evidence.id,
+          row.id,
+          row.providerSlug,
+          evidence.source,
+          row.openapiUrl,
+          evidence.format,
+          evidence.formatStatus,
+          evidence.schemaVersion ?? null,
+          evidence.schemaStatus,
+          evidence.sizeBytes,
+          evidence.contentSha256 ?? null,
+          evidence.status,
+          evidence.error ?? null,
+          evidence.httpStatus ?? null,
+          evidence.observedAt,
+        ],
+      );
+    }
+    if (ownsTransaction) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function listFeedPolls(db: AppDb, limit = 50): FeedPollRow[] {
-  return all(db, `SELECT * FROM feed_polls ORDER BY polled_at DESC LIMIT ?`, [limit]);
+  return all(
+    db,
+    `SELECT poll.*,
+            evidence.id AS validation_evidence_id,
+            evidence.source AS validation_source,
+            evidence.format AS validation_format,
+            evidence.format_status AS validation_format_status,
+            evidence.schema_version AS validation_schema_version,
+            evidence.schema_status AS validation_schema_status,
+            evidence.size_bytes AS validation_size_bytes,
+            evidence.content_sha256 AS validation_content_sha256,
+            evidence.status AS validation_status,
+            evidence.error AS validation_error,
+            evidence.http_status AS validation_http_status,
+            evidence.observed_at AS validation_observed_at
+     FROM feed_polls poll
+     LEFT JOIN feed_validation_evidence evidence ON evidence.poll_id = poll.id
+     ORDER BY poll.polled_at DESC LIMIT ?`,
+    [limit],
+  );
 }
 
 export function latestFeedPollForSlug(db: AppDb, slug: string): FeedPollRow | undefined {
   return get(
     db,
-    `SELECT * FROM feed_polls WHERE provider_slug = ? ORDER BY polled_at DESC LIMIT 1`,
+    `SELECT poll.*,
+            evidence.id AS validation_evidence_id,
+            evidence.source AS validation_source,
+            evidence.format AS validation_format,
+            evidence.format_status AS validation_format_status,
+            evidence.schema_version AS validation_schema_version,
+            evidence.schema_status AS validation_schema_status,
+            evidence.size_bytes AS validation_size_bytes,
+            evidence.content_sha256 AS validation_content_sha256,
+            evidence.status AS validation_status,
+            evidence.error AS validation_error,
+            evidence.http_status AS validation_http_status,
+            evidence.observed_at AS validation_observed_at
+     FROM feed_polls poll
+     LEFT JOIN feed_validation_evidence evidence ON evidence.poll_id = poll.id
+     WHERE poll.provider_slug = ? ORDER BY poll.polled_at DESC LIMIT 1`,
     [slug],
   );
 }
@@ -2243,11 +2466,219 @@ export function latestSuccessfulHash(db: AppDb, slug: string): string | undefine
   const row = get<FeedPollRow>(
     db,
     `SELECT * FROM feed_polls
-     WHERE provider_slug = ? AND content_hash IS NOT NULL AND status IN ('unchanged', 'new_version', 'pipeline_ran')
+     WHERE provider_slug = ? AND content_hash IS NOT NULL
+       AND status IN ('unchanged', 'new_version', 'pipeline_ran', 'pipeline_enqueued')
      ORDER BY polled_at DESC LIMIT 1`,
     [slug],
   );
   return row?.content_hash ?? undefined;
+}
+
+export function upsertFeedSchedule(
+  db: AppDb,
+  input: {
+    id: string;
+    tenantId: string;
+    providerSlug: string;
+    intervalMs: number;
+    staleAfterMs: number;
+    enabled?: boolean;
+    createdAt: string;
+  },
+): FeedScheduleRow {
+  if (!Number.isSafeInteger(input.intervalMs) || input.intervalMs < 1_000) {
+    throw new Error("feed_schedule_interval_invalid");
+  }
+  if (!Number.isSafeInteger(input.staleAfterMs) || input.staleAfterMs < input.intervalMs) {
+    throw new Error("feed_schedule_stale_window_invalid");
+  }
+  const providerSlug = input.providerSlug.trim();
+  if (!providerSlug) throw new Error("feed_schedule_provider_invalid");
+  db.raw
+    .prepare(
+      `INSERT INTO feed_schedules
+       (id, tenant_id, provider_slug, interval_ms, stale_after_ms, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (tenant_id, provider_slug) DO UPDATE SET
+         interval_ms = excluded.interval_ms,
+         stale_after_ms = excluded.stale_after_ms,
+         enabled = excluded.enabled,
+         updated_at = excluded.updated_at`,
+    )
+    .run(
+      input.id,
+      input.tenantId,
+      providerSlug,
+      input.intervalMs,
+      input.staleAfterMs,
+      input.enabled === false ? 0 : 1,
+      input.createdAt,
+      input.createdAt,
+    );
+  return get<FeedScheduleRow>(
+    db,
+    `SELECT * FROM feed_schedules WHERE tenant_id = ? AND provider_slug = ?`,
+    [input.tenantId, providerSlug],
+  )!;
+}
+
+export function listFeedSchedules(db: AppDb, tenantId?: string): FeedScheduleRow[] {
+  return tenantId
+    ? all(db, `SELECT * FROM feed_schedules WHERE tenant_id = ? ORDER BY provider_slug`, [tenantId])
+    : all(db, `SELECT * FROM feed_schedules ORDER BY tenant_id, provider_slug`);
+}
+
+export function listFeedScheduleWindows(
+  db: AppDb,
+  scheduleId: string,
+): FeedScheduleWindowRow[] {
+  return all(
+    db,
+    `SELECT * FROM feed_schedule_windows WHERE schedule_id = ? ORDER BY window_started_at`,
+    [scheduleId],
+  );
+}
+
+export function claimFeedScheduleWindow(
+  db: AppDb,
+  input: {
+    id: string;
+    scheduleId: string;
+    windowStartedAt: string;
+    windowEndsAt: string;
+    attemptedAt: string;
+  },
+): boolean {
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const inserted = db.raw
+      .prepare(
+        `INSERT INTO feed_schedule_windows
+         (id, schedule_id, window_started_at, window_ends_at, status, attempted_at)
+         VALUES (?, ?, ?, ?, 'running', ?)
+         ON CONFLICT (schedule_id, window_started_at) DO NOTHING`,
+      )
+      .run(
+        input.id,
+        input.scheduleId,
+        input.windowStartedAt,
+        input.windowEndsAt,
+        input.attemptedAt,
+      );
+    const claimed = Number(inserted.changes) === 1;
+    if (claimed) {
+      db.raw
+        .prepare(`UPDATE feed_schedules SET last_attempt_at = ?, updated_at = ? WHERE id = ?`)
+        .run(input.attemptedAt, input.attemptedAt, input.scheduleId);
+    }
+    if (ownsTransaction) db.raw.exec("COMMIT");
+    return claimed;
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function completeFeedScheduleWindow(
+  db: AppDb,
+  input: {
+    scheduleId: string;
+    windowStartedAt: string;
+    succeeded: boolean;
+    completedAt: string;
+    error?: string | null;
+  },
+): boolean {
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const updated = db.raw
+      .prepare(
+        `UPDATE feed_schedule_windows
+         SET status = ?, error = ?, completed_at = ?
+         WHERE schedule_id = ? AND window_started_at = ? AND status = 'running'`,
+      )
+      .run(
+        input.succeeded ? "succeeded" : "failed",
+        input.succeeded ? null : input.error ?? "feed_schedule_failed",
+        input.completedAt,
+        input.scheduleId,
+        input.windowStartedAt,
+      );
+    if (Number(updated.changes) !== 1) {
+      if (ownsTransaction) db.raw.exec("COMMIT");
+      return false;
+    }
+    if (input.succeeded) {
+      db.raw
+        .prepare(
+          `UPDATE feed_schedules
+           SET last_success_at = ?, consecutive_failures = 0, alert_state = 'healthy',
+               last_error = NULL, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(input.completedAt, input.completedAt, input.scheduleId);
+    } else {
+      db.raw
+        .prepare(
+          `UPDATE feed_schedules
+           SET consecutive_failures = consecutive_failures + 1, alert_state = 'failed',
+               last_error = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(input.error ?? "feed_schedule_failed", input.completedAt, input.scheduleId);
+    }
+    if (ownsTransaction) db.raw.exec("COMMIT");
+    return true;
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function getFeedScheduleHealth(db: AppDb, at: string, tenantId?: string) {
+  const atMs = Date.parse(at);
+  if (!Number.isFinite(atMs)) throw new Error("feed_schedule_health_time_invalid");
+  const schedules = listFeedSchedules(db, tenantId);
+  for (const schedule of schedules) {
+    if (!schedule.enabled || schedule.alert_state === "failed") continue;
+    const baseline = Date.parse(schedule.last_success_at ?? schedule.created_at);
+    const nextState = atMs - baseline > schedule.stale_after_ms ? "stale" : "healthy";
+    if (schedule.alert_state !== nextState) {
+      db.raw
+        .prepare(`UPDATE feed_schedules SET alert_state = ?, updated_at = ? WHERE id = ?`)
+        .run(nextState, at, schedule.id);
+      schedule.alert_state = nextState;
+      schedule.updated_at = at;
+    }
+  }
+  const active = schedules.filter((schedule) => schedule.enabled === 1);
+  const counts = {
+    healthy: active.filter((schedule) => schedule.alert_state === "healthy").length,
+    stale: active.filter((schedule) => schedule.alert_state === "stale").length,
+    failed: active.filter((schedule) => schedule.alert_state === "failed").length,
+  };
+  return {
+    ok: counts.stale === 0 && counts.failed === 0,
+    status: counts.stale === 0 && counts.failed === 0 ? "healthy" as const : "degraded" as const,
+    checkedAt: at,
+    counts,
+    schedules: schedules.map((schedule) => ({
+      id: schedule.id,
+      tenantId: schedule.tenant_id,
+      providerSlug: schedule.provider_slug,
+      intervalMs: schedule.interval_ms,
+      staleAfterMs: schedule.stale_after_ms,
+      enabled: schedule.enabled === 1,
+      alertState: schedule.alert_state,
+      lastAttemptAt: schedule.last_attempt_at,
+      lastSuccessAt: schedule.last_success_at,
+      consecutiveFailures: schedule.consecutive_failures,
+      lastError: schedule.last_error,
+      updatedAt: schedule.updated_at,
+    })),
+  };
 }
 
 /** Map DB snake_case rows to API camelCase for HTTP responses */
@@ -2275,6 +2706,22 @@ export function feedPollToApi(r: FeedPollRow) {
     versionId: r.version_id,
     pipelineChangeId: r.pipeline_change_id,
     polledAt: r.polled_at,
+    validation: r.validation_evidence_id
+      ? {
+          id: r.validation_evidence_id,
+          source: r.validation_source,
+          format: r.validation_format,
+          formatStatus: r.validation_format_status,
+          schemaVersion: r.validation_schema_version,
+          schemaStatus: r.validation_schema_status,
+          sizeBytes: r.validation_size_bytes,
+          contentSha256: r.validation_content_sha256,
+          status: r.validation_status,
+          error: r.validation_error,
+          httpStatus: r.validation_http_status,
+          observedAt: r.validation_observed_at,
+        }
+      : null,
   };
 }
 

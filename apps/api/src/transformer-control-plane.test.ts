@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NODE_RUNTIME_18_TO_20_RECIPE } from "@mendpoint/transformer";
+import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import type { ApiEnv } from "./auth.js";
 import {
   registerTransformerControlPlaneRoutes,
@@ -124,7 +125,25 @@ function view(value: unknown) {
   };
 }
 
-function testApp(service: TransformerCampaignService) {
+function gateConfig(tenantIds = ["tenant-a", "tenant-b"]) {
+  return JSON.stringify({
+    schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION,
+    tenantAllowlist: tenantIds,
+    environmentAllowlist: ["test"],
+    grants: tenantIds.map((tenantId) => ({
+      tenantId,
+      environment: "test",
+      boundaries: ["api_control_plane", "ui"],
+      acceptanceEvidenceRefs: ["acceptance:test-contract"],
+      productionDeliveryApprovalRefs: [],
+    })),
+  });
+}
+
+function testApp(
+  service: TransformerCampaignService,
+  gateRuntime = { rawConfig: gateConfig(), environment: "test" },
+) {
   const app = new Hono<ApiEnv>();
   app.use("*", async (c, next) => {
     c.set("requestId", c.req.header("x-request-id") ?? "request-route");
@@ -135,7 +154,7 @@ function testApp(service: TransformerCampaignService) {
     }
     await next();
   });
-  registerTransformerControlPlaneRoutes(app, service);
+  registerTransformerControlPlaneRoutes(app, service, gateRuntime);
   return app;
 }
 
@@ -303,6 +322,35 @@ describe("Transformer campaign service", () => {
 });
 
 describe("Transformer campaign routes", () => {
+  it("defaults deny and reports the experimental gate without mutating state", async () => {
+    const service = open();
+    const app = testApp(service, { rawConfig: "", environment: "test" });
+    const status = await app.request("/transformer/gate", { headers: mutationHeaders() });
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      gate: { allowed: false, reasons: ["transformer_gate_config_missing"], boundary: "ui" },
+    });
+    const create = await app.request("/transformer/control-plane/campaigns", {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify(bundle()),
+    });
+    expect(create.status).toBe(403);
+    expect(await create.json()).toMatchObject({
+      error: "transformer_experimental_gate_denied",
+      gate: { allowed: false },
+    });
+    expect(() => service.get("tenant-a", "campaign-a")).toThrow("campaign_not_found");
+  });
+
+  it("denies a tenant not named by the exact gate grant", async () => {
+    const app = testApp(open(), { rawConfig: gateConfig(["tenant-a"]), environment: "test" });
+    const response = await app.request("/transformer/gate", {
+      headers: mutationHeaders({ "x-test-tenant": "tenant-b" }),
+    });
+    expect(await response.json()).toMatchObject({ gate: { allowed: false, reasons: expect.arrayContaining(["tenant_not_allowed"]) } });
+  });
+
   it("requires authenticated identity and mutation metadata", async () => {
     const app = testApp(open());
     const response = await app.request("/transformer/control-plane/campaigns", {
@@ -352,6 +400,16 @@ describe("Transformer campaign routes", () => {
     expect(events.every((event) => event.correlationId === "request-route")).toBe(true);
     expect(events.every((event) => event.causationId === "request-route")).toBe(true);
     expect(events.every((event) => event.evidenceRefs[0] === "evidence:product-spec:node-runtime")).toBe(true);
+
+    const eventResponse = await app.request(
+      "/transformer/control-plane/campaigns/campaign-a/events",
+      { headers: mutationHeaders() },
+    );
+    expect(eventResponse.status).toBe(200);
+    const eventText = await eventResponse.text();
+    expect(eventText).not.toContain("C:\\\\private");
+    expect(eventText).not.toContain("/srv/private");
+    expect(eventText).not.toContain("sk_super_secret_value");
 
     const otherTenant = await app.request(
       "/transformer/control-plane/campaigns/campaign-a",
@@ -411,5 +469,21 @@ describe("Transformer campaign routes", () => {
     expect(await exception.json()).toMatchObject({
       exception: { id: "exception-a", state: "open", revision: 1 },
     });
+
+    const events = await app.request(
+      "/transformer/control-plane/campaigns/campaign-a/events",
+      { headers: mutationHeaders() },
+    );
+    expect(events.status).toBe(200);
+    const eventBody = await events.json() as { events: Array<{ tenantId: string; campaignId: string }> };
+    expect(eventBody.events.length).toBeGreaterThanOrEqual(8);
+    expect(eventBody.events.every((event) => event.tenantId === "tenant-a")).toBe(true);
+    expect(eventBody.events.every((event) => event.campaignId === "campaign-a")).toBe(true);
+
+    const otherTenantEvents = await app.request(
+      "/transformer/control-plane/campaigns/campaign-a/events",
+      { headers: mutationHeaders({ "x-test-tenant": "tenant-b" }) },
+    );
+    expect(otherTenantEvents.status).toBe(404);
   });
 });

@@ -22,9 +22,11 @@ import {
   parseArgs,
   parseIntervalMs,
   parseLeaseMs,
+  enqueueFeedPipelineJob,
   processJobsOnce,
   resolveWorkerRepoPath,
   retryDelayMs,
+  startIndependentWorkerLanes,
   validateWorkerProductionEnv,
   runUnseenVersion,
   writeWorkerHeartbeat,
@@ -80,6 +82,51 @@ describe("worker runtime", () => {
         feedPollOk: true,
       }),
     ).toThrow(/absolute/i);
+  });
+
+  it("starts job draining without waiting for a slow feed", async () => {
+    let releaseFeed!: () => void;
+    const slowFeed = new Promise<string>((resolve) => {
+      releaseFeed = () => resolve("feed complete");
+    });
+    const lanes = startIndependentWorkerLanes({
+      feeds: () => slowFeed,
+      jobs: async () => "job drained",
+    });
+
+    await expect(
+      Promise.race([
+        lanes.jobs,
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error("job lane was blocked by feed polling")), 250),
+        ),
+      ]),
+    ).resolves.toBe("job drained");
+    releaseFeed();
+    await expect(lanes.feeds).resolves.toBe("feed complete");
+  });
+
+  it("enqueues feed pipeline work idempotently", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-worker-feed-job-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    const input = {
+      tenantId: "tenant_test",
+      providerSlug: "stripe",
+      contentHash: "hash-1",
+      versionId: "version-1",
+    };
+
+    const first = enqueueFeedPipelineJob(db, input);
+    const replay = enqueueFeedPipelineJob(db, input);
+    expect(replay).toBe(first);
+    expect(listJobs(db, 10, "tenant_test")).toHaveLength(1);
+    expect(listJobs(db, 10, "tenant_test")[0]).toMatchObject({
+      id: first,
+      type: "pipeline.fanout",
+      status: "pending",
+    });
+    db.raw.close();
   });
 
   it("requires production repositories to stay under the configured mount", () => {

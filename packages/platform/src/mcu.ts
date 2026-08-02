@@ -1,6 +1,47 @@
 export const MCU_VERSION = "mcu-v1" as const;
 export const MCU_MICROS = 1_000_000;
 
+export const MCU_SCHEDULE_V1 = Object.freeze({
+  version: MCU_VERSION,
+  effectiveAt: "2026-08-02T00:00:00.000Z",
+  approval: Object.freeze({
+    requiredRole: "finance_owner",
+    immutableAfterUse: true,
+    replacementRequiresNewVersion: true,
+  }),
+  weights: Object.freeze({
+    graphObjectsPerMcu: 10_000,
+    retrievalBytesPerMcu: 10_000_000,
+    modelUsdPerMcu: 0.01,
+    sandboxVcpuMinutesPerMcu: 1,
+    sandboxGibMinutesPerMcu: 2,
+    verificationVcpuMinutesPerMcu: 1,
+    verificationGibMinutesPerMcu: 2,
+    retainedVerificationBytesPerMcu: 100_000_000,
+  }),
+  examples: Object.freeze([
+    Object.freeze({ label: "Graph scan", work: Object.freeze({ graphObjects: 10_001 }), expectedMicros: 2_000_000 }),
+    Object.freeze({ label: "Model execution", work: Object.freeze({ modelCostUsd: 0.025 }), expectedMicros: 2_500_000 }),
+    Object.freeze({ label: "Verification", work: Object.freeze({ verificationVcpuMinutes: 0.5, verificationGibMinutes: 1 }), expectedMicros: 1_000_000 }),
+  ]),
+});
+
+export function assertMcuScheduleChange(input: Readonly<{
+  currentVersion: string;
+  nextVersion: string;
+  approvedByRole: string;
+  currentVersionHasUsage: boolean;
+}>): void {
+  if (input.currentVersion !== MCU_VERSION) throw new Error("mcu_current_version_unknown");
+  if (!/^mcu-v[1-9][0-9]*$/.test(input.nextVersion) || input.nextVersion === input.currentVersion) {
+    throw new Error("mcu_new_version_required");
+  }
+  if (input.approvedByRole !== MCU_SCHEDULE_V1.approval.requiredRole) {
+    throw new Error("mcu_finance_approval_required");
+  }
+  if (!input.currentVersionHasUsage) throw new Error("mcu_change_without_usage_snapshot");
+}
+
 export type McuWork = Readonly<{
   graphObjects?: number;
   retrievalBytes?: number;
@@ -61,16 +102,21 @@ export function calculateMcuV1(work: McuWork): McuBreakdown {
     "retained_verification_bytes",
   );
 
-  const graphMicros = micros(graphObjects === 0 ? 0 : Math.ceil(graphObjects / 10_000));
-  const retrievalMicros = micros(
-    retrievalBytes === 0 ? 0 : Math.ceil(retrievalBytes / 10_000_000),
+  const graphMicros = micros(
+    graphObjects === 0 ? 0 : Math.ceil(graphObjects / MCU_SCHEDULE_V1.weights.graphObjectsPerMcu),
   );
-  const modelMicros = micros(modelCostUsd / 0.01);
-  const sandboxMicros = micros(sandboxVcpuMinutes + sandboxGibMinutes / 2);
+  const retrievalMicros = micros(
+    retrievalBytes === 0 ? 0 : Math.ceil(retrievalBytes / MCU_SCHEDULE_V1.weights.retrievalBytesPerMcu),
+  );
+  const modelMicros = micros(modelCostUsd / MCU_SCHEDULE_V1.weights.modelUsdPerMcu);
+  const sandboxMicros = micros(
+    sandboxVcpuMinutes / MCU_SCHEDULE_V1.weights.sandboxVcpuMinutesPerMcu +
+      sandboxGibMinutes / MCU_SCHEDULE_V1.weights.sandboxGibMinutesPerMcu,
+  );
   const verificationMicros = micros(
-    verificationVcpuMinutes +
-      verificationGibMinutes / 2 +
-      retainedVerificationBytes / 100_000_000,
+    verificationVcpuMinutes / MCU_SCHEDULE_V1.weights.verificationVcpuMinutesPerMcu +
+      verificationGibMinutes / MCU_SCHEDULE_V1.weights.verificationGibMinutesPerMcu +
+      retainedVerificationBytes / MCU_SCHEDULE_V1.weights.retainedVerificationBytesPerMcu,
   );
   const totalMicros =
     graphMicros + retrievalMicros + modelMicros + sandboxMicros + verificationMicros;

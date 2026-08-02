@@ -9,6 +9,11 @@ import {
   type MutationContext,
   type TransformerEvent,
 } from "@mendpoint/transformer";
+import {
+  assessTransformerGate,
+  type TransformerGateBoundary,
+  type TransformerGateDecision,
+} from "@mendpoint/ops";
 import type { ApiEnv } from "./auth.js";
 
 const DB_ENV = "MENDPOINT_TRANSFORMER_CONTROL_PLANE_DB";
@@ -27,6 +32,11 @@ const CAMPAIGN_STATES = new Set<CampaignState>([
 ]);
 
 type JsonRecord = Record<string, unknown>;
+
+export type TransformerGateRuntime = Readonly<{
+  rawConfig?: string;
+  environment?: string;
+}>;
 
 export type TransformerMutationRequest = Readonly<{
   tenantId: string;
@@ -552,9 +562,45 @@ async function json(c: Context<ApiEnv>): Promise<unknown> {
 export function registerTransformerControlPlaneRoutes(
   app: Hono<ApiEnv>,
   service: TransformerCampaignService,
+  gateRuntime: TransformerGateRuntime = {},
 ): void {
+  const gate = (c: Context<ApiEnv>, boundary: TransformerGateBoundary): TransformerGateDecision => {
+    const principal = c.get("principal");
+    if (!principal) throw new Error("authenticated_principal_required");
+    return assessTransformerGate(
+      {
+        tenantId: principal.tenantId,
+        environment: gateRuntime.environment ?? process.env.MENDPOINT_TRANSFORMER_ENVIRONMENT ?? "",
+        boundary,
+      },
+      gateRuntime.rawConfig ?? process.env.MENDPOINT_TRANSFORMER_GATE,
+    );
+  };
+  const requireGate = (c: Context<ApiEnv>): Response | undefined => {
+    const decision = gate(c, "api_control_plane");
+    if (decision.allowed) return undefined;
+    return c.json(
+      {
+        error: "transformer_experimental_gate_denied",
+        message: "Transformer is unavailable for this tenant and environment",
+        gate: decision,
+      },
+      403,
+    );
+  };
+
+  app.get("/transformer/gate", (c) => {
+    try {
+      return c.json({ gate: gate(c, "ui") });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+
   app.post("/transformer/control-plane/campaigns", async (c) => {
     try {
+      const denied = requireGate(c);
+      if (denied) return denied;
       const result = service.createBundle(requestMetadata(c), await json(c));
       c.header("Location", `/transformer/control-plane/campaigns/${(result as { campaign: { id: string } }).campaign.id}`);
       return c.json(result, 201);
@@ -565,6 +611,8 @@ export function registerTransformerControlPlaneRoutes(
 
   app.get("/transformer/control-plane/campaigns/:campaignId", (c) => {
     try {
+      const denied = requireGate(c);
+      if (denied) return denied;
       const principal = c.get("principal");
       if (!principal) throw new Error("authenticated_principal_required");
       return c.json(service.get(principal.tenantId, c.req.param("campaignId")));
@@ -573,8 +621,24 @@ export function registerTransformerControlPlaneRoutes(
     }
   });
 
+  app.get("/transformer/control-plane/campaigns/:campaignId/events", (c) => {
+    try {
+      const denied = requireGate(c);
+      if (denied) return denied;
+      const principal = c.get("principal");
+      if (!principal) throw new Error("authenticated_principal_required");
+      const campaignId = c.req.param("campaignId");
+      service.get(principal.tenantId, campaignId);
+      return c.json({ events: sanitize(service.events(principal.tenantId, campaignId)) });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+
   app.post("/transformer/control-plane/campaigns/:campaignId/review", async (c) => {
     try {
+      const denied = requireGate(c);
+      if (denied) return denied;
       const input = record(await json(c), "review_required");
       return c.json(
         service.reviewToReady(requestMetadata(c), c.req.param("campaignId"), {
@@ -590,6 +654,8 @@ export function registerTransformerControlPlaneRoutes(
 
   app.post("/transformer/control-plane/campaigns/:campaignId/transitions", async (c) => {
     try {
+      const denied = requireGate(c);
+      if (denied) return denied;
       const input = record(await json(c), "transition_required");
       const state = requiredString(input.state, "campaign_state_invalid") as CampaignState;
       return c.json(
@@ -607,6 +673,8 @@ export function registerTransformerControlPlaneRoutes(
 
   app.post("/transformer/control-plane/campaigns/:campaignId/exceptions", async (c) => {
     try {
+      const denied = requireGate(c);
+      if (denied) return denied;
       return c.json(
         service.createException(requestMetadata(c), c.req.param("campaignId"), await json(c)),
         201,

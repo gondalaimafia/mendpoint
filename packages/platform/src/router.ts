@@ -8,6 +8,28 @@ export type DataClassification =
 
 export type TaskRisk = "low" | "medium" | "high" | "critical";
 
+export const ROUTER_FAILURE_CODES = Object.freeze([
+  "timeout",
+  "rate_limited",
+  "provider_unavailable",
+  "executor_unavailable",
+  "tool_denied",
+  "invalid_request",
+  "invalid_output",
+  "verification_failed",
+  "security_violation",
+  "budget_exhausted",
+  "cancelled",
+] as const);
+
+export type RouterFailureCode = (typeof ROUTER_FAILURE_CODES)[number];
+export type ExecutorKind =
+  | "deterministic_recipe"
+  | "adapter"
+  | "local_model"
+  | "open_model"
+  | "frontier_model";
+
 export type RouterTaskSpec = Readonly<{
   taskId: string;
   tenantId: string;
@@ -16,6 +38,23 @@ export type RouterTaskSpec = Readonly<{
   idempotencyKey: string;
   inputArtifactIds: readonly string[];
   requiredCapabilities: readonly string[];
+  allowedTools: readonly string[];
+  context: Readonly<{
+    estimatedInputTokens: number;
+    maximumOutputTokens: number;
+  }>;
+  verification: Readonly<{
+    requiredChecks: readonly string[];
+    requireAll: true;
+    onFailure: "human_handoff" | "eligible_fallback";
+  }>;
+  fallbackPolicy: Readonly<{
+    enabled: boolean;
+    maxAttempts: number;
+    sameExecutorRetries: number;
+    retryableFailures: readonly RouterFailureCode[];
+    fallbackFailures: readonly RouterFailureCode[];
+  }>;
   privacy: Readonly<{
     classification: DataClassification;
     requiredRegion?: string;
@@ -47,9 +86,32 @@ export type RouterPolicySnapshot = Readonly<{
 export type ExecutorDescriptor = Readonly<{
   executorId: string;
   providerId: string;
+  kind: ExecutorKind;
+  version: string;
   deployment: "internal" | "external";
   capabilities: readonly string[];
+  tools: readonly string[];
   regions: readonly string[];
+  price: Readonly<{
+    version: string;
+    currency: string;
+    effectiveAt: string;
+  }>;
+  limits: Readonly<{
+    maximumInputTokens: number;
+    maximumOutputTokens: number;
+    maximumConcurrentTasks: number;
+  }>;
+  health: Readonly<{
+    status: "healthy" | "degraded" | "unavailable";
+    checkedAt: string;
+    evidenceRef: string;
+  }>;
+  license: Readonly<{
+    id: string;
+    commercialUse: boolean;
+    redistribution: "allowed" | "restricted" | "not_applicable";
+  }>;
   maximumDataClassification: DataClassification;
   maximumRisk: TaskRisk;
   qualityScore: number;
@@ -201,6 +263,10 @@ export type ExecutorAvailability = Readonly<{
 
 export type RoutingExclusionReason =
   | "capability_missing"
+  | "tool_missing"
+  | "hard_limit_exceeded"
+  | "executor_unhealthy"
+  | "license_disallowed"
   | "privacy_disallowed"
   | "region_disallowed"
   | "risk_disallowed"
@@ -212,6 +278,10 @@ export type RoutingExclusionReason =
 export type ExecutorEvaluation = Readonly<{
   executorId: string;
   providerId: string;
+  executorKind: ExecutorKind;
+  executorVersion: string;
+  priceVersion: string;
+  healthStatus: ExecutorDescriptor["health"]["status"];
   eligible: boolean;
   reasons: readonly RoutingExclusionReason[];
   executionRegion?: string;
@@ -225,6 +295,9 @@ const POLICY_BOUND_ROUTE: unique symbol = Symbol("policy-bound-route");
 export type PolicyBoundExecutorRoute = Readonly<{
   executorId: string;
   providerId: string;
+  executorKind: ExecutorKind;
+  executorVersion: string;
+  priceVersion: string;
   executionRegion: string;
   policySnapshotId: string;
   policyFingerprint: string;
@@ -247,7 +320,10 @@ export type HumanHandoffReason =
   | "high_risk"
   | "no_eligible_executor"
   | "budget_exhausted"
-  | "fallback_exhausted";
+  | "fallback_exhausted"
+  | "verification_failed"
+  | "retry_exhausted"
+  | "non_retryable_failure";
 
 export type HumanHandoff = Readonly<{
   action: "human_handoff";
@@ -464,6 +540,17 @@ function evaluateExecutor(
   ) {
     reasons.push("capability_missing");
   }
+  if (task.allowedTools.some((tool) => !executor.tools.includes(tool))) {
+    reasons.push("tool_missing");
+  }
+  if (
+    task.context.estimatedInputTokens > executor.limits.maximumInputTokens ||
+    task.context.maximumOutputTokens > executor.limits.maximumOutputTokens
+  ) {
+    reasons.push("hard_limit_exceeded");
+  }
+  if (executor.health.status === "unavailable") reasons.push("executor_unhealthy");
+  if (!executor.license.commercialUse) reasons.push("license_disallowed");
   if (
     !policy.privacy.allowedClassifications.includes(task.privacy.classification) ||
     classificationRank(executor.maximumDataClassification) <
@@ -504,6 +591,10 @@ function evaluateExecutor(
   return Object.freeze({
     executorId: executor.executorId,
     providerId: executor.providerId,
+    executorKind: executor.kind,
+    executorVersion: executor.version,
+    priceVersion: executor.price.version,
+    healthStatus: executor.health.status,
     eligible: reasons.length === 0,
     reasons: Object.freeze(reasons),
     executionRegion,
@@ -515,6 +606,8 @@ function evaluateExecutor(
 
 function compareEligible(a: ExecutorEvaluation, b: ExecutorEvaluation): number {
   return (
+    EXECUTOR_KIND_RANK[a.executorKind] - EXECUTOR_KIND_RANK[b.executorKind] ||
+    HEALTH_RANK[a.healthStatus] - HEALTH_RANK[b.healthStatus] ||
     b.expectedQualityScore - a.expectedQualityScore ||
     a.expectedCostUsd - b.expectedCostUsd ||
     a.expectedLatencyMs - b.expectedLatencyMs ||
@@ -549,6 +642,9 @@ function bindRoute(
   return Object.freeze({
     executorId: evaluation.executorId,
     providerId: evaluation.providerId,
+    executorKind: evaluation.executorKind,
+    executorVersion: evaluation.executorVersion,
+    priceVersion: evaluation.priceVersion,
     executionRegion: evaluation.executionRegion,
     policySnapshotId,
     policyFingerprint,
@@ -655,6 +751,27 @@ function validateTask(task: RouterTaskSpec): void {
   if (!(task.risk in RISK_RANK)) throw new Error("Task risk is invalid");
   validateStringList(task.inputArtifactIds, "task artifacts");
   validateStringList(task.requiredCapabilities, "task capabilities");
+  validateStringList(task.allowedTools, "task tools");
+  validateStringList(task.verification.requiredChecks, "task verification checks");
+  if (!task.verification.requiredChecks.length || task.verification.requireAll !== true ||
+    !["human_handoff", "eligible_fallback"].includes(task.verification.onFailure)) {
+    throw new Error("Task verification policy is invalid");
+  }
+  validatePositiveInteger(task.context.estimatedInputTokens, "task input token limit", true);
+  validatePositiveInteger(task.context.maximumOutputTokens, "task output token limit");
+  if (
+    typeof task.fallbackPolicy.enabled !== "boolean" ||
+    !Number.isInteger(task.fallbackPolicy.maxAttempts) ||
+    task.fallbackPolicy.maxAttempts < 1 ||
+    task.fallbackPolicy.maxAttempts > 10 ||
+    !Number.isInteger(task.fallbackPolicy.sameExecutorRetries) ||
+    task.fallbackPolicy.sameExecutorRetries < 0 ||
+    task.fallbackPolicy.sameExecutorRetries >= task.fallbackPolicy.maxAttempts
+  ) {
+    throw new Error("Task fallback policy is invalid");
+  }
+  validateFailureCodes(task.fallbackPolicy.retryableFailures, "task retry failures");
+  validateFailureCodes(task.fallbackPolicy.fallbackFailures, "task fallback failures");
   if (task.privacy.requiredRegion !== undefined && !task.privacy.requiredRegion.trim()) {
     throw new Error("Task region is invalid");
   }
@@ -697,12 +814,30 @@ function validateExecutor(executor: ExecutorDescriptor): void {
   if (executor.deployment !== "internal" && executor.deployment !== "external") {
     throw new Error("Executor deployment is invalid");
   }
+  if (!(executor.kind in EXECUTOR_KIND_RANK) || !executor.version?.trim()) {
+    throw new Error("Executor kind or version is invalid");
+  }
   if (!(executor.maximumDataClassification in CLASSIFICATION_RANK)) {
     throw new Error("Executor data classification is invalid");
   }
   if (!(executor.maximumRisk in RISK_RANK)) throw new Error("Executor risk is invalid");
   validateStringList(executor.capabilities, "executor capabilities");
+  validateStringList(executor.tools, "executor tools");
   validateStringList(executor.regions, "executor regions");
+  if (!executor.price.version?.trim() || !/^[A-Z]{3}$/.test(executor.price.currency) || !Number.isFinite(Date.parse(executor.price.effectiveAt))) {
+    throw new Error("Executor price metadata is invalid");
+  }
+  validatePositiveInteger(executor.limits.maximumInputTokens, "executor input token limit");
+  validatePositiveInteger(executor.limits.maximumOutputTokens, "executor output token limit");
+  validatePositiveInteger(executor.limits.maximumConcurrentTasks, "executor concurrency limit");
+  if (!(["healthy", "degraded", "unavailable"] as const).includes(executor.health.status) ||
+    !Number.isFinite(Date.parse(executor.health.checkedAt)) || !executor.health.evidenceRef?.trim()) {
+    throw new Error("Executor health metadata is invalid");
+  }
+  if (!executor.license.id?.trim() || typeof executor.license.commercialUse !== "boolean" ||
+    !(["allowed", "restricted", "not_applicable"] as const).includes(executor.license.redistribution)) {
+    throw new Error("Executor license metadata is invalid");
+  }
   validateScore(executor.qualityScore, "executor quality");
   validateNonNegative(executor.estimatedLatencyMs, "executor latency");
   validateNonNegative(executor.estimatedCostUsd, "executor cost");
@@ -727,13 +862,45 @@ function validateNonNegative(value: number, label: string): void {
   }
 }
 
+function validatePositiveInteger(value: number, label: string, allowZero = false): void {
+  if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1)) {
+    throw new Error(`${label} is invalid`);
+  }
+}
+
+function validateFailureCodes(values: readonly RouterFailureCode[], label: string): void {
+  validateStringList(values, label);
+  if (values.some((value) => !ROUTER_FAILURE_CODES.includes(value))) {
+    throw new Error(`${label} are invalid`);
+  }
+}
+
 function freezeExecutor(executor: ExecutorDescriptor): ExecutorDescriptor {
   return Object.freeze({
     ...executor,
     capabilities: Object.freeze([...executor.capabilities]),
+    tools: Object.freeze([...executor.tools]),
     regions: Object.freeze([...executor.regions]),
+    price: Object.freeze({ ...executor.price }),
+    limits: Object.freeze({ ...executor.limits }),
+    health: Object.freeze({ ...executor.health }),
+    license: Object.freeze({ ...executor.license }),
   });
 }
+
+const EXECUTOR_KIND_RANK: Record<ExecutorKind, number> = {
+  deterministic_recipe: 0,
+  adapter: 1,
+  local_model: 2,
+  open_model: 3,
+  frontier_model: 4,
+};
+
+const HEALTH_RANK: Record<ExecutorDescriptor["health"]["status"], number> = {
+  healthy: 0,
+  degraded: 1,
+  unavailable: 2,
+};
 
 const RISK_RANK: Record<TaskRisk, number> = {
   low: 0,

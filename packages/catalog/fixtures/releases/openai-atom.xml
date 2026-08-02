@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>OpenAI API changelog</title>
+  <entry>
+    <id>urn:openai:release:responses-2026-08-01</id>
+    <title>Responses API field update</title>
+    <link href="https://platform.openai.com/docs/changelog/responses-2026-08-01" />
+    <updated>2026-08-01T12:00:00Z</updated>
+    <summary>Replace max_tokens with max_output_tokens.</summary>
+  </entry>
+</feed>

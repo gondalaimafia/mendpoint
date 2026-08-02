@@ -19,6 +19,9 @@ function validInput(): StructuredPrPackageV1Input {
     tenantId: TENANT,
     pullRequestId: "pr-1",
     createdAt: "2026-08-01T18:30:00.000Z",
+    summary: "Rename the deprecated payment field.",
+    rationale: "The provider removed the old request field in the approved target version.",
+    risks: ["The request payload may change at runtime."],
     source: {
       artifacts: [
         { tenantId: TENANT, id: "source-from" },
@@ -29,6 +32,7 @@ function validInput(): StructuredPrPackageV1Input {
       tenantId: TENANT,
       snapshotId: "snapshot-1",
       repositoryId: "repository-1",
+      revisionKind: "git_commit",
       resolvedSha: SHA,
       manifestSha256: DIGEST_A,
     },
@@ -60,6 +64,9 @@ function validInput(): StructuredPrPackageV1Input {
       evidenceRecordIds: ["evidence-post", "evidence-rollback"],
       verdict: "passed",
       waiverArtifactId: null,
+      results: [
+        { checkId: "contract-suite", status: "passed", evidenceRecordIds: ["evidence-post"] },
+      ],
     },
     generation: {
       kind: "recipe",
@@ -89,7 +96,9 @@ function validInput(): StructuredPrPackageV1Input {
       artifactId: "rollback-plan-1",
       strategy: "restore_snapshot",
       verificationEvidenceRecordIds: ["evidence-rollback"],
+      instructions: "Close the draft and restore the recorded repository snapshot.",
     },
+    delivery: { mode: "draft", autoMerge: false, autoDeploy: false },
   };
 }
 
@@ -150,9 +159,13 @@ describe("StructuredPrPackageV1", () => {
       snapshot: second.snapshot,
       source: { artifacts: [...second.source.artifacts].reverse() },
       createdAt: second.createdAt,
+      risks: [...second.risks].reverse(),
+      rationale: second.rationale,
+      summary: second.summary,
       pullRequestId: second.pullRequestId,
       tenantId: second.tenantId,
       packageId: second.packageId,
+      delivery: second.delivery,
     } satisfies StructuredPrPackageV1Input;
 
     expect(canonicalStructuredPrPackageDigest(first)).toBe(
@@ -174,6 +187,7 @@ describe("StructuredPrPackageV1", () => {
     "ownership",
     "review",
     "rollback",
+    "delivery",
   ] as const)("rejects a package missing its %s link", (field) => {
     const incomplete = structuredClone(validInput()) as Record<string, unknown>;
     delete incomplete[field];
@@ -271,5 +285,35 @@ describe("StructuredPrPackageV1", () => {
         issues: expect.arrayContaining([expect.objectContaining({ code: "INTEGRITY_INVALID" })]),
       }),
     );
+  });
+
+  it("requires explicit snapshot revision provenance", () => {
+    const missing = structuredClone(validInput()) as any;
+    delete missing.snapshot.revisionKind;
+    expect(() => createStructuredPrPackageV1(missing)).toThrow("snapshot revision kind is invalid");
+
+    const manifest = structuredClone(validInput()) as any;
+    manifest.snapshot.revisionKind = "content_manifest";
+    manifest.snapshot.resolvedSha = "c".repeat(64);
+    expect(() => createStructuredPrPackageV1(manifest)).not.toThrow();
+  });
+
+  it("fails closed when narrative, verification details, or draft-only controls are missing", () => {
+    for (const field of ["summary", "rationale", "risks"] as const) {
+      const invalid = structuredClone(validInput()) as any;
+      delete invalid[field];
+      expect(() => createStructuredPrPackageV1(invalid)).toThrowError(
+        expect.objectContaining({ name: "StructuredPrPackageValidationError" }),
+      );
+    }
+
+    const missingResults = structuredClone(validInput()) as any;
+    missingResults.verification.results = [];
+    expect(() => createStructuredPrPackageV1(missingResults)).toThrow("verification results are required");
+
+    const unsafe = structuredClone(validInput()) as any;
+    unsafe.delivery.autoMerge = true;
+    unsafe.delivery.autoDeploy = true;
+    expect(() => createStructuredPrPackageV1(unsafe)).toThrow("automatic merge is forbidden");
   });
 });

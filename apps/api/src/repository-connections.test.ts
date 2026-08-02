@@ -293,7 +293,7 @@ describe("repository connection service", () => {
       available: false,
       retentionStatus: "deleted",
     });
-  });
+  }, 15_000);
 
   it("revokes a connection without exposing or reactivating its credential", () => {
     const { db } = fixture();

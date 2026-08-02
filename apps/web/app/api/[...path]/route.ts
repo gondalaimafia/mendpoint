@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   authenticatedWebSubject,
   isAllowedMutationOrigin,
@@ -37,11 +37,17 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["GET", /^jobs\/[^/]+$/],
     ["GET", /^recovery\/summary$/],
     ["GET", /^billing\/usage$/],
+    ["GET", /^billing\/config$/],
     ["GET", /^github\/app\/install-url$/],
     ["GET", /^design-partner-applications$/],
     ["GET", /^design-partner-applications\/[^/]+$/],
+    ["GET", /^pilot-success-contracts$/],
+    ["GET", /^pilot-success-contracts\/[^/]+$/],
     ["GET", /^graph\//],
     ["GET", /^prs\/[^/]+\/reviews$/],
+    ["GET", /^transformer\/gate$/],
+    ["GET", /^transformer\/control-plane\/campaigns\/[^/]+$/],
+    ["GET", /^transformer\/control-plane\/campaigns\/[^/]+\/events$/],
     ["POST", /^tenants\/[^/]+\/plan$/],
     ["POST", /^brands\/[^/]+\/preview$/],
     ["POST", /^agent\/runs$/],
@@ -58,6 +64,11 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["POST", /^design-partner-applications\/[^/]+\/reveals$/],
     ["POST", /^design-partner-applications\/[^/]+\/erasures$/],
     ["POST", /^design-partner-applications\/retention-purges$/],
+    ["POST", /^pilot-success-contracts$/],
+    ["POST", /^pilot-success-contracts\/[^/]+\/revisions$/],
+    ["POST", /^pilot-success-contracts\/[^/]+\/versions\/\d+\/approvals$/],
+    ["POST", /^transformer\/control-plane\/campaigns$/],
+    ["POST", /^transformer\/control-plane\/campaigns\/[^/]+\/(?:review|transitions|exceptions)$/],
     ["PATCH", /^platform\/plans\/[^/]+$/],
   ];
   return rules.some(([allowedMethod, pattern]) =>
@@ -93,7 +104,14 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
   upstreamUrl.search = request.nextUrl.search;
 
   const headers = new Headers();
-  for (const name of ["accept", "content-type", "if-match", "if-none-match"]) {
+  for (const name of [
+    "accept",
+    "content-type",
+    "if-match",
+    "if-none-match",
+    "idempotency-key",
+    "x-mendpoint-evidence-refs",
+  ]) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
@@ -109,21 +127,6 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     return Response.json({ error: "proxy_api_key_not_configured" }, { status: 503 });
   }
   headers.set("Authorization", `Bearer ${apiKey}`);
-  const actorTimestamp = new Date().toISOString();
-  const actorCanonical = [
-    subject.operatorId,
-    actorTimestamp,
-    requestId,
-    request.method.toUpperCase(),
-    upstreamUrl.pathname,
-  ].join("\n");
-  const actorSignature = createHmac("sha256", apiKey)
-    .update(actorCanonical, "utf8")
-    .digest("hex");
-  headers.set("X-Mendpoint-Actor", subject.operatorId);
-  headers.set("X-Mendpoint-Actor-Timestamp", actorTimestamp);
-  headers.set("X-Mendpoint-Actor-Signature", actorSignature);
-
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   const requestBody = hasBody ? await request.arrayBuffer() : undefined;
   if (requestBody && requestBody.byteLength > MAX_REQUEST_BYTES) {

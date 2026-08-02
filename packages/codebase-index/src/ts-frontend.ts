@@ -52,8 +52,9 @@ export function extractWithTypescript(
   repoRoot: string,
   absPath: string,
   ts: typeof import("typescript"),
+  sourceText?: string,
 ): { functions: TsExtractedFunction[]; usages: TsApiUsage[]; imports: string[] } {
-  const text = readFileSync(absPath, "utf8");
+  const text = sourceText ?? readFileSync(absPath, "utf8");
   const rel = relative(repoRoot, absPath).replace(/\\/g, "/");
   const sf = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 

@@ -3,6 +3,7 @@
  * Offline-safe when URLs fail; supports npm registry JSON.
  */
 import { createHash } from "node:crypto";
+import { boundedConcurrency, mapWithConcurrency } from "./concurrency.js";
 
 export type SdkSignal = {
   ecosystem: "npm" | "pypi";
@@ -67,6 +68,8 @@ export const SDK_PROVIDER_MAP: Array<{ packageName: string; ecosystem: "npm"; pr
 export async function probeKnownSdks(opts?: {
   localOnly?: boolean;
   packages?: string[];
+  concurrency?: number;
+  probePackage?: (packageName: string) => Promise<SdkSignal>;
 }): Promise<SdkSignal[]> {
   if (opts?.localOnly) {
     return SDK_PROVIDER_MAP.map((m) => ({
@@ -84,10 +87,13 @@ export async function probeKnownSdks(opts?: {
   const list = opts?.packages
     ? SDK_PROVIDER_MAP.filter((m) => opts.packages!.includes(m.packageName))
     : SDK_PROVIDER_MAP;
-  const out: SdkSignal[] = [];
-  for (const m of list) {
-    const s = await probeNpmPackage(m.packageName);
-    out.push({ ...s, providerSlug: m.providerSlug });
-  }
-  return out;
+  const probe = opts?.probePackage ?? probeNpmPackage;
+  return mapWithConcurrency(
+    list,
+    boundedConcurrency(opts?.concurrency),
+    async (entry) => ({
+      ...(await probe(entry.packageName)),
+      providerSlug: entry.providerSlug,
+    }),
+  );
 }

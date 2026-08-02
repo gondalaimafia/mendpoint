@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -14,11 +14,13 @@ import {
   claimNextJob,
   completeJob,
   createDb,
+  enqueueJob,
   failJob,
   renewJobLease,
   findMonorepoRoot,
   getConsumer,
   getConsumerRepo,
+  getJob,
   getJobRecoverySummary,
   insertAgentRun,
   insertRepairSession,
@@ -28,7 +30,12 @@ import {
   listVersionsForProvider,
   type AppDb,
 } from "@mendpoint/db";
-import { listCatalogFeeds, pollAllFeeds, probeKnownSdks } from "@mendpoint/catalog";
+import {
+  listCatalogFeeds,
+  pollAllFeeds,
+  probeKnownSdks,
+  runFeedSchedules,
+} from "@mendpoint/catalog";
 import { nowIso } from "@mendpoint/shared";
 import { runWarden } from "@mendpoint/agent";
 import { runRepairSession } from "@mendpoint/repair";
@@ -99,6 +106,78 @@ export function retryDelayMs(
 ): number {
   const exponent = Math.max(0, Math.min(consecutiveFailures - 1, 8));
   return Math.min(maxMs, baseMs * 2 ** exponent);
+}
+
+export function feedPipelineJobId(input: {
+  tenantId: string;
+  providerSlug: string;
+  contentHash: string;
+  versionId?: string;
+}): string {
+  const digest = createHash("sha256")
+    .update(
+      `${input.tenantId}\n${input.providerSlug}\n${input.contentHash}\n${input.versionId ?? ""}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return `feed_pipeline_${digest}`;
+}
+
+export function enqueueFeedPipelineJob(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    providerSlug: string;
+    contentHash: string;
+    versionId?: string;
+  },
+): string {
+  const id = feedPipelineJobId(input);
+  const payload = {
+    providerSlug: input.providerSlug,
+    source: "feed",
+    contentHash: input.contentHash,
+    versionId: input.versionId,
+  };
+  const existing = getJob(db, id, input.tenantId);
+  if (existing) {
+    if (
+      existing.type !== "pipeline.fanout" ||
+      existing.payload_json !== JSON.stringify(payload)
+    ) {
+      throw new Error("Feed pipeline job idempotency collision");
+    }
+    return id;
+  }
+  try {
+    enqueueJob(db, {
+      id,
+      tenantId: input.tenantId,
+      type: "pipeline.fanout",
+      payload,
+      createdAt: nowIso(),
+    });
+  } catch (error) {
+    const replay = getJob(db, id, input.tenantId);
+    if (
+      !replay ||
+      replay.type !== "pipeline.fanout" ||
+      replay.payload_json !== JSON.stringify(payload)
+    ) {
+      throw error;
+    }
+  }
+  return id;
+}
+
+export function startIndependentWorkerLanes<TFeed, TJobs>(input: {
+  feeds: () => Promise<TFeed>;
+  jobs: () => Promise<TJobs>;
+}): { feeds: Promise<TFeed>; jobs: Promise<TJobs> } {
+  return {
+    feeds: Promise.resolve().then(input.feeds),
+    jobs: Promise.resolve().then(input.jobs),
+  };
 }
 
 function classifyJobFailure(error: unknown): {
@@ -273,32 +352,47 @@ async function runFeedPoll(opts: {
   db: AppDb;
   localOnly: boolean;
   runPipeline: boolean;
+  enqueuePipeline?: boolean;
   slugs?: string[];
 }) {
   const root = findMonorepoRoot();
+  const tenantId = process.env.MENDPOINT_TENANT_ID ?? "tenant_default";
   const results = await pollAllFeeds({
     db: opts.db,
-    tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+    tenantId,
     monorepoRoot: root,
     localOnly: opts.localOnly,
     runPipeline: opts.runPipeline,
+    concurrency: Number(process.env.MENDPOINT_FEED_CONCURRENCY ?? 4),
     slugs: opts.slugs,
-    pipeline: async (slug, database) => {
-      const report = await runChangePipeline({
-        tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
-        providerSlug: slug,
-        db: database,
-      });
-      return { changeId: report.changeId };
-    },
+    pipeline: opts.enqueuePipeline
+      ? async (slug, database, context) => ({
+          jobId: enqueueFeedPipelineJob(database, {
+            tenantId,
+            providerSlug: slug,
+            contentHash: context.contentHash,
+            versionId: context.versionId,
+          }),
+        })
+      : async (slug, database) => {
+          const report = await runChangePipeline({
+            tenantId,
+            providerSlug: slug,
+            db: database,
+          });
+          return { changeId: report.changeId };
+        },
   });
   for (const result of results) {
     const extra = result.error ? ` err=${result.error}` : "";
     console.log(
-      `  ${result.slug}: ${result.status}${result.versionLabel ? ` v=${result.versionLabel}` : ""}${result.changeId ? ` change=${result.changeId}` : ""}${extra}`,
+      `  ${result.slug}: ${result.status}${result.versionLabel ? ` v=${result.versionLabel}` : ""}${result.changeId ? ` change=${result.changeId}` : ""}${result.jobId ? ` job=${result.jobId}` : ""}${extra}`,
     );
   }
-  const signals = await probeKnownSdks({ localOnly: opts.localOnly });
+  const signals = await probeKnownSdks({
+    localOnly: opts.localOnly,
+    concurrency: Number(process.env.MENDPOINT_SDK_CONCURRENCY ?? 4),
+  });
   console.log(
     `  sdk signals: ${signals.map((signal) => `${signal.packageName}@${signal.latestVersion ?? "?"}`).join(", ")}`,
   );
@@ -712,12 +806,13 @@ async function runJobWorker(intervalMs: number) {
 }
 
 async function runService(intervalMs: number) {
-  const db = createDb();
+  const feedDb = createDb();
+  const jobDb = createDb();
+  const heartbeatDb = createDb();
   const heartbeatPath = process.env.MENDPOINT_WORKER_HEARTBEAT_PATH;
   if (!heartbeatPath) {
     throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH is required for run-service");
   }
-  let failures = 0;
   let feedPollingEnabled = process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
   let feedPollOk = true;
   let jobs: JobDrainResult = {
@@ -730,7 +825,7 @@ async function runService(intervalMs: number) {
   const tenantId = process.env.MENDPOINT_TENANT_ID ?? "tenant_default";
   const emitHeartbeat = () => {
     try {
-      const recovery = getJobRecoverySummary(db, tenantId);
+      const recovery = getJobRecoverySummary(heartbeatDb, tenantId);
       writeWorkerHeartbeat(heartbeatPath, {
         ok: true,
         workerId: WORKER_ID,
@@ -757,45 +852,82 @@ async function runService(intervalMs: number) {
     Math.max(1_000, Math.min(intervalMs, 5_000)),
   );
   heartbeatTimer.unref();
-  for (;;) {
-    feedPollingEnabled = process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
-    feedPollOk = true;
-    if (feedPollingEnabled) {
+
+  const runFeedLane = async () => {
+    let failures = 0;
+    for (;;) {
+      feedPollingEnabled = process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
+      feedPollOk = true;
+      if (feedPollingEnabled) {
+        try {
+          const scheduled = await runFeedSchedules({
+            db: feedDb,
+            tenantId,
+            defaultIntervalMs: parseIntervalMs(process.env.POLL_INTERVAL_MS, intervalMs),
+            defaultStaleAfterMs: Number(process.env.POLL_STALE_AFTER_MS ?? intervalMs * 2),
+            maxConcurrency: Number(process.env.MENDPOINT_FEED_CONCURRENCY ?? 4),
+            localOnly: process.env.POLL_LOCAL_ONLY === "1",
+            runPipeline: true,
+            pipeline: async (slug, database, context) => ({
+              jobId: enqueueFeedPipelineJob(database, {
+                tenantId,
+                providerSlug: slug,
+                contentHash: context.contentHash,
+                versionId: context.versionId,
+              }),
+            }),
+          });
+          feedPollOk = scheduled.failed === 0 && scheduled.health.ok;
+          console.log(
+            `Feed schedules: claimed=${scheduled.claimed} succeeded=${scheduled.succeeded} failed=${scheduled.failed} replayed=${scheduled.alreadyClaimed} health=${scheduled.health.status}`,
+          );
+        } catch (error) {
+          feedPollOk = false;
+          console.error(error);
+        }
+      }
+      failures = feedPollOk ? 0 : failures + 1;
+      emitHeartbeat();
+      const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
+      await new Promise((resolveSleep) => setTimeout(resolveSleep, delay));
+    }
+  };
+
+  const runJobLane = async () => {
+    let failures = 0;
+    for (;;) {
+      jobs = {
+        claimed: 0,
+        succeeded: 0,
+        failed: 0,
+        retried: 0,
+      };
       try {
-        const feedResults = await runFeedPoll({
-          db,
-          localOnly: process.env.POLL_LOCAL_ONLY === "1",
-          runPipeline: true,
+        jobs = await processJobsOnce(jobDb, {
+          onActiveJob: (job) => {
+            activeJob = job;
+            emitHeartbeat();
+          },
         });
-        feedPollOk = feedResults.every((result) => result.status !== "error");
       } catch (error) {
-        feedPollOk = false;
+        jobs.failed++;
         console.error(error);
       }
+      failures = jobs.failed === 0 ? 0 : failures + 1;
+      emitHeartbeat();
+      const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
+      await new Promise((resolveSleep) => setTimeout(resolveSleep, delay));
     }
+  };
 
-    jobs = {
-      claimed: 0,
-      succeeded: 0,
-      failed: 0,
-      retried: 0,
-    };
-    try {
-      jobs = await processJobsOnce(db, {
-        onActiveJob: (job) => {
-          activeJob = job;
-          emitHeartbeat();
-        },
-      });
-    } catch (error) {
-      jobs.failed++;
-      console.error(error);
-    }
-    const healthy = feedPollOk && jobs.failed === 0;
-    failures = healthy ? 0 : failures + 1;
-    emitHeartbeat();
-    const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
-    await new Promise((resolveSleep) => setTimeout(resolveSleep, delay));
+  const lanes = startIndependentWorkerLanes({
+    feeds: runFeedLane,
+    jobs: runJobLane,
+  });
+  try {
+    await Promise.all([lanes.feeds, lanes.jobs]);
+  } finally {
+    clearInterval(heartbeatTimer);
   }
 }
 

@@ -7,7 +7,7 @@
  * changing the Impact pipeline contract.
  */
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, lstatSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, relative, dirname, basename } from "node:path";
 import {
   buildCallGraph,
@@ -79,19 +79,202 @@ export type CodebaseIndex = {
   callGraph: CallGraph;
 };
 
+export type CodebaseIndexLimits = Readonly<{
+  maxFiles: number;
+  maxTotalBytes: number;
+  maxFileBytes: number;
+  maxTraversalDepth: number;
+}>;
 
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name === ".git" || name === "dist" || name === ".next") continue;
+export type CodebaseIndexOptions = Readonly<{
+  callGraph?: CallGraph;
+  limits?: Partial<CodebaseIndexLimits>;
+}>;
+
+export type CodebaseIndexSafetyCode =
+  | "codebase_index_limits_invalid"
+  | "codebase_index_symlink_not_allowed"
+  | "codebase_index_file_count_limit"
+  | "codebase_index_total_bytes_limit"
+  | "codebase_index_file_bytes_limit"
+  | "codebase_index_traversal_depth_limit"
+  | "codebase_index_file_changed_during_index";
+
+export class CodebaseIndexSafetyError extends Error {
+  readonly code: CodebaseIndexSafetyCode;
+  readonly diagnostic: Readonly<{
+    path: string;
+    limit?: number;
+    actual?: number;
+  }>;
+
+  constructor(
+    code: CodebaseIndexSafetyCode,
+    diagnostic: { path: string; limit?: number; actual?: number },
+  ) {
+    super(code);
+    this.name = "CodebaseIndexSafetyError";
+    this.code = code;
+    this.diagnostic = Object.freeze({ ...diagnostic });
+  }
+}
+
+export const DEFAULT_CODEBASE_INDEX_LIMITS: CodebaseIndexLimits = Object.freeze({
+  maxFiles: 50_000,
+  maxTotalBytes: 1_073_741_824,
+  maxFileBytes: 5_242_880,
+  maxTraversalDepth: 64,
+});
+
+type DiscoveredFile = {
+  abs: string;
+  rel: string;
+  size: number;
+  text?: string;
+  contentHash?: string;
+};
+
+type DiscoveryUsage = { files: number; totalBytes: number };
+
+const IGNORED_DIRECTORIES = new Set(["node_modules", ".git", "dist", ".next"]);
+
+function normalizedLimits(input?: Partial<CodebaseIndexLimits>): CodebaseIndexLimits {
+  const limits = { ...DEFAULT_CODEBASE_INDEX_LIMITS, ...input };
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new CodebaseIndexSafetyError("codebase_index_limits_invalid", {
+        path: name,
+        actual: value,
+      });
+    }
+  }
+  return Object.freeze(limits);
+}
+
+function relativePath(repoRoot: string, path: string): string {
+  const rel = relative(repoRoot, path).replace(/\\/g, "/");
+  return rel || ".";
+}
+
+function fail(
+  code: CodebaseIndexSafetyCode,
+  repoRoot: string,
+  path: string,
+  limit?: number,
+  actual?: number,
+): never {
+  throw new CodebaseIndexSafetyError(code, {
+    path: relativePath(repoRoot, path),
+    ...(limit === undefined ? {} : { limit }),
+    ...(actual === undefined ? {} : { actual }),
+  });
+}
+
+function accountFile(
+  repoRoot: string,
+  path: string,
+  size: number,
+  limits: CodebaseIndexLimits,
+  usage: DiscoveryUsage,
+): void {
+  if (size > limits.maxFileBytes) {
+    fail("codebase_index_file_bytes_limit", repoRoot, path, limits.maxFileBytes, size);
+  }
+  const files = usage.files + 1;
+  if (files > limits.maxFiles) {
+    fail("codebase_index_file_count_limit", repoRoot, path, limits.maxFiles, files);
+  }
+  const totalBytes = usage.totalBytes + size;
+  if (!Number.isSafeInteger(totalBytes) || totalBytes > limits.maxTotalBytes) {
+    fail("codebase_index_total_bytes_limit", repoRoot, path, limits.maxTotalBytes, totalBytes);
+  }
+  usage.files = files;
+  usage.totalBytes = totalBytes;
+}
+
+function assertRegularFile(
+  repoRoot: string,
+  path: string,
+  expectedSize: number | undefined,
+  limits: CodebaseIndexLimits,
+): number {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) {
+    fail("codebase_index_symlink_not_allowed", repoRoot, path);
+  }
+  if (!stat.isFile()) {
+    fail("codebase_index_file_changed_during_index", repoRoot, path);
+  }
+  if (stat.size > limits.maxFileBytes) {
+    fail("codebase_index_file_bytes_limit", repoRoot, path, limits.maxFileBytes, stat.size);
+  }
+  if (expectedSize !== undefined && stat.size !== expectedSize) {
+    fail("codebase_index_file_changed_during_index", repoRoot, path, expectedSize, stat.size);
+  }
+  return stat.size;
+}
+
+function readDiscoveredFile(
+  repoRoot: string,
+  file: DiscoveredFile,
+  limits: CodebaseIndexLimits,
+): string {
+  assertRegularFile(repoRoot, file.abs, file.size, limits);
+  return readFileSync(file.abs, "utf8");
+}
+
+function walk(
+  repoRoot: string,
+  dir: string,
+  limits: CodebaseIndexLimits,
+  usage: DiscoveryUsage,
+  depth = 0,
+  out: DiscoveredFile[] = [],
+): DiscoveredFile[] {
+  for (const name of readdirSync(dir).sort()) {
+    if (IGNORED_DIRECTORIES.has(name)) continue;
     const p = join(dir, name);
-    const st = statSync(p);
-    if (st.isDirectory()) walk(p, out);
-    else {
+    const st = lstatSync(p);
+    if (st.isSymbolicLink()) {
+      fail("codebase_index_symlink_not_allowed", repoRoot, p);
+    }
+    if (st.isDirectory()) {
+      const nextDepth = depth + 1;
+      if (nextDepth > limits.maxTraversalDepth) {
+        fail("codebase_index_traversal_depth_limit", repoRoot, p, limits.maxTraversalDepth, nextDepth);
+      }
+      walk(repoRoot, p, limits, usage, nextDepth, out);
+    } else if (st.isFile()) {
       const ext = name.includes(".") ? `.${name.split(".").pop()}` : "";
-      if (CODE_EXTS.has(ext)) out.push(p);
+      if (CODE_EXTS.has(ext)) {
+        accountFile(repoRoot, p, st.size, limits, usage);
+        out.push({ abs: p, rel: relativePath(repoRoot, p), size: st.size });
+      }
     }
   }
   return out;
+}
+
+function discoverFiles(
+  repoRoot: string,
+  limits: CodebaseIndexLimits,
+): { files: DiscoveredFile[]; usage: DiscoveryUsage } {
+  const rootStat = lstatSync(repoRoot);
+  if (rootStat.isSymbolicLink()) {
+    fail("codebase_index_symlink_not_allowed", repoRoot, repoRoot);
+  }
+  if (!rootStat.isDirectory()) {
+    fail("codebase_index_file_changed_during_index", repoRoot, repoRoot);
+  }
+  const usage: DiscoveryUsage = { files: 0, totalBytes: 0 };
+  const files = walk(repoRoot, repoRoot, limits, usage);
+  for (const manifest of ["package.json", "requirements.txt", "go.mod", "Gemfile"]) {
+    const path = join(repoRoot, manifest);
+    if (!existsSync(path)) continue;
+    const size = assertRegularFile(repoRoot, path, undefined, limits);
+    accountFile(repoRoot, path, size, limits, usage);
+  }
+  return { files, usage };
 }
 
 function langOf(file: string): FileRecord["language"] {
@@ -360,9 +543,19 @@ function extractApiUsages(
 
 export function buildIndex(
   repoRoot: string,
-  opts?: { callGraph?: CallGraph },
+  opts: CodebaseIndexOptions = {},
 ): CodebaseIndex {
-  const filesAbs = walk(repoRoot);
+  const limits = normalizedLimits(opts.limits);
+  const discovery = discoverFiles(repoRoot, limits);
+  return buildIndexFromDiscovered(repoRoot, opts, limits, discovery.files);
+}
+
+function buildIndexFromDiscovered(
+  repoRoot: string,
+  opts: CodebaseIndexOptions,
+  limits: CodebaseIndexLimits,
+  discoveredFiles: DiscoveredFile[],
+): CodebaseIndex {
   const files: FileRecord[] = [];
   const functions: IndexedFunction[] = [];
   const apiUsages: ApiUsageRecord[] = [];
@@ -374,9 +567,10 @@ export function buildIndex(
 
   const tsApi = loadTypescriptSync();
 
-  for (const abs of filesAbs) {
-    const rel = relative(repoRoot, abs).replace(/\\/g, "/");
-    const text = readFileSync(abs, "utf8");
+  for (const discovered of discoveredFiles) {
+    const abs = discovered.abs;
+    const rel = discovered.rel;
+    const text = discovered.text ?? readDiscoveredFile(repoRoot, discovered, limits);
     const language = langOf(rel);
     let imports = extractImports(text, language);
     let fns = extractFunctions(text, language);
@@ -384,7 +578,7 @@ export function buildIndex(
     // Phase B: prefer TypeScript compiler API for .ts/.tsx/.js when available
     if (tsApi && isTypescriptFile(rel)) {
       try {
-        const richer = extractWithTypescript(repoRoot, abs, tsApi);
+        const richer = extractWithTypescript(repoRoot, abs, tsApi, text);
         if (richer.imports.length) imports = [...new Set([...imports, ...richer.imports])];
         if (richer.functions.length) {
           // merge compiler functions with heuristic spans
@@ -428,7 +622,8 @@ export function buildIndex(
       language,
       isTest: isTestPath(rel),
       imports,
-      contentHash: createHash("sha256").update(text).digest("hex").slice(0, 16),
+      contentHash:
+        discovered.contentHash ?? createHash("sha256").update(text).digest("hex").slice(0, 16),
       lineCount: text.split(/\r?\n/).length,
     });
 
@@ -458,6 +653,7 @@ export function buildIndex(
   for (const lock of ["package.json", "requirements.txt", "go.mod", "Gemfile"]) {
     const p = join(repoRoot, lock);
     if (!existsSync(p)) continue;
+    assertRegularFile(repoRoot, p, undefined, limits);
     const raw = readFileSync(p, "utf8");
     if (lock === "package.json") {
       try {
@@ -515,16 +711,20 @@ export function loadIndex(path: string): CodebaseIndex {
 export function buildIndexIncremental(
   repoRoot: string,
   previous?: CodebaseIndex | null,
+  opts: Omit<CodebaseIndexOptions, "callGraph"> = {},
 ): CodebaseIndex {
-  if (!previous) return buildIndex(repoRoot);
+  if (!previous) return buildIndex(repoRoot, opts);
 
   // Hash probe without building a second full graph
-  const filesAbs = walk(repoRoot);
+  const limits = normalizedLimits(opts.limits);
+  const discovery = discoverFiles(repoRoot, limits);
   const currentHashes = new Map<string, string>();
-  for (const abs of filesAbs) {
-    const rel = relative(repoRoot, abs).replace(/\\/g, "/");
-    const text = readFileSync(abs, "utf8");
-    currentHashes.set(rel, createHash("sha256").update(text).digest("hex").slice(0, 16));
+  for (const file of discovery.files) {
+    const text = readDiscoveredFile(repoRoot, file, limits);
+    const contentHash = createHash("sha256").update(text).digest("hex").slice(0, 16);
+    file.text = text;
+    file.contentHash = contentHash;
+    currentHashes.set(file.rel, contentHash);
   }
   const prevMap = new Map(previous.files.map((f) => [f.path, f.contentHash]));
   const changedFiles = [...currentHashes.entries()]
@@ -543,7 +743,12 @@ export function buildIndexIncremental(
   });
 
   // Single metadata pass, inject incremental graph (no second full graph build)
-  return buildIndex(repoRoot, { callGraph });
+  return buildIndexFromDiscovered(
+    repoRoot,
+    { ...opts, callGraph },
+    limits,
+    discovery.files,
+  );
 }
 
 

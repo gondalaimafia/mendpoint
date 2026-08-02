@@ -37,13 +37,19 @@ export default async function GraphPage({
   let error: string | null = null;
 
   try {
-    changes = await apiGet<Change[]>("/changes");
     const view = sp.view ?? (sp.changeId ? "change" : "product");
     if (view === "product" && !sp.changeId) {
-      graph = await apiGet<ProductGraph>("/graph/product");
+      [changes, graph] = await Promise.all([
+        apiGet<Change[]>("/changes"),
+        apiGet<ProductGraph>("/graph/product"),
+      ]);
     } else if (sp.provider) {
-      graph = await apiGet<ProductGraph>(`/graph/api/${sp.provider}`);
+      [changes, graph] = await Promise.all([
+        apiGet<Change[]>("/changes"),
+        apiGet<ProductGraph>(`/graph/api/${sp.provider}`),
+      ]);
     } else {
+      changes = await apiGet<Change[]>("/changes");
       const changeId = sp.changeId ?? changes[0]?.id;
       if (changeId) {
         graph = await apiGet<ProductGraph>(`/graph/changes/${changeId}`);
