@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import claimRegistry from "../../../../docs/PUBLIC_CLAIMS.json";
 import { PublicFooter } from "../public-footer";
 
 export const metadata: Metadata = {
@@ -9,6 +10,8 @@ export const metadata: Metadata = {
 };
 
 export default function PrivacyPage() {
+  const privacyClaim = claimRegistry.claims.find((claim) => claim.id === "CLM-014");
+  if (!privacyClaim) throw new Error("Missing public claim CLM-014");
   return (
     <div className="public-page public-document">
       <header>
@@ -26,6 +29,7 @@ export default function PrivacyPage() {
       </section>
       <section>
         <h2>Purpose and retention</h2>
+        <p>{privacyClaim.wording}</p>
         <p>
           Application data is used to evaluate pilot fit, respond to the request, protect the form,
           and operate the design partner pipeline. It is not sold. Private application details are

@@ -33,6 +33,7 @@
     "eval:warden": "tsx packages/eval/src/warden-bench.ts",
     "eval:capabilities": "tsx packages/eval/src/capability-eval.ts",
     "eval:agents": "tsx packages/eval/src/agent-eval.ts",
+    "eval:performance": "tsx packages/eval/src/performance-runner.ts",
     "platform:dev": "tsx scripts/platform-dev.ts",
     "graph:bench": "tsx -e \"import { runGraphBenchmark } from '@mendpoint/graph-learn'; const b=runGraphBenchmark(); console.log(b.passed+'/'+b.total); process.exit(b.passed>=18?0:1)\"",
     "graph:temporal": "tsx scripts/git-temporal.ts",

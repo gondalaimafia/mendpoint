@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import {
   ingestControlPlane,
   ingestSpecDiff,
@@ -42,6 +43,9 @@ import {
 } from "./index.js";
 import type { StructuralDiff, ImpactableSurface } from "@mendpoint/shared";
 import { writeFileSync, unlinkSync } from "node:fs";
+
+const graphLearnSourcePath = fileURLToPath(new URL(".", import.meta.url));
+const repositoryRootPath = fileURLToPath(new URL("../../../", import.meta.url));
 
 describe("graph-learn substrate", () => {
   it("ingests control plane and answers who_consumes_provider", () => {
@@ -303,11 +307,9 @@ describe("graph-learn substrate", () => {
 
   it("backfills real git history when repo available", () => {
     const db = openGraphLearnMemory();
-    // monorepo root two levels up from package
-    const repoPath = join(process.cwd(), "..", "..");
     try {
       const r = backfillGitTemporal(db, {
-        repoPath,
+        repoPath: repositoryRootPath,
         months: 1,
         maxCommits: 15,
         repoId: "mendpoint-test",
@@ -391,17 +393,16 @@ export function bar() { return 1; }
 
   it("ingests AST from real package path when present", () => {
     const db = openGraphLearnMemory();
-    const repoPath = join(process.cwd(), "src");
     try {
       const r = ingestAstRepo(db, {
-        repoPath,
+        repoPath: graphLearnSourcePath,
         repoId: "graph-learn-src",
         maxFiles: 20,
       });
       expect(r.files).toBeGreaterThan(0);
       expect(r.symbols).toBeGreaterThan(0);
       const lsp = ingestLspSymbols(db, {
-        repoPath,
+        repoPath: graphLearnSourcePath,
         repoId: "graph-learn-src",
         files: [
           {

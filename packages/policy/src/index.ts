@@ -178,3 +178,5 @@ export function filterFindingsByPolicy(
     return confRank[f.confidence] >= minR;
   });
 }
+
+export * from "./warden-policy.js";

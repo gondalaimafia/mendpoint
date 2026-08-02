@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { calculateMcuV1, formatMcu, MCU_MICROS } from "./mcu.js";
+import {
+  assertMcuScheduleChange,
+  calculateMcuV1,
+  formatMcu,
+  MCU_MICROS,
+  MCU_SCHEDULE_V1,
+} from "./mcu.js";
 
 describe("migration compute units", () => {
   it("calculates every v1 component without losing fractional compute", () => {
@@ -34,5 +40,37 @@ describe("migration compute units", () => {
     );
     expect(formatMcu(1_250_000)).toBe("1.25");
     expect(formatMcu(0)).toBe("0");
+  });
+
+  it("publishes executable examples and requires a new finance approved version for changes", () => {
+    for (const example of MCU_SCHEDULE_V1.examples) {
+      expect(calculateMcuV1(example.work).totalMicros, example.label).toBe(example.expectedMicros);
+    }
+    expect(Object.isFrozen(MCU_SCHEDULE_V1)).toBe(true);
+    expect(Object.isFrozen(MCU_SCHEDULE_V1.weights)).toBe(true);
+    expect(() => assertMcuScheduleChange({
+      currentVersion: "mcu-v1",
+      nextVersion: "mcu-v1",
+      approvedByRole: "finance_owner",
+      currentVersionHasUsage: true,
+    })).toThrow("mcu_new_version_required");
+    expect(() => assertMcuScheduleChange({
+      currentVersion: "mcu-v1",
+      nextVersion: "mcu-v2",
+      approvedByRole: "engineer",
+      currentVersionHasUsage: true,
+    })).toThrow("mcu_finance_approval_required");
+    expect(() => assertMcuScheduleChange({
+      currentVersion: "mcu-v1",
+      nextVersion: "mcu-v2",
+      approvedByRole: "finance_owner",
+      currentVersionHasUsage: false,
+    })).toThrow("mcu_change_without_usage_snapshot");
+    expect(() => assertMcuScheduleChange({
+      currentVersion: "mcu-v1",
+      nextVersion: "mcu-v2",
+      approvedByRole: "finance_owner",
+      currentVersionHasUsage: true,
+    })).not.toThrow();
   });
 });

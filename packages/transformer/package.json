@@ -5,12 +5,16 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts",
+    "./bsg-extractor": "./src/bsg-extractor.ts"
+  },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mendpoint/ops": "*",
     "@mendpoint/orchestrator": "*",
     "@mendpoint/shared": "*"
   },

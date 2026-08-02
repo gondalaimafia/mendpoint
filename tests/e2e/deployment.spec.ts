@@ -394,7 +394,6 @@ test("production image protects operators and recovers queued work after a crash
 
     await page.goto("/status");
     await expect(page).toHaveURL(/\/access\?next=%2Fstatus$/);
-    await page.getByRole("textbox", { name: "Operator ID", exact: true }).fill("deployment-test");
     await page.getByLabel("Access token", { exact: true }).fill("wrong-token");
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page.getByText("Access denied")).toBeVisible();

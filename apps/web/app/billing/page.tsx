@@ -59,6 +59,11 @@ type GrossMarginResponse = {
   incompleteAttributions: Array<{ code: string; taskId: string | null }>;
 };
 
+type BillingConfig = {
+  manualPlanChangesEnabled: boolean;
+  externalCollection: "disabled";
+};
+
 function mcu(value: number | null): string {
   return value === null ? "Not configured" : (value / 1_000_000).toFixed(3);
 }
@@ -76,22 +81,26 @@ export default async function BillingPage() {
   let tenants: Tenant[] = [];
   let usage: UsageResponse | null = null;
   let grossMargin: GrossMarginResponse | null = null;
+  let config: BillingConfig | null = null;
   let error: string | null = null;
-  const [plansResult, tenantsResult, usageResult, grossMarginResult] = await Promise.allSettled([
+  const [plansResult, tenantsResult, usageResult, grossMarginResult, configResult] = await Promise.allSettled([
     apiGet<Plan[]>("/billing/plans"),
     apiGet<Tenant[]>("/tenants"),
     apiGet<UsageResponse>("/billing/usage"),
     apiGet<{ data: GrossMarginResponse }>("/billing/gross-margin"),
+    apiGet<BillingConfig>("/billing/config"),
   ]);
   if (plansResult.status === "fulfilled") plans = plansResult.value;
   if (tenantsResult.status === "fulfilled") tenants = tenantsResult.value;
   if (usageResult.status === "fulfilled") usage = usageResult.value;
   if (grossMarginResult.status === "fulfilled") grossMargin = grossMarginResult.value.data;
+  if (configResult.status === "fulfilled") config = configResult.value;
   error = [
     plansResult.status === "rejected" ? String(plansResult.reason) : null,
     tenantsResult.status === "rejected" ? String(tenantsResult.reason) : null,
     usageResult.status === "rejected" ? String(usageResult.reason) : null,
     grossMarginResult.status === "rejected" ? String(grossMarginResult.reason) : null,
+    configResult.status === "rejected" ? String(configResult.reason) : null,
   ].filter(Boolean).join(". ") || null;
 
   return (
@@ -239,7 +248,12 @@ export default async function BillingPage() {
                 {t.slug} · plan <code>{t.plan}</code> · {t.billingStatus} · seats {t.seatLimit}
               </div>
             </div>
-            <PlanPicker tenantId={t.id} currentPlan={t.plan} plans={plans.map((p) => p.id)} />
+            <PlanPicker
+              tenantId={t.id}
+              currentPlan={t.plan}
+              plans={plans.map((p) => p.id)}
+              enabled={config?.manualPlanChangesEnabled === true}
+            />
           </div>
         ))}
         {!tenants.length && <p className="muted">No tenants yet.</p>}

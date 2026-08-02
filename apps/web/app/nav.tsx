@@ -18,6 +18,7 @@ const GROUPS = [
     links: [
       { href: "/agent", label: "Warden runs", glyph: "W" },
       { href: "/repair", label: "Verified repair", glyph: "V" },
+      { href: "/transformer", label: "Transformer", glyph: "T" },
       { href: "/feeds", label: "Change feeds", glyph: "F" },
     ],
   },

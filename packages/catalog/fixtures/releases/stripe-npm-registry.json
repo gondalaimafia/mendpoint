@@ -1,0 +1,28 @@
+{
+  "name": "stripe",
+  "dist-tags": { "latest": "16.0.0" },
+  "versions": {
+    "15.0.0": {
+      "name": "stripe",
+      "version": "15.0.0",
+      "engines": { "node": ">=16" },
+      "exports": {
+        ".": "./index.js",
+        "./legacy": "./legacy.js"
+      }
+    },
+    "16.0.0": {
+      "name": "stripe",
+      "version": "16.0.0",
+      "engines": { "node": ">=18" },
+      "exports": {
+        ".": "./index.js",
+        "./webhooks": "./webhooks.js"
+      }
+    }
+  },
+  "time": {
+    "15.0.0": "2026-07-01T12:00:00Z",
+    "16.0.0": "2026-08-01T12:00:00Z"
+  }
+}

@@ -79,3 +79,55 @@ export {
   type StructuredPrPackageV1Input,
   type StructuredPrScopedRef,
 } from "./warden-operations.js";
+
+export {
+  COMPLIANCE_PROGRAM_SCHEMA_VERSION,
+  COMPLIANCE_CONTROL_IDS,
+  COMPLIANCE_CONTROL_CATALOG,
+  ComplianceEvidenceValidationError,
+  validateComplianceEvidenceBundle,
+  assertComplianceEvidenceBundle,
+  evaluateComplianceProgram,
+  type ComplianceControlId,
+  type ComplianceControlDefinition,
+  type ComplianceEvidenceSource,
+  type ComplianceEvidenceRequirement,
+  type ComplianceEvidence,
+  type ComplianceControlMapping,
+  type ComplianceEvidenceBundle,
+  type ComplianceEvidenceContext,
+  type ComplianceEvidenceIssue,
+  type ComplianceControlAssessment,
+  type ComplianceProgramAssessment,
+} from "./compliance-program.js";
+
+export {
+  TENANT_BOUNDARY_SCHEMA_VERSION,
+  REQUIRED_TENANT_BOUNDARIES,
+  TenantBoundaryRegistry,
+  assertTenantScope,
+  assertTenantResourceAccess,
+  runTenantIsolationProbes,
+  type TenantBoundary,
+  type TenantScope,
+  type TenantOwnedResource,
+  type TenantBoundaryRegistration,
+  type TenantIsolationProbe,
+  type TenantBoundaryAdapter,
+} from "./tenant-boundary.js";
+
+export {
+  AUDIT_GOVERNANCE_SCHEMA_VERSION,
+  AUDIT_RETENTION_DAYS,
+  evaluateAuditRetention,
+  createGovernedAuditExport,
+  verifyGovernedAuditExport,
+  type AuditRetentionClass,
+  type AuditRedactionProfile,
+  type GovernedAuditRecord,
+  type AuditLegalHold,
+  type AuditRetentionDecision,
+  type AuditExportDestination,
+  type AuditExportRecord,
+  type GovernedAuditExport,
+} from "./audit-governance.js";

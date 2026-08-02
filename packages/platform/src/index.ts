@@ -121,6 +121,12 @@ export {
   createGitHubRepositorySource,
 } from "./repository-source.js";
 
+export {
+  evaluateExecutableTarget,
+  type CiRunEvidence,
+  type ExecutableTargetEvidence,
+} from "./execution-evidence.js";
+
 export type {
   SecretReference,
   EnvSecretReference,
@@ -146,12 +152,30 @@ export {
 } from "./credentials.js";
 
 export {
+  ENVELOPE_SECRET_SCHEMA_VERSION,
+  EnvelopeKeyLifecycleRegistry,
+  DisabledExternalVaultProvider,
+  LocalEnvelopeKeyProvider,
+  EnvelopeSecretVault,
+  type EnvelopeKeyReference,
+  type EnvelopeKeyState,
+  type EnvelopeKeyLifecycle,
+  type SecretAccessContext,
+  type EnvelopeSecret,
+  type EnvelopeAccessAuditEvent,
+  type KeyEncryptionKeyProvider,
+} from "./vault-envelope.js";
+
+export {
   ExecutorRegistry,
   ExecutorCircuitBreaker,
+  ROUTER_FAILURE_CODES,
   routeTask,
   selectPolicyBoundFallback,
   type DataClassification,
   type TaskRisk,
+  type RouterFailureCode,
+  type ExecutorKind,
   type RouterTaskSpec,
   type RouterPolicySnapshot,
   type ExecutorDescriptor,
@@ -189,3 +213,52 @@ export {
   type RouterRuntimeDisposition,
   type RouterVerificationEvidence,
 } from "./router-runtime.js";
+
+export {
+  ADAPTER_LIFECYCLE_STATES,
+  AdapterLifecycleError,
+  AdapterLifecycleRegistry,
+  type AdapterLifecycleState,
+  type BaseModelBinding,
+  type TrainingDatasetBinding,
+  type HeldOutEvaluationBinding,
+  type PromotionThresholdBinding,
+  type ApprovedInfrastructureBinding,
+  type MonitoringWindowBinding,
+  type RollbackTargetBinding,
+  type HumanApproverBinding,
+  type CanaryEvidenceBinding,
+  type AdapterLifecycleEvent,
+  type AdapterLifecycleRecord,
+  type RegisterAdapterInput,
+  type AdapterLifecycleBindings,
+  type TransitionAdapterInput,
+  type AdapterLifecycleErrorCode,
+} from "./adapter-lifecycle.js";
+
+export {
+  GitLabFixtureAdapter,
+  GitLabFixtureError,
+  type GitLabFixtureAuth,
+  type GitLabFixtureCredential,
+  type GitLabFixtureProjectSeed,
+  type GitLabSnapshotFile,
+  type GitLabImmutableSnapshot,
+  type GitLabPipelineStatus,
+  type GitLabMergeRequest,
+  type GitLabDiscussion,
+  type GitLabApproval,
+  type GitLabFixtureAuditEvent,
+  type GitLabFixtureErrorCode,
+} from "./gitlab-fixture.js";
+
+export {
+  authorizeScmDraftDelivery,
+  ScmInstallationBoundaryError,
+  type ScmPermissionLevel,
+  type ScmRepositoryBinding,
+  type ScmInstallationBinding,
+  type ScmDraftDeliveryIntent,
+  type ScmDraftDeliveryAuthorization,
+  type ScmInstallationBoundaryErrorCode,
+} from "./scm-installation-boundary.js";

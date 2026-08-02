@@ -33,6 +33,60 @@ export type FeedPollRow = {
   version_id: string | null;
   pipeline_change_id: string | null;
   polled_at: string;
+  validation_evidence_id?: string | null;
+  validation_source?: "catalog" | "provider" | "unknown" | null;
+  validation_format?: "json" | "unknown" | null;
+  validation_format_status?: "accepted" | "rejected" | "not_observed" | null;
+  validation_schema_version?: string | null;
+  validation_schema_status?: "accepted" | "rejected" | "not_observed" | null;
+  validation_size_bytes?: number | null;
+  validation_content_sha256?: string | null;
+  validation_status?: "accepted" | "rejected" | "skipped" | null;
+  validation_error?: string | null;
+  validation_http_status?: number | null;
+  validation_observed_at?: string | null;
+};
+
+export type FeedValidationEvidenceInput = {
+  id: string;
+  source: "catalog" | "provider" | "unknown";
+  format: "json" | "unknown";
+  formatStatus: "accepted" | "rejected" | "not_observed";
+  schemaVersion?: string | null;
+  schemaStatus: "accepted" | "rejected" | "not_observed";
+  sizeBytes: number;
+  contentSha256?: string | null;
+  status: "accepted" | "rejected" | "skipped";
+  error?: string | null;
+  httpStatus?: number | null;
+  observedAt: string;
+};
+
+export type FeedScheduleRow = {
+  id: string;
+  tenant_id: string;
+  provider_slug: string;
+  interval_ms: number;
+  stale_after_ms: number;
+  enabled: number;
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  consecutive_failures: number;
+  alert_state: "healthy" | "stale" | "failed";
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FeedScheduleWindowRow = {
+  id: string;
+  schedule_id: string;
+  window_started_at: string;
+  window_ends_at: string;
+  status: "running" | "succeeded" | "failed";
+  error: string | null;
+  attempted_at: string;
+  completed_at: string | null;
 };
 
 export type ApiVersion = {
@@ -76,6 +130,19 @@ export type TenantRow = {
   billing_status: string;
   seat_limit: number;
   created_at: string;
+};
+
+export type TenantMembershipRow = {
+  tenant_id: string;
+  issuer: string;
+  subject: string;
+  email: string | null;
+  display_name: string;
+  role: "owner" | "admin" | "engineer" | "viewer" | "fde";
+  status: "active" | "offboarded";
+  created_at: string;
+  updated_at: string;
+  offboarded_at: string | null;
 };
 
 export type GitHubInstallationRow = {

@@ -27,6 +27,7 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 
 import { normalizeChange } from "@mendpoint/change-intel";
 import { analyzeImpact, reportToFindings } from "@mendpoint/code-impact";
@@ -53,6 +54,8 @@ import {
   type ContractCase,
   type VerificationWaiver,
 } from "@mendpoint/contract";
+import { createWardenDraftPrPackage } from "./warden-pr-package.js";
+export * from "./warden-campaign-executor.js";
 import {
   getGraphLearnDb,
   ingestControlPlane,
@@ -76,6 +79,65 @@ function trustId(prefix: string, ...parts: string[]): string {
 
 function textDigest(content: string): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+function resolveRepositoryRevision(
+  repoRoot: string,
+  snapshotContent: string,
+): { revisionKind: "git_commit" | "content_manifest"; resolvedSha: string } {
+  let revision: string;
+  try {
+    revision = execFileSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      timeout: 5_000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim().toLowerCase();
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision)) {
+      throw new Error("structured_pr_repository_revision_invalid");
+    }
+    return { revisionKind: "git_commit", resolvedSha: revision };
+  } catch {
+    return { revisionKind: "content_manifest", resolvedSha: textDigest(snapshotContent) };
+  }
+}
+
+function configuredPrincipals(value: unknown, fallback: string): string[] {
+  if (value === undefined) return [fallback];
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (principal): principal is string =>
+      typeof principal === "string" && principal.trim() === principal && principal.length > 0,
+  );
+}
+
+function persistJsonArtifact(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    kind: string;
+    mediaType: string;
+    value: unknown;
+    producerPrincipalId: string;
+    createdAt: string;
+  },
+) {
+  const content = JSON.stringify(input.value);
+  const sha256 = textDigest(content);
+  const id = trustId("artifact", input.tenantId, input.kind, sha256);
+  return insertArtifactManifest(db, {
+    id,
+    tenantId: input.tenantId,
+    kind: input.kind,
+    schemaVersion: 1,
+    sha256,
+    mediaType: input.mediaType,
+    sizeBytes: Buffer.byteLength(content, "utf8"),
+    storageRef: `sqlite://artifact_manifests/${id}#content_text`,
+    content,
+    producerPrincipalId: input.producerPrincipalId,
+    createdAt: input.createdAt,
+  }).row;
 }
 
 
@@ -558,7 +620,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       "",
       "### Policy",
       `- **Severity:** ${severity}`,
-      `- **Auto-merge:** ${decision.allowAutoMerge ? "eligible" : "disabled (default)"}`,
+      "- **Auto-merge:** disabled (draft package requires human merge)",
       ...decision.reasons.map((r) => `- ${r}`),
       decision.blockedFiles.length
         ? `- **Blocked paths:** ${decision.blockedFiles.join(", ")}`
@@ -714,7 +776,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         })
       : null;
     const verificationAccepted = deliveryEvidenceOk || waiverEvaluation?.accepted === true;
-    const shouldDeliver =
+    let shouldDeliver =
       hasActionable &&
       decision.allowPr &&
       verificationAccepted &&
@@ -910,6 +972,284 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       },
       createdAt: nowIso(),
     });
+    let structuredPackageArtifactId: string | null = null;
+    if (shouldDeliver) {
+      try {
+        const packageCreatedAt = retryablePr?.created_at ?? nowIso();
+        const snapshotFiles = decision.allowedEdits
+          .map((edit) => ({ path: edit.path, sha256: textDigest(edit.original) }))
+          .sort((left, right) => left.path.localeCompare(right.path));
+        const snapshotIdentity = JSON.stringify({
+          repositoryId: `${consumer.github_owner}/${consumer.github_repo}`,
+          baseBranch: repo.default_branch,
+          files: snapshotFiles,
+        });
+        const repositoryRevision = resolveRepositoryRevision(repo.local_path, snapshotIdentity);
+        const { resolvedSha, revisionKind } = repositoryRevision;
+        const snapshotManifest = {
+          schemaVersion: 1,
+          repositoryId: `${consumer.github_owner}/${consumer.github_repo}`,
+          baseBranch: repo.default_branch,
+          revisionKind,
+          resolvedSha,
+          files: snapshotFiles,
+        };
+        const snapshotArtifact = persistJsonArtifact(db, {
+          tenantId: input.tenantId,
+          kind: "repository-snapshot-manifest",
+          mediaType: "application/vnd.mendpoint.repository-snapshot+json",
+          value: snapshotManifest,
+          producerPrincipalId: pipelinePrincipal.id,
+          createdAt: packageCreatedAt,
+        });
+        const packageFindings = decision.allowedEdits.map((edit) => {
+          const findingId = trustId("finding", input.tenantId, prId, edit.path);
+          const evidenceArtifact = persistJsonArtifact(db, {
+            tenantId: input.tenantId,
+            kind: "warden-edit-evidence",
+            mediaType: "application/vnd.mendpoint.warden-edit-evidence+json",
+            value: {
+              schemaVersion: 1,
+              findingId,
+              path: edit.path,
+              originalSha256: textDigest(edit.original),
+              candidateSha256: textDigest(edit.updated),
+              findings: findings
+                .filter((finding) => finding.filePath === edit.path)
+                .map((finding) => ({
+                  symbol: finding.symbol,
+                  lineStart: finding.lineStart,
+                  lineEnd: finding.lineEnd,
+                  confidence: finding.confidence,
+                  evidence: finding.evidence,
+                })),
+              repair: repairMeta ?? null,
+            },
+            producerPrincipalId: pipelinePrincipal.id,
+            createdAt: packageCreatedAt,
+          });
+          return {
+            tenantId: input.tenantId,
+            findingId,
+            evidenceArtifactIds: [evidenceArtifact.id],
+          };
+        });
+        const policyArtifact = persistJsonArtifact(db, {
+          tenantId: input.tenantId,
+          kind: "warden-policy-decision",
+          mediaType: "application/vnd.mendpoint.warden-policy+json",
+          value: {
+            schemaVersion: 1,
+            policyId: `consumer:${consumer.id}`,
+            allowPr: decision.allowPr,
+            allowAutoMerge: false,
+            allowAutoDeploy: false,
+            reasons: decision.reasons,
+            blockedFiles: decision.blockedFiles,
+          },
+          producerPrincipalId: pipelinePrincipal.id,
+          createdAt: packageCreatedAt,
+        });
+        const fallbackOwner = `github-owner:${consumer.github_owner}`;
+        const ownerPrincipalIds = configuredPrincipals(
+          policyMap.pr_owner_principal_ids,
+          fallbackOwner,
+        );
+        const reviewerPrincipalIds = configuredPrincipals(
+          policyMap.pr_reviewer_principal_ids,
+          fallbackOwner,
+        );
+        const requiredReviewerCount =
+          policyMap.required_reviewer_count === undefined
+            ? 1
+            : Number(policyMap.required_reviewer_count);
+        const ownershipArtifact = persistJsonArtifact(db, {
+          tenantId: input.tenantId,
+          kind: "warden-reviewer-ownership",
+          mediaType: "application/vnd.mendpoint.reviewer-ownership+json",
+          value: {
+            schemaVersion: 1,
+            repositoryId: `${consumer.github_owner}/${consumer.github_repo}`,
+            ownerPrincipalIds,
+            reviewerPrincipalIds,
+            source:
+              policyMap.pr_owner_principal_ids === undefined &&
+              policyMap.pr_reviewer_principal_ids === undefined
+                ? "repository-owner-fallback"
+                : "tenant-policy",
+          },
+          producerPrincipalId: pipelinePrincipal.id,
+          createdAt: packageCreatedAt,
+        });
+        const reviewArtifact = persistJsonArtifact(db, {
+          tenantId: input.tenantId,
+          kind: "warden-review-requirements",
+          mediaType: "application/vnd.mendpoint.review-requirements+json",
+          value: {
+            schemaVersion: 1,
+            requiredReviewerCount,
+            reviewerPrincipalIds,
+            mergeAuthority: "human_only",
+          },
+          producerPrincipalId: pipelinePrincipal.id,
+          createdAt: packageCreatedAt,
+        });
+        const rollbackInstructions =
+          "Close the draft pull request and restore the exact files from the recorded repository snapshot before retrying.";
+        const rollbackArtifact = persistJsonArtifact(db, {
+          tenantId: input.tenantId,
+          kind: "warden-rollback-plan",
+          mediaType: "application/vnd.mendpoint.rollback-plan+json",
+          value: {
+            schemaVersion: 1,
+            strategy: "close_draft",
+            instructions: rollbackInstructions,
+            snapshotArtifactId: snapshotArtifact.id,
+            resolvedSha,
+            paths: decision.allowedEdits.map((edit) => edit.path).sort(),
+          },
+          producerPrincipalId: pipelinePrincipal.id,
+          createdAt: packageCreatedAt,
+        });
+        const verificationResults = gates.gates
+          .filter((gate) => gate.id === "contract-suite" || gate.id === "security-scan")
+          .map((gate) => ({
+            checkId: gate.id,
+            status: (gate.ok ? "passed" : "waived") as "passed" | "waived",
+            evidenceRecordIds: [evidenceId],
+          }));
+        const packageId = trustId(
+          "package",
+          input.tenantId,
+          prId,
+          candidateArtifactId,
+          verificationArtifactId,
+          ownershipArtifact.id,
+        );
+        const structured = createWardenDraftPrPackage({
+          packageId,
+          tenantId: input.tenantId,
+          pullRequestId: prId,
+          createdAt: packageCreatedAt,
+          summary: diff.summary,
+          rationale: impactReport.strategySummary,
+          risks: [
+            `Change risk: ${draft.risk}`,
+            `Impact confidence: ${draft.confidence}`,
+            ...decision.reasons,
+          ].filter((value, index, values) => value.length > 0 && values.indexOf(value) === index),
+          source: {
+            artifacts: sourceArtifacts.map((artifact) => ({
+              tenantId: input.tenantId,
+              id: artifact.id,
+            })),
+          },
+          snapshot: {
+            tenantId: input.tenantId,
+            snapshotId: snapshotArtifact.id,
+            repositoryId: `${consumer.github_owner}/${consumer.github_repo}`,
+            revisionKind,
+            resolvedSha,
+            manifestSha256: snapshotArtifact.sha256,
+          },
+          findings: packageFindings,
+          candidate: {
+            tenantId: input.tenantId,
+            artifactId: candidateArtifactId,
+            sha256: textDigest(candidateContent),
+            predecessorArtifactId: null,
+            edits: decision.allowedEdits.map((edit, index) => ({
+              editId: trustId("edit", input.tenantId, prId, edit.path, textDigest(edit.updated)),
+              path: edit.path,
+              findingIds: [packageFindings[index]!.findingId],
+            })),
+          },
+          verification: {
+            tenantId: input.tenantId,
+            artifactIds: [verificationArtifactId],
+            evidenceRecordIds: [evidenceId],
+            verdict: deliveryEvidenceOk ? "passed" : "waived",
+            waiverArtifactId,
+            results: verificationResults,
+          },
+          generation: {
+            kind: repairMeta?.ok ? "model" : "recipe",
+            executorId: repairMeta?.ok ? "warden-repair" : "warden-migration",
+            version: "1",
+          },
+          policy: {
+            tenantId: input.tenantId,
+            artifactId: policyArtifact.id,
+            policyId: `consumer:${consumer.id}`,
+            version: policyArtifact.sha256,
+            decision: "allow",
+          },
+          ownership: {
+            tenantId: input.tenantId,
+            codeownersArtifactId: ownershipArtifact.id,
+            ownerPrincipalIds,
+          },
+          review: {
+            tenantId: input.tenantId,
+            requirementsArtifactId: reviewArtifact.id,
+            requiredReviewerCount,
+            reviewerPrincipalIds,
+          },
+          rollback: {
+            tenantId: input.tenantId,
+            artifactId: rollbackArtifact.id,
+            strategy: "close_draft",
+            verificationEvidenceRecordIds: [evidenceId],
+            instructions: rollbackInstructions,
+          },
+          delivery: { mode: "draft", autoMerge: false, autoDeploy: false },
+        });
+        const packageArtifact = persistJsonArtifact(db, {
+          tenantId: input.tenantId,
+          kind: "structured-pr-package",
+          mediaType: "application/vnd.mendpoint.structured-pr-package+json",
+          value: structured.package,
+          producerPrincipalId: pipelinePrincipal.id,
+          createdAt: packageCreatedAt,
+        });
+        structuredPackageArtifactId = packageArtifact.id;
+        prBodyFinal = [
+          prBodyFinal,
+          `- Structured package artifact: \`${packageArtifact.id}\``,
+          "",
+          structured.markdown,
+        ].join("\n");
+        appendDomainEvent(db, {
+          id: trustId("event", input.tenantId, prId, packageArtifact.id),
+          tenantId: input.tenantId,
+          schemaVersion: 1,
+          eventType: "migration_pr.package_recorded",
+          aggregateType: "migration_pr",
+          aggregateId: prId,
+          actorPrincipalId: pipelinePrincipal.id,
+          correlationId: changeId,
+          causationId: trustId("event", input.tenantId, prId, candidateArtifactId),
+          idempotencyKey: `migration_pr:${prId}:package:${packageArtifact.id}`,
+          payload: {
+            packageArtifactId: packageArtifact.id,
+            packageId: structured.package.packageId,
+            digest: structured.package.integrity.digest,
+            delivery: structured.package.delivery,
+          },
+          createdAt: packageCreatedAt,
+        });
+      } catch (error) {
+        shouldDeliver = false;
+        status = "package_failed";
+        deliveryError = error instanceof Error ? error.message : String(error);
+        prBodyFinal = [
+          prBodyFinal,
+          "",
+          "### Structured package status",
+          "Delivery blocked because the required immutable review package could not be created.",
+        ].join("\n");
+      }
+    }
     if (retryablePr) {
       updateMigrationPrDelivery(db, prId, {
         status: shouldDeliver ? "delivery_pending" : status,
@@ -987,6 +1327,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
               ? "pr.gates_failed"
               : status === "repair_failed"
                 ? "pr.repair_failed"
+                : status === "package_failed"
+                  ? "pr.package_failed"
                 : status === "delivery_failed"
                   ? "pr.delivery_failed"
                   : "pr.draft_opened",
@@ -999,6 +1341,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         strategy: impactReport.strategySummary,
         repair: repairMeta ?? null,
         brandPackId: brandPack?.id ?? null,
+        structuredPackageArtifactId,
         deliveryError: deliveryError ?? null,
       },
     });

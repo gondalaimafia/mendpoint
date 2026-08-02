@@ -14,6 +14,8 @@
     "@mendpoint/pipeline": "*",
     "@mendpoint/repair": "*",
     "@mendpoint/db": "*",
+    "@mendpoint/ops": "*",
+    "@mendpoint/transformer": "*",
     "@mendpoint/shared": "*"
   },
   "devDependencies": {

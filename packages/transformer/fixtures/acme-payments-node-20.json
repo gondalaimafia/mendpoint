@@ -1,0 +1,89 @@
+{
+  "schemaVersion": "2026-08-02.v1",
+  "recipeId": "acme-payments-node-18-to-20",
+  "version": 1,
+  "publishedAt": "2026-08-02T00:00:00.000Z",
+  "provider": {
+    "slug": "acme-payments",
+    "category": "payments"
+  },
+  "change": {
+    "target": "runtime",
+    "kind": "breaking",
+    "fromVersion": "18",
+    "toVersion": "20"
+  },
+  "detection": {
+    "allOf": [
+      {
+        "kind": "manifest_value",
+        "path": "package.json",
+        "selector": "/engines/node",
+        "expected": ">=18 <19",
+        "evidenceRequired": true
+      }
+    ]
+  },
+  "preconditions": [
+    {
+      "id": "node-18-engine",
+      "kind": "manifest_value",
+      "path": "package.json",
+      "selector": "/engines/node",
+      "expected": ">=18 <19"
+    }
+  ],
+  "boundedEdits": {
+    "implementationRecipe": {
+      "id": "node-runtime-18-to-20",
+      "version": 1,
+      "digest": "RECIPE_DIGEST"
+    },
+    "allowedPaths": [".node-version", ".nvmrc", "Dockerfile", "package.json"],
+    "allowedOperationKinds": ["replace_file"],
+    "maxFilesChanged": 4,
+    "maxBytesChanged": 65536
+  },
+  "verification": [
+    {
+      "id": "unit-and-typecheck",
+      "command": "npm test && npm run typecheck",
+      "timeoutMs": 900000,
+      "successCriteria": "Tests and typecheck exit successfully",
+      "required": true
+    }
+  ],
+  "rollback": {
+    "strategy": "inverse_operations",
+    "verificationIds": ["unit-and-typecheck"],
+    "maxRecoveryMinutes": 30
+  },
+  "evidence": {
+    "requiredSourceKinds": ["provider_release", "repository_snapshot"],
+    "retainInputSnapshot": true,
+    "retainOperationDiffs": true,
+    "retainVerificationOutput": true
+  },
+  "ownership": {
+    "team": "change-intelligence",
+    "maintainerPrincipalId": "human:recipe-maintainer",
+    "securityReviewerPrincipalId": "human:security-reviewer"
+  },
+  "compatibility": {
+    "languages": ["typescript"],
+    "packageManagers": ["npm"],
+    "repositoryKinds": ["service"],
+    "runtime": {
+      "name": "node",
+      "minMajor": 18,
+      "maxMajor": 18
+    }
+  },
+  "outcomeTelemetry": {
+    "schemaVersion": 1,
+    "eventName": "provider_recipe_outcome",
+    "correlationFields": ["tenantId", "campaignId", "runId", "recipeArtifactSha256"],
+    "metricIds": ["accepted", "reviewerEditRatio", "verificationPassed", "rollbackRequired"],
+    "retentionDays": 90
+  }
+}

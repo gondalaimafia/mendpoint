@@ -773,3 +773,154 @@ Exit gate: enterprise claims name concrete proven controls and approved contract
 - Production browser verification exposed one unrelated missing public icon request. Pull requests 13 and 14 added the site icon and allowed only `/icon.svg` through the unauthenticated middleware boundary; pull request 14 merged as `ec2c819979c73806456ae842c95550fac62adeab`.
 - Exact main run `30735222962` passed every protected gate and deployed successfully. Independent probes returned `200` for `/`, `/livez`, `/healthz`, and `/icon.svg`; the icon response is `image/svg+xml` rather than a login redirect.
 - Final Chrome verification at 1280 by 900 and 375 by 812 returned `200` with no console issues, failed requests, HTTP failures, horizontal overflow, or layout shift. Observed LCP was 392 ms on desktop and 248 ms on mobile.
+
+## Customer readiness closure program
+
+Source of truth: `C:\Users\Talal\Downloads\mendpoint_product_spec.md`
+
+Audited baseline: exact `origin/main` revision `4134b51b5d1e38da31a31c7c99189ef747e77329`
+
+Program interpretation: close every repository controlled acceptance criterion in dependency order, prove each state with current executable evidence, and keep credentials, customer outcomes, commercial accounts, cloud infrastructure, and independent attestations explicitly external. A repository release must not claim that an external acceptance event occurred.
+
+### Stage 0: Evidence contract and release truth
+
+- [x] Reconcile all 84 requirement records and 14 public claims against exact main code and tests.
+- [x] Reject `partial` requirements that contain only planned, external, or live evidence and no current implementation locator.
+- [x] Reject malformed blocker types and require every external evidence record to match a named blocker.
+- [x] Link every public claim to requirement IDs and prevent proven claims from depending on incomplete product capability.
+- [x] Mark the repository website registry as a replacement candidate until authenticated owner cutover is proven.
+- [x] Reconcile stale historical checklists without rewriting prior release evidence.
+
+Acceptance: contract tests fail on unsupported partial status, malformed blockers, unmatched external evidence, missing claim requirement links, and capability claims that exceed requirement state. `spec:check`, `claims:check`, and `ga:check` pass on the corrected registries.
+
+Stage 0 review: commit `328c350` hardened both registries, corrected the evidence ledger, and repaired the root graph test harness. The contract workspace passes 69 tests, full typecheck passes, `spec:check` reports 18 verified, 40 partial, 13 scaffold, 12 unimplemented, and 1 blocked external, and `claims:check` passes 14 claims and 9 destinations. Public surface binding is now checked by claim ID so a registry entry cannot point only at an unrelated file.
+
+### Stage 1: Warden private preview implementation
+
+- [ ] Unify OpenAPI uploads, polls, releases, SDK registries, announcements, and incidents into immutable source artifacts with persisted validation evidence.
+- [ ] Add fixture backed RSS, Atom, GitHub Release, provider page, and SDK release adapters with durable schedules, idempotent windows, stale alerts, and operator health.
+- [ ] Version the complete compatibility taxonomy and signed shared recipe catalog, including preconditions, edits, verification, rollback, ownership, and outcome telemetry.
+- [ ] Add repository graph coverage, owner, test, CI, runtime, and deployment evidence, explicit staleness and deletion semantics, cross repository ordering, phase specific confidence, and held out benchmarks.
+- [ ] Enforce owner and verification coverage before a repository target becomes executable.
+- [ ] Persist baseline and post edit verification comparison and create the structured pull request package in the live Warden pipeline.
+- [ ] Complete reviewer assignment, comments, waiver action, policy precedence and simulation, durable attempts and exceptions, rollout planning, typed event coverage, and production metrics collection.
+
+Acceptance: a clean exact SHA fixture plus a submitted OpenAPI change produces an immutable source artifact, evidence graph, baseline, candidate, post edit verification, structured draft pull request package, review lineage, and restore evidence. Missing attribution or verification fails closed.
+
+### Stage 2: Transformer planning and execution
+
+- [ ] Generate a reviewable blueprint from a bounded objective and connected repository evidence.
+- [ ] Extract a nonempty source linked behavioral specification graph from code, tests, schemas, traces, and approved human additions.
+- [ ] Ingest organization constraints with explicit evidence and precedence.
+- [ ] Bind durable campaign units and waves to isolated fenced recipe execution and persist attempt and artifact evidence.
+- [ ] Stage verified draft pull request batches through the neutral SCM contract and reconcile drift, CI, review, closure, merge, retry, pause, cancellation, and exactly once recovery.
+- [ ] Execute reverse dependency restore for unmerged units and verified compensating changes for merged units.
+- [ ] Build the protected Transformer operator workspace, outcome metrics, feature gates, and crash, drift, partial merge, and recovery evaluations.
+
+Acceptance: one declared runtime migration completes across two to five disposable repositories with reviewed blueprint and BSG, dependency ordered verified draft candidates, visible exceptions, injected failure recovery, and exact restore evidence. Live SCM acceptance remains external until approved repositories and credentials exist.
+
+### Stage 3: Shared router and governed learning
+
+- [ ] Complete one structured Warden and Transformer task contract with product, allowed tools, required verification, data handling, fallback, and handoff policy.
+- [ ] Add typed executor kinds, versions, price schedules, hard limits, health, license, and artifact metadata.
+- [ ] Replace free form failures with a closed taxonomy and persist route, execution, verification, review, regression, cost, latency, recipe, and consent feedback as one lineage.
+- [ ] Add a held out baseline versus router comparator for verified acceptance, security regression, accepted output cost, and latency.
+- [ ] Add adapter lifecycle contracts for artifact, license, lineage, evaluation, shadow, canary, promotion, monitoring, rollback, retirement, and data sufficiency.
+
+Acceptance: routing and fallback are deterministic, policy bound, replayable, cost attributable, and fail closed. Adapter promotion remains blocked until a consented representative dataset and approved training and serving infrastructure exist.
+
+### Stage 4: Identity, isolation, secrets, and audit
+
+- [ ] Add users, memberships, MFA capable OIDC sessions, service principals, reviewer binding, session lifecycle, and offboarding without weakening API key authentication.
+- [ ] Remove optional tenant scope from production storage and execution paths and add boundary wide adversarial isolation tests.
+- [ ] Add a production vault provider, envelope encryption, versioned rotation and revocation workflow, and customer managed key interface.
+- [ ] Add audit retention classes, legal holds, redaction profiles, governed export destinations, and replay verification.
+
+Acceptance: every protected API, queue, database, graph, artifact, snapshot, webhook, cache, log, and export path requires explicit tenant and attributable actor context. OIDC, SAML, and SCIM acceptance remains external until an approved identity provider tenant exists.
+
+### Stage 5: Reliability, disaster recovery, performance, and self hosting
+
+- [ ] Persist one correlation context across request, job, graph, model, verification, SCM, webhook, billing, and audit.
+- [ ] Add a horizontally safe cloud queue and lock adapter while preserving SQLite as the documented single node self hosted mode.
+- [ ] Standardize dependency circuit breakers, retry budgets, durable outage queues, and customer visible degraded state.
+- [ ] Define workload tiers and p50, p95, and p99 objectives; add load and soak suites for first result, scan, verification, queue, and campaign fanout.
+- [ ] Implement backup, restore, migration, rollback, RTO, RPO, regional failure, and recurring drill evidence for database, graph, artifacts, and configuration.
+- [ ] Complete the self hosted sizing, TLS, upgrade, air gap, monitoring, dependency, egress, and support lifecycle contract.
+
+Acceptance: injected dependency, process, storage, and regional failures recover within declared objectives without cross tenant or evidence loss. VPC deployment remains external until an approved cloud account, region, and enterprise network exist.
+
+### Stage 6: Metering, billing, and customer operations
+
+- [ ] Make the MCU schedule a governed versioned artifact and meter Warden, Transformer, router, verification, graph, and sandbox work automatically.
+- [ ] Reserve usage on admission, settle or release on verified outcome, record actual execution cost, and feed gross margin reconciliation without manual attribution.
+- [ ] Add the processor or invoice export boundary and payment state machine for contract pricing, tax, credits, refunds, dunning, and finance reconciliation.
+- [ ] Persist a tenant owned onboarding checklist and pilot success contract covering identity, agreement, repositories, permissions, policy, commands, canary, baseline, owners, support, privacy, rollback, weekly review, thresholds, and conversion decision.
+- [ ] Promote public proof only from accepted external evidence and observed outcomes.
+
+Acceptance: every invoice line and margin result is reproducible from immutable usage and cost records. Processor, tax, pricing, signed agreement, and observed customer outcome acceptance remains external.
+
+### Stage 7: Later provider and enterprise acceptance
+
+- [ ] Complete GitLab snapshot, branch, commit, merge request, pipeline, discussion, approval, webhook, revocation, and recovery through the neutral SCM contract.
+- [ ] Build the VPC reference deployment and generated security, privacy, vulnerability, SBOM, incident, continuity, and control mapping evidence.
+- [ ] Complete authenticated owner cutover and rollback proof for `www.mendpoint.ai`.
+- [ ] Complete the private GitHub canary, private GitLab canary, approved Transformer repository campaign, billing account integration, identity provider lifecycle test, VPC deployment, independent penetration test, and compliance assessment.
+
+Acceptance: internal adapters can pass fixture and disposable repository tests before external authority exists, but no live or customer ready claim advances until the named third party evidence is retained.
+
+### Release discipline
+
+- [ ] Land coherent slices as focused commits and protected pull requests from `codex/customer-readiness-closure` or descendant branches.
+- [ ] For every slice run focused tests, full tests, typecheck, production build, GA checks, dependency audit, production image builds, deployment E2E, crash recovery, exact main deployment, live probes, and desktop and mobile browser verification.
+- [ ] Record exact commits, workflow runs, evidence changes, unresolved external gates, screenshots, and rollback instructions.
+
+### Current planning evidence
+
+- Exact main specification check passes structurally with 10 verified, 52 partial, 7 scaffold, 14 unimplemented, and 1 blocked external requirements.
+- Three specialist audits found stale statuses in both directions. Several SCM, Transformer, router cost, and learning controls are materially implemented, while multiple partial requirements have only planned evidence and should be downgraded.
+- The baseline full workspace test command exceeded the local 120 second command window. Focused audit tests found one root harness defect in `packages/graph-learn/src/graph-learn.test.ts`: repository root resolution can become `C:\` when invoked from the workspace root. This must be repaired before full release verification.
+
+## Customer readiness closure tranche 1
+
+- [x] Harden product requirement and public claim evidence contracts.
+- [x] Add human OIDC identity and tenant membership enforcement without weakening API keys.
+- [x] Add runtime graph evidence, Warden rollout planning, and structured draft PR packages.
+- [x] Add a protected Transformer workspace, deterministic blueprints, source linked BSG extraction, and staged draft PR batches.
+- [x] Add signed provider recipes, held out router value proof, exact Warden metrics, and bounded performance probes.
+- [x] Add release and SDK ingestion fixtures, a GitLab fixture adapter, and adapter lifecycle promotion controls.
+- [x] Add pilot success contracts, disaster recovery drills, a VPC contract, and a compliance evidence catalog.
+- [x] Complete calibrated confidence and held out impact benchmark verification.
+- [x] Complete cross boundary Transformer experimental gate verification.
+- [x] Complete billing contract and invoice export boundary verification.
+- [x] Run full tests, typecheck, production build, GA checks, specialist evals, dependency audit, and diff integrity locally.
+- [ ] Run container, deployment journey, crash recovery, and production browser gates in protected CI.
+- [ ] Commit focused slices, push the protected branch, merge only green CI, deploy exact main, and browser verify.
+
+### Tranche 1 evidence boundary
+
+Repository controls are retained as internal or experimental unless live evidence
+exists. No code artifact satisfies real customer proof, approved credentials,
+cloud or network approval, legal approval, payment processing, identity provider
+lifecycle, production regional recovery, penetration testing, compliance
+assessment, or public website cutover.
+
+### Tranche 1 integration review
+
+- Product contract: 84 requirements, 41 verified, 40 partial, 2 scaffold, and 1 blocked external. The earlier blanket partial explanation was corrected; repository controlled gaps and named external gates are tracked separately.
+- Public claims: 14 claims and 9 destinations pass the evidence binding check.
+- Full workspace tests pass, including 41 catalog, 93 contract, 59 database, 28 web, and 15 worker tests.
+- Full workspace typecheck and the Next production build pass. The build emits 21 static pages and the protected Warden, Transformer, billing, graph, install, status, and review routes.
+- GA preflight passes with graph bench 19 of 20. Agent eval corpus `2026-08-01.v3` passes Warden 14 of 14 and Transformer 12 of 12 across 78 trials, with pass at one, pass at three, and pass to the power of three all 1.000 and zero critical or deterministic failures.
+- Production dependency audit reports zero vulnerabilities. Diff integrity and the source secret and banned language scan pass.
+- The combined audit found and fixed one stale web session payload type before release. Human review identity now derives from active OIDC membership, Transformer merge observation requires exact revision CI and review evidence, feed scheduling is durable and replay safe, and pilot contract mutations write audit evidence transactionally.
+- Live SCM execution, approved private repository drills, real customer outcome evidence, identity provider lifecycle, payment processing, cloud network deployment, regional recovery, independent security assessment, and public website owner cutover remain explicit acceptance gates.
+
+## Post-audit closure sequence
+
+- [ ] Land the Warden policy and review safety slice: durable versioned policy precedence, simulation, approvals, expiring waivers, reviewer activity, and replay evidence.
+- [ ] Land the unified change to impact slice: immutable source artifacts, complete change taxonomy, monitored ingestion health, ownership and CI enforcement, and runtime and deployment evidence collection.
+- [ ] Land the trust floor slice: adversarial tenant boundary tests, vault and key lifecycle, governed audit retention and export, and correlated service health.
+- [ ] Land remaining Warden execution slice: executable campaign attempts, baseline to post-edit comparison, recovery, and GitHub App lifecycle wiring.
+- [ ] Land remaining Transformer slice: durable worker and SCM execution, reverse-order restore, constraint enforcement, outcome ingestion, and failure evaluations behind the default-deny gate.
+- [ ] Land the shared router service slice: registered executors, durable routing and fallback decisions, cost attribution, handoff, and outcome feedback.
+- [ ] Keep live customer, provider credential, IdP, payment processor, cloud network, regional recovery, penetration test, assessor, and website owner cutover gates blocked until the named authority and evidence exist.

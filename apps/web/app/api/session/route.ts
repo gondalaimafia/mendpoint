@@ -4,10 +4,9 @@ import {
   WEB_SESSION_COOKIE,
   WEB_SESSION_MAX_AGE_SECONDS,
   authenticatedWebSubject,
-  createWebSessionV2,
+  createWebSessionV3,
   isAllowedMutationOrigin,
   secureEqual,
-  validOperatorId,
 } from "../../../lib/proxy-auth";
 
 export const dynamic = "force-dynamic";
@@ -31,18 +30,14 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
   const body = await request.json().catch(() => null) as {
     token?: string;
-    operatorId?: string;
   } | null;
   if (!body?.token || !(await secureEqual(body.token, expected))) {
     return Response.json({ error: "invalid_access_token" }, { status: 401 });
   }
-  if (!validOperatorId(body.operatorId)) {
-    return Response.json({ error: "invalid_operator_id" }, { status: 400 });
-  }
   const response = NextResponse.json({ authenticated: true });
   response.cookies.set(
     WEB_SESSION_COOKIE,
-    await createWebSessionV2({ operatorId: body.operatorId, accessToken: expected }),
+    await createWebSessionV3({ accessToken: expected }),
     {
     httpOnly: true,
     sameSite: "strict",

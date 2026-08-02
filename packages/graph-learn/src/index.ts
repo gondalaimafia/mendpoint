@@ -56,6 +56,20 @@ export {
 } from "./ingest.js";
 
 export {
+  ingestRepositoryEvidence,
+  repositorySnapshotNodeId,
+  type RepositoryEvidence,
+  type RepositoryEvidenceType,
+  type RuntimeTraceEvidence,
+  type TestCoverageEvidence,
+  type CodeownersEvidence,
+  type CiEvidence,
+  type DeploymentEvidence,
+  type CollectorEvidence,
+  type IngestRepositoryEvidenceInput,
+} from "./runtime-evidence.js";
+
+export {
   runGraphQuery,
   blastRadius,
   formatQueryForPlanner,
@@ -65,6 +79,28 @@ export {
 export { getGraphLearnDb, resetGraphLearnDbForTests } from "./singleton.js";
 
 export { runGraphBenchmark, BENCH_CASES } from "./benchmark.js";
+
+export {
+  CONFIDENCE_CALIBRATION_VERSION,
+  evaluateConfidenceCalibration,
+  type ConfidencePhase,
+  type ConfidencePhasePolicy,
+  type ConfidenceCalibrationSample,
+  type ConfidenceCalibrationContract,
+  type CalibrationBin,
+  type ConfidencePhaseReport,
+  type ConfidenceCalibrationReport,
+} from "./confidence-calibration.js";
+
+export {
+  IMPACT_BENCHMARK_VERSION,
+  runImpactBenchmark,
+  type ImpactScaleTier,
+  type ImpactBenchmarkCase,
+  type ImpactPrediction,
+  type ImpactBenchmarkContract,
+  type ImpactBenchmarkReport,
+} from "./impact-benchmark.js";
 
 export {
   backfillGitTemporal,

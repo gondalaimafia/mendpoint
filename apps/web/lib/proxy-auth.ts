@@ -1,24 +1,23 @@
 import type { NextRequest } from "next/server";
 
 export const WEB_SESSION_COOKIE = "mendpoint_web_session";
-export const WEB_SESSION_VERSION = 2 as const;
+export const WEB_SESSION_VERSION = 3 as const;
 export const WEB_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
 
 export type WebSessionSubject = Readonly<{
-  operatorId: string;
+  kind: "preview_access";
   issuedAt: string;
   expiresAt: string;
 }>;
 
-type WebSessionPayloadV2 = {
-  v: 2;
-  operatorId: string;
+type WebSessionPayloadV3 = {
+  v: 3;
+  kind: "preview_access";
   iat: number;
   exp: number;
 };
 
-const OPERATOR_ID = /^[A-Za-z0-9][A-Za-z0-9._:@-]{2,127}$/;
-const SESSION_PREFIX = "mendpoint-web-session-v2\n";
+const SESSION_PREFIX = "mendpoint-web-session-v3\n";
 
 function bytesToBase64Url(bytes: Uint8Array): string {
   let binary = "";
@@ -61,10 +60,6 @@ function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
   return difference === 0;
 }
 
-export function validOperatorId(value: unknown): value is string {
-  return typeof value === "string" && value === value.trim() && OPERATOR_ID.test(value);
-}
-
 export async function secureEqual(left: string, right: string): Promise<boolean> {
   const encoder = new TextEncoder();
   const [leftDigest, rightDigest] = await Promise.all([
@@ -74,18 +69,16 @@ export async function secureEqual(left: string, right: string): Promise<boolean>
   return constantTimeEqual(new Uint8Array(leftDigest), new Uint8Array(rightDigest));
 }
 
-export async function createWebSessionV2(input: {
-  operatorId: string;
+export async function createWebSessionV3(input: {
   accessToken: string;
   now?: Date;
 }): Promise<string> {
-  if (!validOperatorId(input.operatorId)) throw new Error("invalid_operator_id");
   if (!input.accessToken) throw new Error("web_access_not_configured");
   const issuedAt = (input.now ?? new Date()).getTime();
   if (!Number.isFinite(issuedAt)) throw new Error("invalid_session_time");
-  const payload: WebSessionPayloadV2 = {
+  const payload: WebSessionPayloadV3 = {
     v: WEB_SESSION_VERSION,
-    operatorId: input.operatorId,
+    kind: "preview_access",
     iat: issuedAt,
     exp: issuedAt + WEB_SESSION_MAX_AGE_SECONDS * 1000,
   };
@@ -93,32 +86,32 @@ export async function createWebSessionV2(input: {
     new TextEncoder().encode(JSON.stringify(payload)),
   );
   const signature = await hmac(`${SESSION_PREFIX}${encodedPayload}`, input.accessToken);
-  return `v2.${encodedPayload}.${bytesToBase64Url(signature)}`;
+  return `v3.${encodedPayload}.${bytesToBase64Url(signature)}`;
 }
 
-export async function readWebSessionV2(input: {
+export async function readWebSessionV3(input: {
   value: string;
   accessToken: string;
   now?: Date;
 }): Promise<WebSessionSubject | null> {
   const parts = input.value.split(".");
-  if (parts.length !== 3 || parts[0] !== "v2") return null;
+  if (parts.length !== 3 || parts[0] !== "v3") return null;
   const payloadBytes = base64UrlToBytes(parts[1]!);
   const suppliedSignature = base64UrlToBytes(parts[2]!);
   if (!payloadBytes || !suppliedSignature) return null;
   const expectedSignature = await hmac(`${SESSION_PREFIX}${parts[1]!}`, input.accessToken);
   if (!constantTimeEqual(suppliedSignature, expectedSignature)) return null;
 
-  let payload: WebSessionPayloadV2;
+  let payload: WebSessionPayloadV3;
   try {
-    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payloadBytes)) as WebSessionPayloadV2;
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payloadBytes)) as WebSessionPayloadV3;
   } catch {
     return null;
   }
   if (
     !payload ||
     payload.v !== WEB_SESSION_VERSION ||
-    !validOperatorId(payload.operatorId) ||
+    payload.kind !== "preview_access" ||
     !Number.isSafeInteger(payload.iat) ||
     !Number.isSafeInteger(payload.exp) ||
     payload.exp <= payload.iat ||
@@ -129,7 +122,7 @@ export async function readWebSessionV2(input: {
   const now = (input.now ?? new Date()).getTime();
   if (!Number.isFinite(now) || now < payload.iat || now >= payload.exp) return null;
   return Object.freeze({
-    operatorId: payload.operatorId,
+    kind: payload.kind,
     issuedAt: new Date(payload.iat).toISOString(),
     expiresAt: new Date(payload.exp).toISOString(),
   });
@@ -163,7 +156,7 @@ export async function authenticatedWebSubject(
   if (!accessToken) return null;
   const cookie = request.cookies.get(WEB_SESSION_COOKIE)?.value;
   if (!cookie) return null;
-  return readWebSessionV2({ value: cookie, accessToken, now });
+  return readWebSessionV3({ value: cookie, accessToken, now });
 }
 
 export async function authenticatedWebSession(request: NextRequest): Promise<boolean> {

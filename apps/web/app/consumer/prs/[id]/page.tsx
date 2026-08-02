@@ -19,10 +19,12 @@ export default async function PrDetailPage({
   let reviews: MigrationPrReview[] = [];
   let error: string | null = null;
   try {
-    pr = await apiGet<MigrationPr>(`/prs/${id}`);
-    reviews = (
-      await apiGet<{ reviews: MigrationPrReview[] }>(`/prs/${id}/reviews`)
-    ).reviews;
+    const [prResult, reviewResult] = await Promise.all([
+      apiGet<MigrationPr>(`/prs/${id}`),
+      apiGet<{ reviews: MigrationPrReview[] }>(`/prs/${id}/reviews`),
+    ]);
+    pr = prResult;
+    reviews = reviewResult.reviews;
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }

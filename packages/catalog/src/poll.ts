@@ -20,8 +20,89 @@ export type FetchOpenApiResult = {
   status?: number;
 };
 
+export type OpenApiValidationEvidence = {
+  id: string;
+  source: "catalog" | "provider" | "unknown";
+  format: "json" | "unknown";
+  formatStatus: "accepted" | "rejected" | "not_observed";
+  schemaVersion: string | null;
+  schemaStatus: "accepted" | "rejected" | "not_observed";
+  sizeBytes: number;
+  contentSha256: string | null;
+  status: "accepted" | "rejected" | "skipped";
+  error: string | null;
+  httpStatus: number | null;
+  observedAt: string;
+};
+
 export function contentHash(body: string): string {
   return createHash("sha256").update(body).digest("hex").slice(0, 16);
+}
+
+function supportedSchemaVersion(document: Record<string, unknown>): string | null {
+  const version = document.openapi ?? document.swagger;
+  if (typeof version !== "string" || !version.trim()) return null;
+  const normalized = version.trim();
+  if ("swagger" in document) return normalized === "2.0" ? normalized : null;
+  return /^3\.(?:0|1)\.\d+(?:[-+].*)?$/.test(normalized) ? normalized : null;
+}
+
+export function buildOpenApiValidationEvidence(
+  fetched: FetchOpenApiResult,
+  input: {
+    id: string;
+    source: "catalog" | "provider" | "unknown";
+    observedAt: string;
+    status?: "accepted" | "rejected" | "skipped";
+  },
+): OpenApiValidationEvidence {
+  const body = fetched.body;
+  const sizeBytes = body === undefined ? 0 : Buffer.byteLength(body, "utf8");
+  const contentSha256 = body === undefined
+    ? null
+    : createHash("sha256").update(body, "utf8").digest("hex");
+  let format: OpenApiValidationEvidence["format"] = "unknown";
+  let formatStatus: OpenApiValidationEvidence["formatStatus"] = "not_observed";
+  let schemaVersion: string | null = null;
+  let schemaStatus: OpenApiValidationEvidence["schemaStatus"] = "not_observed";
+  if (body !== undefined) {
+    try {
+      const parsed = JSON.parse(body) as unknown;
+      format = "json";
+      formatStatus = "accepted";
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const document = parsed as Record<string, unknown>;
+        const declared = document.openapi ?? document.swagger;
+        schemaVersion = typeof declared === "string" ? declared.trim() || null : null;
+        const validVersion = supportedSchemaVersion(document);
+        const validInfo = Boolean(
+          document.info && typeof document.info === "object" && !Array.isArray(document.info),
+        );
+        const validPaths = Boolean(
+          document.paths && typeof document.paths === "object" && !Array.isArray(document.paths),
+        );
+        schemaStatus = validVersion && validInfo && validPaths ? "accepted" : "rejected";
+      } else {
+        schemaStatus = "rejected";
+      }
+    } catch {
+      formatStatus = "rejected";
+    }
+  }
+  return {
+    id: input.id,
+    source: input.source,
+    format,
+    formatStatus,
+    schemaVersion,
+    schemaStatus,
+    sizeBytes,
+    contentSha256,
+    status: input.status ?? (fetched.ok ? "accepted" : "rejected"),
+    error: fetched.error ?? null,
+    httpStatus: fetched.status ?? null,
+    observedAt: input.observedAt,
+  };
 }
 
 /** Resolve file: relative paths against monorepo root (or cwd). */
@@ -283,6 +364,15 @@ function parseOpenApiBody(
       status,
       body,
       error: "OpenAPI document is missing openapi or swagger version",
+    };
+  }
+  if (!supportedSchemaVersion(doc)) {
+    return {
+      ok: false,
+      url,
+      status,
+      body,
+      error: `OpenAPI schema version is unsupported: ${String(version)}`,
     };
   }
   if (!doc.info || typeof doc.info !== "object" || Array.isArray(doc.info)) {

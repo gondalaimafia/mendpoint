@@ -31,6 +31,20 @@ function task(): RouterTaskSpec {
     idempotencyKey: "warden-task-1-route",
     inputArtifactIds: ["artifact-failure", "artifact-source"],
     requiredCapabilities: ["warden", "typescript", "verification"],
+    allowedTools: ["repository.read", "workspace.patch", "verification.run"],
+    context: { estimatedInputTokens: 8_000, maximumOutputTokens: 4_000 },
+    verification: {
+      requiredChecks: ["tests", "security"],
+      requireAll: true,
+      onFailure: "human_handoff",
+    },
+    fallbackPolicy: {
+      enabled: true,
+      maxAttempts: 3,
+      sameExecutorRetries: 1,
+      retryableFailures: ["timeout", "rate_limited", "provider_unavailable"],
+      fallbackFailures: ["timeout", "provider_unavailable", "verification_failed"],
+    },
     privacy: { classification: "confidential", requiredRegion: "us-east" },
     risk: "medium",
     quality: { minimumScore: 0.8 },
@@ -66,9 +80,16 @@ function executor(
   return {
     executorId,
     providerId: `provider-${executorId}`,
+    kind: executorId.includes("recipe") ? "deterministic_recipe" : "frontier_model",
+    version: "2026-08-01",
     deployment: "internal",
     capabilities: ["warden", "typescript", "verification"],
+    tools: ["repository.read", "workspace.patch", "verification.run"],
     regions: ["us-east"],
+    price: { version: "price-2026-08", currency: "USD", effectiveAt: "2026-08-01T00:00:00.000Z" },
+    limits: { maximumInputTokens: 128_000, maximumOutputTokens: 16_000, maximumConcurrentTasks: 10 },
+    health: { status: "healthy", checkedAt: "2026-08-01T11:59:00.000Z", evidenceRef: `health:${executorId}` },
+    license: { id: "commercial-service", commercialUse: true, redistribution: "not_applicable" },
     maximumDataClassification: "restricted",
     maximumRisk: "medium",
     qualityScore: 0.9,
@@ -141,7 +162,7 @@ describe("policy router runtime evidence", () => {
       ]),
     );
     expect(result.evidence.prepared.rationale).toContain(
-      "Eligible executors are ordered by quality, cost, latency, then stable executor identity",
+      "Eligible executors are ordered by deterministic class, health, quality, cost, latency, then stable executor identity",
     );
     expect(runtime.replay(result.envelopeId)).toMatchObject({ matches: true });
   });
@@ -301,6 +322,34 @@ describe("policy router runtime evidence", () => {
     expect(result.action).toBe("human_handoff");
     expect(result.reason).toBe("no_policy_compliant_retry");
     expect(result.evidence.dispatches).toHaveLength(1);
+  });
+
+  it("escalates an explicit verification failure without retrying the same executor", () => {
+    const runtime = new PolicyRouterRuntime(
+      new InMemoryRouterEvidenceStore(),
+      new ExecutorCircuitBreaker(),
+    );
+    const prepared = prepare(runtime);
+    const result = runtime.recordOutcome(prepared.envelopeId, {
+      idempotencyKey: "attempt-verification-failed",
+      executorId: "warden-recipe",
+      providerId: "provider-warden-recipe",
+      outcome: "failed",
+      startedAt: "2026-08-01T12:00:01.000Z",
+      completedAt: "2026-08-01T12:00:02.000Z",
+      actualLatencyMs: 1_000,
+      actualCostUsd: 0.1,
+      errorCode: "verification_failed",
+      verification: {
+        verdict: "failed",
+        evidenceArtifactIds: ["verification:failed"],
+        verifierId: "warden-verifier",
+      },
+    });
+
+    expect(result).toMatchObject({ action: "human_handoff", reason: "verification_failed" });
+    expect(result.evidence.dispatches).toHaveLength(1);
+    expect(result.evidence.attempts[0]?.errorCode).toBe("verification_failed");
   });
 
   it("survives process-local reconstruction from JSONL and detects tampering", () => {

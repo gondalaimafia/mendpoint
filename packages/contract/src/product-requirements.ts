@@ -65,7 +65,7 @@ export interface ProductRequirement {
   claimState: ProductClaimState;
   closureWorkstream: string;
   acceptance: ProductAcceptance[];
-  externalBlockers: string[];
+  externalBlockers: string[] | null;
 }
 
 export interface ProductRequirementManifest {
@@ -163,6 +163,15 @@ const EVIDENCE_TYPES = new Set<ProductEvidenceType>([
   "external",
   "planned",
 ]);
+const IMPLEMENTATION_EVIDENCE_TYPES = new Set<ProductEvidenceType>([
+  "unit",
+  "integration",
+  "e2e",
+  "benchmark",
+  "security",
+  "code",
+  "document",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -175,6 +184,16 @@ function addIssue(
   message: string,
 ) {
   issues.push({ code, subject, message });
+}
+
+function externalEvidenceBlockerNames(locator: string): string[] {
+  const value = locator.startsWith("external:")
+    ? locator.slice("external:".length)
+    : locator;
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
 }
 
 export function validateProductRequirements(
@@ -273,9 +292,40 @@ export function validateProductRequirements(
       addIssue(issues, "WORKSTREAM_REFERENCE", id, "closureWorkstream does not exist");
     }
 
-    const blockers = Array.isArray(raw.externalBlockers)
-      ? raw.externalBlockers.filter((item): item is string => typeof item === "string" && item.length > 0)
-      : [];
+    const blockers: string[] = [];
+    const blockerNames = new Set<string>();
+    if (raw.externalBlockers !== null && !Array.isArray(raw.externalBlockers)) {
+      addIssue(
+        issues,
+        "EXTERNAL_BLOCKERS_TYPE",
+        id,
+        "externalBlockers must be null or an array",
+      );
+    } else if (Array.isArray(raw.externalBlockers)) {
+      for (const blocker of raw.externalBlockers) {
+        if (typeof blocker !== "string" || blocker.trim().length === 0) {
+          addIssue(
+            issues,
+            "EXTERNAL_BLOCKER_VALUE",
+            id,
+            "external blockers must be nonempty strings",
+          );
+          continue;
+        }
+        const normalized = blocker.trim();
+        if (blockerNames.has(normalized)) {
+          addIssue(
+            issues,
+            "EXTERNAL_BLOCKER_DUPLICATE",
+            id,
+            `external blocker is duplicated: ${normalized}`,
+          );
+          continue;
+        }
+        blockerNames.add(normalized);
+        blockers.push(normalized);
+      }
+    }
     if (raw.implementationStatus === "blocked_external" && blockers.length === 0) {
       addIssue(issues, "EXTERNAL_BLOCKER", id, "blocked_external requires a named blocker");
     }
@@ -294,8 +344,17 @@ export function validateProductRequirements(
 
     if (!Array.isArray(raw.acceptance) || raw.acceptance.length === 0) {
       addIssue(issues, "ACCEPTANCE_REQUIRED", id, "at least one acceptance criterion is required");
+      if (raw.implementationStatus === "partial") {
+        addIssue(
+          issues,
+          "PARTIAL_IMPLEMENTATION_EVIDENCE",
+          id,
+          "partial requirements need implementation evidence",
+        );
+      }
       continue;
     }
+    let hasImplementationEvidence = false;
     for (const criterion of raw.acceptance) {
       if (!isRecord(criterion)) {
         addIssue(issues, "ACCEPTANCE_TYPE", id, "acceptance criterion must be an object");
@@ -316,6 +375,7 @@ export function validateProductRequirements(
         addIssue(issues, "EVIDENCE_REQUIRED", acceptanceId, "at least one evidence record is required");
         continue;
       }
+      let hasExternalEvidence = false;
       for (const evidence of criterion.evidence) {
         if (!isRecord(evidence)) {
           addIssue(issues, "EVIDENCE_TYPE", acceptanceId, "evidence must be an object");
@@ -331,14 +391,57 @@ export function validateProductRequirements(
         evidenceIds.add(evidenceId);
         if (!EVIDENCE_TYPES.has(evidence.type as ProductEvidenceType)) {
           addIssue(issues, "EVIDENCE_KIND", evidenceId, "evidence type is invalid");
+        } else {
+          if (IMPLEMENTATION_EVIDENCE_TYPES.has(evidence.type as ProductEvidenceType)) {
+            hasImplementationEvidence = true;
+          }
+          if (evidence.type === "external") {
+            hasExternalEvidence = true;
+          }
         }
         if (typeof evidence.locator !== "string" || evidence.locator.trim().length === 0) {
           addIssue(issues, "EVIDENCE_LOCATOR", evidenceId, "evidence locator is required");
+        } else if (evidence.type === "external") {
+          const namedBlockers = externalEvidenceBlockerNames(evidence.locator);
+          if (namedBlockers.length === 0) {
+            addIssue(
+              issues,
+              "EXTERNAL_EVIDENCE_BLOCKER",
+              evidenceId,
+              "external evidence must name a declared blocker",
+            );
+          }
+          for (const namedBlocker of namedBlockers) {
+            if (!blockerNames.has(namedBlocker)) {
+              addIssue(
+                issues,
+                "EXTERNAL_EVIDENCE_BLOCKER",
+                evidenceId,
+                `external evidence names an undeclared blocker: ${namedBlocker}`,
+              );
+            }
+          }
         }
         if (raw.availability === "ga" && ["document", "code", "planned", "external"].includes(String(evidence.type))) {
           addIssue(issues, "GA_EVIDENCE", evidenceId, "GA acceptance needs automated or live evidence");
         }
       }
+      if (raw.implementationStatus === "verified" && hasExternalEvidence) {
+        addIssue(
+          issues,
+          "EXTERNAL_ACCEPTANCE_VERIFIED",
+          acceptanceId,
+          "externally dependent acceptance cannot be verified",
+        );
+      }
+    }
+    if (raw.implementationStatus === "partial" && !hasImplementationEvidence) {
+      addIssue(
+        issues,
+        "PARTIAL_IMPLEMENTATION_EVIDENCE",
+        id,
+        "partial requirements need implementation evidence",
+      );
     }
   }
 

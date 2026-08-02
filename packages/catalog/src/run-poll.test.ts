@@ -1,14 +1,23 @@
 import { mkdtempSync, rmSync, writeFileSync, copyFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { createDb, findMonorepoRoot, listVersionsForProvider, getProviderBySlug } from "@mendpoint/db";
-import { pollOneFeed } from "./run-poll.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createDb,
+  feedPollToApi,
+  findMonorepoRoot,
+  getProviderBySlug,
+  insertProvider,
+  listFeedPolls,
+  listVersionsForProvider,
+} from "@mendpoint/db";
+import { pollAllFeeds, pollOneFeed } from "./run-poll.js";
 
 const dirs: string[] = [];
 const dbs: Array<{ raw: { close?: () => void } }> = [];
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   while (dbs.length) {
     try {
       dbs.pop()?.raw.close?.();
@@ -65,6 +74,51 @@ describe("run-poll", () => {
 
     const p = getProviderBySlug(db, "acme-payments")!;
     expect(listVersionsForProvider(db, p.id).length).toBeGreaterThanOrEqual(1);
+    expect(feedPollToApi(listFeedPolls(db)[0]!)).toMatchObject({
+      status: "unchanged",
+      validation: {
+        source: "catalog",
+        format: "json",
+        formatStatus: "accepted",
+        schemaStatus: "accepted",
+        status: "accepted",
+        contentSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    });
+  });
+
+  it("persists rejected validation evidence without creating a version", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "poll-rejected-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "p.sqlite"));
+    dbs.push(db);
+    const local = join(dir, "invalid.json");
+    writeFileSync(local, "not valid json", "utf8");
+    const result = await pollOneFeed(
+      {
+        slug: "invalid-provider",
+        name: "Invalid Provider",
+        openapiUrl: `file:${local}`,
+        source: "provider",
+      },
+      { db, tenantId: "tenant_default", runPipeline: false },
+    );
+    expect(result.status).toBe("error");
+    expect(feedPollToApi(listFeedPolls(db)[0]!)).toMatchObject({
+      status: "error",
+      validation: {
+        source: "provider",
+        format: "unknown",
+        formatStatus: "rejected",
+        schemaStatus: "not_observed",
+        sizeBytes: 14,
+        status: "rejected",
+        contentSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        error: expect.stringContaining("not valid JSON"),
+      },
+    });
+    const provider = getProviderBySlug(db, "invalid-provider")!;
+    expect(listVersionsForProvider(db, provider.id)).toEqual([]);
   });
 
   it("retries a failed pipeline without storing a duplicate version", async () => {
@@ -105,6 +159,103 @@ describe("run-poll", () => {
     expect(retried.changeId).toBe("change-1");
     const provider = getProviderBySlug(db, "retry")!;
     expect(listVersionsForProvider(db, provider.id)).toHaveLength(1);
+  });
+
+  it("records queued pipeline dispatch once for an unchanged feed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "poll-queued-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "p.sqlite"));
+    dbs.push(db);
+    const local = join(dir, "spec.json");
+    writeFileSync(
+      local,
+      JSON.stringify({
+        openapi: "3.0.0",
+        info: { title: "Queued", version: "1.0.0" },
+        paths: {},
+      }),
+    );
+    let dispatches = 0;
+    const feed = {
+      slug: "queued",
+      name: "Queued",
+      openapiUrl: `file:${local}`,
+      source: "provider" as const,
+    };
+    const pipeline = async () => {
+      dispatches++;
+      return { jobId: "job-queued-1" };
+    };
+
+    const first = await pollOneFeed(feed, {
+      db,
+      tenantId: "tenant_default",
+      pipeline,
+    });
+    const second = await pollOneFeed(feed, {
+      db,
+      tenantId: "tenant_default",
+      pipeline,
+    });
+
+    expect(first).toMatchObject({
+      status: "pipeline_enqueued",
+      jobId: "job-queued-1",
+    });
+    expect(second.status).toBe("unchanged");
+    expect(dispatches).toBe(1);
+  });
+
+  it("bounds concurrent feed polling and preserves result order", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "poll-bounded-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "p.sqlite"));
+    dbs.push(db);
+    const slugs = ["bounded-1", "bounded-2", "bounded-3", "bounded-4"];
+    for (const slug of slugs) {
+      insertProvider(db, {
+        id: `provider-${slug}`,
+        slug,
+        name: slug,
+        website: null,
+        openapiUrl: `https://example.test/${slug}.json`,
+        changelogUrl: null,
+        createdAt: "2026-08-02T00:00:00.000Z",
+      });
+    }
+
+    let active = 0;
+    let maximumActive = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        active++;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active--;
+        const slug = new URL(String(input)).pathname.split("/").pop()!.replace(".json", "");
+        return new Response(
+          JSON.stringify({
+            openapi: "3.0.0",
+            info: { title: slug, version: "1.0.0" },
+            paths: {},
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }),
+    );
+
+    const results = await pollAllFeeds({
+      db,
+      tenantId: "tenant_default",
+      slugs,
+      runPipeline: false,
+      concurrency: 2,
+    });
+
+    expect(maximumActive).toBe(2);
+    expect(results.map((result) => result.slug)).toEqual(slugs);
+    expect(results.every((result) => result.status === "new_version")).toBe(true);
   });
 
   it("serializes concurrent polls for the same feed", async () => {

@@ -11,9 +11,16 @@
 import type { Context, Next } from "hono";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
+  createRemoteJWKSet,
+  jwtVerify,
+  type JWTVerifyGetKey,
+} from "jose";
+import {
   countActiveApiKeys,
   claimDelegatedRequestNonce,
   findApiKeyByToken,
+  getTenantMembership,
+  getPrincipal,
   getPrincipalBySubject,
   insertPrincipal,
   touchApiKey,
@@ -38,6 +45,102 @@ export type ApiVariables = {
   webhookDeliveryId?: string;
 };
 export type ApiEnv = { Variables: ApiVariables };
+
+export type OidcIdentity = {
+  issuer: string;
+  subject: string;
+  tenantId: string;
+};
+
+export type OidcVerifier = {
+  verify(token: string): Promise<OidcIdentity>;
+};
+
+export type OidcVerifierConfig = {
+  issuer: string;
+  audience: string;
+  tenantClaim: string;
+  requiredAmr: string[];
+  allowedAcr: string[];
+  maxTokenAgeSeconds: number;
+  jwks?: JWTVerifyGetKey;
+  jwksUri?: string;
+};
+
+function textClaim(name: string, value: unknown, max = 512): string {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > max) {
+    throw new Error(`oidc_${name}_invalid`);
+  }
+  return value;
+}
+
+export function createOidcVerifier(config: OidcVerifierConfig): OidcVerifier {
+  const issuer = textClaim("issuer", config.issuer);
+  if (new URL(issuer).protocol !== "https:") throw new Error("oidc_issuer_https_required");
+  const audience = textClaim("audience", config.audience);
+  const tenantClaim = textClaim("tenant_claim", config.tenantClaim, 128);
+  if (!Number.isSafeInteger(config.maxTokenAgeSeconds) || config.maxTokenAgeSeconds < 60) {
+    throw new Error("oidc_max_token_age_invalid");
+  }
+  if (config.requiredAmr.length === 0 && config.allowedAcr.length === 0) {
+    throw new Error("oidc_mfa_policy_required");
+  }
+  const jwksUrl = config.jwksUri ? new URL(config.jwksUri) : null;
+  if (jwksUrl && jwksUrl.protocol !== "https:") {
+    throw new Error("oidc_jwks_https_required");
+  }
+  const jwks = config.jwks ?? (jwksUrl ? createRemoteJWKSet(jwksUrl) : null);
+  if (!jwks) throw new Error("oidc_jwks_required");
+
+  return {
+    async verify(token: string): Promise<OidcIdentity> {
+      const { payload } = await jwtVerify(token, jwks, {
+        issuer,
+        audience,
+        algorithms: ["RS256", "ES256"],
+        requiredClaims: ["sub", "iat", "exp", tenantClaim],
+        maxTokenAge: `${config.maxTokenAgeSeconds}s`,
+        clockTolerance: 5,
+      });
+      const amr = Array.isArray(payload.amr)
+        ? payload.amr.filter((value): value is string => typeof value === "string")
+        : [];
+      const acr = typeof payload.acr === "string" ? payload.acr : null;
+      const amrSatisfied = config.requiredAmr.length > 0 &&
+        config.requiredAmr.every((required) => amr.includes(required));
+      const acrSatisfied = acr !== null && config.allowedAcr.includes(acr);
+      if (!amrSatisfied && !acrSatisfied) throw new Error("oidc_mfa_required");
+      return {
+        issuer,
+        subject: textClaim("subject", payload.sub, 255),
+        tenantId: textClaim("tenant", payload[tenantClaim], 255),
+      };
+    },
+  };
+}
+
+function csv(value: string | undefined, fallback: string[] = []): string[] {
+  if (value === undefined) return fallback;
+  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
+}
+
+export function oidcVerifierFromEnv(): OidcVerifier | null {
+  const issuer = process.env.OIDC_ISSUER?.trim();
+  const audience = process.env.OIDC_AUDIENCE?.trim();
+  const jwksUri = process.env.OIDC_JWKS_URI?.trim();
+  if (!issuer && !audience && !jwksUri) return null;
+  if (!issuer || !audience || !jwksUri) throw new Error("oidc_configuration_incomplete");
+  const maxTokenAgeSeconds = Number(process.env.OIDC_MAX_TOKEN_AGE_SECONDS ?? "3600");
+  return createOidcVerifier({
+    issuer,
+    audience,
+    jwksUri,
+    tenantClaim: process.env.OIDC_TENANT_CLAIM?.trim() || "tenant_id",
+    requiredAmr: csv(process.env.OIDC_REQUIRED_AMR, ["mfa"]),
+    allowedAcr: csv(process.env.OIDC_ALLOWED_ACR),
+    maxTokenAgeSeconds,
+  });
+}
 
 export function authMode(): AuthMode {
   const m = (process.env.API_AUTH ?? "off").toLowerCase();
@@ -162,7 +265,12 @@ export function verifyDelegatedActor(
   return input.actor;
 }
 
-export function createAuthMiddleware(db: AppDb) {
+export function createAuthMiddleware(
+  db: AppDb,
+  options: { oidc?: OidcVerifier | null } = {},
+) {
+  const oidc = options.oidc === undefined ? oidcVerifierFromEnv() : options.oidc;
+  const apiKeyTouchedAt = new Map<string, number>();
   return async (c: Context<ApiEnv>, next: Next) => {
     const path = new URL(c.req.url).pathname;
     if (isExemptPath(path, c.req.method)) {
@@ -170,9 +278,9 @@ export function createAuthMiddleware(db: AppDb) {
     }
 
     const mode = effectiveAuthMode();
-    const active = countActiveApiKeys(db);
     const needAuth =
-      mode === "required" || (mode === "auto" && active > 0);
+      mode === "required" ||
+      (mode === "auto" && (countActiveApiKeys(db) > 0 || oidc !== null));
 
     if (!needAuth) {
       return next();
@@ -190,10 +298,67 @@ export function createAuthMiddleware(db: AppDb) {
 
     const key = findApiKeyByToken(db, raw);
     if (!key) {
-      return c.json({ error: "unauthorized", message: "invalid API key" }, 401);
+      if (raw.split(".").length !== 3) {
+        return c.json({ error: "unauthorized", message: "invalid API key" }, 401);
+      }
+      if (!oidc) {
+        return c.json({ error: "unauthorized", message: "oidc_not_configured" }, 401);
+      }
+      try {
+        const identity = await oidc.verify(raw);
+        const membership = getTenantMembership(
+          db,
+          identity.tenantId,
+          identity.issuer,
+          identity.subject,
+        );
+        if (!membership || membership.status !== "active") {
+          return c.json({ error: "unauthorized", message: "oidc_membership_required" }, 401);
+        }
+        const trustSubject = `${identity.issuer}|${identity.subject}`;
+        const trustPrincipal = getPrincipalBySubject(
+          db,
+          identity.tenantId,
+          "human",
+          trustSubject,
+        ) ?? insertPrincipal(db, {
+          id: `principal-human-${createHash("sha256")
+            .update(`${identity.tenantId}\n${trustSubject}`)
+            .digest("hex")
+            .slice(0, 32)}`,
+          tenantId: identity.tenantId,
+          kind: "human",
+          subject: trustSubject,
+          displayName: membership.display_name,
+          audience: identity.issuer,
+          createdAt: nowIso(),
+        });
+        c.set("tenantId", identity.tenantId);
+        c.set("principal", {
+          id: `human:${trustSubject}`,
+          tenantId: identity.tenantId,
+          role: membership.role,
+          ...(membership.email ? { email: membership.email } : {}),
+        });
+        c.set("trustPrincipalId", trustPrincipal.id);
+        return next();
+      } catch (error) {
+        return c.json({
+          error: "unauthorized",
+          message: error instanceof Error && error.message === "oidc_mfa_required"
+            ? error.message
+            : "oidc_token_invalid",
+        }, 401);
+      }
     }
 
-    touchApiKey(db, key.id, nowIso());
+    const touchedAt = Date.now();
+    const previousTouch = apiKeyTouchedAt.get(key.id) ?? 0;
+    if (touchedAt - previousTouch >= 60_000) {
+      touchApiKey(db, key.id, new Date(touchedAt).toISOString());
+      apiKeyTouchedAt.set(key.id, touchedAt);
+      if (apiKeyTouchedAt.size > 10_000) apiKeyTouchedAt.clear();
+    }
     const scopes = parseApiKeyScopes(key.scopes_json);
     let delegatedActor: string | null;
     try {
@@ -237,27 +402,58 @@ export function createAuthMiddleware(db: AppDb) {
         );
       }
     }
-    const principal: Principal = {
-      id: delegatedActor ? `human:${delegatedActor}` : `api-key:${key.id}`,
-      tenantId: key.tenant_id,
-      role: roleFromApiKeyScopes(scopes),
-    };
-    const trustKind = delegatedActor ? "human" : "api_key";
-    const trustSubject = delegatedActor ?? key.id;
-    const trustPrincipal =
-      getPrincipalBySubject(db, key.tenant_id, trustKind, trustSubject) ??
-      insertPrincipal(db, {
+    let principal: Principal;
+    let trustPrincipal;
+    if (delegatedActor) {
+      trustPrincipal = getPrincipal(db, key.tenant_id, delegatedActor);
+      const issuer = trustPrincipal?.audience;
+      const subjectPrefix = issuer ? `${issuer}|` : "";
+      const subject = trustPrincipal?.subject.startsWith(subjectPrefix)
+        ? trustPrincipal.subject.slice(subjectPrefix.length)
+        : "";
+      const membership = issuer && subject
+        ? getTenantMembership(db, key.tenant_id, issuer, subject)
+        : null;
+      if (
+        !trustPrincipal ||
+        trustPrincipal.kind !== "human" ||
+        !issuer ||
+        !subject ||
+        !membership ||
+        membership.status !== "active"
+      ) {
+        return c.json(
+          { error: "unauthorized", message: "delegated_actor_membership_required" },
+          401,
+        );
+      }
+      principal = {
+        id: `human:${trustPrincipal.subject}`,
+        tenantId: key.tenant_id,
+        role: membership.role,
+        ...(membership.email ? { email: membership.email } : {}),
+      };
+    } else {
+      principal = {
+        id: `api-key:${key.id}`,
+        tenantId: key.tenant_id,
+        role: roleFromApiKeyScopes(scopes),
+      };
+      trustPrincipal =
+        getPrincipalBySubject(db, key.tenant_id, "api_key", key.id) ??
+        insertPrincipal(db, {
         id: `principal-${createHash("sha256")
-          .update(`${key.tenant_id}\n${trustKind}\n${trustSubject}`)
+          .update(`${key.tenant_id}\napi_key\n${key.id}`)
           .digest("hex")
           .slice(0, 32)}`,
         tenantId: key.tenant_id,
-        kind: trustKind,
-        subject: trustSubject,
-        displayName: delegatedActor ?? key.name,
-        audience: delegatedActor ? "operator-session" : "mendpoint-api",
+        kind: "api_key",
+        subject: key.id,
+        displayName: key.name,
+        audience: "mendpoint-api",
         createdAt: nowIso(),
       });
+    }
     c.set("tenantId", key.tenant_id);
     c.set("apiKeyId", key.id);
     c.set("authScopes", scopes);

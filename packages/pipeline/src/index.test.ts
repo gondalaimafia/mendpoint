@@ -10,6 +10,7 @@ import {
   insertConsumer,
   insertConsumerRepo,
   insertMonitoredApi,
+  insertPolicy,
   listPrs,
   listChanges,
   listFindingsForChange,
@@ -209,6 +210,41 @@ describe("pipeline", () => {
     expect(github.sourceBranches).toEqual(["trunk"]);
   });
 
+  it("fails closed before SCM delivery when reviewer ownership is incomplete", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    const consumerId = addMonitoredConsumer(db, provider.id, {
+      name: "Unowned Shop",
+      repo: "unowned-shop",
+      localPath: shop,
+    });
+    insertPolicy(db, {
+      id: newId(),
+      consumerId,
+      key: "pr_reviewer_principal_ids",
+      valueJson: "[]",
+    });
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-unowned-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(deliveryRoot),
+      persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanOk: true,
+    });
+
+    expect(report.consumers[0]?.prStatus).toBe("package_failed");
+    expect(existsSync(join(deliveryRoot, "org", "unowned-shop", "pulls"))).toBe(false);
+    expect(listAudit(db).some((event) => event.action === "pr.package_failed")).toBe(true);
+  });
+
   it("runs end-to-end on fixtures", async () => {
     const dir = join(tmpdir(), `mendpoint-pipe-${Date.now()}`);
     mkdirSync(dir, { recursive: true });
@@ -322,9 +358,15 @@ describe("pipeline", () => {
         "change-source-openapi",
         "candidate-edit",
         "verification-result",
+        "structured-pr-package",
       ]),
     );
     expect(artifacts.every((artifact) => artifact.content_text)).toBe(true);
+    const structuredPackage = JSON.parse(
+      artifacts.find((artifact) => artifact.kind === "structured-pr-package")!.content_text!,
+    ) as { snapshot: { revisionKind: string; resolvedSha: string } };
+    expect(structuredPackage.snapshot.revisionKind).toBe("git_commit");
+    expect(structuredPackage.snapshot.resolvedSha).toMatch(/^[a-f0-9]{40}$/);
     const evidence = listEvidenceRecords(
       db,
       "tenant_default",
@@ -336,8 +378,18 @@ describe("pipeline", () => {
     expect(listArtifactManifests(db, "tenant_other")).toEqual([]);
     expect(listDomainEvents(db, "tenant_default", "migration_pr", prId).map((event) => event.event_type)).toEqual([
       "migration_pr.candidate_recorded",
+      "migration_pr.package_recorded",
       "migration_pr.draft",
     ]);
+    const delivered = JSON.parse(
+      readFileSync(join(ghRoot, "org", "shop", "pulls", "1.json"), "utf8"),
+    ) as { draft: boolean; body: string };
+    expect(delivered.draft).toBe(true);
+    expect(delivered.body).toContain("### Structured Warden draft package");
+    expect(delivered.body).toContain("#### Exact files");
+    expect(delivered.body).toContain("#### Verification results");
+    expect(delivered.body).toContain("Automatic merge: disabled");
+    expect(delivered.body).toContain("Automatic deployment: disabled");
     expect(verifyDomainEventIntegrity(db, "tenant_default").ok).toBe(true);
     expect(verifyAuditIntegrity(db, "tenant_default").ok).toBe(true);
     await applyPrFeedback(db, prId, "closed", {
@@ -510,6 +562,14 @@ describe("pipeline", () => {
       listEvidenceRecords(db, "tenant_default", "migration_pr", waived.consumers[0]!.prId!)
         .some((evidence) => evidence.verdict === "waived"),
     ).toBe(true);
+    const packageArtifact = listArtifactManifests(db, "tenant_default")
+      .filter((artifact) => artifact.kind === "structured-pr-package")
+      .at(-1)!;
+    const packageRecord = JSON.parse(packageArtifact.content_text!) as {
+      snapshot: { revisionKind: string; resolvedSha: string };
+    };
+    expect(packageRecord.snapshot.revisionKind).toBe("content_manifest");
+    expect(packageRecord.snapshot.resolvedSha).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("persists delivery failure and does not duplicate completed consumers on rerun", async () => {

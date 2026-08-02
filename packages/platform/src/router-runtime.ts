@@ -12,6 +12,8 @@ import {
   type ExecutorAvailability,
   type ExecutorDescriptor,
   type HumanHandoffReason,
+  ROUTER_FAILURE_CODES,
+  type RouterFailureCode,
   type RouterPolicySnapshot,
   type RouterTaskSpec,
   type RoutingDecisionRecord,
@@ -21,8 +23,8 @@ export type RouterRetryPolicy = Readonly<{
   maxAttempts: number;
   sameExecutorRetries: number;
   fallbackEnabled: boolean;
-  retryableErrorCodes: readonly string[];
-  fallbackErrorCodes: readonly string[];
+  retryableErrorCodes: readonly RouterFailureCode[];
+  fallbackErrorCodes: readonly RouterFailureCode[];
   retryBackoffMs: readonly number[];
 }>;
 
@@ -48,13 +50,16 @@ export type RouterActualOutcomeInput = Readonly<{
   /** Null means the metering source has not supplied authoritative cost. */
   actualCostUsd: number | null;
   actualQualityScore?: number;
-  errorCode?: string;
+  errorCode?: RouterFailureCode;
   verification: RouterVerificationEvidence;
 }>;
 
 export type RouterDispatch = Readonly<{
   executorId: string;
   providerId: string;
+  executorKind: ExecutorDescriptor["kind"];
+  executorVersion: string;
+  priceVersion: string;
   executionRegion: string;
   expectedQualityScore: number;
   expectedLatencyMs: number;
@@ -116,7 +121,7 @@ export type RouterAttemptEvidence = Readonly<{
   actualLatencyMs: number;
   actualCostUsd: number | null;
   actualQualityScore?: number;
-  errorCode?: string;
+  errorCode?: RouterFailureCode;
   verification: RouterVerificationEvidence;
 }>;
 
@@ -247,7 +252,7 @@ export class PolicyRouterRuntime {
       ...input,
       circuitBreaker: availability,
     });
-    const retryPolicy = normalizeRetryPolicy(input.retryPolicy);
+    const retryPolicy = normalizeRetryPolicy(input.retryPolicy, input.task);
     const prepared = buildPreparedEnvelope({
       input,
       executorSnapshot,
@@ -348,6 +353,15 @@ export class PolicyRouterRuntime {
     }
     if (input.outcome === "cancelled") {
       return this.#finalize(envelopeId, input.completedAt, "cancelled");
+    }
+
+    if (input.errorCode === "verification_failed") {
+      if (current.prepared.task.verification.onFailure === "human_handoff") {
+        return this.#handoff(envelopeId, input.completedAt, "verification_failed");
+      }
+      // A verification failure is never retried on the same executor. It may
+      // use only a task-authorized, policy-bound fallback below.
+      input = { ...input, errorCode: "verification_failed" };
     }
 
     const policy = evidence.prepared.retryPolicy;
@@ -730,9 +744,14 @@ function validateChain(events: readonly RouterEvidenceEvent[]): void {
 
 function normalizeRetryPolicy(
   input: Partial<RouterRetryPolicy> | undefined,
+  task: RouterTaskSpec,
 ): RouterRetryPolicy {
-  const maxAttempts = input?.maxAttempts ?? 3;
-  const sameExecutorRetries = input?.sameExecutorRetries ?? 1;
+  const taskPolicy = task.fallbackPolicy;
+  const maxAttempts = Math.min(input?.maxAttempts ?? taskPolicy.maxAttempts, taskPolicy.maxAttempts);
+  const sameExecutorRetries = Math.min(
+    input?.sameExecutorRetries ?? taskPolicy.sameExecutorRetries,
+    taskPolicy.sameExecutorRetries,
+  );
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
     throw new Error("Router max attempts is invalid");
   }
@@ -744,15 +763,13 @@ function normalizeRetryPolicy(
     throw new Error("Router same executor retry count is invalid");
   }
   const retryableErrorCodes = Object.freeze(
-    [...new Set(input?.retryableErrorCodes ?? ["rate_limited", "timeout", "provider_unavailable"])]
-      .map((value) => value.trim())
-      .filter(Boolean)
+    [...new Set(input?.retryableErrorCodes ?? taskPolicy.retryableFailures)]
+      .filter((value) => taskPolicy.retryableFailures.includes(value))
       .sort(),
   );
   const fallbackErrorCodes = Object.freeze(
-    [...new Set(input?.fallbackErrorCodes ?? ["timeout", "provider_unavailable"])]
-      .map((value) => value.trim())
-      .filter(Boolean)
+    [...new Set(input?.fallbackErrorCodes ?? taskPolicy.fallbackFailures)]
+      .filter((value) => taskPolicy.fallbackFailures.includes(value))
       .sort(),
   );
   const retryBackoffMs = Object.freeze([
@@ -769,7 +786,7 @@ function normalizeRetryPolicy(
   return Object.freeze({
     maxAttempts,
     sameExecutorRetries,
-    fallbackEnabled: input?.fallbackEnabled ?? true,
+    fallbackEnabled: taskPolicy.enabled && (input?.fallbackEnabled ?? true),
     retryableErrorCodes,
     fallbackErrorCodes,
     retryBackoffMs,
@@ -791,6 +808,12 @@ function validateActualOutcome(input: RouterActualOutcomeInput): void {
     (!Number.isFinite(input.actualCostUsd) || input.actualCostUsd < 0)
   ) {
     throw new Error("Router actual cost is invalid");
+  }
+  if (input.outcome === "failed" && (!input.errorCode || !ROUTER_FAILURE_CODES.includes(input.errorCode))) {
+    throw new Error("Router failure code is invalid");
+  }
+  if (input.outcome !== "failed" && input.errorCode !== undefined) {
+    throw new Error("Router failure code is unexpected");
   }
   if (
     input.actualQualityScore !== undefined &&
@@ -836,6 +859,9 @@ function serializableRoute(
   return Object.freeze({
     executorId: evaluation.executorId,
     providerId: evaluation.providerId,
+    executorKind: evaluation.executorKind,
+    executorVersion: evaluation.executorVersion,
+    priceVersion: evaluation.priceVersion,
     executionRegion: evaluation.executionRegion!,
     expectedQualityScore: evaluation.expectedQualityScore,
     expectedLatencyMs: evaluation.expectedLatencyMs,
@@ -846,6 +872,9 @@ function serializableRoute(
 function serializablePlanRoute(route: {
   executorId: string;
   providerId: string;
+  executorKind: ExecutorDescriptor["kind"];
+  executorVersion: string;
+  priceVersion: string;
   executionRegion: string;
   expectedQualityScore: number;
   expectedLatencyMs: number;
@@ -854,6 +883,9 @@ function serializablePlanRoute(route: {
   return Object.freeze({
     executorId: route.executorId,
     providerId: route.providerId,
+    executorKind: route.executorKind,
+    executorVersion: route.executorVersion,
+    priceVersion: route.priceVersion,
     executionRegion: route.executionRegion,
     expectedQualityScore: route.expectedQualityScore,
     expectedLatencyMs: route.expectedLatencyMs,
@@ -866,12 +898,21 @@ function compareEvaluation(
   b: RoutingDecisionRecord["evaluations"][number],
 ): number {
   return (
+    EXECUTOR_KIND_RANK[a.executorKind] - EXECUTOR_KIND_RANK[b.executorKind] ||
     b.expectedQualityScore - a.expectedQualityScore ||
     a.expectedCostUsd - b.expectedCostUsd ||
     a.expectedLatencyMs - b.expectedLatencyMs ||
     a.executorId.localeCompare(b.executorId)
   );
 }
+
+const EXECUTOR_KIND_RANK: Record<ExecutorDescriptor["kind"], number> = {
+  deterministic_recipe: 0,
+  adapter: 1,
+  local_model: 2,
+  open_model: 3,
+  frontier_model: 4,
+};
 
 function rationale(
   decision: RoutingDecisionRecord,
@@ -885,7 +926,7 @@ function rationale(
   }
   return [
     `Selected ${selected.executorId} from ${decision.evaluations.filter((item) => item.eligible).length} eligible executors`,
-    "Eligible executors are ordered by quality, cost, latency, then stable executor identity",
+    "Eligible executors are ordered by deterministic class, health, quality, cost, latency, then stable executor identity",
     `The selected route is bound to policy snapshot ${decision.policySnapshotId}`,
   ];
 }

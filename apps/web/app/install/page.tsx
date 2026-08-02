@@ -1,5 +1,10 @@
 import { apiGet } from "../../lib/api";
 import { InstallWizard } from "./wizard";
+import {
+  PilotSuccessContractPanel,
+  type PilotContractSummary,
+} from "./pilot-success-contract";
+import { PilotReadinessChecklist } from "./pilot-readiness-checklist";
 
 type AppConfig = {
   appId: string | null;
@@ -21,20 +26,46 @@ type Installation = {
   updatedAt: string;
 };
 
+type ScmReadiness = {
+  connections?: Array<{
+    revokedAt: string | null;
+    health: null | {
+      configured: boolean;
+      authenticated: boolean;
+      readAccess: boolean;
+      writeAccess: boolean;
+      webhookOk: boolean;
+      ciVisible: boolean;
+    };
+  }>;
+  repositories?: Array<{
+    snapshots: Array<{ exactCommit: string; available: boolean }>;
+  }>;
+};
+
 export default async function InstallPage() {
   let config: AppConfig | null = null;
   let installations: Installation[] = [];
+  let pilotContracts: PilotContractSummary[] = [];
+  let scm: ScmReadiness | null = null;
   let error: string | null = null;
-  const [configResult, installationsResult] = await Promise.allSettled([
+  const [configResult, installationsResult, pilotContractsResult, scmResult] = await Promise.allSettled([
     apiGet<AppConfig>("/github/app/config"),
     apiGet<Installation[]>("/github/app/installations"),
+    apiGet<{ data: PilotContractSummary[] }>("/pilot-success-contracts"),
+    apiGet<ScmReadiness>("/platform/scm"),
   ]);
   if (configResult.status === "fulfilled") config = configResult.value;
   if (installationsResult.status === "fulfilled") installations = installationsResult.value;
+  if (pilotContractsResult.status === "fulfilled") pilotContracts = pilotContractsResult.value.data;
+  if (scmResult.status === "fulfilled") scm = scmResult.value;
   error = [
     configResult.status === "rejected" ? String(configResult.reason) : null,
     installationsResult.status === "rejected" ? String(installationsResult.reason) : null,
+    pilotContractsResult.status === "rejected" ? String(pilotContractsResult.reason) : null,
+    scmResult.status === "rejected" ? String(scmResult.reason) : null,
   ].filter(Boolean).join(". ") || null;
+  const decisionDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
 
   return (
     <div className="page">
@@ -61,6 +92,34 @@ export default async function InstallPage() {
           <p className="muted">{config.disabledReason}</p>
         </section>
       )}
+
+      <PilotSuccessContractPanel
+        initialContracts={pilotContracts}
+        defaultRepositoryOwner={installations[0]?.accountLogin ?? "customer"}
+        defaultDecisionDate={decisionDate}
+      />
+
+      <PilotReadinessChecklist
+        identityVerified={false}
+        agreementRecorded={false}
+        installationReady={Boolean(scm?.connections?.some((connection) =>
+          !connection.revokedAt &&
+          connection.health?.configured &&
+          connection.health.authenticated &&
+          connection.health.readAccess &&
+          connection.health.writeAccess &&
+          connection.health.webhookOk &&
+          connection.health.ciVisible
+        ))}
+        repositorySnapshotReady={Boolean(scm?.repositories?.some((repository) =>
+          repository.snapshots.some((snapshot) => snapshot.available && /^[a-f0-9]{40,64}$/.test(snapshot.exactCommit))
+        ))}
+        policyRecorded={false}
+        verificationCommandsRecorded={false}
+        canaryVerified={false}
+        baselineRecorded={false}
+        contracts={pilotContracts}
+      />
 
       <section className="card">
         <h2>Existing installations</h2>

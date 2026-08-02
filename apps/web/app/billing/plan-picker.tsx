@@ -9,10 +9,12 @@ export function PlanPicker({
   tenantId,
   currentPlan,
   plans,
+  enabled,
 }: {
   tenantId: string;
   currentPlan: string;
   plans: string[];
+  enabled: boolean;
 }) {
   const router = useRouter();
   const [plan, setPlan] = useState(currentPlan);
@@ -41,16 +43,17 @@ export function PlanPicker({
 
   return (
     <div className="plan-picker">
-      <select value={plan} onChange={(e) => setPlan(e.target.value)} className="input">
+      <select value={plan} onChange={(e) => setPlan(e.target.value)} className="input" disabled={!enabled}>
         {plans.map((p) => (
           <option key={p} value={p}>
             {p}
           </option>
         ))}
       </select>
-      <button type="button" className="btn" onClick={save} disabled={busy || plan === currentPlan}>
+      <button type="button" className="btn" onClick={save} disabled={!enabled || busy || plan === currentPlan}>
         {busy ? "…" : "Set plan"}
       </button>
+      {!enabled && <span className="muted small">Plan changes require an approved manual contract.</span>}
       {msg && <span className="muted small">{msg}</span>}
     </div>
   );
