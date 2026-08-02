@@ -287,15 +287,18 @@ describe("Transformer campaign service", () => {
   });
 
   it("uses MENDPOINT_DATA_DIR by default and honors the database override", () => {
-    expect(transformerControlPlanePath({ MENDPOINT_DATA_DIR: "C:\\data-root" }, "C:\\cwd")).toBe(
-      join("C:\\data-root", "transformer-control-plane.sqlite"),
+    const cwd = join(tmpdir(), "mendpoint-transformer-path-test");
+    const dataRoot = join(cwd, "data-root");
+    const override = join(cwd, "state", "transformer.sqlite");
+    expect(transformerControlPlanePath({ MENDPOINT_DATA_DIR: dataRoot }, cwd)).toBe(
+      join(dataRoot, "transformer-control-plane.sqlite"),
     );
     expect(
       transformerControlPlanePath(
-        { MENDPOINT_TRANSFORMER_CONTROL_PLANE_DB: "C:\\state\\transformer.sqlite" },
-        "C:\\cwd",
+        { MENDPOINT_TRANSFORMER_CONTROL_PLANE_DB: override },
+        cwd,
       ),
-    ).toBe("C:\\state\\transformer.sqlite");
+    ).toBe(override);
   });
 });
 
