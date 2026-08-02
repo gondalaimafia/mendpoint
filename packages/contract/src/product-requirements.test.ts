@@ -89,4 +89,15 @@ describe("product requirement validation", () => {
     const issues = validateProductRequirements(manifest, { expectedIds: [ID] });
     expect(issues.some((issue) => issue.code === "EXTERNAL_BLOCKER")).toBe(true);
   });
+
+  it("rejects an empty declared closure workstream", () => {
+    const manifest = validManifest();
+    manifest.closureWorkstreams.push({ id: "FC-08", title: "Learning lifecycle" });
+    const issues = validateProductRequirements(manifest, { expectedIds: [ID] });
+    expect(issues).toContainEqual({
+      code: "WORKSTREAM_EMPTY",
+      subject: "FC-08",
+      message: "declared workstream must own at least one requirement",
+    });
+  });
 });

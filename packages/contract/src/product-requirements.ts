@@ -341,6 +341,19 @@ export function validateProductRequirements(
   }
 
   const actualIds = [...requirementIds].sort();
+  for (const workstreamId of workstreamIds) {
+    const ownsRequirement = input.requirements.some(
+      (requirement) => isRecord(requirement) && requirement.closureWorkstream === workstreamId,
+    );
+    if (!ownsRequirement) {
+      addIssue(
+        issues,
+        "WORKSTREAM_EMPTY",
+        workstreamId,
+        "declared workstream must own at least one requirement",
+      );
+    }
+  }
   for (const missing of expectedIds.filter((id) => !requirementIds.has(id))) {
     addIssue(issues, "REQUIREMENT_MISSING", missing, "foundational requirement is missing");
   }

@@ -241,12 +241,22 @@ import {
   revokeConnection,
   scmOverview,
 } from "./repository-connections.js";
+import {
+  registerTransformerControlPlaneRoutes,
+  TransformerCampaignService,
+} from "./transformer-control-plane.js";
+import {
+  closeDefaultChangeSourceStore,
+  createChangeSourceRoutes,
+} from "./change-sources.js";
+import { createBillingEconomicsRoutes } from "./billing-economics.js";
 
 // Fail fast in production if env invalid
 assertApiEnvOrExit();
 
 const db = createDb();
 const app = new Hono<ApiEnv>();
+const transformerCampaigns = new TransformerCampaignService();
 const startedAt = Date.now();
 
 function requestAudit(
@@ -307,6 +317,8 @@ app.use(
       "Authorization",
       "X-API-Key",
       "X-Request-Id",
+      "Idempotency-Key",
+      "X-Mendpoint-Evidence-Refs",
     ],
   }),
 );
@@ -398,6 +410,10 @@ app.use("*", async (c, next) => {
   c.set("principal", principal);
   return next();
 });
+
+registerTransformerControlPlaneRoutes(app, transformerCampaigns);
+app.route("/change-sources", createChangeSourceRoutes());
+app.route("/billing", createBillingEconomicsRoutes({ db }));
 
 // Persist alerts under data/
 try {
@@ -2879,19 +2895,35 @@ const server = serve({ fetch: app.fetch, port, hostname }, () => {
   );
 });
 
+let shuttingDown = false;
+
+function closeDurableStores() {
+  transformerCampaigns.close();
+  closeDefaultChangeSourceStore();
+}
+
 function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log(`[mendpoint] ${signal} — graceful shutdown`);
   try {
     // @hono/node-server Server
     const s = server as { close?: (cb?: () => void) => void };
     if (typeof s.close === "function") {
-      s.close(() => process.exit(0));
-      setTimeout(() => process.exit(0), 5000).unref();
+      s.close(() => {
+        closeDurableStores();
+        process.exit(0);
+      });
+      setTimeout(() => {
+        closeDurableStores();
+        process.exit(0);
+      }, 5000).unref();
       return;
     }
   } catch {
     /* */
   }
+  closeDurableStores();
   process.exit(0);
 }
 
