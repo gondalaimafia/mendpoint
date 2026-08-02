@@ -505,11 +505,11 @@ Execution contract: `C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\me
 
 ### Release and deployment
 
-- [ ] Keep every external dependency explicit: private canary, design partner, payment account, SSO tenant, consented dataset, cloud infrastructure, penetration test, and compliance attestation.
-- [ ] Land each coherent gate slice as a separate verified commit.
-- [ ] Run focused tests after each slice and the full test, typecheck, build, GA, audit, API smoke, container, and deployment journey before merge.
-- [ ] Push a pull request, require protected CI, merge only passing code, wait for the production deployment, then verify live health and the affected browser journeys.
-- [ ] Record exact commits, checks, live probes, screenshots, unresolved external gates, and rollback instructions in this review section.
+- [x] Keep every external dependency explicit: private canary, design partner, payment account, SSO tenant, consented dataset, cloud infrastructure, penetration test, and compliance attestation.
+- [x] Land each coherent gate slice as a separate verified commit.
+- [x] Run focused tests after each slice and the full test, typecheck, build, GA, audit, API smoke, container, and deployment journey before merge.
+- [x] Push a pull request, require protected CI, merge only passing code, wait for the production deployment, then verify live health and the affected browser journeys.
+- [x] Record exact commits, checks, live probes, screenshots, unresolved external gates, and rollback instructions in this review section.
 
 ### Foundational closure review
 
@@ -549,3 +549,15 @@ Gate 1 to Gate 3 implementation update:
 - Warden now has a strict content addressed structured pull request package contract linking tenant scoped source, exact snapshot, findings, candidate lineage, verification, generation, policy, ownership, review, and rollback evidence. Durable campaigns persist targets, dependency order, attempt limits, owned exceptions, optimistic revisions, concurrency, pause, resume, cancel, retry, completion policy, immutable attributed events, and reverse rollback plans. Pipeline generation, worker scheduling, native SCM reconciliation, and a real customer campaign remain open.
 - Transformer now has an immutable content addressed recipe contract and the deterministic `node-runtime-18-to-20@1` recipe with declarative preconditions, allowlisted edits, offline verification commands, and drift protected inverse operations. Isolated workspace execution, persisted recipe binding, fenced jobs, staged delivery, and real repository evidence remain open.
 - Governed learning now requires versioned opt in consent bound to purpose and residency, same tenant redacted artifacts, passed redaction, verification, and contamination evidence, accepted human review, temporal cutoff, deduplication, sealed dataset hashes, and append only deletion tombstones. Revocation and deletion remove records from training eligibility. Access review operations, model or adapter lifecycle, a representative consented dataset, external training, and measured adapter improvement remain open.
+
+Release evidence:
+
+- Pull request 5 merged to `main` as `bd0c5ef6e8e07de65c90972a4c725c3867e913b5` after protected run `30724340502` passed test, container builds, deployment E2E, and release gates.
+- Main run `30724448785` passed test, release gates, real container builds, deployment E2E, Fly deployment, and production health for the exact merge commit.
+- Independent production probes returned 200 from `/livez` and `/healthz`. Liveness reported the API and worker healthy. Readiness reported the API ready and authenticated, the worker healthy, and no due, scheduled, running, dead letter, or expired lease recovery work.
+- The root returned the expected 307 to `/access`. `/access` returned 200. `/status` redirected to the protected access page rather than exposing an unauthenticated operator surface.
+- The 1280 by 720 production browser check rendered the 480 pixel access card without horizontal overflow and without browser warnings or errors. Evidence is `C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\mendpoint-foundational-closure-production-viewport-2026-08-01.png`.
+- The first full page browser capture compressed deferred content even though computed geometry was correct. A viewport capture and direct geometry inspection disproved a live layout defect; the full page artifact is not release evidence.
+- External gates remain open for a private customer canary and scoped SCM credentials, a consented design partner campaign, payment processor and tax accounts, an SSO tenant, a representative consented learning dataset, enterprise cloud infrastructure, a penetration test, and compliance attestation.
+- The product requirement register still reports 10 verified, 40 partial, 7 scaffold, 26 unimplemented, and 1 blocked external requirements. The release is materially safer and online, but the foundational specification is not fully closed and customer readiness claims must remain bounded to the implemented evidence.
+- Rollback is the normal Fly release rollback to the prior healthy image or a revert of merge commit `bd0c5ef6e8e07de65c90972a4c725c3867e913b5`, followed by the same protected CI and production health gates.
