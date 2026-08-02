@@ -448,6 +448,69 @@ BEFORE DELETE ON usage_ledger_entries BEGIN
   SELECT RAISE(ABORT, 'usage_ledger_entries_append_only');
 END;
 
+CREATE TABLE IF NOT EXISTS actual_execution_cost_entries (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  idempotency_key TEXT NOT NULL,
+  execution_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  campaign_id TEXT,
+  task_class TEXT NOT NULL,
+  route TEXT NOT NULL,
+  attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+  retry_number INTEGER NOT NULL CHECK (retry_number >= 0),
+  fallback_from_execution_id TEXT,
+  outcome_status TEXT NOT NULL CHECK (
+    outcome_status IN ('accepted', 'rejected', 'unresolved')
+  ),
+  accepted_outcome_id TEXT,
+  input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
+  output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+  cache_read_tokens INTEGER NOT NULL CHECK (cache_read_tokens >= 0),
+  cache_write_tokens INTEGER NOT NULL CHECK (cache_write_tokens >= 0),
+  model_id TEXT NOT NULL,
+  model_price_version TEXT NOT NULL,
+  model_cost_money_micros INTEGER NOT NULL CHECK (model_cost_money_micros >= 0),
+  cache_cost_money_micros INTEGER NOT NULL CHECK (cache_cost_money_micros >= 0),
+  gpu_millis INTEGER NOT NULL CHECK (gpu_millis >= 0),
+  gpu_cost_money_micros INTEGER NOT NULL CHECK (gpu_cost_money_micros >= 0),
+  graph_cost_money_micros INTEGER NOT NULL CHECK (graph_cost_money_micros >= 0),
+  sandbox_cost_money_micros INTEGER NOT NULL CHECK (sandbox_cost_money_micros >= 0),
+  verification_cost_money_micros INTEGER NOT NULL CHECK (
+    verification_cost_money_micros >= 0
+  ),
+  total_cost_money_micros INTEGER NOT NULL CHECK (
+    total_cost_money_micros = model_cost_money_micros + cache_cost_money_micros +
+      gpu_cost_money_micros + graph_cost_money_micros +
+      sandbox_cost_money_micros + verification_cost_money_micros
+  ),
+  currency TEXT NOT NULL CHECK (length(currency) = 3),
+  actor_principal_id TEXT NOT NULL REFERENCES principals(id),
+  entry_sequence INTEGER NOT NULL CHECK (entry_sequence > 0),
+  prev_hash TEXT,
+  entry_hash TEXT NOT NULL CHECK (length(entry_hash) = 64),
+  created_at TEXT NOT NULL,
+  CHECK (
+    (outcome_status = 'accepted' AND accepted_outcome_id IS NOT NULL) OR
+    (outcome_status != 'accepted' AND accepted_outcome_id IS NULL)
+  ),
+  UNIQUE (tenant_id, idempotency_key),
+  UNIQUE (tenant_id, execution_id),
+  UNIQUE (tenant_id, entry_sequence)
+);
+CREATE INDEX IF NOT EXISTS actual_execution_cost_task_idx
+  ON actual_execution_cost_entries(tenant_id, task_id, campaign_id, entry_sequence);
+CREATE INDEX IF NOT EXISTS actual_execution_cost_route_idx
+  ON actual_execution_cost_entries(tenant_id, task_class, route, outcome_status);
+CREATE TRIGGER IF NOT EXISTS actual_execution_cost_entries_append_only_update
+BEFORE UPDATE ON actual_execution_cost_entries BEGIN
+  SELECT RAISE(ABORT, 'actual_execution_cost_entries_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS actual_execution_cost_entries_append_only_delete
+BEFORE DELETE ON actual_execution_cost_entries BEGIN
+  SELECT RAISE(ABORT, 'actual_execution_cost_entries_append_only');
+END;
+
 CREATE TABLE IF NOT EXISTS warden_campaigns (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -1826,6 +1889,16 @@ export type {
 } from "./usage.js";
 
 export type {
+  ActualExecutionCostInput,
+  ActualExecutionCostEntry,
+  ExecutionCostIntegrity,
+  ExecutionOutcomeStatus,
+  GrossMarginAttribution,
+  GrossMarginIncompleteAttribution,
+  GrossMarginReconciliation,
+} from "./gross-margin.js";
+
+export type {
   WardenCampaign,
   WardenCampaignStatus,
   WardenCampaignTarget,
@@ -1872,6 +1945,12 @@ export {
   listUsageLedger,
   reconcileUsageLedger,
 } from "./usage.js";
+export {
+  listActualExecutionCosts,
+  reconcileGrossMargin,
+  recordActualExecutionCost,
+  verifyExecutionCostIntegrity,
+} from "./gross-margin.js";
 
 export type SuppressedPattern = {
   id: string;

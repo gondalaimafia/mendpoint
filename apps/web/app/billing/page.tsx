@@ -49,6 +49,16 @@ type UsageResponse = {
   reconciliation: { ok: boolean; checked: number; error?: string };
 };
 
+type GrossMarginResponse = {
+  complete: boolean;
+  currency: string | null;
+  netRevenueMoneyMicros: number | null;
+  actualCostMoneyMicros: number;
+  exactGrossMarginMoneyMicros: number | null;
+  unattributedRevenueMoneyMicros: number;
+  incompleteAttributions: Array<{ code: string; taskId: string | null }>;
+};
+
 function mcu(value: number | null): string {
   return value === null ? "Not configured" : (value / 1_000_000).toFixed(3);
 }
@@ -65,19 +75,23 @@ export default async function BillingPage() {
   let plans: Plan[] = [];
   let tenants: Tenant[] = [];
   let usage: UsageResponse | null = null;
+  let grossMargin: GrossMarginResponse | null = null;
   let error: string | null = null;
-  const [plansResult, tenantsResult, usageResult] = await Promise.allSettled([
+  const [plansResult, tenantsResult, usageResult, grossMarginResult] = await Promise.allSettled([
     apiGet<Plan[]>("/billing/plans"),
     apiGet<Tenant[]>("/tenants"),
     apiGet<UsageResponse>("/billing/usage"),
+    apiGet<{ data: GrossMarginResponse }>("/billing/gross-margin"),
   ]);
   if (plansResult.status === "fulfilled") plans = plansResult.value;
   if (tenantsResult.status === "fulfilled") tenants = tenantsResult.value;
   if (usageResult.status === "fulfilled") usage = usageResult.value;
+  if (grossMarginResult.status === "fulfilled") grossMargin = grossMarginResult.value.data;
   error = [
     plansResult.status === "rejected" ? String(plansResult.reason) : null,
     tenantsResult.status === "rejected" ? String(tenantsResult.reason) : null,
     usageResult.status === "rejected" ? String(usageResult.reason) : null,
+    grossMarginResult.status === "rejected" ? String(grossMarginResult.reason) : null,
   ].filter(Boolean).join(". ") || null;
 
   return (
@@ -161,6 +175,37 @@ export default async function BillingPage() {
             )}
           </section>
         </>
+      )}
+
+      {grossMargin && (
+        <section className="card">
+          <div className="row-between">
+            <div>
+              <h2>Gross margin reconciliation</h2>
+              <p className="muted small">
+                Revenue and actual execution cost are joined only when task attribution is complete.
+              </p>
+            </div>
+            <span className={`badge ${grossMargin.complete ? "high" : "breaking"}`}>
+              {grossMargin.complete ? "Complete" : "Attribution needed"}
+            </span>
+          </div>
+          <dl className="kv">
+            <dt>Net revenue</dt>
+            <dd>{money(grossMargin.netRevenueMoneyMicros, grossMargin.currency)}</dd>
+            <dt>Actual cost</dt>
+            <dd>{money(grossMargin.actualCostMoneyMicros, grossMargin.currency)}</dd>
+            <dt>Exact gross margin</dt>
+            <dd>{money(grossMargin.exactGrossMarginMoneyMicros, grossMargin.currency)}</dd>
+            <dt>Unattributed revenue</dt>
+            <dd>{money(grossMargin.unattributedRevenueMoneyMicros, grossMargin.currency)}</dd>
+          </dl>
+          {!grossMargin.complete && (
+            <p className="muted small">
+              {grossMargin.incompleteAttributions.length} attribution issue{grossMargin.incompleteAttributions.length === 1 ? "" : "s"} must be resolved before margin is reported.
+            </p>
+          )}
+        </section>
       )}
 
       <section className="grid">
