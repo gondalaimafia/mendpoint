@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,6 +13,15 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import {
+  CredentialBroker,
+  MemorySecretProvider,
+  type CredentialAccessAuditEvent,
+  type CredentialDescriptor,
+  type GitHubRepositoryTransport,
+  type GitHubTransportRequest,
+  type GitHubTransportResponse,
+} from "@mendpoint/platform";
+import {
   materializeConnectedRepository,
   purgeExpiredSnapshots,
   registerConnectedRepository,
@@ -25,6 +34,110 @@ const roots: string[] = [];
 const dbs: AppDb[] = [];
 const previousReposDir = process.env.MENDPOINT_REPOS_DIR;
 const previousNodeEnv = process.env.NODE_ENV;
+const GITHUB_COMMIT = "1".repeat(40);
+const GITHUB_TREE = "2".repeat(40);
+const GITHUB_BLOB = "3".repeat(40);
+
+class FakeGitHubTransport implements GitHubRepositoryTransport {
+  readonly provenance = "test" as const;
+  readonly requests: GitHubTransportRequest[] = [];
+
+  constructor(private readonly forbidden = false) {}
+
+  async request(input: GitHubTransportRequest): Promise<GitHubTransportResponse> {
+    this.requests.push(input);
+    if (this.forbidden) return { status: 403, body: { message: "secret-installation-token" } };
+    if (input.path === "/repositories/98765") {
+      return {
+        status: 200,
+        body: {
+          id: 98765,
+          full_name: "acme/service",
+          default_branch: "main",
+          permissions: { pull: true, push: false },
+        },
+      };
+    }
+    if (input.path === "/repos/acme/service/git/ref/heads/main") {
+      return { status: 200, body: { object: { type: "commit", sha: GITHUB_COMMIT } } };
+    }
+    if (input.path === `/repos/acme/service/git/commits/${GITHUB_COMMIT}`) {
+      return { status: 200, body: { sha: GITHUB_COMMIT, tree: { sha: GITHUB_TREE } } };
+    }
+    if (input.path === `/repos/acme/service/git/trees/${GITHUB_TREE}?recursive=1`) {
+      const content = Buffer.from(JSON.stringify({ scripts: { test: "vitest run" } }));
+      return {
+        status: 200,
+        body: {
+          truncated: false,
+          tree: [{
+            path: "package.json",
+            mode: "100644",
+            type: "blob",
+            sha: GITHUB_BLOB,
+            size: content.length,
+          }],
+        },
+      };
+    }
+    if (input.path === `/repos/acme/service/git/blobs/${GITHUB_BLOB}`) {
+      const content = Buffer.from(JSON.stringify({ scripts: { test: "vitest run" } }));
+      return {
+        status: 200,
+        body: { encoding: "base64", size: content.length, content: content.toString("base64") },
+      };
+    }
+    return { status: 404, body: { message: "Not Found" } };
+  }
+}
+
+function githubRuntime(input: {
+  transport?: GitHubRepositoryTransport;
+  descriptor?: CredentialDescriptor;
+} = {}) {
+  const audits: CredentialAccessAuditEvent[] = [];
+  const secrets = new MemorySecretProvider({
+    "github/installations/12345": "secret-installation-token",
+  });
+  const broker = new CredentialBroker({
+    providers: [secrets],
+    audit: (event) => {
+      audits.push(event);
+    },
+  });
+  return {
+    audits,
+    dependencies: {
+      credentialBroker: broker,
+      githubTransport: input.transport ?? new FakeGitHubTransport(),
+      credentialDescriptor: input.descriptor
+        ? () => input.descriptor!
+        : undefined,
+      actorId: "operator:test",
+      requestId: "request-test",
+    },
+  };
+}
+
+function registerGitHub(db: AppDb) {
+  const connection = registerScmConnection(db, {
+    tenantId: "tenant-a",
+    provider: "github",
+    credentialRef: "memory://github/installations/12345",
+    externalAccountId: "12345",
+    displayName: "Acme GitHub",
+  });
+  const repository = registerConnectedRepository(db, {
+    tenantId: "tenant-a",
+    connectionId: connection.id,
+    remoteId: "98765",
+    owner: "acme",
+    name: "service",
+    defaultBranch: "main",
+    retentionDays: 14,
+  });
+  return { connection, repository };
+}
 
 function git(root: string, ...args: string[]): string {
   return execFileSync("git", ["-C", root, ...args], {
@@ -155,7 +268,7 @@ describe("repository connection service", () => {
       tenantId: "tenant-a",
       provider: "github",
       credentialRef: "vault://tenant-a/github/customer",
-      externalAccountId: "customer",
+      externalAccountId: "12345",
       displayName: "Customer GitHub",
     });
     const revoked = revokeConnection(db, "tenant-a", connection.id);
@@ -164,5 +277,131 @@ describe("repository connection service", () => {
       health: { revoked: true, authenticated: false },
     });
     expect(JSON.stringify(revoked)).not.toContain("vault://");
+  });
+
+  it("materializes an authorized GitHub commit idempotently without claiming test health", async () => {
+    const { db } = fixture();
+    const { connection, repository } = registerGitHub(db);
+    const runtime = githubRuntime();
+
+    const first = await materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    }, runtime.dependencies);
+    const second = await materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    }, runtime.dependencies);
+
+    expect(first).toMatchObject({
+      reused: false,
+      snapshot: { exactCommit: GITHUB_COMMIT },
+      source: { provider: "github", defaultBranch: "main", headSha: GITHUB_COMMIT },
+    });
+    expect(second).toMatchObject({ reused: true, snapshot: { id: first.snapshot.id } });
+    expect(listRepositorySnapshots(db, "tenant-a", repository.id)).toHaveLength(1);
+    expect(runtime.audits.every((event) => event.outcome === "granted")).toBe(true);
+    expect(runtime.audits[0]).toMatchObject({
+      actorId: "operator:test",
+      audience: "github:installation:12345",
+      purpose: "materialize_read_only_repository_snapshot",
+      requestId: "request-test",
+    });
+    const overview = scmOverview(db, "tenant-a");
+    expect(overview.providers.find((provider) => provider.provider === "github"))
+      .toMatchObject({ snapshots: false, pullRequests: false });
+    expect(overview.connections[0]).toMatchObject({
+      id: connection.id,
+      health: {
+        authenticated: false,
+        readAccess: false,
+        lastSyncAt: null,
+        errorCode: "github_snapshot_unproven",
+      },
+    });
+    expect(JSON.stringify({ first, second, overview, audits: runtime.audits }))
+      .not.toContain("secret-installation-token");
+    await expect(materializeConnectedRepository(db, {
+      tenantId: "tenant-b",
+      repositoryId: repository.id,
+    }, runtime.dependencies)).rejects.toThrow("connected_repository_tenant_mismatch");
+  });
+
+  it("fails closed on revoked credentials and GitHub permission loss", async () => {
+    const { db } = fixture();
+    const { connection, repository } = registerGitHub(db);
+    const revokedDescriptor: CredentialDescriptor = {
+      credentialId: connection.id,
+      secret: { provider: "memory", id: "github/installations/12345" },
+      audiences: ["github:installation:12345"],
+      revocation: { revokedAt: "2026-08-01T00:00:00.000Z", reason: "installation removed" },
+      rotation: { generation: 1, issuedAt: "2026-07-01T00:00:00.000Z" },
+    };
+    const revoked = githubRuntime({ descriptor: revokedDescriptor });
+    await expect(materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    }, revoked.dependencies)).rejects.toThrow("github_credential_revoked");
+    expect(scmOverview(db, "tenant-a").connections[0]?.health).toMatchObject({
+      authenticated: false,
+      readAccess: false,
+      errorCode: "github_credential_revoked",
+    });
+    expect(listRepositorySnapshots(db, "tenant-a", repository.id)).toHaveLength(0);
+
+    const denied = githubRuntime({ transport: new FakeGitHubTransport(true) });
+    await expect(materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    }, denied.dependencies)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    expect(scmOverview(db, "tenant-a").connections[0]?.health).toMatchObject({
+      authenticated: false,
+      readAccess: false,
+      errorCode: "github_snapshot_permission_denied",
+    });
+    expect(JSON.stringify(scmOverview(db, "tenant-a"))).not.toContain("secret-installation-token");
+  });
+
+  it("rolls back database state and removes GitHub output after a later binding failure", async () => {
+    const { db, root } = fixture();
+    const { repository } = registerGitHub(db);
+    const runtime = githubRuntime();
+
+    await expect(materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+      consumerRepoId: "missing-consumer-repository",
+    }, runtime.dependencies)).rejects.toThrow("consumer_repository_tenant_mismatch");
+
+    expect(listRepositorySnapshots(db, "tenant-a", repository.id)).toHaveLength(0);
+    const snapshotRoot = join(root, ".mendpoint-snapshots", "tenant-a");
+    expect(existsSync(snapshotRoot) ? readdirSync(snapshotRoot) : []).toEqual([]);
+  });
+
+  it("requires numeric installation and repository IDs for GitHub selection", () => {
+    const { db } = fixture();
+    expect(() => registerScmConnection(db, {
+      tenantId: "tenant-a",
+      provider: "github",
+      credentialRef: "memory://github/installations/not-numeric",
+      externalAccountId: "customer-org",
+      displayName: "Customer GitHub",
+    })).toThrow("github_installation_id_invalid");
+
+    const connection = registerScmConnection(db, {
+      tenantId: "tenant-a",
+      provider: "github",
+      credentialRef: "memory://github/installations/12345",
+      externalAccountId: "12345",
+      displayName: "Customer GitHub",
+    });
+    expect(() => registerConnectedRepository(db, {
+      tenantId: "tenant-a",
+      connectionId: connection.id,
+      remoteId: "acme/service",
+      owner: "acme",
+      name: "service",
+      defaultBranch: "main",
+    })).toThrow("github_repository_id_invalid");
   });
 });

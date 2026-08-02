@@ -27,3 +27,12 @@ export {
 export { proposeWardenFix, hasAutomaticWardenRepair } from "./fixes.js";
 export { runWarden, runWelder, runApiBugAgent } from "./agent.js";
 export { discoverVerifyCommand } from "./discover-verify.js";
+export {
+  runPolicyRoutedWarden,
+  type RoutedWardenResult,
+  type RoutedWardenTelemetry,
+  type WardenRouterPrepared,
+  type WardenRouterRecorded,
+  type WardenRoutingRuntimePort,
+  type WardenExecutorPort,
+} from "./routed-agent.js";

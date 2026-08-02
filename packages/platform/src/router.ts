@@ -194,6 +194,11 @@ export class ExecutorCircuitBreaker {
   }
 }
 
+/** Runtime availability boundary used by the policy router and deterministic replay. */
+export type ExecutorAvailability = Readonly<{
+  allows(executorId: string, providerId: string, at: Date): boolean;
+}>;
+
 export type RoutingExclusionReason =
   | "capability_missing"
   | "privacy_disallowed"
@@ -304,7 +309,7 @@ export type RouteTaskInput = Readonly<{
   task: RouterTaskSpec;
   policy: RouterPolicySnapshot;
   registry: ExecutorRegistry;
-  circuitBreaker: ExecutorCircuitBreaker;
+  circuitBreaker: ExecutorAvailability;
   remainingBudgetUsd: number;
   decidedAt: Date;
 }>;
@@ -394,7 +399,7 @@ export function routeTask(input: RouteTaskInput): RoutingOutcome {
 export type SelectFallbackInput = Readonly<{
   plan: RoutingPlan;
   failedExecutorIds: readonly string[];
-  circuitBreaker: ExecutorCircuitBreaker;
+  circuitBreaker: ExecutorAvailability;
   remainingBudgetUsd: number;
   at: Date;
   tenantId: string;
@@ -447,7 +452,7 @@ function evaluateExecutor(
   executor: ExecutorDescriptor,
   task: RouterTaskSpec,
   policy: RouterPolicySnapshot,
-  breaker: ExecutorCircuitBreaker,
+  breaker: ExecutorAvailability,
   at: Date,
   effectiveBudget: number,
 ): ExecutorEvaluation {
@@ -597,7 +602,7 @@ function decisionRecord(
 ): RoutingDecisionRecord {
   const decidedAt = input.decidedAt.toISOString();
   const body = {
-    task: input.task,
+    task: routingTaskIdentity(input.task),
     policyFingerprint,
     decidedAt,
     remainingBudgetUsd: input.remainingBudgetUsd,
@@ -621,6 +626,17 @@ function decisionRecord(
     evaluations: Object.freeze([...evaluations]),
     handoffReason,
   });
+}
+
+function routingTaskIdentity(task: RouterTaskSpec): unknown {
+  const { goal, ...routingFields } = task;
+  const prehashed = /^sha256:[a-f0-9]{64}$/.test(goal)
+    ? goal.slice("sha256:".length)
+    : createHash("sha256").update(goal).digest("hex");
+  return {
+    ...routingFields,
+    goalDigest: prehashed,
+  };
 }
 
 function validateTask(task: RouterTaskSpec): void {

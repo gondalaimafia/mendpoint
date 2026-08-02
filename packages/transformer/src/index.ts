@@ -87,3 +87,27 @@ export {
   resolveRecipe,
   validateRecipe,
 } from "./recipe.js";
+
+export {
+  RecipeWorkspaceExecutionError,
+  executeRecipeInWorkspace,
+  restoreRecipeExecutionInWorkspace,
+} from "./recipe-workspace-execution.js";
+export type {
+  ExactSourceSnapshot,
+  PersistedRecipeEvidence,
+  RecipeCommandEvidence,
+  RecipeCommandInvocation,
+  RecipeCommandResult,
+  RecipeCommandRunner,
+  RecipeExecutionFence,
+  RecipeExecutionFenceEvidence,
+  RecipeExecutionEvidenceRecord,
+  RecipeExecutionRollback,
+  RecipeOperationEvidence,
+  RecipeRestoreEvidenceRecord,
+  RecipeWorkspaceExecutionResult,
+  RecipeWorkspaceRestoreResult,
+  ExecuteRecipeWorkspaceInput,
+  RestoreRecipeWorkspaceInput,
+} from "./recipe-workspace-execution.js";

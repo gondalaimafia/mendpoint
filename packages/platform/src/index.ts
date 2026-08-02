@@ -109,11 +109,16 @@ export type {
   RepositoryDiscovery,
   RepositorySource,
   RepositorySourceErrorCode,
+  GitHubTransportRequest,
+  GitHubTransportResponse,
+  GitHubRepositoryTransport,
 } from "./repository-source.js";
 export {
   RepositorySourceError,
   validateRepositoryRelativePath,
   createLocalGitRepositorySource,
+  FetchGitHubRepositoryTransport,
+  createGitHubRepositorySource,
 } from "./repository-source.js";
 
 export type {
@@ -152,6 +157,7 @@ export {
   type ExecutorDescriptor,
   type CircuitBreakerConfig,
   type CircuitBreakerState,
+  type ExecutorAvailability,
   type RoutingExclusionReason,
   type ExecutorEvaluation,
   type PolicyBoundExecutorRoute,
@@ -164,3 +170,22 @@ export {
   type RouteTaskInput,
   type SelectFallbackInput,
 } from "./router.js";
+
+export {
+  InMemoryRouterEvidenceStore,
+  JsonlRouterEvidenceStore,
+  PolicyRouterRuntime,
+  type PersistedRouterTaskSpec,
+  type PrepareRouterRuntimeInput,
+  type RouterActualOutcomeInput,
+  type RouterAttemptEvidence,
+  type RouterDispatch,
+  type RouterEvidenceEnvelope,
+  type RouterEvidenceEvent,
+  type RouterEvidenceStore,
+  type RouterFinalOutcome,
+  type RouterPreparedEnvelope,
+  type RouterRetryPolicy,
+  type RouterRuntimeDisposition,
+  type RouterVerificationEvidence,
+} from "./router-runtime.js";
