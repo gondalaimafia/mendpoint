@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
+  RecipeAnalysisCache,
   RecipeWorkspaceExecutionError,
   createCampaign,
   executeRecipeInWorkspace,
@@ -355,6 +356,17 @@ async function workspaceRun(testCase: TransformerWorkspaceCase) {
         : "sensitive text absent",
     }),
   ];
+  if (execution) {
+    grades.push(evalGrade({
+      id: "recipe.applicability_provenance",
+      critical: true,
+      passed: execution.analysis.status === "applicable" &&
+        execution.analysis.sourceDigest === execution.inputDigest &&
+        execution.analysis.estimatedOperations === execution.operations.length,
+      expected: "applicable analysis bound to source digest and operation count",
+      observed: execution.analysis,
+    }));
+  }
   if (testCase.expectedCode) {
     grades.push(evalGrade({
       id: "outcome.error_code",
@@ -488,7 +500,113 @@ const PLANNING_SCENARIO: AgentEvalScenario = Object.freeze({
   },
 });
 
+const ANALYSIS_SCENARIO: AgentEvalScenario = Object.freeze({
+  id: "transformer.analysis.applicability_cache.heldout",
+  product: "transformer",
+  family: "recipe_analysis",
+  tier: "edge",
+  critical: true,
+  sourceRefs: Object.freeze([HARBOR_TASKS, METR_TASK_STANDARD]),
+  deterministic: true,
+  budget: Object.freeze({
+    maxDurationMs: 1_000,
+    maxSteps: 10,
+    maxChangedFiles: 0,
+    maxChangedBytes: 0,
+    maxEvidenceBytes: 32 * 1024,
+  }),
+  run: async () => {
+    const started = Date.now();
+    const cache = new RecipeAnalysisCache(8);
+    const reference = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+    const repeated = Array.from(
+      { length: 5 },
+      () => cache.analyze("tenant-eval", reference, FILES),
+    );
+    const application = cache.apply("tenant-eval", reference, FILES);
+    const already = cache.analyze("tenant-eval", reference, application.files);
+    const unsupported = cache.analyze(
+      "tenant-eval",
+      reference,
+      { ...FILES, ".nvmrc": "22\n" },
+    );
+    const otherTenant = cache.analyze("tenant-other", reference, FILES);
+    const snapshot = JSON.stringify({ repeated, already, unsupported, otherTenant });
+    const durationMs = Date.now() - started;
+    const passed = repeated.every((analysis) => analysis.status === "applicable") &&
+      repeated[0]?.cacheHit === false &&
+      repeated.slice(1).every((analysis) => analysis.cacheHit) &&
+      already.status === "already_applied" &&
+      unsupported.status === "unsupported" &&
+      otherTenant.cacheHit === false &&
+      cache.hits === 5 &&
+      cache.misses === 4 &&
+      !snapshot.includes(SECRET_SENTINEL);
+    const observation: AgentEvalObservation = Object.freeze({
+      disposition: passed ? "passed" : "failed",
+      semanticDigest: agentEvalDigest({
+        repeated: repeated.map((analysis) => [analysis.status, analysis.cacheHit]),
+        already: already.status,
+        unsupported: unsupported.status,
+        otherTenantHit: otherTenant.cacheHit,
+        hits: cache.hits,
+        misses: cache.misses,
+      }),
+      metrics: Object.freeze({
+        durationMs,
+        steps: 9,
+        changedFiles: 0,
+        changedBytes: 0,
+        evidenceBytes: Buffer.byteLength(snapshot, "utf8"),
+        cacheHits: cache.hits,
+      }),
+      details: Object.freeze({
+        applicable: repeated.map((analysis) => analysis.status),
+        alreadyApplied: already.status,
+        unsupported: unsupported.status,
+        tenantIsolation: otherTenant.cacheHit === false,
+        cacheSize: cache.size,
+      }),
+    });
+    return Object.freeze({
+      observation,
+      grades: Object.freeze([
+        evalGrade({
+          id: "analysis.classification",
+          critical: true,
+          passed: repeated.every((analysis) => analysis.status === "applicable") &&
+            already.status === "already_applied" && unsupported.status === "unsupported",
+          expected: "applicable, already applied, and unsupported",
+          observed: [repeated[0]?.status, already.status, unsupported.status],
+        }),
+        evalGrade({
+          id: "analysis.cache_reuse",
+          critical: true,
+          passed: cache.hits === 5 && cache.misses === 4,
+          expected: "5 hits and 4 misses",
+          observed: `${cache.hits} hits and ${cache.misses} misses`,
+        }),
+        evalGrade({
+          id: "analysis.cache_tenant_scope",
+          critical: true,
+          passed: otherTenant.cacheHit === false,
+          expected: "cross tenant miss",
+          observed: otherTenant.cacheHit ? "hit" : "miss",
+        }),
+        evalGrade({
+          id: "analysis.cache_source_redaction",
+          critical: true,
+          passed: !snapshot.includes(SECRET_SENTINEL),
+          expected: "source absent",
+          observed: snapshot.includes(SECRET_SENTINEL) ? "source present" : "source absent",
+        }),
+      ]),
+    });
+  },
+});
+
 export const TRANSFORMER_AGENT_EVAL_SCENARIOS: readonly AgentEvalScenario[] = Object.freeze([
   PLANNING_SCENARIO,
+  ANALYSIS_SCENARIO,
   ...WORKSPACE_CASES.map(workspaceScenario),
 ]);

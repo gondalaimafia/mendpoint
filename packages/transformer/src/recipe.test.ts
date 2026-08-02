@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
+  RecipeAnalysisCache,
+  analyzeRecipe,
   applyInverseOperations,
   applyRecipe,
   assertRecipePathAllowed,
@@ -48,6 +50,63 @@ describe("immutable Transformer recipes", () => {
     expect(Object.isFrozen(NODE_RUNTIME_18_TO_20_RECIPE.transforms)).toBe(true);
     expect(Object.isFrozen(first.operations)).toBe(true);
     expect(Object.isFrozen(first.files)).toBe(true);
+  });
+
+  it("classifies applicability before mutation with deterministic provenance", () => {
+    const reference = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+    const first = analyzeRecipe(reference, INPUT);
+    const second = analyzeRecipe(reference, { ...INPUT });
+
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({
+      recipe: reference,
+      sourceDigest: recipeFilesDigest(INPUT),
+      status: "applicable",
+      estimatedOperations: 4,
+      cacheHit: false,
+    });
+    expect(first.matchedPaths).toEqual([
+      ".node-version",
+      ".nvmrc",
+      "Dockerfile",
+      "package.json",
+    ]);
+    expect(first.reasons).toEqual([]);
+    expect(Object.isFrozen(first)).toBe(true);
+  });
+
+  it("distinguishes already applied and unsupported sources without changing input", () => {
+    const reference = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+    const applied = applyRecipe(reference, INPUT);
+    const before = { ...applied.files };
+
+    expect(analyzeRecipe(reference, applied.files)).toMatchObject({
+      status: "already_applied",
+      estimatedOperations: 0,
+    });
+    expect(() => applyRecipe(reference, applied.files)).toThrow("recipe_already_applied");
+
+    const unsupported = { ...INPUT, ".nvmrc": "22\n" };
+    expect(analyzeRecipe(reference, unsupported)).toMatchObject({
+      status: "unsupported",
+      reasons: ["recipe_precondition_failed:.nvmrc:node_major"],
+    });
+    expect(applied.files).toEqual(before);
+  });
+
+  it("reuses only bounded tenant scoped derived analysis metadata", () => {
+    const reference = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+    const cache = new RecipeAnalysisCache(1);
+
+    expect(cache.analyze("tenant-a", reference, INPUT).cacheHit).toBe(false);
+    expect(cache.analyze("tenant-a", reference, { ...INPUT }).cacheHit).toBe(true);
+    expect(cache.apply("tenant-a", reference, INPUT).analysis.cacheHit).toBe(false);
+    expect(cache.hits).toBe(2);
+    expect(cache.misses).toBe(1);
+    expect(cache.analyze("tenant-b", reference, INPUT).cacheHit).toBe(false);
+    expect(cache.size).toBe(1);
+    expect(JSON.stringify(cache)).not.toContain("payments-api");
+    expect(JSON.stringify(cache)).not.toContain("console.log");
   });
 
   it("rejects unknown recipe versions", () => {

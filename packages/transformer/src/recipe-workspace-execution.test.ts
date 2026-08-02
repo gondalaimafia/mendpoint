@@ -117,6 +117,18 @@ describe("bounded recipe workspace execution", () => {
       revision: "a".repeat(40),
       digest: source().digest,
     });
+    expect(first.analysis).toMatchObject({
+      status: "applicable",
+      estimatedOperations: 4,
+      cacheHit: false,
+    });
+    expect(first.evidence.record).toMatchObject({
+      schemaVersion: 2,
+      analysis: {
+        status: "applicable",
+        estimatedOperations: 4,
+      },
+    });
     expect(first.evidence.record.commands).toHaveLength(2);
     expect(asserted.length).toBeGreaterThanOrEqual(8);
     expect(invocations).toHaveLength(4);

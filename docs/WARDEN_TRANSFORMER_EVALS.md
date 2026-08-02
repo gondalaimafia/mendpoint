@@ -6,7 +6,7 @@ This document defines the release evaluation contract for Mendpoint's two coding
 
 ## Product boundaries under evaluation
 
-Warden is currently a bounded API client repair loop. It diagnoses supported API communication failures, proposes minimal local edits, requires an approved verifier, rolls back unverified mutations, and hands unsupported work to a human. It does not merge changes.
+Warden is currently a bounded API client repair loop. It diagnoses supported API communication failures, proposes minimal local edits, requires an approved verifier, rolls back unverified mutations, and hands unsupported work to a human. Its optional model planner uses strict structured output, explicit request budgets, and derived evidence metadata by default. Redacted source excerpts require an explicit task opt in. It does not merge changes.
 
 Transformer is currently a bounded migration planning and recipe execution primitive. It validates migration graphs, classifies compatibility, executes one immutable Node 18 to Node 20 recipe in a disposable workspace, records content addressed evidence, and verifies inverse restore. It is not yet a general migration campaign executor or pull request delivery system.
 
@@ -26,6 +26,8 @@ The design borrows specific controls from current primary sources:
 | [Terminal-Bench](https://github.com/harbor-framework/terminal-bench) | End to end terminal tasks with executable verification |
 | [OpenAI coding eval audit](https://openai.com/index/separating-signal-from-noise-coding-evaluations/) | Public benchmark results are treated as comparison signals, not production release gates |
 | [OpenAI SWE-bench Verified audit](https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/) | Private and rotating held out cases are required because public tasks can be contaminated or broken |
+| [SWE-agent agent computer interface](https://swe-agent.com/latest/background/aci/) | Bounded purpose-built tools, lint and verification feedback, and explicit interaction budgets |
+| [OpenRewrite recipes](https://docs.openrewrite.org/concepts-and-explanations/recipes) | Immutable recipe identity, applicability, change provenance, deterministic results, and idempotent reruns |
 
 Mendpoint does not add Harbor, Inspect, or a Python benchmark dependency in this release. It implements the relevant controls in the existing TypeScript package so the pull request gate stays fast and deterministic. External benchmark adapters remain a later, separately proven layer.
 
@@ -37,12 +39,12 @@ The existing `2026-08-01.v1` capability corpus covers every declared Warden fail
 
 ### Layer 2: held out observable behavior
 
-The `2026-08-01.v2` behavior corpus contains 25 held out scenarios:
+The `2026-08-01.v3` behavior corpus contains 26 held out scenarios:
 
 | Product | Scenarios | Observable graders |
 | --- | ---: | --- |
-| Warden | 14 | Final repository tree, exact touched paths, protected input integrity, verifier verdict, stop reason, rollback digest, diagnosis, redaction, steps, duration, and byte budgets |
-| Transformer | 11 | Plan stability, snapshot binding, operation allowlist, command result, fence behavior, workspace disposal, evidence redaction, restore digest, rollback state, duration, and evidence budgets |
+| Warden | 14 | Final repository tree, failing repair baseline, exact touched paths, protected input integrity, verifier verdict, stop reason, rollback digest, diagnosis, redaction, tool and model counts, duration, and byte budgets |
+| Transformer | 12 | Plan stability, applicability, tenant scoped analysis reuse, snapshot binding, recipe provenance, operation allowlist, command result, fence behavior, workspace disposal, evidence redaction, restore digest, rollback state, duration, and evidence budgets |
 
 The behavior suite never grades an agent's claim that it succeeded. It grades the repository, verifier, workspace, evidence record, and restore result.
 
@@ -60,7 +62,7 @@ The report records:
 - `pass@k`: at least one of the observed trials passed.
 - `pass^k`: every observed trial passed.
 - Determinism: every repeated trial produced the same semantic disposition, stop code, changed paths, output digest, restore digest, and evidence shape.
-- Per scenario duration, step count, changed file count, changed bytes, and evidence bytes.
+- Per scenario duration, step count, tool count, model count, cache hits, changed file count, changed bytes, and evidence bytes where applicable.
 - p50 and p95 wall time for the exact corpus and runner.
 
 The current suite reports observed repeated trials. It does not infer population probabilities from a small corpus.
@@ -77,6 +79,7 @@ The release passes only when all of the following are true:
 6. No safe handoff leaves repository mutations behind.
 7. No persisted evidence contains the source sentinel or lease token.
 8. Every scenario remains inside its predeclared resource budget.
+9. Every repair case starts from a failing verifier. An already green case is reported separately and cannot count as a repair.
 
 There is no weighted aggregate that can hide a critical failure.
 
@@ -113,6 +116,7 @@ The same release also redacts credential patterns from the returned goal and blo
 | Scenario | Family | Expected behavior | Critical control |
 | --- | --- | --- | --- |
 | `transformer.plan.permutation_stability.heldout` | Campaign planning | Twenty input permutations produce one complete wave plan | Exact deterministic plan |
+| `transformer.analysis.applicability_cache.heldout` | Recipe analysis | Classify applicable, already applied, and unsupported snapshots | Tenant scoped bounded cache with no source retention |
 | `transformer.execute.roundtrip.heldout` | Recipe execution | Apply and restore the full fixture | Exact input digest after restore |
 | `transformer.execute.package_only.heldout` | Recipe execution | Migrate a minimal supported repository | Only present allowlisted files change |
 | `transformer.recovery.verifier_failure.heldout` | Rollback | Fail and verify inverse operations | Workspace disposal and fail closed result |
@@ -140,7 +144,7 @@ Future corpus records must include an exact repository revision, visible input d
 
 The eval release does not claim the following capabilities exist:
 
-- A general model driven Warden with token and model cost trials.
+- Live model quality, token, cache, and provider cost trials. The bounded model protocol is covered with deterministic transport tests only.
 - A locked external verifier container separate from the agent container.
 - Durable routing of production Warden work through the policy router.
 - Transformer worker scheduling and campaign execution.
