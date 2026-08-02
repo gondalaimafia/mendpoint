@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import {
   validatePublicClaimRegistry,
   type PublicClaimRegistry,
+  type ProductRequirementManifest,
 } from "@mendpoint/contract";
 
 function repositoryPath(repoRoot: string, locator: string) {
@@ -17,10 +18,18 @@ function repositoryPath(repoRoot: string, locator: string) {
 
 const repoRoot = resolve(process.cwd());
 const registryPath = resolve(repoRoot, "docs", "PUBLIC_CLAIMS.json");
+const requirementsPath = resolve(repoRoot, "docs", "PRODUCT_REQUIREMENTS.json");
 if (!existsSync(registryPath)) throw new Error("docs/PUBLIC_CLAIMS.json is missing");
+if (!existsSync(requirementsPath)) throw new Error("docs/PRODUCT_REQUIREMENTS.json is missing");
 
 const registry = JSON.parse(readFileSync(registryPath, "utf8")) as PublicClaimRegistry;
-const issues = validatePublicClaimRegistry(registry);
+const requirements = JSON.parse(
+  readFileSync(requirementsPath, "utf8"),
+) as ProductRequirementManifest;
+const issues = validatePublicClaimRegistry(registry, {
+  requirements: requirements.requirements ?? [],
+  asOf: new Date(),
+});
 for (const claim of registry.claims ?? []) {
   for (const surfacePath of claim.surfacePaths ?? []) {
     if (!existsSync(repositoryPath(repoRoot, surfacePath))) {

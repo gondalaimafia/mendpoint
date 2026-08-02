@@ -1,3 +1,7 @@
+import type {
+  ProductRequirement,
+} from "./product-requirements.js";
+
 export type PublicClaimState =
   | "proven"
   | "limited_availability"
@@ -8,14 +12,40 @@ export type PublicClaimState =
 
 export type PublicClaimEvidenceType = "code" | "test" | "live" | "document" | "external";
 
-export interface PublicClaimEvidence {
+export type PublicClaimKind = "capability" | "guardrail";
+
+export type PublicWebsiteStatus = "replacement_candidate" | "published";
+
+interface PublicClaimEvidenceBase {
   id: string;
   type: PublicClaimEvidenceType;
   locator: string;
 }
 
+export interface PublicClaimLiveEvidence extends PublicClaimEvidenceBase {
+  type: "live";
+  observedAt: string;
+  freshUntil: string;
+  revision: string;
+}
+
+export interface PublicClaimNonLiveEvidence extends PublicClaimEvidenceBase {
+  type: Exclude<PublicClaimEvidenceType, "live">;
+}
+
+export type PublicClaimEvidence =
+  | PublicClaimLiveEvidence
+  | PublicClaimNonLiveEvidence;
+
+export type PublicClaimRequirement = Pick<
+  ProductRequirement,
+  "id" | "implementationStatus" | "claimState"
+>;
+
 export interface PublicClaim {
   id: string;
+  claimKind: PublicClaimKind;
+  requirementIds: string[];
   surfaces: string[];
   surfacePaths: string[];
   wording: string;
@@ -41,6 +71,7 @@ export interface PublicDestination {
 export interface PublicClaimRegistry {
   schemaVersion: number;
   website: string;
+  websiteStatus: PublicWebsiteStatus;
   auditedRevision: string;
   claims: PublicClaim[];
   destinations: PublicDestination[];
@@ -52,10 +83,23 @@ export interface PublicClaimIssue {
   message: string;
 }
 
+export interface PublicClaimValidationOptions {
+  requirements: readonly PublicClaimRequirement[];
+  asOf?: Date;
+}
+
 const CLAIM_ID = /^CLM-[0-9]{3}$/;
 const EVIDENCE_ID = /^CLM-[0-9]{3}-EV[0-9]{2}$/;
 const DESTINATION_ID = /^DST-[0-9]{3}$/;
 const ISO_DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+const ISO_TIMESTAMP = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/;
+const REVISION = /^[a-f0-9]{40}$/;
+const REQUIREMENT_ID = /^ME-(FND|ING|SCM|GRF|WAR|TRN|RTR|ENT|COM|GTM)-[0-9]{3}$/;
+const CLAIM_KINDS = new Set<PublicClaimKind>(["capability", "guardrail"]);
+const WEBSITE_STATUSES = new Set<PublicWebsiteStatus>([
+  "replacement_candidate",
+  "published",
+]);
 const STATES = new Set<PublicClaimState>([
   "proven",
   "limited_availability",
@@ -99,19 +143,39 @@ function add(
   issues.push({ code, subject, message });
 }
 
-export function validatePublicClaimRegistry(input: unknown): PublicClaimIssue[] {
+export function validatePublicClaimRegistry(
+  input: unknown,
+  options: PublicClaimValidationOptions,
+): PublicClaimIssue[] {
   const issues: PublicClaimIssue[] = [];
   if (!record(input)) {
     return [{ code: "REGISTRY_TYPE", subject: "registry", message: "must be an object" }];
   }
-  if (input.schemaVersion !== 1) {
-    add(issues, "SCHEMA_VERSION", "registry", "schemaVersion must equal 1");
+  if (input.schemaVersion !== 2) {
+    add(issues, "SCHEMA_VERSION", "registry", "schemaVersion must equal 2");
   }
   if (!nonempty(input.website) || !input.website.startsWith("https://")) {
     add(issues, "WEBSITE", "registry", "website must be an HTTPS URL");
   }
-  if (!nonempty(input.auditedRevision)) {
-    add(issues, "AUDITED_REVISION", "registry", "auditedRevision is required");
+  if (!WEBSITE_STATUSES.has(input.websiteStatus as PublicWebsiteStatus)) {
+    add(
+      issues,
+      "WEBSITE_STATUS",
+      "registry",
+      "websiteStatus must be replacement_candidate or published",
+    );
+  }
+  if (!nonempty(input.auditedRevision) || !REVISION.test(input.auditedRevision)) {
+    add(issues, "AUDITED_REVISION", "registry", "auditedRevision must be a full lowercase Git revision");
+  }
+
+  const requirementById = new Map(
+    options.requirements.map((requirement) => [requirement.id, requirement] as const),
+  );
+  const asOf = options.asOf ?? new Date();
+  const asOfMs = asOf.getTime();
+  if (!Number.isFinite(asOfMs)) {
+    add(issues, "AS_OF", "registry", "validation time must be valid");
   }
 
   const claimIds = new Set<string>();
@@ -127,6 +191,50 @@ export function validatePublicClaimRegistry(input: unknown): PublicClaimIssue[] 
       if (!CLAIM_ID.test(id)) add(issues, "CLAIM_ID", id, "claim ID is invalid");
       if (claimIds.has(id)) add(issues, "CLAIM_DUPLICATE", id, "claim ID is duplicated");
       claimIds.add(id);
+
+      if (!CLAIM_KINDS.has(rawClaim.claimKind as PublicClaimKind)) {
+        add(issues, "CLAIM_KIND", id, "claimKind must be capability or guardrail");
+      }
+
+      const requirementIds = new Set<string>();
+      if (!Array.isArray(rawClaim.requirementIds) || rawClaim.requirementIds.length === 0) {
+        add(issues, "REQUIREMENT_IDS_REQUIRED", id, "at least one requirement ID is required");
+      } else {
+        for (const rawRequirementId of rawClaim.requirementIds) {
+          if (!nonempty(rawRequirementId) || !REQUIREMENT_ID.test(rawRequirementId)) {
+            add(issues, "REQUIREMENT_ID", id, "requirement IDs must use the foundational ID format");
+            continue;
+          }
+          if (requirementIds.has(rawRequirementId)) {
+            add(issues, "REQUIREMENT_ID_DUPLICATE", id, `${rawRequirementId} is duplicated`);
+            continue;
+          }
+          requirementIds.add(rawRequirementId);
+          const requirement = requirementById.get(rawRequirementId);
+          if (!requirement) {
+            add(issues, "REQUIREMENT_REFERENCE", id, `${rawRequirementId} is not registered`);
+            continue;
+          }
+          if (rawClaim.state === "proven" && rawClaim.claimKind === "capability") {
+            if (requirement.implementationStatus !== "verified") {
+              add(
+                issues,
+                "PROVEN_CAPABILITY_REQUIREMENT_INCOMPLETE",
+                id,
+                `${rawRequirementId} is ${requirement.implementationStatus}`,
+              );
+            }
+            if (requirement.claimState !== "public_current") {
+              add(
+                issues,
+                "PROVEN_CAPABILITY_REQUIREMENT_NON_PUBLIC",
+                id,
+                `${rawRequirementId} is ${requirement.claimState}`,
+              );
+            }
+          }
+        }
+      }
 
       if (!Array.isArray(rawClaim.surfaces) || rawClaim.surfaces.length === 0) {
         add(issues, "SURFACES_REQUIRED", id, "at least one public surface is required");
@@ -203,6 +311,58 @@ export function validatePublicClaimRegistry(input: unknown): PublicClaimIssue[] 
           if (!nonempty(rawEvidence.locator)) {
             add(issues, "EVIDENCE_LOCATOR", evidenceId, "evidence locator is required");
           }
+          if (rawEvidence.type === "live") {
+            const observedAtMs = liveTimestamp(
+              rawEvidence.observedAt,
+              issues,
+              "LIVE_EVIDENCE_OBSERVED_AT",
+              evidenceId,
+              "observedAt",
+            );
+            const freshUntilMs = liveTimestamp(
+              rawEvidence.freshUntil,
+              issues,
+              "LIVE_EVIDENCE_FRESH_UNTIL",
+              evidenceId,
+              "freshUntil",
+            );
+            if (!nonempty(rawEvidence.revision) || !REVISION.test(rawEvidence.revision)) {
+              add(
+                issues,
+                "LIVE_EVIDENCE_REVISION",
+                evidenceId,
+                "live evidence revision must be a full lowercase Git revision",
+              );
+            } else if (
+              nonempty(input.auditedRevision) &&
+              rawEvidence.revision !== input.auditedRevision
+            ) {
+              add(
+                issues,
+                "LIVE_EVIDENCE_REVISION_MISMATCH",
+                evidenceId,
+                "live evidence revision must equal the registry auditedRevision",
+              );
+            }
+            if (observedAtMs !== undefined && Number.isFinite(asOfMs) && observedAtMs > asOfMs) {
+              add(issues, "LIVE_EVIDENCE_FUTURE", evidenceId, "live evidence cannot be observed in the future");
+            }
+            if (
+              freshUntilMs !== undefined &&
+              observedAtMs !== undefined &&
+              freshUntilMs <= observedAtMs
+            ) {
+              add(
+                issues,
+                "LIVE_EVIDENCE_FRESHNESS_WINDOW",
+                evidenceId,
+                "freshUntil must be later than observedAt",
+              );
+            }
+            if (freshUntilMs !== undefined && Number.isFinite(asOfMs) && freshUntilMs <= asOfMs) {
+              add(issues, "LIVE_EVIDENCE_STALE", evidenceId, "live evidence freshness window has expired");
+            }
+          }
         }
       }
     }
@@ -245,4 +405,23 @@ export function validatePublicClaimRegistry(input: unknown): PublicClaimIssue[] 
       left.subject.localeCompare(right.subject) ||
       left.message.localeCompare(right.message),
   );
+}
+
+function liveTimestamp(
+  value: unknown,
+  issues: PublicClaimIssue[],
+  code: string,
+  subject: string,
+  field: string,
+): number | undefined {
+  if (!nonempty(value) || !ISO_TIMESTAMP.test(value)) {
+    add(issues, code, subject, `${field} must be an ISO timestamp`);
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    add(issues, code, subject, `${field} must be a valid ISO timestamp`);
+    return undefined;
+  }
+  return parsed;
 }

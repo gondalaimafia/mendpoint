@@ -1,10 +1,13 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "website": "https://www.mendpoint.ai/",
-  "auditedRevision": "94c91d3e95dd6c85cb0b54d9131f0366ddcca9b3",
+  "websiteStatus": "replacement_candidate",
+  "auditedRevision": "4134b51b5d1e38da31a31c7c99189ef747e77329",
   "claims": [
     {
       "id": "CLM-001",
+      "claimKind": "capability",
+      "requirementIds": ["ME-GTM-001", "ME-GTM-003"],
       "surfaces": ["metadata", "header", "hero", "faq"],
       "surfacePaths": ["apps/web/app/layout.tsx", "apps/web/app/nav.tsx", "apps/web/app/page.tsx"],
       "wording": "Mendpoint is available as a Private Design Partner Preview.",
@@ -13,7 +16,7 @@
       "state": "preview",
       "scope": "Approved private pilot teams",
       "evidence": [
-        { "id": "CLM-001-EV01", "type": "live", "locator": "https://mendpoint-talal.fly.dev/livez" },
+        { "id": "CLM-001-EV01", "type": "live", "locator": "https://mendpoint-talal.fly.dev/livez", "observedAt": "2026-08-02T06:20:00.000Z", "freshUntil": "2026-08-09T06:20:00.000Z", "revision": "4134b51b5d1e38da31a31c7c99189ef747e77329" },
         { "id": "CLM-001-EV02", "type": "document", "locator": "docs/PRODUCT_CONTRACT.md" }
       ],
       "limitations": ["Public signup is not available", "Pilot access is approved manually"],
@@ -23,6 +26,8 @@
     },
     {
       "id": "CLM-002",
+      "claimKind": "capability",
+      "requirementIds": ["ME-ING-001", "ME-ING-002", "ME-SCM-003", "ME-WAR-003"],
       "surfaces": ["metadata", "hero", "workflow"],
       "surfacePaths": ["apps/web/app/layout.tsx", "apps/web/app/page.tsx", "apps/web/app/docs/page.tsx"],
       "wording": "Turn submitted OpenAPI changes into evidence backed migration pull request candidates for supported GitHub repositories.",
@@ -41,6 +46,8 @@
     },
     {
       "id": "CLM-003",
+      "claimKind": "capability",
+      "requirementIds": ["ME-GRF-001", "ME-GRF-003", "ME-GRF-004", "ME-GRF-006"],
       "surfaces": ["workflow", "scope", "faq"],
       "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx"],
       "wording": "Warden analyzes configured repository snapshots using static, graph backed, and heuristic evidence.",
@@ -59,6 +66,8 @@
     },
     {
       "id": "CLM-004",
+      "claimKind": "capability",
+      "requirementIds": ["ME-ING-009", "ME-WAR-001"],
       "surfaces": ["workflow", "scope"],
       "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx"],
       "wording": "Warden generates proposed patches for supported migration patterns.",
@@ -77,6 +86,8 @@
     },
     {
       "id": "CLM-005",
+      "claimKind": "guardrail",
+      "requirementIds": ["ME-WAR-002", "ME-WAR-005"],
       "surfaces": ["workflow", "security", "faq"],
       "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx", "apps/web/app/security/page.tsx"],
       "wording": "Configured verification checks run before a draft pull request is eligible for delivery.",
@@ -95,6 +106,8 @@
     },
     {
       "id": "CLM-006",
+      "claimKind": "guardrail",
+      "requirementIds": ["ME-WAR-004", "ME-SCM-003"],
       "surfaces": ["workflow", "security", "faq"],
       "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx", "apps/web/app/terms/page.tsx"],
       "wording": "Draft pull requests require human review in GitHub. Mendpoint does not merge them.",
@@ -113,6 +126,8 @@
     },
     {
       "id": "CLM-007",
+      "claimKind": "capability",
+      "requirementIds": ["ME-TRN-001", "ME-TRN-003", "ME-TRN-010"],
       "surfaces": ["product", "faq"],
       "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx"],
       "wording": "Transformer is an experimental planning preview.",
@@ -131,6 +146,8 @@
     },
     {
       "id": "CLM-008",
+      "claimKind": "capability",
+      "requirementIds": ["ME-SCM-004"],
       "surfaces": ["product", "faq"],
       "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx"],
       "wording": "GitLab delivery is on the roadmap.",
@@ -149,6 +166,8 @@
     },
     {
       "id": "CLM-009",
+      "claimKind": "capability",
+      "requirementIds": ["ME-ENT-006", "ME-ENT-010"],
       "surfaces": ["deployment", "security", "faq"],
       "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/security/page.tsx"],
       "wording": "A single node self hosted control plane is available for pilot evaluation.",
@@ -167,9 +186,11 @@
     },
     {
       "id": "CLM-010",
+      "claimKind": "guardrail",
+      "requirementIds": ["ME-COM-003", "ME-GTM-002"],
       "surfaces": ["commercial", "cta", "faq"],
       "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/terms/page.tsx"],
-      "wording": "Private pilot terms are agreed directly with approved design partners.",
+      "wording": "Private pilot terms are agreed case by case before access with approved design partners.",
       "owner": "commercial",
       "evidenceOwner": "product",
       "state": "preview",
@@ -184,6 +205,8 @@
     },
     {
       "id": "CLM-011",
+      "claimKind": "guardrail",
+      "requirementIds": ["ME-GTM-003"],
       "surfaces": ["demo"],
       "surfacePaths": ["apps/web/app/operator-home.tsx"],
       "wording": "Product figures shown in the preview are illustrative examples, not customer results.",
@@ -201,6 +224,8 @@
     },
     {
       "id": "CLM-012",
+      "claimKind": "capability",
+      "requirementIds": ["ME-GTM-001", "ME-GTM-002"],
       "surfaces": ["cta"],
       "surfacePaths": ["apps/web/app/design-partners/page.tsx", "apps/web/app/design-partners/application-form.tsx"],
       "wording": "Teams can apply for a scoped Private Design Partner Preview.",
@@ -218,24 +243,28 @@
     },
     {
       "id": "CLM-013",
+      "claimKind": "capability",
+      "requirementIds": ["ME-ENT-005", "ME-ENT-010"],
       "surfaces": ["login", "status"],
       "surfacePaths": ["apps/web/app/access/page.tsx", "apps/web/app/service-status/page.tsx"],
-      "wording": "Approved operators can open the pilot workspace, and public deployment health is available.",
+      "wording": "On the Fly pilot deployment, approved operators can open the pilot workspace and public deployment health is available.",
       "owner": "platform",
       "evidenceOwner": "engineering",
-      "state": "proven",
+      "state": "limited_availability",
       "scope": "Fly pilot deployment",
       "evidence": [
-        { "id": "CLM-013-EV01", "type": "live", "locator": "https://mendpoint-talal.fly.dev/access" },
-        { "id": "CLM-013-EV02", "type": "live", "locator": "https://mendpoint-talal.fly.dev/healthz" }
+        { "id": "CLM-013-EV01", "type": "live", "locator": "https://mendpoint-talal.fly.dev/access", "observedAt": "2026-08-02T06:20:00.000Z", "freshUntil": "2026-08-09T06:20:00.000Z", "revision": "4134b51b5d1e38da31a31c7c99189ef747e77329" },
+        { "id": "CLM-013-EV02", "type": "live", "locator": "https://mendpoint-talal.fly.dev/healthz", "observedAt": "2026-08-02T06:20:00.000Z", "freshUntil": "2026-08-09T06:20:00.000Z", "revision": "4134b51b5d1e38da31a31c7c99189ef747e77329" }
       ],
       "limitations": ["Workspace access requires an approved operator credential"],
-      "requiredQualifier": null,
+      "requiredQualifier": "Fly pilot deployment",
       "lastVerifiedAt": "2026-08-01",
       "expiresAt": null
     },
     {
       "id": "CLM-014",
+      "claimKind": "guardrail",
+      "requirementIds": ["ME-ENT-003", "ME-ENT-004", "ME-GTM-001"],
       "surfaces": ["privacy", "application operations"],
       "surfacePaths": ["apps/web/app/privacy/page.tsx", "apps/web/app/applications/page.tsx"],
       "wording": "Private preview application details use encrypted per record keys, a 90 day access window, audited owner access, and cryptographic erasure.",
