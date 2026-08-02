@@ -569,8 +569,8 @@ Release evidence:
 - [x] Add authenticated durable Transformer campaign API operations and focused restart, isolation, replay, stale revision, and sanitized response tests.
 - [x] Normalize manual announcements and customer incidents into immutable, deduplicated, approval gated source artifacts with provenance and redaction evidence.
 - [x] Persist attributable actual execution costs and reconcile them to MCU revenue without estimating missing attribution.
-- [ ] Add focused tests for every slice, then run full tests, typecheck, production build, GA checks, production dependency audit, container builds, deployment E2E, and diff integrity.
-- [ ] Push a protected pull request, merge only green code, deploy the exact main revision, and repeat independent live and browser verification.
+- [x] Add focused tests for every slice, then run full tests, typecheck, production build, GA checks, production dependency audit, container builds, deployment E2E, and diff integrity.
+- [x] Push a protected pull request, merge only green code, deploy the exact main revision, and repeat independent live and browser verification.
 - [x] Keep private customer proof, production SCM credentials, payment and tax accounts, SSO, external training infrastructure, VPC infrastructure, penetration testing, and compliance attestation explicitly external.
 
 ### Foundational closure continuation 2 review
@@ -584,3 +584,9 @@ Release evidence:
 - Local Docker is unavailable in this Windows environment. The protected Linux workflow remains the authoritative gate for all four image builds, production container startup, deployment E2E, crash recovery, and Fly deployment.
 - Local production API smoke returned 200 for readiness, authenticated keys, execution cost listing, and gross margin; tenant scoped missing Transformer and source records returned 404; invalid authentication returned 401.
 - The remaining 14 unimplemented requirements are not represented as complete. Three require named external infrastructure or independent evidence; the remaining internal execution, workspace, identity, recovery, performance, value proof, and pilot contract gaps continue in later closure tranches.
+- Pull request 7 merged to `main` as `0fd02baecf8c40f50f3fc0adc599af4b3b8db650` after protected run `30726515246` passed tests, release gates, all production image builds, container startup, and deployment E2E with crash recovery.
+- Exact main run `30726592463` repeated the full protected matrix, deployed the merge commit to Fly, and passed workflow production health checks.
+- Independent probes returned 200 from `/livez`, `/healthz`, and `/access`; the root returned the expected 307 to `/access?next=%2F`. Liveness and readiness reported the API and worker healthy, API authentication enabled, and zero due, scheduled, running, dead letter, or expired lease recovery work.
+- Unauthenticated requests to the live billing economics, change source, and Transformer control plane proxy routes returned 401, proving the new surfaces exist behind the session boundary.
+- The 1280 by 720 live browser check rendered a centered 480 pixel access card, matched document scroll width to client width at 1280 pixels, and reported no warnings or errors. Evidence is `C:\Users\Talal\Documents\Codex\2026-07-28\review\outputs\mendpoint-foundational-closure-2-production-viewport-2026-08-01.png`.
+- Rollback is the normal Fly release rollback to the prior healthy image or a revert of merge commit `0fd02baecf8c40f50f3fc0adc599af4b3b8db650`, followed by the same protected CI, health, and browser gates.
