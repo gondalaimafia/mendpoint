@@ -967,4 +967,26 @@ Acceptance: no confirmed critical or high severity repository controlled defect 
 - Independent security, product, UX, performance, and reliability re-reviews report no remaining P0 or P1 repository-controlled findings.
 - Full tests, full typecheck, the 21 page production build, GA checks, 78 specialist eval trials, dependency audit, and diff integrity pass. Production dependencies report zero vulnerabilities.
 - Docker is not installed in this local environment. The production image and deployment journey remain protected CI gates.
-- Customer-ready promotion remains externally blocked until a valid identity provider configuration and a replacement scoped GitHub credential complete the private canary draft pull request and restore drill. The previously pasted token must not be reused.
+- The private PAT canary and restore drill is complete. Customer-ready promotion remains externally blocked on an approved identity provider configuration and production GitHub App credentials with installation, refresh, revocation, and permission drift proof.
+
+## Private GitHub canary and restore drill: 2026-08-04
+
+- [x] Capture the exact default branch revision and verification contract for the disposable private repository.
+- [x] Activate the staged scoped credential and verify the production service remains healthy.
+- [x] Use Mendpoint's real GitHub delivery implementation to create a branch, commit the bounded canary edit, and open a draft pull request.
+- [x] Require the repository checks to pass and retain the exact pull request, revision, and check evidence.
+- [x] Close the draft pull request, delete the canary branch, and prove the default branch revision and content are unchanged.
+- [x] Remove the temporary production credential, verify production health, and record the remaining customer-ready gates.
+
+Acceptance: the real product delivery path completes a private draft pull request without writing to the protected default branch; repository verification passes; recovery leaves no canary branch and the exact baseline remains unchanged; the temporary credential is absent after the drill.
+
+### Canary drill review
+
+- Repository: private `gondalaimafia/mendpoint-canary-drill-20260801`.
+- Immutable default branch before and after: `d47e9b5c8da59fddbe6573e3a0995c3c1cc49135`.
+- Mendpoint delivery commit: `014c285da6665d19fcfd293e76a16115f3c95cec`.
+- Exact baseline restore commit: `e0563d9db5c0408f6b638c01b1f48a7a77428ac8`.
+- Draft pull request: `https://github.com/gondalaimafia/mendpoint-canary-drill-20260801/pull/1`, closed without merge after both injection and restore verification checks passed.
+- Recovery result: zero net changed files, no open pull requests, canary branch lookup returns 404, and the default branch is unchanged.
+- Credential result: the temporary fine grained PAT was removed from Fly. Production machine version 28 is healthy and `/`, `/livez`, and `/healthz` return 200.
+- Remaining boundary: this proves PAT based private delivery and restore. It does not prove the GitHub App installation token lifecycle, approved customer repository use, or customer outcome.

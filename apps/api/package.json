@@ -28,7 +28,7 @@
     "@mendpoint/shared": "*",
     "@mendpoint/ops": "*",
     "@hono/node-server": "^2.0.12",
-    "hono": "^4.7.5",
+    "hono": "4.12.34",
     "@mendpoint/notify": "*",
     "jose": "^6.2.7"
   },
