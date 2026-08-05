@@ -74,14 +74,15 @@ import {
   upsertGitHubInstallation,
   listGitHubInstallations,
   getGitHubInstallationByInstallationId,
-  listTenantIdsForGitHubOwner,
   createGitHubInstallState,
   consumeGitHubInstallState,
+  completeGitHubInstallState,
   recordGitHubWebhookDelivery,
   completeGitHubWebhookDelivery,
   failGitHubWebhookDelivery,
   githubInstallationToApi,
   linkConsumersToInstallation,
+  findAuthorizedGitHubInstallationForRepository,
   insertRepairSession,
   listRepairSessions,
   getRepairSession,
@@ -114,6 +115,7 @@ import {
   getGitHubAppConfig,
   buildInstallUrl,
   normalizeMockInstall,
+  resolveGitHubOwnerTenantBinding,
 } from "@mendpoint/github";
 import {
   listBrandPacks,
@@ -1518,22 +1520,37 @@ app.post("/consumers", async (c) => {
     );
   }
   const id = newId();
-  insertConsumer(db, {
-    id,
-    name: body.name,
-    githubOwner: body.githubOwner,
-    githubRepo: body.githubRepo,
-    installationId: null,
-    tenantId: principal.tenantId,
-    createdAt: nowIso(),
-  });
-  insertConsumerRepo(db, {
-    id: newId(),
-    consumerId: id,
-    localPath,
-    defaultBranch: "main",
-    createdAt: nowIso(),
-  });
+  const createdAt = nowIso();
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const installation = findAuthorizedGitHubInstallationForRepository(
+      db,
+      principal.tenantId,
+      body.githubOwner,
+      body.githubRepo,
+    );
+    insertConsumer(db, {
+      id,
+      name: body.name,
+      githubOwner: body.githubOwner,
+      githubRepo: body.githubRepo,
+      installationId: installation?.installation_id ?? null,
+      deliveryMode: "app",
+      tenantId: principal.tenantId,
+      createdAt,
+    });
+    insertConsumerRepo(db, {
+      id: newId(),
+      consumerId: id,
+      localPath,
+      defaultBranch: "main",
+      createdAt,
+    });
+    db.raw.exec("COMMIT");
+  } catch (error) {
+    if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
   return c.json({ id }, 201);
 });
 
@@ -1845,31 +1862,106 @@ app.post("/webhooks/github", async (c) => {
   if (event.type === "installation") {
     const installationId = String(event.installationId);
     const existing = getGitHubInstallationByInstallationId(db, installationId);
-    const candidateTenants = event.accountLogin
-      ? listTenantIdsForGitHubOwner(db, event.accountLogin)
-      : [];
-    const tenantId =
-      existing?.tenant_id ??
-      (candidateTenants.length === 1 ? candidateTenants[0] : undefined);
+    const configuredTenantId = event.accountLogin
+      ? resolveGitHubOwnerTenantBinding(event.accountLogin)
+      : undefined;
+    if (configuredTenantId && !getTenant(db, configuredTenantId)) {
+      return c.json({ error: "github_owner_binding_tenant_not_found" }, 503);
+    }
+    const tenantId = existing?.tenant_id ?? configuredTenantId;
     if (event.action === "deleted" && event.installationId) {
+      const deletedAt = nowIso();
+      const tombstoned = db.raw
+        .prepare(
+          `UPDATE github_installations
+           SET deleted_at = ?, updated_at = ?
+           WHERE installation_id = ?`,
+        )
+        .run(deletedAt, deletedAt, installationId);
+      if (Number(tombstoned.changes) === 0 && event.accountLogin) {
+        upsertGitHubInstallation(db, {
+          id: newId(),
+          installationId,
+          accountLogin: event.accountLogin,
+          tenantId,
+          permissions: event.permissions,
+          repositories: event.repos,
+          repositorySelection: event.repositorySelection,
+          deletedAt,
+          createdAt: deletedAt,
+          updatedAt: deletedAt,
+        });
+      }
       db.raw
-        .prepare(`DELETE FROM github_installations WHERE installation_id = ?`)
-        .run(String(event.installationId));
-      db.raw
-        .prepare(`UPDATE consumers SET installation_id = NULL WHERE installation_id = ?`)
+        .prepare(
+          `UPDATE consumers
+           SET installation_id = NULL, github_delivery_mode = 'revoked'
+           WHERE installation_id = ?`,
+        )
         .run(String(event.installationId));
       recordAudit(db, {
         tenantId: tenantId ?? "tenant_system_unassigned",
         actor: "github_webhook",
-        action: "installation.deleted",
+        action: `installation.${event.action}`,
         resourceType: "github_installation",
         resourceId: String(event.installationId),
       });
-      return c.json({ ok: true, type: "installation", action: "deleted" });
+      return c.json({ ok: true, type: "installation", action: event.action });
+    }
+    if (event.action === "suspend" && event.installationId) {
+      const suspendedAt = nowIso();
+      const suspended = db.raw
+        .prepare(
+          `UPDATE github_installations
+           SET suspended_at = ?, updated_at = ?
+           WHERE installation_id = ?`,
+        )
+        .run(suspendedAt, suspendedAt, installationId);
+      if (Number(suspended.changes) === 0 && event.accountLogin) {
+        upsertGitHubInstallation(db, {
+          id: newId(),
+          installationId,
+          accountLogin: event.accountLogin,
+          tenantId,
+          permissions: event.permissions,
+          repositories: event.repos,
+          repositorySelection: event.repositorySelection,
+          suspendedAt,
+          createdAt: suspendedAt,
+          updatedAt: suspendedAt,
+        });
+      }
+      db.raw
+        .prepare(
+          `UPDATE consumers
+           SET installation_id = NULL, github_delivery_mode = 'revoked'
+           WHERE installation_id = ?`,
+        )
+        .run(installationId);
+      recordAudit(db, {
+        tenantId: tenantId ?? "tenant_system_unassigned",
+        actor: "github_webhook",
+        action: "installation.suspend",
+        resourceType: "github_installation",
+        resourceId: installationId,
+      });
+      return c.json({ ok: true, type: "installation", action: event.action });
+    }
+    if (existing?.deleted_at) {
+      return c.json({
+        ok: true,
+        type: "installation",
+        action: event.action,
+        ignored: "installation_deleted",
+      });
     }
     if (event.accountLogin && event.installationId) {
       const currentRepos = existing?.repositories_json
-        ? (JSON.parse(existing.repositories_json) as Array<{ owner: string; name: string }>)
+        ? (JSON.parse(existing.repositories_json) as Array<{
+            id?: number;
+            owner: string;
+            name: string;
+          }>)
         : [];
       const repoKey = (repo: { owner: string; name: string }) =>
         `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`;
@@ -1884,15 +1976,20 @@ app.post("/webhooks/github", async (c) => {
         installationId: String(event.installationId),
         accountLogin: event.accountLogin,
         tenantId,
+        permissions: event.permissions,
         repositories: [...mergedRepos.values()],
+        repositorySelection: event.repositorySelection,
+        suspendedAt: event.action === "unsuspend" ? null : undefined,
         createdAt: nowIso(),
         updatedAt: nowIso(),
       });
-      if (tenantId) {
+      const persisted = getGitHubInstallationByInstallationId(db, installationId);
+      if (tenantId && !persisted?.suspended_at && !persisted?.deleted_at) {
         linkConsumersToInstallation(
           db,
           event.accountLogin,
           installationId,
+          [...mergedRepos.values()],
           tenantId,
         );
         recordAudit(db, {
@@ -2771,6 +2868,7 @@ app.get("/github/app/install-url", (c) => {
   createGitHubInstallState(db, {
     state,
     tenantId: principal.tenantId,
+    principalId: principal.id,
     createdAt,
     expiresAt: new Date(Date.parse(createdAt) + 10 * 60_000).toISOString(),
   });
@@ -2837,15 +2935,20 @@ app.post("/github/app/callback", async (c) => {
     repositories?: Array<{ owner: string; name: string }>;
     setupAction?: string;
   }>();
-  if (
-    !body.state ||
-    !consumeGitHubInstallState(db, body.state, principal.tenantId, nowIso())
-  ) {
-    return c.json({ error: "invalid_or_expired_state" }, 400);
-  }
-
   let normalized: ReturnType<typeof normalizeMockInstall>;
   if (config.mockMode) {
+    if (
+      !body.state ||
+      !consumeGitHubInstallState(
+        db,
+        body.state,
+        principal.tenantId,
+        principal.id,
+        nowIso(),
+      )
+    ) {
+      return c.json({ error: "invalid_or_expired_state" }, 400);
+    }
     if (!body.accountLogin) return c.json({ error: "accountLogin required" }, 400);
     normalized = normalizeMockInstall({
       accountLogin: body.accountLogin,
@@ -2855,35 +2958,50 @@ app.post("/github/app/callback", async (c) => {
       tenantId: principal.tenantId,
     });
   } else {
-    if (!body.installationId) {
-      return c.json({ error: "installationId required" }, 400);
+    const setupAction = body.setupAction;
+    if (
+      !body.state ||
+      !body.installationId ||
+      !/^[1-9][0-9]{0,19}$/.test(body.installationId) ||
+      !Number.isSafeInteger(Number(body.installationId)) ||
+      (setupAction !== "install" && setupAction !== "update")
+    ) {
+      return c.json({ error: "invalid_installation_return" }, 400);
     }
-    const verified = getGitHubInstallationByInstallationId(db, body.installationId);
-    if (!verified) {
-      return c.json(
-        { error: "installation_not_verified_by_webhook" },
-        409,
-      );
-    }
-    if (!verified.tenant_id) {
-      return c.json({ error: "installation_tenant_unverified" }, 409);
-    }
-    if (verified.tenant_id !== principal.tenantId) {
-      return c.json({ error: "installation_not_owned" }, 404);
-    }
-    normalized = {
-      installationId: verified.installation_id,
-      accountLogin: verified.account_login,
-      accountType:
-        verified.account_type === "User" ? "User" : "Organization",
-      repositories: verified.repositories_json
-        ? JSON.parse(verified.repositories_json)
-        : [],
+    const completion = completeGitHubInstallState(db, {
+      state: body.state,
       tenantId: principal.tenantId,
-      permissions: verified.permissions_json
-        ? JSON.parse(verified.permissions_json)
-        : {},
-    };
+      principalId: principal.id,
+      installationId: body.installationId,
+      setupAction,
+      now: nowIso(),
+      requestId: c.get("requestId"),
+    });
+    if (completion.status === "pending") {
+      c.header("Retry-After", "2");
+      return c.json({ error: "installation_verification_pending" }, 202);
+    }
+    if (completion.status === "permissions_incomplete") {
+      return c.json({ error: "installation_permissions_incomplete" }, 409);
+    }
+    if (completion.status === "repository_scope_incomplete") {
+      return c.json({ error: "installation_repository_scope_incomplete" }, 409);
+    }
+    if (completion.status === "invalid") {
+      return c.json({ error: "invalid_or_expired_state" }, 400);
+    }
+    if (!("installation" in completion)) {
+      return c.json({ error: "installation_completion_failed" }, 500);
+    }
+    return c.json(
+      {
+        ok: true,
+        replayed: completion.status === "replayed",
+        installation: githubInstallationToApi(completion.installation),
+        next: { web: "/install?done=1", repositories: "/consumer" },
+      },
+      completion.status === "completed" ? 201 : 200,
+    );
   }
 
   const id = upsertGitHubInstallation(db, {
@@ -2902,6 +3020,7 @@ app.post("/github/app/callback", async (c) => {
     db,
     normalized.accountLogin,
     normalized.installationId,
+    normalized.repositories,
     normalized.tenantId,
   );
 

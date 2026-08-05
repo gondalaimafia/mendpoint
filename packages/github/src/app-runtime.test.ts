@@ -4,7 +4,9 @@ import {
   createAppJwt,
   deliverToManyRepos,
   GitHubAppDelivery,
+  InstallationTokenCache,
   hasGitHubAppCredentials,
+  loadAppCredentials,
 } from "./app-runtime.js";
 import { MockGitHubDelivery } from "./index.js";
 
@@ -31,7 +33,7 @@ describe("github app runtime", () => {
         fetched = true;
         expect(id).toBe(42);
         expect(jwt.split(".")).toHaveLength(3);
-        // Return a dummy token — subsequent Octokit calls will fail if used against network.
+        // Return a dummy token. Subsequent Octokit calls would use the network.
         // We only assert createBranch is attempted with mock by swapping methods in multi-repo test.
         return {
           token: "ghs_test",
@@ -40,11 +42,176 @@ describe("github app runtime", () => {
         };
       },
     );
-    // Force token fetch without network by calling private path via openPullRequest failure path —
+    // Keep token exchange isolated from the multi repository happy path.
     // use multi-repo with Mock delivery instead for happy path.
     expect(hasGitHubAppCredentials({} as NodeJS.ProcessEnv)).toBe(false);
     void delivery;
     expect(fetched).toBe(false);
+  });
+
+  it("deduplicates concurrent installation token refreshes", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const now = Date.parse("2026-01-01T00:00:00.000Z");
+    const fetcher = vi.fn(
+      async (
+        installationId: number,
+        _jwt: string,
+        _repositoryIds?: number[],
+      ) => ({
+        token: "ghs_one",
+        expiresAt: "2026-01-01T01:00:00.000Z",
+        installationId,
+      }),
+    );
+    const cache = new InstallationTokenCache(
+      { appId: "99", privateKeyPem: pem },
+      42,
+      fetcher,
+      () => now,
+      [77],
+    );
+    await expect(Promise.all([cache.get(), cache.get(), cache.get()])).resolves.toEqual([
+      "ghs_one",
+      "ghs_one",
+      "ghs_one",
+    ]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]?.[2]).toEqual([77]);
+    await expect(cache.get()).resolves.toBe("ghs_one");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects unreadable App private keys during credential loading", () => {
+    expect(
+      loadAppCredentials({
+        GITHUB_APP_ID: "99",
+        GITHUB_APP_PRIVATE_KEY: "not-a-private-key",
+      } as NodeJS.ProcessEnv),
+    ).toBeNull();
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    expect(
+      loadAppCredentials({
+        GITHUB_APP_ID: "99",
+        GITHUB_APP_PRIVATE_KEY: privateKey
+          .export({ type: "pkcs8", format: "pem" })
+          .toString(),
+      } as NodeJS.ProcessEnv),
+    ).toBeNull();
+  });
+
+  it("clears a rejected token and retries an authenticated operation once", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const delivery = new GitHubAppDelivery(
+      { appId: "99", privateKeyPem: pem },
+      42,
+    );
+    const rejected = {
+      git: {
+        getRef: vi.fn(async () => {
+          throw Object.assign(new Error("Bad credentials"), { status: 401 });
+        }),
+      },
+    };
+    const accepted = {
+      git: {
+        getRef: vi.fn(async () => ({ data: { object: { sha: "base" } } })),
+        createRef: vi.fn(async () => ({})),
+      },
+    };
+    const octokit = vi
+      .fn()
+      .mockResolvedValueOnce(rejected)
+      .mockResolvedValueOnce(accepted);
+    const tokenCache = (
+      delivery as unknown as { tokenCache: InstallationTokenCache }
+    ).tokenCache;
+    const clear = vi.spyOn(tokenCache, "clear");
+    (
+      delivery as unknown as { octokit: typeof octokit }
+    ).octokit = octokit;
+
+    await expect(
+      delivery.createBranch("acme", "shop", "mendpoint/change"),
+    ).resolves.toBeUndefined();
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(octokit).toHaveBeenCalledTimes(2);
+    expect(accepted.git.createRef).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes a rejected token while checking an existing branch", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const delivery = new GitHubAppDelivery(
+      { appId: "99", privateKeyPem: pem },
+      42,
+    );
+    const rejected = {
+      repos: {
+        getContent: vi.fn(async () => {
+          throw Object.assign(new Error("Bad credentials"), { status: 401 });
+        }),
+      },
+    };
+    const accepted = {
+      repos: {
+        getContent: vi.fn(async () => ({
+          data: { content: Buffer.from("intended change\n").toString("base64") },
+        })),
+      },
+    };
+    const octokit = vi
+      .fn()
+      .mockResolvedValueOnce(rejected)
+      .mockResolvedValueOnce(accepted);
+    const internals = delivery as unknown as {
+      existingBranches: Set<string>;
+      tokenCache: InstallationTokenCache;
+      octokit: typeof octokit;
+    };
+    internals.existingBranches.add("acme/shop:mendpoint/change");
+    internals.octokit = octokit;
+    const clear = vi.spyOn(internals.tokenCache, "clear");
+
+    await expect(
+      delivery.commitFiles("acme", "shop", "mendpoint/change", "Fix", [
+        { path: "src/a.ts", content: "intended change\n" },
+      ]),
+    ).resolves.toBeUndefined();
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(octokit).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects tokens for another installation or without safe lifetime", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const now = Date.parse("2026-01-01T00:00:00.000Z");
+    const credentials = { appId: "99", privateKeyPem: pem };
+    await expect(
+      new InstallationTokenCache(
+        credentials,
+        42,
+        async () => ({
+          token: "ghs_wrong",
+          expiresAt: "2026-01-01T01:00:00.000Z",
+          installationId: 43,
+        }),
+        () => now,
+      ).get(),
+    ).rejects.toThrow("github_app_token_installation_mismatch");
+    await expect(
+      new InstallationTokenCache(
+        credentials,
+        42,
+        async () => ({
+          token: "ghs_expiring",
+          expiresAt: "2026-01-01T00:00:30.000Z",
+          installationId: 42,
+        }),
+        () => now,
+      ).get(),
+    ).rejects.toThrow("github_app_token_invalid_or_expired");
   });
 
   it("preserves a divergent existing recovery branch for human reconciliation", async () => {

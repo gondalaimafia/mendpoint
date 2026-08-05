@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   RELEASE,
@@ -93,19 +94,50 @@ describe("ops GA", () => {
     );
   });
 
-  it("requires a PAT for real GitHub delivery", () => {
+  it("accepts complete App credentials or a PAT for real GitHub delivery", () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const appOnly = validateApiEnv({
       NODE_ENV: "production",
       API_AUTH: "required",
       GITHUB_MODE: "real",
       GITHUB_WEBHOOK_SECRET: "secret",
       GITHUB_APP_ID: "123",
-      GITHUB_APP_PRIVATE_KEY: "private-key",
+      GITHUB_APP_PRIVATE_KEY: privateKeyPem,
+      GITHUB_APP_OWNER_TENANT_BINDINGS: '{"gondalaimafia":"tenant_default"}',
       MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
       MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
       WEB_URL: "https://mendpoint.example",
     });
-    expect(appOnly.errors.some((e) => e.includes("GITHUB_TOKEN"))).toBe(true);
+    expect(appOnly.ok).toBe(true);
+
+    const invalidApp = validateApiEnv({
+      NODE_ENV: "production",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      GITHUB_TOKEN: "fine-grained-pat",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: "not-a-private-key",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(invalidApp.errors).toContain(
+      "GitHub App credentials must include a positive app ID and a readable RSA private key",
+    );
+
+    const incompleteApp = validateApiEnv({
+      NODE_ENV: "production",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      GITHUB_APP_ID: "123",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(incompleteApp.errors.some((e) => e.includes("complete GitHub App"))).toBe(true);
 
     const patBacked = validateApiEnv({
       NODE_ENV: "production",

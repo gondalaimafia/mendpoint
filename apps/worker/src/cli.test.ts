@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -23,6 +24,7 @@ import {
   parseIntervalMs,
   parseLeaseMs,
   parseJobConcurrency,
+  classifyJobFailure,
   enqueueFeedPipelineJob,
   processJobsOnce,
   resolveWorkerRepoPath,
@@ -45,6 +47,30 @@ afterEach(() => {
 });
 
 describe("worker runtime", () => {
+  it("does not retry permanent GitHub App authorization and scope failures", () => {
+    for (const message of [
+      "github_app_installation_revoked",
+      "github_app_installation_required",
+      "github_app_installation_tenant_mismatch",
+      "github_app_installation_suspended",
+      "github_app_installation_deleted",
+      "github_app_repository_not_authorized",
+      "github_app_permissions_incomplete",
+      "github_app_connection_mismatch",
+      "github_app_delivery_mode_mismatch",
+      "Bad credentials",
+    ]) {
+      expect(classifyJobFailure(new Error(message))).toMatchObject({
+        errorCode: "authorization_failed",
+        retryable: false,
+      });
+    }
+    expect(classifyJobFailure(new Error("GitHub request failed with 503"))).toMatchObject({
+      errorCode: "transient_dependency",
+      retryable: true,
+    });
+  });
+
   it("validates intervals and applies bounded backoff", () => {
     expect(parseIntervalMs("5000")).toBe(5000);
     expect(() => parseIntervalMs("nope")).toThrow(/integer/i);
@@ -416,9 +442,11 @@ describe("worker runtime", () => {
     );
   });
 
-  it("requires a PAT for real production delivery", () => {
+  it("accepts valid App credentials or a PAT for real production delivery", () => {
     const repos = mkdtempSync(join(tmpdir(), "mendpoint-worker-repos-"));
     dirs.push(repos);
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const base = {
       NODE_ENV: "production",
       GITHUB_MODE: "real",
@@ -429,9 +457,27 @@ describe("worker runtime", () => {
       validateWorkerProductionEnv({
         ...base,
         GITHUB_APP_ID: "123",
-        GITHUB_APP_PRIVATE_KEY: "private-key",
+        GITHUB_APP_PRIVATE_KEY: privateKeyPem,
       }),
-    ).toContain("GITHUB_TOKEN is required for real worker delivery");
+    ).toEqual([]);
+    expect(
+      validateWorkerProductionEnv({
+        ...base,
+        GITHUB_APP_ID: "123",
+      }),
+    ).toContain(
+      "GITHUB_TOKEN or complete GitHub App credentials are required for real worker delivery",
+    );
+    expect(
+      validateWorkerProductionEnv({
+        ...base,
+        GITHUB_TOKEN: "fine-grained-pat",
+        GITHUB_APP_ID: "123",
+        GITHUB_APP_PRIVATE_KEY: "not-a-private-key",
+      }),
+    ).toContain(
+      "GitHub App credentials must include a positive app ID and a readable RSA private key",
+    );
     expect(
       validateWorkerProductionEnv({
         ...base,

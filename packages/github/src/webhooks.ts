@@ -52,9 +52,11 @@ export type NormalizedWebhookAction =
       action: string;
       installationId: number;
       accountLogin?: string;
-      repos?: Array<{ owner: string; name: string }>;
-      reposAdded?: Array<{ owner: string; name: string }>;
-      reposRemoved?: Array<{ owner: string; name: string }>;
+      permissions?: Record<string, string>;
+      repositorySelection?: "selected" | "all";
+      repos?: Array<{ id?: number; owner: string; name: string }>;
+      reposAdded?: Array<{ id?: number; owner: string; name: string }>;
+      reposRemoved?: Array<{ id?: number; owner: string; name: string }>;
     }
   | {
       type: "pull_request";
@@ -89,14 +91,23 @@ export function normalizeGitHubEvent(
 
   if (event === "installation" || event === "installation_repositories") {
     const inst = payload.installation as
-      | { id?: number; account?: { login?: string } }
+      | {
+          id?: number;
+          account?: { login?: string };
+          permissions?: Record<string, string>;
+          repository_selection?: "selected" | "all";
+        }
       | undefined;
     const normalizeRepos = (value: unknown) => (
-      (value as Array<{ name?: string; full_name?: string }> | undefined) ?? []
+      (value as Array<{ id?: number; name?: string; full_name?: string }> | undefined) ?? []
     ).map((r) => {
       const full = r.full_name ?? "";
       const [owner, name] = full.split("/");
-      return { owner: owner ?? "", name: name ?? r.name ?? "" };
+      return {
+        ...(Number.isSafeInteger(r.id) ? { id: r.id } : {}),
+        owner: owner ?? "",
+        name: name ?? r.name ?? "",
+      };
     });
     const repos = normalizeRepos(payload.repositories);
     return {
@@ -104,6 +115,8 @@ export function normalizeGitHubEvent(
       action: String(payload.action ?? ""),
       installationId: Number(inst?.id ?? 0),
       accountLogin: inst?.account?.login,
+      permissions: inst?.permissions,
+      repositorySelection: inst?.repository_selection,
       repos,
       reposAdded: normalizeRepos(payload.repositories_added),
       reposRemoved: normalizeRepos(payload.repositories_removed),

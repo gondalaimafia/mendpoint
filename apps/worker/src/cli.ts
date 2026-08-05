@@ -37,6 +37,7 @@ import {
   runFeedSchedules,
 } from "@mendpoint/catalog";
 import { nowIso } from "@mendpoint/shared";
+import { loadAppCredentials } from "@mendpoint/github";
 import { runWarden } from "@mendpoint/agent";
 import { runRepairSession } from "@mendpoint/repair";
 import type { ContractCase } from "@mendpoint/contract";
@@ -212,7 +213,7 @@ export function startIndependentWorkerLanes<TFeed, TJobs>(input: {
   };
 }
 
-function classifyJobFailure(error: unknown): {
+export function classifyJobFailure(error: unknown): {
   message: string;
   errorCode: string;
   retryable: boolean;
@@ -220,7 +221,10 @@ function classifyJobFailure(error: unknown): {
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
   const authorizationFailure =
-    /auth|permission|forbidden|unauthorized/.test(normalized);
+    /auth|permission|forbidden|unauthorized|bad credentials/.test(normalized) ||
+    /github_app_(?:credentials|token_(?:installation|invalid)|installation|repository|permissions|connection|delivery_mode|selected_repositories)/.test(
+      normalized,
+    );
   const retryable =
     !authorizationFailure &&
     /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed/.test(
@@ -316,8 +320,23 @@ export function validateWorkerProductionEnv(
   if (env.GITHUB_MODE !== "mock" && env.GITHUB_MODE !== "real") {
     errors.push("GITHUB_MODE must be explicitly set to mock or real");
   }
-  if (env.GITHUB_MODE === "real" && !env.GITHUB_TOKEN?.trim()) {
-    errors.push("GITHUB_TOKEN is required for real worker delivery");
+  const hasAnyAppCredential = Boolean(
+    env.GITHUB_APP_ID?.trim() ||
+    env.GITHUB_APP_PRIVATE_KEY?.trim() ||
+    env.GITHUB_APP_PRIVATE_KEY_PATH?.trim(),
+  );
+  const appCredentials = loadAppCredentials(env);
+  if (
+    env.GITHUB_MODE === "real" &&
+    !env.GITHUB_TOKEN?.trim() &&
+    !appCredentials
+  ) {
+    errors.push("GITHUB_TOKEN or complete GitHub App credentials are required for real worker delivery");
+  }
+  if (hasAnyAppCredential && !appCredentials) {
+    errors.push(
+      "GitHub App credentials must include a positive app ID and a readable RSA private key",
+    );
   }
   if (!env.DATABASE_URL && !env.MENDPOINT_DATA_DIR) {
     errors.push("DATABASE_URL or MENDPOINT_DATA_DIR is required");

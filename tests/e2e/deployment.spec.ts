@@ -412,6 +412,86 @@ test("production image protects operators and recovers queued work after a crash
     expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
     expect(await page.content()).not.toContain(apiKey);
 
+    const setupState = "s".repeat(43);
+    let setupRequests = 0;
+    await page.route("**/api/github/app/callback", async (route) => {
+      setupRequests++;
+      await route.fulfill({
+        status: setupRequests === 1 ? 202 : 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          setupRequests === 1
+            ? { error: "installation_verification_pending" }
+            : {
+                ok: true,
+                installation: { accountLogin: "gondalaimafia" },
+              },
+        ),
+      });
+    });
+    await page.goto(
+      `/github/setup?installation_id=12345&setup_action=install&state=${setupState}`,
+    );
+    await expect(page).toHaveURL(/\/github\/setup$/);
+    await expect(page.getByRole("heading", { name: "GitHub connected" })).toBeVisible();
+    await expect(page.getByText(/experimental GitHub App connection/)).toBeVisible();
+    await expectNoBlockingAccessibilityViolations(page);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "GitHub connected" })).toBeVisible();
+    expect(setupRequests).toBe(3);
+    await page.unroute("**/api/github/app/callback");
+
+    let pendingSetupRequests = 0;
+    await page.route("**/api/github/app/callback", async (route) => {
+      pendingSetupRequests++;
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "installation_verification_pending" }),
+      });
+    });
+    await page.goto(
+      `/github/setup?installation_id=12345&setup_action=update&state=${setupState}`,
+    );
+    await expect(page.getByRole("heading", { name: "Finishing GitHub setup" })).toBeVisible();
+    await page.goto("/docs");
+    await page.waitForTimeout(1_200);
+    expect(pendingSetupRequests).toBe(1);
+    await page.unroute("**/api/github/app/callback");
+
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.context().clearCookies();
+    await page.goto(
+      `/github/setup?installation_id=12345&setup_action=install&state=${setupState}`,
+      { referer: "https://github.com/" },
+    );
+    await expect(page).toHaveURL(/\/access\?next=/);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(1);
+    await page.route("**/api/github/app/callback", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          installation: { accountLogin: "gondalaimafia" },
+        }),
+      });
+    });
+    await page.getByLabel("Access token", { exact: true }).fill(webToken);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByRole("heading", { name: "GitHub connected" })).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(1);
+    await page.unroute("**/api/github/app/callback");
+    await page.setViewportSize({ width: 1440, height: 900 });
+
     await page.goto("/console");
     await expect(page.getByRole("heading", { name: "Keep every API change moving" })).toBeVisible();
     await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeVisible();

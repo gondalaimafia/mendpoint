@@ -990,3 +990,25 @@ Acceptance: the real product delivery path completes a private draft pull reques
 - Recovery result: zero net changed files, no open pull requests, canary branch lookup returns 404, and the default branch is unchanged.
 - Credential result: the temporary fine grained PAT was removed from Fly. Production machine version 28 is healthy and `/`, `/livez`, and `/healthz` return 200.
 - Remaining boundary: this proves PAT based private delivery and restore. It does not prove the GitHub App installation token lifecycle, approved customer repository use, or customer outcome.
+
+## Production GitHub App setup callback: 2026-08-04
+
+- [x] Add the authenticated browser return route used by GitHub after an installation is selected.
+- [x] Preserve tenant-bound install state across webhook delivery races and consume it exactly once only after the signed installation is verified.
+- [x] Require the signed webhook to bind the installation through preapproved repository ownership; never claim an unassigned installation from browser parameters.
+- [x] Bound callback retries, expose useful recovery states, and keep every mutation behind the same-origin authenticated proxy.
+- [x] Align the GitHub App manifest, runtime configuration, permissions, webhook events, and production URLs.
+- [x] Add database, API service, web callback, replay, expiry, cross-tenant, and webhook race regression tests.
+- [ ] Run focused tests, full typecheck, production build, GA checks, dependency audit, protected CI, exact-main deployment, and live verification.
+
+Acceptance: a signed GitHub installation event, independently verified repository ownership, and the originating principal's unexpired state complete through the browser setup return exactly once; webhook races can retry without losing state; unassigned and foreign installations fail closed; the published App form values match executable routes and least privilege permissions.
+
+### GitHub App callback local review: 2026-08-05
+
+- Added a public, no-referrer setup return page that immediately removes GitHub query parameters, resumes authenticated setup after access, bounds webhook-race retries, and exposes accessible pending, success, and recovery states.
+- Bound every installation state to an authenticated principal and tenant. Completion is idempotent, requires the exact installation, owner mapping, permission set, numeric repository evidence, and repository scope, and supports a verified first installation before consumer creation.
+- Added explicit `app`, `legacy_pat`, and `revoked` delivery modes. App delivery uses exact repository scoped installation tokens, RSA keys of at least 2048 bits, one bounded authentication refresh, and fail-closed permission or lifecycle drift behavior.
+- Added durable suspend and delete tombstones. Delayed create or repository events cannot restore access; only an explicit unsuspend can clear suspension, while deletion remains terminal.
+- Focused verification passes: database 66, API 92, GitHub 42, pipeline 17, worker 18, web 46, and operations 32 tests. Independent security, reliability, and UX reviews report no remaining P0, P1, or P2 findings.
+- Full workspace tests, full typecheck, the 22 page production build, GA checks, agent evals, dependency audit, diff integrity, and isolated API startup pass. The API returns 200 for live, ready, and version. Production dependencies report zero vulnerabilities.
+- Playwright discovers the expanded deployment journey. Docker is unavailable locally; protected CI remains the authoritative production image, crash recovery, and browser journey gate before merge.

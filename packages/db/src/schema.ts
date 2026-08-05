@@ -119,6 +119,7 @@ export type Consumer = {
   github_owner: string;
   github_repo: string;
   installation_id: string | null;
+  github_delivery_mode: "app" | "legacy_pat" | "revoked";
   tenant_id: string;
   created_at: string;
 };
@@ -154,8 +155,22 @@ export type GitHubInstallationRow = {
   tenant_id: string | null;
   permissions_json: string | null;
   repositories_json: string | null;
+  repository_selection: "selected" | "all";
+  suspended_at: string | null;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type GitHubInstallStateRow = {
+  state_hash: string;
+  tenant_id: string;
+  created_by_principal_id: string | null;
+  created_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+  completed_at: string | null;
+  completed_installation_id: string | null;
 };
 
 export type ConsumerRepo = {

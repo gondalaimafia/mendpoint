@@ -1,14 +1,12 @@
 {
   "name": "Mendpoint",
-  "url": "https://github.com/mendpoint/mendpoint",
+  "url": "https://mendpoint-talal.fly.dev",
   "hook_attributes": {
-    "url": "https://YOUR_HOST/webhooks/github",
+    "url": "https://mendpoint-talal.fly.dev/webhooks/github",
     "active": true
   },
-  "redirect_url": "https://YOUR_HOST/github/setup",
-  "callback_urls": ["https://YOUR_HOST/github/callback"],
-  "setup_url": "https://YOUR_HOST/github/setup",
-  "description": "Mendpoint — API impact analysis and migration PRs. Never auto-merges.",
+  "setup_url": "https://mendpoint-talal.fly.dev/github/setup",
+  "description": "Mendpoint detects API impact and prepares reviewed migration pull requests. It never auto merges.",
   "public": false,
   "default_events": [
     "installation",
@@ -20,6 +18,6 @@
     "contents": "write",
     "pull_requests": "write",
     "metadata": "read",
-    "checks": "write"
+    "checks": "read"
   }
 }

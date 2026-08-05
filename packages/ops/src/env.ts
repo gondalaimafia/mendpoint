@@ -3,6 +3,10 @@
  * Fails fast in production when required knobs are missing.
  */
 import { isAbsolute } from "node:path";
+import {
+  loadAppCredentials,
+  parseGitHubOwnerTenantBindings,
+} from "@mendpoint/github";
 
 export type EnvReport = {
   ok: boolean;
@@ -47,6 +51,9 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     GITHUB_APP_ID: env.GITHUB_APP_ID,
     GITHUB_APP_PRIVATE_KEY: env.GITHUB_APP_PRIVATE_KEY ? "[set]" : undefined,
     GITHUB_APP_PRIVATE_KEY_PATH: env.GITHUB_APP_PRIVATE_KEY_PATH,
+    GITHUB_APP_OWNER_TENANT_BINDINGS: env.GITHUB_APP_OWNER_TENANT_BINDINGS
+      ? "[set]"
+      : undefined,
     CORS_ORIGINS: env.CORS_ORIGINS,
     TRUST_PROXY: env.TRUST_PROXY,
     TRUST_PROXY_SECRET: env.TRUST_PROXY_SECRET ? "[set]" : undefined,
@@ -104,15 +111,38 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
         "GITHUB_MODE=mock — real PRs disabled (ok for private/self-hosted demos)",
       );
     } else if (githubMode === "real") {
+      const hasAnyAppCredential = Boolean(
+        env.GITHUB_APP_ID?.trim() ||
+        env.GITHUB_APP_PRIVATE_KEY?.trim() ||
+        env.GITHUB_APP_PRIVATE_KEY_PATH?.trim(),
+      );
+      const appCredentials = loadAppCredentials(env);
       if (!env.GITHUB_WEBHOOK_SECRET) {
         errors.push(
           "GITHUB_WEBHOOK_SECRET is required when GITHUB_MODE=real in production",
         );
       }
-      if (!env.GITHUB_TOKEN) {
+      if (!env.GITHUB_TOKEN?.trim() && !appCredentials) {
         errors.push(
-          "GITHUB_MODE=real requires GITHUB_TOKEN for production delivery",
+          "GITHUB_MODE=real requires GITHUB_TOKEN or complete GitHub App credentials for production delivery",
         );
+      }
+      if (hasAnyAppCredential && !appCredentials) {
+        errors.push(
+          "GitHub App credentials must include a positive app ID and a readable RSA private key",
+        );
+      }
+      if (appCredentials) {
+        try {
+          const bindings = parseGitHubOwnerTenantBindings(
+            env.GITHUB_APP_OWNER_TENANT_BINDINGS,
+          );
+          if (bindings.size === 0) throw new Error("empty");
+        } catch {
+          errors.push(
+            "GITHUB_APP_OWNER_TENANT_BINDINGS must be a nonempty JSON owner to tenant map when GitHub App credentials are configured",
+          );
+        }
       }
     }
     if (!env.CORS_ORIGINS && !env.WEB_URL) {
