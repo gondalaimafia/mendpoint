@@ -1012,3 +1012,35 @@ Acceptance: a signed GitHub installation event, independently verified repositor
 - Focused verification passes: database 66, API 92, GitHub 42, pipeline 17, worker 18, web 46, and operations 32 tests. Independent security, reliability, and UX reviews report no remaining P0, P1, or P2 findings.
 - Full workspace tests, full typecheck, the 22 page production build, GA checks, agent evals, dependency audit, diff integrity, and isolated API startup pass. The API returns 200 for live, ready, and version. Production dependencies report zero vulnerabilities.
 - Playwright discovers the expanded deployment journey. Docker is unavailable locally; protected CI remains the authoritative production image, crash recovery, and browser journey gate before merge.
+
+### GitHub App callback delivery evidence
+
+- Pull request 20 passed protected tests, release gates, production container builds, and the deployment journey, then merged as exact main revision `103bac3c21e6599cffd32c8a64e9c6749b726292`.
+- Exact main workflow `31037652176` repeated every protected gate and deployed successfully. Fly machine version 30 is started in `sjc` with its health check passing.
+- `/`, `/livez`, `/healthz`, and `/github/setup` return 200. `/status` returns the expected 307 access redirect. The setup return page passed public Edge verification with no console errors.
+- Live GitHub App creation remains externally blocked on the signed in GitHub account's sudo verification and action time confirmation before submission.
+
+## Devin level agent execution closure: Transformer durable attempt runner
+
+Baseline: exact `origin/main` revision `103bac3c21e6599cffd32c8a64e9c6749b726292`.
+
+- [x] Audit the real Warden and Transformer tool loops, worker wiring, persistence, recovery, and eval corpus against current autonomous coding agent requirements.
+- [x] Select the highest value repository controlled gap: Transformer claims durable attempts but no production caller loads the exact snapshot, executes the recipe, persists the candidate, or closes the attempt.
+- [x] Bind each attempt lease to its expected candidate digest and changed path contract, and add a reusable current fence assertion.
+- [x] Add fenced, typed attempt failure recording for source drift, candidate drift, verification failure, execution failure, and worker crash. Stale workers must be unable to pause or mutate the campaign.
+- [x] Build the production attempt runner: exact immutable snapshot load, bounded recipe execution, durable candidate artifact persistence, final fence check, exact completion, and deterministic recovery output.
+- [x] Wire the runner into an independent production worker lane that discovers runnable campaigns from the shared pilot store while the existing default deny Transformer gate remains authoritative.
+- [x] Add deterministic tests for success, source mismatch, candidate mismatch, command failure with inverse rollback, stale lease during execution, stale failure recording, duplicate replay, crash recovery, candidate artifact integrity, cleanup, and tenant gate denial.
+- [x] Add a held out end to end eval that uses a real temporary repository snapshot and verifier failure instead of an always successful injected command result. Run three fresh trials and retain pass, time, and consistency evidence.
+- [x] Run focused tests, full workspace tests, full typecheck, production build, GA checks, agent evals, dependency audit, diff integrity, isolated API startup, and independent security, reliability, and product reviews.
+- [ ] Commit by explicit file, push a protected branch, require every protected check, merge only green CI, verify exact main deployment, probe production, and browser verify.
+
+Acceptance: a default denied production worker can only execute an explicitly gated, exact tenant and campaign scoped attempt; every mutation is fenced; the exact source and output digests are verified; candidate files and evidence survive process exit; failed attempts rollback and pause safely; successful attempts become draft eligible but cannot merge or deploy; the real execution eval passes three of three trials.
+
+### Transformer durable attempt runner local review: 2026-08-05
+
+- Exact snapshot ID, revision, manifest digest, source digest, candidate digest, and changed paths now bind every lease. Claims are one transaction, token fenced, append only, and exactly replayable across connections and later attempt generations.
+- The independent worker lane expires abandoned leases, filters authorized campaigns before its limit, executes the allowlisted recipe in a disposable workspace, persists candidate and evidence artifacts, and closes or pauses the exact attempt. Infrastructure failures fail operational readiness; handled customer verification failures do not.
+- The production lane eval uses the real application database, pilot store, snapshot loader, default command runner, fixed external candidate gold, an independent fail to pass target judge, and an independent pass to pass regression judge. Three fresh trials pass: Warden 14 of 14, Transformer 13 of 13, 81 total trials, pass at 1 and pass at 3 both 1.000, with zero critical or deterministic failures.
+- Full workspace tests, full typecheck, the 22 page production build, GA checks, dependency audit, diff integrity, and isolated production mode API startup pass. API live, ready, and version return 200. Production dependencies report zero vulnerabilities. Independent security and reliability reviews found no remaining P0 or P1 issue in this slice.
+- Product contract status remains honest: 41 of 84 requirements are verified, 40 partial, 2 scaffold, and 1 externally blocked. Transformer remains experimental in the GA declaration. SCM draft creation, an adaptive inspect and edit retry loop, artifact retention and orphan cleanup, synchronous SQLite contention hardening, and the source grounded Warden loop remain subsequent gaps; this slice does not claim Devin parity.

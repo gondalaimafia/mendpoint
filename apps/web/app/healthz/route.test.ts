@@ -95,4 +95,101 @@ describe("public deployment health", () => {
       },
     });
   });
+
+  it("fails while an enabled Transformer infrastructure loop is unhealthy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-transformer-infra-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    const observedAt = new Date().toISOString();
+    writeFileSync(
+      heartbeatPath,
+      JSON.stringify({
+        ok: true,
+        recordedAt: observedAt,
+        feedPollingEnabled: false,
+        feedPollOk: true,
+        jobs: { failed: 0 },
+        transformer: {
+          enabled: true,
+          active: false,
+          lastRunAt: observedAt,
+          lastSuccessAt: observedAt,
+          infrastructureError: "transformer_lane_internal_error",
+          expired: 0,
+          attempted: 0,
+          completed: 0,
+          failed: 0,
+          stale: 0,
+          idle: 0,
+          errors: [],
+        },
+      }),
+    );
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    const response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      checks: {
+        worker: {
+          ok: false,
+          transformer: {
+            enabled: true,
+            infrastructureError: "transformer_lane_internal_error",
+          },
+        },
+      },
+    });
+  });
+
+  it("keeps handled Transformer customer failures separate from worker health", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-transformer-customer-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    const observedAt = new Date().toISOString();
+    writeFileSync(
+      heartbeatPath,
+      JSON.stringify({
+        ok: true,
+        recordedAt: observedAt,
+        feedPollingEnabled: false,
+        feedPollOk: true,
+        jobs: { failed: 0 },
+        transformer: {
+          enabled: true,
+          active: false,
+          lastRunAt: observedAt,
+          lastSuccessAt: observedAt,
+          expired: 0,
+          attempted: 1,
+          completed: 0,
+          failed: 1,
+          stale: 0,
+          idle: 0,
+          errors: ["recipe_execution_verification_failed:package-engine"],
+        },
+      }),
+    );
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    const response = await GET();
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      checks: {
+        worker: {
+          ok: true,
+          transformer: {
+            enabled: true,
+            failed: 1,
+          },
+        },
+      },
+    });
+  });
 });

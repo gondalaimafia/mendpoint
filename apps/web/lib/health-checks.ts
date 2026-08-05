@@ -1,5 +1,20 @@
 import { readFile } from "node:fs/promises";
 
+type TransformerHeartbeat = {
+  enabled?: boolean;
+  active?: boolean;
+  lastRunAt?: string;
+  lastSuccessAt?: string;
+  infrastructureError?: string;
+  expired?: number;
+  attempted?: number;
+  completed?: number;
+  failed?: number;
+  stale?: number;
+  idle?: number;
+  errors?: readonly string[];
+};
+
 type WorkerHeartbeat = {
   ok?: boolean;
   recordedAt?: string;
@@ -13,6 +28,7 @@ type WorkerHeartbeat = {
     deadLetter?: number;
     expiredLeases?: number;
   };
+  transformer?: TransformerHeartbeat;
 };
 
 function apiBase(): string {
@@ -40,6 +56,11 @@ export async function workerCheck(operational = true): Promise<{
   feedPollingEnabled?: boolean;
   activeJob?: WorkerHeartbeat["activeJob"];
   recovery?: WorkerHeartbeat["recovery"];
+  transformer?: TransformerHeartbeat & {
+    ok: boolean;
+    lastRunAgeMs?: number;
+    lastSuccessAgeMs?: number;
+  };
   reason?: string;
 }> {
   const path = process.env.MENDPOINT_WORKER_HEARTBEAT_PATH?.trim();
@@ -54,18 +75,42 @@ export async function workerCheck(operational = true): Promise<{
       Number.isFinite(recordedAt) &&
       ageMs >= 0 &&
       ageMs <= maxAgeMs;
+    const transformer = heartbeat.transformer;
+    const transformerMaxAgeMs = Number(
+      process.env.MENDPOINT_TRANSFORMER_HEARTBEAT_MAX_AGE_MS ?? 20 * 60_000,
+    );
+    const lastRunAt = Date.parse(transformer?.lastRunAt ?? "");
+    const lastSuccessAt = Date.parse(transformer?.lastSuccessAt ?? "");
+    const lastRunAgeMs = Date.now() - lastRunAt;
+    const lastSuccessAgeMs = Date.now() - lastSuccessAt;
+    const transformerAgeValid = Number.isFinite(transformerMaxAgeMs) &&
+      transformerMaxAgeMs >= 1_000;
+    const transformerOk = transformer?.enabled !== true || (
+      !transformer.infrastructureError &&
+      transformerAgeValid &&
+      (transformer.active === true
+        ? Number.isFinite(lastRunAt) && lastRunAgeMs >= 0 && lastRunAgeMs <= transformerMaxAgeMs
+        : Number.isFinite(lastSuccessAt) && lastSuccessAgeMs >= 0 && lastSuccessAgeMs <= transformerMaxAgeMs)
+    );
     const ok =
       live &&
       (!operational ||
         (heartbeat.feedPollOk === true &&
           (heartbeat.recovery?.expiredLeases ?? 0) === 0 &&
-          (heartbeat.recovery?.deadLetter ?? 0) === 0));
+          (heartbeat.recovery?.deadLetter ?? 0) === 0 &&
+          transformerOk));
     return {
       ok,
       ageMs,
       feedPollingEnabled: heartbeat.feedPollingEnabled === true,
       activeJob: heartbeat.activeJob ?? null,
       recovery: heartbeat.recovery,
+      transformer: transformer ? {
+        ...transformer,
+        ok: transformerOk,
+        ...(Number.isFinite(lastRunAt) ? { lastRunAgeMs } : {}),
+        ...(Number.isFinite(lastSuccessAt) ? { lastSuccessAgeMs } : {}),
+      } : undefined,
       reason: ok ? undefined : "heartbeat_stale_or_unhealthy",
     };
   } catch {

@@ -147,8 +147,10 @@ function unit(id: string, repositoryId: string, source: string, candidate: strin
     reviewerIds: [`reviewer-${repositoryId}`],
     dependsOn: [],
     snapshot: {
+      snapshotId: `snapshot-${repositoryId}`,
       repositoryId,
       revision: revision(source),
+      manifestSha256: source.repeat(64),
       digest: digest(source),
       evidenceRefs: [`evidence:snapshot:${repositoryId}`],
     },
@@ -274,20 +276,51 @@ describe("Transformer pilot execution API", () => {
     expect((await post(instance, "/transformer/executions", "create", campaign())).status).toBe(201);
 
     const token = "lease-token-unit-a-00000001";
+    const invalidDuration = await post(
+      instance,
+      "/transformer/executions/campaign-a/attempts/claim",
+      "claim-invalid-duration",
+      { leaseToken: token, leaseDurationMs: 999 },
+    );
+    expect(invalidDuration.status).toBe(400);
+    await expect(invalidDuration.json()).resolves.toMatchObject({
+      error: "transformer_pilot_lease_duration_invalid",
+    });
     const claimed = await post(
       instance,
       "/transformer/executions/campaign-a/attempts/claim",
       "claim-a",
-      { leaseToken: token },
+      { leaseToken: token, leaseDurationMs: 900_000 },
     );
     expect(claimed.status).toBe(200);
-    expect(await claimed.json()).toMatchObject({ lease: { unitId: "unit-a", attemptNumber: 1, leaseGeneration: 1 } });
+    const claimedBody = await claimed.json() as {
+      lease: { unitId: string; attemptNumber: number; leaseGeneration: number; leaseExpiresAt: string };
+    };
+    expect(claimedBody).toMatchObject({ lease: { unitId: "unit-a", attemptNumber: 1, leaseGeneration: 1 } });
+    expect(claimedBody.lease.leaseExpiresAt).toBe("2026-08-02T12:16:00.000Z");
+
+    const staleCrash = await post(
+      instance,
+      "/transformer/executions/campaign-a/attempts/crash",
+      "stale-crash-a",
+      {
+        unitId: "unit-a",
+        leaseGeneration: 2,
+        leaseToken: token,
+      },
+    );
+    expect(staleCrash.status).toBe(409);
+    expect(await staleCrash.json()).toMatchObject({ error: "transformer_pilot_fence_stale" });
 
     const crashed = await post(
       instance,
       "/transformer/executions/campaign-a/attempts/crash",
       "crash-a",
-      { unitId: "unit-a" },
+      {
+        unitId: "unit-a",
+        leaseGeneration: 1,
+        leaseToken: token,
+      },
     );
     const crashedBody = await crashed.json() as { exceptions: Array<{ id: string }>; state: string };
     expect(crashedBody.state).toBe("paused");

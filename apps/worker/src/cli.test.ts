@@ -34,6 +34,9 @@ import {
   startConcurrentJobLanes,
   validateWorkerProductionEnv,
   runUnseenVersion,
+  transformerPilotHeartbeatAfterFailure,
+  transformerPilotHeartbeatAfterResult,
+  transformerPilotHeartbeatStarted,
   writeWorkerHeartbeat,
 } from "./cli.js";
 
@@ -114,6 +117,59 @@ describe("worker runtime", () => {
         feedPollOk: true,
       }),
     ).toThrow(/absolute/i);
+  });
+
+  it("separates Transformer infrastructure health from handled customer failures", () => {
+    const initial = {
+      enabled: true,
+      active: false,
+      expired: 0,
+      attempted: 0,
+      completed: 0,
+      failed: 0,
+      stale: 0,
+      idle: 0,
+      errors: [],
+    } as const;
+    const started = transformerPilotHeartbeatStarted(
+      initial,
+      "2026-08-05T10:00:00.000Z",
+    );
+    expect(started).toMatchObject({ enabled: true, active: true });
+
+    const handled = transformerPilotHeartbeatAfterResult(
+      started,
+      {
+        enabled: true,
+        expired: 0,
+        attempted: 1,
+        completed: 0,
+        failed: 1,
+        stale: 0,
+        idle: 0,
+        errors: ["recipe_execution_verification_failed:package-engine"],
+      },
+      "2026-08-05T10:01:00.000Z",
+    );
+    expect(handled).toMatchObject({
+      active: false,
+      failed: 1,
+      lastSuccessAt: "2026-08-05T10:01:00.000Z",
+    });
+    expect(handled).not.toHaveProperty("infrastructureError");
+
+    const infrastructureFailure = transformerPilotHeartbeatAfterFailure(
+      handled,
+      new Error("database is locked"),
+      "2026-08-05T10:02:00.000Z",
+    );
+    expect(infrastructureFailure).toMatchObject({
+      enabled: true,
+      active: false,
+      lastSuccessAt: "2026-08-05T10:01:00.000Z",
+      lastRunAt: "2026-08-05T10:02:00.000Z",
+      infrastructureError: "transformer_lane_database_locked",
+    });
   });
 
   it("starts job draining without waiting for a slow feed", async () => {

@@ -154,7 +154,7 @@ function createRecipe(definition: RecipeDefinition): MigrationRecipeContract {
   return deepFreeze(recipe);
 }
 
-const NODE_RUNTIME_18_TO_20 = createRecipe({
+const NODE_RUNTIME_18_TO_20_V1 = createRecipe({
   id: "node-runtime-18-to-20",
   version: 1,
   title: "Node runtime 18 to 20",
@@ -208,11 +208,43 @@ const NODE_RUNTIME_18_TO_20 = createRecipe({
   },
 });
 
+const RUNTIME_DECLARATIONS_SCRIPT =
+  "const fs=require('node:fs');const fail=()=>{throw new Error('runtime declaration mismatch')};for(const p of ['.nvmrc','.node-version']){if(!fs.existsSync(p))continue;const v=fs.readFileSync(p,'utf8').trim().replace(/^v/,'').split('.')[0];if(v!=='20')fail()}if(fs.existsSync('Dockerfile')){const d=fs.readFileSync('Dockerfile','utf8').split(/\\r?\\n/).filter(l=>/^\\s*FROM\\b/i.test(l)&&/\\bnode:/i.test(l));if(!d.length||d.some(l=>!/^\\s*FROM(?:\\s+--\\S+)?\\s+node:20(?=[.\\-@\\s]|$)/i.test(l)))fail()}";
+
+const NODE_RUNTIME_18_TO_20_V2 = createRecipe({
+  id: NODE_RUNTIME_18_TO_20_V1.id,
+  version: 2,
+  title: NODE_RUNTIME_18_TO_20_V1.title,
+  source: NODE_RUNTIME_18_TO_20_V1.source,
+  target: NODE_RUNTIME_18_TO_20_V1.target,
+  allowedPaths: NODE_RUNTIME_18_TO_20_V1.allowedPaths,
+  preconditions: NODE_RUNTIME_18_TO_20_V1.preconditions,
+  transforms: NODE_RUNTIME_18_TO_20_V1.transforms,
+  verificationCommands: [
+    {
+      id: "runtime-declarations",
+      command: `node -e "${RUNTIME_DECLARATIONS_SCRIPT}"`,
+      successCriteria: "Optional runtime declarations target Node 20",
+    },
+    NODE_RUNTIME_18_TO_20_V1.verificationCommands.find(
+      (command) => command.id === "package-engine",
+    )!,
+  ],
+  rollback: NODE_RUNTIME_18_TO_20_V1.rollback,
+});
+
 const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
-  [`${NODE_RUNTIME_18_TO_20.id}@${NODE_RUNTIME_18_TO_20.version}`, NODE_RUNTIME_18_TO_20],
+  [
+    `${NODE_RUNTIME_18_TO_20_V1.id}@${NODE_RUNTIME_18_TO_20_V1.version}`,
+    NODE_RUNTIME_18_TO_20_V1,
+  ],
+  [
+    `${NODE_RUNTIME_18_TO_20_V2.id}@${NODE_RUNTIME_18_TO_20_V2.version}`,
+    NODE_RUNTIME_18_TO_20_V2,
+  ],
 ]);
 
-export const NODE_RUNTIME_18_TO_20_RECIPE = NODE_RUNTIME_18_TO_20;
+export const NODE_RUNTIME_18_TO_20_RECIPE = NODE_RUNTIME_18_TO_20_V2;
 
 export function validateRecipe(recipe: MigrationRecipeContract): void {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(recipe.id)) throw new Error("recipe_id_invalid");

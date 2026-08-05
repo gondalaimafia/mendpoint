@@ -7,7 +7,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runChangePipeline } from "@mendpoint/pipeline";
 import {
@@ -40,7 +40,13 @@ import { nowIso } from "@mendpoint/shared";
 import { loadAppCredentials } from "@mendpoint/github";
 import { runWarden } from "@mendpoint/agent";
 import { runRepairSession } from "@mendpoint/repair";
+import { TransformerPilotExecutionStore } from "@mendpoint/transformer";
 import type { ContractCase } from "@mendpoint/contract";
+import {
+  runTransformerPilotLaneOnce,
+  transformerPilotWorkerPath,
+  type TransformerPilotLaneResult,
+} from "./transformer-pilot-lane.js";
 
 const WORKER_ID =
   process.env.MENDPOINT_WORKER_ID ?? `worker:${process.pid}:${randomUUID()}`;
@@ -53,7 +59,7 @@ export type JobDrainResult = {
 };
 
 export type WorkerHeartbeat = {
-  ok: true;
+  ok: boolean;
   workerId: string;
   recordedAt: string;
   jobs: JobDrainResult;
@@ -66,9 +72,70 @@ export type WorkerHeartbeat = {
     deadLetter: number;
     expiredLeases: number;
   };
+  transformer?: TransformerPilotLaneHeartbeat;
   feedPollingEnabled: boolean;
   feedPollOk: boolean;
 };
+
+export type TransformerPilotLaneHeartbeat = TransformerPilotLaneResult & Readonly<{
+  active: boolean;
+  lastRunAt?: string;
+  lastSuccessAt?: string;
+  infrastructureError?: string;
+}>;
+
+function transformerInfrastructureErrorCode(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (/database is locked|SQLITE_BUSY/i.test(raw)) {
+    return "transformer_lane_database_locked";
+  }
+  if (/^[A-Za-z0-9][A-Za-z0-9._,:-]{0,199}$/.test(raw)) return raw;
+  return "transformer_lane_internal_error";
+}
+
+export function transformerPilotHeartbeatStarted(
+  previous: TransformerPilotLaneHeartbeat,
+  observedAt: string,
+): TransformerPilotLaneHeartbeat {
+  return Object.freeze({ ...previous, active: true, lastRunAt: observedAt });
+}
+
+export function transformerPilotHeartbeatAfterResult(
+  previous: TransformerPilotLaneHeartbeat,
+  result: TransformerPilotLaneResult,
+  observedAt: string,
+): TransformerPilotLaneHeartbeat {
+  const { infrastructureError: _previousError, ...previousWithoutError } = previous;
+  if (result.infrastructureError) {
+    return Object.freeze({
+      ...previousWithoutError,
+      ...result,
+      active: false,
+      lastRunAt: observedAt,
+      ...(previous.lastSuccessAt ? { lastSuccessAt: previous.lastSuccessAt } : {}),
+    });
+  }
+  return Object.freeze({
+    ...previousWithoutError,
+    ...result,
+    active: false,
+    lastRunAt: observedAt,
+    lastSuccessAt: observedAt,
+  });
+}
+
+export function transformerPilotHeartbeatAfterFailure(
+  previous: TransformerPilotLaneHeartbeat,
+  error: unknown,
+  observedAt: string,
+): TransformerPilotLaneHeartbeat {
+  return Object.freeze({
+    ...previous,
+    active: false,
+    lastRunAt: observedAt,
+    infrastructureError: transformerInfrastructureErrorCode(error),
+  });
+}
 
 export function writeWorkerHeartbeat(
   heartbeatPath: string,
@@ -868,6 +935,10 @@ async function runJobWorker(intervalMs: number) {
 async function runService(intervalMs: number) {
   const feedDb = createDb();
   const heartbeatDb = createDb();
+  const transformerDb = createDb();
+  const transformerStore = new TransformerPilotExecutionStore(
+    transformerPilotWorkerPath(),
+  );
   const jobConcurrency = parseJobConcurrency(process.env.MENDPOINT_JOB_CONCURRENCY);
   const jobDbs = Array.from({ length: jobConcurrency }, () => createDb());
   const heartbeatPath = process.env.MENDPOINT_WORKER_HEARTBEAT_PATH;
@@ -881,6 +952,17 @@ async function runService(intervalMs: number) {
     succeeded: 0,
     failed: 0,
     retried: 0,
+  };
+  let transformer: TransformerPilotLaneHeartbeat = {
+    enabled: Boolean(process.env.MENDPOINT_TRANSFORMER_GATE?.trim()),
+    active: false,
+    expired: 0,
+    attempted: 0,
+    completed: 0,
+    failed: 0,
+    stale: 0,
+    idle: 0,
+    errors: [],
   };
   const activeJobs = new Map<number, NonNullable<WorkerHeartbeat["activeJob"]>>();
   const laneJobs = Array.from({ length: jobConcurrency }, (): JobDrainResult => ({
@@ -911,6 +993,7 @@ async function runService(intervalMs: number) {
           deadLetter: recovery.deadLetter,
           expiredLeases: recovery.expiredLeases,
         },
+        transformer,
         feedPollingEnabled,
         feedPollOk,
       });
@@ -1007,17 +1090,58 @@ async function runService(intervalMs: number) {
     }
   };
 
+  const dataRoot = resolve(
+    process.env.MENDPOINT_DATA_DIR ?? join(process.cwd(), "data"),
+  );
+  const runTransformerLane = async () => {
+    let failures = 0;
+    while (!shutdown.signal.aborted) {
+      transformer = transformerPilotHeartbeatStarted(transformer, nowIso());
+      emitHeartbeat();
+      try {
+        const result = await runTransformerPilotLaneOnce({
+          db: transformerDb,
+          store: transformerStore,
+          gateConfig: process.env.MENDPOINT_TRANSFORMER_GATE,
+          tenantId: configuredTenantId,
+          workerId: WORKER_ID,
+          evidenceRoot: process.env.MENDPOINT_TRANSFORMER_EVIDENCE_ROOT ??
+            join(dataRoot, "transformer-evidence"),
+          candidateRoot: process.env.MENDPOINT_TRANSFORMER_CANDIDATE_ROOT ??
+            join(dataRoot, "transformer-candidates"),
+          tempRoot: process.env.MENDPOINT_TRANSFORMER_TEMP_ROOT ??
+            join(dataRoot, "transformer-workspaces"),
+          leaseDurationMs: Number(
+            process.env.MENDPOINT_TRANSFORMER_LEASE_MS ?? 15 * 60_000,
+          ),
+          shouldContinue: () => !shutdown.signal.aborted,
+        });
+        transformer = transformerPilotHeartbeatAfterResult(transformer, result, nowIso());
+        failures = result.infrastructureError ? failures + 1 : 0;
+      } catch (error) {
+        failures++;
+        transformer = transformerPilotHeartbeatAfterFailure(transformer, error, nowIso());
+        console.error(error);
+      }
+      emitHeartbeat();
+      const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
+      await waitForWorkerDelay(delay, shutdown.signal);
+    }
+  };
+
   const lanes = startIndependentWorkerLanes({
     feeds: runFeedLane,
     jobs: () => startConcurrentJobLanes(jobConcurrency, runJobLane),
   });
   try {
-    await Promise.all([lanes.feeds, lanes.jobs]);
+    await Promise.all([lanes.feeds, lanes.jobs, runTransformerLane()]);
   } finally {
     clearInterval(heartbeatTimer);
     process.off("SIGTERM", requestShutdown);
     process.off("SIGINT", requestShutdown);
     feedDb.raw.close();
+    transformerStore.close();
+    transformerDb.raw.close();
     for (const jobDb of jobDbs) jobDb.raw.close();
     heartbeatDb.raw.close();
   }
