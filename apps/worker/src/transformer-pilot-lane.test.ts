@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
@@ -375,10 +375,12 @@ describe("Transformer production pilot lane", () => {
   });
 
   it("resolves the same shared pilot database path as the API", () => {
-    expect(transformerPilotWorkerPath({ MENDPOINT_DATA_DIR: "C:\\data" }, "C:\\app"))
-      .toBe(join("C:\\data", "transformer-pilot.sqlite"));
+    const dataRoot = resolve("shared-transformer-data");
+    const databasePath = resolve("shared-transformer-state", "pilot.sqlite");
+    expect(transformerPilotWorkerPath({ MENDPOINT_DATA_DIR: dataRoot }, resolve("worker-app")))
+      .toBe(join(dataRoot, "transformer-pilot.sqlite"));
     expect(transformerPilotWorkerPath({
-      MENDPOINT_TRANSFORMER_PILOT_DB: "C:\\state\\pilot.sqlite",
-    }, "C:\\app")).toBe("C:\\state\\pilot.sqlite");
+      MENDPOINT_TRANSFORMER_PILOT_DB: databasePath,
+    }, resolve("worker-app"))).toBe(databasePath);
   });
 });
