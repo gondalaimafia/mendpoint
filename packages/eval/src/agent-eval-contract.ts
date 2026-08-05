@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 
-export const AGENT_EVAL_VERSION = "2026-08-05.v4" as const;
+export const AGENT_EVAL_VERSION = "2026-08-05.v6" as const;
 
 export type AgentEvalProduct = "warden" | "transformer";
 export type AgentEvalTier = "common" | "edge" | "adversarial" | "recovery";
 export type AgentEvalDisposition = "passed" | "safe_handoff" | "failed";
+export type AgentEvalEvidenceLane = "contract" | "simulated_scripted" | "live_model";
 
 export type AgentEvalBudget = Readonly<{
   maxDurationMs: number;
@@ -56,6 +57,7 @@ export type AgentEvalScenario = Readonly<{
   sourceRefs: readonly string[];
   budget: AgentEvalBudget;
   deterministic: boolean;
+  evidenceLane?: AgentEvalEvidenceLane;
   run(trial: number): Promise<Readonly<{
     observation: AgentEvalObservation;
     grades: readonly AgentEvalGrade[];
@@ -74,11 +76,13 @@ export type AgentEvalScenarioResult = Readonly<{
   passAtK: boolean;
   passToK: boolean;
   deterministic: boolean;
+  evidenceLane: AgentEvalEvidenceLane;
+  liveModelCapability: boolean;
   passed: boolean;
 }>;
 
 export type AgentEvalReport = Readonly<{
-  schemaVersion: 1;
+  schemaVersion: 2;
   corpusVersion: typeof AGENT_EVAL_VERSION;
   repetitions: number;
   generatedAt: string;
@@ -92,6 +96,10 @@ export type AgentEvalReport = Readonly<{
   passToK: number;
   durationMs: Readonly<{ p50: number; p95: number; total: number }>;
   byProduct: Readonly<Record<AgentEvalProduct, Readonly<{
+    passed: number;
+    total: number;
+  }>>>;
+  byEvidenceLane: Readonly<Record<AgentEvalEvidenceLane, Readonly<{
     passed: number;
     total: number;
   }>>>;
@@ -230,6 +238,8 @@ export async function runAgentEvalScenarios(
       passAtK,
       passToK,
       deterministic,
+      evidenceLane: scenario.evidenceLane ?? "contract",
+      liveModelCapability: (scenario.evidenceLane ?? "contract") === "live_model",
       passed: passToK && deterministic,
     }));
   }
@@ -252,8 +262,15 @@ export async function runAgentEvalScenarios(
       total: matching.length,
     });
   };
+  const byEvidenceLane = (lane: AgentEvalEvidenceLane) => {
+    const matching = results.filter((result) => result.evidenceLane === lane);
+    return Object.freeze({
+      passed: matching.filter((result) => result.passed).length,
+      total: matching.length,
+    });
+  };
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     corpusVersion: AGENT_EVAL_VERSION,
     repetitions: trialCount,
     generatedAt: now().toISOString(),
@@ -274,6 +291,11 @@ export async function runAgentEvalScenarios(
     byProduct: Object.freeze({
       warden: byProduct("warden"),
       transformer: byProduct("transformer"),
+    }),
+    byEvidenceLane: Object.freeze({
+      contract: byEvidenceLane("contract"),
+      simulated_scripted: byEvidenceLane("simulated_scripted"),
+      live_model: byEvidenceLane("live_model"),
     }),
     scenarios: Object.freeze(results),
   });

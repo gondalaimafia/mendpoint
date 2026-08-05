@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { createHash, randomBytes } from "node:crypto";
+import { rmSync } from "node:fs";
 import {
   createDb,
   listProviders,
@@ -68,6 +69,7 @@ import {
   listTenants,
   getTenant,
   getTenantBySlug,
+  getPrincipal,
   insertTenant,
   updateTenantPlan,
   tenantToApi,
@@ -204,7 +206,13 @@ import {
 } from "./ci-check.js";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
-import { runWarden } from "@mendpoint/agent";
+import { parseWardenRunInput } from "./warden-run-input.js";
+import {
+  discardWardenCandidate,
+  readWardenCandidate,
+  sealWardenCandidateApproval,
+} from "./warden-candidate.js";
+import { isHumanWardenReviewer } from "./warden-review-auth.js";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
   createAuthMiddleware,
@@ -2248,55 +2256,295 @@ app.get("/agent/runs/:id", (c) => {
   return c.json(agentRunToApi(r));
 });
 
+function markWardenCandidateExpired(
+  run: Readonly<{ id: string; status: string; result_json: string | null }>,
+  tenantId: string,
+): void {
+  if (run.status !== "candidate_ready" && run.status !== "candidate_approved") return;
+  let result: Record<string, unknown> = {};
+  try {
+    const parsed = run.result_json ? JSON.parse(run.result_json) as unknown : null;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      result = parsed as Record<string, unknown>;
+    }
+  } catch {
+    result = {};
+  }
+  const retention = result.retention && typeof result.retention === "object"
+    ? result.retention as Record<string, unknown>
+    : {};
+  const observedAt = nowIso();
+  db.raw.prepare(
+    `UPDATE agent_runs SET status = 'candidate_expired', result_json = ?, finished_at = ?
+     WHERE id = ? AND tenant_id = ? AND status IN ('candidate_ready', 'candidate_approved')`,
+  ).run(JSON.stringify({
+    ...result,
+    retention: { ...retention, expiredAt: observedAt },
+    cleanup: { status: "pending", attempts: 0 },
+  }), observedAt, run.id, tenantId);
+}
+
+app.get("/agent/runs/:id/candidate", async (c) => {
+  const run = getAgentRun(db, c.req.param("id"), requestTenantId(c));
+  if (!run) return c.json({ error: "not found" }, 404);
+  c.header("Cache-Control", "private, no-store, max-age=0");
+  c.header("Pragma", "no-cache");
+  try {
+    return c.json(await readWardenCandidate({
+      tenantId: run.tenant_id,
+      repoPath: run.repo_path,
+      status: run.status,
+      resultJson: run.result_json,
+    }));
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "warden_candidate_unavailable";
+    if (code === "warden_candidate_expired") {
+      markWardenCandidateExpired(run, run.tenant_id);
+    }
+    const status = code === "warden_candidate_expired" ? 410 :
+      code === "warden_candidate_not_ready" ? 409 : 409;
+    return c.json({ error: code }, status);
+  }
+});
+
+app.post("/agent/runs/:id/candidate/review", async (c) => {
+  const tenantId = requestTenantId(c);
+  const principal = c.get("principal");
+  const trustPrincipalId = c.get("trustPrincipalId");
+  const trustPrincipal = trustPrincipalId
+    ? getPrincipal(db, tenantId, trustPrincipalId)
+    : undefined;
+  if (!isHumanWardenReviewer(principal, trustPrincipal, tenantId, c.get("apiKeyId"))) {
+    return c.json({ error: "human_review_required" }, 403);
+  }
+  let run = getAgentRun(db, c.req.param("id"), tenantId);
+  if (!run) return c.json({ error: "not found" }, 404);
+  const body: { decision?: unknown } = await c.req
+    .json<{ decision?: unknown }>()
+    .catch(() => ({}));
+  if (body.decision !== "approve" && body.decision !== "reject") {
+    return c.json({ error: "decision must be approve or reject" }, 400);
+  }
+  // Parsing the body yielded the event loop, so a concurrent review may have
+  // moved this run. Re-read current state from the database before deciding to
+  // seal; the `AND status = 'candidate_ready'` UPDATE guard remains the final
+  // arbiter of the write.
+  run = getAgentRun(db, run.id, tenantId);
+  if (!run) return c.json({ error: "not found" }, 404);
+  const reviewedAt = nowIso();
+  const result = run.result_json
+    ? (JSON.parse(run.result_json) as Record<string, unknown>)
+    : {};
+  const priorReview = result.review && typeof result.review === "object"
+    ? result.review as Record<string, unknown>
+    : null;
+  if (
+    ["candidate_approved", "candidate_rejected"].includes(run.status) &&
+    priorReview?.decision === body.decision
+  ) {
+    return c.json(agentRunToApi(run));
+  }
+  if (run.status !== "candidate_ready") {
+    return c.json({ error: "candidate is not awaiting review" }, 409);
+  }
+  let sealedApproval: Readonly<{ path: string; sha256: string; created: boolean }> | null = null;
+  if (body.decision === "approve") {
+    try {
+      sealedApproval = await sealWardenCandidateApproval({
+        tenantId: run.tenant_id,
+        repoPath: run.repo_path,
+        status: run.status,
+        resultJson: run.result_json,
+      });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "warden_candidate_unavailable";
+      if (code === "warden_candidate_expired") {
+        markWardenCandidateExpired(run, tenantId);
+      }
+      return c.json({ error: code }, code === "warden_candidate_expired" ? 410 : 409);
+    }
+  }
+  const status = body.decision === "approve" ? "candidate_approved" : "candidate_rejected";
+  const existingArtifacts = result.artifacts && typeof result.artifacts === "object"
+    ? result.artifacts as Record<string, unknown>
+    : null;
+  const reviewedResult = {
+    ...result,
+    review: {
+      decision: body.decision,
+      reviewedAt,
+      reviewerPrincipalId: principal?.id ?? null,
+    },
+    ...(sealedApproval
+      ? {
+        artifacts: {
+          ...(existingArtifacts ?? {}),
+          approval: { path: sealedApproval.path, sha256: sealedApproval.sha256 },
+        },
+      }
+      : {}),
+    ...(body.decision === "reject"
+      ? { cleanup: { status: "pending", attempts: 0 } }
+      : {}),
+  };
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const updated = db.raw.prepare(
+      `UPDATE agent_runs
+       SET status = ?, result_json = ?, finished_at = ?
+       WHERE id = ? AND tenant_id = ? AND status = 'candidate_ready'`,
+    ).run(
+      status,
+      JSON.stringify(reviewedResult),
+      reviewedAt,
+      run.id,
+      tenantId,
+    );
+    if (Number(updated.changes) !== 1) throw new Error("warden_candidate_review_conflict");
+    requestAudit(c, {
+      actor: "operator",
+      action: body.decision === "approve"
+        ? "agent.candidate.approved"
+        : "agent.candidate.rejected",
+      resourceType: "agent_run",
+      resourceId: run.id,
+      metadata: {
+        decision: body.decision,
+        product: "warden",
+        reviewerPrincipalId: principal?.id ?? null,
+      },
+    });
+    db.raw.exec("COMMIT");
+  } catch (error) {
+    db.raw.exec("ROLLBACK");
+    // Only delete the sealed artifact when THIS request created it. A concurrent
+    // approve that committed first owns a pre-existing content-addressed seal;
+    // removing it would destroy the committed approval's evidence.
+    if (sealedApproval && sealedApproval.created) {
+      try {
+        rmSync(sealedApproval.path, { force: true });
+      } catch {
+        // best effort: avoid leaving an orphan sealed artifact behind
+      }
+    }
+    const code = error instanceof Error ? error.message : "warden_candidate_review_failed";
+    return c.json({ error: code }, 409);
+  }
+  if (body.decision === "reject") {
+    try {
+      discardWardenCandidate({
+        tenantId,
+        status: run.status,
+        resultJson: run.result_json,
+      });
+      const artifacts = result.artifacts && typeof result.artifacts === "object"
+        ? result.artifacts as Record<string, unknown>
+        : null;
+      db.raw.prepare(
+        `UPDATE agent_runs SET result_json = ?
+         WHERE id = ? AND tenant_id = ? AND status = 'candidate_rejected'`,
+      ).run(JSON.stringify({
+        ...reviewedResult,
+        artifacts: artifacts ? {
+          sourceDigest: artifacts.sourceDigest ?? null,
+          candidateDigest: artifacts.candidateDigest ?? null,
+          candidateWorkspace: null,
+          candidateManifest: null,
+          evidence: null,
+        } : null,
+        cleanup: { status: "cleaned", attempts: 1, cleanedAt: nowIso() },
+      }), run.id, tenantId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "warden_candidate_cleanup_failed";
+      db.raw.prepare(
+        `UPDATE agent_runs SET result_json = ?
+         WHERE id = ? AND tenant_id = ? AND status = 'candidate_rejected'`,
+      ).run(JSON.stringify({
+        ...reviewedResult,
+        cleanup: { status: "pending", attempts: 1, lastError: message, lastAttemptAt: nowIso() },
+      }), run.id, tenantId);
+      return c.json({
+        status,
+        cleanup: "pending",
+        error: message,
+      }, 202);
+    }
+  }
+  return c.json(agentRunToApi(getAgentRun(db, run.id, tenantId)!));
+});
+
 /**
  * Run Warden — Mendpoint API debug agent (tool loop).
- * Body: { goal, consumerId, errorLog?, maxSteps?, dryRun?, useLlm?, async? }
- * When async=true, enqueues job type agent.run and returns 202.
+ * Body: { goal, consumerId, allowedChangedPaths, verifyCommand?, errorLog?, maxSteps?, useLlm? }
+ * Every run is queued so the worker can enforce the snapshot and lease boundaries.
  */
 app.post("/agent/runs", async (c) => {
   try {
-    const body = await c.req.json<{
-      goal: string;
-      consumerId?: string;
-      errorLog?: string;
-      maxSteps?: number;
-      dryRun?: boolean;
-      useLlm?: boolean;
-      async?: boolean;
-    }>();
-    if (!body.goal?.trim()) return c.json({ error: "goal required" }, 400);
+    const parsed = parseWardenRunInput(await c.req.json<unknown>());
+    if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+    const body = parsed.value;
 
     const tenantId = requestTenantId(c);
-    if (!body.consumerId) {
-      return c.json({ error: "consumerId required" }, 400);
-    }
     const owned = tenantConsumerRepo(body.consumerId, tenantId);
     if (!owned) return c.json({ error: "consumer not found" }, 404);
     const { consumer, repo } = owned;
     const repoPath = repo.local_path;
 
-    if (isProduction() || body.async !== false) {
-      const jobId = newId();
-      const sessionId = newId();
+    const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(idempotencyKey)) {
+      return c.json({ error: "Idempotency-Key header must contain 8 to 128 safe characters" }, 400);
+    }
+    const identity = createHash("sha256")
+      .update(`${tenantId}\n${idempotencyKey}`)
+      .digest("hex");
+    const jobId = `warden-job-${identity.slice(0, 32)}`;
+    const sessionId = `warden-run-${identity.slice(32)}`;
+    const payload = {
+      goal: body.goal,
+      consumerId: consumer.id,
+      allowedChangedPaths: body.allowedChangedPaths,
+      verifyCommand: body.verifyCommand,
+      errorLog: body.errorLog,
+      maxSteps: body.maxSteps,
+      dryRun: body.dryRun,
+      useLlm: body.useLlm ?? process.env.LLM_AGENT === "1",
+      allowNetwork: false,
+      sessionId,
+    };
+    const payloadJson = JSON.stringify(payload);
+    const createdAt = nowIso();
+    db.raw.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = getJob(db, jobId, tenantId);
+      if (existing) {
+        if (existing.type !== "agent.run" || existing.payload_json !== payloadJson) {
+          db.raw.exec("ROLLBACK");
+          return c.json({ error: "idempotency key was already used for a different Warden run" }, 409);
+        }
+        db.raw.exec("COMMIT");
+        return c.json(
+          {
+            sessionId,
+            jobId,
+            status: existing.status,
+            product: "warden",
+            replayed: true,
+            message: "The existing Warden run was returned",
+          },
+          202,
+        );
+      }
       enqueueJob(db, {
         id: jobId,
         tenantId,
         type: "agent.run",
-        payload: {
-          goal: body.goal,
-          consumerId: consumer.id,
-          errorLog: body.errorLog,
-          maxSteps: body.maxSteps ?? 20,
-          dryRun: body.dryRun,
-          useLlm: body.useLlm ?? process.env.LLM_AGENT === "1",
-          allowNetwork: false,
-          sessionId,
-        },
-        createdAt: nowIso(),
+        payload,
+        createdAt,
       });
       insertAgentRun(db, {
         id: sessionId,
         tenantId,
+        jobId,
         goal: body.goal,
         repoPath,
         status: "queued",
@@ -2304,8 +2552,11 @@ app.post("/agent/runs", async (c) => {
         steps: 0,
         filesChanged: [],
         reportMd: null,
-        resultJson: JSON.stringify({ jobId }),
-        createdAt: nowIso(),
+        resultJson: JSON.stringify({
+          jobId,
+          ingressRedactions: body.ingressRedactions,
+        }),
+        createdAt,
         finishedAt: null,
       });
       requestAudit(c, {
@@ -2313,84 +2564,26 @@ app.post("/agent/runs", async (c) => {
         action: "agent.run.queued",
         resourceType: "agent_run",
         resourceId: sessionId,
-        metadata: { jobId, product: "warden" },
-      });
-      return c.json(
-        {
-          sessionId,
+        metadata: {
           jobId,
-          status: "queued",
           product: "warden",
-          message: "The recovery worker will process this job",
+          idempotencyFingerprint: identity.slice(0, 12),
         },
-        202,
-      );
+      });
+      db.raw.exec("COMMIT");
+    } catch (error) {
+      db.raw.exec("ROLLBACK");
+      throw error;
     }
-
-    const started = nowIso();
-    const result = await runWarden({
-      goal: body.goal,
-      repoRoot: repoPath,
-      errorLog: body.errorLog,
-      maxSteps: body.maxSteps ?? 20,
-      dryRun: body.dryRun,
-      useLlm: body.useLlm ?? process.env.LLM_AGENT === "1",
-      allowNetwork: false,
-    });
-
-    insertAgentRun(db, {
-      id: result.sessionId,
-      tenantId,
-      goal: body.goal,
-      repoPath,
-      status: result.ok ? "ok" : "failed",
-      ok: result.ok,
-      steps: result.steps.length,
-      filesChanged: result.filesChanged,
-      reportMd: result.reportMarkdown,
-      resultJson: JSON.stringify({
-        stoppedReason: result.stoppedReason,
-        steps: result.steps.map((s) => ({
-          step: s.step,
-          tool: s.call.tool,
-          ok: s.result.ok,
-          summary: s.result.summary,
-          thought: s.thought,
-        })),
-      }),
-      createdAt: started,
-      finishedAt: nowIso(),
-    });
-
-    requestAudit(c, {
-      actor: "agent",
-      action: result.ok ? "agent.run.ok" : "agent.run.failed",
-      resourceType: "agent_run",
-      resourceId: result.sessionId,
-      metadata: {
-        steps: result.steps.length,
-        files: result.filesChanged,
-        stoppedReason: result.stoppedReason,
-      },
-    });
-
     return c.json(
       {
-        sessionId: result.sessionId,
-        ok: result.ok,
-        steps: result.steps.length,
-        filesChanged: result.filesChanged,
-        stoppedReason: result.stoppedReason,
-        reportMarkdown: result.reportMarkdown,
-        trace: result.steps.slice(-15).map((s) => ({
-          step: s.step,
-          tool: s.call.tool,
-          ok: s.result.ok,
-          summary: s.result.summary,
-          thought: s.thought,
-        })),
+        sessionId,
+        jobId,
+        status: "queued",
+        product: "warden",
+        message: "The recovery worker will process this job",
       },
-      201,
+      202,
     );
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);

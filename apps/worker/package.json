@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./job-runner": "./src/cli.ts",
     "./transformer-pilot-lane": "./src/transformer-pilot-lane.ts"
   },
   "scripts": {

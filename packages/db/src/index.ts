@@ -126,6 +126,7 @@ CREATE INDEX IF NOT EXISTS repair_sessions_created_idx ON repair_sessions(create
 CREATE TABLE IF NOT EXISTS agent_runs (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
+  job_id TEXT,
   goal TEXT NOT NULL,
   repo_path TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -138,6 +139,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   finished_at TEXT
 );
 CREATE INDEX IF NOT EXISTS agent_runs_created_idx ON agent_runs(created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS agent_runs_tenant_job_uidx
+  ON agent_runs(tenant_id, job_id) WHERE job_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS api_changes_provider_idx ON api_changes(provider_id);
 CREATE TABLE IF NOT EXISTS consumers (
@@ -1058,6 +1061,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "jobs", name: "cancelled_at", sql: "TEXT" },
     { table: "repair_sessions", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
     { table: "agent_runs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "agent_runs", name: "job_id", sql: "TEXT" },
     { table: "audit_events", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
     { table: "audit_events", name: "principal_id", sql: "TEXT" },
     { table: "audit_events", name: "api_key_id", sql: "TEXT" },
@@ -1148,6 +1152,8 @@ function migrateProvidersFeedColumns(db: AppDb) {
      ON migration_prs(consumer_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS audit_events_tenant_created_idx
      ON audit_events(tenant_id, created_at DESC)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS agent_runs_tenant_job_uidx
+     ON agent_runs(tenant_id, job_id) WHERE job_id IS NOT NULL`,
   ]) {
     run(db, statement);
   }
@@ -3229,13 +3235,13 @@ export function completeJob(
            error_code = NULL, available_at = NULL,
            lease_owner = NULL, lease_expires_at = NULL
        WHERE id = ? AND status = 'running'
-         ${fence ? "AND lease_owner = ? AND lease_generation = ?" : ""}`,
+         ${fence ? "AND lease_owner = ? AND lease_generation = ? AND lease_expires_at > ?" : ""}`,
     )
     .run(
       JSON.stringify(result),
       finishedAt,
       id,
-      ...(fence ? [fence.workerId, fence.leaseGeneration] : []),
+      ...(fence ? [fence.workerId, fence.leaseGeneration, finishedAt] : []),
     );
   return Number(completed.changes) === 1;
 }
@@ -3302,7 +3308,7 @@ export function failJob(
        WHERE id = ? AND status = 'running'
          ${
            hasWorkerId && hasLeaseGeneration
-             ? "AND lease_owner = ? AND lease_generation = ?"
+             ? "AND lease_owner = ? AND lease_generation = ? AND lease_expires_at > ?"
              : ""
          }`,
     )
@@ -3316,7 +3322,7 @@ export function failJob(
       retry ? null : finishedAt,
       id,
       ...(hasWorkerId && hasLeaseGeneration
-        ? [opts.workerId!, opts.leaseGeneration!]
+        ? [opts.workerId!, opts.leaseGeneration!, finishedAt]
         : []),
     );
   const applied = Number(failed.changes) === 1;
@@ -3683,6 +3689,7 @@ export function repairSessionToApi(r: RepairSessionRow) {
 export type AgentRunRow = {
   id: string;
   tenant_id: string;
+  job_id: string | null;
   goal: string;
   repo_path: string;
   status: string;
@@ -3700,6 +3707,7 @@ export function insertAgentRun(
   row: {
     id: string;
     tenantId: string;
+    jobId?: string | null;
     goal: string;
     repoPath: string;
     status: string;
@@ -3713,23 +3721,28 @@ export function insertAgentRun(
   },
 ) {
   // Upsert so async queue → complete can reuse the same session id
-  run(
-    db,
+  const written = db.raw.prepare(
     `INSERT INTO agent_runs
-     (id, tenant_id, goal, repo_path, status, ok, steps, files_changed_json, report_md, result_json, created_at, finished_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     (id, tenant_id, job_id, goal, repo_path, status, ok, steps, files_changed_json, report_md, result_json, created_at, finished_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
-       tenant_id = excluded.tenant_id,
+       job_id = excluded.job_id,
        status = excluded.status,
        ok = excluded.ok,
        steps = excluded.steps,
        files_changed_json = excluded.files_changed_json,
        report_md = excluded.report_md,
        result_json = excluded.result_json,
-       finished_at = excluded.finished_at`,
-    [
+       finished_at = excluded.finished_at
+     WHERE agent_runs.tenant_id = excluded.tenant_id
+       AND (
+         (agent_runs.job_id IS NULL AND excluded.job_id IS NULL) OR
+         agent_runs.job_id = excluded.job_id
+       )`,
+  ).run(
       row.id,
       row.tenantId,
+      row.jobId ?? null,
       row.goal,
       row.repoPath,
       row.status,
@@ -3740,7 +3753,19 @@ export function insertAgentRun(
       row.resultJson ?? null,
       row.createdAt,
       row.finishedAt ?? null,
-    ],
+  );
+  if (Number(written.changes) !== 1) throw new Error("agent_run_tenant_conflict");
+}
+
+export function getAgentRunByJobId(
+  db: AppDb,
+  jobId: string,
+  tenantId: string,
+): AgentRunRow | undefined {
+  return get(
+    db,
+    `SELECT * FROM agent_runs WHERE job_id = ? AND tenant_id = ?`,
+    [jobId, tenantId],
   );
 }
 
@@ -3783,6 +3808,22 @@ export function agentRunToApi(r: AgentRunRow) {
     rawResult?.rollback && typeof rawResult.rollback === "object"
       ? (rawResult.rollback as Record<string, unknown>)
       : null;
+  const rawSource =
+    rawResult?.source && typeof rawResult.source === "object"
+      ? (rawResult.source as Record<string, unknown>)
+      : null;
+  const rawArtifacts =
+    rawResult?.artifacts && typeof rawResult.artifacts === "object"
+      ? (rawResult.artifacts as Record<string, unknown>)
+      : null;
+  const rawRetention =
+    rawResult?.retention && typeof rawResult.retention === "object"
+      ? (rawResult.retention as Record<string, unknown>)
+      : null;
+  const rawAgent =
+    rawResult?.agent && typeof rawResult.agent === "object"
+      ? (rawResult.agent as Record<string, unknown>)
+      : null;
   return {
     id: r.id,
     tenantId: r.tenant_id,
@@ -3824,6 +3865,47 @@ export function agentRunToApi(r: AgentRunRow) {
                   : 0,
               }
             : null,
+          candidate:
+            rawResult.attemptStatus === "succeeded" || rawResult.attemptStatus === "rejected"
+              ? {
+                  attemptStatus: rawResult.attemptStatus,
+                  code: typeof rawResult.code === "string" ? rawResult.code : null,
+                  summary: typeof rawResult.summary === "string" ? rawResult.summary : null,
+                  changedPaths: Array.isArray(rawResult.changedPaths)
+                    ? rawResult.changedPaths.filter((path): path is string => typeof path === "string")
+                    : [],
+                  source: rawSource
+                    ? {
+                        repositoryId: typeof rawSource.repositoryId === "string" ? rawSource.repositoryId : null,
+                        snapshotId: typeof rawSource.snapshotId === "string" ? rawSource.snapshotId : null,
+                        revision: typeof rawSource.revision === "string" ? rawSource.revision : null,
+                        manifestSha256: typeof rawSource.manifestSha256 === "string"
+                          ? rawSource.manifestSha256
+                          : null,
+                      }
+                    : null,
+                  sourceDigest: typeof rawArtifacts?.sourceDigest === "string"
+                    ? rawArtifacts.sourceDigest
+                    : null,
+                  candidateDigest: typeof rawArtifacts?.candidateDigest === "string"
+                    ? rawArtifacts.candidateDigest
+                    : null,
+                  expiresAt: typeof rawRetention?.expiresAt === "string"
+                    ? rawRetention.expiresAt
+                    : null,
+                  grounding: rawAgent
+                    ? {
+                        modelCalls: typeof rawAgent.modelCalls === "number" ? rawAgent.modelCalls : 0,
+                        groundedMutations: typeof rawAgent.groundedMutations === "number"
+                          ? rawAgent.groundedMutations
+                          : 0,
+                        blockedMutations: typeof rawAgent.blockedMutations === "number"
+                          ? rawAgent.blockedMutations
+                          : 0,
+                      }
+                    : null,
+                }
+              : null,
         }
       : null,
     createdAt: r.created_at,

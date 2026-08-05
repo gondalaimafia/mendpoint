@@ -1044,3 +1044,62 @@ Acceptance: a default denied production worker can only execute an explicitly ga
 - The production lane eval uses the real application database, pilot store, snapshot loader, default command runner, fixed external candidate gold, an independent fail to pass target judge, and an independent pass to pass regression judge. Three fresh trials pass: Warden 14 of 14, Transformer 13 of 13, 81 total trials, pass at 1 and pass at 3 both 1.000, with zero critical or deterministic failures.
 - Full workspace tests, full typecheck, the 22 page production build, GA checks, dependency audit, diff integrity, and isolated production mode API startup pass. API live, ready, and version return 200. Production dependencies report zero vulnerabilities. Independent security and reliability reviews found no remaining P0 or P1 issue in this slice.
 - Product contract status remains honest: 41 of 84 requirements are verified, 40 partial, 2 scaffold, and 1 externally blocked. Transformer remains experimental in the GA declaration. SCM draft creation, an adaptive inspect and edit retry loop, artifact retention and orphan cleanup, synchronous SQLite contention hardening, and the source grounded Warden loop remain subsequent gaps; this slice does not claim Devin parity.
+
+## Devin level agent execution closure: Warden source grounded loop
+
+Baseline: exact `origin/main` revision `4c49b28cd9b3f09381ea50a4376275d6515da142`.
+
+- [x] Reaudit the current Warden planner, tools, worker entrypoint, persistence, repository source controls, and eval corpus against the full coding agent objective.
+- [x] Bind every production attempt to the tenant owned active snapshot ID, exact revision, stored manifest digest, expiry, deletion state, and canonical read only storage root.
+- [x] Copy the exact source into a private per attempt candidate workspace; never mutate the canonical snapshot or a shared checkout.
+- [x] Define a provider independent planner port whose production adapter and test planner receive the same bounded typed observation contract.
+- [x] Make model enabled Warden planner first from the first post baseline step, while retaining the deterministic heuristic as an explicit unavailable provider fallback.
+- [x] Present bounded, redacted, untrusted repository observations to the planner and record nonsecret source evidence metrics and digests.
+- [x] Require read before write for existing files, directory observation before new files, and an exact content fence before every mutation so stale or unobserved source cannot be changed.
+- [x] Bound file reads, repository walks, searches, search bytes, search hits, prompt evidence, model response bytes, model calls, wall time, and verifier execution.
+- [x] Enable the production worker to provide source context only from its tenant scoped repository root and persist the grounding evidence with the run result.
+- [x] Require a failing target baseline plus passing regression and security baselines, then independently rerun target, regression, and security verification on the candidate.
+- [x] Recompute source and candidate manifests, enforce a nonempty bounded diff, retain the successful candidate artifact, and discard every failed or stale workspace.
+- [x] Add a held out multifile Warden task with distractors and repository prompt injection where the correct repair can only be derived from the repository contract.
+- [x] Require an external fail to pass judge, external pass to pass regression judge, protected input check, secret redaction check, allowed file check, baseline failure, source observation proof, and nonzero typed planner calls.
+- [x] Add adversarial regressions for unobserved writes, source mutation after observation, secret bearing source, context truncation, repeated calls, cancellation, provider timeout, malformed response, rollback, source symlinks, snapshot manifest mismatch, and concurrent attempts.
+- [x] Run three fresh scripted planner trials through the release eval gate and retain completion, consistency, time, model call, context, and critical safety evidence.
+- [ ] Run three fresh live provider trials under the tenant model source policy and retain model quality, token, cost, timeout, and consistency evidence.
+- [x] Run focused tests, full workspace tests, full typecheck, production build, GA checks, dependency audit, diff integrity, isolated API startup, and independent security, reliability, and product reviews.
+- [ ] Commit by explicit file, push a protected branch, require every protected check, merge only green CI, verify exact main deployment, probe production, and browser verify.
+
+Acceptance: Warden must inspect a bounded tenant scoped repository, derive a repair from source evidence that is absent from the task text, mutate only observed and unchanged source, pass independent repair and regression judges, retain replayable nonsecret grounding evidence, recover without preserving failed writes, and pass three of three release trials with real planner calls. This slice improves the source grounded coding loop but does not by itself establish Devin parity.
+
+### Verification results: 2026-08-05
+
+Local gates, all green after the review fixes below:
+
+- Focused suites: agent 89/89, worker 64/64, api 114/114, web 50/50, db 67/67, platform 106/106, eval 59/59.
+- Full workspace `npm test`, `npm run typecheck`, and `npm run build` all exit 0.
+- `npm run ga:check`: product contract 84 requirements pass, public claims 14/14 pass, readiness ok, GA CHECK PASS.
+- `npm run eval:agents -- --repetitions=3`: 87 trials, Warden 16/16, Transformer 13/13, contract evidence 27/27, scripted planner evidence 2/2, live model evidence 0/0 with live model capability reported as not evaluated, pass@1 = pass@3 = pass^3 = 1.000, zero critical and zero deterministic failures.
+- `npm audit --omit=dev`: 0 vulnerabilities. `git diff --check`: clean (CRLF conversion warnings only).
+- Isolated production configuration API start: `/live`, `/ready`, `/health`, `/version` all 200 with env, data dir, and db ping checks ok; degraded status attributable only to deliberate isolation settings (mock GitHub, unset CORS).
+
+Release blockers closed in this pass:
+
+- Human review auth rejects any request carrying an `apiKeyId`, even with a synthesized human principal and trust record.
+- Candidate and evidence tenant roots are resolved through a full component walk from the real data root that rejects junctions or symlinks at `warden-candidates`, `warden-evidence`, or the tenant directory, with Windows junction regression tests.
+- Approval now seals a content addressed immutable artifact from the validated in-memory buffers under the tenant evidence root, persisted at `artifacts.approval` in the same transaction as `candidate_approved`; `readWardenApprovalArtifact` reverifies the digest byte for byte and is the only sanctioned SCM promotion input.
+- Candidate source responses carry `Cache-Control: private, no-store, max-age=0` and `Pragma: no-cache`, proven through the web proxy.
+- All ten lifecycle and retention items now have adversarial regression tests; implementations were verified correct as found.
+- Warden replay evidence serializes the immutable first-observation source digests (`sourceEvidenceFiles`) while the mutation fence advances separately.
+
+Independent security, reliability, product, and eval diff review findings resolved:
+
+- P0: the orphan reconciler could recursively delete the tenant `approvals` directory; it is now exempt from reaping, `artifacts.approval.path` counts as referenced, and approvals bytes are excluded from the attempt storage quota.
+- P1: concurrent approve race could delete a committed approval artifact; seal writes are now exclusive (`wx`) with digest-verified EEXIST handling, rollback deletes only files the request created, and run status is re-read after body parse.
+- P1: full-tree hashing was synchronous on the request path; tree scans are now async behind a concurrency gate so candidate requests cannot block the API event loop.
+- Eval truthfulness dimension reviewed fully clean: scenario counts, lane split, pre-mutation source digest grading, and the absence of any live model claim were all verified in code.
+
+Tracked follow-ups from review (P2, not blocking this slice):
+
+- [ ] Live attempt workspaces are protected only by top-level mtime during long attempts; an attempt outliving the orphan grace window can lose its workspace to lane zero maintenance.
+- [ ] Attempt engine admits changed files up to 4MB with no 256KB per-file cap, while review and seal reject over 256KB per file and 2MB total, so an engine-legal candidate can be unapprovable until expiry; align the limits.
+- [ ] Review UI renders approve and reject controls that always 403 under API key proxy auth; add a UI affordance or documentation note.
+- [ ] Minor: dead 409 ternary and unguarded `JSON.parse(run.result_json)` in the review route; scrub the env passed to the dev-only npm fallback in the attempt engine.

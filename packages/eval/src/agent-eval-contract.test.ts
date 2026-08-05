@@ -10,6 +10,7 @@ function scenario(input?: Readonly<{
   digestForTrial?: (trial: number) => string;
   gradePasses?: boolean;
   durationMs?: number;
+  evidenceLane?: AgentEvalScenario["evidenceLane"];
 }>): AgentEvalScenario {
   return {
     id: "eval.contract.sample",
@@ -19,6 +20,7 @@ function scenario(input?: Readonly<{
     critical: true,
     sourceRefs: ["https://inspect.aisi.org.uk/scoring.html"],
     deterministic: true,
+    ...(input?.evidenceLane ? { evidenceLane: input.evidenceLane } : {}),
     budget: {
       maxDurationMs: 100,
       maxSteps: 2,
@@ -84,5 +86,22 @@ describe("agent eval contract", () => {
     );
     expect(durationGrade).toMatchObject({ passed: false, observed: "101" });
     expect(report.passed).toBe(false);
+  });
+
+  it("keeps scripted and live model evidence in separate report lanes", async () => {
+    const report = await runAgentEvalScenarios([
+      scenario({ evidenceLane: "simulated_scripted" }),
+    ], 1);
+
+    expect(report.schemaVersion).toBe(2);
+    expect(report.scenarios[0]).toMatchObject({
+      evidenceLane: "simulated_scripted",
+      liveModelCapability: false,
+    });
+    expect(report.byEvidenceLane).toEqual({
+      contract: { passed: 0, total: 0 },
+      simulated_scripted: { passed: 1, total: 1 },
+      live_model: { passed: 0, total: 0 },
+    });
   });
 });

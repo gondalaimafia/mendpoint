@@ -32,11 +32,77 @@ export type AgentStep = {
   thought: string;
   call: ToolCall;
   result: ToolResult;
+  plannerSource?: "model" | "heuristic" | "system";
 };
+
+export type AgentPlannerObservation = Readonly<{
+  step: number;
+  tool: ToolName;
+  ok: boolean;
+  summary: string;
+  error?: string;
+  /** Redacted, bounded, and explicitly untrusted source or tool evidence. */
+  evidence?: string;
+}>;
+
+export type AgentPlannerInput = Readonly<{
+  schemaVersion: 1;
+  goal: string;
+  errorLog?: string;
+  verifyCommand: string;
+  diagnosedModes: readonly Readonly<{
+    id: string;
+    category: string;
+    title: string;
+    clientFix: string;
+  }>[];
+  recentSteps: readonly AgentPlannerObservation[];
+}>;
+
+export type AgentPlannerUsage = Readonly<{
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+  model?: string;
+  modelRevision?: string;
+}>;
+
+export type AgentPlannerOutput = Readonly<{
+  call: unknown;
+  usage?: AgentPlannerUsage;
+}>;
+
+export type AgentPlanner = (
+  input: AgentPlannerInput,
+  options: Readonly<{ signal: AbortSignal }>,
+) => Promise<AgentPlannerOutput>;
+
+export type AgentSourceContextBudget = Readonly<{
+  maxFileBytes: number;
+  maxTotalReadBytes: number;
+  maxSearchFiles: number;
+  maxSearchBytes: number;
+  maxSearchHits: number;
+  maxPromptEvidenceBytes: number;
+  maxChangedFiles: number;
+  maxChangedBytes: number;
+}>;
+
+export type AgentModelSourcePolicy = Readonly<{
+  approved: boolean;
+  tenantId: string;
+  policyDigest: string;
+  provider: string;
+  model: string;
+  endpoint: string;
+}>;
 
 export type AgentTask = {
   /** Natural language bug report / goal */
   goal: string;
+  /** Tenant binding required for any externally transmitted source context. */
+  tenantId?: string;
   /** Working directory (repo or subfolder) */
   repoRoot: string;
   /** Command that should pass when fixed (exit 0) */
@@ -50,8 +116,18 @@ export type AgentTask = {
   allowNetwork?: boolean;
   /** Optional LLM planner */
   useLlm?: boolean;
+  /** Provider independent planner used by production adapters and eval harnesses. */
+  planner?: AgentPlanner;
+  /** Require a successful model plan instead of falling back to heuristics. */
+  modelRequired?: boolean;
   /** Allow redacted source excerpts in the model evidence packet. Default false. */
   allowModelSource?: boolean;
+  /** Required authorization evidence whenever source leaves the execution boundary. */
+  modelSourcePolicy?: AgentModelSourcePolicy;
+  /** Fail closed repository and context ceilings. */
+  sourceContextBudget?: Partial<AgentSourceContextBudget>;
+  /** Require source observation and exact content fencing before mutation. Default true. */
+  requireSourceObservation?: boolean;
   /** Fail closed limits for the optional model planner. */
   modelBudget?: Partial<AgentModelBudget>;
   sessionId?: string;
@@ -79,6 +155,18 @@ export type AgentExecutionMetrics = Readonly<{
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    costUsd: number;
+  }>;
+  sourceContext: Readonly<{
+    observedFiles: readonly string[];
+    observedDirectories: readonly string[];
+    searches: readonly string[];
+    observedBytes: number;
+    promptEvidenceBytes: number;
+    truncatedObservations: number;
+    groundedMutations: number;
+    blockedMutations: number;
+    evidenceDigests: readonly Readonly<{ path: string; digest: string }>[];
   }>;
 }>;
 

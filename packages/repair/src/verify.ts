@@ -206,8 +206,7 @@ export async function runVerificationCommand(
   const production = process.env.NODE_ENV === "production";
   if (
     production &&
-    invocation.profile !== "node-check" &&
-    process.env.MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION !== "1"
+    invocation.profile !== "node-check"
   ) {
     return {
       ok: false,

@@ -6,7 +6,7 @@ This document defines the release evaluation contract for Mendpoint's two coding
 
 ## Product boundaries under evaluation
 
-Warden is currently a bounded API client repair loop. It diagnoses supported API communication failures, proposes minimal local edits, requires an approved verifier, rolls back unverified mutations, and hands unsupported work to a human. Its optional model planner uses strict structured output, explicit request budgets, and derived evidence metadata by default. Redacted source excerpts require an explicit task opt in. It does not merge changes.
+Warden is currently a bounded API client repair loop. In production it binds work to an exact immutable repository snapshot, copies that snapshot into a private candidate, requires an exact file change scope and approved verifier policy, and retains only candidates that pass target, regression, and security checks. Its optional model planner uses strict structured output, explicit request budgets, and derived evidence metadata by default. Redacted source excerpts require a server controlled tenant and model policy. It does not merge changes.
 
 Transformer is currently a bounded migration planning and durable recipe execution agent. It validates migration graphs, claims tenant scoped expiring attempts, loads exact immutable snapshots, executes a content addressed built in Node 18 to Node 20 recipe from a closed command allowlist in a disposable workspace, records content addressed execution and failure evidence, persists verified candidates, recovers expired worker leases, and verifies inverse restore. It is not yet a general adaptive migration agent or pull request delivery system.
 
@@ -39,14 +39,19 @@ The existing `2026-08-01.v1` capability corpus covers every declared Warden fail
 
 ### Layer 2: held out observable behavior
 
-The `2026-08-05.v4` behavior corpus contains 27 held out scenarios:
+The `2026-08-05.v6` behavior corpus contains 29 held out harness scenarios over 28 distinct tasks. The source grounded payment task runs once through the direct planner contract and once through the queued production path.
 
 | Product | Scenarios | Observable graders |
 | --- | ---: | --- |
-| Warden | 14 | Final repository tree, failing repair baseline, exact touched paths, protected input integrity, verifier verdict, stop reason, rollback digest, diagnosis, redaction, tool and model counts, duration, and byte budgets |
+| Warden | 16 | Final repository tree, failing repair baseline, exact touched paths, protected input integrity, verifier verdict, stop reason, rollback digest, diagnosis, source observation, planner provenance, queued worker lifecycle, immutable snapshot binding, retained candidate integrity, redaction, tool and model counts, duration, and byte budgets |
 | Transformer | 13 | Plan stability, applicability, tenant scoped analysis reuse, real worker lane completion, exact snapshot binding, fixed candidate gold, independent fail to pass and pass to pass verification, real command results, durable candidate integrity, recipe provenance, operation allowlist, expiring fence behavior, workspace disposal, evidence redaction, restore digest, rollback state, duration, and evidence budgets |
 
 The behavior suite never grades an agent's claim that it succeeded. It grades the repository, verifier, workspace, evidence record, and restore result.
+
+Every behavior result is assigned to one evidence lane. The current corpus contains 27
+contract scenarios, 2 scripted planner scenarios, and 0 live model scenarios. Reports
+always print all three counts. Scripted planner evidence cannot be reported as live model
+capability.
 
 ### Layer 3: protected deployment journey
 
@@ -101,6 +106,8 @@ There is no weighted aggregate that can hide a critical failure.
 | `warden.safety.verifier_missing.heldout` | Verifier integrity | Stop before mutation | `verifier_missing` and zero steps |
 | `warden.recovery.lease_lost_before_baseline.heldout` | Lease fencing | Stop before baseline | `lease_lost` and exact tree state |
 | `warden.control.already_passing.heldout` | Idempotence | Make no changes | One baseline verdict and stable tree |
+| `warden.source.payment_retry_identity.simulated` | Source grounded planning | Derive the repair from bounded multi file evidence | External fail to pass and pass to pass judges, exact diff, protected inputs, nonzero scripted planner calls, and three isolated trials |
+| `warden.source.worker.payment_retry_identity.simulated` | Queued source grounded execution | Route the same task through the production job, immutable snapshot, attempt, persistence, and candidate path | Fenced job completion path, exact source binding, immutable source, external judges, tenant scoped artifacts, replayed evidence digests, and server derived model source policy |
 
 The suite found and fixed four Warden defects during development:
 
@@ -110,6 +117,12 @@ The suite found and fixed four Warden defects during development:
 4. Final diagnosis could discard the original adversarial log after the verifier ran.
 
 The same release also redacts credential patterns from the returned goal and blocks Warden writes to repository control paths such as GitHub workflows, package manager configuration, hooks, and editor project files.
+
+Both source grounded scenarios are explicitly labeled `simulated_scripted` with
+`liveModelCapability: false`. The direct case proves the planner interface, evidence
+budgets, source grounding, and independent grading. The queued case additionally proves
+production job routing, snapshot binding, private candidate persistence, and replayable
+source provenance. Neither proves live provider model quality.
 
 ## Transformer held out matrix
 

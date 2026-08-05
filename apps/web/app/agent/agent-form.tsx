@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { waitForJob } from "../../lib/job-poll";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
@@ -19,9 +19,11 @@ export function AgentForm({
   const [errorLog, setErrorLog] = useState(
     "HTTP 404 /v1/chargess\nerror: amount_cents is not allowed",
   );
+  const [allowedPaths, setAllowedPaths] = useState("client.js");
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const idempotency = useRef<{ payload: string; key: string } | null>(null);
 
   async function run() {
     setBusy(true);
@@ -31,17 +33,29 @@ export function AgentForm({
       const body: Record<string, unknown> = {
         goal,
         consumerId,
+        allowedChangedPaths: allowedPaths
+          .split(/[\n,]/)
+          .map((path) => path.trim())
+          .filter(Boolean),
         errorLog: errorLog || undefined,
         maxSteps: 20,
         async: true,
       };
+      const payload = JSON.stringify(body);
+      if (!idempotency.current || idempotency.current.payload !== payload) {
+        idempotency.current = { payload, key: crypto.randomUUID() };
+      }
       const res = await fetch(`${API_URL}/agent/runs`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotency.current.key,
+        },
+        body: payload,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? res.statusText);
+      idempotency.current = null;
       if (res.status === 202 || data.status === "queued") {
         setOut(
           `QUEUED · session ${data.sessionId} · job ${data.jobId}\nThe recovery worker will process this job`,
@@ -100,6 +114,18 @@ export function AgentForm({
           />
         </label>
         <label>
+          Files Warden may change
+          <textarea
+            className="input"
+            rows={2}
+            value={allowedPaths}
+            onChange={(e) => setAllowedPaths(e.target.value)}
+            placeholder="src/payments.ts"
+            required
+          />
+          <span className="muted">Enter one repository file path per line.</span>
+        </label>
+        <label>
           Error log (optional seed)
           <textarea
             className="input"
@@ -111,8 +137,7 @@ export function AgentForm({
         <button
           type="submit"
           className="btn primary"
-          disabled={busy || !consumerId}
-          onClick={run}
+          disabled={busy || !consumerId || !allowedPaths.trim()}
         >
           {busy ? "Warden running…" : "Run Warden"}
         </button>
