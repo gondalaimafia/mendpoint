@@ -1,6 +1,6 @@
 # Warden and Transformer evaluation contract
 
-Status date: 2026-08-01
+Status date: 2026-08-05
 
 This document defines the release evaluation contract for Mendpoint's two coding agents. It is an internal product quality contract. It is not marketing evidence and does not support universal quality, speed, or coverage claims.
 
@@ -8,7 +8,7 @@ This document defines the release evaluation contract for Mendpoint's two coding
 
 Warden is currently a bounded API client repair loop. It diagnoses supported API communication failures, proposes minimal local edits, requires an approved verifier, rolls back unverified mutations, and hands unsupported work to a human. Its optional model planner uses strict structured output, explicit request budgets, and derived evidence metadata by default. Redacted source excerpts require an explicit task opt in. It does not merge changes.
 
-Transformer is currently a bounded migration planning and recipe execution primitive. It validates migration graphs, classifies compatibility, executes one immutable Node 18 to Node 20 recipe in a disposable workspace, records content addressed evidence, and verifies inverse restore. It is not yet a general migration campaign executor or pull request delivery system.
+Transformer is currently a bounded migration planning and durable recipe execution agent. It validates migration graphs, claims tenant scoped expiring attempts, loads exact immutable snapshots, executes a content addressed built in Node 18 to Node 20 recipe from a closed command allowlist in a disposable workspace, records content addressed execution and failure evidence, persists verified candidates, recovers expired worker leases, and verifies inverse restore. It is not yet a general adaptive migration agent or pull request delivery system.
 
 The evals grade these real boundaries. Roadmap behavior is never converted into a passing capability by a prose grader.
 
@@ -39,12 +39,12 @@ The existing `2026-08-01.v1` capability corpus covers every declared Warden fail
 
 ### Layer 2: held out observable behavior
 
-The `2026-08-01.v3` behavior corpus contains 26 held out scenarios:
+The `2026-08-05.v4` behavior corpus contains 27 held out scenarios:
 
 | Product | Scenarios | Observable graders |
 | --- | ---: | --- |
 | Warden | 14 | Final repository tree, failing repair baseline, exact touched paths, protected input integrity, verifier verdict, stop reason, rollback digest, diagnosis, redaction, tool and model counts, duration, and byte budgets |
-| Transformer | 12 | Plan stability, applicability, tenant scoped analysis reuse, snapshot binding, recipe provenance, operation allowlist, command result, fence behavior, workspace disposal, evidence redaction, restore digest, rollback state, duration, and evidence budgets |
+| Transformer | 13 | Plan stability, applicability, tenant scoped analysis reuse, real worker lane completion, exact snapshot binding, fixed candidate gold, independent fail to pass and pass to pass verification, real command results, durable candidate integrity, recipe provenance, operation allowlist, expiring fence behavior, workspace disposal, evidence redaction, restore digest, rollback state, duration, and evidence budgets |
 
 The behavior suite never grades an agent's claim that it succeeded. It grades the repository, verifier, workspace, evidence record, and restore result.
 
@@ -117,6 +117,7 @@ The same release also redacts credential patterns from the returned goal and blo
 | --- | --- | --- | --- |
 | `transformer.plan.permutation_stability.heldout` | Campaign planning | Twenty input permutations produce one complete wave plan | Exact deterministic plan |
 | `transformer.analysis.applicability_cache.heldout` | Recipe analysis | Classify applicable, already applied, and unsupported snapshots | Tenant scoped bounded cache with no source retention |
+| `transformer.execute.production_runner.heldout` | Production execution | Run the real worker lane through claim, exact database snapshot load, transform, real verifiers, durable persistence, and completion | Fixed gold candidate, target fail to pass, independent pass to pass regression, no delivery event, cleanup, and no secret retention |
 | `transformer.execute.roundtrip.heldout` | Recipe execution | Apply and restore the full fixture | Exact input digest after restore |
 | `transformer.execute.package_only.heldout` | Recipe execution | Migrate a minimal supported repository | Only present allowlisted files change |
 | `transformer.recovery.verifier_failure.heldout` | Rollback | Fail and verify inverse operations | Workspace disposal and fail closed result |
@@ -147,7 +148,7 @@ The eval release does not claim the following capabilities exist:
 - Live model quality, token, cache, and provider cost trials. The bounded model protocol is covered with deterministic transport tests only.
 - A locked external verifier container separate from the agent container.
 - Durable routing of production Warden work through the policy router.
-- Transformer worker scheduling and campaign execution.
+- Adaptive inspect, edit, diagnose, and retry behavior beyond the built in allowlisted recipes.
 - Real branch, draft pull request, CI, review, and repository restore delivery for Transformer.
 - Private GitHub canary evidence, GitLab delivery, payment, enterprise identity, external training, or compliance evidence.
 

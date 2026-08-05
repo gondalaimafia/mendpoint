@@ -33,7 +33,7 @@ const INPUT: RecipeFiles = {
 };
 
 describe("immutable Transformer recipes", () => {
-  it("applies node-runtime-18-to-20@1 deterministically", () => {
+  it("applies node-runtime-18-to-20@2 deterministically", () => {
     const reference = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
     const first = applyRecipe(reference, INPUT);
     const second = applyRecipe(reference, { ...INPUT });
@@ -46,6 +46,9 @@ describe("immutable Transformer recipes", () => {
     expect(first.files.Dockerfile).toContain("FROM node:20-alpine");
     expect(first.files["src/server.js"]).toBe(INPUT["src/server.js"]);
     expect(first.verificationCommands).toHaveLength(2);
+    expect(reference.version).toBe(2);
+    expect(first.verificationCommands[0]).toMatchObject({ id: "runtime-declarations" });
+    expect(first.verificationCommands[0]?.command).not.toContain("process.versions");
     expect(Object.isFrozen(NODE_RUNTIME_18_TO_20_RECIPE)).toBe(true);
     expect(Object.isFrozen(NODE_RUNTIME_18_TO_20_RECIPE.transforms)).toBe(true);
     expect(Object.isFrozen(first.operations)).toBe(true);
@@ -110,10 +113,21 @@ describe("immutable Transformer recipes", () => {
   });
 
   it("rejects unknown recipe versions", () => {
-    expect(() => getRecipe("node-runtime-18-to-20", 2)).toThrow(
-      "recipe_not_found:node-runtime-18-to-20@2",
+    expect(() => getRecipe("node-runtime-18-to-20", 3)).toThrow(
+      "recipe_not_found:node-runtime-18-to-20@3",
     );
     expect(() => getRecipe("node-runtime-18-to-20", 0)).toThrow("recipe_version_invalid");
+  });
+
+  it("preserves the immutable v1 recipe and digest for persisted references", () => {
+    const legacy = getRecipe("node-runtime-18-to-20", 1);
+
+    expect(legacy.digest).toBe(
+      "sha256:2f492907bfd67299218da62d1907ddc503bd7bfec7c1f881b554a0482ef4468f",
+    );
+    expect(legacy.verificationCommands[0]).toMatchObject({ id: "node-major" });
+    expect(Object.isFrozen(legacy)).toBe(true);
+    expect(resolveRecipe(recipeReference(legacy))).toBe(legacy);
   });
 
   it("rejects a reference or contract with a mismatched digest", () => {
@@ -127,6 +141,16 @@ describe("immutable Transformer recipes", () => {
       target: "node@22",
     } as MigrationRecipeContract;
     expect(() => validateRecipe(tampered)).toThrow("recipe_digest_mismatch");
+
+    const commandTampered = {
+      ...NODE_RUNTIME_18_TO_20_RECIPE,
+      verificationCommands: NODE_RUNTIME_18_TO_20_RECIPE.verificationCommands.map(
+        (command, index) => index === 0
+          ? { ...command, command: "node -e \"process.exit(0)\"" }
+          : command,
+      ),
+    } as MigrationRecipeContract;
+    expect(() => validateRecipe(commandTampered)).toThrow("recipe_digest_mismatch");
   });
 
   it("fails when the declared Node 18 preconditions are not satisfied", () => {

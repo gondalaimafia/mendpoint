@@ -13,6 +13,7 @@ import {
 } from "./recipe-workspace-execution.js";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
+  getRecipe,
   recipeFilesDigest,
   recipeReference,
   type RecipeFiles,
@@ -142,6 +143,50 @@ describe("bounded recipe workspace execution", () => {
     }
   });
 
+  it("verifies v2 runtime declarations with the real runner on the current host", async () => {
+    const paths = fixture();
+    const execution = await executeRecipeInWorkspace({
+      fence: FENCE,
+      assertFence: () => true,
+      source: source(),
+      recipe: recipeReference(NODE_RUNTIME_18_TO_20_RECIPE),
+      evidenceDirectory: paths.evidenceDirectory,
+      tempRoot: paths.tempRoot,
+      observedAt: "2026-08-01T20:00:00.000Z",
+    });
+
+    expect(execution.recipe.version).toBe(2);
+    expect(execution.commands.map((command) => command.id)).toEqual([
+      "runtime-declarations",
+      "package-engine",
+    ]);
+    expect(execution.commands.every((command) => command.exitCode === 0)).toBe(true);
+  });
+
+  it("keeps persisted v1 references on their exact signed command allowlist", async () => {
+    const paths = fixture();
+    const invocations: RecipeCommandInvocation[] = [];
+    const legacy = getRecipe("node-runtime-18-to-20", 1);
+    const execution = await executeRecipeInWorkspace({
+      fence: FENCE,
+      assertFence: () => true,
+      source: source(),
+      recipe: recipeReference(legacy),
+      evidenceDirectory: paths.evidenceDirectory,
+      tempRoot: paths.tempRoot,
+      observedAt: "2026-08-01T20:00:00.000Z",
+      commandRunner: successfulRunner(invocations),
+    });
+
+    expect(execution.recipe).toEqual(recipeReference(legacy));
+    expect(execution.commands.map((command) => command.id)).toEqual([
+      "node-major",
+      "package-engine",
+    ]);
+    expect(invocations[0]?.args[2]).toContain("process.versions.node");
+    expect(invocations[1]?.args[2]).toContain("require('./package.json')");
+  });
+
   it("fails closed before execution when the source digest or exact revision is invalid", async () => {
     const paths = fixture();
     const invalidDigest = { ...source(), digest: `sha256:${"0".repeat(64)}` };
@@ -168,6 +213,46 @@ describe("bounded recipe workspace execution", () => {
         commandRunner: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
       }),
     ).rejects.toThrow("recipe_execution_revision_invalid");
+
+    await expect(
+      executeRecipeInWorkspace({
+        fence: FENCE,
+        assertFence: () => true,
+        source: source(),
+        recipe: {
+          ...recipeReference(NODE_RUNTIME_18_TO_20_RECIPE),
+          digest: `sha256:${"0".repeat(64)}`,
+        },
+        evidenceDirectory: paths.evidenceDirectory,
+        observedAt: "2026-08-01T20:00:00.000Z",
+      }),
+    ).rejects.toThrow("recipe_digest_mismatch");
+  });
+
+  it("fails v2 verification when an optional runtime declaration does not target Node 20", async () => {
+    const paths = fixture();
+    const files = {
+      ...FILES,
+      Dockerfile: "FROM --platform=linux/amd64 node:18-alpine\nWORKDIR /app\n",
+    };
+    const error = await executeRecipeInWorkspace({
+      fence: FENCE,
+      assertFence: () => true,
+      source: source(files),
+      recipe: recipeReference(NODE_RUNTIME_18_TO_20_RECIPE),
+      evidenceDirectory: paths.evidenceDirectory,
+      tempRoot: paths.tempRoot,
+      observedAt: "2026-08-01T20:00:00.000Z",
+    }).catch((failure: unknown) => failure);
+
+    expect(error).toMatchObject({
+      code: "recipe_execution_verification_failed:runtime-declarations",
+      rollback: {
+        attempted: true,
+        inverseVerified: true,
+        workspaceDiscarded: true,
+      },
+    });
   });
 
   it("checks the attempt fence at every side effect boundary", async () => {
@@ -210,7 +295,9 @@ describe("bounded recipe workspace execution", () => {
 
     expect(error).toBeInstanceOf(RecipeWorkspaceExecutionError);
     const executionError = error as RecipeWorkspaceExecutionError;
-    expect(executionError.code).toBe("recipe_workspace_drift:verification:node-major:paths");
+    expect(executionError.code).toBe(
+      "recipe_workspace_drift:verification:runtime-declarations:paths",
+    );
     expect(executionError.rollback).toMatchObject({
       attempted: true,
       inverseVerified: false,
@@ -232,7 +319,7 @@ describe("bounded recipe workspace execution", () => {
     }).catch((failure: unknown) => failure);
 
     expect(error).toMatchObject({
-      code: "recipe_execution_verification_failed:node-major",
+      code: "recipe_execution_verification_failed:runtime-declarations",
       rollback: {
         attempted: true,
         inverseVerified: true,

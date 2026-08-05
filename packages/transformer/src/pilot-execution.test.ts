@@ -1,11 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import { createOrganizationConstraintContract } from "./organization-constraints.js";
 import {
   TransformerPilotExecutionStore,
+  type TransformerAttemptFailureCode,
   type TransformerPilotCampaignInput,
   type TransformerPilotUnitInput,
   type TransformerScmObservation,
@@ -72,8 +74,10 @@ function unit(id: string, repositoryId: string, source: string, candidate: strin
     reviewerIds: [`reviewer-${repositoryId}`],
     dependsOn,
     snapshot: {
+      snapshotId: `snapshot-${repositoryId}`,
       repositoryId,
       revision: revision(source),
+      manifestSha256: source.repeat(64),
       digest: digest(source),
       evidenceRefs: [`evidence://snapshot/${repositoryId}/${source}`],
     },
@@ -151,6 +155,7 @@ function singleDraftCampaign(): TransformerPilotExecutionStore {
   const lease = store.claimNextAttempt({
     ...mutation(1, "claim-a"),
     leaseToken: token,
+    leaseDurationMs: 3_600_000,
     gateConfig: gateConfig(),
   })!;
   complete(store, "unit-a", 2, token, lease.leaseGeneration);
@@ -204,7 +209,7 @@ describe("Transformer pilot execution coordinator", () => {
       unit("unit-b", "repo-b", "b", "d", ["unit-a"]),
     ]));
     const tokenA = "lease-token-unit-a-00000001";
-    const leaseA = store.claimNextAttempt({ ...mutation(1, "claim-a"), leaseToken: tokenA, gateConfig: gateConfig() })!;
+    const leaseA = store.claimNextAttempt({ ...mutation(1, "claim-a"), leaseToken: tokenA, leaseDurationMs: 3_600_000, gateConfig: gateConfig() })!;
     expect(leaseA).toMatchObject({ unitId: "unit-a", attemptNumber: 1, leaseGeneration: 1, constraintVersion: 7 });
     expect(() => complete(store, "unit-a", 2, "lease-token-unit-a-stale-1", 1)).toThrow("transformer_pilot_fence_stale");
     complete(store, "unit-a", 2, tokenA, 1);
@@ -217,11 +222,563 @@ describe("Transformer pilot execution coordinator", () => {
     store.close();
   });
 
+  it("persists lease expiry across restart and expires only the exact running generation", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-expiry-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    let store = new TransformerPilotExecutionStore(path);
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-expiring-a"),
+      leaseToken: "lease-token-unit-a-expiring-01",
+      gateConfig: gateConfig(),
+    })!;
+    expect(lease.leaseExpiresAt).toBe(time(2));
+    store.close();
+
+    store = new TransformerPilotExecutionStore(path);
+    expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.leaseExpiresAt)
+      .toBe(time(2));
+    expect(store.listExpiredAttempts(time(2), "tenant-a")).toEqual([{
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      environment: "staging",
+    }]);
+    expect(() => store.expireAttempt({
+      ...mutation(2, "expire-stale-generation"),
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration + 1,
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_fence_stale");
+    expect(() => store.expireAttempt({
+      ...mutation(1, "expire-too-early"),
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_fence_not_expired");
+
+    const expirationInput = {
+      ...mutation(2, "expire-exact-generation"),
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      gateConfig: gateConfig(),
+    };
+    const expired = store.expireAttempt(expirationInput);
+    expect(expired).toMatchObject({
+      state: "paused",
+      units: [{ id: "unit-a", state: "failed", retryAuthorized: false }],
+      exceptions: [{ code: "worker_crash", unitId: "unit-a", state: "open" }],
+    });
+    const revisionAfterExpiration = expired.revision;
+    const eventsAfterExpiration = store.listEvents("tenant-a", "campaign-a").length;
+    expect(store.expireAttempt(expirationInput)).toEqual(expired);
+    expect(store.getCampaign("tenant-a", "campaign-a")?.revision).toBe(revisionAfterExpiration);
+    expect(store.listEvents("tenant-a", "campaign-a")).toHaveLength(eventsAfterExpiration);
+    expect(store.getCampaign("tenant-a", "campaign-a")?.exceptions).toHaveLength(1);
+
+    store.control({
+      ...mutation(3, "authorize-expired-retry"),
+      action: "authorize_retry",
+      unitId: "unit-a",
+    });
+    store.control({
+      ...mutation(4, "resolve-expired-exception"),
+      action: "resolve_exception",
+      exceptionId: expired.exceptions[0]!.id,
+      resolution: "Replacement worker is ready",
+    });
+    store.control({ ...mutation(5, "resume-expired-attempt"), action: "resume" });
+    expect(store.listRunnableCampaigns("tenant-a")).toEqual([{
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      environment: "staging",
+    }]);
+    store.close();
+  });
+
+  it("rejects expired live fences and mutations at the deadline", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const token = "lease-token-unit-a-deadline-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-deadline-a"),
+      leaseToken: token,
+      gateConfig: gateConfig(),
+    })!;
+    const beforeDeadline = "2026-08-02T08:01:59.999Z";
+    expect(() => store.assertCurrentAttemptFence({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      observedAt: beforeDeadline,
+    })).not.toThrow();
+    expect(() => store.assertCurrentAttemptFence({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      observedAt: time(2),
+    })).toThrow("transformer_pilot_fence_expired");
+    expect(() => complete(store, "unit-a", 2, token, lease.leaseGeneration))
+      .toThrow("transformer_pilot_fence_expired");
+    expect(() => store.recordAttemptFailure({
+      ...mutation(2, "failure-at-deadline"),
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      code: "execution_failed",
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_fence_expired");
+    expect(store.getCampaign("tenant-a", "campaign-a")).toMatchObject({
+      state: "running",
+      units: [{ state: "running", leaseGeneration: lease.leaseGeneration }],
+      exceptions: [],
+    });
+    store.close();
+  });
+
+  it("validates lease duration and lists expired attempts with tenant and limit bounds", () => {
+    const store = new TransformerPilotExecutionStore();
+    const base = createInput([unit("unit-a", "repo-a", "a", "c")]);
+    for (const campaignId of ["campaign-b", "campaign-a"] as const) {
+      store.createCampaign({
+        ...base,
+        campaignId,
+        idempotencyKey: `create-${campaignId}`,
+      });
+      store.claimNextAttempt({
+        ...mutation(1, `claim-${campaignId}`),
+        campaignId,
+        leaseToken: `lease-token-${campaignId}-00000001`,
+        gateConfig: gateConfig(),
+      });
+    }
+    expect(store.listExpiredAttempts("2026-08-02T08:01:59.999Z")).toEqual([]);
+    expect(store.listExpiredAttempts(time(2), "tenant-a", 1)).toEqual([{
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      leaseGeneration: 1,
+      environment: "staging",
+    }]);
+    expect(store.listExpiredAttempts(time(2), "tenant-b")).toEqual([]);
+    expect(() => store.listExpiredAttempts(time(2), undefined, 0))
+      .toThrow("transformer_pilot_attempt_limit_invalid");
+    expect(() => store.listExpiredAttempts(time(2), undefined, 101))
+      .toThrow("transformer_pilot_attempt_limit_invalid");
+
+    const isolated = new TransformerPilotExecutionStore();
+    isolated.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    for (const leaseDurationMs of [999, 3_600_001, 1.5]) {
+      expect(() => isolated.claimNextAttempt({
+        ...mutation(1, `invalid-duration-${leaseDurationMs}`),
+        leaseToken: "lease-token-invalid-duration-0001",
+        leaseDurationMs,
+        gateConfig: gateConfig(),
+      })).toThrow("transformer_pilot_lease_duration_invalid");
+    }
+    isolated.close();
+    store.close();
+  });
+
+  it("uses WAL and a bounded busy wait without corrupting committed state", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-wal-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    const first = new TransformerPilotExecutionStore(path);
+    first.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const second = new TransformerPilotExecutionStore(path);
+    expect(second.getCampaign("tenant-a", "campaign-a")?.campaignId).toBe("campaign-a");
+
+    const probe = new DatabaseSync(path);
+    expect(probe.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
+    expect(probe.prepare("PRAGMA synchronous").get()).toEqual({ synchronous: 2 });
+    probe.close();
+
+    const blocker = new DatabaseSync(path);
+    blocker.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+    const startedAt = Date.now();
+    try {
+      expect(() => second.createCampaign({
+        ...createInput([unit("unit-b", "repo-b", "b", "d")]),
+        campaignId: "campaign-b",
+        idempotencyKey: "create-campaign-b-while-locked",
+      })).toThrow(/database is locked/i);
+      const elapsedMs = Date.now() - startedAt;
+      expect(elapsedMs).toBeGreaterThanOrEqual(4_000);
+      expect(elapsedMs).toBeLessThan(10_000);
+    } finally {
+      blocker.exec("ROLLBACK");
+      blocker.close();
+    }
+    expect(first.getCampaign("tenant-a", "campaign-a")?.campaignId).toBe("campaign-a");
+    expect(second.getCampaign("tenant-a", "campaign-b")).toBeUndefined();
+    second.close();
+    first.close();
+  }, 15_000);
+
+  it("replays the exact active lease across connections for the same claim key and token", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-claim-replay-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    const first = new TransformerPilotExecutionStore(path);
+    const second = new TransformerPilotExecutionStore(path);
+    first.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const claim = {
+      ...mutation(1, "claim-replay-a"),
+      leaseToken: "lease-token-claim-replay-000001",
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    };
+
+    const original = first.claimNextAttempt(claim);
+    const replay = second.claimNextAttempt(claim);
+
+    expect(original).not.toBeNull();
+    expect(replay).toEqual(original);
+    expect(first.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.claimed"
+    )).toHaveLength(1);
+    expect(second.getCampaign("tenant-a", "campaign-a")).toMatchObject({
+      units: [{ state: "running", attemptNumber: 1, leaseGeneration: 1 }],
+    });
+    second.close();
+    first.close();
+  });
+
+  it("rejects a conflicting claim replay and never grants a second active lease", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-claim-conflict-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    const first = new TransformerPilotExecutionStore(path);
+    const second = new TransformerPilotExecutionStore(path);
+    first.createCampaign(createInput([
+      unit("unit-a", "repo-a", "a", "c"),
+      unit("unit-b", "repo-b", "b", "d"),
+    ]));
+    const original = first.claimNextAttempt({
+      ...mutation(1, "claim-conflict-a"),
+      leaseToken: "lease-token-claim-original-00001",
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    });
+
+    expect(() => second.claimNextAttempt({
+      ...mutation(1, "claim-conflict-a"),
+      leaseToken: "lease-token-claim-conflict-00001",
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_idempotency_conflict");
+    expect(second.claimNextAttempt({
+      ...mutation(1, "claim-second-key"),
+      leaseToken: "lease-token-claim-second-key-001",
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    })).toBeNull();
+    expect(original).toMatchObject({ unitId: "unit-a", leaseGeneration: 1 });
+    expect(second.getCampaign("tenant-a", "campaign-a")!.units.filter((candidate) =>
+      candidate.state === "running"
+    )).toEqual([
+      expect.objectContaining({ id: "unit-a", leaseGeneration: 1 }),
+    ]);
+    expect(first.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.claimed"
+    )).toHaveLength(1);
+    second.close();
+    first.close();
+  });
+
+  it("replays each stored lease after a failed attempt is retried and completed", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-claim-history-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    const first = new TransformerPilotExecutionStore(path);
+    const second = new TransformerPilotExecutionStore(path);
+    first.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const initialClaim = {
+      ...mutation(1, "claim-history-initial"),
+      leaseToken: "lease-token-claim-history-initial-01",
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    };
+    const initialLease = first.claimNextAttempt(initialClaim)!;
+    const failed = first.recordAttemptFailure({
+      ...mutation(2, "claim-history-failure"),
+      unitId: initialLease.unitId,
+      leaseGeneration: initialLease.leaseGeneration,
+      leaseToken: initialClaim.leaseToken,
+      code: "execution_failed",
+      gateConfig: gateConfig(),
+    });
+    first.control({
+      ...mutation(3, "claim-history-authorize"),
+      action: "authorize_retry",
+      unitId: initialLease.unitId,
+    });
+    first.control({
+      ...mutation(4, "claim-history-resolve"),
+      action: "resolve_exception",
+      exceptionId: failed.exceptions[0]!.id,
+      resolution: "Worker recovered with the original evidence retained",
+    });
+    first.control({ ...mutation(5, "claim-history-resume"), action: "resume" });
+    const retryClaim = {
+      ...mutation(6, "claim-history-retry"),
+      leaseToken: "lease-token-claim-history-retry-0001",
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    };
+    const retryLease = first.claimNextAttempt(retryClaim)!;
+    complete(first, retryLease.unitId, 7, retryClaim.leaseToken, retryLease.leaseGeneration);
+
+    expect(second.claimNextAttempt(initialClaim)).toEqual(initialLease);
+    expect(second.claimNextAttempt(retryClaim)).toEqual(retryLease);
+    expect(second.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.claimed"
+    )).toHaveLength(2);
+    second.close();
+    first.close();
+  });
+
+  it("binds the claimed candidate and enforces the current attempt fence", () => {
+    const store = new TransformerPilotExecutionStore();
+    const input = createInput([unit("unit-a", "repo-a", "a", "c")]);
+    store.createCampaign(input);
+    const token = "lease-token-unit-a-00000001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-fence-a"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+
+    expect(lease).toMatchObject({
+      unitId: "unit-a",
+      candidateRevision: input.units[0]!.candidateRevision,
+      candidateDigest: input.units[0]!.candidateDigest,
+      changedPaths: input.units[0]!.changedPaths,
+    });
+    expect(() => store.assertCurrentAttemptFence({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      observedAt: time(1),
+    })).not.toThrow();
+    expect(() => store.assertCurrentAttemptFence({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration + 1,
+      leaseToken: token,
+      observedAt: time(1),
+    })).toThrow("transformer_pilot_fence_stale");
+    expect(() => store.assertCurrentAttemptFence({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: "lease-token-unit-a-stale-0001",
+      observedAt: time(1),
+    })).toThrow("transformer_pilot_fence_stale");
+    expect(() => store.assertCurrentAttemptFence({
+      tenantId: "tenant-b",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      observedAt: time(1),
+    })).toThrow("transformer_pilot_campaign_not_found");
+    expect(() => store.assertCurrentAttemptFence({
+      tenantId: "tenant-a",
+      campaignId: "campaign-missing",
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      observedAt: time(1),
+    })).toThrow("transformer_pilot_campaign_not_found");
+
+    complete(store, "unit-a", 2, token, lease.leaseGeneration);
+    expect(() => store.assertCurrentAttemptFence({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      observedAt: time(2),
+    })).toThrow("transformer_pilot_attempt_not_running");
+    store.close();
+  });
+
+  it("records one typed fenced attempt failure and replays it idempotently", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const token = "lease-token-unit-a-00000001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-failure-a"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const before = store.getCampaign("tenant-a", "campaign-a")!;
+
+    expect(() => store.recordAttemptFailure({
+      ...mutation(2, "stale-failure-generation"),
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration + 1,
+      leaseToken: token,
+      code: "candidate_drift",
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_fence_stale");
+    expect(() => store.recordAttemptFailure({
+      ...mutation(2, "stale-failure-token"),
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: "lease-token-unit-a-stale-0001",
+      code: "candidate_drift",
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_fence_stale");
+    expect(store.getCampaign("tenant-a", "campaign-a")).toEqual(before);
+
+    expect(() => store.recordAttemptFailure({
+      ...mutation(2, "invalid-failure-code"),
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      observedAt: time(2),
+      code: "ci_failure" as TransformerAttemptFailureCode,
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_failure_code_invalid");
+
+    const failureInput = {
+      ...mutation(2, "candidate-drift-failure"),
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      code: "candidate_drift" as const,
+      gateConfig: gateConfig(),
+    };
+    const failed = store.recordAttemptFailure(failureInput);
+    expect(failed).toMatchObject({
+      state: "paused",
+      units: [{ id: "unit-a", state: "failed", retryAuthorized: false }],
+      exceptions: [{
+        code: "candidate_drift",
+        unitId: "unit-a",
+        state: "open",
+        evidenceRefs: failureInput.evidenceRefs,
+      }],
+    });
+    const eventCount = store.listEvents("tenant-a", "campaign-a").length;
+    expect(store.recordAttemptFailure(failureInput)).toEqual(failed);
+    expect(store.getCampaign("tenant-a", "campaign-a")?.revision).toBe(failed.revision);
+    expect(store.listEvents("tenant-a", "campaign-a")).toHaveLength(eventCount);
+    expect(store.getCampaign("tenant-a", "campaign-a")?.exceptions).toHaveLength(1);
+    expect(() => store.assertCurrentAttemptFence({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      observedAt: time(2),
+    })).toThrow("transformer_pilot_campaign_not_running");
+
+    store.control({
+      ...mutation(3, "authorize-candidate-drift-retry"),
+      action: "authorize_retry",
+      unitId: "unit-a",
+    });
+    store.control({
+      ...mutation(4, "resolve-candidate-drift"),
+      action: "resolve_exception",
+      exceptionId: failed.exceptions[0]!.id,
+      resolution: "Candidate was regenerated from the claimed source",
+    });
+    store.control({
+      ...mutation(5, "resume-candidate-drift"),
+      action: "resume",
+    });
+    expect(store.listRunnableCampaigns("tenant-a")).toEqual([
+      { tenantId: "tenant-a", campaignId: "campaign-a", environment: "staging" },
+    ]);
+    store.close();
+  });
+
+  it("lists only runnable campaigns in stable bounded tenant order without mutation", () => {
+    const store = new TransformerPilotExecutionStore();
+    const base = createInput([unit("unit-a", "repo-a", "a", "c")]);
+    for (const [campaignId, observedAt] of [
+      ["campaign-z", time(2)],
+      ["campaign-b", time(1)],
+      ["campaign-a", time(1)],
+    ] as const) {
+      store.createCampaign({
+        ...base,
+        campaignId,
+        observedAt,
+        idempotencyKey: `create-${campaignId}`,
+      });
+    }
+    const eventsBefore = ["campaign-a", "campaign-b", "campaign-z"].map(
+      (campaignId) => store.listEvents("tenant-a", campaignId).length,
+    );
+
+    expect(store.listRunnableCampaigns()).toEqual([
+      { tenantId: "tenant-a", campaignId: "campaign-a", environment: "staging" },
+      { tenantId: "tenant-a", campaignId: "campaign-b", environment: "staging" },
+      { tenantId: "tenant-a", campaignId: "campaign-z", environment: "staging" },
+    ]);
+    expect(store.listRunnableCampaigns("tenant-a", 2).map((item) => item.campaignId))
+      .toEqual(["campaign-a", "campaign-b"]);
+    expect(store.listRunnableCampaigns("tenant-b")).toEqual([]);
+    expect(() => store.listRunnableCampaigns(undefined, 0))
+      .toThrow("transformer_pilot_campaign_limit_invalid");
+    expect(() => store.listRunnableCampaigns(undefined, 101))
+      .toThrow("transformer_pilot_campaign_limit_invalid");
+
+    store.claimNextAttempt({
+      ...mutation(3, "claim-campaign-z"),
+      campaignId: "campaign-z",
+      leaseToken: "lease-token-campaign-z-000001",
+      gateConfig: gateConfig(),
+    });
+    store.control({
+      ...mutation(3, "pause-campaign-b"),
+      campaignId: "campaign-b",
+      action: "pause",
+    });
+    expect(store.listRunnableCampaigns("tenant-a")).toEqual([
+      { tenantId: "tenant-a", campaignId: "campaign-a", environment: "staging" },
+    ]);
+    expect(["campaign-a", "campaign-b", "campaign-z"].map(
+      (campaignId) => store.listEvents("tenant-a", campaignId).length,
+    )).toEqual(eventsBefore.map((count, index) => count + (index === 0 ? 0 : 1)));
+    store.close();
+  });
+
   it("recovers a crash only after attributable retry authorization and exception resolution", () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
-    store.claimNextAttempt({ ...mutation(1, "claim-a"), leaseToken: "lease-token-unit-a-00000001", gateConfig: gateConfig() });
-    const crashed = store.recordWorkerCrash({ ...mutation(2, "crash-a"), unitId: "unit-a", gateConfig: gateConfig() });
+    const token = "lease-token-unit-a-00000001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-a"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const crashed = store.recordWorkerCrash({
+      ...mutation(2, "crash-a"),
+      unitId: "unit-a",
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      gateConfig: gateConfig(),
+    });
     expect(crashed).toMatchObject({ state: "paused", units: [expect.objectContaining({ state: "failed", retryAuthorized: false })] });
     expect(store.claimNextAttempt({ ...mutation(3, "claim-before-retry"), leaseToken: "lease-token-unit-a-00000002", gateConfig: gateConfig() })).toBeNull();
     store.control({ ...mutation(3, "retry-a"), action: "authorize_retry", unitId: "unit-a" });
@@ -243,7 +800,7 @@ describe("Transformer pilot execution coordinator", () => {
       const store = new TransformerPilotExecutionStore();
       store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
       const token = `lease-token-unit-a-${name}-000001`;
-      store.claimNextAttempt({ ...mutation(1, `claim-${name}`), leaseToken: token, gateConfig: gateConfig() });
+      store.claimNextAttempt({ ...mutation(1, `claim-${name}`), leaseToken: token, leaseDurationMs: 3_600_000, gateConfig: gateConfig() });
       complete(store, "unit-a", 2, token, 1);
       store.authorizeCurrentWaveDrafts({ ...mutation(3, `draft-${name}`), gateConfig: gateConfig() });
       const result = store.reconcileWave({ ...mutation(4, `observe-${name}`), wave: 1, observations: [observation("unit-a", "draft", "a", "c", overrides)], gateConfig: gateConfig() });
@@ -258,7 +815,7 @@ describe("Transformer pilot execution coordinator", () => {
       unit("unit-b", "repo-b", "b", "d"),
     ]));
     for (const [id, token, minute] of [["unit-a", "lease-token-unit-a-00000001", 1], ["unit-b", "lease-token-unit-b-00000001", 3]] as const) {
-      const lease = store.claimNextAttempt({ ...mutation(minute, `claim-${id}`), leaseToken: token, gateConfig: gateConfig() })!;
+      const lease = store.claimNextAttempt({ ...mutation(minute, `claim-${id}`), leaseToken: token, leaseDurationMs: 3_600_000, gateConfig: gateConfig() })!;
       complete(store, id, minute + 1, token, lease.leaseGeneration);
     }
     store.authorizeCurrentWaveDrafts({ ...mutation(5, "draft-wave"), gateConfig: gateConfig() });
@@ -327,7 +884,7 @@ describe("Transformer pilot execution coordinator", () => {
       unit("unit-b", "repo-b", "b", "d"),
     ]));
     for (const [id, token, minute] of [["unit-a", "lease-token-unit-a-00000001", 1], ["unit-b", "lease-token-unit-b-00000001", 3]] as const) {
-      const lease = store.claimNextAttempt({ ...mutation(minute, `claim-${id}`), leaseToken: token, gateConfig: gateConfig() })!;
+      const lease = store.claimNextAttempt({ ...mutation(minute, `claim-${id}`), leaseToken: token, leaseDurationMs: 3_600_000, gateConfig: gateConfig() })!;
       complete(store, id, minute + 1, token, lease.leaseGeneration);
     }
     store.authorizeCurrentWaveDrafts({ ...mutation(5, "draft-wave"), gateConfig: gateConfig() });

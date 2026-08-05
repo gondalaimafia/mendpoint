@@ -18,8 +18,11 @@ import {
   NODE_RUNTIME_18_TO_20_RECIPE,
   RecipeAnalysisCache,
   applyInverseOperations,
+  getRecipe,
   recipeFilesDigest,
+  recipeReference,
   resolveRecipe,
+  type MigrationRecipeContract,
   type RecipeApplication,
   type RecipeAnalysis,
   type RecipeFiles,
@@ -200,29 +203,29 @@ type VerificationDefinition = Readonly<{
   script: string;
 }>;
 
-const NODE_MAJOR_SCRIPT =
-  "if (Number(process.versions.node.split('.')[0]) !== 20) process.exit(1)";
-const PACKAGE_ENGINE_SCRIPT =
-  "const p=require('./package.json'); if(p.engines?.node !== '>=20 <21') process.exit(1)";
+function recipeCommandKey(reference: RecipeReference): string {
+  return `${reference.id}@${reference.version}:${reference.digest}`;
+}
 
-const NODE_RECIPE_COMMANDS = new Map<string, VerificationDefinition>([
-  [
-    "node-major",
-    {
-      command:
-        "node -e \"if (Number(process.versions.node.split('.')[0]) !== 20) process.exit(1)\"",
-      script: NODE_MAJOR_SCRIPT,
-    },
-  ],
-  [
-    "package-engine",
-    {
-      command:
-        "node -e \"const p=require('./package.json'); if(p.engines?.node !== '>=20 <21') process.exit(1)\"",
-      script: PACKAGE_ENGINE_SCRIPT,
-    },
-  ],
-]);
+function signedNodeCommands(recipe: MigrationRecipeContract): ReadonlyMap<string, VerificationDefinition> {
+  return new Map(recipe.verificationCommands.map((command) => {
+    const match = /^node -e "([^"]+)"$/.exec(command.command);
+    if (!match) throw new Error(`recipe_execution_command_definition_invalid:${command.id}`);
+    return [command.id, { command: command.command, script: match[1]! }] as const;
+  }));
+}
+
+const SIGNED_NODE_RECIPES = [
+  getRecipe(NODE_RUNTIME_18_TO_20_RECIPE.id, 1),
+  NODE_RUNTIME_18_TO_20_RECIPE,
+] as const;
+
+const NODE_RECIPE_COMMANDS = new Map(
+  SIGNED_NODE_RECIPES.map((recipe) => [
+    recipeCommandKey(recipeReference(recipe)),
+    signedNodeCommands(recipe),
+  ] as const),
+);
 
 function sha256(value: string | Buffer): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -438,14 +441,9 @@ function allowlistedInvocation(
   workspace: string,
   timeoutMs: number,
 ): RecipeCommandInvocation {
-  if (
-    reference.id !== NODE_RUNTIME_18_TO_20_RECIPE.id ||
-    reference.version !== NODE_RUNTIME_18_TO_20_RECIPE.version ||
-    reference.digest !== NODE_RUNTIME_18_TO_20_RECIPE.digest
-  ) {
-    throw new Error("recipe_execution_command_recipe_not_allowed");
-  }
-  const definition = NODE_RECIPE_COMMANDS.get(command.id);
+  const commands = NODE_RECIPE_COMMANDS.get(recipeCommandKey(reference));
+  if (!commands) throw new Error("recipe_execution_command_recipe_not_allowed");
+  const definition = commands.get(command.id);
   if (!definition || command.command !== definition.command) {
     throw new Error(`recipe_execution_command_not_allowed:${command.id}`);
   }

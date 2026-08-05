@@ -78,6 +78,18 @@ function positiveInteger(value: unknown, code: string): number {
   return Number(value);
 }
 
+function optionalIntegerBetween(
+  value: unknown,
+  code: string,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = positiveInteger(value, code);
+  if (parsed < minimum || parsed > maximum) throw new Error(code);
+  return parsed;
+}
+
 function nonnegativeNumber(value: unknown, code: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(code);
   return value;
@@ -145,6 +157,7 @@ function errorResponse(c: Context<ApiEnv>, error: unknown) {
     code.endsWith("_not_running") ||
     code.endsWith("_not_open") ||
     code.endsWith("_stale") ||
+    code.endsWith("_expired") ||
     code.endsWith("_drift") ||
     code.endsWith("_incomplete") ||
     code.endsWith("_exists") ||
@@ -253,9 +266,16 @@ export class TransformerPilotExecutionService {
   claim(request: MutationRequest, campaignId: string, rawInput: unknown) {
     this.requireGate(request.tenantId, "worker_action");
     const input = record(rawInput, "transformer_pilot_claim_required");
+    const leaseDurationMs = optionalIntegerBetween(
+      input.leaseDurationMs,
+      "transformer_pilot_lease_duration_invalid",
+      1_000,
+      3_600_000,
+    ) ?? 15 * 60_000;
     return this.store.claimNextAttempt({
       ...this.mutation(request, campaignId),
       leaseToken: requiredString(input.leaseToken, "transformer_pilot_lease_token_invalid", 500),
+      leaseDurationMs,
       gateConfig: this.runtime.rawGateConfig,
     });
   }
@@ -284,6 +304,15 @@ export class TransformerPilotExecutionService {
     return this.store.recordWorkerCrash({
       ...this.mutation(request, campaignId),
       unitId: requiredString(input.unitId, "transformer_pilot_unit_invalid", 200),
+      leaseGeneration: positiveInteger(
+        input.leaseGeneration,
+        "transformer_pilot_lease_generation_invalid",
+      ),
+      leaseToken: requiredString(
+        input.leaseToken,
+        "transformer_pilot_lease_token_invalid",
+        500,
+      ),
       gateConfig: this.runtime.rawGateConfig,
     });
   }

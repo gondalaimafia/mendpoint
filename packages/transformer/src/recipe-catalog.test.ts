@@ -11,17 +11,18 @@ import {
   type ProviderRecipeArtifact,
   type SignedProviderRecipe,
 } from "./recipe-catalog.js";
-import { NODE_RUNTIME_18_TO_20_RECIPE } from "./recipe.js";
+import { getRecipe } from "./recipe.js";
 
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const OTHER_KEYS = generateKeyPairSync("ed25519");
 const KEY_ID = "fixture-key-2026-08";
+const LEGACY_IMPLEMENTATION_RECIPE = getRecipe("node-runtime-18-to-20", 1);
 
 function fixture(): ProviderRecipeArtifact {
   const raw = readFileSync(
     new URL("../fixtures/acme-payments-node-20.json", import.meta.url),
     "utf8",
-  ).replace("RECIPE_DIGEST", NODE_RUNTIME_18_TO_20_RECIPE.digest);
+  ).replace("RECIPE_DIGEST", LEGACY_IMPLEMENTATION_RECIPE.digest);
   return JSON.parse(raw) as ProviderRecipeArtifact;
 }
 
@@ -67,7 +68,7 @@ describe("signed provider recipe catalog", () => {
 
     expect(resolved.integrity.artifactSha256).toBe(artifact.integrity.artifactSha256);
     expect(resolved.artifact.boundedEdits.implementationRecipe.digest).toBe(
-      NODE_RUNTIME_18_TO_20_RECIPE.digest,
+      LEGACY_IMPLEMENTATION_RECIPE.digest,
     );
     expect(Object.isFrozen(resolved)).toBe(true);
     expect(Object.isFrozen(resolved.artifact.boundedEdits.allowedPaths)).toBe(true);

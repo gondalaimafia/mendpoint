@@ -125,6 +125,29 @@ export {
 } from "./recipe-workspace-execution.js";
 
 export {
+  persistTransformerAttemptFailureEvidence,
+  persistTransformerCandidate,
+  runTransformerAttempt,
+  transformerAttemptId,
+  type RunTransformerAttemptInput,
+  type TransformerAttemptClaimInput,
+  type TransformerAttemptCompletionInput,
+  type TransformerAttemptCoordinatorPort,
+  type TransformerAttemptFailureArtifact,
+  type TransformerAttemptFailureEvidenceRecord,
+  type TransformerAttemptFailureInput,
+  type TransformerAttemptPhase,
+  type TransformerAttemptRecoveryCode,
+  type TransformerAttemptRunResult,
+  type TransformerAttemptScope,
+  type TransformerCandidateArtifact,
+  type TransformerCandidateFileManifest,
+  type TransformerCandidateManifest,
+  type TransformerCurrentAttemptFence,
+  type TransformerExecutableAttemptLease,
+} from "./attempt-runner.js";
+
+export {
   planStagedPullRequestBatches,
   reconcileStagedPullRequestResume,
   type StagedPullRequestProvider,
@@ -169,6 +192,7 @@ export {
   TransformerPilotExecutionStore,
   type TransformerPilotUnitState,
   type TransformerPilotExceptionCode,
+  type TransformerAttemptFailureCode,
   type TransformerExactSnapshot,
   type TransformerPilotUnitInput,
   type TransformerPilotCampaignInput,
@@ -176,6 +200,8 @@ export {
   type TransformerPilotUnit,
   type TransformerPilotCampaign,
   type TransformerAttemptLease,
+  type TransformerExpiredAttempt,
+  type TransformerRunnableCampaign,
   type TransformerDraftAction,
   type TransformerRollbackAction,
   type TransformerScmObservation,
