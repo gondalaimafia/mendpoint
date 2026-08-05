@@ -29,6 +29,7 @@ const RESPONSE_HEADERS = [
 const MAX_REQUEST_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 12_000;
+const CANDIDATE_UPSTREAM_TIMEOUT_MS = 60_000;
 
 function matchesAllowedRoute(method: string, path: string): boolean {
   const rules: Array<[string, RegExp]> = [
@@ -38,6 +39,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["GET", /^recovery\/summary$/],
     ["GET", /^billing\/usage$/],
     ["GET", /^billing\/config$/],
+    ["GET", /^agent\/runs(?:\/[^/]+(?:\/candidate)?)?$/],
     ["GET", /^audit\/export$/],
     ["GET", /^github\/app\/install-url$/],
     ["GET", /^design-partner-applications$/],
@@ -52,6 +54,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["POST", /^tenants\/[^/]+\/plan$/],
     ["POST", /^brands\/[^/]+\/preview$/],
     ["POST", /^agent\/runs$/],
+    ["POST", /^agent\/runs\/[^/]+\/candidate\/review$/],
     ["POST", /^consumers$/],
     ["POST", /^consumers\/[^/]+\/detect$/],
     ["POST", /^feeds\/poll$/],
@@ -153,7 +156,10 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     return Response.json({ error: "payload_too_large" }, { status: 413 });
   }
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  const timeoutMs = /^agent\/runs\/[^/]+\/candidate(?:\/review)?$/.test(decodedPath)
+    ? CANDIDATE_UPSTREAM_TIMEOUT_MS
+    : UPSTREAM_TIMEOUT_MS;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let upstream: Response;
   let body: ArrayBuffer | null;
   try {

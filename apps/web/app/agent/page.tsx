@@ -1,4 +1,5 @@
 import { apiGet } from "../../lib/api";
+import Link from "next/link";
 import { AgentForm } from "./agent-form";
 
 export const dynamic = "force-dynamic";
@@ -30,15 +31,17 @@ export default async function AgentPage() {
     runsResult.status === "rejected" ? `Runs unavailable: ${String(runsResult.reason)}` : null,
     consumersResult.status === "rejected" ? `Repositories unavailable: ${String(consumersResult.reason)}` : null,
   ].filter(Boolean).join(". ") || null;
+  const successfulStatus = (status: string) =>
+    ["ok", "no_action", "candidate_ready", "candidate_approved"].includes(status);
 
   return (
     <div className="page">
       <div className="page-header">
         <h1>Warden</h1>
         <p className="muted">
-          Mendpoint&apos;s API debug agent — Devin-style tool loop for wrong paths, field renames,
-          auth headers, pagination. Explores the repo, edits code, re-runs your verify command.
-          Never auto-merges.
+          Mendpoint&apos;s API repair agent for wrong paths, field renames, auth headers, and
+          pagination. Warden works on a private candidate, reruns approved checks, and always
+          requires review.
         </p>
       </div>
 
@@ -69,11 +72,17 @@ export default async function AgentPage() {
               <tr key={r.id}>
                 <td className="mono small">{new Date(r.createdAt).toLocaleString()}</td>
                 <td>
-                  <span className={`badge ${r.ok ? "high" : "breaking"}`}>{r.status}</span>
+                  <span className={`badge ${successfulStatus(r.status) ? "high" : "breaking"}`}>
+                    {r.status}
+                  </span>
                 </td>
                 <td>{r.steps}</td>
                 <td>{r.filesChanged?.length ?? 0}</td>
-                <td className="small">{r.goal.slice(0, 80)}</td>
+                <td className="small">
+                  {r.status.startsWith("candidate_") ? (
+                    <Link href={`/agent/${r.id}`}>{r.goal.slice(0, 80)}</Link>
+                  ) : r.goal.slice(0, 80)}
+                </td>
               </tr>
             ))}
           </tbody>

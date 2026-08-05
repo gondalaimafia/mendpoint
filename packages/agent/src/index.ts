@@ -5,14 +5,31 @@ export type {
   AgentStep,
   AgentTask,
   AgentModelBudget,
+  AgentPlanner,
+  AgentPlannerInput,
+  AgentPlannerObservation,
+  AgentPlannerOutput,
+  AgentPlannerUsage,
+  AgentSourceContextBudget,
+  AgentModelSourcePolicy,
   AgentExecutionMetrics,
   AgentRunResult,
   AgentVerifierState,
   AgentRollbackState,
 } from "./types.js";
 
-export { DEFAULT_NEVER_TOUCH, pathBlocked, commandBlocked } from "./policies.js";
-export { executeTool, executeToolAsync, type ToolContext } from "./tools.js";
+export {
+  DEFAULT_NEVER_TOUCH,
+  pathBlocked,
+  verificationControlPath,
+  commandBlocked,
+} from "./policies.js";
+export {
+  executeTool,
+  executeToolAsync,
+  type ToolContext,
+  type ToolSourceContextState,
+} from "./tools.js";
 export {
   extractHints,
   extractRenames,
@@ -29,6 +46,20 @@ export {
 export { proposeWardenFix, hasAutomaticWardenRepair } from "./fixes.js";
 export { runWarden, runWelder, runApiBugAgent } from "./agent.js";
 export { discoverVerifyCommand } from "./discover-verify.js";
+export { resolveAgentModelEndpoint } from "./model-endpoint.js";
+export {
+  runWardenAttempt,
+  type WardenAttemptAgentSummary,
+  type WardenAttemptInput,
+  type WardenAttemptLimits,
+  type WardenAttemptResult,
+} from "./attempt-engine.js";
+export {
+  redactSourceForModel,
+  type SourceRedactionCounts,
+  type SourceRedactionExclusionReason,
+  type SourceRedactionResult,
+} from "./source-redaction.js";
 export {
   runPolicyRoutedWarden,
   type RoutedWardenResult,

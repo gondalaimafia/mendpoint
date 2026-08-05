@@ -286,6 +286,68 @@ describe("web credential proxy", () => {
     await expect(response.json()).resolves.toEqual({ id: "consumer-a" });
   });
 
+  it("allows candidate reads and same origin human review", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn(async (url: URL, init?: RequestInit) => {
+      expect(url.pathname).toMatch(/^\/agent\/runs\/run-a\/candidate(?:\/review)?$/);
+      return Response.json({ ok: true, method: init?.method });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const read = await GET(
+      new NextRequest("https://console.example/api/agent/runs/run-a/candidate", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["agent", "runs", "run-a", "candidate"] }) },
+    );
+    expect(read.status).toBe(200);
+
+    const review = await POST(
+      new NextRequest("https://console.example/api/agent/runs/run-a/candidate/review", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ decision: "approve" }),
+      }),
+      { params: Promise.resolve({ path: ["agent", "runs", "run-a", "candidate", "review"] }) },
+    );
+    expect(review.status).toBe(200);
+    expect(upstream).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves the private no-store cache directives on candidate source reads", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn(async () =>
+      new Response(JSON.stringify({ candidate: "source" }), {
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "private, no-store, max-age=0",
+          Pragma: "no-cache",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", upstream);
+
+    const read = await GET(
+      new NextRequest("https://console.example/api/agent/runs/run-a/candidate", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["agent", "runs", "run-a", "candidate"] }) },
+    );
+    expect(read.status).toBe(200);
+    expect(read.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(read.headers.get("pragma")).toBe("no-cache");
+    expect(upstream).toHaveBeenCalledOnce();
+  });
+
   it("allows tenant scoped Transformer reads and forwards required mutation evidence", async () => {
     const cookie = await sessionCookie();
     process.env.MENDPOINT_API_KEY = "api-secret";

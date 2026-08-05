@@ -17,6 +17,7 @@ export {
   runAgentEvalScenarios,
   type AgentEvalBudget,
   type AgentEvalDisposition,
+  type AgentEvalEvidenceLane,
   type AgentEvalGrade,
   type AgentEvalMetrics,
   type AgentEvalObservation,
@@ -32,6 +33,15 @@ export {
   type WardenTransformerEvalReport,
 } from "./agent-eval.js";
 export { WARDEN_AGENT_EVAL_SCENARIOS } from "./warden-agent-eval.js";
+export {
+  WARDEN_SOURCE_EVAL_SCENARIO,
+  WARDEN_WORKER_SOURCE_EVAL_SCENARIO,
+  createWardenSourceEvalPlanner,
+  runWardenSourceEval,
+  type WardenSourceEvalGrade,
+  type WardenSourceEvalReport,
+  type WardenSourceEvalTrial,
+} from "./warden-source-eval.js";
 export { TRANSFORMER_AGENT_EVAL_SCENARIOS } from "./transformer-agent-eval.js";
 export { WARDEN_CAPABILITY_CASES } from "./corpus/warden-v1.js";
 export { TRANSFORMER_CAPABILITY_CASES } from "./corpus/transformer-v1.js";

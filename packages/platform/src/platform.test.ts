@@ -177,6 +177,7 @@ describe("vm + cost + rbac + scm + alerts", () => {
     expect(permissionForRoute("POST", "/billing/execution-costs")).toBe("tenant:admin");
     expect(permissionForRoute("GET", "/transformer/control-plane/campaigns/campaign-a")).toBe("graph:read");
     expect(permissionForRoute("POST", "/transformer/control-plane/campaigns")).toBe("plan:execute");
+    expect(permissionForRoute("POST", "/agent/runs/run-a/candidate/review")).toBe("plan:edit");
     expect(permissionForRoute("GET", "/change-sources/source-a")).toBe("graph:read");
     expect(permissionForRoute("POST", "/change-sources")).toBe("plan:execute");
     expect(permissionForRoute("POST", "/platform/scm/connections")).toBe("tenant:admin");

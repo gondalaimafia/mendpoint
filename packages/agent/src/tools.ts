@@ -1,6 +1,7 @@
 /**
  * Agent tools — sandboxed to repoRoot.
  */
+import { createHash } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -17,7 +18,24 @@ import { isIP } from "node:net";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { runVerificationCommand } from "@mendpoint/repair";
 import { commandBlocked, isCodeExt, pathBlocked, DEFAULT_NEVER_TOUCH } from "./policies.js";
-import type { ToolCall, ToolResult } from "./types.js";
+import type { AgentSourceContextBudget, ToolCall, ToolResult } from "./types.js";
+
+export type ToolSourceContextState = {
+  requireObservation: boolean;
+  budget: AgentSourceContextBudget;
+  /** Immutable first content observed from the source tree for replay evidence. */
+  sourceEvidenceFiles: Map<string, { digest: string; bytes: number }>;
+  /** Current working content used by the read before write mutation fence. */
+  observedFiles: Map<string, { digest: string; bytes: number }>;
+  observedDirectories: Set<string>;
+  searches: Set<string>;
+  observedBytes: number;
+  searchBytes: number;
+  truncatedObservations: number;
+  groundedMutations: number;
+  blockedMutations: number;
+  changedBytes: number;
+};
 
 export type ToolContext = {
   repoRoot: string;
@@ -28,6 +46,7 @@ export type ToolContext = {
   allowPrivateNetwork?: boolean;
   allowedCommands?: string[];
   changedFiles: Set<string>;
+  sourceContext?: ToolSourceContextState;
 };
 
 const SENSITIVE_HEADER = /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token)$/i;
@@ -139,8 +158,14 @@ function safeRel(repoRoot: string, p: string, allowMissing = false): string | nu
   return relative(root, abs).replace(/\\/g, "/") || ".";
 }
 
-function walk(dir: string, root: string, out: string[] = [], depth = 0): string[] {
-  if (depth > 8) return out;
+function walk(
+  dir: string,
+  root: string,
+  out: string[] = [],
+  depth = 0,
+  maxFiles = 2_000,
+): string[] {
+  if (depth > 8 || out.length >= maxFiles) return out;
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -161,10 +186,58 @@ function walk(dir: string, root: string, out: string[] = [], depth = 0): string[
       continue;
     }
     const rel = relative(root, abs).replace(/\\/g, "/");
-    if (st.isDirectory()) walk(abs, root, out, depth + 1);
-    else if (isCodeExt(name)) out.push(rel);
+    if (st.isDirectory()) walk(abs, root, out, depth + 1, maxFiles);
+    else if (isCodeExt(name) && out.length < maxFiles) out.push(rel);
   }
   return out;
+}
+
+function sha256(value: string | Buffer): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function blockMutation(ctx: ToolContext, tool: ToolCall["tool"], summary: string, error: string): ToolResult {
+  if (ctx.sourceContext) ctx.sourceContext.blockedMutations++;
+  return { ok: false, tool, summary, error };
+}
+
+function assertObservedMutation(
+  ctx: ToolContext,
+  safe: string,
+  absolutePath: string,
+): ToolResult | undefined {
+  const state = ctx.sourceContext;
+  if (!state?.requireObservation) return undefined;
+  if (existsSync(absolutePath)) {
+    const observed = state.observedFiles.get(safe);
+    if (!observed) {
+      return blockMutation(ctx, "write_file", `read ${safe} before changing it`, "source_context_required");
+    }
+    const stat = statSync(absolutePath);
+    if (!stat.isFile() || stat.size > state.budget.maxFileBytes) {
+      return blockMutation(ctx, "write_file", `source fence rejected ${safe}`, "source_context_invalid");
+    }
+    const current = readFileSync(absolutePath);
+    if (sha256(current) !== observed.digest) {
+      return blockMutation(ctx, "write_file", `source changed after observation: ${safe}`, "source_context_stale");
+    }
+    return undefined;
+  }
+  const parent = relative(realpathSync(resolve(ctx.repoRoot)), dirname(absolutePath))
+    .replace(/\\/g, "/") || ".";
+  if (!state.observedDirectories.has(parent)) {
+    return blockMutation(ctx, "write_file", `list ${parent} before creating ${safe}`, "source_context_required");
+  }
+  return undefined;
+}
+
+function recordMutation(ctx: ToolContext, safe: string, content: string): void {
+  const state = ctx.sourceContext;
+  if (!state) return;
+  const bytes = Buffer.byteLength(content, "utf8");
+  state.changedBytes += bytes;
+  state.groundedMutations++;
+  state.observedFiles.set(safe, { digest: sha256(content), bytes });
 }
 
 function captureOriginal(
@@ -240,7 +313,14 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         if (st.isFile()) {
           return { ok: true, tool, summary: `file ${safe}`, data: { files: [safe] } };
         }
-        const files = walk(abs, ctx.repoRoot).slice(0, 200);
+        ctx.sourceContext?.observedDirectories.add(safe);
+        const files = walk(
+          abs,
+          ctx.repoRoot,
+          [],
+          0,
+          Math.min(ctx.sourceContext?.budget.maxSearchFiles ?? 200, 2_000),
+        ).slice(0, 200);
         return {
           ok: true,
           tool,
@@ -257,8 +337,30 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         }
         const abs = join(ctx.repoRoot, safe);
         if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT" };
-        const content = readFileSync(abs, "utf8");
-        const max = Number(args.maxChars ?? 12_000);
+        const stat = statSync(abs);
+        const maxFileBytes = ctx.sourceContext?.budget.maxFileBytes ?? 1024 * 1024;
+        if (!stat.isFile() || stat.size > maxFileBytes) {
+          return { ok: false, tool, summary: "file exceeds source budget", error: "source_budget" };
+        }
+        const bytes = readFileSync(abs);
+        const state = ctx.sourceContext;
+        if (state && state.observedBytes + bytes.byteLength > state.budget.maxTotalReadBytes) {
+          return { ok: false, tool, summary: "source read budget exhausted", error: "source_budget" };
+        }
+        const requestedMax = Number(args.maxChars ?? 12_000);
+        const max = Number.isFinite(requestedMax)
+          ? Math.max(1, Math.min(Math.floor(requestedMax), maxFileBytes))
+          : Math.min(12_000, maxFileBytes);
+        const content = bytes.toString("utf8");
+        if (state) {
+          state.observedBytes += bytes.byteLength;
+          const observation = { digest: sha256(bytes), bytes: bytes.byteLength };
+          if (!state.sourceEvidenceFiles.has(safe)) {
+            state.sourceEvidenceFiles.set(safe, observation);
+          }
+          state.observedFiles.set(safe, observation);
+          if (content.length > max) state.truncatedObservations++;
+        }
         return {
           ok: true,
           tool,
@@ -272,23 +374,40 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         if (!query || query.length < 2) {
           return { ok: false, tool, summary: "query too short", error: "args" };
         }
-        const files = walk(ctx.repoRoot, ctx.repoRoot);
+        const state = ctx.sourceContext;
+        const maxFiles = state?.budget.maxSearchFiles ?? 2_000;
+        const maxBytes = state?.budget.maxSearchBytes ?? 8 * 1024 * 1024;
+        const maxHits = state?.budget.maxSearchHits ?? 40;
+        const files = walk(ctx.repoRoot, ctx.repoRoot, [], 0, maxFiles);
         const hits: Array<{ path: string; line: number; text: string }> = [];
         const re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+        let scannedBytes = 0;
         for (const f of files) {
           if (pathBlocked(f, never)) continue;
           let text: string;
           try {
-            text = readFileSync(join(ctx.repoRoot, f), "utf8");
+            const stat = statSync(join(ctx.repoRoot, f));
+            if (!stat.isFile() || stat.size > (state?.budget.maxFileBytes ?? 1024 * 1024)) continue;
+            if (scannedBytes + stat.size > maxBytes) break;
+            const value = readFileSync(join(ctx.repoRoot, f));
+            scannedBytes += value.byteLength;
+            text = value.toString("utf8");
           } catch {
             continue;
           }
           const lines = text.split(/\r?\n/);
           lines.forEach((line, i) => {
-            if (re.test(line) && hits.length < 40) {
+            if (re.test(line) && hits.length < maxHits) {
               hits.push({ path: f, line: i + 1, text: line.trim().slice(0, 200) });
             }
           });
+        }
+        if (state) {
+          state.searches.add(query);
+          state.searchBytes += scannedBytes;
+          if (files.length >= maxFiles || scannedBytes >= maxBytes || hits.length >= maxHits) {
+            state.truncatedObservations++;
+          }
         }
         return {
           ok: true,
@@ -306,6 +425,17 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
           return { ok: false, tool, summary: "blocked path", error: "policy" };
         }
         const abs = join(ctx.repoRoot, safe);
+        const state = ctx.sourceContext;
+        const contentBytes = Buffer.byteLength(content, "utf8");
+        if (state && (
+          contentBytes > state.budget.maxFileBytes ||
+          (!ctx.changedFiles.has(safe) && ctx.changedFiles.size >= state.budget.maxChangedFiles) ||
+          state.changedBytes + contentBytes > state.budget.maxChangedBytes
+        )) {
+          return blockMutation(ctx, tool, `change budget rejected ${safe}`, "change_budget");
+        }
+        const sourceFence = assertObservedMutation(ctx, safe, abs);
+        if (sourceFence) return { ...sourceFence, tool };
         if (existsSync(abs) && readFileSync(abs, "utf8") === content) {
           return {
             ok: false,
@@ -317,6 +447,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         captureOriginal(ctx, safe, abs);
         if (ctx.dryRun) {
           ctx.changedFiles.add(safe);
+          recordMutation(ctx, safe, content);
           return {
             ok: true,
             tool,
@@ -327,6 +458,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         mkdirSync(dirname(abs), { recursive: true });
         writeFileSync(abs, content, "utf8");
         ctx.changedFiles.add(safe);
+        recordMutation(ctx, safe, content);
         return { ok: true, tool, summary: `wrote ${safe}`, data: { path: safe } };
       }
 
@@ -343,6 +475,8 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         const abs = join(ctx.repoRoot, safe);
         if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT" };
         const original = readFileSync(abs, "utf8");
+        const sourceFence = assertObservedMutation(ctx, safe, abs);
+        if (sourceFence) return { ...sourceFence, tool };
         const re = new RegExp(
           from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
           global ? "g" : "",
@@ -359,9 +493,19 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
             error: "no_change",
           };
         }
+        const state = ctx.sourceContext;
+        const updatedBytes = Buffer.byteLength(updated, "utf8");
+        if (state && (
+          updatedBytes > state.budget.maxFileBytes ||
+          (!ctx.changedFiles.has(safe) && ctx.changedFiles.size >= state.budget.maxChangedFiles) ||
+          state.changedBytes + updatedBytes > state.budget.maxChangedBytes
+        )) {
+          return blockMutation(ctx, tool, `change budget rejected ${safe}`, "change_budget");
+        }
         captureOriginal(ctx, safe, abs);
         if (ctx.dryRun) {
           ctx.changedFiles.add(safe);
+          recordMutation(ctx, safe, updated);
           return {
             ok: true,
             tool,
@@ -371,6 +515,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         }
         writeFileSync(abs, updated, "utf8");
         ctx.changedFiles.add(safe);
+        recordMutation(ctx, safe, updated);
         return { ok: true, tool, summary: `replaced in ${safe}`, data: { path: safe } };
       }
 

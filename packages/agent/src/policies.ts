@@ -31,6 +31,21 @@ export function pathBlocked(relPath: string, neverTouch: string[] = DEFAULT_NEVE
   return neverTouch.some((r) => p.includes(r.toLowerCase()));
 }
 
+export function verificationControlPath(relPath: string): boolean {
+  const path = relPath.replace(/\\/g, "/").toLowerCase();
+  const parts = path.split("/");
+  const name = parts.at(-1) ?? "";
+  if (parts.some((part) => ["test", "tests", "__tests__", "spec", "specs", "fixtures"].includes(part))) {
+    return true;
+  }
+  return (
+    /(?:^|\.)((?:test|spec))\.[a-z0-9]+$/.test(name) ||
+    /^check[^/]*\.(?:mjs|cjs|js|ts|py|rb)$/.test(name) ||
+    /^(?:package\.json|pytest\.ini|tox\.ini|go\.mod|cargo\.toml|pom\.xml)$/.test(name) ||
+    /^(?:vitest|vite|jest|eslint|playwright|cypress|tsconfig)(?:\.[^/]*)?\.(?:js|cjs|mjs|ts|json)$/.test(name)
+  );
+}
+
 /** Block dangerous shell commands */
 export function commandBlocked(cmd: string): boolean {
   const c = cmd.toLowerCase();

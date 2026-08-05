@@ -1,6 +1,6 @@
 # Warden — API debug agent
 
-**Warden** is Mendpoint’s first agentic product: a Devin-style debug agent that **explores a repo, edits code, and re-runs a verify command** until an API-related bug is fixed — or attempts are exhausted.
+**Warden** is Mendpoint’s source grounded API repair agent. It inspects an exact repository snapshot, prepares a private candidate, and reruns an approved verification profile until the API-related bug is fixed or the attempt budget is exhausted.
 
 This is **not** a general “fix any software bug” agent. It is trained on **API communication failures**:
 
@@ -48,28 +48,63 @@ goal + optional error log
 - Shell command denylist
 - **Never auto-merges**
 - Bounded steps (default 20)
+- Exact tenant, snapshot, revision, manifest, and lease binding
+- Read before write plus content fences for every mutation
+- Human approval required after candidate integrity validation
+- Candidate expiry uses the earlier of snapshot expiry and the configured retention limit
 
 ## API
 
 ```http
 POST /agent/runs
+Idempotency-Key: unique-request-id
+Content-Type: application/json
+
 {
   "goal": "Fix 404 chargess and rename amount_cents to amount",
-  "repoPath": "C:/.../fixtures/agent-bugs/broken-charges",
+  "consumerId": "consumer-id",
+  "allowedChangedPaths": ["client.js"],
   "verifyCommand": "node check.mjs",
   "errorLog": "HTTP 404 /v1/chargess",
   "maxSteps": 20,
-  "useLlm": false,
-  "allowNetwork": false,
-  "async": true
+  "useLlm": false
 }
 
 GET /agent/runs
 GET /agent/runs/:id
+GET /agent/runs/:id/candidate
+
+POST /agent/runs/:id/candidate/review
+Content-Type: application/json
+
+{ "decision": "approve" }
+{ "decision": "reject" }
 ```
 
-Runs queue as `agent.run` jobs by default. The worker owns execution, lease renewal,
-retry scheduling, and dead letter handling. For local development, drain with:
+`Idempotency-Key` is required and must contain 8 to 128 safe characters. Reusing the
+same key with the same request returns the existing run with `replayed: true`. Reusing
+it with a different request returns 409. Browser retries retain the same key until the
+request content changes.
+
+Every run queues as an `agent.run` job. In production, the worker requires an exact,
+unexpired repository snapshot and a stored verification policy. It proves the snapshot
+manifest, copies the source into a private candidate, permits changes only to the exact
+paths in `allowedChangedPaths`, and reruns the target, regression, and security checks.
+The source snapshot is never the mutation target. Successful candidates remain review
+only and are not merged automatically. Candidate reads and approvals recheck the source
+and candidate digests, the complete candidate manifest, changed paths, tenant storage
+boundaries, artifact presence, and expiry. Review requires a human role with `plan:edit`.
+Machine agent roles cannot approve their own work.
+
+Candidate states are `queued`, `retrying`, `candidate_ready`, `candidate_approved`,
+`candidate_rejected`, `candidate_expired`, `no_action`, and `failed`. A repeated review
+with the same decision is idempotent. An opposite decision returns 409. An expired
+candidate returns 410 and moves to durable cleanup. Rejection and expiry cleanup are
+retried by periodic worker maintenance until the private workspace and evidence files
+are removed.
+
+The worker owns execution, lease renewal, bounded retry scheduling, evidence persistence,
+and dead letter handling. For local development, drain with:
 
 ```bash
 npm run worker:jobs
@@ -93,15 +128,21 @@ npm run agent:demo
 set LLM_AGENT=1
 set OPENAI_API_KEY=...
 set OPENAI_BASE_URL=...   # or xAI-compatible
+set LLM_AGENT_MODEL=...
 ```
 
-Heuristics run first; LLM may suggest tools after step 2.
+The configured planner receives the first planning turn. Repository source is excluded
+from model requests unless an operator also configures
+`MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED=1`, an exact tenant allowlist in
+`MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS`, and `MENDPOINT_WARDEN_MODEL_PROVIDER`. Source
+excerpts are redacted before request limits are applied. Ambiguous credential material is
+excluded rather than partially disclosed.
 
 ## vs `@mendpoint/repair`
 
 | | Repair | **Warden** |
 |--|--------|----------------|
-| Style | Batch diagnose → plan → apply | Multi-step tool loop (Devin-like) |
+| Style | Batch diagnose → plan → apply | Source grounded multi-step tool loop |
 | Scope | Migration leftovers + CI log | Broader API client bugs |
 | Exploration | Limited tree scan | Active search/read/edit |
 

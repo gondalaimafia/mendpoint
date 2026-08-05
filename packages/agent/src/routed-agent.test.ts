@@ -34,6 +34,18 @@ const passedRun: AgentRunResult = {
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,
+      costUsd: 0,
+    },
+    sourceContext: {
+      observedFiles: [],
+      observedDirectories: [],
+      searches: [],
+      observedBytes: 0,
+      promptEvidenceBytes: 0,
+      truncatedObservations: 0,
+      groundedMutations: 0,
+      blockedMutations: 0,
+      evidenceDigests: [],
     },
   },
 };

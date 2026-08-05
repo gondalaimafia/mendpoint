@@ -43,6 +43,7 @@ import {
   getJob,
   listJobs,
   insertAgentRun,
+  getAgentRunByJobId,
   listAgentRuns,
   insertRepairSession,
   getRepairSession,
@@ -609,6 +610,7 @@ describe("db", () => {
       insertAgentRun(db, {
         id: `agent-${suffix}`,
         tenantId,
+        jobId: `job-${suffix}`,
         goal: "test",
         repoPath: `C:\\secret-${suffix}`,
         status: "queued",
@@ -646,6 +648,30 @@ describe("db", () => {
     expect(getJob(db, "job-a", "tenant-a")?.id).toBe("job-a");
     expect(getJob(db, "job-b", "tenant-a")).toBeUndefined();
     expect(listAgentRuns(db, 50, "tenant-a").map((row) => row.id)).toEqual(["agent-a"]);
+    expect(getAgentRunByJobId(db, "job-a", "tenant-a")?.id).toBe("agent-a");
+    expect(getAgentRunByJobId(db, "job-b", "tenant-a")).toBeUndefined();
+    expect(() => insertAgentRun(db, {
+      id: "agent-a",
+      tenantId: "tenant-b",
+      jobId: "job-foreign",
+      goal: "foreign overwrite",
+      repoPath: "C:\\foreign",
+      status: "failed",
+      ok: false,
+      steps: 0,
+      createdAt: at,
+    })).toThrow("agent_run_tenant_conflict");
+    expect(() => insertAgentRun(db, {
+      id: "agent-a",
+      tenantId: "tenant-a",
+      jobId: "job-other",
+      goal: "same tenant takeover",
+      repoPath: "C:\\foreign",
+      status: "failed",
+      ok: false,
+      steps: 0,
+      createdAt: at,
+    })).toThrow("agent_run_tenant_conflict");
     expect(listRepairSessions(db, 50, "tenant-a").map((row) => row.id)).toEqual([
       "repair-a",
     ]);
@@ -849,6 +875,35 @@ describe("db", () => {
     expect(listJobs(db, 10, "tenant-a")[0].status).toBe("done");
   });
 
+  it("rejects completion and failure after lease expiry before recovery", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-expired-fence-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    enqueueJob(db, {
+      id: "job-expired-fence",
+      tenantId: "tenant-a",
+      type: "agent.run",
+      payload: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const claimed = claimNextJob(db, ["agent.run"], {
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      leaseMs: 1_000,
+      now: "2026-01-01T00:00:00.000Z",
+    })!;
+    const fence = {
+      workerId: "worker-a",
+      leaseGeneration: claimed.lease_generation,
+    };
+
+    expect(completeJob(db, claimed.id, {}, "2026-01-01T00:00:01.000Z", fence)).toBe(false);
+    expect(failJob(db, claimed.id, "late", "2026-01-01T00:00:01.000Z", fence).applied)
+      .toBe(false);
+    expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({ status: "running" });
+  });
+
   it("dead-letters exhausted jobs and supports explicit retry and cancellation", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-recovery-"));
     dirs.push(dir);
@@ -1045,6 +1100,7 @@ describe("db", () => {
     const agent = agentRunToApi({
       id: "agent-safe",
       tenant_id: "tenant-a",
+      job_id: "job-agent",
       goal: "repair the API call",
       repo_path: "C:\\customer\\private",
       status: "ok",

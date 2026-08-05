@@ -11,6 +11,10 @@ import {
 } from "./capability-eval.js";
 import { TRANSFORMER_AGENT_EVAL_SCENARIOS } from "./transformer-agent-eval.js";
 import { WARDEN_AGENT_EVAL_SCENARIOS } from "./warden-agent-eval.js";
+import {
+  WARDEN_SOURCE_EVAL_SCENARIO,
+  WARDEN_WORKER_SOURCE_EVAL_SCENARIO,
+} from "./warden-source-eval.js";
 
 export type WardenTransformerEvalReport = Readonly<{
   schemaVersion: 1;
@@ -23,7 +27,12 @@ export async function runWardenTransformerEval(
   repetitions = 3,
 ): Promise<WardenTransformerEvalReport> {
   const behavior = await runAgentEvalScenarios(
-    [...WARDEN_AGENT_EVAL_SCENARIOS, ...TRANSFORMER_AGENT_EVAL_SCENARIOS],
+    [
+      ...WARDEN_AGENT_EVAL_SCENARIOS,
+      WARDEN_SOURCE_EVAL_SCENARIO,
+      WARDEN_WORKER_SOURCE_EVAL_SCENARIO,
+      ...TRANSFORMER_AGENT_EVAL_SCENARIOS,
+    ],
     repetitions,
   );
   const capability = await runCapabilityEval();
@@ -66,6 +75,12 @@ async function main(): Promise<void> {
   console.log(`Agent eval corpus ${report.behavior.corpusVersion}`);
   console.log(`Warden ${report.behavior.byProduct.warden.passed}/${report.behavior.byProduct.warden.total}`);
   console.log(`Transformer ${report.behavior.byProduct.transformer.passed}/${report.behavior.byProduct.transformer.total}`);
+  console.log(`Contract evidence ${report.behavior.byEvidenceLane.contract.passed}/${report.behavior.byEvidenceLane.contract.total}`);
+  console.log(`Scripted planner evidence ${report.behavior.byEvidenceLane.simulated_scripted.passed}/${report.behavior.byEvidenceLane.simulated_scripted.total}`);
+  console.log(`Live model evidence ${report.behavior.byEvidenceLane.live_model.passed}/${report.behavior.byEvidenceLane.live_model.total}`);
+  if (report.behavior.byEvidenceLane.live_model.total === 0) {
+    console.log("Live model capability not evaluated");
+  }
   console.log(`Trials ${report.behavior.trialCount}`);
   console.log(`pass@1 ${report.behavior.passAtOne.toFixed(3)}`);
   console.log(`pass@${report.behavior.repetitions} ${report.behavior.passAtK.toFixed(3)}`);
