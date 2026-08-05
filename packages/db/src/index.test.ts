@@ -54,6 +54,8 @@ import {
   listFindingsForChange,
   createGitHubInstallState,
   consumeGitHubInstallState,
+  completeGitHubInstallState,
+  findAuthorizedGitHubInstallationForRepository,
   recordGitHubWebhookDelivery,
   completeGitHubWebhookDelivery,
   failGitHubWebhookDelivery,
@@ -150,6 +152,70 @@ describe("db", () => {
       "jobs_tenant_status_idx",
     );
     expect(indexes.map((index) => index.name)).toContain("jobs_due_idx");
+  });
+
+  it("preserves verified App bindings and revokes unverifiable upgrades", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-app-upgrade-"));
+    dirs.push(dir);
+    const path = join(dir, "legacy.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE consumers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        github_owner TEXT NOT NULL,
+        github_repo TEXT NOT NULL,
+        installation_id TEXT,
+        tenant_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE github_installations (
+        id TEXT PRIMARY KEY,
+        installation_id TEXT NOT NULL UNIQUE,
+        account_login TEXT NOT NULL,
+        account_type TEXT NOT NULL DEFAULT 'Organization',
+        tenant_id TEXT,
+        permissions_json TEXT,
+        repositories_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO github_installations
+        (id, installation_id, account_login, tenant_id, permissions_json,
+         repositories_json, created_at, updated_at)
+      VALUES
+        ('verified-install', '12345', 'acme', 'tenant_default',
+         '{"metadata":"read","contents":"write","pull_requests":"write","checks":"read"}',
+         '[{"id":77,"owner":"acme","name":"shop"}]',
+         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+        ('stale-install', '67890', 'acme', 'tenant_default', NULL,
+         '[{"owner":"acme","name":"stale"}]',
+         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      INSERT INTO consumers
+        (id, name, github_owner, github_repo, installation_id, tenant_id, created_at)
+      VALUES
+        ('app-consumer', 'App', 'acme', 'shop', '12345', 'tenant_default', '2026-01-01T00:00:00.000Z'),
+        ('stale-consumer', 'Stale', 'acme', 'stale', '67890', 'tenant_default', '2026-01-01T00:00:00.000Z'),
+        ('pat-consumer', 'PAT', 'acme', 'legacy', NULL, 'tenant_default', '2026-01-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    const db = createDb(path);
+    dbs.push(db);
+    expect(
+      db.raw
+        .prepare("SELECT id, github_delivery_mode FROM consumers ORDER BY id")
+        .all(),
+    ).toEqual([
+      { id: "app-consumer", github_delivery_mode: "app" },
+      { id: "pat-consumer", github_delivery_mode: "legacy_pat" },
+      { id: "stale-consumer", github_delivery_mode: "revoked" },
+    ]);
+    expect(
+      db.raw
+        .prepare("SELECT installation_id FROM consumers WHERE id = 'stale-consumer'")
+        .get(),
+    ).toEqual({ installation_id: null });
   });
 
   it("creates tables and records audit", () => {
@@ -1026,6 +1092,7 @@ describe("db", () => {
     createGitHubInstallState(db, {
       state: "opaque-state",
       tenantId: "tenant-a",
+      principalId: "principal-a",
       createdAt: "2026-01-01T00:00:00.000Z",
       expiresAt: "2026-01-01T00:10:00.000Z",
     });
@@ -1034,6 +1101,7 @@ describe("db", () => {
         db,
         "opaque-state",
         "tenant-b",
+        "principal-a",
         "2026-01-01T00:01:00.000Z",
       ),
     ).toBe(false);
@@ -1042,6 +1110,7 @@ describe("db", () => {
         db,
         "opaque-state",
         "tenant-a",
+        "principal-a",
         "2026-01-01T00:01:00.000Z",
       ),
     ).toBe(true);
@@ -1050,6 +1119,7 @@ describe("db", () => {
         db,
         "opaque-state",
         "tenant-a",
+        "principal-a",
         "2026-01-01T00:02:00.000Z",
       ),
     ).toBe(false);
@@ -1116,6 +1186,331 @@ describe("db", () => {
         "2026-01-01T00:10:00.000Z",
       ),
     ).toBe(false);
+  });
+
+  it("finalizes a webhook bound GitHub install once without burning pending state", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-github-complete-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    db.raw.prepare(
+      `INSERT INTO principals
+       (id, tenant_id, kind, subject, display_name, created_at)
+       VALUES ('principal-a', 'tenant_default', 'human', 'user-a', 'User A', ?)`,
+    ).run("2026-01-01T00:00:00.000Z");
+    db.raw.prepare(
+      `INSERT INTO consumers
+       (id, name, github_owner, github_repo, installation_id, tenant_id, created_at)
+       VALUES ('consumer-a', 'Customer', 'gondalaimafia', 'private-repo', NULL,
+               'tenant_default', ?)`,
+    ).run("2026-01-01T00:00:00.000Z");
+    createGitHubInstallState(db, {
+      state: "s".repeat(43),
+      tenantId: "tenant_default",
+      principalId: "principal-a",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-01T00:10:00.000Z",
+    });
+    const input = {
+      state: "s".repeat(43),
+      tenantId: "tenant_default",
+      principalId: "principal-a",
+      installationId: "12345",
+      setupAction: "install" as const,
+      now: "2026-01-01T00:01:00.000Z",
+    };
+    expect(completeGitHubInstallState(db, input)).toEqual({ status: "pending" });
+    const stateBeforeWebhook = db.raw.prepare(
+      `SELECT consumed_at FROM github_install_states`,
+    ).get() as { consumed_at: string | null };
+    expect(stateBeforeWebhook.consumed_at).toBeNull();
+
+    upsertGitHubInstallation(db, {
+      id: "installation-a",
+      installationId: "12345",
+      accountLogin: "gondalaimafia",
+      permissions: {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+        checks: "read",
+      },
+      repositories: [{ id: 99, owner: "gondalaimafia", name: "private-repo" }],
+      createdAt: input.now,
+      updatedAt: input.now,
+    });
+    expect(completeGitHubInstallState(db, input)).toEqual({ status: "pending" });
+
+    upsertGitHubInstallation(db, {
+      id: "installation-a",
+      installationId: "12345",
+      accountLogin: "gondalaimafia",
+      tenantId: "tenant_default",
+      permissions: {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+        checks: "read",
+      },
+      repositories: [{ id: 100, owner: "gondalaimafia", name: "another-repo" }],
+      createdAt: input.now,
+      updatedAt: input.now,
+    });
+    expect(completeGitHubInstallState(db, input)).toEqual({
+      status: "repository_scope_incomplete",
+    });
+    upsertGitHubInstallation(db, {
+      id: "installation-a",
+      installationId: "12345",
+      accountLogin: "gondalaimafia",
+      tenantId: "tenant_default",
+      permissions: {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+        checks: "read",
+      },
+      repositories: [{ id: 99, owner: "gondalaimafia", name: "private-repo" }],
+      createdAt: input.now,
+      updatedAt: input.now,
+    });
+    expect(completeGitHubInstallState(db, input).status).toBe("completed");
+    expect(
+      completeGitHubInstallState(db, {
+        ...input,
+        now: "2027-01-01T00:00:00.000Z",
+      }).status,
+    ).toBe("replayed");
+    const consumer = db.raw.prepare(
+      `SELECT installation_id FROM consumers WHERE id = 'consumer-a'`,
+    ).get() as { installation_id: string | null };
+    expect(consumer.installation_id).toBe("12345");
+    expect(
+      listAudit(db, "tenant_default").filter(
+        (event) => event.action === "installation.completed",
+      ),
+    ).toHaveLength(1);
+    expect(
+      completeGitHubInstallState(db, {
+        ...input,
+        principalId: "principal-b",
+      }),
+    ).toEqual({ status: "invalid" });
+  });
+
+  it("completes a verified first installation before a consumer is created", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-github-first-install-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    db.raw.prepare(
+      `INSERT INTO principals
+       (id, tenant_id, kind, subject, display_name, created_at)
+       VALUES ('principal-first', 'tenant_default', 'human', 'user-first', 'First User', ?)`,
+    ).run("2026-01-01T00:00:00.000Z");
+    createGitHubInstallState(db, {
+      state: "f".repeat(43),
+      tenantId: "tenant_default",
+      principalId: "principal-first",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-01T00:10:00.000Z",
+    });
+    upsertGitHubInstallation(db, {
+      id: "installation-first",
+      installationId: "54321",
+      accountLogin: "gondalaimafia",
+      tenantId: "tenant_default",
+      repositorySelection: "all",
+      permissions: {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+        checks: "read",
+      },
+      repositories: [{ id: 99, owner: "gondalaimafia", name: "private-repo" }],
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:01:00.000Z",
+    });
+    expect(
+      completeGitHubInstallState(db, {
+        state: "f".repeat(43),
+        tenantId: "tenant_default",
+        principalId: "principal-first",
+        installationId: "54321",
+        setupAction: "install",
+        now: "2026-01-01T00:02:00.000Z",
+      }).status,
+    ).toBe("completed");
+    expect(
+      findAuthorizedGitHubInstallationForRepository(
+        db,
+        "tenant_default",
+        "gondalaimafia",
+        "private-repo",
+      )?.installation_id,
+    ).toBe("54321");
+    upsertGitHubInstallation(db, {
+      id: "installation-first",
+      installationId: "54321",
+      accountLogin: "gondalaimafia",
+      tenantId: "tenant_default",
+      suspendedAt: "2026-01-01T00:03:00.000Z",
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:03:00.000Z",
+    });
+    expect(
+      findAuthorizedGitHubInstallationForRepository(
+        db,
+        "tenant_default",
+        "gondalaimafia",
+        "private-repo",
+      ),
+    ).toBeUndefined();
+    upsertGitHubInstallation(db, {
+      id: "installation-first",
+      installationId: "54321",
+      accountLogin: "gondalaimafia",
+      tenantId: "tenant_default",
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:04:00.000Z",
+    });
+    expect(
+      findAuthorizedGitHubInstallationForRepository(
+        db,
+        "tenant_default",
+        "gondalaimafia",
+        "private-repo",
+      ),
+    ).toBeUndefined();
+    upsertGitHubInstallation(db, {
+      id: "installation-first",
+      installationId: "54321",
+      accountLogin: "gondalaimafia",
+      tenantId: "tenant_default",
+      suspendedAt: null,
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:05:00.000Z",
+    });
+    expect(
+      findAuthorizedGitHubInstallationForRepository(
+        db,
+        "tenant_default",
+        "gondalaimafia",
+        "private-repo",
+      )?.installation_id,
+    ).toBe("54321");
+    upsertGitHubInstallation(db, {
+      id: "installation-first",
+      installationId: "54321",
+      accountLogin: "gondalaimafia",
+      tenantId: "tenant_default",
+      deletedAt: "2026-01-01T00:06:00.000Z",
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:06:00.000Z",
+    });
+    upsertGitHubInstallation(db, {
+      id: "installation-first",
+      installationId: "54321",
+      accountLogin: "gondalaimafia",
+      tenantId: "tenant_default",
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:07:00.000Z",
+    });
+    expect(
+      findAuthorizedGitHubInstallationForRepository(
+        db,
+        "tenant_default",
+        "gondalaimafia",
+        "private-repo",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("keeps terminal installation events monotonic when they arrive first", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-github-terminal-first-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    const permissions = {
+      metadata: "read",
+      contents: "write",
+      pull_requests: "write",
+      checks: "read",
+    };
+    const repositories = [{ id: 77, owner: "acme", name: "shop" }];
+
+    upsertGitHubInstallation(db, {
+      id: "suspended-first",
+      installationId: "70001",
+      accountLogin: "acme",
+      tenantId: "tenant_default",
+      suspendedAt: "2026-01-01T00:00:00.000Z",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    upsertGitHubInstallation(db, {
+      id: "stale-created",
+      installationId: "70001",
+      accountLogin: "acme",
+      tenantId: "tenant_default",
+      permissions,
+      repositories,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    expect(
+      findAuthorizedGitHubInstallationForRepository(
+        db,
+        "tenant_default",
+        "acme",
+        "shop",
+      ),
+    ).toBeUndefined();
+    upsertGitHubInstallation(db, {
+      id: "unsuspended",
+      installationId: "70001",
+      accountLogin: "acme",
+      tenantId: "tenant_default",
+      suspendedAt: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:02.000Z",
+    });
+    expect(
+      findAuthorizedGitHubInstallationForRepository(
+        db,
+        "tenant_default",
+        "acme",
+        "shop",
+      )?.installation_id,
+    ).toBe("70001");
+
+    upsertGitHubInstallation(db, {
+      id: "deleted-first",
+      installationId: "70002",
+      accountLogin: "acme",
+      tenantId: "tenant_default",
+      deletedAt: "2026-01-01T00:00:00.000Z",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    upsertGitHubInstallation(db, {
+      id: "stale-created-after-delete",
+      installationId: "70002",
+      accountLogin: "acme",
+      tenantId: "tenant_default",
+      permissions,
+      repositories: [{ id: 78, owner: "acme", name: "deleted-shop" }],
+      createdAt: "2026-01-01T00:00:01.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    expect(
+      findAuthorizedGitHubInstallationForRepository(
+        db,
+        "tenant_default",
+        "acme",
+        "deleted-shop",
+      ),
+    ).toBeUndefined();
   });
 
   it("matches webhook pull requests by repository and number", () => {

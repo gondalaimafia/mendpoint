@@ -25,6 +25,7 @@ function publicPath(pathname: string): boolean {
     pathname === "/robots.txt" ||
     pathname === "/sitemap.xml" ||
     pathname === "/webhooks/github" ||
+    pathname === "/github/setup" ||
     pathname.startsWith("/_next/") ||
     pathname === "/favicon.ico"
   );

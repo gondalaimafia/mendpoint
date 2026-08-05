@@ -2,6 +2,8 @@ import {
   createDb,
   getConsumer,
   getConsumerRepo,
+  getGitHubInstallationByInstallationId,
+  getScmConnection,
   getProviderBySlug,
   listMonitoredForProvider,
   listVersionsForProvider,
@@ -32,7 +34,12 @@ import { execFileSync } from "node:child_process";
 import { normalizeChange } from "@mendpoint/change-intel";
 import { analyzeImpact, reportToFindings } from "@mendpoint/code-impact";
 import { generateMigration } from "@mendpoint/generation";
-import { createGitHubDelivery, type GitHubDelivery } from "@mendpoint/github";
+import {
+  createAppDelivery,
+  createGitHubDelivery,
+  loadAppCredentials,
+  type GitHubDelivery,
+} from "@mendpoint/github";
 import { evaluatePolicy, type PolicyConfig } from "@mendpoint/policy";
 import {
   applyBrandPack,
@@ -207,6 +214,128 @@ export type PipelineReport = {
   }>;
 };
 
+export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) {
+  if (input.github) return () => input.github!;
+  const mode = process.env.GITHUB_MODE ?? "mock";
+  if (mode !== "real") {
+    const mock = createGitHubDelivery(mode);
+    return () => mock;
+  }
+  const appCredentials = loadAppCredentials();
+  const legacy = process.env.GITHUB_TOKEN?.trim()
+    ? createGitHubDelivery("real")
+    : null;
+  const appDeliveries = new Map<string, GitHubDelivery>();
+  return (
+    consumer: {
+      installation_id: string | null;
+      github_delivery_mode: "app" | "legacy_pat" | "revoked";
+      github_owner: string;
+      github_repo: string;
+    },
+    repo?: { scm_connection_id: string | null },
+  ): GitHubDelivery => {
+    const installationId = consumer.installation_id;
+    if (!installationId) {
+      if (consumer.github_delivery_mode === "legacy_pat" && legacy) return legacy;
+      if (consumer.github_delivery_mode === "revoked") {
+        throw new Error("github_app_installation_revoked");
+      }
+      throw new Error("github_app_installation_required");
+    }
+    if (consumer.github_delivery_mode !== "app") {
+      throw new Error("github_app_delivery_mode_mismatch");
+    }
+    if (!/^[1-9][0-9]{0,19}$/.test(installationId)) {
+      throw new Error("github_app_installation_invalid");
+    }
+    const numericInstallationId = Number(installationId);
+    if (!Number.isSafeInteger(numericInstallationId)) {
+      throw new Error("github_app_installation_invalid");
+    }
+    if (!appCredentials) {
+      throw new Error("github_app_credentials_required_for_bound_consumer");
+    }
+    const verified = getGitHubInstallationByInstallationId(db, installationId);
+    if (!verified || verified.tenant_id !== input.tenantId) {
+      throw new Error("github_app_installation_tenant_mismatch");
+    }
+    if (verified.suspended_at) {
+      throw new Error("github_app_installation_suspended");
+    }
+    if (verified.deleted_at) {
+      throw new Error("github_app_installation_deleted");
+    }
+    if (
+      verified.repository_selection !== "selected" &&
+      verified.repository_selection !== "all"
+    ) {
+      throw new Error("github_app_installation_evidence_invalid");
+    }
+    let permissions: Record<string, string>;
+    let repositories: Array<{ id?: number; owner?: string; name?: string }>;
+    try {
+      permissions = JSON.parse(verified.permissions_json ?? "null") as Record<string, string>;
+      repositories = JSON.parse(verified.repositories_json ?? "null") as Array<{
+        id?: number;
+        owner?: string;
+        name?: string;
+      }>;
+    } catch {
+      throw new Error("github_app_installation_evidence_invalid");
+    }
+    if (!permissions || !repositories || !Array.isArray(repositories)) {
+      throw new Error("github_app_installation_evidence_invalid");
+    }
+    for (const [name, access] of Object.entries({
+      metadata: "read",
+      contents: "write",
+      pull_requests: "write",
+      checks: "read",
+    })) {
+      if (permissions[name] !== access && permissions[name] !== "write") {
+        throw new Error("github_app_permissions_incomplete");
+      }
+    }
+    const authorizedRepository = repositories.find(
+      (candidate) =>
+        candidate.owner?.toLowerCase() === consumer.github_owner.toLowerCase() &&
+        candidate.name?.toLowerCase() === consumer.github_repo.toLowerCase() &&
+        Number.isSafeInteger(candidate.id),
+    );
+    if (!authorizedRepository?.id) {
+      throw new Error("github_app_repository_not_authorized");
+    }
+    if (repo?.scm_connection_id) {
+      const connection = getScmConnection(
+        db,
+        repo.scm_connection_id,
+        input.tenantId,
+      );
+      if (!connection || connection.revoked_at) {
+        throw new Error("github_app_connection_revoked");
+      }
+      if (
+        connection.provider === "github" &&
+        connection.external_account_id !== installationId
+      ) {
+        throw new Error("github_app_connection_mismatch");
+      }
+    }
+    const key = `${appCredentials.appId}:${installationId}:${authorizedRepository.id}`;
+    let delivery = appDeliveries.get(key);
+    if (!delivery) {
+      delivery = createAppDelivery(
+        numericInstallationId,
+        appCredentials,
+        [authorizedRepository.id],
+      );
+      appDeliveries.set(key, delivery);
+    }
+    return delivery;
+  };
+}
+
 /**
  * Core product agent GRAPH (graph engineering), not one overloaded loop:
  * change_intel → index → candidates → expand (fan-out) → confirm → generate → verify → review_gate
@@ -216,7 +345,7 @@ export type PipelineReport = {
 export async function runChangePipeline(input: PipelineInput): Promise<PipelineReport> {
   if (!input.tenantId.trim()) throw new Error("tenantId is required");
   const db = input.db ?? createDb();
-  const github = input.github ?? createGitHubDelivery();
+  const deliveryFor = createPipelineDeliveryResolver(input, db);
   const pipelinePrincipal = insertPrincipal(db, {
     id: trustId("principal", input.tenantId, "warden-pipeline"),
     tenantId: input.tenantId,
@@ -1275,6 +1404,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     if (shouldDeliver) {
       assertActive();
       try {
+        const github = deliveryFor(consumer, repo);
         await github.createBranch(
           consumer.github_owner,
           consumer.github_repo,

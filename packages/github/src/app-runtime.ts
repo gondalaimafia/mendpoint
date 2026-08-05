@@ -1,5 +1,5 @@
 /**
- * Production GitHub App runtime — JWT + installation tokens + multi-repo delivery.
+ * Production GitHub App runtime for JWT, installation tokens, and multi repository delivery.
  * Works with real credentials when set; unit-tested via injectable signers.
  */
 import { createSign, createPrivateKey } from "node:crypto";
@@ -54,7 +54,20 @@ export type InstallationToken = {
 export function hasGitHubAppCredentials(
   env = process.env,
 ): boolean {
-  return Boolean(env.GITHUB_APP_ID && (env.GITHUB_APP_PRIVATE_KEY || env.GITHUB_APP_PRIVATE_KEY_PATH));
+  return Boolean(
+    env.GITHUB_APP_ID &&
+    /^[1-9][0-9]*$/.test(env.GITHUB_APP_ID) &&
+    (env.GITHUB_APP_PRIVATE_KEY || env.GITHUB_APP_PRIVATE_KEY_PATH),
+  );
+}
+
+function isAuthenticationError(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    status === 401 ||
+    /bad credentials|requires authentication|token expired/i.test(message)
+  );
 }
 
 /** Create RS256 JWT for GitHub App authentication (10 min max). */
@@ -82,7 +95,7 @@ export function createAppJwt(
 
 export function loadAppCredentials(env = process.env): AppCredentials | null {
   const appId = env.GITHUB_APP_ID;
-  if (!appId) return null;
+  if (!appId || !/^[1-9][0-9]*$/.test(appId)) return null;
   let pem = env.GITHUB_APP_PRIVATE_KEY;
   if (!pem && env.GITHUB_APP_PRIVATE_KEY_PATH) {
     try {
@@ -92,22 +105,86 @@ export function loadAppCredentials(env = process.env): AppCredentials | null {
     }
   }
   if (!pem) return null;
-  return { appId, privateKeyPem: pem.replace(/\\n/g, "\n") };
+  const privateKeyPem = pem.replace(/\\n/g, "\n");
+  try {
+    const key = createPrivateKey(privateKeyPem);
+    if (key.asymmetricKeyType !== "rsa") return null;
+    const modulusLength = key.asymmetricKeyDetails?.modulusLength;
+    if (typeof modulusLength === "number" && modulusLength < 2048) return null;
+  } catch {
+    return null;
+  }
+  return { appId, privateKeyPem };
 }
 
 export type TokenFetcher = (
   installationId: number,
   jwt: string,
+  repositoryIds?: number[],
 ) => Promise<InstallationToken>;
+
+export class InstallationTokenCache {
+  private cached: { token: string; expires: number } | null = null;
+  private refresh: Promise<string> | null = null;
+
+  constructor(
+    private readonly credentials: AppCredentials,
+    private readonly installationId: number,
+    private readonly fetchToken: TokenFetcher = defaultFetchInstallationToken,
+    private readonly now: () => number = Date.now,
+    private readonly repositoryIds?: number[],
+  ) {}
+
+  async get(): Promise<string> {
+    if (this.cached && this.cached.expires > this.now() + 60_000) {
+      return this.cached.token;
+    }
+    if (this.refresh) return this.refresh;
+    this.refresh = (async () => {
+      const jwt = createAppJwt(
+        this.credentials.appId,
+        this.credentials.privateKeyPem,
+        Math.floor(this.now() / 1_000),
+      );
+      const token = await this.fetchToken(
+        this.installationId,
+        jwt,
+        this.repositoryIds,
+      );
+      const expires = Date.parse(token.expiresAt);
+      if (token.installationId !== this.installationId) {
+        throw new Error("github_app_token_installation_mismatch");
+      }
+      if (!token.token.trim() || !Number.isFinite(expires) || expires <= this.now() + 60_000) {
+        throw new Error("github_app_token_invalid_or_expired");
+      }
+      this.cached = { token: token.token, expires };
+      return token.token;
+    })();
+    try {
+      return await this.refresh;
+    } finally {
+      this.refresh = null;
+    }
+  }
+
+  clear(): void {
+    this.cached = null;
+  }
+}
 
 export async function defaultFetchInstallationToken(
   installationId: number,
   jwt: string,
+  repositoryIds?: number[],
 ): Promise<InstallationToken> {
   const octokit = octokitFor(jwt);
   const { data } = await octokit.request(
     "POST /app/installations/{installation_id}/access_tokens",
-    { installation_id: installationId },
+    {
+      installation_id: installationId,
+      ...(repositoryIds?.length ? { repository_ids: repositoryIds } : {}),
+    },
   );
   return {
     token: data.token,
@@ -121,28 +198,36 @@ export async function defaultFetchInstallationToken(
 }
 
 export class GitHubAppDelivery implements GitHubDelivery {
-  private tokenCache = new Map<string, { token: string; expires: number }>();
+  private readonly tokenCache: InstallationTokenCache;
   private readonly existingBranches = new Set<string>();
 
   constructor(
     private creds: AppCredentials,
     private installationId: number,
     private fetchToken: TokenFetcher = defaultFetchInstallationToken,
-  ) {}
+    private repositoryIds?: number[],
+  ) {
+    this.tokenCache = new InstallationTokenCache(
+      this.creds,
+      this.installationId,
+      this.fetchToken,
+      Date.now,
+      this.repositoryIds,
+    );
+  }
 
   private async octokit(): Promise<Octokit> {
-    const key = String(this.installationId);
-    const cached = this.tokenCache.get(key);
-    if (cached && cached.expires > Date.now() + 60_000) {
-      return octokitFor(cached.token, "mendpoint-app");
+    return octokitFor(await this.tokenCache.get(), "mendpoint-app");
+  }
+
+  private async withAuthRetry<T>(work: (octokit: Octokit) => Promise<T>): Promise<T> {
+    try {
+      return await work(await this.octokit());
+    } catch (error) {
+      if (!isAuthenticationError(error)) throw error;
+      this.tokenCache.clear();
+      return work(await this.octokit());
     }
-    const jwt = createAppJwt(this.creds.appId, this.creds.privateKeyPem);
-    const tok = await this.fetchToken(this.installationId, jwt);
-    this.tokenCache.set(key, {
-      token: tok.token,
-      expires: Date.parse(tok.expiresAt) || Date.now() + 50 * 60_000,
-    });
-    return octokitFor(tok.token, "mendpoint-app");
   }
 
   private async branchMatchesFiles(
@@ -170,7 +255,8 @@ export class GitHubAppDelivery implements GitHubDelivery {
         },
       );
       return matches.every(Boolean);
-    } catch {
+    } catch (error) {
+      if (isAuthenticationError(error)) throw error;
       return false;
     }
   }
@@ -181,7 +267,18 @@ export class GitHubAppDelivery implements GitHubDelivery {
     branch: string,
     fromBranch = "main",
   ): Promise<void> {
-    const o = await this.octokit();
+    return this.withAuthRetry((octokit) =>
+      this.createBranchWithOctokit(octokit, owner, repo, branch, fromBranch),
+    );
+  }
+
+  private async createBranchWithOctokit(
+    o: Octokit,
+    owner: string,
+    repo: string,
+    branch: string,
+    fromBranch: string,
+  ): Promise<void> {
     let baseSha: string;
     try {
       const { data } = await o.git.getRef({ owner, repo, ref: `heads/${fromBranch}` });
@@ -209,8 +306,20 @@ export class GitHubAppDelivery implements GitHubDelivery {
     message: string,
     files: FileEdit[],
   ): Promise<void> {
+    return this.withAuthRetry((octokit) =>
+      this.commitFilesWithOctokit(octokit, owner, repo, branch, message, files),
+    );
+  }
+
+  private async commitFilesWithOctokit(
+    o: Octokit,
+    owner: string,
+    repo: string,
+    branch: string,
+    message: string,
+    files: FileEdit[],
+  ): Promise<void> {
     if (!files.length) return;
-    const o = await this.octokit();
     const branchKey = `${owner}/${repo}:${branch}`;
     if (this.existingBranches.has(branchKey)) {
       if (await this.branchMatchesFiles(o, owner, repo, branch, files)) return;
@@ -263,7 +372,28 @@ export class GitHubAppDelivery implements GitHubDelivery {
     body: string,
     base = "main",
   ): Promise<PullRequestResult> {
-    const o = await this.octokit();
+    return this.withAuthRetry((octokit) =>
+      this.openPullRequestWithOctokit(
+        octokit,
+        owner,
+        repo,
+        branch,
+        title,
+        body,
+        base,
+      ),
+    );
+  }
+
+  private async openPullRequestWithOctokit(
+    o: Octokit,
+    owner: string,
+    repo: string,
+    branch: string,
+    title: string,
+    body: string,
+    base: string,
+  ): Promise<PullRequestResult> {
     const { data: existing } = await o.pulls.list({
       owner,
       repo,
@@ -289,7 +419,9 @@ export class GitHubAppDelivery implements GitHubDelivery {
         draft: true,
       });
       return { number: data.number, url: data.html_url, branch, title: data.title };
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/base.*(?:invalid|not found|does not exist)/i.test(message)) throw error;
       const { data } = await o.pulls.create({
         owner,
         repo,
@@ -345,8 +477,9 @@ export async function deliverToManyRepos(
 export function createAppDelivery(
   installationId: number,
   creds?: AppCredentials | null,
+  repositoryIds?: number[],
 ): GitHubAppDelivery {
   const c = creds ?? loadAppCredentials();
   if (!c) throw new Error("GitHub App credentials missing (GITHUB_APP_ID + PRIVATE_KEY)");
-  return new GitHubAppDelivery(c, installationId);
+  return new GitHubAppDelivery(c, installationId, defaultFetchInstallationToken, repositoryIds);
 }

@@ -42,12 +42,12 @@ export function getGitHubAppConfig(
       ? null
       : "GitHub App installation is unavailable for this pilot. Real pull request delivery uses an approved repository scoped GitHub token.",
     webhookPath: "/webhooks/github",
-    setupCallbackPath: "/github/app/callback",
+    setupCallbackPath: "/github/setup",
     permissions: {
       contents: "write",
       pull_requests: "write",
       metadata: "read",
-      checks: "write",
+      checks: "read",
     },
     events: ["installation", "installation_repositories", "pull_request", "push"],
   };
@@ -113,6 +113,7 @@ export function normalizeMockInstall(input: MockInstallInput) {
       contents: "write",
       pull_requests: "write",
       metadata: "read",
+      checks: "read",
     },
   };
 }

@@ -4,6 +4,7 @@ import { GET as oidcStart } from "./start/route.js";
 import { GET as oidcCallback } from "./callback/route.js";
 import { GET as sessionStatus } from "../session/route.js";
 import { POST as proxyPost } from "../[...path]/route.js";
+import { safeLocalReturn } from "../../../lib/safe-return.js";
 
 const originalEnv = {
   NODE_ENV: process.env.NODE_ENV,
@@ -47,6 +48,24 @@ function cookieFrom(response: Response, name: string): string {
 }
 
 describe("browser OIDC authorization code flow", () => {
+  it.each([
+    "/\\evil.example/path",
+    "//evil.example/path",
+    "/\u0000evil",
+    "https://evil.example/path",
+  ])("rejects an off origin return path", (value) => {
+    expect(safeLocalReturn(value)).toBe("/console");
+  });
+
+  it("preserves a local GitHub setup return", () => {
+    expect(
+      safeLocalReturn(
+        "/github/setup?installation_id=123&setup_action=install&state=opaque",
+      ),
+    ).toBe(
+      "/github/setup?installation_id=123&setup_action=install&state=opaque",
+    );
+  });
   it("uses PKCE, keeps the access token server side, and delegates the human bearer token", async () => {
     configureOidc();
     const accessToken = "human-access-token-with-safe-length";

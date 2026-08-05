@@ -52,6 +52,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["POST", /^tenants\/[^/]+\/plan$/],
     ["POST", /^brands\/[^/]+\/preview$/],
     ["POST", /^agent\/runs$/],
+    ["POST", /^consumers$/],
     ["POST", /^consumers\/[^/]+\/detect$/],
     ["POST", /^feeds\/poll$/],
     ["POST", /^repair\/sessions$/],

@@ -16,6 +16,7 @@ import type {
   FeedScheduleWindowRow,
   FeedValidationEvidenceInput,
   GitHubInstallationRow,
+  GitHubInstallStateRow,
   ImpactFindingRow,
   MigrationPrRow,
   MonitoredApi,
@@ -145,6 +146,8 @@ CREATE TABLE IF NOT EXISTS consumers (
   github_owner TEXT NOT NULL,
   github_repo TEXT NOT NULL,
   installation_id TEXT,
+  github_delivery_mode TEXT NOT NULL DEFAULT 'app'
+    CHECK (github_delivery_mode IN ('app', 'legacy_pat', 'revoked')),
   tenant_id TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -370,6 +373,9 @@ CREATE TABLE IF NOT EXISTS github_installations (
   tenant_id TEXT,
   permissions_json TEXT,
   repositories_json TEXT,
+  repository_selection TEXT NOT NULL DEFAULT 'selected',
+  suspended_at TEXT,
+  deleted_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -379,9 +385,12 @@ CREATE INDEX IF NOT EXISTS github_installations_login_idx ON github_installation
 CREATE TABLE IF NOT EXISTS github_install_states (
   state_hash TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
+  created_by_principal_id TEXT,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
-  consumed_at TEXT
+  consumed_at TEXT,
+  completed_at TEXT,
+  completed_installation_id TEXT
 );
 CREATE INDEX IF NOT EXISTS github_install_states_tenant_idx ON github_install_states(tenant_id);
 
@@ -1060,11 +1069,19 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "github_webhook_deliveries", name: "updated_at", sql: "TEXT" },
     { table: "github_webhook_deliveries", name: "attempts", sql: "INTEGER NOT NULL DEFAULT 1" },
     { table: "github_webhook_deliveries", name: "last_error", sql: "TEXT" },
+    { table: "github_install_states", name: "created_by_principal_id", sql: "TEXT" },
+    { table: "github_install_states", name: "completed_at", sql: "TEXT" },
+    { table: "github_install_states", name: "completed_installation_id", sql: "TEXT" },
+    { table: "consumers", name: "github_delivery_mode", sql: "TEXT NOT NULL DEFAULT 'legacy_pat'" },
+    { table: "github_installations", name: "repository_selection", sql: "TEXT NOT NULL DEFAULT 'selected'" },
+    { table: "github_installations", name: "suspended_at", sql: "TEXT" },
+    { table: "github_installations", name: "deleted_at", sql: "TEXT" },
     { table: "consumer_repos", name: "scm_connection_id", sql: "TEXT" },
     { table: "consumer_repos", name: "connected_repository_id", sql: "TEXT" },
     { table: "consumer_repos", name: "snapshot_id", sql: "TEXT" },
     { table: "consumer_repos", name: "exact_commit", sql: "TEXT" },
   ];
+  const addedColumns = new Set<string>();
   for (const column of additiveColumns) {
     const columns = all<{ name: string }>(
       db,
@@ -1072,6 +1089,50 @@ function migrateProvidersFeedColumns(db: AppDb) {
     ).map((c) => c.name);
     if (!columns.includes(column.name)) {
       run(db, `ALTER TABLE ${column.table} ADD COLUMN ${column.name} ${column.sql}`);
+      addedColumns.add(`${column.table}.${column.name}`);
+    }
+  }
+  if (addedColumns.has("consumers.github_delivery_mode")) {
+    const boundConsumers = all<{
+      id: string;
+      tenant_id: string;
+      github_owner: string;
+      github_repo: string;
+      installation_id: string;
+    }>(
+      db,
+      `SELECT id, tenant_id, github_owner, github_repo, installation_id
+       FROM consumers
+       WHERE installation_id IS NOT NULL`,
+    );
+    for (const consumer of boundConsumers) {
+      const installation = get<GitHubInstallationRow>(
+        db,
+        `SELECT * FROM github_installations WHERE installation_id = ?`,
+        [consumer.installation_id],
+      );
+      const verified = Boolean(
+        installation &&
+        installation.tenant_id === consumer.tenant_id &&
+        !installation.suspended_at &&
+        !installation.deleted_at &&
+        installationAuthorizesRepository(
+          installation,
+          consumer.github_owner,
+          consumer.github_repo,
+        ),
+      );
+      run(
+        db,
+        `UPDATE consumers
+         SET installation_id = ?, github_delivery_mode = ?
+         WHERE id = ?`,
+        [
+          verified ? consumer.installation_id : null,
+          verified ? "app" : "revoked",
+          consumer.id,
+        ],
+      );
     }
   }
   for (const statement of [
@@ -1540,20 +1601,23 @@ export function insertConsumer(
     githubOwner: string;
     githubRepo: string;
     installationId?: string | null;
+    deliveryMode?: "app" | "legacy_pat" | "revoked";
     tenantId: string;
     createdAt: string;
   },
 ) {
   run(
     db,
-    `INSERT INTO consumers (id, name, github_owner, github_repo, installation_id, tenant_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO consumers
+     (id, name, github_owner, github_repo, installation_id, github_delivery_mode, tenant_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.name,
       row.githubOwner,
       row.githubRepo,
       row.installationId ?? null,
+      row.deliveryMode ?? "app",
       row.tenantId,
       row.createdAt,
     ],
@@ -3839,6 +3903,7 @@ export function consumerToApi(c: Consumer) {
     githubOwner: c.github_owner,
     githubRepo: c.github_repo,
     installationId: c.installation_id,
+    githubDeliveryMode: c.github_delivery_mode,
     tenantId: c.tenant_id ?? null,
     createdAt: c.created_at,
   };
@@ -3951,59 +4016,76 @@ export function upsertGitHubInstallation(
     tenantId?: string | null;
     permissions?: unknown;
     repositories?: unknown;
+    repositorySelection?: "selected" | "all";
+    suspendedAt?: string | null;
+    deletedAt?: string | null;
     createdAt: string;
     updatedAt: string;
   },
 ) {
-  const existing = get<GitHubInstallationRow>(
-    db,
-    `SELECT * FROM github_installations WHERE installation_id = ?`,
-    [row.installationId],
-  );
-  if (existing) {
-    if (
-      row.tenantId &&
-      existing.tenant_id &&
-      row.tenantId !== existing.tenant_id
-    ) {
-      throw new Error("github_installation_tenant_mismatch");
-    }
-    run(
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = get<GitHubInstallationRow>(
       db,
-      `UPDATE github_installations
-       SET account_login = ?, account_type = ?, tenant_id = COALESCE(?, tenant_id),
-           permissions_json = ?, repositories_json = ?, updated_at = ?
-       WHERE installation_id = ?`,
-      [
+      `SELECT * FROM github_installations WHERE installation_id = ?`,
+      [row.installationId],
+    );
+    if (existing) {
+      const updated = db.raw.prepare(
+        `UPDATE github_installations
+         SET account_login = ?, account_type = ?, tenant_id = COALESCE(tenant_id, ?),
+             permissions_json = ?, repositories_json = ?, repository_selection = ?,
+             suspended_at = ?, deleted_at = ?, updated_at = ?
+         WHERE installation_id = ?
+           AND (? IS NULL OR tenant_id IS NULL OR tenant_id = ?)`,
+      ).run(
         row.accountLogin,
         row.accountType ?? "Organization",
         row.tenantId ?? null,
         row.permissions ? JSON.stringify(row.permissions) : existing.permissions_json,
         row.repositories ? JSON.stringify(row.repositories) : existing.repositories_json,
+        row.repositorySelection ?? existing.repository_selection,
+        row.suspendedAt === undefined ? existing.suspended_at : row.suspendedAt,
+        row.deletedAt === undefined ? existing.deleted_at : row.deletedAt,
         row.updatedAt,
         row.installationId,
+        row.tenantId ?? null,
+        row.tenantId ?? null,
+      );
+      if (Number(updated.changes) !== 1) {
+        throw new Error("github_installation_tenant_mismatch");
+      }
+      if (ownsTransaction) db.raw.exec("COMMIT");
+      return existing.id;
+    }
+    run(
+      db,
+      `INSERT INTO github_installations
+       (id, installation_id, account_login, account_type, tenant_id, permissions_json,
+        repositories_json, repository_selection, suspended_at, deleted_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        row.id,
+        row.installationId,
+        row.accountLogin,
+        row.accountType ?? "Organization",
+        row.tenantId ?? null,
+        row.permissions ? JSON.stringify(row.permissions) : null,
+        row.repositories ? JSON.stringify(row.repositories) : null,
+        row.repositorySelection ?? "selected",
+        row.suspendedAt ?? null,
+        row.deletedAt ?? null,
+        row.createdAt,
+        row.updatedAt,
       ],
     );
-    return existing.id;
+    if (ownsTransaction) db.raw.exec("COMMIT");
+    return row.id;
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
   }
-  run(
-    db,
-    `INSERT INTO github_installations
-     (id, installation_id, account_login, account_type, tenant_id, permissions_json, repositories_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      row.id,
-      row.installationId,
-      row.accountLogin,
-      row.accountType ?? "Organization",
-      row.tenantId ?? null,
-      row.permissions ? JSON.stringify(row.permissions) : null,
-      row.repositories ? JSON.stringify(row.repositories) : null,
-      row.createdAt,
-      row.updatedAt,
-    ],
-  );
-  return row.id;
 }
 
 export function listGitHubInstallations(
@@ -4039,6 +4121,9 @@ export function githubInstallationToApi(r: GitHubInstallationRow) {
     tenantId: r.tenant_id,
     permissions: r.permissions_json ? JSON.parse(r.permissions_json) : null,
     repositories: r.repositories_json ? JSON.parse(r.repositories_json) : null,
+    repositorySelection: r.repository_selection,
+    suspendedAt: r.suspended_at,
+    deletedAt: r.deleted_at,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -4048,19 +4133,35 @@ export function linkConsumersToInstallation(
   db: AppDb,
   accountLogin: string,
   installationId: string,
+  repositories: Array<{ owner: string; name: string }>,
   tenantId?: string | null,
 ): number {
+  const repositoryNames = [
+    ...new Set(
+      repositories
+        .filter(
+          (repository) =>
+            repository.owner.toLowerCase() === accountLogin.toLowerCase() &&
+            repository.name.trim(),
+        )
+        .map((repository) => repository.name.toLowerCase()),
+    ),
+  ];
+  if (!repositoryNames.length) return 0;
+  const repositoryPlaceholders = repositoryNames.map(() => "?").join(", ");
   const result = db.raw
     .prepare(
       `UPDATE consumers
-       SET installation_id = ?, tenant_id = COALESCE(tenant_id, ?)
+       SET installation_id = ?, github_delivery_mode = 'app', tenant_id = COALESCE(tenant_id, ?)
        WHERE lower(github_owner) = lower(?)
+         AND lower(github_repo) IN (${repositoryPlaceholders})
          AND (? IS NULL OR tenant_id IS NULL OR tenant_id = ?)`,
     )
     .run(
       installationId,
       tenantId ?? null,
       accountLogin,
+      ...repositoryNames,
       tenantId ?? null,
       tenantId ?? null,
     );
@@ -4101,6 +4202,7 @@ export function createGitHubInstallState(
   input: {
     state: string;
     tenantId: string;
+    principalId: string;
     createdAt: string;
     expiresAt: string;
   },
@@ -4108,11 +4210,13 @@ export function createGitHubInstallState(
   run(
     db,
     `INSERT INTO github_install_states
-     (state_hash, tenant_id, created_at, expires_at, consumed_at)
-     VALUES (?, ?, ?, ?, NULL)`,
+     (state_hash, tenant_id, created_by_principal_id, created_at, expires_at,
+      consumed_at, completed_at, completed_installation_id)
+     VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)`,
     [
       hashInstallState(input.state),
       input.tenantId,
+      input.principalId,
       input.createdAt,
       input.expiresAt,
     ],
@@ -4123,6 +4227,7 @@ export function consumeGitHubInstallState(
   db: AppDb,
   state: string,
   tenantId: string,
+  principalId: string,
   now: string,
 ): boolean {
   const result = db.raw
@@ -4131,11 +4236,231 @@ export function consumeGitHubInstallState(
        SET consumed_at = ?
        WHERE state_hash = ?
          AND tenant_id = ?
+         AND created_by_principal_id = ?
          AND consumed_at IS NULL
          AND expires_at > ?`,
     )
-    .run(now, hashInstallState(state), tenantId, now);
+    .run(now, hashInstallState(state), tenantId, principalId, now);
   return Number(result.changes) === 1;
+}
+
+function installationRepositories(
+  installation: GitHubInstallationRow,
+): Array<{ id?: number; owner: string; name: string }> {
+  try {
+    const repositories = JSON.parse(installation.repositories_json ?? "null") as unknown;
+    if (!Array.isArray(repositories)) return [];
+    return repositories.filter(
+      (repository): repository is { id?: number; owner: string; name: string } =>
+        Boolean(
+          repository &&
+          typeof repository === "object" &&
+          typeof repository.owner === "string" &&
+          typeof repository.name === "string",
+        ),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function installationAuthorizesRepository(
+  installation: GitHubInstallationRow,
+  owner: string,
+  repository: string,
+): boolean {
+  if (
+    installation.suspended_at ||
+    installation.deleted_at ||
+    !hasRequiredGitHubInstallPermissions(installation.permissions_json) ||
+    (installation.repository_selection !== "selected" &&
+      installation.repository_selection !== "all")
+  ) {
+    return false;
+  }
+  return installationRepositories(installation).some(
+    (candidate) =>
+      Number.isSafeInteger(candidate.id) &&
+      candidate.owner.toLowerCase() === owner.toLowerCase() &&
+      candidate.name.toLowerCase() === repository.toLowerCase(),
+  );
+}
+
+export function findAuthorizedGitHubInstallationForRepository(
+  db: AppDb,
+  tenantId: string,
+  owner: string,
+  repository: string,
+): GitHubInstallationRow | undefined {
+  return listGitHubInstallations(db, tenantId).find((installation) =>
+    installationAuthorizesRepository(installation, owner, repository),
+  );
+}
+
+export type GitHubInstallCompletion =
+  | { status: "completed" | "replayed"; installation: GitHubInstallationRow }
+  | {
+      status:
+        | "pending"
+        | "invalid"
+        | "permissions_incomplete"
+        | "repository_scope_incomplete";
+    };
+
+const REQUIRED_GITHUB_INSTALL_PERMISSIONS: Record<string, string> = {
+  metadata: "read",
+  contents: "write",
+  pull_requests: "write",
+  checks: "read",
+};
+
+function hasRequiredGitHubInstallPermissions(value: string | null): boolean {
+  if (!value) return false;
+  try {
+    const permissions = JSON.parse(value) as Record<string, string>;
+    return Object.entries(REQUIRED_GITHUB_INSTALL_PERMISSIONS).every(
+      ([name, access]) => permissions[name] === access || permissions[name] === "write",
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Finalize a browser install return only after a signed webhook independently
+ * assigned the installation to the same tenant. The state transition, consumer
+ * linking, and audit record are one idempotent transaction.
+ */
+export function completeGitHubInstallState(
+  db: AppDb,
+  input: {
+    state: string;
+    tenantId: string;
+    principalId: string;
+    installationId: string;
+    setupAction: "install" | "update";
+    now: string;
+    requestId?: string | null;
+  },
+): GitHubInstallCompletion {
+  const stateHash = hashInstallState(input.state);
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const state = get<GitHubInstallStateRow>(
+      db,
+      `SELECT * FROM github_install_states WHERE state_hash = ?`,
+      [stateHash],
+    );
+    if (
+      !state ||
+      state.tenant_id !== input.tenantId ||
+      state.created_by_principal_id !== input.principalId
+    ) {
+      db.raw.exec("ROLLBACK");
+      return { status: "invalid" };
+    }
+    const installation = getGitHubInstallationByInstallationId(
+      db,
+      input.installationId,
+    );
+    if (state.consumed_at) {
+      if (
+        state.completed_installation_id === input.installationId &&
+        installation?.tenant_id === input.tenantId
+      ) {
+        db.raw.exec("COMMIT");
+        return { status: "replayed", installation };
+      }
+      db.raw.exec("ROLLBACK");
+      return { status: "invalid" };
+    }
+    if (state.expires_at <= input.now) {
+      db.raw.exec("ROLLBACK");
+      return { status: "invalid" };
+    }
+    if (!installation) {
+      db.raw.exec("ROLLBACK");
+      return { status: "pending" };
+    }
+    if (!installation.tenant_id || installation.tenant_id !== input.tenantId) {
+      db.raw.exec("ROLLBACK");
+      return { status: "pending" };
+    }
+    if (installation.suspended_at) {
+      db.raw.exec("ROLLBACK");
+      return { status: "pending" };
+    }
+    if (installation.deleted_at) {
+      db.raw.exec("ROLLBACK");
+      return { status: "pending" };
+    }
+    if (!hasRequiredGitHubInstallPermissions(installation.permissions_json)) {
+      db.raw.exec("ROLLBACK");
+      return { status: "permissions_incomplete" };
+    }
+
+    const verifiedRepositories = installationRepositories(installation)
+      .filter(
+          (repository) =>
+            Number.isSafeInteger(repository.id) &&
+            repository.owner.toLowerCase() === installation.account_login.toLowerCase(),
+      );
+    if (verifiedRepositories.length === 0) {
+      db.raw.exec("ROLLBACK");
+      return { status: "repository_scope_incomplete" };
+    }
+    const linked = linkConsumersToInstallation(
+      db,
+      installation.account_login,
+      installation.installation_id,
+      verifiedRepositories,
+      input.tenantId,
+    );
+    const configured = get<{ count: number }>(
+      db,
+      `SELECT COUNT(*) AS count
+       FROM consumers
+       WHERE tenant_id = ? AND lower(github_owner) = lower(?)`,
+      [input.tenantId, installation.account_login],
+    );
+    if (Number(configured?.count ?? 0) > 0 && linked === 0) {
+      db.raw.exec("ROLLBACK");
+      return { status: "repository_scope_incomplete" };
+    }
+    const consumed = db.raw
+      .prepare(
+        `UPDATE github_install_states
+         SET consumed_at = ?, completed_at = ?, completed_installation_id = ?
+         WHERE state_hash = ? AND consumed_at IS NULL`,
+      )
+      .run(
+        input.now,
+        input.now,
+        input.installationId,
+        stateHash,
+      );
+    if (Number(consumed.changes) !== 1) throw new Error("github_install_state_race");
+    recordAudit(db, {
+      id: `github_install_${stateHash}`,
+      tenantId: input.tenantId,
+      actor: "github_app",
+      principalId: input.principalId,
+      requestId: input.requestId ?? null,
+      action: "installation.completed",
+      resourceType: "github_installation",
+      resourceId: installation.id,
+      metadata: {
+        installationId: installation.installation_id,
+        accountLogin: installation.account_login,
+        setupAction: input.setupAction,
+      },
+    });
+    db.raw.exec("COMMIT");
+    return { status: "completed", installation };
+  } catch (error) {
+    if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function recordGitHubWebhookDelivery(

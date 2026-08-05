@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { safeLocalReturn } from "./safe-return";
 
 export const OIDC_FLOW_COOKIE = "mendpoint_oidc_flow";
 export const OIDC_FLOW_MAX_AGE_SECONDS = 10 * 60;
@@ -47,7 +48,7 @@ async function flowKey(secret: string, usage: KeyUsage[]): Promise<CryptoKey> {
 }
 
 export function safeReturnTo(value: string | null): string {
-  return value?.startsWith("/") && !value.startsWith("//") ? value : "/console";
+  return safeLocalReturn(value);
 }
 
 export function oidcRedirectUri(request: NextRequest): string {

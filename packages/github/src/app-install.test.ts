@@ -49,6 +49,8 @@ describe("github app install", () => {
     const cfg = getGitHubAppConfig(env);
     expect(cfg.configured).toBe(true);
     expect(cfg.installEnabled).toBe(true);
+    expect(cfg.setupCallbackPath).toBe("/github/setup");
+    expect(cfg.permissions.checks).toBe("read");
     const url = buildInstallUrl({ state: "state", env });
     expect(url).toEqual({
       url: "https://github.com/apps/mendpoint-preview/installations/new?state=state",
@@ -62,5 +64,6 @@ describe("github app install", () => {
     expect(n.accountLogin).toBe("acme");
     expect(n.repositories?.[0]?.name).toBe("shop-app");
     expect(n.installationId).toBeTruthy();
+    expect(n.permissions.checks).toBe("read");
   });
 });

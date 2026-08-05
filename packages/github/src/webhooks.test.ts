@@ -45,13 +45,18 @@ describe("github webhooks", () => {
   it("normalizes installation", () => {
     const n = normalizeGitHubEvent("installation", {
       action: "created",
-      installation: { id: 99, account: { login: "acme" } },
+      installation: {
+        id: 99,
+        account: { login: "acme" },
+        permissions: { contents: "write", checks: "read" },
+      },
       repositories: [{ full_name: "acme/shop" }],
     });
     expect(n.type).toBe("installation");
     if (n.type === "installation") {
       expect(n.installationId).toBe(99);
       expect(n.repos?.[0]?.name).toBe("shop");
+      expect(n.permissions).toEqual({ contents: "write", checks: "read" });
     }
   });
 

@@ -1,16 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { safeLocalReturn } from "../../lib/safe-return";
 
 export default function AccessPage() {
   const [token, setToken] = useState("");
   const [message, setMessage] = useState("");
   const [next, setNext] = useState("/console");
   const [identityEnabled, setIdentityEnabled] = useState<boolean | null>(null);
+  const returningFromGitHub = next.startsWith("/github/setup?");
 
   useEffect(() => {
     const candidate = new URLSearchParams(window.location.search).get("next");
-    setNext(candidate?.startsWith("/") && !candidate.startsWith("//") ? candidate : "/console");
+    setNext(safeLocalReturn(candidate));
     void fetch("/api/oidc/config", { cache: "no-store" })
       .then(async (response) => response.json())
       .then((body: { enabled?: boolean }) => setIdentityEnabled(body.enabled === true))
@@ -28,7 +30,7 @@ export default function AccessPage() {
       setMessage("Access denied");
       return;
     }
-    window.location.assign(next.startsWith("/") && !next.startsWith("//") ? next : "/console");
+    window.location.assign(safeLocalReturn(next));
   }
 
   return (
@@ -36,7 +38,9 @@ export default function AccessPage() {
       <section className="card" style={{ maxWidth: 480, margin: "4rem auto" }}>
         <h1>Operator access</h1>
         <p className="muted">
-          Company identity is required to approve or reject a migration candidate.
+          {returningFromGitHub
+            ? "GitHub installation returned. Sign in to finish connecting it."
+            : "Company identity is required to approve or reject a migration candidate."}
         </p>
         {identityEnabled === true ? (
           <a className="btn primary" href={`/api/oidc/start?next=${encodeURIComponent(next)}`}>

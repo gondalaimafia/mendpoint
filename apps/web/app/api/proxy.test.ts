@@ -87,6 +87,13 @@ describe("web credential proxy", () => {
       new NextRequest("https://console.example/icon.svg"),
     );
     expect(icon.headers.get("x-middleware-next")).toBe("1");
+
+    const githubReturn = await middleware(
+      new NextRequest(
+        "https://console.example/github/setup?installation_id=123&setup_action=install&state=opaque",
+      ),
+    );
+    expect(githubReturn.headers.get("x-middleware-next")).toBe("1");
   });
 
   it("creates and clears a same-origin HttpOnly session", async () => {
@@ -240,6 +247,43 @@ describe("web credential proxy", () => {
     );
     expect(retry.status).toBe(200);
     expect(upstream).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows authenticated same origin consumer creation", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn(async (url: URL, init?: RequestInit) => {
+      expect(url.toString()).toBe("http://api.internal:3001/consumers");
+      expect(init?.method).toBe("POST");
+      expect(await new Response(init?.body).json()).toMatchObject({
+        githubOwner: "gondalaimafia",
+        githubRepo: "private-repo",
+      });
+      return Response.json({ id: "consumer-a" }, { status: 201 });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await POST(
+      new NextRequest("https://console.example/api/consumers", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "Private repository",
+          githubOwner: "gondalaimafia",
+          githubRepo: "private-repo",
+          repoKey: "private-repo",
+        }),
+      }),
+      { params: Promise.resolve({ path: ["consumers"] }) },
+    );
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({ id: "consumer-a" });
   });
 
   it("allows tenant scoped Transformer reads and forwards required mutation evidence", async () => {

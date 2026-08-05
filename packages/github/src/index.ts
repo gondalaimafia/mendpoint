@@ -482,3 +482,8 @@ export {
   type GitHubDraftDeliveryGrant,
   type GitHubAppLifecycleErrorCode,
 } from "./app-lifecycle.js";
+
+export {
+  parseGitHubOwnerTenantBindings,
+  resolveGitHubOwnerTenantBinding,
+} from "./owner-bindings.js";

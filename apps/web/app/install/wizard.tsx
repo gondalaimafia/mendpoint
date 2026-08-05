@@ -109,7 +109,7 @@ export function InstallWizard({
 
         {step === 2 && (
           <div className="stack">
-            {installUrl && (
+            {installUrl && config.mockMode && (
               <p className="mono small">
                 Install URL: <a href={installUrl}>{installUrl}</a>
               </p>
