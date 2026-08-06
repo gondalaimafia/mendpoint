@@ -41,6 +41,7 @@ import type {
   AgentVerifierState,
   LiveModelProvenanceRecord,
   ToolCall,
+  ToolName,
   ToolResult,
 } from "./types.js";
 
@@ -58,7 +59,7 @@ const DEFAULT_SOURCE_CONTEXT_BUDGET: AgentSourceContextBudget = Object.freeze({
   maxChangedFiles: 20,
   maxChangedBytes: 1024 * 1024,
 });
-const TOOL_NAMES = new Set([
+const TOOL_NAMES = new Set<ToolName>([
   "list_dir",
   "read_file",
   "search",
@@ -69,38 +70,59 @@ const TOOL_NAMES = new Set([
   "finish",
 ]);
 
-function plannerSchemaVariant(tool: ToolCall["tool"], args: readonly string[]) {
-  const properties = Object.fromEntries(
-    args.map((key) => [key, { type: key === "ok" ? "boolean" : "string" }]),
-  );
-  return {
-    type: "object",
-    additionalProperties: false,
-    required: ["tool", "args", "thought"],
-    properties: {
-      tool: { type: "string", const: tool },
-      thought: { type: "string", maxLength: 500 },
-      args: {
-        type: "object",
-        additionalProperties: false,
-        required: [...args],
-        properties,
-      },
-    },
-  };
-}
+// Single inventory of every arg key a tool call may carry, with its scalar type.
+// Both the wire schema and the runtime validator derive from this — no second
+// hardcoded list to drift.
+const TOOL_ARG_TYPES = {
+  path: "string",
+  content: "string",
+  from: "string",
+  to: "string",
+  query: "string",
+  command: "string",
+  url: "string",
+  message: "string",
+  ok: "boolean",
+} as const;
 
-const WARDEN_TOOL_CALL_SCHEMA = {
-  oneOf: [
-    plannerSchemaVariant("list_dir", ["path"]),
-    plannerSchemaVariant("read_file", ["path"]),
-    plannerSchemaVariant("search", ["query"]),
-    plannerSchemaVariant("write_file", ["path", "content"]),
-    plannerSchemaVariant("replace_in_file", ["path", "from", "to"]),
-    plannerSchemaVariant("run_command", ["command"]),
-    plannerSchemaVariant("http_probe", ["url"]),
-    plannerSchemaVariant("finish", ["message", "ok"]),
-  ],
+type ToolArgKey = keyof typeof TOOL_ARG_TYPES;
+
+const TOOL_ARG_KEYS = Object.keys(TOOL_ARG_TYPES) as ToolArgKey[];
+
+// Required (and complete) arg contract per tool. Keys outside a tool's list are
+// not part of its contract and are dropped from a validated call.
+const TOOL_REQUIRED_ARGS: Record<ToolName, readonly ToolArgKey[]> = {
+  list_dir: ["path"],
+  read_file: ["path"],
+  search: ["query"],
+  write_file: ["path", "content"],
+  replace_in_file: ["path", "from", "to"],
+  run_command: ["command"],
+  http_probe: ["url"],
+  finish: ["message", "ok"],
+};
+
+// Meta's (and OpenAI's) strict json_schema validator rejects a top-level
+// oneOf/anyOf/allOf/enum and requires `required` to list every property key.
+// So the root is a single object whose `args` carries every key as a nullable
+// scalar; the model null-pads the keys it does not use and the validator below
+// strips those nulls and drops junk before enforcing the per-tool contract.
+export const WARDEN_TOOL_CALL_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["tool", "args", "thought"],
+  properties: {
+    tool: { type: "string", enum: [...TOOL_NAMES] },
+    args: {
+      type: "object",
+      additionalProperties: false,
+      required: [...TOOL_ARG_KEYS],
+      properties: Object.fromEntries(
+        TOOL_ARG_KEYS.map((key) => [key, { type: [TOOL_ARG_TYPES[key], "null"] }]),
+      ),
+    },
+    thought: { type: "string" },
+  },
 };
 
 function redactUntrustedText(value: string | undefined, limit: number): string | undefined {
@@ -164,28 +186,32 @@ function sanitizedToolResult(result: ToolResult): ToolResult {
   };
 }
 
-function validatedToolCall(value: unknown): ToolCall | null {
+export function validatedToolCall(value: unknown): ToolCall | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
-  if (typeof candidate.tool !== "string" || !TOOL_NAMES.has(candidate.tool)) return null;
+  if (typeof candidate.tool !== "string" || !TOOL_NAMES.has(candidate.tool as ToolName)) {
+    return null;
+  }
   if (!candidate.args || typeof candidate.args !== "object" || Array.isArray(candidate.args)) {
     return null;
   }
   if (candidate.thought !== undefined && typeof candidate.thought !== "string") return null;
-  const args = candidate.args as Record<string, unknown>;
-  const requiredStrings: Partial<Record<string, string[]>> = {
-    read_file: ["path"],
-    search: ["query"],
-    write_file: ["path", "content"],
-    replace_in_file: ["path", "from", "to"],
-    run_command: ["command"],
-    http_probe: ["url"],
-  };
-  if ((requiredStrings[candidate.tool] ?? []).some((key) => typeof args[key] !== "string")) {
-    return null;
+  const tool = candidate.tool as ToolName;
+  const rawArgs = candidate.args as Record<string, unknown>;
+  // The strict schema forces every arg key to be present, so the model returns
+  // the unused ones as null and may even fill irrelevant keys with junk. Keep
+  // only this tool's contract keys (dropping junk, not rejecting it) and treat a
+  // null as absent so the per-tool required check below matches the prior rules.
+  const contract = TOOL_REQUIRED_ARGS[tool];
+  const args: Record<string, unknown> = {};
+  for (const key of contract) {
+    const argValue = rawArgs[key];
+    if (argValue === null || argValue === undefined) continue;
+    args[key] = argValue;
   }
+  if (contract.some((key) => typeof args[key] !== TOOL_ARG_TYPES[key])) return null;
   return {
-    tool: candidate.tool as ToolCall["tool"],
+    tool,
     args,
     ...(typeof candidate.thought === "string" ? { thought: candidate.thought.slice(0, 500) } : {}),
   };

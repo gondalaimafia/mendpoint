@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runWarden } from "./agent.js";
+import { runWarden, validatedToolCall, WARDEN_TOOL_CALL_SCHEMA } from "./agent.js";
 import { extractHints, extractRenames, extractApiPaths } from "./heuristics.js";
 import { pathBlocked, commandBlocked } from "./policies.js";
 import {
@@ -726,7 +726,8 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         type: "json_schema",
         json_schema: { name: "warden_tool_call", strict: true },
       });
-      expect(request.response_format.json_schema.schema.oneOf).toHaveLength(8);
+      expect(request.response_format.json_schema.schema.type).toBe("object");
+      expect(request.response_format.json_schema.schema.oneOf).toBeUndefined();
     } finally {
       vi.unstubAllGlobals();
       if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
@@ -991,6 +992,92 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
       if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = priorKey;
     }
+  });
+});
+
+describe("Warden planner response schema", () => {
+  it("uses an object root with no top-level oneOf/anyOf/allOf/enum/not and lists every property in required", () => {
+    const schema = WARDEN_TOOL_CALL_SCHEMA as Record<string, unknown>;
+    expect(schema.type).toBe("object");
+    for (const forbidden of ["oneOf", "anyOf", "allOf", "enum", "not"]) {
+      expect(schema[forbidden]).toBeUndefined();
+    }
+    const properties = schema.properties as Record<string, unknown>;
+    const required = schema.required as string[];
+    expect(new Set(required)).toEqual(new Set(Object.keys(properties)));
+    // The nested args object must satisfy the same strict-mode rule.
+    const args = properties.args as Record<string, unknown>;
+    expect(args.type).toBe("object");
+    const argProps = args.properties as Record<string, unknown>;
+    const argRequired = args.required as string[];
+    expect(new Set(argRequired)).toEqual(new Set(Object.keys(argProps)));
+  });
+
+  it("accepts a null-padded finish call and returns only its contract args", () => {
+    const call = validatedToolCall({
+      tool: "finish",
+      args: {
+        path: null,
+        content: null,
+        from: null,
+        to: null,
+        query: null,
+        command: null,
+        url: null,
+        message: "done",
+        ok: true,
+      },
+      thought: "wrap up",
+    });
+    expect(call).toEqual({
+      tool: "finish",
+      args: { message: "done", ok: true },
+      thought: "wrap up",
+    });
+  });
+
+  it("drops non-contract junk args instead of rejecting the call", () => {
+    const call = validatedToolCall({
+      tool: "finish",
+      args: {
+        path: null,
+        content: null,
+        from: null,
+        to: null,
+        query: null,
+        // Live models have returned a junk command value on a finish call.
+        command: "rm -rf /",
+        url: null,
+        message: "done",
+        ok: false,
+      },
+      thought: "give up cleanly",
+    });
+    expect(call).toEqual({
+      tool: "finish",
+      args: { message: "done", ok: false },
+      thought: "give up cleanly",
+    });
+    expect(call?.args.command).toBeUndefined();
+  });
+
+  it("still rejects a call missing a required arg", () => {
+    const call = validatedToolCall({
+      tool: "replace_in_file",
+      args: {
+        path: "client.js",
+        content: null,
+        from: "old",
+        to: null,
+        query: null,
+        command: null,
+        url: null,
+        message: null,
+        ok: null,
+      },
+      thought: "rename without a target",
+    });
+    expect(call).toBeNull();
   });
 });
 
