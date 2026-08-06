@@ -141,6 +141,22 @@ function planner(onFirstPlan?: () => void): AgentPlanner {
   };
 }
 
+const PER_CALL_USAGE = Object.freeze({
+  promptTokens: 100,
+  completionTokens: 20,
+  totalTokens: 120,
+  costUsd: 0.0025,
+});
+
+/** A planner that attaches measured token usage + cost to every plan. */
+function meteredPlanner(): AgentPlanner {
+  const base = planner();
+  return async (value, options) => ({
+    ...(await base(value, options)),
+    usage: PER_CALL_USAGE,
+  });
+}
+
 const LIMITS: WardenAttemptLimits = Object.freeze({
   maxSourceFiles: 40,
   maxSourceFileBytes: 1024 * 1024,
@@ -391,5 +407,44 @@ describe("Warden attempt engine", () => {
     expect(evidence).not.toContain(SECRET_SENTINEL);
     expect(manifest).toContain("sha256:");
     expect(evidence).toContain("sourceDigest");
+  });
+
+  it("surfaces measured model cost and tokens from a model backed run", async () => {
+    const value = fixture("metered");
+
+    const result = await runWardenAttempt(input(value, { task: task(meteredPlanner()) }));
+
+    if (result.status === "rejected") throw new Error(`${result.code}: ${result.summary}`);
+    expect(result.status).toBe("succeeded");
+    const calls = result.agent.modelCalls;
+    expect(calls).toBeGreaterThan(0);
+    expect(result.agent.usage.measured).toBe(true);
+    expect(result.agent.usage.promptTokens).toBe(calls * PER_CALL_USAGE.promptTokens);
+    expect(result.agent.usage.completionTokens).toBe(calls * PER_CALL_USAGE.completionTokens);
+    expect(result.agent.usage.totalTokens).toBe(calls * PER_CALL_USAGE.totalTokens);
+    expect(result.agent.usage.costUsd).toBeCloseTo(calls * PER_CALL_USAGE.costUsd, 10);
+  });
+
+  it("reports null cost and absent tokens for a deterministic heuristic only run", async () => {
+    const value = fixture("heuristic-only");
+    const heuristicTask: Omit<AgentTask, "repoRoot" | "tenantId"> = {
+      goal: "Repair the API path. The correct endpoint is /v1/charges.",
+      errorLog: "HTTP 404 for /v1/chargess, expected /v1/charges",
+      maxSteps: 20,
+      useLlm: false,
+    };
+
+    const result = await runWardenAttempt(input(value, { task: heuristicTask }));
+
+    // The heuristic-only run reaches the agent (baseline target is red) but never
+    // calls a model, so cost is null and tokens are absent rather than a measured
+    // zero — regardless of whether the heuristic ultimately repairs the source.
+    expect(result.agent).toBeDefined();
+    expect(result.agent?.modelCalls).toBe(0);
+    expect(result.agent?.usage.measured).toBe(false);
+    expect(result.agent?.usage.costUsd).toBeNull();
+    expect(result.agent?.usage.promptTokens).toBeNull();
+    expect(result.agent?.usage.completionTokens).toBeNull();
+    expect(result.agent?.usage.totalTokens).toBeNull();
   });
 });

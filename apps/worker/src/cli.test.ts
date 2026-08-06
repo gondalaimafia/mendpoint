@@ -18,6 +18,7 @@ import {
   bindConsumerRepoSnapshot,
   enqueueJob,
   getAgentRun,
+  getRoutingLedgerForJob,
   insertAgentRun,
   insertConsumer,
   insertConsumerRepo,
@@ -29,6 +30,7 @@ import {
   listJobs,
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
+import type { AgentPlanner } from "@mendpoint/agent";
 import {
   parseArgs,
   parseIntervalMs,
@@ -93,6 +95,52 @@ function slowCheck(delayMs: number): string {
   );
 }
 
+const PER_CALL_USAGE = Object.freeze({
+  promptTokens: 100,
+  completionTokens: 20,
+  totalTokens: 120,
+  costUsd: 0.0025,
+});
+
+/**
+ * A Warden planner that repairs the fixture's `chargess` typo and attaches
+ * measured token usage + cost to every plan, so a production model-backed job
+ * yields non-null usage the routing ledger can attribute.
+ */
+function meteredWardenPlanner(): AgentPlanner {
+  return async (input) => {
+    const tools = input.recentSteps.map((step) => step.tool);
+    if (!tools.includes("read_file")) {
+      return {
+        call: {
+          tool: "read_file",
+          args: { path: "client.js" },
+          thought: "Inspect the exact client path before editing",
+        },
+        usage: PER_CALL_USAGE,
+      };
+    }
+    if (!tools.includes("replace_in_file")) {
+      return {
+        call: {
+          tool: "replace_in_file",
+          args: { path: "client.js", from: "chargess", to: "charges" },
+          thought: "Apply the source grounded path correction",
+        },
+        usage: PER_CALL_USAGE,
+      };
+    }
+    return {
+      call: {
+        tool: "run_command",
+        args: { command: "node check.mjs" },
+        thought: "Verify the candidate",
+      },
+      usage: PER_CALL_USAGE,
+    };
+  };
+}
+
 /**
  * Builds the full exact-snapshot Warden job fixture (connection, repo, snapshot,
  * policy, consumer binding, and a queued agent.run job) so lifecycle tests can
@@ -102,8 +150,9 @@ function setupWardenSnapshotJob(options: {
   parent: string;
   checkBody: string;
   snapshotExpiresAt: string;
+  useLlm?: boolean;
 }) {
-  const { parent, checkBody, snapshotExpiresAt } = options;
+  const { parent, checkBody, snapshotExpiresAt, useLlm = false } = options;
   const snapshotRoot = join(parent, "repositories", "tenant_test", "snapshot-a");
   const dataRoot = join(parent, "data");
   mkdirSync(snapshotRoot, { recursive: true });
@@ -191,7 +240,7 @@ function setupWardenSnapshotJob(options: {
       verifyCommand: "node check.mjs",
       allowedChangedPaths: ["client.js"],
       maxSteps: 20,
-      useLlm: false,
+      useLlm,
     },
   });
   return {
@@ -1479,6 +1528,86 @@ describe("worker runtime", () => {
       ok: 1,
     });
     expect(existsSync(sealed)).toBe(true);
+    fixture.db.raw.close();
+  }, 30_000);
+
+  it("persists measured cost and tokens to the routing ledger for a model backed job", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-ledger-cost-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      useLlm: true,
+    });
+
+    const result = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-ledger-cost",
+      leaseMs: 30_000,
+      wardenPlanner: meteredWardenPlanner(),
+      wardenEnv: {
+        MENDPOINT_DATA_DIR: fixture.dataRoot,
+        MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
+        MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_test",
+        MENDPOINT_WARDEN_MODEL_PROVIDER: "openai-compatible",
+        LLM_AGENT_MODEL: "model-a",
+        LLM_AGENT_URL: "https://models.example/v1",
+      },
+    });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test")).toMatchObject({
+      status: "candidate_ready",
+      ok: 1,
+    });
+
+    const ledger = getRoutingLedgerForJob(fixture.db, "job-warden-snapshot", "tenant_test");
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]!.outcome).toBe("succeeded");
+    // The model-backed run measured usage, so real cost and tokens reach the ledger.
+    expect(ledger[0]!.cost_usd).not.toBeNull();
+    expect(ledger[0]!.cost_usd).toBeGreaterThan(0);
+    expect(ledger[0]!.input_tokens).not.toBeNull();
+    expect(ledger[0]!.input_tokens).toBeGreaterThan(0);
+    expect(ledger[0]!.output_tokens).not.toBeNull();
+    expect(ledger[0]!.output_tokens).toBeGreaterThan(0);
+    expect(ledger[0]!.total_tokens).toBe(
+      ledger[0]!.input_tokens! + ledger[0]!.output_tokens!,
+    );
+    fixture.db.raw.close();
+  }, 30_000);
+
+  it("persists null cost and tokens to the routing ledger for a heuristic only job", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-ledger-null-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      useLlm: false,
+    });
+
+    const result = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-ledger-null",
+      leaseMs: 30_000,
+      wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
+    });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test")).toMatchObject({
+      status: "candidate_ready",
+      ok: 1,
+    });
+
+    const ledger = getRoutingLedgerForJob(fixture.db, "job-warden-snapshot", "tenant_test");
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]!.outcome).toBe("succeeded");
+    // A deterministic heuristic-only run made no model call, so the ledger keeps
+    // null cost and tokens rather than a fabricated measured zero.
+    expect(ledger[0]!.cost_usd).toBeNull();
+    expect(ledger[0]!.input_tokens).toBeNull();
+    expect(ledger[0]!.output_tokens).toBeNull();
+    expect(ledger[0]!.total_tokens).toBeNull();
     fixture.db.raw.close();
   }, 30_000);
 });

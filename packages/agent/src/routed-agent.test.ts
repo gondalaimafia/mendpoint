@@ -147,6 +147,97 @@ describe("policy routed Warden", () => {
     );
   });
 
+  it("forwards measured token attribution through the router to recordOutcome", async () => {
+    const recordOutcome = vi.fn(() => ({
+      envelopeId: "route-tokens",
+      action: "completed" as const,
+      selectedExecutorId: null,
+    }));
+    const runtime: WardenRoutingRuntimePort<{ taskId: string }> = {
+      prepare: () => ({
+        envelopeId: "route-tokens",
+        action: "execute",
+        selectedExecutorId: "warden-recipe",
+        dispatch: {
+          executorId: "warden-recipe",
+          providerId: "mendpoint-internal",
+        },
+      }),
+      recordOutcome,
+    };
+
+    await runPolicyRoutedWarden({
+      task: { goal: "Repair API client", repoRoot: "." },
+      routingRequest: { taskId: "task-tokens" },
+      runtime,
+      outcomeIdempotencyKey: "task-tokens-run-1",
+      telemetry: () => ({
+        actualCostUsd: 0.0125,
+        inputTokens: 900,
+        outputTokens: 150,
+        totalTokens: 1050,
+      }),
+      executor: {
+        executorId: "warden-recipe",
+        providerId: "mendpoint-internal",
+        run: async () => passedRun,
+      },
+    });
+
+    expect(recordOutcome).toHaveBeenCalledWith(
+      "route-tokens",
+      expect.objectContaining({
+        actualCostUsd: 0.0125,
+        inputTokens: 900,
+        outputTokens: 150,
+        totalTokens: 1050,
+      }),
+    );
+  });
+
+  it("defaults token attribution to null when telemetry omits it", async () => {
+    const recordOutcome = vi.fn(() => ({
+      envelopeId: "route-null-tokens",
+      action: "completed" as const,
+      selectedExecutorId: null,
+    }));
+    const runtime: WardenRoutingRuntimePort<{ taskId: string }> = {
+      prepare: () => ({
+        envelopeId: "route-null-tokens",
+        action: "execute",
+        selectedExecutorId: "warden-recipe",
+        dispatch: {
+          executorId: "warden-recipe",
+          providerId: "mendpoint-internal",
+        },
+      }),
+      recordOutcome,
+    };
+
+    await runPolicyRoutedWarden({
+      task: { goal: "Repair API client", repoRoot: "." },
+      routingRequest: { taskId: "task-null-tokens" },
+      runtime,
+      outcomeIdempotencyKey: "task-null-tokens-run-1",
+      telemetry: () => ({ actualCostUsd: null }),
+      executor: {
+        executorId: "warden-recipe",
+        providerId: "mendpoint-internal",
+        run: async () => passedRun,
+      },
+    });
+
+    expect(recordOutcome).toHaveBeenCalledWith(
+      "route-null-tokens",
+      expect.objectContaining({
+        actualCostUsd: null,
+        inputTokens: null,
+        outputTokens: null,
+        totalTokens: null,
+      }),
+    );
+  });
+
   it("does not run a retry before its policy backoff", async () => {
     const run = vi.fn();
     const runtime: WardenRoutingRuntimePort<{ taskId: string }> = {

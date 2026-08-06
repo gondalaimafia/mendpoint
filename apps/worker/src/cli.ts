@@ -48,12 +48,22 @@ import { loadAppCredentials } from "@mendpoint/github";
 import {
   runWarden,
   runWardenAttempt,
+  runPolicyRoutedWarden,
   resolveAgentModelEndpoint,
   type AgentModelSourcePolicy,
   type AgentPlanner,
   type WardenAttemptLimits,
   type WardenAttemptResult,
 } from "@mendpoint/agent";
+import {
+  buildWardenExecutorRegistry,
+  createWardenRoutingRuntime,
+  synthesizeWardenRun,
+  wardenRoutingOutcomeAttribution,
+  wardenRoutingRequest,
+  WARDEN_EXECUTOR_ID,
+  WARDEN_PROVIDER_ID,
+} from "./warden-router.js";
 import { runRepairSession } from "@mendpoint/repair";
 import { TransformerPilotExecutionStore } from "@mendpoint/transformer";
 import type { ContractCase } from "@mendpoint/contract";
@@ -1357,6 +1367,8 @@ export async function processJobsOnce(
         if (!Array.isArray(payload.allowedChangedPaths) || !payload.allowedChangedPaths.length) {
           throw new Error("warden_allowed_changed_paths_required");
         }
+        // Capture the narrowed value so it survives into the executor closure.
+        const allowedChangedPaths = payload.allowedChangedPaths;
         const verification = wardenVerificationPolicy(
           db,
           job.tenant_id,
@@ -1396,48 +1408,154 @@ export async function processJobsOnce(
           Date.parse(storage.expiresAt),
           Date.parse(binding.expiresAt),
         )).toISOString();
-        const attempt = await runWardenAttempt({
-          scope: { tenantId: job.tenant_id, attemptId: job.id },
-          source: {
-            repositoryId: binding.repositoryId,
-            snapshotId: binding.snapshotId,
-            revision: binding.revision,
-            manifestSha256: binding.manifestSha256,
-            sparsePaths: binding.sparsePaths,
-            root: binding.root,
-          },
-          candidateRoot,
-          evidenceRoot,
+        // Durable, policy-routed production execution. The shared router is the
+        // dispatcher: it decides (execute vs mandatory human handoff), the
+        // Warden attempt is the registered executor, and every decision +
+        // outcome is persisted to the durable routing ledger with breaker
+        // feedback. Ledger/breaker writes are fail-closed and never block the
+        // job. All existing guarantees (lease fencing, snapshot expiry,
+        // candidate artifacts, quota, failure codes) are preserved below.
+        const routingRuntime = createWardenRoutingRuntime({
+          db,
+          tenantId: job.tenant_id,
+          jobId: job.id,
+          runId: sessionId,
+          registry: buildWardenExecutorRegistry(started),
+        });
+        let capturedAttempt: WardenAttemptResult | null = null;
+        const routed = await runPolicyRoutedWarden({
           task: {
             goal: payload.goal,
-            errorLog: payload.errorLog,
-            verifyCommand: verification.targetCommand,
-            maxSteps: Math.max(1, Math.min(payload.maxSteps ?? 20, 100)),
-            useLlm,
-            ...(opts.wardenPlanner ? { planner: opts.wardenPlanner } : {}),
-            modelRequired: Boolean(modelSourcePolicy),
-            allowModelSource: Boolean(modelSourcePolicy),
-            ...(modelSourcePolicy ? { modelSourcePolicy } : {}),
-            allowNetwork: false,
-            sessionId,
-            neverTouchPaths: [...verification.protectedPaths],
-            shouldContinue: () =>
-              !leaseLost && opts.shouldContinue?.() !== false,
+            repoRoot: binding.root,
+            tenantId: job.tenant_id,
           },
-          verification,
-          limits: {
-            ...WARDEN_ATTEMPT_LIMITS,
-            allowedChangedPaths: [...payload.allowedChangedPaths],
+          routingRequest: wardenRoutingRequest({
+            taskId: job.id,
+            tenantId: job.tenant_id,
+            goal: payload.goal,
+            idempotencyKey: sessionId,
+            verifyCommand: verification.targetCommand,
+            policySnapshotId: binding.snapshotId,
+          }),
+          runtime: routingRuntime,
+          outcomeIdempotencyKey: `${job.id}:${sessionId}:route`,
+          // Honest cost + token attribution from the attempt engine's measured
+          // model usage. A heuristic-only run made no model call, so every field
+          // stays null (never a fabricated measured zero) for the ledger.
+          telemetry: () => {
+            const attribution = capturedAttempt
+              ? wardenRoutingOutcomeAttribution(capturedAttempt)
+              : {
+                  costUsd: null,
+                  inputTokens: null,
+                  outputTokens: null,
+                  totalTokens: null,
+                };
+            return {
+              actualCostUsd: attribution.costUsd,
+              inputTokens: attribution.inputTokens,
+              outputTokens: attribution.outputTokens,
+              totalTokens: attribution.totalTokens,
+              verifierId: "warden-attempt-verifier",
+            };
+          },
+          executor: {
+            executorId: WARDEN_EXECUTOR_ID,
+            providerId: WARDEN_PROVIDER_ID,
+            run: async () => {
+              const attempt = await runWardenAttempt({
+                scope: { tenantId: job.tenant_id, attemptId: job.id },
+                source: {
+                  repositoryId: binding.repositoryId,
+                  snapshotId: binding.snapshotId,
+                  revision: binding.revision,
+                  manifestSha256: binding.manifestSha256,
+                  sparsePaths: binding.sparsePaths,
+                  root: binding.root,
+                },
+                candidateRoot,
+                evidenceRoot,
+                task: {
+                  goal: payload.goal,
+                  errorLog: payload.errorLog,
+                  verifyCommand: verification.targetCommand,
+                  maxSteps: Math.max(1, Math.min(payload.maxSteps ?? 20, 100)),
+                  useLlm,
+                  ...(opts.wardenPlanner ? { planner: opts.wardenPlanner } : {}),
+                  modelRequired: Boolean(modelSourcePolicy),
+                  allowModelSource: Boolean(modelSourcePolicy),
+                  ...(modelSourcePolicy ? { modelSourcePolicy } : {}),
+                  allowNetwork: false,
+                  sessionId,
+                  neverTouchPaths: [...verification.protectedPaths],
+                  shouldContinue: () =>
+                    !leaseLost && opts.shouldContinue?.() !== false,
+                },
+                verification,
+                limits: {
+                  ...WARDEN_ATTEMPT_LIMITS,
+                  allowedChangedPaths: [...allowedChangedPaths],
+                },
+              });
+              capturedAttempt = attempt;
+              if (leaseLost || attempt.agent?.stoppedReason === "lease_lost") {
+                discardWardenAttempt(attempt, candidateRoot, evidenceRoot);
+                throw new Error("lease_lost_during_warden");
+              }
+              if (Date.parse(candidateExpiresAt) <= Date.now()) {
+                discardWardenAttempt(attempt, candidateRoot, evidenceRoot);
+                throw new Error("warden_snapshot_expired_during_attempt");
+              }
+              return synthesizeWardenRun(attempt, sessionId, payload.goal);
+            },
           },
         });
-        if (leaseLost || attempt.agent?.stoppedReason === "lease_lost") {
-          discardWardenAttempt(attempt, candidateRoot, evidenceRoot);
-          throw new Error("lease_lost_during_warden");
+        if (!routed.run) {
+          // The router required human review before any autonomous execution.
+          // No attempt ran; block autonomous completion with a non-retryable
+          // handoff code.
+          const handoffReason = routed.routing.reason ?? "human_handoff";
+          const failure = persistFailedAgentJob(
+            db,
+            job.id,
+            fence,
+            {
+              message: `warden_routing_${handoffReason}`,
+              errorCode: "warden_needs_human",
+              retryable: false,
+            },
+            {
+              id: sessionId,
+              tenantId: job.tenant_id,
+              goal: payload.goal,
+              repoPath: binding.root,
+              status: "failed",
+              ok: false,
+              steps: 0,
+              filesChanged: [],
+              reportMd: null,
+              resultJson: JSON.stringify({
+                jobId: job.id,
+                product: "warden",
+                sourceKind: "immutable_snapshot",
+                routing: {
+                  action: routed.routing.action,
+                  envelopeId: routed.routing.envelopeId,
+                  reason: handoffReason,
+                },
+              }),
+              createdAt: started,
+              finishedAt: nowIso(),
+            },
+          );
+          result.failed++;
+          if (!failure.applied) console.error(`  stale lease ignored job=${job.id}`);
+          console.log(
+            `  Warden routing requires human review session=${sessionId} reason=${handoffReason}`,
+          );
+          continue;
         }
-        if (Date.parse(candidateExpiresAt) <= Date.now()) {
-          discardWardenAttempt(attempt, candidateRoot, evidenceRoot);
-          throw new Error("warden_snapshot_expired_during_attempt");
-        }
+        const attempt = capturedAttempt!;
         const noAction = attempt.status === "rejected" &&
           attempt.code === "warden_attempt_baseline_target_green";
         const ok = attempt.status === "succeeded" || noAction;

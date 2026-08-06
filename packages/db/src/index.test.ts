@@ -64,6 +64,14 @@ import {
   insertApiVersionIfAbsent,
   claimFeedTenantDispatch,
   completeFeedTenantDispatch,
+  recordRoutingDecision,
+  recordRoutingOutcome,
+  recordRoutingExecutorOutcome,
+  loadRoutingAvailability,
+  loadRoutingBreakerSnapshot,
+  getRoutingLedgerForJob,
+  listRoutingLedgerForRun,
+  DEFAULT_ROUTING_BREAKER,
 } from "./index.js";
 import { newId, nowIso } from "@mendpoint/shared";
 
@@ -1746,5 +1754,212 @@ describe("db", () => {
       .prepare(`SELECT COUNT(*) AS count FROM api_versions WHERE provider_id = ?`)
       .get("provider-1") as { count: number };
     expect(count.count).toBe(1);
+  });
+
+  it("boots on a pre-routing-ledger schema and converges to the fresh shape", () => {
+    // Pre-change production shape: a database created before the routing ledger
+    // tables existed. createDb runs the static DDL (CREATE TABLE IF NOT EXISTS)
+    // before migrations, so booting must add the new tables + indexes and never
+    // throw "no such column" from a dependent index.
+    const legacyDir = mkdtempSync(join(tmpdir(), "mendpoint-db-route-legacy-"));
+    dirs.push(legacyDir);
+    const legacyPath = join(legacyDir, "legacy.sqlite");
+    const legacy = new DatabaseSync(legacyPath);
+    // A minimal legacy database with none of the routing tables present.
+    legacy.exec(`
+      CREATE TABLE jobs (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        error TEXT,
+        result_json TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT
+      );
+    `);
+    legacy.close();
+
+    const migrated = createDb(legacyPath);
+    dbs.push(migrated);
+
+    const freshDir = mkdtempSync(join(tmpdir(), "mendpoint-db-route-fresh-"));
+    dirs.push(freshDir);
+    const fresh = createDb(join(freshDir, "fresh.sqlite"));
+    dbs.push(fresh);
+
+    const columnsOf = (db: { raw: DatabaseSync }, table: string) =>
+      (db.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+        .map((c) => c.name)
+        .sort();
+    const indexesOf = (db: { raw: DatabaseSync }, table: string) =>
+      (db.raw.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string }>)
+        .map((i) => i.name)
+        .sort();
+
+    for (const table of ["routing_ledger", "routing_executor_health"]) {
+      expect(columnsOf(migrated, table)).toEqual(columnsOf(fresh, table));
+      expect(indexesOf(migrated, table)).toEqual(indexesOf(fresh, table));
+    }
+    expect(columnsOf(migrated, "routing_ledger")).toContain("selected_executor_id");
+    // The migrated database must be writable through the new ledger path.
+    expect(() =>
+      recordRoutingDecision(migrated, {
+        tenantId: "tenant_default",
+        jobId: "job-boot",
+        taskKind: "warden.attempt",
+        envelopeId: "route-boot",
+        policySnapshotId: "policy-1",
+        taskSnapshotId: "task-1",
+        action: "execute",
+        selectedExecutorId: "warden-attempt",
+        providerId: "mendpoint-internal",
+        eliminated: [],
+        fallback: [],
+        breaker: [],
+        handoffRequired: false,
+        decision: {},
+      }),
+    ).not.toThrow();
+  });
+
+  it("persists a routing decision and outcome queryable per job and run", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-route-ledger-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+
+    recordRoutingDecision(db, {
+      tenantId: "tenant_default",
+      jobId: "job-1",
+      runId: "run-1",
+      taskKind: "warden.attempt",
+      envelopeId: "route_dec_1",
+      policySnapshotId: "policy-1",
+      taskSnapshotId: "task-1",
+      action: "execute",
+      selectedExecutorId: "warden-attempt",
+      providerId: "mendpoint-internal",
+      eliminated: [{ executorId: "slow", reasons: ["latency_exceeded"] }],
+      fallback: [{ executorId: "backup" }],
+      breaker: [],
+      handoffRequired: false,
+      decision: { decisionId: "route_dec_1" },
+      createdAt: "2026-08-01T12:00:00.000Z",
+    });
+
+    const updated = recordRoutingOutcome(db, {
+      tenantId: "tenant_default",
+      jobId: "job-1",
+      envelopeId: "route_dec_1",
+      action: "completed",
+      outcome: "succeeded",
+      costUsd: 0.42,
+      totalTokens: 1200,
+      startedAt: "2026-08-01T12:00:00.000Z",
+      completedAt: "2026-08-01T12:00:02.000Z",
+      observedAt: "2026-08-01T12:00:02.000Z",
+    });
+    expect(updated).toBe(true);
+
+    const byJob = getRoutingLedgerForJob(db, "job-1", "tenant_default");
+    expect(byJob).toHaveLength(1);
+    expect(byJob[0]!.selected_executor_id).toBe("warden-attempt");
+    expect(byJob[0]!.outcome).toBe("succeeded");
+    expect(byJob[0]!.cost_usd).toBe(0.42);
+    expect(byJob[0]!.total_tokens).toBe(1200);
+    expect(JSON.parse(byJob[0]!.eliminated_json)).toEqual([
+      { executorId: "slow", reasons: ["latency_exceeded"] },
+    ]);
+    expect(JSON.parse(byJob[0]!.fallback_json)).toEqual([{ executorId: "backup" }]);
+
+    const byRun = listRoutingLedgerForRun(db, "run-1", "tenant_default");
+    expect(byRun.map((r) => r.envelope_id)).toEqual(["route_dec_1"]);
+  });
+
+  it("records a handoff decision and isolates the ledger across tenants", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-route-tenant-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+
+    for (const tenant of ["tenant_a", "tenant_b"]) {
+      recordRoutingDecision(db, {
+        tenantId: tenant,
+        jobId: "job-shared",
+        runId: "run-shared",
+        taskKind: "warden.attempt",
+        envelopeId: `route_${tenant}`,
+        policySnapshotId: "policy-1",
+        taskSnapshotId: "task-1",
+        action: "human_handoff",
+        handoffRequired: true,
+        handoffReason: "high_risk",
+        eliminated: [],
+        fallback: [],
+        breaker: [],
+        decision: {},
+      });
+    }
+
+    const a = getRoutingLedgerForJob(db, "job-shared", "tenant_a");
+    expect(a).toHaveLength(1);
+    expect(a[0]!.envelope_id).toBe("route_tenant_a");
+    expect(a[0]!.handoff_required).toBe(1);
+    expect(a[0]!.handoff_reason).toBe("high_risk");
+    // A cross-tenant read never sees another tenant's decision.
+    expect(getRoutingLedgerForJob(db, "job-shared", "tenant_b").map((r) => r.envelope_id))
+      .toEqual(["route_tenant_b"]);
+    expect(listRoutingLedgerForRun(db, "run-shared", "tenant_a")).toHaveLength(1);
+  });
+
+  it("flips breaker state from outcome feedback and stays bounded", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-route-breaker-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    const at = new Date("2026-08-01T12:00:00.000Z");
+    const config = DEFAULT_ROUTING_BREAKER;
+    const feed = (success: boolean) =>
+      recordRoutingExecutorOutcome(db, {
+        tenantId: "tenant_default",
+        executorId: "warden-attempt",
+        providerId: "mendpoint-internal",
+        success,
+        observedAt: at.toISOString(),
+        config,
+      });
+
+    let availability = loadRoutingAvailability(db, "tenant_default", at, config);
+    expect(availability.allows("warden-attempt", "mendpoint-internal")).toBe(true);
+
+    // Three consecutive failures open the executor breaker.
+    feed(false);
+    feed(false);
+    feed(false);
+    availability = loadRoutingAvailability(db, "tenant_default", at, config);
+    expect(availability.allows("warden-attempt", "mendpoint-internal")).toBe(false);
+
+    // After the open window elapses, the breaker allows a probe (half-open).
+    const later = new Date(at.getTime() + config.openDurationMs + 1);
+    expect(
+      loadRoutingAvailability(db, "tenant_default", later, config).allows(
+        "warden-attempt",
+        "mendpoint-internal",
+      ),
+    ).toBe(true);
+
+    // A success clears the rows entirely (bounded growth).
+    feed(true);
+    expect(loadRoutingBreakerSnapshot(db, "tenant_default", at, config)).toHaveLength(0);
+    expect(
+      loadRoutingAvailability(db, "tenant_default", at, config).allows(
+        "warden-attempt",
+        "mendpoint-internal",
+      ),
+    ).toBe(true);
   });
 });

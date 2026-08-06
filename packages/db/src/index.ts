@@ -21,6 +21,8 @@ import type {
   MigrationPrRow,
   MonitoredApi,
   Provider,
+  RoutingExecutorHealthRow,
+  RoutingLedgerRow,
   TenantRow,
 } from "./schema.js";
 
@@ -946,6 +948,58 @@ CREATE TABLE IF NOT EXISTS repository_snapshot_deletions (
 );
 CREATE INDEX IF NOT EXISTS repository_snapshot_deletions_tenant_idx
   ON repository_snapshot_deletions(tenant_id, snapshot_id, created_at);
+
+-- Durable policy-routing ledger: one row per routing decision for a job/run.
+-- Every column lives in this table's own CREATE, so the indexes below are safe
+-- in the static DDL (no additive migration adds a column they depend on).
+CREATE TABLE IF NOT EXISTS routing_ledger (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  run_id TEXT,
+  task_kind TEXT NOT NULL,
+  envelope_id TEXT NOT NULL,
+  policy_snapshot_id TEXT NOT NULL,
+  task_snapshot_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  selected_executor_id TEXT,
+  provider_id TEXT,
+  eliminated_json TEXT NOT NULL DEFAULT '[]',
+  fallback_json TEXT NOT NULL DEFAULT '[]',
+  breaker_json TEXT NOT NULL DEFAULT '[]',
+  handoff_required INTEGER NOT NULL DEFAULT 0,
+  handoff_reason TEXT,
+  outcome TEXT,
+  error_code TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  total_tokens INTEGER,
+  cost_usd REAL,
+  started_at TEXT,
+  completed_at TEXT,
+  decision_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, job_id, envelope_id)
+);
+CREATE INDEX IF NOT EXISTS routing_ledger_job_idx
+  ON routing_ledger(tenant_id, job_id, created_at);
+CREATE INDEX IF NOT EXISTS routing_ledger_run_idx
+  ON routing_ledger(tenant_id, run_id, created_at);
+
+-- Durable executor/provider circuit-breaker health used for outcome feedback.
+-- Bounded: at most one row per (tenant, scope, executor, provider); success
+-- deletes the row so the table never grows without failing executors.
+CREATE TABLE IF NOT EXISTS routing_executor_health (
+  tenant_id TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN ('executor', 'provider')),
+  executor_id TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+  opened_at TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, scope, executor_id, provider_id)
+);
 `;
 
 
@@ -4662,4 +4716,333 @@ export function versionToApi(v: ApiVersion) {
     changelogMd: v.changelog_md,
     publishedAt: v.published_at,
   };
+}
+
+// --- Durable policy-routing ledger + executor circuit-breaker health ---
+
+export type RoutingBreakerConfig = Readonly<{
+  failureThreshold: number;
+  openDurationMs: number;
+}>;
+
+export const DEFAULT_ROUTING_BREAKER: RoutingBreakerConfig = Object.freeze({
+  failureThreshold: 3,
+  openDurationMs: 30_000,
+});
+
+export type RoutingBreakerSnapshotEntry = Readonly<{
+  scope: "executor" | "provider";
+  executorId: string;
+  providerId: string;
+  consecutiveFailures: number;
+  openedAt: string | null;
+  open: boolean;
+}>;
+
+/** Availability boundary consumed by the policy router (structural match). */
+export type RoutingAvailability = Readonly<{
+  snapshot: readonly RoutingBreakerSnapshotEntry[];
+  allows(executorId: string, providerId: string): boolean;
+}>;
+
+function breakerOpen(
+  consecutiveFailures: number,
+  openedAt: string | null,
+  atMs: number,
+  config: RoutingBreakerConfig,
+): boolean {
+  if (consecutiveFailures < config.failureThreshold || !openedAt) return false;
+  const openedAtMs = Date.parse(openedAt);
+  if (!Number.isFinite(openedAtMs)) return false;
+  return atMs < openedAtMs + config.openDurationMs;
+}
+
+/** Snapshot of every failing executor/provider for a tenant, evaluated at `at`. */
+export function loadRoutingBreakerSnapshot(
+  db: AppDb,
+  tenantId: string,
+  at: Date = new Date(),
+  config: RoutingBreakerConfig = DEFAULT_ROUTING_BREAKER,
+): RoutingBreakerSnapshotEntry[] {
+  const atMs = at.getTime();
+  const rows = all<RoutingExecutorHealthRow>(
+    db,
+    `SELECT * FROM routing_executor_health WHERE tenant_id = ?`,
+    [tenantId],
+  );
+  return rows.map((row) =>
+    Object.freeze({
+      scope: row.scope,
+      executorId: row.executor_id,
+      providerId: row.provider_id,
+      consecutiveFailures: row.consecutive_failures,
+      openedAt: row.opened_at,
+      open: breakerOpen(row.consecutive_failures, row.opened_at, atMs, config),
+    }),
+  );
+}
+
+/** Build an availability boundary from a tenant's persisted breaker state. */
+export function loadRoutingAvailability(
+  db: AppDb,
+  tenantId: string,
+  at: Date = new Date(),
+  config: RoutingBreakerConfig = DEFAULT_ROUTING_BREAKER,
+): RoutingAvailability {
+  const snapshot = loadRoutingBreakerSnapshot(db, tenantId, at, config);
+  const openExecutors = new Set(
+    snapshot
+      .filter((entry) => entry.scope === "executor" && entry.open)
+      .map((entry) => `${entry.executorId} ${entry.providerId}`),
+  );
+  const openProviders = new Set(
+    snapshot
+      .filter((entry) => entry.scope === "provider" && entry.open)
+      .map((entry) => entry.providerId),
+  );
+  return Object.freeze({
+    snapshot: Object.freeze(snapshot),
+    allows(executorId: string, providerId: string): boolean {
+      return (
+        !openExecutors.has(`${executorId} ${providerId}`) &&
+        !openProviders.has(providerId)
+      );
+    },
+  });
+}
+
+function recordBreakerScope(
+  db: AppDb,
+  tenantId: string,
+  scope: "executor" | "provider",
+  executorId: string,
+  providerId: string,
+  success: boolean,
+  observedAt: string,
+  config: RoutingBreakerConfig,
+): void {
+  if (success) {
+    run(
+      db,
+      `DELETE FROM routing_executor_health
+       WHERE tenant_id = ? AND scope = ? AND executor_id = ? AND provider_id = ?`,
+      [tenantId, scope, executorId, providerId],
+    );
+    return;
+  }
+  const existing = get<RoutingExecutorHealthRow>(
+    db,
+    `SELECT * FROM routing_executor_health
+     WHERE tenant_id = ? AND scope = ? AND executor_id = ? AND provider_id = ?`,
+    [tenantId, scope, executorId, providerId],
+  );
+  const consecutive = (existing?.consecutive_failures ?? 0) + 1;
+  const openedAt =
+    consecutive >= config.failureThreshold
+      ? existing?.opened_at ?? observedAt
+      : null;
+  run(
+    db,
+    `INSERT INTO routing_executor_health
+       (tenant_id, scope, executor_id, provider_id, consecutive_failures, opened_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(tenant_id, scope, executor_id, provider_id) DO UPDATE SET
+       consecutive_failures = excluded.consecutive_failures,
+       opened_at = excluded.opened_at,
+       updated_at = excluded.updated_at`,
+    [tenantId, scope, executorId, providerId, consecutive, openedAt, observedAt],
+  );
+}
+
+/**
+ * Feed a single execution outcome back into the durable breaker state. A
+ * success clears both the executor and provider rows (bounded growth); a
+ * failure increments consecutive failures and opens the breaker at threshold.
+ */
+export function recordRoutingExecutorOutcome(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    executorId: string;
+    providerId: string;
+    success: boolean;
+    observedAt?: string;
+    config?: RoutingBreakerConfig;
+  }>,
+): void {
+  const observedAt = input.observedAt ?? nowIso();
+  const config = input.config ?? DEFAULT_ROUTING_BREAKER;
+  recordBreakerScope(
+    db,
+    input.tenantId,
+    "executor",
+    input.executorId,
+    input.providerId,
+    input.success,
+    observedAt,
+    config,
+  );
+  recordBreakerScope(
+    db,
+    input.tenantId,
+    "provider",
+    "",
+    input.providerId,
+    input.success,
+    observedAt,
+    config,
+  );
+}
+
+/**
+ * Persist a routing decision. Idempotent per (tenant, job, envelope) so a
+ * replayed job re-records the same deterministic decision without duplicating.
+ */
+export function recordRoutingDecision(
+  db: AppDb,
+  input: Readonly<{
+    id?: string;
+    tenantId: string;
+    jobId: string;
+    runId?: string | null;
+    taskKind: string;
+    envelopeId: string;
+    policySnapshotId: string;
+    taskSnapshotId: string;
+    action: string;
+    selectedExecutorId?: string | null;
+    providerId?: string | null;
+    eliminated: unknown;
+    fallback: unknown;
+    breaker: unknown;
+    handoffRequired: boolean;
+    handoffReason?: string | null;
+    decision: unknown;
+    createdAt?: string;
+  }>,
+): string {
+  const id = input.id ?? newId();
+  const now = input.createdAt ?? nowIso();
+  run(
+    db,
+    `INSERT INTO routing_ledger
+       (id, tenant_id, job_id, run_id, task_kind, envelope_id, policy_snapshot_id,
+        task_snapshot_id, action, selected_executor_id, provider_id, eliminated_json,
+        fallback_json, breaker_json, handoff_required, handoff_reason, decision_json,
+        created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(tenant_id, job_id, envelope_id) DO UPDATE SET
+       run_id = excluded.run_id,
+       action = excluded.action,
+       selected_executor_id = excluded.selected_executor_id,
+       provider_id = excluded.provider_id,
+       eliminated_json = excluded.eliminated_json,
+       fallback_json = excluded.fallback_json,
+       breaker_json = excluded.breaker_json,
+       handoff_required = excluded.handoff_required,
+       handoff_reason = excluded.handoff_reason,
+       decision_json = excluded.decision_json,
+       updated_at = excluded.updated_at`,
+    [
+      id,
+      input.tenantId,
+      input.jobId,
+      input.runId ?? null,
+      input.taskKind,
+      input.envelopeId,
+      input.policySnapshotId,
+      input.taskSnapshotId,
+      input.action,
+      input.selectedExecutorId ?? null,
+      input.providerId ?? null,
+      JSON.stringify(input.eliminated ?? []),
+      JSON.stringify(input.fallback ?? []),
+      JSON.stringify(input.breaker ?? []),
+      input.handoffRequired ? 1 : 0,
+      input.handoffReason ?? null,
+      JSON.stringify(input.decision ?? {}),
+      now,
+      now,
+    ],
+  );
+  const row = get<{ id: string }>(
+    db,
+    `SELECT id FROM routing_ledger
+     WHERE tenant_id = ? AND job_id = ? AND envelope_id = ?`,
+    [input.tenantId, input.jobId, input.envelopeId],
+  );
+  return row?.id ?? id;
+}
+
+/** Record the final outcome + cost attribution for a routing decision. */
+export function recordRoutingOutcome(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    jobId: string;
+    envelopeId: string;
+    action: string;
+    outcome: string;
+    errorCode?: string | null;
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    totalTokens?: number | null;
+    costUsd?: number | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    observedAt?: string;
+  }>,
+): boolean {
+  const observedAt = input.observedAt ?? nowIso();
+  const result = db.raw
+    .prepare(
+      `UPDATE routing_ledger SET
+         action = ?, outcome = ?, error_code = ?, input_tokens = ?, output_tokens = ?,
+         total_tokens = ?, cost_usd = ?, started_at = ?, completed_at = ?, updated_at = ?
+       WHERE tenant_id = ? AND job_id = ? AND envelope_id = ?`,
+    )
+    .run(
+      input.action,
+      input.outcome,
+      input.errorCode ?? null,
+      input.inputTokens ?? null,
+      input.outputTokens ?? null,
+      input.totalTokens ?? null,
+      input.costUsd ?? null,
+      input.startedAt ?? null,
+      input.completedAt ?? null,
+      observedAt,
+      input.tenantId,
+      input.jobId,
+      input.envelopeId,
+    );
+  return Number(result.changes) === 1;
+}
+
+export function getRoutingLedgerForJob(
+  db: AppDb,
+  jobId: string,
+  tenantId: string,
+): RoutingLedgerRow[] {
+  return all(
+    db,
+    `SELECT * FROM routing_ledger
+     WHERE tenant_id = ? AND job_id = ?
+     ORDER BY created_at, id`,
+    [tenantId, jobId],
+  );
+}
+
+export function listRoutingLedgerForRun(
+  db: AppDb,
+  runId: string,
+  tenantId: string,
+): RoutingLedgerRow[] {
+  return all(
+    db,
+    `SELECT * FROM routing_ledger
+     WHERE tenant_id = ? AND run_id = ?
+     ORDER BY created_at, id`,
+    [tenantId, runId],
+  );
 }

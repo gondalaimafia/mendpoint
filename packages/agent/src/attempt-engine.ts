@@ -93,6 +93,19 @@ export type WardenAttemptAgentSummary = Readonly<{
     model: string | null;
     endpoint: string | null;
   }>;
+  /**
+   * Measured model cost + token attribution rolled up from the agent execution
+   * metrics. `measured` is true only when at least one model call was made; a
+   * deterministic heuristic-only run makes no call, so every value is null
+   * rather than a fabricated zero presented as a measured cost.
+   */
+  usage: Readonly<{
+    measured: boolean;
+    costUsd: number | null;
+    promptTokens: number | null;
+    completionTokens: number | null;
+    totalTokens: number | null;
+  }>;
 }>;
 
 type EmptyAttemptArtifacts = Readonly<{
@@ -560,6 +573,8 @@ function agentEvidence(
   task: Omit<AgentTask, "repoRoot" | "tenantId">,
 ): WardenAttemptAgentSummary {
   const policy = task.modelSourcePolicy;
+  const model = agent.metrics.model;
+  const measured = model.calls > 0;
   return Object.freeze({
     sessionId: agent.sessionId,
     ok: agent.ok,
@@ -569,8 +584,8 @@ function agentEvidence(
     reportMarkdown: agent.reportMarkdown,
     toolCalls: agent.metrics.toolCalls,
     verifierCalls: agent.metrics.verifierCalls,
-    modelCalls: agent.metrics.model.calls,
-    modelSuccessfulCalls: agent.metrics.model.successfulCalls,
+    modelCalls: model.calls,
+    modelSuccessfulCalls: model.successfulCalls,
     groundedMutations: agent.metrics.sourceContext.groundedMutations,
     blockedMutations: agent.metrics.sourceContext.blockedMutations,
     sourceContext: agent.metrics.sourceContext,
@@ -580,6 +595,13 @@ function agentEvidence(
       provider: policy?.provider ?? null,
       model: policy?.model ?? null,
       endpoint: policy?.endpoint ?? null,
+    }),
+    usage: Object.freeze({
+      measured,
+      costUsd: measured ? model.costUsd : null,
+      promptTokens: measured ? model.promptTokens : null,
+      completionTokens: measured ? model.completionTokens : null,
+      totalTokens: measured ? model.totalTokens : null,
     }),
   });
 }

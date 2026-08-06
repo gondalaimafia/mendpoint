@@ -20,6 +20,7 @@
     "@mendpoint/db": "*",
     "@mendpoint/github": "*",
     "@mendpoint/ops": "*",
+    "@mendpoint/platform": "*",
     "@mendpoint/transformer": "*",
     "@mendpoint/shared": "*"
   },

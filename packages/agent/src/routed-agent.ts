@@ -33,6 +33,9 @@ export interface WardenRoutingRuntimePort<Request> {
       completedAt: string;
       actualLatencyMs: number;
       actualCostUsd: number | null;
+      inputTokens?: number | null;
+      outputTokens?: number | null;
+      totalTokens?: number | null;
       errorCode?: string;
       verification: Readonly<{
         verdict: "passed" | "failed" | "unknown";
@@ -51,6 +54,9 @@ export type RoutedWardenResult = Readonly<{
 
 export type RoutedWardenTelemetry = Readonly<{
   actualCostUsd: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  totalTokens?: number | null;
   evidenceArtifactIds?: readonly string[];
   verifierId?: string;
   verifierVersion?: string;
@@ -149,6 +155,9 @@ export async function runPolicyRoutedWarden<Request>(input: Readonly<{
     completedAt: completedAt.toISOString(),
     actualLatencyMs: completedAt.getTime() - startedAt.getTime(),
     actualCostUsd: telemetry.actualCostUsd,
+    inputTokens: telemetry.inputTokens ?? null,
+    outputTokens: telemetry.outputTokens ?? null,
+    totalTokens: telemetry.totalTokens ?? null,
     errorCode: result.ok ? undefined : result.stoppedReason,
     verification: {
       verdict,
