@@ -139,8 +139,9 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   finished_at TEXT
 );
 CREATE INDEX IF NOT EXISTS agent_runs_created_idx ON agent_runs(created_at);
-CREATE UNIQUE INDEX IF NOT EXISTS agent_runs_tenant_job_uidx
-  ON agent_runs(tenant_id, job_id) WHERE job_id IS NOT NULL;
+-- agent_runs_tenant_job_uidx references job_id, which is added by an additive
+-- migration for pre-existing databases. It is created in migrateProvidersFeedColumns
+-- AFTER that column exists so booting on an old DB does not throw "no such column: job_id".
 
 CREATE INDEX IF NOT EXISTS api_changes_provider_idx ON api_changes(provider_id);
 CREATE TABLE IF NOT EXISTS consumers (

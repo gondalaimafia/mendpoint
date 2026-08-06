@@ -219,6 +219,117 @@ describe("db", () => {
     ).toEqual({ installation_id: null });
   });
 
+  it("boots on a pre-slice agent_runs schema and adds job_id before its unique index", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-agent-runs-"));
+    dirs.push(dir);
+    const path = join(dir, "legacy.sqlite");
+    // Pre-slice production shape: agent_runs WITHOUT job_id and WITHOUT the
+    // partial unique index (copied from origin/main~1).
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE agent_runs (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        repo_path TEXT NOT NULL,
+        status TEXT NOT NULL,
+        ok INTEGER NOT NULL DEFAULT 0,
+        steps INTEGER NOT NULL DEFAULT 0,
+        files_changed_json TEXT,
+        report_md TEXT,
+        result_json TEXT,
+        created_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS agent_runs_created_idx ON agent_runs(created_at);
+      INSERT INTO agent_runs (id, tenant_id, goal, repo_path, status, created_at)
+      VALUES ('legacy-run', 'tenant_default', 'fix', '/repo', 'succeeded', '2026-01-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    // Booting on the existing database must not throw "no such column: job_id".
+    const db = createDb(path);
+    dbs.push(db);
+
+    const columns = (
+      db.raw.prepare("PRAGMA table_info(agent_runs)").all() as Array<{
+        name: string;
+      }>
+    ).map((c) => c.name);
+    expect(columns).toContain("job_id");
+
+    const indexes = db.raw
+      .prepare("PRAGMA index_list(agent_runs)")
+      .all() as Array<{ name: string; unique: number; partial: number }>;
+    const uidx = indexes.find(
+      (i) => i.name === "agent_runs_tenant_job_uidx",
+    );
+    expect(uidx).toBeTruthy();
+    expect(uidx?.unique).toBe(1);
+    expect(uidx?.partial).toBe(1);
+
+    const idxSql = db.raw
+      .prepare(
+        `SELECT sql FROM sqlite_master
+         WHERE type = 'index' AND name = 'agent_runs_tenant_job_uidx'`,
+      )
+      .get() as { sql: string } | undefined;
+    expect(idxSql?.sql).toContain("job_id IS NOT NULL");
+  });
+
+  it("converges fresh and migrated agent_runs schema", () => {
+    const migratedDir = mkdtempSync(join(tmpdir(), "mendpoint-db-conv-migrated-"));
+    dirs.push(migratedDir);
+    const migratedPath = join(migratedDir, "legacy.sqlite");
+    const legacy = new DatabaseSync(migratedPath);
+    legacy.exec(`
+      CREATE TABLE agent_runs (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        repo_path TEXT NOT NULL,
+        status TEXT NOT NULL,
+        ok INTEGER NOT NULL DEFAULT 0,
+        steps INTEGER NOT NULL DEFAULT 0,
+        files_changed_json TEXT,
+        report_md TEXT,
+        result_json TEXT,
+        created_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS agent_runs_created_idx ON agent_runs(created_at);
+    `);
+    legacy.close();
+    const migrated = createDb(migratedPath);
+    dbs.push(migrated);
+
+    const freshDir = mkdtempSync(join(tmpdir(), "mendpoint-db-conv-fresh-"));
+    dirs.push(freshDir);
+    const fresh = createDb(join(freshDir, "fresh.sqlite"));
+    dbs.push(fresh);
+
+    const columnsOf = (db: { raw: DatabaseSync }) =>
+      (
+        db.raw.prepare("PRAGMA table_info(agent_runs)").all() as Array<{
+          name: string;
+        }>
+      )
+        .map((c) => c.name)
+        .sort();
+    const indexesOf = (db: { raw: DatabaseSync }) =>
+      (
+        db.raw.prepare("PRAGMA index_list(agent_runs)").all() as Array<{
+          name: string;
+        }>
+      )
+        .map((i) => i.name)
+        .sort();
+
+    expect(columnsOf(migrated)).toEqual(columnsOf(fresh));
+    expect(indexesOf(migrated)).toEqual(indexesOf(fresh));
+    expect(indexesOf(fresh)).toContain("agent_runs_tenant_job_uidx");
+  });
+
   it("creates tables and records audit", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-"));
     dirs.push(dir);
