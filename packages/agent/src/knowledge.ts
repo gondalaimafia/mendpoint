@@ -7,6 +7,8 @@
  * Others surface as diagnosis + FDE guidance (infra / multi-service).
  */
 
+import { WARDEN_BEHAVIOR_POLICY } from "./policies.js";
+
 export type FailureCategoryId =
   | "protocol_contract"
   | "serialization_drift"
@@ -630,5 +632,8 @@ Playbook (loop inside this node):
 3) Apply: path/contract, serialization renames, headers (Content-Type, Accept, Auth, Idempotency-Key, version),
    https, timeouts, exponential backoff+jitter, 429 Retry-After, status checks, webhook idempotency/signature.
 4) Re-run verify command — the VERIFIER is the bottleneck; do not claim success without it.
-5) Stop if infra-only (NTP, gateway, mesh) — FDE handoff. Tools only JSON: {"tool":"...","args":{...},"thought":"..."}.`;
+5) Stop if infra-only (NTP, gateway, mesh) — FDE handoff. Tools only JSON: {"tool":"...","args":{...},"thought":"..."}.
+
+Behavior policy (overrides the steps above when they conflict):
+${WARDEN_BEHAVIOR_POLICY.map((p, i) => `${i + 1}) ${p}`).join("\n")}`;
 }

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const AGENT_EVAL_VERSION = "2026-08-05.v6" as const;
+export const AGENT_EVAL_VERSION = "2026-08-05.v7" as const;
 
 export type AgentEvalProduct = "warden" | "transformer";
 export type AgentEvalTier = "common" | "edge" | "adversarial" | "recovery";
