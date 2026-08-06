@@ -26,6 +26,26 @@ export {
   type VerificationExecution,
   type VerificationInvocation,
 } from "./verify.js";
+export {
+  createSandboxVerifier,
+  createSandboxVerifierFromEnv,
+  resolveSandboxConfig,
+  sweepOrphanedSandboxMachines,
+  packWorkspaceTarGz,
+  LocalSandboxVerifier,
+  FlyMachinesSandbox,
+  type SandboxVerifier,
+  type SandboxBackend,
+  type SandboxConfig,
+  type SandboxDeps,
+  type SandboxErrorCode,
+  type SandboxVerificationRequest,
+  type SandboxVerificationResult,
+  type SandboxSweepResult,
+  type FlyGuestConfig,
+  type FlyMachinesConfig,
+  type PackedWorkspace,
+} from "./sandbox.js";
 
 /** Integrate with CI loop: repair then re-verify */
 export { runAgenticRepairLoop } from "./loop.js";
