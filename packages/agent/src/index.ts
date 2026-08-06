@@ -16,6 +16,7 @@ export type {
   AgentRunResult,
   AgentVerifierState,
   AgentRollbackState,
+  LiveModelProvenanceRecord,
 } from "./types.js";
 
 export {
@@ -46,7 +47,17 @@ export {
 export { proposeWardenFix, hasAutomaticWardenRepair } from "./fixes.js";
 export { runWarden, runWelder, runApiBugAgent } from "./agent.js";
 export { discoverVerifyCommand } from "./discover-verify.js";
-export { resolveAgentModelEndpoint } from "./model-endpoint.js";
+export {
+  resolveAgentModelEndpoint,
+  resolveAgentModelName,
+} from "./model-endpoint.js";
+export {
+  buildLiveModelProvenance,
+  computeModelCostUsd,
+  DEFAULT_MODEL_PRICE_TABLE,
+  MAX_LIVE_MODEL_PROVENANCE,
+  type LiveModelPrice,
+} from "./model-provenance.js";
 export {
   runWardenAttempt,
   type WardenAttemptAgentSummary,

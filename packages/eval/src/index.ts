@@ -43,6 +43,26 @@ export {
   type WardenSourceEvalTrial,
 } from "./warden-source-eval.js";
 export { TRANSFORMER_AGENT_EVAL_SCENARIOS } from "./transformer-agent-eval.js";
+export {
+  DEFAULT_APPROVED_LIVE_MODEL,
+  LIVE_MODEL_EVIDENCE_VERSION,
+  gradeLiveModelProvenance,
+  resolveApprovedLiveModel,
+  type LiveModelApprovedConfig,
+  type LiveModelGrade,
+  type LiveModelGradeInput,
+  type LiveModelGradeResult,
+} from "./live-model-eval.js";
+export {
+  DEFAULT_LIVE_EVAL_MAX_USD,
+  DEFAULT_LIVE_EVAL_RATE_LIMIT_BACKOFF_MS,
+  DEFAULT_LIVE_EVAL_RATE_LIMIT_RETRIES,
+  LIVE_EVAL_CASE_ID,
+  runWardenLiveEval,
+  type LiveEvalReport,
+  type LiveEvalTrial,
+  type RunWardenLiveEvalOptions,
+} from "./agent-eval-live.js";
 export { WARDEN_CAPABILITY_CASES } from "./corpus/warden-v1.js";
 export { TRANSFORMER_CAPABILITY_CASES } from "./corpus/transformer-v1.js";
 export type * from "./corpus/types.js";

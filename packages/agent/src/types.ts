@@ -141,6 +141,31 @@ export type AgentModelBudget = Readonly<{
   maxResponseBytes: number;
 }>;
 
+/**
+ * Machine-verifiable provenance for a single successful live provider call.
+ * Every field is captured from what actually happened on the wire (not from
+ * the request we intended), so a live evidence lane can prove the call.
+ */
+export type LiveModelProvenanceRecord = Readonly<{
+  /** OpenAI-compatible response body `id` (null when the body omits it). */
+  bodyRequestId: string | null;
+  /** `x-request-id` response header (null when the provider omits it). */
+  headerRequestId: string | null;
+  /** Exact `model` echoed by the response body, never the requested id. */
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  /** Host of the endpoint actually contacted. */
+  host: string;
+  /** Transport protocol actually used (must be `https:` to be valid). */
+  protocol: string;
+  /** Cost from the configured price table, or null for an unpriced model. */
+  costUsd: number | null;
+  /** Monotonic clock reading (ms) captured when the response was parsed. */
+  monotonicTimestampMs: number;
+}>;
+
 export type AgentExecutionMetrics = Readonly<{
   durationMs: number;
   toolCalls: number;
@@ -156,6 +181,8 @@ export type AgentExecutionMetrics = Readonly<{
     completionTokens: number;
     totalTokens: number;
     costUsd: number;
+    /** Bounded, per-call live provenance records (rolled-up totals above). */
+    provenance: readonly LiveModelProvenanceRecord[];
   }>;
   sourceContext: Readonly<{
     observedFiles: readonly string[];
