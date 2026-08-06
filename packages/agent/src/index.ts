@@ -21,6 +21,7 @@ export type {
 
 export {
   DEFAULT_NEVER_TOUCH,
+  WARDEN_BEHAVIOR_POLICY,
   pathBlocked,
   verificationControlPath,
   commandBlocked,
