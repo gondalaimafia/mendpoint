@@ -17,16 +17,28 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve } from "node:path";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
-import { recipeFilesDigest, type RecipeFiles } from "./recipe.js";
+import { applyRecipe, recipeFilesDigest, resolveRecipe, type RecipeFiles } from "./recipe.js";
 import {
   RecipeWorkspaceExecutionError,
   executeRecipeInWorkspace,
+  runRecipeVerificationGate,
   type ExactSourceSnapshot,
   type RecipeCommandRunner,
   type RecipeExecutionFence,
   type RecipeExecutionRollback,
   type RecipeWorkspaceExecutionResult,
 } from "./recipe-workspace-execution.js";
+import {
+  runAdaptiveRepairLoop,
+  type AdaptiveBoundExhaustion,
+  type AdaptiveGate,
+  type AdaptiveRepairBounds,
+  type AdaptiveRepairOutcome,
+  type AdaptiveRepairPlanner,
+  type AdaptiveRepairUsage,
+  type AdaptiveUnfixableMarker,
+  type AdaptiveVerifierResult,
+} from "./adaptive-loop.js";
 import type { TransformerAttemptLease } from "./pilot-execution.js";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -198,6 +210,42 @@ export type TransformerAttemptFailureArtifact = Readonly<{
   record: TransformerAttemptFailureEvidenceRecord;
 }>;
 
+/**
+ * Opt-in adaptive repair. When configured and the deterministic recipe fails
+ * verification, the runner engages the bounded inspect/edit/verify/retry loop.
+ * When absent the deterministic path is entirely unchanged.
+ */
+export type TransformerAdaptiveRepairConfig = Readonly<{
+  planner: AdaptiveRepairPlanner;
+  /** Objective gate. Defaults to the recipe's verification commands. */
+  gate?: AdaptiveGate;
+  /** Pre-migration regression gate for the pre-existing-failure trap. */
+  baselineGate?: AdaptiveGate;
+  /** Exact mutation allowlist. Defaults to the recipe's allowed paths. */
+  allowedMutationPaths?: readonly string[];
+  bounds?: Partial<AdaptiveRepairBounds>;
+  now?: () => number;
+}>;
+
+export type TransformerAdaptiveSummary = Readonly<{
+  engaged: boolean;
+  outcome: AdaptiveRepairOutcome["status"];
+  iterationsUsed: number;
+  totalIterationsUsed: number;
+  unitsFixedAdaptively: number;
+  unitsMarkedUnfixable: number;
+  preExistingFailures: number;
+  boundExhaustion: readonly AdaptiveBoundExhaustion[];
+  markers: readonly AdaptiveUnfixableMarker[];
+  /** The converged fix (digest + changed paths), null unless converged. */
+  convergedCandidate: Readonly<{ outputDigest: string; changedPaths: readonly string[] }> | null;
+  /** Converged files carried onward for promotion (null unless converged). */
+  convergedFiles: RecipeFiles | null;
+  /** Best failing attempt files carried for human escalation (null if none). */
+  bestAttemptFiles: RecipeFiles | null;
+  usage: AdaptiveRepairUsage;
+}>;
+
 export type TransformerAttemptRunResult = Readonly<{
   status: "idle" | "completed" | "failed" | "stale";
   summary: string;
@@ -207,6 +255,8 @@ export type TransformerAttemptRunResult = Readonly<{
   errorCode?: string;
   rollback?: RecipeExecutionRollback;
   failureEvidence?: TransformerAttemptFailureArtifact;
+  /** Present only when adaptive repair was configured and engaged. */
+  adaptive?: TransformerAdaptiveSummary;
 }>;
 
 export type RunTransformerAttemptInput = Readonly<{
@@ -224,6 +274,7 @@ export type RunTransformerAttemptInput = Readonly<{
   commandTimeoutMs?: number;
   tempRoot?: string;
   actualCostUsd?: number | ((execution: RecipeWorkspaceExecutionResult) => number);
+  adaptiveRepair?: TransformerAdaptiveRepairConfig;
 }>;
 
 class AttemptRunnerError extends Error {
@@ -830,6 +881,110 @@ function actualCost(input: RunTransformerAttemptInput, execution: RecipeWorkspac
   return value;
 }
 
+function summarizeAdaptiveOutcome(outcome: AdaptiveRepairOutcome): TransformerAdaptiveSummary {
+  const base = {
+    engaged: outcome.status !== "not_engaged",
+    outcome: outcome.status,
+    iterationsUsed: outcome.iterationsUsed,
+    totalIterationsUsed: outcome.iterationsUsed,
+    usage: outcome.usage,
+  } as const;
+  if (outcome.status === "converged") {
+    return Object.freeze({
+      ...base,
+      unitsFixedAdaptively: 1,
+      unitsMarkedUnfixable: 0,
+      preExistingFailures: 0,
+      boundExhaustion: Object.freeze([]),
+      markers: Object.freeze([]),
+      convergedCandidate: Object.freeze({ outputDigest: outcome.outputDigest, changedPaths: outcome.changedPaths }),
+      convergedFiles: outcome.files,
+      bestAttemptFiles: null,
+    });
+  }
+  if (outcome.status === "pre_existing_failure") {
+    return Object.freeze({
+      ...base,
+      unitsFixedAdaptively: 0,
+      unitsMarkedUnfixable: 0,
+      preExistingFailures: 1,
+      boundExhaustion: Object.freeze([]),
+      markers: Object.freeze([outcome.marker]),
+      convergedCandidate: null,
+      convergedFiles: null,
+      bestAttemptFiles: null,
+    });
+  }
+  if (outcome.status === "unfixable") {
+    return Object.freeze({
+      ...base,
+      unitsFixedAdaptively: 0,
+      unitsMarkedUnfixable: 1,
+      preExistingFailures: 0,
+      boundExhaustion: Object.freeze(outcome.boundExhausted ? [outcome.boundExhausted] : []),
+      markers: Object.freeze([outcome.marker]),
+      convergedCandidate: null,
+      convergedFiles: null,
+      bestAttemptFiles: outcome.bestAttemptFiles,
+    });
+  }
+  return Object.freeze({
+    ...base,
+    unitsFixedAdaptively: 0,
+    unitsMarkedUnfixable: 0,
+    preExistingFailures: 0,
+    boundExhaustion: Object.freeze([]),
+    markers: Object.freeze([]),
+    convergedCandidate: null,
+    convergedFiles: null,
+    bestAttemptFiles: null,
+  });
+}
+
+async function runAttemptAdaptiveRepair(
+  input: RunTransformerAttemptInput,
+  lease: TransformerExecutableAttemptLease,
+  source: ExactSourceSnapshot,
+): Promise<TransformerAdaptiveSummary | undefined> {
+  const config = input.adaptiveRepair;
+  if (!config) return undefined;
+  let recipeFiles: RecipeFiles;
+  let allowedMutationPaths: readonly string[];
+  try {
+    const application = applyRecipe(lease.recipe, source.files);
+    recipeFiles = application.files;
+    allowedMutationPaths = config.allowedMutationPaths ?? resolveRecipe(lease.recipe).allowedPaths;
+  } catch {
+    // The deterministic recipe output could not be reconstructed; skip adaptive
+    // repair rather than guess.
+    return undefined;
+  }
+  const gate: AdaptiveGate =
+    config.gate ??
+    (async (files: RecipeFiles): Promise<AdaptiveVerifierResult> =>
+      await runRecipeVerificationGate({
+        files,
+        recipe: lease.recipe,
+        commandRunner: input.commandRunner,
+        commandTimeoutMs: input.commandTimeoutMs,
+        tempRoot: input.tempRoot,
+      }));
+  const outcome = await runAdaptiveRepairLoop({
+    unitId: lease.unitId,
+    goal: `Adaptively repair unit ${lease.unitId} for recipe ${lease.recipe.id}@${lease.recipe.version}`,
+    recipe: lease.recipe,
+    sourceFiles: source.files,
+    recipeFiles,
+    allowedMutationPaths,
+    gate,
+    ...(config.baselineGate ? { baselineGate: config.baselineGate } : {}),
+    planner: config.planner,
+    ...(config.bounds ? { bounds: config.bounds } : {}),
+    ...(config.now ? { now: config.now } : {}),
+  });
+  return summarizeAdaptiveOutcome(outcome);
+}
+
 export async function runTransformerAttempt(input: RunTransformerAttemptInput): Promise<TransformerAttemptRunResult> {
   validateScope(input.scope);
   const authorization = authorizeTransformerWorkerAction(
@@ -883,13 +1038,13 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
   let execution: RecipeWorkspaceExecutionResult | undefined;
   let artifact: TransformerCandidateArtifact | undefined;
   let evidenceDirectory: string | undefined;
+  let source: ExactSourceSnapshot | undefined;
   try {
     validateLease(lease, input.scope, leaseToken);
     attemptId = transformerAttemptId(lease);
     fence = fenceFor(lease, attemptId, leaseToken);
     await assertCurrentFence(input.coordinator, lease, fence, input.observedAt("execute"));
     evidenceDirectory = scopedEvidenceDirectory(input.evidenceRoot, input.scope, lease, attemptId);
-    let source: ExactSourceSnapshot;
     try {
       source = await input.loadExactSource(lease);
     } catch (error) {
@@ -955,6 +1110,17 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
       ...(execution ? [execution.evidence.record.evidenceId] : []),
       ...(artifact ? artifact.evidenceRefs : []),
     ].filter((value, index, values) => values.indexOf(value) === index));
+    // Recipe-first: adaptive repair engages only after the deterministic recipe
+    // has failed verification, only when configured, and never disturbs the
+    // deterministic success path above.
+    let adaptiveSummary: TransformerAdaptiveSummary | undefined;
+    if (classified.recoveryCode === "verification_failed" && source && input.adaptiveRepair) {
+      try {
+        adaptiveSummary = await runAttemptAdaptiveRepair(input, lease, source);
+      } catch {
+        adaptiveSummary = undefined;
+      }
+    }
     let failureEvidence: TransformerAttemptFailureArtifact | undefined;
     try {
       const failureObservedAt = input.observedAt("failure");
@@ -1000,6 +1166,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
           artifacts: Object.freeze(artifact ? [artifact] : []),
           ...(classified.rollback ? { rollback: classified.rollback } : {}),
           ...(failureEvidence ? { failureEvidence } : {}),
+          ...(adaptiveSummary ? { adaptive: adaptiveSummary } : {}),
         });
       }
       return Object.freeze({
@@ -1011,6 +1178,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
         errorCode: errorCode(recordError),
         ...(classified.rollback ? { rollback: classified.rollback } : {}),
         ...(failureEvidence ? { failureEvidence } : {}),
+        ...(adaptiveSummary ? { adaptive: adaptiveSummary } : {}),
       });
     }
     return Object.freeze({
@@ -1022,6 +1190,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
       errorCode: classified.errorCode,
       ...(classified.rollback ? { rollback: classified.rollback } : {}),
       ...(failureEvidence ? { failureEvidence } : {}),
+      ...(adaptiveSummary ? { adaptive: adaptiveSummary } : {}),
     });
   }
 }

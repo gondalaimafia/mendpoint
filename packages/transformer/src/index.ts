@@ -122,7 +122,30 @@ export {
   RecipeWorkspaceExecutionError,
   executeRecipeInWorkspace,
   restoreRecipeExecutionInWorkspace,
+  runRecipeVerificationGate,
 } from "./recipe-workspace-execution.js";
+
+export {
+  DEFAULT_ADAPTIVE_REPAIR_BOUNDS,
+  runAdaptiveRepairLoop,
+  type AdaptiveBestAttempt,
+  type AdaptiveBoundExhaustion,
+  type AdaptiveEdit,
+  type AdaptiveGate,
+  type AdaptiveRepairBounds,
+  type AdaptiveRepairContextFile,
+  type AdaptiveRepairOutcome,
+  type AdaptiveRepairPlan,
+  type AdaptiveRepairPlanner,
+  type AdaptiveRepairPlannerInput,
+  type AdaptiveRepairPlannerOutput,
+  type AdaptiveRepairPlannerUsage,
+  type AdaptiveRepairUsage,
+  type AdaptiveUnfixableMarker,
+  type AdaptiveUnfixableReason,
+  type AdaptiveVerifierResult,
+  type RunAdaptiveRepairLoopInput,
+} from "./adaptive-loop.js";
 
 export {
   persistTransformerAttemptFailureEvidence,
@@ -130,6 +153,8 @@ export {
   runTransformerAttempt,
   transformerAttemptId,
   type RunTransformerAttemptInput,
+  type TransformerAdaptiveRepairConfig,
+  type TransformerAdaptiveSummary,
   type TransformerAttemptClaimInput,
   type TransformerAttemptCompletionInput,
   type TransformerAttemptCoordinatorPort,
@@ -225,4 +250,6 @@ export type {
   RecipeWorkspaceRestoreResult,
   ExecuteRecipeWorkspaceInput,
   RestoreRecipeWorkspaceInput,
+  RecipeVerificationGateResult,
+  RunRecipeVerificationGateInput,
 } from "./recipe-workspace-execution.js";

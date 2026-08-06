@@ -9,6 +9,11 @@ import {
 } from "@mendpoint/transformer";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
 import { loadTransformerRecipeSnapshot } from "./transformer-snapshot-loader.js";
+import {
+  buildRoutedExecutorRegistry,
+  runRoutedTransformerAttempt,
+  transformerRoutingRequest,
+} from "./transformer-router.js";
 
 export type TransformerPilotLaneResult = Readonly<{
   enabled: boolean;
@@ -18,6 +23,7 @@ export type TransformerPilotLaneResult = Readonly<{
   failed: number;
   stale: number;
   idle: number;
+  handoff?: number;
   errors: readonly string[];
   infrastructureError?: string;
 }>;
@@ -124,6 +130,7 @@ export async function runTransformerPilotLaneOnce(
   let failed = 0;
   let stale = 0;
   let idle = 0;
+  let handoff = 0;
   let infrastructureError: string | undefined;
 
   const sweepObservedAt = now();
@@ -179,6 +186,13 @@ export async function runTransformerPilotLaneOnce(
   }
 
   const coordinator = asCoordinator(input.store);
+  // The shared policy router is the dispatcher for every runnable campaign: it
+  // decides (execute vs mandatory human handoff), selects the Transformer
+  // executor over Warden under the existing filters and breakers, and persists
+  // the decision + outcome to the durable routing ledger. The claim, snapshot,
+  // lease, and authorization guarantees below are unchanged; the attempt runs
+  // through the router's executor port instead of being invoked directly.
+  const routedRegistry = buildRoutedExecutorRegistry(now());
   for (const campaign of input.store.listRunnableCampaigns(
     input.tenantId,
     maxCampaigns,
@@ -200,35 +214,68 @@ export async function runTransformerPilotLaneOnce(
       campaign.tenantId,
       campaign.campaignId,
     );
-    const result = await runTransformerAttempt({
-      scope: campaign,
-      gateConfig: rawGate,
-      coordinator,
-      loadExactSource: (lease) => loadTransformerRecipeSnapshot(input.db, lease, now()),
-      evidenceRoot: resolve(input.evidenceRoot),
-      candidateRoot: resolve(input.candidateRoot),
-      ...(input.tempRoot ? { tempRoot: resolve(input.tempRoot) } : {}),
-      leaseDurationMs,
-      observedAt: () => now(),
-      idempotencyKey: (phase, attemptId) =>
-        phase === "claim"
-          ? claimKey
-          : stableId(
-              `tf${phase}`,
-              campaign.tenantId,
-              campaign.campaignId,
-              attemptId ?? "unbound",
-            ),
-      leaseToken: createLeaseToken,
-      ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
-      actualCostUsd: 0,
+    const routed = await runRoutedTransformerAttempt({
+      db: input.db,
+      registry: routedRegistry,
+      tenantId: campaign.tenantId,
+      jobId: campaign.campaignId,
+      runId,
+      sessionId: runId,
+      goal: `Transformer recipe migration for ${campaign.campaignId}`,
+      routingRequest: transformerRoutingRequest({
+        taskId: campaign.campaignId,
+        tenantId: campaign.tenantId,
+        campaignId: campaign.campaignId,
+        idempotencyKey: claimKey,
+        policySnapshotId: stableId(
+          "tfpolicy",
+          campaign.tenantId,
+          campaign.campaignId,
+        ),
+        decidedAt: new Date(now()),
+      }),
+      outcomeIdempotencyKey: stableId(
+        "tfroute",
+        campaign.tenantId,
+        campaign.campaignId,
+        runId,
+      ),
+      runAttempt: () =>
+        runTransformerAttempt({
+          scope: campaign,
+          gateConfig: rawGate,
+          coordinator,
+          loadExactSource: (lease) => loadTransformerRecipeSnapshot(input.db, lease, now()),
+          evidenceRoot: resolve(input.evidenceRoot),
+          candidateRoot: resolve(input.candidateRoot),
+          ...(input.tempRoot ? { tempRoot: resolve(input.tempRoot) } : {}),
+          leaseDurationMs,
+          observedAt: () => now(),
+          idempotencyKey: (phase, attemptId) =>
+            phase === "claim"
+              ? claimKey
+              : stableId(
+                  `tf${phase}`,
+                  campaign.tenantId,
+                  campaign.campaignId,
+                  attemptId ?? "unbound",
+                ),
+          leaseToken: createLeaseToken,
+          ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
+          actualCostUsd: 0,
+        }),
     });
-    if (result.status !== "idle") attempted++;
-    if (result.status === "completed") completed++;
-    else if (result.status === "failed") {
+    if (routed.status === "handoff") {
+      handoff++;
+      errors.push(`transformer_routing_human_handoff:${campaign.campaignId}`);
+      continue;
+    }
+    if (routed.status !== "idle") attempted++;
+    if (routed.status === "completed") completed++;
+    else if (routed.status === "failed") {
       failed++;
-      if (result.errorCode) errors.push(result.errorCode);
-    } else if (result.status === "stale") stale++;
+      if (routed.errorCode) errors.push(routed.errorCode);
+    } else if (routed.status === "stale") stale++;
     else idle++;
   }
 
@@ -240,6 +287,7 @@ export async function runTransformerPilotLaneOnce(
     failed,
     stale,
     idle,
+    ...(handoff ? { handoff } : {}),
     errors: Object.freeze([...new Set(errors)].slice(0, 25)),
     ...(infrastructureError ? { infrastructureError } : {}),
   });

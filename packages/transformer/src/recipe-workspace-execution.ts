@@ -618,6 +618,64 @@ function validateCommon(
   return timeout;
 }
 
+export type RecipeVerificationGateResult = Readonly<{
+  passed: boolean;
+  /** Identifier of the first failing verification command, null when passed. */
+  failingCommandId: string | null;
+  /** Bounded, untrusted verifier output for the failing command. */
+  output: string;
+  /** Recipe-allowed paths present in the supplied files. */
+  implicatedPaths: readonly string[];
+}>;
+
+export type RunRecipeVerificationGateInput = Readonly<{
+  files: RecipeFiles;
+  recipe: RecipeReference;
+  commandRunner?: RecipeCommandRunner;
+  commandTimeoutMs?: number;
+  tempRoot?: string;
+}>;
+
+const GATE_OUTPUT_MAX_CHARS = 8_192;
+
+/**
+ * Run the recipe's objective verification commands against an arbitrary set of
+ * files in a disposable workspace. Unlike {@link executeRecipeInWorkspace} this
+ * applies no transform and enforces no lease fence — it is the objective gate
+ * the adaptive repair loop re-runs after each edit. The workspace is always
+ * disposed and the recipe's command allowlist is still enforced.
+ */
+export async function runRecipeVerificationGate(
+  input: RunRecipeVerificationGateInput,
+): Promise<RecipeVerificationGateResult> {
+  const timeout = input.commandTimeoutMs ?? 10_000;
+  if (!Number.isSafeInteger(timeout) || timeout < 100 || timeout > MAX_COMMAND_TIMEOUT_MS) {
+    throw new Error("recipe_execution_command_timeout_invalid");
+  }
+  const recipe = resolveRecipe(input.recipe);
+  const implicatedPaths = Object.freeze(
+    recipe.allowedPaths.filter((path) => input.files[path] !== undefined),
+  );
+  const runner = input.commandRunner ?? defaultCommandRunner;
+  let workspace: string | undefined;
+  try {
+    workspace = createWorkspace(input.tempRoot);
+    materializeFiles(workspace, input.files);
+    for (const command of recipe.verificationCommands) {
+      const invocation = allowlistedInvocation(input.recipe, command, workspace, timeout);
+      const result = await runner(invocation);
+      if (!Number.isSafeInteger(result.exitCode)) throw new Error("recipe_execution_command_result_invalid");
+      if (result.exitCode !== 0) {
+        const output = `${result.stdout}\n${result.stderr}`.slice(0, GATE_OUTPUT_MAX_CHARS);
+        return deepFreeze({ passed: false, failingCommandId: command.id, output, implicatedPaths });
+      }
+    }
+    return deepFreeze({ passed: true, failingCommandId: null, output: "", implicatedPaths });
+  } finally {
+    discardWorkspace(workspace);
+  }
+}
+
 export async function executeRecipeInWorkspace(
   input: ExecuteRecipeWorkspaceInput,
 ): Promise<RecipeWorkspaceExecutionResult> {
