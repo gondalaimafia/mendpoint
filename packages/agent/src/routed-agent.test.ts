@@ -35,6 +35,7 @@ const passedRun: AgentRunResult = {
       completionTokens: 0,
       totalTokens: 0,
       costUsd: 0,
+      provenance: [],
     },
     sourceContext: {
       observedFiles: [],

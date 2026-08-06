@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveAgentModelEndpoint } from "./model-endpoint.js";
+import {
+  resolveAgentModelEndpoint,
+  resolveAgentModelName,
+} from "./model-endpoint.js";
 
 describe("Warden model endpoint", () => {
   it("normalizes the exact chat completion destination", () => {
@@ -21,5 +24,15 @@ describe("Warden model endpoint", () => {
 
   it("returns null when no provider endpoint is configured", () => {
     expect(resolveAgentModelEndpoint({})).toBeNull();
+  });
+});
+
+describe("Warden model name resolution", () => {
+  it("resolves the configured model id, including approved contributor tiers", () => {
+    expect(resolveAgentModelName({ LLM_AGENT_MODEL: "muse-spark-1.2-contributor" }))
+      .toBe("muse-spark-1.2-contributor");
+    expect(resolveAgentModelName({ LLM_AGENT_MODEL: "  muse-spark-1.2  " }))
+      .toBe("muse-spark-1.2");
+    expect(resolveAgentModelName({})).toBe("gpt-4o-mini");
   });
 });

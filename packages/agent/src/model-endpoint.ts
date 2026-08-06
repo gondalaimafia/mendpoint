@@ -27,3 +27,14 @@ export function resolveAgentModelEndpoint(
     : `${basePath}/v1/chat/completions`;
   return parsed.toString();
 }
+
+/**
+ * Resolve the exact model id used for a live provider call from configuration.
+ * The live evidence lane (not this generic client) enforces the approved-model
+ * allowlist, so a policy change is a config change, not a code change here.
+ */
+export function resolveAgentModelName(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return env.LLM_AGENT_MODEL?.trim() || "gpt-4o-mini";
+}

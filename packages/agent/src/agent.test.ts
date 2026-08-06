@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runWarden } from "./agent.js";
+import { runWarden, validatedToolCall, WARDEN_TOOL_CALL_SCHEMA } from "./agent.js";
 import { extractHints, extractRenames, extractApiPaths } from "./heuristics.js";
 import { pathBlocked, commandBlocked } from "./policies.js";
 import {
@@ -726,7 +726,144 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         type: "json_schema",
         json_schema: { name: "warden_tool_call", strict: true },
       });
-      expect(request.response_format.json_schema.schema.oneOf).toHaveLength(8);
+      expect(request.response_format.json_schema.schema.type).toBe("object");
+      expect(request.response_format.json_schema.schema.oneOf).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+    }
+  });
+
+  it("captures live model provenance and computed cost on a successful call", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-provenance-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    const priorModel = process.env.LLM_AGENT_MODEL;
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.LLM_AGENT_MODEL = "muse-spark-1.2";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      id: "chatcmpl-live-1",
+      model: "muse-spark-1.2",
+      choices: [{ message: { content: JSON.stringify({
+        tool: "read_file",
+        args: { path: "client.js" },
+        thought: "inspect the client",
+      }) } }],
+      usage: { prompt_tokens: 200, completion_tokens: 80, total_tokens: 280 },
+    }), { headers: { "content-type": "application/json", "x-request-id": "req-live-9" } })));
+    try {
+      const result = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 20,
+        modelBudget: { maxCalls: 1 },
+      });
+      expect(result.stoppedReason).toBe("model_call_budget_exhausted");
+      expect(result.metrics.model.provenance).toHaveLength(1);
+      const record = result.metrics.model.provenance[0]!;
+      expect(record.bodyRequestId).toBe("chatcmpl-live-1");
+      expect(record.headerRequestId).toBe("req-live-9");
+      expect(record.model).toBe("muse-spark-1.2");
+      expect(record.promptTokens).toBe(200);
+      expect(record.completionTokens).toBe(80);
+      expect(record.totalTokens).toBe(280);
+      expect(record.host).toBe("models.example");
+      expect(record.protocol).toBe("https:");
+      expect(record.costUsd).toBeCloseTo((200 * 1.25 + 80 * 4.25) / 1_000_000, 12);
+      expect(result.metrics.model.costUsd).toBeCloseTo(record.costUsd!, 12);
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+      if (priorModel === undefined) delete process.env.LLM_AGENT_MODEL;
+      else process.env.LLM_AGENT_MODEL = priorModel;
+    }
+  });
+
+  it("sends the approved contributor tier model and prices it accordingly", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-contributor-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    const priorModel = process.env.LLM_AGENT_MODEL;
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.LLM_AGENT_MODEL = "muse-spark-1.2-contributor";
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({
+      id: "chatcmpl-contrib-1",
+      model: "muse-spark-1.2-contributor",
+      choices: [{ message: { content: JSON.stringify({
+        tool: "read_file",
+        args: { path: "client.js" },
+        thought: "inspect the client",
+      }) } }],
+      // Muse Spark is a reasoning model; completions carry real token headroom.
+      usage: { prompt_tokens: 200, completion_tokens: 160, total_tokens: 360 },
+    }), { headers: { "content-type": "application/json", "x-request-id": "req-contrib-1" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const result = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 20,
+        modelBudget: { maxCalls: 1 },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).model)
+        .toBe("muse-spark-1.2-contributor");
+      const record = result.metrics.model.provenance[0]!;
+      expect(record.model).toBe("muse-spark-1.2-contributor");
+      expect(record.costUsd).toBeCloseTo((200 * 0.1 + 160 * 0.2) / 1_000_000, 12);
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+      if (priorModel === undefined) delete process.env.LLM_AGENT_MODEL;
+      else process.env.LLM_AGENT_MODEL = priorModel;
+    }
+  });
+
+  it("surfaces a provider 429 as a rate limited stop", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-429-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("rate limited", { status: 429 })));
+    try {
+      const result = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 20,
+        modelBudget: { maxCalls: 3 },
+      });
+      expect(result.stoppedReason).toBe("model_rate_limited");
+      expect(result.metrics.model.failedCalls).toBeGreaterThanOrEqual(1);
     } finally {
       vi.unstubAllGlobals();
       if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
@@ -855,6 +992,92 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
       if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = priorKey;
     }
+  });
+});
+
+describe("Warden planner response schema", () => {
+  it("uses an object root with no top-level oneOf/anyOf/allOf/enum/not and lists every property in required", () => {
+    const schema = WARDEN_TOOL_CALL_SCHEMA as Record<string, unknown>;
+    expect(schema.type).toBe("object");
+    for (const forbidden of ["oneOf", "anyOf", "allOf", "enum", "not"]) {
+      expect(schema[forbidden]).toBeUndefined();
+    }
+    const properties = schema.properties as Record<string, unknown>;
+    const required = schema.required as string[];
+    expect(new Set(required)).toEqual(new Set(Object.keys(properties)));
+    // The nested args object must satisfy the same strict-mode rule.
+    const args = properties.args as Record<string, unknown>;
+    expect(args.type).toBe("object");
+    const argProps = args.properties as Record<string, unknown>;
+    const argRequired = args.required as string[];
+    expect(new Set(argRequired)).toEqual(new Set(Object.keys(argProps)));
+  });
+
+  it("accepts a null-padded finish call and returns only its contract args", () => {
+    const call = validatedToolCall({
+      tool: "finish",
+      args: {
+        path: null,
+        content: null,
+        from: null,
+        to: null,
+        query: null,
+        command: null,
+        url: null,
+        message: "done",
+        ok: true,
+      },
+      thought: "wrap up",
+    });
+    expect(call).toEqual({
+      tool: "finish",
+      args: { message: "done", ok: true },
+      thought: "wrap up",
+    });
+  });
+
+  it("drops non-contract junk args instead of rejecting the call", () => {
+    const call = validatedToolCall({
+      tool: "finish",
+      args: {
+        path: null,
+        content: null,
+        from: null,
+        to: null,
+        query: null,
+        // Live models have returned a junk command value on a finish call.
+        command: "rm -rf /",
+        url: null,
+        message: "done",
+        ok: false,
+      },
+      thought: "give up cleanly",
+    });
+    expect(call).toEqual({
+      tool: "finish",
+      args: { message: "done", ok: false },
+      thought: "give up cleanly",
+    });
+    expect(call?.args.command).toBeUndefined();
+  });
+
+  it("still rejects a call missing a required arg", () => {
+    const call = validatedToolCall({
+      tool: "replace_in_file",
+      args: {
+        path: "client.js",
+        content: null,
+        from: "old",
+        to: null,
+        query: null,
+        command: null,
+        url: null,
+        message: null,
+        ok: null,
+      },
+      thought: "rename without a target",
+    });
+    expect(call).toBeNull();
   });
 });
 

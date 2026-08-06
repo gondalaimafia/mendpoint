@@ -192,7 +192,8 @@ api · worker · scripts
 - PR-only delivery; mock GitHub by default  
 - Only candidate slices may leave the trust boundary for LLM  
 - Full audit trail of normalize / analyze / open-PR events  
-- Customer code not used for foundation-model training without opt-in  
+- Model-bound repository context is redacted before transmission  
+- The current design-partner preview runs on a provider tier (Meta Muse Spark contributor) where prompts and completions may be used for provider model training; this is an explicit operator opt-in and is disclosed to design partners  
 
 ## Storage
 
