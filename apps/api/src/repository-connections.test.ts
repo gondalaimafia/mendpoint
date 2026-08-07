@@ -170,10 +170,15 @@ function fixture() {
   writeFileSync(join(repositoryPath, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
   writeFileSync(join(repositoryPath, ".github", "CODEOWNERS"), "* @customer\n");
   writeFileSync(join(repositoryPath, ".github", "workflows", "ci.yml"), "jobs:\n  test:\n    steps:\n      - run: npm test\n");
-  writeFileSync(join(repositoryPath, "scripts", "check.sh"), "#!/bin/sh\nnpm test\n");
+  const checkScriptPath = join(repositoryPath, "scripts", "check.sh");
+  writeFileSync(checkScriptPath, "#!/bin/sh\nnpm test\n");
+  chmodSync(checkScriptPath, 0o755);
   git(repositoryPath, "add", "--all");
   git(repositoryPath, "update-index", "--chmod=+x", "scripts/check.sh");
   git(repositoryPath, "commit", "-m", "customer fixture");
+  if (git(repositoryPath, "status", "--porcelain")) {
+    throw new Error("repository_connection_fixture_not_clean");
+  }
   process.env.MENDPOINT_REPOS_DIR = root;
   process.env.NODE_ENV = "test";
   const db = createDb(join(root, "connections.sqlite"));
