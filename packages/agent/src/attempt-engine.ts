@@ -802,8 +802,8 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       fail("warden_attempt_verifier_mutated_candidate", "A baseline verifier changed the private candidate.");
     }
 
-    const protectedPaths = [...new Set([
-      ...(input.task.neverTouchPaths ?? []).map(normalizeRelativePath),
+    const readOnlyPaths = [...new Set([
+      ...(input.task.readOnlyPaths ?? []).map(normalizeRelativePath),
       ...verifierPaths(sourceManifest),
     ])].sort();
     const agent = await runWarden({
@@ -811,7 +811,8 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       tenantId: input.scope.tenantId,
       repoRoot: workspace,
       verifyCommand: input.verification.targetCommand,
-      neverTouchPaths: protectedPaths,
+      neverTouchPaths: input.task.neverTouchPaths,
+      readOnlyPaths,
       allowNetwork: false,
       requireSourceObservation: true,
       sourceContextBudget: sourceBudget(input),

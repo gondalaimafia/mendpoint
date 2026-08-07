@@ -41,6 +41,7 @@ export type ToolContext = {
   repoRoot: string;
   dryRun?: boolean;
   neverTouchPaths?: string[];
+  readOnlyPaths?: string[];
   allowNetwork?: boolean;
   /** Test and explicitly trusted development use only. */
   allowPrivateNetwork?: boolean;
@@ -272,7 +273,14 @@ export function rollbackToolWrites(ctx: ToolContext): ToolRollbackResult {
   for (const [rel, original] of originals) {
     try {
       const safe = safeRel(ctx.repoRoot, rel, true);
-      if (!safe || safe !== rel || pathBlocked(safe, ctx.neverTouchPaths ?? DEFAULT_NEVER_TOUCH)) {
+      if (
+        !safe || safe !== rel ||
+        pathBlocked(safe, [
+          ...DEFAULT_NEVER_TOUCH,
+          ...(ctx.neverTouchPaths ?? []),
+          ...(ctx.readOnlyPaths ?? []),
+        ])
+      ) {
         failedFiles.push(rel);
         continue;
       }
@@ -297,7 +305,8 @@ export function rollbackToolWrites(ctx: ToolContext): ToolRollbackResult {
 }
 
 export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
-  const never = ctx.neverTouchPaths ?? DEFAULT_NEVER_TOUCH;
+  const never = [...DEFAULT_NEVER_TOUCH, ...(ctx.neverTouchPaths ?? [])];
+  const neverMutate = [...never, ...(ctx.readOnlyPaths ?? [])];
   const tool = call.tool;
   const args = call.args;
 
@@ -421,7 +430,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         const rel = String(args.path ?? "");
         const content = String(args.content ?? "");
         const safe = safeRel(ctx.repoRoot, rel, true);
-        if (!safe || pathBlocked(safe, never)) {
+        if (!safe || pathBlocked(safe, neverMutate)) {
           return { ok: false, tool, summary: "blocked path", error: "policy" };
         }
         const abs = join(ctx.repoRoot, safe);
@@ -468,7 +477,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         const to = String(args.to ?? "");
         const global = args.global !== false;
         const safe = safeRel(ctx.repoRoot, rel);
-        if (!safe || pathBlocked(safe, never)) {
+        if (!safe || pathBlocked(safe, neverMutate)) {
           return { ok: false, tool, summary: "blocked path", error: "policy" };
         }
         if (!from) return { ok: false, tool, summary: "from required", error: "args" };

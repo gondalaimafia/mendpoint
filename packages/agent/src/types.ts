@@ -145,6 +145,8 @@ export type AgentTask = {
   maxSteps?: number;
   dryRun?: boolean;
   neverTouchPaths?: string[];
+  /** Paths the agent may inspect and search but must never mutate. */
+  readOnlyPaths?: string[];
   /** Allow network for http_probe (default false in tests) */
   allowNetwork?: boolean;
   /** Optional LLM planner */

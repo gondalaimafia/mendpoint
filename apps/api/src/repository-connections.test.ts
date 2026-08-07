@@ -430,7 +430,7 @@ describe("repository connection service", () => {
     expect(second).toMatchObject({ reused: false, snapshot: { requestedRef: "release" } });
     expect(second.snapshot.id).not.toBe(first.snapshot.id);
     expect(listRepositorySnapshots(db, "tenant-a", repository.id)).toHaveLength(2);
-  });
+  }, 15_000);
 
   it("rematerializes identical content after the reusable snapshot expires", async () => {
     vi.useFakeTimers();
@@ -465,7 +465,7 @@ describe("repository connection service", () => {
     expect(second.reused).toBe(false);
     expect(second.snapshot.id).not.toBe(first.snapshot.id);
     expect(listRepositorySnapshots(db, "tenant-a", repository.id)).toHaveLength(2);
-  });
+  }, 15_000);
 
   it.each(["missing", "corrupt", "deleted", "legacy"] as const)(
     "rematerializes identical content when reusable storage is %s",

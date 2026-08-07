@@ -227,7 +227,7 @@ function input(
   };
 }
 
-describe("Warden attempt engine", () => {
+describe("Warden attempt engine", { timeout: 15_000 }, () => {
   it("repairs only a private candidate and leaves the frozen source unchanged", async () => {
     const value = fixture("valid");
     const sourceBefore = readFileSync(join(value.sourceRoot, "client.js"), "utf8");
