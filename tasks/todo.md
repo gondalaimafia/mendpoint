@@ -1221,3 +1221,20 @@ Baseline: exact deployed `origin/main` revision `6d2b25c1129eccee3f333ceb47dbc15
 Acceptance: a Warden live trial passes only when a real approved model both satisfies every provenance gate and completes the held out repair through the production agent loop, with independent verification and the exact allowed diff. Provider identity alone can never certify coding capability.
 
 Review evidence: the original lane reproduced a provider-valid false positive while the task stopped without progress. Schema v2 now binds every pass to the production agent outcome, a non-executing source verifier, an independent hidden semantic judge, a bounded final-tree digest, exact allowed files, tool-ledger agreement, immutable verifier bytes, rollback state, approved model provenance, semantic consistency, and one shared worst-case USD ledger across all attempts. Default secret protections are unioned at both the public Warden and exported low-level tool boundaries. Missing, zero, unpriced, or inconsistent live-provider usage fails closed and charges the reserved worst case. Provider rate limits, typed cross-platform connection failures, timeouts, and retry-safe HTTP statuses receive bounded backoff; permanent failures do not retry. A fresh real three-repetition run passed 3 of 3 with consistent `verify_passed` outcomes, zero timeouts, and $0.002485 total spend. Full workspace tests, every workspace typecheck, the 22-page production build, GA and claims checks, the 90-trial deterministic agent eval, production dependency audit, and diff integrity pass. Independent final adversarial review reports no P0 or P1 finding. Protected delivery remains before merge.
+
+## Transformer live objective and spend truthfulness: 2026-08-07
+
+Baseline: exact deployed `origin/main` revision `14bee419b7d22999a33a4e91add1984d8a41996b`.
+
+- [x] Reject missing, zero, non-integral, or inconsistent provider usage at the production adaptive planner boundary.
+- [x] Reserve worst-case cost before every live call and charge it for failed, malformed, unknown, or over-budget settlements across all repetitions.
+- [x] Accept measured cost only for a positive, internally consistent successful settlement within its reservation.
+- [x] Make the final report require every trial and held-out objective to pass, regardless of configurable aggregate thresholds.
+- [x] Reject present-but-invalid live budget configuration before any provider call.
+- [x] Add adversarial regressions for zero or missing usage, failed-call charging, shared remaining-budget exhaustion, zero-threshold objective failure, unauthorized extra fields, strict provider schemas, parsed object content, truncated output, and isolated CLI selection.
+- [x] Run focused suites, all affected typechecks, the complete release matrix, and a real three-repetition live Transformer lane.
+- [ ] Obtain an independent final review, then push, require protected CI, merge, deploy, and verify production.
+
+Acceptance: no provider request can escape the configured live-eval cost ceiling through missing or untrusted usage; no collection of failed objectives can certify Transformer capability; and only three consistent real-provider successes through the production router can supply live evidence.
+
+Review evidence: the first real run exposed a strict-schema compatibility error and charged all three failed reservations conservatively. The provider required every declared property in the schema's required array, then returned parsed structured content rather than a JSON string. The production adapter now supports both safe envelopes, rejects refusals and truncated output, and retains the same strict local plan parser. A fresh isolated Meta Muse Spark run passed 3 of 3 with exact objective success, consistency 1.000, 8,472 total tokens, and $0.001570 measured and charged spend. The final full workspace tests, every workspace typecheck, the 22-page production build, GA and claims checks, the 90-trial deterministic agent eval, production dependency audit, and diff integrity all pass. Independent final adversarial review reports no P0 or P1 finding. Protected delivery remains pending.

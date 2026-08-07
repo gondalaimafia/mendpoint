@@ -43,7 +43,10 @@ const TRANSFORMER_ADAPTIVE_PLAN_SCHEMA = Object.freeze({
     plan: {
       type: "object",
       additionalProperties: false,
-      required: ["edits"],
+      // Strict structured-output providers require every declared property to
+      // appear in required. Empty arrays, false, and an empty rationale encode
+      // the optional planner semantics without weakening local validation.
+      required: ["edits", "requestContextPaths", "markUnfixable", "rationale"],
       properties: {
         edits: {
           type: "array",
@@ -249,8 +252,8 @@ function budgetedPlannerRequest(
     throw new Error("transformer_adaptive_model_budget_exhausted");
   }
   const price = priceTable[model];
-  if (!price || !Number.isFinite(price.promptUsdPerMillion) || price.promptUsdPerMillion < 0 ||
-      !Number.isFinite(price.completionUsdPerMillion) || price.completionUsdPerMillion < 0) {
+  if (!price || !Number.isFinite(price.promptUsdPerMillion) || price.promptUsdPerMillion <= 0 ||
+      !Number.isFinite(price.completionUsdPerMillion) || price.completionUsdPerMillion <= 0) {
     throw new Error("transformer_adaptive_model_price_unknown");
   }
 
@@ -514,6 +517,7 @@ function parseResponse(
   const totalTokens = nonNegativeInteger(usage?.total_tokens);
   if (
     promptTokens === null || completionTokens === null || totalTokens === null ||
+    promptTokens < 1 || completionTokens < 1 || totalTokens < 1 ||
     totalTokens !== promptTokens + completionTokens
   ) {
     throw new Error("transformer_adaptive_model_response_invalid");
@@ -523,13 +527,19 @@ function parseResponse(
   }
   const choice = body.choices[0];
   const message = isRecord(choice) && isRecord(choice.message) ? choice.message : null;
-  if (!message || typeof message.content !== "string") {
+  if (!message || choice.finish_reason !== "stop" || message.refusal) {
     throw new Error("transformer_adaptive_model_response_invalid");
   }
   let decoded: unknown;
-  try {
-    decoded = JSON.parse(message.content);
-  } catch {
+  if (typeof message.content === "string") {
+    try {
+      decoded = JSON.parse(message.content);
+    } catch {
+      throw new Error("transformer_adaptive_model_response_invalid");
+    }
+  } else if (isRecord(message.content)) {
+    decoded = message.content;
+  } else {
     throw new Error("transformer_adaptive_model_response_invalid");
   }
   if (!isRecord(decoded) || !onlyKeys(decoded, ["plan"]) || !("plan" in decoded)) {
@@ -688,12 +698,14 @@ export function resolveTransformerAdaptivePlannerAdapter(
         provenance.completionTokens > maxTokens ||
         provenance.totalTokens > promptTokenUpperBound + maxTokens ||
         provenance.costUsd === null ||
+        provenance.costUsd <= 0 ||
         provenance.costUsd > costUpperBoundUsd ||
         provenance.promptTokens > budget.inputTokens ||
         provenance.completionTokens > maxTokens ||
         provenance.completionTokens > budget.outputTokens ||
         provenance.totalTokens > budget.totalTokens ||
         provenance.costUsd === null ||
+        provenance.costUsd <= 0 ||
         provenance.costUsd > budget.actualCostUsd;
       await accounting.settle(Object.freeze({
         reservationId,
