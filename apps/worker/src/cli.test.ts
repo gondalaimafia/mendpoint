@@ -8,6 +8,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +18,9 @@ import {
   createDb,
   bindConsumerRepoSnapshot,
   enqueueJob,
+  enqueueAdaptiveDelivery,
+  getAdaptiveCandidate,
+  getAdaptiveDeliveryByCandidate,
   getAgentRun,
   getRoutingLedgerForJob,
   insertAgentRun,
@@ -25,12 +29,22 @@ import {
   insertConnectedRepository,
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
+  recordAdaptiveCandidate,
+  retryJob,
+  reviewAdaptiveCandidate,
   upsertScmConnection,
+  upsertGitHubInstallation,
   getRepairSession,
   listJobs,
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
+import {
+  OctokitGitHubDelivery,
+  type ExactDraftDeliveryInput,
+  type GitHubDelivery,
+} from "@mendpoint/github";
+import { recipeFilesDigest, sealAdaptiveCandidate } from "@mendpoint/transformer";
 import {
   parseArgs,
   parseIntervalMs,
@@ -51,8 +65,11 @@ import {
   transformerPilotHeartbeatAfterFailure,
   transformerPilotHeartbeatAfterResult,
   transformerPilotHeartbeatStarted,
+  transformerAdaptiveGitHubDelivery,
+  transformerAdaptiveProductionPorts,
   writeWorkerHeartbeat,
 } from "./cli.js";
+import { WARDEN_EXECUTOR_ID, WARDEN_PROVIDER_ID } from "./warden-router.js";
 
 const dirs: string[] = [];
 
@@ -309,6 +326,11 @@ describe("worker runtime", () => {
       MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
       MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant-a,tenant-b",
       MENDPOINT_WARDEN_MODEL_PROVIDER: "openai-compatible",
+      MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
+      MENDPOINT_WARDEN_MODEL_REGION: "us-central",
+      MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+      MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
+      MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
       LLM_AGENT_MODEL: "model-a",
       LLM_AGENT_URL: "https://models.example/v1",
     };
@@ -320,8 +342,19 @@ describe("worker runtime", () => {
       provider: "openai-compatible",
       model: "model-a",
       endpoint: "https://models.example/v1/chat/completions",
+      externalProcessingAllowed: true,
+      region: "us-central",
+      maximumDataClassification: "confidential",
+      estimatedCostUsd: 0.25,
+      maximumCallCostUsd: 1,
       policyDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     });
+    const {
+      MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: _maximumCallCostUsd,
+      ...missingMaximum
+    } = env;
+    expect(() => resolveWardenModelSourcePolicy("tenant-a", true, missingMaximum))
+      .toThrow("warden_model_source_policy_incomplete");
   });
 
   it("does not retry permanent GitHub App authorization and scope failures", () => {
@@ -1001,7 +1034,55 @@ describe("worker runtime", () => {
     );
   });
 
-  it("accepts valid App credentials or a PAT for real production delivery", () => {
+  it("requires complete Transformer adaptive model configuration when enabled", () => {
+    const repos = mkdtempSync(join(tmpdir(), "mendpoint-worker-adaptive-model-"));
+    dirs.push(repos);
+    const base = {
+      NODE_ENV: "production",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: repos,
+      MENDPOINT_REPOS_DIR: repos,
+      MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED: "1",
+    };
+    expect(validateWorkerProductionEnv(base)).toEqual(expect.arrayContaining([
+      expect.stringContaining("MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS"),
+      expect.stringContaining("MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER"),
+      expect.stringContaining("MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT"),
+      expect.stringContaining("MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED"),
+      expect.stringContaining("MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION"),
+      expect.stringContaining("MENDPOINT_TRANSFORMER_ADAPTIVE_MAX_DATA_CLASSIFICATION"),
+      expect.stringContaining("LLM_AGENT_MODEL"),
+      expect.stringContaining("LLM_AGENT_URL or OPENAI_BASE_URL"),
+      expect.stringContaining("OPENAI_API_KEY or XAI_API_KEY"),
+    ]));
+    const complete = {
+      ...base,
+      MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS: "tenant-a",
+      MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER: "openai-compatible",
+      MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT: "us-central-primary",
+      MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED: "1",
+      MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION: "us-central1",
+      MENDPOINT_TRANSFORMER_ADAPTIVE_MAX_DATA_CLASSIFICATION: "confidential",
+      LLM_AGENT_MODEL: "model-a",
+      LLM_AGENT_URL: "https://models.example/v1",
+      OPENAI_API_KEY: "configured",
+    };
+    expect(validateWorkerProductionEnv(complete)).toEqual([]);
+    const ports = transformerAdaptiveProductionPorts(complete);
+    const adapter = ports.adaptivePlannerAdapterForTenant("tenant-a")!;
+    expect(ports.authorizeAdaptiveExternalProcessing({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      sourceArtifactIds: ["snapshot-a"],
+      policy: adapter.policy,
+    })).toEqual({
+      allowed: true,
+      evidenceRef: `transformer-adaptive-authorization:${adapter.policy.policyDigest}`,
+    });
+    expect(ports.adaptivePlannerAdapterForTenant("tenant-b")).toBeUndefined();
+  });
+
+  it("requires an App for customer delivery and allows PAT only for a disposable canary", () => {
     const repos = mkdtempSync(join(tmpdir(), "mendpoint-worker-repos-"));
     dirs.push(repos);
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -1009,6 +1090,7 @@ describe("worker runtime", () => {
     const base = {
       NODE_ENV: "production",
       GITHUB_MODE: "real",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
       MENDPOINT_DATA_DIR: repos,
       MENDPOINT_REPOS_DIR: repos,
     };
@@ -1025,7 +1107,7 @@ describe("worker runtime", () => {
         GITHUB_APP_ID: "123",
       }),
     ).toContain(
-      "GITHUB_TOKEN or complete GitHub App credentials are required for real worker delivery",
+      "Complete GitHub App credentials are required for customer production delivery",
     );
     expect(
       validateWorkerProductionEnv({
@@ -1040,9 +1122,191 @@ describe("worker runtime", () => {
     expect(
       validateWorkerProductionEnv({
         ...base,
+        MENDPOINT_DEPLOYMENT_CLASS: "disposable_canary",
         GITHUB_TOKEN: "fine-grained-pat",
       }),
+    ).toContain("MENDPOINT_TENANT_ID is required for disposable canary PAT delivery");
+    expect(
+      validateWorkerProductionEnv({
+        ...base,
+        MENDPOINT_DEPLOYMENT_CLASS: "disposable_canary",
+        GITHUB_TOKEN: "fine-grained-pat",
+        MENDPOINT_TENANT_ID: "tenant-canary",
+      }),
     ).toEqual([]);
+  });
+
+  it("allows a PAT canary only for one pinned tenant and exact connected repository", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-worker-pat-pin-"));
+    dirs.push(parent);
+    const db = createDb(join(parent, "worker.db"));
+    upsertScmConnection(db, {
+      id: "connection-canary",
+      tenantId: "tenant-canary",
+      provider: "github",
+      credentialRef: "env://GITHUB_TOKEN",
+      externalAccountId: "123",
+      displayName: "Canary",
+      createdAt: "2026-08-06T00:00:00.000Z",
+      updatedAt: "2026-08-06T00:00:00.000Z",
+    });
+    insertConnectedRepository(db, {
+      id: "repository-canary",
+      tenantId: "tenant-canary",
+      connectionId: "connection-canary",
+      remoteId: "456",
+      owner: "acme",
+      name: "canary",
+      defaultBranch: "main",
+      status: "ready",
+      createdAt: "2026-08-06T00:00:00.000Z",
+      updatedAt: "2026-08-06T00:00:00.000Z",
+    });
+    const intent: ExactDraftDeliveryInput = {
+      owner: "acme",
+      repo: "canary",
+      baseBranch: "main",
+      expectedBaseSha: "a".repeat(40),
+      branch: "mendpoint/transformer-canary",
+      commitMessage: "Open approved Transformer candidate",
+      commitDate: "2026-08-06T00:00:00.000Z",
+      title: "Transformer candidate",
+      body: "Exact approved candidate",
+      files: [{ path: "package.json", content: "{}\n", mode: "100644" }],
+    };
+    const result = {
+      number: 1,
+      url: "https://github.com/acme/canary/pull/1",
+      branch: intent.branch,
+      title: intent.title,
+      draft: true as const,
+      baseBranch: intent.baseBranch,
+      baseSha: intent.expectedBaseSha,
+      commitSha: "b".repeat(40),
+    };
+    const identity = vi.spyOn(
+      OctokitGitHubDelivery.prototype,
+      "assertRepositoryIdentity",
+    ).mockResolvedValue(undefined);
+    const deliver = vi.spyOn(
+      OctokitGitHubDelivery.prototype,
+      "deliverExactDraft",
+    ).mockResolvedValue(result);
+
+    await expect(transformerAdaptiveGitHubDelivery(db, "tenant-canary", {
+      NODE_ENV: "production",
+      GITHUB_MODE: "real",
+      GITHUB_TOKEN: "canary-token",
+      MENDPOINT_TENANT_ID: "tenant-canary",
+    }).deliverExactDraft(intent)).rejects.toThrow(
+      "transformer_adaptive_delivery_pat_disposable_canary_required",
+    );
+
+    await expect(transformerAdaptiveGitHubDelivery(db, "tenant-canary", {
+      NODE_ENV: "production",
+      GITHUB_MODE: "real",
+      GITHUB_TOKEN: "canary-token",
+      MENDPOINT_DEPLOYMENT_CLASS: "disposable_canary",
+      MENDPOINT_TENANT_ID: "tenant-canary",
+    }).deliverExactDraft(intent)).resolves.toEqual(result);
+    expect(identity).toHaveBeenCalledWith("acme", "canary", 456);
+    expect(deliver).toHaveBeenCalledWith(intent);
+
+    insertConnectedRepository(db, {
+      id: "repository-canary-second",
+      tenantId: "tenant-canary",
+      connectionId: "connection-canary",
+      remoteId: "789",
+      owner: "acme",
+      name: "second",
+      defaultBranch: "main",
+      status: "ready",
+      createdAt: "2026-08-06T00:00:01.000Z",
+      updatedAt: "2026-08-06T00:00:01.000Z",
+    });
+    await expect(transformerAdaptiveGitHubDelivery(db, "tenant-canary", {
+      NODE_ENV: "production",
+      GITHUB_MODE: "real",
+      GITHUB_TOKEN: "canary-token",
+      MENDPOINT_DEPLOYMENT_CLASS: "disposable_canary",
+      MENDPOINT_TENANT_ID: "tenant-canary",
+    }).deliverExactDraft(intent)).rejects.toThrow(
+      "transformer_adaptive_delivery_pat_repository_not_pinned",
+    );
+    await expect(transformerAdaptiveGitHubDelivery(db, "tenant-canary", {
+      NODE_ENV: "production",
+      GITHUB_MODE: "real",
+      GITHUB_TOKEN: "canary-token",
+      MENDPOINT_DEPLOYMENT_CLASS: "disposable_canary",
+      MENDPOINT_TENANT_ID: "tenant-other",
+    }).deliverExactDraft(intent)).rejects.toThrow(
+      "transformer_adaptive_delivery_pat_tenant_not_pinned",
+    );
+    db.raw.close();
+  });
+
+  it("rejects a GitHub App installation whose repository ID differs from the connection", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-worker-app-binding-"));
+    dirs.push(parent);
+    const db = createDb(join(parent, "worker.db"));
+    upsertScmConnection(db, {
+      id: "connection-app",
+      tenantId: "tenant-app",
+      provider: "github",
+      credentialRef: "env://GITHUB_TOKEN",
+      externalAccountId: "123",
+      displayName: "App",
+      createdAt: "2026-08-06T00:00:00.000Z",
+      updatedAt: "2026-08-06T00:00:00.000Z",
+    });
+    insertConnectedRepository(db, {
+      id: "repository-app",
+      tenantId: "tenant-app",
+      connectionId: "connection-app",
+      remoteId: "456",
+      owner: "acme",
+      name: "app-repo",
+      defaultBranch: "main",
+      status: "ready",
+      createdAt: "2026-08-06T00:00:00.000Z",
+      updatedAt: "2026-08-06T00:00:00.000Z",
+    });
+    upsertGitHubInstallation(db, {
+      id: "installation-app",
+      installationId: "123",
+      accountLogin: "acme",
+      tenantId: "tenant-app",
+      permissions: {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+        checks: "read",
+      },
+      repositories: [{ id: 999, owner: "acme", name: "app-repo" }],
+      repositorySelection: "selected",
+      createdAt: "2026-08-06T00:00:00.000Z",
+      updatedAt: "2026-08-06T00:00:00.000Z",
+    });
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    await expect(transformerAdaptiveGitHubDelivery(db, "tenant-app", {
+      NODE_ENV: "production",
+      GITHUB_MODE: "real",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: privateKeyPem,
+    }).deliverExactDraft({
+      owner: "acme",
+      repo: "app-repo",
+      baseBranch: "main",
+      expectedBaseSha: "a".repeat(40),
+      branch: "mendpoint/transformer-app",
+      commitMessage: "Open approved Transformer candidate",
+      commitDate: "2026-08-06T00:00:00.000Z",
+      title: "Transformer candidate",
+      body: "Exact approved candidate",
+      files: [{ path: "package.json", content: "{}\n", mode: "100644" }],
+    })).rejects.toThrow("transformer_adaptive_delivery_installation_invalid");
+    db.raw.close();
   });
 
   it("expires Warden candidate rows across pages beyond the 100 row limit", () => {
@@ -1084,6 +1348,78 @@ describe("worker runtime", () => {
     }
     expect(countAgentRunStatus(db, tenant, "candidate_ready")).toBe(0);
     expect(countAgentRunStatus(db, tenant, "candidate_expired")).toBe(total);
+    db.raw.close();
+  });
+
+  it("retains an approved Warden candidate at expiry while delivery is unresolved", () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-delivery-retention-"));
+    dirs.push(parent);
+    const dataRoot = join(parent, "data");
+    const tenant = "tenant-delivery-retention";
+    const candidateRoot = join(dataRoot, "warden-candidates", tenant);
+    const evidenceRoot = join(dataRoot, "warden-evidence", tenant);
+    const approvalRoot = join(evidenceRoot, "approvals");
+    mkdirSync(candidateRoot, { recursive: true });
+    mkdirSync(approvalRoot, { recursive: true });
+    const workspace = join(candidateRoot, "workspace");
+    const manifest = join(candidateRoot, "manifest.json");
+    const evidence = join(evidenceRoot, "evidence.json");
+    const approval = join(approvalRoot, "seal.json");
+    mkdirSync(workspace);
+    writeFileSync(join(workspace, "client.ts"), "export const fixed = true;\n");
+    for (const path of [manifest, evidence, approval]) writeFileSync(path, "{}\n");
+    const db = createDb(join(parent, "jobs.sqlite"));
+    insertWardenLifecycleRun(db, {
+      id: "approved-retained",
+      tenantId: tenant,
+      status: "candidate_approved",
+      resultJson: JSON.stringify({
+        artifacts: {
+          candidateWorkspace: workspace,
+          candidateManifest: manifest,
+          evidence,
+          approval: { path: approval, sha256: `sha256:${"b".repeat(64)}` },
+        },
+        retention: { expiresAt: "2026-08-06T12:00:00.000Z" },
+      }),
+    });
+    db.raw.prepare(
+      `INSERT INTO warden_candidate_deliveries
+       (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
+        expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
+        requested_at, updated_at)
+       VALUES ('delivery-retained', ?, 'approved-retained', 'delivery-job-retained', 'delivery_pending',
+        'repo-1', 'snapshot-1', 'main', ?, ?, ?, 'human:reviewer@example.com', 'Approved', ?, ?)`,
+    ).run(tenant, "a".repeat(40), approval, `sha256:${"b".repeat(64)}`,
+      "2026-08-06T11:00:00.000Z", "2026-08-06T11:00:00.000Z");
+
+    maintainWardenArtifactsOnce(
+      db,
+      { MENDPOINT_DATA_DIR: dataRoot },
+      "2026-08-06T12:00:00.000Z",
+    );
+
+    expect(getAgentRun(db, "approved-retained", tenant)?.status).toBe("candidate_approved");
+    expect(existsSync(workspace)).toBe(true);
+    expect(existsSync(manifest)).toBe(true);
+    expect(existsSync(evidence)).toBe(true);
+    expect(existsSync(approval)).toBe(true);
+
+    db.raw.prepare(
+      `UPDATE warden_candidate_deliveries
+       SET status = 'delivery_failed', failed_at = ?, updated_at = ?
+       WHERE id = 'delivery-retained' AND tenant_id = ?`,
+    ).run("2026-08-06T12:00:01.000Z", "2026-08-06T12:00:01.000Z", tenant);
+    maintainWardenArtifactsOnce(
+      db,
+      { MENDPOINT_DATA_DIR: dataRoot },
+      "2026-08-06T12:00:01.000Z",
+    );
+    expect(getAgentRun(db, "approved-retained", tenant)?.status).toBe("candidate_expired");
+    expect(existsSync(workspace)).toBe(false);
+    expect(existsSync(manifest)).toBe(false);
+    expect(existsSync(evidence)).toBe(false);
+    expect(existsSync(approval)).toBe(true);
     db.raw.close();
   });
 
@@ -1167,6 +1503,48 @@ describe("worker runtime", () => {
     expect(existsSync(referencedWs)).toBe(true);
     expect(existsSync(orphanWs)).toBe(false);
     expect(getAgentRun(db, "referenced-run", tenant)?.status).toBe("candidate_ready");
+    db.raw.close();
+  });
+
+  it("never reaps a workspace owned by a durable running Warden job", () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-live-workspace-"));
+    dirs.push(parent);
+    const dataRoot = join(parent, "data");
+    const tenant = "tenant-live-workspace";
+    const candidateRoot = join(dataRoot, "warden-candidates", tenant);
+    const evidenceRoot = join(dataRoot, "warden-evidence", tenant);
+    mkdirSync(candidateRoot, { recursive: true });
+    mkdirSync(evidenceRoot, { recursive: true });
+    const db = createDb(join(parent, "jobs.sqlite"));
+    const jobId = "job-live-workspace";
+    enqueueJob(db, {
+      id: jobId,
+      tenantId: tenant,
+      type: "agent.run",
+      payload: {},
+      createdAt: "2026-08-05T00:00:00.000Z",
+    });
+    db.raw.prepare(
+      `UPDATE jobs SET status = 'running', attempts = 1,
+       lease_owner = 'worker-live', lease_expires_at = '2026-08-07T00:00:00.000Z',
+       lease_generation = 1 WHERE id = ?`,
+    ).run(jobId);
+    const liveWorkspace = join(candidateRoot, `${jobId}-private-attempt`);
+    const orphanWorkspace = join(candidateRoot, "orphan-private-attempt");
+    mkdirSync(liveWorkspace);
+    mkdirSync(orphanWorkspace);
+    const old = new Date("2026-08-05T00:00:00.000Z");
+    utimesSync(liveWorkspace, old, old);
+    utimesSync(orphanWorkspace, old, old);
+
+    maintainWardenArtifactsOnce(
+      db,
+      { MENDPOINT_DATA_DIR: dataRoot, MENDPOINT_WARDEN_ORPHAN_GRACE_MS: "60000" },
+      "2026-08-06T00:00:00.000Z",
+    );
+
+    expect(existsSync(liveWorkspace)).toBe(true);
+    expect(existsSync(orphanWorkspace)).toBe(false);
     db.raw.close();
   });
 
@@ -1531,6 +1909,243 @@ describe("worker runtime", () => {
     fixture.db.raw.close();
   }, 30_000);
 
+  it("hands off before invoking the model planner when external processing is denied", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-routing-privacy-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      useLlm: true,
+    });
+    const planner = vi.fn(meteredWardenPlanner());
+
+    const result = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-routing-privacy",
+      leaseMs: 30_000,
+      wardenPlanner: planner,
+      wardenEnv: {
+        MENDPOINT_DATA_DIR: fixture.dataRoot,
+        MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
+        MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_test",
+        MENDPOINT_WARDEN_MODEL_PROVIDER: "openai-compatible",
+        MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "0",
+        MENDPOINT_WARDEN_MODEL_REGION: "us-central",
+        MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+        MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
+        MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
+        LLM_AGENT_MODEL: "model-a",
+        LLM_AGENT_URL: "https://models.example/v1",
+      },
+    });
+
+    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    expect(planner).not.toHaveBeenCalled();
+    const ledger = getRoutingLedgerForJob(fixture.db, "job-warden-snapshot", "tenant_test");
+    expect(ledger[0]).toMatchObject({
+      action: "human_handoff",
+      handoff_reason: "no_eligible_executor",
+      task_snapshot_id: "snapshot-warden-a",
+    });
+    expect(JSON.parse(ledger[0]!.eliminated_json)).toEqual([
+      expect.objectContaining({ reasons: expect.arrayContaining(["privacy_disallowed"]) }),
+    ]);
+    fixture.db.raw.close();
+  }, 30_000);
+
+  it("does not apply a routing outcome after the Warden lease transfers", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-routing-stale-fence-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    let transferred = false;
+
+    const result = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-stale",
+      leaseMs: 30_000,
+      wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
+      onActiveJob: (active) => {
+        if (!active || transferred) return;
+        transferred = true;
+        fixture.db.raw.prepare(
+          `UPDATE jobs
+           SET lease_owner = ?, lease_generation = lease_generation + 1, lease_expires_at = ?
+           WHERE id = ?`,
+        ).run("worker-successor", "2099-01-01T00:00:00.000Z", active.id);
+      },
+    });
+
+    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    expect(listJobs(fixture.db, 10, "tenant_test")[0]).toMatchObject({
+      status: "running",
+      lease_owner: "worker-successor",
+      lease_generation: 2,
+    });
+    expect(getRoutingLedgerForJob(
+      fixture.db,
+      "job-warden-snapshot",
+      "tenant_test",
+    )[0]!.outcome).toBeNull();
+    expect(fixture.db.raw.prepare(
+      "SELECT COUNT(*) AS count FROM routing_outcome_applications",
+    ).get()).toEqual({ count: 0 });
+    fixture.db.raw.close();
+  }, 30_000);
+
+  it("rolls back the completed job transition when routing outcome persistence fails", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-routing-rollback-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    fixture.db.raw.exec("DROP TABLE routing_outcome_applications");
+
+    await expect(processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-routing-rollback",
+      leaseMs: 30_000,
+      wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
+    })).rejects.toThrow("routing_outcome_persistence_failed");
+
+    expect(listJobs(fixture.db, 10, "tenant_test")[0]).toMatchObject({
+      status: "running",
+      lease_owner: "worker-routing-rollback",
+    });
+    expect(getRoutingLedgerForJob(
+      fixture.db,
+      "job-warden-snapshot",
+      "tenant_test",
+    )[0]!.outcome).toBeNull();
+    fixture.db.raw.close();
+  }, 30_000);
+
+  it("rolls back the routing outcome when final agent-run persistence fails", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-finalization-rollback-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    fixture.db.raw.exec(
+      `CREATE TRIGGER reject_agent_run_finalization
+       BEFORE INSERT ON agent_runs
+       WHEN NEW.status = 'candidate_ready'
+       BEGIN
+         SELECT RAISE(ABORT, 'forced_agent_run_failure');
+       END`,
+    );
+
+    await expect(processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-run-rollback",
+      leaseMs: 30_000,
+      wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
+    })).rejects.toThrow("forced_agent_run_failure");
+
+    expect(listJobs(fixture.db, 10, "tenant_test")[0]).toMatchObject({
+      status: "running",
+      lease_owner: "worker-run-rollback",
+    });
+    expect(getRoutingLedgerForJob(
+      fixture.db,
+      "job-warden-snapshot",
+      "tenant_test",
+    )[0]!.outcome).toBeNull();
+    expect(fixture.db.raw.prepare(
+      "SELECT COUNT(*) AS count FROM routing_outcome_applications",
+    ).get()).toEqual({ count: 0 });
+    fixture.db.raw.close();
+  }, 30_000);
+
+  it("finalizes a routed Warden retry under a new lease generation", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-routing-retry-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      useLlm: true,
+    });
+    const repairPlanner = meteredWardenPlanner();
+    let failFirstExecution = true;
+    const planner: AgentPlanner = async (input, options) => {
+      if (failFirstExecution) {
+        failFirstExecution = false;
+        throw new Error("transient planner failure");
+      }
+      return repairPlanner(input, options);
+    };
+    const wardenEnv = {
+      MENDPOINT_DATA_DIR: fixture.dataRoot,
+      MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
+      MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_test",
+      MENDPOINT_WARDEN_MODEL_PROVIDER: "openai-compatible",
+      MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
+      MENDPOINT_WARDEN_MODEL_REGION: "us-central",
+      MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+      MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
+      MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
+      LLM_AGENT_MODEL: "model-a",
+      LLM_AGENT_URL: "https://models.example/v1",
+    };
+
+    const first = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-routing-retry-1",
+      leaseMs: 30_000,
+      maxJobs: 1,
+      wardenPlanner: planner,
+      wardenEnv,
+    });
+    expect(first).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    expect(listJobs(fixture.db, 10, "tenant_test")[0]).toMatchObject({
+      status: "dead_letter",
+      lease_generation: 1,
+    });
+    expect(retryJob(fixture.db, "job-warden-snapshot", {
+      tenantId: "tenant_test",
+      now: "2000-01-01T00:00:00.000Z",
+    })).toBe(true);
+
+    const second = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-routing-retry-2",
+      leaseMs: 30_000,
+      maxJobs: 1,
+      wardenPlanner: planner,
+      wardenEnv,
+    });
+    expect(second).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(listJobs(fixture.db, 10, "tenant_test")[0]).toMatchObject({
+      status: "done",
+      lease_generation: 2,
+    });
+    const ledger = getRoutingLedgerForJob(
+      fixture.db,
+      "job-warden-snapshot",
+      "tenant_test",
+    );
+    expect(ledger).toHaveLength(2);
+    expect(ledger.map((row) => row.outcome).sort()).toEqual(["failed", "succeeded"]);
+    const applications = fixture.db.raw.prepare(
+      `SELECT idempotency_key FROM routing_outcome_applications
+       WHERE tenant_id = ? AND job_id = ? ORDER BY idempotency_key`,
+    ).all("tenant_test", "job-warden-snapshot") as Array<{ idempotency_key: string }>;
+    expect(applications.map((row) => row.idempotency_key)).toEqual([
+      "job-warden-snapshot:session-warden-snapshot:lease-1:route",
+      "job-warden-snapshot:session-warden-snapshot:lease-2:route",
+    ]);
+    fixture.db.raw.close();
+  }, 30_000);
+
   it("persists measured cost and tokens to the routing ledger for a model backed job", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-ledger-cost-"));
     dirs.push(parent);
@@ -1551,6 +2166,11 @@ describe("worker runtime", () => {
         MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
         MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_test",
         MENDPOINT_WARDEN_MODEL_PROVIDER: "openai-compatible",
+        MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
+        MENDPOINT_WARDEN_MODEL_REGION: "us-central",
+        MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+        MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
+        MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
         LLM_AGENT_MODEL: "model-a",
         LLM_AGENT_URL: "https://models.example/v1",
       },
@@ -1564,6 +2184,24 @@ describe("worker runtime", () => {
     const ledger = getRoutingLedgerForJob(fixture.db, "job-warden-snapshot", "tenant_test");
     expect(ledger).toHaveLength(1);
     expect(ledger[0]!.outcome).toBe("succeeded");
+    expect(ledger[0]).toMatchObject({
+      provider_id: "openai-compatible",
+      task_snapshot_id: "snapshot-warden-a",
+    });
+    expect(ledger[0]!.selected_executor_id).toMatch(/^warden-model-[a-f0-9]{64}$/);
+    expect(ledger[0]!.policy_snapshot_id).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(ledger[0]!.policy_snapshot_id).not.toBe("snapshot-warden-a");
+    const decision = JSON.parse(ledger[0]!.decision_json) as {
+      evaluations: Array<Record<string, unknown>>;
+    };
+    expect(decision.evaluations).toEqual([
+      expect.objectContaining({
+        providerId: "openai-compatible",
+        executorVersion: expect.stringContaining("model-a"),
+        executionRegion: "us-central",
+        expectedCostUsd: 0.25,
+      }),
+    ]);
     // The model-backed run measured usage, so real cost and tokens reach the ledger.
     expect(ledger[0]!.cost_usd).not.toBeNull();
     expect(ledger[0]!.cost_usd).toBeGreaterThan(0);
@@ -1602,6 +2240,13 @@ describe("worker runtime", () => {
     const ledger = getRoutingLedgerForJob(fixture.db, "job-warden-snapshot", "tenant_test");
     expect(ledger).toHaveLength(1);
     expect(ledger[0]!.outcome).toBe("succeeded");
+    expect(ledger[0]).toMatchObject({
+      selected_executor_id: WARDEN_EXECUTOR_ID,
+      provider_id: WARDEN_PROVIDER_ID,
+      task_snapshot_id: "snapshot-warden-a",
+    });
+    expect(ledger[0]!.policy_snapshot_id).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(ledger[0]!.policy_snapshot_id).not.toBe("snapshot-warden-a");
     // A deterministic heuristic-only run made no model call, so the ledger keeps
     // null cost and tokens rather than a fabricated measured zero.
     expect(ledger[0]!.cost_usd).toBeNull();
@@ -1609,5 +2254,161 @@ describe("worker runtime", () => {
     expect(ledger[0]!.output_tokens).toBeNull();
     expect(ledger[0]!.total_tokens).toBeNull();
     fixture.db.raw.close();
+  }, 30_000);
+
+  it("drains an approved Transformer adaptive delivery through the exact draft handler", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-transformer-delivery-cli-"));
+    dirs.push(parent);
+    const dataRoot = join(parent, "data");
+    mkdirSync(dataRoot, { recursive: true });
+    const db = createDb(join(parent, "worker.db"));
+    const files = { "src/client.ts": "export const migrated = true;\n" };
+    const candidateDigest = recipeFilesDigest(files);
+    const baseRevision = "a".repeat(40);
+    const artifactEnv = { MENDPOINT_DATA_DIR: dataRoot } as NodeJS.ProcessEnv;
+    upsertScmConnection(db, {
+      id: "connection-transformer",
+      tenantId: "tenant-transformer",
+      provider: "github",
+      credentialRef: "env://GITHUB_TOKEN",
+      externalAccountId: "123",
+      displayName: "Transformer test",
+      createdAt: "2026-08-06T00:00:00.000Z",
+      updatedAt: "2026-08-06T00:00:00.000Z",
+    });
+    insertConnectedRepository(db, {
+      id: "repository-transformer",
+      tenantId: "tenant-transformer",
+      connectionId: "connection-transformer",
+      remoteId: "456",
+      owner: "acme",
+      name: "customer",
+      defaultBranch: "main",
+      selectedBranch: "release",
+      status: "ready",
+      createdAt: "2026-08-06T00:00:00.000Z",
+      updatedAt: "2026-08-06T00:00:00.000Z",
+    });
+    insertRepositorySnapshot(db, {
+      id: "snapshot-transformer",
+      tenantId: "tenant-transformer",
+      repositoryId: "repository-transformer",
+      requestedRef: "main",
+      resolvedSha: baseRevision,
+      manifestSha256: "d".repeat(64),
+      storagePath: join(parent, "snapshot-transformer"),
+      createdAt: "2026-08-06T00:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const seal = sealAdaptiveCandidate({
+      tenantId: "tenant-transformer",
+      campaignId: "campaign-transformer",
+      unitId: "unit-transformer",
+      attemptId: "attempt-transformer",
+      repositoryId: "repository-transformer",
+      snapshotId: "snapshot-transformer",
+      baseBranch: "main",
+      expectedBaseRevision: baseRevision,
+      divergedFromDigest: `sha256:${"c".repeat(64)}`,
+      candidateDigest,
+      failingCommandId: "verify-tests",
+      changedPaths: ["src/client.ts"],
+      files,
+      fileModes: { "src/client.ts": "100755" },
+      review: {
+        schemaVersion: 1,
+        edits: [{
+          path: "src/client.ts",
+          changeType: "modify",
+          beforeContent: "export const migrated = false;\n",
+          beforeDigest: `sha256:${createHash("sha256").update("export const migrated = false;\n").digest("hex")}`,
+          beforeMode: "100755",
+          afterDigest: `sha256:${createHash("sha256").update(files["src/client.ts"]!).digest("hex")}`,
+          afterMode: "100755",
+          semanticCategory: "behavior",
+          rationale: "Apply the verified client migration behavior.",
+          risk: "medium",
+          confidence: 92,
+        }],
+        verification: {
+          passed: true,
+          commandId: "verify-tests",
+          summary: "The objective verification passed on the sealed candidate.",
+          outputDigest: `sha256:${createHash("sha256").update("passed").digest("hex")}`,
+        },
+        overallRisk: "medium",
+        confidence: 92,
+      },
+      env: artifactEnv,
+    });
+    const candidate = recordAdaptiveCandidate(db, {
+      tenantId: "tenant-transformer",
+      campaignId: "campaign-transformer",
+      unitId: "unit-transformer",
+      attemptId: "attempt-transformer",
+      repositoryId: "repository-transformer",
+      snapshotId: "snapshot-transformer",
+      baseBranch: "main",
+      expectedBaseRevision: baseRevision,
+      divergedFromDigest: `sha256:${"c".repeat(64)}`,
+      candidateDigest,
+      failingCommandId: "verify-tests",
+      sealedPath: seal.path,
+      sealedSha256: seal.sha256,
+      changedPaths: ["src/client.ts"],
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    });
+    reviewAdaptiveCandidate(db, {
+      tenantId: "tenant-transformer",
+      id: candidate.id,
+      decision: "approve",
+      reviewerPrincipalId: "reviewer-transformer",
+      rationale: "Verified the exact semantic review evidence.",
+    });
+    enqueueAdaptiveDelivery(db, {
+      tenantId: "tenant-transformer",
+      candidateId: candidate.id,
+      repositoryId: "repository-transformer",
+      snapshotId: "snapshot-transformer",
+      baseBranch: "main",
+      expectedBaseRevision: baseRevision,
+      requesterPrincipalId: "reviewer-transformer",
+    });
+    const github: GitHubDelivery = {
+      async deliverExactDraft(input: ExactDraftDeliveryInput) {
+        expect(input.baseBranch).toBe("main");
+        return {
+          number: 19,
+          url: "https://github.com/acme/customer/pull/19",
+          branch: input.branch,
+          title: input.title,
+          draft: true,
+          baseBranch: input.baseBranch,
+          baseSha: input.expectedBaseSha,
+          commitSha: "b".repeat(40),
+        };
+      },
+      async createBranch() { throw new Error("unexpected legacy delivery"); },
+      async commitFiles() { throw new Error("unexpected legacy delivery"); },
+      async openPullRequest() { throw new Error("unexpected legacy delivery"); },
+    };
+
+    const result = await processJobsOnce(db, {
+      tenantId: "tenant-transformer",
+      workerId: "worker-transformer-delivery",
+      maxJobs: 1,
+      runWardenMaintenance: false,
+      wardenEnv: artifactEnv,
+      transformerAdaptiveGithub: github,
+    });
+
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(getAdaptiveCandidate(db, "tenant-transformer", candidate.id)?.status).toBe("promoted");
+    expect(getAdaptiveDeliveryByCandidate(db, "tenant-transformer", candidate.id)).toMatchObject({
+      status: "delivered",
+      draftPr: true,
+      draftPrNumber: 19,
+    });
+    db.raw.close();
   }, 30_000);
 });

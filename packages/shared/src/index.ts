@@ -1,5 +1,41 @@
 import { z } from "zod";
 
+export const ReviewedVerificationCommandSchema = z.object({
+  command: z.string().min(1).max(500),
+  ok: z.literal(true),
+  exitCode: z.literal(0),
+  outputSha256: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+});
+export type ReviewedVerificationCommand = z.infer<typeof ReviewedVerificationCommandSchema>;
+
+export const ReviewedChangeEvidenceSchema = z.object({
+  path: z.string().min(1).max(1_000),
+  rationale: z.string().min(1).max(500).nullable(),
+  category: z.string().min(1).max(100).nullable(),
+  risk: z.enum(["low", "medium", "high"]).nullable(),
+  confidence: z.number().min(0).max(1).nullable(),
+  assessmentSource: z.enum(["planner", "verifier", "unavailable"]),
+  verification: z.object({
+    summary: z.string().min(1).max(500),
+    commandOutputSha256: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)).min(1).max(20),
+  }),
+});
+export type ReviewedChangeEvidence = z.infer<typeof ReviewedChangeEvidenceSchema>;
+
+export const CandidateReviewEvidenceSchema = z.object({
+  schemaVersion: z.literal(1),
+  summary: z.string().min(1).max(1_000),
+  verification: z.object({
+    summary: z.string().min(1).max(500),
+    commands: z.array(ReviewedVerificationCommandSchema).min(1).max(20),
+  }),
+  edits: z.array(ReviewedChangeEvidenceSchema).min(1).max(40),
+});
+export type CandidateReviewEvidence = z.infer<typeof CandidateReviewEvidenceSchema>;
+
+/** Maximum response body the authenticated web bridge will accept from the API. */
+export const WEB_PROXY_RESPONSE_BYTES = 5 * 1024 * 1024;
+
 export const ChangeRiskSchema = z.enum([
   "breaking",
   "non_breaking",

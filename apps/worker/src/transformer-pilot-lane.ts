@@ -1,17 +1,33 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import type { AppDb } from "@mendpoint/db";
 import {
+  listRepositorySnapshots,
+  recordAdaptiveCandidate,
+  type AppDb,
+} from "@mendpoint/db";
+import {
+  discardAdaptiveCandidate,
+  readAdaptiveCandidateArtifact,
   runTransformerAttempt,
+  sealAdaptiveCandidate,
   type RecipeCommandRunner,
   type TransformerAttemptCoordinatorPort,
   type TransformerPilotExecutionStore,
 } from "@mendpoint/transformer";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
+import {
+  discardTransformerAdaptiveModelEvidence,
+  persistTransformerAdaptiveModelEvidence,
+  type TransformerAdaptiveModelEvidenceSummary,
+  type TransformerAdaptivePlannerAdapter,
+} from "./transformer-adaptive-planner.js";
+import { processTransformerAdaptiveRegenerations } from "./transformer-adaptive-regeneration.js";
 import { loadTransformerRecipeSnapshot } from "./transformer-snapshot-loader.js";
 import {
   buildRoutedExecutorRegistry,
   runRoutedTransformerAttempt,
+  settleTransformerRoutingOutcome,
+  transformerExecutorDescriptor,
   transformerRoutingRequest,
 } from "./transformer-router.js";
 
@@ -23,7 +39,13 @@ export type TransformerPilotLaneResult = Readonly<{
   failed: number;
   stale: number;
   idle: number;
+  routingSettled?: number;
   handoff?: number;
+  adaptiveModelEvidence?: readonly TransformerAdaptiveModelEvidenceSummary[];
+  adaptiveRecovered?: number;
+  regenerationBlocked?: number;
+  regenerationScheduled?: number;
+  regenerationFailed?: number;
   errors: readonly string[];
   infrastructureError?: string;
 }>;
@@ -31,12 +53,22 @@ export type TransformerPilotLaneResult = Readonly<{
 export type TransformerPilotLaneStore = Pick<
   TransformerPilotExecutionStore,
   | "listExpiredAttempts"
+  | "listPendingRoutingSettlements"
   | "expireAttempt"
   | "listRunnableCampaigns"
+  | "listAdaptiveCandidateHandoffs"
+  | "bindRoutingAttempt"
   | "claimNextAttempt"
   | "assertCurrentAttemptFence"
+  | "recordAdaptiveAttemptUsage"
+  | "reserveAdaptiveModelCall"
+  | "settleAdaptiveModelCall"
+  | "recordAdaptiveCandidateHandoff"
+  | "markAdaptiveCandidateHandoffImported"
   | "completeAttempt"
   | "recordAttemptFailure"
+  | "markRoutingOutcomeSettled"
+  | "control"
 >;
 
 export type RunTransformerPilotLaneInput = Readonly<{
@@ -55,6 +87,27 @@ export type RunTransformerPilotLaneInput = Readonly<{
   leaseToken?: () => string;
   commandRunner?: RecipeCommandRunner;
   shouldContinue?: () => boolean;
+  /** Retention window for durable adaptive candidates awaiting human review. */
+  adaptiveCandidateRetentionMs?: number;
+  /** Existing private data root used for content-addressed adaptive seals. */
+  adaptiveCandidateDataRoot?: string;
+  /** Optional tenant-authorized live planner. Absent keeps adaptive repair disabled. */
+  adaptivePlannerAdapterForTenant?(
+    tenantId: string,
+  ): TransformerAdaptivePlannerAdapter | undefined;
+  /**
+   * Explicit per-campaign authorization for sending source-derived context to
+   * the exact external planner destination. Production leaves this absent until
+   * a tenant approval contract supplies the evidence reference.
+   */
+  authorizeAdaptiveExternalProcessing?(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    sourceArtifactIds: readonly string[];
+    policy: TransformerAdaptivePlannerAdapter["policy"];
+  }>): Readonly<{ allowed: boolean; evidenceRef?: string }>;
+  /** Test seam for durable adaptive-candidate recording. */
+  adaptiveCandidateRecorder?: typeof recordAdaptiveCandidate;
 }>;
 
 const ERROR_CODE = /^[A-Za-z0-9][A-Za-z0-9._,:-]{0,499}$/;
@@ -104,10 +157,24 @@ function requireLeaseDuration(value: number | undefined): number {
   return duration;
 }
 
+const DEFAULT_ADAPTIVE_CANDIDATE_RETENTION_MS = 7 * 24 * 60 * 60_000;
+
+function requireAdaptiveRetention(value: number | undefined): number {
+  const retention = value ?? DEFAULT_ADAPTIVE_CANDIDATE_RETENTION_MS;
+  if (!Number.isSafeInteger(retention) || retention < 60_000 || retention > 90 * 24 * 60 * 60_000) {
+    throw new Error("transformer_lane_adaptive_retention_invalid");
+  }
+  return retention;
+}
+
 function asCoordinator(store: TransformerPilotLaneStore): TransformerAttemptCoordinatorPort {
   return {
     claimNextAttempt: (input) => store.claimNextAttempt(input),
     assertCurrentAttemptFence: (input) => store.assertCurrentAttemptFence(input),
+    recordAdaptiveAttemptUsage: (input) => store.recordAdaptiveAttemptUsage(input),
+    reserveAdaptiveModelCall: (input) => store.reserveAdaptiveModelCall(input),
+    settleAdaptiveModelCall: (input) => store.settleAdaptiveModelCall(input),
+    recordAdaptiveCandidateHandoff: (input) => store.recordAdaptiveCandidateHandoff(input),
     completeAttempt: (input) => store.completeAttempt(input),
     recordAttemptFailure: (input) => store.recordAttemptFailure(input),
   };
@@ -122,6 +189,7 @@ export async function runTransformerPilotLaneOnce(
   const runId = input.runId ?? randomUUID();
   const maxCampaigns = requireLimit(input.maxCampaigns);
   const leaseDurationMs = requireLeaseDuration(input.leaseDurationMs);
+  const adaptiveRetentionMs = requireAdaptiveRetention(input.adaptiveCandidateRetentionMs);
   const createLeaseToken = input.leaseToken ?? (() => randomBytes(32).toString("hex"));
   const errors: string[] = [];
   let expired = 0;
@@ -131,7 +199,198 @@ export async function runTransformerPilotLaneOnce(
   let stale = 0;
   let idle = 0;
   let handoff = 0;
+  let routingSettled = 0;
+  let adaptiveRecovered = 0;
+  let regenerationBlocked = 0;
+  let regenerationScheduled = 0;
+  let regenerationFailed = 0;
+  const adaptiveModelEvidence: TransformerAdaptiveModelEvidenceSummary[] = [];
   let infrastructureError: string | undefined;
+
+  if (input.shouldContinue?.() !== false) {
+    const regeneration = processTransformerAdaptiveRegenerations(input.db, input.store, {
+      tenantId: input.tenantId,
+      limit: maxCampaigns,
+      observedAt: now(),
+    });
+    regenerationBlocked = regeneration.blocked;
+    regenerationScheduled = regeneration.scheduled;
+    regenerationFailed = regeneration.failed;
+    errors.push(...regeneration.errors);
+  }
+
+  const reconcileRoutingSettlements = (): boolean => {
+    for (const settlement of input.store.listPendingRoutingSettlements(
+      input.tenantId,
+      maxCampaigns,
+    )) {
+      if (input.shouldContinue?.() === false) break;
+      try {
+        settleTransformerRoutingOutcome({ db: input.db, settlement });
+        input.store.markRoutingOutcomeSettled({
+          tenantId: settlement.tenantId,
+          campaignId: settlement.campaignId,
+          unitId: settlement.unitId,
+          envelopeId: settlement.envelopeId,
+          outcomeIdempotencyKey: settlement.outcome.idempotencyKey,
+          observedAt: now(),
+          evidenceRefs: Object.freeze([
+            ...settlement.outcome.verification.evidenceArtifactIds,
+            stableId(
+              "tfroutingsettled",
+              settlement.tenantId,
+              settlement.campaignId,
+              settlement.unitId,
+              settlement.envelopeId,
+            ),
+          ]),
+          idempotencyKey: stableId(
+            "tfroutingsettle",
+            settlement.tenantId,
+            settlement.campaignId,
+            settlement.unitId,
+            settlement.envelopeId,
+            settlement.outcome.idempotencyKey,
+          ),
+          gateConfig: rawGate,
+        });
+        routingSettled++;
+      } catch (error) {
+        const code = boundedError(error);
+        errors.push(code);
+        infrastructureError ??= code;
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // A terminal attempt is authoritative. Settle any App DB routing outcome
+  // left behind by a crash before claiming new work, so the completed attempt
+  // is never rerun or reported as idle while its routing ledger is incomplete.
+  if (!reconcileRoutingSettlements()) {
+    return Object.freeze({
+      enabled: true,
+      expired,
+      attempted,
+      completed,
+      failed,
+      stale,
+      idle,
+      ...(routingSettled ? { routingSettled } : {}),
+      errors: Object.freeze([...new Set(errors)].slice(0, 25)),
+      ...(infrastructureError ? { infrastructureError } : {}),
+    });
+  }
+
+  // A fenced handoff is the durable authority after convergence. Re-import its
+  // exact sealed artifact before claiming new work so a process death between
+  // handoff persistence and the App DB transaction cannot lose the candidate.
+  for (const pending of input.store.listAdaptiveCandidateHandoffs(
+    input.tenantId,
+    maxCampaigns,
+    rawGate,
+  )) {
+    if (input.shouldContinue?.() === false) break;
+    try {
+      const artifact = readAdaptiveCandidateArtifact({
+        tenantId: pending.tenantId,
+        path: pending.handoff.sealedPath,
+        sha256: pending.handoff.sealedSha256,
+        ...(input.adaptiveCandidateDataRoot
+          ? { env: { MENDPOINT_DATA_DIR: resolve(input.adaptiveCandidateDataRoot) } }
+          : {}),
+      });
+      if (
+        artifact.campaignId !== pending.campaignId ||
+        artifact.unitId !== pending.unitId ||
+        artifact.attemptId !== pending.handoff.attemptId ||
+        artifact.repositoryId !== pending.handoff.repositoryId ||
+        artifact.snapshotId !== pending.handoff.snapshotId ||
+        artifact.baseBranch !== pending.handoff.baseBranch ||
+        artifact.expectedBaseRevision !== pending.handoff.expectedBaseRevision ||
+        artifact.divergedFromDigest !== pending.handoff.divergedFromDigest ||
+        artifact.candidateDigest !== pending.handoff.candidateDigest ||
+        JSON.stringify(artifact.changedPaths) !== JSON.stringify(pending.handoff.changedPaths) ||
+        pending.handoff.changedPaths.some((path) =>
+          artifact.fileModes[path] !== pending.handoff.fileModes[path]
+        )
+      ) {
+        throw new Error("transformer_adaptive_candidate_handoff_seal_mismatch");
+      }
+      const recordedCandidate = (input.adaptiveCandidateRecorder ?? recordAdaptiveCandidate)(input.db, {
+        tenantId: pending.tenantId,
+        campaignId: pending.campaignId,
+        unitId: pending.unitId,
+        attemptId: pending.handoff.attemptId,
+        repositoryId: pending.handoff.repositoryId,
+        snapshotId: pending.handoff.snapshotId,
+        baseBranch: pending.handoff.baseBranch,
+        expectedBaseRevision: pending.handoff.expectedBaseRevision,
+        divergedFromDigest: pending.handoff.divergedFromDigest,
+        candidateDigest: pending.handoff.candidateDigest,
+        failingCommandId: pending.handoff.failingCommandId,
+        sealedPath: pending.handoff.sealedPath,
+        sealedSha256: pending.handoff.sealedSha256,
+        changedPaths: pending.handoff.changedPaths,
+        expiresAt: pending.handoff.expiresAt,
+        now: pending.handoff.observedAt,
+      });
+      input.store.markAdaptiveCandidateHandoffImported({
+        tenantId: pending.tenantId,
+        campaignId: pending.campaignId,
+        unitId: pending.unitId,
+        attemptId: pending.handoff.attemptId,
+        candidateId: recordedCandidate.id,
+        sealedSha256: pending.handoff.sealedSha256,
+        observedAt: now(),
+        evidenceRefs: Object.freeze([
+          ...pending.handoff.evidenceRefs,
+          stableId(
+            "tfadaptiveimport",
+            pending.tenantId,
+            pending.campaignId,
+            pending.unitId,
+            pending.handoff.attemptId,
+            pending.handoff.sealedSha256,
+          ),
+        ]),
+        idempotencyKey: stableId(
+          "tfadaptiveimport",
+          pending.tenantId,
+          pending.campaignId,
+          pending.unitId,
+          pending.handoff.attemptId,
+          pending.handoff.sealedSha256,
+        ),
+        gateConfig: rawGate,
+      });
+      adaptiveRecovered++;
+    } catch (error) {
+      const code = boundedError(error);
+      errors.push(code);
+      infrastructureError ??= code;
+      break;
+    }
+  }
+  if (infrastructureError) {
+    return Object.freeze({
+      enabled: true,
+      expired,
+      attempted,
+      completed,
+      failed,
+      stale,
+      idle,
+      ...(routingSettled ? { routingSettled } : {}),
+      ...(adaptiveRecovered ? { adaptiveRecovered } : {}),
+      ...(regenerationBlocked ? { regenerationBlocked } : {}),
+      ...(regenerationScheduled ? { regenerationScheduled } : {}),
+      ...(regenerationFailed ? { regenerationFailed } : {}),
+      errors: Object.freeze([...new Set(errors)].slice(0, 25)),
+      infrastructureError,
+    });
+  }
 
   const sweepObservedAt = now();
   for (const attempt of input.store.listExpiredAttempts(
@@ -192,7 +451,6 @@ export async function runTransformerPilotLaneOnce(
   // the decision + outcome to the durable routing ledger. The claim, snapshot,
   // lease, and authorization guarantees below are unchanged; the attempt runs
   // through the router's executor port instead of being invoked directly.
-  const routedRegistry = buildRoutedExecutorRegistry(now());
   for (const campaign of input.store.listRunnableCampaigns(
     input.tenantId,
     maxCampaigns,
@@ -207,6 +465,40 @@ export async function runTransformerPilotLaneOnce(
       errors.push(`transformer_lane_campaign_denied:${campaign.campaignId}`);
       continue;
     }
+    const adaptiveAdapter = input.adaptivePlannerAdapterForTenant?.(campaign.tenantId);
+    let adaptiveAuthorizationEvidenceRef: string | undefined;
+    if (adaptiveAdapter) {
+      const authorization = input.authorizeAdaptiveExternalProcessing?.({
+        tenantId: campaign.tenantId,
+        campaignId: campaign.campaignId,
+        sourceArtifactIds: campaign.sourceArtifactIds,
+        policy: adaptiveAdapter.policy,
+      });
+      if (
+        authorization?.allowed !== true ||
+        typeof authorization.evidenceRef !== "string" ||
+        !authorization.evidenceRef.trim()
+      ) {
+        handoff++;
+        errors.push(`transformer_adaptive_external_processing_not_authorized:${campaign.campaignId}`);
+        continue;
+      }
+      adaptiveAuthorizationEvidenceRef = authorization.evidenceRef;
+    }
+    const adaptiveProvenanceStart = adaptiveAdapter?.provenance().length ?? 0;
+    const adaptiveCostRemaining = 25;
+    const externalRoutingProfile = adaptiveAdapter
+      ? {
+            provider: adaptiveAdapter.policy.provider,
+            model: adaptiveAdapter.policy.model,
+            deployment: adaptiveAdapter.policy.deployment,
+            executionRegion: adaptiveAdapter.policy.executionRegion,
+            maximumDataClassification: adaptiveAdapter.policy.maximumDataClassification,
+            maximumCostUsd: adaptiveCostRemaining,
+          }
+      : undefined;
+    const transformerDescriptor = transformerExecutorDescriptor(now(), externalRoutingProfile);
+    const routedRegistry = buildRoutedExecutorRegistry(now(), externalRoutingProfile);
     const claimKey = stableId(
       "tfclaim",
       input.workerId,
@@ -221,6 +513,8 @@ export async function runTransformerPilotLaneOnce(
       jobId: campaign.campaignId,
       runId,
       sessionId: runId,
+      executorId: transformerDescriptor.executorId,
+      ...(adaptiveAdapter ? { providerId: adaptiveAdapter.policy.provider } : {}),
       goal: `Transformer recipe migration for ${campaign.campaignId}`,
       routingRequest: transformerRoutingRequest({
         taskId: campaign.campaignId,
@@ -232,6 +526,15 @@ export async function runTransformerPilotLaneOnce(
           campaign.tenantId,
           campaign.campaignId,
         ),
+        sourceArtifactIds: campaign.sourceArtifactIds,
+        ...(adaptiveAdapter
+          ? {
+              classification: adaptiveAdapter.policy.maximumDataClassification,
+              budgetUsd: adaptiveCostRemaining,
+              externalProcessingAllowed: true,
+              allowedExecutionRegion: adaptiveAdapter.policy.executionRegion,
+            }
+          : {}),
         decidedAt: new Date(now()),
       }),
       outcomeIdempotencyKey: stableId(
@@ -240,6 +543,44 @@ export async function runTransformerPilotLaneOnce(
         campaign.campaignId,
         runId,
       ),
+      deferOutcomePersistence: true,
+      onPrepared: (prepared) => {
+        if (!prepared.dispatch || prepared.action === "human_handoff" || prepared.action === "completed") {
+          return;
+        }
+        input.store.bindRoutingAttempt({
+          tenantId: campaign.tenantId,
+          campaignId: campaign.campaignId,
+          runId,
+          envelopeId: prepared.envelopeId,
+          outcomeIdempotencyKey: stableId(
+            "tfroute",
+            campaign.tenantId,
+            campaign.campaignId,
+            runId,
+          ),
+          executorId: prepared.dispatch.executorId,
+          providerId: prepared.dispatch.providerId,
+          observedAt: now(),
+          evidenceRefs: Object.freeze([
+            ...decision.acceptanceEvidenceRefs,
+            stableId(
+              "tfroutingbound",
+              campaign.tenantId,
+              campaign.campaignId,
+              prepared.envelopeId,
+            ),
+          ]),
+          idempotencyKey: stableId(
+            "tfroutingbind",
+            campaign.tenantId,
+            campaign.campaignId,
+            runId,
+            prepared.envelopeId,
+          ),
+          gateConfig: rawGate,
+        });
+      },
       runAttempt: () =>
         runTransformerAttempt({
           scope: campaign,
@@ -263,6 +604,168 @@ export async function runTransformerPilotLaneOnce(
           leaseToken: createLeaseToken,
           ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
           actualCostUsd: 0,
+          ...(adaptiveAdapter ? { adaptiveRepair: { planner: adaptiveAdapter.planner } } : {}),
+          // A converged adaptive fix that diverges from the deterministic recipe
+          // output is sealed and durably handed off before App DB import. Once the
+          // fenced handoff exists its exact artifacts are retained for lane-start
+          // recovery; failures before that authority exists clean up their writes.
+          onAdaptiveCandidateConverged: async (handoff) => {
+            const boundSnapshot = listRepositorySnapshots(
+              input.db,
+              handoff.tenantId,
+              handoff.repositoryId,
+            ).find((snapshot) => snapshot.id === handoff.snapshotId);
+            if (
+              !boundSnapshot ||
+              boundSnapshot.resolved_sha !== handoff.expectedBaseRevision
+            ) {
+              throw new Error("transformer_adaptive_candidate_snapshot_binding_mismatch");
+            }
+            const observedAt = now();
+            const expiresAt = new Date(
+              Date.parse(observedAt) + adaptiveRetentionMs,
+            ).toISOString();
+            const changedFileModes = Object.freeze(Object.fromEntries(
+              handoff.changedPaths.map((path) => [path, handoff.fileModes[path]]),
+            ));
+            const seal = sealAdaptiveCandidate({
+              tenantId: handoff.tenantId,
+              campaignId: handoff.campaignId,
+              unitId: handoff.unitId,
+              attemptId: handoff.attemptId,
+              repositoryId: handoff.repositoryId,
+              snapshotId: handoff.snapshotId,
+              baseBranch: boundSnapshot.requested_ref,
+              expectedBaseRevision: handoff.expectedBaseRevision,
+              divergedFromDigest: handoff.divergedFromDigest,
+              candidateDigest: handoff.candidateDigest,
+              failingCommandId: handoff.failingCommandId,
+              changedPaths: handoff.changedPaths,
+              adaptiveChangedPaths: handoff.adaptiveChangedPaths,
+              files: handoff.files,
+              fileModes: handoff.fileModes,
+              review: handoff.review,
+              ...(input.adaptiveCandidateDataRoot
+                ? { env: { MENDPOINT_DATA_DIR: resolve(input.adaptiveCandidateDataRoot) } }
+                : {}),
+            });
+            let modelEvidence: TransformerAdaptiveModelEvidenceSummary | undefined;
+            let handoffRecorded = false;
+            try {
+              const calls = adaptiveAdapter?.provenance().slice(adaptiveProvenanceStart) ?? [];
+              if (!adaptiveAdapter || calls.length === 0) {
+                throw new Error("transformer_adaptive_model_evidence_missing");
+              }
+              modelEvidence = persistTransformerAdaptiveModelEvidence({
+                evidenceRoot: resolve(input.evidenceRoot),
+                tenantId: handoff.tenantId,
+                campaignId: handoff.campaignId,
+                unitId: handoff.unitId,
+                attemptId: handoff.attemptId,
+                policy: adaptiveAdapter.policy,
+                calls,
+              });
+              await coordinator.recordAdaptiveCandidateHandoff({
+                tenantId: handoff.tenantId,
+                campaignId: handoff.campaignId,
+                unitId: handoff.unitId,
+                attemptId: handoff.attemptId,
+                attemptNumber: handoff.attemptNumber,
+                leaseGeneration: handoff.leaseGeneration,
+                leaseToken: handoff.leaseToken,
+                repositoryId: handoff.repositoryId,
+                snapshotId: handoff.snapshotId,
+                baseBranch: boundSnapshot.requested_ref,
+                expectedBaseRevision: handoff.expectedBaseRevision,
+                divergedFromDigest: handoff.divergedFromDigest,
+                candidateDigest: handoff.candidateDigest,
+                failingCommandId: handoff.failingCommandId,
+                changedPaths: handoff.changedPaths,
+                fileModes: changedFileModes,
+                sealedPath: seal.path,
+                sealedSha256: seal.sha256,
+                expiresAt,
+                observedAt,
+                evidenceRefs: Object.freeze([
+                  ...decision.acceptanceEvidenceRefs,
+                  ...(adaptiveAuthorizationEvidenceRef ? [adaptiveAuthorizationEvidenceRef] : []),
+                  modelEvidence.sha256,
+                ]),
+                idempotencyKey: stableId(
+                  "tfadaptivehandoff",
+                  handoff.tenantId,
+                  handoff.campaignId,
+                  handoff.unitId,
+                  handoff.attemptId,
+                ),
+                gateConfig: rawGate,
+              });
+              handoffRecorded = true;
+              const recordedCandidate = (input.adaptiveCandidateRecorder ?? recordAdaptiveCandidate)(input.db, {
+                tenantId: handoff.tenantId,
+                campaignId: handoff.campaignId,
+                unitId: handoff.unitId,
+                attemptId: handoff.attemptId,
+                repositoryId: handoff.repositoryId,
+                snapshotId: handoff.snapshotId,
+                baseBranch: boundSnapshot.requested_ref,
+                expectedBaseRevision: handoff.expectedBaseRevision,
+                divergedFromDigest: handoff.divergedFromDigest,
+                candidateDigest: handoff.candidateDigest,
+                failingCommandId: handoff.failingCommandId,
+                sealedPath: seal.path,
+                sealedSha256: seal.sha256,
+                changedPaths: handoff.changedPaths,
+                expiresAt,
+                now: observedAt,
+              });
+              input.store.markAdaptiveCandidateHandoffImported({
+                tenantId: handoff.tenantId,
+                campaignId: handoff.campaignId,
+                unitId: handoff.unitId,
+                attemptId: handoff.attemptId,
+                candidateId: recordedCandidate.id,
+                sealedSha256: seal.sha256,
+                observedAt,
+                evidenceRefs: Object.freeze([
+                  ...decision.acceptanceEvidenceRefs,
+                  stableId(
+                    "tfadaptiveimport",
+                    handoff.tenantId,
+                    handoff.campaignId,
+                    handoff.unitId,
+                    handoff.attemptId,
+                    seal.sha256,
+                  ),
+                ]),
+                idempotencyKey: stableId(
+                  "tfadaptiveimport",
+                  handoff.tenantId,
+                  handoff.campaignId,
+                  handoff.unitId,
+                  handoff.attemptId,
+                  seal.sha256,
+                ),
+                gateConfig: rawGate,
+              });
+              adaptiveModelEvidence.push(modelEvidence);
+            } catch (error) {
+              if (!handoffRecorded && modelEvidence?.created) {
+                discardTransformerAdaptiveModelEvidence(resolve(input.evidenceRoot), modelEvidence);
+              }
+              if (!handoffRecorded && seal.created) {
+                discardAdaptiveCandidate({
+                  tenantId: handoff.tenantId,
+                  path: seal.path,
+                  sha256: seal.sha256,
+                  ...(input.adaptiveCandidateDataRoot
+                    ? { env: { MENDPOINT_DATA_DIR: resolve(input.adaptiveCandidateDataRoot) } }
+                    : {}),
+                });
+              }
+              throw error;
+            }
+          },
         }),
     });
     if (routed.status === "handoff") {
@@ -277,6 +780,12 @@ export async function runTransformerPilotLaneOnce(
       if (routed.errorCode) errors.push(routed.errorCode);
     } else if (routed.status === "stale") stale++;
     else idle++;
+    if (
+      (routed.status === "completed" || routed.status === "failed") &&
+      !reconcileRoutingSettlements()
+    ) {
+      break;
+    }
   }
 
   return Object.freeze({
@@ -287,7 +796,15 @@ export async function runTransformerPilotLaneOnce(
     failed,
     stale,
     idle,
+    ...(routingSettled ? { routingSettled } : {}),
+    ...(adaptiveRecovered ? { adaptiveRecovered } : {}),
+    ...(regenerationBlocked ? { regenerationBlocked } : {}),
+    ...(regenerationScheduled ? { regenerationScheduled } : {}),
+    ...(regenerationFailed ? { regenerationFailed } : {}),
     ...(handoff ? { handoff } : {}),
+    ...(adaptiveModelEvidence.length > 0
+      ? { adaptiveModelEvidence: Object.freeze([...adaptiveModelEvidence]) }
+      : {}),
     errors: Object.freeze([...new Set(errors)].slice(0, 25)),
     ...(infrastructureError ? { infrastructureError } : {}),
   });

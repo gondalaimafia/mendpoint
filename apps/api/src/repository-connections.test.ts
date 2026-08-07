@@ -12,14 +12,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
   getConsumerRepo,
   getRepositorySnapshotPolicy,
   insertConsumer,
   insertConsumerRepo,
+  listRepositorySnapshotFiles,
   listRepositorySnapshots,
+  recordRepositorySnapshotDeletion,
   type AppDb,
 } from "@mendpoint/db";
 import {
@@ -161,13 +163,16 @@ function fixture() {
   roots.push(root);
   const repositoryPath = join(root, "customer-repo");
   mkdirSync(join(repositoryPath, ".github", "workflows"), { recursive: true });
+  mkdirSync(join(repositoryPath, "scripts"), { recursive: true });
   git(repositoryPath, "init", "-b", "main");
   git(repositoryPath, "config", "user.name", "Mendpoint Test");
   git(repositoryPath, "config", "user.email", "test@mendpoint.invalid");
   writeFileSync(join(repositoryPath, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
   writeFileSync(join(repositoryPath, ".github", "CODEOWNERS"), "* @customer\n");
   writeFileSync(join(repositoryPath, ".github", "workflows", "ci.yml"), "jobs:\n  test:\n    steps:\n      - run: npm test\n");
+  writeFileSync(join(repositoryPath, "scripts", "check.sh"), "#!/bin/sh\nnpm test\n");
   git(repositoryPath, "add", "--all");
+  git(repositoryPath, "update-index", "--chmod=+x", "scripts/check.sh");
   git(repositoryPath, "commit", "-m", "customer fixture");
   process.env.MENDPOINT_REPOS_DIR = root;
   process.env.NODE_ENV = "test";
@@ -201,6 +206,7 @@ function removeFixtureRoot(root: string): void {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   while (dbs.length) dbs.pop()?.raw.close();
   process.env.MENDPOINT_REPOS_DIR = previousReposDir;
   process.env.NODE_ENV = previousNodeEnv;
@@ -261,6 +267,24 @@ describe("repository connection service", () => {
       exact_commit: sha,
     });
     expect(getRepositorySnapshotPolicy(db, "tenant-a", result.snapshot.id)).toBeDefined();
+    expect(listRepositorySnapshotFiles(db, "tenant-a", result.snapshot.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "package.json",
+          mode: "100644",
+          kind: "file",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+        expect.objectContaining({
+          path: "scripts/check.sh",
+          mode: "100755",
+          kind: "file",
+          size: 19,
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      ]),
+    );
+    expect(listRepositorySnapshotFiles(db, "tenant-b", result.snapshot.id)).toEqual([]);
     const overview = scmOverview(db, "tenant-a");
     expect(JSON.stringify(overview)).not.toContain("local://filesystem");
     expect(overview.connections[0]?.health).toMatchObject({
@@ -366,6 +390,145 @@ describe("repository connection service", () => {
       repositoryId: repository.id,
     }, runtime.dependencies)).rejects.toThrow("connected_repository_tenant_mismatch");
   });
+
+  it("does not reuse identical content materialized from a different selected branch", async () => {
+    const { db, repositoryPath } = fixture();
+    git(repositoryPath, "branch", "release");
+    const connection = registerScmConnection(db, {
+      tenantId: "tenant-a",
+      provider: "local_git",
+      externalAccountId: "local-customer",
+      displayName: "Customer repository",
+    });
+    const repository = registerConnectedRepository(db, {
+      tenantId: "tenant-a",
+      connectionId: connection.id,
+      remoteId: "customer-repo",
+      owner: "customer",
+      name: "service",
+      defaultBranch: "main",
+      retentionDays: 14,
+    });
+    const first = await materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    });
+    db.raw.prepare(
+      "UPDATE connected_repositories SET selected_branch = 'release' WHERE id = ?",
+    ).run(repository.id);
+
+    const second = await materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    });
+
+    expect(second).toMatchObject({ reused: false, snapshot: { requestedRef: "release" } });
+    expect(second.snapshot.id).not.toBe(first.snapshot.id);
+    expect(listRepositorySnapshots(db, "tenant-a", repository.id)).toHaveLength(2);
+  });
+
+  it("rematerializes identical content after the reusable snapshot expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-01T00:00:00.000Z"));
+    const { db } = fixture();
+    const connection = registerScmConnection(db, {
+      tenantId: "tenant-a",
+      provider: "local_git",
+      externalAccountId: "local-customer",
+      displayName: "Customer repository",
+    });
+    const repository = registerConnectedRepository(db, {
+      tenantId: "tenant-a",
+      connectionId: connection.id,
+      remoteId: "customer-repo",
+      owner: "customer",
+      name: "service",
+      defaultBranch: "main",
+      retentionDays: 1,
+    });
+    const first = await materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    });
+    vi.setSystemTime(new Date("2026-08-03T00:00:00.000Z"));
+
+    const second = await materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    });
+
+    expect(second.reused).toBe(false);
+    expect(second.snapshot.id).not.toBe(first.snapshot.id);
+    expect(listRepositorySnapshots(db, "tenant-a", repository.id)).toHaveLength(2);
+  });
+
+  it.each(["missing", "corrupt", "deleted", "legacy"] as const)(
+    "rematerializes identical content when reusable storage is %s",
+    async (condition) => {
+      const { db } = fixture();
+      const connection = registerScmConnection(db, {
+        tenantId: "tenant-a",
+        provider: "local_git",
+        externalAccountId: "local-customer",
+        displayName: "Customer repository",
+      });
+      const repository = registerConnectedRepository(db, {
+        tenantId: "tenant-a",
+        connectionId: connection.id,
+        remoteId: "customer-repo",
+        owner: "customer",
+        name: "service",
+        defaultBranch: "main",
+        retentionDays: 14,
+      });
+      const first = await materializeConnectedRepository(db, {
+        tenantId: "tenant-a",
+        repositoryId: repository.id,
+      });
+      const stored = listRepositorySnapshots(db, "tenant-a", repository.id)[0]!;
+      if (condition === "missing") {
+        removeFixtureRoot(stored.storage_path);
+      } else if (condition === "corrupt") {
+        makeFixtureTreeWritable(stored.storage_path);
+        writeFileSync(join(stored.storage_path, "package.json"), "corrupt\n");
+      } else if (condition === "deleted") {
+        recordRepositorySnapshotDeletion(db, {
+          id: "deletion-planned",
+          tenantId: "tenant-a",
+          snapshotId: stored.id,
+          status: "planned",
+          actorPrincipalId: "service:retention",
+          createdAt: "2026-08-06T00:00:00.000Z",
+        });
+        recordRepositorySnapshotDeletion(db, {
+          id: "deletion-complete",
+          tenantId: "tenant-a",
+          snapshotId: stored.id,
+          status: "deleted",
+          actorPrincipalId: "service:retention",
+          createdAt: "2026-08-06T00:00:01.000Z",
+        });
+        removeFixtureRoot(stored.storage_path);
+      } else {
+        db.raw.exec("DROP TRIGGER repository_snapshots_append_only_update");
+        db.raw.prepare(
+          "UPDATE repository_snapshots SET file_manifest_version = 0 WHERE id = ?",
+        ).run(stored.id);
+      }
+
+      const second = await materializeConnectedRepository(db, {
+        tenantId: "tenant-a",
+        repositoryId: repository.id,
+      });
+
+      expect(second.reused).toBe(false);
+      expect(second.snapshot.id).not.toBe(first.snapshot.id);
+      expect(listRepositorySnapshots(db, "tenant-a", repository.id)).toHaveLength(2);
+      expect(existsSync(listRepositorySnapshots(db, "tenant-a", repository.id)[0]!.storage_path))
+        .toBe(true);
+    },
+    15_000,
+  );
 
   it("removes an owned fixture tree after snapshot permissions make nested content read only", () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-read-only-cleanup-"));

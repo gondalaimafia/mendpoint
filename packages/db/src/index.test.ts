@@ -72,6 +72,7 @@ import {
   getRoutingLedgerForJob,
   listRoutingLedgerForRun,
   DEFAULT_ROUTING_BREAKER,
+  recordAdaptiveCandidate,
 } from "./index.js";
 import { newId, nowIso } from "@mendpoint/shared";
 
@@ -100,6 +101,120 @@ afterEach(() => {
 });
 
 describe("db", () => {
+  it("upgrades legacy snapshot identity without treating legacy rows as reusable mode manifests", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-snapshot-upgrade-"));
+    dirs.push(dir);
+    const path = join(dir, "legacy-snapshots.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE scm_connections (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        credential_ref TEXT NOT NULL,
+        external_account_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revoked_at TEXT
+      );
+      CREATE TABLE connected_repositories (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        connection_id TEXT NOT NULL REFERENCES scm_connections(id),
+        remote_id TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        name TEXT NOT NULL,
+        default_branch TEXT NOT NULL,
+        selected_branch TEXT NOT NULL,
+        environment TEXT NOT NULL,
+        retention_days INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE repository_snapshots (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        repository_id TEXT NOT NULL REFERENCES connected_repositories(id),
+        requested_ref TEXT NOT NULL,
+        resolved_sha TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        storage_path TEXT NOT NULL,
+        submodules_policy TEXT NOT NULL,
+        lfs_policy TEXT NOT NULL,
+        sparse_paths_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        UNIQUE (tenant_id, repository_id, resolved_sha, manifest_sha256)
+      );
+      CREATE UNIQUE INDEX repository_snapshots_id_tenant_uidx
+        ON repository_snapshots(id, tenant_id);
+      CREATE TABLE repository_snapshot_files (
+        snapshot_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        PRIMARY KEY (snapshot_id, path),
+        FOREIGN KEY (snapshot_id, tenant_id) REFERENCES repository_snapshots(id, tenant_id)
+      );
+      INSERT INTO scm_connections VALUES (
+        'connection-a', 'tenant-a', 'local_git', 'env://LOCAL_GIT_TEST', 'local-a',
+        'Local A', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', NULL
+      );
+      INSERT INTO connected_repositories VALUES (
+        'repository-a', 'tenant-a', 'connection-a', 'owner/repo', 'owner', 'repo',
+        'main', 'main', 'production', 14, 'ready',
+        '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
+      );
+      INSERT INTO repository_snapshots VALUES (
+        'snapshot-main', 'tenant-a', 'repository-a', 'main', '${"a".repeat(40)}',
+        '${"b".repeat(64)}', '${join(dir, "snapshot-main").replaceAll("'", "''")}',
+        'reject', 'reject', '[]', '2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z'
+      );
+      INSERT INTO repository_snapshot_files VALUES (
+        'snapshot-main', 'tenant-a', 'package.json', '100644', 'file', 2,
+        '${"c".repeat(64)}'
+      );
+      CREATE TRIGGER repository_snapshots_append_only_update
+        BEFORE UPDATE ON repository_snapshots
+        BEGIN SELECT RAISE(ABORT, 'repository_snapshots_append_only'); END;
+      CREATE TRIGGER repository_snapshots_append_only_delete
+        BEFORE DELETE ON repository_snapshots
+        BEGIN SELECT RAISE(ABORT, 'repository_snapshots_append_only'); END;
+    `);
+    legacy.close();
+
+    const db = createDb(path);
+    dbs.push(db);
+    expect(
+      db.raw.prepare(
+        "SELECT file_manifest_version FROM repository_snapshots WHERE id = 'snapshot-main'",
+      ).get(),
+    ).toEqual({ file_manifest_version: 0 });
+    expect(db.raw.prepare(
+      "SELECT path, mode FROM repository_snapshot_files WHERE snapshot_id = 'snapshot-main'",
+    ).get()).toEqual({ path: "package.json", mode: "100644" });
+    expect(() => db.raw.prepare(`
+      INSERT INTO repository_snapshots
+        (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256,
+         storage_path, submodules_policy, lfs_policy, sparse_paths_json,
+         file_manifest_version, created_at, expires_at)
+      VALUES
+        ('snapshot-release', 'tenant-a', 'repository-a', 'release', '${"a".repeat(40)}',
+         '${"b".repeat(64)}', '${join(dir, "snapshot-release").replaceAll("'", "''")}',
+         'reject', 'reject', '[]', 1, '2026-08-01T01:00:00.000Z', '2026-09-01T01:00:00.000Z')
+    `).run()).not.toThrow();
+    expect(db.raw.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(() => db.raw.prepare(
+      "UPDATE repository_snapshots SET requested_ref = 'other' WHERE id = 'snapshot-main'",
+    ).run()).toThrow("repository_snapshots_append_only");
+  });
+
   it("upgrades a prior jobs schema before creating tenant indexes", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-upgrade-"));
     dirs.push(dir);
@@ -1230,6 +1345,16 @@ describe("db", () => {
       result_json: JSON.stringify({
         jobId: "job-agent",
         stoppedReason: "verify_passed",
+        supersedesRunId: "agent-earlier",
+        supersededByRunId: "agent-later",
+        review: {
+          decision: "regenerate",
+          rationale: "The repair needs a narrower change.",
+          reviewedAt: "2026-01-01T00:00:30.000Z",
+          reviewerPrincipalId: "human:reviewer@example.com",
+          supersedingRunId: "agent-later",
+          privateEvidence: "private review evidence",
+        },
         steps: [{ source: "private source" }],
         verifier: {
           command: "node check.mjs",
@@ -1257,6 +1382,18 @@ describe("db", () => {
       restoredCount: 1,
       failedCount: 0,
     });
+    expect(agent.result?.review).toEqual({
+      decision: "regenerate",
+      rationale: "The repair needs a narrower change.",
+      reviewedAt: "2026-01-01T00:00:30.000Z",
+      reviewerPrincipalId: "human:reviewer@example.com",
+      supersedingRunId: "agent-later",
+    });
+    expect(agent.result?.lineage).toEqual({
+      supersedesRunId: "agent-earlier",
+      supersededByRunId: "agent-later",
+    });
+    expect(JSON.stringify(agent)).not.toContain("private review evidence");
   });
 
   it("consumes install state and webhook deliveries once", () => {
@@ -1800,7 +1937,12 @@ describe("db", () => {
         .map((i) => i.name)
         .sort();
 
-    for (const table of ["routing_ledger", "routing_executor_health"]) {
+    for (const table of [
+      "routing_ledger",
+      "routing_executor_health",
+      "routing_outcome_applications",
+      "repository_snapshot_files",
+    ]) {
       expect(columnsOf(migrated, table)).toEqual(columnsOf(fresh, table));
       expect(indexesOf(migrated, table)).toEqual(indexesOf(fresh, table));
     }
@@ -1824,6 +1966,141 @@ describe("db", () => {
         decision: {},
       }),
     ).not.toThrow();
+  });
+
+  it("boots on a pre-adaptive-candidate schema and converges to the fresh shape", () => {
+    // Pre-change production shape: a database created before the transformer
+    // adaptive candidate review table existed. createDb runs the static DDL
+    // (CREATE TABLE IF NOT EXISTS) before migrations, so booting must add the
+    // new table + index and never throw "no such column" from a dependent index.
+    const legacyDir = mkdtempSync(join(tmpdir(), "mendpoint-db-adaptive-legacy-"));
+    dirs.push(legacyDir);
+    const legacyPath = join(legacyDir, "legacy.sqlite");
+    const legacy = new DatabaseSync(legacyPath);
+    legacy.exec(`
+      CREATE TABLE jobs (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        error TEXT,
+        result_json TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT
+      );
+    `);
+    legacy.close();
+
+    const migrated = createDb(legacyPath);
+    dbs.push(migrated);
+
+    const freshDir = mkdtempSync(join(tmpdir(), "mendpoint-db-adaptive-fresh-"));
+    dirs.push(freshDir);
+    const fresh = createDb(join(freshDir, "fresh.sqlite"));
+    dbs.push(fresh);
+
+    const columnsOf = (db: { raw: DatabaseSync }, table: string) =>
+      (db.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+        .map((c) => c.name)
+        .sort();
+    const indexesOf = (db: { raw: DatabaseSync }, table: string) =>
+      (db.raw.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string }>)
+        .map((i) => i.name)
+        .sort();
+
+    const table = "transformer_adaptive_candidates";
+    expect(columnsOf(migrated, table)).toEqual(columnsOf(fresh, table));
+    expect(indexesOf(migrated, table)).toEqual(indexesOf(fresh, table));
+    expect(columnsOf(migrated, table)).toContain("candidate_digest");
+    // The migrated database must be writable through the new review-state path.
+    expect(() =>
+      recordAdaptiveCandidate(migrated, {
+        tenantId: "tenant_default",
+        campaignId: "campaign-boot",
+        unitId: "unit-boot",
+        attemptId: "tfattempt_boot",
+        repositoryId: "repo-boot",
+        snapshotId: "snapshot-boot",
+        baseBranch: "main",
+        expectedBaseRevision: "e".repeat(40),
+        divergedFromDigest: `sha256:${"1".repeat(64)}`,
+        candidateDigest: `sha256:${"2".repeat(64)}`,
+        failingCommandId: "verify:boot",
+        sealedPath: "/data/x.json",
+        sealedSha256: `sha256:${"3".repeat(64)}`,
+        changedPaths: ["package.json"],
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      }),
+    ).not.toThrow();
+  });
+
+  it("upgrades existing adaptive rows and backfills the immutable base branch", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-adaptive-branch-upgrade-"));
+    dirs.push(dir);
+    const path = join(dir, "legacy.sqlite");
+    const seeded = createDb(path);
+    seeded.raw.exec(`
+      INSERT INTO scm_connections
+        (id, tenant_id, provider, credential_ref, external_account_id, display_name,
+         created_at, updated_at, revoked_at)
+      VALUES ('connection-upgrade', 'tenant-upgrade', 'github', 'env://GITHUB_TOKEN',
+              '123', 'Upgrade', '2026-08-06T00:00:00.000Z',
+              '2026-08-06T00:00:00.000Z', NULL);
+      INSERT INTO connected_repositories
+        (id, tenant_id, connection_id, remote_id, owner, name, default_branch,
+         selected_branch, environment, retention_days, status, created_at, updated_at)
+      VALUES ('repository-upgrade', 'tenant-upgrade', 'connection-upgrade', '456',
+              'acme', 'upgrade', 'main', 'release', 'production', 30, 'ready',
+              '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z');
+      INSERT INTO repository_snapshots
+        (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256,
+         storage_path, submodules_policy, lfs_policy, sparse_paths_json, created_at, expires_at)
+      VALUES ('snapshot-upgrade', 'tenant-upgrade', 'repository-upgrade', 'release',
+              '${"a".repeat(40)}', '${"b".repeat(64)}', 'C:/snapshot-upgrade',
+              'reject', 'reject', '[]', '2026-08-06T00:00:00.000Z',
+              '2026-09-06T00:00:00.000Z');
+      INSERT INTO transformer_adaptive_candidates
+        (id, tenant_id, campaign_id, unit_id, attempt_id, repository_id, snapshot_id,
+         base_branch, expected_base_revision, kind, status, diverged_from_digest,
+         candidate_digest, failing_command_id, sealed_path, sealed_sha256,
+         changed_paths_json, reviewer_principal_id, review_decision, reviewed_at,
+         promoted_at, expires_at, created_at, updated_at)
+      VALUES ('candidate-upgrade', 'tenant-upgrade', 'campaign-upgrade', 'unit-upgrade',
+              'attempt-upgrade', 'repository-upgrade', 'snapshot-upgrade', 'release',
+              '${"a".repeat(40)}', 'adaptive', 'approved', 'sha256:${"c".repeat(64)}',
+              'sha256:${"d".repeat(64)}', 'verify', 'C:/seal.json',
+              'sha256:${"e".repeat(64)}', '["package.json"]', 'reviewer-upgrade',
+              'approve', '2026-08-06T00:01:00.000Z', NULL,
+              '2026-09-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z',
+              '2026-08-06T00:01:00.000Z');
+      INSERT INTO transformer_adaptive_deliveries
+        (id, tenant_id, candidate_id, job_id, status, repository_id, snapshot_id,
+         base_branch, expected_base_revision, requester_principal_id, requested_at, updated_at)
+      VALUES ('delivery-upgrade', 'tenant-upgrade', 'candidate-upgrade', 'job-upgrade',
+              'delivery_pending', 'repository-upgrade', 'snapshot-upgrade', 'release',
+              '${"a".repeat(40)}', 'reviewer-upgrade', '2026-08-06T00:01:00.000Z',
+              '2026-08-06T00:01:00.000Z');
+    `);
+    seeded.raw.close();
+
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      ALTER TABLE transformer_adaptive_deliveries DROP COLUMN base_branch;
+      ALTER TABLE transformer_adaptive_candidates DROP COLUMN base_branch;
+    `);
+    legacy.close();
+
+    const migrated = createDb(path);
+    dbs.push(migrated);
+    expect(migrated.raw.prepare(
+      "SELECT base_branch FROM transformer_adaptive_candidates WHERE id = 'candidate-upgrade'",
+    ).get()).toEqual({ base_branch: "release" });
+    expect(migrated.raw.prepare(
+      "SELECT base_branch FROM transformer_adaptive_deliveries WHERE id = 'delivery-upgrade'",
+    ).get()).toEqual({ base_branch: "release" });
   });
 
   it("persists a routing decision and outcome queryable per job and run", () => {

@@ -10,6 +10,7 @@ import {
   type CapabilityEvalReport,
 } from "./capability-eval.js";
 import { TRANSFORMER_AGENT_EVAL_SCENARIOS } from "./transformer-agent-eval.js";
+import { TRANSFORMER_ADAPTIVE_DELIVERY_EVAL_SCENARIO } from "./transformer-adaptive-delivery-eval.js";
 import { WARDEN_AGENT_EVAL_SCENARIOS } from "./warden-agent-eval.js";
 import {
   WARDEN_SOURCE_EVAL_SCENARIO,
@@ -32,6 +33,7 @@ export async function runWardenTransformerEval(
       WARDEN_SOURCE_EVAL_SCENARIO,
       WARDEN_WORKER_SOURCE_EVAL_SCENARIO,
       ...TRANSFORMER_AGENT_EVAL_SCENARIOS,
+      TRANSFORMER_ADAPTIVE_DELIVERY_EVAL_SCENARIO,
     ],
     repetitions,
   );

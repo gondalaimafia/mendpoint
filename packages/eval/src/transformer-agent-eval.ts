@@ -8,12 +8,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   createDb,
   insertConnectedRepository,
   insertRepositorySnapshot,
+  insertRepositorySnapshotFiles,
   upsertScmConnection,
 } from "@mendpoint/db";
 import {
@@ -240,6 +242,9 @@ function source(files: RecipeFiles): ExactSourceSnapshot {
     revision: "b".repeat(40),
     digest: recipeFilesDigest(files),
     files,
+    fileModes: Object.freeze(Object.fromEntries(
+      Object.keys(files).map((path) => [path, path === ".nvmrc" ? "100755" : "100644"]),
+    ) as Record<string, "100644" | "100755">),
   });
 }
 
@@ -785,6 +790,19 @@ const PRODUCTION_RUNNER_SCENARIO: AgentEvalScenario = Object.freeze({
         storagePath: snapshotRoot,
         createdAt,
         expiresAt,
+      });
+      insertRepositorySnapshotFiles(db, {
+        tenantId,
+        snapshotId: "snapshot-production-eval",
+        files: Object.entries({ ...FILES, "private.env": SECRET_SENTINEL }).map(
+          ([path, content]) => ({
+            path,
+            mode: path === ".nvmrc" ? "100755" : "100644",
+            kind: "file",
+            size: Buffer.byteLength(content, "utf8"),
+            sha256: createHash("sha256").update(content, "utf8").digest("hex"),
+          }),
+        ),
       });
       const constraints = createOrganizationConstraintContract({
         tenantId,

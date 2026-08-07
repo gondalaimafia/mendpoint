@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ExecutorRegistry,
   type DataClassification,
@@ -13,7 +14,10 @@ import {
   type WardenRouterPrepared,
   type WardenRouterRecorded,
 } from "@mendpoint/agent";
-import type { TransformerAttemptRunResult } from "@mendpoint/transformer";
+import type {
+  TransformerAttemptRunResult,
+  TransformerPendingRoutingSettlement,
+} from "@mendpoint/transformer";
 import { createWardenRoutingRuntime, wardenExecutorDescriptor } from "./warden-router.js";
 
 /**
@@ -42,21 +46,53 @@ export const TRANSFORMER_CAPABILITY = "transformer.recipe";
 
 const TRANSFORMER_PRICE_EFFECTIVE_AT = "2026-01-01T00:00:00.000Z";
 
+export type TransformerExternalRoutingProfile = Readonly<{
+  provider: string;
+  model: string;
+  deployment: string;
+  executionRegion: string;
+  maximumDataClassification: DataClassification;
+  maximumCostUsd: number;
+}>;
+
+function transformerExternalDeploymentIdentity(
+  profile: TransformerExternalRoutingProfile,
+): string {
+  const canonical = JSON.stringify({
+    deployment: profile.deployment,
+    executionRegion: profile.executionRegion,
+    model: profile.model,
+    provider: profile.provider,
+  });
+  return `sha256:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
+}
+
 /** Register the Transformer attempt executor descriptor for a routing pass. */
 export function transformerExecutorDescriptor(
   checkedAt: string,
+  external?: TransformerExternalRoutingProfile,
+  executorIdOverride?: string,
 ): ExecutorDescriptor {
+  const deploymentIdentity = external
+    ? transformerExternalDeploymentIdentity(external)
+    : undefined;
   return {
-    executorId: TRANSFORMER_EXECUTOR_ID,
-    providerId: TRANSFORMER_PROVIDER_ID,
-    kind: "deterministic_recipe",
-    version: "transformer-attempt-1",
-    deployment: "internal",
+    executorId: executorIdOverride ?? (deploymentIdentity
+      ? `transformer-model-${deploymentIdentity.slice("sha256:".length)}`
+      : TRANSFORMER_EXECUTOR_ID),
+    providerId: external?.provider ?? TRANSFORMER_PROVIDER_ID,
+    kind: external ? "frontier_model" : "deterministic_recipe",
+    version: external && deploymentIdentity
+      ? `${external.model}@${external.deployment}@${deploymentIdentity}`
+      : "transformer-attempt-1",
+    deployment: external ? "external" : "internal",
     capabilities: [TRANSFORMER_CAPABILITY],
     tools: ["read_file", "write_file", "run_command"],
-    regions: [TRANSFORMER_ROUTING_REGION],
+    regions: [external?.executionRegion ?? TRANSFORMER_ROUTING_REGION],
     price: {
-      version: "transformer-attempt-price-1",
+      version: deploymentIdentity
+        ? `transformer-model-price-${deploymentIdentity}`
+        : "transformer-attempt-price-1",
       currency: "USD",
       effectiveAt: TRANSFORMER_PRICE_EFFECTIVE_AT,
     },
@@ -75,11 +111,11 @@ export function transformerExecutorDescriptor(
       commercialUse: true,
       redistribution: "not_applicable",
     },
-    maximumDataClassification: "restricted",
+    maximumDataClassification: external?.maximumDataClassification ?? "restricted",
     maximumRisk: "high",
     qualityScore: 0.9,
     estimatedLatencyMs: 60_000,
-    estimatedCostUsd: 0,
+    estimatedCostUsd: external?.maximumCostUsd ?? 0,
   };
 }
 
@@ -90,10 +126,14 @@ export function transformerExecutorDescriptor(
  * to Transformer; the other executor is eliminated by capability. Breaker state
  * is keyed per executor, so a Transformer failure never contaminates Warden.
  */
-export function buildRoutedExecutorRegistry(checkedAt: string): ExecutorRegistry {
+export function buildRoutedExecutorRegistry(
+  checkedAt: string,
+  external?: TransformerExternalRoutingProfile,
+  executorIdOverride?: string,
+): ExecutorRegistry {
   const registry = new ExecutorRegistry();
   registry.register(wardenExecutorDescriptor(checkedAt));
-  registry.register(transformerExecutorDescriptor(checkedAt));
+  registry.register(transformerExecutorDescriptor(checkedAt, external, executorIdOverride));
   return registry;
 }
 
@@ -102,7 +142,9 @@ export type TransformerRoutingRequestInput = Readonly<{
   tenantId: string;
   campaignId: string;
   idempotencyKey: string;
-  policySnapshotId: string;
+  /** Legacy caller field. Router policy identity is computed from policy content. */
+  policySnapshotId?: string;
+  sourceArtifactIds: readonly string[];
   goal?: string;
   verifyCommand?: string;
   maxOutputTokens?: number;
@@ -110,6 +152,8 @@ export type TransformerRoutingRequestInput = Readonly<{
   classification?: DataClassification;
   budgetUsd?: number;
   maximumLatencyMs?: number;
+  externalProcessingAllowed?: boolean;
+  allowedExecutionRegion?: string;
   decidedAt?: Date;
 }>;
 
@@ -128,7 +172,7 @@ function buildTaskSpec(input: TransformerRoutingRequestInput): RouterTaskSpec {
     kind: TRANSFORMER_TASK_KIND,
     goal: input.goal ?? `Transformer recipe migration for ${input.campaignId}`,
     idempotencyKey: input.idempotencyKey,
-    inputArtifactIds: [],
+    inputArtifactIds: [...input.sourceArtifactIds],
     requiredCapabilities: [TRANSFORMER_CAPABILITY],
     allowedTools: [],
     context: {
@@ -158,10 +202,8 @@ function buildTaskSpec(input: TransformerRoutingRequestInput): RouterTaskSpec {
 function buildPolicySnapshot(
   input: TransformerRoutingRequestInput,
 ): RouterPolicySnapshot {
-  return {
-    snapshotId: input.policySnapshotId,
+  const body: Omit<RouterPolicySnapshot, "snapshotId" | "capturedAt"> = {
     version: 1,
-    capturedAt: (input.decidedAt ?? new Date()).toISOString(),
     privacy: {
       allowedClassifications: [
         "public",
@@ -169,13 +211,22 @@ function buildPolicySnapshot(
         "confidential",
         "restricted",
       ],
-      externalProcessingAllowed: false,
+      externalProcessingAllowed: input.externalProcessingAllowed ?? false,
     },
-    region: { allowedExecutionRegions: [TRANSFORMER_ROUTING_REGION] },
+    region: {
+      allowedExecutionRegions: [input.allowedExecutionRegion ?? TRANSFORMER_ROUTING_REGION],
+    },
     risk: { maximumAutonomousRisk: "medium", humanReviewAtOrAbove: "high" },
     quality: { minimumScore: 0 },
     latency: { maximumMs: input.maximumLatencyMs ?? 3_600_000 },
     budget: { maximumUsd: input.budgetUsd ?? 25 },
+  };
+  return {
+    snapshotId: `sha256:${createHash("sha256")
+      .update(JSON.stringify(body), "utf8")
+      .digest("hex")}`,
+    ...body,
+    capturedAt: (input.decidedAt ?? new Date()).toISOString(),
   };
 }
 
@@ -412,7 +463,11 @@ export type RunRoutedTransformerAttemptInput = Readonly<{
   outcomeIdempotencyKey: string;
   goal: string;
   sessionId: string;
+  providerId?: string;
+  executorId?: string;
   runAttempt: () => Promise<TransformerAttemptRunResult>;
+  onPrepared?: (prepared: WardenRouterPrepared) => void;
+  deferOutcomePersistence?: boolean;
   breakerConfig?: RoutingBreakerConfig;
   now?: () => Date;
 }>;
@@ -429,14 +484,25 @@ export type RunRoutedTransformerAttemptInput = Readonly<{
 export async function runRoutedTransformerAttempt(
   input: RunRoutedTransformerAttemptInput,
 ): Promise<RoutedTransformerAttempt> {
-  const runtime = createWardenRoutingRuntime({
+  const baseRuntime = createWardenRoutingRuntime({
     db: input.db,
     tenantId: input.tenantId,
     jobId: input.jobId,
     runId: input.runId,
     registry: input.registry,
     ...(input.breakerConfig ? { breakerConfig: input.breakerConfig } : {}),
+    ...(input.deferOutcomePersistence ? { deferOutcomePersistence: true } : {}),
   });
+  const runtime = input.onPrepared
+    ? {
+        prepare: (request: TransformerRoutingRequest) => {
+          const prepared = baseRuntime.prepare(request);
+          input.onPrepared!(prepared);
+          return prepared;
+        },
+        recordOutcome: baseRuntime.recordOutcome,
+      }
+    : baseRuntime;
   let captured: TransformerAttemptRunResult | null = null;
   try {
     const routed = await runPolicyRoutedWarden<TransformerRoutingRequest>({
@@ -458,8 +524,8 @@ export async function runRoutedTransformerAttempt(
         };
       },
       executor: {
-        executorId: TRANSFORMER_EXECUTOR_ID,
-        providerId: TRANSFORMER_PROVIDER_ID,
+        executorId: input.executorId ?? TRANSFORMER_EXECUTOR_ID,
+        providerId: input.providerId ?? TRANSFORMER_PROVIDER_ID,
         run: async () => {
           const result = await input.runAttempt();
           captured = result;
@@ -496,4 +562,36 @@ export async function runRoutedTransformerAttempt(
     }
     throw error;
   }
+}
+
+export function settleTransformerRoutingOutcome(input: Readonly<{
+  db: AppDb;
+  settlement: TransformerPendingRoutingSettlement;
+  breakerConfig?: RoutingBreakerConfig;
+}>): WardenRouterRecorded {
+  const runtime = createWardenRoutingRuntime({
+    db: input.db,
+    tenantId: input.settlement.tenantId,
+    jobId: input.settlement.campaignId,
+    runId: input.settlement.runId,
+    registry: buildRoutedExecutorRegistry(
+      input.settlement.outcome.completedAt,
+      input.settlement.outcome.providerId === TRANSFORMER_PROVIDER_ID
+        ? undefined
+        : {
+            provider: input.settlement.outcome.providerId,
+            model: "settled-external-model",
+            deployment: "settled-external-deployment",
+            executionRegion: TRANSFORMER_ROUTING_REGION,
+            maximumDataClassification: "restricted",
+            maximumCostUsd: input.settlement.outcome.actualCostUsd ?? 0,
+          },
+      input.settlement.outcome.executorId,
+    ),
+    ...(input.breakerConfig ? { breakerConfig: input.breakerConfig } : {}),
+  });
+  return runtime.recordOutcome(
+    input.settlement.envelopeId,
+    input.settlement.outcome,
+  );
 }

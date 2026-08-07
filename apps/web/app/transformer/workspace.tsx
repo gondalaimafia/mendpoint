@@ -8,6 +8,7 @@ import {
   type TransformerCampaignView,
   type TransformerEventView,
 } from "./workspace-model";
+import { AdaptiveCandidateInbox } from "./candidate-inbox";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
@@ -323,6 +324,8 @@ export function TransformerWorkspace() {
           {notice.text}
         </p>
       )}
+
+      <AdaptiveCandidateInbox />
 
       <section className="surface transformer-load" aria-labelledby="campaign-access-title">
         <div>

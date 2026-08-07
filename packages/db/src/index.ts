@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { newId, nowIso } from "@mendpoint/shared";
 import { computeProductMetrics } from "./metrics.js";
+import { settleExpiredWardenModelReservations } from "./warden-model-accounting.js";
 import type {
   ApiChange,
   ApiKeyRow,
@@ -27,6 +28,7 @@ import type {
 } from "./schema.js";
 
 export type * from "./schema.js";
+export * from "./warden-model-accounting.js";
 
 export type AppDb = {
   raw: DatabaseSync;
@@ -107,6 +109,45 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
 CREATE INDEX IF NOT EXISTS jobs_type_idx ON jobs(type);
+
+CREATE TABLE IF NOT EXISTS warden_model_reservations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  job_id TEXT NOT NULL REFERENCES jobs(id),
+  run_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  lease_generation INTEGER NOT NULL CHECK (lease_generation > 0),
+  call_index INTEGER NOT NULL CHECK (call_index > 0),
+  request_digest TEXT NOT NULL,
+  reservation_digest TEXT NOT NULL,
+  settlement_digest TEXT,
+  provider TEXT NOT NULL,
+  configured_model TEXT NOT NULL,
+  actual_model TEXT,
+  endpoint_host TEXT NOT NULL,
+  body_request_id TEXT,
+  header_request_id TEXT,
+  status TEXT NOT NULL CHECK (status IN ('active', 'succeeded', 'failed', 'over_budget', 'unknown')),
+  maximum_input_tokens INTEGER NOT NULL CHECK (maximum_input_tokens >= 0),
+  maximum_output_tokens INTEGER NOT NULL CHECK (maximum_output_tokens > 0),
+  maximum_total_tokens INTEGER NOT NULL CHECK (maximum_total_tokens > 0),
+  maximum_cost_usd REAL NOT NULL CHECK (maximum_cost_usd >= 0),
+  job_budget_usd REAL NOT NULL CHECK (job_budget_usd >= 0),
+  reported_input_tokens INTEGER,
+  reported_output_tokens INTEGER,
+  reported_total_tokens INTEGER,
+  reported_cost_usd REAL,
+  charged_input_tokens INTEGER,
+  charged_output_tokens INTEGER,
+  charged_total_tokens INTEGER,
+  charged_cost_usd REAL,
+  error_code TEXT,
+  reserved_at TEXT NOT NULL,
+  settled_at TEXT,
+  UNIQUE (tenant_id, job_id, lease_generation, call_index)
+);
+CREATE INDEX IF NOT EXISTS warden_model_reservations_job_idx
+  ON warden_model_reservations(tenant_id, job_id, status, reserved_at);
 
 -- Agentic repair sessions
 CREATE TABLE IF NOT EXISTS repair_sessions (
@@ -903,11 +944,31 @@ CREATE TABLE IF NOT EXISTS repository_snapshots (
   submodules_policy TEXT NOT NULL CHECK (submodules_policy IN ('reject', 'pinned')),
   lfs_policy TEXT NOT NULL CHECK (lfs_policy IN ('reject', 'pointer_only', 'fetch')),
   sparse_paths_json TEXT NOT NULL,
+  file_manifest_version INTEGER NOT NULL DEFAULT 0 CHECK (file_manifest_version IN (0, 1)),
   created_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  UNIQUE (tenant_id, repository_id, resolved_sha, manifest_sha256)
+  expires_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS repository_snapshots_tenant_idx ON repository_snapshots(tenant_id, repository_id, created_at);
+CREATE INDEX IF NOT EXISTS repository_snapshots_identity_idx
+  ON repository_snapshots(tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS repository_snapshots_id_tenant_uidx
+  ON repository_snapshots(id, tenant_id);
+
+CREATE TABLE IF NOT EXISTS repository_snapshot_files (
+  snapshot_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK (mode IN ('100644', '100755', '120000')),
+  kind TEXT NOT NULL CHECK (kind IN ('file', 'symlink')),
+  size INTEGER NOT NULL CHECK (size >= 0),
+  sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^a-f0-9]*'),
+  PRIMARY KEY (snapshot_id, path),
+  FOREIGN KEY (snapshot_id, tenant_id) REFERENCES repository_snapshots(id, tenant_id),
+  CHECK ((kind = 'file' AND mode IN ('100644', '100755')) OR
+         (kind = 'symlink' AND mode = '120000'))
+);
+CREATE INDEX IF NOT EXISTS repository_snapshot_files_tenant_idx
+  ON repository_snapshot_files(tenant_id, snapshot_id, path);
 
 CREATE TABLE IF NOT EXISTS repository_snapshot_policies (
   id TEXT PRIMARY KEY,
@@ -987,6 +1048,22 @@ CREATE INDEX IF NOT EXISTS routing_ledger_job_idx
 CREATE INDEX IF NOT EXISTS routing_ledger_run_idx
   ON routing_ledger(tenant_id, run_id, created_at);
 
+-- Exactly-once application record for routing outcomes. Kept in a separate
+-- table so existing databases gain the invariant safely without an additive
+-- routing_ledger column/index ordering hazard during boot.
+CREATE TABLE IF NOT EXISTS routing_outcome_applications (
+  tenant_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  envelope_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  payload_digest TEXT NOT NULL,
+  applied_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, job_id, idempotency_key),
+  UNIQUE (tenant_id, job_id, envelope_id)
+);
+CREATE INDEX IF NOT EXISTS routing_outcome_applications_envelope_idx
+  ON routing_outcome_applications(tenant_id, job_id, envelope_id);
+
 -- Durable executor/provider circuit-breaker health used for outcome feedback.
 -- Bounded: at most one row per (tenant, scope, executor, provider); success
 -- deletes the row so the table never grows without failing executors.
@@ -1000,6 +1077,140 @@ CREATE TABLE IF NOT EXISTS routing_executor_health (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, scope, executor_id, provider_id)
 );
+
+-- Durable review state for Transformer *adaptive* candidates. When the bounded
+-- adaptive repair loop converges on a fix that DIVERGES from the deterministic
+-- recipe output, that fix is not auto-promoted: it is recorded here as a
+-- distinct kind ('adaptive') awaiting explicit human sign-off. The kind CHECK
+-- makes it impossible for a recipe-candidate code path to ever approve one of
+-- these rows. Every column lives in this table's own CREATE, so the index below
+-- is safe in the static DDL (no additive migration adds a column it depends on).
+CREATE TABLE IF NOT EXISTS transformer_adaptive_candidates (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  unit_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  repository_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL,
+  base_branch TEXT NOT NULL,
+  expected_base_revision TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind = 'adaptive'),
+  status TEXT NOT NULL CHECK (
+    status IN ('review_pending', 'approved', 'rejected', 'superseded', 'promoted', 'expired')
+  ),
+  diverged_from_digest TEXT NOT NULL,
+  candidate_digest TEXT NOT NULL,
+  failing_command_id TEXT,
+  sealed_path TEXT NOT NULL,
+  sealed_sha256 TEXT NOT NULL,
+  changed_paths_json TEXT NOT NULL,
+  reviewer_principal_id TEXT,
+  review_decision TEXT CHECK (review_decision IN ('approve', 'reject', 'regenerate')),
+  review_rationale TEXT,
+  reviewed_at TEXT,
+  promoted_at TEXT,
+  supersedes_candidate_id TEXT,
+  superseded_by_candidate_id TEXT,
+  generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, campaign_id, unit_id, attempt_id)
+);
+CREATE INDEX IF NOT EXISTS transformer_adaptive_candidates_tenant_idx
+  ON transformer_adaptive_candidates(tenant_id, campaign_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS transformer_adaptive_regenerations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  candidate_id TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  unit_id TEXT NOT NULL,
+  reviewer_principal_id TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  rationale_digest TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'scheduled', 'completed')),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  last_error_code TEXT,
+  superseding_candidate_id TEXT,
+  requested_at TEXT NOT NULL,
+  scheduled_at TEXT,
+  completed_at TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, candidate_id)
+);
+CREATE INDEX IF NOT EXISTS transformer_adaptive_regenerations_pending_idx
+  ON transformer_adaptive_regenerations(status, requested_at, id);
+
+CREATE TABLE IF NOT EXISTS transformer_adaptive_deliveries (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  candidate_id TEXT NOT NULL,
+  job_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (
+    status IN ('delivery_pending', 'delivered', 'delivery_failed')
+  ),
+  repository_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL,
+  base_branch TEXT NOT NULL,
+  expected_base_revision TEXT NOT NULL,
+  intent_digest TEXT,
+  branch_name TEXT,
+  base_revision TEXT,
+  commit_sha TEXT,
+  draft_pr INTEGER CHECK (draft_pr = 1),
+  draft_pr_number INTEGER,
+  draft_pr_url TEXT,
+  requester_principal_id TEXT NOT NULL,
+  error_code TEXT,
+  error_message TEXT,
+  requested_at TEXT NOT NULL,
+  intent_bound_at TEXT,
+  delivered_at TEXT,
+  failed_at TEXT,
+  last_error_at TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, candidate_id)
+);
+CREATE INDEX IF NOT EXISTS transformer_adaptive_deliveries_tenant_idx
+  ON transformer_adaptive_deliveries(tenant_id, status, requested_at);
+
+CREATE TABLE IF NOT EXISTS warden_candidate_deliveries (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  job_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (
+    status IN ('delivery_pending', 'delivered', 'delivery_failed')
+  ),
+  repository_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL,
+  base_branch TEXT NOT NULL,
+  expected_base_revision TEXT NOT NULL,
+  sealed_path TEXT NOT NULL,
+  sealed_sha256 TEXT NOT NULL,
+  requester_principal_id TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  intent_digest TEXT,
+  branch_name TEXT,
+  base_revision TEXT,
+  commit_sha TEXT,
+  draft_pr INTEGER CHECK (draft_pr = 1),
+  draft_pr_number INTEGER,
+  draft_pr_url TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  requested_at TEXT NOT NULL,
+  intent_bound_at TEXT,
+  delivered_at TEXT,
+  failed_at TEXT,
+  last_error_at TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, run_id)
+);
+CREATE INDEX IF NOT EXISTS warden_candidate_deliveries_tenant_idx
+  ON warden_candidate_deliveries(tenant_id, status, requested_at);
 `;
 
 
@@ -1035,11 +1246,82 @@ export function createDb(urlOrPath?: string): AppDb {
   raw.exec("PRAGMA busy_timeout = 5000;");
   raw.exec("PRAGMA temp_store = MEMORY;");
   raw.exec(DDL);
+  migrateRepositorySnapshotIdentity({ raw });
   migrateProvidersFeedColumns({ raw });
   migrateAuditIntegrity({ raw });
   migrateArtifactContent({ raw });
   installTrustImmutability({ raw });
   return { raw };
+}
+
+function migrateRepositorySnapshotIdentity(db: AppDb): void {
+  const columns = all<{ name: string }>(
+    db,
+    "PRAGMA table_info(repository_snapshots)",
+  ).map((column) => column.name);
+  const tableSql = get<{ sql: string }>(
+    db,
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'repository_snapshots'",
+  )?.sql ?? "";
+  const legacyContentUniqueness = /UNIQUE\s*\(\s*tenant_id\s*,\s*repository_id\s*,\s*resolved_sha\s*,\s*manifest_sha256\s*\)/i
+    .test(tableSql);
+  if (columns.includes("file_manifest_version") && !legacyContentUniqueness) return;
+
+  const foreignKeysEnabled = Number(
+    (db.raw.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number }).foreign_keys,
+  ) === 1;
+  if (db.raw.isTransaction) throw new Error("repository_snapshot_migration_transaction_active");
+  db.raw.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.raw.exec("BEGIN IMMEDIATE");
+    db.raw.exec("DROP TABLE IF EXISTS repository_snapshots_next");
+    db.raw.exec(`
+      CREATE TABLE repository_snapshots_next (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        repository_id TEXT NOT NULL REFERENCES connected_repositories(id),
+        requested_ref TEXT NOT NULL,
+        resolved_sha TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        storage_path TEXT NOT NULL,
+        submodules_policy TEXT NOT NULL CHECK (submodules_policy IN ('reject', 'pinned')),
+        lfs_policy TEXT NOT NULL CHECK (lfs_policy IN ('reject', 'pointer_only', 'fetch')),
+        sparse_paths_json TEXT NOT NULL,
+        file_manifest_version INTEGER NOT NULL DEFAULT 0 CHECK (file_manifest_version IN (0, 1)),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+    `);
+    db.raw.exec(`
+      INSERT INTO repository_snapshots_next
+        (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256,
+         storage_path, submodules_policy, lfs_policy, sparse_paths_json,
+         file_manifest_version, created_at, expires_at)
+      SELECT id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256,
+             storage_path, submodules_policy, lfs_policy, sparse_paths_json,
+             ${columns.includes("file_manifest_version") ? "file_manifest_version" : "0"},
+             created_at, expires_at
+      FROM repository_snapshots;
+      DROP TABLE repository_snapshots;
+      ALTER TABLE repository_snapshots_next RENAME TO repository_snapshots;
+      CREATE INDEX repository_snapshots_tenant_idx
+        ON repository_snapshots(tenant_id, repository_id, created_at);
+      CREATE INDEX repository_snapshots_identity_idx
+        ON repository_snapshots(
+          tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, created_at
+        );
+      CREATE UNIQUE INDEX repository_snapshots_id_tenant_uidx
+        ON repository_snapshots(id, tenant_id);
+    `);
+    const violations = db.raw.prepare("PRAGMA foreign_key_check").all();
+    if (violations.length) throw new Error("repository_snapshot_migration_foreign_key_invalid");
+    db.raw.exec("COMMIT");
+  } catch (error) {
+    if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  } finally {
+    if (foreignKeysEnabled) db.raw.exec("PRAGMA foreign_keys = ON");
+  }
 }
 
 /** Additive columns for Phase D feed URLs + Phase E tenant on consumers. */
@@ -1139,6 +1421,21 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "consumer_repos", name: "connected_repository_id", sql: "TEXT" },
     { table: "consumer_repos", name: "snapshot_id", sql: "TEXT" },
     { table: "consumer_repos", name: "exact_commit", sql: "TEXT" },
+    {
+      table: "transformer_adaptive_candidates",
+      name: "base_branch",
+      sql: "TEXT NOT NULL DEFAULT ''",
+    },
+    {
+      table: "transformer_adaptive_candidates",
+      name: "review_rationale",
+      sql: "TEXT",
+    },
+    {
+      table: "transformer_adaptive_deliveries",
+      name: "base_branch",
+      sql: "TEXT NOT NULL DEFAULT ''",
+    },
   ];
   const addedColumns = new Set<string>();
   for (const column of additiveColumns) {
@@ -1151,6 +1448,31 @@ function migrateProvidersFeedColumns(db: AppDb) {
       addedColumns.add(`${column.table}.${column.name}`);
     }
   }
+  run(
+    db,
+    `UPDATE transformer_adaptive_candidates
+     SET base_branch = COALESCE((
+       SELECT snapshot.requested_ref
+       FROM repository_snapshots snapshot
+       WHERE snapshot.id = transformer_adaptive_candidates.snapshot_id
+         AND snapshot.tenant_id = transformer_adaptive_candidates.tenant_id
+         AND snapshot.repository_id = transformer_adaptive_candidates.repository_id
+     ), '')
+     WHERE base_branch = ''`,
+  );
+  run(
+    db,
+    `UPDATE transformer_adaptive_deliveries
+     SET base_branch = COALESCE((
+       SELECT candidate.base_branch
+       FROM transformer_adaptive_candidates candidate
+       WHERE candidate.id = transformer_adaptive_deliveries.candidate_id
+         AND candidate.tenant_id = transformer_adaptive_deliveries.tenant_id
+         AND candidate.repository_id = transformer_adaptive_deliveries.repository_id
+         AND candidate.snapshot_id = transformer_adaptive_deliveries.snapshot_id
+     ), '')
+     WHERE base_branch = ''`,
+  );
   if (addedColumns.has("consumers.github_delivery_mode")) {
     const boundConsumers = all<{
       id: string;
@@ -1368,6 +1690,7 @@ function installTrustImmutability(db: AppDb) {
     "pilot_success_contract_versions",
     "domain_events",
     "repository_snapshots",
+    "repository_snapshot_files",
     "repository_snapshot_policies",
     "repository_snapshot_deletions",
   ]) {
@@ -2199,10 +2522,13 @@ export {
   getScmConnectionHealth,
   insertConnectedRepository,
   insertRepositorySnapshot,
+  insertRepositorySnapshotFiles,
   insertRepositorySnapshotPolicy,
   listConnectedRepositories,
   listRepositorySnapshots,
+  listRepositorySnapshotFiles,
   listExpiredRepositorySnapshots,
+  listRepositorySnapshotReuseCandidates,
   listScmConnections,
   revokeScmConnection,
   recordRepositorySnapshotDeletion,
@@ -2237,6 +2563,64 @@ export type {
   WardenRolloutStopConditions,
   WardenTargetStage,
 } from "./warden-campaign.js";
+
+export {
+  recordAdaptiveCandidate,
+  getAdaptiveCandidate,
+  listAdaptiveCandidates,
+  listAdaptiveCandidateTenantIds,
+  listAdaptiveAttentionCandidates,
+  listAdaptiveCandidateHistory,
+  listAdaptiveCandidatesForMaintenance,
+  getAdaptiveRegenerationByCandidate,
+  requestAdaptiveCandidateRegeneration,
+  listPendingAdaptiveRegenerations,
+  markAdaptiveRegenerationBlocked,
+  markAdaptiveRegenerationScheduled,
+  recordAdaptiveRegenerationScheduleFailure,
+  reviewAdaptiveCandidate,
+  promoteAdaptiveCandidate,
+  expireAdaptiveCandidate,
+  type AdaptiveCandidateStatus,
+  type AdaptiveCandidateHistoryCursor,
+  type AdaptiveCandidateHistoryPage,
+  type AdaptiveReviewDecision,
+  type AdaptiveRegenerationStatus,
+  type TransformerAdaptiveCandidateRecord,
+  type TransformerAdaptiveRegenerationRecord,
+  type RecordAdaptiveCandidateInput,
+  type ReviewAdaptiveCandidateInput,
+  type PromoteAdaptiveCandidateInput,
+  type ExpireAdaptiveCandidateInput,
+} from "./transformer-adaptive-candidate.js";
+
+export {
+  enqueueAdaptiveDelivery,
+  getAdaptiveDelivery,
+  getAdaptiveDeliveryByCandidate,
+  listAdaptiveDeliveries,
+  bindAdaptiveDeliveryIntent,
+  recordAdaptiveDeliverySuccess,
+  recordAdaptiveDeliveryFailure,
+  type AdaptiveDeliveryStatus,
+  type TransformerAdaptiveDeliveryRecord,
+  type EnqueueAdaptiveDeliveryInput,
+  type BindAdaptiveDeliveryIntentInput,
+  type RecordAdaptiveDeliverySuccessInput,
+  type RecordAdaptiveDeliveryFailureInput,
+} from "./transformer-adaptive-delivery.js";
+
+export {
+  enqueueWardenCandidateDelivery,
+  getWardenCandidateDelivery,
+  getWardenCandidateDeliveryByRun,
+  bindWardenCandidateDeliveryIntent,
+  recordWardenCandidateDeliverySuccess,
+  recordWardenCandidateDeliveryFailure,
+  type WardenCandidateDeliveryStatus,
+  type WardenCandidateDeliveryRecord,
+  type EnqueueWardenCandidateDeliveryInput,
+} from "./warden-candidate-delivery.js";
 
 export type {
   LearningConsentRow,
@@ -3094,6 +3478,8 @@ export type JobLeaseFence = {
 export type JobFailureOptions = Partial<JobLeaseFence> & {
   errorCode?: string;
   retryable?: boolean;
+  /** Keep reconciliation work pending when an external write may have succeeded. */
+  retryPastMaxAttempts?: boolean;
   baseDelayMs?: number;
   maxDelayMs?: number;
 };
@@ -3172,22 +3558,47 @@ export function recoverExpiredJobs(
   now = new Date().toISOString(),
   tenantId?: string,
 ): number {
+  settleExpiredWardenModelReservations(db, now, tenantId);
+  const adaptiveSideEffectMayExist = `(
+    jobs.type = 'transformer.adaptive.deliver' AND EXISTS (
+      SELECT 1 FROM transformer_adaptive_deliveries delivery
+      WHERE delivery.job_id = jobs.id
+        AND delivery.tenant_id = jobs.tenant_id
+        AND delivery.status = 'delivery_pending'
+        AND delivery.intent_digest IS NOT NULL
+    )
+  )`;
+  const wardenSideEffectMayExist = `(
+    jobs.type = 'warden.candidate.deliver' AND EXISTS (
+      SELECT 1 FROM warden_candidate_deliveries delivery
+      WHERE delivery.job_id = jobs.id
+        AND delivery.tenant_id = jobs.tenant_id
+        AND delivery.status = 'delivery_pending'
+        AND delivery.intent_digest IS NOT NULL
+    )
+  )`;
+  const externalSideEffectMayExist = `(${adaptiveSideEffectMayExist} OR ${wardenSideEffectMayExist})`;
+  const shouldRetry = `(attempts < max_attempts OR ${externalSideEffectMayExist})`;
   const result = db.raw
     .prepare(
       `UPDATE jobs
-       SET status = CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'dead_letter' END,
+       SET status = CASE WHEN ${shouldRetry} THEN 'pending' ELSE 'dead_letter' END,
            error = CASE
              WHEN attempts < max_attempts THEN 'lease_expired'
+             WHEN ${externalSideEffectMayExist}
+               THEN 'lease_expired_external_side_effect_uncertain'
              ELSE 'lease_expired_max_attempts'
            END,
            error_code = CASE
              WHEN attempts < max_attempts THEN 'lease_expired'
+             WHEN ${externalSideEffectMayExist}
+               THEN 'lease_expired_external_side_effect_uncertain'
              ELSE 'lease_expired_max_attempts'
            END,
            last_error_at = ?,
-           available_at = CASE WHEN attempts < max_attempts THEN ? ELSE NULL END,
-           finished_at = CASE WHEN attempts < max_attempts THEN NULL ELSE ? END,
-           dead_at = CASE WHEN attempts < max_attempts THEN NULL ELSE ? END,
+           available_at = CASE WHEN ${shouldRetry} THEN ? ELSE NULL END,
+           finished_at = CASE WHEN ${shouldRetry} THEN NULL ELSE ? END,
+           dead_at = CASE WHEN ${shouldRetry} THEN NULL ELSE ? END,
            lease_owner = NULL,
            lease_expires_at = NULL
        WHERE status = 'running'
@@ -3339,7 +3750,9 @@ export function failJob(
   if (!job) {
     return { applied: false, status: "missing", availableAt: null, deadAt: null };
   }
-  const retry = opts.retryable !== false && job.attempts < job.max_attempts;
+  const retry =
+    opts.retryable !== false &&
+    (opts.retryPastMaxAttempts === true || job.attempts < job.max_attempts);
   const delayMs = retry
     ? boundedDelayMs(job.attempts, opts.baseDelayMs, opts.maxDelayMs)
     : 0;
@@ -3879,6 +4292,10 @@ export function agentRunToApi(r: AgentRunRow) {
     rawResult?.agent && typeof rawResult.agent === "object"
       ? (rawResult.agent as Record<string, unknown>)
       : null;
+  const rawReview =
+    rawResult?.review && typeof rawResult.review === "object"
+      ? (rawResult.review as Record<string, unknown>)
+      : null;
   return {
     id: r.id,
     tenantId: r.tenant_id,
@@ -3961,6 +4378,27 @@ export function agentRunToApi(r: AgentRunRow) {
                     : null,
                 }
               : null,
+          review: rawReview
+            ? {
+                decision: typeof rawReview.decision === "string" ? rawReview.decision : null,
+                rationale: typeof rawReview.rationale === "string" ? rawReview.rationale : null,
+                reviewedAt: typeof rawReview.reviewedAt === "string" ? rawReview.reviewedAt : null,
+                reviewerPrincipalId: typeof rawReview.reviewerPrincipalId === "string"
+                  ? rawReview.reviewerPrincipalId
+                  : null,
+                supersedingRunId: typeof rawReview.supersedingRunId === "string"
+                  ? rawReview.supersedingRunId
+                  : null,
+              }
+            : null,
+          lineage: {
+            supersedesRunId: typeof rawResult.supersedesRunId === "string"
+              ? rawResult.supersedesRunId
+              : null,
+            supersededByRunId: typeof rawResult.supersededByRunId === "string"
+              ? rawResult.supersededByRunId
+              : null,
+          },
         }
       : null,
     createdAt: r.created_at,
@@ -4793,7 +5231,7 @@ export function loadRoutingAvailability(
   const openExecutors = new Set(
     snapshot
       .filter((entry) => entry.scope === "executor" && entry.open)
-      .map((entry) => `${entry.executorId} ${entry.providerId}`),
+      .map((entry) => `${entry.executorId}\u0000${entry.providerId}`),
   );
   const openProviders = new Set(
     snapshot
@@ -4804,7 +5242,7 @@ export function loadRoutingAvailability(
     snapshot: Object.freeze(snapshot),
     allows(executorId: string, providerId: string): boolean {
       return (
-        !openExecutors.has(`${executorId} ${providerId}`) &&
+        !openExecutors.has(`${executorId}\u0000${providerId}`) &&
         !openProviders.has(providerId)
       );
     },
@@ -5017,6 +5455,156 @@ export function recordRoutingOutcome(
       input.envelopeId,
     );
   return Number(result.changes) === 1;
+}
+
+type RoutingOutcomeApplicationRow = Readonly<{
+  envelope_id: string;
+  payload_digest: string;
+}>;
+
+export type RoutingBreakerFeedback =
+  | "success"
+  | "availability_failure"
+  | "none";
+
+function canonicalRoutingOutcomeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalRoutingOutcomeValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, child]) => child !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonicalRoutingOutcomeValue(child)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * Apply one execution outcome, its ledger fields, and both breaker scopes in a
+ * single transaction. An identical idempotency replay is a no-op; reusing the
+ * key or decision envelope for different evidence fails closed.
+ */
+export function recordRoutingOutcomeExactlyOnce(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    jobId: string;
+    envelopeId: string;
+    idempotencyKey: string;
+    idempotencyPayload: unknown;
+    executorId: string;
+    providerId: string;
+    breakerFeedback: RoutingBreakerFeedback;
+    action: string;
+    outcome: string;
+    errorCode?: string | null;
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    totalTokens?: number | null;
+    costUsd?: number | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    observedAt?: string;
+    config?: RoutingBreakerConfig;
+  }>,
+): boolean {
+  const idempotencyKey = input.idempotencyKey.trim();
+  if (!idempotencyKey) throw new Error("routing_outcome_idempotency_key_required");
+  const observedAt = input.observedAt ?? nowIso();
+  const payloadDigest = `sha256:${createHash("sha256")
+    .update(JSON.stringify(canonicalRoutingOutcomeValue(input.idempotencyPayload)), "utf8")
+    .digest("hex")}`;
+  const config = input.config ?? DEFAULT_ROUTING_BREAKER;
+
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const byKey = db.raw
+      .prepare(
+        `SELECT envelope_id, payload_digest FROM routing_outcome_applications
+         WHERE tenant_id = ? AND job_id = ? AND idempotency_key = ?`,
+      )
+      .get(input.tenantId, input.jobId, idempotencyKey) as
+        | RoutingOutcomeApplicationRow
+        | undefined;
+    if (byKey) {
+      if (byKey.envelope_id !== input.envelopeId || byKey.payload_digest !== payloadDigest) {
+        throw new Error("routing_outcome_idempotency_conflict");
+      }
+      if (ownsTransaction) db.raw.exec("COMMIT");
+      return false;
+    }
+    const byEnvelope = db.raw
+      .prepare(
+        `SELECT envelope_id, payload_digest FROM routing_outcome_applications
+         WHERE tenant_id = ? AND job_id = ? AND envelope_id = ?`,
+      )
+      .get(input.tenantId, input.jobId, input.envelopeId) as
+        | RoutingOutcomeApplicationRow
+        | undefined;
+    if (byEnvelope) throw new Error("routing_outcome_idempotency_conflict");
+
+    const applied = recordRoutingOutcome(db, {
+      tenantId: input.tenantId,
+      jobId: input.jobId,
+      envelopeId: input.envelopeId,
+      action: input.action,
+      outcome: input.outcome,
+      errorCode: input.errorCode ?? null,
+      inputTokens: input.inputTokens ?? null,
+      outputTokens: input.outputTokens ?? null,
+      totalTokens: input.totalTokens ?? null,
+      costUsd: input.costUsd ?? null,
+      startedAt: input.startedAt ?? null,
+      completedAt: input.completedAt ?? null,
+      observedAt,
+    });
+    if (!applied) throw new Error("routing_outcome_decision_missing");
+
+    db.raw
+      .prepare(
+        `INSERT INTO routing_outcome_applications
+          (tenant_id, job_id, envelope_id, idempotency_key, payload_digest, applied_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.tenantId,
+        input.jobId,
+        input.envelopeId,
+        idempotencyKey,
+        payloadDigest,
+        observedAt,
+      );
+    if (input.breakerFeedback !== "none") {
+      const success = input.breakerFeedback === "success";
+      recordBreakerScope(
+        db,
+        input.tenantId,
+        "executor",
+        input.executorId,
+        input.providerId,
+        success,
+        observedAt,
+        config,
+      );
+      recordBreakerScope(
+        db,
+        input.tenantId,
+        "provider",
+        "",
+        input.providerId,
+        success,
+        observedAt,
+        config,
+      );
+    }
+    if (ownsTransaction) db.raw.exec("COMMIT");
+    return true;
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function getRoutingLedgerForJob(

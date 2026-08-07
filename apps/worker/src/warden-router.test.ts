@@ -22,12 +22,23 @@ import {
   wardenExecutorDescriptor,
   wardenRoutingOutcomeAttribution,
   wardenRoutingRequest,
+  type WardenModelRoutingProfile,
   WARDEN_EXECUTOR_ID,
   WARDEN_PROVIDER_ID,
 } from "./warden-router.js";
 
 const dirs: string[] = [];
 const dbs: AppDb[] = [];
+
+const MODEL_ROUTING_PROFILE: WardenModelRoutingProfile = Object.freeze({
+  provider: "openai-compatible",
+  model: "model-a",
+  endpoint: "https://models.example/v1/chat/completions",
+  policyDigest: `sha256:${"a".repeat(64)}`,
+  region: "us-central",
+  maximumDataClassification: "confidential",
+  estimatedCostUsd: 0.25,
+});
 
 afterEach(() => {
   while (dbs.length) {
@@ -120,7 +131,7 @@ function request(overrides: Partial<Parameters<typeof wardenRoutingRequest>[0]> 
     goal: "Repair API client",
     idempotencyKey: "run-1",
     verifyCommand: "npm test",
-    policySnapshotId: "snapshot-1",
+    sourceArtifactId: "snapshot-1",
     decidedAt: new Date("2026-08-01T12:00:00.000Z"),
     ...overrides,
   });
@@ -178,6 +189,118 @@ function succeededAttempt(usage: AttemptUsage): WardenAttemptResult {
 }
 
 describe("warden routing runtime", () => {
+  it("hands off an external model before planner execution when processing is denied", async () => {
+    const db = freshDb();
+    const runtime = createWardenRoutingRuntime({
+      db,
+      tenantId: "tenant_default",
+      jobId: "job-1",
+      runId: "run-1",
+      registry: buildWardenExecutorRegistry(
+        "2026-08-01T12:00:00.000Z",
+        MODEL_ROUTING_PROFILE,
+      ),
+    });
+    const planner = vi.fn(async () => PASSED_RUN);
+    const descriptor = wardenExecutorDescriptor(
+      "2026-08-01T12:00:00.000Z",
+      MODEL_ROUTING_PROFILE,
+    );
+
+    const routed = await runPolicyRoutedWarden({
+      task: { goal: "Repair API client", repoRoot: "." },
+      routingRequest: request({
+        modelSource: MODEL_ROUTING_PROFILE,
+        externalProcessingAllowed: false,
+      }),
+      runtime,
+      outcomeIdempotencyKey: "job-1:run-1:denied",
+      telemetry: () => ({ actualCostUsd: null, verifierId: "warden-attempt-verifier" }),
+      executor: {
+        executorId: descriptor.executorId,
+        providerId: descriptor.providerId,
+        run: planner,
+      },
+    });
+
+    expect(routed.routing.action).toBe("human_handoff");
+    expect(routed.run).toBeNull();
+    expect(planner).not.toHaveBeenCalled();
+    const ledger = getRoutingLedgerForJob(db, "job-1", "tenant_default");
+    expect(JSON.parse(ledger[0]!.eliminated_json)).toEqual([
+      expect.objectContaining({ reasons: expect.arrayContaining(["privacy_disallowed"]) }),
+    ]);
+  });
+
+  it("routes an approved tenant model with exact provider and model provenance", () => {
+    const db = freshDb();
+    const descriptor = wardenExecutorDescriptor(
+      "2026-08-01T12:00:00.000Z",
+      MODEL_ROUTING_PROFILE,
+    );
+    const registry = buildWardenExecutorRegistry(
+      "2026-08-01T12:00:00.000Z",
+      MODEL_ROUTING_PROFILE,
+    );
+    const runtime = createWardenRoutingRuntime({
+      db,
+      tenantId: "tenant_default",
+      jobId: "job-1",
+      runId: "run-1",
+      registry,
+    });
+    const routingRequest = request({
+      modelSource: MODEL_ROUTING_PROFILE,
+      externalProcessingAllowed: true,
+    });
+    const prepared = runtime.prepare(routingRequest);
+
+    expect(descriptor).toMatchObject({
+      providerId: MODEL_ROUTING_PROFILE.provider,
+      deployment: "external",
+      regions: [MODEL_ROUTING_PROFILE.region],
+      maximumDataClassification: MODEL_ROUTING_PROFILE.maximumDataClassification,
+      estimatedCostUsd: MODEL_ROUTING_PROFILE.estimatedCostUsd,
+      health: { evidenceRef: MODEL_ROUTING_PROFILE.policyDigest },
+    });
+    expect(descriptor.version).toContain(MODEL_ROUTING_PROFILE.model);
+    expect(descriptor.executorId).not.toBe(WARDEN_EXECUTOR_ID);
+    expect(prepared).toMatchObject({
+      action: "execute",
+      selectedExecutorId: descriptor.executorId,
+      dispatch: {
+        executorId: descriptor.executorId,
+        providerId: MODEL_ROUTING_PROFILE.provider,
+      },
+    });
+    expect(routingRequest.task.inputArtifactIds).toEqual([
+      "snapshot-1",
+      MODEL_ROUTING_PROFILE.policyDigest,
+    ]);
+    expect(routingRequest.policy.snapshotId).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(routingRequest.policy.snapshotId).not.toBe("snapshot-1");
+    expect(routingRequest.policy).toMatchObject({
+      privacy: { externalProcessingAllowed: true },
+      region: { allowedExecutionRegions: [MODEL_ROUTING_PROFILE.region] },
+    });
+  });
+
+  it("keeps heuristic fallback internal and excludes model policy artifacts", () => {
+    const routingRequest = request();
+    const descriptor = wardenExecutorDescriptor("2026-08-01T12:00:00.000Z");
+
+    expect(descriptor).toMatchObject({
+      executorId: WARDEN_EXECUTOR_ID,
+      providerId: WARDEN_PROVIDER_ID,
+      deployment: "internal",
+      regions: ["internal"],
+      estimatedCostUsd: 0,
+    });
+    expect(routingRequest.task.inputArtifactIds).toEqual(["snapshot-1"]);
+    expect(routingRequest.policy.privacy.externalProcessingAllowed).toBe(false);
+    expect(routingRequest.policy.region.allowedExecutionRegions).toEqual(["internal"]);
+  });
+
   it("persists a routing decision for a real queued job", async () => {
     const db = freshDb();
     enqueueJob(db, {
@@ -318,7 +441,7 @@ describe("warden routing runtime", () => {
     expect(ledger[0]!.handoff_reason).toBe("high_risk");
   });
 
-  it("flips breaker state from outcome feedback so future routing excludes it", () => {
+  it("opens the breaker after three provider availability failures", () => {
     const db = freshDb();
     const runtime = createWardenRoutingRuntime({
       db,
@@ -329,7 +452,11 @@ describe("warden routing runtime", () => {
     });
     // Feed three failed outcomes through the runtime's outcome path.
     for (let i = 0; i < 3; i += 1) {
-      runtime.recordOutcome(`route-${i}`, {
+      const prepared = runtime.prepare(request({
+        taskId: `job-breaker-${i}`,
+        idempotencyKey: `run-breaker-${i}`,
+      }));
+      runtime.recordOutcome(prepared.envelopeId, {
         idempotencyKey: `k-${i}`,
         executorId: WARDEN_EXECUTOR_ID,
         providerId: WARDEN_PROVIDER_ID,
@@ -338,16 +465,61 @@ describe("warden routing runtime", () => {
         completedAt: "2026-08-01T12:00:01.000Z",
         actualLatencyMs: 1000,
         actualCostUsd: null,
-        errorCode: "executor_unavailable",
+        errorCode: "provider_unavailable",
         verification: { verdict: "failed", evidenceArtifactIds: [], verifierId: "v" },
       });
     }
     // The only executor is now circuit-open, so routing hands off.
     const prepared = runtime.prepare(request());
     expect(prepared.action).toBe("human_handoff");
+    expect(db.raw.prepare(
+      `SELECT consecutive_failures FROM routing_executor_health
+       WHERE tenant_id = ? AND scope = 'provider' AND provider_id = ?`,
+    ).get("tenant_default", WARDEN_PROVIDER_ID)).toEqual({ consecutive_failures: 3 });
   });
 
-  it("does not break job completion when the ledger write fails", async () => {
+  it("does not open the breaker after three customer verification failures", () => {
+    const db = freshDb();
+    const runtime = createWardenRoutingRuntime({
+      db,
+      tenantId: "tenant_default",
+      jobId: "job-1",
+      runId: "run-1",
+      registry: buildWardenExecutorRegistry("2026-08-01T12:00:00.000Z"),
+    });
+    for (let i = 0; i < 3; i += 1) {
+      const prepared = runtime.prepare(request({
+        taskId: `job-verification-${i}`,
+        idempotencyKey: `run-verification-${i}`,
+      }));
+      runtime.recordOutcome(prepared.envelopeId, {
+        idempotencyKey: `verification-${i}`,
+        executorId: WARDEN_EXECUTOR_ID,
+        providerId: WARDEN_PROVIDER_ID,
+        outcome: "failed",
+        startedAt: "2026-08-01T12:00:00.000Z",
+        completedAt: "2026-08-01T12:00:01.000Z",
+        actualLatencyMs: 1000,
+        actualCostUsd: null,
+        errorCode: "verification_failed",
+        verification: { verdict: "failed", evidenceArtifactIds: [], verifierId: "v" },
+      });
+    }
+
+    expect(runtime.prepare(request({
+      taskId: "job-after-verification",
+      idempotencyKey: "run-after-verification",
+    })).action).toBe("execute");
+    expect(db.raw.prepare(
+      "SELECT COUNT(*) AS count FROM routing_executor_health WHERE tenant_id = ?",
+    ).get("tenant_default")).toEqual({ count: 0 });
+    expect(db.raw.prepare(
+      `SELECT COUNT(*) AS count FROM routing_ledger
+       WHERE tenant_id = ? AND job_id = ? AND outcome = ? AND error_code = ?`,
+    ).get("tenant_default", "job-1", "failed", "verification_failed")).toEqual({ count: 3 });
+  });
+
+  it("fails closed before execution when breaker state cannot be read", async () => {
     const brokenDb = {
       raw: {
         prepare() {
@@ -366,7 +538,8 @@ describe("warden routing runtime", () => {
       registry: buildWardenExecutorRegistry("2026-08-01T12:00:00.000Z"),
     });
 
-    const routed = await runPolicyRoutedWarden({
+    const execute = vi.fn(async () => PASSED_RUN);
+    await expect(runPolicyRoutedWarden({
       task: { goal: "Repair API client", repoRoot: "." },
       routingRequest: request(),
       runtime,
@@ -375,14 +548,157 @@ describe("warden routing runtime", () => {
       executor: {
         executorId: WARDEN_EXECUTOR_ID,
         providerId: WARDEN_PROVIDER_ID,
-        run: async () => PASSED_RUN,
+        run: execute,
       },
-    });
+    })).rejects.toMatchObject({ code: "routing_breaker_state_unavailable" });
+    expect(execute).not.toHaveBeenCalled();
+  });
 
-    // The routing decision still executes and completes despite the ledger and
-    // breaker writes failing on every call.
-    expect(routed.run).toBe(PASSED_RUN);
-    expect(routed.routing.action).toBe("completed");
+  it("fails closed before execution when the routing decision cannot be persisted", async () => {
+    const db = freshDb();
+    const raw = {
+      prepare(sql: string) {
+        if (/routing_executor_health/.test(sql)) return db.raw.prepare(sql);
+        throw new Error("decision ledger unavailable");
+      },
+      close() {
+        /* owned by freshDb */
+      },
+    } as unknown as AppDb["raw"];
+    const runtime = createWardenRoutingRuntime({
+      db: { raw },
+      tenantId: "tenant_default",
+      jobId: "job-1",
+      runId: "run-1",
+      registry: buildWardenExecutorRegistry("2026-08-01T12:00:00.000Z"),
+    });
+    const execute = vi.fn(async () => PASSED_RUN);
+
+    await expect(runPolicyRoutedWarden({
+      task: { goal: "Repair API client", repoRoot: "." },
+      routingRequest: request(),
+      runtime,
+      outcomeIdempotencyKey: "job-1:run-1:route",
+      telemetry: () => ({ actualCostUsd: null, verifierId: "warden-attempt-verifier" }),
+      executor: {
+        executorId: WARDEN_EXECUTOR_ID,
+        providerId: WARDEN_PROVIDER_ID,
+        run: execute,
+      },
+    })).rejects.toMatchObject({ code: "routing_decision_persistence_failed" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("applies identical routing outcomes exactly once", () => {
+    const db = freshDb();
+    const runtime = createWardenRoutingRuntime({
+      db,
+      tenantId: "tenant_default",
+      jobId: "job-1",
+      runId: "run-1",
+      registry: buildWardenExecutorRegistry("2026-08-01T12:00:00.000Z"),
+    });
+    const prepared = runtime.prepare(request());
+    const outcome = {
+      idempotencyKey: "outcome-once",
+      executorId: WARDEN_EXECUTOR_ID,
+      providerId: WARDEN_PROVIDER_ID,
+      outcome: "failed" as const,
+      startedAt: "2026-08-01T12:00:00.000Z",
+      completedAt: "2026-08-01T12:00:01.000Z",
+      actualLatencyMs: 1000,
+      actualCostUsd: null,
+      errorCode: "executor_unavailable",
+      verification: { verdict: "failed" as const, evidenceArtifactIds: [], verifierId: "v" },
+    };
+
+    runtime.recordOutcome(prepared.envelopeId, outcome);
+    runtime.recordOutcome(prepared.envelopeId, outcome);
+
+    const health = db.raw.prepare(
+      `SELECT consecutive_failures FROM routing_executor_health
+       WHERE tenant_id = ? AND scope = 'executor' AND executor_id = ? AND provider_id = ?`,
+    ).get("tenant_default", WARDEN_EXECUTOR_ID, WARDEN_PROVIDER_ID) as
+      | { consecutive_failures: number }
+      | undefined;
+    expect(health?.consecutive_failures).toBe(1);
+  });
+
+  it("defers an outcome so an outer job-finalization transaction owns commit and rollback", () => {
+    const db = freshDb();
+    const runtime = createWardenRoutingRuntime({
+      db,
+      tenantId: "tenant_default",
+      jobId: "job-1",
+      runId: "run-1",
+      registry: buildWardenExecutorRegistry("2026-08-01T12:00:00.000Z"),
+      deferOutcomePersistence: true,
+    });
+    const prepared = runtime.prepare(request());
+    runtime.recordOutcome(prepared.envelopeId, {
+      idempotencyKey: "outcome-deferred",
+      executorId: WARDEN_EXECUTOR_ID,
+      providerId: WARDEN_PROVIDER_ID,
+      outcome: "failed",
+      startedAt: "2026-08-01T12:00:00.000Z",
+      completedAt: "2026-08-01T12:00:01.000Z",
+      actualLatencyMs: 1000,
+      actualCostUsd: null,
+      errorCode: "provider_unavailable",
+      verification: { verdict: "failed", evidenceArtifactIds: [], verifierId: "v" },
+    });
+    expect(getRoutingLedgerForJob(db, "job-1", "tenant_default")[0]!.outcome).toBeNull();
+
+    db.raw.exec("BEGIN IMMEDIATE");
+    runtime.applyPendingOutcome();
+    db.raw.exec("ROLLBACK");
+    expect(getRoutingLedgerForJob(db, "job-1", "tenant_default")[0]!.outcome).toBeNull();
+    expect(db.raw.prepare(
+      "SELECT COUNT(*) AS count FROM routing_outcome_applications",
+    ).get()).toEqual({ count: 0 });
+
+    db.raw.exec("BEGIN IMMEDIATE");
+    runtime.applyPendingOutcome();
+    db.raw.exec("COMMIT");
+    runtime.applyPendingOutcome();
+    expect(getRoutingLedgerForJob(db, "job-1", "tenant_default")[0]).toMatchObject({
+      outcome: "failed",
+      error_code: "provider_unavailable",
+    });
+    expect(db.raw.prepare(
+      `SELECT consecutive_failures FROM routing_executor_health
+       WHERE tenant_id = ? AND scope = 'provider' AND provider_id = ?`,
+    ).get("tenant_default", WARDEN_PROVIDER_ID)).toEqual({ consecutive_failures: 1 });
+  });
+
+  it("rejects reuse of an outcome idempotency key with different evidence", () => {
+    const db = freshDb();
+    const runtime = createWardenRoutingRuntime({
+      db,
+      tenantId: "tenant_default",
+      jobId: "job-1",
+      runId: "run-1",
+      registry: buildWardenExecutorRegistry("2026-08-01T12:00:00.000Z"),
+    });
+    const prepared = runtime.prepare(request());
+    const outcome = {
+      idempotencyKey: "outcome-conflict",
+      executorId: WARDEN_EXECUTOR_ID,
+      providerId: WARDEN_PROVIDER_ID,
+      outcome: "failed" as const,
+      startedAt: "2026-08-01T12:00:00.000Z",
+      completedAt: "2026-08-01T12:00:01.000Z",
+      actualLatencyMs: 1000,
+      actualCostUsd: null,
+      errorCode: "executor_unavailable",
+      verification: { verdict: "failed" as const, evidenceArtifactIds: [], verifierId: "v" },
+    };
+    runtime.recordOutcome(prepared.envelopeId, outcome);
+
+    expect(() => runtime.recordOutcome(prepared.envelopeId, {
+      ...outcome,
+      errorCode: "provider_unavailable",
+    })).toThrowError(expect.objectContaining({ code: "routing_outcome_idempotency_conflict" }));
   });
 
   it("records real cost and tokens propagated from the attempt summary", () => {

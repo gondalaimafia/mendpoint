@@ -1099,7 +1099,110 @@ Independent security, reliability, product, and eval diff review findings resolv
 
 Tracked follow-ups from review (P2, not blocking this slice):
 
-- [ ] Live attempt workspaces are protected only by top-level mtime during long attempts; an attempt outliving the orphan grace window can lose its workspace to lane zero maintenance.
-- [ ] Attempt engine admits changed files up to 4MB with no 256KB per-file cap, while review and seal reject over 256KB per file and 2MB total, so an engine-legal candidate can be unapprovable until expiry; align the limits.
-- [ ] Review UI renders approve and reject controls that always 403 under API key proxy auth; add a UI affordance or documentation note.
-- [ ] Minor: dead 409 ternary and unguarded `JSON.parse(run.result_json)` in the review route; scrub the env passed to the dev-only npm fallback in the attempt engine.
+- [x] Live attempt workspaces are protected by the authoritative running `agent.run` job reference; a job claimed after the maintenance read can create only a fresh grace-protected workspace.
+- [x] Attempt execution and candidate review share a 40 changed file, 256KB per file, and 2MB total contract, so every successful candidate fits review and sealing.
+- [x] Review UI with preview access presents no decision controls and links to the existing company OIDC sign in path.
+- [x] Removed the dead 409 branch, guarded malformed review result JSON, and reduced the development npm fallback environment to an operational allowlist.
+
+Warden follow-up verification: attempt engine 15/15, worker CLI 43/43, candidate API 12/12, review UI 1/1. Agent and web typechecks pass. API and worker typechecks are temporarily blocked by concurrent Transformer `adaptiveBudgetRemaining` edits outside this Warden scope.
+
+## Claude change review and agent parity continuation: 2026-08-06
+
+Review scope: exact `origin/main..HEAD` commits `584885a` and `37efac3`, plus the current uncommitted adaptive candidate review worktree on `codex/adaptive-candidate-review`.
+
+- [x] Inventory every changed production, database, API, worker, router, Transformer, and test surface.
+- [x] Independently review security, tenant isolation, persistence, recovery, concurrency, resource bounds, evidence truthfulness, product coherence, and customer workflow.
+- [x] Run focused tests and typechecks for every changed workspace, then the complete release matrix.
+- [x] Reproduce and fix every repository controlled P0 and P1 finding with adversarial regression coverage.
+- [x] Reassess the remaining specialist capability gaps against the foundational product specification and pursue the highest value gap after the review is clean.
+- [ ] Commit by explicit path, push protected branches, require green CI, merge in dependency order, and verify exact production behavior before recording release evidence.
+
+Acceptance: the final diff has no confirmed repository controlled P0 or P1 defect; adaptive Transformer execution, candidate review, and shared routing are tenant safe, fenced, bounded, recoverable, and covered by realistic production path evaluations; all full release gates pass; external evidence gaps remain explicit.
+
+### Claude change review findings
+
+- [x] Review both Claude commits and every uncommitted adaptive candidate file with independent security, Transformer, and product and eval passes.
+- [x] Run focused tests and typechecks for agent, database, worker, Transformer, API, platform, and eval workspaces. All passed, while production path gaps below remain reproducible.
+- [x] Make routing fail closed when breaker state or the durable decision ledger is unavailable.
+- [x] Describe and route the actual Warden planner provider, deployment, region, data policy, cost, and model provenance instead of classifying model backed execution as internal deterministic work.
+- [x] Apply typed breaker feedback exactly once, transactionally, and only for provider or executor availability failures after the final lease fenced job transition.
+- [x] Bind the reconstructed deterministic candidate to the attempt lease before adaptive repair, enforce hard planner and gate deadlines, count invocations independently, and reject oversized edits before allocation.
+- [x] Wire a policy bound adaptive planner into the production Transformer lane and enforce cumulative campaign attempt, token, cost, and elapsed time budgets.
+- [x] Fence candidate sealing and insertion to the live lease, then add tenant quotas, expiry enforcement, cleanup retry, and orphan reconciliation.
+- [x] Add candidate discovery and bounded review evidence, require appropriate human authorization, and make promotion apply the exact sealed bytes to a fenced campaign and draft delivery workflow.
+- [x] Add held out release scenarios for routing fallback and provenance, adaptive failure to pass, candidate review and promotion, stale lease behavior, retention boundaries, and draft delivery.
+- [x] Normalize the database source line endings and replace literal NUL bytes with escaped source text before review.
+
+Review conclusion: no hardcoded secret was introduced and existing tenant query scoping, path containment, symlink rejection, and artifact digests are sound. The branch must not merge or deploy until the repository controlled P1 items above are closed.
+
+### Current specialist agent parity acceptance
+
+- Router: select from actual executable provider and model adapters, record exact provenance and measured economics, fall back only for typed retryable failures, and never execute without a durable decision.
+- Adaptive repair: production must run inspect, plan, edit, verify, and critique under hard attempt, time, model call, token, cost, file, byte, and changed line limits. Repository state and external verification determine success.
+- Execution: every attempt starts from a pinned snapshot in an isolated disposable workspace with workspace scoped writes, default denied network, step scoped secrets, and explicit retained artifacts.
+- Customer workflow: list candidates, inspect bounded evidence and diffs, approve or reject with attribution, promote the exact seal to a draft pull request, and expose the trace and CI outcome.
+- Release evidence: production router, planner, workspace, verifier, review, and delivery paths must run in held out trials at least three times, with pass at one, consistency, latency, tokens, cost, provenance, and stop reason retained. Scripted fixtures cannot certify the live path.
+
+### Adaptive delivery repository authorization and base branch binding
+
+- [x] Bind the reviewed base branch immutably from repository snapshot through sealed artifact, candidate, delivery intent, API evidence, and GitHub draft creation.
+- [x] Require production adaptive GitHub delivery credentials to be tenant scoped and authorized for the exact connected repository identity.
+- [x] Add existing schema upgrade coverage for every new persisted column and adversarial regressions for branch mutation and cross tenant or unpinned credentials.
+- [x] Run focused database, Transformer, API, worker, GitHub, web, and eval tests plus affected package typechecks.
+
+Acceptance: an approved adaptive candidate can only create a draft against the exact reviewed repository, repository ID, base branch, and base revision. Production never falls back to an operator wide unscoped token.
+
+Review: the adaptive seal is schema v3 and binds `baseBranch`; existing candidate and delivery rows gain and backfill `base_branch` from the exact tenant, repository, and snapshot relationship. GitHub App delivery requires the connected installation and numeric repository ID to match the authorized installation. PAT delivery requires one configured tenant, one eligible `env://GITHUB_TOKEN` repository, and a live numeric repository identity preflight. Focused tests passed: database 58, Transformer artifact 16, GitHub 15, API 15, worker 60, web 4, eval 1. All seven affected workspace typechecks passed.
+
+### Adaptive review customer readiness closure
+
+- [x] Define and test a deterministic serialized-byte preview contract that always fits through the web proxy, including escaping-heavy content.
+- [x] Add customer-visible review history across pending, approved, delivery pending, delivery failed, delivered, rejected, and expired states.
+- [x] Reverify and serve retained immutable evidence for terminal records, while reporting intentional retention cleanup separately from corruption.
+- [x] Run full API and web tests, affected typechecks, and the web production build. Full workspace gates remain with the coordinating release pass after concurrent delivery changes finish.
+
+Acceptance: every API response declared reviewable traverses the customer web proxy; every candidate remains discoverable through its lifecycle; successful draft delivery never displays a false corruption state; genuine seal corruption still fails closed; human-only review and worker-only promotion remain unchanged.
+
+Review: the API and web proxy now share one 5 MiB response contract and candidate detail measures the exact serialized UTF-8 envelope. An escaping-heavy 1 MiB candidate reproduced a 6.29 MiB pre-fix response and now returns a bounded, non-approvable preview. Candidate lists expose bounded file counts plus delivery state, normalize elapsed pending records, and keep active work and terminal history discoverable. Retained promoted seals are reverified and served; intentional rejected or expired cleanup is neutral, while unexpected digest failure is explicit. Full API tests pass 134 of 134, full web tests pass 58 of 58, API, web, and shared typechecks pass, and the 22-page web production build passes.
+
+### Adaptive delivery P1 remediation: 2026-08-06
+
+- [x] Keep approved delivery eligible after the review window and cover provider and finalization retries that cross expiry.
+- [x] Remove orphan sweeping from live worker maintenance while retaining exact cleanup of rejected and expired records.
+- [x] Restrict the standalone orphan reconciler to explicit offline maintenance and cover the seal reference race.
+- [x] Allow PAT delivery only for an explicit disposable canary deployment with one tenant, one repository, and live numeric identity verification.
+- [x] Require GitHub App authorization for customer production delivery and update existing deployment configuration examples.
+- [x] Run focused worker, Transformer, and ops tests plus affected typechecks.
+
+Acceptance: human approval survives the review deadline; live maintenance cannot delete a seal that a concurrent planner may reference; and a production customer deployment cannot use PAT delivery.
+
+Review: approved deliveries now recover after expiry from both GitHub rate limiting and post-GitHub finalization failure. Live maintenance deletes only seals named by rejected or expired durable records; the bounded orphan reconciler remains available only with an explicit offline acknowledgement and stopped writers. Real customer deployments require GitHub App credentials, while PAT delivery requires the disposable canary class, one tenant, one eligible connected repository, and live numeric identity verification. Current focused evidence: worker 55/55, Transformer artifact 17/17, ops environment 12/12; worker, Transformer, and ops typechecks pass; `git diff --check` passes. The broader ops suite also exposed an unrelated intermittent Windows directory rename denial in disaster recovery; the affected ops environment suite passed independently.
+## Warden reviewed candidate draft delivery closure: 2026-08-06
+
+- [x] Specify failing API, database, worker, UI, concurrency, and adversarial tests for rationale, regeneration, exact sealed draft delivery, and durable status.
+- [x] Add additive existing-schema-safe Warden delivery and supersession persistence.
+- [x] Require bounded attributed human decisions; enqueue approval atomically and create immutable superseding regeneration runs without mutating reviewed seals.
+- [x] Deliver only exact reverified approval bytes through tenant-authorized GitHub draft delivery and persist evidence, failures, and URL idempotently.
+- [x] Expose rationale, regeneration, and delivery status in the non-technical review UI.
+- [x] Run focused suites, affected typechecks, and diff integrity; document review evidence.
+
+Acceptance: approval creates only a draft pull request from the exact immutable reviewed seal and exact authorized repository/base identity; rejection and regeneration require attributable rationale; regeneration creates a new superseding run; concurrent review losers cannot remove the winner's seal; delivery is durable, idempotent, fail closed, and never merges or deploys.
+
+Review: the API now accepts only bounded attributed human approve, reject, or regenerate decisions. Approval seals the exact reviewed bytes and atomically creates one tenant-scoped delivery job; exact replay is idempotent and conflicting immutable bindings fail closed. Regeneration creates a new queued run with the reviewer rationale and an immutable supersession link. The worker reverifies the shared approval artifact, repository, snapshot, branch, revision, paths, contents, modes, attribution, and rationale before tenant-authorized GitHub draft delivery, then persists the delivery URL and audit evidence. The customer review page exposes rationale, all three decisions, and queued, delivered, or failed delivery status while stating that approval never merges or deploys. Focused evidence: database 2/2, API 15/15, worker 2/2, web 3/3; agent, database, API, worker, and web typechecks pass; `git diff --check` passes; the legacy review route is absent.
+
+## Final integrated P1 closure: 2026-08-06
+
+- [x] Deliver the complete source to final Transformer candidate while preserving the adaptive only delta for explanation, with a multifile exact draft regression.
+- [x] Recover uncertain and post side effect Warden GitHub deliveries past ordinary retry limits without duplicating a draft pull request.
+- [x] Preserve approved Warden deliveries and seals through delayed, retried, or uncertain delivery; make interrupted seal creation recover safely.
+- [x] Bind structured rationale, category, risk, confidence, and exact verification evidence into Warden review, both immutable seals, both customer views, audit events, and both draft bodies.
+- [x] Preserve Warden review attribution, rationale, supersession lineage, delivery state, and permanent draft URL in terminal run history independently of candidate bytes.
+- [x] Add attributed Transformer regeneration with immutable supersession lineage in active and terminal history.
+- [x] Add an executable, opt in Transformer live model eval lane with production routing, provenance, token, cost, objective verification, and consistency evidence.
+- [ ] Run focused regressions, the complete release matrix, protected CI, exact main deployment, production probes, and authenticated browser verification.
+
+Acceptance: no confirmed repository controlled P0 or P1 remains; exact approved bytes reach one draft pull request; uncertain remote state remains recoverable; review evidence and history survive process exit and retention cleanup; Warden and Transformer both support attributed regeneration and truthful live model evaluation; all release gates prove the integrated result before merge.
+
+Review: Transformer regeneration preserves attributed immutable lineage and remains recoverably pending until explicit customer authorization permits review feedback to reach the configured model. Reconciliation is idempotent, consumes no attempt, and mutates no pilot state while blocked. A future authorized transition is bound to the exact imported candidate and originating exception, including a worker crash after import. The opt in live eval uses the production adapter and router over hard coded synthetic input, records provenance, repetitions, objective verification, tokens, cost, and thresholds, and fails closed. Focused Transformer suites passed 116 tests, the full eval package passed 85 tests, five affected workspace typechecks passed, and the production web build passed.
+
+Final local release evidence: full workspace tests, full typecheck, the 22 page production build, GA contract and claims checks, the three repetition agent eval, production dependency audit, diff integrity, and isolated production API startup all pass. The agent eval completed 90 trials with Warden 16 of 16, Transformer 14 of 14, pass at one and pass at three both 1.000, and zero critical or deterministic failures. Local API live, ready, health, and version probes all returned 200. Docker is not installed in this environment, so protected CI remains the authoritative container gate. Independent final review reports no repository controlled P0 or P1 in the reviewed scope.

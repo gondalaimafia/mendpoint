@@ -224,8 +224,19 @@ export type RepositorySnapshotRow = {
   submodules_policy: "reject" | "pinned";
   lfs_policy: "reject" | "pointer_only" | "fetch";
   sparse_paths_json: string;
+  file_manifest_version: 0 | 1;
   created_at: string;
   expires_at: string;
+};
+
+export type RepositorySnapshotFileRow = {
+  snapshot_id: string;
+  tenant_id: string;
+  path: string;
+  mode: "100644" | "100755" | "120000";
+  kind: "file" | "symlink";
+  size: number;
+  sha256: string;
 };
 
 export type RepositorySnapshotPolicyRow = {

@@ -5,7 +5,10 @@
   "type": "module",
   "exports": {
     "./job-runner": "./src/cli.ts",
-    "./transformer-pilot-lane": "./src/transformer-pilot-lane.ts"
+    "./transformer-pilot-lane": "./src/transformer-pilot-lane.ts",
+    "./transformer-adaptive-planner": "./src/transformer-adaptive-planner.ts",
+    "./transformer-adaptive-regeneration": "./src/transformer-adaptive-regeneration.ts",
+    "./transformer-router": "./src/transformer-router.ts"
   },
   "scripts": {
     "start": "tsx src/cli.ts",

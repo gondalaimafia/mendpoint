@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { AgentPlanner, AgentTask } from "./types.js";
 import {
   runWardenAttempt,
+  wardenNpmFallbackEnvironment,
   type WardenAttemptInput,
   type WardenAttemptLimits,
 } from "./attempt-engine.js";
@@ -120,6 +121,7 @@ function planner(onFirstPlan?: () => void): AgentPlanner {
           args: { path: "client.js" },
           thought: "Inspect the exact client path before editing",
         },
+        usage: PER_CALL_USAGE,
       };
     }
     if (!tools.includes("replace_in_file")) {
@@ -129,6 +131,7 @@ function planner(onFirstPlan?: () => void): AgentPlanner {
           args: { path: "client.js", from: "chargess", to: "charges" },
           thought: "Apply the source grounded path correction",
         },
+        usage: PER_CALL_USAGE,
       };
     }
     return {
@@ -137,6 +140,7 @@ function planner(onFirstPlan?: () => void): AgentPlanner {
         args: { command: "node check.mjs" },
         thought: "Verify the candidate",
       },
+      usage: PER_CALL_USAGE,
     };
   };
 }
@@ -163,6 +167,7 @@ const LIMITS: WardenAttemptLimits = Object.freeze({
   maxSourceBytes: 4 * 1024 * 1024,
   maxTreeDepth: 12,
   maxChangedFiles: 2,
+  maxChangedFileBytes: 256 * 1024,
   maxChangedBytes: 64 * 1024,
   maxEvidenceBytes: 64 * 1024,
   verificationTimeoutMs: 15_000,
@@ -185,6 +190,12 @@ function task(value: AgentPlanner): Omit<AgentTask, "repoRoot" | "tenantId"> {
       provider: "test-provider",
       model: "test-model",
       endpoint: "planner://test-provider/test-model",
+    },
+    externalModelAccounting: {
+      executionScopeId: `sha256:${"d".repeat(64)}`,
+      maximumCostUsd: 1,
+      reserve: async () => undefined,
+      settle: async () => undefined,
     },
   };
 }
@@ -230,8 +241,70 @@ describe("Warden attempt engine", () => {
     expect(readFileSync(join(result.artifacts.candidateWorkspace, "client.js"), "utf8"))
       .toContain("/v1/charges");
     expect(readFileSync(join(value.sourceRoot, "client.js"), "utf8")).toBe(sourceBefore);
+    const evidence = JSON.parse(readFileSync(result.artifacts.evidence, "utf8")) as { review: unknown };
+    expect(evidence.review).toMatchObject({
+      schemaVersion: 1,
+      verification: {
+        commands: [
+          { command: "node check.mjs", ok: true, exitCode: 0 },
+          { command: "npm run typecheck", ok: true, exitCode: 0 },
+          { command: "npm run lint", ok: true, exitCode: 0 },
+        ],
+      },
+      edits: [{
+        path: "client.js",
+        rationale: null,
+        category: null,
+        risk: null,
+        confidence: null,
+        assessmentSource: "unavailable",
+        verification: {
+          commandOutputSha256: [
+            expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+            expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+            expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          ],
+        },
+      }],
+    });
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.artifacts)).toBe(true);
+  });
+
+  it("rejects a changed file that cannot fit the review and seal contract", async () => {
+    const value = fixture("changed-file-review-limit");
+
+    const result = await runWardenAttempt(input(value, {
+      limits: { ...LIMITS, maxChangedFileBytes: 16 },
+    }));
+
+    expect(result).toMatchObject({
+      status: "rejected",
+      code: "warden_attempt_changed_file_byte_limit",
+    });
+    expect(readdirSync(value.candidateRoot)).toEqual([]);
+  });
+
+  it("passes only operational keys to the development npm fallback", () => {
+    expect(wardenNpmFallbackEnvironment({
+      Path: "C:\\Windows\\System32",
+      SystemRoot: "C:\\Windows",
+      TEMP: "C:\\Temp",
+      NODE_ENV: "test",
+      CI: "1",
+      GITHUB_TOKEN: "github_pat_secret",
+      OPENAI_API_KEY: "sk-secret",
+      DATABASE_URL: "postgres://secret",
+      MENDPOINT_API_KEY: "mendpoint-secret",
+      npm_config_userconfig: "C:\\secret\\.npmrc",
+      NODE_OPTIONS: "--require C:\\secret\\capture.cjs",
+    })).toEqual({
+      Path: "C:\\Windows\\System32",
+      SystemRoot: "C:\\Windows",
+      TEMP: "C:\\Temp",
+      NODE_ENV: "test",
+      CI: "1",
+    });
   });
 
   it("rejects an already green target and removes the candidate workspace", async () => {

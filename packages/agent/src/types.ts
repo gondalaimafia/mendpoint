@@ -98,6 +98,39 @@ export type AgentModelSourcePolicy = Readonly<{
   endpoint: string;
 }>;
 
+export type AgentExternalModelReservation = Readonly<{
+  reservationId: string;
+  callIndex: number;
+  requestDigest: string;
+  provider: string;
+  configuredModel: string;
+  endpointHost: string;
+  maximumInputTokens: number;
+  maximumOutputTokens: number;
+  maximumTotalTokens: number;
+  maximumCostUsd: number;
+}>;
+
+export type AgentExternalModelSettlement = Readonly<{
+  reservationId: string;
+  status: "succeeded" | "failed";
+  actualModel?: string | null;
+  bodyRequestId?: string | null;
+  headerRequestId?: string | null;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  costUsd?: number | null;
+  errorCode?: string;
+}>;
+
+export type AgentExternalModelAccounting = Readonly<{
+  executionScopeId: string;
+  maximumCostUsd: number;
+  reserve: (reservation: AgentExternalModelReservation) => Promise<void>;
+  settle: (settlement: AgentExternalModelSettlement) => Promise<void>;
+}>;
+
 export type AgentTask = {
   /** Natural language bug report / goal */
   goal: string;
@@ -130,6 +163,8 @@ export type AgentTask = {
   requireSourceObservation?: boolean;
   /** Fail closed limits for the optional model planner. */
   modelBudget?: Partial<AgentModelBudget>;
+  /** Durable reserve/settle boundary required before externally approved model calls. */
+  externalModelAccounting?: AgentExternalModelAccounting;
   sessionId?: string;
   /** Cooperative cancellation checked around every awaited or mutating phase. */
   shouldContinue?: () => boolean;
@@ -139,6 +174,7 @@ export type AgentModelBudget = Readonly<{
   maxCalls: number;
   requestTimeoutMs: number;
   maxResponseBytes: number;
+  maxOutputTokens: number;
 }>;
 
 /**

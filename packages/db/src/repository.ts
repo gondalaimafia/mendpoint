@@ -5,6 +5,7 @@ import type {
   ConnectedRepositoryRow,
   RepositorySnapshotPolicyRow,
   RepositorySnapshotDeletionRow,
+  RepositorySnapshotFileRow,
   RepositorySnapshotRow,
   ScmConnectionHealthRow,
   ScmConnectionRow,
@@ -278,6 +279,8 @@ export function insertRepositorySnapshot(
     submodulesPolicy?: RepositorySnapshotRow["submodules_policy"];
     lfsPolicy?: RepositorySnapshotRow["lfs_policy"];
     sparsePaths?: string[];
+    fileManifestVersion?: 1;
+    reuseSnapshotId?: string;
     createdAt: string;
     expiresAt: string;
   },
@@ -295,19 +298,40 @@ export function insertRepositorySnapshot(
   required("snapshot_ref", input.requestedRef);
   required("snapshot_storage_path", input.storagePath);
   if (!isAbsolute(input.storagePath)) throw new Error("repository_snapshot_path_invalid");
-  const existing = one<RepositorySnapshotRow>(
-    db,
-    `SELECT * FROM repository_snapshots
-     WHERE tenant_id = ? AND repository_id = ? AND resolved_sha = ? AND manifest_sha256 = ?`,
-    [input.tenantId, input.repositoryId, input.resolvedSha, input.manifestSha256],
-  );
-  if (existing) return { row: existing, inserted: false };
+  if (input.reuseSnapshotId) {
+    required("snapshot_reuse_id", input.reuseSnapshotId);
+    const existing = one<RepositorySnapshotRow>(
+      db,
+      `SELECT snapshot.* FROM repository_snapshots snapshot
+       WHERE snapshot.id = ? AND snapshot.tenant_id = ? AND snapshot.repository_id = ?
+         AND snapshot.requested_ref = ? AND snapshot.resolved_sha = ?
+         AND snapshot.manifest_sha256 = ? AND snapshot.file_manifest_version = 1
+         AND snapshot.expires_at > ?
+         AND COALESCE((
+           SELECT deletion.status FROM repository_snapshot_deletions deletion
+           WHERE deletion.tenant_id = snapshot.tenant_id
+             AND deletion.snapshot_id = snapshot.id
+           ORDER BY deletion.created_at DESC, deletion.rowid DESC LIMIT 1
+         ), '') NOT IN ('planned', 'deleted')`,
+      [
+        input.reuseSnapshotId,
+        input.tenantId,
+        input.repositoryId,
+        input.requestedRef,
+        input.resolvedSha,
+        input.manifestSha256,
+        input.createdAt,
+      ],
+    );
+    if (existing) return { row: existing, inserted: false };
+  }
   db.raw
     .prepare(
       `INSERT INTO repository_snapshots
        (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256,
-        storage_path, submodules_policy, lfs_policy, sparse_paths_json, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        storage_path, submodules_policy, lfs_policy, sparse_paths_json,
+        file_manifest_version, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.id,
@@ -320,6 +344,7 @@ export function insertRepositorySnapshot(
       input.submodulesPolicy ?? "reject",
       input.lfsPolicy ?? "reject",
       json("repository_snapshot_sparse_paths", input.sparsePaths ?? []),
+      input.fileManifestVersion ?? 0,
       input.createdAt,
       input.expiresAt,
     );
@@ -339,6 +364,166 @@ export function listRepositorySnapshots(
     `SELECT * FROM repository_snapshots
      WHERE tenant_id = ? AND repository_id = ? ORDER BY created_at DESC, id`,
     [tenantId, repositoryId],
+  );
+}
+
+export function listRepositorySnapshotReuseCandidates(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    repositoryId: string;
+    requestedRef: string;
+    resolvedSha: string;
+    manifestSha256: string;
+    asOf: string;
+  }>,
+): RepositorySnapshotRow[] {
+  required("snapshot_ref", input.requestedRef);
+  timestamp("snapshot_reuse_as_of", input.asOf);
+  return many(
+    db,
+    `SELECT snapshot.* FROM repository_snapshots snapshot
+     WHERE snapshot.tenant_id = ? AND snapshot.repository_id = ?
+       AND snapshot.requested_ref = ? AND snapshot.resolved_sha = ?
+       AND snapshot.manifest_sha256 = ? AND snapshot.file_manifest_version = 1
+       AND snapshot.expires_at > ?
+       AND COALESCE((
+         SELECT deletion.status FROM repository_snapshot_deletions deletion
+         WHERE deletion.tenant_id = snapshot.tenant_id
+           AND deletion.snapshot_id = snapshot.id
+         ORDER BY deletion.created_at DESC, deletion.rowid DESC LIMIT 1
+       ), '') NOT IN ('planned', 'deleted')
+     ORDER BY snapshot.created_at DESC, snapshot.id DESC`,
+    [
+      input.tenantId,
+      input.repositoryId,
+      input.requestedRef,
+      input.resolvedSha,
+      input.manifestSha256,
+      input.asOf,
+    ],
+  );
+}
+
+function normalizedSnapshotFiles(
+  files: readonly Readonly<{
+    path: string;
+    mode: string;
+    kind: string;
+    size: number;
+    sha256: string;
+  }>[],
+): Array<Omit<RepositorySnapshotFileRow, "snapshot_id" | "tenant_id">> {
+  const seen = new Set<string>();
+  return files.map((file) => {
+    const path = file.path;
+    const segments = path.split("/");
+    if (file.kind !== "file" && file.kind !== "symlink") {
+      throw new Error("repository_snapshot_file_kind_invalid");
+    }
+    if (
+      !path || path.trim() !== path || path.includes("\\") || path.includes("\0") ||
+      isAbsolute(path) || segments.some((segment) => !segment || segment === "." || segment === "..")
+    ) {
+      throw new Error("repository_snapshot_file_path_invalid");
+    }
+    if (seen.has(path)) throw new Error("repository_snapshot_file_path_duplicate");
+    seen.add(path);
+    if (
+      (file.kind === "file" && file.mode !== "100644" && file.mode !== "100755") ||
+      (file.kind === "symlink" && file.mode !== "120000")
+    ) {
+      throw new Error("repository_snapshot_file_mode_invalid");
+    }
+    if (!Number.isSafeInteger(file.size) || file.size < 0) {
+      throw new Error("repository_snapshot_file_size_invalid");
+    }
+    if (!/^[a-f0-9]{64}$/.test(file.sha256)) {
+      throw new Error("repository_snapshot_file_hash_invalid");
+    }
+    return {
+      path,
+      mode: file.mode as RepositorySnapshotFileRow["mode"],
+      kind: file.kind as RepositorySnapshotFileRow["kind"],
+      size: file.size,
+      sha256: file.sha256,
+    };
+  }).sort((left, right) => left.path.localeCompare(right.path));
+}
+
+export function insertRepositorySnapshotFiles(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    snapshotId: string;
+    files: readonly Readonly<{
+      path: string;
+      mode: string;
+      kind: string;
+      size: number;
+      sha256: string;
+    }>[];
+  }>,
+): Readonly<{ rows: RepositorySnapshotFileRow[]; inserted: boolean }> {
+  const snapshot = one<RepositorySnapshotRow>(
+    db,
+    `SELECT * FROM repository_snapshots WHERE id = ? AND tenant_id = ?`,
+    [input.snapshotId, input.tenantId],
+  );
+  if (!snapshot) throw new Error("repository_snapshot_tenant_mismatch");
+  const files = normalizedSnapshotFiles(input.files);
+  const existing = listRepositorySnapshotFiles(db, input.tenantId, input.snapshotId);
+  if (existing.length) {
+    const exact = existing.length === files.length && existing.every((row, index) => {
+      const file = files[index];
+      return file !== undefined && row.path === file.path && row.mode === file.mode &&
+        row.kind === file.kind && row.size === file.size && row.sha256 === file.sha256;
+    });
+    if (!exact) throw new Error("repository_snapshot_file_manifest_conflict");
+    return Object.freeze({ rows: existing, inserted: false });
+  }
+  if (!files.length) return Object.freeze({ rows: [], inserted: false });
+
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const statement = db.raw.prepare(
+      `INSERT INTO repository_snapshot_files
+       (snapshot_id, tenant_id, path, mode, kind, size, sha256)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const file of files) {
+      statement.run(
+        input.snapshotId,
+        input.tenantId,
+        file.path,
+        file.mode,
+        file.kind,
+        file.size,
+        file.sha256,
+      );
+    }
+    if (ownsTransaction) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+  return Object.freeze({
+    rows: listRepositorySnapshotFiles(db, input.tenantId, input.snapshotId),
+    inserted: true,
+  });
+}
+
+export function listRepositorySnapshotFiles(
+  db: AppDb,
+  tenantId: string,
+  snapshotId: string,
+): RepositorySnapshotFileRow[] {
+  return many(
+    db,
+    `SELECT * FROM repository_snapshot_files
+     WHERE tenant_id = ? AND snapshot_id = ? ORDER BY path`,
+    [tenantId, snapshotId],
   );
 }
 

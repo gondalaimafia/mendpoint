@@ -22,6 +22,8 @@ import {
   failJob,
   renewJobLease,
   findMonorepoRoot,
+  findAuthorizedGitHubInstallationForRepository,
+  getConnectedRepository,
   getConsumer,
   getConsumerRepo,
   getJob,
@@ -29,12 +31,19 @@ import {
   getAgentRunByJobId,
   getJobRecoverySummary,
   getRepositorySnapshotPolicy,
+  getScmConnection,
   insertAgentRun,
   insertRepairSession,
+  expireAdaptiveCandidate,
+  listAdaptiveCandidateTenantIds,
+  listAdaptiveCandidatesForMaintenance,
+  listConnectedRepositories,
   listFeedPolls,
   listJobs,
+  listRepositorySnapshots,
   listProviders,
   listVersionsForProvider,
+  settleActiveWardenModelReservationsForFence,
   type AppDb,
 } from "@mendpoint/db";
 import {
@@ -44,12 +53,19 @@ import {
   runFeedSchedules,
 } from "@mendpoint/catalog";
 import { nowIso } from "@mendpoint/shared";
-import { loadAppCredentials } from "@mendpoint/github";
+import {
+  createAppDelivery,
+  loadAppCredentials,
+  OctokitGitHubDelivery,
+  type ExactDraftDeliveryInput,
+  type GitHubDelivery,
+} from "@mendpoint/github";
 import {
   runWarden,
   runWardenAttempt,
   runPolicyRoutedWarden,
   resolveAgentModelEndpoint,
+  WARDEN_CANDIDATE_REVIEW_LIMITS,
   type AgentModelSourcePolicy,
   type AgentPlanner,
   type WardenAttemptLimits,
@@ -59,13 +75,16 @@ import {
   buildWardenExecutorRegistry,
   createWardenRoutingRuntime,
   synthesizeWardenRun,
+  wardenExecutorDescriptor,
   wardenRoutingOutcomeAttribution,
   wardenRoutingRequest,
-  WARDEN_EXECUTOR_ID,
-  WARDEN_PROVIDER_ID,
+  type WardenModelRoutingProfile,
 } from "./warden-router.js";
 import { runRepairSession } from "@mendpoint/repair";
-import { TransformerPilotExecutionStore } from "@mendpoint/transformer";
+import {
+  discardAdaptiveCandidate,
+  TransformerPilotExecutionStore,
+} from "@mendpoint/transformer";
 import type { ContractCase } from "@mendpoint/contract";
 import {
   runTransformerPilotLaneOnce,
@@ -73,10 +92,40 @@ import {
   type TransformerPilotLaneResult,
 } from "./transformer-pilot-lane.js";
 import { loadWardenSnapshotBinding } from "./warden-snapshot-loader.js";
+import {
+  authorizeConfiguredTransformerAdaptiveExternalProcessing,
+  resolveTransformerAdaptivePlannerAdapter,
+} from "./transformer-adaptive-planner.js";
+import {
+  runTransformerAdaptiveDelivery,
+  type ResolveTransformerAdaptiveRepository,
+} from "./transformer-adaptive-delivery.js";
+import {
+  runWardenCandidateDelivery,
+  type ResolveWardenCandidateRepository,
+} from "./warden-candidate-delivery.js";
+import {
+  assertWardenModelAccountingSettled,
+  createWardenModelAccountingRuntime,
+} from "./warden-model-accounting.js";
 
 const WORKER_ID =
   process.env.MENDPOINT_WORKER_ID ?? `worker:${process.pid}:${randomUUID()}`;
 const wardenMaintenanceRowOffsets = new Map<string, number>();
+
+export function transformerAdaptiveProductionPorts(
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  return Object.freeze({
+    adaptivePlannerAdapterForTenant: (tenantId: string) =>
+      resolveTransformerAdaptivePlannerAdapter(tenantId, env),
+    authorizeAdaptiveExternalProcessing: (
+      authorization: Parameters<
+        typeof authorizeConfiguredTransformerAdaptiveExternalProcessing
+      >[0],
+    ) => authorizeConfiguredTransformerAdaptiveExternalProcessing(authorization, env),
+  });
+}
 let wardenMaintenanceTenantOffset = 0;
 
 export type JobDrainResult = {
@@ -418,6 +467,9 @@ type WardenJobPayload = Readonly<{
   useLlm?: boolean;
   sessionId?: string;
   allowedChangedPaths?: string[];
+  reviewFeedback?: string;
+  supersedesRunId?: string;
+  reviewerPrincipalId?: string;
 }>;
 
 type WardenVerificationPolicy = Readonly<{
@@ -432,11 +484,11 @@ const WARDEN_ATTEMPT_LIMITS = Object.freeze({
   maxSourceFileBytes: 32 * 1024 * 1024,
   maxSourceBytes: 512 * 1024 * 1024,
   maxTreeDepth: 64,
-  maxChangedFiles: 40,
-  maxChangedBytes: 4 * 1024 * 1024,
+  ...WARDEN_CANDIDATE_REVIEW_LIMITS,
   maxEvidenceBytes: 512 * 1024,
   verificationTimeoutMs: 120_000,
 }) satisfies Omit<WardenAttemptLimits, "allowedChangedPaths">;
+const WARDEN_JOB_MODEL_BUDGET_USD = 25;
 
 function parseWardenStringArray(value: string, field: string): string[] {
   let parsed: unknown;
@@ -455,11 +507,19 @@ function parseWardenStringArray(value: string, field: string): string[] {
   return [...new Set(parsed.map((entry) => String(entry).trim()))];
 }
 
+export type WardenApprovedModelSourcePolicy = Readonly<
+  AgentModelSourcePolicy &
+    WardenModelRoutingProfile & {
+      externalProcessingAllowed: boolean;
+      maximumCallCostUsd: number;
+    }
+>;
+
 export function resolveWardenModelSourcePolicy(
   tenantId: string,
   useLlm: boolean,
   env: NodeJS.ProcessEnv = process.env,
-): AgentModelSourcePolicy | undefined {
+): WardenApprovedModelSourcePolicy | undefined {
   if (!useLlm || env.MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED !== "1") return undefined;
   const tenants = new Set(
     (env.MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS ?? "")
@@ -471,16 +531,60 @@ export function resolveWardenModelSourcePolicy(
   const provider = env.MENDPOINT_WARDEN_MODEL_PROVIDER?.trim() ?? "";
   const model = env.LLM_AGENT_MODEL?.trim() ?? "";
   const endpoint = resolveAgentModelEndpoint(env);
-  if (!provider || !model || !endpoint) {
+  const region = env.MENDPOINT_WARDEN_MODEL_REGION?.trim() ?? "";
+  const maximumDataClassification =
+    env.MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION?.trim() ?? "";
+  const externalProcessing = env.MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED?.trim() ?? "";
+  const estimatedCostText = env.MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD?.trim() ?? "";
+  const estimatedCostUsd = Number(estimatedCostText);
+  const maximumCallCostText = env.MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD?.trim() ?? "";
+  const maximumCallCostUsd = Number(maximumCallCostText);
+  if (
+    !provider ||
+    !model ||
+    !endpoint ||
+    !region ||
+    !(["public", "internal", "confidential", "restricted"] as const).includes(
+      maximumDataClassification as "public" | "internal" | "confidential" | "restricted",
+    ) ||
+    !["0", "1"].includes(externalProcessing) ||
+    !estimatedCostText ||
+    !Number.isFinite(estimatedCostUsd) ||
+    estimatedCostUsd < 0 ||
+    !maximumCallCostText ||
+    !Number.isFinite(maximumCallCostUsd) ||
+    maximumCallCostUsd <= 0
+  ) {
     throw new Error("warden_model_source_policy_incomplete");
   }
-  const canonical = JSON.stringify({ schemaVersion: 1, tenantId, provider, model, endpoint });
+  const externalProcessingAllowed = externalProcessing === "1";
+  const canonical = JSON.stringify({
+    schemaVersion: 2,
+    tenantId,
+    provider,
+    model,
+    endpoint,
+    externalProcessingAllowed,
+    region,
+    maximumDataClassification,
+    estimatedCostUsd,
+    maximumCallCostUsd,
+  });
   return Object.freeze({
     approved: true,
     tenantId,
     provider,
     model,
     endpoint,
+    externalProcessingAllowed,
+    region,
+    maximumDataClassification: maximumDataClassification as
+      | "public"
+      | "internal"
+      | "confidential"
+      | "restricted",
+    estimatedCostUsd,
+    maximumCallCostUsd,
     policyDigest: `sha256:${createHash("sha256").update(canonical).digest("hex")}`,
   });
 }
@@ -614,6 +718,10 @@ function reconcileWardenOrphans(
     "warden_orphan_grace",
   );
   const referenced = new Set<string>();
+  const runningAttemptPrefixes = (db.raw.prepare(
+    `SELECT id FROM jobs
+     WHERE tenant_id = ? AND type = 'agent.run' AND status = 'running'`,
+  ).all(tenantId) as Array<{ id: string }>).map((row) => `${row.id}-`);
   const rows = db.raw.prepare(
     `SELECT result_json FROM agent_runs
      WHERE tenant_id = ?
@@ -645,6 +753,11 @@ function reconcileWardenOrphans(
       if (root === evidenceRoot && name === "approvals") continue;
       const target = resolve(root, name);
       if (!isWithin(root, target) || referenced.has(target)) continue;
+      // A workspace and its temporary evidence are created only after the job
+      // becomes running, and every top-level name begins with the durable job id.
+      // A job claimed after this read can only create fresh entries inside the
+      // grace window, so this reference is safe against the claim/delete race.
+      if (runningAttemptPrefixes.some((prefix) => name.startsWith(prefix))) continue;
       const info = lstatSync(target);
       if (info.mtimeMs > cutoff) continue;
       rmSync(target, {
@@ -718,7 +831,15 @@ function expireWardenAgentRuns(
   observedAt = nowIso(),
 ): Readonly<{ expired: number; cleaned: number; cleanupPending: number }> {
   const eligible = `(
-    status IN ('candidate_ready', 'candidate_approved') OR
+    status = 'candidate_ready' OR
+    (
+      status = 'candidate_approved' AND NOT EXISTS (
+        SELECT 1 FROM warden_candidate_deliveries delivery
+        WHERE delivery.tenant_id = agent_runs.tenant_id
+          AND delivery.run_id = agent_runs.id
+          AND delivery.status = 'delivery_pending'
+      )
+    ) OR
     (
       status IN ('candidate_expired', 'candidate_rejected') AND
       CASE
@@ -898,8 +1019,94 @@ export function maintainWardenArtifactsOnce(
   return Object.freeze(total);
 }
 
+export function maintainTransformerAdaptiveArtifactsOnce(
+  db: AppDb,
+  env: NodeJS.ProcessEnv = process.env,
+  observedAt = nowIso(),
+): Readonly<{
+  tenants: number;
+  expired: number;
+  cleaned: number;
+  cleanupPending: number;
+}> {
+  const nowMs = Date.parse(observedAt);
+  if (!Number.isFinite(nowMs) || new Date(nowMs).toISOString() !== observedAt) {
+    throw new Error("transformer_adaptive_maintenance_timestamp_invalid");
+  }
+  const tenantIds = listAdaptiveCandidateTenantIds(db);
+  const total = { tenants: tenantIds.length, expired: 0, cleaned: 0, cleanupPending: 0 };
+  const artifactEnv = {
+    ...env,
+    MENDPOINT_DATA_DIR: resolve(env.MENDPOINT_DATA_DIR ?? join(process.cwd(), "data")),
+  };
+
+  for (const tenantId of tenantIds) {
+    try {
+      const records = listAdaptiveCandidatesForMaintenance(db, tenantId);
+      for (const record of records) {
+        let status = record.status;
+        if (status === "review_pending" && Date.parse(record.expiresAt) <= nowMs) {
+          status = expireAdaptiveCandidate(db, {
+            tenantId,
+            id: record.id,
+            observedAt,
+          }).status;
+          total.expired++;
+        }
+        const promotedRetentionElapsed =
+          status === "promoted" && Date.parse(record.expiresAt) <= nowMs;
+        const supersededRetentionElapsed =
+          status === "superseded" && Date.parse(record.expiresAt) <= nowMs;
+        if (
+          status === "rejected" ||
+          status === "expired" ||
+          promotedRetentionElapsed ||
+          supersededRetentionElapsed
+        ) {
+          try {
+            const removed = discardAdaptiveCandidate({
+              tenantId,
+              path: record.sealedPath,
+              sha256: record.sealedSha256,
+              env: artifactEnv,
+            });
+            if (removed) total.cleaned++;
+          } catch (error) {
+            total.cleanupPending++;
+            console.error(
+              `  Transformer adaptive cleanup deferred candidate=${record.id} error=${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+          continue;
+        }
+      }
+    } catch (error) {
+      total.cleanupPending++;
+      console.error(
+        `  Transformer adaptive maintenance deferred tenant=${tenantId} error=${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return Object.freeze(total);
+}
+
 type AgentRunWrite = Parameters<typeof insertAgentRun>[1];
 type JobFence = Readonly<{ workerId: string; leaseGeneration: number }>;
+type RoutingOutcomeFinalizer = (() => unknown) | undefined;
+
+class WardenAtomicFinalizationError extends Error {
+  readonly original: unknown;
+
+  constructor(error: unknown) {
+    super(error instanceof Error ? error.message : String(error));
+    this.name = "WardenAtomicFinalizationError";
+    this.original = error;
+  }
+}
 
 function persistCompletedAgentJob(
   db: AppDb,
@@ -907,16 +1114,23 @@ function persistCompletedAgentJob(
   fence: JobFence,
   jobResult: unknown,
   run: AgentRunWrite,
+  applyRoutingOutcome?: RoutingOutcomeFinalizer,
 ): void {
+  let routingFinalizationStarted = false;
   db.raw.exec("BEGIN IMMEDIATE");
   try {
     if (!completeJob(db, jobId, jobResult, nowIso(), fence)) {
       throw new Error("lease_lost_before_warden_completion");
     }
+    if (applyRoutingOutcome) {
+      routingFinalizationStarted = true;
+      applyRoutingOutcome();
+    }
     insertAgentRun(db, { ...run, jobId });
     db.raw.exec("COMMIT");
   } catch (error) {
     db.raw.exec("ROLLBACK");
+    if (routingFinalizationStarted) throw new WardenAtomicFinalizationError(error);
     throw error;
   }
 }
@@ -930,11 +1144,21 @@ function persistFailedAgentJob(
     errorCode: string;
     retryable: boolean;
   }>,
-  run: AgentRunWrite,
+  run: AgentRunWrite | null,
+  applyRoutingOutcome?: RoutingOutcomeFinalizer,
 ) {
+  let routingFinalizationStarted = false;
   db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const failure = failJob(db, jobId, failureInput.message, nowIso(), {
+    const failedAt = nowIso();
+    settleActiveWardenModelReservationsForFence(db, {
+      jobId,
+      workerId: fence.workerId,
+      leaseGeneration: fence.leaseGeneration,
+      observedAt: failedAt,
+      errorCode: "warden_model_job_failed",
+    });
+    const failure = failJob(db, jobId, failureInput.message, failedAt, {
       ...fence,
       errorCode: failureInput.errorCode,
       retryable: failureInput.retryable,
@@ -942,17 +1166,24 @@ function persistFailedAgentJob(
       maxDelayMs: 300_000,
     });
     if (failure.applied) {
-      insertAgentRun(db, {
-        ...run,
-        jobId,
-        status: failure.status === "pending" ? "retrying" : run.status,
-        finishedAt: failure.status === "pending" ? null : run.finishedAt,
-      });
+      if (applyRoutingOutcome) {
+        routingFinalizationStarted = true;
+        applyRoutingOutcome();
+      }
+      if (run) {
+        insertAgentRun(db, {
+          ...run,
+          jobId,
+          status: failure.status === "pending" ? "retrying" : run.status,
+          finishedAt: failure.status === "pending" ? null : run.finishedAt,
+        });
+      }
     }
     db.raw.exec("COMMIT");
     return failure;
   } catch (error) {
     db.raw.exec("ROLLBACK");
+    if (routingFinalizationStarted) throw new WardenAtomicFinalizationError(error);
     throw error;
   }
 }
@@ -971,12 +1202,29 @@ export function validateWorkerProductionEnv(
     env.GITHUB_APP_PRIVATE_KEY_PATH?.trim(),
   );
   const appCredentials = loadAppCredentials(env);
+  const deploymentClass = env.MENDPOINT_DEPLOYMENT_CLASS?.trim();
   if (
     env.GITHUB_MODE === "real" &&
-    !env.GITHUB_TOKEN?.trim() &&
-    !appCredentials
+    deploymentClass !== "customer" &&
+    deploymentClass !== "disposable_canary"
   ) {
-    errors.push("GITHUB_TOKEN or complete GitHub App credentials are required for real worker delivery");
+    errors.push(
+      "MENDPOINT_DEPLOYMENT_CLASS must be customer or disposable_canary for real GitHub delivery",
+    );
+  }
+  if (env.GITHUB_MODE === "real" && !appCredentials) {
+    if (deploymentClass === "disposable_canary") {
+      if (!env.GITHUB_TOKEN?.trim()) {
+        errors.push("GITHUB_TOKEN is required for disposable canary PAT delivery");
+      }
+      if (!env.MENDPOINT_TENANT_ID?.trim()) {
+        errors.push("MENDPOINT_TENANT_ID is required for disposable canary PAT delivery");
+      }
+    } else {
+      errors.push(
+        "Complete GitHub App credentials are required for customer production delivery",
+      );
+    }
   }
   if (hasAnyAppCredential && !appCredentials) {
     errors.push(
@@ -1005,6 +1253,90 @@ export function validateWorkerProductionEnv(
     }
     if (!(env.OPENAI_API_KEY?.trim() || env.XAI_API_KEY?.trim())) {
       errors.push("OPENAI_API_KEY or XAI_API_KEY is required when model source is enabled");
+    }
+    if (!["0", "1"].includes(env.MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED?.trim() ?? "")) {
+      errors.push(
+        "MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED must explicitly be 0 or 1 when model source is enabled",
+      );
+    }
+    if (!env.MENDPOINT_WARDEN_MODEL_REGION?.trim()) {
+      errors.push("MENDPOINT_WARDEN_MODEL_REGION is required when model source is enabled");
+    }
+    if (
+      !(["public", "internal", "confidential", "restricted"] as const).includes(
+        env.MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION?.trim() as
+          | "public"
+          | "internal"
+          | "confidential"
+          | "restricted",
+      )
+    ) {
+      errors.push(
+        "MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION must be public, internal, confidential, or restricted when model source is enabled",
+      );
+    }
+    const estimatedCostText = env.MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD?.trim() ?? "";
+    const estimatedCostUsd = Number(estimatedCostText);
+    if (!estimatedCostText || !Number.isFinite(estimatedCostUsd) || estimatedCostUsd < 0) {
+      errors.push(
+        "MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD must be a non-negative number when model source is enabled",
+      );
+    }
+    const maximumCallCostText = env.MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD?.trim() ?? "";
+    const maximumCallCostUsd = Number(maximumCallCostText);
+    if (!maximumCallCostText || !Number.isFinite(maximumCallCostUsd) || maximumCallCostUsd <= 0) {
+      errors.push(
+        "MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD must be a positive number when model source is enabled",
+      );
+    }
+  }
+  if (env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED === "1") {
+    if (!(env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS ?? "").trim()) {
+      errors.push(
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS is required when Transformer adaptive model source is enabled",
+      );
+    }
+    if (!env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER?.trim()) {
+      errors.push(
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER is required when Transformer adaptive model source is enabled",
+      );
+    }
+    if (!env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT?.trim()) {
+      errors.push(
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT is required when Transformer adaptive model source is enabled",
+      );
+    }
+    if (env.MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED !== "1") {
+      errors.push(
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED must be 1 when Transformer adaptive model source is enabled",
+      );
+    }
+    if (!env.MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION?.trim()) {
+      errors.push(
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION is required when Transformer adaptive model source is enabled",
+      );
+    }
+    if (
+      !["public", "internal", "confidential", "restricted"].includes(
+        env.MENDPOINT_TRANSFORMER_ADAPTIVE_MAX_DATA_CLASSIFICATION?.trim() ?? "",
+      )
+    ) {
+      errors.push(
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_MAX_DATA_CLASSIFICATION must be public, internal, confidential, or restricted when Transformer adaptive model source is enabled",
+      );
+    }
+    if (!env.LLM_AGENT_MODEL?.trim()) {
+      errors.push("LLM_AGENT_MODEL is required when Transformer adaptive model source is enabled");
+    }
+    if (!(env.LLM_AGENT_URL?.trim() || env.OPENAI_BASE_URL?.trim())) {
+      errors.push(
+        "LLM_AGENT_URL or OPENAI_BASE_URL is required when Transformer adaptive model source is enabled",
+      );
+    }
+    if (!(env.OPENAI_API_KEY?.trim() || env.XAI_API_KEY?.trim())) {
+      errors.push(
+        "OPENAI_API_KEY or XAI_API_KEY is required when Transformer adaptive model source is enabled",
+      );
     }
   }
   return errors;
@@ -1148,6 +1480,181 @@ async function pollFeeds(opts: {
   }
 }
 
+function transformerAdaptiveRepositoryResolver(
+  db: AppDb,
+): ResolveTransformerAdaptiveRepository {
+  return ({ tenantId, repositoryId, snapshotId, baseBranch, expectedBaseRevision }) => {
+    const repository = getConnectedRepository(db, repositoryId, tenantId);
+    if (!repository || repository.status !== "ready") {
+      throw new Error("transformer_adaptive_delivery_repository_not_ready");
+    }
+    const connection = getScmConnection(db, repository.connection_id, tenantId);
+    if (!connection || connection.provider !== "github" || connection.revoked_at) {
+      throw new Error("transformer_adaptive_delivery_github_connection_required");
+    }
+    const snapshot = listRepositorySnapshots(db, tenantId, repositoryId)
+      .find((candidate) => candidate.id === snapshotId);
+    if (
+      !snapshot ||
+      snapshot.requested_ref !== baseBranch ||
+      snapshot.resolved_sha !== expectedBaseRevision
+    ) {
+      throw new Error("transformer_adaptive_delivery_snapshot_binding_mismatch");
+    }
+    return Object.freeze({
+      owner: repository.owner,
+      repo: repository.name,
+      baseBranch: snapshot.requested_ref,
+    });
+  };
+}
+
+function transformerAdaptiveConnectedGitHubRepository(
+  db: AppDb,
+  tenantId: string,
+  owner: string,
+  repo: string,
+) {
+  const matches = listConnectedRepositories(db, tenantId).filter(
+    (repository) =>
+      repository.status === "ready" &&
+      repository.owner.toLowerCase() === owner.toLowerCase() &&
+      repository.name.toLowerCase() === repo.toLowerCase(),
+  );
+  if (matches.length !== 1) {
+    throw new Error("transformer_adaptive_delivery_connected_repository_ambiguous");
+  }
+  const repository = matches[0]!;
+  const connection = getScmConnection(db, repository.connection_id, tenantId);
+  if (!connection || connection.provider !== "github" || connection.revoked_at) {
+    throw new Error("transformer_adaptive_delivery_github_connection_required");
+  }
+  const remoteRepositoryId = Number(repository.remote_id);
+  const installationId = Number(connection.external_account_id);
+  if (
+    !Number.isSafeInteger(remoteRepositoryId) ||
+    remoteRepositoryId < 1 ||
+    !Number.isSafeInteger(installationId) ||
+    installationId < 1
+  ) {
+    throw new Error("transformer_adaptive_delivery_repository_identity_invalid");
+  }
+  return Object.freeze({ repository, connection, remoteRepositoryId, installationId });
+}
+
+function installationRepositoryId(
+  repositoriesJson: string | null,
+  owner: string,
+  repo: string,
+): number | undefined {
+  try {
+    const repositories = JSON.parse(repositoriesJson ?? "null") as unknown;
+    if (!Array.isArray(repositories)) return undefined;
+    const match = repositories.find((candidate) => {
+      if (!candidate || typeof candidate !== "object") return false;
+      const value = candidate as Record<string, unknown>;
+      return (
+        typeof value.owner === "string" &&
+        typeof value.name === "string" &&
+        value.owner.toLowerCase() === owner.toLowerCase() &&
+        value.name.toLowerCase() === repo.toLowerCase()
+      );
+    }) as Record<string, unknown> | undefined;
+    return Number.isSafeInteger(match?.id) && Number(match!.id) > 0
+      ? Number(match!.id)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function transformerAdaptiveGitHubDelivery(
+  db: AppDb,
+  tenantId: string,
+  env: NodeJS.ProcessEnv,
+): GitHubDelivery {
+  const unsupported = async (): Promise<never> => {
+    throw new Error("transformer_adaptive_delivery_exact_draft_only");
+  };
+  return {
+    async deliverExactDraft(input: ExactDraftDeliveryInput) {
+      if (env.GITHUB_MODE !== "real") {
+        throw new Error("transformer_adaptive_delivery_real_github_required");
+      }
+      const connected = transformerAdaptiveConnectedGitHubRepository(
+        db,
+        tenantId,
+        input.owner,
+        input.repo,
+      );
+      const credentials = loadAppCredentials(env);
+      if (credentials) {
+        const installation = findAuthorizedGitHubInstallationForRepository(
+          db,
+          tenantId,
+          input.owner,
+          input.repo,
+        );
+        if (!installation) {
+          throw new Error("transformer_adaptive_delivery_installation_not_authorized");
+        }
+        const installationId = Number(installation.installation_id);
+        const repositoryId = installationRepositoryId(
+          installation.repositories_json,
+          input.owner,
+          input.repo,
+        );
+        if (
+          !Number.isSafeInteger(installationId) ||
+          installationId < 1 ||
+          installationId !== connected.installationId ||
+          !repositoryId ||
+          repositoryId !== connected.remoteRepositoryId
+        ) {
+          throw new Error("transformer_adaptive_delivery_installation_invalid");
+        }
+        return createAppDelivery(installationId, credentials, [repositoryId])
+          .deliverExactDraft(input);
+      }
+      const token = env.GITHUB_TOKEN?.trim();
+      if (!token) throw new Error("transformer_adaptive_delivery_credentials_missing");
+      if (env.MENDPOINT_DEPLOYMENT_CLASS?.trim() !== "disposable_canary") {
+        throw new Error("transformer_adaptive_delivery_pat_disposable_canary_required");
+      }
+      if (env.MENDPOINT_TENANT_ID?.trim() !== tenantId) {
+        throw new Error("transformer_adaptive_delivery_pat_tenant_not_pinned");
+      }
+      const patRepositories = listConnectedRepositories(db, tenantId).filter((repository) => {
+        if (repository.status !== "ready") return false;
+        const connection = getScmConnection(db, repository.connection_id, tenantId);
+        return Boolean(
+          connection &&
+          connection.provider === "github" &&
+          !connection.revoked_at &&
+          connection.credential_ref === "env://GITHUB_TOKEN",
+        );
+      });
+      if (
+        connected.connection.credential_ref !== "env://GITHUB_TOKEN" ||
+        patRepositories.length !== 1 ||
+        patRepositories[0]!.id !== connected.repository.id
+      ) {
+        throw new Error("transformer_adaptive_delivery_pat_repository_not_pinned");
+      }
+      const delivery = new OctokitGitHubDelivery(token);
+      await delivery.assertRepositoryIdentity(
+        input.owner,
+        input.repo,
+        connected.remoteRepositoryId,
+      );
+      return delivery.deliverExactDraft(input);
+    },
+    createBranch: unsupported as GitHubDelivery["createBranch"],
+    commitFiles: unsupported as GitHubDelivery["commitFiles"],
+    openPullRequest: unsupported as GitHubDelivery["openPullRequest"],
+  };
+}
+
 export async function processJobsOnce(
   db = createDb(),
   opts: {
@@ -1161,6 +1668,10 @@ export async function processJobsOnce(
     runWardenMaintenance?: boolean;
     wardenPlanner?: AgentPlanner;
     wardenEnv?: NodeJS.ProcessEnv;
+    transformerAdaptiveGithub?: GitHubDelivery;
+    transformerAdaptiveRepositoryResolver?: ResolveTransformerAdaptiveRepository;
+    wardenCandidateGithub?: GitHubDelivery;
+    wardenCandidateRepositoryResolver?: ResolveWardenCandidateRepository;
     onActiveJob?: (
       job: { id: string; type: string; leaseGeneration: number } | null,
     ) => void;
@@ -1184,16 +1695,29 @@ export async function processJobsOnce(
         `  Warden maintenance unavailable: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+    try {
+      maintainTransformerAdaptiveArtifactsOnce(db, workerEnv);
+    } catch (error) {
+      console.error(
+        `  Transformer adaptive maintenance unavailable: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
   for (; result.claimed < maxJobs && opts.shouldContinue?.() !== false; ) {
-    const job = claimNextJob(db, ["pipeline.fanout", "agent.run", "repair.run"], {
+    const job = claimNextJob(
+      db,
+      ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver", "transformer.adaptive.deliver"],
+      {
       tenantId: opts.allTenants
         ? undefined
         : opts.tenantId ?? process.env.MENDPOINT_TENANT_ID,
       workerId,
       leaseMs,
       maxRunningPerTenant: opts.maxRunningPerTenant,
-    });
+      },
+    );
     if (!job) break;
     result.claimed++;
     opts.onActiveJob?.({
@@ -1212,6 +1736,7 @@ export async function processJobsOnce(
       repoPath: string;
       createdAt: string;
     }> | null = null;
+    let pendingWardenRoutingFinalizer: RoutingOutcomeFinalizer;
     if (job.type === "agent.run") {
       const queued = getAgentRunByJobId(db, job.id, job.tenant_id);
       if (queued) {
@@ -1244,8 +1769,51 @@ export async function processJobsOnce(
     }, Math.max(100, Math.floor(leaseMs / 3)));
     renewal.unref();
     try {
+      if (job.type === "warden.candidate.deliver") {
+        const delivery = await runWardenCandidateDelivery({
+          db,
+          job,
+          github: opts.wardenCandidateGithub ?? transformerAdaptiveGitHubDelivery(
+            db,
+            job.tenant_id,
+            workerEnv,
+          ),
+          resolveRepository: opts.wardenCandidateRepositoryResolver ??
+            transformerAdaptiveRepositoryResolver(db),
+          artifactEnv: workerEnv,
+        });
+        if (delivery.status === "delivered") result.succeeded++;
+        else {
+          result.failed++;
+          if (delivery.status === "retry_scheduled") result.retried++;
+        }
+        continue;
+      }
+      if (job.type === "transformer.adaptive.deliver") {
+        const delivery = await runTransformerAdaptiveDelivery({
+          db,
+          job,
+          github: opts.transformerAdaptiveGithub ?? transformerAdaptiveGitHubDelivery(
+            db,
+            job.tenant_id,
+            workerEnv,
+          ),
+          resolveRepository: opts.transformerAdaptiveRepositoryResolver ??
+            transformerAdaptiveRepositoryResolver(db),
+          artifactEnv: workerEnv,
+        });
+        if (delivery.status === "delivered") result.succeeded++;
+        else {
+          result.failed++;
+          if (delivery.status === "retry_scheduled") result.retried++;
+        }
+        continue;
+      }
       if (job.type === "agent.run") {
         const payload = JSON.parse(job.payload_json) as WardenJobPayload;
+        const executionGoal = payload.reviewFeedback
+          ? `${payload.goal}\n\nReviewer feedback for this regeneration:\n${payload.reviewFeedback}`
+          : payload.goal;
         const sessionId = payload.sessionId ?? pendingAgentRun?.sessionId ?? job.id;
         if (pendingAgentRun && pendingAgentRun.sessionId !== sessionId) {
           throw new Error("warden_agent_run_job_identity_mismatch");
@@ -1287,7 +1855,7 @@ export async function processJobsOnce(
 
         if (binding.sourceKind === "legacy_local") {
           const warden = await runWarden({
-            goal: payload.goal,
+            goal: executionGoal,
             repoRoot: binding.root,
             verifyCommand: payload.verifyCommand,
             errorLog: payload.errorLog,
@@ -1305,7 +1873,7 @@ export async function processJobsOnce(
           const legacyRun: AgentRunWrite = {
             id: warden.sessionId,
             tenantId: job.tenant_id,
-            goal: payload.goal,
+            goal: executionGoal,
             repoPath: binding.root,
             status: warden.ok ? "ok" : "failed",
             ok: warden.ok,
@@ -1381,6 +1949,21 @@ export async function processJobsOnce(
           useLlm,
           workerEnv,
         );
+        const modelAccounting = modelSourcePolicy
+          ? createWardenModelAccountingRuntime({
+              db,
+              tenantId: job.tenant_id,
+              jobId: job.id,
+              runId: sessionId,
+              workerId: fence.workerId,
+              leaseGeneration: fence.leaseGeneration,
+              provider: modelSourcePolicy.provider,
+              configuredModel: modelSourcePolicy.model,
+              endpoint: modelSourcePolicy.endpoint,
+              maximumCallCostUsd: modelSourcePolicy.maximumCallCostUsd,
+              jobBudgetUsd: WARDEN_JOB_MODEL_BUDGET_USD,
+            })
+          : undefined;
         const dataRoot = privateWardenDirectory(
           resolve(workerEnv.MENDPOINT_DATA_DIR ?? join(process.cwd(), "data")),
         );
@@ -1412,33 +1995,52 @@ export async function processJobsOnce(
         // dispatcher: it decides (execute vs mandatory human handoff), the
         // Warden attempt is the registered executor, and every decision +
         // outcome is persisted to the durable routing ledger with breaker
-        // feedback. Ledger/breaker writes are fail-closed and never block the
-        // job. All existing guarantees (lease fencing, snapshot expiry,
+        // feedback. Safety persistence is fail-closed before unsafe dispatch.
+        // All existing guarantees (lease fencing, snapshot expiry,
         // candidate artifacts, quota, failure codes) are preserved below.
+        const routingDescriptor = wardenExecutorDescriptor(
+          started,
+          modelSourcePolicy,
+        );
         const routingRuntime = createWardenRoutingRuntime({
           db,
           tenantId: job.tenant_id,
           jobId: job.id,
           runId: sessionId,
-          registry: buildWardenExecutorRegistry(started),
+          registry: buildWardenExecutorRegistry(started, modelSourcePolicy),
+          deferOutcomePersistence: true,
         });
+        pendingWardenRoutingFinalizer = () => routingRuntime.applyPendingOutcome();
         let capturedAttempt: WardenAttemptResult | null = null;
         const routed = await runPolicyRoutedWarden({
           task: {
-            goal: payload.goal,
+            goal: executionGoal,
             repoRoot: binding.root,
             tenantId: job.tenant_id,
           },
           routingRequest: wardenRoutingRequest({
             taskId: job.id,
             tenantId: job.tenant_id,
-            goal: payload.goal,
+            goal: executionGoal,
             idempotencyKey: sessionId,
             verifyCommand: verification.targetCommand,
-            policySnapshotId: binding.snapshotId,
+            sourceArtifactId: binding.snapshotId,
+            budgetUsd: WARDEN_JOB_MODEL_BUDGET_USD,
+            ...(modelSourcePolicy
+              ? {
+                  modelSource: modelSourcePolicy,
+                  externalProcessingAllowed:
+                    modelSourcePolicy.externalProcessingAllowed,
+                }
+              : {}),
           }),
           runtime: routingRuntime,
-          outcomeIdempotencyKey: `${job.id}:${sessionId}:route`,
+          // A retry is a new execution with a new routing envelope. Scope the
+          // outcome identity to the fenced lease generation so replays inside
+          // one execution remain idempotent without colliding with a later
+          // retry of the same durable job/session.
+          outcomeIdempotencyKey:
+            `${job.id}:${sessionId}:lease-${job.lease_generation}:route`,
           // Honest cost + token attribution from the attempt engine's measured
           // model usage. A heuristic-only run made no model call, so every field
           // stays null (never a fabricated measured zero) for the ledger.
@@ -1460,8 +2062,8 @@ export async function processJobsOnce(
             };
           },
           executor: {
-            executorId: WARDEN_EXECUTOR_ID,
-            providerId: WARDEN_PROVIDER_ID,
+            executorId: routingDescriptor.executorId,
+            providerId: routingDescriptor.providerId,
             run: async () => {
               const attempt = await runWardenAttempt({
                 scope: { tenantId: job.tenant_id, attemptId: job.id },
@@ -1476,7 +2078,7 @@ export async function processJobsOnce(
                 candidateRoot,
                 evidenceRoot,
                 task: {
-                  goal: payload.goal,
+                  goal: executionGoal,
                   errorLog: payload.errorLog,
                   verifyCommand: verification.targetCommand,
                   maxSteps: Math.max(1, Math.min(payload.maxSteps ?? 20, 100)),
@@ -1485,6 +2087,9 @@ export async function processJobsOnce(
                   modelRequired: Boolean(modelSourcePolicy),
                   allowModelSource: Boolean(modelSourcePolicy),
                   ...(modelSourcePolicy ? { modelSourcePolicy } : {}),
+                  ...(modelAccounting
+                    ? { externalModelAccounting: modelAccounting }
+                    : {}),
                   allowNetwork: false,
                   sessionId,
                   neverTouchPaths: [...verification.protectedPaths],
@@ -1510,6 +2115,14 @@ export async function processJobsOnce(
             },
           },
         });
+        if (modelAccounting) {
+          assertWardenModelAccountingSettled(db, {
+            tenantId: job.tenant_id,
+            jobId: job.id,
+            workerId: fence.workerId,
+            leaseGeneration: fence.leaseGeneration,
+          });
+        }
         if (!routed.run) {
           // The router required human review before any autonomous execution.
           // No attempt ran; block autonomous completion with a non-retryable
@@ -1606,6 +2219,7 @@ export async function processJobsOnce(
               retryable,
             },
             runWrite,
+            pendingWardenRoutingFinalizer,
           );
           result.failed++;
           if (failure.status === "pending") result.retried++;
@@ -1634,6 +2248,7 @@ export async function processJobsOnce(
                   product: "warden",
                 },
             runWrite,
+            pendingWardenRoutingFinalizer,
           );
         } catch (error) {
           discardWardenAttempt(attempt, candidateRoot, evidenceRoot);
@@ -1788,32 +2403,36 @@ export async function processJobsOnce(
       result.succeeded++;
       console.log(`  done change=${report.changeId}`);
     } catch (error) {
+      if (error instanceof WardenAtomicFinalizationError) throw error;
       const classified = classifyJobFailure(error);
-      const failure = pendingAgentRun
+      const failure = pendingAgentRun || pendingWardenRoutingFinalizer
         ? persistFailedAgentJob(
             db,
             job.id,
             fence,
             classified,
-            {
-              id: pendingAgentRun.sessionId,
-              tenantId: job.tenant_id,
-              goal: pendingAgentRun.goal,
-              repoPath: pendingAgentRun.repoPath,
-              status: "failed",
-              ok: false,
-              steps: 0,
-              filesChanged: [],
-              reportMd: null,
-              resultJson: JSON.stringify({
-                jobId: job.id,
-                product: "warden",
-                code: classified.errorCode,
-                summary: classified.message,
-              }),
-              createdAt: pendingAgentRun.createdAt,
-              finishedAt: nowIso(),
-            },
+            pendingAgentRun
+              ? {
+                  id: pendingAgentRun.sessionId,
+                  tenantId: job.tenant_id,
+                  goal: pendingAgentRun.goal,
+                  repoPath: pendingAgentRun.repoPath,
+                  status: "failed",
+                  ok: false,
+                  steps: 0,
+                  filesChanged: [],
+                  reportMd: null,
+                  resultJson: JSON.stringify({
+                    jobId: job.id,
+                    product: "warden",
+                    code: classified.errorCode,
+                    summary: classified.message,
+                  }),
+                  createdAt: pendingAgentRun.createdAt,
+                  finishedAt: nowIso(),
+                }
+              : null,
+            pendingWardenRoutingFinalizer,
           )
         : failJob(db, job.id, classified.message, nowIso(), {
             ...fence,
@@ -2035,6 +2654,8 @@ async function runService(intervalMs: number) {
             process.env.MENDPOINT_TRANSFORMER_LEASE_MS ?? 15 * 60_000,
           ),
           shouldContinue: () => !shutdown.signal.aborted,
+          adaptiveCandidateDataRoot: dataRoot,
+          ...transformerAdaptiveProductionPorts(process.env),
         });
         transformer = transformerPilotHeartbeatAfterResult(transformer, result, nowIso());
         failures = result.infrastructureError ? failures + 1 : 0;

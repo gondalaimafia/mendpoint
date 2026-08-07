@@ -14,6 +14,10 @@ import {
   type LiveModelApprovedConfig,
   type LiveModelGrade,
 } from "./live-model-eval.js";
+import {
+  runTransformerLiveEval,
+  type TransformerLiveEvalReport,
+} from "./transformer-live-eval.js";
 
 export const LIVE_EVAL_CASE_ID = "warden.live.path_repair.live" as const;
 export const DEFAULT_LIVE_EVAL_MAX_USD = 25;
@@ -243,7 +247,7 @@ function option(name: string): string | undefined {
   return process.argv.find((value) => value.startsWith(prefix))?.slice(prefix.length);
 }
 
-function printReport(report: LiveEvalReport): void {
+function printWardenReport(report: LiveEvalReport): void {
   const pad = (value: string, width: number) => value.padEnd(width).slice(0, width);
   console.log("");
   console.log(`Live model evidence lane — ${report.caseId}`);
@@ -268,12 +272,51 @@ function printReport(report: LiveEvalReport): void {
   console.log("");
 }
 
+function printTransformerReport(report: TransformerLiveEvalReport): void {
+  const pad = (value: string, width: number) => value.padEnd(width).slice(0, width);
+  console.log("");
+  console.log(`Transformer live model evidence lane: ${report.caseId}`);
+  console.log(`Budget ${report.budgetUsd.toFixed(4)} USD, spent ${report.spentUsd.toFixed(6)} USD`);
+  console.log("");
+  console.log(
+    `${pad("TRIAL", 6)} ${pad("PASS", 5)} ${pad("TOKENS", 8)} ${pad("USD", 12)} ${pad("MS", 8)} MODEL`,
+  );
+  console.log("=".repeat(80));
+  for (const trial of report.trials) {
+    console.log(
+      `${pad(String(trial.trial), 6)} ${pad(trial.passed ? "yes" : "no", 5)} ${pad(String(trial.totalTokens), 8)} ${pad(trial.costUsd.toFixed(8), 12)} ${pad(String(trial.latencyMs), 8)} ${trial.provider}/${trial.model}`,
+    );
+    for (const candidate of trial.grades.filter((item) => !item.passed)) {
+      console.log(`  ${candidate.id}: expected ${candidate.expected}, observed ${candidate.observed}`);
+    }
+  }
+  console.log("=".repeat(80));
+  console.log(`Pass rate ${report.passRate.toFixed(3)}, consistency rate ${report.consistencyRate.toFixed(3)}`);
+  console.log(`Transformer live model evidence ${report.passed ? "verified" : "NOT verified"}`);
+  console.log("");
+}
+
 async function main(): Promise<void> {
   const repetitions = Number(option("repetitions") ?? "3");
+  const product = option("product") ?? "all";
+  if (!new Set(["all", "warden", "transformer"]).has(product)) {
+    console.error("Live model eval refused: product must be all, warden, or transformer");
+    process.exit(1);
+    return;
+  }
   try {
-    const report = await runWardenLiveEval({ repetitions });
-    printReport(report);
-    if (!report.passed) process.exit(1);
+    let passed = true;
+    if (product === "all" || product === "warden") {
+      const report = await runWardenLiveEval({ repetitions });
+      printWardenReport(report);
+      passed = passed && report.passed;
+    }
+    if (product === "all" || product === "transformer") {
+      const report = await runTransformerLiveEval({ repetitions });
+      printTransformerReport(report);
+      passed = passed && report.passed;
+    }
+    if (!passed) process.exit(1);
   } catch (error) {
     console.error(`Live model eval refused: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);

@@ -27,6 +27,7 @@ import {
   validateVerificationCommands,
   type VerificationExecution,
 } from "@mendpoint/repair";
+import type { CandidateReviewEvidence } from "@mendpoint/shared";
 import { runWarden } from "./agent.js";
 import { verificationControlPath } from "./policies.js";
 import type { AgentExecutionMetrics, AgentRunResult, AgentTask } from "./types.js";
@@ -37,6 +38,7 @@ export type WardenAttemptLimits = Readonly<{
   maxSourceBytes: number;
   maxTreeDepth: number;
   maxChangedFiles: number;
+  maxChangedFileBytes: number;
   maxChangedBytes: number;
   maxEvidenceBytes: number;
   verificationTimeoutMs: number;
@@ -171,10 +173,30 @@ const HARD_LIMITS = Object.freeze({
   maxSourceBytes: 512 * 1024 * 1024,
   maxTreeDepth: 64,
   maxChangedFiles: 1_000,
+  maxChangedFileBytes: 32 * 1024 * 1024,
   maxChangedBytes: 128 * 1024 * 1024,
   maxEvidenceBytes: 4 * 1024 * 1024,
   verificationTimeoutMs: 300_000,
 });
+
+export const WARDEN_CANDIDATE_REVIEW_LIMITS = Object.freeze({
+  maxChangedFiles: 40,
+  maxChangedFileBytes: 256 * 1024,
+  maxChangedBytes: 2 * 1024 * 1024,
+});
+
+const WARDEN_NPM_FALLBACK_ENV = new Set([
+  "path", "pathext", "systemroot", "windir", "comspec", "temp", "tmp", "tmpdir",
+  "node_env", "ci", "no_color", "force_color", "lang", "lc_all", "tz",
+]);
+
+export function wardenNpmFallbackEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key, value]) =>
+      value !== undefined && WARDEN_NPM_FALLBACK_ENV.has(key.toLowerCase())
+    ),
+  );
+}
 
 function sha256(value: string | Buffer): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -481,7 +503,7 @@ async function verify(
         timeout: Math.max(1_000, Math.min(timeoutMs, 300_000)),
         windowsHide: true,
         maxBuffer: 2 * 1024 * 1024,
-        env: process.env,
+        env: wardenNpmFallbackEnvironment(process.env),
       }, (npmError, stdout, stderr) => {
         if (!npmError) {
           resolveExecution({ ok: true, stdout: String(stdout), stderr: String(stderr), exitCode: 0 });
@@ -566,6 +588,46 @@ function compareTrees(
     }
   }
   return { changedPaths, changedBytes };
+}
+
+function reviewEvidence(
+  task: Omit<AgentTask, "repoRoot" | "tenantId">,
+  changedPaths: readonly string[],
+  commands: readonly VerificationRecord[],
+): CandidateReviewEvidence {
+  if (!commands.length || commands.some((command) => !command.ok || command.exitCode !== 0)) {
+    throw new Error("warden_attempt_review_verification_invalid");
+  }
+  if (commands.length > 20 || commands.some((command) => command.command.length > 500)) {
+    throw new AttemptError(
+      "warden_attempt_review_evidence_limit",
+      "The configured verification evidence does not fit the customer review contract.",
+    );
+  }
+  const objective = task.goal.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 350);
+  if (!objective) throw new Error("warden_attempt_review_objective_invalid");
+  const verification = {
+    summary: `All ${commands.length} configured verification commands passed on the exact candidate.`,
+    commands: commands.map((command) => ({ ...command, ok: true as const, exitCode: 0 as const })),
+  };
+  const evidence: CandidateReviewEvidence = {
+    schemaVersion: 1 as const,
+    summary: "Every reviewed file is bound to the source snapshot and exact verifier evidence. Semantic risk and confidence are unavailable because this planner contract did not measure them.",
+    verification,
+    edits: changedPaths.map((path) => ({
+      path,
+      rationale: null,
+      category: null,
+      risk: null,
+      confidence: null,
+      assessmentSource: "unavailable" as const,
+      verification: {
+        summary: `${verification.summary} Repair objective: ${objective}`,
+        commandOutputSha256: verification.commands.map((command) => command.outputSha256),
+      },
+    })),
+  };
+  return Object.freeze(evidence);
 }
 
 function agentEvidence(
@@ -818,6 +880,18 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
     if (difference.changedPaths.length > input.limits.maxChangedFiles) {
       fail("warden_attempt_changed_file_limit", "The candidate exceeds the changed file limit.");
     }
+    const oversizedChangedPath = difference.changedPaths.find((path) => {
+      const before = sourceManifest.entries.find((entry) => entry.path === path);
+      const after = candidateManifest.entries.find((entry) => entry.path === path);
+      return (before?.size ?? 0) > input.limits.maxChangedFileBytes ||
+        (after?.size ?? 0) > input.limits.maxChangedFileBytes;
+    });
+    if (oversizedChangedPath) {
+      fail(
+        "warden_attempt_changed_file_byte_limit",
+        `Changed file exceeds the review limit: ${oversizedChangedPath}.`,
+      );
+    }
     if (difference.changedBytes > input.limits.maxChangedBytes) {
       fail("warden_attempt_changed_byte_limit", "The candidate exceeds the changed byte limit.");
     }
@@ -866,6 +940,11 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       },
       changedPaths: difference.changedPaths,
       changedBytes: difference.changedBytes,
+      review: reviewEvidence(input.task, difference.changedPaths, [
+        target.record,
+        ...regression.records,
+        ...security.records,
+      ]),
     };
     const artifacts = writeArtifactPair(
       validated.candidateRoot,

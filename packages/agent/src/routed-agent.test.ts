@@ -195,6 +195,54 @@ describe("policy routed Warden", () => {
     );
   });
 
+  it("records a typed failed outcome when the selected executor throws", async () => {
+    const recordOutcome = vi.fn(() => ({
+      envelopeId: "route-thrown",
+      action: "human_handoff" as const,
+      selectedExecutorId: null,
+    }));
+    const runtime: WardenRoutingRuntimePort<{ taskId: string }> = {
+      prepare: () => ({
+        envelopeId: "route-thrown",
+        action: "execute",
+        selectedExecutorId: "warden-model",
+        dispatch: {
+          executorId: "warden-model",
+          providerId: "provider-a",
+        },
+      }),
+      recordOutcome,
+    };
+
+    await expect(runPolicyRoutedWarden({
+      task: { goal: "Repair API client", repoRoot: "." },
+      routingRequest: { taskId: "task-thrown" },
+      runtime,
+      outcomeIdempotencyKey: "task-thrown-run-1",
+      telemetry: () => ({ actualCostUsd: null }),
+      executor: {
+        executorId: "warden-model",
+        providerId: "provider-a",
+        run: async () => {
+          throw new Error("provider_unavailable");
+        },
+      },
+    })).rejects.toThrow("provider_unavailable");
+
+    expect(recordOutcome).toHaveBeenCalledWith(
+      "route-thrown",
+      expect.objectContaining({
+        outcome: "failed",
+        errorCode: "provider_unavailable",
+        actualCostUsd: null,
+        inputTokens: null,
+        outputTokens: null,
+        totalTokens: null,
+        verification: expect.objectContaining({ verdict: "unknown" }),
+      }),
+    );
+  });
+
   it("defaults token attribution to null when telemetry omits it", async () => {
     const recordOutcome = vi.fn(() => ({
       envelopeId: "route-null-tokens",

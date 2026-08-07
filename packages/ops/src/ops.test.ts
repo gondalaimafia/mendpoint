@@ -94,13 +94,14 @@ describe("ops GA", () => {
     );
   });
 
-  it("accepts complete App credentials or a PAT for real GitHub delivery", () => {
+  it("requires an App for customers and allows PAT only for a disposable canary", () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const appOnly = validateApiEnv({
       NODE_ENV: "production",
       API_AUTH: "required",
       GITHUB_MODE: "real",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
       GITHUB_WEBHOOK_SECRET: "secret",
       GITHUB_APP_ID: "123",
       GITHUB_APP_PRIVATE_KEY: privateKeyPem,
@@ -115,6 +116,7 @@ describe("ops GA", () => {
       NODE_ENV: "production",
       API_AUTH: "required",
       GITHUB_MODE: "real",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
       GITHUB_WEBHOOK_SECRET: "secret",
       GITHUB_TOKEN: "fine-grained-pat",
       GITHUB_APP_ID: "123",
@@ -131,18 +133,39 @@ describe("ops GA", () => {
       NODE_ENV: "production",
       API_AUTH: "required",
       GITHUB_MODE: "real",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
       GITHUB_WEBHOOK_SECRET: "secret",
       GITHUB_APP_ID: "123",
       MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
       MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
       WEB_URL: "https://mendpoint.example",
     });
-    expect(incompleteApp.errors.some((e) => e.includes("complete GitHub App"))).toBe(true);
+    expect(incompleteApp.errors).toContain(
+      "Complete GitHub App credentials are required for customer production delivery",
+    );
+
+    const customerPat = validateApiEnv({
+      NODE_ENV: "production",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      GITHUB_TOKEN: "fine-grained-pat",
+      MENDPOINT_TENANT_ID: "tenant-canary",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(customerPat.errors).toContain(
+      "Complete GitHub App credentials are required for customer production delivery",
+    );
 
     const patBacked = validateApiEnv({
       NODE_ENV: "production",
       API_AUTH: "required",
       GITHUB_MODE: "real",
+      MENDPOINT_DEPLOYMENT_CLASS: "disposable_canary",
+      MENDPOINT_TENANT_ID: "tenant-canary",
       GITHUB_WEBHOOK_SECRET: "secret",
       GITHUB_TOKEN: "fine-grained-pat",
       MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",

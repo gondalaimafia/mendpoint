@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { redactSourceForModel } from "@mendpoint/agent";
 import { recipeFilesDigest, type RecipeFiles, type RecipeReference } from "./recipe.js";
+import {
+  MAX_ADAPTIVE_REVIEW_FILE_BYTES,
+  MAX_ADAPTIVE_REVIEW_TOTAL_BYTES,
+} from "./adaptive-review-limits.js";
 
 /**
  * Adaptive inspect/edit/verify/retry loop for the Transformer.
@@ -28,26 +32,38 @@ export type AdaptiveRepairBounds = Readonly<{
   maxTotalIterations: number;
   /** Wall-clock ceiling for the loop, in milliseconds. */
   wallClockBudgetMs: number;
-  /** Maximum model (planner) calls the loop may make. */
+  /** Maximum planner invocations, including deterministic planners. */
+  maxPlannerCalls: number;
+  /** Maximum planner invocations that may call an external model. */
   maxModelCalls: number;
   /** Maximum redacted context bytes handed to the planner per prompt. */
   maxContextBytesPerPrompt: number;
+  /** Maximum UTF-8 bytes in any one adaptive candidate file. */
+  maxCandidateFileBytes: number;
+  /** Maximum aggregate UTF-8 bytes in an adaptive candidate file set. */
+  maxCandidateBytes: number;
 }>;
 
 export const DEFAULT_ADAPTIVE_REPAIR_BOUNDS: AdaptiveRepairBounds = Object.freeze({
   maxIterationsPerUnit: 4,
   maxTotalIterations: 12,
   wallClockBudgetMs: 120_000,
+  maxPlannerCalls: 8,
   maxModelCalls: 8,
   maxContextBytesPerPrompt: 32_768,
+  maxCandidateFileBytes: MAX_ADAPTIVE_REVIEW_FILE_BYTES,
+  maxCandidateBytes: MAX_ADAPTIVE_REVIEW_TOTAL_BYTES,
 });
 
 const HARD_ADAPTIVE_BOUNDS: AdaptiveRepairBounds = Object.freeze({
   maxIterationsPerUnit: 100,
   maxTotalIterations: 1_000,
   wallClockBudgetMs: 3_600_000,
+  maxPlannerCalls: 500,
   maxModelCalls: 500,
   maxContextBytesPerPrompt: 1_000_000,
+  maxCandidateFileBytes: MAX_ADAPTIVE_REVIEW_FILE_BYTES,
+  maxCandidateBytes: MAX_ADAPTIVE_REVIEW_TOTAL_BYTES,
 });
 
 export type AdaptiveVerifierResult = Readonly<{
@@ -61,13 +77,50 @@ export type AdaptiveVerifierResult = Readonly<{
 }>;
 
 /** The objective gate: re-run the same verification the recipe used. */
-export type AdaptiveGate = (files: RecipeFiles) => Promise<AdaptiveVerifierResult>;
+export type AdaptiveGate = (
+  files: RecipeFiles,
+  options?: Readonly<{ signal?: AbortSignal }>,
+) => Promise<AdaptiveVerifierResult>;
 
 export type AdaptiveEdit = Readonly<{
   path: string;
   /** Digest of the file content the planner observed (exact content fence). */
   observedContentDigest: string;
   nextContent: string;
+  rationale?: string;
+  semanticCategory?: AdaptiveSemanticCategory;
+  risk?: AdaptiveReviewRisk;
+  /** Whole-number confidence percentage from 0 through 100. */
+  confidence?: number;
+}>;
+
+export type AdaptiveSemanticCategory =
+  | "behavior"
+  | "tests"
+  | "configuration"
+  | "dependencies"
+  | "security"
+  | "documentation"
+  | "other";
+
+export type AdaptiveReviewRisk = "low" | "medium" | "high";
+
+export type AdaptiveRepairReviewEvidence = Readonly<{
+  edits: readonly Readonly<{
+    path: string;
+    rationale: string;
+    semanticCategory: AdaptiveSemanticCategory;
+    risk: AdaptiveReviewRisk;
+    confidence: number;
+  }>[];
+  verification: Readonly<{
+    passed: true;
+    commandId: string;
+    summary: string;
+    outputDigest: string;
+  }>;
+  overallRisk: AdaptiveReviewRisk;
+  confidence: number;
 }>;
 
 export type AdaptiveRepairPlan = Readonly<{
@@ -110,6 +163,17 @@ export type AdaptiveRepairPlannerInput = Readonly<{
   context: readonly AdaptiveRepairContextFile[];
   allowedMutationPaths: readonly string[];
   priorChangedPaths: readonly string[];
+  /** Durable campaign headroom available before this planner invocation. */
+  budget?: AdaptiveRepairPlannerBudget;
+}>;
+
+export type AdaptiveRepairPlannerBudget = Readonly<{
+  plannerCalls: number;
+  modelCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  actualCostUsd: number;
 }>;
 
 export type AdaptiveRepairPlannerOutput = Readonly<{
@@ -117,26 +181,68 @@ export type AdaptiveRepairPlannerOutput = Readonly<{
   usage?: AdaptiveRepairPlannerUsage;
 }>;
 
+export type AdaptiveExternalModelReservation = Readonly<{
+  reservationId: string;
+  requestDigest: string;
+  provider: string;
+  configuredModel: string;
+  deployment: string;
+  executionRegion: string;
+  maximumDataClassification: "public" | "internal" | "confidential" | "restricted";
+  endpointHost: string;
+  maximumInputTokens: number;
+  maximumOutputTokens: number;
+  maximumTotalTokens: number;
+  maximumCostUsd: number;
+}>;
+
+export type AdaptiveExternalModelSettlement = Readonly<{
+  reservationId: string;
+  status: "succeeded" | "failed" | "over_budget";
+  actualModel?: string;
+  bodyRequestId?: string | null;
+  headerRequestId?: string | null;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  costUsd?: number | null;
+  errorCode?: string;
+}>;
+
+export type AdaptiveExternalModelAccounting = Readonly<{
+  /** Stable for retries within one exact attempt lease and different across leases. */
+  executionScopeId: string;
+  reserve(input: AdaptiveExternalModelReservation): Promise<void>;
+  settle(input: AdaptiveExternalModelSettlement): Promise<void>;
+}>;
+
 export type AdaptiveRepairPlanner = (
   input: AdaptiveRepairPlannerInput,
-  options: Readonly<{ signal?: AbortSignal }>,
+  options: Readonly<{
+    signal?: AbortSignal;
+    externalModelAccounting?: AdaptiveExternalModelAccounting;
+  }>,
 ) => Promise<AdaptiveRepairPlannerOutput>;
 
 export type AdaptiveBoundExhaustion =
   | "iterations_per_unit"
   | "total_iterations"
   | "wall_clock"
+  | "planner_calls"
   | "model_calls";
 
 export type AdaptiveUnfixableReason =
   | "iterations_per_unit_exhausted"
   | "total_iterations_exhausted"
   | "wall_clock_exhausted"
+  | "planner_calls_exhausted"
   | "model_calls_exhausted"
   | "planner_marked_unfixable"
   | "planner_error"
   | "fence_violation"
   | "path_not_allowed"
+  | "output_too_large"
+  | "cancelled"
   | "no_progress"
   | "pre_existing_failure";
 
@@ -162,6 +268,10 @@ export type AdaptiveUnfixableMarker = Readonly<{
 }>;
 
 export type AdaptiveRepairUsage = Readonly<{
+  /** True only when every planner call supplied internally consistent accounting. */
+  complete: boolean;
+  /** Independently counted planner invocations, including non-model planners. */
+  plannerCalls: number;
   /** True only when at least one model call was actually made. */
   measured: boolean;
   modelCalls: number | null;
@@ -178,6 +288,9 @@ export type AdaptiveRepairOutcome =
       files: RecipeFiles;
       outputDigest: string;
       changedPaths: readonly string[];
+      /** The first failing objective check that triggered adaptation. */
+      triggeredByFailingCommandId: string | null;
+      review: AdaptiveRepairReviewEvidence;
       iterationsUsed: number;
       usage: AdaptiveRepairUsage;
     }>
@@ -228,6 +341,11 @@ export type RunAdaptiveRepairLoopInput = Readonly<{
   /** Injectable clock for deterministic wall-clock tests. */
   now?: () => number;
   signal?: AbortSignal;
+  onUsageCheckpoint?(usage: AdaptiveRepairUsage): Promise<void>;
+  /** Campaign-wide headroom remaining when this loop starts. */
+  resourceBudget?: AdaptiveRepairPlannerBudget;
+  /** Durable lease-fenced accounting used by planners that call an external model. */
+  externalModelAccounting?: AdaptiveExternalModelAccounting;
 }>;
 
 function sha256(value: string): string {
@@ -259,6 +377,41 @@ function changedPathsBetween(before: RecipeFiles, after: Record<string, string>)
     if (before[path] !== after[path]) changed.push(path);
   }
   return changed.sort();
+}
+
+function inferredSemanticCategory(path: string): AdaptiveSemanticCategory {
+  const lower = path.toLowerCase();
+  if (/(^|\/)(test|tests|spec|specs|__tests__)(\/|$)|\.(test|spec)\./.test(lower)) return "tests";
+  if (/(^|\/)(package-lock\.json|package\.json|pnpm-lock\.yaml|yarn\.lock)$/.test(lower)) return "dependencies";
+  if (/(^|\/)(readme|docs?)(\.|\/|$)/.test(lower)) return "documentation";
+  if (/(^|\/)(security|auth|policy)(\.|\/|$)/.test(lower)) return "security";
+  if (/\.(json|ya?ml|toml|ini|config\.[cm]?[jt]s)$/.test(lower) || lower.startsWith(".github/")) return "configuration";
+  return "behavior";
+}
+
+function normalizedEditReview(
+  edit: AdaptiveEdit,
+  planRationale: string | undefined,
+  failingCommandId: string | null,
+): AdaptiveRepairReviewEvidence["edits"][number] {
+  const rationale = edit.rationale ?? planRationale ??
+    `Update ${edit.path} to satisfy ${failingCommandId ?? "the objective verification"}.`;
+  if (!rationale.trim() || Buffer.byteLength(rationale, "utf8") > 2_000) {
+    throw new AdaptiveMutationError("fence_violation", `adaptive_review_rationale_invalid:${edit.path}`);
+  }
+  const semanticCategory = edit.semanticCategory ?? inferredSemanticCategory(edit.path);
+  if (!["behavior", "tests", "configuration", "dependencies", "security", "documentation", "other"].includes(semanticCategory)) {
+    throw new AdaptiveMutationError("fence_violation", `adaptive_review_category_invalid:${edit.path}`);
+  }
+  const risk = edit.risk ?? "medium";
+  if (!["low", "medium", "high"].includes(risk)) {
+    throw new AdaptiveMutationError("fence_violation", `adaptive_review_risk_invalid:${edit.path}`);
+  }
+  const confidence = edit.confidence ?? 50;
+  if (!Number.isSafeInteger(confidence) || confidence < 0 || confidence > 100) {
+    throw new AdaptiveMutationError("fence_violation", `adaptive_review_confidence_invalid:${edit.path}`);
+  }
+  return Object.freeze({ path: edit.path, rationale, semanticCategory, risk, confidence });
 }
 
 function assembleContext(
@@ -304,9 +457,69 @@ function readableContextSeed(
 }
 
 class AdaptiveMutationError extends Error {
-  constructor(readonly reason: "fence_violation" | "path_not_allowed", message: string) {
+  constructor(
+    readonly reason: "fence_violation" | "path_not_allowed" | "output_too_large",
+    message: string,
+  ) {
     super(message);
     this.name = "AdaptiveMutationError";
+  }
+}
+
+class AdaptiveControlError extends Error {
+  constructor(readonly reason: "wall_clock" | "cancelled") {
+    super(reason === "wall_clock" ? "adaptive_wall_clock_exhausted" : "adaptive_cancelled");
+    this.name = "AdaptiveControlError";
+  }
+}
+
+async function runBoundedOperation<T>(input: Readonly<{
+  operation: (signal: AbortSignal) => Promise<T>;
+  signal?: AbortSignal;
+  remainingMs: number;
+}>): Promise<T> {
+  if (input.signal?.aborted) throw new AdaptiveControlError("cancelled");
+  if (!Number.isFinite(input.remainingMs) || input.remainingMs <= 0) {
+    throw new AdaptiveControlError("wall_clock");
+  }
+
+  const controller = new AbortController();
+  let disposition: "wall_clock" | "cancelled" = "wall_clock";
+  const forwardCancellation = () => {
+    disposition = "cancelled";
+    controller.abort(input.signal?.reason);
+  };
+  input.signal?.addEventListener("abort", forwardCancellation, { once: true });
+  const timeout = setTimeout(() => {
+    disposition = "wall_clock";
+    controller.abort(new Error("adaptive_wall_clock_exhausted"));
+  }, Math.max(1, Math.ceil(input.remainingMs)));
+
+  let rejectOnAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectOnAbort = () => reject(new AdaptiveControlError(disposition));
+    controller.signal.addEventListener("abort", rejectOnAbort, { once: true });
+  });
+  try {
+    return await Promise.race([input.operation(controller.signal), aborted]);
+  } finally {
+    clearTimeout(timeout);
+    input.signal?.removeEventListener("abort", forwardCancellation);
+    if (rejectOnAbort) controller.signal.removeEventListener("abort", rejectOnAbort);
+  }
+}
+
+function candidateBytes(files: Record<string, string>, bounds: AdaptiveRepairBounds): void {
+  let total = 0;
+  for (const [path, content] of Object.entries(files)) {
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > bounds.maxCandidateFileBytes) {
+      throw new AdaptiveMutationError("output_too_large", `adaptive_candidate_file_too_large:${path}`);
+    }
+    total += bytes;
+    if (total > bounds.maxCandidateBytes) {
+      throw new AdaptiveMutationError("output_too_large", "adaptive_candidate_too_large");
+    }
   }
 }
 
@@ -314,6 +527,7 @@ function applyEdits(
   working: Record<string, string>,
   edits: readonly AdaptiveEdit[],
   allowed: ReadonlySet<string>,
+  bounds: AdaptiveRepairBounds,
 ): Record<string, string> {
   const next = { ...working };
   for (const edit of edits) {
@@ -321,12 +535,11 @@ function applyEdits(
       throw new AdaptiveMutationError("path_not_allowed", `adaptive_path_not_allowed:${edit.path}`);
     }
     const current = next[edit.path];
-    if (current === undefined) {
-      throw new AdaptiveMutationError("path_not_allowed", `adaptive_path_absent:${edit.path}`);
-    }
     // Read-before-write exact content fence: reject if the file changed since
-    // the planner observed it.
-    if (edit.observedContentDigest !== sha256(current)) {
+    // the planner observed it. An explicitly allowlisted absent path is observed
+    // as empty, which permits bounded new-file creation without weakening the
+    // fence for existing content.
+    if (edit.observedContentDigest !== sha256(current ?? "")) {
       throw new AdaptiveMutationError("fence_violation", `adaptive_fence_violation:${edit.path}`);
     }
     if (typeof edit.nextContent !== "string") {
@@ -334,10 +547,13 @@ function applyEdits(
     }
     next[edit.path] = edit.nextContent;
   }
+  candidateBytes(next, bounds);
   return next;
 }
 
 function emptyUsage(): {
+  complete: boolean;
+  plannerCalls: number;
   measured: boolean;
   modelCalls: number;
   promptTokens: number;
@@ -346,6 +562,8 @@ function emptyUsage(): {
   costUsd: number;
 } {
   return {
+    complete: true,
+    plannerCalls: 0,
     measured: false,
     modelCalls: 0,
     promptTokens: 0,
@@ -356,11 +574,10 @@ function emptyUsage(): {
 }
 
 function finalizeUsage(usage: ReturnType<typeof emptyUsage>): AdaptiveRepairUsage {
-  // Honest measurement: usage counts only when the model was actually called.
-  // A deterministic (scripted, no-model) run reports nulls, never a fabricated
-  // zero presented as a measured cost.
-  if (!usage.measured || usage.modelCalls === 0) {
+  if (!usage.complete) {
     return Object.freeze({
+      complete: false,
+      plannerCalls: usage.plannerCalls,
       measured: false,
       modelCalls: null,
       promptTokens: null,
@@ -370,7 +587,9 @@ function finalizeUsage(usage: ReturnType<typeof emptyUsage>): AdaptiveRepairUsag
     });
   }
   return Object.freeze({
-    measured: true,
+    complete: true,
+    plannerCalls: usage.plannerCalls,
+    measured: usage.modelCalls > 0,
     modelCalls: usage.modelCalls,
     promptTokens: usage.promptTokens,
     completionTokens: usage.completionTokens,
@@ -383,13 +602,31 @@ function accumulateUsage(
   usage: ReturnType<typeof emptyUsage>,
   reported: AdaptiveRepairPlannerUsage | undefined,
 ): void {
-  if (!reported?.modelCalled) return;
+  if (!reported) {
+    usage.complete = false;
+    return;
+  }
+  if (!reported.modelCalled) return;
+  const promptTokens = reported.promptTokens;
+  const completionTokens = reported.completionTokens;
+  const totalTokens = reported.totalTokens;
+  const costUsd = reported.costUsd;
+  if (
+    !Number.isSafeInteger(promptTokens) || promptTokens! < 0 ||
+    !Number.isSafeInteger(completionTokens) || completionTokens! < 0 ||
+    !Number.isSafeInteger(totalTokens) || totalTokens! < 0 ||
+    totalTokens !== promptTokens! + completionTokens! ||
+    typeof costUsd !== "number" || !Number.isFinite(costUsd) || costUsd < 0
+  ) {
+    usage.complete = false;
+    return;
+  }
   usage.measured = true;
   usage.modelCalls += 1;
-  usage.promptTokens += Math.max(0, reported.promptTokens ?? 0);
-  usage.completionTokens += Math.max(0, reported.completionTokens ?? 0);
-  usage.totalTokens += Math.max(0, reported.totalTokens ?? 0);
-  usage.costUsd += Math.max(0, reported.costUsd ?? 0);
+  usage.promptTokens += promptTokens!;
+  usage.completionTokens += completionTokens!;
+  usage.totalTokens += totalTokens!;
+  usage.costUsd += costUsd;
 }
 
 function reasonForBound(bound: AdaptiveBoundExhaustion): AdaptiveUnfixableReason {
@@ -400,9 +637,33 @@ function reasonForBound(bound: AdaptiveBoundExhaustion): AdaptiveUnfixableReason
       return "total_iterations_exhausted";
     case "wall_clock":
       return "wall_clock_exhausted";
+    case "planner_calls":
+      return "planner_calls_exhausted";
     case "model_calls":
       return "model_calls_exhausted";
   }
+}
+
+function remainingPlannerBudget(
+  budget: AdaptiveRepairPlannerBudget | undefined,
+  usage: ReturnType<typeof emptyUsage>,
+  bounds: AdaptiveRepairBounds,
+): AdaptiveRepairPlannerBudget | undefined {
+  if (!budget) return undefined;
+  return Object.freeze({
+    plannerCalls: Math.max(
+      0,
+      Math.min(budget.plannerCalls, bounds.maxPlannerCalls) - usage.plannerCalls,
+    ),
+    modelCalls: Math.max(
+      0,
+      Math.min(budget.modelCalls, bounds.maxModelCalls) - usage.modelCalls,
+    ),
+    inputTokens: Math.max(0, budget.inputTokens - usage.promptTokens),
+    outputTokens: Math.max(0, budget.outputTokens - usage.completionTokens),
+    totalTokens: Math.max(0, budget.totalTokens - usage.totalTokens),
+    actualCostUsd: Math.max(0, budget.actualCostUsd - usage.costUsd),
+  });
 }
 
 export async function runAdaptiveRepairLoop(
@@ -413,6 +674,7 @@ export async function runAdaptiveRepairLoop(
   const started = now();
   const allowed = new Set(input.allowedMutationPaths);
   if (allowed.size === 0) throw new Error("adaptive_allowed_paths_required");
+  normalizeFiles(Object.fromEntries([...allowed].map((path) => [path, ""])));
   const priorTotal = Math.max(0, input.priorTotalIterations ?? 0);
   const usage = emptyUsage();
 
@@ -420,7 +682,73 @@ export async function runAdaptiveRepairLoop(
   let working = normalizeFiles(recipeFiles);
   normalizeFiles(input.sourceFiles);
 
-  const initial = await input.gate(recipeFiles);
+  const remainingMs = () => bounds.wallClockBudgetMs - (now() - started);
+  const controlOutcome = (
+    control: AdaptiveControlError,
+    failure: AdaptiveVerifierResult | null = null,
+  ): AdaptiveRepairOutcome => {
+    const wallClock = control.reason === "wall_clock";
+    const marker: AdaptiveUnfixableMarker = Object.freeze({
+      schemaVersion: 1,
+      kind: "transformer.adaptive.unfixable",
+      unitId: input.unitId,
+      reason: wallClock ? "wall_clock_exhausted" : "cancelled",
+      boundExhausted: wallClock ? "wall_clock" : null,
+      failingCommandId: failure?.failingCommandId ?? null,
+      verifierOutputDigest: sha256(failure?.output ?? ""),
+      iterationsUsed: 0,
+      bestAttempt: null,
+    });
+    return Object.freeze({
+      status: "unfixable",
+      marker,
+      files: recipeFiles,
+      bestAttemptFiles: null,
+      iterationsUsed: 0,
+      usage: finalizeUsage(usage),
+      boundExhausted: wallClock ? "wall_clock" : null,
+    });
+  };
+
+  try {
+    candidateBytes(working, bounds);
+  } catch (error) {
+    if (!(error instanceof AdaptiveMutationError) || error.reason !== "output_too_large") {
+      throw error;
+    }
+    const marker: AdaptiveUnfixableMarker = Object.freeze({
+      schemaVersion: 1,
+      kind: "transformer.adaptive.unfixable",
+      unitId: input.unitId,
+      reason: "output_too_large",
+      boundExhausted: null,
+      failingCommandId: null,
+      verifierOutputDigest: sha256(""),
+      iterationsUsed: 0,
+      bestAttempt: null,
+    });
+    return Object.freeze({
+      status: "unfixable",
+      marker,
+      files: recipeFiles,
+      bestAttemptFiles: null,
+      iterationsUsed: 0,
+      usage: finalizeUsage(usage),
+      boundExhausted: null,
+    });
+  }
+
+  let initial: AdaptiveVerifierResult;
+  try {
+    initial = await runBoundedOperation({
+      operation: async (signal) => await input.gate(recipeFiles, { signal }),
+      signal: input.signal,
+      remainingMs: remainingMs(),
+    });
+  } catch (error) {
+    if (error instanceof AdaptiveControlError) return controlOutcome(error);
+    throw error;
+  }
   if (initial.passed) {
     // Recipe-first guarantee: the deterministic path already satisfies the gate,
     // so the adaptive loop never engages.
@@ -432,7 +760,17 @@ export async function runAdaptiveRepairLoop(
   // fails on the untouched source, the failure predates the migration and must
   // not be blamed on it.
   if (input.baselineGate) {
-    const baseline = await input.baselineGate(input.sourceFiles);
+    let baseline: AdaptiveVerifierResult;
+    try {
+      baseline = await runBoundedOperation({
+        operation: async (signal) => await input.baselineGate!(input.sourceFiles, { signal }),
+        signal: input.signal,
+        remainingMs: remainingMs(),
+      });
+    } catch (error) {
+      if (error instanceof AdaptiveControlError) return controlOutcome(error, initial);
+      throw error;
+    }
     if (!baseline.passed) {
       const marker: AdaptiveUnfixableMarker = Object.freeze({
         schemaVersion: 1,
@@ -460,9 +798,9 @@ export async function runAdaptiveRepairLoop(
   let best: AdaptiveBestAttempt | null = null;
   let bestFiles: RecipeFiles | null = null;
   const contextPaths = readableContextSeed(initial.implicatedPaths, working);
+  const reviewByPath = new Map<string, AdaptiveRepairReviewEvidence["edits"][number]>();
   let unfixableReason: AdaptiveUnfixableReason = "no_progress";
   let boundExhausted: AdaptiveBoundExhaustion | null = null;
-
   for (;;) {
     if (iterations >= bounds.maxIterationsPerUnit) {
       boundExhausted = "iterations_per_unit";
@@ -476,6 +814,10 @@ export async function runAdaptiveRepairLoop(
       boundExhausted = "wall_clock";
       break;
     }
+    if (usage.plannerCalls >= bounds.maxPlannerCalls) {
+      boundExhausted = "planner_calls";
+      break;
+    }
     if (usage.modelCalls >= bounds.maxModelCalls) {
       boundExhausted = "model_calls";
       break;
@@ -487,26 +829,59 @@ export async function runAdaptiveRepairLoop(
 
     let output: AdaptiveRepairPlannerOutput;
     try {
-      output = await input.planner(
-        Object.freeze({
-          schemaVersion: 1,
-          unitId: input.unitId,
-          goal: input.goal,
-          recipe: input.recipe,
-          iteration: iterations,
-          failingCommandId: lastFailure.failingCommandId,
-          verifierOutput: redactVerifierOutput(lastFailure.output, bounds.maxContextBytesPerPrompt),
-          context: Object.freeze(context),
-          allowedMutationPaths: Object.freeze([...allowed].sort()),
-          priorChangedPaths: Object.freeze(priorChangedPaths),
-        }),
-        { signal: input.signal },
-      );
-    } catch {
+      const budget = remainingPlannerBudget(input.resourceBudget, usage, bounds);
+      usage.plannerCalls += 1;
+      output = await runBoundedOperation({
+        operation: async (signal) => await input.planner(
+          Object.freeze({
+            schemaVersion: 1,
+            unitId: input.unitId,
+            goal: input.goal,
+            recipe: input.recipe,
+            iteration: iterations,
+            failingCommandId: lastFailure.failingCommandId,
+            verifierOutput: redactVerifierOutput(lastFailure.output, bounds.maxContextBytesPerPrompt),
+            context: Object.freeze(context),
+            allowedMutationPaths: Object.freeze([...allowed].sort()),
+            priorChangedPaths: Object.freeze(priorChangedPaths),
+            ...(budget ? { budget } : {}),
+          }),
+          {
+            signal,
+            ...(input.externalModelAccounting
+              ? { externalModelAccounting: input.externalModelAccounting }
+              : {}),
+          },
+        ),
+        signal: input.signal,
+        remainingMs: remainingMs(),
+      });
+    } catch (error) {
+      usage.complete = false;
+      if (error instanceof AdaptiveControlError) {
+        if (error.reason === "wall_clock") boundExhausted = "wall_clock";
+        else unfixableReason = "cancelled";
+        break;
+      }
       unfixableReason = "planner_error";
       break;
     }
+    if (remainingMs() <= 0) {
+      boundExhausted = "wall_clock";
+      break;
+    }
     accumulateUsage(usage, output.usage);
+    if (usage.modelCalls > bounds.maxModelCalls) {
+      boundExhausted = "model_calls";
+    }
+    if (input.onUsageCheckpoint) {
+      try {
+        await input.onUsageCheckpoint(finalizeUsage(usage));
+      } catch (error) {
+        throw error;
+      }
+    }
+    if (boundExhausted === "model_calls") break;
 
     const plan = output.plan;
     if (plan.markUnfixable) {
@@ -516,7 +891,7 @@ export async function runAdaptiveRepairLoop(
 
     let candidate: Record<string, string>;
     try {
-      candidate = applyEdits(working, plan.edits, allowed);
+      candidate = applyEdits(working, plan.edits, allowed, bounds);
     } catch (error) {
       unfixableReason = error instanceof AdaptiveMutationError ? error.reason : "planner_error";
       break;
@@ -542,15 +917,57 @@ export async function runAdaptiveRepairLoop(
       continue;
     }
 
-    const result = await input.gate(candidate);
+    for (const edit of plan.edits) {
+      if (working[edit.path] !== candidate[edit.path]) {
+        reviewByPath.set(edit.path, normalizedEditReview(edit, plan.rationale, lastFailure.failingCommandId));
+      }
+    }
+
+    let result: AdaptiveVerifierResult;
+    try {
+      result = await runBoundedOperation({
+        operation: async (signal) => await input.gate(candidate, { signal }),
+        signal: input.signal,
+        remainingMs: remainingMs(),
+      });
+    } catch (error) {
+      if (error instanceof AdaptiveControlError) {
+        if (error.reason === "wall_clock") boundExhausted = "wall_clock";
+        else unfixableReason = "cancelled";
+        break;
+      }
+      throw error;
+    }
     if (result.passed) {
       const changedPaths = changedPathsBetween(recipeFiles, candidate);
       const files = Object.freeze({ ...candidate });
+      const edits = changedPaths.map((path) => {
+        const review = reviewByPath.get(path);
+        if (!review) throw new Error(`adaptive_review_evidence_missing:${path}`);
+        return review;
+      });
+      const riskRank = { low: 0, medium: 1, high: 2 } as const;
+      const overallRisk = edits.reduce<AdaptiveReviewRisk>(
+        (highest, edit) => riskRank[edit.risk] > riskRank[highest] ? edit.risk : highest,
+        "low",
+      );
       return Object.freeze({
         status: "converged",
         files,
         outputDigest: recipeFilesDigest(files),
         changedPaths: Object.freeze(changedPaths),
+        triggeredByFailingCommandId: initial.failingCommandId,
+        review: Object.freeze({
+          edits: Object.freeze(edits),
+          verification: Object.freeze({
+            passed: true,
+            commandId: initial.failingCommandId ?? "objective-verification",
+            summary: "The objective verification passed on the final adaptive candidate.",
+            outputDigest: sha256(result.output),
+          }),
+          overallRisk,
+          confidence: edits.reduce((minimum, edit) => Math.min(minimum, edit.confidence), 100),
+        }),
         iterationsUsed: iterations,
         usage: finalizeUsage(usage),
       });

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ExecutorRegistry,
   routeTask,
@@ -11,9 +12,9 @@ import {
   DEFAULT_ROUTING_BREAKER,
   loadRoutingAvailability,
   recordRoutingDecision,
-  recordRoutingExecutorOutcome,
-  recordRoutingOutcome,
+  recordRoutingOutcomeExactlyOnce,
   type AppDb,
+  type RoutingBreakerFeedback,
   type RoutingBreakerConfig,
 } from "@mendpoint/db";
 import type {
@@ -26,6 +27,32 @@ import type {
 import { nowIso } from "@mendpoint/shared";
 
 const WARDEN_NO_ACTION_CODE = "warden_attempt_baseline_target_green";
+
+const WARDEN_BREAKER_FAILURE_CODES = new Set([
+  "executor_unavailable",
+  "provider_unavailable",
+  "timeout",
+  "request_timeout",
+  "http_error",
+  "transport_error",
+  "network_error",
+  "connection_error",
+  "rate_limited",
+  "transient_dependency",
+  "model_unavailable",
+  "model_request_timeout",
+  "model_http_error",
+  "model_rate_limited",
+]);
+
+function breakerFeedbackForOutcome(
+  outcome: WardenRoutingOutcomeInput,
+): RoutingBreakerFeedback {
+  if (outcome.outcome === "succeeded") return "success";
+  return outcome.errorCode && WARDEN_BREAKER_FAILURE_CODES.has(outcome.errorCode)
+    ? "availability_failure"
+    : "none";
+}
 
 /**
  * Durable policy-routed execution for the production Warden attempt path.
@@ -44,20 +71,137 @@ export const WARDEN_PROVIDER_ID = "mendpoint-internal";
 export const WARDEN_ROUTING_REGION = "internal";
 export const WARDEN_TASK_KIND = "warden.attempt";
 
+export type WardenRoutingSafetyCode =
+  | "routing_breaker_state_unavailable"
+  | "routing_decision_persistence_failed"
+  | "routing_outcome_persistence_failed"
+  | "routing_outcome_idempotency_conflict";
+
+export class WardenRoutingSafetyError extends Error {
+  readonly code: WardenRoutingSafetyCode;
+  readonly cause: unknown;
+
+  constructor(code: WardenRoutingSafetyCode, cause: unknown) {
+    super(code);
+    this.name = "WardenRoutingSafetyError";
+    this.code = code;
+    this.cause = cause;
+  }
+}
+
 const WARDEN_PRICE_EFFECTIVE_AT = "2026-01-01T00:00:00.000Z";
+
+export type WardenModelRoutingProfile = Readonly<{
+  provider: string;
+  model: string;
+  endpoint: string;
+  policyDigest: string;
+  region: string;
+  maximumDataClassification: DataClassification;
+  estimatedCostUsd: number;
+}>;
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined) throw new Error("warden_canonical_value_invalid");
+    return encoded;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(",")}}`;
+}
+
+function digest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
+}
+
+function validateModelRoutingProfile(profile: WardenModelRoutingProfile): void {
+  if (
+    !profile.provider.trim() ||
+    !profile.model.trim() ||
+    !profile.region.trim() ||
+    !/^sha256:[a-f0-9]{64}$/.test(profile.policyDigest) ||
+    !Number.isFinite(profile.estimatedCostUsd) ||
+    profile.estimatedCostUsd < 0
+  ) {
+    throw new Error("warden_model_routing_profile_invalid");
+  }
+  try {
+    const endpoint = new URL(profile.endpoint);
+    if (endpoint.protocol !== "https:") throw new Error("https_required");
+  } catch {
+    throw new Error("warden_model_routing_profile_invalid");
+  }
+}
+
+function modelDeploymentIdentity(profile: WardenModelRoutingProfile): string {
+  return digest({
+    provider: profile.provider,
+    model: profile.model,
+    endpoint: profile.endpoint,
+  });
+}
 
 /** Register the Warden attempt executor descriptor for a routing pass. */
 export function buildWardenExecutorRegistry(
   checkedAt: string = nowIso(),
+  modelSource?: WardenModelRoutingProfile,
 ): ExecutorRegistry {
   const registry = new ExecutorRegistry();
-  registry.register(wardenExecutorDescriptor(checkedAt));
+  registry.register(wardenExecutorDescriptor(checkedAt, modelSource));
   return registry;
 }
 
 export function wardenExecutorDescriptor(
   checkedAt: string = nowIso(),
+  modelSource?: WardenModelRoutingProfile,
 ): ExecutorDescriptor {
+  if (modelSource) {
+    validateModelRoutingProfile(modelSource);
+    const deploymentIdentity = modelDeploymentIdentity(modelSource);
+    return {
+      executorId: `warden-model-${deploymentIdentity.slice("sha256:".length)}`,
+      providerId: modelSource.provider,
+      kind: "frontier_model",
+      version: `${modelSource.model}@${deploymentIdentity}`,
+      deployment: "external",
+      capabilities: ["warden.repair"],
+      tools: ["read_file", "write_file", "run_command"],
+      regions: [modelSource.region],
+      price: {
+        version: `model-price-${deploymentIdentity}`,
+        currency: "USD",
+        effectiveAt: WARDEN_PRICE_EFFECTIVE_AT,
+      },
+      limits: {
+        maximumInputTokens: 4_000_000,
+        maximumOutputTokens: 1_000_000,
+        maximumConcurrentTasks: 8,
+      },
+      health: {
+        status: "healthy",
+        checkedAt,
+        evidenceRef: modelSource.policyDigest,
+      },
+      license: {
+        id: modelSource.provider,
+        commercialUse: true,
+        redistribution: "not_applicable",
+      },
+      maximumDataClassification: modelSource.maximumDataClassification,
+      maximumRisk: "high",
+      qualityScore: 0.9,
+      estimatedLatencyMs: 60_000,
+      estimatedCostUsd: modelSource.estimatedCostUsd,
+    };
+  }
   return {
     executorId: WARDEN_EXECUTOR_ID,
     providerId: WARDEN_PROVIDER_ID,
@@ -101,7 +245,11 @@ export type WardenRoutingRequestInput = Readonly<{
   goal: string;
   idempotencyKey: string;
   verifyCommand: string;
-  policySnapshotId: string;
+  sourceArtifactId?: string;
+  /** Legacy source-reference name. It is never used as the router policy ID. */
+  policySnapshotId?: string;
+  modelSource?: WardenModelRoutingProfile;
+  externalProcessingAllowed?: boolean;
   maxOutputTokens?: number;
   risk?: TaskRisk;
   classification?: DataClassification;
@@ -119,13 +267,16 @@ export type WardenRoutingRequest = Readonly<{
 
 function buildTaskSpec(input: WardenRoutingRequestInput): RouterTaskSpec {
   const budgetUsd = input.budgetUsd ?? 25;
+  const sourceArtifactId = input.sourceArtifactId ?? input.policySnapshotId ?? "";
   return {
     taskId: input.taskId,
     tenantId: input.tenantId,
     kind: WARDEN_TASK_KIND,
     goal: input.goal,
     idempotencyKey: input.idempotencyKey,
-    inputArtifactIds: [],
+    inputArtifactIds: input.modelSource
+      ? [sourceArtifactId, input.modelSource.policyDigest]
+      : [sourceArtifactId],
     requiredCapabilities: ["warden.repair"],
     allowedTools: [],
     context: {
@@ -155,24 +306,33 @@ function buildTaskSpec(input: WardenRoutingRequestInput): RouterTaskSpec {
 function buildPolicySnapshot(
   input: WardenRoutingRequestInput,
 ): RouterPolicySnapshot {
-  return {
-    snapshotId: input.policySnapshotId,
+  const allowedClassifications: readonly DataClassification[] = input.modelSource
+    ? (["public", "internal", "confidential", "restricted"] as const).slice(
+        0,
+        (["public", "internal", "confidential", "restricted"] as const)
+            .indexOf(input.modelSource.maximumDataClassification) + 1,
+      )
+    : ["public", "internal", "confidential", "restricted"];
+  const policyBody: Omit<RouterPolicySnapshot, "snapshotId" | "capturedAt"> = {
     version: 1,
-    capturedAt: (input.decidedAt ?? new Date()).toISOString(),
     privacy: {
-      allowedClassifications: [
-        "public",
-        "internal",
-        "confidential",
-        "restricted",
-      ],
-      externalProcessingAllowed: false,
+      allowedClassifications,
+      externalProcessingAllowed: Boolean(
+        input.modelSource && input.externalProcessingAllowed === true,
+      ),
     },
-    region: { allowedExecutionRegions: [WARDEN_ROUTING_REGION] },
+    region: {
+      allowedExecutionRegions: [input.modelSource?.region ?? WARDEN_ROUTING_REGION],
+    },
     risk: { maximumAutonomousRisk: "medium", humanReviewAtOrAbove: "high" },
     quality: { minimumScore: 0 },
     latency: { maximumMs: input.maximumLatencyMs ?? 3_600_000 },
     budget: { maximumUsd: input.budgetUsd ?? 25 },
+  };
+  return {
+    snapshotId: digest(policyBody),
+    ...policyBody,
+    capturedAt: (input.decidedAt ?? new Date()).toISOString(),
   };
 }
 
@@ -204,6 +364,9 @@ type WardenRoutingOutcomeInput = Parameters<
     outputTokens?: number | null;
     totalTokens?: number | null;
   }>;
+type WardenRoutingOutcomeWrite = Parameters<
+  typeof recordRoutingOutcomeExactlyOnce
+>[1];
 
 /**
  * The concrete Warden routing runtime. It is a `WardenRoutingRuntimePort` (so it
@@ -217,6 +380,7 @@ export interface WardenRoutingRuntime
     envelopeId: string,
     outcome: WardenRoutingOutcomeInput,
   ): WardenRouterRecorded;
+  applyPendingOutcome(): WardenRouterRecorded | null;
 }
 
 /** Honest cost + token attribution derived from a completed Warden attempt. */
@@ -260,18 +424,41 @@ export type WardenRoutingRuntimeContext = Readonly<{
   runId: string;
   registry: ExecutorRegistry;
   breakerConfig?: RoutingBreakerConfig;
+  deferOutcomePersistence?: boolean;
 }>;
 
 /**
  * Concrete `WardenRoutingRuntimePort` backed by the shared platform router and
- * the durable ledger + circuit-breaker state. All persistence is fail-closed:
- * a ledger or breaker write failure is logged and never propagates, so it can
- * never corrupt or block job completion.
+ * the durable ledger + circuit-breaker state. Safety state is fail-closed: an
+ * unreadable breaker or an unpersisted decision stops dispatch, while outcome
+ * and breaker feedback commit exactly once in one transaction.
  */
 export function createWardenRoutingRuntime(
   context: WardenRoutingRuntimeContext,
 ): WardenRoutingRuntime {
   const config = context.breakerConfig ?? DEFAULT_ROUTING_BREAKER;
+  let pendingOutcome: Readonly<{
+    fingerprint: string;
+    write: WardenRoutingOutcomeWrite;
+    recorded: WardenRouterRecorded;
+  }> | null = null;
+
+  const applyOutcome = (
+    write: WardenRoutingOutcomeWrite,
+    recorded: WardenRouterRecorded,
+  ): WardenRouterRecorded => {
+    try {
+      recordRoutingOutcomeExactlyOnce(context.db, write);
+    } catch (error) {
+      const code = error instanceof Error &&
+          error.message === "routing_outcome_idempotency_conflict"
+        ? "routing_outcome_idempotency_conflict"
+        : "routing_outcome_persistence_failed";
+      throw new WardenRoutingSafetyError(code, error);
+    }
+    return recorded;
+  };
+
   return {
     prepare(request: WardenRoutingRequest): WardenRouterPrepared {
       const availability = safeAvailability(
@@ -313,7 +500,7 @@ export function createWardenRoutingRuntime(
           ? outcome.handoff.reason
           : undefined;
 
-      persist(() =>
+      try {
         recordRoutingDecision(context.db, {
           tenantId: context.tenantId,
           jobId: context.jobId,
@@ -321,7 +508,7 @@ export function createWardenRoutingRuntime(
           taskKind: request.task.kind,
           envelopeId: outcome.decision.decisionId,
           policySnapshotId: request.policy.snapshotId,
-          taskSnapshotId: request.task.idempotencyKey,
+          taskSnapshotId: request.task.inputArtifactIds[0]!,
           action: outcome.action,
           selectedExecutorId,
           providerId,
@@ -332,8 +519,13 @@ export function createWardenRoutingRuntime(
           handoffReason,
           decision: outcome.decision,
           createdAt: request.decidedAt.toISOString(),
-        }),
-      );
+        });
+      } catch (error) {
+        throw new WardenRoutingSafetyError(
+          "routing_decision_persistence_failed",
+          error,
+        );
+      }
 
       if (outcome.action === "human_handoff") {
         return Object.freeze({
@@ -359,39 +551,49 @@ export function createWardenRoutingRuntime(
       outcome: WardenRoutingOutcomeInput,
     ): WardenRouterRecorded {
       const success = outcome.outcome === "succeeded";
-      // Outcome feedback into the durable breaker. Fail-closed: never throws.
-      persist(() =>
-        recordRoutingExecutorOutcome(context.db, {
-          tenantId: context.tenantId,
-          executorId: outcome.executorId,
-          providerId: outcome.providerId,
-          success,
-          observedAt: outcome.completedAt,
-          config,
-        }),
-      );
-      persist(() =>
-        recordRoutingOutcome(context.db, {
-          tenantId: context.tenantId,
-          jobId: context.jobId,
-          envelopeId,
-          action: success ? "completed" : "human_handoff",
-          outcome: outcome.outcome,
-          errorCode: outcome.errorCode ?? null,
-          costUsd: outcome.actualCostUsd,
-          inputTokens: outcome.inputTokens ?? null,
-          outputTokens: outcome.outputTokens ?? null,
-          totalTokens: outcome.totalTokens ?? null,
-          startedAt: outcome.startedAt,
-          completedAt: outcome.completedAt,
-          observedAt: outcome.completedAt,
-        }),
-      );
-      return Object.freeze({
+      const breakerFeedback = breakerFeedbackForOutcome(outcome);
+      const write = Object.freeze({
+        tenantId: context.tenantId,
+        jobId: context.jobId,
+        envelopeId,
+        idempotencyKey: outcome.idempotencyKey,
+        idempotencyPayload: outcome,
+        executorId: outcome.executorId,
+        providerId: outcome.providerId,
+        breakerFeedback,
+        action: success ? "completed" : "human_handoff",
+        outcome: outcome.outcome,
+        errorCode: outcome.errorCode ?? null,
+        costUsd: outcome.actualCostUsd,
+        inputTokens: outcome.inputTokens ?? null,
+        outputTokens: outcome.outputTokens ?? null,
+        totalTokens: outcome.totalTokens ?? null,
+        startedAt: outcome.startedAt,
+        completedAt: outcome.completedAt,
+        observedAt: outcome.completedAt,
+        config,
+      }) satisfies WardenRoutingOutcomeWrite;
+      const recorded = Object.freeze({
         envelopeId,
         action: success ? "completed" : "human_handoff",
         selectedExecutorId: null,
       });
+      if (!context.deferOutcomePersistence) return applyOutcome(write, recorded);
+
+      const fingerprint = digest({ envelopeId, outcome });
+      if (pendingOutcome && pendingOutcome.fingerprint !== fingerprint) {
+        throw new WardenRoutingSafetyError(
+          "routing_outcome_idempotency_conflict",
+          new Error("routing_outcome_idempotency_conflict"),
+        );
+      }
+      pendingOutcome ??= Object.freeze({ fingerprint, write, recorded });
+      return pendingOutcome.recorded;
+    },
+
+    applyPendingOutcome(): WardenRouterRecorded | null {
+      if (!pendingOutcome) return null;
+      return applyOutcome(pendingOutcome.write, pendingOutcome.recorded);
     },
   };
 }
@@ -404,25 +606,9 @@ function safeAvailability(
   try {
     return loadRoutingAvailability(context.db, context.tenantId, at, config);
   } catch (error) {
-    // A breaker read failure must not block production routing: default to
-    // allowing every executor (other policy filters still gate the decision).
-    console.error(
-      `  routing breaker state unavailable: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-    return { snapshot: [], allows: () => true };
-  }
-}
-
-function persist(write: () => unknown): void {
-  try {
-    write();
-  } catch (error) {
-    console.error(
-      `  routing ledger write deferred: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+    throw new WardenRoutingSafetyError(
+      "routing_breaker_state_unavailable",
+      error,
     );
   }
 }

@@ -18,12 +18,15 @@ import {
   type AgentPlannerInput,
   type AgentPlannerOutput,
   type AgentRunResult,
+  type AgentExternalModelAccounting,
 } from "@mendpoint/agent";
 import {
   bindConsumerRepoSnapshot,
   createDb,
   enqueueJob,
   getAgentRun,
+  getJob,
+  getRoutingLedgerForJob,
   insertConnectedRepository,
   insertAgentRun,
   insertConsumer,
@@ -485,6 +488,23 @@ function secretAbsent(result: AgentRunResult, state: ScriptedPlannerState): bool
     !JSON.stringify(state.inputs).includes(SECRET_SENTINEL);
 }
 
+function simulatedModelAccounting(trial: number): AgentExternalModelAccounting {
+  const active = new Set<string>();
+  return Object.freeze({
+    executionScopeId: stableDigest(`warden-source-eval-accounting:${trial}`),
+    maximumCostUsd: 1,
+    reserve: async (reservation) => {
+      if (active.has(reservation.reservationId)) return;
+      active.add(reservation.reservationId);
+    },
+    settle: async (settlement) => {
+      if (!active.delete(settlement.reservationId)) {
+        throw new Error("warden_source_eval_accounting_settlement_without_reservation");
+      }
+    },
+  });
+}
+
 async function runTrial(trial: number): Promise<WardenSourceEvalTrial> {
   const caseRoot = mkdtempSync(join(tmpdir(), `mendpoint-warden-source-${trial}-`));
   const repoRoot = join(caseRoot, "repository");
@@ -517,6 +537,7 @@ async function runTrial(trial: number): Promise<WardenSourceEvalTrial> {
         model: "scripted-source-eval",
         endpoint: "planner://mendpoint-eval/scripted-source-eval",
       },
+      externalModelAccounting: simulatedModelAccounting(trial),
       requireSourceObservation: true,
       sourceContextBudget: SOURCE_BUDGET,
       modelBudget: { maxCalls: 10, requestTimeoutMs: 5_000, maxResponseBytes: 16_384 },
@@ -796,6 +817,11 @@ async function runQueuedWorkerTrial(trial: number): Promise<WardenSourceEvalTria
         MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
         MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: TENANT_ID,
         MENDPOINT_WARDEN_MODEL_PROVIDER: "mendpoint-eval",
+        MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
+        MENDPOINT_WARDEN_MODEL_REGION: "us-central",
+        MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+        MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.01",
+        MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
         LLM_AGENT_MODEL: "scripted-source-eval",
         LLM_AGENT_URL: "https://models.example/v1",
       },
@@ -841,11 +867,16 @@ async function runQueuedWorkerTrial(trial: number): Promise<WardenSourceEvalTria
     const modelSource = persisted.agent?.modelSource;
     const expectedEndpoint = "https://models.example/v1/chat/completions";
     const expectedPolicyDigest = stableDigest(JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       tenantId: TENANT_ID,
       provider: "mendpoint-eval",
       model: "scripted-source-eval",
       endpoint: expectedEndpoint,
+      externalProcessingAllowed: true,
+      region: "us-central",
+      maximumDataClassification: "confidential",
+      estimatedCostUsd: 0.01,
+      maximumCallCostUsd: 1,
     }));
     const policyBound = Boolean(
       modelSource?.authorized &&
@@ -855,6 +886,15 @@ async function runQueuedWorkerTrial(trial: number): Promise<WardenSourceEvalTria
       modelSource.endpoint === expectedEndpoint,
     );
     const digests = context?.evidenceDigests ?? [];
+    const routingLedger = getRoutingLedgerForJob(db, jobId, TENANT_ID);
+    const routing = routingLedger[0];
+    const routingOutcomeApplications = db.raw
+      .prepare(
+        `SELECT envelope_id, payload_digest FROM routing_outcome_applications
+         WHERE tenant_id = ? AND job_id = ?`,
+      )
+      .all(TENANT_ID, jobId) as Array<{ envelope_id: string; payload_digest: string }>;
+    const finalJob = getJob(db, jobId);
     const digestMap = new Map(digests.map((item) => [item.path, item.digest]));
     const evidenceDigestsReplay = [TARGET_PATH, CONTRACT_PATH].every((path) =>
       digestMap.get(path) === stableDigest(before[path] ?? ""),
@@ -864,6 +904,37 @@ async function runQueuedWorkerTrial(trial: number): Promise<WardenSourceEvalTria
         { claimed: 1, succeeded: 1, failed: 0 }, drain),
       grade("worker.run_candidate_ready", run?.status === "candidate_ready" && run.ok === 1,
         { status: "candidate_ready", ok: 1 }, { status: run?.status, ok: run?.ok }),
+      grade("routing.single_execute_decision", routingLedger.length === 1 &&
+        routing?.action === "completed" && routing.handoff_required === 0 && !routing.error_code &&
+        routing.decision_json.includes('"action":"execute"'),
+      { rows: 1, finalAction: "completed", decisionAction: "execute", handoffRequired: 0, errorCode: null }, {
+        rows: routingLedger.length,
+        finalAction: routing?.action,
+        decisionJson: routing?.decision_json,
+        handoffRequired: routing?.handoff_required,
+        errorCode: routing?.error_code,
+      }),
+      grade("routing.exact_snapshot_and_model", routing?.task_snapshot_id === snapshotId &&
+        routing.provider_id === "mendpoint-eval" &&
+        routing.selected_executor_id?.startsWith("warden-model-") === true &&
+        routing.decision_json.includes('"executionRegion":"us-central"') &&
+        routing.decision_json.includes('"expectedCostUsd":0.01') && policyBound,
+      { taskSnapshotId: snapshotId, providerId: "mendpoint-eval", region: "us-central", expectedCostUsd: 0.01 }, {
+        taskSnapshotId: routing?.task_snapshot_id,
+        providerId: routing?.provider_id,
+        selectedExecutorId: routing?.selected_executor_id,
+        decisionJson: routing?.decision_json,
+      }),
+      grade("routing.atomic_terminal_outcome", routing?.outcome === "succeeded" &&
+        routing.completed_at !== null && routingOutcomeApplications.length === 1 &&
+        routingOutcomeApplications[0]?.envelope_id === routing.envelope_id &&
+        finalJob?.status === "done",
+      { outcome: "succeeded", applications: 1, jobStatus: "done" }, {
+        outcome: routing?.outcome,
+        completedAt: routing?.completed_at,
+        applications: routingOutcomeApplications.length,
+        jobStatus: finalJob?.status,
+      }),
       grade("worker.immutable_source", JSON.stringify(sourceAfter) === JSON.stringify(before),
         "unchanged", JSON.stringify(sourceAfter) === JSON.stringify(before) ? "unchanged" : "changed"),
       grade("fail_to_pass.baseline_failed", !failToPassBefore.ok, "failed", failToPassBefore.status),

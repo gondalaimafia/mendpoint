@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import { Hono, type Context } from "hono";
 import {
   TransformerPilotExecutionStore,
+  type TransformerAdaptiveAttemptAccounting,
   type TransformerPilotCampaignInput,
   type TransformerRollbackAction,
   type TransformerScmObservation,
@@ -93,6 +94,31 @@ function optionalIntegerBetween(
 function nonnegativeNumber(value: unknown, code: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(code);
   return value;
+}
+
+function nonnegativeInteger(value: unknown, code: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error(code);
+  return Number(value);
+}
+
+function adaptiveAccounting(value: unknown): TransformerAdaptiveAttemptAccounting {
+  const input = record(value, "transformer_pilot_adaptive_accounting_required");
+  const accounting = {
+    plannerCalls: nonnegativeInteger(input.plannerCalls, "transformer_pilot_adaptive_accounting_invalid"),
+    modelCalls: nonnegativeInteger(input.modelCalls, "transformer_pilot_adaptive_accounting_invalid"),
+    inputTokens: nonnegativeInteger(input.inputTokens, "transformer_pilot_adaptive_accounting_invalid"),
+    outputTokens: nonnegativeInteger(input.outputTokens, "transformer_pilot_adaptive_accounting_invalid"),
+    totalTokens: nonnegativeInteger(input.totalTokens, "transformer_pilot_adaptive_accounting_invalid"),
+    actualCostUsd: nonnegativeNumber(input.actualCostUsd, "transformer_pilot_adaptive_accounting_invalid"),
+    wallTimeMs: nonnegativeInteger(input.wallTimeMs, "transformer_pilot_adaptive_accounting_invalid"),
+  };
+  if (
+    accounting.modelCalls > accounting.plannerCalls ||
+    accounting.totalTokens !== accounting.inputTokens + accounting.outputTokens
+  ) {
+    throw new Error("transformer_pilot_adaptive_accounting_invalid");
+  }
+  return Object.freeze(accounting);
 }
 
 function boolean(value: unknown, code: string): boolean {
@@ -294,6 +320,7 @@ export class TransformerPilotExecutionService {
       candidateDigest: requiredString(input.candidateDigest, "transformer_pilot_candidate_digest_invalid", 80),
       verificationPassed: boolean(input.verificationPassed, "transformer_pilot_verification_invalid"),
       actualCostUsd: nonnegativeNumber(input.actualCostUsd, "transformer_pilot_cost_invalid"),
+      accounting: adaptiveAccounting(input.accounting),
       gateConfig: this.runtime.rawGateConfig,
     });
   }
@@ -313,6 +340,7 @@ export class TransformerPilotExecutionService {
         "transformer_pilot_lease_token_invalid",
         500,
       ),
+      accounting: adaptiveAccounting(input.accounting),
       gateConfig: this.runtime.rawGateConfig,
     });
   }

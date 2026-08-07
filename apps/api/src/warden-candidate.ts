@@ -1,8 +1,13 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -11,6 +16,14 @@ import {
 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  readWardenApprovalArtifact as readSharedWardenApprovalArtifact,
+  WARDEN_CANDIDATE_REVIEW_LIMITS,
+} from "@mendpoint/agent";
+import {
+  CandidateReviewEvidenceSchema,
+  type CandidateReviewEvidence,
+} from "@mendpoint/shared";
 
 export type WardenCandidateFile = Readonly<{
   path: string;
@@ -95,14 +108,20 @@ function candidateResult(resultJson: string | null): Record<string, unknown> {
   }
 }
 
-function candidateExpiry(result: Record<string, unknown>, nowMs: number): string {
+export function parseWardenCandidateReviewResult(
+  resultJson: string | null,
+): Record<string, unknown> {
+  return candidateResult(resultJson);
+}
+
+function candidateExpiry(result: Record<string, unknown>, nowMs: number, allowExpired = false): string {
   const retention = result.retention && typeof result.retention === "object"
     ? (result.retention as Record<string, unknown>)
     : null;
   const expiresAt = typeof retention?.expiresAt === "string" ? retention.expiresAt : "";
   const expiresMs = Date.parse(expiresAt);
   if (!expiresAt || !Number.isFinite(expiresMs)) throw new Error("warden_candidate_expiry_invalid");
-  if (expiresMs <= nowMs) throw new Error("warden_candidate_expired");
+  if (!allowExpired && expiresMs <= nowMs) throw new Error("warden_candidate_expired");
   return expiresAt;
 }
 
@@ -256,6 +275,7 @@ export async function validateWardenCandidateForReview(
   sourceDigest: string;
   candidateDigest: string;
   candidateEntries: readonly ReviewManifestEntry[];
+  reviewEvidence: CandidateReviewEvidence;
   sourceFiles: ReadonlyMap<string, Buffer>;
   candidateFiles: ReadonlyMap<string, Buffer>;
 }>> {
@@ -266,7 +286,11 @@ export async function validateWardenCandidateForReview(
     throw new Error("warden_candidate_tenant_invalid");
   }
   const result = candidateResult(input.resultJson);
-  const expiresAt = candidateExpiry(result, input.nowMs ?? Date.now());
+  const expiresAt = candidateExpiry(
+    result,
+    input.nowMs ?? Date.now(),
+    input.status === "candidate_approved",
+  );
   const artifacts = result.artifacts && typeof result.artifacts === "object"
     ? (result.artifacts as Record<string, unknown>)
     : null;
@@ -299,7 +323,7 @@ export async function validateWardenCandidateForReview(
   const changedPaths = Array.isArray(result.changedPaths)
     ? result.changedPaths.map(safeRelativePath)
     : [];
-  if (!changedPaths.length || changedPaths.length > 40 ||
+  if (!changedPaths.length || changedPaths.length > WARDEN_CANDIDATE_REVIEW_LIMITS.maxChangedFiles ||
     new Set(changedPaths).size !== changedPaths.length) {
     throw new Error("warden_candidate_changed_paths_invalid");
   }
@@ -322,6 +346,9 @@ export async function validateWardenCandidateForReview(
   const evidenceChangedPaths = Array.isArray(evidence.changedPaths)
     ? evidence.changedPaths.map(safeRelativePath)
     : [];
+  const parsedReviewEvidence = CandidateReviewEvidenceSchema.safeParse(evidence.review);
+  if (!parsedReviewEvidence.success) throw new Error("warden_candidate_integrity_failed");
+  const reviewPaths = parsedReviewEvidence.data.edits.map((edit) => safeRelativePath(edit.path));
   const expectedCandidateEntries = Array.isArray(manifestCandidate?.entries)
     ? manifestCandidate.entries
     : null;
@@ -335,7 +362,9 @@ export async function validateWardenCandidateForReview(
     JSON.stringify(stableValue(expectedCandidateEntries)) ===
       JSON.stringify(stableValue(candidateTree.entries)) &&
     JSON.stringify(artifactChangedPaths) === JSON.stringify(changedPaths) &&
-    JSON.stringify(evidenceChangedPaths) === JSON.stringify(changedPaths);
+    JSON.stringify(evidenceChangedPaths) === JSON.stringify(changedPaths) &&
+    new Set(reviewPaths).size === reviewPaths.length &&
+    JSON.stringify(reviewPaths) === JSON.stringify(changedPaths);
   if (!valid) throw new Error("warden_candidate_integrity_failed");
   return Object.freeze({
     result,
@@ -347,6 +376,7 @@ export async function validateWardenCandidateForReview(
     sourceDigest: sourceTree.digest,
     candidateDigest: candidateTree.digest,
     candidateEntries: candidateTree.entries,
+    reviewEvidence: parsedReviewEvidence.data,
     sourceFiles: sourceTree.files,
     candidateFiles: candidateTree.files,
   });
@@ -365,6 +395,7 @@ export async function readWardenCandidate(
   changedPaths: readonly string[];
   files: readonly WardenCandidateFile[];
   expiresAt: string | null;
+  reviewEvidence: CandidateReviewEvidence;
 }>> {
   const validated = await validateWardenCandidateForReview(input);
   const { changedPaths, expiresAt, sourceFiles, candidateFiles } = validated;
@@ -372,11 +403,14 @@ export async function readWardenCandidate(
   const files = changedPaths.map((path) => {
     const before = sourceFiles.get(path) ?? null;
     const after = candidateFiles.get(path) ?? null;
-    if ((before?.byteLength ?? 0) > 256 * 1024 || (after?.byteLength ?? 0) > 256 * 1024) {
+    if ((before?.byteLength ?? 0) > WARDEN_CANDIDATE_REVIEW_LIMITS.maxChangedFileBytes ||
+      (after?.byteLength ?? 0) > WARDEN_CANDIDATE_REVIEW_LIMITS.maxChangedFileBytes) {
       throw new Error("warden_candidate_file_too_large");
     }
     totalBytes += (before?.byteLength ?? 0) + (after?.byteLength ?? 0);
-    if (totalBytes > 2 * 1024 * 1024) throw new Error("warden_candidate_response_too_large");
+    if (totalBytes > WARDEN_CANDIDATE_REVIEW_LIMITS.maxChangedBytes) {
+      throw new Error("warden_candidate_response_too_large");
+    }
     return Object.freeze({
       path,
       before: text(before),
@@ -389,6 +423,7 @@ export async function readWardenCandidate(
     changedPaths: Object.freeze(changedPaths),
     files: Object.freeze(files),
     expiresAt,
+    reviewEvidence: validated.reviewEvidence,
   });
 }
 
@@ -467,20 +502,41 @@ export async function sealWardenCandidateApproval(
     repoPath: string;
     status: string;
     resultJson: string | null;
+    baseBranch?: string;
+    reviewerPrincipalId?: string;
+    rationale?: string;
     env?: NodeJS.ProcessEnv;
     nowMs?: number;
   }>,
 ): Promise<Readonly<{ path: string; sha256: string; created: boolean }>> {
   const validated = await validateWardenCandidateForReview(input);
+  const source = validated.result.source && typeof validated.result.source === "object"
+    ? validated.result.source as Record<string, unknown>
+    : null;
+  if (
+    typeof source?.repositoryId !== "string" ||
+    typeof source.snapshotId !== "string" ||
+    typeof source.revision !== "string" ||
+    !/^[a-f0-9]{40}$/.test(source.revision) ||
+    !/^(?!\/)(?!.*(?:\.\.|\/\/|@\{))[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/.test(input.baseBranch ?? "") ||
+    typeof input.reviewerPrincipalId !== "string" ||
+    !input.reviewerPrincipalId.trim() || input.reviewerPrincipalId.length > 500 ||
+    typeof input.rationale !== "string" || !input.rationale.trim() || input.rationale.trim().length > 2_000
+  ) {
+    throw new Error("warden_candidate_approval_binding_invalid");
+  }
   let totalBytes = 0;
   const files = validated.changedPaths.map((path) => {
     const before = validated.sourceFiles.get(path) ?? null;
     const after = validated.candidateFiles.get(path) ?? null;
-    if ((before?.byteLength ?? 0) > 256 * 1024 || (after?.byteLength ?? 0) > 256 * 1024) {
+    if ((before?.byteLength ?? 0) > WARDEN_CANDIDATE_REVIEW_LIMITS.maxChangedFileBytes ||
+      (after?.byteLength ?? 0) > WARDEN_CANDIDATE_REVIEW_LIMITS.maxChangedFileBytes) {
       throw new Error("warden_candidate_file_too_large");
     }
     totalBytes += (before?.byteLength ?? 0) + (after?.byteLength ?? 0);
-    if (totalBytes > 2 * 1024 * 1024) throw new Error("warden_candidate_response_too_large");
+    if (totalBytes > WARDEN_CANDIDATE_REVIEW_LIMITS.maxChangedBytes) {
+      throw new Error("warden_candidate_response_too_large");
+    }
     return Object.freeze({
       path,
       before: before ? before.toString("base64") : null,
@@ -490,8 +546,15 @@ export async function sealWardenCandidateApproval(
     });
   });
   const artifact = {
-    schemaVersion: 1,
+    schemaVersion: 3,
     tenantId: input.tenantId,
+    repositoryId: source.repositoryId,
+    snapshotId: source.snapshotId,
+    baseBranch: input.baseBranch!,
+    expectedBaseRevision: source.revision,
+    reviewerPrincipalId: input.reviewerPrincipalId!.trim(),
+    rationale: input.rationale!.trim(),
+    reviewEvidence: validated.reviewEvidence,
     changedPaths: [...validated.changedPaths],
     sourceDigest: validated.sourceDigest,
     candidate: {
@@ -513,76 +576,47 @@ export async function sealWardenCandidateApproval(
   }
   const artifactPath = join(approvalsDir, `${hex}.json`);
   assertNoSymlinkPath(validated.evidenceRoot, artifactPath);
-  // Content-addressed write: refuse to clobber an existing seal. If one is
-  // already present it belongs to a concurrent approve that committed the same
-  // artifact (identical bytes = success), or it is corrupt (different bytes).
-  let created = true;
-  try {
-    writeFileSync(artifactPath, serialized, { flag: "wx" });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    created = false;
-    const existing = readFileSync(artifactPath);
-    if (createHash("sha256").update(existing).digest("hex") !== hex) {
+  const verifyExisting = (): Readonly<{ path: string; sha256: string; created: false }> => {
+    const info = lstatSync(artifactPath);
+    if (info.isSymbolicLink() || !info.isFile() || !readFileSync(artifactPath).equals(serialized)) {
       throw new Error("warden_candidate_approval_conflict");
     }
+    return Object.freeze({ path: artifactPath, sha256: `sha256:${hex}`, created: false });
+  };
+  if (existsSync(artifactPath)) return verifyExisting();
+
+  // Publish the fully written and synced inode as one directory entry. A crash
+  // can leave only an unreferenced temp file or the complete final seal, never a
+  // partial final path. Hard-link publication is the non-clobbering equivalent
+  // of an atomic rename and makes concurrent exact writers deterministic.
+  const temporary = join(approvalsDir, `.${hex}.${randomUUID()}.tmp`);
+  let fd: number | null = null;
+  try {
+    fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+    writeFileSync(fd, serialized);
+    fsyncSync(fd);
+    try {
+      closeSync(fd);
+    } finally {
+      fd = null;
+    }
+    try {
+      linkSync(temporary, artifactPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      return verifyExisting();
+    }
+  } catch (error) {
+    if (fd !== null) closeSync(fd);
+    throw error;
+  } finally {
+    try { rmSync(temporary, { force: true }); } catch { /* final seal remains authoritative */ }
   }
-  return Object.freeze({ path: artifactPath, sha256: `sha256:${hex}`, created });
+  return Object.freeze({ path: artifactPath, sha256: `sha256:${hex}`, created: true });
 }
 
 export function readWardenApprovalArtifact(
-  input: Readonly<{
-    tenantId: string;
-    path: string;
-    sha256: string;
-    env?: NodeJS.ProcessEnv;
-  }>,
+  input: Parameters<typeof readSharedWardenApprovalArtifact>[0],
 ): Record<string, unknown> {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(input.tenantId)) {
-    throw new Error("warden_candidate_tenant_invalid");
-  }
-  const env = input.env ?? process.env;
-  const dataRootValue = env.MENDPOINT_DATA_DIR?.trim();
-  if (!dataRootValue || !isAbsolute(dataRootValue)) {
-    throw new Error("warden_candidate_data_root_required");
-  }
-  const dataRoot = realDirectory(dataRootValue, "warden_candidate_data_root_invalid");
-  const evidenceRoot = resolveTenantRoot(
-    dataRoot,
-    "warden-evidence",
-    input.tenantId,
-    "warden_candidate_evidence_root_invalid",
-  );
-  const approvalsDir = join(evidenceRoot, "approvals");
-  const path = resolve(input.path);
-  if (!isStrictlyWithin(approvalsDir, path)) {
-    throw new Error("warden_candidate_approval_escape");
-  }
-  assertNoSymlinkPath(evidenceRoot, path);
-  if (!existsSync(path)) throw new Error("warden_candidate_approval_missing");
-  const info = lstatSync(path);
-  if (info.isSymbolicLink() || !info.isFile() || info.size > 4 * 1024 * 1024) {
-    throw new Error("warden_candidate_approval_invalid");
-  }
-  if (!isStrictlyWithin(approvalsDir, realpathSync(path))) {
-    throw new Error("warden_candidate_approval_escape");
-  }
-  const bytes = readFileSync(path);
-  if (`sha256:${createHash("sha256").update(bytes).digest("hex")}` !== input.sha256) {
-    throw new Error("warden_candidate_approval_digest_mismatch");
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    throw new Error("warden_candidate_approval_invalid");
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("warden_candidate_approval_invalid");
-  }
-  const record = parsed as Record<string, unknown>;
-  if (record.schemaVersion !== 1 || record.tenantId !== input.tenantId) {
-    throw new Error("warden_candidate_approval_invalid");
-  }
-  return record;
+  return readSharedWardenApprovalArtifact(input);
 }

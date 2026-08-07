@@ -84,6 +84,10 @@ describe("Transformer adaptive repair loop", () => {
             path: "src/app.js",
             observedContentDigest: contextDigest(input, "src/app.js"),
             nextContent: "// app: FIXED\nexport const ready = true;\n",
+            rationale: "Replace the failing readiness marker with the verified target state.",
+            semanticCategory: "behavior",
+            risk: "low",
+            confidence: 94,
           },
         ],
       },
@@ -104,6 +108,21 @@ describe("Transformer adaptive repair loop", () => {
     expect(outcome.iterationsUsed).toBe(1);
     expect(outcome.changedPaths).toEqual(["src/app.js"]);
     expect(outcome.files["src/app.js"]).toContain("FIXED");
+    expect(outcome.review).toMatchObject({
+      edits: [{
+        path: "src/app.js",
+        rationale: "Replace the failing readiness marker with the verified target state.",
+        semanticCategory: "behavior",
+        risk: "low",
+        confidence: 94,
+      }],
+      verification: {
+        passed: true,
+        commandId: "app-behavior",
+      },
+      overallRisk: "low",
+      confidence: 94,
+    });
     expect(outcome.usage).toMatchObject({
       measured: true,
       modelCalls: 1,
@@ -112,6 +131,54 @@ describe("Transformer adaptive repair loop", () => {
       totalTokens: 160,
       costUsd: 0.0021,
     });
+  });
+
+  it("creates an explicitly allowlisted absent file behind the empty-content fence", async () => {
+    const path = "scripts/check.sh";
+    const outcome = await runAdaptiveRepairLoop({
+      unitId: "unit-a",
+      goal: "add a verification helper",
+      recipe: RECIPE,
+      sourceFiles: SOURCE,
+      recipeFiles: RECIPE_FILES,
+      allowedMutationPaths: [path],
+      gate: async (files) => ({
+        passed: files[path] === "#!/bin/sh\nexit 0\n",
+        failingCommandId: files[path] ? null : "missing-check-script",
+        output: files[path] ? "ok" : "missing scripts/check.sh",
+        implicatedPaths: [path],
+      }),
+      planner: async () => ({
+        plan: {
+          edits: [{
+            path,
+            observedContentDigest: sha256(""),
+            nextContent: "#!/bin/sh\nexit 0\n",
+          }],
+        },
+        usage: { modelCalled: false },
+      }),
+    });
+
+    expect(outcome.status).toBe("converged");
+    if (outcome.status !== "converged") return;
+    expect(outcome.changedPaths).toEqual([path]);
+    expect(outcome.files[path]).toBe("#!/bin/sh\nexit 0\n");
+  });
+
+  it("rejects an unsafe allowlisted new-file path before invoking the planner", async () => {
+    const planner = vi.fn<AdaptiveRepairPlanner>();
+    await expect(runAdaptiveRepairLoop({
+      unitId: "unit-a",
+      goal: "escape",
+      recipe: RECIPE,
+      sourceFiles: SOURCE,
+      recipeFiles: RECIPE_FILES,
+      allowedMutationPaths: ["../outside.sh"],
+      gate: markerGate(),
+      planner,
+    })).rejects.toThrow("recipe_path_invalid:../outside.sh");
+    expect(planner).not.toHaveBeenCalled();
   });
 
   it("reports null usage for a deterministic run that never calls a model", async () => {
@@ -139,12 +206,14 @@ describe("Transformer adaptive repair loop", () => {
     });
     expect(outcome.status).toBe("converged");
     expect(outcome.usage).toEqual({
+      complete: true,
+      plannerCalls: 1,
       measured: false,
-      modelCalls: null,
-      promptTokens: null,
-      completionTokens: null,
-      totalTokens: null,
-      costUsd: null,
+      modelCalls: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      costUsd: 0,
     });
   });
 
@@ -363,5 +432,267 @@ describe("Transformer adaptive repair loop", () => {
     if (outcome.status !== "unfixable") return;
     expect(outcome.boundExhausted).toBe("total_iterations");
     expect(outcome.iterationsUsed).toBe(1);
+  });
+
+  it("enforces the planner-call bound even when usage is not reported", async () => {
+    let counter = 0;
+    const planner = vi.fn<AdaptiveRepairPlanner>(async (input) => ({
+      plan: {
+        edits: [
+          {
+            path: "src/app.js",
+            observedContentDigest: contextDigest(input, "src/app.js"),
+            nextContent: `// still broken ${counter += 1}\n`,
+          },
+        ],
+      },
+      usage: { modelCalled: false },
+    }));
+    const outcome = await runAdaptiveRepairLoop({
+      unitId: "unit-a",
+      goal: "migrate",
+      recipe: RECIPE,
+      sourceFiles: SOURCE,
+      recipeFiles: RECIPE_FILES,
+      allowedMutationPaths: ALLOWED,
+      gate: markerGate(),
+      planner,
+      bounds: { maxPlannerCalls: 1 },
+    });
+
+    expect(outcome.status).toBe("unfixable");
+    if (outcome.status !== "unfixable") return;
+    expect(outcome.boundExhausted).toBe("planner_calls");
+    expect(planner).toHaveBeenCalledTimes(1);
+    expect(outcome.usage.measured).toBe(false);
+  });
+
+  it("stops before an extra model call and clamps planner-visible headroom", async () => {
+    let counter = 0;
+    const planner = vi.fn<AdaptiveRepairPlanner>(async (input) => ({
+      plan: {
+        edits: [{
+          path: "src/app.js",
+          observedContentDigest: contextDigest(input, "src/app.js"),
+          nextContent: `// model attempt ${counter += 1}\nexport const ready = false;\n`,
+        }],
+      },
+      usage: {
+        modelCalled: true,
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+        costUsd: 0.001,
+      },
+    }));
+    const outcome = await runAdaptiveRepairLoop({
+      unitId: "unit-a",
+      goal: "migrate",
+      recipe: RECIPE,
+      sourceFiles: SOURCE,
+      recipeFiles: RECIPE_FILES,
+      allowedMutationPaths: ALLOWED,
+      gate: markerGate(),
+      planner,
+      bounds: { maxPlannerCalls: 4, maxModelCalls: 1 },
+      resourceBudget: {
+        plannerCalls: 8,
+        modelCalls: 8,
+        inputTokens: 1_000,
+        outputTokens: 1_000,
+        totalTokens: 2_000,
+        actualCostUsd: 1,
+      },
+    });
+
+    expect(outcome.status).toBe("unfixable");
+    if (outcome.status !== "unfixable") return;
+    expect(outcome.boundExhausted).toBe("model_calls");
+    expect(outcome.usage.modelCalls).toBe(1);
+    expect(planner).toHaveBeenCalledTimes(1);
+    expect(planner.mock.calls[0]![0].budget).toMatchObject({
+      plannerCalls: 4,
+      modelCalls: 1,
+    });
+  });
+
+  it("stops a planner that does not settle when the wall-clock deadline expires", async () => {
+    const planner: AdaptiveRepairPlanner = async () => await new Promise(() => undefined);
+    const outcome = await Promise.race([
+      runAdaptiveRepairLoop({
+        unitId: "unit-a",
+        goal: "migrate",
+        recipe: RECIPE,
+        sourceFiles: SOURCE,
+        recipeFiles: RECIPE_FILES,
+        allowedMutationPaths: ALLOWED,
+        gate: markerGate(),
+        planner,
+        bounds: { wallClockBudgetMs: 20 },
+      }),
+      new Promise<"deadline_not_enforced">((resolve) =>
+        setTimeout(() => resolve("deadline_not_enforced"), 250),
+      ),
+    ]);
+
+    expect(outcome).not.toBe("deadline_not_enforced");
+    if (outcome === "deadline_not_enforced") return;
+    expect(outcome.status).toBe("unfixable");
+    if (outcome.status !== "unfixable") return;
+    expect(outcome.boundExhausted).toBe("wall_clock");
+    expect(outcome.marker.reason).toBe("wall_clock_exhausted");
+  });
+
+  it("classifies caller cancellation without accepting planner output", async () => {
+    const controller = new AbortController();
+    const planner: AdaptiveRepairPlanner = async (_input, options) =>
+      await new Promise((_resolve, reject) => {
+        options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+      });
+    const pending = runAdaptiveRepairLoop({
+      unitId: "unit-a",
+      goal: "migrate",
+      recipe: RECIPE,
+      sourceFiles: SOURCE,
+      recipeFiles: RECIPE_FILES,
+      allowedMutationPaths: ALLOWED,
+      gate: markerGate(),
+      planner,
+      signal: controller.signal,
+    });
+    controller.abort(new Error("lease lost"));
+    const outcome = await pending;
+
+    expect(outcome.status).toBe("unfixable");
+    if (outcome.status !== "unfixable") return;
+    expect(outcome.marker.reason).toBe("cancelled");
+  });
+
+  it("rejects an edit that exceeds the per-file candidate output limit", async () => {
+    const planner: AdaptiveRepairPlanner = async (input) => ({
+      plan: {
+        edits: [
+          {
+            path: "src/app.js",
+            observedContentDigest: contextDigest(input, "src/app.js"),
+            nextContent: "FIXED output is too large",
+          },
+        ],
+      },
+    });
+    const outcome = await runAdaptiveRepairLoop({
+      unitId: "unit-a",
+      goal: "migrate",
+      recipe: RECIPE,
+      sourceFiles: SOURCE,
+      recipeFiles: RECIPE_FILES,
+      allowedMutationPaths: ALLOWED,
+      gate: markerGate(),
+      planner,
+      bounds: { maxCandidateFileBytes: 8 },
+    });
+
+    expect(outcome.status).toBe("unfixable");
+    if (outcome.status !== "unfixable") return;
+    expect(outcome.marker.reason).toBe("output_too_large");
+    expect(outcome.files).toEqual(RECIPE_FILES);
+  });
+
+  it("rejects an edit that exceeds the aggregate candidate output limit", async () => {
+    const startingBytes = Object.values(RECIPE_FILES)
+      .reduce((total, content) => total + Buffer.byteLength(content, "utf8"), 0);
+    const planner: AdaptiveRepairPlanner = async (input) => ({
+      plan: {
+        edits: [
+          {
+            path: "src/app.js",
+            observedContentDigest: contextDigest(input, "src/app.js"),
+            nextContent: `${RECIPE_FILES["src/app.js"]}FIXED`,
+          },
+        ],
+      },
+    });
+    const outcome = await runAdaptiveRepairLoop({
+      unitId: "unit-a",
+      goal: "migrate",
+      recipe: RECIPE,
+      sourceFiles: SOURCE,
+      recipeFiles: RECIPE_FILES,
+      allowedMutationPaths: ALLOWED,
+      gate: markerGate(),
+      planner,
+      bounds: {
+        maxCandidateFileBytes: 1_024,
+        maxCandidateBytes: startingBytes + 1,
+      },
+    });
+
+    expect(outcome.status).toBe("unfixable");
+    if (outcome.status !== "unfixable") return;
+    expect(outcome.marker.reason).toBe("output_too_large");
+    expect(outcome.files).toEqual(RECIPE_FILES);
+  });
+
+  it("rejects an oversized deterministic recipe file before running a gate or planner", async () => {
+    const gate = vi.fn<AdaptiveGate>(async () => ({
+      passed: true,
+      failingCommandId: null,
+      output: "ok",
+      implicatedPaths: [],
+    }));
+    const planner = vi.fn<AdaptiveRepairPlanner>();
+    const outcome = await runAdaptiveRepairLoop({
+      unitId: "unit-a",
+      goal: "migrate",
+      recipe: RECIPE,
+      sourceFiles: SOURCE,
+      recipeFiles: RECIPE_FILES,
+      allowedMutationPaths: ALLOWED,
+      gate,
+      planner,
+      bounds: {
+        maxCandidateFileBytes: Buffer.byteLength(RECIPE_FILES["package.json"], "utf8") - 1,
+      },
+    });
+
+    expect(outcome.status).toBe("unfixable");
+    if (outcome.status !== "unfixable") return;
+    expect(outcome.marker.reason).toBe("output_too_large");
+    expect(outcome.iterationsUsed).toBe(0);
+    expect(gate).not.toHaveBeenCalled();
+    expect(planner).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized deterministic recipe aggregate before running a gate or planner", async () => {
+    const gate = vi.fn<AdaptiveGate>(async () => ({
+      passed: true,
+      failingCommandId: null,
+      output: "ok",
+      implicatedPaths: [],
+    }));
+    const planner = vi.fn<AdaptiveRepairPlanner>();
+    const startingBytes = Object.values(RECIPE_FILES)
+      .reduce((total, content) => total + Buffer.byteLength(content, "utf8"), 0);
+    const outcome = await runAdaptiveRepairLoop({
+      unitId: "unit-a",
+      goal: "migrate",
+      recipe: RECIPE,
+      sourceFiles: SOURCE,
+      recipeFiles: RECIPE_FILES,
+      allowedMutationPaths: ALLOWED,
+      gate,
+      planner,
+      bounds: {
+        maxCandidateFileBytes: 1_024,
+        maxCandidateBytes: startingBytes - 1,
+      },
+    });
+
+    expect(outcome.status).toBe("unfixable");
+    if (outcome.status !== "unfixable") return;
+    expect(outcome.marker.reason).toBe("output_too_large");
+    expect(outcome.iterationsUsed).toBe(0);
+    expect(gate).not.toHaveBeenCalled();
+    expect(planner).not.toHaveBeenCalled();
   });
 });

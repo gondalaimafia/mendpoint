@@ -8,10 +8,12 @@ import { createOrganizationConstraintContract } from "./organization-constraints
 import {
   TransformerPilotExecutionStore,
   type TransformerAttemptFailureCode,
+  type TransformerAttemptLease,
   type TransformerPilotCampaignInput,
   type TransformerPilotUnitInput,
   type TransformerScmObservation,
 } from "./pilot-execution.js";
+import { transformerAttemptId } from "./attempt-runner.js";
 import { NODE_RUNTIME_18_TO_20_RECIPE, recipeReference } from "./recipe.js";
 
 const roots: string[] = [];
@@ -88,6 +90,23 @@ function unit(id: string, repositoryId: string, source: string, candidate: strin
   };
 }
 
+function runnableCampaign(campaignId: string, repositoryId = "repo-a", source = "a") {
+  return {
+    tenantId: "tenant-a",
+    campaignId,
+    environment: "staging",
+    repositoryId,
+    taskSnapshotId: `snapshot-${repositoryId}`,
+    expectedBaseRevision: revision(source),
+    sourceArtifactIds: [
+      `snapshot-${repositoryId}`,
+      `revision:${revision(source)}`,
+      `manifest:${source.repeat(64)}`,
+      digest(source),
+    ],
+  };
+}
+
 function createInput(units: TransformerPilotUnitInput[]): TransformerPilotCampaignInput {
   return {
     tenantId: "tenant-a",
@@ -113,6 +132,70 @@ function mutation(minute: number, key: string) {
   };
 }
 
+function adaptiveAccounting(overrides: Partial<{
+  plannerCalls: number;
+  modelCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  actualCostUsd: number;
+  wallTimeMs: number;
+}> = {}) {
+  return {
+    plannerCalls: 0,
+    modelCalls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    actualCostUsd: 0,
+    wallTimeMs: 0,
+    ...overrides,
+  };
+}
+
+function adaptiveHandoff(
+  lease: TransformerAttemptLease,
+  leaseToken: string,
+  key: string,
+  overrides: Partial<Parameters<TransformerPilotExecutionStore["recordAdaptiveCandidateHandoff"]>[0]> = {},
+): Parameters<TransformerPilotExecutionStore["recordAdaptiveCandidateHandoff"]>[0] {
+  return {
+    ...mutation(2, key),
+    unitId: lease.unitId,
+    attemptId: transformerAttemptId(lease),
+    attemptNumber: lease.attemptNumber,
+    leaseGeneration: lease.leaseGeneration,
+    leaseToken,
+    repositoryId: lease.snapshot.repositoryId,
+    snapshotId: lease.snapshot.snapshotId,
+    baseBranch: "main",
+    expectedBaseRevision: lease.snapshot.revision,
+    divergedFromDigest: lease.candidateDigest,
+    candidateDigest: digest("e"),
+    failingCommandId: "runtime-declarations",
+    changedPaths: ["package.json"],
+    fileModes: Object.freeze({ "package.json": "100755" as const }),
+    sealedPath: "/data/transformer-adaptive-candidates/tenant-a/approvals/candidate.json",
+    sealedSha256: digest("f"),
+    expiresAt: time(59),
+    gateConfig: gateConfig(),
+    ...overrides,
+  };
+}
+
+function routingBinding(key: string, overrides: Record<string, unknown> = {}) {
+  return {
+    ...mutation(1, key),
+    runId: "run-routing-a",
+    envelopeId: "route-routing-a",
+    outcomeIdempotencyKey: "outcome-routing-a",
+    executorId: "transformer-attempt",
+    providerId: "mendpoint-transformer",
+    gateConfig: gateConfig(),
+    ...overrides,
+  };
+}
+
 function complete(store: TransformerPilotExecutionStore, unitId: string, minute: number, token: string, generation: number) {
   const candidate = store.getCampaign("tenant-a", "campaign-a")!.units.find((entry) => entry.id === unitId)!;
   return store.completeAttempt({
@@ -126,6 +209,7 @@ function complete(store: TransformerPilotExecutionStore, unitId: string, minute:
     candidateDigest: candidate.candidateDigest,
     verificationPassed: true,
     actualCostUsd: 0.25,
+    accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
     gateConfig: gateConfig(),
   });
 }
@@ -167,6 +251,278 @@ function singleDraftCampaign(): TransformerPilotExecutionStore {
 }
 
 describe("Transformer pilot execution coordinator", () => {
+  it("binds a route to the claimed attempt and exposes one exact terminal success settlement", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    store.bindRoutingAttempt(routingBinding("bind-routing-success"));
+    const token = "lease-token-routing-success-00001";
+    const lease = store.claimNextAttempt({
+      ...mutation(2, "claim-routing-success"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    complete(store, "unit-a", 3, token, lease.leaseGeneration);
+
+    expect(store.listPendingRoutingSettlements("tenant-a")).toEqual([
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        unitId: "unit-a",
+        runId: "run-routing-a",
+        envelopeId: "route-routing-a",
+        outcome: expect.objectContaining({
+          idempotencyKey: "outcome-routing-a",
+          executorId: "transformer-attempt",
+          providerId: "mendpoint-transformer",
+          outcome: "succeeded",
+          actualCostUsd: null,
+          inputTokens: null,
+          outputTokens: null,
+          totalTokens: null,
+          verification: expect.objectContaining({
+            verdict: "passed",
+            evidenceArtifactIds: expect.arrayContaining([
+              "evidence://operation/complete-unit-a-1",
+            ]),
+          }),
+        }),
+      }),
+    ]);
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.routingSettlement)
+      .toMatchObject({
+        attemptNumber: lease.attemptNumber,
+        leaseGeneration: lease.leaseGeneration,
+        leaseTokenDigest: lease.leaseTokenDigest,
+      });
+
+    const settlement = store.listPendingRoutingSettlements("tenant-a")[0]!;
+    const markInput = {
+      ...mutation(4, "mark-routing-success"),
+      unitId: settlement.unitId,
+      envelopeId: settlement.envelopeId,
+      outcomeIdempotencyKey: settlement.outcome.idempotencyKey,
+      gateConfig: gateConfig(),
+    };
+    const marked = store.markRoutingOutcomeSettled(markInput);
+    expect(store.markRoutingOutcomeSettled(markInput)).toEqual(marked);
+    expect(store.listPendingRoutingSettlements("tenant-a")).toEqual([]);
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "routing.outcome_settled"
+    )).toHaveLength(1);
+    store.close();
+  });
+
+  it("retains measured failure attribution and exact verification evidence for recovery", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    store.bindRoutingAttempt(routingBinding("bind-routing-failure"));
+    const token = "lease-token-routing-failure-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(2, "claim-routing-failure"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    store.recordAttemptFailure({
+      ...mutation(3, "record-routing-failure"),
+      unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      code: "verification_failed",
+      errorCode: "recipe_execution_verification_failed:runtime-declarations",
+      accounting: adaptiveAccounting({
+        plannerCalls: 1,
+        modelCalls: 1,
+        inputTokens: 50,
+        outputTokens: 15,
+        totalTokens: 65,
+        actualCostUsd: 0.00008,
+        wallTimeMs: 60_000,
+      }),
+      gateConfig: gateConfig(),
+    });
+
+    expect(store.listPendingRoutingSettlements("tenant-a")[0]?.outcome).toMatchObject({
+      outcome: "failed",
+      errorCode: "recipe_execution_verification_failed:runtime-declarations",
+      actualCostUsd: 0.00008,
+      inputTokens: 50,
+      outputTokens: 15,
+      totalTokens: 65,
+      verification: {
+        verdict: "failed",
+        evidenceArtifactIds: ["evidence://operation/record-routing-failure"],
+        verifierId: "transformer-attempt-verifier",
+      },
+    });
+    store.close();
+  });
+
+  it("rejects an adaptive candidate handoff after the exact lease transfers", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const originalToken = "lease-token-adaptive-original-0001";
+    const original = store.claimNextAttempt({
+      ...mutation(1, "claim-adaptive-original"),
+      leaseToken: originalToken,
+      gateConfig: gateConfig(),
+    })!;
+    store.expireAttempt({
+      ...mutation(2, "expire-adaptive-original"),
+      unitId: original.unitId,
+      leaseGeneration: original.leaseGeneration,
+      gateConfig: gateConfig(),
+    });
+    const exceptionId = store.getCampaign("tenant-a", "campaign-a")!.exceptions[0]!.id;
+    store.control({
+      ...mutation(3, "authorize-adaptive-successor"),
+      action: "authorize_retry",
+      unitId: original.unitId,
+    });
+    store.control({
+      ...mutation(4, "resolve-adaptive-original"),
+      action: "resolve_exception",
+      exceptionId,
+      resolution: "Successor owns the retry",
+    });
+    store.control({ ...mutation(5, "resume-adaptive-successor"), action: "resume" });
+    const successor = store.claimNextAttempt({
+      ...mutation(6, "claim-adaptive-successor"),
+      leaseToken: "lease-token-adaptive-successor-0001",
+      gateConfig: gateConfig(),
+    })!;
+
+    expect(successor.leaseGeneration).toBe(original.leaseGeneration + 1);
+    expect(() => store.recordAdaptiveCandidateHandoff(adaptiveHandoff(
+      original,
+      originalToken,
+      "handoff-adaptive-original",
+      { observedAt: time(7) },
+    ))).toThrow("transformer_pilot_fence_stale");
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.adaptiveCandidateHandoff)
+      .toBeUndefined();
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.adaptive_candidate_handoff"
+    )).toEqual([]);
+    store.close();
+  });
+
+  it("replays an exact adaptive candidate handoff without another state transition", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const token = "lease-token-adaptive-replay-000001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-adaptive-replay"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const input = adaptiveHandoff(lease, token, "handoff-adaptive-replay");
+
+    const recorded = store.recordAdaptiveCandidateHandoff(input);
+    const replayed = store.recordAdaptiveCandidateHandoff(input);
+
+    expect(replayed).toEqual(recorded);
+    expect(replayed.units[0]!.adaptiveCandidateHandoff).toMatchObject({
+      attemptId: transformerAttemptId(lease),
+      leaseGeneration: lease.leaseGeneration,
+      repositoryId: "repo-a",
+      snapshotId: "snapshot-repo-a",
+      baseBranch: "main",
+      expectedBaseRevision: revision("a"),
+      divergedFromDigest: digest("c"),
+      candidateDigest: digest("e"),
+      changedPaths: ["package.json"],
+    });
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.adaptive_candidate_handoff"
+    )).toHaveLength(1);
+    store.close();
+  });
+
+  it("rejects a conflicting adaptive candidate handoff replay", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const token = "lease-token-adaptive-conflict-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-adaptive-conflict"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const input = adaptiveHandoff(lease, token, "handoff-adaptive-conflict");
+    store.recordAdaptiveCandidateHandoff(input);
+
+    expect(() => store.recordAdaptiveCandidateHandoff({
+      ...input,
+      baseBranch: "release",
+    })).toThrow("transformer_pilot_idempotency_conflict");
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.adaptive_candidate_handoff"
+    )).toHaveLength(1);
+    store.close();
+  });
+
+  it("keeps the fenced handoff durable across a crash before App DB import", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-adaptive-handoff-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    let store = new TransformerPilotExecutionStore(path);
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const token = "lease-token-adaptive-crash-0000001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-adaptive-crash"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const input = adaptiveHandoff(lease, token, "handoff-adaptive-crash");
+    store.recordAdaptiveCandidateHandoff(input);
+    store.close();
+
+    store = new TransformerPilotExecutionStore(path);
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.adaptiveCandidateHandoff)
+      .toMatchObject({
+        attemptId: transformerAttemptId(lease),
+        leaseTokenDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        candidateDigest: digest("e"),
+      });
+    expect(store.listEvents("tenant-a", "campaign-a").at(-1)).toMatchObject({
+      type: "attempt.adaptive_candidate_handoff",
+      payload: {
+        attemptId: transformerAttemptId(lease),
+        candidateDigest: digest("e"),
+      },
+    });
+    expect(store.listAdaptiveCandidateHandoffs("tenant-a", 10, gateConfig())).toHaveLength(1);
+    const imported = {
+      ...mutation(3, "adaptive-imported-after-crash"),
+      unitId: lease.unitId,
+      attemptId: transformerAttemptId(lease),
+      candidateId: "candidate-after-crash",
+      sealedSha256: input.sealedSha256,
+      gateConfig: gateConfig(),
+    };
+    const marked = store.markAdaptiveCandidateHandoffImported(imported);
+    expect(store.markAdaptiveCandidateHandoffImported(imported)).toEqual(marked);
+    expect(() => store.markAdaptiveCandidateHandoffImported({
+      ...imported,
+      candidateId: "different-candidate-same-key",
+    })).toThrow("transformer_pilot_idempotency_conflict");
+    expect(() => store.markAdaptiveCandidateHandoffImported({
+      ...imported,
+      idempotencyKey: "adaptive-imported-after-crash-different-candidate",
+      candidateId: "different-candidate-new-key",
+    })).toThrow("transformer_pilot_adaptive_candidate_import_conflict");
+    expect(marked.units[0]!.adaptiveCandidateHandoff).toMatchObject({
+      candidateId: "candidate-after-crash",
+      importedAt: time(3),
+    });
+    expect(store.listAdaptiveCandidateHandoffs("tenant-a", 10, gateConfig())).toEqual([]);
+    store.close();
+  });
+
   it("persists exact snapshots, versioned constraints, evidence, and idempotency across restart", () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-pilot-"));
     roots.push(root);
@@ -290,11 +646,9 @@ describe("Transformer pilot execution coordinator", () => {
       resolution: "Replacement worker is ready",
     });
     store.control({ ...mutation(5, "resume-expired-attempt"), action: "resume" });
-    expect(store.listRunnableCampaigns("tenant-a")).toEqual([{
-      tenantId: "tenant-a",
-      campaignId: "campaign-a",
-      environment: "staging",
-    }]);
+    expect(store.listRunnableCampaigns("tenant-a")).toEqual([
+      runnableCampaign("campaign-a"),
+    ]);
     store.close();
   });
 
@@ -332,6 +686,7 @@ describe("Transformer pilot execution coordinator", () => {
       leaseGeneration: lease.leaseGeneration,
       leaseToken: token,
       code: "execution_failed",
+      accounting: adaptiveAccounting({ wallTimeMs: 60_000 }),
       gateConfig: gateConfig(),
     })).toThrow("transformer_pilot_fence_expired");
     expect(store.getCampaign("tenant-a", "campaign-a")).toMatchObject({
@@ -513,6 +868,7 @@ describe("Transformer pilot execution coordinator", () => {
       leaseGeneration: initialLease.leaseGeneration,
       leaseToken: initialClaim.leaseToken,
       code: "execution_failed",
+      accounting: adaptiveAccounting({ wallTimeMs: 60_000 }),
       gateConfig: gateConfig(),
     });
     first.control({
@@ -616,6 +972,44 @@ describe("Transformer pilot execution coordinator", () => {
     store.close();
   });
 
+  it("still rejects an unapproved divergent candidate as candidate_drift", () => {
+    // The adaptive-candidate review path never routes a divergent candidate
+    // through completeAttempt. This guarantee — the deterministic drift check —
+    // must remain intact: completing with a digest that diverges from the
+    // lease-bound deterministic recipe output is rejected, and the unit is not
+    // advanced to executed.
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const token = "lease-token-unit-a-00000001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-drift-a"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    expect(() =>
+      store.completeAttempt({
+        ...mutation(2, "complete-divergent-a"),
+        unitId: "unit-a",
+        leaseGeneration: lease.leaseGeneration,
+        leaseToken: token,
+        sourceRevision: lease.snapshot.revision,
+        sourceDigest: lease.snapshot.digest,
+        candidateRevision: lease.candidateRevision,
+        // A converged adaptive fix diverges from the deterministic output digest.
+        candidateDigest: digest("e"),
+        verificationPassed: true,
+        actualCostUsd: 0,
+        accounting: adaptiveAccounting({ wallTimeMs: 60_000 }),
+        gateConfig: gateConfig(),
+      }),
+    ).toThrow("transformer_pilot_candidate_drift");
+    expect(
+      store.getCampaign("tenant-a", "campaign-a")!.units.find((entry) => entry.id === "unit-a")!.state,
+    ).toBe("running");
+    store.close();
+  });
+
   it("records one typed fenced attempt failure and replays it idempotently", () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
@@ -634,6 +1028,7 @@ describe("Transformer pilot execution coordinator", () => {
       leaseGeneration: lease.leaseGeneration + 1,
       leaseToken: token,
       code: "candidate_drift",
+      accounting: adaptiveAccounting({ wallTimeMs: 60_000 }),
       gateConfig: gateConfig(),
     })).toThrow("transformer_pilot_fence_stale");
     expect(() => store.recordAttemptFailure({
@@ -642,6 +1037,7 @@ describe("Transformer pilot execution coordinator", () => {
       leaseGeneration: lease.leaseGeneration,
       leaseToken: "lease-token-unit-a-stale-0001",
       code: "candidate_drift",
+      accounting: adaptiveAccounting({ wallTimeMs: 60_000 }),
       gateConfig: gateConfig(),
     })).toThrow("transformer_pilot_fence_stale");
     expect(store.getCampaign("tenant-a", "campaign-a")).toEqual(before);
@@ -653,6 +1049,7 @@ describe("Transformer pilot execution coordinator", () => {
       leaseToken: token,
       observedAt: time(2),
       code: "ci_failure" as TransformerAttemptFailureCode,
+      accounting: adaptiveAccounting({ wallTimeMs: 60_000 }),
       gateConfig: gateConfig(),
     })).toThrow("transformer_pilot_failure_code_invalid");
 
@@ -662,6 +1059,7 @@ describe("Transformer pilot execution coordinator", () => {
       leaseGeneration: lease.leaseGeneration,
       leaseToken: token,
       code: "candidate_drift" as const,
+      accounting: adaptiveAccounting({ wallTimeMs: 60_000 }),
       gateConfig: gateConfig(),
     };
     const failed = store.recordAttemptFailure(failureInput);
@@ -705,7 +1103,7 @@ describe("Transformer pilot execution coordinator", () => {
       action: "resume",
     });
     expect(store.listRunnableCampaigns("tenant-a")).toEqual([
-      { tenantId: "tenant-a", campaignId: "campaign-a", environment: "staging" },
+      runnableCampaign("campaign-a"),
     ]);
     store.close();
   });
@@ -730,9 +1128,9 @@ describe("Transformer pilot execution coordinator", () => {
     );
 
     expect(store.listRunnableCampaigns()).toEqual([
-      { tenantId: "tenant-a", campaignId: "campaign-a", environment: "staging" },
-      { tenantId: "tenant-a", campaignId: "campaign-b", environment: "staging" },
-      { tenantId: "tenant-a", campaignId: "campaign-z", environment: "staging" },
+      runnableCampaign("campaign-a"),
+      runnableCampaign("campaign-b"),
+      runnableCampaign("campaign-z"),
     ]);
     expect(store.listRunnableCampaigns("tenant-a", 2).map((item) => item.campaignId))
       .toEqual(["campaign-a", "campaign-b"]);
@@ -754,7 +1152,7 @@ describe("Transformer pilot execution coordinator", () => {
       action: "pause",
     });
     expect(store.listRunnableCampaigns("tenant-a")).toEqual([
-      { tenantId: "tenant-a", campaignId: "campaign-a", environment: "staging" },
+      runnableCampaign("campaign-a"),
     ]);
     expect(["campaign-a", "campaign-b", "campaign-z"].map(
       (campaignId) => store.listEvents("tenant-a", campaignId).length,
@@ -777,6 +1175,7 @@ describe("Transformer pilot execution coordinator", () => {
       unitId: "unit-a",
       leaseGeneration: lease.leaseGeneration,
       leaseToken: token,
+      accounting: adaptiveAccounting({ wallTimeMs: 60_000 }),
       gateConfig: gateConfig(),
     });
     expect(crashed).toMatchObject({ state: "paused", units: [expect.objectContaining({ state: "failed", retryAuthorized: false })] });
@@ -909,6 +1308,256 @@ describe("Transformer pilot execution coordinator", () => {
       legacyItemsRemoved: 6,
       reviewerEditLines: 4,
       actualCostUsd: 0.5,
+    });
+    store.close();
+  });
+
+  it("persists cumulative adaptive accounting across checkpoints, retries, and restart", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-budget-restart-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    const first = new TransformerPilotExecutionStore(path);
+    first.createCampaign({
+      ...createInput([unit("unit-a", "repo-a", "a", "c")]),
+      adaptiveBudget: {
+        maxAttempts: 4, maxPlannerCalls: 8, maxModelCalls: 8,
+        maxInputTokens: 10_000, maxOutputTokens: 10_000, maxTotalTokens: 20_000,
+        maxActualCostUsd: 20, maxWallTimeMs: 600_000,
+      },
+    });
+    const firstToken = "lease-token-budget-restart-first-01";
+    const firstLease = first.claimNextAttempt({
+      ...mutation(1, "budget-restart-claim-1"), leaseToken: firstToken,
+      leaseDurationMs: 3_600_000, gateConfig: gateConfig(),
+    })!;
+    const firstUsage = adaptiveAccounting({
+      plannerCalls: 1, modelCalls: 1, inputTokens: 100, outputTokens: 20,
+      totalTokens: 120, actualCostUsd: 0.5, wallTimeMs: 1_000,
+    });
+    const checkpointInput = {
+      ...mutation(2, "budget-restart-checkpoint-1"), unitId: firstLease.unitId,
+      leaseGeneration: firstLease.leaseGeneration, leaseToken: firstToken,
+      accounting: firstUsage, gateConfig: gateConfig(),
+    };
+    const checkpoint = first.recordAdaptiveAttemptUsage(checkpointInput);
+    expect(first.recordAdaptiveAttemptUsage(checkpointInput)).toEqual(checkpoint);
+    const failed = first.recordAttemptFailure({
+      ...mutation(3, "budget-restart-failure-1"), unitId: firstLease.unitId,
+      leaseGeneration: firstLease.leaseGeneration, leaseToken: firstToken,
+      code: "execution_failed", accounting: firstUsage, gateConfig: gateConfig(),
+    });
+    first.control({ ...mutation(4, "budget-restart-authorize"), action: "authorize_retry", unitId: "unit-a" });
+    first.control({
+      ...mutation(5, "budget-restart-resolve"), action: "resolve_exception",
+      exceptionId: failed.exceptions[0]!.id,
+      resolution: "Retry approved after bounded failure review",
+    });
+    first.control({ ...mutation(6, "budget-restart-resume"), action: "resume" });
+    first.close();
+
+    const second = new TransformerPilotExecutionStore(path);
+    const secondToken = "lease-token-budget-restart-second-1";
+    const secondLease = second.claimNextAttempt({
+      ...mutation(7, "budget-restart-claim-2"), leaseToken: secondToken,
+      leaseDurationMs: 3_600_000, gateConfig: gateConfig(),
+    })!;
+    second.recordAdaptiveAttemptUsage({
+      ...mutation(8, "budget-restart-checkpoint-2"), unitId: secondLease.unitId,
+      leaseGeneration: secondLease.leaseGeneration, leaseToken: secondToken,
+      accounting: adaptiveAccounting({
+        plannerCalls: 2, modelCalls: 1, inputTokens: 200, outputTokens: 50,
+        totalTokens: 250, actualCostUsd: 0.75, wallTimeMs: 2_000,
+      }),
+      gateConfig: gateConfig(),
+    });
+    expect(second.getCampaign("tenant-a", "campaign-a")?.adaptiveBudget.totals).toEqual({
+      attempts: 2, plannerCalls: 3, modelCalls: 2, inputTokens: 300,
+      outputTokens: 70, totalTokens: 370, actualCostUsd: 1.25, wallTimeMs: 3_000,
+    });
+    second.close();
+  });
+
+  it("reserves external model headroom and settles exact, over-budget, and crashed calls once", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign({
+      ...createInput([unit("unit-a", "repo-a", "a", "c")]),
+      adaptiveBudget: {
+        maxAttempts: 2, maxPlannerCalls: 4, maxModelCalls: 4,
+        maxInputTokens: 400, maxOutputTokens: 100, maxTotalTokens: 500,
+        maxActualCostUsd: 4, maxWallTimeMs: 600_000,
+      },
+    });
+    const token = "lease-token-model-reservation-current-1";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "model-reservation-claim"), leaseToken: token,
+      leaseDurationMs: 180_000, gateConfig: gateConfig(),
+    })!;
+    const reservation = (reservationId: string) => ({
+      reservationId,
+      requestDigest: `sha256:${reservationId.slice(-1).repeat(64)}`,
+      provider: "provider-a",
+      configuredModel: "model-a",
+      deployment: "deployment-a",
+      executionRegion: "us-central",
+      maximumDataClassification: "confidential" as const,
+      endpointHost: "models.example",
+      maximumInputTokens: 100,
+      maximumOutputTokens: 20,
+      maximumTotalTokens: 120,
+      maximumCostUsd: 1,
+    });
+    const reserveOne = {
+      ...mutation(2, "model-reserve-one"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      reservation: reservation("reservation-1"), gateConfig: gateConfig(),
+    };
+    const reserved = store.reserveAdaptiveModelCall(reserveOne);
+    expect(store.reserveAdaptiveModelCall(reserveOne)).toEqual(reserved);
+    expect(store.getCampaign("tenant-a", "campaign-a")!.adaptiveBudget.totals.modelCalls).toBe(0);
+    const settleOne = {
+      ...mutation(2, "model-settle-one"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      settlement: {
+        reservationId: "reservation-1", status: "succeeded" as const,
+        actualModel: "model-a-20260806", headerRequestId: "request-1",
+        inputTokens: 50, outputTokens: 10, totalTokens: 60, costUsd: 0.4,
+      },
+      gateConfig: gateConfig(),
+    };
+    const settled = store.settleAdaptiveModelCall(settleOne);
+    expect(store.settleAdaptiveModelCall(settleOne)).toEqual(settled);
+
+    store.reserveAdaptiveModelCall({
+      ...mutation(2, "model-reserve-two"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      reservation: reservation("reservation-2"), gateConfig: gateConfig(),
+    });
+    store.settleAdaptiveModelCall({
+      ...mutation(2, "model-settle-two"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      settlement: {
+        reservationId: "reservation-2", status: "succeeded",
+        actualModel: "unexpected-model", inputTokens: 101,
+        outputTokens: 20, totalTokens: 121, costUsd: 1.1,
+      },
+      gateConfig: gateConfig(),
+    });
+    store.reserveAdaptiveModelCall({
+      ...mutation(2, "model-reserve-three"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      reservation: reservation("reservation-3"), gateConfig: gateConfig(),
+    });
+    store.expireAttempt({
+      ...mutation(5, "model-reservation-expire"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, gateConfig: gateConfig(),
+    });
+    const campaign = store.getCampaign("tenant-a", "campaign-a")!;
+    expect(campaign.adaptiveBudget.totals).toMatchObject({
+      plannerCalls: 3, modelCalls: 3, inputTokens: 250,
+      outputTokens: 50, totalTokens: 300, actualCostUsd: 2.4,
+    });
+    expect(campaign.units[0]!.adaptiveModelReservations?.map((item) => item.status)).toEqual([
+      "succeeded", "over_budget", "unknown",
+    ]);
+    expect(campaign.units[0]!.adaptiveModelReservations?.[1]).toMatchObject({
+      actualModel: "unexpected-model", reportedTotalTokens: 121, chargedTotalTokens: 120,
+    });
+    store.close();
+  });
+
+  it("enforces ceilings during an attempt and never charges a stale lease", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign({
+      ...createInput([unit("unit-a", "repo-a", "a", "c")]),
+      adaptiveBudget: {
+        maxAttempts: 1, maxPlannerCalls: 1, maxModelCalls: 1,
+        maxInputTokens: 100, maxOutputTokens: 20, maxTotalTokens: 120,
+        maxActualCostUsd: 1, maxWallTimeMs: 1_000,
+      },
+    });
+    const token = "lease-token-budget-ceiling-current-1";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "budget-ceiling-claim"), leaseToken: token,
+      leaseDurationMs: 3_600_000, gateConfig: gateConfig(),
+    })!;
+    const allowed = adaptiveAccounting({
+      plannerCalls: 1, modelCalls: 1, inputTokens: 100, outputTokens: 20,
+      totalTokens: 120, actualCostUsd: 1, wallTimeMs: 1_000,
+    });
+    store.recordAdaptiveAttemptUsage({
+      ...mutation(2, "budget-ceiling-allowed"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      accounting: allowed, gateConfig: gateConfig(),
+    });
+    const before = store.getCampaign("tenant-a", "campaign-a")!.adaptiveBudget.totals;
+    expect(() => store.recordAdaptiveAttemptUsage({
+      ...mutation(2, "budget-ceiling-stale"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: "lease-token-budget-ceiling-stale-1",
+      accounting: adaptiveAccounting({ ...allowed, wallTimeMs: 2_000 }), gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_fence_stale");
+    expect(store.getCampaign("tenant-a", "campaign-a")!.adaptiveBudget.totals).toEqual(before);
+    expect(() => store.recordAdaptiveAttemptUsage({
+      ...mutation(2, "budget-ceiling-overrun"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      accounting: adaptiveAccounting({ ...allowed, plannerCalls: 2 }), gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_adaptive_budget_planner_calls_exceeded");
+    expect(store.getCampaign("tenant-a", "campaign-a")!.adaptiveBudget.totals).toEqual(before);
+    store.close();
+  });
+
+  it("fails closed on inconsistent or regressing attempt accounting", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const token = "lease-token-budget-accounting-current";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "budget-accounting-claim"), leaseToken: token,
+      leaseDurationMs: 3_600_000, gateConfig: gateConfig(),
+    })!;
+    expect(() => store.recordAdaptiveAttemptUsage({
+      ...mutation(2, "budget-accounting-inconsistent"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      accounting: adaptiveAccounting({ inputTokens: 10, outputTokens: 5, totalTokens: 20 }),
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_adaptive_accounting_invalid");
+    store.recordAdaptiveAttemptUsage({
+      ...mutation(2, "budget-accounting-current"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      accounting: adaptiveAccounting({ plannerCalls: 1, wallTimeMs: 100 }),
+      gateConfig: gateConfig(),
+    });
+    expect(() => store.recordAdaptiveAttemptUsage({
+      ...mutation(3, "budget-accounting-regression"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      accounting: adaptiveAccounting({ wallTimeMs: 99 }), gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_adaptive_accounting_regressed");
+    store.close();
+  });
+
+  it("requires an attributable human override for every budget increase", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign({
+      ...createInput([unit("unit-a", "repo-a", "a", "c")]),
+      adaptiveBudget: { maxAttempts: 1 },
+    });
+    expect(() => store.increaseAdaptiveBudget({
+      ...mutation(1, "budget-override-missing-human"), humanActorId: "",
+      reason: "Need one retry", ceilings: { maxAttempts: 2 },
+    })).toThrow("transformer_pilot_budget_override_actor_invalid");
+    const increased = store.increaseAdaptiveBudget({
+      ...mutation(1, "budget-override-approved"), humanActorId: "user-talal",
+      reason: "Approved one bounded retry after reviewing failure evidence",
+      ceilings: { maxAttempts: 2 },
+    });
+    expect(increased.adaptiveBudget).toMatchObject({
+      ceilings: { maxAttempts: 2 },
+      overrides: [{
+        humanActorId: "user-talal",
+        reason: "Approved one bounded retry after reviewing failure evidence",
+        evidenceRefs: mutation(1, "budget-override-approved").evidenceRefs,
+      }],
+    });
+    expect(store.listEvents("tenant-a", "campaign-a").at(-1)).toMatchObject({
+      type: "adaptive_budget.increased", payload: { humanActorId: "user-talal" },
     });
     store.close();
   });

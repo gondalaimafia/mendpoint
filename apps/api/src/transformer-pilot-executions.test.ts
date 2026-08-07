@@ -197,6 +197,15 @@ function completion(unitId: string, token: string, generation: number, source: s
     candidateDigest: digest(candidate),
     verificationPassed: true,
     actualCostUsd: 0.25,
+    accounting: {
+      plannerCalls: 1,
+      modelCalls: 1,
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      actualCostUsd: 0.25,
+      wallTimeMs: 25,
+    },
   };
 }
 
@@ -307,6 +316,15 @@ describe("Transformer pilot execution API", () => {
         unitId: "unit-a",
         leaseGeneration: 2,
         leaseToken: token,
+        accounting: {
+          plannerCalls: 0,
+          modelCalls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          actualCostUsd: 0,
+          wallTimeMs: 0,
+        },
       },
     );
     expect(staleCrash.status).toBe(409);
@@ -320,6 +338,15 @@ describe("Transformer pilot execution API", () => {
         unitId: "unit-a",
         leaseGeneration: 1,
         leaseToken: token,
+        accounting: {
+          plannerCalls: 0,
+          modelCalls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          actualCostUsd: 0,
+          wallTimeMs: 0,
+        },
       },
     );
     const crashedBody = await crashed.json() as { exceptions: Array<{ id: string }>; state: string };

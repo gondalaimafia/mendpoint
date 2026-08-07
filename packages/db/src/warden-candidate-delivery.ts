@@ -1,0 +1,225 @@
+import { createHash } from "node:crypto";
+import type { AppDb } from "./index.js";
+
+const JOB_TYPE = "warden.candidate.deliver";
+const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const DIGEST = /^sha256:[a-f0-9]{64}$/;
+const COMMIT = /^[a-f0-9]{40}$/;
+const BRANCH = /^(?!\/)(?!.*(?:\.\.|\/\/|@\{))[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/;
+
+export type WardenCandidateDeliveryStatus = "delivery_pending" | "delivered" | "delivery_failed";
+
+export type WardenCandidateDeliveryRecord = Readonly<{
+  id: string;
+  tenantId: string;
+  runId: string;
+  jobId: string;
+  status: WardenCandidateDeliveryStatus;
+  repositoryId: string;
+  snapshotId: string;
+  baseBranch: string;
+  expectedBaseRevision: string;
+  sealedPath: string;
+  sealedSha256: string;
+  requesterPrincipalId: string;
+  rationale: string;
+  intentDigest: string | null;
+  branchName: string | null;
+  baseRevision: string | null;
+  commitSha: string | null;
+  draftPr: true | null;
+  draftPrNumber: number | null;
+  draftPrUrl: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  requestedAt: string;
+  intentBoundAt: string | null;
+  deliveredAt: string | null;
+  failedAt: string | null;
+  lastErrorAt: string | null;
+  updatedAt: string;
+}>;
+
+type Row = {
+  id: string; tenant_id: string; run_id: string; job_id: string; status: string;
+  repository_id: string; snapshot_id: string; base_branch: string;
+  expected_base_revision: string; sealed_path: string; sealed_sha256: string;
+  requester_principal_id: string; rationale: string; intent_digest: string | null;
+  branch_name: string | null; base_revision: string | null; commit_sha: string | null;
+  draft_pr: number | null; draft_pr_number: number | null; draft_pr_url: string | null;
+  error_code: string | null; error_message: string | null; requested_at: string;
+  intent_bound_at: string | null; delivered_at: string | null; failed_at: string | null;
+  last_error_at: string | null; updated_at: string;
+};
+
+function text(value: unknown, code: string, max = 2_000): string {
+  if (typeof value !== "string" || !value.trim() || value.trim().length > max) throw new Error(code);
+  return value.trim();
+}
+function id(value: unknown, code: string): string {
+  const out = text(value, code, 200);
+  if (!IDENTIFIER.test(out)) throw new Error(code);
+  return out;
+}
+function timestamp(value: unknown, code: string): string {
+  if (typeof value !== "string" || new Date(value).toISOString() !== value) throw new Error(code);
+  return value;
+}
+function branch(value: unknown): string {
+  if (typeof value !== "string" || !BRANCH.test(value) || value.endsWith("/")) {
+    throw new Error("warden_candidate_delivery_base_branch_invalid");
+  }
+  return value;
+}
+function map(row: Row): WardenCandidateDeliveryRecord {
+  if (!["delivery_pending", "delivered", "delivery_failed"].includes(row.status)) {
+    throw new Error("warden_candidate_delivery_corrupt");
+  }
+  return Object.freeze({
+    id: row.id, tenantId: row.tenant_id, runId: row.run_id, jobId: row.job_id,
+    status: row.status as WardenCandidateDeliveryStatus, repositoryId: row.repository_id,
+    snapshotId: row.snapshot_id, baseBranch: row.base_branch,
+    expectedBaseRevision: row.expected_base_revision, sealedPath: row.sealed_path,
+    sealedSha256: row.sealed_sha256, requesterPrincipalId: row.requester_principal_id,
+    rationale: row.rationale, intentDigest: row.intent_digest, branchName: row.branch_name,
+    baseRevision: row.base_revision, commitSha: row.commit_sha,
+    draftPr: row.draft_pr === 1 ? true : null, draftPrNumber: row.draft_pr_number,
+    draftPrUrl: row.draft_pr_url, errorCode: row.error_code, errorMessage: row.error_message,
+    requestedAt: row.requested_at, intentBoundAt: row.intent_bound_at,
+    deliveredAt: row.delivered_at, failedAt: row.failed_at,
+    lastErrorAt: row.last_error_at, updatedAt: row.updated_at,
+  });
+}
+
+function ids(tenantId: string, runId: string) {
+  const hash = createHash("sha256").update([tenantId, runId].join("\0"), "utf8").digest("hex").slice(0, 32);
+  return { deliveryId: `wardendelivery_${hash}`, jobId: `wardendeliveryjob_${hash}` };
+}
+
+export type EnqueueWardenCandidateDeliveryInput = Readonly<{
+  tenantId: string; runId: string; repositoryId: string; snapshotId: string;
+  baseBranch: string; expectedBaseRevision: string; sealedPath: string; sealedSha256: string;
+  requesterPrincipalId: string; rationale: string; maxAttempts?: number; now?: string;
+}>;
+
+export function getWardenCandidateDelivery(db: AppDb, tenantId: string, deliveryId: string) {
+  const row = db.raw.prepare(
+    "SELECT * FROM warden_candidate_deliveries WHERE id = ? AND tenant_id = ?",
+  ).get(deliveryId, tenantId) as Row | undefined;
+  return row ? map(row) : undefined;
+}
+
+export function getWardenCandidateDeliveryByRun(db: AppDb, tenantId: string, runId: string) {
+  const row = db.raw.prepare(
+    "SELECT * FROM warden_candidate_deliveries WHERE run_id = ? AND tenant_id = ?",
+  ).get(runId, tenantId) as Row | undefined;
+  return row ? map(row) : undefined;
+}
+
+export function enqueueWardenCandidateDelivery(
+  db: AppDb,
+  input: EnqueueWardenCandidateDeliveryInput,
+): WardenCandidateDeliveryRecord {
+  const tenantId = text(input.tenantId, "warden_candidate_delivery_tenant_invalid", 200);
+  const runId = id(input.runId, "warden_candidate_delivery_run_invalid");
+  const repositoryId = id(input.repositoryId, "warden_candidate_delivery_repository_invalid");
+  const snapshotId = id(input.snapshotId, "warden_candidate_delivery_snapshot_invalid");
+  const baseBranch = branch(input.baseBranch);
+  if (!COMMIT.test(input.expectedBaseRevision)) throw new Error("warden_candidate_delivery_revision_invalid");
+  if (!DIGEST.test(input.sealedSha256)) throw new Error("warden_candidate_delivery_seal_invalid");
+  const sealedPath = text(input.sealedPath, "warden_candidate_delivery_seal_invalid", 4_000);
+  const requester = text(input.requesterPrincipalId, "warden_candidate_delivery_requester_invalid", 500);
+  const rationale = text(input.rationale, "warden_candidate_delivery_rationale_invalid", 2_000);
+  const now = timestamp(input.now ?? new Date().toISOString(), "warden_candidate_delivery_timestamp_invalid");
+  const deterministic = ids(tenantId, runId);
+  const payload = JSON.stringify({ deliveryId: deterministic.deliveryId, runId });
+  const existing = getWardenCandidateDeliveryByRun(db, tenantId, runId);
+  if (existing) {
+    const same = existing.id === deterministic.deliveryId && existing.jobId === deterministic.jobId &&
+      existing.repositoryId === repositoryId && existing.snapshotId === snapshotId &&
+      existing.baseBranch === baseBranch && existing.expectedBaseRevision === input.expectedBaseRevision &&
+      existing.sealedPath === sealedPath && existing.sealedSha256 === input.sealedSha256 &&
+      existing.requesterPrincipalId === requester && existing.rationale === rationale;
+    if (!same) throw new Error("warden_candidate_delivery_conflict");
+    return existing;
+  }
+  const run = db.raw.prepare(
+    "SELECT status, result_json FROM agent_runs WHERE id = ? AND tenant_id = ?",
+  ).get(runId, tenantId) as { status: string; result_json: string | null } | undefined;
+  if (!run || run.status !== "candidate_approved") {
+    throw new Error("warden_candidate_delivery_run_not_approved");
+  }
+  let result: Record<string, unknown>;
+  try { result = JSON.parse(run.result_json ?? "null") as Record<string, unknown>; } catch { throw new Error("warden_candidate_delivery_run_invalid"); }
+  const source = result?.source as Record<string, unknown> | undefined;
+  const approval = (result?.artifacts as Record<string, unknown> | undefined)?.approval as Record<string, unknown> | undefined;
+  const review = result?.review as Record<string, unknown> | undefined;
+  if (source?.repositoryId !== repositoryId || source.snapshotId !== snapshotId ||
+    source.revision !== input.expectedBaseRevision || approval?.path !== sealedPath ||
+    approval.sha256 !== input.sealedSha256 || review?.decision !== "approve" ||
+    review.reviewerPrincipalId !== requester || review.rationale !== rationale) {
+    throw new Error("warden_candidate_delivery_binding_mismatch");
+  }
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    db.raw.prepare(
+      `INSERT INTO jobs
+       (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at, available_at, lease_generation)
+       VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?, 0)`,
+    ).run(deterministic.jobId, tenantId, JOB_TYPE, payload, input.maxAttempts ?? 5, now, now);
+    db.raw.prepare(
+      `INSERT INTO warden_candidate_deliveries
+       (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
+        expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
+        requested_at, updated_at)
+       VALUES (?, ?, ?, ?, 'delivery_pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(deterministic.deliveryId, tenantId, runId, deterministic.jobId, repositoryId, snapshotId,
+      baseBranch, input.expectedBaseRevision, sealedPath, input.sealedSha256, requester, rationale, now, now);
+    if (owns) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+  return getWardenCandidateDelivery(db, tenantId, deterministic.deliveryId)!;
+}
+
+export function bindWardenCandidateDeliveryIntent(db: AppDb, input: {
+  tenantId: string; deliveryId: string; intentDigest: string; branchName: string; observedAt: string;
+}) {
+  const current = getWardenCandidateDelivery(db, input.tenantId, input.deliveryId);
+  if (!current) throw new Error("warden_candidate_delivery_not_found");
+  if (current.intentDigest && (current.intentDigest !== input.intentDigest || current.branchName !== input.branchName)) {
+    throw new Error("warden_candidate_delivery_intent_conflict");
+  }
+  db.raw.prepare(
+    `UPDATE warden_candidate_deliveries SET intent_digest = ?, branch_name = ?, intent_bound_at = COALESCE(intent_bound_at, ?), updated_at = ?
+     WHERE id = ? AND tenant_id = ? AND status = 'delivery_pending'`,
+  ).run(input.intentDigest, input.branchName, input.observedAt, input.observedAt, input.deliveryId, input.tenantId);
+  return getWardenCandidateDelivery(db, input.tenantId, input.deliveryId)!;
+}
+
+export function recordWardenCandidateDeliverySuccess(db: AppDb, input: {
+  tenantId: string; deliveryId: string; branchName: string; baseRevision: string; commitSha: string;
+  draftPrNumber: number; draftPrUrl: string; observedAt: string;
+}) {
+  db.raw.prepare(
+    `UPDATE warden_candidate_deliveries SET status = 'delivered', branch_name = ?, base_revision = ?, commit_sha = ?,
+       draft_pr = 1, draft_pr_number = ?, draft_pr_url = ?, delivered_at = ?, updated_at = ?, error_code = NULL, error_message = NULL
+     WHERE id = ? AND tenant_id = ? AND status = 'delivery_pending'`,
+  ).run(input.branchName, input.baseRevision, input.commitSha, input.draftPrNumber, input.draftPrUrl,
+    input.observedAt, input.observedAt, input.deliveryId, input.tenantId);
+  return getWardenCandidateDelivery(db, input.tenantId, input.deliveryId)!;
+}
+
+export function recordWardenCandidateDeliveryFailure(db: AppDb, input: {
+  tenantId: string; deliveryId: string; errorCode: string; errorMessage: string; terminal: boolean; observedAt: string;
+}) {
+  db.raw.prepare(
+    `UPDATE warden_candidate_deliveries SET status = CASE WHEN ? THEN 'delivery_failed' ELSE status END,
+       error_code = ?, error_message = ?, failed_at = CASE WHEN ? THEN ? ELSE failed_at END,
+       last_error_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND status = 'delivery_pending'`,
+  ).run(input.terminal ? 1 : 0, input.errorCode, input.errorMessage, input.terminal ? 1 : 0,
+    input.observedAt, input.observedAt, input.observedAt, input.deliveryId, input.tenantId);
+  return getWardenCandidateDelivery(db, input.tenantId, input.deliveryId)!;
+}

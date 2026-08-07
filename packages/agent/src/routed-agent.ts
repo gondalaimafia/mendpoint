@@ -123,7 +123,39 @@ export async function runPolicyRoutedWarden<Request>(input: Readonly<{
   if (!Number.isFinite(startedAt.getTime())) {
     throw new Error("Warden routing start time is invalid");
   }
-  const result = await input.executor.run(input.task, prepared.dispatch);
+  let result: AgentRunResult;
+  try {
+    result = await input.executor.run(input.task, prepared.dispatch);
+  } catch (error) {
+    const completedAt = now();
+    if (!Number.isFinite(completedAt.getTime()) || completedAt < startedAt) {
+      throw new Error("Warden routing completion time is invalid");
+    }
+    const rawCode = error instanceof Error ? error.message : "executor_unavailable";
+    const errorCode = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(rawCode)
+      ? rawCode
+      : "executor_unavailable";
+    input.runtime.recordOutcome(prepared.envelopeId, {
+      idempotencyKey: input.outcomeIdempotencyKey,
+      executorId: prepared.dispatch.executorId,
+      providerId: prepared.dispatch.providerId,
+      outcome: "failed",
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString(),
+      actualLatencyMs: completedAt.getTime() - startedAt.getTime(),
+      actualCostUsd: null,
+      inputTokens: null,
+      outputTokens: null,
+      totalTokens: null,
+      errorCode,
+      verification: {
+        verdict: "unknown",
+        evidenceArtifactIds: Object.freeze([]),
+        verifierId: "warden-verifier",
+      },
+    });
+    throw error;
+  }
   if (
     input.executor.executorId !== boundExecutorId ||
     input.executor.providerId !== boundProviderId

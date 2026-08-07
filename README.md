@@ -97,7 +97,7 @@ See `docs/ARCHITECTURE.md` for the full design and `docs/EXAMPLES.md` for concre
 - Audit log for every pipeline step
 - Customer code is not used to train foundation models without explicit opt-in
 
-Set `GITHUB_MODE=real` and `GITHUB_TOKEN` only when wiring the Octokit scaffold for live PRs.
+Customer deployments use `GITHUB_MODE=real`, `MENDPOINT_DEPLOYMENT_CLASS=customer`, and GitHub App credentials. A fine-grained PAT is accepted only by an explicitly configured disposable private canary pinned to one tenant and one connected repository.
 
 ## API surface (local)
 

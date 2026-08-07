@@ -10,6 +10,9 @@ import {
 } from "./app-runtime.js";
 import { MockGitHubDelivery } from "./index.js";
 
+const EXACT_BASE_SHA = "a".repeat(40);
+const EXACT_COMMIT_SHA = "c".repeat(40);
+
 describe("github app runtime", () => {
   it("creates a verifiable RS256 JWT shape", () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -252,6 +255,74 @@ describe("github app runtime", () => {
     ).rejects.toThrow(/human reconciliation required/);
     expect(updateRef).not.toHaveBeenCalled();
     expect(createBlob).not.toHaveBeenCalled();
+  });
+
+  it("uses installation authentication for exact draft delivery evidence", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const delivery = new GitHubAppDelivery(
+      { appId: "99", privateKeyPem: pem },
+      42,
+    );
+    let branchHead: string | undefined;
+    const fakeOctokit = {
+      git: {
+        getRef: vi.fn(async ({ ref }: { ref: string }) => {
+          if (ref === "heads/main") return { data: { object: { sha: EXACT_BASE_SHA } } };
+          if (branchHead) return { data: { object: { sha: branchHead } } };
+          throw Object.assign(new Error("Not Found"), { status: 404 });
+        }),
+        createRef: vi.fn(async ({ sha }: { sha: string }) => {
+          branchHead = sha;
+          return { data: { object: { sha } } };
+        }),
+        getCommit: vi.fn(async ({ commit_sha }: { commit_sha: string }) => ({
+          data: commit_sha === EXACT_BASE_SHA
+            ? { sha: commit_sha, tree: { sha: "base-tree" }, parents: [] }
+            : { sha: commit_sha, tree: { sha: "desired-tree" }, parents: [{ sha: EXACT_BASE_SHA }] },
+        })),
+        createBlob: vi.fn(async () => ({ data: { sha: "blob-a" } })),
+        createTree: vi.fn(async () => ({ data: { sha: "desired-tree" } })),
+        createCommit: vi.fn(async () => ({ data: { sha: EXACT_COMMIT_SHA } })),
+        updateRef: vi.fn(async ({ sha }: { sha: string }) => {
+          branchHead = sha;
+          return { data: { object: { sha } } };
+        }),
+      },
+      pulls: {
+        list: vi.fn(async () => ({ data: [] })),
+        create: vi.fn(async () => ({ data: {
+          number: 23,
+          html_url: "https://github.com/acme/shop/pull/23",
+          state: "open",
+          draft: true,
+          title: "Transformer candidate",
+          body: "Exact candidate",
+          head: { ref: "mendpoint/transformer/candidate-a", sha: branchHead },
+          base: { ref: "main", sha: EXACT_BASE_SHA },
+        } })),
+      },
+    };
+    (delivery as unknown as { octokit: () => Promise<typeof fakeOctokit> }).octokit =
+      async () => fakeOctokit;
+
+    await expect(delivery.deliverExactDraft({
+      owner: "acme",
+      repo: "shop",
+      baseBranch: "main",
+      expectedBaseSha: EXACT_BASE_SHA,
+      branch: "mendpoint/transformer/candidate-a",
+      commitMessage: "Open approved Transformer candidate",
+      commitDate: "2026-08-06T12:00:00.000Z",
+      title: "Transformer candidate",
+      body: "Exact candidate",
+      files: [{ path: "src/a.ts", content: "changed\n", mode: "100644" }],
+    })).resolves.toMatchObject({
+      draft: true,
+      baseSha: EXACT_BASE_SHA,
+      commitSha: EXACT_COMMIT_SHA,
+      number: 23,
+    });
   });
 
   it("delivers to many repos via mock delivery", async () => {

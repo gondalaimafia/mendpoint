@@ -17,6 +17,7 @@ import {
   buildRoutedExecutorRegistry,
   runRoutedTransformerAttempt,
   synthesizeTransformerRun,
+  transformerExecutorDescriptor,
   transformerRoutingOutcomeAttribution,
   transformerRoutingRequest,
   TRANSFORMER_EXECUTOR_ID,
@@ -24,6 +25,25 @@ import {
 } from "./transformer-router.js";
 
 const CHECKED_AT = "2026-08-01T12:00:00.000Z";
+
+it("describes an authorized external adaptive route with its real policy and cost ceiling", () => {
+  expect(transformerExecutorDescriptor(CHECKED_AT, {
+    provider: "openai-compatible",
+    model: "model-a",
+    deployment: "us-central-primary",
+    executionRegion: "us-central",
+    maximumDataClassification: "confidential",
+    maximumCostUsd: 3.5,
+  })).toMatchObject({
+    providerId: "openai-compatible",
+    kind: "frontier_model",
+    version: expect.stringMatching(/^model-a@us-central-primary@sha256:[a-f0-9]{64}$/),
+    deployment: "external",
+    regions: ["us-central"],
+    maximumDataClassification: "confidential",
+    estimatedCostUsd: 3.5,
+  });
+});
 
 const dirs: string[] = [];
 const dbs: AppDb[] = [];
@@ -65,14 +85,14 @@ function completedAttempt(): TransformerAttemptRunResult {
   });
 }
 
-function failedAttempt(): TransformerAttemptRunResult {
+function failedAttempt(errorCode = "recipe_execution_failed"): TransformerAttemptRunResult {
   return Object.freeze({
     status: "failed",
-    summary: "recipe_execution_failed",
+    summary: errorCode,
     nextActions: Object.freeze(["Review execution evidence and authorize a fenced retry"]),
     artifacts: Object.freeze([]),
     recoveryCode: "execution_failed",
-    errorCode: "recipe_execution_failed",
+    errorCode,
   });
 }
 
@@ -83,6 +103,12 @@ function transformerRequest(campaignId: string, decidedAt: Date, risk?: "high") 
     campaignId,
     idempotencyKey: `claim-${campaignId}`,
     policySnapshotId: `snapshot-${campaignId}`,
+    sourceArtifactIds: [
+      `snapshot-${campaignId}`,
+      `revision:${"a".repeat(40)}`,
+      `manifest:${"b".repeat(64)}`,
+      `sha256:${"c".repeat(64)}`,
+    ],
     decidedAt,
     ...(risk ? { risk } : {}),
   });
@@ -123,7 +149,7 @@ describe("transformer routing runtime", () => {
     expect(warden?.reasons).toContain("capability_missing");
   });
 
-  it("records the real error code and feeds the breaker on a Transformer failure", async () => {
+  it("records a deterministic failure without poisoning the availability breaker", async () => {
     const db = freshDb();
     const registry = buildRoutedExecutorRegistry(CHECKED_AT);
     const at = new Date();
@@ -150,8 +176,8 @@ describe("transformer routing runtime", () => {
     expect(ledger[0]!.outcome).toBe("failed");
     expect(ledger[0]!.error_code).toBe("recipe_execution_failed");
 
-    // Three failures opened the transformer executor breaker, so the next route
-    // hands off before running the attempt at all.
+    // Deterministic recipe failures do not imply executor or provider
+    // unavailability, so the next route remains eligible.
     const attempt = vi.fn(async () => completedAttempt());
     const blocked = await runRoutedTransformerAttempt({
       db,
@@ -165,8 +191,8 @@ describe("transformer routing runtime", () => {
       outcomeIdempotencyKey: "route-final",
       runAttempt: attempt,
     });
-    expect(blocked.status).toBe("handoff");
-    expect(attempt).not.toHaveBeenCalled();
+    expect(blocked.status).toBe("completed");
+    expect(attempt).toHaveBeenCalledOnce();
   });
 
   it("blocks autonomous Transformer execution when policy requires human review", async () => {
@@ -197,7 +223,8 @@ describe("transformer routing runtime", () => {
     const db = freshDb();
     const registry = buildRoutedExecutorRegistry(CHECKED_AT);
     const at = new Date();
-    // Open the transformer executor + provider breaker with three failures.
+    // Open the transformer executor and provider breaker with three attributable
+    // availability failures.
     for (let i = 0; i < 3; i += 1) {
       const routed = await runRoutedTransformerAttempt({
         db,
@@ -209,7 +236,7 @@ describe("transformer routing runtime", () => {
         goal: "migrate",
         routingRequest: transformerRequest(`transformer-${i}`, at),
         outcomeIdempotencyKey: `troute-${i}`,
-        runAttempt: async () => failedAttempt(),
+        runAttempt: async () => failedAttempt("provider_unavailable"),
       });
       expect(routed.status).toBe("failed");
     }

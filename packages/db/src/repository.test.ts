@@ -14,10 +14,12 @@ import {
   insertConsumer,
   insertConsumerRepo,
   insertRepositorySnapshot,
+  insertRepositorySnapshotFiles,
   insertRepositorySnapshotPolicy,
   listConnectedRepositories,
   listExpiredRepositorySnapshots,
   listRepositorySnapshots,
+  listRepositorySnapshotFiles,
   listScmConnections,
   revokeScmConnection,
   recordRepositorySnapshotDeletion,
@@ -147,6 +149,57 @@ describe("repository connections", () => {
       createdAt: at,
       expiresAt: "2026-09-01T12:00:00.000Z",
     });
+    expect(insertRepositorySnapshotFiles(db, {
+      tenantId: "tenant-a",
+      snapshotId: "snapshot-a",
+      files: [
+        {
+          path: "scripts/check.sh",
+          mode: "100755",
+          kind: "file",
+          size: 18,
+          sha256: "d".repeat(64),
+        },
+        {
+          path: "package.json",
+          mode: "100644",
+          kind: "file",
+          size: 3,
+          sha256: "c".repeat(64),
+        },
+      ],
+    })).toMatchObject({ inserted: true });
+    expect(listRepositorySnapshotFiles(db, "tenant-a", "snapshot-a")).toEqual([
+      expect.objectContaining({
+        snapshot_id: "snapshot-a",
+        tenant_id: "tenant-a",
+        path: "package.json",
+        mode: "100644",
+        kind: "file",
+        size: 3,
+        sha256: "c".repeat(64),
+      }),
+      expect.objectContaining({ path: "scripts/check.sh", mode: "100755" }),
+    ]);
+    expect(listRepositorySnapshotFiles(db, "tenant-b", "snapshot-a")).toEqual([]);
+    expect(insertRepositorySnapshotFiles(db, {
+      tenantId: "tenant-a",
+      snapshotId: "snapshot-a",
+      files: [
+        { path: "package.json", mode: "100644", kind: "file", size: 3, sha256: "c".repeat(64) },
+        { path: "scripts/check.sh", mode: "100755", kind: "file", size: 18, sha256: "d".repeat(64) },
+      ],
+    })).toMatchObject({ inserted: false });
+    expect(() => insertRepositorySnapshotFiles(db, {
+      tenantId: "tenant-a",
+      snapshotId: "snapshot-a",
+      files: [
+        { path: "package.json", mode: "100755", kind: "file", size: 3, sha256: "c".repeat(64) },
+      ],
+    })).toThrow("repository_snapshot_file_manifest_conflict");
+    expect(() => db.raw.prepare(
+      "UPDATE repository_snapshot_files SET mode = '100755' WHERE snapshot_id = 'snapshot-a' AND path = 'package.json'",
+    ).run()).toThrow("repository_snapshot_files_append_only");
     expect(listRepositorySnapshots(db, "tenant-a", "repository-a")).toHaveLength(1);
     expect(listRepositorySnapshots(db, "tenant-b", "repository-a")).toEqual([]);
     expect(getLatestRepositorySnapshot(db, "tenant-a", "repository-a")?.resolved_sha).toBe(
@@ -236,6 +289,68 @@ describe("repository connections", () => {
         checkedAt: at,
       }),
     ).toThrow("scm_connection_health_revocation_mismatch");
+  });
+
+  it("keeps branch and lifecycle generations distinct for identical repository content", () => {
+    const { db, dir } = setup();
+    upsertScmConnection(db, {
+      id: "connection-a",
+      tenantId: "tenant-a",
+      provider: "local_git",
+      credentialRef: "env://LOCAL_GIT_TEST",
+      externalAccountId: "local-a",
+      displayName: "Local A",
+      createdAt: at,
+      updatedAt: at,
+    });
+    insertConnectedRepository(db, {
+      id: "repository-a",
+      tenantId: "tenant-a",
+      connectionId: "connection-a",
+      remoteId: "owner/repo",
+      owner: "owner",
+      name: "repo",
+      defaultBranch: "main",
+      status: "ready",
+      createdAt: at,
+      updatedAt: at,
+    });
+    const common = {
+      tenantId: "tenant-a",
+      repositoryId: "repository-a",
+      resolvedSha: "a".repeat(40),
+      manifestSha256: "b".repeat(64),
+    } as const;
+
+    const main = insertRepositorySnapshot(db, {
+      ...common,
+      id: "snapshot-main",
+      requestedRef: "main",
+      storagePath: join(dir, "snapshot-main"),
+      createdAt: "2026-08-01T12:00:00.000Z",
+      expiresAt: "2026-08-02T12:00:00.000Z",
+    });
+    const release = insertRepositorySnapshot(db, {
+      ...common,
+      id: "snapshot-release",
+      requestedRef: "release",
+      storagePath: join(dir, "snapshot-release"),
+      createdAt: "2026-08-01T13:00:00.000Z",
+      expiresAt: "2026-08-02T13:00:00.000Z",
+    });
+    const refreshedMain = insertRepositorySnapshot(db, {
+      ...common,
+      id: "snapshot-main-refreshed",
+      requestedRef: "main",
+      storagePath: join(dir, "snapshot-main-refreshed"),
+      createdAt: "2026-08-03T12:00:00.000Z",
+      expiresAt: "2026-08-04T12:00:00.000Z",
+    });
+
+    expect(main.row.id).toBe("snapshot-main");
+    expect(release.row.id).toBe("snapshot-release");
+    expect(refreshedMain.row.id).toBe("snapshot-main-refreshed");
+    expect(listRepositorySnapshots(db, "tenant-a", "repository-a")).toHaveLength(3);
   });
 
   it("binds a consumer only to an owned exact commit snapshot", () => {

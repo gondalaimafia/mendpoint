@@ -2,7 +2,6 @@ import { serve } from "@hono/node-server";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { createHash, randomBytes } from "node:crypto";
-import { rmSync } from "node:fs";
 import {
   createDb,
   listProviders,
@@ -92,6 +91,7 @@ import {
   insertAgentRun,
   listAgentRuns,
   getAgentRun,
+  getWardenCandidateDeliveryByRun,
   agentRunToApi,
   buildExposureReport,
   listConsumersForProvider,
@@ -208,11 +208,9 @@ import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
 import { parseWardenRunInput } from "./warden-run-input.js";
 import {
-  discardWardenCandidate,
   readWardenCandidate,
-  sealWardenCandidateApproval,
 } from "./warden-candidate.js";
-import { isHumanWardenReviewer } from "./warden-review-auth.js";
+import { registerTransformerAdaptiveReviewRoutes } from "./transformer-adaptive-review.js";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
   createAuthMiddleware,
@@ -261,6 +259,7 @@ import { billingPlanChangeDecision } from "./billing-plan-control.js";
 import { createDesignPartnerApplicationRoutes } from "./design-partner-applications.js";
 import { createPilotSuccessContractRoutes } from "./pilot-success-contracts.js";
 import { createMigrationPrReviewRoutes } from "./review-routes.js";
+import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
 
 // Fail fast in production if env invalid
 assertApiEnvOrExit();
@@ -2244,23 +2243,30 @@ app.get("/feeds/sdk-signals", async (c) => {
 
 // ─── Devin-style API bug agent ───────────────────────────────────────────────
 
+function wardenRunResponse(run: Parameters<typeof agentRunToApi>[0]) {
+  return {
+    ...agentRunToApi(run),
+    delivery: getWardenCandidateDeliveryByRun(db, run.tenant_id, run.id) ?? null,
+  };
+}
+
 app.get("/agent/runs", (c) =>
   c.json(
-    listAgentRuns(db, 40, requestTenantId(c)).map(agentRunToApi),
+    listAgentRuns(db, 40, requestTenantId(c)).map(wardenRunResponse),
   ),
 );
 
 app.get("/agent/runs/:id", (c) => {
   const r = getAgentRun(db, c.req.param("id"), requestTenantId(c));
   if (!r) return c.json({ error: "not found" }, 404);
-  return c.json(agentRunToApi(r));
+  return c.json(wardenRunResponse(r));
 });
 
 function markWardenCandidateExpired(
   run: Readonly<{ id: string; status: string; result_json: string | null }>,
   tenantId: string,
 ): void {
-  if (run.status !== "candidate_ready" && run.status !== "candidate_approved") return;
+  if (run.status !== "candidate_ready") return;
   let result: Record<string, unknown> = {};
   try {
     const parsed = run.result_json ? JSON.parse(run.result_json) as unknown : null;
@@ -2276,7 +2282,7 @@ function markWardenCandidateExpired(
   const observedAt = nowIso();
   db.raw.prepare(
     `UPDATE agent_runs SET status = 'candidate_expired', result_json = ?, finished_at = ?
-     WHERE id = ? AND tenant_id = ? AND status IN ('candidate_ready', 'candidate_approved')`,
+     WHERE id = ? AND tenant_id = ? AND status = 'candidate_ready'`,
   ).run(JSON.stringify({
     ...result,
     retention: { ...retention, expiredAt: observedAt },
@@ -2290,187 +2296,32 @@ app.get("/agent/runs/:id/candidate", async (c) => {
   c.header("Cache-Control", "private, no-store, max-age=0");
   c.header("Pragma", "no-cache");
   try {
-    return c.json(await readWardenCandidate({
+    return c.json({
+      ...(await readWardenCandidate({
       tenantId: run.tenant_id,
       repoPath: run.repo_path,
       status: run.status,
       resultJson: run.result_json,
-    }));
+      })),
+      delivery: getWardenCandidateDeliveryByRun(db, run.tenant_id, run.id) ?? null,
+    });
   } catch (error) {
     const code = error instanceof Error ? error.message : "warden_candidate_unavailable";
     if (code === "warden_candidate_expired") {
       markWardenCandidateExpired(run, run.tenant_id);
     }
-    const status = code === "warden_candidate_expired" ? 410 :
-      code === "warden_candidate_not_ready" ? 409 : 409;
+    const status = code === "warden_candidate_expired" ? 410 : 409;
     return c.json({ error: code }, status);
   }
 });
 
-app.post("/agent/runs/:id/candidate/review", async (c) => {
-  const tenantId = requestTenantId(c);
-  const principal = c.get("principal");
-  const trustPrincipalId = c.get("trustPrincipalId");
-  const trustPrincipal = trustPrincipalId
-    ? getPrincipal(db, tenantId, trustPrincipalId)
-    : undefined;
-  if (!isHumanWardenReviewer(principal, trustPrincipal, tenantId, c.get("apiKeyId"))) {
-    return c.json({ error: "human_review_required" }, 403);
-  }
-  let run = getAgentRun(db, c.req.param("id"), tenantId);
-  if (!run) return c.json({ error: "not found" }, 404);
-  const body: { decision?: unknown } = await c.req
-    .json<{ decision?: unknown }>()
-    .catch(() => ({}));
-  if (body.decision !== "approve" && body.decision !== "reject") {
-    return c.json({ error: "decision must be approve or reject" }, 400);
-  }
-  // Parsing the body yielded the event loop, so a concurrent review may have
-  // moved this run. Re-read current state from the database before deciding to
-  // seal; the `AND status = 'candidate_ready'` UPDATE guard remains the final
-  // arbiter of the write.
-  run = getAgentRun(db, run.id, tenantId);
-  if (!run) return c.json({ error: "not found" }, 404);
-  const reviewedAt = nowIso();
-  const result = run.result_json
-    ? (JSON.parse(run.result_json) as Record<string, unknown>)
-    : {};
-  const priorReview = result.review && typeof result.review === "object"
-    ? result.review as Record<string, unknown>
-    : null;
-  if (
-    ["candidate_approved", "candidate_rejected"].includes(run.status) &&
-    priorReview?.decision === body.decision
-  ) {
-    return c.json(agentRunToApi(run));
-  }
-  if (run.status !== "candidate_ready") {
-    return c.json({ error: "candidate is not awaiting review" }, 409);
-  }
-  let sealedApproval: Readonly<{ path: string; sha256: string; created: boolean }> | null = null;
-  if (body.decision === "approve") {
-    try {
-      sealedApproval = await sealWardenCandidateApproval({
-        tenantId: run.tenant_id,
-        repoPath: run.repo_path,
-        status: run.status,
-        resultJson: run.result_json,
-      });
-    } catch (error) {
-      const code = error instanceof Error ? error.message : "warden_candidate_unavailable";
-      if (code === "warden_candidate_expired") {
-        markWardenCandidateExpired(run, tenantId);
-      }
-      return c.json({ error: code }, code === "warden_candidate_expired" ? 410 : 409);
-    }
-  }
-  const status = body.decision === "approve" ? "candidate_approved" : "candidate_rejected";
-  const existingArtifacts = result.artifacts && typeof result.artifacts === "object"
-    ? result.artifacts as Record<string, unknown>
-    : null;
-  const reviewedResult = {
-    ...result,
-    review: {
-      decision: body.decision,
-      reviewedAt,
-      reviewerPrincipalId: principal?.id ?? null,
-    },
-    ...(sealedApproval
-      ? {
-        artifacts: {
-          ...(existingArtifacts ?? {}),
-          approval: { path: sealedApproval.path, sha256: sealedApproval.sha256 },
-        },
-      }
-      : {}),
-    ...(body.decision === "reject"
-      ? { cleanup: { status: "pending", attempts: 0 } }
-      : {}),
-  };
-  db.raw.exec("BEGIN IMMEDIATE");
-  try {
-    const updated = db.raw.prepare(
-      `UPDATE agent_runs
-       SET status = ?, result_json = ?, finished_at = ?
-       WHERE id = ? AND tenant_id = ? AND status = 'candidate_ready'`,
-    ).run(
-      status,
-      JSON.stringify(reviewedResult),
-      reviewedAt,
-      run.id,
-      tenantId,
-    );
-    if (Number(updated.changes) !== 1) throw new Error("warden_candidate_review_conflict");
-    requestAudit(c, {
-      actor: "operator",
-      action: body.decision === "approve"
-        ? "agent.candidate.approved"
-        : "agent.candidate.rejected",
-      resourceType: "agent_run",
-      resourceId: run.id,
-      metadata: {
-        decision: body.decision,
-        product: "warden",
-        reviewerPrincipalId: principal?.id ?? null,
-      },
-    });
-    db.raw.exec("COMMIT");
-  } catch (error) {
-    db.raw.exec("ROLLBACK");
-    // Only delete the sealed artifact when THIS request created it. A concurrent
-    // approve that committed first owns a pre-existing content-addressed seal;
-    // removing it would destroy the committed approval's evidence.
-    if (sealedApproval && sealedApproval.created) {
-      try {
-        rmSync(sealedApproval.path, { force: true });
-      } catch {
-        // best effort: avoid leaving an orphan sealed artifact behind
-      }
-    }
-    const code = error instanceof Error ? error.message : "warden_candidate_review_failed";
-    return c.json({ error: code }, 409);
-  }
-  if (body.decision === "reject") {
-    try {
-      discardWardenCandidate({
-        tenantId,
-        status: run.status,
-        resultJson: run.result_json,
-      });
-      const artifacts = result.artifacts && typeof result.artifacts === "object"
-        ? result.artifacts as Record<string, unknown>
-        : null;
-      db.raw.prepare(
-        `UPDATE agent_runs SET result_json = ?
-         WHERE id = ? AND tenant_id = ? AND status = 'candidate_rejected'`,
-      ).run(JSON.stringify({
-        ...reviewedResult,
-        artifacts: artifacts ? {
-          sourceDigest: artifacts.sourceDigest ?? null,
-          candidateDigest: artifacts.candidateDigest ?? null,
-          candidateWorkspace: null,
-          candidateManifest: null,
-          evidence: null,
-        } : null,
-        cleanup: { status: "cleaned", attempts: 1, cleanedAt: nowIso() },
-      }), run.id, tenantId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "warden_candidate_cleanup_failed";
-      db.raw.prepare(
-        `UPDATE agent_runs SET result_json = ?
-         WHERE id = ? AND tenant_id = ? AND status = 'candidate_rejected'`,
-      ).run(JSON.stringify({
-        ...reviewedResult,
-        cleanup: { status: "pending", attempts: 1, lastError: message, lastAttemptAt: nowIso() },
-      }), run.id, tenantId);
-      return c.json({
-        status,
-        cleanup: "pending",
-        error: message,
-      }, 202);
-    }
-  }
-  return c.json(agentRunToApi(getAgentRun(db, run.id, tenantId)!));
+registerWardenCandidateReviewRoutes(app, db, requestAudit);
+
+
+// Transformer adaptive candidate review (distinct human sign-off for adaptive
+// fixes that diverge from the deterministic recipe output).
+registerTransformerAdaptiveReviewRoutes(app, db, requestAudit, {
+  regenerationGate: (tenantId) => transformerExecutions.gate(tenantId, "api_control_plane"),
 });
 
 /**
