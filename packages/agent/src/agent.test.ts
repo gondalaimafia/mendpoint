@@ -191,6 +191,36 @@ describe("policies", () => {
 });
 
 describe("tools sandbox", () => {
+  it("allows verifier inspection while keeping verifier bytes immutable", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-readonly-verifier-"));
+    dirs.push(dir);
+    const verifier = join(dir, "check.mjs");
+    writeFileSync(verifier, "if (true) process.exit(1);\n");
+    const ctx: ToolContext = {
+      repoRoot: dir,
+      readOnlyPaths: ["check.mjs"],
+      changedFiles: new Set(),
+    };
+
+    expect(executeTool(ctx, {
+      tool: "read_file",
+      args: { path: "check.mjs" },
+    })).toMatchObject({ ok: true, summary: expect.stringMatching(/^read check\.mjs \(\d+ chars\)$/) });
+    expect(executeTool(ctx, {
+      tool: "search",
+      args: { query: "process.exit" },
+    })).toMatchObject({ ok: true, data: { hits: [expect.objectContaining({ path: "check.mjs" })] } });
+    expect(executeTool(ctx, {
+      tool: "write_file",
+      args: { path: "check.mjs", content: "process.exit(0);\n" },
+    })).toMatchObject({ ok: false, error: "policy" });
+    expect(executeTool(ctx, {
+      tool: "replace_in_file",
+      args: { path: "check.mjs", from: "1", to: "0" },
+    })).toMatchObject({ ok: false, error: "policy" });
+    expect(readFileSync(verifier, "utf8")).toBe("if (true) process.exit(1);\n");
+  });
+
   it("refuses path escape and blocks write to .env", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-tools-"));
     dirs.push(dir);
@@ -209,6 +239,32 @@ describe("tools sandbox", () => {
       args: { path: ".env", content: "SECRET=1" },
     });
     expect(envWrite.ok).toBe(false);
+  });
+
+  it("keeps the default secret policy when a low level caller adds custom paths", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-custom-policy-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, ".env"), "SECRET=unchanged\n");
+    writeFileSync(join(dir, "custom.lock"), "unchanged\n");
+    const ctx: ToolContext = {
+      repoRoot: dir,
+      neverTouchPaths: ["custom.lock"],
+      changedFiles: new Set(),
+    };
+
+    expect(executeTool(ctx, {
+      tool: "read_file",
+      args: { path: ".env" },
+    })).toMatchObject({ ok: false, error: "policy" });
+    expect(executeTool(ctx, {
+      tool: "write_file",
+      args: { path: ".env", content: "SECRET=changed\n" },
+    })).toMatchObject({ ok: false, error: "policy" });
+    expect(executeTool(ctx, {
+      tool: "write_file",
+      args: { path: "custom.lock", content: "changed\n" },
+    })).toMatchObject({ ok: false, error: "policy" });
+    expect(readFileSync(join(dir, ".env"), "utf8")).toBe("SECRET=unchanged\n");
   });
 
   it("blocks sibling prefix and symlink or junction escapes", () => {
@@ -403,6 +459,41 @@ describe("tools sandbox", () => {
 });
 
 describe("Warden (API debug agent)", () => {
+  it("preserves default secret protections when callers add protected paths", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-path-policy-union-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, ".env"), "SECRET=do-not-read\n");
+    writeFileSync(join(dir, "protected-ci.yml"), "steps: []\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const requestedPaths = [".env", "protected-ci.yml"];
+    let request = 0;
+
+    const result = await runWarden({
+      goal: "inspect protected files",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "unknown failure",
+      maxSteps: 3,
+      useLlm: true,
+      neverTouchPaths: ["protected-ci.yml"],
+      planner: async () => ({
+        call: {
+          tool: "read_file",
+          args: { path: requestedPaths[request++] ?? "protected-ci.yml" },
+        },
+      }),
+    });
+
+    expect(result.steps.slice(1).map((step) => ({
+      path: step.call.args.path,
+      ok: step.result.ok,
+      summary: step.result.summary,
+    }))).toEqual([
+      { path: ".env", ok: false, summary: "blocked path" },
+      { path: "protected-ci.yml", ok: false, summary: "blocked path" },
+    ]);
+  });
+
   it("fixes path typo and amount_cents on fixture", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-"));
     dirs.push(dir);
@@ -644,6 +735,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
       "fetch",
       vi.fn(async () =>
         Response.json({
+          model: "muse-spark-1.2",
           choices: [
             {
               message: {
@@ -655,6 +747,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
               },
             },
           ],
+          usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
         }),
       ),
     );
@@ -689,6 +782,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     process.env.LLM_AGENT_URL = "https://llm.invalid/v1";
     process.env.OPENAI_API_KEY = "test-key";
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({
+      model: "muse-spark-1.2",
       choices: [{ message: { content: JSON.stringify({
         tool: "search",
         args: { query: "first-model-search" },
@@ -728,6 +822,12 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
       });
       expect(request.response_format.json_schema.schema.type).toBe("object");
       expect(request.response_format.json_schema.schema.oneOf).toBeUndefined();
+      const systemPrompt = request.messages.find((message: { role: string }) => message.role === "system")?.content;
+      expect(systemPrompt).toContain("search requires one nonempty literal substring of at least two characters");
+      expect(systemPrompt).toContain('Use "." for the repository root');
+      expect(systemPrompt).toContain("Verifier files may be read but never edited");
+      expect(systemPrompt).toContain("run it again only after a successful edit");
+      expect(systemPrompt).toContain("only the exact verifyCommand");
     } finally {
       vi.unstubAllGlobals();
       if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
@@ -873,6 +973,154 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     }
   });
 
+  it("fails closed when a provider omits measured usage", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-usage-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    const priorModel = process.env.LLM_AGENT_MODEL;
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.LLM_AGENT_MODEL = "muse-spark-1.2-contributor";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      id: "chatcmpl-missing-usage",
+      model: "muse-spark-1.2-contributor",
+      choices: [{ message: { content: JSON.stringify({
+        tool: "read_file",
+        args: { path: "client.js" },
+        thought: "inspect the client",
+      }) } }],
+    }), { headers: { "content-type": "application/json" } })));
+    try {
+      const result = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 20,
+        modelBudget: { maxCalls: 1 },
+      });
+      expect(result.stoppedReason).toBe("model_response_invalid");
+      expect(result.metrics.model).toMatchObject({
+        calls: 1,
+        successfulCalls: 0,
+        failedCalls: 1,
+        invalidResponses: 1,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+      if (priorModel === undefined) delete process.env.LLM_AGENT_MODEL;
+      else process.env.LLM_AGENT_MODEL = priorModel;
+    }
+  });
+
+  it("distinguishes retry safe provider failures from permanent HTTP errors", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-http-status-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    try {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("unavailable", { status: 503 })));
+      const transient = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 20,
+        modelBudget: { maxCalls: 3 },
+      });
+      expect(transient.stoppedReason).toBe("model_http_transient_error");
+
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("unauthorized", { status: 401 })));
+      const permanent = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 20,
+        modelBudget: { maxCalls: 3 },
+      });
+      expect(permanent.stoppedReason).toBe("model_http_error");
+
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("not implemented", { status: 501 })));
+      const unsupported = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 20,
+        modelBudget: { maxCalls: 3 },
+      });
+      expect(unsupported.stoppedReason).toBe("model_http_error");
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+    }
+  });
+
+  it("retries only allowlisted transport error codes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-request-error-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    try {
+      vi.stubGlobal("fetch", vi.fn(async () => {
+        throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+      }));
+      const retryable = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 20,
+        modelBudget: { maxCalls: 3 },
+      });
+      expect(retryable.stoppedReason).toBe("model_request_failed");
+
+      vi.stubGlobal("fetch", vi.fn(async () => {
+        throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ENOTFOUND" } });
+      }));
+      const permanent = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        maxSteps: 20,
+        modelBudget: { maxCalls: 3 },
+      });
+      expect(permanent.stoppedReason).toBe("model_request_error");
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+    }
+  });
+
   it("aborts a slow model request within the configured deadline", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-timeout-"));
     dirs.push(dir);
@@ -959,6 +1207,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
       vi.fn(async () => {
         calls++;
         return Response.json({
+          model: "muse-spark-1.2",
           choices: [
             {
               message: {
@@ -970,6 +1219,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
               },
             },
           ],
+          usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
         });
       }),
     );
