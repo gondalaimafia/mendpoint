@@ -1,17 +1,22 @@
-import { chmod, lstat, mkdir, readdir, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import type { AppDb } from "@mendpoint/db";
+import { createHash } from "node:crypto";
+import { chmod, lstat, mkdir, readFile, readlink, readdir, realpath, rm } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative } from "node:path";
+import type { AppDb, RepositorySnapshotFileRow, RepositorySnapshotRow } from "@mendpoint/db";
 import {
   bindConsumerRepoSnapshot,
+  getRepositorySnapshotPolicy,
   getScmConnection,
   getScmConnectionHealth,
   getRepositorySnapshotDeletionStatus,
   insertConnectedRepository,
   insertRepositorySnapshot,
+  insertRepositorySnapshotFiles,
   insertRepositorySnapshotPolicy,
   listConnectedRepositories,
   listExpiredRepositorySnapshots,
   listRepositorySnapshots,
+  listRepositorySnapshotFiles,
+  listRepositorySnapshotReuseCandidates,
   listScmConnections,
   revokeScmConnection,
   recordRepositorySnapshotDeletion,
@@ -27,6 +32,7 @@ import {
   type CredentialBroker,
   type CredentialDescriptor,
   type GitHubRepositoryTransport,
+  type SnapshotFile,
   type RepositorySource,
 } from "@mendpoint/platform";
 import { newId, nowIso } from "@mendpoint/shared";
@@ -299,6 +305,23 @@ export async function materializeConnectedRepository(
     const expiresAt = new Date(
       Date.parse(createdAt) + repository.retention_days * 24 * 60 * 60 * 1000,
     ).toISOString();
+    let reuseSnapshotId: string | undefined;
+    const candidates = listRepositorySnapshotReuseCandidates(db, {
+      tenantId: input.tenantId,
+      repositoryId: repository.id,
+      requestedRef: resolved.requestedRef,
+      resolvedSha: snapshot.sha,
+      manifestSha256: snapshot.manifestSha256,
+      asOf: createdAt,
+    });
+    for (const candidate of candidates) {
+      if (!getRepositorySnapshotPolicy(db, input.tenantId, candidate.id)) continue;
+      const manifest = listRepositorySnapshotFiles(db, input.tenantId, candidate.id);
+      if (await reusableSnapshotStorageVerifies(input.tenantId, candidate, manifest, snapshot.files)) {
+        reuseSnapshotId = candidate.id;
+        break;
+      }
+    }
     db.raw.exec("BEGIN IMMEDIATE");
     try {
       const stored = insertRepositorySnapshot(db, {
@@ -312,8 +335,15 @@ export async function materializeConnectedRepository(
         submodulesPolicy: snapshot.submodules.length ? "pinned" : "reject",
         lfsPolicy: snapshot.lfsPointers.length ? "pointer_only" : "reject",
         sparsePaths: [...snapshot.sparsePaths],
+        fileManifestVersion: 1,
+        reuseSnapshotId,
         createdAt,
         expiresAt,
+      });
+      insertRepositorySnapshotFiles(db, {
+        tenantId: input.tenantId,
+        snapshotId: stored.row.id,
+        files: snapshot.files,
       });
       if (stored.inserted) {
         insertRepositorySnapshotPolicy(db, {
@@ -394,6 +424,88 @@ export async function materializeConnectedRepository(
   } catch (error) {
     await removeSnapshot(snapshot.root);
     throw error;
+  }
+}
+
+function snapshotManifestMatches(
+  stored: readonly RepositorySnapshotFileRow[],
+  expected: readonly SnapshotFile[],
+): boolean {
+  if (stored.length !== expected.length) return false;
+  const sortedExpected = [...expected].sort((left, right) => left.path.localeCompare(right.path));
+  return stored.every((row, index) => {
+    const file = sortedExpected[index];
+    return Boolean(
+      file && row.path === file.path && row.mode === file.mode && row.kind === file.kind &&
+      row.size === file.size && row.sha256 === file.sha256,
+    );
+  });
+}
+
+async function snapshotLeafPaths(
+  root: string,
+  directory = root,
+  prefix = "",
+): Promise<string[]> {
+  const leaves: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    const repositoryPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      leaves.push(...await snapshotLeafPaths(root, path, repositoryPath));
+    } else {
+      leaves.push(repositoryPath);
+    }
+  }
+  return leaves;
+}
+
+async function reusableSnapshotStorageVerifies(
+  tenantId: string,
+  snapshot: RepositorySnapshotRow,
+  storedManifest: readonly RepositorySnapshotFileRow[],
+  expectedManifest: readonly SnapshotFile[],
+): Promise<boolean> {
+  if (snapshot.file_manifest_version !== 1 || !snapshotManifestMatches(storedManifest, expectedManifest)) {
+    return false;
+  }
+  try {
+    const guardedRoot = assertRepositorySnapshotPath(snapshot.storage_path, snapshot.id, tenantId);
+    const rootStat = await lstat(guardedRoot);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return false;
+    const root = await realpath(guardedRoot);
+    const leaves = (await snapshotLeafPaths(root)).sort();
+    const expectedPaths = storedManifest.map((file) => file.path).sort();
+    if (
+      leaves.length !== expectedPaths.length ||
+      leaves.some((path, index) => path !== expectedPaths[index])
+    ) {
+      return false;
+    }
+    for (const file of storedManifest) {
+      const target = join(root, ...file.path.split("/"));
+      const stat = await lstat(target);
+      let content: Buffer;
+      if (file.kind === "symlink") {
+        if (!stat.isSymbolicLink()) return false;
+        content = Buffer.from(await readlink(target), "utf8");
+      } else {
+        if (!stat.isFile() || stat.isSymbolicLink()) return false;
+        const actual = await realpath(target);
+        const fromRoot = relative(root, actual);
+        if (fromRoot.startsWith("..") || isAbsolute(fromRoot)) return false;
+        content = await readFile(actual);
+      }
+      if (
+        content.length !== file.size ||
+        createHash("sha256").update(content).digest("hex") !== file.sha256
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 

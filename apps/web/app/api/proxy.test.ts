@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { WEB_PROXY_RESPONSE_BYTES } from "@mendpoint/shared";
 import { GET, PATCH, POST } from "./[...path]/route.js";
 import {
   DELETE as logout,
@@ -16,6 +17,8 @@ const originalEnv = {
   MENDPOINT_WEB_ALLOWED_ORIGINS: process.env.MENDPOINT_WEB_ALLOWED_ORIGINS,
   TRUST_PROXY_SECRET: process.env.TRUST_PROXY_SECRET,
 };
+
+const MAX_PROXY_REQUEST_BYTES = 256 * 1024;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -41,6 +44,46 @@ function mutationRequest(
     body: JSON.stringify({ title: "safe" }),
     ...init,
   });
+}
+
+function byteStream(
+  chunks: readonly Uint8Array[],
+  onCancel?: () => void,
+  closeAfterChunks = true,
+): ReadableStream<Uint8Array> {
+  let index = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const chunk = chunks[index++];
+      if (chunk) controller.enqueue(chunk);
+      else if (closeAfterChunks) controller.close();
+    },
+    cancel() {
+      onCancel?.();
+    },
+  });
+}
+
+function streamedMutationRequest(
+  chunks: readonly Uint8Array[],
+  input: Readonly<{ cookie?: string; contentLength?: number; onCancel?: () => void }> = {},
+  closeAfterChunks = true,
+): NextRequest {
+  const headers = new Headers({
+    Origin: "https://console.example",
+    "Sec-Fetch-Site": "same-origin",
+    "Content-Type": "application/octet-stream",
+  });
+  if (input.cookie) headers.set("Cookie", input.cookie);
+  if (input.contentLength !== undefined) {
+    headers.set("Content-Length", String(input.contentLength));
+  }
+  return new NextRequest("https://console.example/api/platform/plans/run-1", {
+    method: "PATCH",
+    headers,
+    body: byteStream(chunks, input.onCancel, closeAfterChunks),
+    duplex: "half",
+  } as ConstructorParameters<typeof NextRequest>[1] & { duplex: "half" });
 }
 
 async function sessionCookie(): Promise<string> {
@@ -387,6 +430,22 @@ describe("web credential proxy", () => {
     );
     expect(events.status).toBe(200);
 
+    const adaptiveCandidates = await GET(
+      new NextRequest("https://console.example/api/transformer/adaptive-candidates", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["transformer", "adaptive-candidates"] }) },
+    );
+    expect(adaptiveCandidates.status).toBe(200);
+
+    const adaptiveCandidate = await GET(
+      new NextRequest("https://console.example/api/transformer/adaptive-candidates/tfadapt-a", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["transformer", "adaptive-candidates", "tfadapt-a"] }) },
+    );
+    expect(adaptiveCandidate.status).toBe(200);
+
     const pause = await POST(
       new NextRequest("https://console.example/api/transformer/control-plane/campaigns/campaign-a/transitions", {
         method: "POST",
@@ -403,7 +462,42 @@ describe("web credential proxy", () => {
       { params: Promise.resolve({ path: ["transformer", "control-plane", "campaigns", "campaign-a", "transitions"] }) },
     );
     expect(pause.status).toBe(200);
-    expect(upstream).toHaveBeenCalledTimes(4);
+    expect(upstream).toHaveBeenCalledTimes(6);
+  });
+
+  it("allows same origin adaptive candidate review mutations without synthesizing a human", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn(async (url: URL, init?: RequestInit) => {
+      expect(url.pathname).toBe("/transformer/adaptive-candidates/tfadapt-a/review");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("x-mendpoint-actor")).toBeNull();
+      expect(headers.get("idempotency-key")).toBe("adaptive-review-a");
+      return Response.json({ status: "approved" });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await POST(
+      new NextRequest("https://console.example/api/transformer/adaptive-candidates/tfadapt-a/review", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "adaptive-review-a",
+        },
+        body: JSON.stringify({ decision: "approve" }),
+      }),
+      {
+        params: Promise.resolve({
+          path: ["transformer", "adaptive-candidates", "tfadapt-a", "review"],
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(upstream).toHaveBeenCalledOnce();
   });
 
   it("does not turn preview access into a delegated human identity", async () => {
@@ -521,6 +615,139 @@ describe("web credential proxy", () => {
     expect(response.headers.get("x-ratelimit-remaining")).toBe("99");
     expect(response.headers.get("server-timing")).toBe("total;dur=4");
     expect(response.headers.get("x-request-id")).toBe("upstream-request");
+  });
+
+  it("rejects a declared oversized request before forwarding and cancels its body", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    let cancelled = false;
+
+    const response = await PATCH(
+      streamedMutationRequest([new Uint8Array([1])], {
+        cookie,
+        contentLength: MAX_PROXY_REQUEST_BYTES + 1,
+        onCancel: () => { cancelled = true; },
+      }),
+      { params: Promise.resolve({ path: ["platform", "plans", "run-1"] }) },
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({ error: "payload_too_large" });
+    expect(cancelled).toBe(true);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("stops an undeclared streamed request at the maximum plus one byte", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    let cancelled = false;
+
+    const response = await PATCH(
+      streamedMutationRequest([
+        new Uint8Array(MAX_PROXY_REQUEST_BYTES),
+        new Uint8Array([1]),
+      ], {
+        cookie,
+        onCancel: () => { cancelled = true; },
+      }, false),
+      { params: Promise.resolve({ path: ["platform", "plans", "run-1"] }) },
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({ error: "payload_too_large" });
+    expect(cancelled).toBe(true);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("forwards an undeclared request exactly at the byte boundary", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn(async (_url: URL, init?: RequestInit) => {
+      const forwarded = new Uint8Array(await new Response(init?.body).arrayBuffer());
+      expect(forwarded.byteLength).toBe(MAX_PROXY_REQUEST_BYTES);
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await PATCH(
+      streamedMutationRequest([new Uint8Array(MAX_PROXY_REQUEST_BYTES)], { cookie }),
+      { params: Promise.resolve({ path: ["platform", "plans", "run-1"] }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(upstream).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a declared oversized upstream response before consuming it", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    let cancelled = false;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      byteStream([new Uint8Array([1])], () => { cancelled = true; }),
+      { headers: { "Content-Length": String(WEB_PROXY_RESPONSE_BYTES + 1) } },
+    )));
+
+    const response = await GET(
+      new NextRequest("https://console.example/api/status", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["status"] }) },
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({ error: "upstream_response_too_large" });
+    expect(cancelled).toBe(true);
+  });
+
+  it("stops an undeclared streamed upstream response at the maximum plus one byte", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    let cancelled = false;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(byteStream([
+      new Uint8Array(WEB_PROXY_RESPONSE_BYTES),
+      new Uint8Array([1]),
+    ], () => { cancelled = true; }, false))));
+
+    const response = await GET(
+      new NextRequest("https://console.example/api/status", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["status"] }) },
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({ error: "upstream_response_too_large" });
+    expect(cancelled).toBe(true);
+  });
+
+  it("returns an undeclared upstream response exactly at the byte boundary", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      byteStream([new Uint8Array(WEB_PROXY_RESPONSE_BYTES)]),
+      { headers: { "Content-Type": "application/octet-stream" } },
+    )));
+
+    const response = await GET(
+      new NextRequest("https://console.example/api/status", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["status"] }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.arrayBuffer()).byteLength).toBe(WEB_PROXY_RESPONSE_BYTES);
+    expect(response.headers.get("content-type")).toBe("application/octet-stream");
   });
 
   it("keeps the abort active while consuming the upstream body", async () => {

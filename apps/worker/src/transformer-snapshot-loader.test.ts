@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import {
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -13,6 +15,7 @@ import {
   createDb,
   insertConnectedRepository,
   insertRepositorySnapshot,
+  insertRepositorySnapshotFiles,
   upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
@@ -101,6 +104,8 @@ function addSnapshot(
     storagePath: string;
     createdAt?: string;
     expiresAt?: string;
+    modes?: Readonly<Record<string, "100644" | "100755">>;
+    persistFiles?: boolean;
   }>,
 ): void {
   insertRepositorySnapshot(db, {
@@ -114,6 +119,49 @@ function addSnapshot(
     createdAt: input.createdAt ?? CREATED_AT,
     expiresAt: input.expiresAt ?? EXPIRES_AT,
   });
+  if (input.persistFiles === false) return;
+  const files: Array<{
+    path: string;
+    mode: string;
+    kind: "file" | "symlink";
+    size: number;
+    sha256: string;
+  }> = [];
+  for (const path of [".node-version", ".nvmrc", "Dockerfile", "package.json"]) {
+    const target = join(input.storagePath, path);
+    let stat;
+    try {
+      stat = lstatSync(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      files.push({
+        path,
+        mode: "120000",
+        kind: "symlink",
+        size: stat.size,
+        sha256: "0".repeat(64),
+      });
+      continue;
+    }
+    const content = readFileSync(target);
+    files.push({
+      path,
+      mode: input.modes?.[path] ?? "100644",
+      kind: "file",
+      size: content.byteLength,
+      sha256: createHash("sha256").update(content).digest("hex"),
+    });
+  }
+  if (files.length) {
+    insertRepositorySnapshotFiles(db, {
+      tenantId: input.tenantId ?? "tenant-a",
+      snapshotId: input.id,
+      files,
+    });
+  }
 }
 
 function lease(input: Readonly<{
@@ -133,6 +181,7 @@ function lease(input: Readonly<{
     leaseGeneration: 1,
     leaseTokenDigest: `sha256:${"c".repeat(64)}`,
     leaseExpiresAt: EXPIRES_AT,
+    startedAt: CREATED_AT,
     snapshot: {
       snapshotId: input.snapshotId ?? "snapshot-a",
       repositoryId: input.repositoryId ?? "repository-a",
@@ -148,6 +197,16 @@ function lease(input: Readonly<{
     constraintVersion: 1,
     constraintDigest: `sha256:${"d".repeat(64)}`,
     gateEvidenceRefs: ["gate:test"],
+    adaptiveBudgetRemaining: {
+      attempts: 1,
+      plannerCalls: 8,
+      modelCalls: 8,
+      inputTokens: 1_000_000,
+      outputTokens: 250_000,
+      totalTokens: 1_250_000,
+      actualCostUsd: 50,
+      wallTimeMs: 120_000,
+    },
   };
 }
 
@@ -203,6 +262,7 @@ describe("Transformer local repository snapshot loader", () => {
       revision: REVISION,
       digest: recipeFilesDigest({ "package.json": selected }),
       files: { "package.json": selected },
+      fileModes: { "package.json": "100644" },
     });
   });
 
@@ -254,6 +314,7 @@ describe("Transformer local repository snapshot loader", () => {
       revision: REVISION,
       digest: recipeFilesDigest({ "package.json": PACKAGE_JSON }),
       files: { "package.json": PACKAGE_JSON },
+      fileModes: { "package.json": "100644" },
     });
   });
 
@@ -310,6 +371,20 @@ describe("Transformer local repository snapshot loader", () => {
     )).toThrow("transformer_snapshot_manifest_invalid");
   });
 
+  it("fails closed for a legacy snapshot without authoritative file manifest rows", () => {
+    const { db, root } = setup();
+    addRepository(db, "tenant-a", "repository-a");
+    const snapshotRoot = join(root, "legacy");
+    writeFiles(snapshotRoot, { "package.json": PACKAGE_JSON });
+    addSnapshot(db, { id: "snapshot-a", storagePath: snapshotRoot, persistFiles: false });
+
+    expect(() => loadTransformerRecipeSnapshot(
+      db,
+      lease({ digest: recipeFilesDigest({ "package.json": PACKAGE_JSON }) }),
+      OBSERVED_AT,
+    )).toThrow("transformer_snapshot_file_manifest_missing");
+  });
+
   it("requires package.json from the recipe input set", () => {
     const { db, root } = setup();
     addRepository(db, "tenant-a", "repository-a");
@@ -359,7 +434,58 @@ describe("Transformer local repository snapshot loader", () => {
       db,
       lease({ digest: recipeFilesDigest({ "package.json": PACKAGE_JSON }) }),
       OBSERVED_AT,
-    )).toThrow("transformer_snapshot_symlink_forbidden:package.json");
+    )).toThrow("transformer_snapshot_file_kind_unsupported:package.json");
+  });
+
+  it("rejects file size and hash drift against the persisted manifest", () => {
+    const { db, root } = setup();
+    addRepository(db, "tenant-a", "repository-a");
+    const sizeRoot = join(root, "size-drift");
+    writeFiles(sizeRoot, { "package.json": PACKAGE_JSON });
+    addSnapshot(db, { id: "snapshot-size", storagePath: sizeRoot });
+    writeFileSync(join(sizeRoot, "package.json"), `${PACKAGE_JSON} `);
+    expect(() => loadTransformerRecipeSnapshot(
+      db,
+      lease({
+        snapshotId: "snapshot-size",
+        digest: recipeFilesDigest({ "package.json": PACKAGE_JSON }),
+      }),
+      OBSERVED_AT,
+    )).toThrow("transformer_snapshot_file_size_mismatch:package.json");
+
+    const hashRoot = join(root, "hash-drift");
+    writeFiles(hashRoot, { "package.json": PACKAGE_JSON });
+    addSnapshot(db, { id: "snapshot-hash", manifest: "e".repeat(64), storagePath: hashRoot });
+    const replacement = PACKAGE_JSON.replace("private\": true", "private\":false");
+    expect(Buffer.byteLength(replacement)).toBe(Buffer.byteLength(PACKAGE_JSON));
+    writeFileSync(join(hashRoot, "package.json"), replacement);
+    expect(() => loadTransformerRecipeSnapshot(
+      db,
+      lease({
+        snapshotId: "snapshot-hash",
+        manifest: "e".repeat(64),
+        digest: recipeFilesDigest({ "package.json": replacement }),
+      }),
+      OBSERVED_AT,
+    )).toThrow("transformer_snapshot_file_hash_mismatch:package.json");
+  });
+
+  it("returns the persisted executable mode for exact Transformer source files", () => {
+    const { db, root } = setup();
+    addRepository(db, "tenant-a", "repository-a");
+    const snapshotRoot = join(root, "executable");
+    writeFiles(snapshotRoot, { "package.json": PACKAGE_JSON });
+    addSnapshot(db, {
+      id: "snapshot-a",
+      storagePath: snapshotRoot,
+      modes: { "package.json": "100755" },
+    });
+
+    expect(loadTransformerRecipeSnapshot(
+      db,
+      lease({ digest: recipeFilesDigest({ "package.json": PACKAGE_JSON }) }),
+      OBSERVED_AT,
+    )).toMatchObject({ fileModes: { "package.json": "100755" } });
   });
 
   it("rejects an oversized allowed file before reading it", () => {
@@ -406,6 +532,12 @@ describe("Transformer local repository snapshot loader", () => {
       revision: REVISION,
       digest: recipeFilesDigest(expected),
       files: expected,
+      fileModes: {
+        ".node-version": "100644",
+        ".nvmrc": "100644",
+        Dockerfile: "100644",
+        "package.json": "100644",
+      },
     });
     expect(readFileSync(join(snapshotRoot, "package.json"), "utf8")).toBe(rawPackage);
     expect(readFileSync(join(snapshotRoot, "not-allowed.txt"), "utf8")).toBe(rawSecret);

@@ -1,7 +1,23 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Octokit } from "@octokit/rest";
 import { newId } from "@mendpoint/shared";
+import {
+  deliverExactDraftWithOctokit,
+  validateExactDraftDeliveryInput,
+  type ExactDraftDeliveryInput,
+  type ExactDraftDeliveryResult,
+} from "./exact-draft.js";
 
 export type PullRequestResult = {
   number: number;
@@ -34,6 +50,7 @@ async function mapWithConcurrency<T, R>(
 }
 
 export interface GitHubDelivery {
+  deliverExactDraft(input: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult>;
   createBranch(owner: string, repo: string, branch: string, fromBranch?: string): Promise<void>;
   commitFiles(
     owner: string,
@@ -117,6 +134,131 @@ export class MockGitHubDelivery implements GitHubDelivery {
     return this.containedPath(owner, repo);
   }
 
+  async deliverExactDraft(rawInput: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult> {
+    const input = validateExactDraftDeliveryInput(rawInput);
+    const repoDir = this.repoDir(input.owner, input.repo);
+    const stateDir = this.containedPathFrom(repoDir, "exact-drafts");
+    mkdirSync(stateDir, { recursive: true });
+    const baseKey = createHash("sha256").update(input.baseBranch, "utf8").digest("hex");
+    const basePath = this.containedPathFrom(stateDir, `base-${baseKey}.json`);
+    if (existsSync(basePath)) {
+      const current = JSON.parse(readFileSync(basePath, "utf8")) as { sha?: unknown };
+      if (current.sha !== input.expectedBaseSha) {
+        throw new Error("github_exact_draft_base_revision_drift");
+      }
+    } else {
+      writeFileSync(basePath, JSON.stringify({ branch: input.baseBranch, sha: input.expectedBaseSha }), "utf8");
+    }
+
+    const branchDir = this.branchDir(input.owner, input.repo, input.branch);
+    const metadataPath = this.containedPathFrom(branchDir, ".exact-draft.json");
+    const treeDigest = createHash("sha256")
+      .update(JSON.stringify([...input.files].sort((a, b) => a.path.localeCompare(b.path))))
+      .digest("hex");
+    const commitSha = createHash("sha1").update(JSON.stringify({
+      baseSha: input.expectedBaseSha,
+      treeDigest,
+      message: input.commitMessage,
+      date: input.commitDate,
+    })).digest("hex");
+    const expectedMetadata = {
+      baseBranch: input.baseBranch,
+      baseSha: input.expectedBaseSha,
+      branch: input.branch,
+      treeDigest,
+      commitSha,
+      commitMessage: input.commitMessage,
+      commitDate: input.commitDate,
+      fileModes: [...input.files]
+        .map((file) => ({ path: file.path, mode: file.mode }))
+        .sort((a, b) => a.path.localeCompare(b.path)),
+    };
+    if (existsSync(branchDir)) {
+      if (!existsSync(metadataPath)) throw new Error("github_exact_draft_branch_diverged");
+      const existing = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+      if (JSON.stringify(existing) !== JSON.stringify(expectedMetadata)) {
+        throw new Error("github_exact_draft_branch_diverged");
+      }
+      for (const file of input.files) {
+        const path = this.containedPathFrom(branchDir, file.path);
+        if (
+          !existsSync(path) ||
+          readFileSync(path, "utf8") !== file.content ||
+          (process.platform !== "win32" &&
+            ((statSync(path).mode & 0o111) !== 0) !== (file.mode === "100755"))
+        ) {
+          throw new Error("github_exact_draft_branch_diverged");
+        }
+      }
+    } else {
+      mkdirSync(branchDir, { recursive: true });
+      for (const file of input.files) {
+        const path = this.containedPathFrom(branchDir, file.path);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, file.content, "utf8");
+        if (process.platform !== "win32") {
+          chmodSync(path, file.mode === "100755" ? 0o755 : 0o644);
+        }
+      }
+      writeFileSync(join(branchDir, ".branch"), input.branch, "utf8");
+      writeFileSync(metadataPath, JSON.stringify(expectedMetadata), "utf8");
+    }
+
+    const pullsDir = this.containedPathFrom(repoDir, "pulls");
+    mkdirSync(pullsDir, { recursive: true });
+    const existingPulls = readdirSync(pullsDir)
+      .filter((name) => /^[1-9][0-9]*\.json$/.test(name))
+      .map((name) => JSON.parse(readFileSync(join(pullsDir, name), "utf8")) as Record<string, unknown>)
+      .filter((pull) => pull.branch === input.branch);
+    if (existingPulls.length > 0) {
+      if (existingPulls.length !== 1) throw new Error("github_exact_draft_pull_request_diverged");
+      const pull = existingPulls[0]!;
+      if (
+        pull.state !== "open" || pull.draft !== true || pull.base !== input.baseBranch ||
+        pull.baseSha !== input.expectedBaseSha || pull.commitSha !== commitSha ||
+        pull.title !== input.title || pull.body !== input.body
+      ) {
+        throw new Error("github_exact_draft_pull_request_diverged");
+      }
+      return Object.freeze({
+        number: Number(pull.number),
+        url: String(pull.url),
+        branch: input.branch,
+        title: input.title,
+        draft: true,
+        baseBranch: input.baseBranch,
+        baseSha: input.expectedBaseSha,
+        commitSha,
+      });
+    }
+    const counterFile = join(pullsDir, "_counter");
+    const number = existsSync(counterFile) ? Number(readFileSync(counterFile, "utf8")) + 1 : 1;
+    writeFileSync(counterFile, String(number), "utf8");
+    const url = `https://github.com/${input.owner}/${input.repo}/pull/${number}`;
+    writeFileSync(join(pullsDir, `${number}.json`), JSON.stringify({
+      number,
+      url,
+      state: "open",
+      draft: true,
+      title: input.title,
+      body: input.body,
+      branch: input.branch,
+      base: input.baseBranch,
+      baseSha: input.expectedBaseSha,
+      commitSha,
+    }, null, 2), "utf8");
+    return Object.freeze({
+      number,
+      url,
+      branch: input.branch,
+      title: input.title,
+      draft: true,
+      baseBranch: input.baseBranch,
+      baseSha: input.expectedBaseSha,
+      commitSha,
+    });
+  }
+
   async createBranch(owner: string, repo: string, branch: string): Promise<void> {
     const dir = this.branchDir(owner, repo, branch);
     mkdirSync(dir, { recursive: true });
@@ -197,6 +339,28 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
       userAgent: "mendpoint-api",
       request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
     });
+  }
+
+  async assertRepositoryIdentity(
+    owner: string,
+    repo: string,
+    expectedRepositoryId: number,
+  ): Promise<void> {
+    if (!Number.isSafeInteger(expectedRepositoryId) || expectedRepositoryId < 1) {
+      throw new Error("github_repository_id_invalid");
+    }
+    const { data } = await this.octokit.repos.get({ owner, repo });
+    if (
+      data.id !== expectedRepositoryId ||
+      data.owner.login.toLowerCase() !== owner.toLowerCase() ||
+      data.name.toLowerCase() !== repo.toLowerCase()
+    ) {
+      throw new Error("github_repository_identity_mismatch");
+    }
+  }
+
+  deliverExactDraft(input: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult> {
+    return deliverExactDraftWithOctokit(this.octokit, input);
   }
 
   private async refSha(owner: string, repo: string, ref: string): Promise<string> {
@@ -429,6 +593,13 @@ export function createGitHubDelivery(mode = process.env.GITHUB_MODE ?? "mock"): 
   }
   return new MockGitHubDelivery();
 }
+
+export {
+  ExactDraftRemoteSideEffectUncertainError,
+  type ExactDraftFileMode,
+  type ExactDraftDeliveryInput,
+  type ExactDraftDeliveryResult,
+} from "./exact-draft.js";
 
 export {
   parseWebhookHeaders,

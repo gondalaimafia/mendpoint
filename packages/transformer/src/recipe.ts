@@ -69,6 +69,10 @@ export type MigrationRecipeContract = Readonly<{
 
 export type RecipeFiles = Readonly<Record<string, string>>;
 
+export type GitBlobMode = "100644" | "100755";
+
+export type RecipeFileModes = Readonly<Record<string, GitBlobMode>>;
+
 export type RecipeOperation = Readonly<{
   kind: "replace_file";
   path: string;
@@ -304,6 +308,33 @@ function normalizeFiles(files: RecipeFiles): Record<string, string> {
     normalized[path] = content;
   }
   return normalized;
+}
+
+export function normalizeRecipeFileModes(
+  files: RecipeFiles,
+  fileModes: RecipeFileModes,
+): RecipeFileModes {
+  const filePaths = Object.keys(normalizeFiles(files)).sort();
+  if (!fileModes || typeof fileModes !== "object" || Array.isArray(fileModes)) {
+    throw new Error("recipe_file_modes_paths_mismatch");
+  }
+  const modePaths = Object.keys(fileModes).sort();
+  if (
+    filePaths.length !== modePaths.length ||
+    filePaths.some((path, index) => path !== modePaths[index])
+  ) {
+    throw new Error("recipe_file_modes_paths_mismatch");
+  }
+  const normalized: Record<string, GitBlobMode> = {};
+  for (const path of modePaths) {
+    validatePath(path);
+    const mode = fileModes[path];
+    if (mode !== "100644" && mode !== "100755") {
+      throw new Error(`recipe_file_mode_unsupported:${path}`);
+    }
+    normalized[path] = mode;
+  }
+  return deepFreeze(normalized);
 }
 
 export function recipeFilesDigest(files: RecipeFiles): string {

@@ -17,17 +17,50 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve } from "node:path";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
-import { recipeFilesDigest, type RecipeFiles } from "./recipe.js";
+import {
+  applyRecipe,
+  normalizeRecipeFileModes,
+  recipeFilesDigest,
+  resolveRecipe,
+  type RecipeFileModes,
+  type RecipeFiles,
+} from "./recipe.js";
 import {
   RecipeWorkspaceExecutionError,
   executeRecipeInWorkspace,
+  runRecipeVerificationGate,
   type ExactSourceSnapshot,
   type RecipeCommandRunner,
   type RecipeExecutionFence,
   type RecipeExecutionRollback,
   type RecipeWorkspaceExecutionResult,
 } from "./recipe-workspace-execution.js";
-import type { TransformerAttemptLease } from "./pilot-execution.js";
+import {
+  DEFAULT_ADAPTIVE_REPAIR_BOUNDS,
+  runAdaptiveRepairLoop,
+  type AdaptiveBoundExhaustion,
+  type AdaptiveGate,
+  type AdaptiveExternalModelReservation,
+  type AdaptiveExternalModelSettlement,
+  type AdaptiveRepairBounds,
+  type AdaptiveRepairOutcome,
+  type AdaptiveRepairPlanner,
+  type AdaptiveRepairReviewEvidence,
+  type AdaptiveRepairUsage,
+  type AdaptiveUnfixableMarker,
+  type AdaptiveVerifierResult,
+} from "./adaptive-loop.js";
+import type {
+  AdaptiveCandidateReviewEdit,
+  AdaptiveCandidateReviewEvidence,
+  AdaptiveReviewRisk,
+  AdaptiveSemanticCategory,
+} from "./adaptive-candidate.js";
+import type {
+  TransformerAdaptiveCandidateHandoffInput,
+  TransformerAdaptiveAttemptAccounting,
+  TransformerAttemptLease,
+} from "./pilot-execution.js";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const REVISION = /^[a-f0-9]{40}$/;
@@ -52,7 +85,7 @@ export type TransformerAttemptScope = Readonly<{
   campaignId: string;
 }>;
 
-export type TransformerAttemptPhase = "claim" | "execute" | "failure" | "complete";
+export type TransformerAttemptPhase = "claim" | "execute" | "usage" | "failure" | "complete";
 
 export type TransformerAttemptClaimInput = Readonly<{
   tenantId: string;
@@ -86,6 +119,7 @@ export type TransformerAttemptCompletionInput = Readonly<{
   candidateDigest: string;
   verificationPassed: true;
   actualCostUsd: number;
+  accounting: TransformerAdaptiveAttemptAccounting;
   observedAt: string;
   evidenceRefs: readonly string[];
   idempotencyKey: string;
@@ -99,6 +133,47 @@ export type TransformerAttemptFailureInput = Readonly<{
   leaseGeneration: number;
   leaseToken: string;
   code: TransformerAttemptRecoveryCode;
+  errorCode?: string;
+  accounting: TransformerAdaptiveAttemptAccounting;
+  observedAt: string;
+  evidenceRefs: readonly string[];
+  idempotencyKey: string;
+  gateConfig?: string;
+}>;
+
+export type TransformerAttemptUsageInput = Readonly<{
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  leaseGeneration: number;
+  leaseToken: string;
+  accounting: TransformerAdaptiveAttemptAccounting;
+  observedAt: string;
+  evidenceRefs: readonly string[];
+  idempotencyKey: string;
+  gateConfig?: string;
+}>;
+
+export type TransformerAttemptModelReservationInput = Readonly<{
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  leaseGeneration: number;
+  leaseToken: string;
+  reservation: AdaptiveExternalModelReservation;
+  observedAt: string;
+  evidenceRefs: readonly string[];
+  idempotencyKey: string;
+  gateConfig?: string;
+}>;
+
+export type TransformerAttemptModelSettlementInput = Readonly<{
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  leaseGeneration: number;
+  leaseToken: string;
+  settlement: AdaptiveExternalModelSettlement;
   observedAt: string;
   evidenceRefs: readonly string[];
   idempotencyKey: string;
@@ -108,6 +183,10 @@ export type TransformerAttemptFailureInput = Readonly<{
 export type TransformerAttemptCoordinatorPort = Readonly<{
   claimNextAttempt(input: TransformerAttemptClaimInput): MaybePromise<TransformerExecutableAttemptLease | null>;
   assertCurrentAttemptFence(input: TransformerCurrentAttemptFence): MaybePromise<boolean | void>;
+  recordAdaptiveAttemptUsage(input: TransformerAttemptUsageInput): MaybePromise<unknown>;
+  reserveAdaptiveModelCall?(input: TransformerAttemptModelReservationInput): MaybePromise<TransformerAdaptiveAttemptAccounting>;
+  settleAdaptiveModelCall?(input: TransformerAttemptModelSettlementInput): MaybePromise<TransformerAdaptiveAttemptAccounting>;
+  recordAdaptiveCandidateHandoff(input: TransformerAdaptiveCandidateHandoffInput): MaybePromise<unknown>;
   completeAttempt(input: TransformerAttemptCompletionInput): MaybePromise<unknown>;
   recordAttemptFailure(input: TransformerAttemptFailureInput): MaybePromise<unknown>;
 }>;
@@ -198,6 +277,84 @@ export type TransformerAttemptFailureArtifact = Readonly<{
   record: TransformerAttemptFailureEvidenceRecord;
 }>;
 
+/**
+ * Opt-in adaptive repair. When configured and the deterministic recipe fails
+ * verification, the runner engages the bounded inspect/edit/verify/retry loop.
+ * When absent the deterministic path is entirely unchanged.
+ */
+export type TransformerAdaptiveRepairConfig = Readonly<{
+  planner: AdaptiveRepairPlanner;
+  /** Objective gate. Defaults to the recipe's verification commands. */
+  gate?: AdaptiveGate;
+  /** Pre-migration regression gate for the pre-existing-failure trap. */
+  baselineGate?: AdaptiveGate;
+  /** Exact mutation allowlist. Defaults to the recipe's allowed paths. */
+  allowedMutationPaths?: readonly string[];
+  bounds?: Partial<AdaptiveRepairBounds>;
+  now?: () => number;
+  signal?: AbortSignal;
+}>;
+
+/**
+ * Emitted when the adaptive loop converges on a fix whose digest DIVERGES from
+ * the lease-bound deterministic recipe output. The consumer is expected to seal
+ * the converged files and record a review-pending adaptive candidate; the runner
+ * never auto-completes a divergent candidate (that path stays candidate_drift).
+ */
+export type TransformerAdaptiveCandidateHandoff = Readonly<{
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  attemptId: string;
+  attemptNumber: number;
+  leaseGeneration: number;
+  leaseToken: string;
+  repositoryId: string;
+  snapshotId: string;
+  expectedBaseRevision: string;
+  /** Deterministic recipe candidate digest the adaptive fix diverged from. */
+  divergedFromDigest: string;
+  /** Converged adaptive output digest. */
+  candidateDigest: string;
+  /** The failing objective verification that triggered adaptation. */
+  failingCommandId: string | null;
+  /** Complete source snapshot to final candidate delta delivered for review. */
+  changedPaths: readonly string[];
+  /** Paths changed specifically by the adaptive loop relative to the recipe output. */
+  adaptiveChangedPaths: readonly string[];
+  files: RecipeFiles;
+  fileModes: RecipeFileModes;
+  review: AdaptiveCandidateReviewEvidence;
+}>;
+
+export type TransformerAdaptiveSummary = Readonly<{
+  engaged: boolean;
+  outcome: AdaptiveRepairOutcome["status"];
+  iterationsUsed: number;
+  totalIterationsUsed: number;
+  unitsFixedAdaptively: number;
+  unitsMarkedUnfixable: number;
+  preExistingFailures: number;
+  boundExhaustion: readonly AdaptiveBoundExhaustion[];
+  markers: readonly AdaptiveUnfixableMarker[];
+  /** The converged fix (digest + changed paths), null unless converged. */
+  convergedCandidate: Readonly<{
+    outputDigest: string;
+    /** Complete source snapshot to final candidate delta. */
+    changedPaths: readonly string[];
+    /** Adaptive-only delta relative to the deterministic recipe output. */
+    adaptiveChangedPaths: readonly string[];
+    /** The failing objective verification that triggered adaptation. */
+    failingCommandId: string | null;
+    review: AdaptiveCandidateReviewEvidence;
+  }> | null;
+  /** Converged files carried onward for promotion (null unless converged). */
+  convergedFiles: RecipeFiles | null;
+  /** Best failing attempt files carried for human escalation (null if none). */
+  bestAttemptFiles: RecipeFiles | null;
+  usage: AdaptiveRepairUsage;
+}>;
+
 export type TransformerAttemptRunResult = Readonly<{
   status: "idle" | "completed" | "failed" | "stale";
   summary: string;
@@ -207,6 +364,8 @@ export type TransformerAttemptRunResult = Readonly<{
   errorCode?: string;
   rollback?: RecipeExecutionRollback;
   failureEvidence?: TransformerAttemptFailureArtifact;
+  /** Present only when adaptive repair was configured and engaged. */
+  adaptive?: TransformerAdaptiveSummary;
 }>;
 
 export type RunTransformerAttemptInput = Readonly<{
@@ -224,6 +383,13 @@ export type RunTransformerAttemptInput = Readonly<{
   commandTimeoutMs?: number;
   tempRoot?: string;
   actualCostUsd?: number | ((execution: RecipeWorkspaceExecutionResult) => number);
+  adaptiveRepair?: TransformerAdaptiveRepairConfig;
+  /**
+   * Invoked when adaptive repair converges on a candidate that diverges from the
+   * deterministic recipe output. The consumer must seal and record it for human
+   * review. A persistence failure fails the fenced attempt as a worker crash.
+   */
+  onAdaptiveCandidateConverged?(input: TransformerAdaptiveCandidateHandoff): MaybePromise<void>;
 }>;
 
 class AttemptRunnerError extends Error {
@@ -619,6 +785,24 @@ function validateLease(lease: TransformerExecutableAttemptLease, scope: Transfor
       !Number.isSafeInteger(lease.leaseGeneration) || lease.leaseGeneration < 1) {
     throw new AttemptRunnerError("execution_failed", "transformer_attempt_lease_invalid");
   }
+  const startedAt = Date.parse(lease.startedAt);
+  const expiresAt = Date.parse(lease.leaseExpiresAt);
+  if (!Number.isFinite(startedAt) || !Number.isFinite(expiresAt) || startedAt >= expiresAt) {
+    throw new AttemptRunnerError("execution_failed", "transformer_attempt_lease_accounting_invalid");
+  }
+  const remaining = lease.adaptiveBudgetRemaining;
+  if (!remaining || typeof remaining !== "object" ||
+      !Number.isSafeInteger(remaining.attempts) || remaining.attempts < 0 ||
+      !Number.isSafeInteger(remaining.plannerCalls) || remaining.plannerCalls < 1 ||
+      !Number.isSafeInteger(remaining.modelCalls) || remaining.modelCalls < 1 ||
+      !Number.isSafeInteger(remaining.inputTokens) || remaining.inputTokens < 1 ||
+      !Number.isSafeInteger(remaining.outputTokens) || remaining.outputTokens < 1 ||
+      !Number.isSafeInteger(remaining.totalTokens) || remaining.totalTokens < 1 ||
+      typeof remaining.actualCostUsd !== "number" || !Number.isFinite(remaining.actualCostUsd) ||
+      remaining.actualCostUsd <= 0 ||
+      !Number.isSafeInteger(remaining.wallTimeMs) || remaining.wallTimeMs < 1) {
+    throw new AttemptRunnerError("execution_failed", "transformer_attempt_budget_remaining_invalid");
+  }
   if (lease.leaseTokenDigest !== sha256(leaseToken)) {
     throw new StaleAttemptFenceError();
   }
@@ -637,6 +821,7 @@ function validateLease(lease: TransformerExecutableAttemptLease, scope: Transfor
 
 function bindSource(source: ExactSourceSnapshot, lease: TransformerExecutableAttemptLease): void {
   try {
+    normalizeRecipeFileModes(source.files, source.fileModes);
     if (source.repositoryId !== lease.snapshot.repositoryId ||
         source.revision !== lease.snapshot.revision ||
         source.digest !== lease.snapshot.digest ||
@@ -830,6 +1015,386 @@ function actualCost(input: RunTransformerAttemptInput, execution: RecipeWorkspac
   return value;
 }
 
+function accountingExecutionCost(
+  input: RunTransformerAttemptInput,
+  execution: RecipeWorkspaceExecutionResult | undefined,
+): number {
+  if (execution) return actualCost(input, execution);
+  if (typeof input.actualCostUsd === "function") {
+    throw new AttemptRunnerError("worker_crash", "transformer_attempt_cost_accounting_incomplete");
+  }
+  const value = input.actualCostUsd ?? 0;
+  if (!Number.isFinite(value) || value < 0) {
+    throw new AttemptRunnerError("worker_crash", "transformer_attempt_cost_accounting_invalid");
+  }
+  return value;
+}
+
+function attemptAccounting(
+  lease: TransformerExecutableAttemptLease,
+  observedAt: string,
+  executionCostUsd: number,
+  usage?: AdaptiveRepairUsage,
+): TransformerAdaptiveAttemptAccounting {
+  assertObservedAt(observedAt);
+  const wallTimeMs = Date.parse(observedAt) - Date.parse(lease.startedAt);
+  if (!Number.isSafeInteger(wallTimeMs) || wallTimeMs < 0) {
+    throw new AttemptRunnerError("worker_crash", "transformer_adaptive_wall_time_accounting_invalid");
+  }
+  if (usage && !usage.complete) {
+    throw new AttemptRunnerError("worker_crash", "transformer_adaptive_usage_accounting_incomplete");
+  }
+  const plannerCalls = usage?.plannerCalls ?? 0;
+  const modelCalls = usage?.modelCalls ?? 0;
+  const inputTokens = usage?.promptTokens ?? 0;
+  const outputTokens = usage?.completionTokens ?? 0;
+  const totalTokens = usage?.totalTokens ?? 0;
+  const adaptiveCostUsd = usage?.costUsd ?? 0;
+  if (
+    !Number.isSafeInteger(plannerCalls) || plannerCalls < 0 ||
+    !Number.isSafeInteger(modelCalls) || modelCalls < 0 || modelCalls > plannerCalls ||
+    !Number.isSafeInteger(inputTokens) || inputTokens < 0 ||
+    !Number.isSafeInteger(outputTokens) || outputTokens < 0 ||
+    !Number.isSafeInteger(totalTokens) || totalTokens !== inputTokens + outputTokens ||
+    !Number.isFinite(adaptiveCostUsd) || adaptiveCostUsd < 0
+  ) {
+    throw new AttemptRunnerError("worker_crash", "transformer_adaptive_usage_accounting_invalid");
+  }
+  const actualCostUsd = executionCostUsd + adaptiveCostUsd;
+  if (!Number.isFinite(actualCostUsd) || actualCostUsd < 0) {
+    throw new AttemptRunnerError("worker_crash", "transformer_adaptive_cost_accounting_invalid");
+  }
+  return Object.freeze({
+    plannerCalls,
+    modelCalls,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    actualCostUsd,
+    wallTimeMs,
+  });
+}
+
+function changedPathsBetweenSourceAndFinal(
+  sourceFiles: RecipeFiles,
+  finalFiles: RecipeFiles,
+): readonly string[] {
+  const paths = [...new Set([...Object.keys(sourceFiles), ...Object.keys(finalFiles)])].sort();
+  const changed = paths.filter((path) => sourceFiles[path] !== finalFiles[path]);
+  if (changed.some((path) => finalFiles[path] === undefined)) {
+    throw new AttemptRunnerError(
+      "candidate_drift",
+      "transformer_adaptive_candidate_delete_unsupported",
+    );
+  }
+  return Object.freeze(changed);
+}
+
+function deterministicSemanticCategory(path: string): AdaptiveSemanticCategory {
+  const normalized = path.toLowerCase();
+  if (
+    normalized === "package.json" ||
+    normalized.endsWith("lock.json") ||
+    normalized.endsWith("lock.yaml") ||
+    normalized.endsWith("lock.yml")
+  ) return "dependencies";
+  if (/(?:^|\/)(?:test|tests|__tests__)(?:\/|$)|\.(?:test|spec)\./.test(normalized)) return "tests";
+  if (/(?:^|\/)(?:readme|changelog|docs?)(?:\.|\/|$)/.test(normalized)) return "documentation";
+  if (
+    normalized === "dockerfile" ||
+    normalized.startsWith(".") ||
+    /(?:^|\/)(?:config|configuration)(?:\/|$)/.test(normalized)
+  ) return "configuration";
+  return "behavior";
+}
+
+function candidateReviewEvidence(
+  review: AdaptiveRepairReviewEvidence,
+  sourceFiles: RecipeFiles,
+  convergedFiles: RecipeFiles,
+  sourceModes: RecipeFileModes,
+): AdaptiveCandidateReviewEvidence {
+  const sourceFileModes = adaptiveOutputFileModes(sourceFiles, sourceModes);
+  const afterModes = adaptiveOutputFileModes(convergedFiles, sourceModes);
+  const adaptiveByPath = new Map(review.edits.map((edit) => [edit.path, edit]));
+  const changedPaths = changedPathsBetweenSourceAndFinal(sourceFiles, convergedFiles);
+  const edits = changedPaths.map((path): AdaptiveCandidateReviewEdit => {
+    const adaptive = adaptiveByPath.get(path);
+    const beforeContent = sourceFiles[path] ?? null;
+    const afterContent = convergedFiles[path];
+    if (afterContent === undefined) throw new Error(`adaptive_review_after_missing:${path}`);
+    return Object.freeze({
+      path,
+      changeType: beforeContent === null ? "add" as const : "modify" as const,
+      beforeContent,
+      beforeDigest: sha256(beforeContent ?? ""),
+      beforeMode: beforeContent === null ? null : sourceFileModes[path]!,
+      afterDigest: sha256(afterContent),
+      afterMode: afterModes[path]!,
+      semanticCategory: adaptive?.semanticCategory ?? deterministicSemanticCategory(path),
+      rationale: adaptive?.rationale ?? "Apply the approved deterministic migration recipe change.",
+      risk: adaptive?.risk ?? "medium",
+      confidence: adaptive?.confidence ?? 100,
+    });
+  });
+  const riskRank: Readonly<Record<AdaptiveReviewRisk, number>> = { low: 0, medium: 1, high: 2 };
+  const overallRisk = edits.reduce<AdaptiveReviewRisk>(
+    (highest, edit) => riskRank[edit.risk] > riskRank[highest] ? edit.risk : highest,
+    review.overallRisk,
+  );
+  return Object.freeze({
+    schemaVersion: 1,
+    edits: Object.freeze(edits),
+    verification: review.verification,
+    overallRisk,
+    confidence: edits.reduce((minimum, edit) => Math.min(minimum, edit.confidence), review.confidence),
+  });
+}
+
+function summarizeAdaptiveOutcome(
+  outcome: AdaptiveRepairOutcome,
+  sourceFiles: RecipeFiles,
+  sourceModes: RecipeFileModes,
+): TransformerAdaptiveSummary {
+  const base = {
+    engaged: outcome.status !== "not_engaged",
+    outcome: outcome.status,
+    iterationsUsed: outcome.iterationsUsed,
+    totalIterationsUsed: outcome.iterationsUsed,
+    usage: outcome.usage,
+  } as const;
+  if (outcome.status === "converged") {
+    return Object.freeze({
+      ...base,
+      unitsFixedAdaptively: 1,
+      unitsMarkedUnfixable: 0,
+      preExistingFailures: 0,
+      boundExhaustion: Object.freeze([]),
+      markers: Object.freeze([]),
+      convergedCandidate: Object.freeze({
+        outputDigest: outcome.outputDigest,
+        changedPaths: changedPathsBetweenSourceAndFinal(sourceFiles, outcome.files),
+        adaptiveChangedPaths: outcome.changedPaths,
+        failingCommandId: outcome.triggeredByFailingCommandId,
+        review: candidateReviewEvidence(
+          outcome.review,
+          sourceFiles,
+          outcome.files,
+          sourceModes,
+        ),
+      }),
+      convergedFiles: outcome.files,
+      bestAttemptFiles: null,
+    });
+  }
+  if (outcome.status === "pre_existing_failure") {
+    return Object.freeze({
+      ...base,
+      unitsFixedAdaptively: 0,
+      unitsMarkedUnfixable: 0,
+      preExistingFailures: 1,
+      boundExhaustion: Object.freeze([]),
+      markers: Object.freeze([outcome.marker]),
+      convergedCandidate: null,
+      convergedFiles: null,
+      bestAttemptFiles: null,
+    });
+  }
+  if (outcome.status === "unfixable") {
+    return Object.freeze({
+      ...base,
+      unitsFixedAdaptively: 0,
+      unitsMarkedUnfixable: 1,
+      preExistingFailures: 0,
+      boundExhaustion: Object.freeze(outcome.boundExhausted ? [outcome.boundExhausted] : []),
+      markers: Object.freeze([outcome.marker]),
+      convergedCandidate: null,
+      convergedFiles: null,
+      bestAttemptFiles: outcome.bestAttemptFiles,
+    });
+  }
+  return Object.freeze({
+    ...base,
+    unitsFixedAdaptively: 0,
+    unitsMarkedUnfixable: 0,
+    preExistingFailures: 0,
+    boundExhaustion: Object.freeze([]),
+    markers: Object.freeze([]),
+    convergedCandidate: null,
+    convergedFiles: null,
+    bestAttemptFiles: null,
+  });
+}
+
+function adaptiveOutputFileModes(
+  files: RecipeFiles,
+  sourceModes: RecipeFileModes,
+): RecipeFileModes {
+  const modes = Object.fromEntries(
+    Object.keys(files)
+      .sort((left, right) => left.localeCompare(right))
+      .map((path) => [path, sourceModes[path] ?? "100644"] as const),
+  );
+  return normalizeRecipeFileModes(files, modes);
+}
+
+async function runAttemptAdaptiveRepair(
+  input: RunTransformerAttemptInput,
+  lease: TransformerExecutableAttemptLease,
+  leaseToken: string,
+  source: ExactSourceSnapshot,
+  reservedExecutionCostUsd: number,
+  adaptiveStartedAt: string,
+  onUsageCheckpoint: (usage: AdaptiveRepairUsage) => Promise<void>,
+  onExternalAccountingAccepted: (accounting: TransformerAdaptiveAttemptAccounting) => void,
+): Promise<TransformerAdaptiveSummary | undefined> {
+  const config = input.adaptiveRepair;
+  if (!config) return undefined;
+  // Regeneration review feedback is retained on the fenced lease but must not
+  // be sent to a planner until an explicit tenant-scoped external-processing
+  // policy is available. Fail before planner invocation instead of running an
+  // unguided retry that would falsely imply the human feedback was applied.
+  if (lease.regenerationReview) {
+    throw new AttemptRunnerError(
+      "verification_failed",
+      "transformer_regeneration_review_external_processing_not_approved",
+    );
+  }
+  let recipeFiles: RecipeFiles;
+  let allowedMutationPaths: readonly string[];
+  try {
+    const application = applyRecipe(lease.recipe, source.files);
+    recipeFiles = application.files;
+    allowedMutationPaths = config.allowedMutationPaths ?? resolveRecipe(lease.recipe).allowedPaths;
+    if (application.outputDigest !== lease.candidateDigest) {
+      throw new AttemptRunnerError(
+        "candidate_drift",
+        "transformer_attempt_candidate_digest_mismatch",
+      );
+    }
+    const reconstructedPaths = [...new Set(application.operations.map((operation) => operation.path))].sort();
+    const leasedPaths = [...new Set(lease.changedPaths)].sort();
+    if (
+      reconstructedPaths.length !== leasedPaths.length ||
+      reconstructedPaths.some((path, index) => path !== leasedPaths[index])
+    ) {
+      throw new AttemptRunnerError(
+        "candidate_drift",
+        "transformer_attempt_changed_paths_mismatch",
+      );
+    }
+  } catch (error) {
+    // The deterministic recipe output could not be reconstructed; skip adaptive
+    // repair rather than guess.
+    if (error instanceof AttemptRunnerError) throw error;
+    return undefined;
+  }
+  const gate: AdaptiveGate =
+    config.gate ??
+    (async (files: RecipeFiles): Promise<AdaptiveVerifierResult> =>
+      await runRecipeVerificationGate({
+        files,
+        fileModes: adaptiveOutputFileModes(files, source.fileModes),
+        recipe: lease.recipe,
+        commandRunner: input.commandRunner,
+        commandTimeoutMs: input.commandTimeoutMs,
+        tempRoot: input.tempRoot,
+      }));
+  assertObservedAt(adaptiveStartedAt);
+  const elapsedWallTimeMs = Date.parse(adaptiveStartedAt) - Date.parse(lease.startedAt);
+  const adaptiveWallTimeMs = lease.adaptiveBudgetRemaining.wallTimeMs - elapsedWallTimeMs;
+  if (!Number.isSafeInteger(adaptiveWallTimeMs) || adaptiveWallTimeMs < 1) {
+    throw new AttemptRunnerError("worker_crash", "transformer_adaptive_wall_time_budget_exhausted");
+  }
+  const adaptiveCostUsd = lease.adaptiveBudgetRemaining.actualCostUsd - reservedExecutionCostUsd;
+  if (!Number.isFinite(adaptiveCostUsd) || adaptiveCostUsd < 0) {
+    throw new AttemptRunnerError("worker_crash", "transformer_adaptive_cost_budget_exhausted");
+  }
+  const maxPlannerCalls = Math.min(
+    config.bounds?.maxPlannerCalls ?? DEFAULT_ADAPTIVE_REPAIR_BOUNDS.maxPlannerCalls,
+    lease.adaptiveBudgetRemaining.plannerCalls,
+  );
+  const maxModelCalls = Math.min(
+    config.bounds?.maxModelCalls ?? DEFAULT_ADAPTIVE_REPAIR_BOUNDS.maxModelCalls,
+    lease.adaptiveBudgetRemaining.modelCalls,
+  );
+  const outcome = await runAdaptiveRepairLoop({
+    unitId: lease.unitId,
+    goal: `Adaptively repair unit ${lease.unitId} for recipe ${lease.recipe.id}@${lease.recipe.version}`,
+    recipe: lease.recipe,
+    sourceFiles: source.files,
+    recipeFiles,
+    allowedMutationPaths,
+    gate,
+    ...(config.baselineGate ? { baselineGate: config.baselineGate } : {}),
+    planner: config.planner,
+    bounds: {
+      ...config.bounds,
+      maxPlannerCalls,
+      maxModelCalls,
+      wallClockBudgetMs: Math.min(
+        config.bounds?.wallClockBudgetMs ?? DEFAULT_ADAPTIVE_REPAIR_BOUNDS.wallClockBudgetMs,
+        adaptiveWallTimeMs,
+      ),
+    },
+    resourceBudget: {
+      plannerCalls: maxPlannerCalls,
+      modelCalls: maxModelCalls,
+      inputTokens: lease.adaptiveBudgetRemaining.inputTokens,
+      outputTokens: lease.adaptiveBudgetRemaining.outputTokens,
+      totalTokens: lease.adaptiveBudgetRemaining.totalTokens,
+      actualCostUsd: adaptiveCostUsd,
+    },
+    ...(config.now ? { now: config.now } : {}),
+    ...(config.signal ? { signal: config.signal } : {}),
+    onUsageCheckpoint,
+    ...(input.coordinator.reserveAdaptiveModelCall && input.coordinator.settleAdaptiveModelCall
+      ? {
+          externalModelAccounting: {
+            executionScopeId: sha256([
+              transformerAttemptId(lease),
+              String(lease.leaseGeneration),
+              lease.leaseTokenDigest,
+            ].join("\0")),
+            reserve: async (reservation: AdaptiveExternalModelReservation) => {
+              const observedAt = input.observedAt("usage");
+              const accounting = await input.coordinator.reserveAdaptiveModelCall!({
+                tenantId: lease.tenantId,
+                campaignId: lease.campaignId,
+                unitId: lease.unitId,
+                leaseGeneration: lease.leaseGeneration,
+                leaseToken,
+                reservation,
+                observedAt,
+                evidenceRefs: lease.gateEvidenceRefs,
+                idempotencyKey: input.idempotencyKey("usage", `${transformerAttemptId(lease)}:model-reserve:${reservation.reservationId}`),
+                gateConfig: input.gateConfig,
+              });
+              onExternalAccountingAccepted(accounting);
+            },
+            settle: async (settlement: AdaptiveExternalModelSettlement) => {
+              const observedAt = input.observedAt("usage");
+              const accounting = await input.coordinator.settleAdaptiveModelCall!({
+                tenantId: lease.tenantId,
+                campaignId: lease.campaignId,
+                unitId: lease.unitId,
+                leaseGeneration: lease.leaseGeneration,
+                leaseToken,
+                settlement,
+                observedAt,
+                evidenceRefs: lease.gateEvidenceRefs,
+                idempotencyKey: input.idempotencyKey("usage", `${transformerAttemptId(lease)}:model-settle:${settlement.reservationId}`),
+                gateConfig: input.gateConfig,
+              });
+              onExternalAccountingAccepted(accounting);
+            },
+          },
+        }
+      : {}),
+  });
+  return summarizeAdaptiveOutcome(outcome, source.files, source.fileModes);
+}
+
 export async function runTransformerAttempt(input: RunTransformerAttemptInput): Promise<TransformerAttemptRunResult> {
   validateScope(input.scope);
   const authorization = authorizeTransformerWorkerAction(
@@ -883,13 +1448,16 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
   let execution: RecipeWorkspaceExecutionResult | undefined;
   let artifact: TransformerCandidateArtifact | undefined;
   let evidenceDirectory: string | undefined;
+  let source: ExactSourceSnapshot | undefined;
+  let lastAcceptedAccounting: TransformerAdaptiveAttemptAccounting | undefined;
+  let usageCheckpointFailed = false;
+  let durableExternalAccounting = false;
   try {
     validateLease(lease, input.scope, leaseToken);
     attemptId = transformerAttemptId(lease);
     fence = fenceFor(lease, attemptId, leaseToken);
     await assertCurrentFence(input.coordinator, lease, fence, input.observedAt("execute"));
     evidenceDirectory = scopedEvidenceDirectory(input.evidenceRoot, input.scope, lease, attemptId);
-    let source: ExactSourceSnapshot;
     try {
       source = await input.loadExactSource(lease);
     } catch (error) {
@@ -913,6 +1481,12 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
     artifact = persistTransformerCandidate(input.candidateRoot, input.scope, lease, attemptId, execution);
     const completionObservedAt = input.observedAt("complete");
     await assertCurrentFence(input.coordinator, lease, fence, completionObservedAt);
+    const executionCostUsd = accountingExecutionCost(input, execution);
+    const completionAccounting = attemptAccounting(
+      lease,
+      completionObservedAt,
+      executionCostUsd,
+    );
     const completionKey = input.idempotencyKey("complete", attemptId);
     assertIdentifier(completionKey, "transformer_attempt_complete_idempotency_key_invalid");
     await input.coordinator.completeAttempt({
@@ -926,7 +1500,8 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
       candidateRevision: lease.candidateRevision,
       candidateDigest: lease.candidateDigest,
       verificationPassed: true,
-      actualCostUsd: actualCost(input, execution),
+      actualCostUsd: executionCostUsd,
+      accounting: completionAccounting,
       observedAt: completionObservedAt,
       evidenceRefs: artifact.evidenceRefs,
       idempotencyKey: completionKey,
@@ -950,15 +1525,177 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
         ...(error instanceof RecipeWorkspaceExecutionError ? { rollback: error.rollback } : {}),
       });
     }
-    const classified = classify(error);
+    let classified = classify(error);
     const completedEvidenceIds = Object.freeze([
       ...(execution ? [execution.evidence.record.evidenceId] : []),
       ...(artifact ? artifact.evidenceRefs : []),
     ].filter((value, index, values) => values.indexOf(value) === index));
+    // Recipe-first: adaptive repair engages only after the deterministic recipe
+    // has failed verification, only when configured, and never disturbs the
+    // deterministic success path above.
+    let adaptiveSummary: TransformerAdaptiveSummary | undefined;
+    if (classified.recoveryCode === "verification_failed" && source && input.adaptiveRepair) {
+      try {
+        const adaptiveStartedAt = input.observedAt("usage");
+        const executionCostUsd = accountingExecutionCost(input, execution);
+        adaptiveSummary = await runAttemptAdaptiveRepair(
+          input,
+          lease,
+          leaseToken,
+          source,
+          executionCostUsd,
+          adaptiveStartedAt,
+          async (usage) => {
+            const checkpointObservedAt = input.observedAt("usage");
+            try {
+              const accounting = attemptAccounting(
+                lease,
+                checkpointObservedAt,
+                accountingExecutionCost(input, execution),
+                usage,
+              );
+              const checkpointKey = input.idempotencyKey(
+                "usage",
+                `${attemptId}:${accounting.plannerCalls}:${accounting.wallTimeMs}`,
+              );
+              assertIdentifier(
+                checkpointKey,
+                "transformer_attempt_usage_idempotency_key_invalid",
+              );
+              await input.coordinator.recordAdaptiveAttemptUsage({
+                tenantId: lease.tenantId,
+                campaignId: lease.campaignId,
+                unitId: lease.unitId,
+                leaseGeneration: lease.leaseGeneration,
+                leaseToken,
+                accounting,
+                observedAt: checkpointObservedAt,
+                evidenceRefs: lease.gateEvidenceRefs,
+                idempotencyKey: checkpointKey,
+                gateConfig: input.gateConfig,
+              });
+              lastAcceptedAccounting = accounting;
+            } catch (checkpointError) {
+              usageCheckpointFailed = true;
+              throw checkpointError instanceof AttemptRunnerError
+                ? checkpointError
+                : new AttemptRunnerError(
+                    "worker_crash",
+                    "transformer_adaptive_budget_checkpoint_failed",
+                    checkpointError,
+                  );
+            }
+          },
+          (accounting) => {
+            lastAcceptedAccounting = Object.freeze({
+              ...accounting,
+              actualCostUsd: accounting.actualCostUsd + executionCostUsd,
+            });
+            durableExternalAccounting = true;
+          },
+        );
+      } catch (adaptiveError) {
+        if (adaptiveError instanceof AttemptRunnerError) {
+          classified = classify(adaptiveError);
+        }
+        adaptiveSummary = undefined;
+      }
+      // A converged adaptive fix that diverges from the deterministic recipe
+      // output is never auto-promoted: hand it off to be sealed and recorded as a
+      // review-pending adaptive candidate. The deterministic completion path is
+      // untouched, so the drift guarantee above still holds for every other path.
+      const converged = adaptiveSummary?.convergedCandidate;
+      if (
+        adaptiveSummary?.outcome === "converged" &&
+        converged &&
+        adaptiveSummary.convergedFiles &&
+        converged.outputDigest !== lease.candidateDigest &&
+        input.onAdaptiveCandidateConverged
+      ) {
+        let handoffFenceCurrent = true;
+        try {
+          await assertCurrentFence(
+            input.coordinator,
+            lease,
+            fence,
+            input.observedAt("execute"),
+          );
+        } catch (fenceError) {
+          if (isStale(fenceError)) {
+            return Object.freeze({
+              status: "stale",
+              summary: "Transformer attempt fence became stale before adaptive candidate handoff",
+              nextActions: Object.freeze(["Discard the stale result and claim a current attempt"]),
+              artifacts: Object.freeze(artifact ? [artifact] : []),
+              ...(classified.rollback ? { rollback: classified.rollback } : {}),
+              adaptive: adaptiveSummary,
+            });
+          }
+          classified = classify(fenceError);
+          handoffFenceCurrent = false;
+        }
+        if (handoffFenceCurrent) {
+          try {
+            const adaptiveFileModes = adaptiveOutputFileModes(
+              adaptiveSummary.convergedFiles,
+              source.fileModes,
+            );
+            await input.onAdaptiveCandidateConverged({
+              tenantId: lease.tenantId,
+              campaignId: lease.campaignId,
+              unitId: lease.unitId,
+              attemptId,
+              attemptNumber: lease.attemptNumber,
+              leaseGeneration: lease.leaseGeneration,
+              leaseToken,
+              repositoryId: lease.snapshot.repositoryId,
+              snapshotId: lease.snapshot.snapshotId,
+              expectedBaseRevision: lease.snapshot.revision,
+              divergedFromDigest: lease.candidateDigest,
+              candidateDigest: converged.outputDigest,
+              failingCommandId: converged.failingCommandId,
+              changedPaths: converged.changedPaths,
+              adaptiveChangedPaths: converged.adaptiveChangedPaths,
+              files: adaptiveSummary.convergedFiles,
+              fileModes: adaptiveFileModes,
+              review: converged.review,
+            });
+          } catch (handoffError) {
+            classified = classify(new AttemptRunnerError(
+              "worker_crash",
+              "transformer_adaptive_candidate_persistence_failed",
+              handoffError,
+            ));
+          }
+        }
+      }
+    }
     let failureEvidence: TransformerAttemptFailureArtifact | undefined;
     try {
       const failureObservedAt = input.observedAt("failure");
       await assertCurrentFence(input.coordinator, lease, fence, failureObservedAt);
+      let failureAccounting: TransformerAdaptiveAttemptAccounting;
+      if (usageCheckpointFailed || durableExternalAccounting) {
+        const fallback = lastAcceptedAccounting ?? attemptAccounting(
+          lease,
+          failureObservedAt,
+          accountingExecutionCost(input, execution),
+        );
+        failureAccounting = Object.freeze({
+          ...fallback,
+          wallTimeMs: Math.max(
+            fallback.wallTimeMs,
+            Date.parse(failureObservedAt) - Date.parse(lease.startedAt),
+          ),
+        });
+      } else {
+        failureAccounting = attemptAccounting(
+          lease,
+          failureObservedAt,
+          accountingExecutionCost(input, execution),
+          adaptiveSummary?.usage,
+        );
+      }
       if (!evidenceDirectory) {
         evidenceDirectory = scopedEvidenceDirectory(input.evidenceRoot, input.scope, lease, attemptId);
       }
@@ -982,6 +1719,8 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
         leaseGeneration: lease.leaseGeneration,
         leaseToken,
         code: classified.recoveryCode,
+        errorCode: classified.errorCode,
+        accounting: failureAccounting,
         observedAt: failureObservedAt,
         evidenceRefs: Object.freeze([
           failureEvidence.evidenceId,
@@ -1000,6 +1739,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
           artifacts: Object.freeze(artifact ? [artifact] : []),
           ...(classified.rollback ? { rollback: classified.rollback } : {}),
           ...(failureEvidence ? { failureEvidence } : {}),
+          ...(adaptiveSummary ? { adaptive: adaptiveSummary } : {}),
         });
       }
       return Object.freeze({
@@ -1011,6 +1751,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
         errorCode: errorCode(recordError),
         ...(classified.rollback ? { rollback: classified.rollback } : {}),
         ...(failureEvidence ? { failureEvidence } : {}),
+        ...(adaptiveSummary ? { adaptive: adaptiveSummary } : {}),
       });
     }
     return Object.freeze({
@@ -1022,6 +1763,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
       errorCode: classified.errorCode,
       ...(classified.rollback ? { rollback: classified.rollback } : {}),
       ...(failureEvidence ? { failureEvidence } : {}),
+      ...(adaptiveSummary ? { adaptive: adaptiveSummary } : {}),
     });
   }
 }

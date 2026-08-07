@@ -6,6 +6,11 @@ import { createSign, createPrivateKey } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Octokit } from "@octokit/rest";
 import type { FileEdit, GitHubDelivery, PullRequestResult } from "./index.js";
+import {
+  deliverExactDraftWithOctokit,
+  type ExactDraftDeliveryInput,
+  type ExactDraftDeliveryResult,
+} from "./exact-draft.js";
 
 const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 const GITHUB_FILE_CONCURRENCY = 8;
@@ -228,6 +233,10 @@ export class GitHubAppDelivery implements GitHubDelivery {
       this.tokenCache.clear();
       return work(await this.octokit());
     }
+  }
+
+  deliverExactDraft(input: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult> {
+    return this.withAuthRetry((octokit) => deliverExactDraftWithOctokit(octokit, input));
   }
 
   private async branchMatchesFiles(

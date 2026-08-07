@@ -12,6 +12,9 @@ export type {
   AgentPlannerUsage,
   AgentSourceContextBudget,
   AgentModelSourcePolicy,
+  AgentExternalModelReservation,
+  AgentExternalModelSettlement,
+  AgentExternalModelAccounting,
   AgentExecutionMetrics,
   AgentRunResult,
   AgentVerifierState,
@@ -46,6 +49,7 @@ export {
 } from "./knowledge.js";
 export { proposeWardenFix, hasAutomaticWardenRepair } from "./fixes.js";
 export { runWarden, runWelder, runApiBugAgent } from "./agent.js";
+export { readWardenApprovalArtifact } from "./warden-approval-artifact.js";
 export { discoverVerifyCommand } from "./discover-verify.js";
 export {
   resolveAgentModelEndpoint,
@@ -60,6 +64,8 @@ export {
 } from "./model-provenance.js";
 export {
   runWardenAttempt,
+  WARDEN_CANDIDATE_REVIEW_LIMITS,
+  wardenNpmFallbackEnvironment,
   type WardenAttemptAgentSummary,
   type WardenAttemptInput,
   type WardenAttemptLimits,

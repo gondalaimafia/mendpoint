@@ -63,6 +63,17 @@ export {
   type LiveEvalTrial,
   type RunWardenLiveEvalOptions,
 } from "./agent-eval-live.js";
+export {
+  DEFAULT_TRANSFORMER_LIVE_EVAL_MAX_USD,
+  DEFAULT_TRANSFORMER_LIVE_MIN_CONSISTENCY,
+  DEFAULT_TRANSFORMER_LIVE_MIN_PASS_RATE,
+  TRANSFORMER_LIVE_EVAL_CASE_ID,
+  runTransformerLiveEval,
+  type RunTransformerLiveEvalOptions,
+  type TransformerLiveEvalReport,
+  type TransformerLiveEvalTrial,
+  type TransformerLiveGrade,
+} from "./transformer-live-eval.js";
 export { WARDEN_CAPABILITY_CASES } from "./corpus/warden-v1.js";
 export { TRANSFORMER_CAPABILITY_CASES } from "./corpus/transformer-v1.js";
 export type * from "./corpus/types.js";

@@ -46,6 +46,8 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     MENDPOINT_REPOS_DIR: env.MENDPOINT_REPOS_DIR,
     WEB_URL: env.WEB_URL,
     GITHUB_MODE: env.GITHUB_MODE,
+    MENDPOINT_DEPLOYMENT_CLASS: env.MENDPOINT_DEPLOYMENT_CLASS,
+    MENDPOINT_TENANT_ID: env.MENDPOINT_TENANT_ID,
     GITHUB_WEBHOOK_SECRET: env.GITHUB_WEBHOOK_SECRET ? "[set]" : undefined,
     GITHUB_TOKEN: env.GITHUB_TOKEN ? "[set]" : undefined,
     GITHUB_APP_ID: env.GITHUB_APP_ID,
@@ -117,15 +119,30 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
         env.GITHUB_APP_PRIVATE_KEY_PATH?.trim(),
       );
       const appCredentials = loadAppCredentials(env);
+      const deploymentClass = env.MENDPOINT_DEPLOYMENT_CLASS?.trim();
+      if (deploymentClass !== "customer" && deploymentClass !== "disposable_canary") {
+        errors.push(
+          "MENDPOINT_DEPLOYMENT_CLASS must be customer or disposable_canary for real GitHub delivery",
+        );
+      }
       if (!env.GITHUB_WEBHOOK_SECRET) {
         errors.push(
           "GITHUB_WEBHOOK_SECRET is required when GITHUB_MODE=real in production",
         );
       }
-      if (!env.GITHUB_TOKEN?.trim() && !appCredentials) {
-        errors.push(
-          "GITHUB_MODE=real requires GITHUB_TOKEN or complete GitHub App credentials for production delivery",
-        );
+      if (!appCredentials) {
+        if (deploymentClass === "disposable_canary") {
+          if (!env.GITHUB_TOKEN?.trim()) {
+            errors.push("GITHUB_TOKEN is required for disposable canary PAT delivery");
+          }
+          if (!env.MENDPOINT_TENANT_ID?.trim()) {
+            errors.push("MENDPOINT_TENANT_ID is required for disposable canary PAT delivery");
+          }
+        } else {
+          errors.push(
+            "Complete GitHub App credentials are required for customer production delivery",
+          );
+        }
       }
       if (hasAnyAppCredential && !appCredentials) {
         errors.push(

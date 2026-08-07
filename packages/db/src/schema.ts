@@ -224,8 +224,19 @@ export type RepositorySnapshotRow = {
   submodules_policy: "reject" | "pinned";
   lfs_policy: "reject" | "pointer_only" | "fetch";
   sparse_paths_json: string;
+  file_manifest_version: 0 | 1;
   created_at: string;
   expires_at: string;
+};
+
+export type RepositorySnapshotFileRow = {
+  snapshot_id: string;
+  tenant_id: string;
+  path: string;
+  mode: "100644" | "100755" | "120000";
+  kind: "file" | "symlink";
+  size: number;
+  sha256: string;
 };
 
 export type RepositorySnapshotPolicyRow = {
@@ -399,4 +410,44 @@ export type Policy = {
   consumer_id: string;
   key: string;
   value_json: string;
+};
+
+export type RoutingLedgerRow = {
+  id: string;
+  tenant_id: string;
+  job_id: string;
+  run_id: string | null;
+  task_kind: string;
+  envelope_id: string;
+  policy_snapshot_id: string;
+  task_snapshot_id: string;
+  action: string;
+  selected_executor_id: string | null;
+  provider_id: string | null;
+  eliminated_json: string;
+  fallback_json: string;
+  breaker_json: string;
+  handoff_required: number;
+  handoff_reason: string | null;
+  outcome: string | null;
+  error_code: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  cost_usd: number | null;
+  started_at: string | null;
+  completed_at: string | null;
+  decision_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RoutingExecutorHealthRow = {
+  tenant_id: string;
+  scope: "executor" | "provider";
+  executor_id: string;
+  provider_id: string;
+  consecutive_failures: number;
+  opened_at: string | null;
+  updated_at: string;
 };

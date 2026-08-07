@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   lstatSync,
   readFileSync,
@@ -8,6 +9,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { TextDecoder } from "node:util";
 import {
   listRepositorySnapshots,
+  listRepositorySnapshotFiles,
   type AppDb,
   type RepositorySnapshotRow,
 } from "@mendpoint/db";
@@ -16,6 +18,7 @@ import {
   resolveRecipe,
   type ExactSourceSnapshot,
   type RecipeFiles,
+  type RecipeFileModes,
   type TransformerAttemptLease,
 } from "@mendpoint/transformer";
 
@@ -93,7 +96,10 @@ function snapshotRoot(path: string): string {
   return root;
 }
 
-function allowedFile(root: string, path: string): { bytes: number; text: string } | undefined {
+function allowedFile(
+  root: string,
+  path: string,
+): { bytes: number; sha256: string; text: string } | undefined {
   const segments = path.split("/");
   let cursor = root;
   for (let index = 0; index < segments.length; index++) {
@@ -139,6 +145,7 @@ function allowedFile(root: string, path: string): { bytes: number; text: string 
     const decoded = UTF8.decode(bytes);
     return {
       bytes: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
       text: decoded.replace(/^\uFEFF/u, "").replace(/\r\n?/g, "\n"),
     };
   } catch {
@@ -164,26 +171,53 @@ export function loadTransformerRecipeSnapshot(
     lease.snapshot.manifestSha256,
     observedAtMs,
   );
+  const manifestRows = listRepositorySnapshotFiles(db, lease.tenantId, row.id);
+  if (!manifestRows.length) throw new Error("transformer_snapshot_file_manifest_missing");
+  const manifestByPath = new Map(manifestRows.map((entry) => [entry.path, entry] as const));
   const root = snapshotRoot(row.storage_path);
   const files: Record<string, string> = {};
+  const fileModes: Record<string, "100644" | "100755"> = {};
   let totalBytes = 0;
   for (const path of recipe.allowedPaths) {
+    const manifest = manifestByPath.get(path);
+    if (!manifest) {
+      if (path === REQUIRED_RECIPE_PATH) {
+        throw new Error(`transformer_snapshot_required_input_missing:${path}`);
+      }
+      continue;
+    }
+    if (manifest.kind !== "file") {
+      throw new Error(`transformer_snapshot_file_kind_unsupported:${path}`);
+    }
+    if (manifest.mode !== "100644" && manifest.mode !== "100755") {
+      throw new Error(`transformer_snapshot_file_mode_unsupported:${path}`);
+    }
     const loaded = allowedFile(root, path);
     if (!loaded) {
       if (path === REQUIRED_RECIPE_PATH) {
         throw new Error(`transformer_snapshot_required_input_missing:${path}`);
       }
-      continue;
+      throw new Error(`transformer_snapshot_file_missing:${path}`);
+    }
+    if (loaded.bytes !== manifest.size) {
+      throw new Error(`transformer_snapshot_file_size_mismatch:${path}`);
+    }
+    if (loaded.sha256 !== manifest.sha256) {
+      throw new Error(`transformer_snapshot_file_hash_mismatch:${path}`);
     }
     totalBytes += loaded.bytes;
     if (totalBytes > MAX_TOTAL_BYTES) {
       throw new Error("transformer_snapshot_total_too_large");
     }
     files[path] = loaded.text;
+    fileModes[path] = manifest.mode;
   }
 
   const normalizedFiles: RecipeFiles = Object.freeze(
     Object.fromEntries(Object.entries(files).sort(([left], [right]) => left.localeCompare(right))),
+  );
+  const normalizedFileModes: RecipeFileModes = Object.freeze(
+    Object.fromEntries(Object.entries(fileModes).sort(([left], [right]) => left.localeCompare(right))),
   );
   if (recipeFilesDigest(normalizedFiles) !== lease.snapshot.digest) {
     throw new Error("transformer_snapshot_source_drift");
@@ -193,5 +227,6 @@ export function loadTransformerRecipeSnapshot(
     revision: lease.snapshot.revision,
     digest: lease.snapshot.digest,
     files: normalizedFiles,
+    fileModes: normalizedFileModes,
   });
 }

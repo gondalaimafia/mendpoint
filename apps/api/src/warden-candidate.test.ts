@@ -5,12 +5,18 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   discardWardenCandidate,
+  parseWardenCandidateReviewResult,
   readWardenApprovalArtifact,
   readWardenCandidate,
   sealWardenCandidateApproval,
 } from "./warden-candidate.js";
 
 const roots: string[] = [];
+const REVIEW_BINDING = {
+  baseBranch: "main",
+  reviewerPrincipalId: "human:reviewer@example.com",
+  rationale: "The target and regression checks pass.",
+} as const;
 
 afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
@@ -57,8 +63,34 @@ function fixture() {
     sourceDigest,
     candidateDigest,
     changedPaths: ["client.js"],
+    review: {
+      schemaVersion: 1,
+      summary: "The exact candidate passed every configured check.",
+      verification: {
+        summary: "The target and regression checks passed.",
+        commands: [{
+          command: "npm test",
+          ok: true,
+          exitCode: 0,
+          outputSha256: `sha256:${"f".repeat(64)}`,
+        }],
+      },
+      edits: [{
+        path: "client.js",
+        rationale: "This source change addresses the bounded API repair.",
+        category: "api_repair",
+        risk: "medium",
+        confidence: 1,
+        assessmentSource: "planner",
+        verification: {
+          summary: "The target and regression checks passed.",
+          commandOutputSha256: [`sha256:${"f".repeat(64)}`],
+        },
+      }],
+    },
   }));
   const resultJson = JSON.stringify({
+    source: { repositoryId: "repo-1", snapshotId: "snapshot-1", revision: "a".repeat(40) },
     changedPaths: ["client.js"],
     artifacts: {
       candidateWorkspace: candidate,
@@ -73,6 +105,13 @@ function fixture() {
 }
 
 describe("Warden candidate API", () => {
+  it("fails closed when a review row contains malformed result JSON", () => {
+    expect(() => parseWardenCandidateReviewResult("{ malformed"))
+      .toThrow("warden_candidate_result_invalid");
+    expect(() => parseWardenCandidateReviewResult(JSON.stringify([])))
+      .toThrow("warden_candidate_result_invalid");
+  });
+
   it("returns bounded before and after content from the tenant candidate root", async () => {
     const value = fixture();
     const result = await readWardenCandidate({
@@ -88,6 +127,11 @@ describe("Warden candidate API", () => {
       after: expect.stringContaining("/new"),
       beforeSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       afterSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(result.reviewEvidence).toMatchObject({
+      schemaVersion: 1,
+      edits: [{ path: "client.js", risk: "medium", confidence: 1, assessmentSource: "planner" }],
+      verification: { commands: [{ command: "npm test", ok: true, exitCode: 0 }] },
     });
   });
 
@@ -139,6 +183,21 @@ describe("Warden candidate API", () => {
       env: { MENDPOINT_DATA_DIR: join(value.root, "data") },
       nowMs: Date.parse("2035-08-12T00:00:00.000Z"),
     })).rejects.toThrow("warden_candidate_expired");
+  });
+
+  it("keeps an approved candidate readable across the delivery retention boundary", async () => {
+    const value = fixture();
+    await expect(readWardenCandidate({
+      tenantId: "tenant-a",
+      repoPath: value.source,
+      status: "candidate_approved",
+      resultJson: value.resultJson,
+      env: { MENDPOINT_DATA_DIR: join(value.root, "data") },
+      nowMs: Date.parse("2035-08-12T00:00:00.000Z"),
+    })).resolves.toMatchObject({
+      changedPaths: ["client.js"],
+      reviewEvidence: { edits: [{ path: "client.js" }] },
+    });
   });
 
   it("rejects source drift and a nested candidate junction", async () => {
@@ -207,6 +266,7 @@ describe("Warden approval sealing", () => {
     const value = fixture();
     const dataDir = join(value.root, "data");
     const sealed = await sealWardenCandidateApproval({
+      ...REVIEW_BINDING,
       tenantId: "tenant-a",
       repoPath: value.source,
       status: "candidate_ready",
@@ -231,6 +291,18 @@ describe("Warden approval sealing", () => {
     const after = Buffer.from(files[0].after as string, "base64").toString("utf8");
     expect(after).toContain("/new");
     expect(after).not.toContain("/mutated");
+    expect(artifact).toMatchObject({
+      schemaVersion: 3,
+      reviewEvidence: {
+        edits: [{
+          path: "client.js",
+          rationale: expect.any(String),
+          risk: "medium",
+          confidence: 1,
+          assessmentSource: "planner",
+        }],
+      },
+    });
 
     // Workspace-based reads and re-sealing now see the mutation, proving the
     // seal (not the mutable workspace) is what protects the approval.
@@ -242,6 +314,7 @@ describe("Warden approval sealing", () => {
       env: { MENDPOINT_DATA_DIR: dataDir },
     })).rejects.toThrow("warden_candidate_integrity_failed");
     await expect(sealWardenCandidateApproval({
+      ...REVIEW_BINDING,
       tenantId: "tenant-a",
       repoPath: value.source,
       status: "candidate_ready",
@@ -254,6 +327,7 @@ describe("Warden approval sealing", () => {
     const value = fixture();
     const dataDir = join(value.root, "data");
     const input = {
+      ...REVIEW_BINDING,
       tenantId: "tenant-a",
       repoPath: value.source,
       status: "candidate_ready",
@@ -279,10 +353,42 @@ describe("Warden approval sealing", () => {
     expect(after).toContain("/new");
   });
 
+  it("recovers safely around interrupted temp and post-publication seal writes", async () => {
+    const value = fixture();
+    const dataDir = join(value.root, "data");
+    const input = {
+      ...REVIEW_BINDING,
+      tenantId: "tenant-a",
+      repoPath: value.source,
+      status: "candidate_ready",
+      resultJson: value.resultJson,
+      env: { MENDPOINT_DATA_DIR: dataDir },
+    } as const;
+    const first = await sealWardenCandidateApproval(input);
+    const exact = readFileSync(first.path);
+
+    // A process death before atomic publication can leave an incomplete temp
+    // inode. Replay must publish the complete seal without treating that temp as
+    // authoritative.
+    rmSync(first.path);
+    const interrupted = `${first.path}.interrupted.tmp`;
+    writeFileSync(interrupted, exact.subarray(0, Math.max(1, Math.floor(exact.byteLength / 2))));
+    const recovered = await sealWardenCandidateApproval(input);
+    expect(recovered.created).toBe(true);
+    expect(readFileSync(recovered.path)).toEqual(exact);
+
+    // A death after publication but before temp cleanup leaves a complete final
+    // seal. Replay must verify the exact bytes and reuse it without clobbering.
+    const replay = await sealWardenCandidateApproval(input);
+    expect(replay).toEqual({ path: recovered.path, sha256: recovered.sha256, created: false });
+    expect(readFileSync(replay.path)).toEqual(exact);
+  });
+
   it("rejects re-sealing over a corrupt artifact at the content-addressed path", async () => {
     const value = fixture();
     const dataDir = join(value.root, "data");
     const input = {
+      ...REVIEW_BINDING,
       tenantId: "tenant-a",
       repoPath: value.source,
       status: "candidate_ready",
@@ -300,19 +406,24 @@ describe("Warden approval sealing", () => {
     const value = fixture();
     const dataDir = join(value.root, "data");
     const sealed = await sealWardenCandidateApproval({
+      ...REVIEW_BINDING,
       tenantId: "tenant-a",
       repoPath: value.source,
       status: "candidate_ready",
       resultJson: value.resultJson,
       env: { MENDPOINT_DATA_DIR: dataDir },
     });
-    const tampered = readFileSync(sealed.path, "utf8").replace("\"schemaVersion\":1", "\"schemaVersion\":2");
+    const artifact = JSON.parse(readFileSync(sealed.path, "utf8")) as Record<string, unknown>;
+    const reviewEvidence = artifact.reviewEvidence as Record<string, unknown>;
+    reviewEvidence.edits = [];
+    const tampered = JSON.stringify(artifact);
     writeFileSync(sealed.path, tampered);
+    const tamperedSha256 = `sha256:${createHash("sha256").update(tampered).digest("hex")}`;
     expect(() => readWardenApprovalArtifact({
       tenantId: "tenant-a",
       path: sealed.path,
-      sha256: sealed.sha256,
+      sha256: tamperedSha256,
       env: { MENDPOINT_DATA_DIR: dataDir },
-    })).toThrow("warden_candidate_approval_digest_mismatch");
+    })).toThrow("warden_candidate_approval_invalid");
   });
 });

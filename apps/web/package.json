@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mendpoint/shared": "*",
     "next": "^15.5.22",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

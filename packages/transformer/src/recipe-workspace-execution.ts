@@ -19,6 +19,7 @@ import {
   RecipeAnalysisCache,
   applyInverseOperations,
   getRecipe,
+  normalizeRecipeFileModes,
   recipeFilesDigest,
   recipeReference,
   resolveRecipe,
@@ -26,6 +27,7 @@ import {
   type RecipeApplication,
   type RecipeAnalysis,
   type RecipeFiles,
+  type RecipeFileModes,
   type RecipeOperation,
   type RecipeReference,
   type RecipeVerificationCommand,
@@ -58,6 +60,7 @@ export type ExactSourceSnapshot = Readonly<{
   revision: string;
   digest: string;
   files: RecipeFiles;
+  fileModes: RecipeFileModes;
 }>;
 
 export type RecipeCommandInvocation = Readonly<{
@@ -143,6 +146,7 @@ export type RecipeWorkspaceExecutionResult = Readonly<{
   inputDigest: string;
   outputDigest: string;
   outputFiles: RecipeFiles;
+  outputFileModes: RecipeFileModes;
   operations: readonly RecipeOperation[];
   commands: readonly RecipeCommandEvidence[];
   evidence: PersistedRecipeEvidence<RecipeExecutionEvidenceRecord>;
@@ -350,8 +354,9 @@ function createWorkspace(tempRoot?: string): string {
   return mkdtempSync(join(realParent, "mendpoint-transformer-recipe-"));
 }
 
-function materializeFiles(root: string, files: RecipeFiles): void {
+function materializeFiles(root: string, files: RecipeFiles, fileModes: RecipeFileModes): void {
   validateFiles(files);
+  const normalizedModes = normalizeRecipeFileModes(files, fileModes);
   const realRoot = realpathSync(root);
   for (const [path, content] of Object.entries(files).sort(([left], [right]) =>
     left.localeCompare(right),
@@ -360,7 +365,11 @@ function materializeFiles(root: string, files: RecipeFiles): void {
     mkdirSync(dirname(target), { recursive: true });
     const parent = realpathSync(dirname(target));
     if (!isWithin(realRoot, parent)) throw new Error(`recipe_workspace_parent_escape:${path}`);
-    writeFileSync(target, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    writeFileSync(target, content, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: normalizedModes[path] === "100755" ? 0o700 : 0o600,
+    });
   }
 }
 
@@ -520,6 +529,7 @@ function validateSource(source: ExactSourceSnapshot): void {
   if (!REVISION.test(source.revision)) throw new Error("recipe_execution_revision_invalid");
   assertDigest(source.digest, "recipe_execution_source_digest");
   validateFiles(source.files);
+  normalizeRecipeFileModes(source.files, source.fileModes);
   if (recipeFilesDigest(source.files) !== source.digest) {
     throw new Error("recipe_execution_source_digest_mismatch");
   }
@@ -618,6 +628,65 @@ function validateCommon(
   return timeout;
 }
 
+export type RecipeVerificationGateResult = Readonly<{
+  passed: boolean;
+  /** Identifier of the first failing verification command, null when passed. */
+  failingCommandId: string | null;
+  /** Bounded, untrusted verifier output for the failing command. */
+  output: string;
+  /** Recipe-allowed paths present in the supplied files. */
+  implicatedPaths: readonly string[];
+}>;
+
+export type RunRecipeVerificationGateInput = Readonly<{
+  files: RecipeFiles;
+  fileModes: RecipeFileModes;
+  recipe: RecipeReference;
+  commandRunner?: RecipeCommandRunner;
+  commandTimeoutMs?: number;
+  tempRoot?: string;
+}>;
+
+const GATE_OUTPUT_MAX_CHARS = 8_192;
+
+/**
+ * Run the recipe's objective verification commands against an arbitrary set of
+ * files in a disposable workspace. Unlike {@link executeRecipeInWorkspace} this
+ * applies no transform and enforces no lease fence — it is the objective gate
+ * the adaptive repair loop re-runs after each edit. The workspace is always
+ * disposed and the recipe's command allowlist is still enforced.
+ */
+export async function runRecipeVerificationGate(
+  input: RunRecipeVerificationGateInput,
+): Promise<RecipeVerificationGateResult> {
+  const timeout = input.commandTimeoutMs ?? 10_000;
+  if (!Number.isSafeInteger(timeout) || timeout < 100 || timeout > MAX_COMMAND_TIMEOUT_MS) {
+    throw new Error("recipe_execution_command_timeout_invalid");
+  }
+  const recipe = resolveRecipe(input.recipe);
+  const implicatedPaths = Object.freeze(
+    recipe.allowedPaths.filter((path) => input.files[path] !== undefined),
+  );
+  const runner = input.commandRunner ?? defaultCommandRunner;
+  let workspace: string | undefined;
+  try {
+    workspace = createWorkspace(input.tempRoot);
+    materializeFiles(workspace, input.files, input.fileModes);
+    for (const command of recipe.verificationCommands) {
+      const invocation = allowlistedInvocation(input.recipe, command, workspace, timeout);
+      const result = await runner(invocation);
+      if (!Number.isSafeInteger(result.exitCode)) throw new Error("recipe_execution_command_result_invalid");
+      if (result.exitCode !== 0) {
+        const output = `${result.stdout}\n${result.stderr}`.slice(0, GATE_OUTPUT_MAX_CHARS);
+        return deepFreeze({ passed: false, failingCommandId: command.id, output, implicatedPaths });
+      }
+    }
+    return deepFreeze({ passed: true, failingCommandId: null, output: "", implicatedPaths });
+  } finally {
+    discardWorkspace(workspace);
+  }
+}
+
 export async function executeRecipeInWorkspace(
   input: ExecuteRecipeWorkspaceInput,
 ): Promise<RecipeWorkspaceExecutionResult> {
@@ -635,7 +704,7 @@ export async function executeRecipeInWorkspace(
       input.source.files,
     );
     workspace = createWorkspace(input.tempRoot);
-    materializeFiles(workspace, input.source.files);
+    materializeFiles(workspace, input.source.files, input.source.fileModes);
     assertWorkspaceEquals(workspace, input.source.files, "materialized");
 
     await assertCurrentFence(input.fence, input.assertFence);
@@ -663,6 +732,7 @@ export async function executeRecipeInWorkspace(
       repositoryId: input.source.repositoryId,
       revision: input.source.revision,
       digest: input.source.digest,
+      fileModes: normalizeRecipeFileModes(input.source.files, input.source.fileModes),
     });
     const { cacheHit: _cacheHit, ...analysisEvidence } = application.analysis;
     const recordWithoutId = deepFreeze({
@@ -693,6 +763,7 @@ export async function executeRecipeInWorkspace(
       inputDigest: application.inputDigest,
       outputDigest: application.outputDigest,
       outputFiles: application.files,
+      outputFileModes: normalizeRecipeFileModes(application.files, input.source.fileModes),
       operations: application.operations,
       commands,
       evidence,
@@ -759,7 +830,7 @@ export async function restoreRecipeExecutionInWorkspace(
   try {
     await assertCurrentFence(input.fence, input.assertFence);
     workspace = createWorkspace(input.tempRoot);
-    materializeFiles(workspace, input.currentFiles);
+    materializeFiles(workspace, input.currentFiles, execution.outputFileModes);
     assertWorkspaceEquals(workspace, input.currentFiles, "restore_materialized");
     const restoredFiles = applyInverseOperations(
       execution.recipe,

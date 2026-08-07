@@ -71,6 +71,8 @@ export type {
   RecipeApplication,
   RecipeAnalysis,
   RecipeApplicability,
+  GitBlobMode,
+  RecipeFileModes,
   RecipeFiles,
   RecipeOperation,
   RecipePrecondition,
@@ -90,6 +92,7 @@ export {
   applyRecipe,
   assertRecipePathAllowed,
   getRecipe,
+  normalizeRecipeFileModes,
   recipeFilesDigest,
   recipeReference,
   resolveRecipe,
@@ -122,7 +125,37 @@ export {
   RecipeWorkspaceExecutionError,
   executeRecipeInWorkspace,
   restoreRecipeExecutionInWorkspace,
+  runRecipeVerificationGate,
 } from "./recipe-workspace-execution.js";
+
+export {
+  DEFAULT_ADAPTIVE_REPAIR_BOUNDS,
+  runAdaptiveRepairLoop,
+  type AdaptiveBestAttempt,
+  type AdaptiveBoundExhaustion,
+  type AdaptiveEdit,
+  type AdaptiveExternalModelAccounting,
+  type AdaptiveExternalModelReservation,
+  type AdaptiveExternalModelSettlement,
+  type AdaptiveGate,
+  type AdaptiveRepairBounds,
+  type AdaptiveRepairContextFile,
+  type AdaptiveRepairOutcome,
+  type AdaptiveRepairPlan,
+  type AdaptiveRepairPlanner,
+  type AdaptiveRepairPlannerBudget,
+  type AdaptiveRepairPlannerInput,
+  type AdaptiveRepairPlannerOutput,
+  type AdaptiveRepairPlannerUsage,
+  type AdaptiveRepairReviewEvidence,
+  type AdaptiveReviewRisk,
+  type AdaptiveSemanticCategory,
+  type AdaptiveRepairUsage,
+  type AdaptiveUnfixableMarker,
+  type AdaptiveUnfixableReason,
+  type AdaptiveVerifierResult,
+  type RunAdaptiveRepairLoopInput,
+} from "./adaptive-loop.js";
 
 export {
   persistTransformerAttemptFailureEvidence,
@@ -130,12 +163,16 @@ export {
   runTransformerAttempt,
   transformerAttemptId,
   type RunTransformerAttemptInput,
+  type TransformerAdaptiveCandidateHandoff,
+  type TransformerAdaptiveRepairConfig,
+  type TransformerAdaptiveSummary,
   type TransformerAttemptClaimInput,
   type TransformerAttemptCompletionInput,
   type TransformerAttemptCoordinatorPort,
   type TransformerAttemptFailureArtifact,
   type TransformerAttemptFailureEvidenceRecord,
   type TransformerAttemptFailureInput,
+  type TransformerAttemptUsageInput,
   type TransformerAttemptPhase,
   type TransformerAttemptRecoveryCode,
   type TransformerAttemptRunResult,
@@ -146,6 +183,31 @@ export {
   type TransformerCurrentAttemptFence,
   type TransformerExecutableAttemptLease,
 } from "./attempt-runner.js";
+
+export {
+  MAX_ADAPTIVE_REVIEW_FILES,
+  MAX_ADAPTIVE_REVIEW_FILE_BYTES,
+  MAX_ADAPTIVE_REVIEW_TOTAL_BYTES,
+  MAX_ADAPTIVE_SEAL_BYTES,
+} from "./adaptive-review-limits.js";
+
+export {
+  sealAdaptiveCandidate,
+  readAdaptiveCandidateArtifact,
+  promoteAdaptiveCandidateFiles,
+  discardAdaptiveCandidate,
+  reconcileAdaptiveCandidateArtifacts,
+  type AdaptiveCandidateSeal,
+  type AdaptiveCandidateArtifact,
+  type AdaptiveCandidateReviewEdit,
+  type AdaptiveCandidateReviewEvidence,
+  type SealAdaptiveCandidateInput,
+  type ReadAdaptiveCandidateInput,
+  type DiscardAdaptiveCandidateInput,
+  type PromotedAdaptiveCandidate,
+  type ReconcileAdaptiveCandidateArtifactsInput,
+  type AdaptiveCandidateReconcileResult,
+} from "./adaptive-candidate.js";
 
 export {
   planStagedPullRequestBatches,
@@ -188,6 +250,7 @@ export {
 } from "./organization-constraints.js";
 
 export {
+  DEFAULT_TRANSFORMER_ADAPTIVE_CAMPAIGN_BUDGET,
   TRANSFORMER_PILOT_EXECUTION_SCHEMA_VERSION,
   TransformerPilotExecutionStore,
   type TransformerPilotUnitState,
@@ -207,6 +270,19 @@ export {
   type TransformerScmObservation,
   type TransformerPilotMetrics,
   type TransformerPilotEvent,
+  type TransformerAdaptiveCandidateHandoffInput,
+  type TransformerAdaptiveCandidateHandoffRecord,
+  type TransformerRegenerationReview,
+  type TransformerPendingAdaptiveCandidateHandoff,
+  type TransformerRoutingOutcomeRecord,
+  type TransformerRoutingSettlementRecord,
+  type TransformerPendingRoutingSettlement,
+  type TransformerRoutingAttemptBindingInput,
+  type TransformerAdaptiveAttemptAccounting,
+  type TransformerAdaptiveCampaignBudgetCeilings,
+  type TransformerAdaptiveCampaignBudgetTotals,
+  type TransformerAdaptiveBudgetOverride,
+  type TransformerAdaptiveCampaignBudget,
 } from "./pilot-execution.js";
 export type {
   ExactSourceSnapshot,
@@ -225,4 +301,6 @@ export type {
   RecipeWorkspaceRestoreResult,
   ExecuteRecipeWorkspaceInput,
   RestoreRecipeWorkspaceInput,
+  RecipeVerificationGateResult,
+  RunRecipeVerificationGateInput,
 } from "./recipe-workspace-execution.js";

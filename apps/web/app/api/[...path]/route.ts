@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { createHash, randomUUID } from "node:crypto";
+import { WEB_PROXY_RESPONSE_BYTES } from "@mendpoint/shared";
 import {
   authenticatedWebCredential,
   isAllowedMutationOrigin,
@@ -27,9 +28,63 @@ const RESPONSE_HEADERS = [
 ] as const;
 
 const MAX_REQUEST_BYTES = 256 * 1024;
-const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 12_000;
 const CANDIDATE_UPSTREAM_TIMEOUT_MS = 60_000;
+
+class BodyLimitExceededError extends Error {
+  constructor() {
+    super("body_limit_exceeded");
+    this.name = "BodyLimitExceededError";
+  }
+}
+
+function cancelBody(
+  body: ReadableStream<Uint8Array> | null,
+  abort?: () => void,
+): void {
+  abort?.();
+  if (body) void body.cancel("body_limit_exceeded").catch(() => undefined);
+}
+
+async function readBodyWithinLimit(
+  body: ReadableStream<Uint8Array> | null,
+  maximumBytes: number,
+  abort?: () => void,
+): Promise<Uint8Array<ArrayBuffer> | null> {
+  if (!body) return null;
+  const reader = body.getReader();
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let totalBytes = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      const remaining = maximumBytes + 1 - totalBytes;
+      const retainedBytes = Math.min(next.value.byteLength, Math.max(remaining, 0));
+      if (retainedBytes > 0) {
+        const retained = new Uint8Array(retainedBytes);
+        retained.set(next.value.subarray(0, retainedBytes));
+        chunks.push(retained);
+        totalBytes += retainedBytes;
+      }
+      if (next.value.byteLength > retainedBytes || totalBytes > maximumBytes) {
+        abort?.();
+        void reader.cancel("body_limit_exceeded").catch(() => undefined);
+        throw new BodyLimitExceededError();
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (chunks.length === 1) return chunks[0]!;
+  const result = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
 
 function matchesAllowedRoute(method: string, path: string): boolean {
   const rules: Array<[string, RegExp]> = [
@@ -49,6 +104,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["GET", /^graph\//],
     ["GET", /^prs\/[^/]+\/reviews$/],
     ["GET", /^transformer\/gate$/],
+    ["GET", /^transformer\/adaptive-candidates(?:\/[^/]+)?$/],
     ["GET", /^transformer\/control-plane\/campaigns\/[^/]+$/],
     ["GET", /^transformer\/control-plane\/campaigns\/[^/]+\/events$/],
     ["POST", /^tenants\/[^/]+\/plan$/],
@@ -74,6 +130,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["POST", /^pilot-success-contracts\/[^/]+\/versions\/\d+\/approvals$/],
     ["POST", /^transformer\/control-plane\/campaigns$/],
     ["POST", /^transformer\/control-plane\/campaigns\/[^/]+\/(?:review|transitions|exceptions)$/],
+    ["POST", /^transformer\/adaptive-candidates\/[^/]+\/(?:review|promote)$/],
     ["PATCH", /^platform\/plans\/[^/]+$/],
   ];
   return rules.some(([allowedMethod, pattern]) =>
@@ -97,6 +154,7 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
   }
   const declaredLength = Number(request.headers.get("content-length") ?? 0);
   if (declaredLength > MAX_REQUEST_BYTES) {
+    cancelBody(request.body);
     return Response.json({ error: "payload_too_large" }, { status: 413 });
   }
   const apiBase = (
@@ -151,8 +209,13 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     headers.set("X-Mendpoint-Proxy-Secret", proxySecret);
   }
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
-  const requestBody = hasBody ? await request.arrayBuffer() : undefined;
-  if (requestBody && requestBody.byteLength > MAX_REQUEST_BYTES) {
+  let requestBody: Uint8Array<ArrayBuffer> | null = null;
+  try {
+    requestBody = hasBody
+      ? await readBodyWithinLimit(request.body, MAX_REQUEST_BYTES)
+      : null;
+  } catch (error) {
+    if (!(error instanceof BodyLimitExceededError)) throw error;
     return Response.json({ error: "payload_too_large" }, { status: 413 });
   }
   const controller = new AbortController();
@@ -161,7 +224,7 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     : UPSTREAM_TIMEOUT_MS;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let upstream: Response;
-  let body: ArrayBuffer | null;
+  let body: Uint8Array<ArrayBuffer> | null;
   try {
     upstream = await fetch(upstreamUrl, {
       method: request.method,
@@ -172,16 +235,23 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
       signal: controller.signal,
     });
     const declaredResponseLength = Number(upstream.headers.get("content-length") ?? 0);
-    if (declaredResponseLength > MAX_RESPONSE_BYTES) {
+    if (declaredResponseLength > WEB_PROXY_RESPONSE_BYTES) {
+      cancelBody(upstream.body, () => controller.abort());
       return Response.json({ error: "upstream_response_too_large" }, { status: 502 });
     }
     const noBody =
       upstream.status === 204 || upstream.status === 205 || upstream.status === 304;
-    body = noBody ? null : await upstream.arrayBuffer();
-    if (body && body.byteLength > MAX_RESPONSE_BYTES) {
+    body = noBody
+      ? null
+      : await readBodyWithinLimit(
+          upstream.body,
+          WEB_PROXY_RESPONSE_BYTES,
+          () => controller.abort(),
+        );
+  } catch (error) {
+    if (error instanceof BodyLimitExceededError) {
       return Response.json({ error: "upstream_response_too_large" }, { status: 502 });
     }
-  } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       return Response.json({ error: "upstream_timeout" }, { status: 504 });
     }

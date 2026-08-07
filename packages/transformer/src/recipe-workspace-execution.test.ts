@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -56,6 +56,9 @@ function source(files: RecipeFiles = FILES): ExactSourceSnapshot {
     revision: "a".repeat(40),
     digest: recipeFilesDigest(files),
     files,
+    fileModes: Object.freeze(Object.fromEntries(
+      Object.keys(files).map((path) => [path, path === "src/server.js" ? "100755" : "100644"]),
+    ) as Record<string, "100644" | "100755">),
   };
 }
 
@@ -72,6 +75,9 @@ function fixture() {
 function successfulRunner(invocations: RecipeCommandInvocation[]): RecipeCommandRunner {
   return async (invocation) => {
     invocations.push(invocation);
+    if (process.platform !== "win32") {
+      expect(statSync(join(invocation.cwd, "src/server.js")).mode & 0o111).not.toBe(0);
+    }
     return { exitCode: 0, stdout: "verified\n", stderr: "" };
   };
 }
@@ -104,6 +110,7 @@ describe("bounded recipe workspace execution", () => {
     expect(first.outputDigest).not.toBe(first.inputDigest);
     expect(JSON.parse(first.outputFiles["package.json"]!).engines.node).toBe(">=20 <21");
     expect(first.outputFiles["src/server.js"]).toBe(FILES["src/server.js"]);
+    expect(first.outputFileModes).toEqual(source().fileModes);
     expect(first.operations.map((operation) => operation.path).sort()).toEqual([
       ".node-version",
       ".nvmrc",
@@ -117,6 +124,7 @@ describe("bounded recipe workspace execution", () => {
       repositoryId: "repository-a",
       revision: "a".repeat(40),
       digest: source().digest,
+      fileModes: source().fileModes,
     });
     expect(first.analysis).toMatchObject({
       status: "applicable",

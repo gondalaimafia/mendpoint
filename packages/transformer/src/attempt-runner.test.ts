@@ -24,6 +24,11 @@ import {
   recipeReference,
   type RecipeFiles,
 } from "./recipe.js";
+import type {
+  AdaptiveGate,
+  AdaptiveRepairPlanner,
+  AdaptiveVerifierResult,
+} from "./adaptive-loop.js";
 import { TransformerPilotExecutionStore } from "./pilot-execution.js";
 
 const roots: string[] = [];
@@ -43,6 +48,9 @@ const FILES: RecipeFiles = Object.freeze({
   Dockerfile: "FROM node:18-alpine\nWORKDIR /app\n",
   "src/server.js": "export const ready = true;\n",
 });
+const FILE_MODES = Object.freeze(Object.fromEntries(
+  Object.keys(FILES).map((path) => [path, path === ".nvmrc" ? "100755" : "100644"]),
+) as Record<string, "100644" | "100755">);
 
 const LEASE_TOKEN = "lease-token-transformer-attempt-00000001";
 const SOURCE_REVISION = "a".repeat(40);
@@ -80,6 +88,7 @@ function lease(overrides: Partial<TransformerExecutableAttemptLease> = {}): Tran
     leaseGeneration: 1,
     leaseTokenDigest: sha256(LEASE_TOKEN),
     leaseExpiresAt: "2026-08-05T10:05:00.000Z",
+    startedAt: "2026-08-05T10:00:00.000Z",
     snapshot: {
       snapshotId: "snapshot-repo-a",
       repositoryId: "repo-a",
@@ -95,6 +104,16 @@ function lease(overrides: Partial<TransformerExecutableAttemptLease> = {}): Tran
     candidateRevision: CANDIDATE_REVISION,
     candidateDigest: APPLICATION.outputDigest,
     changedPaths: APPLICATION.operations.map((operation) => operation.path),
+    adaptiveBudgetRemaining: {
+      attempts: 10,
+      plannerCalls: 100,
+      modelCalls: 100,
+      inputTokens: 1_000_000,
+      outputTokens: 250_000,
+      totalTokens: 1_250_000,
+      actualCostUsd: 50,
+      wallTimeMs: 600_000,
+    },
     ...overrides,
   };
 }
@@ -102,13 +121,20 @@ function lease(overrides: Partial<TransformerExecutableAttemptLease> = {}): Tran
 type CoordinatorSpies = Readonly<{
   claimNextAttempt: ReturnType<typeof vi.fn>;
   assertCurrentAttemptFence: ReturnType<typeof vi.fn>;
+  recordAdaptiveAttemptUsage: ReturnType<typeof vi.fn>;
   completeAttempt: ReturnType<typeof vi.fn>;
   recordAttemptFailure: ReturnType<typeof vi.fn>;
 }>;
 
 function harness(options: Readonly<{
   lease?: TransformerExecutableAttemptLease;
-  source?: Readonly<{ repositoryId: string; revision: string; digest: string; files: RecipeFiles }>;
+  source?: Readonly<{
+    repositoryId: string;
+    revision: string;
+    digest: string;
+    files: RecipeFiles;
+    fileModes?: Readonly<Record<string, "100644" | "100755">>;
+  }>;
   assertFence?: () => boolean | void;
   commandRunner?: RunTransformerAttemptInput["commandRunner"];
 }> = {}) {
@@ -118,14 +144,16 @@ function harness(options: Readonly<{
   const spies: CoordinatorSpies = {
     claimNextAttempt: vi.fn(async () => claimed),
     assertCurrentAttemptFence: vi.fn(async () => options.assertFence?.() ?? true),
+    recordAdaptiveAttemptUsage: vi.fn(async () => undefined),
     completeAttempt: vi.fn(async () => undefined),
     recordAttemptFailure: vi.fn(async () => undefined),
   };
-  const source = options.source ?? {
+  const source = options.source ? { fileModes: FILE_MODES, ...options.source } : {
     repositoryId: "repo-a",
     revision: SOURCE_REVISION,
     digest: SOURCE_DIGEST,
     files: FILES,
+    fileModes: FILE_MODES,
   };
   const loadExactSource = vi.fn(async () => source);
   const input: RunTransformerAttemptInput = {
@@ -140,6 +168,7 @@ function harness(options: Readonly<{
     observedAt: (phase) => ({
       claim: "2026-08-05T10:00:00.000Z",
       execute: "2026-08-05T10:01:00.000Z",
+      usage: "2026-08-05T10:01:00.000Z",
       complete: "2026-08-05T10:02:00.000Z",
       failure: "2026-08-05T10:03:00.000Z",
     })[phase],
@@ -317,6 +346,7 @@ describe("Transformer production attempt runner", () => {
       observedAt: (phase) => ({
         claim: "2026-08-05T10:10:00.000Z",
         execute: "2026-08-05T10:11:00.000Z",
+        usage: "2026-08-05T10:11:00.000Z",
         complete: "2026-08-05T10:12:00.000Z",
         failure: "2026-08-05T10:13:00.000Z",
       })[phase],
@@ -346,5 +376,465 @@ describe("Transformer production attempt runner", () => {
     });
     expect(spies.completeAttempt).toHaveBeenCalledTimes(1);
     expect(spies.recordAttemptFailure).toHaveBeenCalledWith(expect.objectContaining({ code: "candidate_drift" }));
+  });
+
+  it("leaves the deterministic success path untouched when adaptive repair is configured", async () => {
+    const planner = vi.fn<AdaptiveRepairPlanner>();
+    const { input } = harness();
+    const result = await runTransformerAttempt({
+      ...input,
+      adaptiveRepair: { planner },
+    });
+
+    // Recipe succeeded, so the adaptive loop never engaged.
+    expect(result.status).toBe("completed");
+    expect(result.adaptive).toBeUndefined();
+    expect(planner).not.toHaveBeenCalled();
+  });
+
+  it("engages adaptive repair after verification failure and reports the converged fix", async () => {
+    const gate: AdaptiveGate = async (files: RecipeFiles): Promise<AdaptiveVerifierResult> => {
+      const app = files["package.json"] ?? "";
+      const passed = app.includes("adaptively-fixed");
+      return {
+        passed,
+        failingCommandId: passed ? null : "engine-check",
+        output: passed ? "ok" : "engine-check: package.json not adaptively repaired",
+        implicatedPaths: ["package.json"],
+      };
+    };
+    const planner: AdaptiveRepairPlanner = async (loopInput) => {
+      const file = loopInput.context.find((entry) => entry.path === "package.json")!;
+      return {
+        plan: {
+          edits: [
+            {
+              path: "package.json",
+              observedContentDigest: file.digest,
+              nextContent: `${file.content}\n// adaptively-fixed\n`,
+            },
+          ],
+        },
+        usage: { modelCalled: true, promptTokens: 64, completionTokens: 12, totalTokens: 76, costUsd: 0.0009 },
+      };
+    };
+    const { input, spies } = harness({
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "verifier failed" }),
+    });
+    const result = await runTransformerAttempt({ ...input, adaptiveRepair: { planner, gate } });
+
+    // The lease-bound deterministic attempt still fails (the candidate diverges
+    // from the pre-approved digest); the adaptive fix is carried in the summary.
+    expect(result.status).toBe("failed");
+    expect(result.recoveryCode).toBe("verification_failed");
+    expect(result.adaptive).toBeDefined();
+    expect(result.adaptive).toMatchObject({
+      engaged: true,
+      outcome: "converged",
+      unitsFixedAdaptively: 1,
+      unitsMarkedUnfixable: 0,
+      usage: { measured: true, modelCalls: 1, totalTokens: 76 },
+    });
+    expect(result.adaptive!.convergedCandidate!.changedPaths).toEqual(
+      APPLICATION.operations.map((operation) => operation.path).sort(),
+    );
+    expect(result.adaptive!.convergedCandidate!.adaptiveChangedPaths).toEqual(["package.json"]);
+    expect(result.adaptive!.convergedFiles!["package.json"]).toContain("adaptively-fixed");
+    expect(spies.recordAttemptFailure).toHaveBeenCalledWith(expect.objectContaining({ code: "verification_failed" }));
+  });
+
+  it("fails a regeneration closed before planner use without external review authorization", async () => {
+    const rationale = "Synthetic reviewer feedback: preserve scripts while changing only the runtime range.";
+    const planner = vi.fn<AdaptiveRepairPlanner>(async () => ({
+      plan: { edits: [], markUnfixable: true, rationale: "not called" },
+    }));
+    const gate: AdaptiveGate = async () => ({
+      passed: false,
+      failingCommandId: "engine-check",
+      output: "engine-check: still failing",
+      implicatedPaths: ["package.json"],
+    });
+    const { input } = harness({
+      lease: lease({
+        regenerationReview: {
+          candidateId: "tfadaptive_synthetic_review",
+          reviewerPrincipalId: "human:synthetic-reviewer",
+          rationale,
+          rationaleDigest: sha256(rationale),
+          requestedAt: "2026-08-05T09:59:00.000Z",
+        },
+      }),
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "verifier failed" }),
+    });
+
+    const result = await runTransformerAttempt({ ...input, adaptiveRepair: { planner, gate } });
+
+    expect(planner).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      status: "failed",
+      recoveryCode: "verification_failed",
+      errorCode: "transformer_regeneration_review_external_processing_not_approved",
+    });
+  });
+
+  it("assigns a regular mode to adaptive new files and preserves executable source modes", async () => {
+    const newPath = "scripts/check.sh";
+    const gate: AdaptiveGate = async (files: RecipeFiles): Promise<AdaptiveVerifierResult> => ({
+      passed: files[newPath] === "#!/bin/sh\nexit 0\n",
+      failingCommandId: files[newPath] ? null : "missing-check-script",
+      output: files[newPath] ? "ok" : "missing scripts/check.sh",
+      implicatedPaths: [newPath],
+    });
+    const planner: AdaptiveRepairPlanner = async () => ({
+      plan: {
+        edits: [{
+          path: newPath,
+          observedContentDigest: sha256(""),
+          nextContent: "#!/bin/sh\nexit 0\n",
+        }],
+      },
+      usage: { modelCalled: false },
+    });
+    type AdaptiveCandidateHandoff = Parameters<
+      NonNullable<RunTransformerAttemptInput["onAdaptiveCandidateConverged"]>
+    >[0];
+    const handoffs: AdaptiveCandidateHandoff[] = [];
+    const onAdaptiveCandidateConverged = vi.fn(async (handoff: AdaptiveCandidateHandoff) => {
+      handoffs.push(handoff);
+    });
+    const { input } = harness({
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "verifier failed" }),
+    });
+
+    const result = await runTransformerAttempt({
+      ...input,
+      onAdaptiveCandidateConverged,
+      adaptiveRepair: {
+        planner,
+        gate,
+        allowedMutationPaths: [...Object.keys(FILES), newPath],
+      },
+    });
+
+    expect(result.adaptive?.outcome).toBe("converged");
+    expect(onAdaptiveCandidateConverged).toHaveBeenCalledTimes(1);
+    const handoff = handoffs[0]!;
+    expect(handoff.fileModes[newPath]).toBe("100644");
+    expect(handoff.fileModes[".nvmrc"]).toBe("100755");
+    expect(Object.keys(handoff.fileModes).sort()).toEqual(Object.keys(handoff.files).sort());
+  });
+
+  it("stops adaptive repair on bound exhaustion and carries a structured unfixable marker", async () => {
+    const gate: AdaptiveGate = async (): Promise<AdaptiveVerifierResult> => ({
+      passed: false,
+      failingCommandId: "engine-check",
+      output: "engine-check: still failing",
+      implicatedPaths: ["package.json"],
+    });
+    let counter = 0;
+    const planner: AdaptiveRepairPlanner = async (loopInput) => {
+      const file = loopInput.context.find((entry) => entry.path === "package.json")!;
+      return {
+        plan: {
+          edits: [
+            {
+              path: "package.json",
+              observedContentDigest: file.digest,
+              nextContent: `${file.content}\n// attempt ${(counter += 1)}\n`,
+            },
+          ],
+        },
+        usage: { modelCalled: false },
+      };
+    };
+    const { input } = harness({
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "verifier failed" }),
+    });
+    const result = await runTransformerAttempt({
+      ...input,
+      adaptiveRepair: { planner, gate, bounds: { maxIterationsPerUnit: 1 } },
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.adaptive).toMatchObject({
+      engaged: true,
+      outcome: "unfixable",
+      unitsMarkedUnfixable: 1,
+      boundExhaustion: ["iterations_per_unit"],
+    });
+    expect(result.adaptive!.markers).toHaveLength(1);
+    expect(result.adaptive!.markers[0]).toMatchObject({
+      kind: "transformer.adaptive.unfixable",
+      reason: "iterations_per_unit_exhausted",
+      unitId: "unit-a",
+    });
+    // Honest measurement: the scripted planner reported no model call.
+    expect(result.adaptive!.usage.measured).toBe(false);
+    expect(result.adaptive!.bestAttemptFiles!["package.json"]).toContain("attempt 1");
+  });
+
+  it("refuses adaptive repair when the reconstructed recipe output is not the leased candidate", async () => {
+    const mismatched = lease({ candidateDigest: `sha256:${"0".repeat(64)}` });
+    const planner = vi.fn<AdaptiveRepairPlanner>(async () => ({
+      plan: { edits: [], markUnfixable: true },
+    }));
+    const gate: AdaptiveGate = async () => ({
+      passed: false,
+      failingCommandId: "engine-check",
+      output: "failed",
+      implicatedPaths: ["package.json"],
+    });
+    const { input, spies } = harness({
+      lease: mismatched,
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "verifier failed" }),
+    });
+
+    const result = await runTransformerAttempt({
+      ...input,
+      adaptiveRepair: { planner, gate },
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      recoveryCode: "candidate_drift",
+      errorCode: "transformer_attempt_candidate_digest_mismatch",
+    });
+    expect(result.adaptive).toBeUndefined();
+    expect(planner).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "candidate_drift" }),
+    );
+  });
+
+  it("refuses adaptive repair when reconstructed changed paths differ from the lease", async () => {
+    const mismatched = lease({ changedPaths: ["package.json"] });
+    const planner = vi.fn<AdaptiveRepairPlanner>(async () => ({
+      plan: { edits: [], markUnfixable: true },
+    }));
+    const gate: AdaptiveGate = async () => ({
+      passed: false,
+      failingCommandId: "engine-check",
+      output: "failed",
+      implicatedPaths: ["package.json"],
+    });
+    const { input, spies } = harness({
+      lease: mismatched,
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "verifier failed" }),
+    });
+
+    const result = await runTransformerAttempt({
+      ...input,
+      adaptiveRepair: { planner, gate },
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      recoveryCode: "candidate_drift",
+      errorCode: "transformer_attempt_changed_paths_mismatch",
+    });
+    expect(result.adaptive).toBeUndefined();
+    expect(planner).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "candidate_drift" }),
+    );
+  });
+
+  it("does not hand off a converged adaptive candidate after its lease fence is stale", async () => {
+    let adaptationConverged = false;
+    const gate: AdaptiveGate = async (files) => {
+      const passed = (files["package.json"] ?? "").includes("adaptively-fixed");
+      if (passed) adaptationConverged = true;
+      return {
+        passed,
+        failingCommandId: passed ? null : "engine-check",
+        output: passed ? "ok" : "failed",
+        implicatedPaths: ["package.json"],
+      };
+    };
+    const planner: AdaptiveRepairPlanner = async (loopInput) => {
+      const file = loopInput.context.find((entry) => entry.path === "package.json")!;
+      return {
+        plan: {
+          edits: [{
+            path: "package.json",
+            observedContentDigest: file.digest,
+            nextContent: `${file.content}\n// adaptively-fixed\n`,
+          }],
+        },
+        usage: { modelCalled: false },
+      };
+    };
+    const onAdaptiveCandidateConverged = vi.fn();
+    const { input, spies } = harness({
+      assertFence: () => !adaptationConverged,
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "verifier failed" }),
+    });
+
+    const result = await runTransformerAttempt({
+      ...input,
+      adaptiveRepair: { planner, gate },
+      onAdaptiveCandidateConverged,
+    });
+
+    expect(result.status).toBe("stale");
+    expect(onAdaptiveCandidateConverged).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
+  it("records a worker failure when the pre-handoff fence check itself fails", async () => {
+    let adaptationConverged = false;
+    let fenceFailureInjected = false;
+    const gate: AdaptiveGate = async (files) => {
+      const passed = (files["package.json"] ?? "").includes("adaptively-fixed");
+      if (passed) adaptationConverged = true;
+      return {
+        passed,
+        failingCommandId: passed ? null : "engine-check",
+        output: passed ? "ok" : "failed",
+        implicatedPaths: ["package.json"],
+      };
+    };
+    const planner: AdaptiveRepairPlanner = async (loopInput) => {
+      const file = loopInput.context.find((entry) => entry.path === "package.json")!;
+      return {
+        plan: {
+          edits: [{
+            path: "package.json",
+            observedContentDigest: file.digest,
+            nextContent: `${file.content}\n// adaptively-fixed\n`,
+          }],
+        },
+        usage: { modelCalled: false },
+      };
+    };
+    const onAdaptiveCandidateConverged = vi.fn();
+    const { input, spies } = harness({
+      assertFence: () => {
+        if (adaptationConverged && !fenceFailureInjected) {
+          fenceFailureInjected = true;
+          throw new Error("coordinator unavailable");
+        }
+        return true;
+      },
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "verifier failed" }),
+    });
+
+    const result = await runTransformerAttempt({
+      ...input,
+      adaptiveRepair: { planner, gate },
+      onAdaptiveCandidateConverged,
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      recoveryCode: "worker_crash",
+      errorCode: "transformer_attempt_worker_crash",
+    });
+    expect(onAdaptiveCandidateConverged).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "worker_crash" }),
+    );
+  });
+
+  it("fails the fenced attempt when adaptive candidate persistence fails", async () => {
+    const gate: AdaptiveGate = async (files) => {
+      const passed = (files["package.json"] ?? "").includes("adaptively-fixed");
+      return {
+        passed,
+        failingCommandId: passed ? null : "engine-check",
+        output: passed ? "ok" : "failed",
+        implicatedPaths: ["package.json"],
+      };
+    };
+    const planner: AdaptiveRepairPlanner = async (loopInput) => {
+      const file = loopInput.context.find((entry) => entry.path === "package.json")!;
+      return {
+        plan: {
+          edits: [{
+            path: "package.json",
+            observedContentDigest: file.digest,
+            nextContent: `${file.content}\n// adaptively-fixed\n`,
+          }],
+        },
+        usage: { modelCalled: false },
+      };
+    };
+    const persistenceSecret = "adaptive candidate persistence secret";
+    const onAdaptiveCandidateConverged = vi.fn(async () => {
+      throw new Error(persistenceSecret);
+    });
+    const { input, spies } = harness({
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "verifier failed" }),
+    });
+
+    const result = await runTransformerAttempt({
+      ...input,
+      adaptiveRepair: { planner, gate },
+      onAdaptiveCandidateConverged,
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      recoveryCode: "worker_crash",
+      errorCode: "transformer_adaptive_candidate_persistence_failed",
+      adaptive: { outcome: "converged" },
+    });
+    expect(onAdaptiveCandidateConverged).toHaveBeenCalledTimes(1);
+    expect(spies.recordAttemptFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "worker_crash" }),
+    );
+    expect(result.failureEvidence).toBeDefined();
+    if (!result.failureEvidence) return;
+    const serialized = readFileSync(result.failureEvidence.path, "utf8");
+    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(16 * 1024);
+    expect(serialized).not.toContain(persistenceSecret);
+  });
+
+  it("clamps campaign planner and model headroom to the loop limits", async () => {
+    const gate: AdaptiveGate = async () => ({
+      passed: false,
+      failingCommandId: "engine-check",
+      output: "still failing",
+      implicatedPaths: ["package.json"],
+    });
+    const planner = vi.fn<AdaptiveRepairPlanner>(async (loopInput) => ({
+      plan: { edits: [], markUnfixable: true },
+      usage: { modelCalled: false },
+    }));
+    const constrainedLease = lease({
+      adaptiveBudgetRemaining: {
+        attempts: 1,
+        plannerCalls: 7,
+        modelCalls: 2,
+        inputTokens: 101,
+        outputTokens: 11,
+        totalTokens: 112,
+        actualCostUsd: 0.2,
+        wallTimeMs: 90_000,
+      },
+    });
+    const { input } = harness({
+      lease: constrainedLease,
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "failed" }),
+    });
+
+    await runTransformerAttempt({
+      ...input,
+      adaptiveRepair: {
+        planner,
+        gate,
+        bounds: { maxPlannerCalls: 3, maxModelCalls: 1 },
+      },
+    });
+
+    expect(planner).toHaveBeenCalledTimes(1);
+    expect(planner.mock.calls[0]![0].budget).toMatchObject({
+      plannerCalls: 3,
+      modelCalls: 1,
+      inputTokens: 101,
+      outputTokens: 11,
+      totalTokens: 112,
+    });
+    expect(planner.mock.calls[0]![0].budget!.actualCostUsd).toBeCloseTo(0.08, 12);
   });
 });
