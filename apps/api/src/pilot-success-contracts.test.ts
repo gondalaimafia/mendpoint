@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb, insertPrincipal, type AppDb, type PilotSuccessContractDefinition } from "@mendpoint/db";
 import { Hono } from "hono";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiEnv } from "./auth.js";
 import { createPilotSuccessContractRoutes } from "./pilot-success-contracts.js";
 
@@ -80,6 +80,7 @@ function fixture() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const { db, directory } of opened.splice(0)) {
     db.raw.close();
     rmSync(directory, { recursive: true, force: true });
@@ -91,6 +92,29 @@ function headers(token: string) {
 }
 
 describe("pilot success contract API", () => {
+  it.each([
+    ["provider", "pilot_contract_provider_token_invalid"],
+    ["filesystem", "pilot_contract_/customers/acme/private_not_found"],
+    ["database", "pilot_contract_SQLITE_CONSTRAINT"],
+    ["resource existence", "pilot_contract_repository_not_found"],
+  ])("fails unknown %s exceptions closed at the API boundary", async (_kind, sentinel) => {
+    const { app, db } = fixture();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(db.raw, "prepare").mockImplementation(() => {
+      throw new Error(sentinel);
+    });
+
+    const response = await app.request("/pilot-success-contracts", {
+      headers: headers("owner-a"),
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "internal_error",
+      requestId: "request-owner-a",
+    });
+  });
+
   it("rejects a missing definition as a validation error", async () => {
     const { app } = fixture();
     const response = await app.request("/pilot-success-contracts", {

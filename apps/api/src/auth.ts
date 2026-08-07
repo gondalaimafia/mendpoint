@@ -194,6 +194,11 @@ export function scopeAllows(scopes: string[] | undefined, permission: Permission
 const ACTOR = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
 const SIGNATURE = /^[a-f0-9]{64}$/;
 const DELEGATION_MAX_SKEW_MS = 5 * 60 * 1000;
+const DELEGATED_ACTOR_PUBLIC_ERRORS = new Set([
+  "delegated_actor_expired",
+  "delegated_actor_invalid",
+  "delegated_actor_signature_invalid",
+]);
 
 export function delegatedActorSignature(
   apiKey: string,
@@ -374,10 +379,13 @@ export function createAuthMiddleware(
         path,
       });
     } catch (error) {
+      if (!(error instanceof Error) || !DELEGATED_ACTOR_PUBLIC_ERRORS.has(error.message)) {
+        throw error;
+      }
       return c.json(
         {
           error: "unauthorized",
-          message: error instanceof Error ? error.message : "delegated_actor_invalid",
+          message: error.message,
         },
         401,
       );

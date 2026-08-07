@@ -20,6 +20,11 @@ export type WardenRunInputResult =
   | Readonly<{ ok: true; value: WardenRunInput }>
   | Readonly<{ ok: false; error: string }>;
 
+const OPTIONAL_BOOLEAN_ERRORS = new Set([
+  "dryRun must be a boolean",
+  "useLlm must be a boolean",
+]);
+
 function optionalBoolean(value: unknown, field: string): boolean | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") throw new Error(`${field} must be a boolean`);
@@ -114,6 +119,11 @@ export function parseWardenRunInput(body: unknown): WardenRunInputResult {
       }),
     };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : "request is invalid" };
+    return {
+      ok: false,
+      error: error instanceof Error && OPTIONAL_BOOLEAN_ERRORS.has(error.message)
+        ? error.message
+        : "request is invalid",
+    };
   }
 }

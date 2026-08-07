@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
 import { Hono, type Context } from "hono";
 import {
+  TransformerDomainError,
   TransformerPilotExecutionStore,
   type TransformerAdaptiveAttemptAccounting,
   type TransformerPilotCampaignInput,
@@ -13,6 +14,10 @@ import {
   type TransformerGateDecision,
 } from "@mendpoint/ops";
 import type { ApiEnv } from "./auth.js";
+import {
+  mappedErrorResponse,
+  type PublicErrorRule,
+} from "./error-boundary.js";
 
 const DB_ENV = "MENDPOINT_TRANSFORMER_PILOT_DB";
 const CONTROL_ACTIONS = new Set([
@@ -23,6 +28,151 @@ const CONTROL_ACTIONS = new Set([
   "resolve_exception",
   "waive_exception",
 ]);
+
+function publicRules(
+  status: PublicErrorRule["status"],
+  publicMessage: string,
+  ...internalCodes: readonly string[]
+): readonly PublicErrorRule[] {
+  return internalCodes.map((internalCode) => ({ internalCode, status, publicMessage }));
+}
+
+const TRANSFORMER_PILOT_ERRORS: readonly PublicErrorRule[] = [
+  {
+    internalCode: "authenticated_principal_required",
+    publicCode: "unauthorized",
+    status: 401,
+    publicMessage: "Authenticated principal required",
+  },
+  {
+    internalCode: "transformer_worker_principal_denied",
+    status: 403,
+    publicMessage: "Transformer worker principal required",
+  },
+  ...publicRules(
+    404,
+    "Requested resource was not found",
+    "transformer_pilot_campaign_not_found",
+    "transformer_pilot_rollback_plan_not_found",
+    "transformer_pilot_unit_not_found",
+  ),
+  ...publicRules(
+    409,
+    "Request conflicts with current execution state",
+    "transformer_pilot_adaptive_candidate_handoff_conflict",
+    "transformer_pilot_adaptive_candidate_import_conflict",
+    "transformer_pilot_attempt_not_running",
+    "transformer_pilot_campaign_exists",
+    "transformer_pilot_campaign_not_running",
+    "transformer_pilot_candidate_drift",
+    "transformer_pilot_exception_not_open",
+    "transformer_pilot_fence_expired",
+    "transformer_pilot_fence_not_expired",
+    "transformer_pilot_fence_stale",
+    "transformer_pilot_idempotency_conflict",
+    "transformer_pilot_model_reservation_conflict",
+    "transformer_pilot_pause_invalid",
+    "transformer_pilot_regeneration_resume_blocked",
+    "transformer_pilot_resume_blocked",
+    "transformer_pilot_retry_invalid",
+    "transformer_pilot_routing_settlement_conflict",
+    "transformer_pilot_routing_terminal_conflict",
+    "transformer_pilot_source_drift",
+    "transformer_pilot_wave_execution_incomplete",
+    "transformer_pilot_wave_observation_incomplete",
+  ),
+  ...publicRules(
+    400,
+    "Request validation failed",
+    "json_body_required",
+    "request_id_required",
+    "idempotency_key_required",
+    "evidence_refs_required",
+    "evidence_refs_required_duplicate",
+    "transformer_pilot_adaptive_accounting_invalid",
+    "transformer_pilot_adaptive_budget_cost_invalid",
+    "transformer_pilot_adaptive_budget_invalid",
+    "transformer_pilot_adaptive_candidate_attempt_invalid",
+    "transformer_pilot_adaptive_candidate_attempt_mismatch",
+    "transformer_pilot_adaptive_candidate_digest_mismatch",
+    "transformer_pilot_adaptive_candidate_expiry_invalid",
+    "transformer_pilot_adaptive_candidate_file_modes_invalid",
+    "transformer_pilot_adaptive_candidate_handoff_mismatch",
+    "transformer_pilot_adaptive_candidate_paths_invalid",
+    "transformer_pilot_adaptive_candidate_seal_path_invalid",
+    "transformer_pilot_adaptive_candidate_source_mismatch",
+    "transformer_pilot_attempt_limit_invalid",
+    "transformer_pilot_budget_override_invalid",
+    "transformer_pilot_budget_override_reason_invalid",
+    "transformer_pilot_campaign_invalid",
+    "transformer_pilot_campaign_limit_invalid",
+    "transformer_pilot_campaign_required",
+    "transformer_pilot_cancel_invalid",
+    "transformer_pilot_candidate_digest_invalid",
+    "transformer_pilot_candidate_revision_invalid",
+    "transformer_pilot_changed_paths_required",
+    "transformer_pilot_claim_replay_invalid",
+    "transformer_pilot_claim_required",
+    "transformer_pilot_completion_required",
+    "transformer_pilot_constraint_scope_mismatch",
+    "transformer_pilot_control_invalid",
+    "transformer_pilot_control_required",
+    "transformer_pilot_cost_invalid",
+    "transformer_pilot_crash_required",
+    "transformer_pilot_delivery_approvals_invalid",
+    "transformer_pilot_delivery_approvals_invalid_duplicate",
+    "transformer_pilot_delivery_required",
+    "transformer_pilot_dependency_cycle",
+    "transformer_pilot_dependency_invalid",
+    "transformer_pilot_exception_invalid",
+    "transformer_pilot_failure_code_invalid",
+    "transformer_pilot_lease_duration_invalid",
+    "transformer_pilot_lease_generation_invalid",
+    "transformer_pilot_lease_token_invalid",
+    "transformer_pilot_model_reservation_bound_invalid",
+    "transformer_pilot_model_reservation_provenance_invalid",
+    "transformer_pilot_observation_required",
+    "transformer_pilot_observations_required",
+    "transformer_pilot_observed_at_invalid",
+    "transformer_pilot_regeneration_candidate_binding_mismatch",
+    "transformer_pilot_regeneration_state_invalid",
+    "transformer_pilot_resolution_required",
+    "transformer_pilot_rollback_plan_empty",
+    "transformer_pilot_routing_attempt_mismatch",
+    "transformer_pilot_routing_latency_invalid",
+    "transformer_pilot_routing_settlement_limit_invalid",
+    "transformer_pilot_routing_settlement_mismatch",
+    "transformer_pilot_snapshot_manifest_invalid",
+    "transformer_pilot_source_digest_invalid",
+    "transformer_pilot_source_revision_invalid",
+    "transformer_pilot_unit_duplicate",
+    "transformer_pilot_unit_invalid",
+    "transformer_pilot_units_invalid",
+    "transformer_pilot_verification_invalid",
+    "transformer_pilot_wave_invalid",
+    "transformer_pilot_wave_observation_scope_invalid",
+  ),
+];
+
+const TRANSFORMER_PILOT_DETAIL_CODES = new Set([
+  "transformer_pilot_gate_denied",
+  "transformer_pilot_delivery_denied",
+  "transformer_pilot_constraint_denied",
+]);
+
+const TRANSFORMER_PILOT_DOMAIN_ERRORS: readonly PublicErrorRule[] = [
+  ...publicRules(
+    403,
+    "Transformer authorization denied",
+    "transformer_pilot_gate_denied",
+    "transformer_pilot_delivery_denied",
+  ),
+  ...publicRules(
+    400,
+    "Request validation failed",
+    "transformer_pilot_constraint_denied",
+  ),
+];
 
 type JsonRecord = Record<string, unknown>;
 
@@ -160,50 +310,17 @@ async function json(c: Context<ApiEnv>): Promise<unknown> {
 }
 
 function errorResponse(c: Context<ApiEnv>, error: unknown) {
-  const detail = error instanceof Error ? error.message : "internal_error";
-  const code = detail.split(":", 1)[0]!;
-  if (code === "authenticated_principal_required") {
-    return c.json({ error: "unauthorized", message: "Authenticated principal required" }, 401);
-  }
-  if (code === "transformer_worker_principal_denied") {
-    return c.json(
-      { error: code, message: "Transformer worker principal required" },
-      403,
+  if (
+    error instanceof TransformerDomainError &&
+    TRANSFORMER_PILOT_DETAIL_CODES.has(error.code)
+  ) {
+    return mappedErrorResponse(
+      c,
+      new Error(error.code, { cause: error }),
+      TRANSFORMER_PILOT_DOMAIN_ERRORS,
     );
   }
-  if (code.includes("gate_denied") || code.includes("delivery_denied")) {
-    return c.json({ error: code, message: "Transformer authorization denied" }, 403);
-  }
-  if (code.endsWith("_not_found")) {
-    return c.json({ error: code, message: "Requested resource was not found" }, 404);
-  }
-  if (
-    code.endsWith("_blocked") ||
-    code.endsWith("_conflict") ||
-    code.endsWith("_not_running") ||
-    code.endsWith("_not_open") ||
-    code.endsWith("_stale") ||
-    code.endsWith("_expired") ||
-    code.endsWith("_drift") ||
-    code.endsWith("_incomplete") ||
-    code.endsWith("_exists") ||
-    code.endsWith("_invalid") && code.includes("pause") ||
-    code.endsWith("_invalid") && code.includes("retry")
-  ) {
-    return c.json({ error: code, message: "Request conflicts with current execution state" }, 409);
-  }
-  if (
-    code.endsWith("_required") ||
-    code.endsWith("_invalid") ||
-    code.endsWith("_mismatch") ||
-    code.endsWith("_duplicate") ||
-    code.endsWith("_empty") ||
-    code.endsWith("_cycle") ||
-    code.includes("constraint_denied")
-  ) {
-    return c.json({ error: code, message: "Request validation failed" }, 400);
-  }
-  return c.json({ error: "internal_error", message: "Request could not be completed" }, 500);
+  return mappedErrorResponse(c, error, TRANSFORMER_PILOT_ERRORS);
 }
 
 export class TransformerPilotExecutionService {
@@ -244,7 +361,9 @@ export class TransformerPilotExecutionService {
     productionDeliveryApprovalRefs?: readonly string[],
   ): TransformerGateDecision {
     const decision = this.gate(tenantId, boundary, productionDeliveryApprovalRefs);
-    if (!decision.allowed) throw new Error(`transformer_pilot_gate_denied:${decision.reasons.join(",")}`);
+    if (!decision.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", decision.reasons.join(","));
+    }
     return decision;
   }
 

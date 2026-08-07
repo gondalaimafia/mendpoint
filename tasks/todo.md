@@ -1238,3 +1238,63 @@ Baseline: exact deployed `origin/main` revision `14bee419b7d22999a33a4e91add1984
 Acceptance: no provider request can escape the configured live-eval cost ceiling through missing or untrusted usage; no collection of failed objectives can certify Transformer capability; and only three consistent real-provider successes through the production router can supply live evidence.
 
 Review evidence: the first real run exposed a strict-schema compatibility error and charged all three failed reservations conservatively. The provider required every declared property in the schema's required array, then returned parsed structured content rather than a JSON string. The production adapter now supports both safe envelopes, rejects refusals and truncated output, and retains the same strict local plan parser. A fresh isolated Meta Muse Spark run passed 3 of 3 with exact objective success, consistency 1.000, 8,472 total tokens, and $0.001570 measured and charged spend. The final full workspace tests, every workspace typecheck, the 22-page production build, GA and claims checks, the 90-trial deterministic agent eval, production dependency audit, and diff integrity all pass. Independent final adversarial review reports no P0 or P1 finding. Protected delivery remains pending.
+
+## Mid scale customer readiness closure: 2026-08-07
+
+Baseline: exact `origin/main` revision `4106f4598f1f1b7876d8d46c1e2e2a2c412a9ea7`. The foundational authority is `C:\Users\Talal\Downloads\mendpoint_product_spec.md`; repository documents and website copy are evidence surfaces, not competing specifications.
+
+Research baseline: GitHub App least privilege, short lived tokens, frequent authorization checks, signed webhooks, deletion, security logging, and breach response; NIST SSDF 1.1 and 800-218A; NIST AI RMF Generative AI Profile; OWASP agentic threats and mitigations; OpenTelemetry semantic conventions; SLSA provenance; SCIM and OAuth/OIDC standards. The audit treats a control as complete only when implementation, automated verification, deployed evidence, and named external dependencies agree.
+
+### Final adversarial P1 closure before protected delivery
+
+- [x] Require stable numeric GitHub account identity at the final delivery sink and revoke every legacy installation whose account identity was not independently proven.
+- [x] Replace heuristic API exception mapping with exact allowlists and injected unknown-error regressions.
+- [x] Reject stale, future, or hung feed success evidence in customer readiness.
+- [x] Make customer backup resources strict, complete, encrypted, authenticated, restorable, isolated, ownership-safe, and observable; require explicit external storage and key configuration.
+- [x] Resolve YAML aliases before checking action keys so mutable references cannot hide behind anchors.
+- [x] Bind general Warden pipeline delivery and pull request feedback to immutable numeric repository, installation, account, and pull request identities; restrict PAT delivery to one disposable canary.
+- [x] Fence launcher bootstrap plus API and worker store initialization before any customer mutation or schema migration.
+- [x] Reject zero, missing, or inconsistent production model usage and charge the conservative reservation when Warden or Transformer usage evidence is not trustworthy.
+- [x] Re-run focused tests, full tests, typecheck, build, GA checks, agent evaluations, dependency audit, local process probes, and independent adversarial review before staging.
+
+### P0: truthful and operable customer boundary
+
+- [x] Add explicit `demo`, `pilot`, and `customer` deployment profiles. Customer mode must reject mock GitHub, disabled or local-only feeds, pilot seeding, missing real App credentials, and missing customer authorization before any process or seed mutation.
+- [x] Make capability readiness report GitHub delivery authorization, signed webhook state, worker freshness, feed enablement and freshness, queue recovery, Transformer lane state, schema and writable storage independently; required customer capabilities must return 503 when unavailable.
+- [ ] Build a clean-tenant Warden golden path that joins approved identity, GitHub App install and selection, exact snapshot, change ingestion, impact, verified candidate, attributed human review, exact draft delivery, SCM reconciliation, regeneration, restore, audit export, and observed outcome without duplicate side effects.
+- [ ] Add an exhaustive cross-tenant denial matrix for routes, records, graph state, artifacts, queues, credentials, model routing, review, and SCM delivery. Missing tenant scope must be impossible in customer production constructors.
+- [x] Bind GitHub installations, authenticated setup state, repositories, and tenant authorization to stable numeric account and repository IDs. Mutable logins remain display-only and cannot assign ownership.
+- [x] Replace raw unhandled exception responses with stable error codes plus request IDs and recursively redacted structured logs. Internal paths, SQL, provider payloads, prompts, source, patches, credentials, and resource existence must never leak through an unexpected error response.
+- [x] Pin every CI and deploy action to a reviewed full commit SHA and fail the release gate on mutable action references.
+- [ ] Build, attest, and deploy the tested image digest before claiming supply-chain provenance.
+- [ ] Replace the live `mendpoint.ai` trial, GitLab, unlimited repository, every usage, no-egress, pricing, and outcome claims with the approved claim registry. Add a deployed-site claim crawl gate. This is externally blocked until the website source repository and deployment access are in scope.
+- [x] Replace live WAL filesystem copy backup with a fenced application-consistent, encrypted, authenticated, semantically verified seven-resource backup and exact restore boundary.
+- [ ] Measure RPO and RTO against the selected off-host storage and recovery environment. Keep unmeasured objectives out of customer claims.
+
+### P1: specialist agent capability and customer workflow
+
+- [ ] Wire Transformer objective-only intake through the real blueprint planner, exact connected snapshots, organization constraints, human blueprint review, fenced execution, staged draft waves, reconciliation, exceptions, and reverse dependency restore.
+- [ ] Add Warden structured plan-before-edit, evidence-linked hypotheses, verifier-driven replan, privacy-safe context compaction, approved knowledge digests, sealed checkpoints, and exact crash resume.
+- [ ] Build sealed Warden long-horizon incident repair evaluations for webhook secret rotation, OAuth refresh concurrency, pagination-envelope migration, and unknown-commit payment recovery with hidden behavioral, security, regression, diff, checkpoint, cost, and pass to three graders.
+- [ ] Permit bounded Transformer concurrency across independent repositories while preserving one active unit per repository and dependency fences. Build a four-repository REST v1 to v2 campaign with hidden adaptive recovery, bounded abstention, crash replay, branch drift, regeneration, exact draft delivery, and reverse dependency restore.
+- [ ] Make per-edit evidence, target symbol, precondition, postcondition, rollback, calibrated confidence, risk reason, verifier result, and router rationale mandatory for delivery eligibility; abstain rather than invent missing evidence.
+- [ ] Add a customer Warden campaign surface and tests for owner, stages, thresholds, pause, retry, cancel, exception, rollback, canary status, review, and PR outcomes.
+- [ ] Bind observed SCM, CI, reviewer delta, regression, elapsed effort, support load, route, cost, and consent into an immutable outcome ledger that cannot mix synthetic estimates with observed facts.
+
+### P1: mid scale operations and delivery
+
+- [ ] Replace single-failure-domain SQLite cloud operation with a shared durable state design, versioned object artifacts, stateless API and web, independently scalable worker classes, distributed admission control, and generation-fenced transactional claims. Preserve SQLite only as an explicitly bounded single-node pilot tier.
+- [ ] Add privacy-safe OpenTelemetry traces, metrics, and structured logs across request, queue, worker, model, verifier, database, webhook, and SCM boundaries. Export no source, prompts, credentials, or raw tool content by default.
+- [ ] Build once in CI, emit SBOM and signed provenance, deploy the tested digest, verify exact revision, canary the joined customer journey, and restore the last known good digest automatically on failure.
+- [ ] Add Warden and Transformer load, soak, overload, recovery, and multi-tenant fairness suites with queue age, saturation, storage growth, provider quota, and cost evidence.
+- [ ] Add tenant-safe diagnostics, tested incident runbooks, paging integration boundary, and game-day evidence for bad deploy, stuck queue, uncertain SCM side effect, provider outage, secret compromise, corruption, and restore.
+
+### External acceptance gates
+
+- [ ] Configure a production GitHub App, signed webhook, approved owner-to-tenant binding, selected disposable private repository, and real non-local provider feed before changing Fly from demo to customer profile.
+- [ ] Select managed Postgres, versioned object storage, KMS, telemetry backend, paging receiver, container registry/signing policy, recovery region, residency, retention, RPO, RTO, quotas, and support owner.
+- [ ] Run the clean private canary, independent security test, restore drill, capacity run, and one consented design-partner outcome. External evidence must not be promoted to verified before observation.
+
+Acceptance: Warden can serve a clean mid scale design partner through one joined, recoverable, least privilege, evidence-backed workflow; Transformer can turn an objective into a governed multi-repository campaign; both agents pass sealed long-horizon evaluations and conservative live-model gates; the platform survives bounded failures without data loss or duplicate external effects; public claims match deployed proof exactly.
+
+Review: the immediate repository-controlled release blockers are closed and the settled tree passes the full workspace test command, every workspace typecheck, the 22-page production build, GA/spec/claim/action checks, 90 held-out agent trials with pass at one and pass at three equal to 1.000, a zero-vulnerability production audit, and isolated `/live`, `/ready`, `/health`, and `/version` probes. Independent rereview found no P0 or P1 in the one-way GitHub delivery identity, privileged path safety, or customer Compose topology slices. Current production remains a demo profile, not a customer-ready deployment. The open items above are material mid-scale gaps: joined clean-tenant proof, long-horizon agent controls and evals, objective-to-campaign Transformer intake, shared durable cloud state, telemetry, tested image provenance, capacity evidence, and external provider configuration.

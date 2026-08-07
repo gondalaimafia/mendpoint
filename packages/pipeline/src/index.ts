@@ -2,8 +2,10 @@ import {
   createDb,
   getConsumer,
   getConsumerRepo,
+  getConnectedRepository,
   getGitHubInstallationByInstallationId,
   getScmConnection,
+  listConnectedRepositories,
   getProviderBySlug,
   listMonitoredForProvider,
   listVersionsForProvider,
@@ -38,6 +40,8 @@ import {
   createAppDelivery,
   createGitHubDelivery,
   loadAppCredentials,
+  OctokitGitHubDelivery,
+  resolveGitHubTenantAccountBinding,
   type GitHubDelivery,
 } from "@mendpoint/github";
 import { evaluatePolicy, type PolicyConfig } from "@mendpoint/policy";
@@ -214,17 +218,66 @@ export type PipelineReport = {
   }>;
 };
 
+type PipelineDeliveryResolution = {
+  delivery: GitHubDelivery;
+  githubRepositoryId?: string;
+  githubInstallationId?: string;
+  githubAccountId?: string;
+  assertRepositoryIdentity?: () => Promise<void>;
+};
+
+function resolvePipelineConnectedRepository(
+  db: AppDb,
+  tenantId: string,
+  consumer: { github_owner: string; github_repo: string },
+  repo?: {
+    scm_connection_id: string | null;
+    connected_repository_id: string | null;
+  },
+) {
+  if (!repo?.scm_connection_id || !repo.connected_repository_id) {
+    throw new Error("github_connected_repository_identity_required");
+  }
+  const connected = getConnectedRepository(db, repo.connected_repository_id, tenantId);
+  if (
+    !connected ||
+    connected.status !== "ready" ||
+    connected.connection_id !== repo.scm_connection_id
+  ) {
+    throw new Error("github_connected_repository_identity_mismatch");
+  }
+  const connection = getScmConnection(db, repo.scm_connection_id, tenantId);
+  if (!connection || connection.revoked_at || connection.provider !== "github") {
+    throw new Error("github_app_connection_revoked");
+  }
+  if (
+    connected.owner.toLowerCase() !== consumer.github_owner.toLowerCase() ||
+    connected.name.toLowerCase() !== consumer.github_repo.toLowerCase()
+  ) {
+    throw new Error("github_connected_repository_name_mismatch");
+  }
+  if (!/^[1-9][0-9]{0,19}$/.test(connected.remote_id)) {
+    throw new Error("github_repository_id_invalid");
+  }
+  const repositoryId = Number(connected.remote_id);
+  if (!Number.isSafeInteger(repositoryId)) {
+    throw new Error("github_repository_id_invalid");
+  }
+  return { connected, connection, repositoryId };
+}
+
 export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) {
-  if (input.github) return () => input.github!;
+  if (input.github) {
+    return (): PipelineDeliveryResolution => ({ delivery: input.github! });
+  }
   const mode = process.env.GITHUB_MODE ?? "mock";
   if (mode !== "real") {
     const mock = createGitHubDelivery(mode);
-    return () => mock;
+    return (): PipelineDeliveryResolution => ({ delivery: mock });
   }
   const appCredentials = loadAppCredentials();
-  const legacy = process.env.GITHUB_TOKEN?.trim()
-    ? createGitHubDelivery("real")
-    : null;
+  const legacyToken = process.env.GITHUB_TOKEN?.trim();
+  const legacy = legacyToken ? new OctokitGitHubDelivery(legacyToken) : null;
   const appDeliveries = new Map<string, GitHubDelivery>();
   return (
     consumer: {
@@ -233,13 +286,63 @@ export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) 
       github_owner: string;
       github_repo: string;
     },
-    repo?: { scm_connection_id: string | null },
-  ): GitHubDelivery => {
+    repo?: {
+      scm_connection_id: string | null;
+      connected_repository_id: string | null;
+    },
+  ): PipelineDeliveryResolution => {
+    const repository = resolvePipelineConnectedRepository(
+      db,
+      input.tenantId,
+      consumer,
+      repo,
+    );
     const installationId = consumer.installation_id;
     if (!installationId) {
-      if (consumer.github_delivery_mode === "legacy_pat" && legacy) return legacy;
       if (consumer.github_delivery_mode === "revoked") {
         throw new Error("github_app_installation_revoked");
+      }
+      if (consumer.github_delivery_mode === "legacy_pat" && legacy) {
+        if (process.env.MENDPOINT_DEPLOYMENT_PROFILE?.trim().toLowerCase() === "customer") {
+          throw new Error("github_pat_customer_profile_forbidden");
+        }
+        if (process.env.MENDPOINT_DEPLOYMENT_CLASS?.trim() !== "disposable_canary") {
+          throw new Error("github_pat_disposable_canary_required");
+        }
+        if (process.env.MENDPOINT_TENANT_ID?.trim() !== input.tenantId) {
+          throw new Error("github_pat_tenant_not_pinned");
+        }
+        const pinned = listConnectedRepositories(db, input.tenantId).filter((candidate) => {
+          if (candidate.status !== "ready") return false;
+          const candidateConnection = getScmConnection(
+            db,
+            candidate.connection_id,
+            input.tenantId,
+          );
+          return Boolean(
+            candidateConnection &&
+            candidateConnection.provider === "github" &&
+            !candidateConnection.revoked_at &&
+            candidateConnection.credential_ref === "env://GITHUB_TOKEN",
+          );
+        });
+        if (
+          repository.connection.credential_ref !== "env://GITHUB_TOKEN" ||
+          pinned.length !== 1 ||
+          pinned[0]?.id !== repository.connected.id
+        ) {
+          throw new Error("github_pat_repository_not_pinned");
+        }
+        return {
+          delivery: legacy,
+          githubRepositoryId: repository.connected.remote_id,
+          assertRepositoryIdentity: () =>
+            legacy.assertRepositoryIdentity(
+              repository.connected.owner,
+              repository.connected.name,
+              repository.repositoryId,
+            ),
+        };
       }
       throw new Error("github_app_installation_required");
     }
@@ -259,6 +362,16 @@ export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) 
     const verified = getGitHubInstallationByInstallationId(db, installationId);
     if (!verified || verified.tenant_id !== input.tenantId) {
       throw new Error("github_app_installation_tenant_mismatch");
+    }
+    if (!verified.account_id) {
+      throw new Error("github_app_installation_account_identity_required");
+    }
+    const expectedAccountId = resolveGitHubTenantAccountBinding(input.tenantId);
+    if (!expectedAccountId) {
+      throw new Error("github_app_tenant_account_binding_required");
+    }
+    if (verified.account_id !== expectedAccountId) {
+      throw new Error("github_app_installation_account_identity_mismatch");
     }
     if (verified.suspended_at) {
       throw new Error("github_app_installation_suspended");
@@ -301,26 +414,22 @@ export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) 
       (candidate) =>
         candidate.owner?.toLowerCase() === consumer.github_owner.toLowerCase() &&
         candidate.name?.toLowerCase() === consumer.github_repo.toLowerCase() &&
-        Number.isSafeInteger(candidate.id),
+        candidate.id === repository.repositoryId,
     );
     if (!authorizedRepository?.id) {
-      throw new Error("github_app_repository_not_authorized");
-    }
-    if (repo?.scm_connection_id) {
-      const connection = getScmConnection(
-        db,
-        repo.scm_connection_id,
-        input.tenantId,
+      const sameName = repositories.some(
+        (candidate) =>
+          candidate.owner?.toLowerCase() === consumer.github_owner.toLowerCase() &&
+          candidate.name?.toLowerCase() === consumer.github_repo.toLowerCase(),
       );
-      if (!connection || connection.revoked_at) {
-        throw new Error("github_app_connection_revoked");
-      }
-      if (
-        connection.provider === "github" &&
-        connection.external_account_id !== installationId
-      ) {
-        throw new Error("github_app_connection_mismatch");
-      }
+      throw new Error(
+        sameName
+          ? "github_app_repository_identity_mismatch"
+          : "github_app_repository_not_authorized",
+      );
+    }
+    if (repository.connection.external_account_id !== installationId) {
+      throw new Error("github_app_connection_mismatch");
     }
     const key = `${appCredentials.appId}:${installationId}:${authorizedRepository.id}`;
     let delivery = appDeliveries.get(key);
@@ -332,7 +441,12 @@ export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) 
       );
       appDeliveries.set(key, delivery);
     }
-    return delivery;
+    return {
+      delivery,
+      githubRepositoryId: repository.connected.remote_id,
+      githubInstallationId: installationId,
+      githubAccountId: verified.account_id,
+    };
   };
 }
 
@@ -1404,7 +1518,22 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     if (shouldDeliver) {
       assertActive();
       try {
-        const github = deliveryFor(consumer, repo);
+        const resolution = deliveryFor(consumer, repo);
+        await resolution.assertRepositoryIdentity?.();
+        updateMigrationPrDelivery(db, prId, {
+          status: "delivery_pending",
+          body: prBodyFinal,
+          ...(resolution.githubRepositoryId
+            ? { githubRepositoryId: resolution.githubRepositoryId }
+            : {}),
+          ...(resolution.githubInstallationId
+            ? { githubInstallationId: resolution.githubInstallationId }
+            : {}),
+          ...(resolution.githubAccountId
+            ? { githubAccountId: resolution.githubAccountId }
+            : {}),
+        });
+        const github = resolution.delivery;
         await github.createBranch(
           consumer.github_owner,
           consumer.github_repo,

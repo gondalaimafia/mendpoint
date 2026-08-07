@@ -51,6 +51,7 @@ export type NormalizedWebhookAction =
       type: "installation";
       action: string;
       installationId: number;
+      accountId?: number;
       accountLogin?: string;
       permissions?: Record<string, string>;
       repositorySelection?: "selected" | "all";
@@ -63,6 +64,9 @@ export type NormalizedWebhookAction =
       action: string;
       owner: string;
       repo: string;
+      repositoryId?: number;
+      accountId?: number;
+      installationId?: number;
       number: number;
       merged: boolean;
       state: string;
@@ -93,7 +97,7 @@ export function normalizeGitHubEvent(
     const inst = payload.installation as
       | {
           id?: number;
-          account?: { login?: string };
+          account?: { id?: number; login?: string };
           permissions?: Record<string, string>;
           repository_selection?: "selected" | "all";
         }
@@ -114,6 +118,9 @@ export function normalizeGitHubEvent(
       type: "installation",
       action: String(payload.action ?? ""),
       installationId: Number(inst?.id ?? 0),
+      ...(Number.isSafeInteger(inst?.account?.id) && Number(inst?.account?.id) > 0
+        ? { accountId: inst!.account!.id }
+        : {}),
       accountLogin: inst?.account?.login,
       permissions: inst?.permissions,
       repositorySelection: inst?.repository_selection,
@@ -134,10 +141,12 @@ export function normalizeGitHubEvent(
       labels?: Array<{ name?: string }>;
     };
     const repo = payload.repository as {
+      id?: number;
       name?: string;
-      owner?: { login?: string };
+      owner?: { id?: number; login?: string };
       full_name?: string;
     };
+    const installation = payload.installation as { id?: number } | undefined;
     const owner =
       repo?.owner?.login ?? (repo?.full_name ? repo.full_name.split("/")[0] : "") ?? "";
     return {
@@ -145,6 +154,15 @@ export function normalizeGitHubEvent(
       action: String(payload.action ?? ""),
       owner,
       repo: repo?.name ?? "",
+      ...(Number.isSafeInteger(repo?.id) && Number(repo?.id) > 0
+        ? { repositoryId: repo!.id }
+        : {}),
+      ...(Number.isSafeInteger(repo?.owner?.id) && Number(repo?.owner?.id) > 0
+        ? { accountId: repo!.owner!.id }
+        : {}),
+      ...(Number.isSafeInteger(installation?.id) && Number(installation?.id) > 0
+        ? { installationId: installation!.id }
+        : {}),
       number: Number(pr?.number ?? 0),
       merged: Boolean(pr?.merged),
       state: String(pr?.state ?? ""),

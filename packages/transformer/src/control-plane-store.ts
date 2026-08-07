@@ -3,6 +3,10 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { resolveRecipe, type RecipeReference } from "./recipe.js";
+import {
+  TransformerDomainError,
+  type TransformerDomainErrorCode,
+} from "./types.js";
 
 const CONTRACT_VERSION = 1 as const;
 const SCHEMA_VERSION = 2;
@@ -30,6 +34,16 @@ export type AttemptState = "queued" | "running" | "succeeded" | "failed" | "canc
 export type ApprovalState = "pending" | "approved" | "rejected" | "revoked";
 export type ExceptionState = "open" | "acknowledged" | "resolved" | "waived";
 export type PullRequestState = "draft" | "open" | "merged" | "closed";
+type TransformerTransitionEntity =
+  | "campaign"
+  | "blueprint"
+  | "bsg"
+  | "exception"
+  | "unit"
+  | "wave"
+  | "attempt"
+  | "approval"
+  | "pr";
 
 type Identity = { tenantId: string; id: string; campaignId: string };
 export type Versioned<T> = T & {
@@ -408,10 +422,11 @@ function assertTransition<T extends string>(
   transitions: Record<T, readonly T[]>,
   from: T,
   to: T,
-  entity: string,
+  entity: TransformerTransitionEntity,
 ) {
   if (!transitions[from]?.includes(to)) {
-    throw new Error(`invalid_${entity}_transition:${from}->${to}`);
+    const code: TransformerDomainErrorCode = `invalid_${entity}_transition`;
+    throw new TransformerDomainError(code, `${from}->${to}`);
   }
 }
 
@@ -1017,7 +1032,9 @@ export class TransformerControlPlaneStore {
       tenantId,
       id,
       (current) => {
-        if (current.state !== "draft") throw new Error(`invalid_bsg_transition:${current.state}->locked`);
+        if (current.state !== "draft") {
+          throw new TransformerDomainError("invalid_bsg_transition", `${current.state}->locked`);
+        }
         if (!current.nodes.length) throw new Error("nonempty_bsg_required");
         return { ...current, state: "locked" };
       },

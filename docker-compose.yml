@@ -22,25 +22,48 @@ services:
       NODE_ENV: production
       API_PORT: "3001"
       API_AUTH: required
+      MENDPOINT_DEPLOYMENT_PROFILE: ${MENDPOINT_DEPLOYMENT_PROFILE:-demo}
       WEB_URL: ${WEB_URL:-http://localhost:3000}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       GITHUB_MODE: ${GITHUB_MODE:?Set GITHUB_MODE to mock or real}
       MENDPOINT_DEPLOYMENT_CLASS: ${MENDPOINT_DEPLOYMENT_CLASS:-customer}
+      MENDPOINT_FEED_POLLING_ENABLED: ${MENDPOINT_FEED_POLLING_ENABLED:-0}
+      POLL_LOCAL_ONLY: ${POLL_LOCAL_ONLY:-1}
+      MENDPOINT_PILOT_SEED: ${MENDPOINT_PILOT_SEED:-0}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
       GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-}
-      GITHUB_APP_OWNER_TENANT_BINDINGS: ${GITHUB_APP_OWNER_TENANT_BINDINGS:-}
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS: ${GITHUB_APP_ACCOUNT_TENANT_BINDINGS:-}
       RATE_LIMIT_MAX: "300"
       RATE_LIMIT_WINDOW_MS: "60000"
       MENDPOINT_DATA_DIR: /app/data
       MENDPOINT_REPOS_DIR: /workspace/repos
       MENDPOINT_APPLICATION_DATA_KEY: ${MENDPOINT_APPLICATION_DATA_KEY:?Set a distinct application data key}
+      MENDPOINT_BACKUP_SOURCE_ROOT: ${MENDPOINT_BACKUP_SOURCE_ROOT:-/app/data}
+      MENDPOINT_BACKUP_OUTPUT_ROOT: ${MENDPOINT_BACKUP_OUTPUT_ROOT:-/backup/mendpoint}
+      MENDPOINT_BACKUP_FENCE_ROOT: ${MENDPOINT_BACKUP_FENCE_ROOT:-/app/data/.backup-fence}
+      MENDPOINT_BACKUP_EVIDENCE_PATH: ${MENDPOINT_BACKUP_EVIDENCE_PATH:-/app/data/.backup-state/last-verified.json}
+      MENDPOINT_BACKUP_STORAGE_CLASS: ${MENDPOINT_BACKUP_STORAGE_CLASS:-durable_isolated_mount}
+      MENDPOINT_BACKUP_KEY: ${MENDPOINT_BACKUP_KEY:-}
+      MENDPOINT_BACKUP_KEY_ID: ${MENDPOINT_BACKUP_KEY_ID:-}
+      MENDPOINT_BACKUP_DATABASE_PATH: ${MENDPOINT_BACKUP_DATABASE_PATH:-mendpoint.sqlite}
+      MENDPOINT_BACKUP_GRAPH_PATH: ${MENDPOINT_BACKUP_GRAPH_PATH:-graph-learn.sqlite}
+      MENDPOINT_BACKUP_CHANGE_SOURCES_PATH: ${MENDPOINT_BACKUP_CHANGE_SOURCES_PATH:-change-sources.sqlite}
+      MENDPOINT_BACKUP_TRANSFORMER_CONTROL_PLANE_PATH: ${MENDPOINT_BACKUP_TRANSFORMER_CONTROL_PLANE_PATH:-transformer-control-plane.sqlite}
+      MENDPOINT_BACKUP_TRANSFORMER_PILOT_PATH: ${MENDPOINT_BACKUP_TRANSFORMER_PILOT_PATH:-transformer-pilot.sqlite}
+      MENDPOINT_BACKUP_ARTIFACTS_PATH: ${MENDPOINT_BACKUP_ARTIFACTS_PATH:-.}
+      MENDPOINT_BACKUP_CONFIGURATION_PATH: ${MENDPOINT_BACKUP_CONFIGURATION_PATH:-recovery-config.json}
+      MENDPOINT_BACKUP_WAIT_TIMEOUT_MS: ${MENDPOINT_BACKUP_WAIT_TIMEOUT_MS:-30000}
+      MENDPOINT_RESTORE_BACKUP_ROOT: ${MENDPOINT_RESTORE_BACKUP_ROOT:-}
+      MENDPOINT_RESTORE_TARGET_ROOT: ${MENDPOINT_RESTORE_TARGET_ROOT:-/restore/mendpoint}
     volumes:
       - mendpoint-data:/app/data
       - mendpoint-runs:/app/runs
       - mendpoint-github:/app/.mendpoint
+      - mendpoint-backups:/backup
+      - mendpoint-restore:/restore
       - ${MENDPOINT_REPOS_HOST_DIR:-./fixtures/consumers}:/workspace/repos/${MENDPOINT_TENANT_ID:-tenant_default}
     healthcheck:
       test:
@@ -64,10 +87,14 @@ services:
       - "127.0.0.1:3000:3000"
     environment:
       NODE_ENV: production
+      MENDPOINT_DEPLOYMENT_PROFILE: ${MENDPOINT_DEPLOYMENT_PROFILE:-demo}
       MENDPOINT_API_URL: http://api:3001
       MENDPOINT_API_KEY: ${MENDPOINT_API_KEY:-}
       MENDPOINT_WEB_ACCESS_TOKEN: ${MENDPOINT_WEB_ACCESS_TOKEN:?Set MENDPOINT_WEB_ACCESS_TOKEN}
       MENDPOINT_WEB_ALLOWED_ORIGINS: ${MENDPOINT_WEB_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      MENDPOINT_WORKER_HEARTBEAT_PATH: /app/data/worker-heartbeat.json
+    volumes:
+      - mendpoint-data:/app/data:ro
     depends_on:
       api:
         condition: service_healthy
@@ -79,17 +106,25 @@ services:
       target: worker
     environment:
       NODE_ENV: production
+      MENDPOINT_DEPLOYMENT_PROFILE: ${MENDPOINT_DEPLOYMENT_PROFILE:-demo}
       GITHUB_MODE: ${GITHUB_MODE:?Set GITHUB_MODE to mock or real}
       MENDPOINT_DEPLOYMENT_CLASS: ${MENDPOINT_DEPLOYMENT_CLASS:-customer}
+      MENDPOINT_FEED_POLLING_ENABLED: ${MENDPOINT_FEED_POLLING_ENABLED:-0}
+      POLL_LOCAL_ONLY: ${POLL_LOCAL_ONLY:-1}
+      MENDPOINT_PILOT_SEED: ${MENDPOINT_PILOT_SEED:-0}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
       GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-}
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS: ${GITHUB_APP_ACCOUNT_TENANT_BINDINGS:-}
       MENDPOINT_DATA_DIR: /app/data
       MENDPOINT_REPOS_DIR: /workspace/repos
       MENDPOINT_TENANT_ID: ${MENDPOINT_TENANT_ID:-tenant_default}
+      MENDPOINT_BACKUP_FENCE_ROOT: ${MENDPOINT_BACKUP_FENCE_ROOT:-/app/data/.backup-fence}
+      MENDPOINT_WORKER_HEARTBEAT_PATH: /app/data/worker-heartbeat.json
       POLL_INTERVAL_MS: "5000"
       JOB_LEASE_MS: "900000"
+    command: ["node", "--import", "tsx", "apps/worker/src/cli.ts", "run-service", "--interval", "5000"]
     volumes:
       - mendpoint-data:/app/data
       - mendpoint-runs:/app/runs
@@ -104,3 +139,5 @@ volumes:
   mendpoint-data:
   mendpoint-runs:
   mendpoint-github:
+  mendpoint-backups:
+  mendpoint-restore:

@@ -60,7 +60,8 @@ import {
   recordGitHubWebhookDelivery,
   completeGitHubWebhookDelivery,
   failGitHubWebhookDelivery,
-  findPrByRepositoryAndNumber,
+  findPrByGitHubIdentityAndNumber,
+  updateMigrationPrDelivery,
   insertApiVersionIfAbsent,
   claimFeedTenantDispatch,
   completeFeedTenantDispatch,
@@ -278,7 +279,7 @@ describe("db", () => {
     expect(indexes.map((index) => index.name)).toContain("jobs_due_idx");
   });
 
-  it("preserves verified App bindings and revokes unverifiable upgrades", () => {
+  it("revokes legacy App bindings until stable account identity is independently proven", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-app-upgrade-"));
     dirs.push(dir);
     const path = join(dir, "legacy.sqlite");
@@ -324,22 +325,99 @@ describe("db", () => {
     `);
     legacy.close();
 
-    const db = createDb(path);
+    const previousBindings = process.env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS;
+    process.env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS =
+      '{"7123456":"tenant_default"}';
+    const db = (() => {
+      try {
+        return createDb(path);
+      } finally {
+        if (previousBindings === undefined) {
+          delete process.env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS;
+        } else {
+          process.env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS = previousBindings;
+        }
+      }
+    })();
     dbs.push(db);
     expect(
       db.raw
         .prepare("SELECT id, github_delivery_mode FROM consumers ORDER BY id")
         .all(),
     ).toEqual([
-      { id: "app-consumer", github_delivery_mode: "app" },
+      { id: "app-consumer", github_delivery_mode: "revoked" },
       { id: "pat-consumer", github_delivery_mode: "legacy_pat" },
       { id: "stale-consumer", github_delivery_mode: "revoked" },
     ]);
     expect(
       db.raw
-        .prepare("SELECT installation_id FROM consumers WHERE id = 'stale-consumer'")
-        .get(),
-    ).toEqual({ installation_id: null });
+        .prepare("SELECT id, installation_id FROM consumers WHERE id IN ('app-consumer', 'stale-consumer') ORDER BY id")
+        .all(),
+    ).toEqual([
+      { id: "app-consumer", installation_id: null },
+      { id: "stale-consumer", installation_id: null },
+    ]);
+    expect(
+      db.raw
+        .prepare("SELECT installation_id, account_id FROM github_installations ORDER BY installation_id")
+        .all(),
+    ).toEqual([
+      { installation_id: "12345", account_id: null },
+      { installation_id: "67890", account_id: null },
+    ]);
+  });
+
+  it("adds one-way delivery identity binding to legacy migration pull requests", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-pr-identity-upgrade-"));
+    dirs.push(dir);
+    const path = join(dir, "legacy.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE migration_prs (
+        id TEXT PRIMARY KEY,
+        change_id TEXT NOT NULL,
+        consumer_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        branch_name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        risk TEXT NOT NULL,
+        patch_unified TEXT NOT NULL,
+        github_pr_number INTEGER,
+        github_pr_url TEXT,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT
+      );
+      INSERT INTO migration_prs
+        (id, change_id, consumer_id, title, body, branch_name, status, risk,
+         patch_unified, github_pr_number, created_at)
+      VALUES
+        ('legacy-pr', 'change-1', 'consumer-1', 'Legacy', '', 'branch', 'draft',
+         'breaking', '', 7, '2026-01-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    const db = createDb(path);
+    dbs.push(db);
+    expect(() =>
+      updateMigrationPrDelivery(db, "legacy-pr", {
+        status: "draft",
+        githubPrNumber: 7,
+        githubRepositoryId: "77",
+        githubInstallationId: "70001",
+        githubAccountId: "7123456",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      db.raw.prepare(
+        "UPDATE migration_prs SET github_pr_number = 8 WHERE id = 'legacy-pr'",
+      ).run(),
+    ).toThrow("migration_pr_delivery_identity_immutable");
+    expect(() =>
+      db.raw.prepare(
+        "UPDATE migration_prs SET github_repository_id = '88' WHERE id = 'legacy-pr'",
+      ).run(),
+    ).toThrow("migration_pr_delivery_identity_immutable");
   });
 
   it("boots on a pre-slice agent_runs schema and adds job_id before its unique index", () => {
@@ -791,24 +869,46 @@ describe("db", () => {
     upsertGitHubInstallation(db, {
       id: newId(),
       installationId: "42",
+      accountId: "7123456",
       accountLogin: "acme-co",
       tenantId: id,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     });
     expect(listGitHubInstallations(db)).toHaveLength(1);
+    expect(listGitHubInstallations(db)[0]?.account_id).toBe("7123456");
     expect(listGitHubInstallations(db, id)).toHaveLength(1);
     expect(listGitHubInstallations(db, "tenant_default")).toEqual([]);
     expect(() =>
       upsertGitHubInstallation(db, {
         id: newId(),
         installationId: "42",
+        accountId: "7123456",
         accountLogin: "attacker",
         tenantId: "tenant_default",
         createdAt: nowIso(),
         updatedAt: nowIso(),
       }),
     ).toThrow("github_installation_tenant_mismatch");
+    upsertGitHubInstallation(db, {
+      id: newId(),
+      installationId: "42",
+      accountId: "7123456",
+      accountLogin: "acme-renamed",
+      tenantId: id,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    });
+    expect(listGitHubInstallations(db, id)[0]?.account_login).toBe("acme-renamed");
+    expect(() => upsertGitHubInstallation(db, {
+      id: newId(),
+      installationId: "42",
+      accountId: "8123456",
+      accountLogin: "acme-renamed",
+      tenantId: id,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    })).toThrow("github_installation_account_mismatch");
   });
 
   it("isolates tenant-owned durable records and findings", () => {
@@ -1520,6 +1620,7 @@ describe("db", () => {
       state: "s".repeat(43),
       tenantId: "tenant_default",
       principalId: "principal-a",
+      expectedAccountId: "7123456",
       createdAt: "2026-01-01T00:00:00.000Z",
       expiresAt: "2026-01-01T00:10:00.000Z",
     });
@@ -1540,6 +1641,7 @@ describe("db", () => {
     upsertGitHubInstallation(db, {
       id: "installation-a",
       installationId: "12345",
+      accountId: "7123456",
       accountLogin: "gondalaimafia",
       permissions: {
         metadata: "read",
@@ -1556,6 +1658,7 @@ describe("db", () => {
     upsertGitHubInstallation(db, {
       id: "installation-a",
       installationId: "12345",
+      accountId: "7123456",
       accountLogin: "gondalaimafia",
       tenantId: "tenant_default",
       permissions: {
@@ -1574,6 +1677,7 @@ describe("db", () => {
     upsertGitHubInstallation(db, {
       id: "installation-a",
       installationId: "12345",
+      accountId: "7123456",
       accountLogin: "gondalaimafia",
       tenantId: "tenant_default",
       permissions: {
@@ -1610,6 +1714,54 @@ describe("db", () => {
     ).toEqual({ status: "invalid" });
   });
 
+  it("rejects a stable account mismatch without consuming install state", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-github-account-mismatch-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    createGitHubInstallState(db, {
+      state: "a".repeat(43),
+      tenantId: "tenant_default",
+      principalId: "principal-a",
+      expectedAccountId: "7123456",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-01T00:10:00.000Z",
+    });
+    upsertGitHubInstallation(db, {
+      id: "installation-mismatch",
+      installationId: "92345",
+      accountId: "8123456",
+      accountLogin: "recycled-login",
+      tenantId: "tenant_default",
+      permissions: {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+        checks: "read",
+      },
+      repositories: [{ id: 99, owner: "recycled-login", name: "private-repo" }],
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:01:00.000Z",
+    });
+    const input = {
+      state: "a".repeat(43),
+      tenantId: "tenant_default",
+      principalId: "principal-a",
+      installationId: "92345",
+      setupAction: "install" as const,
+      now: "2026-01-01T00:02:00.000Z",
+    };
+    expect(completeGitHubInstallState(db, input)).toEqual({
+      status: "account_identity_mismatch",
+    });
+    expect(completeGitHubInstallState(db, input)).toEqual({
+      status: "account_identity_mismatch",
+    });
+    expect(db.raw.prepare(
+      "SELECT consumed_at FROM github_install_states",
+    ).get()).toEqual({ consumed_at: null });
+  });
+
   it("completes a verified first installation before a consumer is created", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-github-first-install-"));
     dirs.push(dir);
@@ -1624,12 +1776,14 @@ describe("db", () => {
       state: "f".repeat(43),
       tenantId: "tenant_default",
       principalId: "principal-first",
+      expectedAccountId: "7123456",
       createdAt: "2026-01-01T00:00:00.000Z",
       expiresAt: "2026-01-01T00:10:00.000Z",
     });
     upsertGitHubInstallation(db, {
       id: "installation-first",
       installationId: "54321",
+      accountId: "7123456",
       accountLogin: "gondalaimafia",
       tenantId: "tenant_default",
       repositorySelection: "all",
@@ -1754,6 +1908,7 @@ describe("db", () => {
     upsertGitHubInstallation(db, {
       id: "suspended-first",
       installationId: "70001",
+      accountId: "7123456",
       accountLogin: "acme",
       tenantId: "tenant_default",
       suspendedAt: "2026-01-01T00:00:00.000Z",
@@ -1763,6 +1918,7 @@ describe("db", () => {
     upsertGitHubInstallation(db, {
       id: "stale-created",
       installationId: "70001",
+      accountId: "7123456",
       accountLogin: "acme",
       tenantId: "tenant_default",
       permissions,
@@ -1781,6 +1937,7 @@ describe("db", () => {
     upsertGitHubInstallation(db, {
       id: "unsuspended",
       installationId: "70001",
+      accountId: "7123456",
       accountLogin: "acme",
       tenantId: "tenant_default",
       suspendedAt: null,
@@ -1799,6 +1956,7 @@ describe("db", () => {
     upsertGitHubInstallation(db, {
       id: "deleted-first",
       installationId: "70002",
+      accountId: "7123456",
       accountLogin: "acme",
       tenantId: "tenant_default",
       deletedAt: "2026-01-01T00:00:00.000Z",
@@ -1808,6 +1966,7 @@ describe("db", () => {
     upsertGitHubInstallation(db, {
       id: "stale-created-after-delete",
       installationId: "70002",
+      accountId: "7123456",
       accountLogin: "acme",
       tenantId: "tenant_default",
       permissions,
@@ -1825,7 +1984,7 @@ describe("db", () => {
     ).toBeUndefined();
   });
 
-  it("matches webhook pull requests by repository and number", () => {
+  it("matches webhook pull requests only by stable GitHub identity", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-pr-identity-"));
     dirs.push(dir);
     const db = createDb(join(dir, "t.sqlite"));
@@ -1844,13 +2003,87 @@ describe("db", () => {
         .prepare(
           `INSERT INTO migration_prs
            (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified,
-            github_pr_number, created_at)
-           VALUES (?, 'change-1', ?, ?, '', ?, 'open', 'breaking', '', 7, ?)`,
+            github_pr_number, github_repository_id, github_installation_id, github_account_id,
+            created_at)
+           VALUES (?, 'change-1', ?, ?, '', ?, 'open', 'breaking', '', 7, ?, ?, ?, ?)`,
         )
-        .run(`pr-${suffix}`, `consumer-${suffix}`, `title-${suffix}`, `branch-${suffix}`, at);
+        .run(
+          `pr-${suffix}`,
+          `consumer-${suffix}`,
+          `title-${suffix}`,
+          `branch-${suffix}`,
+          suffix === "a" ? "77" : "88",
+          suffix === "a" ? "70001" : "70002",
+          suffix === "a" ? "7123456" : "8123456",
+          at,
+        );
     }
-    expect(findPrByRepositoryAndNumber(db, "ACME", "repo-b", 7)?.id).toBe("pr-b");
-    expect(findPrByRepositoryAndNumber(db, "acme", "missing", 7)).toBeUndefined();
+    expect(
+      findPrByGitHubIdentityAndNumber(db, {
+        repositoryId: "88",
+        installationId: "70002",
+        accountId: "8123456",
+        number: 7,
+      })?.id,
+    ).toBe("pr-b");
+    expect(
+      findPrByGitHubIdentityAndNumber(db, {
+        repositoryId: "77",
+        installationId: "70002",
+        accountId: "8123456",
+        number: 7,
+      }),
+    ).toBeUndefined();
+    expect(() =>
+      updateMigrationPrDelivery(db, "pr-b", {
+        status: "draft",
+        githubPrNumber: 7,
+        githubRepositoryId: "88",
+        githubInstallationId: "70002",
+        githubAccountId: "8123456",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      updateMigrationPrDelivery(db, "pr-b", {
+        status: "draft",
+        githubPrNumber: 7,
+        githubRepositoryId: "99",
+        githubInstallationId: "70002",
+        githubAccountId: "8123456",
+      }),
+    ).toThrow("migration_pr_delivery_identity_mismatch");
+    expect(() =>
+      updateMigrationPrDelivery(db, "pr-b", {
+        status: "draft",
+        githubPrNumber: 8,
+        githubRepositoryId: "88",
+        githubInstallationId: "70002",
+        githubAccountId: "8123456",
+      }),
+    ).toThrow("migration_pr_delivery_identity_mismatch");
+    expect(() =>
+      db.raw.prepare(
+        "UPDATE migration_prs SET github_account_id = '9999999' WHERE id = 'pr-b'",
+      ).run(),
+    ).toThrow("migration_pr_delivery_identity_immutable");
+
+    db.raw.prepare(
+      `INSERT INTO migration_prs
+       (id, change_id, consumer_id, title, body, branch_name, status, risk,
+        patch_unified, github_pr_number, github_repository_id,
+        github_installation_id, github_account_id, created_at)
+       VALUES
+       ('pr-duplicate', 'change-1', 'consumer-a', 'duplicate', '', 'duplicate',
+        'open', 'breaking', '', 7, '88', '70002', '8123456', ?)`,
+    ).run(at);
+    expect(
+      findPrByGitHubIdentityAndNumber(db, {
+        repositoryId: "88",
+        installationId: "70002",
+        accountId: "8123456",
+        number: 7,
+      }),
+    ).toBeUndefined();
   });
 
   it("deduplicates provider versions atomically by content", () => {

@@ -96,6 +96,127 @@ describe("public deployment health", () => {
     });
   });
 
+  it("fails when customer Warden discovery is disabled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-customer-feed-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    writeFileSync(
+      heartbeatPath,
+      JSON.stringify({
+        ok: true,
+        recordedAt: new Date().toISOString(),
+        feedPollingEnabled: false,
+        feedPollOk: true,
+        jobs: { failed: 0 },
+      }),
+    );
+    process.env.MENDPOINT_DEPLOYMENT_PROFILE = "customer";
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    const response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      checks: {
+        worker: {
+          ok: false,
+          feedPollingEnabled: false,
+          reason: "customer_feed_polling_disabled",
+        },
+      },
+    });
+  });
+
+  it("requires a configured schedule and an observed successful customer feed poll", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-customer-feed-proof-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    const heartbeat = (feedScheduleCount: number, feedLastSuccessAt?: string) => ({
+      ok: true,
+      recordedAt: new Date().toISOString(),
+      feedPollingEnabled: true,
+      feedPollOk: true,
+      feedScheduleCount,
+      feedStaleAfterMs: 60_000,
+      ...(feedLastSuccessAt ? { feedLastSuccessAt } : {}),
+      jobs: { failed: 0 },
+    });
+    process.env.MENDPOINT_DEPLOYMENT_PROFILE = "customer";
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    writeFileSync(heartbeatPath, JSON.stringify(heartbeat(0)));
+    let response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      checks: { worker: { reason: "customer_feed_not_observed", feedScheduleCount: 0 } },
+    });
+
+    writeFileSync(heartbeatPath, JSON.stringify(heartbeat(1)));
+    response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      checks: { worker: { reason: "customer_feed_not_observed", feedScheduleCount: 1 } },
+    });
+
+    const observedAt = new Date().toISOString();
+    writeFileSync(heartbeatPath, JSON.stringify(heartbeat(1, observedAt)));
+    response = await GET();
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      checks: {
+        worker: {
+          ok: true,
+          feedScheduleCount: 1,
+          feedLastSuccessAt: observedAt,
+        },
+      },
+    });
+  });
+
+  it("rejects stale, future, and over-bound in-progress customer feed evidence", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-customer-feed-freshness-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    const now = Date.now();
+    const heartbeat = (feedLastSuccessAt: string, feedPollStartedAt?: string) => ({
+      ok: true,
+      recordedAt: new Date(now).toISOString(),
+      feedPollingEnabled: true,
+      feedPollOk: true,
+      feedScheduleCount: 1,
+      feedLastSuccessAt,
+      feedStaleAfterMs: 60_000,
+      ...(feedPollStartedAt ? { feedPollStartedAt } : {}),
+      jobs: { failed: 0 },
+    });
+    process.env.MENDPOINT_DEPLOYMENT_PROFILE = "customer";
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    for (const value of [
+      heartbeat(new Date(now - 60_001).toISOString()),
+      heartbeat(new Date(now + 60_001).toISOString()),
+      heartbeat(
+        new Date(now - 1_000).toISOString(),
+        new Date(now - 60_001).toISOString(),
+      ),
+    ]) {
+      writeFileSync(heartbeatPath, JSON.stringify(value));
+      const response = await GET();
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toMatchObject({
+        ok: false,
+        checks: { worker: { reason: "customer_feed_not_fresh" } },
+      });
+    }
+  });
+
   it("fails while an enabled Transformer infrastructure loop is unhealthy", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-transformer-infra-"));
     dirs.push(dir);

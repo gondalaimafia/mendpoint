@@ -3,7 +3,6 @@ import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { createHash, randomBytes } from "node:crypto";
 import {
-  createDb,
   listProviders,
   getProviderBySlug,
   listChanges,
@@ -12,7 +11,7 @@ import {
   listPrs,
   listPrsForChange,
   getPr,
-  findPrByRepositoryAndNumber,
+  findPrByGitHubIdentityAndNumber,
   listAudit,
   listFindingsForChange,
   listVersionsForProvider,
@@ -117,7 +116,9 @@ import {
   getGitHubAppConfig,
   buildInstallUrl,
   normalizeMockInstall,
-  resolveGitHubOwnerTenantBinding,
+  resolveGitHubInstallationTenant,
+  resolveGitHubAccountTenantBinding,
+  resolveGitHubTenantAccountBinding,
 } from "@mendpoint/github";
 import {
   listBrandPacks,
@@ -231,6 +232,7 @@ import {
   requestIdMiddleware,
   securityHeadersMiddleware,
   rateLimitMiddleware,
+  mutationAdmissionMiddleware,
   corsOrigins,
 } from "./production.js";
 import { canonicalRepoPath, resolveRepoKey } from "./repo-path.js";
@@ -244,31 +246,214 @@ import {
 } from "./repository-connections.js";
 import {
   registerTransformerControlPlaneRoutes,
-  TransformerCampaignService,
 } from "./transformer-control-plane.js";
 import {
   registerTransformerPilotExecutionRoutes,
-  TransformerPilotExecutionService,
 } from "./transformer-pilot-executions.js";
-import {
-  closeDefaultChangeSourceStore,
-  createChangeSourceRoutes,
-} from "./change-sources.js";
-import { createBillingEconomicsRoutes } from "./billing-economics.js";
+import { closeDefaultChangeSourceStore } from "./change-sources.js";
 import { billingPlanChangeDecision } from "./billing-plan-control.js";
-import { createDesignPartnerApplicationRoutes } from "./design-partner-applications.js";
-import { createPilotSuccessContractRoutes } from "./pilot-success-contracts.js";
-import { createMigrationPrReviewRoutes } from "./review-routes.js";
 import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
+import { initializeApiRuntime } from "./api-runtime.js";
+import {
+  internalErrorResponse,
+  mappedErrorResponse,
+  type PublicErrorRule,
+} from "./error-boundary.js";
 
 // Fail fast in production if env invalid
 assertApiEnvOrExit();
 
-const db = createDb();
+const durableState = initializeApiRuntime();
+const {
+  db,
+  transformerCampaigns,
+  transformerExecutions,
+  changeSourceRoutes,
+  billingRoutes,
+  designPartnerRoutes,
+  pilotSuccessRoutes,
+  migrationPrRoutes,
+} = durableState;
 const app = new Hono<ApiEnv>();
-const transformerCampaigns = new TransformerCampaignService();
-const transformerExecutions = new TransformerPilotExecutionService();
 const startedAt = Date.now();
+
+function apiReadiness() {
+  return readiness({
+    dbPing: () => {
+      db.raw.prepare("SELECT 1").get();
+      return true;
+    },
+    schemaCheck: () => {
+      const quickCheck = db.raw.prepare("PRAGMA quick_check").get() as {
+        quick_check?: string;
+      };
+      if (quickCheck.quick_check !== "ok") return false;
+      if (db.raw.prepare("PRAGMA foreign_key_check").all().length > 0) return false;
+      const requiredTables = new Set([
+        "agent_runs",
+        "audit_events",
+        "connected_repositories",
+        "github_installations",
+        "jobs",
+        "principals",
+        "repository_snapshots",
+        "tenants",
+        "transformer_adaptive_candidates",
+      ]);
+      const presentTables = new Set(
+        (db.raw
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all() as Array<{ name: string }>).map((row) => row.name),
+      );
+      if ([...requiredTables].some((table) => !presentTables.has(table))) return false;
+      const installationColumns = new Set(
+        (db.raw.prepare("PRAGMA table_info(github_installations)").all() as Array<{
+          name: string;
+        }>).map((row) => row.name),
+      );
+      return installationColumns.has("account_id");
+    },
+  });
+}
+
+function publicErrorRules(
+  status: PublicErrorRule["status"],
+  ...internalCodes: readonly string[]
+): readonly PublicErrorRule[] {
+  return internalCodes.map((internalCode) => ({ internalCode, status }));
+}
+
+const SCM_CONNECTION_INPUT_ERRORS = publicErrorRules(
+  400,
+  "scm_provider_invalid",
+  "external_account_id_invalid",
+  "github_installation_id_invalid",
+  "display_name_invalid",
+  "credential_reference_required",
+);
+const SCM_REPOSITORY_INPUT_ERRORS = [
+  ...publicErrorRules(
+    400,
+    "remote_id_invalid",
+    "github_repository_id_invalid",
+    "default_branch_invalid",
+    "selected_branch_invalid",
+    "repository_retention_invalid",
+    "repository_owner_invalid",
+    "repository_name_invalid",
+    "repository_environment_invalid",
+    "repo_key_must_be_relative",
+    "repo_path_outside_tenant_root",
+    "repo_path_not_directory",
+  ),
+  {
+    internalCode: "scm_connection_tenant_mismatch",
+    publicCode: "not_found",
+    status: 404,
+  },
+] satisfies readonly PublicErrorRule[];
+const SCM_SNAPSHOT_ERRORS = [
+  {
+    internalCode: "connected_repository_tenant_mismatch",
+    publicCode: "not_found",
+    status: 404,
+  },
+  {
+    internalCode: "scm_connection_tenant_mismatch",
+    publicCode: "not_found",
+    status: 404,
+  },
+  { internalCode: "scm_connection_revoked", status: 409 },
+  { internalCode: "consumer_repository_tenant_mismatch", publicCode: "not_found", status: 404 },
+] satisfies readonly PublicErrorRule[];
+const REPO_KEY_ERRORS = publicErrorRules(
+  400,
+  "tenant_id_not_path_safe",
+  "repo_key_must_be_relative",
+  "repo_path_outside_tenant_root",
+  "repo_path_not_directory",
+);
+const USAGE_ERRORS = [
+  ...publicErrorRules(
+    400,
+    "usage_currency_invalid",
+    "usage_price_id_invalid",
+    "usage_formula_version_invalid",
+    "usage_price_per_mcu_money_micros_invalid",
+    "usage_price_effective_at_invalid",
+    "usage_price_expires_at_invalid",
+    "usage_price_period_invalid",
+    "usage_entitlement_id_invalid",
+    "usage_quota_mcu_micros_invalid",
+    "usage_period_start_invalid",
+    "usage_period_end_invalid",
+    "usage_price_version_required",
+    "usage_period_invalid",
+    "usage_contract_reference_mismatch",
+    "usage_contract_reference_invalid",
+    "usage_price_does_not_cover_entitlement",
+    "usage_features_invalid",
+    "usage_entry_id_invalid",
+    "usage_idempotency_key_invalid",
+    "usage_task_id_invalid",
+    "usage_price_version_invalid",
+    "usage_reason_invalid",
+    "usage_campaign_id_invalid",
+    "usage_invoice_reference_invalid",
+    "usage_created_at_invalid",
+    "usage_reserved_delta_invalid",
+    "usage_consumed_delta_invalid",
+    "usage_reservation_mcu_micros_invalid",
+    "usage_settlement_mcu_micros_invalid",
+    "usage_adjustment_mcu_micros_invalid",
+    "usage_reservation_empty",
+  ),
+  ...publicErrorRules(
+    409,
+    "usage_price_id_conflict",
+    "usage_entitlement_id_conflict",
+    "usage_idempotency_conflict",
+    "usage_entitlement_required",
+    "usage_quota_exceeded",
+    "usage_reservation_closed",
+    "usage_settlement_exceeds_reservation",
+    "usage_credit_exceeds_consumption",
+  ),
+  { internalCode: "usage_reservation_not_found", status: 404 },
+] satisfies readonly PublicErrorRule[];
+const WARDEN_CANDIDATE_ERRORS = [
+  ...publicErrorRules(
+    409,
+    "warden_candidate_path_invalid",
+    "warden_candidate_path_escape",
+    "warden_candidate_symlink_path",
+    "warden_candidate_tenant_root_escape",
+    "warden_candidate_artifact_missing",
+    "warden_candidate_result_invalid",
+    "warden_candidate_expiry_invalid",
+    "warden_candidate_binary_file_unsupported",
+    "warden_candidate_tree_limit",
+    "warden_candidate_file_invalid",
+    "warden_candidate_file_too_large",
+    "warden_candidate_artifact_escape",
+    "warden_candidate_artifact_invalid",
+    "warden_candidate_not_ready",
+    "warden_candidate_tenant_invalid",
+    "warden_candidate_data_root_required",
+    "warden_candidate_data_root_invalid",
+    "warden_candidate_tenant_root_invalid",
+    "warden_candidate_evidence_root_invalid",
+    "warden_candidate_workspace_invalid",
+    "warden_candidate_workspace_escape",
+    "warden_candidate_source_invalid",
+    "warden_candidate_changed_paths_invalid",
+    "warden_candidate_integrity_failed",
+    "warden_candidate_response_too_large",
+  ),
+  { internalCode: "warden_candidate_expired", status: 410 },
+] satisfies readonly PublicErrorRule[];
+
+app.onError((error, c) => internalErrorResponse(c, error));
 
 function requestAudit(
   c: Context<ApiEnv>,
@@ -427,17 +612,10 @@ app.use("*", async (c, next) => {
         db,
         webhookDeliveryId,
         nowIso(),
-        e instanceof Error ? e.message : String(e),
+        `internal_error:${c.get("requestId")}`,
       );
     }
-    console.error("[api]", c.req.method, c.req.path, e);
-    return c.json(
-      {
-        error: "internal_error",
-        message: e instanceof Error ? e.message : String(e),
-      },
-      500,
-    );
+    return internalErrorResponse(c, e);
   } finally {
     const ms = Date.now() - t0;
     if (ms > 500 || c.req.path.startsWith("/graph")) {
@@ -449,6 +627,7 @@ app.use("*", async (c, next) => {
 
 // Rate limit before auth so credential stuffing is throttled
 app.use("*", rateLimitMiddleware({ identity: "network" }));
+app.use("*", mutationAdmissionMiddleware());
 app.use("*", createAuthMiddleware(db));
 app.use("*", rateLimitMiddleware({ identity: "principal" }));
 
@@ -492,17 +671,11 @@ app.use("*", async (c, next) => {
 
 registerTransformerControlPlaneRoutes(app, transformerCampaigns);
 registerTransformerPilotExecutionRoutes(app, transformerExecutions);
-app.route("/change-sources", createChangeSourceRoutes());
-app.route("/billing", createBillingEconomicsRoutes({ db }));
-app.route(
-  "/design-partner-applications",
-  createDesignPartnerApplicationRoutes({ db }),
-);
-app.route(
-  "/pilot-success-contracts",
-  createPilotSuccessContractRoutes({ db }),
-);
-app.route("/prs", createMigrationPrReviewRoutes({ db }));
+app.route("/change-sources", changeSourceRoutes);
+app.route("/billing", billingRoutes);
+app.route("/design-partner-applications", designPartnerRoutes);
+app.route("/pilot-success-contracts", pilotSuccessRoutes);
+app.route("/prs", migrationPrRoutes);
 
 // Persist alerts under data/
 try {
@@ -532,12 +705,7 @@ app.get("/health", (c) =>
 app.get("/live", (c) => c.json(liveness()));
 
 app.get("/ready", (c) => {
-  const r = readiness({
-    dbPing: () => {
-      db.raw.prepare("SELECT 1").get();
-      return true;
-    },
-  });
+  const r = apiReadiness();
   return c.json(r, r.status === "fail" ? 503 : 200);
 });
 
@@ -550,16 +718,7 @@ app.get("/version", (c) =>
 );
 
 app.get("/status", (c) => {
-  const r = readiness({
-    dbPing: () => {
-      try {
-        db.raw.prepare("SELECT 1").get();
-        return true;
-      } catch {
-        return false;
-      }
-    },
-  });
+  const r = apiReadiness();
   return c.json({
     ...r,
     ga: {
@@ -593,10 +752,7 @@ app.get("/graph/changes/:id", (c) => {
     c.header("Cache-Control", "private, max-age=10");
     return c.json(g);
   } catch (e) {
-    return c.json(
-      { error: "graph_build_failed", message: e instanceof Error ? e.message : String(e) },
-      500,
-    );
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -615,10 +771,7 @@ app.get("/graph/consumers/:id", (c) => {
     c.header("Cache-Control", "private, max-age=10");
     return c.json(g);
   } catch (e) {
-    return c.json(
-      { error: "graph_build_failed", message: e instanceof Error ? e.message : String(e) },
-      500,
-    );
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -675,7 +828,7 @@ app.post("/warden/plans/from-spec", async (c) => {
       registryMarkdown: registrySummaryMarkdown(consumers, provider.slug),
     });
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -716,7 +869,7 @@ app.post("/warden/gates", async (c) => {
     });
     return c.json(result);
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -738,7 +891,7 @@ app.post("/warden/review", async (c) => {
     if (!spec) return c.json({ error: "spec or providerSlug required" }, 400);
     return c.json(reviewOpenApiDesign(spec));
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -836,7 +989,7 @@ app.post("/graph-learn/query", async (c) => {
       markdown: formatQueryForPlanner(result),
     });
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -1043,7 +1196,7 @@ app.post("/platform/scm/connections", async (c) => {
     });
     return c.json(connection, 201);
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+    return mappedErrorResponse(c, error, SCM_CONNECTION_INPUT_ERRORS);
   }
 });
 
@@ -1079,7 +1232,7 @@ app.post("/platform/scm/repositories", async (c) => {
     });
     return c.json(repository, 201);
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+    return mappedErrorResponse(c, error, SCM_REPOSITORY_INPUT_ERRORS);
   }
 });
 
@@ -1107,7 +1260,7 @@ app.post("/platform/scm/repositories/:id/snapshots", async (c) => {
     });
     return c.json(result, result.reused ? 200 : 201);
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+    return mappedErrorResponse(c, error, SCM_SNAPSHOT_ERRORS);
   }
 });
 
@@ -1122,7 +1275,13 @@ app.post("/platform/scm/connections/:id/revoke", (c) => {
     });
     return c.json(connection);
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+    return mappedErrorResponse(c, error, [
+      {
+        internalCode: "scm_connection_tenant_mismatch",
+        publicCode: "not_found",
+        status: 404,
+      },
+    ]);
   }
 });
 
@@ -1170,7 +1329,10 @@ app.get("/platform/plans/:runId", (c) => {
     const plan = getPlan(process.cwd(), c.req.param("runId"));
     return c.json(plan);
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 404);
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return c.json({ error: "not_found", requestId: c.get("requestId") }, 404);
+    }
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -1184,7 +1346,7 @@ app.patch("/platform/plans/:runId", async (c) => {
     const plan = savePlanHitl(process.cwd(), c.req.param("runId"), patch);
     return c.json({ ok: true, plan });
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -1249,10 +1411,7 @@ app.get("/graph/product", (c) => {
       buildProductKnowledgeGraph(db, f, c.get("principal")?.tenantId),
     );
   } catch (e) {
-    return c.json(
-      { error: "graph_build_failed", message: e instanceof Error ? e.message : String(e) },
-      500,
-    );
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -1263,10 +1422,7 @@ app.get("/graph/api/:providerSlug", (c) => {
     c.header("Cache-Control", "private, max-age=15");
     return c.json(g);
   } catch (e) {
-    return c.json(
-      { error: "graph_build_failed", message: e instanceof Error ? e.message : String(e) },
-      500,
-    );
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -1387,7 +1543,7 @@ app.post("/providers/:slug/publish", async (c) => {
     ).catch(() => undefined);
     return c.json(report, 201);
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -1521,10 +1677,7 @@ app.post("/consumers", async (c) => {
   try {
     localPath = resolveRepoKey(body.repoKey, principal.tenantId);
   } catch (error) {
-    return c.json(
-      { error: error instanceof Error ? error.message : String(error) },
-      400,
-    );
+    return mappedErrorResponse(c, error, REPO_KEY_ERRORS);
   }
   const id = newId();
   const createdAt = nowIso();
@@ -1867,15 +2020,38 @@ app.post("/webhooks/github", async (c) => {
   }
 
   if (event.type === "installation") {
+    if (
+      !Number.isSafeInteger(event.installationId) ||
+      event.installationId < 1 ||
+      !Number.isSafeInteger(event.accountId) ||
+      Number(event.accountId) < 1 ||
+      !event.accountLogin
+    ) {
+      return c.json({ error: "github_installation_stable_identity_required" }, 400);
+    }
     const installationId = String(event.installationId);
+    const accountId = String(event.accountId);
     const existing = getGitHubInstallationByInstallationId(db, installationId);
-    const configuredTenantId = event.accountLogin
-      ? resolveGitHubOwnerTenantBinding(event.accountLogin)
-      : undefined;
+    const configuredTenantId = resolveGitHubAccountTenantBinding(accountId);
     if (configuredTenantId && !getTenant(db, configuredTenantId)) {
       return c.json({ error: "github_owner_binding_tenant_not_found" }, 503);
     }
-    const tenantId = existing?.tenant_id ?? configuredTenantId;
+    let tenantId: string | undefined;
+    try {
+      tenantId = resolveGitHubInstallationTenant({
+        accountId,
+        ...(configuredTenantId ? { configuredTenantId } : {}),
+        ...(existing
+          ? { existing: { accountId: existing.account_id, tenantId: existing.tenant_id } }
+          : {}),
+      });
+    } catch (error) {
+      return mappedErrorResponse(c, error, publicErrorRules(
+        409,
+        "github_installation_account_identity_mismatch",
+        "github_installation_tenant_identity_mismatch",
+      ));
+    }
     if (event.action === "deleted" && event.installationId) {
       const deletedAt = nowIso();
       const tombstoned = db.raw
@@ -1889,6 +2065,7 @@ app.post("/webhooks/github", async (c) => {
         upsertGitHubInstallation(db, {
           id: newId(),
           installationId,
+          accountId,
           accountLogin: event.accountLogin,
           tenantId,
           permissions: event.permissions,
@@ -1928,6 +2105,7 @@ app.post("/webhooks/github", async (c) => {
         upsertGitHubInstallation(db, {
           id: newId(),
           installationId,
+          accountId,
           accountLogin: event.accountLogin,
           tenantId,
           permissions: event.permissions,
@@ -1981,6 +2159,7 @@ app.post("/webhooks/github", async (c) => {
       upsertGitHubInstallation(db, {
         id: newId(),
         installationId: String(event.installationId),
+        accountId,
         accountLogin: event.accountLogin,
         tenantId,
         permissions: event.permissions,
@@ -2006,7 +2185,7 @@ app.post("/webhooks/github", async (c) => {
           resourceType: "github_installation",
           resourceId: installationId,
           requestId: c.get("requestId"),
-          metadata: { delivery: wh.delivery },
+          metadata: { delivery: wh.delivery, accountId },
         });
       }
     }
@@ -2016,12 +2195,15 @@ app.post("/webhooks/github", async (c) => {
   if (event.type === "pull_request") {
     const outcome = prFeedbackFromWebhook(event);
     if (outcome) {
-      const match = findPrByRepositoryAndNumber(
-        db,
-        event.owner,
-        event.repo,
-        event.number,
-      );
+      if (!event.repositoryId || !event.installationId || !event.accountId) {
+        return c.json({ error: "webhook_pull_request_identity_required" }, 400);
+      }
+      const match = findPrByGitHubIdentityAndNumber(db, {
+        repositoryId: String(event.repositoryId),
+        installationId: String(event.installationId),
+        accountId: String(event.accountId),
+        number: event.number,
+      });
       if (match) {
         const consumer = getConsumer(db, match.consumer_id);
         if (!consumer) {
@@ -2047,6 +2229,9 @@ app.post("/webhooks/github", async (c) => {
             delivery: wh.delivery,
             owner: event.owner,
             repo: event.repo,
+            repositoryId: event.repositoryId,
+            installationId: event.installationId,
+            accountId: event.accountId,
             number: event.number,
           },
         });
@@ -2306,12 +2491,10 @@ app.get("/agent/runs/:id/candidate", async (c) => {
       delivery: getWardenCandidateDeliveryByRun(db, run.tenant_id, run.id) ?? null,
     });
   } catch (error) {
-    const code = error instanceof Error ? error.message : "warden_candidate_unavailable";
-    if (code === "warden_candidate_expired") {
+    if (error instanceof Error && error.message === "warden_candidate_expired") {
       markWardenCandidateExpired(run, run.tenant_id);
     }
-    const status = code === "warden_candidate_expired" ? 410 : 409;
-    return c.json({ error: code }, status);
+    return mappedErrorResponse(c, error, WARDEN_CANDIDATE_ERRORS);
   }
 });
 
@@ -2437,7 +2620,7 @@ app.post("/agent/runs", async (c) => {
       202,
     );
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -2533,10 +2716,7 @@ app.post("/repair/sessions", async (c) => {
       202,
     );
   } catch (e) {
-    return c.json(
-      { error: e instanceof Error ? e.message : String(e) },
-      500,
-    );
+    return internalErrorResponse(c, e);
   }
 });
 
@@ -2574,8 +2754,7 @@ app.get("/billing/usage", (c) => {
       reconciliation: reconcileUsageLedger(db, tenantId),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "usage_query_failed";
-    return c.json({ error: message }, 400);
+    return internalErrorResponse(c, error);
   }
 });
 
@@ -2616,8 +2795,7 @@ app.post("/billing/price-versions", async (c) => {
     });
     return c.json(price, 201);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "usage_price_failed";
-    return c.json({ error: message }, message.endsWith("_conflict") ? 409 : 400);
+    return mappedErrorResponse(c, error, USAGE_ERRORS);
   }
 });
 
@@ -2660,8 +2838,7 @@ app.post("/billing/entitlements", async (c) => {
     });
     return c.json(entitlement, 201);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "usage_entitlement_failed";
-    return c.json({ error: message }, message.endsWith("_conflict") ? 409 : 400);
+    return mappedErrorResponse(c, error, USAGE_ERRORS);
   }
 });
 
@@ -2700,13 +2877,7 @@ app.post("/billing/usage/reservations", async (c) => {
     });
     return c.json(entry, 201);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "usage_reservation_failed";
-    return c.json(
-      { error: message },
-      message.includes("conflict") || message.includes("quota") || message.includes("required")
-        ? 409
-        : 400,
-    );
+    return mappedErrorResponse(c, error, USAGE_ERRORS);
   }
 });
 
@@ -2743,8 +2914,7 @@ app.post("/billing/usage/reservations/:id/settle", async (c) => {
     });
     return c.json(entry, 201);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "usage_settlement_failed";
-    return c.json({ error: message }, message.includes("not_found") ? 404 : 409);
+    return mappedErrorResponse(c, error, USAGE_ERRORS);
   }
 });
 
@@ -2770,8 +2940,7 @@ app.post("/billing/usage/reservations/:id/release", async (c) => {
     });
     return c.json(entry, 201);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "usage_release_failed";
-    return c.json({ error: message }, message.includes("not_found") ? 404 : 409);
+    return mappedErrorResponse(c, error, USAGE_ERRORS);
   }
 });
 
@@ -2818,8 +2987,7 @@ app.post("/billing/usage/:kind", async (c) => {
     });
     return c.json(entry, 201);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "usage_adjustment_failed";
-    return c.json({ error: message }, message.includes("conflict") ? 409 : 400);
+    return mappedErrorResponse(c, error, USAGE_ERRORS);
   }
 });
 
@@ -2909,10 +3077,22 @@ app.get("/github/app/install-url", (c) => {
   }
   const state = randomBytes(32).toString("base64url");
   const createdAt = nowIso();
+  let expectedAccountId: string | undefined;
+  if (!config.mockMode) {
+    try {
+      expectedAccountId = resolveGitHubTenantAccountBinding(principal.tenantId);
+    } catch {
+      return c.json({ error: "github_account_binding_invalid" }, 503);
+    }
+    if (!expectedAccountId) {
+      return c.json({ error: "github_account_binding_required" }, 503);
+    }
+  }
   createGitHubInstallState(db, {
     state,
     tenantId: principal.tenantId,
     principalId: principal.id,
+    expectedAccountId,
     createdAt,
     expiresAt: new Date(Date.parse(createdAt) + 10 * 60_000).toISOString(),
   });
@@ -3028,6 +3208,9 @@ app.post("/github/app/callback", async (c) => {
     if (completion.status === "permissions_incomplete") {
       return c.json({ error: "installation_permissions_incomplete" }, 409);
     }
+    if (completion.status === "account_identity_mismatch") {
+      return c.json({ error: "installation_account_identity_mismatch" }, 409);
+    }
     if (completion.status === "repository_scope_incomplete") {
       return c.json({ error: "installation_repository_scope_incomplete" }, 409);
     }
@@ -3035,7 +3218,7 @@ app.post("/github/app/callback", async (c) => {
       return c.json({ error: "invalid_or_expired_state" }, 400);
     }
     if (!("installation" in completion)) {
-      return c.json({ error: "installation_completion_failed" }, 500);
+      return internalErrorResponse(c, new Error("installation_completion_failed"));
     }
     return c.json(
       {
@@ -3051,6 +3234,7 @@ app.post("/github/app/callback", async (c) => {
   const id = upsertGitHubInstallation(db, {
     id: newId(),
     installationId: normalized.installationId,
+    accountId: "1",
     accountLogin: normalized.accountLogin,
     accountType: normalized.accountType,
     tenantId: normalized.tenantId,

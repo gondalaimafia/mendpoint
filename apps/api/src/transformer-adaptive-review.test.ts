@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
   getAdaptiveCandidate,
@@ -204,6 +204,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (savedDataDir === undefined) delete process.env.MENDPOINT_DATA_DIR;
   else process.env.MENDPOINT_DATA_DIR = savedDataDir;
   while (pilotStores.length) pilotStores.pop()?.close();
@@ -225,6 +226,29 @@ afterEach(() => {
 });
 
 describe("transformer adaptive candidate review routes", () => {
+  it("sanitizes an unmapped database failure during review", async () => {
+    const sentinel = "SQLITE_BUSY at C:\\customers\\acme\\adaptive-private.sqlite";
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { app, db } = fixture(() => { throw new Error(sentinel); });
+    const seeded = seedCandidate(db, "tenant-a");
+
+    const response = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Test-Actor": "human-a",
+      },
+      body: reviewBody("reject"),
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "internal_error",
+      requestId: "request-human-a",
+    });
+    expect(log.mock.calls.flat().join(" ")).not.toContain(sentinel);
+  });
+
   it("lets a direct human approve and states the divergence explicitly", async () => {
     const { app, db } = fixture();
     const seeded = seedCandidate(db, "tenant-a");
@@ -795,6 +819,7 @@ describe("transformer adaptive candidate review routes", () => {
   });
 
   it("rolls review state back when its audit event cannot be recorded", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { app, db } = fixture(() => {
       throw new Error("audit unavailable");
     });
@@ -804,7 +829,11 @@ describe("transformer adaptive candidate review routes", () => {
       headers: { "X-Test-Actor": "human-a", "content-type": "application/json" },
       body: reviewBody("approve"),
     });
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      error: "internal_error",
+      requestId: "request-human-a",
+    });
     expect(getAdaptiveCandidate(db, "tenant-a", seeded.id)?.status).toBe("review_pending");
   });
 

@@ -150,6 +150,7 @@ export type TenantMembershipRow = {
 export type GitHubInstallationRow = {
   id: string;
   installation_id: string;
+  account_id: string | null;
   account_login: string;
   account_type: string;
   tenant_id: string | null;
@@ -166,6 +167,7 @@ export type GitHubInstallStateRow = {
   state_hash: string;
   tenant_id: string;
   created_by_principal_id: string | null;
+  expected_account_id: string | null;
   created_at: string;
   expires_at: string;
   consumed_at: string | null;
@@ -307,6 +309,9 @@ export type MigrationPrRow = {
   patch_unified: string;
   github_pr_number: number | null;
   github_pr_url: string | null;
+  github_repository_id: string | null;
+  github_installation_id: string | null;
+  github_account_id: string | null;
   created_at: string;
   resolved_at: string | null;
 };

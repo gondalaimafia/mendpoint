@@ -16,6 +16,10 @@ import {
 } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
 import {
+  mappedErrorResponse,
+  type PublicErrorRule,
+} from "./error-boundary.js";
+import {
   discardWardenCandidate,
   parseWardenCandidateReviewResult,
   sealWardenCandidateApproval,
@@ -25,6 +29,52 @@ import { isHumanWardenReviewer } from "./warden-review-auth.js";
 type AuditEvent = Omit<Parameters<typeof recordAudit>[1], "tenantId" | "principalId" | "apiKeyId" | "requestId">;
 export type WardenCandidateReviewAudit = (c: Context<ApiEnv>, event: AuditEvent) => void;
 type ReviewDecision = "approve" | "reject" | "regenerate";
+
+const REVIEW_INPUT_ERRORS: readonly PublicErrorRule[] = [
+  "decision must be approve, reject, or regenerate",
+  "review rationale is required",
+  "review rationale must be at most 2000 characters",
+].map((internalCode) => ({ internalCode, status: 400 as const }));
+
+const WARDEN_REVIEW_ERRORS = [
+  ...[
+    "warden_candidate_approval_binding_invalid",
+    "warden_candidate_approval_conflict",
+    "warden_candidate_approval_escape",
+    "warden_candidate_approval_too_large",
+    "warden_candidate_artifact_escape",
+    "warden_candidate_artifact_invalid",
+    "warden_candidate_artifact_missing",
+    "warden_candidate_binary_file_unsupported",
+    "warden_candidate_changed_paths_invalid",
+    "warden_candidate_data_root_invalid",
+    "warden_candidate_data_root_required",
+    "warden_candidate_delivery_binding_mismatch",
+    "warden_candidate_delivery_conflict",
+    "warden_candidate_delivery_revision_invalid",
+    "warden_candidate_delivery_run_invalid",
+    "warden_candidate_delivery_run_not_approved",
+    "warden_candidate_delivery_seal_invalid",
+    "warden_candidate_evidence_root_invalid",
+    "warden_candidate_file_too_large",
+    "warden_candidate_integrity_failed",
+    "warden_candidate_not_ready",
+    "warden_candidate_response_too_large",
+    "warden_candidate_result_invalid",
+    "warden_candidate_review_conflict",
+    "warden_candidate_snapshot_binding_mismatch",
+    "warden_candidate_source_invalid",
+    "warden_candidate_source_job_invalid",
+    "warden_candidate_source_job_missing",
+    "warden_candidate_symlink_path",
+    "warden_candidate_tenant_invalid",
+    "warden_candidate_tenant_root_invalid",
+    "warden_candidate_tenant_root_escape",
+    "warden_candidate_workspace_escape",
+    "warden_candidate_workspace_invalid",
+  ].map((internalCode) => ({ internalCode, status: 409 as const })),
+  { internalCode: "warden_candidate_expired", status: 410 },
+] satisfies readonly PublicErrorRule[];
 
 function parseDecision(value: unknown): { decision: ReviewDecision; rationale: string } {
   const body = value && typeof value === "object" ? value as Record<string, unknown> : {};
@@ -78,12 +128,12 @@ export function registerWardenCandidateReviewRoutes(
     }
     let body: { decision: ReviewDecision; rationale: string };
     try { body = parseDecision(await c.req.json<unknown>().catch(() => null)); }
-    catch (error) { return c.json({ error: error instanceof Error ? error.message : "review invalid" }, 400); }
+    catch (error) { return mappedErrorResponse(c, error, REVIEW_INPUT_ERRORS); }
     let run = getAgentRun(db, c.req.param("id"), tenantId);
     if (!run) return c.json({ error: "not found" }, 404);
     let result: Record<string, unknown>;
     try { result = parseWardenCandidateReviewResult(run.result_json); }
-    catch (error) { return c.json({ error: error instanceof Error ? error.message : "warden_candidate_result_invalid" }, 409); }
+    catch (error) { return mappedErrorResponse(c, error, WARDEN_REVIEW_ERRORS); }
     const prior = result.review && typeof result.review === "object" ? result.review as Record<string, unknown> : null;
     if (prior?.decision === body.decision && prior.rationale === body.rationale) {
       if (body.decision === "regenerate" && typeof prior.supersedingRunId === "string" && typeof prior.supersedingJobId === "string") {
@@ -96,7 +146,7 @@ export function registerWardenCandidateReviewRoutes(
     let binding: ReturnType<typeof sourceBinding> | null = null;
     if (body.decision === "approve") {
       try { binding = sourceBinding(db, tenantId, result); }
-      catch (error) { return c.json({ error: error instanceof Error ? error.message : "warden_candidate_snapshot_binding_mismatch" }, 409); }
+      catch (error) { return mappedErrorResponse(c, error, WARDEN_REVIEW_ERRORS); }
     }
     let seal: Awaited<ReturnType<typeof sealWardenCandidateApproval>> | null = null;
     if (body.decision === "approve") {
@@ -106,8 +156,7 @@ export function registerWardenCandidateReviewRoutes(
           baseBranch: binding!.baseBranch, reviewerPrincipalId: principal.id, rationale: body.rationale,
         });
       } catch (error) {
-        const code = error instanceof Error ? error.message : "warden_candidate_unavailable";
-        return c.json({ error: code }, code === "warden_candidate_expired" ? 410 : 409);
+        return mappedErrorResponse(c, error, WARDEN_REVIEW_ERRORS);
       }
     }
     const artifacts = result.artifacts && typeof result.artifacts === "object" ? result.artifacts as Record<string, unknown> : {};
@@ -167,7 +216,7 @@ export function registerWardenCandidateReviewRoutes(
       // Never unlink a content-addressed seal from a losing review. A concurrent
       // committed winner may reference the same path; offline reconciliation is
       // the only component allowed to reap unreferenced approval artifacts.
-      return c.json({ error: error instanceof Error ? error.message : "warden_candidate_review_failed" }, 409);
+      return mappedErrorResponse(c, error, WARDEN_REVIEW_ERRORS);
     }
     if (body.decision === "reject" || body.decision === "regenerate") {
       try {

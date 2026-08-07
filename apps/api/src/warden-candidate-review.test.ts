@@ -18,7 +18,10 @@ import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.j
 const NOW = "2026-08-06T12:00:00.000Z";
 const opened: Array<{ db: AppDb; directory: string }> = [];
 
-function fixture() {
+function fixture(options: {
+  audit?: Parameters<typeof registerWardenCandidateReviewRoutes>[2];
+  sealApproval?: NonNullable<Parameters<typeof registerWardenCandidateReviewRoutes>[3]>["sealApproval"];
+} = {}) {
   const directory = mkdtempSync(join(tmpdir(), "mendpoint-warden-review-api-"));
   const db = createDb(join(directory, "api.sqlite"));
   opened.push({ db, directory });
@@ -64,7 +67,7 @@ function fixture() {
     createdAt: NOW,
     finishedAt: NOW,
   });
-  const audit = vi.fn();
+  const audit = options.audit ?? vi.fn();
   const app = new Hono<ApiEnv>();
   app.use("*", async (c, next) => {
     c.set("principal", { id: "human:reviewer@example.com", tenantId: "tenant-a", role: "owner" });
@@ -72,11 +75,15 @@ function fixture() {
     c.set("requestId", "request-1");
     return next();
   });
-  registerWardenCandidateReviewRoutes(app, db, audit, { now: () => NOW });
+  registerWardenCandidateReviewRoutes(app, db, audit, {
+    now: () => NOW,
+    ...(options.sealApproval ? { sealApproval: options.sealApproval } : {}),
+  });
   return { app, db, audit, directory };
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (opened.length) {
     const entry = opened.pop()!;
     entry.db.raw.close();
@@ -85,6 +92,26 @@ afterEach(() => {
 });
 
 describe("Warden candidate human review", () => {
+  it.each([
+    "provider returned github_pat_SENTINEL for secret-org/private-repo",
+    "SQLITE_CONSTRAINT tenants.secret_column customer_acme",
+    "ENOENT C:\\customers\\acme\\private-source.ts",
+    "repository secret-org/private-repo exists but is inaccessible",
+  ])("sanitizes an unmapped review failure: %s", async (sentinel) => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { app } = fixture({ audit: () => { throw new Error(sentinel); } });
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "reject", rationale: "The candidate is not acceptable." }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "internal_error", requestId: "request-1" });
+    expect(log.mock.calls.flat().join(" ")).not.toContain(sentinel);
+  });
+
   it("requires a bounded human rationale", async () => {
     const { app } = fixture();
     const response = await app.request("/agent/runs/warden-run-1/candidate/review", {

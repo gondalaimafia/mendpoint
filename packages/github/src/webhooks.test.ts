@@ -33,12 +33,30 @@ describe("github webhooks", () => {
         head: { ref: "mendpoint/x" },
         labels: [{ name: "mendpoint" }],
       },
-      repository: { name: "r", owner: { login: "o" } },
+      repository: { id: 77, name: "r", owner: { id: 7123456, login: "o" } },
+      installation: { id: 99 },
     });
     expect(n.type).toBe("pull_request");
     if (n.type === "pull_request") {
       expect(prFeedbackFromWebhook(n)).toBe("merged");
       expect(n.number).toBe(3);
+      expect(n.repositoryId).toBe(77);
+      expect(n.accountId).toBe(7123456);
+      expect(n.installationId).toBe(99);
+    }
+  });
+
+  it("does not manufacture pull request identity from mutable names", () => {
+    const n = normalizeGitHubEvent("pull_request", {
+      action: "closed",
+      pull_request: { number: 3, merged: false, state: "closed" },
+      repository: { name: "recycled", owner: { login: "recycled-owner" } },
+    });
+    expect(n.type).toBe("pull_request");
+    if (n.type === "pull_request") {
+      expect(n.repositoryId).toBeUndefined();
+      expect(n.accountId).toBeUndefined();
+      expect(n.installationId).toBeUndefined();
     }
   });
 
@@ -47,7 +65,7 @@ describe("github webhooks", () => {
       action: "created",
       installation: {
         id: 99,
-        account: { login: "acme" },
+        account: { id: 7123456, login: "acme" },
         permissions: { contents: "write", checks: "read" },
       },
       repositories: [{ full_name: "acme/shop" }],
@@ -55,15 +73,29 @@ describe("github webhooks", () => {
     expect(n.type).toBe("installation");
     if (n.type === "installation") {
       expect(n.installationId).toBe(99);
+      expect(n.accountId).toBe(7123456);
+      expect(n.accountLogin).toBe("acme");
       expect(n.repos?.[0]?.name).toBe("shop");
       expect(n.permissions).toEqual({ contents: "write", checks: "read" });
+    }
+  });
+
+  it("does not manufacture a stable account identity from a mutable login", () => {
+    const n = normalizeGitHubEvent("installation", {
+      action: "created",
+      installation: { id: 99, account: { login: "recycled-login" } },
+    });
+    expect(n.type).toBe("installation");
+    if (n.type === "installation") {
+      expect(n.accountId).toBeUndefined();
+      expect(n.accountLogin).toBe("recycled-login");
     }
   });
 
   it("normalizes repository additions and removals", () => {
     const n = normalizeGitHubEvent("installation_repositories", {
       action: "removed",
-      installation: { id: 99, account: { login: "acme" } },
+      installation: { id: 99, account: { id: 7123456, login: "acme" } },
       repositories_added: [{ full_name: "acme/new" }],
       repositories_removed: [{ full_name: "acme/old" }],
     });

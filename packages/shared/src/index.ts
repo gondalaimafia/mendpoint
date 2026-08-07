@@ -36,6 +36,78 @@ export type CandidateReviewEvidence = z.infer<typeof CandidateReviewEvidenceSche
 /** Maximum response body the authenticated web bridge will accept from the API. */
 export const WEB_PROXY_RESPONSE_BYTES = 5 * 1024 * 1024;
 
+export const FEED_SUCCESS_FUTURE_SKEW_MS = 30_000;
+
+export type FeedFreshnessAssessment = Readonly<{
+  ok: boolean;
+  reason:
+    | "fresh"
+    | "freshness_bound_invalid"
+    | "success_missing"
+    | "success_in_future"
+    | "success_stale"
+    | "poll_started_at_invalid"
+    | "poll_started_in_future"
+    | "poll_overdue";
+  successAgeMs?: number;
+  pollAgeMs?: number;
+}>;
+
+/**
+ * One freshness rule for worker evidence and public readiness. The schedule's
+ * stale window is authoritative; clock skew is bounded to the smaller of that
+ * window and the global allowance.
+ */
+export function assessFeedFreshness(input: Readonly<{
+  lastSuccessAt?: string;
+  staleAfterMs?: number;
+  pollStartedAt?: string;
+  nowMs?: number;
+  futureSkewMs?: number;
+}>): FeedFreshnessAssessment {
+  const staleAfterMs = input.staleAfterMs;
+  if (
+    typeof staleAfterMs !== "number" ||
+    !Number.isSafeInteger(staleAfterMs) ||
+    staleAfterMs < 1_000
+  ) {
+    return { ok: false, reason: "freshness_bound_invalid" };
+  }
+  const configuredSkew = input.futureSkewMs ?? FEED_SUCCESS_FUTURE_SKEW_MS;
+  if (!Number.isSafeInteger(configuredSkew) || configuredSkew < 0) {
+    return { ok: false, reason: "freshness_bound_invalid" };
+  }
+  const futureSkewMs = Math.min(staleAfterMs, configuredSkew);
+  const nowMs = input.nowMs ?? Date.now();
+  if (!Number.isFinite(nowMs)) {
+    return { ok: false, reason: "freshness_bound_invalid" };
+  }
+  const successAt = Date.parse(input.lastSuccessAt ?? "");
+  if (!Number.isFinite(successAt)) return { ok: false, reason: "success_missing" };
+  const successAgeMs = nowMs - successAt;
+  if (successAgeMs < -futureSkewMs) {
+    return { ok: false, reason: "success_in_future", successAgeMs };
+  }
+  if (successAgeMs > staleAfterMs) {
+    return { ok: false, reason: "success_stale", successAgeMs };
+  }
+  if (input.pollStartedAt !== undefined) {
+    const pollStartedAt = Date.parse(input.pollStartedAt);
+    if (!Number.isFinite(pollStartedAt)) {
+      return { ok: false, reason: "poll_started_at_invalid", successAgeMs };
+    }
+    const pollAgeMs = nowMs - pollStartedAt;
+    if (pollAgeMs < -futureSkewMs) {
+      return { ok: false, reason: "poll_started_in_future", successAgeMs, pollAgeMs };
+    }
+    if (pollAgeMs > staleAfterMs) {
+      return { ok: false, reason: "poll_overdue", successAgeMs, pollAgeMs };
+    }
+    return { ok: true, reason: "fresh", successAgeMs, pollAgeMs };
+  }
+  return { ok: true, reason: "fresh", successAgeMs };
+}
+
 export const ChangeRiskSchema = z.enum([
   "breaking",
   "non_breaking",

@@ -606,14 +606,12 @@ function hasMeasuredUsage(
   outputTokens: number | null | undefined,
   totalTokens: number | null | undefined,
   costUsd: number | null | undefined,
-  allowZeroCost = false,
 ): boolean {
   return (
     Number.isSafeInteger(inputTokens) && inputTokens! > 0 &&
     Number.isSafeInteger(outputTokens) && outputTokens! > 0 &&
     Number.isSafeInteger(totalTokens) && totalTokens === inputTokens! + outputTokens! &&
-    typeof costUsd === "number" && Number.isFinite(costUsd) &&
-    (allowZeroCost ? costUsd >= 0 : costUsd > 0)
+    typeof costUsd === "number" && Number.isFinite(costUsd) && costUsd > 0
   );
 }
 
@@ -628,7 +626,6 @@ function measuredSettlement(
       settlement.outputTokens,
       settlement.totalTokens,
       settlement.costUsd,
-      true,
     ) &&
     settlement.inputTokens! <= reservation.maximumInputTokens &&
     settlement.outputTokens! <= reservation.maximumOutputTokens &&
@@ -733,7 +730,6 @@ async function llmSuggestTool(
         output.usage?.completionTokens,
         output.usage?.totalTokens,
         output.usage?.costUsd,
-        true,
       )) {
         metrics.model.failedCalls++;
         metrics.model.invalidResponses++;

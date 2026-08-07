@@ -612,11 +612,11 @@ function accumulateUsage(
   const totalTokens = reported.totalTokens;
   const costUsd = reported.costUsd;
   if (
-    !Number.isSafeInteger(promptTokens) || promptTokens! < 0 ||
-    !Number.isSafeInteger(completionTokens) || completionTokens! < 0 ||
-    !Number.isSafeInteger(totalTokens) || totalTokens! < 0 ||
+    !Number.isSafeInteger(promptTokens) || promptTokens! <= 0 ||
+    !Number.isSafeInteger(completionTokens) || completionTokens! <= 0 ||
+    !Number.isSafeInteger(totalTokens) || totalTokens! <= 0 ||
     totalTokens !== promptTokens! + completionTokens! ||
-    typeof costUsd !== "number" || !Number.isFinite(costUsd) || costUsd < 0
+    typeof costUsd !== "number" || !Number.isFinite(costUsd) || costUsd <= 0
   ) {
     usage.complete = false;
     return;

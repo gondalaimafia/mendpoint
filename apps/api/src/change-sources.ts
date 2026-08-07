@@ -20,6 +20,10 @@ import {
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { ApiEnv } from "./auth.js";
+import {
+  mappedErrorResponse,
+  type PublicErrorRule,
+} from "./error-boundary.js";
 
 type JsonObject = Record<string, unknown>;
 type ApiResponse = Readonly<{ data?: unknown; error?: Readonly<{ code: string; message: string }> }>;
@@ -58,6 +62,123 @@ const FORBIDDEN_CREATE_FIELDS = new Set([
   "token",
   "authorization",
 ]);
+
+function nestedRules(
+  status: PublicErrorRule["status"],
+  publicMessage: string,
+  ...internalCodes: readonly string[]
+): readonly PublicErrorRule[] {
+  return internalCodes.map((internalCode) => ({
+    internalCode,
+    status,
+    publicMessage,
+    responseShape: "nested",
+  }));
+}
+
+const CHANGE_SOURCE_VALIDATION_BASES = [
+  "change_source_affected_products",
+  "change_source_announcement",
+  "change_source_artifact_id",
+  "change_source_author_name",
+  "change_source_author_principal",
+  "change_source_captured_at",
+  "change_source_captured_by",
+  "change_source_confirmation_actor",
+  "change_source_confirmation_reason",
+  "change_source_confirmed_at",
+  "change_source_created_at",
+  "change_source_effective_date",
+  "change_source_escalated_at",
+  "change_source_escalation_actor",
+  "change_source_escalation_reason",
+  "change_source_escalation_severity",
+  "change_source_escalation_target",
+  "change_source_evidence_kind",
+  "change_source_evidence_sha256",
+  "change_source_excerpt",
+  "change_source_excerpt_location",
+  "change_source_incident_details",
+  "change_source_incident_ref",
+  "change_source_observed_at",
+  "change_source_override_affected_products",
+  "change_source_override_effective_date",
+  "change_source_override_excerpt",
+  "change_source_override_excerpt_location",
+  "change_source_provider_slug",
+  "change_source_redacted_fields",
+  "change_source_redaction_method",
+  "change_source_redaction_source_sha256",
+  "change_source_review_reason",
+  "change_source_reviewed_at",
+  "change_source_reviewer_principal",
+  "change_source_source_kind",
+  "change_source_source_revision",
+  "change_source_source_uri",
+  "change_source_tenant_id",
+] as const;
+
+const CHANGE_SOURCE_VALIDATION_CODES = [
+  ...CHANGE_SOURCE_VALIDATION_BASES.flatMap((base) => [
+    `${base}_required`,
+    `${base}_invalid`,
+  ]),
+  "change_source_request_body_invalid",
+  "change_source_expectedRevision_invalid",
+  "change_source_decision_invalid",
+  "change_source_request_id_invalid",
+  "change_source_unredacted_incident_material_rejected",
+  "change_source_server_owned_field_rejected",
+  "change_source_kind_invalid",
+  "change_source_confirmed_invalid",
+  "change_source_confidence_invalid",
+  "change_source_evidence_required",
+  "change_source_evidence_invalid",
+  "change_source_evidence_kind_invalid",
+  "change_source_evidence_sha256_invalid",
+  "change_source_reviewer_override_invalid",
+  "change_source_provenance_time_invalid",
+  "change_source_source_uri_unsafe",
+  "change_source_manual_source_kind_invalid",
+  "change_source_incident_source_kind_invalid",
+  "change_source_incident_details_not_redacted",
+  "change_source_redaction_evidence_required",
+  "change_source_redaction_source_sha256_invalid",
+  "change_source_not_customer_incident",
+  ...Array.from({ length: 100 }, (_, index) => [
+    `change_source_evidence_locator_${index}_required`,
+    `change_source_evidence_locator_${index}_invalid`,
+    `change_source_evidence_locator_${index}_unsafe`,
+  ]).flat(),
+] as const;
+
+const CHANGE_SOURCE_ERRORS: readonly PublicErrorRule[] = [
+  {
+    internalCode: "authenticated_principal_required",
+    publicCode: "unauthorized",
+    status: 401,
+    publicMessage: "Authentication is required",
+    responseShape: "nested",
+  },
+  {
+    internalCode: "change_source_artifact_not_found",
+    publicCode: "not_found",
+    status: 404,
+    publicMessage: "Change source was not found",
+    responseShape: "nested",
+  },
+  ...nestedRules(
+    409,
+    "Change source state changed; refresh and retry",
+    "change_source_revision_conflict",
+    "change_source_artifact_id_conflict",
+  ),
+  ...nestedRules(
+    422,
+    "Change source request was rejected",
+    ...CHANGE_SOURCE_VALIDATION_CODES,
+  ),
+];
 
 let defaultStore: ChangeSourceStore | undefined;
 
@@ -425,20 +546,7 @@ async function idempotentMutation(
 }
 
 function errorResponse(c: Context<ApiEnv>, error: unknown): Response {
-  const code = error instanceof Error ? error.message : "change_source_internal_error";
-  if (code === "authenticated_principal_required") {
-    return c.json({ error: { code: "unauthorized", message: "Authentication is required" } }, 401);
-  }
-  if (code === "change_source_artifact_not_found") {
-    return c.json({ error: { code: "not_found", message: "Change source was not found" } }, 404);
-  }
-  if (code === "change_source_revision_conflict" || code === "change_source_artifact_id_conflict") {
-    return c.json({ error: { code, message: "Change source state changed; refresh and retry" } }, 409);
-  }
-  if (code.startsWith("change_source_")) {
-    return c.json({ error: { code, message: "Change source request was rejected" } }, 422);
-  }
-  return c.json({ error: { code: "internal_error", message: "Change source operation failed" } }, 500);
+  return mappedErrorResponse(c, error, CHANGE_SOURCE_ERRORS);
 }
 
 async function jsonBody(c: Context<ApiEnv>): Promise<JsonObject> {

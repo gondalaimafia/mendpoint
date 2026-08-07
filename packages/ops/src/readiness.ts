@@ -1,11 +1,12 @@
 /**
  * Liveness / readiness probes for production orchestration.
  */
-import { existsSync, accessSync, constants } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, accessSync, constants, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { RELEASE, releaseBanner } from "./release.js";
 import { validateApiEnv } from "./env.js";
 import { featureMatrix } from "./features.js";
+import { assessCustomerBackupReadiness } from "./disaster-recovery.js";
 
 export type ProbeResult = {
   status: "ok" | "degraded" | "fail";
@@ -41,6 +42,7 @@ export function liveness(): ProbeResult {
 export function readiness(opts?: {
   dbPath?: string;
   dbPing?: () => boolean;
+  schemaCheck?: () => boolean;
 }): ProbeResult {
   const checks: ProbeResult["checks"] = [];
   const env = validateApiEnv();
@@ -53,19 +55,28 @@ export function readiness(opts?: {
   const dbPath =
     opts?.dbPath ??
     process.env.DATABASE_URL?.replace(/^file:/, "") ??
+    (process.env.MENDPOINT_DATA_DIR
+      ? join(process.env.MENDPOINT_DATA_DIR, "mendpoint.sqlite")
+      : undefined) ??
     "data/mendpoint.sqlite";
   try {
     const dir = dirname(dbPath);
-    if (dir && dir !== ".") {
-      accessSync(dir === "" ? "." : dir, constants.W_OK);
+    let writableRoot = dir || ".";
+    while (!existsSync(writableRoot)) {
+      const parent = dirname(writableRoot);
+      if (parent === writableRoot) break;
+      writableRoot = parent;
     }
-    checks.push({ name: "data_dir_writable", ok: true, detail: dir || "." });
+    if (!statSync(writableRoot).isDirectory()) {
+      throw new Error("storage_root_not_directory");
+    }
+    accessSync(writableRoot, constants.W_OK);
+    checks.push({ name: "data_dir_writable", ok: true, detail: "available" });
   } catch {
-    // dir may not exist yet — try parent
     checks.push({
       name: "data_dir_writable",
-      ok: true,
-      detail: "will create on first write",
+      ok: false,
+      detail: "unavailable",
     });
   }
 
@@ -73,11 +84,11 @@ export function readiness(opts?: {
     try {
       const ok = opts.dbPing();
       checks.push({ name: "db_ping", ok, detail: ok ? "ok" : "ping failed" });
-    } catch (e) {
+    } catch {
       checks.push({
         name: "db_ping",
         ok: false,
-        detail: e instanceof Error ? e.message : String(e),
+        detail: "failed",
       });
     }
   } else {
@@ -85,6 +96,24 @@ export function readiness(opts?: {
       name: "db_file",
       ok: true,
       detail: existsSync(dbPath) ? "exists" : "will create",
+    });
+  }
+
+  if (opts?.schemaCheck) {
+    try {
+      const ok = opts.schemaCheck();
+      checks.push({ name: "db_schema", ok, detail: ok ? "valid" : "invalid" });
+    } catch {
+      checks.push({ name: "db_schema", ok: false, detail: "invalid" });
+    }
+  }
+
+  if (process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer") {
+    const backup = assessCustomerBackupReadiness(process.env);
+    checks.push({
+      name: "last_verified_backup",
+      ok: backup.ok,
+      detail: backup.detail,
     });
   }
 

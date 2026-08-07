@@ -15,6 +15,7 @@ import {
   type OrganizationConstraintContract,
 } from "./organization-constraints.js";
 import { resolveRecipe, type RecipeFileModes, type RecipeReference } from "./recipe.js";
+import { TransformerDomainError } from "./types.js";
 
 export const TRANSFORMER_PILOT_EXECUTION_SCHEMA_VERSION = "2026-08-06.v2" as const;
 
@@ -794,13 +795,21 @@ function requireAdaptiveAccounting(value: unknown): TransformerAdaptiveAttemptAc
   }
   const raw = value as Record<string, unknown>;
   const integerKeys = ACCOUNTING_KEYS.filter((key) => key !== "actualCostUsd");
+  const modelCalls = raw.modelCalls as number;
+  const inputTokens = raw.inputTokens as number;
+  const outputTokens = raw.outputTokens as number;
+  const totalTokens = raw.totalTokens as number;
   if (
     integerKeys.some((key) => !Number.isSafeInteger(raw[key]) || (raw[key] as number) < 0) ||
     typeof raw.actualCostUsd !== "number" ||
     !Number.isFinite(raw.actualCostUsd) ||
     raw.actualCostUsd < 0 ||
-    raw.totalTokens !== (raw.inputTokens as number) + (raw.outputTokens as number) ||
-    (raw.modelCalls as number) > (raw.plannerCalls as number)
+    totalTokens !== inputTokens + outputTokens ||
+    modelCalls > (raw.plannerCalls as number) ||
+    (modelCalls === 0 && (inputTokens !== 0 || outputTokens !== 0 || totalTokens !== 0)) ||
+    (modelCalls > 0 && (
+      inputTokens <= 0 || outputTokens <= 0 || totalTokens <= 0 || raw.actualCostUsd <= 0
+    ))
   ) {
     throw new Error("transformer_pilot_adaptive_accounting_invalid");
   }
@@ -1343,7 +1352,9 @@ export class TransformerPilotExecutionStore {
       throw new Error("transformer_pilot_constraint_scope_mismatch");
     }
     const gate = authorizeTransformerWorkerAction({ tenantId: input.tenantId, environment: input.environment }, input.gateConfig);
-    if (!gate.allowed) throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
     const adaptiveBudgetCeilings = resolveAdaptiveBudgetCeilings(input.adaptiveBudget);
     const waveById = waves(input.units);
     const units = input.units.map((candidate): TransformerPilotUnit => {
@@ -1368,7 +1379,12 @@ export class TransformerPilotExecutionStore {
         action: "change",
       }));
       const denied = decisions.filter((decision: ReturnType<typeof assessOrganizationConstraint>) => !decision.allowed);
-      if (denied.length) throw new Error(`transformer_pilot_constraint_denied:${candidate.id}:${denied.flatMap((decision: ReturnType<typeof assessOrganizationConstraint>) => decision.reasons).join(",")}`);
+      if (denied.length) {
+        throw new TransformerDomainError(
+          "transformer_pilot_constraint_denied",
+          `${candidate.id}:${denied.flatMap((decision: ReturnType<typeof assessOrganizationConstraint>) => decision.reasons).join(",")}`,
+        );
+      }
       return {
         ...clone(candidate),
         wave: waveById.get(candidate.id)!,
@@ -1444,7 +1460,7 @@ export class TransformerPilotExecutionStore {
       input.gateConfig,
     );
     if (!gate.allowed) {
-      throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
     }
     const record: TransformerRoutingSettlementRecord = Object.freeze({
       runId: input.runId,
@@ -1556,7 +1572,9 @@ export class TransformerPilotExecutionStore {
         { tenantId: input.tenantId, environment: state.environment },
         input.gateConfig,
       );
-      if (!gate.allowed) throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+      if (!gate.allowed) {
+        throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+      }
       if (state.state !== "running" || state.units.some((unit) => unit.state === "running")) {
         this.db.exec("COMMIT");
         return null;
@@ -1652,7 +1670,7 @@ export class TransformerPilotExecutionStore {
       input.gateConfig,
     );
     if (!gate.allowed) {
-      throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
     }
     return this.mutate(
       input,
@@ -1698,10 +1716,10 @@ export class TransformerPilotExecutionStore {
       reservation.maximumTotalTokens,
     ];
     if (
-      integerBounds.some((value) => !Number.isSafeInteger(value) || value < 0) ||
+      integerBounds.some((value) => !Number.isSafeInteger(value) || value <= 0) ||
       reservation.maximumTotalTokens !==
         reservation.maximumInputTokens + reservation.maximumOutputTokens ||
-      !Number.isFinite(reservation.maximumCostUsd) || reservation.maximumCostUsd < 0
+      !Number.isFinite(reservation.maximumCostUsd) || reservation.maximumCostUsd <= 0
     ) {
       throw new Error("transformer_pilot_model_reservation_bound_invalid");
     }
@@ -1710,7 +1728,9 @@ export class TransformerPilotExecutionStore {
       { tenantId: input.tenantId, environment: campaign.environment },
       input.gateConfig,
     );
-    if (!gate.allowed) throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
     const updated = this.mutate(
       input,
       "attempt.adaptive_model_reserved",
@@ -1768,7 +1788,9 @@ export class TransformerPilotExecutionStore {
       { tenantId: input.tenantId, environment: campaign.environment },
       input.gateConfig,
     );
-    if (!gate.allowed) throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
     const updated = this.mutate(
       input,
       "attempt.adaptive_model_settled",
@@ -1792,10 +1814,10 @@ export class TransformerPilotExecutionStore {
         const reportedTotal = input.settlement.totalTokens;
         const reportedCost = input.settlement.costUsd;
         const completeMeasured =
-          Number.isSafeInteger(reportedInput) && reportedInput! >= 0 &&
-          Number.isSafeInteger(reportedOutput) && reportedOutput! >= 0 &&
+          Number.isSafeInteger(reportedInput) && reportedInput! > 0 &&
+          Number.isSafeInteger(reportedOutput) && reportedOutput! > 0 &&
           Number.isSafeInteger(reportedTotal) && reportedTotal === reportedInput! + reportedOutput! &&
-          typeof reportedCost === "number" && Number.isFinite(reportedCost) && reportedCost >= 0;
+          typeof reportedCost === "number" && Number.isFinite(reportedCost) && reportedCost > 0;
         const withinReservation = completeMeasured &&
           reportedInput! <= reservation.maximumInputTokens &&
           reportedOutput! <= reservation.maximumOutputTokens &&
@@ -1887,7 +1909,7 @@ export class TransformerPilotExecutionStore {
       input.gateConfig,
     );
     if (!gate.allowed) {
-      throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
     }
     const unit = unitById(campaign, input.unitId);
     const changedPaths = requireAdaptiveCandidatePaths(
@@ -1986,7 +2008,7 @@ export class TransformerPilotExecutionStore {
       input.gateConfig,
     );
     if (!gate.allowed) {
-      throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
     }
     return this.mutate(
       input,
@@ -2048,7 +2070,9 @@ export class TransformerPilotExecutionStore {
       { tenantId: input.tenantId, environment: campaign.environment },
       input.gateConfig,
     );
-    if (!gate.allowed) throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
     return this.mutate(input, "attempt.completed", {
       ...input,
       leaseToken: leaseTokenDigest(input.leaseToken),
@@ -2099,7 +2123,7 @@ export class TransformerPilotExecutionStore {
       input.gateConfig,
     );
     if (!gate.allowed) {
-      throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
     }
     return this.mutate(
       input,
@@ -2156,7 +2180,7 @@ export class TransformerPilotExecutionStore {
       input.gateConfig,
     );
     if (!gate.allowed) {
-      throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
     }
     return this.mutate(
       input,
@@ -2200,7 +2224,7 @@ export class TransformerPilotExecutionStore {
       input.gateConfig,
     );
     if (!gate.allowed) {
-      throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
     }
     return this.mutate(
       input,
@@ -2261,7 +2285,9 @@ export class TransformerPilotExecutionStore {
       environment: state.environment,
       productionDeliveryApprovalRefs: input.productionDeliveryApprovalRefs,
     }, input.gateConfig);
-    if (!gate.allowed) throw new Error(`transformer_pilot_delivery_denied:${gate.reasons.join(",")}`);
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_delivery_denied", gate.reasons.join(","));
+    }
     if (state.state !== "running") throw new Error("transformer_pilot_campaign_not_running");
     const wave = Math.min(...state.units.filter((unit) => unit.state !== "merged" && unit.state !== "cancelled" && unit.state !== "rolled_back").map((unit) => unit.wave));
     const current = state.units.filter((unit) => unit.wave === wave);
@@ -2295,7 +2321,9 @@ export class TransformerPilotExecutionStore {
       { tenantId: input.tenantId, environment: campaign.environment },
       input.gateConfig,
     );
-    if (!gate.allowed) throw new Error(`transformer_pilot_gate_denied:${gate.reasons.join(",")}`);
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
     return this.mutate(input, "delivery.wave_reconciled", { wave: input.wave, observations: input.observations }, (state) => {
       if (state.state !== "running") throw new Error("transformer_pilot_campaign_not_running");
       const units = state.units.filter((unit) => unit.wave === input.wave);

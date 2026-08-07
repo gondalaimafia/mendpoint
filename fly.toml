@@ -12,6 +12,7 @@ kill_timeout = 30
   API_AUTH = "required"
   API_HOST = "127.0.0.1"
   API_PORT = "3001"
+  MENDPOINT_DEPLOYMENT_PROFILE = "demo"
   HOSTNAME = "0.0.0.0"
   PORT = "3000"
   GITHUB_MODE = "mock"

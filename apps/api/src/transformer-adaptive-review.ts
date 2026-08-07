@@ -25,6 +25,11 @@ import {
   readAdaptiveCandidateArtifact,
 } from "@mendpoint/transformer";
 import type { ApiEnv } from "./auth.js";
+import {
+  internalErrorResponse,
+  mappedErrorResponse,
+  type PublicErrorRule,
+} from "./error-boundary.js";
 import { isHumanWardenReviewer } from "./warden-review-auth.js";
 
 /**
@@ -53,6 +58,44 @@ const SEMANTIC_CATEGORY_ORDER = [
 ] as const;
 
 type AdaptiveEvidenceStatus = "verified" | "retention_cleaned" | "corrupt";
+
+const HISTORY_CURSOR_ERRORS = [
+  { internalCode: "transformer_adaptive_candidate_history_cursor_invalid", status: 400 },
+] satisfies readonly PublicErrorRule[];
+
+const ADAPTIVE_EVIDENCE_CODES = new Set([
+  "adaptive_candidate_approval_escape",
+  "adaptive_candidate_file_modes_invalid",
+  "adaptive_candidate_file_modes_missing",
+  "adaptive_candidate_metadata_too_large",
+  "adaptive_candidate_preview_binding_mismatch",
+  "adaptive_candidate_record_binding_mismatch",
+  "adaptive_candidate_review_digest_mismatch",
+  "adaptive_candidate_review_evidence_missing",
+  "adaptive_candidate_seal_digest_mismatch",
+  "adaptive_candidate_seal_invalid",
+  "adaptive_candidate_seal_missing",
+]);
+
+const ADAPTIVE_EVIDENCE_ERRORS = [...ADAPTIVE_EVIDENCE_CODES].map((internalCode) => ({
+  internalCode,
+  status: 409 as const,
+})) satisfies readonly PublicErrorRule[];
+
+const ADAPTIVE_REVIEW_ERRORS = [
+  ...ADAPTIVE_EVIDENCE_ERRORS,
+  ...[
+    "transformer_adaptive_candidate_decision_invalid",
+    "transformer_adaptive_candidate_not_found",
+    "transformer_adaptive_candidate_not_pending",
+    "transformer_adaptive_candidate_review_conflict",
+    "transformer_adaptive_candidate_review_rationale_invalid",
+    "transformer_adaptive_candidate_reviewer_invalid",
+    "transformer_adaptive_candidate_lineage_conflict",
+    "warden_candidate_delivery_conflict",
+  ].map((internalCode) => ({ internalCode, status: 409 as const })),
+  { internalCode: "transformer_adaptive_candidate_expired", status: 410 },
+] satisfies readonly PublicErrorRule[];
 
 export type AdaptiveReviewAudit = (c: Context<ApiEnv>, event: AdaptiveAuditEvent) => void;
 
@@ -412,11 +455,14 @@ function terminalEvidence(record: TransformerAdaptiveCandidateRecord): Readonly<
   status: AdaptiveEvidenceStatus;
   errorCode: string | null;
   artifact?: ReturnType<typeof readAdaptiveCandidateArtifact>;
+  internalError?: unknown;
 }> {
   try {
     return { status: "verified", errorCode: null, artifact: readBoundArtifact(record) };
   } catch (error) {
-    const errorCode = error instanceof Error ? error.message : "adaptive_candidate_unavailable";
+    const errorCode = error instanceof Error && ADAPTIVE_EVIDENCE_CODES.has(error.message)
+      ? error.message
+      : null;
     const intentionallyCleaned =
       (
         record.status === "rejected" ||
@@ -425,6 +471,9 @@ function terminalEvidence(record: TransformerAdaptiveCandidateRecord): Readonly<
         (record.status === "promoted" && Date.parse(record.expiresAt) <= Date.now())
       ) &&
       errorCode === "adaptive_candidate_seal_missing";
+    if (!errorCode) {
+      return { status: "corrupt", errorCode: null, internalError: error };
+    }
     return intentionallyCleaned
       ? { status: "retention_cleaned", errorCode: null }
       : { status: "corrupt", errorCode };
@@ -457,7 +506,7 @@ export function registerTransformerAdaptiveReviewRoutes(
     try {
       historyCursor = decodeHistoryCursor(c.req.query("historyCursor"));
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+      return mappedErrorResponse(c, error, HISTORY_CURSOR_ERRORS);
     }
     const attention = listAdaptiveAttentionCandidates(db, tenantId, campaignId)
       .map((listed) => {
@@ -507,11 +556,11 @@ export function registerTransformerAdaptiveReviewRoutes(
           regeneration,
         ));
       } catch (error) {
-        const code = error instanceof Error ? error.message : "adaptive_candidate_unavailable";
-        return c.json({ error: code }, 409);
+        return mappedErrorResponse(c, error, ADAPTIVE_EVIDENCE_ERRORS);
       }
     }
     const evidence = terminalEvidence(record);
+    if (evidence.internalError) return internalErrorResponse(c, evidence.internalError);
     try {
       return c.json(candidateDetailResponse(
         record,
@@ -522,8 +571,7 @@ export function registerTransformerAdaptiveReviewRoutes(
         regeneration,
       ));
     } catch (error) {
-      const code = error instanceof Error ? error.message : "adaptive_candidate_unavailable";
-      return c.json({ error: code }, 409);
+      return mappedErrorResponse(c, error, ADAPTIVE_EVIDENCE_ERRORS);
     }
   });
 
@@ -574,8 +622,7 @@ export function registerTransformerAdaptiveReviewRoutes(
           return c.json({ error: "adaptive_candidate_review_evidence_incomplete" }, 409);
         }
       } catch (error) {
-        const code = error instanceof Error ? error.message : "adaptive_candidate_unavailable";
-        return c.json({ error: code }, 409);
+        return mappedErrorResponse(c, error, ADAPTIVE_EVIDENCE_ERRORS);
       }
     }
     if (body.decision === "regenerate") {
@@ -663,8 +710,7 @@ export function registerTransformerAdaptiveReviewRoutes(
       db.raw.exec("COMMIT");
     } catch (error) {
       if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
-      const code = error instanceof Error ? error.message : "adaptive_candidate_review_failed";
-      return c.json({ error: code }, 409);
+      return mappedErrorResponse(c, error, ADAPTIVE_REVIEW_ERRORS);
     }
     if (reviewed.status === "expired") {
       return c.json({ error: "adaptive_candidate_expired" }, 410);
@@ -677,8 +723,7 @@ export function registerTransformerAdaptiveReviewRoutes(
           sha256: record.sealedSha256,
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "adaptive_candidate_cleanup_failed";
-        return c.json({ ...reviewResponse(reviewed), cleanup: "pending", error: message }, 202);
+        return internalErrorResponse(c, error);
       }
     }
     return c.json(

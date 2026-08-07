@@ -1,4 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   RELEASE,
@@ -11,6 +13,31 @@ import {
   liveness,
   readiness,
 } from "./index.js";
+
+const CUSTOMER_BACKUP_ENV = {
+  MENDPOINT_BACKUP_SOURCE_ROOT: process.platform === "win32"
+    ? "C:\\mendpoint\\data"
+    : "/srv/mendpoint/data",
+  MENDPOINT_BACKUP_OUTPUT_ROOT: process.platform === "win32"
+    ? "C:\\mendpoint-backups\\customer"
+    : "/var/backups/mendpoint",
+  MENDPOINT_BACKUP_FENCE_ROOT: process.platform === "win32"
+    ? "C:\\mendpoint\\data\\backup-fence"
+    : "/srv/mendpoint/data/backup-fence",
+  MENDPOINT_BACKUP_EVIDENCE_PATH: process.platform === "win32"
+    ? "C:\\mendpoint\\data\\backup-state\\last-verified.json"
+    : "/srv/mendpoint/data/backup-state/last-verified.json",
+  MENDPOINT_BACKUP_STORAGE_CLASS: "durable_isolated_mount",
+  MENDPOINT_BACKUP_KEY: "11".repeat(32),
+  MENDPOINT_BACKUP_KEY_ID: "customer-backup-key-v1",
+  MENDPOINT_BACKUP_DATABASE_PATH: "mendpoint.sqlite",
+  MENDPOINT_BACKUP_GRAPH_PATH: "graph-learn.sqlite",
+  MENDPOINT_BACKUP_CHANGE_SOURCES_PATH: "change-sources.sqlite",
+  MENDPOINT_BACKUP_TRANSFORMER_CONTROL_PLANE_PATH: "transformer-control-plane.sqlite",
+  MENDPOINT_BACKUP_TRANSFORMER_PILOT_PATH: "transformer-pilot.sqlite",
+  MENDPOINT_BACKUP_ARTIFACTS_PATH: ".",
+  MENDPOINT_BACKUP_CONFIGURATION_PATH: "configuration/recovery.json",
+} satisfies NodeJS.ProcessEnv;
 
 describe("ops GA", () => {
   beforeEach(() => {
@@ -71,6 +98,7 @@ describe("ops GA", () => {
   it("accepts a durable mock mode production configuration", () => {
     const r = validateApiEnv({
       NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
       API_AUTH: "required",
       GITHUB_MODE: "mock",
       MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
@@ -83,6 +111,7 @@ describe("ops GA", () => {
   it("fails closed when trusted proxy mode has no shared secret", () => {
     const r = validateApiEnv({
       NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
       API_AUTH: "required",
       GITHUB_MODE: "mock",
       TRUST_PROXY: "1",
@@ -98,15 +127,20 @@ describe("ops GA", () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const appOnly = validateApiEnv({
+      ...CUSTOMER_BACKUP_ENV,
       NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
       API_AUTH: "required",
       GITHUB_MODE: "real",
       MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      MENDPOINT_FEED_POLLING_ENABLED: "1",
+      POLL_LOCAL_ONLY: "0",
+      MENDPOINT_PILOT_SEED: "0",
       GITHUB_WEBHOOK_SECRET: "secret",
       GITHUB_APP_ID: "123",
       GITHUB_APP_PRIVATE_KEY: privateKeyPem,
-      GITHUB_APP_OWNER_TENANT_BINDINGS: '{"gondalaimafia":"tenant_default"}',
-      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant_default"}',
+      MENDPOINT_DATA_DIR: CUSTOMER_BACKUP_ENV.MENDPOINT_BACKUP_SOURCE_ROOT,
       MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
       WEB_URL: "https://mendpoint.example",
     });
@@ -114,9 +148,13 @@ describe("ops GA", () => {
 
     const invalidApp = validateApiEnv({
       NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
       API_AUTH: "required",
       GITHUB_MODE: "real",
       MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      MENDPOINT_FEED_POLLING_ENABLED: "1",
+      POLL_LOCAL_ONLY: "0",
+      MENDPOINT_PILOT_SEED: "0",
       GITHUB_WEBHOOK_SECRET: "secret",
       GITHUB_TOKEN: "fine-grained-pat",
       GITHUB_APP_ID: "123",
@@ -131,9 +169,13 @@ describe("ops GA", () => {
 
     const incompleteApp = validateApiEnv({
       NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
       API_AUTH: "required",
       GITHUB_MODE: "real",
       MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      MENDPOINT_FEED_POLLING_ENABLED: "1",
+      POLL_LOCAL_ONLY: "0",
+      MENDPOINT_PILOT_SEED: "0",
       GITHUB_WEBHOOK_SECRET: "secret",
       GITHUB_APP_ID: "123",
       MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
@@ -146,9 +188,13 @@ describe("ops GA", () => {
 
     const customerPat = validateApiEnv({
       NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
       API_AUTH: "required",
       GITHUB_MODE: "real",
       MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      MENDPOINT_FEED_POLLING_ENABLED: "1",
+      POLL_LOCAL_ONLY: "0",
+      MENDPOINT_PILOT_SEED: "0",
       GITHUB_WEBHOOK_SECRET: "secret",
       GITHUB_TOKEN: "fine-grained-pat",
       MENDPOINT_TENANT_ID: "tenant-canary",
@@ -162,6 +208,7 @@ describe("ops GA", () => {
 
     const patBacked = validateApiEnv({
       NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "pilot",
       API_AUTH: "required",
       GITHUB_MODE: "real",
       MENDPOINT_DEPLOYMENT_CLASS: "disposable_canary",
@@ -173,6 +220,153 @@ describe("ops GA", () => {
       WEB_URL: "https://mendpoint.example",
     });
     expect(patBacked.ok).toBe(true);
+  });
+
+  it("rejects legacy GitHub login bindings for customer production", () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const report = validateApiEnv({
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      MENDPOINT_FEED_POLLING_ENABLED: "1",
+      POLL_LOCAL_ONLY: "0",
+      MENDPOINT_PILOT_SEED: "0",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      GITHUB_APP_OWNER_TENANT_BINDINGS: '{"gondalaimafia":"tenant_default"}',
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+    });
+    expect(report.errors).toContain(
+      "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
+    );
+  });
+
+  it("rejects ambiguous account bindings before customer startup", () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const report = validateApiEnv({
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      MENDPOINT_FEED_POLLING_ENABLED: "1",
+      POLL_LOCAL_ONLY: "0",
+      MENDPOINT_PILOT_SEED: "0",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS:
+        '{"7123456":"tenant_default","8123456":"tenant_default"}',
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+    });
+    expect(report.errors).toContain(
+      "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
+    );
+  });
+
+  it("requires an explicit production deployment profile", () => {
+    const missing = validateApiEnv({
+      NODE_ENV: "production",
+      API_AUTH: "required",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+    });
+    expect(missing.errors).toContain(
+      "MENDPOINT_DEPLOYMENT_PROFILE must be explicitly set to demo, pilot, or customer in production",
+    );
+
+    for (const profile of ["production", "CUSTOMER", " customer "]) {
+      const invalid = validateApiEnv({
+        ...missing.values,
+        NODE_ENV: "production",
+        API_AUTH: "required",
+        GITHUB_MODE: "mock",
+        MENDPOINT_DEPLOYMENT_PROFILE: profile,
+        MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+        MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      });
+      expect(invalid.errors).toContain(
+        "MENDPOINT_DEPLOYMENT_PROFILE must be exactly demo, pilot, or customer",
+      );
+    }
+  });
+
+  it("fails closed on every demo control in a customer deployment profile", () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const base = {
+      ...CUSTOMER_BACKUP_ENV,
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      MENDPOINT_FEED_POLLING_ENABLED: "1",
+      POLL_LOCAL_ONLY: "0",
+      MENDPOINT_PILOT_SEED: "0",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: privateKeyPem,
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"12345":"tenant_default"}',
+      MENDPOINT_DATA_DIR: CUSTOMER_BACKUP_ENV.MENDPOINT_BACKUP_SOURCE_ROOT,
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    } satisfies NodeJS.ProcessEnv;
+
+    expect(validateApiEnv(base).ok).toBe(true);
+    const {
+      MENDPOINT_BACKUP_OUTPUT_ROOT: _backupOutput,
+      ...missingBackup
+    } = base;
+    expect(validateApiEnv(missingBackup).errors).toContain(
+      "Customer deployment profile requires complete isolated application-consistent backup configuration",
+    );
+    expect(validateApiEnv({ ...base, MENDPOINT_BACKUP_KEY: "" }).errors).toContain(
+      "Customer deployment profile requires complete isolated application-consistent backup configuration",
+    );
+    expect(validateApiEnv({ ...base, MENDPOINT_BACKUP_STORAGE_CLASS: "local_directory" }).errors).toContain(
+      "Customer deployment profile requires complete isolated application-consistent backup configuration",
+    );
+    expect(validateApiEnv({ ...base, GITHUB_MODE: "mock" }).errors)
+      .toContain("Customer deployment profile requires GITHUB_MODE=real");
+    expect(validateApiEnv({ ...base, MENDPOINT_FEED_POLLING_ENABLED: "0" }).errors)
+      .toContain("Customer deployment profile requires MENDPOINT_FEED_POLLING_ENABLED=1");
+    expect(validateApiEnv({ ...base, POLL_LOCAL_ONLY: "1" }).errors)
+      .toContain("Customer deployment profile requires POLL_LOCAL_ONLY=0");
+    expect(validateApiEnv({ ...base, MENDPOINT_PILOT_SEED: "1" }).errors)
+      .toContain("Customer deployment profile requires MENDPOINT_PILOT_SEED=0");
+  });
+
+  it("ships an isolated durable Compose backup mount without exposing the backup key to the worker", () => {
+    const compose = readFileSync(resolve(import.meta.dirname, "../../../docker-compose.yml"), "utf8");
+    expect(compose.match(/mendpoint-backups:\/backup/g)?.length).toBe(1);
+    expect(compose).toMatch(/\n\s*mendpoint-backups:\s*\r?\n/);
+    expect(compose).toContain("MENDPOINT_BACKUP_STORAGE_CLASS");
+    expect(compose).toContain("MENDPOINT_BACKUP_KEY");
+    expect(compose).toContain(
+      "MENDPOINT_BACKUP_ARTIFACTS_PATH: ${MENDPOINT_BACKUP_ARTIFACTS_PATH:-.}",
+    );
+    const dockerfile = readFileSync(resolve(import.meta.dirname, "../../../Dockerfile"), "utf8");
+    for (const retainedRoot of [
+      "warden-candidates",
+      "warden-evidence",
+      "transformer-candidates",
+      "transformer-evidence",
+    ]) expect(dockerfile).toContain(`/app/data/${retainedRoot}`);
+    const worker = compose.split("\n  worker:")[1] ?? "";
+    expect(worker).not.toContain("MENDPOINT_BACKUP_KEY:");
+    expect(worker).toContain("GITHUB_APP_ACCOUNT_TENANT_BINDINGS:");
+    expect(worker).toContain("MENDPOINT_WORKER_HEARTBEAT_PATH: /app/data/worker-heartbeat.json");
+    expect(worker).toContain('"run-service"');
+    const web = (compose.split("\n  web:")[1] ?? "").split("\n  worker:")[0] ?? "";
+    expect(web).toContain("MENDPOINT_WORKER_HEARTBEAT_PATH: /app/data/worker-heartbeat.json");
+    expect(web).toContain("mendpoint-data:/app/data:ro");
   });
 
   it("rate limits after max", () => {

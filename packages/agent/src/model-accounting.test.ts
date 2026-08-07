@@ -149,6 +149,36 @@ describe("Warden external model accounting boundary", () => {
     }))).rejects.toThrow("settlement_store_unavailable");
   });
 
+  it("rejects a custom planner model call with zero-cost usage", async () => {
+    const directory = repo();
+    const settlements: AgentExternalModelSettlement[] = [];
+    const planner: AgentPlanner = async () => ({
+      call: { tool: "read_file", args: { path: "client.js" } },
+      usage: {
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+        costUsd: 0,
+        model: "model-a",
+      },
+    });
+
+    const result = await runWarden(task(directory, planner, {
+      executionScopeId: `sha256:${"0".repeat(64)}`,
+      maximumCostUsd: 0.75,
+      reserve: async () => undefined,
+      settle: async (value) => { settlements.push(value); },
+    }));
+
+    expect(result.stoppedReason).toBe("model_response_invalid");
+    expect(settlements).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        errorCode: "warden_model_usage_invalid",
+      }),
+    ]);
+  });
+
   it("settles an invalid direct provider response exactly once", async () => {
     const directory = repo();
     const settlements: AgentExternalModelSettlement[] = [];

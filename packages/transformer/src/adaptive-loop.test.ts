@@ -217,6 +217,44 @@ describe("Transformer adaptive repair loop", () => {
     });
   });
 
+  it.each([
+    ["all-zero", { promptTokens: 0, completionTokens: 0, totalTokens: 0, costUsd: 0 }],
+    ["missing", {}],
+    ["inconsistent", { promptTokens: 10, completionTokens: 5, totalTokens: 16, costUsd: 0.1 }],
+    ["zero-cost", { promptTokens: 10, completionTokens: 5, totalTokens: 15, costUsd: 0 }],
+  ])("marks %s model usage evidence incomplete", async (_case, usage) => {
+    const outcome = await runAdaptiveRepairLoop({
+      unitId: "unit-a",
+      goal: "migrate",
+      recipe: RECIPE,
+      sourceFiles: SOURCE,
+      recipeFiles: RECIPE_FILES,
+      allowedMutationPaths: ALLOWED,
+      gate: markerGate(),
+      planner: async (input) => ({
+        plan: {
+          edits: [{
+            path: "src/app.js",
+            observedContentDigest: contextDigest(input, "src/app.js"),
+            nextContent: "// app: FIXED\nexport const ready = true;\n",
+          }],
+        },
+        usage: { modelCalled: true, ...usage },
+      }),
+    });
+
+    expect(outcome.usage).toEqual({
+      complete: false,
+      plannerCalls: 1,
+      measured: false,
+      modelCalls: null,
+      promptTokens: null,
+      completionTokens: null,
+      totalTokens: null,
+      costUsd: null,
+    });
+  });
+
   it("escalates context: the first iteration lacks the helper, the second pulls it in and succeeds", async () => {
     // Gate now requires the helper's token to appear in the app file.
     const gate: AdaptiveGate = async (files) => {

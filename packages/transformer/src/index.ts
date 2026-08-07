@@ -7,7 +7,9 @@ export type {
   MigrationDagNode,
   MigrationCampaign,
   DifferentialResult,
+  TransformerDomainErrorCode,
 } from "./types.js";
+export { TransformerDomainError } from "./types.js";
 
 export {
   CampaignValidationError,

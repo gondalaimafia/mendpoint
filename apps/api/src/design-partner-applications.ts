@@ -3,6 +3,10 @@ import { Hono } from "hono";
 import { createHash } from "node:crypto";
 import type { ApiEnv } from "./auth.js";
 import {
+  mappedErrorResponse,
+  type PublicErrorRule,
+} from "./error-boundary.js";
+import {
   createDesignPartnerApplicationStore,
   type ApplicationSourceMetadata,
   type DesignPartnerApplicationStore,
@@ -11,6 +15,94 @@ import { recordAudit, type AppDb } from "@mendpoint/db";
 
 const MAX_APPLICATION_BYTES = 16 * 1_024;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function nestedRules(
+  status: PublicErrorRule["status"],
+  publicMessage: string,
+  ...internalCodes: readonly string[]
+): readonly PublicErrorRule[] {
+  return internalCodes.map((internalCode) => ({
+    internalCode,
+    status,
+    publicMessage,
+    responseShape: "nested",
+  }));
+}
+
+const APPLICATION_ERRORS: readonly PublicErrorRule[] = [
+  {
+    internalCode: "application_authentication_required",
+    publicCode: "unauthorized",
+    status: 401,
+    publicMessage: "Authentication is required",
+    responseShape: "nested",
+  },
+  {
+    internalCode: "application_admin_required",
+    publicCode: "forbidden",
+    status: 403,
+    publicMessage: "Administrative access is required",
+    responseShape: "nested",
+  },
+  {
+    internalCode: "application_not_found",
+    publicCode: "not_found",
+    status: 404,
+    publicMessage: "Application was not found",
+    responseShape: "nested",
+  },
+  ...nestedRules(
+    410,
+    "Application payload is no longer available",
+    "application_payload_erased",
+    "application_payload_expired",
+  ),
+  ...nestedRules(
+    413,
+    "Application payload is too large",
+    "application_payload_too_large",
+  ),
+  ...nestedRules(
+    429,
+    "Application rate limit reached",
+    "application_rate_limited",
+  ),
+  ...nestedRules(
+    409,
+    "Application conflicts with an earlier submission",
+    "application_idempotency_conflict",
+    "application_duplicate_rejected",
+  ),
+  ...nestedRules(
+    422,
+    "Application was rejected",
+    "application_request_id_invalid",
+    "application_content_type_invalid",
+    "application_content_length_invalid",
+    "application_payload_invalid",
+    "application_reveal_purpose_invalid",
+    "application_erasure_reason_invalid",
+    "application_purge_limit_invalid",
+    "application_name_invalid",
+    "application_work_email_invalid",
+    "application_company_invalid",
+    "application_role_invalid",
+    "application_providerChange_invalid",
+    "application_repositoryScope_invalid",
+    "application_successMetric_invalid",
+    "application_disposable_email_rejected",
+    "application_url_rejected",
+    "application_secret_rejected",
+    "application_source_code_rejected",
+    "application_server_owned_field_rejected",
+    "application_honeypot_rejected",
+    "application_authorization_required",
+    "application_consent_required",
+    "application_started_at_invalid",
+    "application_submitted_too_fast",
+    "application_form_expired",
+  ),
+];
 
 export type DesignPartnerApplicationRoutesOptions = Readonly<{
   db: AppDb;
@@ -75,42 +167,10 @@ async function applicationBody(c: Context<ApiEnv>): Promise<unknown> {
 }
 
 function errorResponse(c: Context<ApiEnv>, error: unknown): Response {
-  const code = error instanceof Error ? error.message : "application_internal_error";
-  if (code === "application_authentication_required") {
-    return c.json({ error: { code: "unauthorized", message: "Authentication is required" } }, 401);
-  }
-  if (code === "application_admin_required") {
-    return c.json({ error: { code: "forbidden", message: "Administrative access is required" } }, 403);
-  }
-  if (code === "application_not_found") {
-    return c.json({ error: { code: "not_found", message: "Application was not found" } }, 404);
-  }
-  if (code === "application_payload_erased" || code === "application_payload_expired") {
-    return c.json({ error: { code, message: "Application payload is no longer available" } }, 410);
-  }
-  if (code === "application_payload_too_large") {
-    return c.json({ error: { code, message: "Application payload is too large" } }, 413);
-  }
-  if (code === "application_rate_limited") {
+  if (error instanceof Error && error.message === "application_rate_limited") {
     c.header("Retry-After", "86400");
-    return c.json({ error: { code, message: "Application rate limit reached" } }, 429);
   }
-  if (code === "application_idempotency_conflict" || code === "application_duplicate_rejected") {
-    return c.json({ error: { code, message: "Application conflicts with an earlier submission" } }, 409);
-  }
-  if (
-    code === "application_audit_callback_required" ||
-    code === "application_data_key_envelope_invalid" ||
-    code === "application_payload_envelope_invalid" ||
-    code === "application_payload_key_missing" ||
-    code === "application_retention_evidence_missing"
-  ) {
-    return c.json({ error: { code: "internal_error", message: "Application operation failed" } }, 500);
-  }
-  if (code.startsWith("application_")) {
-    return c.json({ error: { code, message: "Application was rejected" } }, 422);
-  }
-  return c.json({ error: { code: "internal_error", message: "Application operation failed" } }, 500);
+  return mappedErrorResponse(c, error, APPLICATION_ERRORS);
 }
 
 function requireAdmin(c: Context<ApiEnv>) {

@@ -161,6 +161,36 @@ describe("Warden durable model accounting", () => {
     }))).toThrow("warden_model_job_lease_stale");
   });
 
+  it.each([
+    ["all-zero", { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 }],
+    ["missing", {}],
+    ["inconsistent", { inputTokens: 10, outputTokens: 5, totalTokens: 16, costUsd: 0.1 }],
+    ["zero-cost", { inputTokens: 10, outputTokens: 5, totalTokens: 15, costUsd: 0 }],
+  ])("charges the reservation maximum for %s successful usage evidence", (_case, usage) => {
+    const { db, job } = fixture();
+    const input = reservation(job);
+    reserveWardenModelCall(db, input);
+
+    const settled = settleWardenModelCall(db, {
+      tenantId: "tenant-a",
+      jobId: job.id,
+      reservationId: input.id,
+      workerId: job.lease_owner!,
+      leaseGeneration: job.lease_generation,
+      status: "succeeded",
+      ...usage,
+      observedAt: LATER,
+    });
+
+    expect(settled).toMatchObject({
+      status: "over_budget",
+      charged_input_tokens: input.maximumInputTokens,
+      charged_output_tokens: input.maximumOutputTokens,
+      charged_total_tokens: input.maximumTotalTokens,
+      charged_cost_usd: input.maximumCostUsd,
+    });
+  });
+
   it("charges the reservation maximum for failed, unmeasured, or over-budget calls", () => {
     const { db, job } = fixture();
     for (const [index, status] of [[1, "failed"], [2, "succeeded"]] as const) {

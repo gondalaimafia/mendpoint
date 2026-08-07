@@ -1465,6 +1465,127 @@ describe("Transformer pilot execution coordinator", () => {
     store.close();
   });
 
+  it.each([
+    ["input-tokens", { maximumInputTokens: 0, maximumTotalTokens: 20 }],
+    ["output-tokens", { maximumOutputTokens: 0, maximumTotalTokens: 100 }],
+    ["total-tokens", { maximumTotalTokens: 0 }],
+    ["cost", { maximumCostUsd: 0 }],
+  ])("rejects a zero maximum for %s before reserving model headroom", (slug, overrides) => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign({
+      ...createInput([unit("unit-a", "repo-a", "a", "c")]),
+      adaptiveBudget: {
+        maxAttempts: 1, maxPlannerCalls: 1, maxModelCalls: 1,
+        maxInputTokens: 100, maxOutputTokens: 20, maxTotalTokens: 120,
+        maxActualCostUsd: 1, maxWallTimeMs: 60_000,
+      },
+    });
+    const token = "lease-token-zero-model-reservation-bound";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "zero-model-reservation-bound-claim"), leaseToken: token,
+      leaseDurationMs: 180_000, gateConfig: gateConfig(),
+    })!;
+
+    expect(() => store.reserveAdaptiveModelCall({
+      ...mutation(2, `zero-model-reservation-bound-${slug}`), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      reservation: {
+        reservationId: `reservation-zero-${slug}`,
+        requestDigest: digest("0"),
+        provider: "provider-a",
+        configuredModel: "model-a",
+        deployment: "deployment-a",
+        executionRegion: "us-central",
+        maximumDataClassification: "confidential",
+        endpointHost: "models.example",
+        maximumInputTokens: 100,
+        maximumOutputTokens: 20,
+        maximumTotalTokens: 120,
+        maximumCostUsd: 1,
+        ...overrides,
+      },
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_model_reservation_bound_invalid");
+
+    const campaign = store.getCampaign("tenant-a", "campaign-a")!;
+    expect(campaign.units[0]!.adaptiveModelReservations ?? []).toEqual([]);
+    expect(campaign.adaptiveBudget.totals).toMatchObject({
+      plannerCalls: 0,
+      modelCalls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      actualCostUsd: 0,
+    });
+    store.close();
+  });
+
+  it.each([
+    ["all-zero", { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 }],
+    ["missing", {}],
+    ["inconsistent", { inputTokens: 10, outputTokens: 5, totalTokens: 16, costUsd: 0.1 }],
+    ["zero-cost", { inputTokens: 10, outputTokens: 5, totalTokens: 15, costUsd: 0 }],
+  ])("charges adaptive reservation maximum for %s successful usage evidence", (_case, usage) => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign({
+      ...createInput([unit("unit-a", "repo-a", "a", "c")]),
+      adaptiveBudget: {
+        maxAttempts: 1, maxPlannerCalls: 1, maxModelCalls: 1,
+        maxInputTokens: 100, maxOutputTokens: 20, maxTotalTokens: 120,
+        maxActualCostUsd: 1, maxWallTimeMs: 60_000,
+      },
+    });
+    const token = "lease-token-model-usage-evidence-1";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "model-usage-evidence-claim"), leaseToken: token,
+      leaseDurationMs: 180_000, gateConfig: gateConfig(),
+    })!;
+    const reservationId = "reservation-usage-evidence";
+    store.reserveAdaptiveModelCall({
+      ...mutation(2, "model-usage-evidence-reserve"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      reservation: {
+        reservationId,
+        requestDigest: digest("e"),
+        provider: "provider-a",
+        configuredModel: "model-a",
+        deployment: "deployment-a",
+        executionRegion: "us-central",
+        maximumDataClassification: "confidential",
+        endpointHost: "models.example",
+        maximumInputTokens: 100,
+        maximumOutputTokens: 20,
+        maximumTotalTokens: 120,
+        maximumCostUsd: 1,
+      },
+      gateConfig: gateConfig(),
+    });
+
+    store.settleAdaptiveModelCall({
+      ...mutation(3, "model-usage-evidence-settle"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      settlement: { reservationId, status: "succeeded", ...usage },
+      gateConfig: gateConfig(),
+    });
+
+    const campaign = store.getCampaign("tenant-a", "campaign-a")!;
+    expect(campaign.adaptiveBudget.totals).toMatchObject({
+      modelCalls: 1,
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      actualCostUsd: 1,
+    });
+    expect(campaign.units[0]!.adaptiveModelReservations?.[0]).toMatchObject({
+      status: "over_budget",
+      chargedInputTokens: 100,
+      chargedOutputTokens: 20,
+      chargedTotalTokens: 120,
+      chargedCostUsd: 1,
+    });
+    store.close();
+  });
+
   it("enforces ceilings during an attempt and never charges a stale lease", () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign({
@@ -1517,6 +1638,18 @@ describe("Transformer pilot execution coordinator", () => {
       ...mutation(2, "budget-accounting-inconsistent"), unitId: lease.unitId,
       leaseGeneration: lease.leaseGeneration, leaseToken: token,
       accounting: adaptiveAccounting({ inputTokens: 10, outputTokens: 5, totalTokens: 20 }),
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_adaptive_accounting_invalid");
+    expect(() => store.recordAdaptiveAttemptUsage({
+      ...mutation(2, "budget-accounting-zero-model"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      accounting: adaptiveAccounting({ plannerCalls: 1, modelCalls: 1 }),
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_adaptive_accounting_invalid");
+    expect(() => store.recordAdaptiveAttemptUsage({
+      ...mutation(2, "budget-accounting-phantom-usage"), unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration, leaseToken: token,
+      accounting: adaptiveAccounting({ inputTokens: 10, outputTokens: 5, totalTokens: 15 }),
       gateConfig: gateConfig(),
     })).toThrow("transformer_pilot_adaptive_accounting_invalid");
     store.recordAdaptiveAttemptUsage({

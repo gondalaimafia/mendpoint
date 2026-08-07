@@ -242,7 +242,7 @@ function plannerOutput(call: unknown): AgentPlannerOutput {
       promptTokens: 1,
       completionTokens: 1,
       totalTokens: 2,
-      costUsd: 0,
+      costUsd: 0.000001,
       model: "scripted-source-eval",
       modelRevision: "2026-08-05.v1",
     }),
