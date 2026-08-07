@@ -212,6 +212,7 @@ jobs:
             http://127.0.0.1:3000/api/status >/dev/null
           docker run --rm \
             --network mendpoint-ci \
+            -e MENDPOINT_DEPLOYMENT_PROFILE=demo \
             -e GITHUB_MODE=mock \
             -e MENDPOINT_TENANT_ID=tenant_default \
             -v mendpoint-ci-data:/app/data \
