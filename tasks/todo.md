@@ -1019,6 +1019,7 @@ Acceptance: a signed GitHub installation event, independently verified repositor
 - Exact main workflow `31037652176` repeated every protected gate and deployed successfully. Fly machine version 30 is started in `sjc` with its health check passing.
 - `/`, `/livez`, `/healthz`, and `/github/setup` return 200. `/status` returns the expected 307 access redirect. The setup return page passed public Edge verification with no console errors.
 - Live GitHub App creation remains externally blocked on the signed in GitHub account's sudo verification and action time confirmation before submission.
+- The complete production setup procedure (App form values, redirect on update, secrets, owner tenant bindings, install flow, troubleshooting) is documented in `docs/GITHUB_APP_SETUP.md`.
 
 ## Devin level agent execution closure: Transformer durable attempt runner
 
