@@ -241,7 +241,7 @@ function adaptiveAdapter() {
       return new Response(JSON.stringify({
         id: "adaptive-body-request-a",
         model: "model-a",
-        choices: [{ message: { content: JSON.stringify({
+        choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
           plan: {
             edits: [{
               path: file.path,
@@ -252,6 +252,8 @@ function adaptiveAdapter() {
               risk: "low",
               confidence: 95,
             }],
+            requestContextPaths: [],
+            markUnfixable: false,
             rationale: "Repair the failed objective gate without widening scope",
           },
         }) } }],

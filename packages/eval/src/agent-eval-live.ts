@@ -685,9 +685,17 @@ export async function runWardenLiveEval(
   });
 }
 
-function option(name: string): string | undefined {
+export function parseLiveEvalOption(args: readonly string[], name: string): string | undefined {
   const prefix = `--${name}=`;
-  return process.argv.find((value) => value.startsWith(prefix))?.slice(prefix.length);
+  const assigned = args.find((value) => value.startsWith(prefix))?.slice(prefix.length);
+  if (assigned !== undefined) return assigned;
+  const index = args.indexOf(`--${name}`);
+  const next = index >= 0 ? args[index + 1] : undefined;
+  return next && !next.startsWith("--") ? next : undefined;
+}
+
+function option(name: string): string | undefined {
+  return parseLiveEvalOption(process.argv, name);
 }
 
 function printWardenReport(report: LiveEvalReport): void {
@@ -730,12 +738,12 @@ function printTransformerReport(report: TransformerLiveEvalReport): void {
   console.log(`Budget ${report.budgetUsd.toFixed(4)} USD, spent ${report.spentUsd.toFixed(6)} USD`);
   console.log("");
   console.log(
-    `${pad("TRIAL", 6)} ${pad("PASS", 5)} ${pad("TOKENS", 8)} ${pad("USD", 12)} ${pad("MS", 8)} MODEL`,
+    `${pad("TRIAL", 6)} ${pad("PASS", 5)} ${pad("TOKENS", 8)} ${pad("MEASURED", 12)} ${pad("CHARGED", 12)} ${pad("MS", 8)} MODEL`,
   );
   console.log("=".repeat(80));
   for (const trial of report.trials) {
     console.log(
-      `${pad(String(trial.trial), 6)} ${pad(trial.passed ? "yes" : "no", 5)} ${pad(String(trial.totalTokens), 8)} ${pad(trial.costUsd.toFixed(8), 12)} ${pad(String(trial.latencyMs), 8)} ${trial.provider}/${trial.model}`,
+      `${pad(String(trial.trial), 6)} ${pad(trial.passed ? "yes" : "no", 5)} ${pad(String(trial.totalTokens), 8)} ${pad(trial.costUsd.toFixed(8), 12)} ${pad(trial.accountedCostUsd.toFixed(8), 12)} ${pad(String(trial.latencyMs), 8)} ${trial.provider}/${trial.model}`,
     );
     for (const candidate of trial.grades.filter((item) => !item.passed)) {
       console.log(`  ${candidate.id}: expected ${candidate.expected}, observed ${candidate.observed}`);

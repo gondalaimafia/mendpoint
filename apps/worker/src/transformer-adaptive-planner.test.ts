@@ -84,7 +84,7 @@ function successfulResponse(): Response {
   return new Response(JSON.stringify({
     id: "request-body-a",
     model: "model-a",
-    choices: [{ message: { content: JSON.stringify({
+    choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
       plan: {
         edits: [{
           path: "package.json",
@@ -173,7 +173,17 @@ describe("Transformer adaptive model planner", () => {
       expect(request).toMatchObject({ model: "model-a", temperature: 0, max_tokens: 1_000 });
       expect(request.response_format).toMatchObject({
         type: "json_schema",
-        json_schema: { name: "transformer_adaptive_plan", strict: true },
+        json_schema: {
+          name: "transformer_adaptive_plan",
+          strict: true,
+          schema: {
+            properties: {
+              plan: {
+                required: ["edits", "requestContextPaths", "markUnfixable", "rationale"],
+              },
+            },
+          },
+        },
       });
       return successfulResponse();
     });
@@ -237,6 +247,66 @@ describe("Transformer adaptive model planner", () => {
     ]);
   });
 
+  it.each([
+    ["zero", { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }],
+    ["missing", undefined],
+  ])("rejects %s provider usage and settles the reserved call as failed", async (_label, usage) => {
+    const body = JSON.parse(await successfulResponse().text()) as Record<string, unknown>;
+    if (usage === undefined) delete body.usage;
+    else body.usage = usage;
+    const accounting = accountingOptions();
+    const adapter = resolveTransformerAdaptivePlannerAdapter("tenant-a", enabledEnv(), {
+      fetchImpl: async () => new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json", "x-request-id": "request-header-invalid" },
+      }),
+      priceTable: PRICE_TABLE,
+    })!;
+
+    await expect(adapter.planner(INPUT, accounting.options)).rejects.toThrow(
+      "transformer_adaptive_model_response_invalid",
+    );
+    expect(accounting.reservations).toHaveLength(1);
+    expect(accounting.settlements).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        headerRequestId: "request-header-invalid",
+        errorCode: "transformer_adaptive_model_response_invalid",
+      }),
+    ]);
+    expect(adapter.provenance()).toHaveLength(0);
+  });
+
+  it("accepts a strict provider's parsed JSON object content and rejects truncated output", async () => {
+    const objectBody = JSON.parse(await successfulResponse().text()) as {
+      choices: Array<{ finish_reason: string; message: { content: unknown } }>;
+    };
+    objectBody.choices[0]!.message.content = JSON.parse(
+      String(objectBody.choices[0]!.message.content),
+    );
+    const objectAdapter = resolveTransformerAdaptivePlannerAdapter("tenant-a", enabledEnv(), {
+      fetchImpl: async () => new Response(JSON.stringify(objectBody), { status: 200 }),
+      priceTable: PRICE_TABLE,
+    })!;
+    await expect(objectAdapter.planner(INPUT, accountingOptions().options)).resolves.toMatchObject({
+      plan: { edits: [{ path: "package.json" }] },
+      usage: { totalTokens: 150 },
+    });
+
+    objectBody.choices[0]!.finish_reason = "length";
+    const truncatedAccounting = accountingOptions();
+    const truncatedAdapter = resolveTransformerAdaptivePlannerAdapter("tenant-a", enabledEnv(), {
+      fetchImpl: async () => new Response(JSON.stringify(objectBody), { status: 200 }),
+      priceTable: PRICE_TABLE,
+    })!;
+    await expect(truncatedAdapter.planner(INPUT, truncatedAccounting.options)).rejects.toThrow(
+      "transformer_adaptive_model_response_invalid",
+    );
+    expect(truncatedAccounting.settlements).toEqual([
+      expect.objectContaining({ status: "failed", errorCode: "transformer_adaptive_model_response_invalid" }),
+    ]);
+  });
+
   it("fails before external execution when token or cost headroom cannot be guaranteed", async () => {
     const fetchImpl = vi.fn(async () => successfulResponse());
     const adapter = resolveTransformerAdaptivePlannerAdapter("tenant-a", enabledEnv(), {
@@ -263,6 +333,15 @@ describe("Transformer adaptive model planner", () => {
       priceTable: {},
     })!;
     await expect(unknownPrice.planner(INPUT, accountingOptions().options)).rejects.toThrow(
+      "transformer_adaptive_model_price_unknown",
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const zeroPrice = resolveTransformerAdaptivePlannerAdapter("tenant-a", enabledEnv(), {
+      fetchImpl,
+      priceTable: { "model-a": { promptUsdPerMillion: 0, completionUsdPerMillion: 0 } },
+    })!;
+    await expect(zeroPrice.planner(INPUT, accountingOptions().options)).rejects.toThrow(
       "transformer_adaptive_model_price_unknown",
     );
     expect(fetchImpl).not.toHaveBeenCalled();

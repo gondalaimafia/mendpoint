@@ -33,15 +33,13 @@ function liveEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   };
 }
 
-function responseFor(nextEngine = ">=20 <21", request = 1): Response {
-  const nextContent = `${JSON.stringify({
-    ...SOURCE_PACKAGE,
-    engines: { node: nextEngine },
-  }, null, 2)}\n`;
+function responseForPackage(nextPackage: unknown, request = 1): Response {
+  const nextContent = `${JSON.stringify(nextPackage, null, 2)}\n`;
   return new Response(JSON.stringify({
     id: `body-${request}`,
     model: MODEL,
     choices: [{
+      finish_reason: "stop",
       message: {
         content: JSON.stringify({
           plan: {
@@ -66,6 +64,25 @@ function responseFor(nextEngine = ">=20 <21", request = 1): Response {
       "x-request-id": `header-${request}`,
     },
   });
+}
+
+async function responseWithoutUsage(request = 1): Promise<Response> {
+  const body = JSON.parse(await responseFor(">=20 <21", request).text()) as Record<string, unknown>;
+  delete body.usage;
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "x-request-id": `header-${request}`,
+    },
+  });
+}
+
+function responseFor(nextEngine = ">=20 <21", request = 1): Response {
+  return responseForPackage({
+    ...SOURCE_PACKAGE,
+    engines: { node: nextEngine },
+  }, request);
 }
 
 const PRICE_TABLE = {
@@ -108,6 +125,7 @@ describe("Transformer live model eval", () => {
     });
 
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(report.schemaVersion).toBe(2);
     expect(report.passed).toBe(true);
     expect(report.passRate).toBe(1);
     expect(report.consistencyRate).toBe(1);
@@ -164,6 +182,85 @@ describe("Transformer live model eval", () => {
     expect(report.trials[0]?.grades.find((candidate) => candidate.id === "objective.verified")?.passed)
       .toBe(false);
   });
+
+  it.each([
+    ["extra top-level field", {
+      ...SOURCE_PACKAGE,
+      engines: { node: ">=20 <21" },
+      unexpected: "unauthorized",
+    }],
+    ["extra engines field", {
+      ...SOURCE_PACKAGE,
+      engines: { node: ">=20 <21", npm: "malicious-extra" },
+    }],
+  ])("rejects an otherwise correct plan with an %s", async (_label, nextPackage) => {
+    const report = await runTransformerLiveEval({
+      env: liveEnv(),
+      repetitions: 1,
+      fetchImpl: async () => responseForPackage(nextPackage),
+      priceTable: PRICE_TABLE,
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.trials[0]?.objectiveVerified).toBe(false);
+    expect(report.trials[0]?.grades.find((candidate) => candidate.id === "objective.verified")?.passed)
+      .toBe(false);
+  });
+
+  it("cannot certify failed objectives when both aggregate thresholds are zero", async () => {
+    const report = await runTransformerLiveEval({
+      env: liveEnv({
+        MENDPOINT_TRANSFORMER_LIVE_MIN_PASS_RATE: "0",
+        MENDPOINT_TRANSFORMER_LIVE_MIN_CONSISTENCY: "0",
+      }),
+      repetitions: 2,
+      fetchImpl: async () => responseFor(">=18 <20"),
+      priceTable: PRICE_TABLE,
+    });
+
+    expect(report.passRate).toBe(0);
+    expect(report.consistencyRate).toBe(1);
+    expect(report.trials.every((trial) => !trial.objectiveVerified)).toBe(true);
+    expect(report.passed).toBe(false);
+  });
+
+  it("charges a failed call at its reservation and blocks a second call that cannot fit", async () => {
+    const fetchImpl = vi.fn(async () => responseWithoutUsage());
+    const report = await runTransformerLiveEval({
+      env: liveEnv({ MENDPOINT_TRANSFORMER_LIVE_EVAL_MAX_USD: "3" }),
+      repetitions: 2,
+      fetchImpl,
+      priceTable: {
+        [MODEL]: { promptUsdPerMillion: 200, completionUsdPerMillion: 200 },
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(report.passed).toBe(false);
+    expect(report.spentUsd).toBeGreaterThan(0);
+    expect(report.spentUsd).toBeLessThanOrEqual(3);
+    expect(report.trials[0]?.accountedCostUsd).toBe(report.spentUsd);
+    expect(report.trials[1]?.accountedCostUsd).toBe(0);
+    expect(report.trials).toHaveLength(2);
+    expect(report.trials[0]?.grades.find((candidate) => candidate.id === "accounting.settled")?.passed)
+      .toBe(false);
+    expect(report.trials[1]?.grades.find((candidate) => candidate.id === "accounting.reserved")?.passed)
+      .toBe(false);
+  });
+
+  it.each(["", " ", "-1", "NaN", "not-a-number"])(
+    "rejects a present invalid live budget %j before any provider call",
+    async (configuredBudget) => {
+      const fetchImpl = vi.fn(async () => responseFor());
+      await expect(runTransformerLiveEval({
+        env: liveEnv({ MENDPOINT_TRANSFORMER_LIVE_EVAL_MAX_USD: configuredBudget }),
+        repetitions: 1,
+        fetchImpl,
+        priceTable: PRICE_TABLE,
+      })).rejects.toThrow("transformer_live_eval_budget_invalid");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
 
   it("refuses before a provider call when the live budget is zero", async () => {
     const fetchImpl = vi.fn(async () => responseFor());

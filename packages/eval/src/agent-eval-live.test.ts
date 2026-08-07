@@ -1,9 +1,20 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runWardenLiveEval } from "./agent-eval-live.js";
+import { parseLiveEvalOption, runWardenLiveEval } from "./agent-eval-live.js";
 
 const APPROVED_MODEL = "muse-spark-1.2-contributor";
+
+describe("live eval command options", () => {
+  it("accepts assignment and separated values without consuming another option", () => {
+    expect(parseLiveEvalOption(["node", "eval", "--product=transformer"], "product"))
+      .toBe("transformer");
+    expect(parseLiveEvalOption(["node", "eval", "--product", "transformer"], "product"))
+      .toBe("transformer");
+    expect(parseLiveEvalOption(["node", "eval", "--product", "--repetitions", "3"], "product"))
+      .toBeUndefined();
+  });
+});
 
 type MockConfig = {
   echoModel: string;
