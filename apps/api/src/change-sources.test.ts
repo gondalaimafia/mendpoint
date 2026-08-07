@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createApiKey, createDb, type AppDb } from "@mendpoint/db";
 import { openChangeSourceStore, type ChangeSourceStore } from "@mendpoint/change-intel";
 import { Hono } from "hono";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAuthMiddleware, type ApiEnv } from "./auth.js";
 import { createChangeSourceRoutes } from "./change-sources.js";
 import { requestIdMiddleware } from "./production.js";
@@ -18,6 +18,7 @@ const stores: ChangeSourceStore[] = [];
 const originalAuth = process.env.API_AUTH;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (originalAuth === undefined) delete process.env.API_AUTH;
   else process.env.API_AUTH = originalAuth;
   for (const store of stores.splice(0)) {
@@ -119,6 +120,30 @@ async function createSource(app: Hono<ApiEnv>, token: string, requestId: string,
 }
 
 describe("change source API routes", () => {
+  it.each([
+    ["provider", "change_source_provider_token_invalid"],
+    ["filesystem", "change_source_/customers/acme/private_not_found"],
+    ["database", "change_source_SQLITE_CONSTRAINT"],
+    ["resource existence", "change_source_repository_not_found"],
+  ])("fails unknown %s exceptions closed at the API boundary", async (_kind, sentinel) => {
+    const { db, store, tenantA } = fixture();
+    const app = appFor(db, store);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(store.raw, "prepare").mockImplementation(() => {
+      throw new Error(sentinel);
+    });
+
+    const response = await app.request("/change-sources/source-unknown", {
+      headers: headers(tenantA, "sentinel-change-source"),
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "internal_error",
+      requestId: "sentinel-change-source",
+    });
+  });
+
   it("requires authentication and derives tenant scope only from the authenticated principal", async () => {
     const { db, store, tenantA, tenantB } = fixture();
     const app = appFor(db, store);

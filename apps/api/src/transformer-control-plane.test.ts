@@ -17,6 +17,7 @@ const dirs: string[] = [];
 const services: TransformerCampaignService[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (services.length) services.pop()?.close();
   while (dirs.length) {
     const dir = dirs.pop();
@@ -322,6 +323,32 @@ describe("Transformer campaign service", () => {
 });
 
 describe("Transformer campaign routes", () => {
+  it.each([
+    ["provider", "provider_api_key_invalid"],
+    ["filesystem", "/customers/acme/private_not_found"],
+    ["database", "SQLITE tenant_limit"],
+    ["resource existence", "repository_exists_not_found"],
+    ["allowlisted exact-code collision", "invalid_campaign_transition"],
+    ["allowlisted prefix collision", "invalid_campaign_transition:provider /customers/acme/private"],
+  ])("fails unknown %s exceptions closed at the API boundary", async (_kind, sentinel) => {
+    const service = open();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(service, "get").mockImplementation(() => {
+      throw new Error(sentinel);
+    });
+
+    const response = await testApp(service).request(
+      "/transformer/control-plane/campaigns/campaign-a",
+      { headers: mutationHeaders() },
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "internal_error",
+      requestId: "request-route",
+    });
+  });
+
   it("defaults deny and reports the experimental gate without mutating state", async () => {
     const service = open();
     const app = testApp(service, { rawConfig: "", environment: "test" });

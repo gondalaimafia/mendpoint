@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
   createOrganizationConstraintContract,
@@ -19,6 +19,7 @@ const roots: string[] = [];
 const services: TransformerPilotExecutionService[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (services.length) services.pop()?.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -227,6 +228,32 @@ function observation(unitId: string, state: "draft" | "merged", source: string, 
 }
 
 describe("Transformer pilot execution API", () => {
+  it.each([
+    ["provider", "provider_api_key_invalid"],
+    ["filesystem", "/customers/acme/private_not_found"],
+    ["database", "database_constraint_denied"],
+    ["resource existence", "repository_exists"],
+    ["allowlisted exact-code collision", "transformer_pilot_gate_denied"],
+    ["allowlisted prefix collision", "transformer_pilot_gate_denied:provider /customers/acme/private"],
+  ])("fails unknown %s exceptions closed at the API boundary", async (_kind, sentinel) => {
+    const service = open(databasePath());
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(service, "get").mockImplementation(() => {
+      throw new Error(sentinel);
+    });
+
+    const response = await app(service).request(
+      "/transformer/executions/campaign-a",
+      { headers: headers("sentinel") },
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "internal_error",
+      requestId: "request-sentinel",
+    });
+  });
+
   it("rejects human plan executors from worker result endpoints", async () => {
     const instance = app(open(databasePath()));
     expect((await post(instance, "/transformer/executions", "create-worker-auth", campaign())).status).toBe(201);

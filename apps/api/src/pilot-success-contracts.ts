@@ -12,8 +12,137 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
 import type { ApiEnv } from "./auth.js";
+import {
+  mappedErrorResponse,
+  type PublicErrorRule,
+} from "./error-boundary.js";
 
 const MAX_BODY_BYTES = 128 * 1_024;
+
+function nestedRules(
+  status: PublicErrorRule["status"],
+  publicMessage: string,
+  ...internalCodes: readonly string[]
+): readonly PublicErrorRule[] {
+  return internalCodes.map((internalCode) => ({
+    internalCode,
+    status,
+    publicMessage,
+    responseShape: "nested",
+  }));
+}
+
+const PILOT_CONTRACT_TEXT_FIELDS = [
+  "provider",
+  "change_description",
+  "repository_owner",
+  "repository_name",
+  "repository_branch",
+  "repository_scope",
+  "threshold_metric",
+  "threshold_unit",
+  "owner_principal",
+  "support_coverage",
+  "privacy_deletion_procedure",
+  "rollback_trigger",
+  "rollback_procedure",
+  "rollback_owner",
+  "review_time",
+  "review_owner",
+  "conversion_due_at",
+  "conversion_owner",
+] as const;
+
+const PILOT_CONTRACT_ERRORS: readonly PublicErrorRule[] = [
+  {
+    internalCode: "pilot_contract_authentication_required",
+    publicCode: "unauthorized",
+    status: 401,
+    publicMessage: "Authentication is required",
+    responseShape: "nested",
+  },
+  ...[
+    "pilot_contract_manager_required",
+    "pilot_contract_reviewer_role_required",
+  ].map((internalCode): PublicErrorRule => ({
+    internalCode,
+    publicCode: "forbidden",
+    status: 403,
+    publicMessage: "This operation requires pilot contract authority",
+    responseShape: "nested",
+  })),
+  {
+    internalCode: "pilot_contract_not_found",
+    publicCode: "not_found",
+    status: 404,
+    publicMessage: "Pilot success contract was not found",
+    responseShape: "nested",
+  },
+  ...nestedRules(
+    409,
+    "Pilot success contract conflicts with current state",
+    "pilot_contract_version_conflict",
+    "pilot_contract_id_conflict",
+    "pilot_contract_already_approved",
+  ),
+  ...nestedRules(
+    413,
+    "Pilot success contract payload is too large",
+    "pilot_contract_payload_too_large",
+  ),
+  ...nestedRules(
+    422,
+    "Pilot success contract was rejected",
+    "pilot_contract_content_type_invalid",
+    "pilot_contract_payload_invalid",
+    "pilot_contract_definition_required",
+    "pilot_contract_definition_invalid",
+    "pilot_contract_version_invalid",
+    "pilot_contract_change_class_invalid",
+    "pilot_contract_repositories_required",
+    "pilot_contract_repository_duplicate",
+    "pilot_contract_thresholds_required",
+    "pilot_contract_threshold_operator_invalid",
+    "pilot_contract_threshold_target_invalid",
+    "pilot_contract_threshold_duplicate",
+    "pilot_contract_owners_required",
+    "pilot_contract_owner_responsibility_invalid",
+    "pilot_contract_owner_duplicate",
+    "pilot_contract_owner_customer_owner_required",
+    "pilot_contract_owner_mendpoint_owner_required",
+    "pilot_contract_owner_technical_reviewer_required",
+    "pilot_contract_owner_privacy_contact_required",
+    "pilot_contract_owner_rollback_owner_required",
+    "pilot_contract_support_responses_required",
+    "pilot_contract_support_severity_invalid",
+    "pilot_contract_support_response_minutes_invalid",
+    "pilot_contract_support_severity_duplicate",
+    "pilot_contract_privacy_data_categories_required",
+    "pilot_contract_privacy_data_categories_invalid",
+    "pilot_contract_privacy_data_categories_duplicate",
+    "pilot_contract_privacy_retention_days_invalid",
+    "pilot_contract_privacy_processing_regions_required",
+    "pilot_contract_privacy_processing_regions_invalid",
+    "pilot_contract_privacy_processing_regions_duplicate",
+    "pilot_contract_rollback_recovery_minutes_invalid",
+    "pilot_contract_rollback_owner_mismatch",
+    "pilot_contract_review_day_invalid",
+    "pilot_contract_review_time_invalid",
+    "pilot_contract_review_agenda_required",
+    "pilot_contract_review_agenda_invalid",
+    "pilot_contract_review_agenda_duplicate",
+    "pilot_contract_review_owner_mismatch",
+    "pilot_contract_conversion_criteria_required",
+    "pilot_contract_conversion_criteria_invalid",
+    "pilot_contract_conversion_criteria_duplicate",
+    "pilot_contract_conversion_owner_mismatch",
+    "pilot_contract_principal_tenant_mismatch",
+    "pilot_contract_human_reviewer_required",
+    "pilot_contract_independent_reviewer_required",
+    "pilot_contract_reviewer_not_assigned",
+    ...PILOT_CONTRACT_TEXT_FIELDS.map((field) => `pilot_contract_${field}_invalid`),
+  ),
+];
 
 export type PilotSuccessContractRoutesOptions = Readonly<{
   db: AppDb;
@@ -64,27 +193,7 @@ async function body(c: Context<ApiEnv>): Promise<Record<string, unknown>> {
 }
 
 function replyError(c: Context<ApiEnv>, error: unknown): Response {
-  const code = error instanceof Error ? error.message : "pilot_contract_internal_error";
-  if (code === "pilot_contract_authentication_required") {
-    return c.json({ error: { code: "unauthorized", message: "Authentication is required" } }, 401);
-  }
-  if (code === "pilot_contract_manager_required" || code === "pilot_contract_reviewer_role_required") {
-    return c.json({ error: { code: "forbidden", message: "This operation requires pilot contract authority" } }, 403);
-  }
-  if (code === "pilot_contract_not_found") {
-    return c.json({ error: { code: "not_found", message: "Pilot success contract was not found" } }, 404);
-  }
-  if (code === "pilot_contract_version_conflict" || code === "pilot_contract_id_conflict" ||
-    code === "pilot_contract_already_approved") {
-    return c.json({ error: { code, message: "Pilot success contract conflicts with current state" } }, 409);
-  }
-  if (code === "pilot_contract_payload_too_large") {
-    return c.json({ error: { code, message: "Pilot success contract payload is too large" } }, 413);
-  }
-  if (code.startsWith("pilot_contract_")) {
-    return c.json({ error: { code, message: "Pilot success contract was rejected" } }, 422);
-  }
-  return c.json({ error: { code: "internal_error", message: "Pilot success contract operation failed" } }, 500);
+  return mappedErrorResponse(c, error, PILOT_CONTRACT_ERRORS);
 }
 
 function requestId(c: Context<ApiEnv>): string {

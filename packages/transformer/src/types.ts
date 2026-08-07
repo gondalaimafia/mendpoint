@@ -4,6 +4,32 @@
  * @see docs/WARDEN_TRANSFORMER_GAP_ANALYSIS.md
  */
 
+export type TransformerDomainErrorCode =
+  | "invalid_campaign_transition"
+  | "invalid_blueprint_transition"
+  | "invalid_bsg_transition"
+  | "invalid_exception_transition"
+  | "invalid_unit_transition"
+  | "invalid_wave_transition"
+  | "invalid_attempt_transition"
+  | "invalid_approval_transition"
+  | "invalid_pr_transition"
+  | "transformer_pilot_gate_denied"
+  | "transformer_pilot_delivery_denied"
+  | "transformer_pilot_constraint_denied";
+
+/** A reviewed domain failure whose public code is independent of diagnostic text. */
+export class TransformerDomainError extends Error {
+  constructor(
+    public readonly code: TransformerDomainErrorCode,
+    public readonly detail?: string,
+    options?: ErrorOptions,
+  ) {
+    super(code, options);
+    this.name = "TransformerDomainError";
+  }
+}
+
 export type BsgNodeKind = "precondition" | "postcondition" | "invariant" | "behavior";
 
 export type BsgNode = {

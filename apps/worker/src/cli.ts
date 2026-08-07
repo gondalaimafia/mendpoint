@@ -38,6 +38,7 @@ import {
   listAdaptiveCandidateTenantIds,
   listAdaptiveCandidatesForMaintenance,
   listConnectedRepositories,
+  listFeedSchedules,
   listFeedPolls,
   listJobs,
   listRepositorySnapshots,
@@ -45,6 +46,7 @@ import {
   listVersionsForProvider,
   settleActiveWardenModelReservationsForFence,
   type AppDb,
+  type FeedScheduleRow,
 } from "@mendpoint/db";
 import {
   listCatalogFeeds,
@@ -52,14 +54,29 @@ import {
   probeKnownSdks,
   runFeedSchedules,
 } from "@mendpoint/catalog";
-import { nowIso } from "@mendpoint/shared";
+import { assessFeedFreshness, nowIso } from "@mendpoint/shared";
 import {
   createAppDelivery,
   loadAppCredentials,
   OctokitGitHubDelivery,
+  parseGitHubAccountTenantBindings,
+  resolveGitHubTenantAccountBinding,
   type ExactDraftDeliveryInput,
   type GitHubDelivery,
 } from "@mendpoint/github";
+import {
+  deploymentProfile,
+  resolveMutationFenceRoot,
+  tryAcquireMutationLease,
+  initializeWithMutationLease,
+} from "@mendpoint/ops";
+
+export function initializeWorkerDurableState<T>(
+  initialize: () => T,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): T {
+  return initializeWithMutationLease(initialize, env);
+}
 import {
   runWarden,
   runWardenAttempt,
@@ -152,7 +169,48 @@ export type WorkerHeartbeat = {
   transformer?: TransformerPilotLaneHeartbeat;
   feedPollingEnabled: boolean;
   feedPollOk: boolean;
+  feedScheduleCount?: number;
+  feedLastSuccessAt?: string;
+  feedStaleAfterMs?: number;
+  feedPollStartedAt?: string;
 };
+
+export function summarizeCustomerFeedEvidence(
+  rows: readonly FeedScheduleRow[],
+  nowMs = Date.now(),
+) {
+  const schedules = rows.filter((schedule) => schedule.enabled === 1);
+  const assessed = schedules.map((schedule) => ({
+    schedule,
+    alertStateHealthy:
+      schedule.alert_state === "healthy" && schedule.consecutive_failures === 0,
+    freshness: assessFeedFreshness({
+      lastSuccessAt: schedule.last_success_at ?? undefined,
+      staleAfterMs: schedule.stale_after_ms,
+      nowMs,
+    }),
+  }));
+  const critical = assessed.find(
+    ({ freshness, alertStateHealthy }) => !freshness.ok || !alertStateHealthy,
+  ) ?? assessed.reduce<(typeof assessed)[number] | undefined>((earliest, candidate) => {
+    if (!earliest) return candidate;
+    const earliestDeadline = Date.parse(earliest.schedule.last_success_at ?? "") +
+      earliest.schedule.stale_after_ms;
+    const candidateDeadline = Date.parse(candidate.schedule.last_success_at ?? "") +
+      candidate.schedule.stale_after_ms;
+    return candidateDeadline < earliestDeadline ? candidate : earliest;
+  }, undefined);
+  const alertStateHealthy = schedules.length > 0 &&
+    assessed.every((candidate) => candidate.alertStateHealthy);
+  return Object.freeze({
+    scheduleCount: schedules.length,
+    lastSuccessAt: critical?.schedule.last_success_at ?? undefined,
+    staleAfterMs: critical?.schedule.stale_after_ms,
+    alertStateHealthy,
+    fresh:
+      alertStateHealthy && assessed.every(({ freshness }) => freshness.ok),
+  });
+}
 
 export type TransformerPilotLaneHeartbeat = TransformerPilotLaneResult & Readonly<{
   active: boolean;
@@ -1193,6 +1251,37 @@ export function validateWorkerProductionEnv(
 ): string[] {
   if (env.NODE_ENV !== "production") return [];
   const errors: string[] = [];
+  const profile = deploymentProfile(env);
+  if (!env.MENDPOINT_DEPLOYMENT_PROFILE) {
+    errors.push("MENDPOINT_DEPLOYMENT_PROFILE must be explicitly set to demo, pilot, or customer");
+  } else if (!profile) {
+    errors.push("MENDPOINT_DEPLOYMENT_PROFILE must be exactly demo, pilot, or customer");
+  }
+  if (profile === "customer") {
+    if (env.GITHUB_MODE !== "real") {
+      errors.push("Customer worker requires GITHUB_MODE=real");
+    }
+    if (env.MENDPOINT_DEPLOYMENT_CLASS !== "customer") {
+      errors.push("Customer worker requires MENDPOINT_DEPLOYMENT_CLASS=customer");
+    }
+    if (env.MENDPOINT_FEED_POLLING_ENABLED !== "1") {
+      errors.push("Customer worker requires MENDPOINT_FEED_POLLING_ENABLED=1");
+    }
+    if (env.POLL_LOCAL_ONLY !== "0") {
+      errors.push("Customer worker requires POLL_LOCAL_ONLY=0");
+    }
+    if (env.MENDPOINT_PILOT_SEED !== "0") {
+      errors.push("Customer worker requires MENDPOINT_PILOT_SEED=0");
+    }
+    const fenceRoot = env.MENDPOINT_BACKUP_FENCE_ROOT?.trim();
+    if (!fenceRoot || !isAbsolute(fenceRoot)) {
+      errors.push("Customer worker requires an absolute MENDPOINT_BACKUP_FENCE_ROOT");
+    }
+    const heartbeatPath = env.MENDPOINT_WORKER_HEARTBEAT_PATH?.trim();
+    if (!heartbeatPath || !isAbsolute(heartbeatPath)) {
+      errors.push("Customer worker requires an absolute MENDPOINT_WORKER_HEARTBEAT_PATH");
+    }
+  }
   if (env.GITHUB_MODE !== "mock" && env.GITHUB_MODE !== "real") {
     errors.push("GITHUB_MODE must be explicitly set to mock or real");
   }
@@ -1230,6 +1319,21 @@ export function validateWorkerProductionEnv(
     errors.push(
       "GitHub App credentials must include a positive app ID and a readable RSA private key",
     );
+  }
+  if (profile === "customer" && appCredentials) {
+    try {
+      if (env.GITHUB_APP_OWNER_TENANT_BINDINGS?.trim()) throw new Error("legacy");
+      const bindings = parseGitHubAccountTenantBindings(
+        env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS,
+      );
+      if (bindings.size === 0 || new Set(bindings.values()).size !== bindings.size) {
+        throw new Error("ambiguous");
+      }
+    } catch {
+      errors.push(
+        "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
+      );
+    }
   }
   if (!env.DATABASE_URL && !env.MENDPOINT_DATA_DIR) {
     errors.push("DATABASE_URL or MENDPOINT_DATA_DIR is required");
@@ -1339,15 +1443,25 @@ export function validateWorkerProductionEnv(
       );
     }
   }
-  return errors;
+  return [...new Set(errors)];
 }
 
 async function demo() {
-  const report = await runChangePipeline({
-    tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
-    providerSlug: "acme-payments",
-  });
-  console.log(JSON.stringify(report, null, 2));
+  const fenceEnabled = process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer" ||
+    Boolean(process.env.MENDPOINT_BACKUP_FENCE_ROOT?.trim());
+  const lease = fenceEnabled
+    ? tryAcquireMutationLease(resolveMutationFenceRoot())
+    : undefined;
+  if (fenceEnabled && !lease) return;
+  try {
+    const report = await runChangePipeline({
+      tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+      providerSlug: "acme-payments",
+    });
+    console.log(JSON.stringify(report, null, 2));
+  } finally {
+    lease?.release();
+  }
 }
 
 export async function runUnseenVersion<T>(
@@ -1363,8 +1477,11 @@ export async function runUnseenVersion<T>(
 
 async function watch(intervalMs = 30_000) {
   console.log(`Watching for providers with 2 or more versions every ${intervalMs}ms`);
-  const db = createDb();
+  const db = initializeWorkerDurableState(() => createDb());
   const seen = new Set<string>();
+  const fenceEnabled = process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer" ||
+    Boolean(process.env.MENDPOINT_BACKUP_FENCE_ROOT?.trim());
+  const fenceRoot = resolveMutationFenceRoot();
   for (;;) {
     for (const provider of listProviders(db)) {
       const versions = listVersionsForProvider(db, provider.id);
@@ -1372,6 +1489,10 @@ async function watch(intervalMs = 30_000) {
       const key = `${provider.slug}:${versions.map((version) => version.version_label).join(">")}`;
       if (seen.has(key)) continue;
       console.log(`Running pipeline for ${provider.slug}`);
+      const mutationLease = fenceEnabled
+        ? tryAcquireMutationLease(fenceRoot)
+        : undefined;
+      if (fenceEnabled && !mutationLease) continue;
       try {
         const report = await runUnseenVersion(seen, key, () =>
           runChangePipeline({
@@ -1386,6 +1507,8 @@ async function watch(intervalMs = 30_000) {
         );
       } catch (error) {
         console.error(error);
+      } finally {
+        mutationLease?.release();
       }
     }
     await processJobsOnce(db);
@@ -1393,7 +1516,7 @@ async function watch(intervalMs = 30_000) {
   }
 }
 
-async function runFeedPoll(opts: {
+async function runFeedPollUnfenced(opts: {
   db: AppDb;
   localOnly: boolean;
   runPipeline: boolean;
@@ -1444,6 +1567,21 @@ async function runFeedPoll(opts: {
   return results;
 }
 
+async function runFeedPoll(
+  opts: Parameters<typeof runFeedPollUnfenced>[0],
+): Promise<Awaited<ReturnType<typeof runFeedPollUnfenced>>> {
+  const fenceEnabled = process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer" ||
+    Boolean(process.env.MENDPOINT_BACKUP_FENCE_ROOT?.trim());
+  if (!fenceEnabled) return runFeedPollUnfenced(opts);
+  const lease = tryAcquireMutationLease(resolveMutationFenceRoot());
+  if (!lease) return [];
+  try {
+    return await runFeedPollUnfenced(opts);
+  } finally {
+    lease.release();
+  }
+}
+
 async function pollFeeds(opts: {
   loop: boolean;
   intervalMs: number;
@@ -1451,7 +1589,7 @@ async function pollFeeds(opts: {
   runPipeline: boolean;
   slugs?: string[];
 }) {
-  const db = createDb();
+  const db = initializeWorkerDurableState(() => createDb());
   const root = findMonorepoRoot();
   console.log(
     `Feed poll ${opts.loop ? "loop" : "once"} localOnly=${opts.localOnly} pipeline=${opts.runPipeline} root=${root}`,
@@ -1598,6 +1736,16 @@ export function transformerAdaptiveGitHubDelivery(
         if (!installation) {
           throw new Error("transformer_adaptive_delivery_installation_not_authorized");
         }
+        if (!installation.account_id) {
+          throw new Error("github_app_installation_account_identity_required");
+        }
+        const expectedAccountId = resolveGitHubTenantAccountBinding(tenantId, env);
+        if (!expectedAccountId) {
+          throw new Error("github_app_tenant_account_binding_required");
+        }
+        if (installation.account_id !== expectedAccountId) {
+          throw new Error("github_app_installation_account_identity_mismatch");
+        }
         const installationId = Number(installation.installation_id);
         const repositoryId = installationRepositoryId(
           installation.repositories_json,
@@ -1655,8 +1803,8 @@ export function transformerAdaptiveGitHubDelivery(
   };
 }
 
-export async function processJobsOnce(
-  db = createDb(),
+async function processJobsOnceUnfenced(
+  db: AppDb,
   opts: {
     tenantId?: string;
     workerId?: string;
@@ -2454,8 +2602,28 @@ export async function processJobsOnce(
   return result;
 }
 
+export async function processJobsOnce(
+  db: AppDb | undefined = undefined,
+  opts: NonNullable<Parameters<typeof processJobsOnceUnfenced>[1]> = {},
+): Promise<JobDrainResult> {
+  const env = opts.wardenEnv ?? process.env;
+  const runtimeDb = db ?? initializeWorkerDurableState(() => createDb(), env);
+  const fenceEnabled = env.MENDPOINT_DEPLOYMENT_PROFILE === "customer" ||
+    Boolean(env.MENDPOINT_BACKUP_FENCE_ROOT?.trim());
+  if (!fenceEnabled) return processJobsOnceUnfenced(runtimeDb, opts);
+  const lease = tryAcquireMutationLease(resolveMutationFenceRoot(env));
+  if (!lease) {
+    return { claimed: 0, succeeded: 0, failed: 0, retried: 0 };
+  }
+  try {
+    return await processJobsOnceUnfenced(runtimeDb, opts);
+  } finally {
+    lease.release();
+  }
+}
+
 async function runJobWorker(intervalMs: number) {
-  const db = createDb();
+  const db = initializeWorkerDurableState(() => createDb());
   let failures = 0;
   for (;;) {
     try {
@@ -2471,20 +2639,35 @@ async function runJobWorker(intervalMs: number) {
 }
 
 async function runService(intervalMs: number) {
-  const feedDb = createDb();
-  const heartbeatDb = createDb();
-  const transformerDb = createDb();
-  const transformerStore = new TransformerPilotExecutionStore(
-    transformerPilotWorkerPath(),
-  );
   const jobConcurrency = parseJobConcurrency(process.env.MENDPOINT_JOB_CONCURRENCY);
-  const jobDbs = Array.from({ length: jobConcurrency }, () => createDb());
+  const durableState = initializeWorkerDurableState(() => ({
+    feedDb: createDb(),
+    heartbeatDb: createDb(),
+    transformerDb: createDb(),
+    transformerStore: new TransformerPilotExecutionStore(
+      transformerPilotWorkerPath(),
+    ),
+    jobDbs: Array.from({ length: jobConcurrency }, () => createDb()),
+  }));
+  const { feedDb, heartbeatDb, transformerDb, transformerStore, jobDbs } = durableState;
   const heartbeatPath = process.env.MENDPOINT_WORKER_HEARTBEAT_PATH;
   if (!heartbeatPath) {
     throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH is required for run-service");
   }
+  const configuredTenantId = process.env.MENDPOINT_TENANT_ID?.trim() || undefined;
+  const customerProfile = deploymentProfile(process.env) === "customer";
+  const mutationFenceEnabled = customerProfile ||
+    Boolean(process.env.MENDPOINT_BACKUP_FENCE_ROOT?.trim());
+  const mutationFenceRoot = resolveMutationFenceRoot();
   let feedPollingEnabled = process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
-  let feedPollOk = true;
+  const readFeedEvidence = (nowMs = Date.now()) =>
+    summarizeCustomerFeedEvidence(
+      listFeedSchedules(feedDb, configuredTenantId),
+      nowMs,
+    );
+  let feedEvidence = readFeedEvidence();
+  let feedPollOk = !customerProfile || feedEvidence.fresh;
+  let feedPollStartedAt: string | undefined;
   let jobs: JobDrainResult = {
     claimed: 0,
     succeeded: 0,
@@ -2509,13 +2692,17 @@ async function runService(intervalMs: number) {
     failed: 0,
     retried: 0,
   }));
-  const configuredTenantId = process.env.MENDPOINT_TENANT_ID?.trim() || undefined;
   const shutdown = new AbortController();
   const requestShutdown = () => shutdown.abort();
   process.once("SIGTERM", requestShutdown);
   process.once("SIGINT", requestShutdown);
   const emitHeartbeat = () => {
     try {
+      const feedFreshness = assessFeedFreshness({
+        lastSuccessAt: feedEvidence.lastSuccessAt,
+        staleAfterMs: feedEvidence.staleAfterMs,
+        pollStartedAt: feedPollStartedAt,
+      });
       const recovery = getJobRecoverySummary(heartbeatDb, configuredTenantId);
       writeWorkerHeartbeat(heartbeatPath, {
         ok: true,
@@ -2533,7 +2720,15 @@ async function runService(intervalMs: number) {
         },
         transformer,
         feedPollingEnabled,
-        feedPollOk,
+        feedPollOk: feedPollOk && (!customerProfile || feedFreshness.ok),
+        feedScheduleCount: feedEvidence.scheduleCount,
+        ...(feedEvidence.lastSuccessAt
+          ? { feedLastSuccessAt: feedEvidence.lastSuccessAt }
+          : {}),
+        ...(feedEvidence.staleAfterMs !== undefined
+          ? { feedStaleAfterMs: feedEvidence.staleAfterMs }
+          : {}),
+        ...(feedPollStartedAt ? { feedPollStartedAt } : {}),
       });
     } catch (error) {
       console.error(error);
@@ -2550,8 +2745,16 @@ async function runService(intervalMs: number) {
     let failures = 0;
     while (!shutdown.signal.aborted) {
       feedPollingEnabled = process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
-      feedPollOk = true;
+      if (!customerProfile) feedPollOk = true;
       if (feedPollingEnabled) {
+        const mutationLease = mutationFenceEnabled
+          ? tryAcquireMutationLease(mutationFenceRoot)
+          : undefined;
+        if (mutationFenceEnabled && !mutationLease) {
+          await waitForWorkerDelay(intervalMs, shutdown.signal);
+          continue;
+        }
+        feedPollStartedAt = nowIso();
         try {
           const scheduled = await runFeedSchedules({
             db: feedDb,
@@ -2570,14 +2773,22 @@ async function runService(intervalMs: number) {
               }),
             }),
           });
-          feedPollOk = scheduled.failed === 0 && scheduled.health.ok;
+          feedEvidence = readFeedEvidence();
+          feedPollOk = scheduled.failed === 0 && scheduled.health.ok && (
+            !customerProfile || feedEvidence.fresh
+          );
           console.log(
             `Feed schedules: claimed=${scheduled.claimed} succeeded=${scheduled.succeeded} failed=${scheduled.failed} replayed=${scheduled.alreadyClaimed} health=${scheduled.health.status}`,
           );
         } catch (error) {
           feedPollOk = false;
           console.error(error);
+        } finally {
+          feedPollStartedAt = undefined;
+          mutationLease?.release();
         }
+      } else {
+        feedPollStartedAt = undefined;
       }
       failures = feedPollOk ? 0 : failures + 1;
       emitHeartbeat();
@@ -2637,6 +2848,13 @@ async function runService(intervalMs: number) {
     while (!shutdown.signal.aborted) {
       transformer = transformerPilotHeartbeatStarted(transformer, nowIso());
       emitHeartbeat();
+      const mutationLease = mutationFenceEnabled
+        ? tryAcquireMutationLease(mutationFenceRoot)
+        : undefined;
+      if (mutationFenceEnabled && !mutationLease) {
+        await waitForWorkerDelay(intervalMs, shutdown.signal);
+        continue;
+      }
       try {
         const result = await runTransformerPilotLaneOnce({
           db: transformerDb,
@@ -2663,6 +2881,8 @@ async function runService(intervalMs: number) {
         failures++;
         transformer = transformerPilotHeartbeatAfterFailure(transformer, error, nowIso());
         console.error(error);
+      } finally {
+        mutationLease?.release();
       }
       emitHeartbeat();
       const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
@@ -2731,7 +2951,7 @@ async function main() {
       slugs: args.slugs,
     });
   } else if (cmd === "feeds") {
-    const db = createDb();
+    const db = initializeWorkerDurableState(() => createDb());
     console.log(
       JSON.stringify({ catalog: listCatalogFeeds(), recent: listFeedPolls(db, 20) }, null, 2),
     );
@@ -2740,7 +2960,11 @@ async function main() {
     if (cmd === "jobs") {
       console.log(
         JSON.stringify(
-          listJobs(createDb(), 20, process.env.MENDPOINT_TENANT_ID),
+          listJobs(
+            initializeWorkerDurableState(() => createDb()),
+            20,
+            process.env.MENDPOINT_TENANT_ID,
+          ),
           null,
           2,
         ),

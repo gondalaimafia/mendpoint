@@ -655,6 +655,8 @@ export {
 } from "./app-lifecycle.js";
 
 export {
-  parseGitHubOwnerTenantBindings,
-  resolveGitHubOwnerTenantBinding,
+  parseGitHubAccountTenantBindings,
+  resolveGitHubInstallationTenant,
+  resolveGitHubAccountTenantBinding,
+  resolveGitHubTenantAccountBinding,
 } from "./owner-bindings.js";

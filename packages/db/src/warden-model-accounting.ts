@@ -319,10 +319,10 @@ export function settleWardenModelCall(
       throw new Error("warden_model_job_lease_stale");
     }
     const completeMeasured =
-      Number.isSafeInteger(input.inputTokens) && input.inputTokens! >= 0 &&
-      Number.isSafeInteger(input.outputTokens) && input.outputTokens! >= 0 &&
+      Number.isSafeInteger(input.inputTokens) && input.inputTokens! > 0 &&
+      Number.isSafeInteger(input.outputTokens) && input.outputTokens! > 0 &&
       Number.isSafeInteger(input.totalTokens) && input.totalTokens === input.inputTokens! + input.outputTokens! &&
-      typeof input.costUsd === "number" && Number.isFinite(input.costUsd) && input.costUsd >= 0;
+      typeof input.costUsd === "number" && Number.isFinite(input.costUsd) && input.costUsd > 0;
     const withinReservation = completeMeasured &&
       input.inputTokens! <= reservation.maximum_input_tokens &&
       input.outputTokens! <= reservation.maximum_output_tokens &&

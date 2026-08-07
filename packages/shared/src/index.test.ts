@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { CandidateReviewEvidenceSchema, ChangeRiskSchema, newId, ok } from "./index.js";
+import {
+  assessFeedFreshness,
+  CandidateReviewEvidenceSchema,
+  ChangeRiskSchema,
+  newId,
+  ok,
+} from "./index.js";
 
 describe("shared", () => {
   it("validates change risk", () => {
@@ -14,6 +20,29 @@ describe("shared", () => {
 
   it("ok helper", () => {
     expect(ok(1)).toEqual({ ok: true, value: 1 });
+  });
+
+  it("bounds feed success freshness and in-progress polls by the schedule stale window", () => {
+    const nowMs = Date.parse("2026-08-07T12:00:00.000Z");
+    const base = { staleAfterMs: 60_000, nowMs };
+
+    expect(assessFeedFreshness({
+      ...base,
+      lastSuccessAt: "2026-08-07T11:59:59.000Z",
+    })).toMatchObject({ ok: true, reason: "fresh" });
+    expect(assessFeedFreshness({
+      ...base,
+      lastSuccessAt: "2026-08-07T11:58:59.999Z",
+    })).toMatchObject({ ok: false, reason: "success_stale" });
+    expect(assessFeedFreshness({
+      ...base,
+      lastSuccessAt: "2026-08-07T12:01:00.001Z",
+    })).toMatchObject({ ok: false, reason: "success_in_future" });
+    expect(assessFeedFreshness({
+      ...base,
+      lastSuccessAt: "2026-08-07T11:59:59.000Z",
+      pollStartedAt: "2026-08-07T11:58:59.999Z",
+    })).toMatchObject({ ok: false, reason: "poll_overdue" });
   });
 
   it("accepts only complete successful candidate review evidence", () => {

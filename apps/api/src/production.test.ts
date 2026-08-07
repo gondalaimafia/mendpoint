@@ -1,7 +1,22 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { clearRateLimits } from "@mendpoint/ops";
-import { rateLimitMiddleware } from "./production.js";
+import { createDb } from "@mendpoint/db";
+import {
+  mutationAdmissionMiddleware,
+  rateLimitMiddleware,
+} from "./production.js";
+import { initializeApiRuntime } from "./api-runtime.js";
 import type { ApiEnv } from "./auth.js";
 
 const originalEnv = {
@@ -10,9 +25,11 @@ const originalEnv = {
   TRUST_PROXY: process.env.TRUST_PROXY,
   TRUST_PROXY_SECRET: process.env.TRUST_PROXY_SECRET,
 };
+const temporaryRoots: string[] = [];
 
 afterEach(() => {
   clearRateLimits();
+  for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -27,6 +44,57 @@ function limitedApp() {
 }
 
 describe("production rate limit identity", () => {
+  it("does not construct standalone API stores while a customer backup is exclusive", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-api-startup-fence-"));
+    temporaryRoots.push(root);
+    const fenceRoot = join(root, "fence");
+    const databasePath = join(root, "api.sqlite");
+    const changeSourcePath = join(root, "change-sources.sqlite");
+    const transformerCampaignPath = join(root, "transformer-control-plane.sqlite");
+    const transformerExecutionPath = join(root, "transformer-pilot.sqlite");
+    mkdirSync(fenceRoot, { recursive: true });
+    writeFileSync(join(fenceRoot, "exclusive.json"), "{}\n");
+
+    expect(() =>
+      initializeApiRuntime({
+        ...process.env,
+        MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+        MENDPOINT_BACKUP_FENCE_ROOT: fenceRoot,
+        DB_PATH: databasePath,
+        MENDPOINT_CHANGE_SOURCE_DB_PATH: changeSourcePath,
+        MENDPOINT_TRANSFORMER_CONTROL_PLANE_DB_PATH: transformerCampaignPath,
+        MENDPOINT_TRANSFORMER_PILOT_DB_PATH: transformerExecutionPath,
+        MENDPOINT_APPLICATION_DATA_KEY: "0".repeat(64),
+      }),
+    ).toThrow("customer_startup_blocked_by_backup");
+    for (const path of [
+      databasePath,
+      changeSourcePath,
+      transformerCampaignPath,
+      transformerExecutionPath,
+    ]) expect(existsSync(path)).toBe(false);
+  });
+
+  it("holds an API writer lease and returns retryable unavailability during backup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-api-backup-fence-"));
+    temporaryRoots.push(root);
+    const fenceRoot = join(root, "fence");
+    const app = new Hono<ApiEnv>();
+    app.use("*", mutationAdmissionMiddleware({ enabled: true, fenceRoot }));
+    app.get("/private", (c) => c.json({ ok: true }));
+    app.get("/health", (c) => c.json({ ok: true }));
+
+    expect((await app.request("/private")).status).toBe(200);
+    expect(readdirSync(join(fenceRoot, "writers"))).toEqual([]);
+    writeFileSync(join(fenceRoot, "exclusive.json"), "{}\n");
+
+    const blocked = await app.request("/private");
+    expect(blocked.status).toBe(503);
+    expect(blocked.headers.get("Retry-After")).toBe("1");
+    expect(await blocked.json()).toEqual({ error: "backup_in_progress" });
+    expect((await app.request("/health")).status).toBe(200);
+  });
+
   it("ignores spoofed forwarding headers unless TRUST_PROXY is enabled", async () => {
     process.env.RATE_LIMIT_MAX = "1";
     delete process.env.TRUST_PROXY;

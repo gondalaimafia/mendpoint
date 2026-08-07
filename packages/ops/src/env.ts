@@ -5,8 +5,9 @@
 import { isAbsolute } from "node:path";
 import {
   loadAppCredentials,
-  parseGitHubOwnerTenantBindings,
+  parseGitHubAccountTenantBindings,
 } from "@mendpoint/github";
+import { customerBackupInputFromEnv } from "./disaster-recovery.js";
 
 export type EnvReport = {
   ok: boolean;
@@ -15,6 +16,23 @@ export type EnvReport = {
   warnings: string[];
   values: Record<string, string | undefined>;
 };
+
+export type DeploymentProfile = "demo" | "pilot" | "customer";
+
+const DEPLOYMENT_PROFILES = new Set<DeploymentProfile>([
+  "demo",
+  "pilot",
+  "customer",
+]);
+
+export function deploymentProfile(
+  env: NodeJS.ProcessEnv = process.env,
+): DeploymentProfile | null {
+  const value = env.MENDPOINT_DEPLOYMENT_PROFILE;
+  return value && DEPLOYMENT_PROFILES.has(value as DeploymentProfile)
+    ? value as DeploymentProfile
+    : null;
+}
 
 export function nodeEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -46,15 +64,27 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     MENDPOINT_REPOS_DIR: env.MENDPOINT_REPOS_DIR,
     WEB_URL: env.WEB_URL,
     GITHUB_MODE: env.GITHUB_MODE,
+    MENDPOINT_DEPLOYMENT_PROFILE: env.MENDPOINT_DEPLOYMENT_PROFILE,
     MENDPOINT_DEPLOYMENT_CLASS: env.MENDPOINT_DEPLOYMENT_CLASS,
+    MENDPOINT_FEED_POLLING_ENABLED: env.MENDPOINT_FEED_POLLING_ENABLED,
+    POLL_LOCAL_ONLY: env.POLL_LOCAL_ONLY,
+    MENDPOINT_PILOT_SEED: env.MENDPOINT_PILOT_SEED,
     MENDPOINT_TENANT_ID: env.MENDPOINT_TENANT_ID,
+    MENDPOINT_BACKUP_OUTPUT_ROOT: env.MENDPOINT_BACKUP_OUTPUT_ROOT,
+    MENDPOINT_BACKUP_EVIDENCE_PATH: env.MENDPOINT_BACKUP_EVIDENCE_PATH,
+    MENDPOINT_BACKUP_STORAGE_CLASS: env.MENDPOINT_BACKUP_STORAGE_CLASS,
+    MENDPOINT_BACKUP_KEY: env.MENDPOINT_BACKUP_KEY ? "[set]" : undefined,
+    MENDPOINT_BACKUP_KEY_ID: env.MENDPOINT_BACKUP_KEY_ID,
     GITHUB_WEBHOOK_SECRET: env.GITHUB_WEBHOOK_SECRET ? "[set]" : undefined,
     GITHUB_TOKEN: env.GITHUB_TOKEN ? "[set]" : undefined,
     GITHUB_APP_ID: env.GITHUB_APP_ID,
     GITHUB_APP_PRIVATE_KEY: env.GITHUB_APP_PRIVATE_KEY ? "[set]" : undefined,
     GITHUB_APP_PRIVATE_KEY_PATH: env.GITHUB_APP_PRIVATE_KEY_PATH,
-    GITHUB_APP_OWNER_TENANT_BINDINGS: env.GITHUB_APP_OWNER_TENANT_BINDINGS
+    GITHUB_APP_ACCOUNT_TENANT_BINDINGS: env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS
       ? "[set]"
+      : undefined,
+    GITHUB_APP_OWNER_TENANT_BINDINGS: env.GITHUB_APP_OWNER_TENANT_BINDINGS
+      ? "[legacy_forbidden]"
       : undefined,
     CORS_ORIGINS: env.CORS_ORIGINS,
     TRUST_PROXY: env.TRUST_PROXY,
@@ -63,6 +93,16 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
 
   const githubMode =
     env.GITHUB_MODE ?? (mode === "production" ? "" : "mock");
+  const profile = deploymentProfile(env);
+  if (mode === "production" && !env.MENDPOINT_DEPLOYMENT_PROFILE?.trim()) {
+    errors.push(
+      "MENDPOINT_DEPLOYMENT_PROFILE must be explicitly set to demo, pilot, or customer in production",
+    );
+  } else if (env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() && !profile) {
+    errors.push(
+      "MENDPOINT_DEPLOYMENT_PROFILE must be exactly demo, pilot, or customer",
+    );
+  }
   if (mode === "production" && !env.GITHUB_MODE) {
     errors.push("GITHUB_MODE must be explicitly set to 'mock' or 'real' in production");
   } else if (githubMode !== "mock" && githubMode !== "real") {
@@ -108,6 +148,34 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     if (env.TRUST_PROXY === "1" && !env.TRUST_PROXY_SECRET) {
       errors.push("TRUST_PROXY_SECRET is required when TRUST_PROXY=1 in production");
     }
+    if (profile === "customer") {
+      if (githubMode !== "real") {
+        errors.push("Customer deployment profile requires GITHUB_MODE=real");
+      }
+      if (env.MENDPOINT_DEPLOYMENT_CLASS !== "customer") {
+        errors.push(
+          "Customer deployment profile requires MENDPOINT_DEPLOYMENT_CLASS=customer",
+        );
+      }
+      if (env.MENDPOINT_FEED_POLLING_ENABLED !== "1") {
+        errors.push(
+          "Customer deployment profile requires MENDPOINT_FEED_POLLING_ENABLED=1",
+        );
+      }
+      if (env.POLL_LOCAL_ONLY !== "0") {
+        errors.push("Customer deployment profile requires POLL_LOCAL_ONLY=0");
+      }
+      if (env.MENDPOINT_PILOT_SEED !== "0") {
+        errors.push("Customer deployment profile requires MENDPOINT_PILOT_SEED=0");
+      }
+      try {
+        customerBackupInputFromEnv(env);
+      } catch {
+        errors.push(
+          "Customer deployment profile requires complete isolated application-consistent backup configuration",
+        );
+      }
+    }
     if (githubMode === "mock") {
       warnings.push(
         "GITHUB_MODE=mock — real PRs disabled (ok for private/self-hosted demos)",
@@ -151,13 +219,19 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
       }
       if (appCredentials) {
         try {
-          const bindings = parseGitHubOwnerTenantBindings(
-            env.GITHUB_APP_OWNER_TENANT_BINDINGS,
+          if (env.GITHUB_APP_OWNER_TENANT_BINDINGS?.trim()) {
+            throw new Error("legacy");
+          }
+          const bindings = parseGitHubAccountTenantBindings(
+            env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS,
           );
           if (bindings.size === 0) throw new Error("empty");
+          if (new Set(bindings.values()).size !== bindings.size) {
+            throw new Error("ambiguous");
+          }
         } catch {
           errors.push(
-            "GITHUB_APP_OWNER_TENANT_BINDINGS must be a nonempty JSON owner to tenant map when GitHub App credentials are configured",
+            "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
           );
         }
       }

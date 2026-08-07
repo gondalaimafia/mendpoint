@@ -40,6 +40,7 @@ import {
 import { nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
 import {
+  GitHubAppDelivery,
   OctokitGitHubDelivery,
   type ExactDraftDeliveryInput,
   type GitHubDelivery,
@@ -67,11 +68,33 @@ import {
   transformerPilotHeartbeatStarted,
   transformerAdaptiveGitHubDelivery,
   transformerAdaptiveProductionPorts,
+  initializeWorkerDurableState,
+  summarizeCustomerFeedEvidence,
   writeWorkerHeartbeat,
 } from "./cli.js";
 import { WARDEN_EXECUTOR_ID, WARDEN_PROVIDER_ID } from "./warden-router.js";
 
 const dirs: string[] = [];
+
+it("does not construct standalone worker stores while a customer backup is exclusive", () => {
+  const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-startup-fence-"));
+  dirs.push(root);
+  const fenceRoot = join(root, "fence");
+  const databasePath = join(root, "worker.sqlite");
+  mkdirSync(fenceRoot, { recursive: true });
+  writeFileSync(join(fenceRoot, "exclusive.json"), "{}\n");
+
+  expect(() =>
+    initializeWorkerDurableState(
+      () => createDb(databasePath),
+      {
+        MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+        MENDPOINT_BACKUP_FENCE_ROOT: fenceRoot,
+      },
+    ),
+  ).toThrow("customer_startup_blocked_by_backup");
+  expect(existsSync(databasePath)).toBe(false);
+});
 
 function snapshotManifest(root: string): string {
   const files: Array<Record<string, unknown>> = [];
@@ -429,6 +452,32 @@ describe("worker runtime", () => {
     ).toThrow(/absolute/i);
   });
 
+  it("keeps customer feed readiness false after restart when the latest poll failed", () => {
+    const evidence = summarizeCustomerFeedEvidence([
+      {
+        id: "schedule-a",
+        tenant_id: "tenant-a",
+        provider_slug: "provider-a",
+        interval_ms: 60_000,
+        stale_after_ms: 300_000,
+        enabled: 1,
+        last_attempt_at: "2026-08-07T15:59:00.000Z",
+        last_success_at: "2026-08-07T15:58:00.000Z",
+        consecutive_failures: 1,
+        alert_state: "failed",
+        last_error: "provider_unavailable",
+        created_at: "2026-08-07T15:00:00.000Z",
+        updated_at: "2026-08-07T15:59:00.000Z",
+      },
+    ], Date.parse("2026-08-07T16:00:00.000Z"));
+
+    expect(evidence).toMatchObject({
+      scheduleCount: 1,
+      fresh: false,
+      alertStateHealthy: false,
+    });
+  });
+
   it("separates Transformer infrastructure health from handled customer failures", () => {
     const initial = {
       enabled: true,
@@ -549,6 +598,37 @@ describe("worker runtime", () => {
     });
     expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({
       id: "job-drain-test",
+      status: "pending",
+    });
+    db.raw.close();
+  });
+
+  it("does not claim customer jobs while the global backup fence is active", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-worker-backup-fence-"));
+    dirs.push(dir);
+    const fenceRoot = join(dir, "backup-fence");
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    writeFileSync(join(fenceRoot, "exclusive.json"), "{}\n");
+    const db = createDb(join(dir, "jobs.sqlite"));
+    enqueueJob(db, {
+      id: "job-backup-fenced",
+      tenantId: "tenant-a",
+      type: "pipeline.fanout",
+      createdAt: nowIso(),
+      payload: { providerSlug: "acme" },
+    });
+
+    await expect(processJobsOnce(db, {
+      allTenants: true,
+      runWardenMaintenance: false,
+      wardenEnv: {
+        MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+        MENDPOINT_BACKUP_FENCE_ROOT: fenceRoot,
+        MENDPOINT_DATA_DIR: join(dir, "data"),
+      },
+    })).resolves.toEqual({ claimed: 0, succeeded: 0, failed: 0, retried: 0 });
+    expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({
+      id: "job-backup-fenced",
       status: "pending",
     });
     db.raw.close();
@@ -1027,10 +1107,17 @@ describe("worker runtime", () => {
   it("requires explicit production delivery and repository configuration", () => {
     expect(validateWorkerProductionEnv({ NODE_ENV: "production" })).toEqual(
       expect.arrayContaining([
+        expect.stringContaining("MENDPOINT_DEPLOYMENT_PROFILE"),
         expect.stringContaining("GITHUB_MODE"),
         expect.stringContaining("DATABASE_URL"),
         expect.stringContaining("MENDPOINT_REPOS_DIR"),
       ]),
+    );
+    expect(validateWorkerProductionEnv({
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "CUSTOMER",
+    })).toContain(
+      "MENDPOINT_DEPLOYMENT_PROFILE must be exactly demo, pilot, or customer",
     );
   });
 
@@ -1039,6 +1126,7 @@ describe("worker runtime", () => {
     dirs.push(repos);
     const base = {
       NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
       GITHUB_MODE: "mock",
       MENDPOINT_DATA_DIR: repos,
       MENDPOINT_REPOS_DIR: repos,
@@ -1089,6 +1177,7 @@ describe("worker runtime", () => {
     const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const base = {
       NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "pilot",
       GITHUB_MODE: "real",
       MENDPOINT_DEPLOYMENT_CLASS: "customer",
       MENDPOINT_DATA_DIR: repos,
@@ -1134,6 +1223,32 @@ describe("worker runtime", () => {
         MENDPOINT_TENANT_ID: "tenant-canary",
       }),
     ).toEqual([]);
+
+    const customerProfile = {
+      ...base,
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+      MENDPOINT_FEED_POLLING_ENABLED: "1",
+      POLL_LOCAL_ONLY: "0",
+      MENDPOINT_PILOT_SEED: "0",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: privateKeyPem,
+      MENDPOINT_BACKUP_FENCE_ROOT: join(repos, "backup-fence"),
+      MENDPOINT_WORKER_HEARTBEAT_PATH: join(repos, "worker-heartbeat.json"),
+    };
+    expect(validateWorkerProductionEnv(customerProfile)).toContain(
+      "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
+    );
+    expect(validateWorkerProductionEnv({
+      ...customerProfile,
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS:
+        '{"7123456":"tenant_default","8123456":"tenant_default"}',
+    })).toContain(
+      "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
+    );
+    expect(validateWorkerProductionEnv({
+      ...customerProfile,
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant_default"}',
+    })).toEqual([]);
   });
 
   it("allows a PAT canary only for one pinned tenant and exact connected repository", async () => {
@@ -1245,7 +1360,7 @@ describe("worker runtime", () => {
     db.raw.close();
   });
 
-  it("rejects a GitHub App installation whose repository ID differs from the connection", async () => {
+  it("rejects a GitHub App installation with missing or mismatched stable account identity", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-worker-app-binding-"));
     dirs.push(parent);
     const db = createDb(join(parent, "worker.db"));
@@ -1274,6 +1389,7 @@ describe("worker runtime", () => {
     upsertGitHubInstallation(db, {
       id: "installation-app",
       installationId: "123",
+      accountId: "8123456",
       accountLogin: "acme",
       tenantId: "tenant-app",
       permissions: {
@@ -1282,19 +1398,14 @@ describe("worker runtime", () => {
         pull_requests: "write",
         checks: "read",
       },
-      repositories: [{ id: 999, owner: "acme", name: "app-repo" }],
+      repositories: [{ id: 456, owner: "acme", name: "app-repo" }],
       repositorySelection: "selected",
       createdAt: "2026-08-06T00:00:00.000Z",
       updatedAt: "2026-08-06T00:00:00.000Z",
     });
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-    await expect(transformerAdaptiveGitHubDelivery(db, "tenant-app", {
-      NODE_ENV: "production",
-      GITHUB_MODE: "real",
-      GITHUB_APP_ID: "123",
-      GITHUB_APP_PRIVATE_KEY: privateKeyPem,
-    }).deliverExactDraft({
+    const intent: ExactDraftDeliveryInput = {
       owner: "acme",
       repo: "app-repo",
       baseBranch: "main",
@@ -1305,8 +1416,48 @@ describe("worker runtime", () => {
       title: "Transformer candidate",
       body: "Exact approved candidate",
       files: [{ path: "package.json", content: "{}\n", mode: "100644" }],
-    })).rejects.toThrow("transformer_adaptive_delivery_installation_invalid");
-    db.raw.close();
+    };
+    vi.spyOn(GitHubAppDelivery.prototype, "deliverExactDraft").mockResolvedValue({
+      number: 1,
+      url: "https://github.com/acme/app-repo/pull/1",
+      branch: intent.branch,
+      title: intent.title,
+      draft: true,
+      baseBranch: intent.baseBranch,
+      baseSha: intent.expectedBaseSha,
+      commitSha: "b".repeat(40),
+    });
+    const env = {
+      NODE_ENV: "production",
+      GITHUB_MODE: "real",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: privateKeyPem,
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant-app"}',
+    };
+    try {
+      await expect(
+        transformerAdaptiveGitHubDelivery(db, "tenant-app", env).deliverExactDraft(intent),
+      ).rejects.toThrow("github_app_installation_account_identity_mismatch");
+
+      db.raw.prepare(
+        "UPDATE github_installations SET account_id = NULL WHERE installation_id = '123'",
+      ).run();
+      await expect(
+        transformerAdaptiveGitHubDelivery(db, "tenant-app", env).deliverExactDraft(intent),
+      ).rejects.toThrow("transformer_adaptive_delivery_installation_not_authorized");
+
+      db.raw.prepare(
+        `UPDATE github_installations
+         SET account_id = '7123456', repositories_json =
+           '[{"id":999,"owner":"acme","name":"app-repo"}]'
+         WHERE installation_id = '123'`,
+      ).run();
+      await expect(
+        transformerAdaptiveGitHubDelivery(db, "tenant-app", env).deliverExactDraft(intent),
+      ).rejects.toThrow("transformer_adaptive_delivery_installation_invalid");
+    } finally {
+      db.raw.close();
+    }
   });
 
   it("expires Warden candidate rows across pages beyond the 100 row limit", () => {

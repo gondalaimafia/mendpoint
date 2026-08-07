@@ -277,6 +277,7 @@ function startRuntime(workerIntervalMs: number): void {
     MENDPOINT_API_KEY: apiKey,
     MENDPOINT_APPLICATION_DATA_KEY: applicationDataKey,
     MENDPOINT_APPROVED_VERIFIER_SHA256S: verifierHash,
+    MENDPOINT_DEPLOYMENT_PROFILE: "demo",
     MENDPOINT_FEED_POLLING_ENABLED: "0",
     MENDPOINT_PILOT_SEED: "1",
     MENDPOINT_TENANT_ID: tenantId,

@@ -23,6 +23,10 @@
     "phase-e:java": "tsx packages/phase-a/src/harness-java.ts",
     "phase-e:ruby": "tsx packages/phase-a/src/harness-ruby.ts",
     "db:seed": "tsx scripts/seed.ts",
+    "backup:customer": "tsx scripts/customer-backup.ts",
+    "restore:customer": "tsx scripts/customer-restore.ts",
+    "backup:fence:inspect": "tsx scripts/backup-fence-inspect.ts",
+    "backup:fence:recover": "tsx scripts/backup-fence-recover.ts",
     "worker": "tsx apps/worker/src/cli.ts",
     "worker:poll": "tsx apps/worker/src/cli.ts poll-once --local",
     "worker:jobs": "tsx apps/worker/src/cli.ts process-jobs",
@@ -44,7 +48,8 @@
     "trajectory:view": "tsx scripts/trajectory-view.ts",
     "spec:check": "tsx scripts/product-spec-check.ts",
     "claims:check": "tsx scripts/public-claims-check.ts",
-    "ga:check": "npm run spec:check && npm run claims:check && tsx scripts/ga-check.ts",
+    "actions:check": "vitest run scripts/github-actions-pins-check.test.ts && tsx scripts/github-actions-pins-check.ts",
+    "ga:check": "npm run spec:check && npm run claims:check && npm run actions:check && tsx scripts/ga-check.ts",
     "auth:bootstrap": "tsx scripts/bootstrap-key.ts",
     "start:api": "npm run start -w @mendpoint/api"
   },
@@ -62,7 +67,8 @@
     "@playwright/test": "^1.55.1",
     "@types/node": "^22.13.10",
     "typescript": "^5.8.2",
-    "vitest": "^3.0.9"
+    "vitest": "^3.0.9",
+    "yaml": "^2.9.0"
   },
   "overrides": {
     "next": {

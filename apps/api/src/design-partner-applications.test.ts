@@ -16,6 +16,7 @@ const databases: AppDb[] = [];
 const originalAuth = process.env.API_AUTH;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (originalAuth === undefined) delete process.env.API_AUTH;
   else process.env.API_AUTH = originalAuth;
   for (const db of databases.splice(0)) db.raw.close();
@@ -92,6 +93,29 @@ function headers(token: string, requestId: string) {
 }
 
 describe("design partner application API", () => {
+  it.each([
+    ["provider", "application_provider_token_invalid"],
+    ["filesystem", "application_/customers/acme/private_not_found"],
+    ["database", "application_SQLITE_CONSTRAINT"],
+    ["resource existence", "application_repository_not_found"],
+  ])("fails unknown %s exceptions closed at the API boundary", async (_kind, sentinel) => {
+    const { app, store, tenantA } = fixture();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(store, "list").mockImplementation(() => {
+      throw new Error(sentinel);
+    });
+
+    const response = await app.request("/design-partner-applications", {
+      headers: headers(tenantA, "sentinel-application"),
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "internal_error",
+      requestId: "sentinel-application",
+    });
+  });
+
   it("requires authentication, derives identity, isolates tenants, and redacts metadata", async () => {
     const { app, store, tenantA, tenantB, viewer } = fixture();
     const unauthenticated = await app.request("/design-partner-applications", {

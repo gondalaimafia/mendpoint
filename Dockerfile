@@ -46,8 +46,15 @@ COPY --from=api-deps /app /app
 COPY schema ./schema
 COPY fixtures ./fixtures
 COPY scripts ./scripts
-RUN mkdir -p /app/data /app/runs /app/.mendpoint /workspace/repos \
-  && chown -R node:node /app/data /app/runs /app/.mendpoint /workspace/repos
+RUN mkdir -p /app/data/.backup-fence/writers /app/data/.backup-state \
+    /app/data/warden-candidates /app/data/warden-evidence \
+    /app/data/transformer-candidates /app/data/transformer-evidence \
+    /app/runs /app/.mendpoint /workspace/repos /backup/mendpoint /restore \
+  && chown -R node:node /app/data /app/runs /app/.mendpoint /workspace/repos /backup /restore \
+  && chmod 700 /app/data/.backup-fence /app/data/.backup-fence/writers \
+    /app/data/.backup-state /app/data/warden-candidates /app/data/warden-evidence \
+    /app/data/transformer-candidates /app/data/transformer-evidence \
+    /backup/mendpoint /restore
 EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.API_PORT||3001)+'/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
@@ -83,4 +90,4 @@ ENV MENDPOINT_FEED_POLLING_ENABLED=0
 EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-CMD ["node", "scripts/start-fly.mjs"]
+CMD ["node", "--import", "tsx", "scripts/start-fly.mjs"]

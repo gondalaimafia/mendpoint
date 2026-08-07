@@ -239,6 +239,9 @@ CREATE TABLE IF NOT EXISTS migration_prs (
   patch_unified TEXT NOT NULL,
   github_pr_number INTEGER,
   github_pr_url TEXT,
+  github_repository_id TEXT,
+  github_installation_id TEXT,
+  github_account_id TEXT,
   created_at TEXT NOT NULL,
   resolved_at TEXT
 );
@@ -415,6 +418,7 @@ CREATE TABLE IF NOT EXISTS tenants (
 CREATE TABLE IF NOT EXISTS github_installations (
   id TEXT PRIMARY KEY,
   installation_id TEXT NOT NULL UNIQUE,
+  account_id TEXT,
   account_login TEXT NOT NULL,
   account_type TEXT NOT NULL DEFAULT 'Organization',
   tenant_id TEXT,
@@ -433,6 +437,7 @@ CREATE TABLE IF NOT EXISTS github_install_states (
   state_hash TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   created_by_principal_id TEXT,
+  expected_account_id TEXT,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   consumed_at TEXT,
@@ -1411,16 +1416,21 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "github_webhook_deliveries", name: "attempts", sql: "INTEGER NOT NULL DEFAULT 1" },
     { table: "github_webhook_deliveries", name: "last_error", sql: "TEXT" },
     { table: "github_install_states", name: "created_by_principal_id", sql: "TEXT" },
+    { table: "github_install_states", name: "expected_account_id", sql: "TEXT" },
     { table: "github_install_states", name: "completed_at", sql: "TEXT" },
     { table: "github_install_states", name: "completed_installation_id", sql: "TEXT" },
     { table: "consumers", name: "github_delivery_mode", sql: "TEXT NOT NULL DEFAULT 'legacy_pat'" },
     { table: "github_installations", name: "repository_selection", sql: "TEXT NOT NULL DEFAULT 'selected'" },
+    { table: "github_installations", name: "account_id", sql: "TEXT" },
     { table: "github_installations", name: "suspended_at", sql: "TEXT" },
     { table: "github_installations", name: "deleted_at", sql: "TEXT" },
     { table: "consumer_repos", name: "scm_connection_id", sql: "TEXT" },
     { table: "consumer_repos", name: "connected_repository_id", sql: "TEXT" },
     { table: "consumer_repos", name: "snapshot_id", sql: "TEXT" },
     { table: "consumer_repos", name: "exact_commit", sql: "TEXT" },
+    { table: "migration_prs", name: "github_repository_id", sql: "TEXT" },
+    { table: "migration_prs", name: "github_installation_id", sql: "TEXT" },
+    { table: "migration_prs", name: "github_account_id", sql: "TEXT" },
     {
       table: "transformer_adaptive_candidates",
       name: "base_branch",
@@ -1448,6 +1458,18 @@ function migrateProvidersFeedColumns(db: AppDb) {
       addedColumns.add(`${column.table}.${column.name}`);
     }
   }
+  db.raw.exec(`
+    CREATE TRIGGER IF NOT EXISTS migration_prs_delivery_identity_immutable
+    BEFORE UPDATE OF github_pr_number, github_repository_id,
+      github_installation_id, github_account_id ON migration_prs
+    WHEN (OLD.github_pr_number IS NOT NULL AND NEW.github_pr_number IS NOT OLD.github_pr_number)
+      OR (OLD.github_repository_id IS NOT NULL AND NEW.github_repository_id IS NOT OLD.github_repository_id)
+      OR (OLD.github_installation_id IS NOT NULL AND NEW.github_installation_id IS NOT OLD.github_installation_id)
+      OR (OLD.github_account_id IS NOT NULL AND NEW.github_account_id IS NOT OLD.github_account_id)
+    BEGIN
+      SELECT RAISE(ABORT, 'migration_pr_delivery_identity_immutable');
+    END;
+  `);
   run(
     db,
     `UPDATE transformer_adaptive_candidates
@@ -1473,7 +1495,10 @@ function migrateProvidersFeedColumns(db: AppDb) {
      ), '')
      WHERE base_branch = ''`,
   );
-  if (addedColumns.has("consumers.github_delivery_mode")) {
+  if (
+    addedColumns.has("consumers.github_delivery_mode") ||
+    addedColumns.has("github_installations.account_id")
+  ) {
     const boundConsumers = all<{
       id: string;
       tenant_id: string;
@@ -2221,24 +2246,44 @@ export function updateMigrationPrDelivery(
     githubPrNumber?: number | null;
     githubPrUrl?: string | null;
     body?: string;
+    githubRepositoryId?: string;
+    githubInstallationId?: string;
+    githubAccountId?: string;
   },
 ) {
-  run(
-    db,
+  const result = db.raw.prepare(
     `UPDATE migration_prs
      SET status = ?,
-         github_pr_number = ?,
-         github_pr_url = ?,
-         body = COALESCE(?, body)
-     WHERE id = ?`,
-    [
+         github_pr_number = COALESCE(?, github_pr_number),
+         github_pr_url = COALESCE(?, github_pr_url),
+         body = COALESCE(?, body),
+         github_repository_id = COALESCE(?, github_repository_id),
+         github_installation_id = COALESCE(?, github_installation_id),
+         github_account_id = COALESCE(?, github_account_id)
+     WHERE id = ?
+       AND (? IS NULL OR github_pr_number IS NULL OR github_pr_number = ?)
+       AND (? IS NULL OR github_repository_id IS NULL OR github_repository_id = ?)
+       AND (? IS NULL OR github_installation_id IS NULL OR github_installation_id = ?)
+       AND (? IS NULL OR github_account_id IS NULL OR github_account_id = ?)`,
+  ).run(
       row.status,
       row.githubPrNumber ?? null,
       row.githubPrUrl ?? null,
       row.body ?? null,
+      row.githubRepositoryId ?? null,
+      row.githubInstallationId ?? null,
+      row.githubAccountId ?? null,
       id,
-    ],
+      row.githubPrNumber ?? null,
+      row.githubPrNumber ?? null,
+      row.githubRepositoryId ?? null,
+      row.githubRepositoryId ?? null,
+      row.githubInstallationId ?? null,
+      row.githubInstallationId ?? null,
+      row.githubAccountId ?? null,
+      row.githubAccountId ?? null,
   );
+  if (result.changes !== 1) throw new Error("migration_pr_delivery_identity_mismatch");
 }
 
 export function listProviders(db: AppDb, limit?: number, offset = 0): Provider[] {
@@ -2342,24 +2387,27 @@ export function listAudit(
   );
 }
 
-export function findPrByRepositoryAndNumber(
+export function findPrByGitHubIdentityAndNumber(
   db: AppDb,
-  owner: string,
-  repo: string,
-  number: number,
+  input: {
+    repositoryId: string;
+    installationId: string;
+    accountId: string;
+    number: number;
+  },
 ): MigrationPrRow | undefined {
-  return get(
+  const rows = all<MigrationPrRow>(
     db,
-    `SELECT pr.*
-     FROM migration_prs pr
-     JOIN consumers c ON c.id = pr.consumer_id
-     WHERE lower(c.github_owner) = lower(?)
-       AND lower(c.github_repo) = lower(?)
+    `SELECT pr.* FROM migration_prs pr
+     WHERE pr.github_repository_id = ?
+       AND pr.github_installation_id = ?
+       AND pr.github_account_id = ?
        AND pr.github_pr_number = ?
      ORDER BY pr.created_at DESC
-     LIMIT 1`,
-    [owner, repo, number],
+     LIMIT 2`,
+    [input.repositoryId, input.installationId, input.accountId, input.number],
   );
+  return rows.length === 1 ? rows[0] : undefined;
 }
 
 export function listFindingsForChange(
@@ -4586,6 +4634,7 @@ export function upsertGitHubInstallation(
   row: {
     id: string;
     installationId: string;
+    accountId?: string | null;
     accountLogin: string;
     accountType?: string;
     tenantId?: string | null;
@@ -4598,6 +4647,10 @@ export function upsertGitHubInstallation(
     updatedAt: string;
   },
 ) {
+  const accountId = row.accountId ?? null;
+  if (accountId !== null && !/^[1-9][0-9]{0,19}$/.test(accountId)) {
+    throw new Error("github_installation_account_id_invalid");
+  }
   const ownsTransaction = !db.raw.isTransaction;
   if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
   try {
@@ -4607,14 +4660,19 @@ export function upsertGitHubInstallation(
       [row.installationId],
     );
     if (existing) {
+      if (existing.account_id && accountId && existing.account_id !== accountId) {
+        throw new Error("github_installation_account_mismatch");
+      }
       const updated = db.raw.prepare(
         `UPDATE github_installations
-         SET account_login = ?, account_type = ?, tenant_id = COALESCE(tenant_id, ?),
+         SET account_id = COALESCE(account_id, ?), account_login = ?,
+             account_type = ?, tenant_id = COALESCE(tenant_id, ?),
              permissions_json = ?, repositories_json = ?, repository_selection = ?,
              suspended_at = ?, deleted_at = ?, updated_at = ?
          WHERE installation_id = ?
            AND (? IS NULL OR tenant_id IS NULL OR tenant_id = ?)`,
       ).run(
+        accountId,
         row.accountLogin,
         row.accountType ?? "Organization",
         row.tenantId ?? null,
@@ -4637,12 +4695,13 @@ export function upsertGitHubInstallation(
     run(
       db,
       `INSERT INTO github_installations
-       (id, installation_id, account_login, account_type, tenant_id, permissions_json,
-        repositories_json, repository_selection, suspended_at, deleted_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, installation_id, account_id, account_login, account_type, tenant_id, permissions_json,
+         repositories_json, repository_selection, suspended_at, deleted_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.installationId,
+        accountId,
         row.accountLogin,
         row.accountType ?? "Organization",
         row.tenantId ?? null,
@@ -4691,6 +4750,7 @@ export function githubInstallationToApi(r: GitHubInstallationRow) {
   return {
     id: r.id,
     installationId: r.installation_id,
+    accountId: r.account_id,
     accountLogin: r.account_login,
     accountType: r.account_type,
     tenantId: r.tenant_id,
@@ -4778,20 +4838,29 @@ export function createGitHubInstallState(
     state: string;
     tenantId: string;
     principalId: string;
+    expectedAccountId?: string | null;
     createdAt: string;
     expiresAt: string;
   },
 ): void {
+  const expectedAccountId = input.expectedAccountId ?? null;
+  if (
+    expectedAccountId !== null &&
+    !/^[1-9][0-9]{0,19}$/.test(expectedAccountId)
+  ) {
+    throw new Error("github_install_state_account_id_invalid");
+  }
   run(
     db,
     `INSERT INTO github_install_states
-     (state_hash, tenant_id, created_by_principal_id, created_at, expires_at,
+     (state_hash, tenant_id, created_by_principal_id, expected_account_id, created_at, expires_at,
       consumed_at, completed_at, completed_installation_id)
-     VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)`,
+     VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)`,
     [
       hashInstallState(input.state),
       input.tenantId,
       input.principalId,
+      expectedAccountId,
       input.createdAt,
       input.expiresAt,
     ],
@@ -4845,6 +4914,7 @@ function installationAuthorizesRepository(
   repository: string,
 ): boolean {
   if (
+    !installation.account_id ||
     installation.suspended_at ||
     installation.deleted_at ||
     !hasRequiredGitHubInstallPermissions(installation.permissions_json) ||
@@ -4878,6 +4948,7 @@ export type GitHubInstallCompletion =
       status:
         | "pending"
         | "invalid"
+        | "account_identity_mismatch"
         | "permissions_incomplete"
         | "repository_scope_incomplete";
     };
@@ -4941,7 +5012,9 @@ export function completeGitHubInstallState(
     if (state.consumed_at) {
       if (
         state.completed_installation_id === input.installationId &&
-        installation?.tenant_id === input.tenantId
+        installation?.tenant_id === input.tenantId &&
+        Boolean(state.expected_account_id) &&
+        installation.account_id === state.expected_account_id
       ) {
         db.raw.exec("COMMIT");
         return { status: "replayed", installation };
@@ -4956,6 +5029,14 @@ export function completeGitHubInstallState(
     if (!installation) {
       db.raw.exec("ROLLBACK");
       return { status: "pending" };
+    }
+    if (
+      !installation.account_id ||
+      !state.expected_account_id ||
+      installation.account_id !== state.expected_account_id
+    ) {
+      db.raw.exec("ROLLBACK");
+      return { status: "account_identity_mismatch" };
     }
     if (!installation.tenant_id || installation.tenant_id !== input.tenantId) {
       db.raw.exec("ROLLBACK");

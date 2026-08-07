@@ -14,8 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
           cache: npm
@@ -27,7 +27,7 @@ jobs:
         run: npm run eval:agents -- --repetitions=3 --output=test-results/agent-evals/report.json
       - name: Upload agent eval evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: agent-eval-evidence
           path: test-results/agent-evals/report.json
@@ -40,6 +40,7 @@ jobs:
           npm run ga:check
         env:
           NODE_ENV: production
+          MENDPOINT_DEPLOYMENT_PROFILE: demo
           API_AUTH: required
           GITHUB_MODE: mock
           MENDPOINT_DATA_DIR: ${{ runner.temp }}/mendpoint-ga
@@ -53,8 +54,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
           cache: npm
@@ -71,6 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           export NODE_ENV=production
+          export MENDPOINT_DEPLOYMENT_PROFILE=demo
           export API_AUTH=required
           export GITHUB_MODE=mock
           export MENDPOINT_APPLICATION_DATA_KEY="$(printf 'b%.0s' {1..64})"
@@ -117,7 +119,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Build API image
         run: docker build --target api -t mendpoint-api:ci .
       - name: Build web image
@@ -142,6 +144,7 @@ jobs:
           }
           trap cleanup EXIT
           bootstrap_output="$(docker run --rm \
+            -e MENDPOINT_DEPLOYMENT_PROFILE=demo \
             -v mendpoint-ci-data:/app/data \
             mendpoint-api:ci npm run --silent auth:bootstrap)"
           api_key="$(printf '%s\n' "$bootstrap_output" | sed -n 's/^token=//p')"
@@ -150,6 +153,7 @@ jobs:
             --name mendpoint-api-ci \
             --network mendpoint-ci \
             --publish 127.0.0.1:3001:3001 \
+            -e MENDPOINT_DEPLOYMENT_PROFILE=demo \
             -e GITHUB_MODE=mock \
             -e MENDPOINT_APPLICATION_DATA_KEY="$(printf 'b%.0s' {1..64})" \
             -e MENDPOINT_REPOS_DIR=/workspace/repos \
@@ -218,6 +222,7 @@ jobs:
           docker run --detach \
             --name mendpoint-fly-ci \
             --publish 127.0.0.1:3002:3000 \
+            -e MENDPOINT_DEPLOYMENT_PROFILE=demo \
             -e GITHUB_MODE=mock \
             -e MENDPOINT_APPLICATION_DATA_KEY="$(printf 'b%.0s' {1..64})" \
             -e MENDPOINT_API_KEY="$fly_api_key" \
@@ -250,8 +255,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
           cache: npm
@@ -265,7 +270,7 @@ jobs:
         run: npm run e2e:deployment
       - name: Upload browser and runtime evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: deployment-e2e-evidence
           path: |
@@ -283,8 +288,10 @@ jobs:
       group: mendpoint-production
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v5
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        with:
+          version: "0.4.79"
       - name: Deploy verified revision
         run: flyctl deploy --remote-only --app mendpoint-talal
         env:

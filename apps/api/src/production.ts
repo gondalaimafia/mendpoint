@@ -6,8 +6,18 @@ import {
   rateLimit,
   rateLimitKeyFromRequest,
   isProduction,
+  resolveMutationFenceRoot,
+  tryAcquireMutationLease,
+  initializeWithMutationLease,
 } from "@mendpoint/ops";
 import type { ApiEnv } from "./auth.js";
+
+export function initializeApiDurableState<T>(
+  initialize: () => T,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): T {
+  return initializeWithMutationLease(initialize, env);
+}
 
 export function requestIdMiddleware() {
   return async (c: Context<ApiEnv>, next: Next) => {
@@ -98,6 +108,39 @@ export function rateLimitMiddleware(
       );
     }
     return next();
+  };
+}
+
+export function mutationAdmissionMiddleware(
+  options: { enabled?: boolean; fenceRoot?: string } = {},
+) {
+  const enabled = options.enabled ?? (
+    process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer" ||
+    Boolean(process.env.MENDPOINT_BACKUP_FENCE_ROOT?.trim())
+  );
+  const fenceRoot = options.fenceRoot ?? resolveMutationFenceRoot();
+  return async (c: Context<ApiEnv>, next: Next) => {
+    if (!enabled) return next();
+    const path = new URL(c.req.url).pathname;
+    if (
+      c.req.method === "OPTIONS" ||
+      path === "/health" ||
+      path === "/live" ||
+      path === "/ready" ||
+      path === "/version"
+    ) {
+      return next();
+    }
+    const lease = tryAcquireMutationLease(fenceRoot);
+    if (!lease) {
+      c.header("Retry-After", "1");
+      return c.json({ error: "backup_in_progress" }, 503);
+    }
+    try {
+      return await next();
+    } finally {
+      lease.release();
+    }
   };
 }
 

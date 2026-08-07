@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { assessFeedFreshness } from "@mendpoint/shared";
 
 type TransformerHeartbeat = {
   enabled?: boolean;
@@ -20,6 +21,10 @@ type WorkerHeartbeat = {
   recordedAt?: string;
   feedPollingEnabled?: boolean;
   feedPollOk?: boolean;
+  feedScheduleCount?: number;
+  feedLastSuccessAt?: string;
+  feedStaleAfterMs?: number;
+  feedPollStartedAt?: string;
   activeJob?: { id?: string; type?: string; leaseGeneration?: number } | null;
   recovery?: {
     due?: number;
@@ -54,6 +59,10 @@ export async function workerCheck(operational = true): Promise<{
   ok: boolean;
   ageMs?: number;
   feedPollingEnabled?: boolean;
+  feedScheduleCount?: number;
+  feedLastSuccessAt?: string;
+  feedStaleAfterMs?: number;
+  feedPollStartedAt?: string;
   activeJob?: WorkerHeartbeat["activeJob"];
   recovery?: WorkerHeartbeat["recovery"];
   transformer?: TransformerHeartbeat & {
@@ -92,10 +101,26 @@ export async function workerCheck(operational = true): Promise<{
         ? Number.isFinite(lastRunAt) && lastRunAgeMs >= 0 && lastRunAgeMs <= transformerMaxAgeMs
         : Number.isFinite(lastSuccessAt) && lastSuccessAgeMs >= 0 && lastSuccessAgeMs <= transformerMaxAgeMs)
     );
+    const customerProfile = process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer";
+    const feedScheduleCount = heartbeat.feedScheduleCount ?? 0;
+    const feedLastSuccessAt = Date.parse(heartbeat.feedLastSuccessAt ?? "");
+    const feedFreshness = assessFeedFreshness({
+      lastSuccessAt: heartbeat.feedLastSuccessAt,
+      staleAfterMs: heartbeat.feedStaleAfterMs,
+      pollStartedAt: heartbeat.feedPollStartedAt,
+    });
+    const customerFeedObserved =
+      heartbeat.feedPollingEnabled === true &&
+      Number.isSafeInteger(feedScheduleCount) &&
+      feedScheduleCount > 0 &&
+      Number.isFinite(feedLastSuccessAt) &&
+      feedFreshness.ok;
+    const requiredFeedAvailable = !customerProfile || customerFeedObserved;
     const ok =
       live &&
       (!operational ||
         (heartbeat.feedPollOk === true &&
+          requiredFeedAvailable &&
           (heartbeat.recovery?.expiredLeases ?? 0) === 0 &&
           (heartbeat.recovery?.deadLetter ?? 0) === 0 &&
           transformerOk));
@@ -103,6 +128,16 @@ export async function workerCheck(operational = true): Promise<{
       ok,
       ageMs,
       feedPollingEnabled: heartbeat.feedPollingEnabled === true,
+      feedScheduleCount,
+      ...(Number.isFinite(feedLastSuccessAt)
+        ? { feedLastSuccessAt: heartbeat.feedLastSuccessAt }
+        : {}),
+      ...(heartbeat.feedStaleAfterMs !== undefined
+        ? { feedStaleAfterMs: heartbeat.feedStaleAfterMs }
+        : {}),
+      ...(heartbeat.feedPollStartedAt
+        ? { feedPollStartedAt: heartbeat.feedPollStartedAt }
+        : {}),
       activeJob: heartbeat.activeJob ?? null,
       recovery: heartbeat.recovery,
       transformer: transformer ? {
@@ -111,7 +146,17 @@ export async function workerCheck(operational = true): Promise<{
         ...(Number.isFinite(lastRunAt) ? { lastRunAgeMs } : {}),
         ...(Number.isFinite(lastSuccessAt) ? { lastSuccessAgeMs } : {}),
       } : undefined,
-      reason: ok ? undefined : "heartbeat_stale_or_unhealthy",
+      reason: ok
+        ? undefined
+        : customerProfile && heartbeat.feedPollingEnabled !== true
+          ? "customer_feed_polling_disabled"
+          : customerProfile && (
+              feedScheduleCount < 1 || !Number.isFinite(feedLastSuccessAt)
+            )
+            ? "customer_feed_not_observed"
+          : customerProfile && !feedFreshness.ok
+            ? "customer_feed_not_fresh"
+          : "heartbeat_stale_or_unhealthy",
     };
   } catch {
     return { ok: false, reason: "heartbeat_unavailable" };

@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import { Hono, type Context } from "hono";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
+  TransformerDomainError,
   TransformerControlPlaneStore,
   recipeReference,
   type BlueprintPolicy,
@@ -15,6 +16,10 @@ import {
   type TransformerGateDecision,
 } from "@mendpoint/ops";
 import type { ApiEnv } from "./auth.js";
+import {
+  mappedErrorResponse,
+  type PublicErrorRule,
+} from "./error-boundary.js";
 
 const DB_ENV = "MENDPOINT_TRANSFORMER_CONTROL_PLANE_DB";
 const SECRET_KEY = /(?:secret|token|password|credential|private.?key|api.?key)/i;
@@ -30,6 +35,144 @@ const CAMPAIGN_STATES = new Set<CampaignState>([
   "failed",
   "cancelled",
 ]);
+
+function publicRules(
+  status: PublicErrorRule["status"],
+  publicMessage: string,
+  ...internalCodes: readonly string[]
+): readonly PublicErrorRule[] {
+  return internalCodes.map((internalCode) => ({ internalCode, status, publicMessage }));
+}
+
+const TRANSFORMER_CONTROL_PLANE_ERRORS: readonly PublicErrorRule[] = [
+  {
+    internalCode: "authenticated_principal_required",
+    publicCode: "unauthorized",
+    status: 401,
+    publicMessage: "Authenticated principal required",
+  },
+  ...publicRules(
+    404,
+    "Requested resource was not found",
+    "campaign_not_found",
+    "blueprint_not_found",
+    "bsg_not_found",
+    "exception_not_found",
+    "attempt_unit_not_found",
+    "pr_unit_not_found",
+    "wave_unit_not_found",
+  ),
+  ...publicRules(
+    409,
+    "Request conflicts with current state",
+    "idempotency_conflict",
+    "review_revision_conflict",
+    "campaign_revision_conflict",
+    "blueprint_revision_conflict",
+    "bsg_revision_conflict",
+    "exception_revision_conflict",
+    "campaign_identity_immutable",
+    "blueprint_identity_immutable",
+    "bsg_identity_immutable",
+    "exception_identity_immutable",
+    "locked_bsg_immutable",
+    "reviewed_blueprint_immutable",
+  ),
+  ...publicRules(
+    400,
+    "Request validation failed",
+    "json_body_required",
+    "request_id_required",
+    "idempotency_key_required",
+    "evidence_refs_required",
+    "evidence_ref_invalid",
+    "campaign_bundle_required",
+    "campaign_required",
+    "campaign_id_required",
+    "campaign_name_required",
+    "campaign_source_required",
+    "campaign_target_required",
+    "campaign_state_invalid",
+    "campaign_expected_revision_invalid",
+    "blueprint_required",
+    "blueprint_id_required",
+    "blueprint_objective_required",
+    "blueprint_content_required",
+    "blueprint_policy_required",
+    "blueprint_policy_invalid",
+    "blueprint_owner_required",
+    "blueprint_risks_required",
+    "blueprint_unknowns_required",
+    "blueprint_risk_invalid",
+    "blueprint_risk_id_required",
+    "blueprint_risk_statement_required",
+    "blueprint_risk_severity_invalid",
+    "blueprint_risk_owner_required",
+    "blueprint_risk_evidence_required",
+    "blueprint_risk_evidence_invalid",
+    "blueprint_unknown_invalid",
+    "blueprint_unknown_id_required",
+    "blueprint_unknown_question_required",
+    "blueprint_unknown_owner_required",
+    "blueprint_unknown_evidence_required",
+    "blueprint_unknown_evidence_invalid",
+    "blueprint_verification_required",
+    "blueprint_rollback_required",
+    "blueprint_rollback_strategy_invalid",
+    "blueprint_rollback_verification_required",
+    "blueprint_approval_required",
+    "blueprint_reviewer_required",
+    "blueprint_recipe_invalid",
+    "blueprint_recipe_mismatch",
+    "blueprint_expected_revision_invalid",
+    "bsg_required",
+    "bsg_invalid",
+    "bsg_id_required",
+    "bsg_node_invalid",
+    "bsg_node_id_required",
+    "bsg_node_kind_required",
+    "bsg_node_spec_required",
+    "bsg_node_source_refs_required",
+    "bsg_node_source_ref_invalid",
+    "bsg_edge_invalid",
+    "bsg_edge_id_required",
+    "bsg_edge_from_required",
+    "bsg_edge_to_required",
+    "bsg_edge_kind_required",
+    "bsg_expected_revision_invalid",
+    "bsg_nodes_limit",
+    "bsg_edges_limit",
+    "review_required",
+    "transition_required",
+    "exception_required",
+    "exception_id_required",
+    "exception_code_required",
+    "exception_message_required",
+    "exception_unit_id_invalid",
+    "approval_note_required",
+    "approval_reviewer_required",
+    "artifact_digest_invalid",
+    "attempt_number_invalid",
+    "campaign_running_required",
+    "nonempty_bsg_required",
+    "nonempty_locked_bsg_required",
+    "pr_number_invalid",
+    "reviewed_blueprint_required",
+  ),
+];
+
+const TRANSFORMER_CONTROL_PLANE_DETAIL_CODES = new Set([
+  "invalid_campaign_transition",
+  "invalid_blueprint_transition",
+  "invalid_bsg_transition",
+  "invalid_exception_transition",
+]);
+
+const TRANSFORMER_CONTROL_PLANE_DOMAIN_ERRORS: readonly PublicErrorRule[] = publicRules(
+  409,
+  "Request conflicts with current state",
+  ...TRANSFORMER_CONTROL_PLANE_DETAIL_CODES,
+);
 
 type JsonRecord = Record<string, unknown>;
 
@@ -527,30 +670,17 @@ function positiveRevision(value: unknown, code: string): number {
 }
 
 function errorResponse(c: Context<ApiEnv>, error: unknown) {
-  const code = error instanceof Error ? error.message : "internal_error";
-  if (code === "authenticated_principal_required") {
-    return c.json({ error: "unauthorized", message: "Authenticated principal required" }, 401);
-  }
-  if (code.endsWith("_not_found")) {
-    return c.json({ error: code, message: "Requested resource was not found" }, 404);
-  }
   if (
-    code === "idempotency_conflict" ||
-    code.endsWith("_revision_conflict") ||
-    code.startsWith("invalid_") ||
-    code.endsWith("_immutable")
+    error instanceof TransformerDomainError &&
+    TRANSFORMER_CONTROL_PLANE_DETAIL_CODES.has(error.code)
   ) {
-    return c.json({ error: code, message: "Request conflicts with current state" }, 409);
+    return mappedErrorResponse(
+      c,
+      new Error(error.code, { cause: error }),
+      TRANSFORMER_CONTROL_PLANE_DOMAIN_ERRORS,
+    );
   }
-  if (
-    code.endsWith("_required") ||
-    code.endsWith("_invalid") ||
-    code.endsWith("_mismatch") ||
-    code.endsWith("_limit")
-  ) {
-    return c.json({ error: code, message: "Request validation failed" }, 400);
-  }
-  return c.json({ error: "internal_error", message: "Request could not be completed" }, 500);
+  return mappedErrorResponse(c, error, TRANSFORMER_CONTROL_PLANE_ERRORS);
 }
 
 async function json(c: Context<ApiEnv>): Promise<unknown> {
