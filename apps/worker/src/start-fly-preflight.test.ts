@@ -1,13 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +25,6 @@ describe("customer launcher preflight", () => {
     const fenceRoot = join(backupSourceRoot, "backup-fence");
     const databasePath = join(dataRoot, "db", "mendpoint.sqlite");
     mkdirSync(fenceRoot, { recursive: true });
-    if (process.platform !== "win32") chmodSync(parent, 0o755);
     writeFileSync(join(fenceRoot, "exclusive.json"), "{}\n");
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const env: NodeJS.ProcessEnv = {

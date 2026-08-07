@@ -20,7 +20,10 @@ const reposRoot = resolve(process.env.MENDPOINT_REPOS_DIR ?? `${dataRoot}/repos`
 const tenantRepos = resolve(reposRoot, tenantId);
 const appRoot = resolve(process.env.MENDPOINT_APP_ROOT ?? "/app");
 const deploymentProfile = process.env.MENDPOINT_DEPLOYMENT_PROFILE;
-const childIdentity = process.platform === "win32" ? {} : { uid: 1000, gid: 1000 };
+const childIdentity =
+  process.platform !== "win32" && process.getuid?.() === 0
+    ? { uid: 1000, gid: 1000 }
+    : {};
 
 if (!["demo", "pilot", "customer"].includes(deploymentProfile)) {
   throw new Error(
