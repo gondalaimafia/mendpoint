@@ -292,12 +292,14 @@ async function pollOneFeedUnlocked(
       versions.find((version) => version.id === latest?.version_id) ??
       versions.at(-1);
     try {
-      const report = await dispatchTenantPipeline(db, feed, opts, {
-        tenantId: opts.tenantId,
-        contentHash: fetched.contentHash,
-        versionId: existingVersion?.id,
-        versionLabel: existingVersion?.version_label ?? fetched.versionLabel,
-      });
+      const report = versions.length >= 2
+        ? await dispatchTenantPipeline(db, feed, opts, {
+            tenantId: opts.tenantId,
+            contentHash: fetched.contentHash,
+            versionId: existingVersion?.id,
+            versionLabel: existingVersion?.version_label ?? fetched.versionLabel,
+          })
+        : undefined;
       const dispatched = report ? pipelineResult(report) : undefined;
       persistPollOutcome(db, feed, opts.tenantId, fetched, {
         contentHash: fetched.contentHash,
@@ -382,7 +384,11 @@ async function pollOneFeedUnlocked(
   let jobId: string | undefined;
   let status: PollOneResult["status"] = "new_version";
 
-  if (opts.runPipeline !== false && opts.pipeline) {
+  if (
+    opts.runPipeline !== false &&
+    opts.pipeline &&
+    listVersionsForProvider(db, provider.id).length >= 2
+  ) {
     try {
       const report = await dispatchTenantPipeline(db, feed, opts, {
         tenantId: opts.tenantId,

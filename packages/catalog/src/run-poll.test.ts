@@ -121,6 +121,48 @@ describe("run-poll", () => {
     expect(listVersionsForProvider(db, provider.id)).toEqual([]);
   });
 
+  it("does not dispatch a migration pipeline until a second API version exists", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "poll-first-version-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "p.sqlite"));
+    dbs.push(db);
+    const local = join(dir, "spec.json");
+    writeFileSync(
+      local,
+      JSON.stringify({
+        openapi: "3.0.0",
+        info: { title: "First version", version: "1.0.0" },
+        paths: {},
+      }),
+    );
+    const feed = {
+      slug: "first-version",
+      name: "First version",
+      openapiUrl: `file:${local}`,
+      source: "provider" as const,
+    };
+    let dispatches = 0;
+    const pipeline = async () => {
+      dispatches++;
+      return { jobId: "unexpected-first-version-job" };
+    };
+
+    const first = await pollOneFeed(feed, {
+      db,
+      tenantId: "tenant_default",
+      pipeline,
+    });
+    const unchanged = await pollOneFeed(feed, {
+      db,
+      tenantId: "tenant_default",
+      pipeline,
+    });
+
+    expect(first.status).toBe("new_version");
+    expect(unchanged.status).toBe("unchanged");
+    expect(dispatches).toBe(0);
+  });
+
   it("retries a failed pipeline without storing a duplicate version", async () => {
     const dir = mkdtempSync(join(tmpdir(), "poll-retry-"));
     dirs.push(dir);
@@ -141,6 +183,19 @@ describe("run-poll", () => {
       openapiUrl: `file:${local}`,
       source: "provider" as const,
     };
+    await pollOneFeed(feed, {
+      db,
+      tenantId: "tenant_default",
+      runPipeline: false,
+    });
+    writeFileSync(
+      local,
+      JSON.stringify({
+        openapi: "3.0.0",
+        info: { title: "Retry", version: "2.0.0" },
+        paths: { "/v2": {} },
+      }),
+    );
     const failed = await pollOneFeed(feed, {
       db,
       tenantId: "tenant_default",
@@ -158,7 +213,7 @@ describe("run-poll", () => {
     expect(retried.status).toBe("pipeline_ran");
     expect(retried.changeId).toBe("change-1");
     const provider = getProviderBySlug(db, "retry")!;
-    expect(listVersionsForProvider(db, provider.id)).toHaveLength(1);
+    expect(listVersionsForProvider(db, provider.id)).toHaveLength(2);
   });
 
   it("records queued pipeline dispatch once for an unchanged feed", async () => {
@@ -186,6 +241,20 @@ describe("run-poll", () => {
       dispatches++;
       return { jobId: "job-queued-1" };
     };
+
+    await pollOneFeed(feed, {
+      db,
+      tenantId: "tenant_default",
+      runPipeline: false,
+    });
+    writeFileSync(
+      local,
+      JSON.stringify({
+        openapi: "3.0.0",
+        info: { title: "Queued", version: "2.0.0" },
+        paths: { "/v2": {} },
+      }),
+    );
 
     const first = await pollOneFeed(feed, {
       db,
@@ -243,6 +312,20 @@ describe("run-poll", () => {
           return { jobId: `job-${context.tenantId}` };
         },
       });
+
+    await pollOneFeed(feed, {
+      db,
+      tenantId: "tenant_default",
+      runPipeline: false,
+    });
+    writeFileSync(
+      local,
+      JSON.stringify({
+        openapi: "3.0.0",
+        info: { title: "Tenant dispatch", version: "2.0.0" },
+        paths: { "/v2": {} },
+      }),
+    );
 
     expect(await run("tenant_default")).toMatchObject({
       status: "pipeline_enqueued",

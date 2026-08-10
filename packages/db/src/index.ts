@@ -3899,17 +3899,17 @@ export function cancelJob(
     .prepare(
       `UPDATE jobs
        SET status = 'cancelled',
-           error = ?,
-           error_code = 'job_cancelled',
-           last_error_at = ?,
+           error = CASE WHEN status = 'pending' THEN ? ELSE error END,
+           error_code = CASE WHEN status = 'pending' THEN 'job_cancelled' ELSE error_code END,
+           last_error_at = CASE WHEN status = 'pending' THEN ? ELSE last_error_at END,
            available_at = NULL,
-           finished_at = ?,
-           dead_at = NULL,
+           finished_at = CASE WHEN status = 'pending' THEN ? ELSE finished_at END,
+           dead_at = CASE WHEN status = 'pending' THEN NULL ELSE dead_at END,
            cancelled_at = ?,
            lease_owner = NULL,
            lease_expires_at = NULL
        WHERE id = ?
-          AND status = 'pending'
+          AND status IN ('pending', 'dead_letter', 'failed')
          ${opts.tenantId ? "AND tenant_id = ?" : ""}`,
     )
     .run(

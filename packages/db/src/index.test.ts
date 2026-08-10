@@ -1321,6 +1321,57 @@ describe("db", () => {
     ).toBeUndefined();
   });
 
+  it("acknowledges a permanent dead letter without losing its failure evidence", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-acknowledge-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    enqueueJob(db, {
+      id: "job-permanent",
+      tenantId: "tenant-a",
+      type: "pipeline.fanout",
+      payload: { providerSlug: "stripe" },
+      maxAttempts: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const claimed = claimNextJob(db, ["pipeline.fanout"], {
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      now: "2026-01-01T00:00:00.000Z",
+    })!;
+    failJob(
+      db,
+      claimed.id,
+      "Provider stripe needs at least 2 API versions",
+      "2026-01-01T00:00:01.000Z",
+      {
+        workerId: "worker-a",
+        leaseGeneration: claimed.lease_generation,
+        errorCode: "job_failed",
+        retryable: false,
+      },
+    );
+
+    expect(
+      cancelJob(db, "job-permanent", "2026-01-01T00:01:00.000Z", {
+        tenantId: "tenant-a",
+        reason: "operator acknowledged permanent failure",
+      }),
+    ).toBe(true);
+    expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({
+      status: "cancelled",
+      error: "Provider stripe needs at least 2 API versions",
+      error_code: "job_failed",
+      last_error_at: "2026-01-01T00:00:01.000Z",
+      dead_at: "2026-01-01T00:00:01.000Z",
+      cancelled_at: "2026-01-01T00:01:00.000Z",
+    });
+    expect(getJobRecoverySummary(db, "tenant-a")).toMatchObject({
+      deadLetter: 0,
+      cancelled: 1,
+    });
+  });
+
   it("schedules retry backoff durably", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-backoff-"));
     dirs.push(dir);
