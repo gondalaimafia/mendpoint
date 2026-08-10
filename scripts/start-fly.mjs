@@ -13,6 +13,15 @@ import {
   initializeWithMutationLease,
   validateCustomerBackupPathSafety,
 } from "@mendpoint/ops";
+import {
+  customerWardenChildEnvironment,
+  validateCustomerWardenRuntime,
+} from "./customer-warden-profile.ts";
+import {
+  createRcloneCustomerObjectStoreTransport,
+  loadCustomerObjectStoreConfig,
+  probeCustomerObjectStore,
+} from "./customer-object-store.ts";
 
 const dataRoot = resolve(process.env.MENDPOINT_VOLUME_ROOT ?? "/data");
 const tenantId = process.env.MENDPOINT_TENANT_ID ?? "tenant_default";
@@ -54,6 +63,10 @@ if (deploymentProfile === "customer") {
   if (unsafe.length) {
     throw new Error(`Customer deployment profile requires ${unsafe.join(", ")}`);
   }
+  const customerWardenErrors = validateCustomerWardenRuntime(process.env);
+  if (customerWardenErrors.length) {
+    throw new Error(customerWardenErrors.join(", "));
+  }
 }
 
 const childEnv = {
@@ -77,6 +90,63 @@ const childEnv = {
     process.env.MENDPOINT_ALERTS_PATH ?? resolve(dataRoot, "state", "alerts.jsonl"),
 };
 
+function environmentForRole(role) {
+  if (deploymentProfile !== "customer") return childEnv;
+  return customerWardenChildEnvironment(role, childEnv);
+}
+
+const children = new Map();
+let stopping = false;
+
+function shutdown(exitCode = 0) {
+  if (stopping) return;
+  stopping = true;
+  const active = [...children.values()].filter((child) => child.exitCode === null);
+  for (const child of active) child.kill("SIGTERM");
+  if (active.length === 0) {
+    process.exit(exitCode);
+    return;
+  }
+  const timer = setTimeout(() => {
+    for (const child of active) {
+      if (child.exitCode === null) child.kill("SIGKILL");
+    }
+    process.exit(exitCode);
+  }, 25_000);
+  timer.unref();
+  Promise.all(
+    active.map(
+      (child) => new Promise((resolveChild) => child.once("exit", resolveChild)),
+    ),
+  ).finally(() => process.exit(exitCode));
+}
+
+function startProcess(
+  name,
+  command,
+  args,
+  cwd = appRoot,
+  identity = childIdentity,
+  env = childEnv,
+) {
+  const child = spawn(command, args, {
+    cwd,
+    env,
+    stdio: "inherit",
+    ...identity,
+  });
+  children.set(name, child);
+  child.on("exit", (code, signal) => {
+    if (stopping) return;
+    console.error(`${name} exited code=${code ?? "none"} signal=${signal ?? "none"}`);
+    shutdown(code ?? 1);
+  });
+  return child;
+}
+
+process.on("SIGTERM", () => shutdown(0));
+process.on("SIGINT", () => shutdown(0));
+
 const customerBackupPaths = deploymentProfile === "customer"
   ? validateCustomerBackupPathSafety({
       sourceRoot: process.env.MENDPOINT_BACKUP_SOURCE_ROOT,
@@ -86,6 +156,22 @@ const customerBackupPaths = deploymentProfile === "customer"
       dataRoot: childEnv.MENDPOINT_DATA_DIR,
     })
   : null;
+
+async function verifyCustomerBackupObjectStore() {
+  if (
+    !customerBackupPaths ||
+    process.env.MENDPOINT_BACKUP_TRANSPORT !== "rclone_s3"
+  ) return;
+  mkdirSync(customerBackupPaths.sourceRoot, { recursive: true, mode: 0o700 });
+  mkdirSync(customerBackupPaths.outputRoot, { recursive: true, mode: 0o700 });
+  const config = loadCustomerObjectStoreConfig(process.env);
+  const transport = createRcloneCustomerObjectStoreTransport(config, environmentForRole("backup"));
+  await probeCustomerObjectStore(config, transport, {
+    machineId: process.env.FLY_MACHINE_ID?.trim() || "non-fly-customer",
+  });
+}
+
+await verifyCustomerBackupObjectStore();
 
 const preflight = spawnSync(
   process.execPath,
@@ -98,6 +184,7 @@ const preflight = spawnSync(
   },
 );
 if (preflight.status !== 0) {
+  for (const child of children.values()) child.kill("SIGTERM");
   throw new Error("Runtime environment validation failed before startup");
 }
 
@@ -135,7 +222,7 @@ for (const path of [
 function runSetup(args, extraEnv = {}) {
   const result = spawnSync(process.execPath, args, {
     cwd: appRoot,
-    env: { ...childEnv, ...extraEnv },
+    env: { ...environmentForRole("api"), ...extraEnv },
     stdio: "inherit",
     ...childIdentity,
   });
@@ -169,42 +256,9 @@ if (process.env.MENDPOINT_PILOT_SEED === "1") {
   });
 }
 
-const children = new Map();
-let stopping = false;
-
 function start(name, args, cwd = appRoot) {
-  const child = spawn(process.execPath, args, {
-    cwd,
-    env: childEnv,
-    stdio: "inherit",
-    ...childIdentity,
-  });
-  children.set(name, child);
-  child.on("exit", (code, signal) => {
-    if (stopping) return;
-    console.error(`${name} exited code=${code ?? "none"} signal=${signal ?? "none"}`);
-    shutdown(code ?? 1);
-  });
+  startProcess(name, process.execPath, args, cwd, childIdentity, environmentForRole(name));
 }
-
-function shutdown(exitCode = 0) {
-  if (stopping) return;
-  stopping = true;
-  for (const child of children.values()) child.kill("SIGTERM");
-  const timer = setTimeout(() => {
-    for (const child of children.values()) child.kill("SIGKILL");
-    process.exit(exitCode);
-  }, 25_000);
-  timer.unref();
-  Promise.all(
-    [...children.values()].map(
-      (child) => new Promise((resolveChild) => child.once("exit", resolveChild)),
-    ),
-  ).finally(() => process.exit(exitCode));
-}
-
-process.on("SIGTERM", () => shutdown(0));
-process.on("SIGINT", () => shutdown(0));
 
 start("api", ["--import", "tsx", "apps/api/src/server.ts"]);
 start("worker", [

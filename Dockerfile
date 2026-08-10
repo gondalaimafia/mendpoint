@@ -71,7 +71,7 @@ CMD ["node", "--import", "tsx", "apps/worker/src/cli.ts", "run-jobs", "--interva
 
 FROM api AS fly
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends git \
+RUN apt-get update && apt-get install -y --no-install-recommends git rclone \
   && rm -rf /var/lib/apt/lists/* \
   && rm -rf /app/runs /app/.mendpoint \
   && ln -s /data/runs /app/runs \

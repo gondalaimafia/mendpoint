@@ -42,6 +42,25 @@ function membership(
   ).get(tenantId, issuer, subject) as TenantMembershipRow | undefined;
 }
 
+export function listTenantMemberships(
+  db: AppDb,
+  tenantId: string,
+): TenantMembershipRow[] {
+  return db.raw.prepare(
+    `SELECT * FROM tenant_memberships
+     WHERE tenant_id = ?
+     ORDER BY status, role, display_name, issuer, subject`,
+  ).all(required("tenant_id", tenantId)) as TenantMembershipRow[];
+}
+
+export function countActiveTenantOwners(db: AppDb, tenantId: string): number {
+  const row = db.raw.prepare(
+    `SELECT COUNT(*) AS count FROM tenant_memberships
+     WHERE tenant_id = ? AND role = 'owner' AND status = 'active'`,
+  ).get(required("tenant_id", tenantId)) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
 export function getTenantMembership(
   db: AppDb,
   tenantId: string,
@@ -109,6 +128,104 @@ export function putTenantMembership(
     offboardedAt,
   );
   return membership(db, tenantId, issuer, subject)!;
+}
+
+export function createTenantMembership(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    issuer: string;
+    subject: string;
+    email: string | null;
+    displayName: string;
+    role: TenantMembershipRow["role"];
+    createdAt: string;
+  },
+): TenantMembershipRow {
+  const tenantId = required("tenant_id", input.tenantId);
+  const issuer = required("membership_issuer", input.issuer);
+  const subject = required("membership_subject", input.subject);
+  const displayName = required("membership_display_name", input.displayName);
+  const createdAt = timestamp("membership_created_at", input.createdAt);
+  if (!MEMBERSHIP_ROLES.has(input.role)) {
+    throw new Error("tenant_membership_role_invalid");
+  }
+  const email = input.email?.trim() || null;
+  try {
+    db.raw.prepare(
+      `INSERT INTO tenant_memberships
+         (tenant_id, issuer, subject, email, display_name, role, status,
+          created_at, updated_at, offboarded_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL)`,
+    ).run(
+      tenantId,
+      issuer,
+      subject,
+      email,
+      displayName,
+      input.role,
+      createdAt,
+      createdAt,
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
+      throw new Error("tenant_membership_exists");
+    }
+    throw error;
+  }
+  return membership(db, tenantId, issuer, subject)!;
+}
+
+export function changeTenantMembershipRole(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    issuer: string;
+    subject: string;
+    role: TenantMembershipRow["role"];
+    expectedUpdatedAt: string;
+    updatedAt: string;
+  },
+): TenantMembershipRow | undefined {
+  const tenantId = required("tenant_id", input.tenantId);
+  const issuer = required("membership_issuer", input.issuer);
+  const subject = required("membership_subject", input.subject);
+  const expectedUpdatedAt = timestamp("membership_expected_updated_at", input.expectedUpdatedAt);
+  const updatedAt = timestamp("membership_updated_at", input.updatedAt);
+  if (!MEMBERSHIP_ROLES.has(input.role)) {
+    throw new Error("tenant_membership_role_invalid");
+  }
+  const result = db.raw.prepare(
+    `UPDATE tenant_memberships
+     SET role = ?, updated_at = ?
+     WHERE tenant_id = ? AND issuer = ? AND subject = ?
+       AND status = 'active' AND updated_at = ?`,
+  ).run(input.role, updatedAt, tenantId, issuer, subject, expectedUpdatedAt);
+  return result.changes === 1 ? membership(db, tenantId, issuer, subject) : undefined;
+}
+
+export function offboardTenantMembership(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    issuer: string;
+    subject: string;
+    expectedUpdatedAt: string;
+    updatedAt: string;
+  },
+): TenantMembershipRow | undefined {
+  const tenantId = required("tenant_id", input.tenantId);
+  const issuer = required("membership_issuer", input.issuer);
+  const subject = required("membership_subject", input.subject);
+  const expectedUpdatedAt = timestamp("membership_expected_updated_at", input.expectedUpdatedAt);
+  const updatedAt = timestamp("membership_updated_at", input.updatedAt);
+  const result = db.raw.prepare(
+    `UPDATE tenant_memberships
+     SET status = 'offboarded', updated_at = ?, offboarded_at = ?
+     WHERE tenant_id = ? AND issuer = ? AND subject = ?
+       AND status = 'active' AND updated_at = ?`,
+  ).run(updatedAt, updatedAt, tenantId, issuer, subject, expectedUpdatedAt);
+  return result.changes === 1 ? membership(db, tenantId, issuer, subject) : undefined;
 }
 
 export function setTenantMembershipStatus(

@@ -13,7 +13,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runWarden, validatedToolCall, WARDEN_TOOL_CALL_SCHEMA } from "./agent.js";
+import {
+  ABSENT_FILE_EVIDENCE_DIGEST,
+  runWarden,
+  validatedToolCall,
+  WARDEN_TOOL_CALL_SCHEMA,
+} from "./agent.js";
 import { extractHints, extractRenames, extractApiPaths } from "./heuristics.js";
 import { pathBlocked, commandBlocked } from "./policies.js";
 import {
@@ -25,9 +30,34 @@ import {
 import { classifyFailures, FAILURE_CATEGORIES, FAILURE_MODES } from "./knowledge.js";
 import { proposeWardenFix } from "./fixes.js";
 import { discoverVerifyCommand } from "./discover-verify.js";
+import type { AgentPlanner } from "./types.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const dirs: string[] = [];
+const TEST_MODEL_USAGE = Object.freeze({
+  promptTokens: 100,
+  completionTokens: 20,
+  totalTokens: 120,
+  costUsd: 0.0025,
+});
+const TEST_MODEL_SOURCE = Object.freeze({
+  tenantId: "tenant-test",
+  allowModelSource: true,
+  modelSourcePolicy: Object.freeze({
+    approved: true,
+    tenantId: "tenant-test",
+    policyDigest: `sha256:${"a".repeat(64)}`,
+    provider: "test-provider",
+    model: "test-model",
+    endpoint: "https://models.example/v1/chat/completions",
+  }),
+  externalModelAccounting: Object.freeze({
+    executionScopeId: `sha256:${"b".repeat(64)}`,
+    maximumCostUsd: 10,
+    reserve: async () => undefined,
+    settle: async () => undefined,
+  }),
+});
 
 afterEach(() => {
   while (dirs.length) {
@@ -205,7 +235,10 @@ describe("tools sandbox", () => {
     expect(executeTool(ctx, {
       tool: "read_file",
       args: { path: "check.mjs" },
-    })).toMatchObject({ ok: true, summary: expect.stringMatching(/^read check\.mjs \(\d+ chars\)$/) });
+    })).toMatchObject({
+      ok: true,
+      summary: expect.stringMatching(/^read check\.mjs chars 0 to \d+ of \d+$/),
+    });
     expect(executeTool(ctx, {
       tool: "search",
       args: { query: "process.exit" },
@@ -459,6 +492,1579 @@ describe("tools sandbox", () => {
 });
 
 describe("Warden (API debug agent)", () => {
+  function mutationIntent(
+    evidence: readonly Readonly<{ path: string; digest: string }>[],
+    overrides: Record<string, unknown> = {},
+  ) {
+    const target = evidence.find((item) => item.path === "client.js");
+    if (!target) throw new Error("test planner did not receive the observed target digest");
+    return {
+      schemaVersion: 1,
+      hypothesis: "The duplicated s in the observed charge path causes the 404 response.",
+      targetPath: "client.js",
+      targetSymbol: "chargePath",
+      targetDigest: target.digest,
+      evidenceRefs: [{ path: target.path, digest: target.digest }],
+      precondition: "The observed client still contains /v1/chargess.",
+      expectedObservation: "The exact observed path literal can be replaced once.",
+      postcondition: "The client uses /v1/charges and the protected verifier passes.",
+      rollback: "Restore the exact observed client.js bytes.",
+      confidence: 0.96,
+      risk: "low",
+      stopCondition: "Stop if the target digest changes or the verifier still fails.",
+      ...overrides,
+    };
+  }
+
+  function intentPlanner(
+    buildIntent: (
+      evidence: readonly Readonly<{ path: string; digest: string }>[],
+    ) => unknown,
+  ) {
+    return async (input: Parameters<NonNullable<Parameters<typeof runWarden>[0]["planner"]>>[0]) => {
+      const evidence = (input as typeof input & {
+        observedEvidenceDigests?: readonly Readonly<{ path: string; digest: string }>[];
+      }).observedEvidenceDigests ?? [];
+      const tools = input.recentSteps.map((step) => step.tool);
+      if (!tools.includes("read_file")) {
+        return {
+          call: {
+            tool: "read_file",
+            args: { path: "client.js" },
+            thought: "Observe the exact target before planning a mutation",
+          },
+          usage: TEST_MODEL_USAGE,
+        };
+      }
+      if (!input.recentSteps.some((step) => step.tool === "replace_in_file" && step.ok)) {
+        const intent = buildIntent(evidence);
+        return {
+          call: {
+            tool: "replace_in_file",
+            args: { path: "client.js", from: "/v1/chargess", to: "/v1/charges" },
+            thought: "Apply the evidence bound path repair",
+            ...(intent === undefined ? {} : { intent }),
+          },
+          usage: TEST_MODEL_USAGE,
+        };
+      }
+      return {
+        call: {
+          tool: "run_command",
+          args: { command: input.verifyCommand },
+          thought: "Verify the evidence bound repair",
+        },
+        usage: TEST_MODEL_USAGE,
+      };
+    };
+  }
+
+  function intentFixture() {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-intent-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const chargePath = '/v1/chargess';\n");
+    writeFileSync(join(dir, "check.mjs"), [
+      "import { chargePath } from './client.js';",
+      "if (chargePath !== '/v1/charges') process.exit(1);",
+      "",
+    ].join("\n"));
+    return dir;
+  }
+
+  it("rejects a planner mutation without a versioned execution intent", async () => {
+    const dir = intentFixture();
+    const result = await runWarden({
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: intentPlanner(() => undefined),
+    });
+
+    expect(result.stoppedReason).toBe("mutation_intent_missing");
+    expect(readFileSync(join(dir, "client.js"), "utf8")).toContain("/v1/chargess");
+  });
+
+  it("lets a model correct a rejected missing intent before any mutation", async () => {
+    const dir = intentFixture();
+    let mutationAttempts = 0;
+    const result = await runWarden({
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 8,
+      planner: async (input) => {
+        const evidence = input.observedEvidenceDigests ?? [];
+        if (!input.recentSteps.some((step) => step.tool === "read_file")) {
+          return {
+            call: { tool: "read_file", args: { path: "client.js" } },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        if (!input.recentSteps.some((step) => step.tool === "replace_in_file" && step.ok)) {
+          mutationAttempts++;
+          return {
+            call: {
+              tool: "replace_in_file",
+              args: { path: "client.js", from: "/v1/chargess", to: "/v1/charges" },
+              ...(mutationAttempts > 1 ? { intent: mutationIntent(evidence) } : {}),
+            },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        return {
+          call: { tool: "run_command", args: { command: input.verifyCommand } },
+          usage: TEST_MODEL_USAGE,
+        };
+      },
+    });
+
+    expect(mutationAttempts).toBe(2);
+    expect(result.ok).toBe(true);
+    expect(result.stoppedReason).toBe("verify_passed");
+    expect(result.steps.filter((step) => step.call.tool === "replace_in_file"))
+      .toHaveLength(2);
+    expect(readFileSync(join(dir, "client.js"), "utf8")).toContain("/v1/charges");
+  });
+
+  it("rejects a planner mutation that cites a stale target digest", async () => {
+    const dir = intentFixture();
+    const result = await runWarden({
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: intentPlanner((evidence) => mutationIntent(evidence, {
+        targetDigest: `sha256:${"0".repeat(64)}`,
+      })),
+    });
+
+    expect(result.stoppedReason).toBe("mutation_intent_target_stale");
+    expect(readFileSync(join(dir, "client.js"), "utf8")).toContain("/v1/chargess");
+  });
+
+  it("rejects a planner mutation whose intent targets another file", async () => {
+    const dir = intentFixture();
+    const result = await runWarden({
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: intentPlanner((evidence) => mutationIntent(evidence, {
+        targetPath: "other.js",
+      })),
+    });
+
+    expect(result.stoppedReason).toBe("mutation_intent_target_mismatch");
+    expect(readFileSync(join(dir, "client.js"), "utf8")).toContain("/v1/chargess");
+  });
+
+  it("propagates an exact evidence bound model intent into the accepted mutation step", async () => {
+    const dir = intentFixture();
+    let observed: readonly Readonly<{ path: string; digest: string }>[] = [];
+    const result = await runWarden({
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: intentPlanner((evidence) => {
+        observed = evidence;
+        return mutationIntent(evidence);
+      }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(observed).toEqual([{
+      path: "client.js",
+      digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    }]);
+    expect(result.steps.find((step) => step.call.tool === "replace_in_file")?.call)
+      .toMatchObject({
+        intent: {
+          schemaVersion: 1,
+          hypothesis: "The duplicated s in the observed charge path causes the 404 response.",
+          targetPath: "client.js",
+          targetSymbol: "chargePath",
+          evidenceRefs: [{
+            path: "client.js",
+            digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          }],
+          risk: "high",
+          confidence: 0.96,
+          assessmentSource: "model",
+        },
+      });
+  });
+
+  it("discards nonmutation intent without replacing accepted review evidence", async () => {
+    const dir = intentFixture();
+    let acceptedIntent: ReturnType<typeof mutationIntent> | undefined;
+    const result = await runWarden({
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: async (input) => {
+        const tools = input.recentSteps.map((step) => step.tool);
+        if (!tools.includes("read_file")) {
+          return {
+            call: { tool: "read_file", args: { path: "client.js" } },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        if (!tools.includes("replace_in_file")) {
+          acceptedIntent = mutationIntent(input.observedEvidenceDigests ?? []);
+          return {
+            call: {
+              tool: "replace_in_file",
+              args: { path: "client.js", from: "/v1/chargess", to: "/v1/charges" },
+              intent: acceptedIntent,
+            },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        return {
+          call: {
+            tool: "run_command",
+            args: { command: input.verifyCommand },
+            intent: {
+              ...acceptedIntent!,
+              hypothesis: "Spoofed low-risk rationale from a nonmutation step.",
+              confidence: 1,
+            },
+          },
+          usage: TEST_MODEL_USAGE,
+        };
+      },
+    });
+
+    expect(result.stoppedReason).toBe("verify_passed");
+    expect(result.ok).toBe(true);
+    expect(result.steps.find((step) => (
+      step.call.tool === "run_command" && step.plannerSource === "model"
+    ))?.call.intent)
+      .toBeUndefined();
+    expect(result.steps.find((step) => step.call.tool === "replace_in_file")?.call.intent)
+      .toMatchObject({ hypothesis: acceptedIntent?.hypothesis });
+    expect(readFileSync(join(dir, "client.js"), "utf8")).toContain("/v1/charges");
+  });
+
+  it("never invokes a planner when repository source transmission is not authorized", async () => {
+    const dir = intentFixture();
+    const planner = vi.fn(async () => ({
+      call: { tool: "read_file" as const, args: { path: "client.js" } },
+      usage: TEST_MODEL_USAGE,
+    }));
+
+    const result = await runWarden({
+      goal: "Inspect client.js without an approved model source policy.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      planner,
+      maxSteps: 6,
+    });
+
+    expect(result.stoppedReason).toBe("model_source_policy_denied");
+    expect(result.metrics.model.calls).toBe(0);
+    expect(planner).not.toHaveBeenCalled();
+  });
+
+  it("creates a new file only after observing its exact parent and citing absence", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-new-file-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "check.mjs"), [
+      "import { value } from './helper.js';",
+      "if (value !== 42) process.exit(1);",
+      "",
+    ].join("\n"));
+
+    const result = await runWarden({
+      goal: "Add the missing helper module.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "ERR_MODULE_NOT_FOUND helper.js",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: async (input) => {
+        const tools = input.recentSteps.map((step) => step.tool);
+        if (!tools.includes("list_dir")) {
+          return {
+            call: { tool: "list_dir", args: { path: ".", offset: 0, maxFiles: 200 } },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        if (!tools.includes("write_file")) {
+          return {
+            call: {
+              tool: "write_file",
+              args: { path: "helper.js", content: "export const value = 42;\n" },
+              intent: {
+                schemaVersion: 1,
+                hypothesis: "The verifier fails because helper.js is absent.",
+                targetPath: "helper.js",
+                targetSymbol: "value",
+                targetDigest: ABSENT_FILE_EVIDENCE_DIGEST,
+                evidenceRefs: [{ path: "helper.js", digest: ABSENT_FILE_EVIDENCE_DIGEST }],
+                precondition: "The observed repository root contains no helper.js file.",
+                expectedObservation: "A new helper.js module can be created in the observed root.",
+                postcondition: "The verifier imports value 42 from helper.js.",
+                rollback: "Remove helper.js.",
+                confidence: 0.97,
+                risk: "low",
+                stopCondition: "Stop if helper.js appears before the mutation or verification fails.",
+              },
+            },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        return {
+          call: { tool: "run_command", args: { command: input.verifyCommand } },
+          usage: TEST_MODEL_USAGE,
+        };
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(join(dir, "helper.js"), "utf8")).toBe("export const value = 42;\n");
+    expect(result.steps.find((step) => step.call.tool === "write_file")?.call.intent?.risk)
+      .toBe("high");
+  });
+
+  it("rejects forged additional evidence on an otherwise grounded new file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-new-file-forged-evidence-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+
+    const result = await runWarden({
+      goal: "Add helper.js.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "helper.js is missing",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 5,
+      planner: async (input) => {
+        if (!input.recentSteps.some((step) => step.tool === "list_dir")) {
+          return {
+            call: { tool: "list_dir", args: { path: "." } },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        return {
+          call: {
+            tool: "write_file",
+            args: { path: "helper.js", content: "export const value = 42;\n" },
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "helper.js is absent.",
+              targetPath: "helper.js",
+              targetSymbol: "value",
+              targetDigest: ABSENT_FILE_EVIDENCE_DIGEST,
+              evidenceRefs: [
+                { path: "helper.js", digest: ABSENT_FILE_EVIDENCE_DIGEST },
+                { path: "forged.js", digest: `sha256:${"f".repeat(64)}` },
+              ],
+              precondition: "The repository root has no helper.js.",
+              expectedObservation: "helper.js can be created.",
+              postcondition: "helper.js exports value.",
+              rollback: "Remove helper.js.",
+              confidence: 0.9,
+              risk: "low",
+              stopCondition: "Stop if any cited evidence is unavailable.",
+            },
+          },
+          usage: TEST_MODEL_USAGE,
+        };
+      },
+    });
+
+    expect(result.stoppedReason).toBe("mutation_intent_evidence_stale");
+    expect(existsSync(join(dir, "helper.js"))).toBe(false);
+  });
+
+  it("derives critical risk from sensitive paths before repository mutation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-critical-path-"));
+    dirs.push(dir);
+    const original = "export const authorizationMode = 'legacy';\n";
+    writeFileSync(join(dir, "authentication.ts"), original);
+    writeFileSync(join(dir, "check.mjs"), [
+      "import { authorizationMode } from './authentication.ts';",
+      "if (authorizationMode !== 'strict') process.exit(1);",
+      "",
+    ].join("\n"));
+
+    const result = await runWarden({
+      goal: "Change the authorization mode.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "authorization mode mismatch",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: async (input) => {
+        const target = (input.observedEvidenceDigests ?? [])
+          .find((item) => item.path === "authentication.ts");
+        if (!target) {
+          return {
+            call: { tool: "read_file", args: { path: "authentication.ts" } },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        return {
+          call: {
+            tool: "replace_in_file",
+            args: { path: "authentication.ts", from: "legacy", to: "strict" },
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "The authorization mode is stale.",
+              targetPath: "authentication.ts",
+              targetSymbol: "authorizationMode",
+              targetDigest: target.digest,
+              evidenceRefs: [{ path: target.path, digest: target.digest }],
+              precondition: "authentication.ts still contains legacy mode.",
+              expectedObservation: "The literal can be replaced once.",
+              postcondition: "Authorization uses strict mode.",
+              rollback: "Restore the observed authentication.ts bytes.",
+              confidence: 0.99,
+              risk: "low",
+              stopCondition: "Stop before editing if platform policy escalates the risk.",
+            },
+          },
+          usage: TEST_MODEL_USAGE,
+        };
+      },
+    });
+
+    expect(result.stoppedReason).toBe("mutation_intent_critical_requires_escalation");
+    expect(readFileSync(join(dir, "authentication.ts"), "utf8")).toBe(original);
+    expect(result.metrics.sourceContext.blockedMutations).toBe(1);
+  });
+
+  it.each([
+    ["requireUser", "export const requireUser = true;\n", "true", "false"],
+    ["rejectUnauthorized", "export const rejectUnauthorized = true;\n", "true", "false"],
+  ])(
+    "blocks runtime security-control disablement for %s in an ordinary file",
+    async (targetSymbol, original, from, to) => {
+      const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-critical-control-"));
+      dirs.push(dir);
+      writeFileSync(join(dir, "handler.ts"), original);
+      writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+
+      const result = await runWarden({
+        goal: "Apply the requested handler change.",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "handler behavior mismatch",
+        useLlm: true,
+        ...TEST_MODEL_SOURCE,
+        maxSteps: 6,
+        planner: async (input) => {
+          const target = (input.observedEvidenceDigests ?? [])
+            .find((item) => item.path === "handler.ts");
+          if (!target) {
+            return {
+              call: { tool: "read_file", args: { path: "handler.ts" } },
+              usage: TEST_MODEL_USAGE,
+            };
+          }
+          return {
+            call: {
+              tool: "replace_in_file",
+              args: { path: "handler.ts", from, to },
+              intent: {
+                schemaVersion: 1,
+                hypothesis: "The handler flag should be changed.",
+                targetPath: "handler.ts",
+                targetSymbol,
+                targetDigest: target.digest,
+                evidenceRefs: [{ path: target.path, digest: target.digest }],
+                precondition: `handler.ts still contains ${from}.`,
+                expectedObservation: "The literal can be replaced once.",
+                postcondition: "The requested handler flag is updated.",
+                rollback: "Restore the observed handler.ts bytes.",
+                confidence: 0.99,
+                risk: "low",
+                stopCondition: "Stop before editing if runtime policy escalates the risk.",
+              },
+            },
+            usage: TEST_MODEL_USAGE,
+          };
+        },
+      });
+
+      expect(result.stoppedReason).toBe("mutation_intent_critical_requires_escalation");
+      expect(readFileSync(join(dir, "handler.ts"), "utf8")).toBe(original);
+      expect(result.metrics.sourceContext.blockedMutations).toBe(1);
+    },
+  );
+
+  it("uses global replacement semantics when blocking a hidden guard removal", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-critical-global-control-"));
+    dirs.push(dir);
+    const original = [
+      "// placeholder(); appears before the guard",
+      "export function handler() { requireUser(); return true; }",
+      "",
+    ].join("\n");
+    writeFileSync(join(dir, "handler.ts"), original);
+    writeFileSync(join(dir, "check.mjs"), [
+      "import { readFileSync } from 'node:fs';",
+      "const source = readFileSync(new URL('./handler.ts', import.meta.url), 'utf8');",
+      "process.exit(source.includes('requireUser;') ? 0 : 1);",
+      "",
+    ].join("\n"));
+
+    const result = await runWarden({
+      goal: "Apply the punctuation cleanup.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: async (input) => {
+        const target = (input.observedEvidenceDigests ?? [])
+          .find((item) => item.path === "handler.ts");
+        if (!target) {
+          return {
+            call: { tool: "read_file", args: { path: "handler.ts" } },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        return {
+          call: {
+            tool: "replace_in_file",
+            args: { path: "handler.ts", from: "();", to: ";" },
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "The punctuation can be simplified.",
+              targetPath: "handler.ts",
+              targetSymbol: "placeholder",
+              targetDigest: target.digest,
+              evidenceRefs: [{ path: target.path, digest: target.digest }],
+              precondition: "handler.ts contains the cited punctuation.",
+              expectedObservation: "The literal replacement applies.",
+              postcondition: "The verifier remains green.",
+              rollback: "Restore the observed handler.ts bytes.",
+              confidence: 0.99,
+              risk: "low",
+              stopCondition: "Stop if runtime policy detects a control removal.",
+            },
+          },
+          usage: TEST_MODEL_USAGE,
+        };
+      },
+    });
+
+    expect(result.stoppedReason).toBe("mutation_intent_critical_requires_escalation");
+    expect(readFileSync(join(dir, "handler.ts"), "utf8")).toBe(original);
+    expect(result.metrics.sourceContext.blockedMutations).toBe(1);
+  });
+
+  it.each(["mustBeSignedIn", "ensureLoggedIn", "userIsValid"])(
+    "fails closed when an unrecognized call %s is removed",
+    async (guard) => {
+      const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-unknown-guard-"));
+      dirs.push(dir);
+      const original = `export function handler() { ${guard}(); return true; }\n`;
+      writeFileSync(join(dir, "handler.ts"), original);
+      writeFileSync(join(dir, "check.mjs"), [
+        "import { readFileSync } from 'node:fs';",
+        "const source = readFileSync(new URL('./handler.ts', import.meta.url), 'utf8');",
+        `process.exit(source.includes('${guard}();') ? 1 : 0);`,
+        "",
+      ].join("\n"));
+
+      const result = await runWarden({
+        goal: "Remove the obsolete call.",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        useLlm: true,
+        ...TEST_MODEL_SOURCE,
+        maxSteps: 6,
+        planner: async (input) => {
+          const target = (input.observedEvidenceDigests ?? [])
+            .find((item) => item.path === "handler.ts");
+          if (!target) {
+            return {
+              call: { tool: "read_file", args: { path: "handler.ts" } },
+              usage: TEST_MODEL_USAGE,
+            };
+          }
+          return {
+            call: {
+              tool: "replace_in_file",
+              args: { path: "handler.ts", from: `${guard}(); `, to: "" },
+              intent: {
+                schemaVersion: 1,
+                hypothesis: "The call appears obsolete.",
+                targetPath: "handler.ts",
+                targetSymbol: guard,
+                targetDigest: target.digest,
+                evidenceRefs: [{ path: target.path, digest: target.digest }],
+                precondition: `handler.ts contains ${guard}.`,
+                expectedObservation: "The exact call is removed.",
+                postcondition: "The verifier accepts the result.",
+                rollback: "Restore the observed handler.ts bytes.",
+                confidence: 0.99,
+                risk: "low",
+                stopCondition: "Stop if runtime policy cannot prove call removal safe.",
+              },
+            },
+            usage: TEST_MODEL_USAGE,
+          };
+        },
+      });
+
+      expect(result.stoppedReason).toBe("mutation_intent_critical_requires_escalation");
+      expect(readFileSync(join(dir, "handler.ts"), "utf8")).toBe(original);
+      expect(result.metrics.sourceContext.blockedMutations).toBe(1);
+    },
+  );
+
+  it.each([
+    {
+      name: "whole-file guard removal",
+      original: "export function handler() { mustBeSignedIn(); return true; }\n",
+      tool: "write_file" as const,
+      args: {
+        path: "handler.ts",
+        content: "export function handler() { return true; }\n",
+      },
+    },
+    {
+      name: "middleware guard removal",
+      original: "app.get('/admin', mustBeSignedIn, handler);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn, ", to: "" },
+    },
+    {
+      name: "unknown middleware callback removal",
+      original: "app.get('/admin', tenantBoundary, handler);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "tenantBoundary, ", to: "" },
+      targetSymbol: "route",
+    },
+    {
+      name: "unknown middleware callback replacement",
+      original: "app.get('/admin', tenantBoundary, handler);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "tenantBoundary", to: "noop" },
+      targetSymbol: "route",
+    },
+    {
+      name: "member expression middleware callback removal",
+      original: "app.get('/admin', boundaries.tenantBoundary, handler);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "boundaries.tenantBoundary, ", to: "" },
+      targetSymbol: "route",
+    },
+    {
+      name: "member expression middleware callback replacement",
+      original: "app.get('/admin', boundaries.tenantBoundary, handler);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "boundaries.tenantBoundary", to: "noop" },
+      targetSymbol: "route",
+    },
+    {
+      name: "middleware callback reordering",
+      original: "app.get('/admin', tenantBoundary, handler);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "tenantBoundary, handler", to: "handler, tenantBoundary" },
+      targetSymbol: "route",
+    },
+    {
+      name: "guard reachability disabled by boolean short circuit",
+      original: "export function handler() { mustBeSignedIn(); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn()", to: "false && mustBeSignedIn()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "guard disabled by a control predicate literal",
+      original: "export function handler(mode) { if (mode === 'strict') mustBeSignedIn(); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "'strict'", to: "'off'" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "dynamic execution payload replacement",
+      original: "export function handler() { eval('mustBeSignedIn()'); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn()", to: "noop()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "computed middleware callback replacement",
+      original: "app.get('/admin', guards['mustBeSignedIn'], handler);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "'mustBeSignedIn'", to: "'noop'" },
+      targetSymbol: "route",
+    },
+    {
+      name: "tenant filter removal from a query string",
+      original: "export function load(db, accountId) { return db.query('SELECT * FROM records WHERE tenant_id = ?', [accountId]); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "SELECT * FROM records WHERE tenant_id = ?", to: "SELECT * FROM records" },
+      targetSymbol: "load",
+    },
+    {
+      name: "aliased dynamic execution payload replacement",
+      original: "export function handler() { const code = 'mustBeSignedIn()'; eval(code); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn()", to: "noop()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "aliased computed middleware callback replacement",
+      original: "const key = 'mustBeSignedIn'; app.get('/admin', guards[key], handler);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn", to: "noop" },
+      targetSymbol: "route",
+    },
+    {
+      name: "aliased tenant filter removal from a query string",
+      original: "export function load(db, accountId) { const statement = 'SELECT * FROM records WHERE tenant_id = ?'; return db.query(statement, [accountId]); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "SELECT * FROM records WHERE tenant_id = ?", to: "SELECT * FROM records" },
+      targetSymbol: "load",
+    },
+    {
+      name: "aliased control predicate replacement",
+      original: "export function handler(mode) { const requiredMode = 'strict'; if (mode === requiredMode) mustBeSignedIn(); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "'strict'", to: "'off'" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "tenant predicate regular expression widening",
+      original: "export function allowed(value) { if (/^tenant:[0-9]+$/.test(value)) mustBeSignedIn(); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "/^tenant:[0-9]+$/", to: "/.*/" },
+      targetSymbol: "allowed",
+    },
+    {
+      name: "tagged query tenant filter removal",
+      original: "export function load(db, accountId) { return db.query`SELECT * FROM records WHERE tenant_id = ${accountId}`; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: " WHERE tenant_id = ${accountId}", to: "" },
+      targetSymbol: "load",
+    },
+    {
+      name: "tenant scoped network path removal",
+      original: "export async function load() { return fetch('/tenants/current/records'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "/tenants/current/records", to: "/records" },
+      targetSymbol: "load",
+    },
+    {
+      name: "network origin replacement",
+      original: "export async function load() { return fetch('https://api.example.com/v1/charges'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "api.example.com", to: "attacker.example" },
+      targetSymbol: "load",
+    },
+    {
+      name: "member callback property replacement",
+      original: "app.get('/admin', guards.tenantBoundary, guards.handler);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "tenantBoundary", to: "noop" },
+      targetSymbol: "route",
+    },
+    {
+      name: "member callback reordering",
+      original: "app.get('/admin', guards.tenantBoundary, guards.handler);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "guards.tenantBoundary, guards.handler", to: "guards.handler, guards.tenantBoundary" },
+      targetSymbol: "route",
+    },
+    {
+      name: "object property tenant query replacement",
+      original: "export function load(db, accountId) { const config = { statement: 'SELECT * FROM records WHERE tenant_id = ?' }; return db.query(config.statement, [accountId]); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "SELECT * FROM records WHERE tenant_id = ?", to: "SELECT * FROM records" },
+      targetSymbol: "load",
+    },
+    {
+      name: "destructured tenant query replacement",
+      original: "export function load(db, accountId) { const config = { statement: 'SELECT * FROM records WHERE tenant_id = ?' }; const { statement } = config; return db.query(statement, [accountId]); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "SELECT * FROM records WHERE tenant_id = ?", to: "SELECT * FROM records" },
+      targetSymbol: "load",
+    },
+    {
+      name: "wrapper parameter tenant query replacement",
+      original: "function run(db, statement, accountId) { return db.query(statement, [accountId]); } export function load(db, accountId) { const statement = 'SELECT * FROM records WHERE tenant_id = ?'; return run(db, statement, accountId); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "SELECT * FROM records WHERE tenant_id = ?", to: "SELECT * FROM records" },
+      targetSymbol: "load",
+    },
+    {
+      name: "aliased evaluator payload replacement",
+      original: "export function handler() { const invoke = eval; const code = 'mustBeSignedIn()'; invoke(code); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn()", to: "noop()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "computed query sink tenant filter removal",
+      original: "export function load(db, accountId) { const statement = 'SELECT * FROM records WHERE tenant_id = ?'; return db['query'](statement, [accountId]); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "SELECT * FROM records WHERE tenant_id = ?", to: "SELECT * FROM records" },
+      targetSymbol: "load",
+    },
+    {
+      name: "sensitive network scope replacement through a local binding",
+      original: "export function load() { const url = 'https://api.example/v1/tenants/tenant-a/records'; return fetch(url); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "tenant-a", to: "tenant-b" },
+      targetSymbol: "load",
+    },
+    {
+      name: "comma expression evaluator payload replacement",
+      original: "export function handler() { const code = 'mustBeSignedIn()'; (0, eval)(code); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn()", to: "noop()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "query wrapper alias tenant filter removal",
+      original: "function forward(db, statement, accountId) { return db.query(statement, [accountId]); } const invoke = forward; export function load(db, accountId) { const statement = 'SELECT * FROM records WHERE tenant_id = ?'; return invoke(db, statement, accountId); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "SELECT * FROM records WHERE tenant_id = ?", to: "SELECT * FROM records" },
+      targetSymbol: "load",
+    },
+    {
+      name: "aliased route callback reordering",
+      original: "const register = app.get; register('/admin', middleware.first, middleware.second);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "middleware.first, middleware.second", to: "middleware.second, middleware.first" },
+      targetSymbol: "route",
+    },
+    {
+      name: "bound route callback reordering",
+      original: "const register = app.get.bind(app); register('/admin', middleware.first, middleware.second);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "middleware.first, middleware.second", to: "middleware.second, middleware.first" },
+      targetSymbol: "route",
+    },
+    {
+      name: "two level evaluator alias payload replacement",
+      original: "const first = eval; const invoke = first; export function handler() { const code = 'mustBeSignedIn()'; invoke(code); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn()", to: "noop()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "composed network origin replacement",
+      original: "export function load() { const host = 'api.example.com'; return fetch('https://' + host + '/v1/charges'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "api.example.com", to: "attacker.example" },
+      targetSymbol: "load",
+    },
+    {
+      name: "aliased fetch tenant scope replacement",
+      original: "const first = fetch; const request = first; export function load() { const url = '/tenants/tenant-a/records'; return request(url); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "tenant-a", to: "tenant-b" },
+      targetSymbol: "load",
+    },
+    {
+      name: "destructured evaluator payload replacement",
+      original: "const { eval: invoke } = globalThis; export function handler() { const code = 'mustBeSignedIn()'; invoke(code); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn()", to: "noop()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "nested declaration destructured fetch origin replacement",
+      original: "const registry = { net: { fetch } }; const { net: { fetch: request } } = registry; const invoke = request; export function load() { const host = 'api.example.com'; return invoke('https://' + host + '/v1/charges'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "api.example.com", to: "attacker.example" },
+      targetSymbol: "load",
+    },
+    {
+      name: "nested declaration destructured evaluator payload replacement",
+      original: "const registry = { dynamic: { eval } }; const { dynamic: { eval: first } } = registry; const invoke = first; export function handler() { const code = 'mustBeSignedIn()'; invoke(code); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn()", to: "noop()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "object rest destructured fetch origin replacement",
+      original: "const registry = { fetch }; const { ...copy } = registry; const first = copy.fetch; const invoke = first.bind(globalThis); export function load() { const host = 'api.example.com'; return invoke('https://' + host + '/v1/charges'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "api.example.com", to: "attacker.example" },
+      targetSymbol: "load",
+    },
+    {
+      name: "aliased object rest destructured fetch origin replacement",
+      original: "const registry = { fetch }; const { ...copy } = registry; const alias = copy; const request = alias.fetch; export function load() { const host = 'api.example.com'; return request('https://' + host + '/v1/charges'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "api.example.com", to: "attacker.example" },
+      targetSymbol: "load",
+    },
+    {
+      name: "literal element access on object rest fetch origin replacement",
+      original: "const registry = { fetch }; const { ...copy } = registry; const request = copy['fetch']; export function load() { const host = 'api.example.com'; return request('https://' + host + '/v1/charges'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "api.example.com", to: "attacker.example" },
+      targetSymbol: "load",
+    },
+    {
+      name: "const key element access on object rest fetch origin replacement",
+      original: "const registry = { fetch }; const { ...copy } = registry; const key = 'fetch'; const request = copy[key]; export function load() { const host = 'api.example.com'; return request('https://' + host + '/v1/charges'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "api.example.com", to: "attacker.example" },
+      targetSymbol: "load",
+    },
+    {
+      name: "runtime key element access on object rest fetch origin replacement",
+      original: "const registry = { fetch }; const { ...copy } = registry; const key = getCapabilityName(); const request = copy[key]; export function load() { const host = 'api.example.com'; return request('https://' + host + '/v1/charges'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "api.example.com", to: "attacker.example" },
+      targetSymbol: "load",
+    },
+    {
+      name: "object property embedded rest fetch origin replacement",
+      original: "const registry = { fetch }; const { ...copy } = registry; const wrapper = { client: copy }; const request = wrapper.client.fetch; export function load() { const host = 'api.example.com'; return request('https://' + host + '/v1/charges'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "api.example.com", to: "attacker.example" },
+      targetSymbol: "load",
+    },
+    {
+      name: "function parameter rest fetch origin replacement",
+      original: "function invoke(client, url) { return client.fetch(url); } const registry = { fetch }; const { ...copy } = registry; export function load() { const host = 'api.example.com'; return invoke(copy, 'https://' + host + '/v1/charges'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "api.example.com", to: "attacker.example" },
+      targetSymbol: "load",
+    },
+    {
+      name: "computed declaration destructured fetch origin replacement",
+      original: "const key = 'fetch'; const registry = { fetch }; const { [key]: request } = registry; const invoke = request; export function load() { const host = 'api.example.com'; return invoke('https://' + host + '/v1/charges'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "api.example.com", to: "attacker.example" },
+      targetSymbol: "load",
+    },
+    {
+      name: "computed assignment destructured evaluator payload replacement",
+      original: "const key = 'eval'; const registry = { eval }; let request; ({ [key]: request } = registry); const invoke = request; export function handler() { const code = 'mustBeSignedIn()'; invoke(code); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn()", to: "noop()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "destructuring assignment fetch tenant scope replacement",
+      original: "let request; ({ fetch: request } = globalThis); export function load() { const url = '/tenants/tenant-a/records'; return request(url); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "tenant-a", to: "tenant-b" },
+      targetSymbol: "load",
+    },
+    {
+      name: "destructuring assignment evaluator payload replacement",
+      original: "let invoke; ({ eval: invoke } = globalThis); export function handler() { const code = 'mustBeSignedIn()'; invoke(code); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn()", to: "noop()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "partially bound query wrapper tenant filter removal",
+      original: "function forward(db, statement, accountId) { return db.query(statement, [accountId]); } const db = {}; const invoke = forward.bind(null, db); export function load(accountId) { const statement = 'SELECT * FROM records WHERE tenant_id = ?'; return invoke(statement, accountId); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "SELECT * FROM records WHERE tenant_id = ?", to: "SELECT * FROM records" },
+      targetSymbol: "load",
+    },
+    {
+      name: "assigned route callback reordering",
+      original: "let register; register = app.get; register('/admin', middleware.first, middleware.second);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "middleware.first, middleware.second", to: "middleware.second, middleware.first" },
+      targetSymbol: "route",
+    },
+    {
+      name: "assigned bound route callback reordering",
+      original: "let register; register = app.get.bind(app); register('/admin', middleware.first, middleware.second);\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "middleware.first, middleware.second", to: "middleware.second, middleware.first" },
+      targetSymbol: "route",
+    },
+    {
+      name: "bound evaluator payload replacement",
+      original: "const invoke = eval.bind(globalThis); export function handler() { const code = 'mustBeSignedIn()'; invoke(code); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn()", to: "noop()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "executable guard laundering into a string",
+      original: "export function handler() { mustBeSignedIn(); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn();", to: "\"mustBeSignedIn()\";" },
+    },
+    {
+      name: "template interpolation guard removal",
+      original: "export const output = `${mustBeSignedIn() && render()}`;\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "mustBeSignedIn() && ", to: "" },
+      targetSymbol: "output",
+    },
+    {
+      name: "unknown tenant boundary removal",
+      original: "export function handler() { tenantBoundary(); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "tenantBoundary(); ", to: "" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "unknown tenant boundary replacement with noop",
+      original: "export function handler() { tenantBoundary(); return true; }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "tenantBoundary()", to: "noop()" },
+      targetSymbol: "handler",
+    },
+    {
+      name: "HTTP framing header replacement",
+      original: "export const request = { headers: { 'Transfer-Encoding': 'chunked' } };\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "Transfer-Encoding", to: "Content-Length" },
+      targetSymbol: "request",
+    },
+    {
+      name: "idempotency header removal",
+      original: "export const request = { headers: { 'Idempotency-Key': requestId } };\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "Idempotency-Key", to: "Legacy-Retry-Key" },
+      targetSymbol: "request",
+    },
+    {
+      name: "lowercase idempotency header removal",
+      original: "export const request = { headers: { 'idempotency-key': requestId } };\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "idempotency-key", to: "Legacy-Retry-Key" },
+      targetSymbol: "request",
+    },
+    {
+      name: "escaped idempotency header removal",
+      original: "export const request = { headers: { '\\u0049DEMPOTENCY-KEY': requestId } };\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "\\u0049DEMPOTENCY-KEY", to: "Legacy-Retry-Key" },
+      targetSymbol: "request",
+    },
+    {
+      name: "idempotency header relocation",
+      original: "export const paymentRequest = { headers: { 'Idempotency-Key': paymentId } }; export const analyticsRequest = { headers: { 'Legacy-Retry-Key': eventId } };\n",
+      tool: "write_file" as const,
+      args: {
+        path: "handler.ts",
+        content: "export const paymentRequest = { headers: { 'Legacy-Retry-Key': paymentId } }; export const analyticsRequest = { headers: { 'Idempotency-Key': eventId } };\n",
+      },
+      targetSymbol: "paymentRequest",
+    },
+    {
+      name: "idempotency header relocation across same-named lexical bindings",
+      original: "export function pay() { const request = { headers: { 'Idempotency-Key': paymentId } }; return request; } export function analytics() { const request = { headers: { 'Legacy-Retry-Key': eventId } }; return request; }\n",
+      tool: "write_file" as const,
+      args: {
+        path: "handler.ts",
+        content: "export function pay() { const request = { headers: { 'Legacy-Retry-Key': paymentId } }; return request; } export function analytics() { const request = { headers: { 'Idempotency-Key': eventId } }; return request; }\n",
+      },
+      targetSymbol: "pay",
+    },
+    {
+      name: "idempotency header relocation across array elements",
+      original: "export const requests = [{ kind: 'payment', headers: { 'Idempotency-Key': paymentId } }, { kind: 'analytics', headers: { 'Legacy-Retry-Key': eventId } }];\n",
+      tool: "write_file" as const,
+      args: {
+        path: "handler.ts",
+        content: "export const requests = [{ kind: 'payment', headers: { 'Legacy-Retry-Key': paymentId } }, { kind: 'analytics', headers: { 'Idempotency-Key': eventId } }];\n",
+      },
+      targetSymbol: "requests",
+    },
+    {
+      name: "idempotency header removal through a computed const key",
+      original: "export const headerName = 'Idempotency-Key'; export const request = { headers: { [headerName]: requestId } };\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "Idempotency-Key", to: "Legacy-Retry-Key" },
+      targetSymbol: "headerName",
+    },
+    {
+      name: "unresolved computed header key mutation",
+      original: "const headerName = getHeaderName(); export const request = { headers: { [headerName]: requestId } };\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "getHeaderName", to: "getLegacyHeaderName" },
+      targetSymbol: "headerName",
+    },
+    {
+      name: "composed exported idempotency header alias mutation",
+      original: "export const suffix = 'Key'; export const headerName = 'Idempotency-' + suffix;\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "'Key'", to: "'Legacy-Key'" },
+      targetSymbol: "suffix",
+    },
+    {
+      name: "joined exported idempotency header alias mutation",
+      original: "export const prefix = 'Idempotency'; export const suffix = 'Key'; export const headerName = [prefix, suffix].join('-');\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "'Key'", to: "'Legacy-Key'" },
+      targetSymbol: "suffix",
+    },
+    {
+      name: "joined idempotency value in an exported object mutation",
+      original: "export const prefix = 'Idempotency'; export const suffix = 'Key'; export const names = { idempotency: [prefix, suffix].join('-') };\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "'Key'", to: "'Legacy-Key'" },
+      targetSymbol: "suffix",
+    },
+    {
+      name: "joined idempotency value in an exported getter mutation",
+      original: "export const prefix = 'Idempotency'; export const suffix = 'Key'; export const names = { get idempotency() { return [prefix, suffix].join('-'); } };\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "'Key'", to: "'Legacy-Key'" },
+      targetSymbol: "suffix",
+    },
+    {
+      name: "joined idempotency value in an exported function mutation",
+      original: "export const prefix = 'Idempotency'; export const suffix = 'Key'; export function idempotencyHeaderName() { return [prefix, suffix].join('-'); }\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "'Key'", to: "'Legacy-Key'" },
+      targetSymbol: "suffix",
+    },
+    {
+      name: "joined idempotency value behind an exported function alias mutation",
+      original: "export const prefix = 'Idempotency'; export const suffix = 'Key'; function makeName(useFallback = false) { if (useFallback) return 'Fallback'; return [prefix, suffix].join('-'); } export { makeName as idempotencyHeaderName };\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "'Key'", to: "'Legacy-Key'" },
+      targetSymbol: "suffix",
+    },
+    {
+      name: "joined idempotency value behind a CommonJS export mutation",
+      original: "const prefix = 'Idempotency'; const suffix = 'Key'; function makeName(useFallback = false) { if (useFallback) return 'Fallback'; return [prefix, suffix].join('-'); } exports.idempotencyHeaderName = makeName;\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "'Key'", to: "'Legacy-Key'" },
+      targetSymbol: "suffix",
+    },
+    {
+      name: "joined idempotency value behind a defined CommonJS export mutation",
+      original: "const prefix = 'Idempotency'; const suffix = 'Key'; function makeName(useFallback = false) { if (useFallback) return 'Fallback'; return [prefix, suffix].join('-'); } Object.defineProperty(exports, 'idempotencyHeaderName', { get: () => makeName() });\n",
+      tool: "replace_in_file" as const,
+      args: { path: "handler.ts", from: "'Key'", to: "'Legacy-Key'" },
+      targetSymbol: "suffix",
+    },
+  ])("blocks $name before repository mutation", async ({ original, tool, args, targetSymbol }) => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-critical-shape-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "handler.ts"), original);
+    writeFileSync(join(dir, "check.mjs"), [
+      "import { readFileSync } from 'node:fs';",
+      "const source = readFileSync(new URL('./handler.ts', import.meta.url), 'utf8');",
+      `process.exit(source === ${JSON.stringify(original)} ? 1 : 0);`,
+      "",
+    ].join("\n"));
+    const result = await runWarden({
+      goal: "Apply the requested handler change.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "handler behavior mismatch",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: async (input) => {
+        const target = (input.observedEvidenceDigests ?? [])
+          .find((item) => item.path === "handler.ts");
+        if (!target) {
+          return {
+            call: { tool: "read_file", args: { path: "handler.ts" } },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        return {
+          call: {
+            tool,
+            args,
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "The handler should no longer require this step.",
+              targetPath: "handler.ts",
+              targetSymbol: targetSymbol ?? "mustBeSignedIn",
+              targetDigest: target.digest,
+              evidenceRefs: [{ path: target.path, digest: target.digest }],
+              precondition: "handler.ts still contains the observed guard.",
+              expectedObservation: "The proposed mutation can be evaluated exactly.",
+              postcondition: "The handler matches the requested behavior.",
+              rollback: "Restore the observed handler.ts bytes.",
+              confidence: 0.99,
+              risk: "low",
+              stopCondition: "Stop before editing if runtime policy detects control removal.",
+            },
+          },
+          usage: TEST_MODEL_USAGE,
+        };
+      },
+    });
+
+    expect(result.stoppedReason).toBe("mutation_intent_critical_requires_escalation");
+    expect(readFileSync(join(dir, "handler.ts"), "utf8")).toBe(original);
+    expect(result.metrics.sourceContext.blockedMutations).toBe(1);
+  });
+
+  it("keeps unrelated same-name bindings from blocking an ordinary API path repair", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-scoped-path-"));
+    dirs.push(dir);
+    const original = [
+      "export const headers = { Accept: 'application/json' };",
+      "export const id = '/v1/chargess';",
+      "export function lookup(db, id) { return db.query('SELECT 1 WHERE id = ?', [id]); }",
+      "",
+    ].join("\n");
+    writeFileSync(join(dir, "client.js"), original);
+    writeFileSync(join(dir, "check.mjs"), [
+      "import { id } from './client.js';",
+      "process.exit(id === '/v1/charges' ? 0 : 1);",
+      "",
+    ].join("\n"));
+
+    const result = await runWarden({
+      goal: "Repair the observed charge endpoint typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: async (input) => {
+        const target = (input.observedEvidenceDigests ?? [])
+          .find((item) => item.path === "client.js");
+        const tools = input.recentSteps.map((step) => step.tool);
+        if (!target) return { call: { tool: "read_file", args: { path: "client.js" } }, usage: TEST_MODEL_USAGE };
+        if (!tools.includes("replace_in_file")) {
+          return {
+            call: {
+              tool: "replace_in_file",
+              args: { path: "client.js", from: "/v1/chargess", to: "/v1/charges" },
+              intent: {
+                schemaVersion: 1,
+                hypothesis: "The observed endpoint contains one duplicated character.",
+                targetPath: "client.js",
+                targetSymbol: "id",
+                targetDigest: target.digest,
+                evidenceRefs: [{ path: target.path, digest: target.digest }],
+                precondition: "The observed endpoint remains /v1/chargess.",
+                expectedObservation: "One exact endpoint literal is replaced.",
+                postcondition: "The endpoint is /v1/charges and the verifier passes.",
+                rollback: "Restore the observed client.js bytes.",
+                confidence: 0.99,
+                risk: "low",
+                stopCondition: "Stop if any unrelated structure changes.",
+              },
+            },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        return { call: { tool: "run_command", args: { command: input.verifyCommand } }, usage: TEST_MODEL_USAGE };
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.stoppedReason).toBe("verify_passed");
+    expect(readFileSync(join(dir, "client.js"), "utf8")).toContain("/v1/charges");
+  });
+
+  it.each([
+    { path: "client.json", source: '{"endpoint":"/v1/chargess"}\n' },
+    { path: "client.py", source: 'ENDPOINT = "/v1/chargess"\n' },
+    { path: "client.go", source: 'package client\nconst endpoint = "/v1/chargess"\n' },
+  ])("allows a bounded endpoint typo repair in $path", async ({ path, source }) => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-language-path-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, path), source);
+    writeFileSync(join(dir, "check.mjs"), [
+      "import { readFileSync } from 'node:fs';",
+      `const source = readFileSync(${JSON.stringify(path)}, 'utf8');`,
+      "process.exit(source.includes('/v1/charges') && !source.includes('/v1/chargess') ? 0 : 1);",
+      "",
+    ].join("\n"));
+
+    const result = await runWarden({
+      goal: "Repair the observed API endpoint typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: async (input) => {
+        const target = (input.observedEvidenceDigests ?? []).find((item) => item.path === path);
+        const tools = input.recentSteps.map((step) => step.tool);
+        if (!target) return { call: { tool: "read_file", args: { path } }, usage: TEST_MODEL_USAGE };
+        if (!tools.includes("replace_in_file")) {
+          return {
+            call: {
+              tool: "replace_in_file",
+              args: { path, from: "/v1/chargess", to: "/v1/charges" },
+              intent: {
+                schemaVersion: 1,
+                hypothesis: "The observed endpoint contains one duplicated character.",
+                targetPath: path,
+                targetSymbol: "endpoint",
+                targetDigest: target.digest,
+                evidenceRefs: [{ path: target.path, digest: target.digest }],
+                precondition: "The observed endpoint remains /v1/chargess.",
+                expectedObservation: "One exact endpoint token is replaced.",
+                postcondition: "The endpoint is /v1/charges and the verifier passes.",
+                rollback: `Restore the observed ${path} bytes.`,
+                confidence: 0.99,
+                risk: "low",
+                stopCondition: "Stop if the replacement changes any other token.",
+              },
+            },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        return { call: { tool: "run_command", args: { command: input.verifyCommand } }, usage: TEST_MODEL_USAGE };
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.stoppedReason).toBe("verify_passed");
+    expect(readFileSync(join(dir, path), "utf8")).toContain("/v1/charges");
+  });
+
+  it("blocks a tenant scope replacement in a non JavaScript configuration", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-language-tenant-scope-"));
+    dirs.push(dir);
+    const path = "client.json";
+    const original = '{"endpoint":"/tenants/tenant-a/records"}\n';
+    writeFileSync(join(dir, path), original);
+    writeFileSync(join(dir, "check.mjs"), [
+      "import { readFileSync } from 'node:fs';",
+      `const source = readFileSync(${JSON.stringify(path)}, 'utf8');`,
+      "process.exit(source.includes('/tenants/tenant-b/records') ? 0 : 1);",
+      "",
+    ].join("\n"));
+
+    const result = await runWarden({
+      goal: "Point the client at the other tenant.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "tenant endpoint mismatch",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 5,
+      planner: async (input) => {
+        const target = (input.observedEvidenceDigests ?? []).find((item) => item.path === path);
+        if (!target) return { call: { tool: "read_file", args: { path } }, usage: TEST_MODEL_USAGE };
+        return {
+          call: {
+            tool: "replace_in_file",
+            args: {
+              path,
+              from: "/tenants/tenant-a/records",
+              to: "/tenants/tenant-b/records",
+            },
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "The client should address tenant B.",
+              targetPath: path,
+              targetSymbol: "endpoint",
+              targetDigest: target.digest,
+              evidenceRefs: [{ path: target.path, digest: target.digest }],
+              precondition: "The endpoint still addresses tenant A.",
+              expectedObservation: "The endpoint token can be replaced exactly.",
+              postcondition: "The client addresses tenant B.",
+              rollback: "Restore the observed client.json bytes.",
+              confidence: 0.99,
+              risk: "low",
+              stopCondition: "Stop if tenant scope is security-sensitive.",
+            },
+          },
+          usage: TEST_MODEL_USAGE,
+        };
+      },
+    });
+
+    expect(result.stoppedReason).toBe("mutation_intent_critical_requires_escalation");
+    expect(readFileSync(join(dir, path), "utf8")).toBe(original);
+  });
+
+  it("uses intent semantics when a security mutation preserves executable shape", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-critical-intent-"));
+    dirs.push(dir);
+    const original = "export const middlewareMode = 'strict';\n";
+    writeFileSync(join(dir, "middleware.ts"), original);
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+
+    const result = await runWarden({
+      goal: "Change the middleware mode.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "middleware mismatch",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 5,
+      planner: async (input) => {
+        const target = (input.observedEvidenceDigests ?? [])
+          .find((item) => item.path === "middleware.ts");
+        if (!target) return { call: { tool: "read_file", args: { path: "middleware.ts" } }, usage: TEST_MODEL_USAGE };
+        return {
+          call: {
+            tool: "replace_in_file",
+            args: { path: "middleware.ts", from: "strict", to: "permissive" },
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "The requested middleware mode should be updated.",
+              targetPath: "middleware.ts",
+              targetSymbol: "middlewareMode",
+              targetDigest: target.digest,
+              evidenceRefs: [{ path: target.path, digest: target.digest }],
+              precondition: "The current mode is strict.",
+              expectedObservation: "The mode literal can be replaced.",
+              postcondition: "Authorization checks become permissive and requests bypass the control.",
+              rollback: "Restore the previous middleware mode.",
+              confidence: 0.99,
+              risk: "low",
+              stopCondition: "Stop if platform policy classifies this as security-sensitive.",
+            },
+          },
+          usage: TEST_MODEL_USAGE,
+        };
+      },
+    });
+
+    expect(result.stoppedReason).toBe("mutation_intent_critical_requires_escalation");
+    expect(readFileSync(join(dir, "middleware.ts"), "utf8")).toBe(original);
+  });
+
+  it("requires trusted approval wiring before an API response helper rename", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-benign-helper-"));
+    dirs.push(dir);
+    const original = "export function client(response) { return checkResponse(response); }\n";
+    const expected = "export function client(response) { return inspectResponse(response); }\n";
+    writeFileSync(join(dir, "client.ts"), original);
+    writeFileSync(join(dir, "check.mjs"), [
+      "import { readFileSync } from 'node:fs';",
+      "const source = readFileSync(new URL('./client.ts', import.meta.url), 'utf8');",
+      `process.exit(source === ${JSON.stringify(expected)} ? 0 : 1);`,
+      "",
+    ].join("\n"));
+
+    const renamePlanner: AgentPlanner = async (input) => {
+      const target = (input.observedEvidenceDigests ?? [])
+        .find((item) => item.path === "client.ts");
+      if (!target) return { call: { tool: "read_file", args: { path: "client.ts" } }, usage: TEST_MODEL_USAGE };
+      if (!input.recentSteps.some((step) => step.tool === "replace_in_file")) {
+        return {
+          call: {
+            tool: "replace_in_file",
+            args: { path: "client.ts", from: "checkResponse", to: "inspectResponse" },
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "The response helper has an outdated name.",
+              targetPath: "client.ts",
+              targetSymbol: "client",
+              targetDigest: target.digest,
+              evidenceRefs: [{ path: target.path, digest: target.digest }],
+              precondition: "client.ts calls checkResponse.",
+              expectedObservation: "The helper identifier can be renamed exactly.",
+              postcondition: "The API client calls inspectResponse.",
+              rollback: "Restore the prior helper name.",
+              confidence: 0.99,
+              risk: "low",
+              stopCondition: "Stop if the verifier fails.",
+            },
+          },
+          usage: TEST_MODEL_USAGE,
+        };
+      }
+      return { call: { tool: "run_command", args: { command: "node check.mjs" } }, usage: TEST_MODEL_USAGE };
+    };
+    const baseTask = {
+      goal: "Rename the API response helper.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "response helper mismatch",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 5,
+      planner: renamePlanner,
+    };
+    const result = await runWarden(baseTask);
+
+    expect(result.ok).toBe(false);
+    expect(result.stoppedReason).toBe("mutation_intent_critical_requires_escalation");
+    expect(readFileSync(join(dir, "client.ts"), "utf8")).toBe(original);
+  });
+
+  it("rejects verifier mutation on the finish confirmation path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-finish-verifier-drift-"));
+    dirs.push(dir);
+    const original = "export const chargePath = '/v1/chargess';\n";
+    writeFileSync(join(dir, "client.js"), original);
+    writeFileSync(join(dir, "check.mjs"), [
+      "import { readFileSync, writeFileSync } from 'node:fs';",
+      "const url = new URL('./client.js', import.meta.url);",
+      "const source = readFileSync(url, 'utf8');",
+      "if (source.includes('/v1/chargess')) process.exit(1);",
+      "writeFileSync(url, \"export const chargePath = '/v1/tampered';\\n\");",
+      "process.exit(0);",
+      "",
+    ].join("\n"));
+
+    const result = await runWarden({
+      goal: "Repair the charge path.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 6,
+      planner: async (input) => {
+        const target = (input.observedEvidenceDigests ?? [])
+          .find((item) => item.path === "client.js");
+        const tools = input.recentSteps.map((step) => step.tool);
+        if (!target) return { call: { tool: "read_file", args: { path: "client.js" } }, usage: TEST_MODEL_USAGE };
+        if (!tools.includes("replace_in_file")) {
+          return {
+            call: {
+              tool: "replace_in_file",
+              args: { path: "client.js", from: "chargess", to: "charges" },
+              intent: mutationIntent(input.observedEvidenceDigests ?? []),
+            },
+            usage: TEST_MODEL_USAGE,
+          };
+        }
+        return {
+          call: { tool: "finish", args: { message: "repair complete", ok: true } },
+          usage: TEST_MODEL_USAGE,
+        };
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.stoppedReason).toBe("verifier_mutated_candidate");
+    expect(readFileSync(join(dir, "client.js"), "utf8")).toBe(original);
+  });
+
   it("preserves default secret protections when callers add protected paths", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-path-policy-union-"));
     dirs.push(dir);
@@ -475,12 +2081,14 @@ describe("Warden (API debug agent)", () => {
       errorLog: "unknown failure",
       maxSteps: 3,
       useLlm: true,
+      ...TEST_MODEL_SOURCE,
       neverTouchPaths: ["protected-ci.yml"],
       planner: async () => ({
         call: {
           tool: "read_file",
           args: { path: requestedPaths[request++] ?? "protected-ci.yml" },
         },
+        usage: TEST_MODEL_USAGE,
       }),
     });
 
@@ -576,6 +2184,31 @@ if (source.includes("broken") || !source.includes("fixed")) process.exit(1);
     expect(readFileSync(join(dir, "client.test.js"), "utf8")).toBe(testBefore);
     expect(readFileSync(join(dir, "package.json"), "utf8")).toBe(packageBefore);
     expect(readFileSync(join(dir, "check.mjs"), "utf8")).toContain("source.includes");
+  }, 60_000);
+
+  it("repairs an ordinary JavaScript data literal", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-data-literal-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const responseState = 'broken';\n");
+    writeFileSync(
+      join(dir, "check.mjs"),
+      [
+        "import { responseState } from './client.js';",
+        "if (responseState !== 'fixed') process.exit(1);",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await runWarden({
+      goal: "rename broken to fixed",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      maxSteps: 16,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(join(dir, "client.js"), "utf8"))
+      .toBe("export const responseState = 'fixed';\n");
   }, 60_000);
 
   it("reports already passing", async () => {
@@ -729,7 +2362,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
     const priorUrl = process.env.LLM_AGENT_URL;
     const priorKey = process.env.OPENAI_API_KEY;
-    process.env.LLM_AGENT_URL = "https://llm.invalid/v1";
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
     process.env.OPENAI_API_KEY = "test-key";
     vi.stubGlobal(
       "fetch",
@@ -758,6 +2391,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 20,
       });
       expect(result.ok).toBe(false);
@@ -779,7 +2413,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
     const priorUrl = process.env.LLM_AGENT_URL;
     const priorKey = process.env.OPENAI_API_KEY;
-    process.env.LLM_AGENT_URL = "https://llm.invalid/v1";
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
     process.env.OPENAI_API_KEY = "test-key";
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({
       model: "muse-spark-1.2",
@@ -798,6 +2432,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 20,
         modelBudget: { maxCalls: 1 },
       });
@@ -865,6 +2500,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 20,
         modelBudget: { maxCalls: 1 },
       });
@@ -922,6 +2558,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 20,
         modelBudget: { maxCalls: 1 },
       });
@@ -959,6 +2596,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 20,
         modelBudget: { maxCalls: 3 },
       });
@@ -1000,6 +2638,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 20,
         modelBudget: { maxCalls: 1 },
       });
@@ -1038,6 +2677,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 20,
         modelBudget: { maxCalls: 3 },
       });
@@ -1050,6 +2690,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 20,
         modelBudget: { maxCalls: 3 },
       });
@@ -1062,6 +2703,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 20,
         modelBudget: { maxCalls: 3 },
       });
@@ -1094,6 +2736,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 20,
         modelBudget: { maxCalls: 3 },
       });
@@ -1108,6 +2751,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 20,
         modelBudget: { maxCalls: 3 },
       });
@@ -1128,7 +2772,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
     const priorUrl = process.env.LLM_AGENT_URL;
     const priorKey = process.env.OPENAI_API_KEY;
-    process.env.LLM_AGENT_URL = "https://llm.invalid/v1";
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
     process.env.OPENAI_API_KEY = "test-key";
     vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {
@@ -1143,6 +2787,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 12,
         modelBudget: { requestTimeoutMs: 10 },
       });
@@ -1166,7 +2811,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
     const priorUrl = process.env.LLM_AGENT_URL;
     const priorKey = process.env.OPENAI_API_KEY;
-    process.env.LLM_AGENT_URL = "https://llm.invalid/v1";
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
     process.env.OPENAI_API_KEY = "test-key";
     vi.stubGlobal("fetch", vi.fn(async () => new Response("x".repeat(256))));
     try {
@@ -1176,6 +2821,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: 12,
         modelBudget: { maxResponseBytes: 64 },
       });
@@ -1199,7 +2845,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
     const priorUrl = process.env.LLM_AGENT_URL;
     const priorKey = process.env.OPENAI_API_KEY;
-    process.env.LLM_AGENT_URL = "https://llm.invalid/v1";
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
     process.env.OPENAI_API_KEY = "test-key";
     let calls = 0;
     vi.stubGlobal(
@@ -1230,6 +2876,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         verifyCommand: "node check.mjs",
         errorLog: "unknown failure",
         useLlm: true,
+        ...TEST_MODEL_SOURCE,
         maxSteps: Number.MAX_SAFE_INTEGER,
       });
       expect(result.ok).toBe(false);
@@ -1246,12 +2893,30 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
 });
 
 describe("Warden planner response schema", () => {
-  it("uses an object root with no top-level oneOf/anyOf/allOf/enum/not and lists every property in required", () => {
+  it("uses a strict-compatible nullable intent without schema combinators anywhere", () => {
     const schema = WARDEN_TOOL_CALL_SCHEMA as Record<string, unknown>;
     expect(schema.type).toBe("object");
-    for (const forbidden of ["oneOf", "anyOf", "allOf", "enum", "not"]) {
+    for (const forbidden of ["oneOf", "anyOf", "allOf", "not"]) {
       expect(schema[forbidden]).toBeUndefined();
     }
+    const visit = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      if (!value || typeof value !== "object") return;
+      const node = value as Record<string, unknown>;
+      for (const forbidden of ["oneOf", "anyOf", "allOf", "not"]) {
+        expect(node[forbidden]).toBeUndefined();
+      }
+      if (node.properties && typeof node.properties === "object") {
+        expect(new Set(node.required as string[])).toEqual(
+          new Set(Object.keys(node.properties as Record<string, unknown>)),
+        );
+      }
+      Object.values(node).forEach(visit);
+    };
+    visit(schema);
     const properties = schema.properties as Record<string, unknown>;
     const required = schema.required as string[];
     expect(new Set(required)).toEqual(new Set(Object.keys(properties)));
@@ -1261,6 +2926,7 @@ describe("Warden planner response schema", () => {
     const argProps = args.properties as Record<string, unknown>;
     const argRequired = args.required as string[];
     expect(new Set(argRequired)).toEqual(new Set(Object.keys(argProps)));
+    expect((properties.intent as Record<string, unknown>).type).toEqual(["object", "null"]);
   });
 
   it("accepts a null-padded finish call and returns only its contract args", () => {
@@ -1328,6 +2994,44 @@ describe("Warden planner response schema", () => {
       thought: "rename without a target",
     });
     expect(call).toBeNull();
+  });
+
+  it("rejects an empty mutation target before intent or repository checks", () => {
+    expect(validatedToolCall({
+      tool: "replace_in_file",
+      args: {
+        path: "",
+        content: null,
+        from: "old",
+        to: "new",
+        query: null,
+        command: null,
+        url: null,
+        message: null,
+        ok: null,
+      },
+      thought: "repair the target",
+      intent: null,
+    })).toBeNull();
+  });
+
+  it("normalizes an empty root listing path to the documented repository root", () => {
+    expect(validatedToolCall({
+      tool: "list_dir",
+      args: {
+        path: "",
+        content: null,
+        from: null,
+        to: null,
+        query: null,
+        command: null,
+        url: null,
+        message: null,
+        ok: null,
+      },
+      thought: "inspect the repository root",
+      intent: null,
+    }))?.toMatchObject({ tool: "list_dir", args: { path: "." } });
   });
 });
 

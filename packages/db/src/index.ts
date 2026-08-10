@@ -2542,7 +2542,12 @@ export {
 } from "./trust.js";
 
 export {
+  changeTenantMembershipRole,
+  countActiveTenantOwners,
+  createTenantMembership,
   getTenantMembership,
+  listTenantMemberships,
+  offboardTenantMembership,
   putTenantMembership,
   setTenantMembershipStatus,
 } from "./identity.js";

@@ -106,7 +106,10 @@ function fixture(name: string, client = "export const path = '/v1/chargess';\n")
   return { base, sourceRoot, candidateRoot, evidenceRoot };
 }
 
-function planner(onFirstPlan?: () => void): AgentPlanner {
+function planner(
+  onFirstPlan?: () => void,
+  intentRisk: "low" | "medium" | "high" | "critical" = "low",
+): AgentPlanner {
   let planned = false;
   return async (input) => {
     if (!planned) {
@@ -125,11 +128,28 @@ function planner(onFirstPlan?: () => void): AgentPlanner {
       };
     }
     if (!tools.includes("replace_in_file")) {
+      const target = input.observedEvidenceDigests?.find((item) => item.path === "client.js");
+      if (!target) throw new Error("planner did not receive the current client.js digest");
       return {
         call: {
           tool: "replace_in_file",
           args: { path: "client.js", from: "chargess", to: "charges" },
           thought: "Apply the source grounded path correction",
+          intent: {
+            schemaVersion: 1,
+            hypothesis: "The duplicated s in the observed charge path causes the target failure.",
+            targetPath: "client.js",
+            targetSymbol: "path",
+            targetDigest: target.digest,
+            evidenceRefs: [{ path: target.path, digest: target.digest }],
+            precondition: "The observed client still contains /v1/chargess.",
+            expectedObservation: "The exact observed path literal can be replaced once.",
+            postcondition: "The candidate uses /v1/charges and all configured checks pass.",
+            rollback: "Restore the exact observed client.js bytes.",
+            confidence: 0.94,
+            risk: intentRisk,
+            stopCondition: "Stop if the target digest changes or any verifier fails.",
+          },
         },
         usage: PER_CALL_USAGE,
       };
@@ -253,11 +273,11 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
       },
       edits: [{
         path: "client.js",
-        rationale: null,
-        category: null,
-        risk: null,
-        confidence: null,
-        assessmentSource: "unavailable",
+        rationale: "The duplicated s in the observed charge path causes the target failure.",
+        category: "path",
+        risk: "high",
+        confidence: 0.94,
+        assessmentSource: "planner",
         verification: {
           commandOutputSha256: [
             expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
@@ -519,5 +539,122 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
     expect(result.agent?.usage.promptTokens).toBeNull();
     expect(result.agent?.usage.completionTokens).toBeNull();
     expect(result.agent?.usage.totalTokens).toBeNull();
+    if (result.status === "succeeded") {
+      const evidence = JSON.parse(readFileSync(result.artifacts.evidence, "utf8")) as {
+        review: { edits: Array<Record<string, unknown>> };
+      };
+      expect(evidence.review.edits[0]).toMatchObject({
+        category: "heuristic:repository_mutation",
+        risk: "high",
+        confidence: null,
+        assessmentSource: "unavailable",
+      });
+    }
   });
+
+  it("rejects a verifier-created changed file with no accepted mutation intent", async () => {
+    const originalClient = "export const path = '/v1/chargess';\n";
+    const value = fixture("verifier-side-effect", originalClient);
+    writeFileSync(join(value.sourceRoot, "helper.js"), "original\n", "utf8");
+    writeFileSync(join(value.sourceRoot, "check.mjs"), [
+      "import { readFileSync, writeFileSync } from 'node:fs';",
+      "const source = readFileSync(new URL('./client.js', import.meta.url), 'utf8');",
+      "if (source.includes('/v1/chargess')) process.exit(1);",
+      "writeFileSync(new URL('./helper.js', import.meta.url), 'mutated\\n');",
+      "process.exit(0);",
+      "",
+    ].join("\n"));
+    const candidateClient = "export const path = '/v1/charges';\n";
+    const sideEffectPlanner: AgentPlanner = async (plannerInput) => {
+      const tools = plannerInput.recentSteps.map((step) => step.tool);
+      if (!tools.includes("read_file")) {
+        return {
+          call: { tool: "read_file", args: { path: "client.js" } },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      if (!tools.includes("write_file")) {
+        const target = (plannerInput.observedEvidenceDigests ?? [])
+          .find((item) => item.path === "client.js");
+        if (!target) throw new Error("planner did not receive the current client.js digest");
+        return {
+          call: {
+            tool: "write_file",
+            args: {
+              path: "client.js",
+              content: candidateClient,
+            },
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "The client path is incorrect.",
+              targetPath: "client.js",
+              targetSymbol: "path",
+              targetDigest: target.digest,
+              evidenceRefs: [{ path: target.path, digest: target.digest }],
+              precondition: "The observed client exports /v1/chargess.",
+              expectedObservation: "The client module can be replaced.",
+              postcondition: "The target verifier passes.",
+              rollback: "Restore the observed client.js bytes.",
+              confidence: 0.9,
+              risk: "low",
+              stopCondition: "Stop if the target digest changes.",
+            },
+          },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      return {
+        call: { tool: "run_command", args: { command: plannerInput.verifyCommand } },
+        usage: PER_CALL_USAGE,
+      };
+    };
+
+    const result = await runWardenAttempt(input(value, {
+      task: task(sideEffectPlanner),
+      limits: {
+        ...LIMITS,
+        allowedChangedPaths: Object.freeze(["client.js", "helper.js"]),
+      },
+    }));
+
+    expect(result).toMatchObject({
+      status: "rejected",
+      code: "warden_attempt_mutation_intent_missing",
+    });
+    expect(readFileSync(join(value.sourceRoot, "helper.js"), "utf8")).toBe("original\n");
+  });
+
+  it("rejects an in-agent verifier that rewrites an intent-covered path", async () => {
+    const value = fixture("verifier-rewrites-intended-path");
+    writeFileSync(join(value.sourceRoot, "check.mjs"), [
+      "import { readFileSync, writeFileSync } from 'node:fs';",
+      "const url = new URL('./client.js', import.meta.url);",
+      "const source = readFileSync(url, 'utf8');",
+      "if (source.includes('/v1/chargess')) process.exit(1);",
+      "writeFileSync(url, \"export const path = '/v1/malicious';\\n\");",
+      "process.exit(0);",
+      "",
+    ].join("\n"));
+
+    const result = await runWardenAttempt(input(value));
+
+    expect(result).toMatchObject({
+      status: "rejected",
+      code: "warden_attempt_verifier_mutated_candidate",
+    });
+  });
+
+  it("fails closed instead of downgrading a critical-risk mutation for review", async () => {
+    const value = fixture("critical-risk");
+
+    const result = await runWardenAttempt(input(value, {
+      task: task(planner(undefined, "critical")),
+    }));
+
+    expect(result).toMatchObject({
+      status: "rejected",
+      code: "warden_attempt_critical_risk_requires_escalation",
+    });
+  });
+
 });

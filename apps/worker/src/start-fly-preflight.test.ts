@@ -9,6 +9,40 @@ import { customerBackupInputFromEnv, validateApiEnv } from "@mendpoint/ops";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const temporaryRoots: string[] = [];
+const CUSTOMER_WARDEN_ENV = {
+  FLY_MACHINE_ID: "preflight-machine",
+  MENDPOINT_ALLOWED_MACHINE_ID: "preflight-machine",
+  MENDPOINT_CUSTOMER_READY: "1",
+  MENDPOINT_CUSTOMER_TOPOLOGY: "single_node",
+  MENDPOINT_CUSTOMER_MAX_MACHINES: "1",
+  MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
+  MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_default",
+  MENDPOINT_WARDEN_MODEL_PROVIDER: "openai-compatible",
+  MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
+  MENDPOINT_WARDEN_MODEL_REGION: "us-central",
+  MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+  MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
+  MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
+  MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS: '{"tenant_default/repo":"confidential"}',
+  MENDPOINT_TRANSFORMER_ENABLED: "0",
+  MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED: "0",
+  MENDPOINT_BACKUP_TRANSPORT: "pre_mounted",
+  TRUST_PROXY_SECRET: "preflight-test-proxy-secret",
+  WEB_URL: "https://console.example",
+  CORS_ORIGINS: "https://console.example",
+  MENDPOINT_WEB_ALLOWED_ORIGINS: "https://console.example",
+  OIDC_ISSUER: "https://identity.example",
+  OIDC_AUDIENCE: "mendpoint-api",
+  OIDC_JWKS_URI: "https://identity.example/.well-known/jwks.json",
+  OIDC_CLIENT_ID: "mendpoint-web",
+  OIDC_CLIENT_SECRET: "preflight-test-oidc-secret",
+  OIDC_REDIRECT_URI: "https://console.example/api/oidc/callback",
+  OIDC_TENANT_CLAIM: "tenant_id",
+  OIDC_REQUIRED_AMR: "mfa",
+  LLM_AGENT_MODEL: "test-model",
+  LLM_AGENT_URL: "https://models.example/v1",
+  OPENAI_API_KEY: "preflight-test-model-key",
+} satisfies NodeJS.ProcessEnv;
 
 afterEach(() => {
   for (const path of temporaryRoots.splice(0)) {
@@ -29,6 +63,7 @@ describe("customer launcher preflight", () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ...CUSTOMER_WARDEN_ENV,
       NODE_ENV: "production",
       MENDPOINT_APP_ROOT: repoRoot,
       MENDPOINT_VOLUME_ROOT: dataRoot,
@@ -89,6 +124,7 @@ describe("customer launcher preflight", () => {
     const dataRoot = join(parent, "must-not-exist");
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ...CUSTOMER_WARDEN_ENV,
       NODE_ENV: "production",
       MENDPOINT_APP_ROOT: repoRoot,
       MENDPOINT_VOLUME_ROOT: dataRoot,
@@ -120,7 +156,7 @@ describe("customer launcher preflight", () => {
     );
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("customer_backup_source_root_required");
+    expect(result.stderr).toContain("Customer Warden profile requires GITHUB_APP_ID");
     expect(existsSync(dataRoot)).toBe(false);
   });
 
@@ -132,6 +168,7 @@ describe("customer launcher preflight", () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ...CUSTOMER_WARDEN_ENV,
       NODE_ENV: "production",
       API_AUTH: "required",
       MENDPOINT_APP_ROOT: repoRoot,

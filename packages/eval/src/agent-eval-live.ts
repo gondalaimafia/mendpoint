@@ -48,7 +48,9 @@ const LIVE_ERROR_LOG = "HTTP 404 for /v1/chargess, expected /v1/charges";
 const VERIFY_COMMAND = "node check.mjs";
 const ALLOWED_FILES = Object.freeze(["client.js"]);
 const LIVE_TENANT_ID = "tenant_warden_live_eval";
-const LIVE_MODEL_MAX_OUTPUT_TOKENS = 1_024;
+// Match the production Warden ceiling so the evidence lane exercises the same
+// strict intent envelope instead of failing on an eval-only truncation limit.
+const LIVE_MODEL_MAX_OUTPUT_TOKENS = 8_192;
 const LIVE_TREE_MAX_ENTRIES = 32;
 const LIVE_TREE_MAX_FILE_BYTES = 1024 * 1024;
 const LIVE_TREE_MAX_TOTAL_BYTES = 2 * 1024 * 1024;

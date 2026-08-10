@@ -17,7 +17,41 @@ export type ToolCall = {
   tool: ToolName;
   args: Record<string, unknown>;
   thought?: string;
+  /** Required, state-bound justification for every planner or model mutation. */
+  intent?: AgentExecutionIntent;
 };
+
+export type AgentExecutionIntentRisk = "low" | "medium" | "high" | "critical";
+
+export type AgentExecutionIntentEvidence = Readonly<{
+  path: string;
+  digest: string;
+}>;
+
+/**
+ * Versioned evidence contract that authorizes one exact repository mutation.
+ * The runtime supplies `assessmentSource`; planners cannot self-attribute it.
+ */
+export type AgentExecutionIntent = Readonly<{
+  schemaVersion: 1;
+  hypothesis: string;
+  targetPath: string;
+  targetSymbol: string | null;
+  targetDigest: string;
+  evidenceRefs: readonly AgentExecutionIntentEvidence[];
+  precondition: string;
+  expectedObservation: string;
+  postcondition: string;
+  rollback: string;
+  confidence: number;
+  risk: AgentExecutionIntentRisk;
+  stopCondition: string;
+  assessmentSource: "model" | "heuristic";
+  /** Runtime-created digest of the exact mutation tool, target, and arguments. */
+  operationDigest?: string;
+  /** Runtime-created digest of the exact bytes expected after the mutation. */
+  expectedResultDigest?: string;
+}>;
 
 export type ToolResult = {
   ok: boolean;
@@ -57,6 +91,8 @@ export type AgentPlannerInput = Readonly<{
     clientFix: string;
   }>[];
   recentSteps: readonly AgentPlannerObservation[];
+  /** Current bounded candidate-state digests available for execution intent citation. */
+  observedEvidenceDigests?: readonly AgentExecutionIntentEvidence[];
 }>;
 
 export type AgentPlannerUsage = Readonly<{

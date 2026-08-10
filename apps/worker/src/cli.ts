@@ -1273,6 +1273,9 @@ export function validateWorkerProductionEnv(
     if (env.MENDPOINT_PILOT_SEED !== "0") {
       errors.push("Customer worker requires MENDPOINT_PILOT_SEED=0");
     }
+    if (env.MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED !== "1") {
+      errors.push("Customer worker requires Warden model source execution");
+    }
     const fenceRoot = env.MENDPOINT_BACKUP_FENCE_ROOT?.trim();
     if (!fenceRoot || !isAbsolute(fenceRoot)) {
       errors.push("Customer worker requires an absolute MENDPOINT_BACKUP_FENCE_ROOT");
@@ -1320,6 +1323,7 @@ export function validateWorkerProductionEnv(
       "GitHub App credentials must include a positive app ID and a readable RSA private key",
     );
   }
+  let customerTenantIds: string[] = [];
   if (profile === "customer" && appCredentials) {
     try {
       if (env.GITHUB_APP_OWNER_TENANT_BINDINGS?.trim()) throw new Error("legacy");
@@ -1329,6 +1333,7 @@ export function validateWorkerProductionEnv(
       if (bindings.size === 0 || new Set(bindings.values()).size !== bindings.size) {
         throw new Error("ambiguous");
       }
+      customerTenantIds = [...new Set(bindings.values())];
     } catch {
       errors.push(
         "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
@@ -1363,6 +1368,14 @@ export function validateWorkerProductionEnv(
         "MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED must explicitly be 0 or 1 when model source is enabled",
       );
     }
+    if (
+      profile === "customer" &&
+      env.MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED?.trim() !== "1"
+    ) {
+      errors.push(
+        "Customer worker requires external model processing to be explicitly allowed",
+      );
+    }
     if (!env.MENDPOINT_WARDEN_MODEL_REGION?.trim()) {
       errors.push("MENDPOINT_WARDEN_MODEL_REGION is required when model source is enabled");
     }
@@ -1392,6 +1405,31 @@ export function validateWorkerProductionEnv(
       errors.push(
         "MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD must be a positive number when model source is enabled",
       );
+    }
+    if (profile === "customer") {
+      const approvedTenants = new Set(
+        (env.MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS ?? "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+      );
+      if (customerTenantIds.some((tenantId) => !approvedTenants.has(tenantId))) {
+        errors.push(
+          "Every customer GitHub account tenant must be approved for Warden model source execution",
+        );
+      }
+      try {
+        const classifications = parseWardenRepositoryClassifications(
+          env.MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS,
+        );
+        if (customerTenantIds.some((tenantId) => !classifications[tenantId])) {
+          throw new Error("missing");
+        }
+      } catch {
+        errors.push(
+          "Customer worker requires a valid stable remote repository classification map for every tenant",
+        );
+      }
     }
   }
   if (env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED === "1") {
@@ -1444,6 +1482,69 @@ export function validateWorkerProductionEnv(
     }
   }
   return [...new Set(errors)];
+}
+
+type WardenRepositoryClassification = "public" | "internal" | "confidential" | "restricted";
+const WARDEN_REPOSITORY_CLASSIFICATIONS = new Set<WardenRepositoryClassification>([
+  "public",
+  "internal",
+  "confidential",
+  "restricted",
+]);
+
+function parseWardenRepositoryClassifications(
+  encoded: string | undefined,
+): Readonly<Record<string, Readonly<Record<string, WardenRepositoryClassification>>>> {
+  if (!encoded?.trim()) throw new Error("warden_repository_classification_required");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(encoded);
+  } catch {
+    throw new Error("warden_repository_classifications_invalid");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("warden_repository_classifications_invalid");
+  }
+  const result: Record<string, Record<string, WardenRepositoryClassification>> = {};
+  const tenantEntries = Object.entries(parsed as Record<string, unknown>);
+  if (tenantEntries.length > 500) throw new Error("warden_repository_classifications_invalid");
+  for (const [tenantId, value] of tenantEntries) {
+    if (!tenantId.trim() || !value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("warden_repository_classifications_invalid");
+    }
+    const repositories = Object.entries(value as Record<string, unknown>);
+    if (!repositories.length || repositories.length > 5_000) {
+      throw new Error("warden_repository_classifications_invalid");
+    }
+    result[tenantId] = {};
+    for (const [remoteId, classification] of repositories) {
+      if (!remoteId.trim() || typeof classification !== "string" ||
+        !WARDEN_REPOSITORY_CLASSIFICATIONS.has(classification as WardenRepositoryClassification)) {
+        throw new Error("warden_repository_classifications_invalid");
+      }
+      result[tenantId][remoteId] = classification as WardenRepositoryClassification;
+    }
+  }
+  return result;
+}
+
+export function resolveWardenRepositoryClassification(
+  tenantId: string,
+  remoteRepositoryId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): WardenRepositoryClassification {
+  const parsed = parseWardenRepositoryClassifications(
+    env.MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS,
+  );
+  const tenantMap = parsed[tenantId];
+  if (!tenantMap) {
+    throw new Error("warden_repository_classification_required");
+  }
+  const classification = tenantMap[remoteRepositoryId];
+  if (!classification) {
+    throw new Error("warden_repository_classification_required");
+  }
+  return classification as WardenRepositoryClassification;
 }
 
 async function demo() {
@@ -2097,6 +2198,14 @@ async function processJobsOnceUnfenced(
           useLlm,
           workerEnv,
         );
+        if (deploymentProfile(workerEnv) === "customer" && !modelSourcePolicy) {
+          throw new Error("customer_warden_model_policy_required");
+        }
+        const repository = getConnectedRepository(db, binding.repositoryId, job.tenant_id);
+        if (!repository) throw new Error("warden_connected_repository_not_found");
+        const repositoryClassification = modelSourcePolicy
+          ? resolveWardenRepositoryClassification(job.tenant_id, repository.remote_id, workerEnv)
+          : "restricted";
         const modelAccounting = modelSourcePolicy
           ? createWardenModelAccountingRuntime({
               db,
@@ -2173,6 +2282,7 @@ async function processJobsOnceUnfenced(
             idempotencyKey: sessionId,
             verifyCommand: verification.targetCommand,
             sourceArtifactId: binding.snapshotId,
+            classification: repositoryClassification,
             budgetUsd: WARDEN_JOB_MODEL_BUDGET_USD,
             ...(modelSourcePolicy
               ? {

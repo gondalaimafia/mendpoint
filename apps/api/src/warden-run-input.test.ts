@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { parseWardenRunInput } from "./warden-run-input.js";
+import {
+  parseWardenRunInput,
+  resolveWardenUseLlm,
+} from "./warden-run-input.js";
 
 function valid(overrides: Record<string, unknown> = {}) {
   return {
@@ -80,5 +83,23 @@ describe("Warden run input", () => {
       ok: false,
       error: "dryRun is not supported for snapshot bound Warden runs",
     });
+  });
+
+  it("requires capable model execution for every customer Warden run", () => {
+    expect(resolveWardenUseLlm({ useLlm: false }, {
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+      LLM_AGENT: "0",
+    })).toBe(true);
+    expect(resolveWardenUseLlm({}, {
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+    })).toBe(true);
+    expect(resolveWardenUseLlm({ useLlm: false }, {
+      MENDPOINT_DEPLOYMENT_PROFILE: "pilot",
+      LLM_AGENT: "1",
+    })).toBe(false);
+    expect(resolveWardenUseLlm({}, {
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      LLM_AGENT: "1",
+    })).toBe(true);
   });
 });

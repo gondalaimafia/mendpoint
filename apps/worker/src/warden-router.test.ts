@@ -252,6 +252,7 @@ describe("warden routing runtime", () => {
     const routingRequest = request({
       modelSource: MODEL_ROUTING_PROFILE,
       externalProcessingAllowed: true,
+      classification: "internal",
     });
     const prepared = runtime.prepare(routingRequest);
 
