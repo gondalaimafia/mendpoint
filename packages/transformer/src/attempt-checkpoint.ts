@@ -1928,6 +1928,9 @@ export async function prepareTransformerAttemptCheckpointAdvance(
   expectedBinding: TransformerAttemptCheckpointBinding,
 ): Promise<TransformerPreparedAttemptCheckpointAdvance> {
   requireDigest(expectedHeadDigest, "transformer_attempt_checkpoint_head_invalid");
+  if (nextState.stage === "terminal") {
+    throw new Error("transformer_attempt_checkpoint_terminal_atomic_required");
+  }
   const currentEnvelope = await journal.read(createTransformerEpisodeId(expectedBinding));
   if (currentEnvelope === null || currentEnvelope.stateDigest !== expectedHeadDigest) {
     if (currentEnvelope !== null && sameState(currentEnvelope, nextState, key)) {
@@ -1956,6 +1959,81 @@ export async function prepareTransformerAttemptCheckpointAdvance(
   const next = seal(nextState, key);
   return Object.freeze({
     kind: "advance",
+    operation: Object.freeze({
+      episodeId: current.episodeId,
+      expectedStateDigest: currentEnvelope.stateDigest,
+      activeLease: Object.freeze({ ...activeLease }),
+      next,
+    }),
+  });
+}
+
+export async function prepareTransformerAttemptCheckpointTerminalAdvance(
+  journal: TransformerAttemptCheckpointJournal,
+  expectedHeadDigest: string,
+  resultArtifact: TransformerEncryptedArtifact,
+  createdAt: string,
+  key: Uint8Array,
+  expectedBinding: TransformerAttemptCheckpointBinding,
+): Promise<TransformerPreparedAttemptCheckpointAdvance> {
+  requireDigest(expectedHeadDigest, "transformer_attempt_checkpoint_head_invalid");
+  const currentEnvelope = await journal.read(createTransformerEpisodeId(expectedBinding));
+  if (currentEnvelope === null || currentEnvelope.stateDigest !== expectedHeadDigest) {
+    throw new Error("transformer_attempt_checkpoint_head_conflict");
+  }
+  const current = openTransformerAttemptCheckpoint(currentEnvelope, key, expectedBinding);
+  const activeLease = await journal.readLease(current.episodeId);
+  if (activeLease === null) throw new Error("transformer_attempt_checkpoint_lease_mismatch");
+  validateLease(activeLease);
+  if (current.stage !== "completion_prepared" ||
+      current.pendingEffect.kind !== "coordinator_complete" ||
+      current.pendingEffect.state !== "dispatched" ||
+      current.attemptNumber !== activeLease.attemptNumber ||
+      current.writerLeaseGeneration !== activeLease.generation ||
+      current.writerLeaseTokenDigest !== activeLease.tokenDigest ||
+      !Number.isFinite(Date.parse(createdAt)) || new Date(Date.parse(createdAt)).toISOString() !== createdAt ||
+      Date.parse(createdAt) < Date.parse(current.createdAt)) {
+    throw new Error("transformer_attempt_checkpoint_terminal_invalid");
+  }
+  await verifyPendingEffectRequestStored(journal, current, key);
+  const completedEffect = {
+    ...current.pendingEffect,
+    state: "completed" as const,
+    resultArtifact,
+  };
+  const completedState = { ...current, pendingEffect: completedEffect };
+  validateState(completedState);
+  const completedResultPayload = await verifyCompletedEffectStored(journal, completedState, key);
+  const expectedCompletionDigest = coordinatorCompletionDigestFromSlot(current.pendingEffect.slot);
+  const result = completedResultPayload === null
+    ? null
+    : parseCoordinatorEffectResult(completedResultPayload);
+  if (expectedCompletionDigest === null || result === null || result.status !== "accepted" ||
+      result.completionDigest !== expectedCompletionDigest) {
+    throw new Error("transformer_attempt_checkpoint_coordinator_result_invalid");
+  }
+  const receipt = {
+    kind: current.pendingEffect.kind,
+    effectId: current.pendingEffect.effectId,
+    slot: current.pendingEffect.slot,
+    idempotencyKey: current.pendingEffect.idempotencyKey,
+    requestDigest: current.pendingEffect.requestDigest,
+    requestArtifact: current.pendingEffect.requestArtifact,
+    resultArtifact,
+  } satisfies TransformerAttemptCheckpointEffectReceipt;
+  const terminalState = {
+    ...current,
+    generation: current.generation + 1,
+    stage: "terminal" as const,
+    completedEffects: [...current.completedEffects, receipt],
+    pendingEffect: { kind: "none" as const },
+    previousCheckpointDigest: currentEnvelope.stateDigest,
+    createdAt,
+  } satisfies TransformerAttemptCheckpointState;
+  validateState(terminalState);
+  const next = seal(terminalState, key);
+  return Object.freeze({
+    kind: "advance" as const,
     operation: Object.freeze({
       episodeId: current.episodeId,
       expectedStateDigest: currentEnvelope.stateDigest,

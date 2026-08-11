@@ -174,6 +174,9 @@ export function createTransformerPilotCheckpointJournal(
         throw new Error("transformer_attempt_checkpoint_envelope_mismatch");
       }
       const opened = openTransformerAttemptCheckpoint(operation.next, encryptionKey, binding);
+      if (opened.stage === "terminal") {
+        throw new Error("transformer_attempt_checkpoint_terminal_atomic_required");
+      }
       if (operation.expectedStateDigest === null &&
           opened.workspaceArtifact.filesDigest !== sourceDigest) {
         throw new Error("transformer_attempt_checkpoint_source_authority_mismatch");

@@ -30,6 +30,7 @@ import {
   openTransformerWorkspaceArtifact,
   openTransformerWorkspaceTransitionRequest,
   prepareTransformerAttemptCheckpointAdvance,
+  prepareTransformerAttemptCheckpointTerminalAdvance,
   verifyTransformerWorkspaceArtifact,
   type TransformerAttemptCheckpointEnvelope,
   type TransformerAttemptCheckpointJournal,
@@ -1065,27 +1066,101 @@ describe("Transformer attempt checkpoint", () => {
         }, key),
         consume: () => ({ stage: "terminal" as const }),
       },
-    )).rejects.toThrow("transformer_attempt_checkpoint_coordinator_result_invalid");
-    const terminal = await consumeEffect(journal, completionPreparedHead, completionPrepared, {
-      kind: "coordinator_complete",
-      slot: createTransformerCoordinatorCompletionSlot(coordinatorCompletionDigest),
-      requestPayload: createTransformerCoordinatorCompletionRequest(
-        current.state.episodeId,
-        repairedSeal,
-        coordinatorCompletionIntent,
-      ),
-      createResult: (effectId) => createTransformerCoordinatorEffectResultArtifact({
-        tenantId: current.state.binding.tenantId,
-        episodeId: current.state.episodeId,
-        effectId,
-      }, {
-        schemaVersion: 1,
-        status: "accepted",
-        completionDigest: coordinatorCompletionDigest,
-      }, key),
-      consume: () => ({ stage: "terminal" as const }),
-    });
-    expect(terminal.state.stage).toBe("terminal");
+    )).rejects.toThrow("transformer_attempt_checkpoint_terminal_atomic_required");
+    const completionRequestPayload = createTransformerCoordinatorCompletionRequest(
+      current.state.episodeId,
+      repairedSeal,
+      coordinatorCompletionIntent,
+    );
+    const completionRequestDigest = digest(completionRequestPayload);
+    const completionSlot = createTransformerCoordinatorCompletionSlot(
+      coordinatorCompletionDigest,
+    );
+    const completionIdentity = createTransformerAttemptEffectIdentity(
+      current.state.episodeId,
+      "coordinator_complete",
+      completionSlot,
+      completionRequestDigest,
+    );
+    const completionRequest = createTransformerEffectRequestArtifact({
+      tenantId: current.state.binding.tenantId,
+      episodeId: current.state.episodeId,
+      effectId: completionIdentity.effectId,
+    }, completionRequestPayload, key);
+    const completionResult = createTransformerCoordinatorEffectResultArtifact({
+      tenantId: current.state.binding.tenantId,
+      episodeId: current.state.episodeId,
+      effectId: completionIdentity.effectId,
+    }, {
+      schemaVersion: 1,
+      status: "accepted",
+      completionDigest: coordinatorCompletionDigest,
+    }, key);
+    journal.putArtifact(completionRequest.artifact.storageKey, completionRequest.bytes);
+    journal.putArtifact(completionResult.artifact.storageKey, completionResult.bytes);
+    const coordinatorPrepared = {
+      ...completionPrepared,
+      generation: completionPrepared.generation + 1,
+      pendingEffect: {
+        kind: "coordinator_complete" as const,
+        state: "prepared" as const,
+        slot: completionSlot,
+        ...completionIdentity,
+        requestDigest: completionRequestDigest,
+        requestArtifact: completionRequest.artifact,
+      },
+      previousCheckpointDigest: completionPreparedHead.stateDigest,
+      createdAt: new Date(Date.parse(completionPrepared.createdAt) + 60_000).toISOString(),
+    } satisfies TransformerAttemptCheckpointState;
+    const coordinatorPreparedHead = await advanceTransformerAttemptCheckpoint(
+      journal,
+      completionPreparedHead.stateDigest,
+      coordinatorPrepared,
+      key,
+      current.state.binding,
+    );
+    const coordinatorDispatched = {
+      ...coordinatorPrepared,
+      generation: coordinatorPrepared.generation + 1,
+      pendingEffect: { ...coordinatorPrepared.pendingEffect, state: "dispatched" as const },
+      previousCheckpointDigest: coordinatorPreparedHead.stateDigest,
+      createdAt: new Date(Date.parse(coordinatorPrepared.createdAt) + 60_000).toISOString(),
+    } satisfies TransformerAttemptCheckpointState;
+    const coordinatorDispatchedHead = await advanceTransformerAttemptCheckpoint(
+      journal,
+      coordinatorPreparedHead.stateDigest,
+      coordinatorDispatched,
+      key,
+      current.state.binding,
+    );
+    const terminalPrepared = await prepareTransformerAttemptCheckpointTerminalAdvance(
+      journal,
+      coordinatorDispatchedHead.stateDigest,
+      completionResult.artifact,
+      new Date(Date.parse(coordinatorDispatched.createdAt) + 60_000).toISOString(),
+      key,
+      current.state.binding,
+    );
+    expect(terminalPrepared.kind).toBe("advance");
+    if (terminalPrepared.kind !== "advance") throw new Error("expected terminal advance");
+    const terminalState = openTransformerAttemptCheckpoint(
+      terminalPrepared.operation.next,
+      key,
+      current.state.binding,
+    );
+    await expect(advanceTransformerAttemptCheckpoint(
+      journal,
+      coordinatorDispatchedHead.stateDigest,
+      terminalState,
+      key,
+      current.state.binding,
+    )).rejects.toThrow("transformer_attempt_checkpoint_terminal_atomic_required");
+    expect(await journal.compareAndSwap(terminalPrepared.operation)).toBe(true);
+    expect(openTransformerAttemptCheckpoint(
+      terminalPrepared.operation.next,
+      key,
+      current.state.binding,
+    ).stage).toBe("terminal");
   });
 
   it("rejects cursor skips, unbound verification plans, hollow seals, and premature terminal state", async () => {
