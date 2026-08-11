@@ -155,6 +155,7 @@ describe("Warden-only customer Fly profile", () => {
     expect(worker.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(worker.MENDPOINT_SANDBOX_FLY_TOKEN).toBeUndefined();
     expect(worker.FLY_API_TOKEN).toBeUndefined();
+    expect(web.MENDPOINT_API_KEY).toBe(env.MENDPOINT_API_KEY);
     expect(web.OIDC_CLIENT_SECRET).toBe(env.OIDC_CLIENT_SECRET);
     expect(web.GITHUB_APP_PRIVATE_KEY).toBeUndefined();
     expect(web.OPENAI_API_KEY).toBeUndefined();
