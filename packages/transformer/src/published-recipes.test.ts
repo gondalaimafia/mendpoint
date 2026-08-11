@@ -4,6 +4,7 @@ import {
   AWS_SDK_JS_V2_TO_V3_ARTIFACT,
   GOOGLEAPIS_V25_TO_V26_ARTIFACT,
   PUBLISHED_PROVIDER_RECIPE_ARTIFACTS,
+  REACT_DOM_17_TO_18_ARTIFACT,
   STRIPE_NODE_V10_TO_V11_ARTIFACT,
   createPublishedProviderRecipeCatalog,
   signPublishedProviderRecipes,
@@ -11,6 +12,7 @@ import {
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
   GOOGLEAPIS_V25_TO_V26_RECIPE,
+  REACT_DOM_17_TO_18_RECIPE,
   STRIPE_NODE_V10_TO_V11_RECIPE,
 } from "./recipe.js";
 import {
@@ -61,6 +63,19 @@ const GOOGLEAPIS_QUERY: ProviderRecipeResolution = {
   runtime: { name: "node", major: 20 },
 };
 
+const REACT_QUERY: ProviderRecipeResolution = {
+  providerSlug: "react-dom",
+  providerCategory: "developer_platform",
+  changeTarget: "sdk",
+  changeKind: "breaking",
+  fromVersion: "17",
+  toVersion: "18",
+  language: "javascript",
+  packageManager: "npm",
+  repositoryKind: "service",
+  runtime: { name: "node", major: 20 },
+};
+
 function catalog() {
   return createPublishedProviderRecipeCatalog({
     signedArtifacts: signPublishedProviderRecipes({ keyId: KEY_ID, privateKey }),
@@ -70,12 +85,13 @@ function catalog() {
 }
 
 describe("published provider recipes", () => {
-  it("publishes the three artifacts each bound to its executable recipe", () => {
-    expect(PUBLISHED_PROVIDER_RECIPE_ARTIFACTS).toHaveLength(3);
+  it("publishes the four artifacts each bound to its executable recipe", () => {
+    expect(PUBLISHED_PROVIDER_RECIPE_ARTIFACTS).toHaveLength(4);
     const bindings = [
       [AWS_SDK_JS_V2_TO_V3_ARTIFACT, AWS_SDK_JS_V2_TO_V3_RECIPE, "aws-sdk-js-v2-to-v3"],
       [STRIPE_NODE_V10_TO_V11_ARTIFACT, STRIPE_NODE_V10_TO_V11_RECIPE, "stripe-node-v10-to-v11"],
       [GOOGLEAPIS_V25_TO_V26_ARTIFACT, GOOGLEAPIS_V25_TO_V26_RECIPE, "googleapis-v25-to-v26"],
+      [REACT_DOM_17_TO_18_ARTIFACT, REACT_DOM_17_TO_18_RECIPE, "react-dom-17-to-18"],
     ] as const;
     for (const [artifact, recipe, id] of bindings) {
       expect(artifact.recipeId).toBe(id);
@@ -88,7 +104,7 @@ describe("published provider recipes", () => {
 
   it("signs and verifies every published artifact", () => {
     const signed = signPublishedProviderRecipes({ keyId: KEY_ID, privateKey });
-    expect(signed).toHaveLength(3);
+    expect(signed).toHaveLength(4);
     for (const artifact of signed) {
       expect(verifyProviderRecipeSignature(artifact, publicKey)).toBe(true);
       expect(artifact.integrity.artifactSha256).toBe(recipeArtifactSha256(artifact.artifact));
@@ -101,6 +117,7 @@ describe("published provider recipes", () => {
       [AWS_QUERY, AWS_SDK_JS_V2_TO_V3_RECIPE, "aws-sdk-js-v2-to-v3"],
       [STRIPE_QUERY, STRIPE_NODE_V10_TO_V11_RECIPE, "stripe-node-v10-to-v11"],
       [GOOGLEAPIS_QUERY, GOOGLEAPIS_V25_TO_V26_RECIPE, "googleapis-v25-to-v26"],
+      [REACT_QUERY, REACT_DOM_17_TO_18_RECIPE, "react-dom-17-to-18"],
     ] as const;
     for (const [query, recipe, id] of cases) {
       const resolved = resolver.resolve(query);
