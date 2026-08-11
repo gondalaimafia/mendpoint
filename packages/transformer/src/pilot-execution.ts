@@ -535,6 +535,27 @@ type MutationInput = Readonly<{
   idempotencyKey: string;
 }>;
 
+export type TransformerAttemptCompletionInput = MutationInput & Readonly<{
+  unitId: string;
+  leaseGeneration: number;
+  leaseToken: string;
+  sourceRevision: string;
+  sourceDigest: string;
+  candidateRevision: string;
+  candidateDigest: string;
+  verificationPassed: boolean;
+  actualCostUsd: number;
+  accounting: TransformerAdaptiveAttemptAccounting;
+  gateConfig?: string;
+}>;
+
+export type TransformerAttemptCheckpointCompletionInput =
+  TransformerAttemptCompletionInput & Readonly<{
+    attemptNumber: number;
+    expectedStateDigest: string;
+    nextCheckpointHead: TransformerAttemptCheckpointHead;
+  }>;
+
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);
   if (value && typeof value === "object") {
@@ -1156,6 +1177,52 @@ function requireAttemptFailureCode(value: string): TransformerAttemptFailureCode
 
 function replaceUnit(state: StoredCampaign, next: TransformerPilotUnit): void {
   state.units = state.units.map((unit) => unit.id === next.id ? next : unit);
+}
+
+function requireAttemptCompletion(input: TransformerAttemptCompletionInput): void {
+  requireRevision(input.sourceRevision, "transformer_pilot_source_revision_invalid");
+  requireDigest(input.sourceDigest, "transformer_pilot_source_digest_invalid");
+  requireRevision(input.candidateRevision, "transformer_pilot_candidate_revision_invalid");
+  requireDigest(input.candidateDigest, "transformer_pilot_candidate_digest_invalid");
+  requireNonnegative(input.actualCostUsd, "transformer_pilot_cost_invalid");
+}
+
+function applyAttemptCompletion(
+  state: StoredCampaign,
+  input: TransformerAttemptCompletionInput,
+  checkpointHead?: TransformerAttemptCheckpointHead,
+): void {
+  assertAttemptFence(state, input);
+  const unit = unitById(state, input.unitId);
+  if (unit.attemptCheckpointHead && !checkpointHead) {
+    throw new Error("transformer_pilot_terminal_checkpoint_required");
+  }
+  if (unit.snapshot.revision !== input.sourceRevision || unit.snapshot.digest !== input.sourceDigest) {
+    throw new Error("transformer_pilot_source_drift");
+  }
+  if (unit.candidateRevision !== input.candidateRevision || unit.candidateDigest !== input.candidateDigest) {
+    throw new Error("transformer_pilot_candidate_drift");
+  }
+  if (!input.verificationPassed) throw new Error("transformer_pilot_verification_failed");
+  const accounted = applyAdaptiveAccounting(state, unit, input.accounting);
+  const executionEvidenceRefs = requireEvidence(input.evidenceRefs);
+  const routingSettlement = routingTerminal(
+    accounted,
+    input.accounting,
+    input.observedAt,
+    executionEvidenceRefs,
+    "succeeded",
+  );
+  replaceUnit(state, {
+    ...accounted,
+    state: "executed",
+    verificationPassed: true,
+    actualCostUsd: input.actualCostUsd,
+    executedAt: input.observedAt,
+    executionEvidenceRefs,
+    ...(checkpointHead ? { attemptCheckpointHead: checkpointHead } : {}),
+    ...(routingSettlement ? { routingSettlement } : {}),
+  });
 }
 
 function openedException(
@@ -2339,24 +2406,8 @@ export class TransformerPilotExecutionStore {
     );
   }
 
-  completeAttempt(input: MutationInput & {
-    unitId: string;
-    leaseGeneration: number;
-    leaseToken: string;
-    sourceRevision: string;
-    sourceDigest: string;
-    candidateRevision: string;
-    candidateDigest: string;
-    verificationPassed: boolean;
-    actualCostUsd: number;
-    accounting: TransformerAdaptiveAttemptAccounting;
-    gateConfig?: string;
-  }): TransformerPilotCampaign {
-    requireRevision(input.sourceRevision, "transformer_pilot_source_revision_invalid");
-    requireDigest(input.sourceDigest, "transformer_pilot_source_digest_invalid");
-    requireRevision(input.candidateRevision, "transformer_pilot_candidate_revision_invalid");
-    requireDigest(input.candidateDigest, "transformer_pilot_candidate_digest_invalid");
-    requireNonnegative(input.actualCostUsd, "transformer_pilot_cost_invalid");
+  completeAttempt(input: TransformerAttemptCompletionInput): TransformerPilotCampaign {
+    requireAttemptCompletion(input);
     const campaign = this.mustGet(input.tenantId, input.campaignId);
     const gate = authorizeTransformerWorkerAction(
       { tenantId: input.tenantId, environment: campaign.environment },
@@ -2368,34 +2419,62 @@ export class TransformerPilotExecutionStore {
     return this.mutate(input, "attempt.completed", {
       ...input,
       leaseToken: leaseTokenDigest(input.leaseToken),
+    }, (state) => applyAttemptCompletion(state, input));
+  }
+
+  completeAttemptWithCheckpointHead(
+    input: TransformerAttemptCheckpointCompletionInput,
+  ): TransformerPilotCampaign {
+    requireAttemptCompletion(input);
+    requireDigest(input.expectedStateDigest, "transformer_pilot_checkpoint_head_invalid");
+    const nextCheckpointHead = requireCheckpointHead(input.nextCheckpointHead);
+    const campaign = this.mustGet(input.tenantId, input.campaignId);
+    const gate = authorizeTransformerWorkerAction(
+      { tenantId: input.tenantId, environment: campaign.environment },
+      input.gateConfig,
+    );
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
+    return this.mutate(input, "attempt.completed_with_checkpoint", {
+      ...input,
+      leaseToken: leaseTokenDigest(input.leaseToken),
+      nextCheckpointHead,
     }, (state) => {
-      const unit = unitById(state, input.unitId);
       assertAttemptFence(state, input);
-      if (unit.snapshot.revision !== input.sourceRevision || unit.snapshot.digest !== input.sourceDigest) {
-        throw new Error("transformer_pilot_source_drift");
+      const unit = unitById(state, input.unitId);
+      if (unit.attemptNumber !== input.attemptNumber) {
+        throw new Error("transformer_pilot_checkpoint_attempt_mismatch");
       }
-      if (unit.candidateRevision !== input.candidateRevision || unit.candidateDigest !== input.candidateDigest) {
-        throw new Error("transformer_pilot_candidate_drift");
+      if (!unit.attemptCheckpointHead) {
+        throw new Error("transformer_pilot_checkpoint_head_missing");
       }
-      if (!input.verificationPassed) throw new Error("transformer_pilot_verification_failed");
-      const accounted = applyAdaptiveAccounting(state, unit, input.accounting);
-      const executionEvidenceRefs = requireEvidence(input.evidenceRefs);
-      const routingSettlement = routingTerminal(
-        accounted,
-        input.accounting,
-        input.observedAt,
-        executionEvidenceRefs,
-        "succeeded",
+      const current = requireCheckpointHeadForScope(
+        unit.attemptCheckpointHead,
+        input.tenantId,
+        input.campaignId,
+        input.unitId,
+        unit.attemptCheckpointHead.episodeId,
       );
-      replaceUnit(state, {
-        ...accounted,
-        state: "executed",
-        verificationPassed: true,
-        actualCostUsd: input.actualCostUsd,
-        executedAt: input.observedAt,
-        executionEvidenceRefs,
-        ...(routingSettlement ? { routingSettlement } : {}),
-      });
+      if (current.stateDigest !== input.expectedStateDigest) {
+        throw new Error("transformer_pilot_checkpoint_head_conflict");
+      }
+      const terminal = requireCheckpointHeadForScope(
+        nextCheckpointHead,
+        input.tenantId,
+        input.campaignId,
+        input.unitId,
+        current.episodeId,
+      );
+      if (
+        terminal.generation !== current.generation + 1 ||
+        terminal.attemptNumber !== unit.attemptNumber ||
+        terminal.writerLeaseGeneration !== unit.leaseGeneration ||
+        terminal.writerLeaseTokenDigest !== unit.leaseTokenDigest
+      ) {
+        throw new Error("transformer_pilot_checkpoint_head_invalid");
+      }
+      applyAttemptCompletion(state, input, terminal);
     });
   }
 
