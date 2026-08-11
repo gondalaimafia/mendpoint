@@ -5361,10 +5361,10 @@ function recordBreakerScope(
     [tenantId, scope, executorId, providerId],
   );
   const consecutive = (existing?.consecutive_failures ?? 0) + 1;
-  const openedAt =
-    consecutive >= config.failureThreshold
-      ? existing?.opened_at ?? observedAt
-      : null;
+  // Advance the open window on every failure at or past threshold. Pinning it to
+  // the first trip would leave the breaker reporting available after a failed
+  // half-open probe, so a sustained outage would never re-open it.
+  const openedAt = consecutive >= config.failureThreshold ? observedAt : null;
   run(
     db,
     `INSERT INTO routing_executor_health

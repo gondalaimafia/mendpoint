@@ -455,6 +455,9 @@ async function runLiveTrial(
       verifyCommand: VERIFY_COMMAND,
       maxSteps,
       useLlm: true,
+      // A heuristic fallback must never certify a live repair: require the model
+      // so an unavailable planner fails the run instead of silently proceeding.
+      modelRequired: true,
       allowNetwork: false,
       allowModelSource: true,
       modelSourcePolicy,
@@ -470,9 +473,15 @@ async function runLiveTrial(
     const result = await runWarden(task);
     const latencyMs = Math.max(0, now() - started);
     const model = result.metrics.model;
+    // Grade the planner source of every planner-decided step, excluding only the
+    // framework "system" verify steps. A step the model did not plan (a heuristic
+    // fallback, including a heuristic repair) must stay visible to the grader;
+    // pre-filtering to model steps hid exactly that and let a non-model step
+    // certify trivially.
     const plannerSources = result.steps
-      .filter((step) => step.plannerSource === "model")
-      .map((step) => step.plannerSource ?? "");
+      .map((step) => step.plannerSource)
+      .filter((source): source is "model" | "heuristic" =>
+        source === "model" || source === "heuristic");
     const graded = gradeLiveModelProvenance({
       approved,
       provenance: model.provenance,

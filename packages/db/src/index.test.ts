@@ -2523,4 +2523,64 @@ describe("db", () => {
       ),
     ).toBe(true);
   });
+
+  it("re-opens the breaker after a failed half-open probe past the window", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-route-breaker-reopen-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    const t0 = new Date("2026-08-01T12:00:00.000Z");
+    const config = DEFAULT_ROUTING_BREAKER;
+    const feed = (success: boolean, at: Date) =>
+      recordRoutingExecutorOutcome(db, {
+        tenantId: "tenant_default",
+        executorId: "warden-attempt",
+        providerId: "mendpoint-internal",
+        success,
+        observedAt: at.toISOString(),
+        config,
+      });
+
+    // Three failures at t0 open the breaker.
+    feed(false, t0);
+    feed(false, t0);
+    feed(false, t0);
+    expect(
+      loadRoutingAvailability(db, "tenant_default", t0, config).allows(
+        "warden-attempt",
+        "mendpoint-internal",
+      ),
+    ).toBe(false);
+
+    // After the window elapses the breaker half-opens and allows a probe.
+    const halfOpen = new Date(t0.getTime() + config.openDurationMs + 1);
+    expect(
+      loadRoutingAvailability(db, "tenant_default", halfOpen, config).allows(
+        "warden-attempt",
+        "mendpoint-internal",
+      ),
+    ).toBe(true);
+
+    // The half-open probe fails past the original window. The breaker must
+    // re-open by advancing its window, not stay available for the outage.
+    const probeFailure = new Date(t0.getTime() + config.openDurationMs + 5);
+    feed(false, probeFailure);
+    expect(
+      loadRoutingAvailability(db, "tenant_default", probeFailure, config).allows(
+        "warden-attempt",
+        "mendpoint-internal",
+      ),
+    ).toBe(false);
+    // Each outcome records an executor-scope and a provider-scope row; both must
+    // re-open with the advanced window.
+    const snapshot = loadRoutingBreakerSnapshot(db, "tenant_default", probeFailure, config);
+    expect(snapshot).toHaveLength(2);
+    expect(snapshot.every((row) => row.open)).toBe(true);
+    expect(snapshot.every((row) => row.openedAt === probeFailure.toISOString())).toBe(true);
+
+    // A success after the window clears the row entirely.
+    const recovery = new Date(probeFailure.getTime() + 1);
+    feed(true, recovery);
+    expect(loadRoutingBreakerSnapshot(db, "tenant_default", recovery, config)).toHaveLength(0);
+  });
 });
