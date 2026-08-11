@@ -90,6 +90,7 @@ const CUSTOMER_ROLE_SECRETS = Object.freeze({
     "OPENAI_API_KEY",
   ]),
   web: Object.freeze([
+    "MENDPOINT_API_KEY",
     "MENDPOINT_WEB_ACCESS_TOKEN",
     "OIDC_CLIENT_SECRET",
   ]),

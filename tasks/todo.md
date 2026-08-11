@@ -1316,3 +1316,15 @@ Review: the immediate repository-controlled release blockers are closed and the 
 ### Bounded Warden pilot review
 
 The first protected run exposed six Warden false rejections hidden behind the combined report. Repository-owned deterministic repairs were being classified like untrusted model edits whenever their executable shape changed. Runtime-only provenance now authorizes only six exact, single-site built-in transformations; model-proposed edits cannot forge that provenance, and broad multi-site replacements still stop before mutation. Full workspace tests pass. The three-repetition held-out evaluation passes Warden 16 of 16, Transformer 14 of 14, all 90 trials, pass at one and pass at three equal to 1.000, with zero critical or deterministic failures. Production remains unchanged until the updated protected run is green.
+
+### Customer profile cutover incident: 2026-08-10
+
+- [x] Roll back the restart-looping customer release to the last verified healthy image and demo manifest.
+- [x] Confirm `/livez` and `/healthz` return 200 after rollback.
+- [x] Identify the exact startup failure from Fly logs.
+- [x] Add a failing regression proving the web server child receives its required server-side API key while browser-inappropriate secrets remain absent.
+- [x] Fix the role-scoped child environment and run focused tests, full workspace tests, typecheck, production build, and GA checks.
+- [ ] Ship the fix through protected CI.
+- [ ] Retry the customer profile only from exact merged main, then run the private draft pull request canary and restore drill.
+
+Incident evidence: customer release v56 restarted because the web production validator reported `MENDPOINT_API_KEY is required`. The key existed at the Fly application boundary but `customerWardenChildEnvironment("web", env)` removed it before launching the Next.js server. Release v57 restored the exact main image from v54 with the demo manifest; public liveness and health returned 200 and recovery queues remained clear. The new regression failed before the fix and passed afterward. Focused profile, web production, and launcher suites pass 9 of 9; the full workspace test command, every workspace typecheck, the 22-page production build, and GA checks pass.
