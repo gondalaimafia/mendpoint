@@ -256,6 +256,7 @@ import {
 import { closeDefaultChangeSourceStore } from "./change-sources.js";
 import { billingPlanChangeDecision } from "./billing-plan-control.js";
 import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
+import { createWardenPilotIntakeRoutes } from "./warden-pilot-intake.js";
 import { initializeApiRuntime } from "./api-runtime.js";
 import {
   internalErrorResponse,
@@ -681,6 +682,7 @@ app.route("/design-partner-applications", designPartnerRoutes);
 app.route("/pilot-success-contracts", pilotSuccessRoutes);
 app.route("/prs", migrationPrRoutes);
 app.route("/tenants/memberships", tenantMembershipRoutes);
+app.route("/warden/pilot", createWardenPilotIntakeRoutes({ db }));
 
 // Persist alerts under data/
 try {
