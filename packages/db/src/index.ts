@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { newId, nowIso } from "@mendpoint/shared";
 import { computeProductMetrics } from "./metrics.js";
 import { settleExpiredWardenModelReservations } from "./warden-model-accounting.js";
+import { assertTenantScope } from "./tenant-scope.js";
 import type {
   ApiChange,
   ApiKeyRow,
@@ -28,6 +29,7 @@ import type {
 } from "./schema.js";
 
 export type * from "./schema.js";
+export { assertTenantScope } from "./tenant-scope.js";
 export * from "./warden-model-accounting.js";
 export * from "./external-baseline.js";
 export * from "./outcome-metrics.js";
@@ -2334,6 +2336,19 @@ export function listChanges(db: AppDb, limit?: number, offset = 0): ApiChange[] 
   );
 }
 
+/**
+ * Shared-catalog read (intentionally tenant-agnostic).
+ *
+ * `api_changes` is a shared provider / API-change catalog: rows describe public provider
+ * OpenAPI specs and the diff between two published versions. It has no tenant_id column by
+ * design, so this accessor takes no tenantId and the same row is visible to every tenant.
+ *
+ * CONTRACT: `api_changes.diff_json` must only ever hold public provider spec data. It must
+ * never carry tenant-private content (consumer code, findings, PR bodies, secrets). Anything
+ * tenant-scoped (impact findings, migration PRs) is stored in tenant-scoped tables and read
+ * through the tenant-filtered accessors (listFindingsForChange / listPrsForChange), never
+ * embedded here. See the cross-tenant denial matrix for the test that pins this intent.
+ */
 export function getChange(db: AppDb, id: string): ApiChange | undefined {
   return get(db, `SELECT * FROM api_changes WHERE id = ?`, [id]);
 }
@@ -2344,6 +2359,7 @@ export function listConsumers(
   limit?: number,
   offset = 0,
 ): Consumer[] {
+  assertTenantScope(tenantId);
   return all(
     db,
     `SELECT * FROM consumers
@@ -2359,6 +2375,7 @@ export function listPrs(
   limit?: number,
   offset = 0,
 ): MigrationPrRow[] {
+  assertTenantScope(tenantId);
   return all(
     db,
     `SELECT pr.*
@@ -2375,6 +2392,7 @@ export function listPrsForChange(
   changeId: string,
   tenantId?: string,
 ): MigrationPrRow[] {
+  assertTenantScope(tenantId);
   return all(
     db,
     `SELECT pr.* FROM migration_prs pr
@@ -2390,6 +2408,7 @@ export function getPr(
   id: string,
   tenantId?: string,
 ): MigrationPrRow | undefined {
+  assertTenantScope(tenantId);
   return get(
     db,
     `SELECT pr.*
@@ -2406,6 +2425,7 @@ export function listAudit(
   limit?: number,
   offset = 0,
 ): AuditEvent[] {
+  assertTenantScope(tenantId);
   return all(
     db,
     `SELECT * FROM audit_events
@@ -2443,6 +2463,7 @@ export function listFindingsForChange(
   changeId: string,
   tenantId?: string,
 ): ImpactFindingRow[] {
+  assertTenantScope(tenantId);
   return all(
     db,
     `SELECT f.* FROM impact_findings f
@@ -2463,6 +2484,7 @@ export function listMonitoredForProvider(
   providerId: string,
   tenantId?: string,
 ): MonitoredApi[] {
+  assertTenantScope(tenantId);
   return all(
     db,
     `SELECT m.* FROM monitored_apis m
@@ -2494,6 +2516,7 @@ export function getConsumerRepo(
   consumerId: string,
   tenantId?: string,
 ): ConsumerRepo | undefined {
+  assertTenantScope(tenantId);
   return get(
     db,
     `SELECT r.* FROM consumer_repos r
@@ -2508,6 +2531,7 @@ export function getConsumer(
   id: string,
   tenantId?: string,
 ): Consumer | undefined {
+  assertTenantScope(tenantId);
   return get(
     db,
     `SELECT * FROM consumers
@@ -2521,6 +2545,7 @@ export function listPoliciesForConsumer(
   consumerId: string,
   tenantId?: string,
 ) {
+  assertTenantScope(tenantId);
   return all<{ id: string; consumer_id: string; key: string; value_json: string }>(
     db,
     `SELECT p.* FROM policies p
@@ -2970,6 +2995,7 @@ export function listApiKeys(
   db: AppDb,
   tenantId?: string,
 ): Array<Omit<ApiKeyRow, "key_hash">> {
+  assertTenantScope(tenantId);
   return all<ApiKeyRow>(
     db,
     `SELECT id, name, key_hash, key_prefix, tenant_id, scopes_json, created_at, last_used_at, revoked_at
@@ -2986,6 +3012,7 @@ export function revokeApiKey(
   at: string,
   tenantId?: string,
 ): boolean {
+  assertTenantScope(tenantId);
   const result = db.raw
     .prepare(
       `UPDATE api_keys SET revoked_at = ?
@@ -3084,6 +3111,7 @@ export function listFeedPolls(
   limit = 50,
   tenantId?: string,
 ): FeedPollRow[] {
+  assertTenantScope(tenantId);
   return all(
     db,
     `SELECT poll.*,
@@ -3639,6 +3667,7 @@ export function recoverExpiredJobs(
   now = new Date().toISOString(),
   tenantId?: string,
 ): number {
+  assertTenantScope(tenantId);
   settleExpiredWardenModelReservations(db, now, tenantId);
   const adaptiveSideEffectMayExist = `(
     jobs.type = 'transformer.adaptive.deliver' AND EXISTS (
@@ -3702,6 +3731,7 @@ export function claimNextJob(
     maxRunningPerTenant?: number;
   },
 ): JobRow | undefined {
+  assertTenantScope(opts?.tenantId);
   const typeFilter = types?.length
     ? `AND type IN (${types.map(() => "?").join(",")})`
     : "";
@@ -3892,6 +3922,7 @@ export function retryJob(
     resetAttempts?: boolean;
   } = {},
 ): boolean {
+  assertTenantScope(opts.tenantId);
   const now = opts.now ?? new Date().toISOString();
   const retried = db.raw
     .prepare(
@@ -3923,6 +3954,7 @@ export function cancelJob(
   cancelledAt: string,
   opts: { tenantId?: string; reason?: string } = {},
 ): boolean {
+  assertTenantScope(opts.tenantId);
   const cancelled = db.raw
     .prepare(
       `UPDATE jobs
@@ -3952,6 +3984,7 @@ export function cancelJob(
 }
 
 export function listJobs(db: AppDb, limit = 50, tenantId?: string): JobRow[] {
+  assertTenantScope(tenantId);
   return all(
     db,
     `SELECT * FROM jobs
@@ -3962,6 +3995,7 @@ export function listJobs(db: AppDb, limit = 50, tenantId?: string): JobRow[] {
 }
 
 export function getJob(db: AppDb, id: string, tenantId?: string): JobRow | undefined {
+  assertTenantScope(tenantId);
   return get<JobRow>(
     db,
     `SELECT * FROM jobs WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`,
@@ -3974,6 +4008,7 @@ export function getJobRecoverySummary(
   tenantId?: string,
   now = new Date().toISOString(),
 ): JobRecoverySummary {
+  assertTenantScope(tenantId);
   const row = get<{
     pending: number;
     due: number;
@@ -4053,6 +4088,7 @@ export function jobToApi(job: JobRow) {
 }
 
 export function exportAuditJson(db: AppDb, limit = 5000, tenantId?: string) {
+  assertTenantScope(tenantId);
   const rows = all(
     db,
     `SELECT * FROM audit_events
@@ -4068,6 +4104,7 @@ export function exportAuditJson(db: AppDb, limit = 5000, tenantId?: string) {
 }
 
 export function exportAuditCsv(db: AppDb, limit = 5000, tenantId?: string): string {
+  assertTenantScope(tenantId);
   const rows = all(
     db,
     `SELECT id, tenant_id, actor, principal_id, api_key_id, request_id,
@@ -4180,6 +4217,7 @@ export function listRepairSessions(
   limit = 30,
   tenantId?: string,
 ): RepairSessionRow[] {
+  assertTenantScope(tenantId);
   return all(
     db,
     `SELECT * FROM repair_sessions
@@ -4194,6 +4232,7 @@ export function getRepairSession(
   id: string,
   tenantId?: string,
 ): RepairSessionRow | undefined {
+  assertTenantScope(tenantId);
   return get(
     db,
     `SELECT * FROM repair_sessions
@@ -4323,6 +4362,7 @@ export function listAgentRuns(
   limit = 30,
   tenantId?: string,
 ): AgentRunRow[] {
+  assertTenantScope(tenantId);
   return all(
     db,
     `SELECT * FROM agent_runs
@@ -4337,6 +4377,7 @@ export function getAgentRun(
   id: string,
   tenantId?: string,
 ): AgentRunRow | undefined {
+  assertTenantScope(tenantId);
   return get(
     db,
     `SELECT * FROM agent_runs
@@ -4495,6 +4536,7 @@ export {
 } from "./registry.js";
 
 export function computeDesignPartnerMetrics(db: AppDb, tenantId?: string) {
+  assertTenantScope(tenantId);
   const base = computeProductMetrics(db, tenantId);
   const suppressed = (
     db.raw
@@ -4759,6 +4801,7 @@ export function listGitHubInstallations(
   db: AppDb,
   tenantId?: string,
 ): GitHubInstallationRow[] {
+  assertTenantScope(tenantId);
   return all(
     db,
     `SELECT * FROM github_installations

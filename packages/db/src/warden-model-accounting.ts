@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AppDb } from "./index.js";
+import { assertTenantScope } from "./tenant-scope.js";
 
 export type WardenModelReservationStatus =
   | "active"
@@ -379,6 +380,7 @@ export function settleExpiredWardenModelReservations(
   tenantId?: string,
 ): number {
   requireIso(observedAt, "warden_model_observed_at_invalid");
+  assertTenantScope(tenantId);
   if (tenantId) requireId(tenantId, "warden_model_tenant_invalid");
   const settlementDigest = digest({ status: "unknown", errorCode: "warden_model_lease_expired" });
   const updated = db.raw.prepare(

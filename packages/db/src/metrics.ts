@@ -2,6 +2,7 @@
  * Phase B instrumentation — product metrics from migration_prs + audit_events.
  */
 import type { AppDb } from "./index.js";
+import { assertTenantScope } from "./tenant-scope.js";
 
 export type ProductMetrics = {
   prsOpened: number;
@@ -37,6 +38,7 @@ function median(nums: number[]): number | null {
 }
 
 export function computeProductMetrics(db: AppDb, tenantId?: string): ProductMetrics {
+  assertTenantScope(tenantId);
   const prs = db.raw
     .prepare(
       `SELECT pr.id, pr.title, pr.status, pr.risk, pr.github_pr_url,
