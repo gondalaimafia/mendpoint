@@ -34,6 +34,10 @@ import {
   getScmConnection,
   insertAgentRun,
   recordAgentRunMeter,
+  releaseRunUsage,
+  settleRunUsage,
+  RUN_USAGE_RESERVATION_KEY,
+  RUN_USAGE_RESERVED_MCU_KEY,
   insertRepairSession,
   expireAdaptiveCandidate,
   listAdaptiveCandidateTenantIds,
@@ -1314,6 +1318,73 @@ function persistFailedAgentJob(
     db.raw.exec("ROLLBACK");
     if (routingFinalizationStarted) throw new WardenAtomicFinalizationError(error);
     throw error;
+  }
+}
+
+/**
+ * Wave C: settle a completed pipeline.fanout run's usage hold. Only runs admitted
+ * with quota enforcement on carry a reservation id, so this is a no-op for the legacy
+ * path. Fanout has no per-run MCU measurement, so we settle to the reserved estimate
+ * (documented in docs/USAGE_ENFORCEMENT.md) rather than fabricating a zero. Best-effort:
+ * a settlement failure is logged for reconciliation and never breaks job processing.
+ */
+function settleFanoutRunUsage(
+  db: AppDb,
+  tenantId: string,
+  payload: Record<string, unknown>,
+): void {
+  const reservationId = payload[RUN_USAGE_RESERVATION_KEY];
+  const reserved = payload[RUN_USAGE_RESERVED_MCU_KEY];
+  if (typeof reservationId !== "string" || !reservationId) return;
+  if (typeof reserved !== "number" || !Number.isSafeInteger(reserved) || reserved <= 0) return;
+  try {
+    settleRunUsage(db, {
+      tenantId,
+      reservationId,
+      actualMcuMicros: reserved,
+      reason: "run completed: pipeline.fanout",
+      createdAt: nowIso(),
+    });
+  } catch (error) {
+    console.error(
+      `  usage settle skipped reservation=${reservationId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
+ * Wave C: release a terminally failed pipeline.fanout run's usage hold so an infra
+ * failure burns no quota. Retryable failures keep the hold (the retried run settles
+ * it). Best-effort, no-op for the legacy path.
+ */
+function releaseFanoutRunUsage(
+  db: AppDb,
+  tenantId: string,
+  payloadJson: string,
+  jobId: string,
+): void {
+  let reservationId: unknown;
+  try {
+    reservationId = (JSON.parse(payloadJson) as Record<string, unknown>)[RUN_USAGE_RESERVATION_KEY];
+  } catch {
+    return;
+  }
+  if (typeof reservationId !== "string" || !reservationId) return;
+  try {
+    releaseRunUsage(db, {
+      tenantId,
+      reservationId,
+      reason: `run failed: job ${jobId}`,
+      createdAt: nowIso(),
+    });
+  } catch (error) {
+    console.error(
+      `  usage release skipped reservation=${reservationId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 }
 
@@ -2766,6 +2837,7 @@ async function processJobsOnceUnfenced(
           if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
           throw error;
         }
+        settleFanoutRunUsage(db, job.tenant_id, payload);
         result.succeeded++;
         console.log(`  done change=${report.changeId}`);
         continue;
@@ -2785,6 +2857,7 @@ async function processJobsOnceUnfenced(
       ) {
         throw new Error("lease_lost_before_pipeline_completion");
       }
+      settleFanoutRunUsage(db, job.tenant_id, payload);
       result.succeeded++;
       console.log(`  done change=${report.changeId}`);
     } catch (error) {
@@ -2828,6 +2901,15 @@ async function processJobsOnceUnfenced(
           });
       result.failed++;
       if (failure.status === "pending") result.retried++;
+      // Wave C: a terminally failed fanout run releases its usage hold (infra failure
+      // burns no quota). Retryable failures keep the hold for the retried run.
+      if (
+        job.type === "pipeline.fanout" &&
+        failure.applied &&
+        failure.status === "dead_letter"
+      ) {
+        releaseFanoutRunUsage(db, job.tenant_id, job.payload_json, job.id);
+      }
       console.error(`  failed: ${classified.message}`);
       if (!failure.applied) console.error(`  stale lease ignored job=${job.id}`);
     } finally {
