@@ -193,4 +193,23 @@ describe("Warden-only customer Fly profile", () => {
       "Customer Warden profile requires MENDPOINT_BACKUP_TRANSPORT=rclone_s3 or pre_mounted",
     );
   });
+
+  it("asserts a local model endpoint at boot under local_only egress", () => {
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "https://api.meta.ai/v1",
+    }))).toContain(
+      "Customer Warden profile requires a private, loopback, link-local, or allowlisted model endpoint when MENDPOINT_MODEL_EGRESS=local_only",
+    );
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "http://127.0.0.1:11434/v1",
+    }))).toEqual([]);
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_MODEL_EGRESS: "on",
+      LLM_AGENT_URL: "http://127.0.0.1:11434/v1",
+    }))).toContain(
+      "Customer Warden profile requires MENDPOINT_MODEL_EGRESS=local_only or external_allowed",
+    );
+  });
 });

@@ -405,4 +405,36 @@ describe("ops GA", () => {
     expect(["ok", "degraded", "fail"]).toContain(r.status);
     expect(r.release.version).toBe("1.0.0");
   });
+
+  it("fails boot when local_only egress is configured with an external model endpoint", () => {
+    const r = validateApiEnv({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "https://api.meta.ai/v1",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors).toContain(
+      "MENDPOINT_MODEL_EGRESS=local_only forbids an external model endpoint; LLM_AGENT_URL must resolve to a private, loopback, link-local, or allowlisted host",
+    );
+  });
+
+  it("accepts a local model endpoint under local_only egress", () => {
+    const r = validateApiEnv({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "http://127.0.0.1:11434/v1",
+    });
+    expect(r.errors.some((e) => e.includes("MENDPOINT_MODEL_EGRESS"))).toBe(false);
+    expect(r.errors.some((e) => e.includes("LLM_AGENT_URL"))).toBe(false);
+  });
+
+  it("rejects an invalid egress flag value", () => {
+    const r = validateApiEnv({ MENDPOINT_MODEL_EGRESS: "localonly" });
+    expect(r.errors).toContain(
+      "MENDPOINT_MODEL_EGRESS must be exactly local_only or external_allowed",
+    );
+  });
+
+  it("leaves external_allowed (default) egress unchanged for a public endpoint", () => {
+    const r = validateApiEnv({ LLM_AGENT_URL: "https://api.meta.ai/v1" });
+    expect(r.errors.some((e) => e.includes("MENDPOINT_MODEL_EGRESS"))).toBe(false);
+  });
 });

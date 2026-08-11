@@ -208,6 +208,45 @@ describe("readiness storage boundary", () => {
     expect(JSON.stringify(report)).not.toContain("secret payload");
   });
 
+  it("exposes the model egress mode and fails on a local_only violation", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-readiness-egress-"));
+    roots.push(root);
+    process.env.MENDPOINT_DATA_DIR = join(root, "db");
+    const savedMode = process.env.MENDPOINT_MODEL_EGRESS;
+    const savedUrl = process.env.LLM_AGENT_URL;
+    try {
+      process.env.MENDPOINT_MODEL_EGRESS = "local_only";
+      process.env.LLM_AGENT_URL = "http://127.0.0.1:11434/v1";
+      const localReport = readiness({ dbPing: () => true });
+      expect(localReport.modelEgress).toEqual({
+        mode: "local_only",
+        localOnly: true,
+        endpointConfigured: true,
+        localOnlySatisfied: true,
+      });
+      expect(localReport.checks).toContainEqual({
+        name: "model_egress",
+        ok: true,
+        detail: "local_only",
+      });
+
+      process.env.LLM_AGENT_URL = "https://api.meta.ai/v1";
+      const publicReport = readiness({ dbPing: () => true });
+      expect(publicReport.status).toBe("fail");
+      expect(publicReport.modelEgress?.localOnlySatisfied).toBe(false);
+      expect(publicReport.checks).toContainEqual({
+        name: "model_egress",
+        ok: false,
+        detail: "model_egress_local_only_violation",
+      });
+    } finally {
+      if (savedMode === undefined) delete process.env.MENDPOINT_MODEL_EGRESS;
+      else process.env.MENDPOINT_MODEL_EGRESS = savedMode;
+      if (savedUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = savedUrl;
+    }
+  });
+
   it("reports schema integrity independently without exposing failures", () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-readiness-schema-"));
     roots.push(root);

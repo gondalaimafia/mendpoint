@@ -1,7 +1,14 @@
+import {
+  configuredModelEndpointUrl,
+  isPrivateModelHost,
+  modelEgressMode,
+  parseModelLocalHosts,
+} from "@mendpoint/shared";
+
 export function resolveAgentModelEndpoint(
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  const configured = env.LLM_AGENT_URL?.trim() || env.OPENAI_BASE_URL?.trim();
+  const configured = configuredModelEndpointUrl(env);
   if (!configured) return null;
   let parsed: URL;
   try {
@@ -20,6 +27,17 @@ export function resolveAgentModelEndpoint(
   }
   if (env.NODE_ENV === "production" && parsed.protocol !== "https:") {
     throw new Error("warden_model_endpoint_https_required");
+  }
+  // Enforced no-egress mode: repository content may only reach a private,
+  // loopback, link-local, or operator allowlisted model host.
+  if (
+    modelEgressMode(env) === "local_only" &&
+    !isPrivateModelHost(
+      parsed.hostname,
+      parseModelLocalHosts(env.MENDPOINT_MODEL_LOCAL_HOSTS),
+    )
+  ) {
+    throw new Error("model_egress_local_only_violation");
   }
   const basePath = parsed.pathname.replace(/\/+$/, "");
   parsed.pathname = basePath.endsWith("/v1")

@@ -3,6 +3,7 @@
  */
 import { existsSync, accessSync, constants, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { assessModelEgress } from "@mendpoint/shared";
 import { RELEASE, releaseBanner } from "./release.js";
 import { validateApiEnv } from "./env.js";
 import { featureMatrix } from "./features.js";
@@ -19,6 +20,12 @@ export type ProbeResult = {
     banner: string;
   };
   features?: ReturnType<typeof featureMatrix>;
+  modelEgress?: {
+    mode: "local_only" | "external_allowed";
+    localOnly: boolean;
+    endpointConfigured: boolean;
+    localOnlySatisfied: boolean;
+  };
   uptimeSec: number;
   ts: string;
 };
@@ -120,6 +127,14 @@ export function readiness(opts?: {
     });
   }
 
+  // Auditable model egress posture, so an operator can verify local_only mode.
+  const egress = assessModelEgress(process.env);
+  checks.push({
+    name: "model_egress",
+    ok: egress.violation === null,
+    detail: egress.violation ?? egress.mode,
+  });
+
   const fail = checks.some((c) => !c.ok);
   const degraded = env.warnings.length > 0 && !fail;
   const status = fail ? "fail" : degraded ? "degraded" : "ok";
@@ -139,6 +154,12 @@ export function readiness(opts?: {
       banner: releaseBanner(),
     },
     features: featureMatrix(),
+    modelEgress: {
+      mode: egress.mode,
+      localOnly: egress.localOnly,
+      endpointConfigured: egress.endpointConfigured,
+      localOnlySatisfied: egress.localOnlySatisfied,
+    },
     uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
     ts: new Date().toISOString(),
   };
