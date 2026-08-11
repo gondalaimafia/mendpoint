@@ -26,6 +26,7 @@ import {
   openTransformerAttemptCheckpoint,
   openTransformerVerifierEffectResultArtifact,
   openTransformerWorkspaceArtifact,
+  openTransformerWorkspaceTransitionRequest,
   prepareTransformerAttemptCheckpointAdvance,
   verifyTransformerWorkspaceArtifact,
   type TransformerAttemptCheckpointEnvelope,
@@ -392,6 +393,30 @@ describe("Transformer attempt checkpoint", () => {
       key,
       { ...scope, episodeId: "episode-wrong" },
     )).toThrow("transformer_attempt_checkpoint_artifact_authentication_failed");
+
+    const nextWorkspace = createTransformerWorkspaceArtifact(
+      scope,
+      [{ path: "package.json", content: Buffer.from('{"name":"changed"}\n'), mode: "executable" }],
+      key,
+    );
+    const transitionPayload = createTransformerWorkspaceTransitionRequest(
+      current.state.workspaceArtifact,
+      nextWorkspace.artifact,
+    );
+    const transitionRequest = createTransformerEffectRequestArtifact(
+      effectScope,
+      transitionPayload,
+      key,
+    );
+    expect(openTransformerWorkspaceTransitionRequest(
+      transitionRequest.artifact,
+      transitionRequest.bytes,
+      key,
+      effectScope,
+    )).toEqual({
+      current: current.state.workspaceArtifact,
+      next: nextWorkspace.artifact,
+    });
   });
 
   it("atomically chooses one sibling, replays it exactly, and rejects a stale lease", async () => {

@@ -771,6 +771,47 @@ export function createTransformerWorkspaceTransitionRequest(
   }), "utf8");
 }
 
+export function openTransformerWorkspaceTransitionRequest(
+  artifact: TransformerEncryptedArtifact,
+  bytes: Uint8Array,
+  key: Uint8Array,
+  scope: Readonly<{ tenantId: string; episodeId: string; effectId: string }>,
+): Readonly<{
+  current: TransformerWorkspaceArtifact;
+  next: TransformerWorkspaceArtifact;
+}> {
+  const payload = verifyTransformerEffectRequestArtifact(artifact, bytes, key, scope);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(payload).toString("utf8"));
+  } catch {
+    throw new Error("transformer_attempt_checkpoint_workspace_transition_invalid");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("transformer_attempt_checkpoint_workspace_transition_invalid");
+  }
+  exactKeys(
+    parsed,
+    ["protocol", "current", "next"],
+    "transformer_attempt_checkpoint_workspace_transition_invalid",
+  );
+  const request = parsed as {
+    protocol: string;
+    current: TransformerWorkspaceArtifact;
+    next: TransformerWorkspaceArtifact;
+  };
+  if (request.protocol !== `${PROTOCOL}:workspace-transition` ||
+      canonical(request) !== Buffer.from(payload).toString("utf8")) {
+    throw new Error("transformer_attempt_checkpoint_workspace_transition_invalid");
+  }
+  validateWorkspaceArtifact(request.current);
+  validateWorkspaceArtifact(request.next);
+  return Object.freeze({
+    current: Object.freeze({ ...request.current }),
+    next: Object.freeze({ ...request.next }),
+  });
+}
+
 export function createTransformerCandidateSeal(
   binding: TransformerAttemptCheckpointBinding,
   workspaceArtifact: TransformerWorkspaceArtifact,
