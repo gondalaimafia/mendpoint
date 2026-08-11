@@ -33,6 +33,7 @@ import {
   getRepositorySnapshotPolicy,
   getScmConnection,
   insertAgentRun,
+  recordAgentRunMeter,
   insertRepairSession,
   expireAdaptiveCandidate,
   listAdaptiveCandidateTenantIds,
@@ -1249,6 +1250,9 @@ function persistCompletedAgentJob(
       applyRoutingOutcome();
     }
     insertAgentRun(db, { ...run, jobId });
+    // Wave 3b: record the per-run metering entry inside the same transaction,
+    // after the routing outcome (cost/tokens) is durable.
+    recordAgentRunMeter(db, { tenantId: run.tenantId, runId: run.id, meteredAt: nowIso() });
     db.raw.exec("COMMIT");
   } catch (error) {
     db.raw.exec("ROLLBACK");
@@ -1299,6 +1303,9 @@ function persistFailedAgentJob(
           status: failure.status === "pending" ? "retrying" : run.status,
           finishedAt: failure.status === "pending" ? null : run.finishedAt,
         });
+        // Wave 3b: metering entry for the failed/retrying run (cost null when
+        // unmeasured), inside the same transaction as the routing outcome.
+        recordAgentRunMeter(db, { tenantId: run.tenantId, runId: run.id, meteredAt: nowIso() });
       }
     }
     db.raw.exec("COMMIT");
