@@ -31,6 +31,7 @@ import {
   openTransformerWorkspaceTransitionRequest,
   prepareTransformerAttemptCheckpointAdvance,
   prepareTransformerAttemptCheckpointTerminalAdvance,
+  supersedeTransformerAttemptCheckpointCoordinatorCompletion,
   verifyTransformerWorkspaceArtifact,
   type TransformerAttemptCheckpointEnvelope,
   type TransformerAttemptCheckpointJournal,
@@ -1143,6 +1144,71 @@ describe("Transformer attempt checkpoint", () => {
       key,
       current.state.binding,
     );
+    const takeoverJournal = journal.clone();
+    const takeoverLease = lease(1, 2, "lease-b");
+    takeoverJournal.setLease(current.state.episodeId, takeoverLease);
+    const takeoverIntent = {
+      ...coordinatorCompletionIntent,
+      leaseGeneration: takeoverLease.generation,
+      leaseTokenDigest: takeoverLease.tokenDigest,
+      observedAt: new Date(Date.parse(coordinatorDispatched.createdAt) + 60_000).toISOString(),
+    } satisfies TransformerAttemptCompletionIntent;
+    const takeoverDigest = createTransformerAttemptCompletionDigest(takeoverIntent);
+    const takeoverPayload = createTransformerCoordinatorCompletionRequest(
+      current.state.episodeId,
+      repairedSeal,
+      takeoverIntent,
+    );
+    const takeoverRequestDigest = digest(takeoverPayload);
+    const takeoverSlot = createTransformerCoordinatorCompletionSlot(takeoverDigest);
+    const takeoverIdentity = createTransformerAttemptEffectIdentity(
+      current.state.episodeId,
+      "coordinator_complete",
+      takeoverSlot,
+      takeoverRequestDigest,
+    );
+    const takeoverRequest = createTransformerEffectRequestArtifact({
+      tenantId: current.state.binding.tenantId,
+      episodeId: current.state.episodeId,
+      effectId: takeoverIdentity.effectId,
+    }, takeoverPayload, key);
+    takeoverJournal.putArtifact(takeoverRequest.artifact.storageKey, takeoverRequest.bytes);
+    const takeoverHead = await supersedeTransformerAttemptCheckpointCoordinatorCompletion(
+      takeoverJournal,
+      coordinatorDispatchedHead.stateDigest,
+      {
+        kind: "coordinator_complete",
+        state: "prepared",
+        slot: takeoverSlot,
+        ...takeoverIdentity,
+        requestDigest: takeoverRequestDigest,
+        requestArtifact: takeoverRequest.artifact,
+      },
+      takeoverIntent.observedAt,
+      key,
+      current.state.binding,
+    );
+    expect(openTransformerAttemptCheckpoint(
+      takeoverHead,
+      key,
+      current.state.binding,
+    )).toMatchObject({
+      writerLeaseGeneration: takeoverLease.generation,
+      writerLeaseTokenDigest: takeoverLease.tokenDigest,
+      pendingEffect: {
+        kind: "coordinator_complete",
+        state: "prepared",
+        effectId: takeoverIdentity.effectId,
+      },
+    });
+    await expect(prepareTransformerAttemptCheckpointTerminalAdvance(
+      takeoverJournal,
+      takeoverHead.stateDigest,
+      completionResult.artifact,
+      new Date(Date.parse(takeoverIntent.observedAt) + 60_000).toISOString(),
+      key,
+      current.state.binding,
+    )).rejects.toThrow(/transformer_attempt_checkpoint_/);
     const terminalPrepared = await prepareTransformerAttemptCheckpointTerminalAdvance(
       journal,
       coordinatorDispatchedHead.stateDigest,

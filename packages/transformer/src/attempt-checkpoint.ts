@@ -365,6 +365,31 @@ export function createTransformerWorkspaceManifestDigest(
   return sha256(canonical(normalizedManifest(manifest)));
 }
 
+export function createTransformerWorkspaceManifest(
+  files: readonly TransformerWorkspaceArtifactFile[],
+): readonly TransformerWorkspaceManifestEntry[] {
+  if (!Array.isArray(files) || files.length < 1 || files.length > MAX_ENTRIES) {
+    throw new Error("transformer_attempt_checkpoint_workspace_artifact_invalid");
+  }
+  const seen = new Set<string>();
+  const manifest = files.map((file) => {
+    if (!file || typeof file !== "object" || Array.isArray(file) ||
+        !validPath(file.path) || !(file.content instanceof Uint8Array) ||
+        (file.mode !== "file" && file.mode !== "executable") ||
+        seen.has(file.path.toLowerCase())) {
+      throw new Error("transformer_attempt_checkpoint_workspace_artifact_invalid");
+    }
+    seen.add(file.path.toLowerCase());
+    return Object.freeze({
+      path: file.path,
+      digest: sha256(file.content),
+      bytes: file.content.byteLength,
+      mode: file.mode,
+    });
+  }).sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  return Object.freeze(manifest);
+}
+
 export function createTransformerVerificationPlanDigest(
   plan: readonly Readonly<{ index: number; commandId: string; commandDigest: string }>[],
 ): string {
@@ -514,10 +539,11 @@ export function createTransformerWorkspaceArtifact(
   if (payload.byteLength > MAX_WORKSPACE_ARCHIVE_BYTES) {
     throw new Error("transformer_attempt_checkpoint_workspace_artifact_invalid");
   }
-  const manifest = encodedEntries.map((entry) => {
-    const content = Buffer.from(entry.contentBase64, "base64");
-    return { path: entry.path, digest: sha256(content), bytes: content.byteLength, mode: entry.mode };
-  });
+  const manifest = createTransformerWorkspaceManifest(encodedEntries.map((entry) => ({
+    path: entry.path,
+    content: Buffer.from(entry.contentBase64, "base64"),
+    mode: entry.mode,
+  })));
   const manifestDigest = createTransformerWorkspaceManifestDigest(manifest);
   const filesDigest = sha256(encodedEntries.map((entry) => {
     const content = Buffer.from(entry.contentBase64, "base64");
@@ -2041,6 +2067,60 @@ export async function prepareTransformerAttemptCheckpointTerminalAdvance(
       next,
     }),
   });
+}
+
+export async function supersedeTransformerAttemptCheckpointCoordinatorCompletion(
+  journal: TransformerAttemptCheckpointJournal,
+  expectedHeadDigest: string,
+  nextEffect: Exclude<TransformerAttemptCheckpointEffect, Readonly<{ kind: "none" }>>,
+  createdAt: string,
+  key: Uint8Array,
+  expectedBinding: TransformerAttemptCheckpointBinding,
+): Promise<TransformerAttemptCheckpointEnvelope> {
+  requireDigest(expectedHeadDigest, "transformer_attempt_checkpoint_head_invalid");
+  const currentEnvelope = await journal.read(createTransformerEpisodeId(expectedBinding));
+  if (currentEnvelope === null || currentEnvelope.stateDigest !== expectedHeadDigest) {
+    throw new Error("transformer_attempt_checkpoint_head_conflict");
+  }
+  const current = openTransformerAttemptCheckpoint(currentEnvelope, key, expectedBinding);
+  const activeLease = await journal.readLease(current.episodeId);
+  if (activeLease === null) throw new Error("transformer_attempt_checkpoint_lease_mismatch");
+  validateLease(activeLease);
+  const newerLease = activeLease.attemptNumber > current.attemptNumber ||
+    (activeLease.attemptNumber === current.attemptNumber &&
+      activeLease.generation > current.writerLeaseGeneration);
+  if (!newerLease || current.stage !== "completion_prepared" || current.candidateSeal === null ||
+      current.pendingEffect.kind !== "coordinator_complete" ||
+      (current.pendingEffect.state !== "prepared" && current.pendingEffect.state !== "dispatched") ||
+      nextEffect.kind !== "coordinator_complete" || nextEffect.state !== "prepared" ||
+      !Number.isFinite(Date.parse(createdAt)) || new Date(Date.parse(createdAt)).toISOString() !== createdAt ||
+      Date.parse(createdAt) < Date.parse(current.createdAt)) {
+    throw new Error("transformer_attempt_checkpoint_coordinator_takeover_invalid");
+  }
+  const nextState = {
+    ...current,
+    generation: current.generation + 1,
+    attemptNumber: activeLease.attemptNumber,
+    writerLeaseGeneration: activeLease.generation,
+    writerLeaseTokenDigest: activeLease.tokenDigest,
+    pendingEffect: nextEffect,
+    previousCheckpointDigest: currentEnvelope.stateDigest,
+    createdAt,
+  } satisfies TransformerAttemptCheckpointState;
+  validateState(nextState);
+  await verifyPendingEffectRequestStored(journal, nextState, key);
+  const next = seal(nextState, key);
+  if (await journal.compareAndSwap({
+    episodeId: current.episodeId,
+    expectedStateDigest: currentEnvelope.stateDigest,
+    activeLease,
+    next,
+  })) {
+    return next;
+  }
+  const raced = await journal.read(current.episodeId);
+  if (raced !== null && sameState(raced, nextState, key)) return raced;
+  throw new Error("transformer_attempt_checkpoint_head_conflict");
 }
 
 export async function advanceTransformerAttemptCheckpoint(
