@@ -74,6 +74,10 @@ function rule(
   options: Partial<Pick<CompatibilityRule, "rollout" | "requiresApproval" | "autoExecutable">> = {},
 ): CompatibilityRule {
   const breaking = severity === "breaking" || severity === "security_required";
+  // "dangerous" changes are not breaking, but their own reason strings say they
+  // can break exhaustive/strict clients, so they must default to human review
+  // rather than silently auto-executing.
+  const requiresReview = breaking || severity === "dangerous";
   return {
     kind,
     severity,
@@ -82,8 +86,8 @@ function rule(
     rollout: options.rollout ?? (breaking
       ? ["expand", "migrate", "observe", "contract"]
       : ["expand", "observe"]),
-    requiresApproval: options.requiresApproval ?? breaking,
-    autoExecutable: options.autoExecutable ?? !breaking,
+    requiresApproval: options.requiresApproval ?? requiresReview,
+    autoExecutable: options.autoExecutable ?? !requiresReview,
     sourceRef,
   };
 }

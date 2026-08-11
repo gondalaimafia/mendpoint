@@ -64,6 +64,36 @@ function isWithin(root: string, candidate: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/**
+ * Minimal environment allowlist handed to sandboxed child processes.
+ * The child MUST NOT inherit the parent process.env, which carries host secrets
+ * (GitHub tokens, DB URLs, provider API keys). Only variables a build/verify
+ * command genuinely needs to locate a shell and toolchain are forwarded. Mirrors
+ * the production scrub in packages/repair/src/verify.ts.
+ */
+const SANDBOX_ENV_ALLOWLIST: string[] = [
+  "PATH",
+  "Path",
+  "PATHEXT",
+  "SystemRoot",
+  "COMSPEC",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "USERPROFILE",
+  "TMP",
+  "TEMP",
+  "TMPDIR",
+];
+
+function scrubbedSandboxEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    SANDBOX_ENV_ALLOWLIST.map((key) => [key, process.env[key]]).filter(
+      (entry): entry is [string, string] => Boolean(entry[1]),
+    ),
+  );
+}
+
 function seedPath(root: string, rel: string): string {
   if (!rel || isAbsolute(rel)) throw new Error(`Sandbox seed path must be relative: ${rel}`);
   const abs = resolve(root, rel);
@@ -191,6 +221,9 @@ export function createSandbox(opts: CreateSandboxOpts = {}): SandboxHandle {
         }
       };
     })(),
+    // `cmd` is executed as a shell string, so it must never receive untrusted
+    // input. The env is scrubbed to SANDBOX_ENV_ALLOWLIST so host secrets never
+    // reach the child process regardless of the command.
     run: (cmd, runOpts) => {
       try {
         const stdout = execSync(cmd, {
@@ -198,6 +231,7 @@ export function createSandbox(opts: CreateSandboxOpts = {}): SandboxHandle {
           encoding: "utf8",
           timeout: runOpts?.timeoutMs ?? 60_000,
           stdio: ["ignore", "pipe", "pipe"],
+          env: scrubbedSandboxEnv(),
         });
         return { ok: true, stdout: String(stdout).slice(0, 8000), stderr: "" };
       } catch (e: unknown) {
