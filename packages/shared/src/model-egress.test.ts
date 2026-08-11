@@ -5,7 +5,7 @@ import {
   isValidModelEgressMode,
   modelEgressMode,
   parseModelLocalHosts,
-} from "./model-egress.js";
+} from "./index.js";
 
 describe("model egress mode parsing", () => {
   it("defaults to external_allowed and only local_only flips it", () => {
