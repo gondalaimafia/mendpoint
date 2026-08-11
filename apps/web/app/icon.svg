@@ -1,5 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="#0b0f0e"/>
-  <rect x="8" y="8" width="16" height="16" rx="4" fill="#34d399"/>
-  <rect x="11" y="11" width="10" height="10" rx="2" fill="#0b0f0e"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <rect width="48" height="48" rx="10" fill="#070a18"/>
+  <defs>
+    <linearGradient id="mendpoint-icon-gradient" x1="4" x2="44" y1="8" y2="40" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#356cff"/>
+      <stop offset="1" stop-color="#00bcc1"/>
+    </linearGradient>
+  </defs>
+  <path d="M4 7h12l13.5 13.5H35V13l10.5 11L35 35v-7.5h-8.5L12 12H4V7Zm0 13h18l4 4-4 4H4l4-4-4-4Zm0 21h12l13.5-13.5H35V35l10.5-11L35 13v7.5h-8.5L12 36H4v5Z" fill="url(#mendpoint-icon-gradient)" fill-rule="evenodd"/>
 </svg>

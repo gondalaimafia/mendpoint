@@ -1324,7 +1324,22 @@ The first protected run exposed six Warden false rejections hidden behind the co
 - [x] Identify the exact startup failure from Fly logs.
 - [x] Add a failing regression proving the web server child receives its required server-side API key while browser-inappropriate secrets remain absent.
 - [x] Fix the role-scoped child environment and run focused tests, full workspace tests, typecheck, production build, and GA checks.
-- [ ] Ship the fix through protected CI.
+- [x] Ship the fix through protected CI.
 - [ ] Retry the customer profile only from exact merged main, then run the private draft pull request canary and restore drill.
 
 Incident evidence: customer release v56 restarted because the web production validator reported `MENDPOINT_API_KEY is required`. The key existed at the Fly application boundary but `customerWardenChildEnvironment("web", env)` removed it before launching the Next.js server. Release v57 restored the exact main image from v54 with the demo manifest; public liveness and health returned 200 and recovery queues remained clear. The new regression failed before the fix and passed afterward. Focused profile, web production, and launcher suites pass 9 of 9; the full workspace test command, every workspace typecheck, the 22-page production build, and GA checks pass.
+
+## Website brand and capability truth: 2026-08-10
+
+- [x] Capture the rendered website logo, colors, fonts, layout patterns, navigation, and customer-facing claims.
+- [x] Compare every material website claim with implementation, automated verification, deployed runtime evidence, and known limitations.
+- [x] Replace the product app's conflicting emerald mark, palette, and system typography with the website's approved arrow mark, indigo-to-cyan palette, Sora, Inter, and JetBrains Mono.
+- [x] Preserve the app's bounded preview wording where the website overstates current product status.
+- [x] Add brand rendering, navigation, responsive, keyboard, and accessibility regressions.
+- [x] Run focused web tests, full tests, typecheck, production build, GA and claim checks, and desktop and mobile browser QA.
+- [ ] Verify the exact deployed revision, production health, and branded UI after protected main deployment.
+- [ ] Ship through protected main only after the claim matrix and browser evidence are complete.
+
+Acceptance: the application and website are recognizably one product without weakening the application's truthful preview boundaries. A public claim is marked functional only when its production path, automated proof, and deployed evidence all agree. Claims that are partial, roadmap, unpriced, or unproven must be corrected or explicitly qualified rather than inferred from component existence.
+
+Review: the product app now uses the website's arrow mark, blue-to-cyan identity, Sora headings, Inter interface text, JetBrains Mono technical labels, and dark indigo grid/glow surface while keeping the truthful bounded-pilot copy. The full workspace tests and typecheck pass, the 22-page production build passes, GA/spec/claim/action checks pass, the production dependency audit reports zero vulnerabilities, and diff integrity passes. The exact production build returns 200 at desktop and mobile widths with no console errors, no horizontal overflow, the expected fonts and logo, and no unnamed buttons or links. The exact final build also passes axe WCAG A/AA with zero violations at both widths; filled actions and text accents use accessible variants while the official `#356CFF` pigment remains the brand identity. The claim audit does not certify the current marketing page as truthful: real GitHub delivery remains disabled in the live demo, Transformer and GitLab are not customer-functional, commercial pricing/trials and SAML are unavailable, no-egress and universal-coverage wording is false or overstated, outcome numbers are not customer evidence, and every non-GitHub conversion button on the marketing site is inert. Website source and deployment access remain outside this repository, so those public-page corrections are still an external release blocker.
