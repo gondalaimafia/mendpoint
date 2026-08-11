@@ -11,6 +11,9 @@ Nothing here changes the enablement gate. The gate
 profile keeps Transformer off, so these recipes are unreachable in a default
 deployment.
 
+Framework-upgrade recipes are documented separately in
+`docs/TRANSFORMER_FRAMEWORK_RECIPES.md`; they share this catalog seam.
+
 ## Catalog wiring
 
 `packages/transformer/src/published-recipes.ts` is the single seam that

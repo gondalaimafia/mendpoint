@@ -22,6 +22,7 @@ import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
   GOOGLEAPIS_V25_TO_V26_RECIPE,
   NODE_RUNTIME_18_TO_20_RECIPE,
+  REACT_DOM_17_TO_18_RECIPE,
   STRIPE_NODE_V10_TO_V11_RECIPE,
   RecipeAnalysisCache,
   RecipeWorkspaceExecutionError,
@@ -70,6 +71,8 @@ const STRIPE_NODE_UPGRADE_GUIDE =
   "https://github.com/stripe/stripe-node/wiki/Migration-guide-for-v11";
 const GOOGLEAPIS_UPGRADE_GUIDE =
   "https://github.com/googleapis/google-api-nodejs-client/releases/tag/v26.0.0";
+const REACT_18_UPGRADE_GUIDE =
+  "https://react.dev/blog/2022/03/08/react-18-upgrade-guide";
 
 const AWS_FIXTURE_ROOT = "../../../fixtures/consumers/aws-sdk-v2-to-v3/";
 
@@ -1670,6 +1673,37 @@ const GOOGLEAPIS_EVAL_CONFIG: SdkRecipeEvalConfig = Object.freeze({
   }),
 });
 
+const REACT_DOM_EVAL_CONFIG: SdkRecipeEvalConfig = Object.freeze({
+  idSlug: "react_dom_17_to_18",
+  recipe: REACT_DOM_17_TO_18_RECIPE,
+  fixtureDir: "react-dom-17-to-18",
+  supportedPaths: ["package.json", "src/index.jsx"],
+  outOfScopePaths: ["package.json", "src/index.jsx"],
+  operationsCsv: "package.json,src/index.jsx",
+  abstainReason: "recipe_react_render_callback",
+  guideUrl: REACT_18_UPGRADE_GUIDE,
+  query: Object.freeze({
+    providerSlug: "react-dom",
+    providerCategory: "developer_platform",
+    changeTarget: "sdk",
+    changeKind: "breaking",
+    fromVersion: "17",
+    toVersion: "18",
+    language: "javascript",
+    packageManager: "npm",
+    repositoryKind: "service",
+    runtime: { name: "node", major: 20 },
+  }),
+  fence: Object.freeze({
+    tenantId: "tenant-react-eval",
+    campaignId: "campaign-react-eval",
+    unitId: "unit-react-eval",
+    attemptId: "attempt-react-eval",
+    leaseGeneration: 3,
+    leaseToken: "transformer-react-eval-lease-token",
+  }),
+});
+
 export const TRANSFORMER_AGENT_EVAL_SCENARIOS: readonly AgentEvalScenario[] = Object.freeze([
   PLANNING_SCENARIO,
   ANALYSIS_SCENARIO,
@@ -1680,5 +1714,7 @@ export const TRANSFORMER_AGENT_EVAL_SCENARIOS: readonly AgentEvalScenario[] = Ob
   sdkAbstainScenario(STRIPE_NODE_EVAL_CONFIG),
   sdkExecutionScenario(GOOGLEAPIS_EVAL_CONFIG),
   sdkAbstainScenario(GOOGLEAPIS_EVAL_CONFIG),
+  sdkExecutionScenario(REACT_DOM_EVAL_CONFIG),
+  sdkAbstainScenario(REACT_DOM_EVAL_CONFIG),
   ...WORKSPACE_CASES.map(workspaceScenario),
 ]);

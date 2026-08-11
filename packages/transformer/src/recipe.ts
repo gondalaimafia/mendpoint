@@ -45,6 +45,10 @@ export type RecipePrecondition =
   | Readonly<{
       kind: "googleapis_default_import_source";
       path: string;
+    }>
+  | Readonly<{
+      kind: "react_dom_render_source";
+      path: string;
     }>;
 
 export type RecipeTransform =
@@ -87,6 +91,10 @@ export type RecipeTransform =
     }>
   | Readonly<{
       kind: "googleapis_default_import_to_named";
+      path: string;
+    }>
+  | Readonly<{
+      kind: "react_dom_render_to_root";
       path: string;
     }>;
 
@@ -976,6 +984,273 @@ const GOOGLEAPIS_V25_TO_V26_V1 = createRecipe({
 
 export const GOOGLEAPIS_V25_TO_V26_RECIPE = GOOGLEAPIS_V25_TO_V26_V1;
 
+// ---------------------------------------------------------------------------
+// React DOM 17 -> 18 client-render API (bounded, deterministic subset)
+//
+// React 18 replaced the legacy `ReactDOM.render`/`ReactDOM.hydrate` entry points
+// with the `react-dom/client` root API (`createRoot`/`hydrateRoot`). This recipe
+// rewrites the mechanically-deterministic slice of that migration and bumps the
+// `react` and `react-dom` dependencies to v18. The supported surface is encoded
+// explicitly; everything else is reported out-of-scope by analysis so the recipe
+// abstains rather than producing a wrong edit.
+//
+// Supported surface:
+//   - A default `react-dom` import bound to an identifier, either
+//     `const <id> = require("react-dom")` (CommonJS) or
+//     `import <id> from "react-dom"` (ESM), on its own single line. The migrated
+//     import keeps the source module system and emits only the used symbols from
+//     `react-dom/client`.
+//   - `<id>.render(<element>, <container>)` becomes
+//     `createRoot(<container>).render(<element>)`.
+//   - `<id>.hydrate(<element>, <container>)` becomes
+//     `hydrateRoot(<container>, <element>)`.
+//   - Arguments are split on top-level commas with balanced-delimiter and string
+//     scanning, so JSX elements and container expressions such as
+//     `document.getElementById("root")` are relocated byte-for-byte.
+//   - package.json: bumps the existing `react` and `react-dom` ranges to v18.
+//
+// Out-of-scope (analysis abstains, status `unsupported`):
+//   - `unmountComponentAtNode` (cannot be rewritten deterministically without the
+//     root handle), and any other member access on the binding.
+//   - The removed third callback argument on render/hydrate, or any arity other
+//     than two arguments.
+//   - Multiple render/hydrate calls that share the same container expression.
+//   - Non-default `react-dom` import forms (named, namespace, or unrecognized).
+//   - A migrated source that still carries any legacy react-dom surface.
+// ---------------------------------------------------------------------------
+
+const REACT_18_VERSION = "^18.2.0";
+
+const REACT_DOM_MODULE = /["']react-dom["']/;
+const REACT_DOM_CLIENT_MODULE = /["']react-dom\/client["']/;
+const REACT_DOM_REQUIRE_LINE =
+  /^([ \t]*)(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*require\(\s*["']react-dom["']\s*\);?[ \t]*\r?$/m;
+const REACT_DOM_IMPORT_LINE =
+  /^([ \t]*)import\s+([A-Za-z0-9_$]+)\s+from\s+["']react-dom["'];?[ \t]*\r?$/m;
+const REACT_DOM_REQUIRE =
+  /(?:const|let|var)[ \t]+([A-Za-z0-9_$]+)[ \t]*=[ \t]*require\([ \t]*["']react-dom["'][ \t]*\)/;
+const REACT_DOM_IMPORT = /import[ \t]+([A-Za-z0-9_$]+)[ \t]+from[ \t]*["']react-dom["']/;
+const REACT_DOM_NAMED_ESM = /import[ \t]*\{[^}]*\}[ \t]*from[ \t]*["']react-dom["']/;
+const REACT_DOM_NAMED_CJS =
+  /(?:const|let|var)[ \t]*\{[^}]*\}[ \t]*=[ \t]*require\([ \t]*["']react-dom["'][ \t]*\)/;
+const REACT_DOM_NAMESPACE =
+  /import[ \t]*\*[ \t]*as[ \t]+[A-Za-z0-9_$]+[ \t]+from[ \t]*["']react-dom["']/;
+
+// Scan a call argument list. `openParen` is the index of the `(` that opens the
+// call. Returns the index of the matching `)` and the raw top-level argument
+// substrings (untrimmed), or undefined when the parentheses are unbalanced.
+function scanReactCallArgs(
+  content: string,
+  openParen: number,
+): { end: number; args: string[] } | undefined {
+  let depth = 0;
+  let argStart = openParen + 1;
+  const args: string[] = [];
+  let quote: string | undefined;
+  for (let index = openParen; index < content.length; index++) {
+    const char = content[index]!;
+    if (quote) {
+      if (char === "\\") {
+        index++;
+        continue;
+      }
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") {
+      depth++;
+      continue;
+    }
+    if (char === ")" || char === "]" || char === "}") {
+      if (char === ")" && depth === 1) {
+        args.push(content.slice(argStart, index));
+        return { end: index, args };
+      }
+      depth--;
+      continue;
+    }
+    if (char === "," && depth === 1) {
+      args.push(content.slice(argStart, index));
+      argStart = index + 1;
+    }
+  }
+  return undefined;
+}
+
+function rewriteReactDomSource(content: string): string {
+  const requireMatch = REACT_DOM_REQUIRE_LINE.exec(content);
+  const importMatch = requireMatch ? null : REACT_DOM_IMPORT_LINE.exec(content);
+  const syntax: "cjs" | "esm" | undefined = requireMatch ? "cjs" : importMatch ? "esm" : undefined;
+  if (!syntax) return content;
+  const indent = (requireMatch ?? importMatch)![1] ?? "";
+  const binding = (requireMatch ?? importMatch)![2]!;
+  const escaped = escapeRegExp(binding);
+
+  const callMarker = new RegExp(`\\b${escaped}\\.(render|hydrate)[ \\t]*\\(`, "g");
+  let out = "";
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = callMarker.exec(content))) {
+    const openParen = match.index + match[0].length - 1;
+    const scan = scanReactCallArgs(content, openParen);
+    if (!scan || scan.args.length !== 2) continue;
+    const element = scan.args[0]!.trim();
+    const container = scan.args[1]!.trim();
+    const replacement =
+      match[1] === "render"
+        ? `createRoot(${container}).render(${element})`
+        : `hydrateRoot(${container}, ${element})`;
+    out += content.slice(last, match.index) + replacement;
+    last = scan.end + 1;
+    callMarker.lastIndex = last;
+  }
+  out += content.slice(last);
+
+  const used: string[] = [];
+  if (/\bcreateRoot\b/.test(out)) used.push("createRoot");
+  if (/\bhydrateRoot\b/.test(out)) used.push("hydrateRoot");
+  if (!used.length) return content;
+  const named = used.join(", ");
+  const importBlock =
+    syntax === "esm"
+      ? `${indent}import { ${named} } from "react-dom/client";`
+      : `${indent}const { ${named} } = require("react-dom/client");`;
+  out = out.replace(syntax === "cjs" ? REACT_DOM_REQUIRE_LINE : REACT_DOM_IMPORT_LINE, () => importBlock);
+  return out;
+}
+
+function classifyReactDomSource(content: string): PreconditionState {
+  const hasLegacyModule = REACT_DOM_MODULE.test(content);
+  const hasClientModule = REACT_DOM_CLIENT_MODULE.test(content);
+  if (!hasLegacyModule && !hasClientModule) return { state: "neutral" };
+  if (REACT_DOM_NAMESPACE.test(content)) {
+    return { state: "unsupported", reason: "recipe_react_namespace_import" };
+  }
+  if (REACT_DOM_NAMED_ESM.test(content) || REACT_DOM_NAMED_CJS.test(content)) {
+    return { state: "unsupported", reason: "recipe_react_named_import" };
+  }
+  const requireMatch = REACT_DOM_REQUIRE.exec(content);
+  const importMatch = requireMatch ? null : REACT_DOM_IMPORT.exec(content);
+  const binding = requireMatch?.[1] ?? importMatch?.[1];
+  if (!binding) {
+    if (hasClientModule && !hasLegacyModule) return { state: "target" };
+    return { state: "unsupported", reason: "recipe_react_import_unrecognized" };
+  }
+  if (!REACT_DOM_REQUIRE_LINE.test(content) && !REACT_DOM_IMPORT_LINE.test(content)) {
+    return { state: "unsupported", reason: "recipe_react_import_unrecognized" };
+  }
+  const escaped = escapeRegExp(binding);
+  const members = [...content.matchAll(new RegExp(`\\b${escaped}\\.([A-Za-z0-9_$]+)`, "g"))];
+  if (!members.length) return { state: "unsupported", reason: "recipe_react_binding_unused" };
+  const containers: string[] = [];
+  for (const member of members) {
+    const method = member[1]!;
+    if (method === "unmountComponentAtNode") {
+      return { state: "unsupported", reason: "recipe_react_unmount_unsupported" };
+    }
+    if (method !== "render" && method !== "hydrate") {
+      return { state: "unsupported", reason: `recipe_react_unsupported_api:${method}` };
+    }
+    const rest = content.slice(member.index! + member[0].length);
+    const paren = /^[ \t]*\(/.exec(rest);
+    if (!paren) {
+      return { state: "unsupported", reason: `recipe_react_unsupported_api:${method}` };
+    }
+    const openParen = member.index! + member[0].length + paren[0].length - 1;
+    const scan = scanReactCallArgs(content, openParen);
+    if (!scan) return { state: "unsupported", reason: "recipe_react_render_unparsable" };
+    if (scan.args.length === 3) {
+      return { state: "unsupported", reason: "recipe_react_render_callback" };
+    }
+    if (scan.args.length !== 2) {
+      return { state: "unsupported", reason: "recipe_react_render_arity" };
+    }
+    containers.push(scan.args[1]!.trim());
+  }
+  if (new Set(containers).size !== containers.length) {
+    return { state: "unsupported", reason: "recipe_react_shared_container" };
+  }
+  const transformed = rewriteReactDomSource(content);
+  if (
+    REACT_DOM_MODULE.test(transformed) ||
+    new RegExp(`\\b${escaped}\\.(?:render|hydrate)[ \\t]*\\(`).test(transformed)
+  ) {
+    return { state: "unsupported", reason: "recipe_react_residual_legacy" };
+  }
+  return { state: "source" };
+}
+
+const REACT_SOURCE_VERIFIER =
+  "const fs=require('node:fs');const fail=(m)=>{throw new Error(m)};" +
+  "const files=['src/index.jsx','src/index.tsx'];let migrated=0;" +
+  "for(const f of files){if(!fs.existsSync(f))continue;const s=fs.readFileSync(f,'utf8');" +
+  "if(/from\\s+[\\x27\\x22]react-dom[\\x27\\x22]/.test(s))fail('react_dom_legacy_import:'+f);" +
+  "if(/require\\(\\s*[\\x27\\x22]react-dom[\\x27\\x22]\\s*\\)/.test(s))fail('react_dom_legacy_require:'+f);" +
+  "if(/[\\x27\\x22]react-dom\\/client[\\x27\\x22]/.test(s))migrated++;}" +
+  "if(migrated===0)fail('react_dom_client_import_missing');";
+
+const REACT_MANIFEST_VERIFIER =
+  "const fs=require('node:fs');const fail=(m)=>{throw new Error(m)};" +
+  "const p=JSON.parse(fs.readFileSync('package.json','utf8'));" +
+  "const d=p.dependencies||{};const rd=d['react-dom'];const r=d.react;" +
+  "if(typeof rd!==('str'+'ing'))fail('react_dom_dependency_missing');" +
+  "if(!/^[\\^~]?18\\./.test(rd))fail('react_dom_not_v18:'+rd);" +
+  "if(typeof r!==('str'+'ing'))fail('react_dependency_missing');" +
+  "if(!/^[\\^~]?18\\./.test(r))fail('react_not_v18:'+r);";
+
+const REACT_DOM_17_TO_18_V1 = createRecipe({
+  id: "react-dom-17-to-18",
+  version: 1,
+  title: "React DOM 17 to 18 (client render API)",
+  source: "react-dom-17",
+  target: "react-dom-18",
+  allowedPaths: ["package.json", "src/index.jsx", "src/index.tsx"],
+  preconditions: [
+    { kind: "json_dependency_version", path: "package.json", dependency: "react-dom" },
+    { kind: "react_dom_render_source", path: "src/index.jsx" },
+    { kind: "react_dom_render_source", path: "src/index.tsx" },
+  ],
+  transforms: [
+    {
+      kind: "json_dependency_version_set",
+      path: "package.json",
+      dependency: "react-dom",
+      version: REACT_18_VERSION,
+    },
+    {
+      kind: "json_dependency_version_set",
+      path: "package.json",
+      dependency: "react",
+      version: REACT_18_VERSION,
+    },
+    { kind: "react_dom_render_to_root", path: "src/index.jsx" },
+    { kind: "react_dom_render_to_root", path: "src/index.tsx" },
+  ],
+  verificationCommands: [
+    {
+      id: "react-dom-18-source",
+      command: `node -e "${REACT_SOURCE_VERIFIER}"`,
+      successCriteria:
+        "The migrated source imports from react-dom/client with no legacy react-dom import or require",
+    },
+    {
+      id: "react-dom-18-manifest",
+      command: `node -e "${REACT_MANIFEST_VERIFIER}"`,
+      successCriteria: "package.json declares the react and react-dom dependencies at v18",
+    },
+  ],
+  rollback: {
+    strategy: "inverse_operations",
+    requireCurrentDigest: true,
+  },
+});
+
+export const REACT_DOM_17_TO_18_RECIPE = REACT_DOM_17_TO_18_V1;
+
 const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${NODE_RUNTIME_18_TO_20_V1.id}@${NODE_RUNTIME_18_TO_20_V1.version}`,
@@ -996,6 +1271,10 @@ const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${GOOGLEAPIS_V25_TO_V26_V1.id}@${GOOGLEAPIS_V25_TO_V26_V1.version}`,
     GOOGLEAPIS_V25_TO_V26_V1,
+  ],
+  [
+    `${REACT_DOM_17_TO_18_V1.id}@${REACT_DOM_17_TO_18_V1.version}`,
+    REACT_DOM_17_TO_18_V1,
   ],
 ]);
 
@@ -1114,6 +1393,9 @@ function preconditionFailure(precondition: RecipePrecondition): string {
   if (precondition.kind === "googleapis_default_import_source") {
     return `recipe_precondition_failed:${precondition.path}:googleapis_import`;
   }
+  if (precondition.kind === "react_dom_render_source") {
+    return `recipe_precondition_failed:${precondition.path}:react_dom_render`;
+  }
   return `recipe_precondition_failed:${precondition.path}:node_major`;
 }
 
@@ -1156,6 +1438,11 @@ function preconditionState(
     const content = files[precondition.path];
     if (content === undefined) return { state: "neutral" };
     return classifyGoogleapisSource(content);
+  }
+  if (precondition.kind === "react_dom_render_source") {
+    const content = files[precondition.path];
+    if (content === undefined) return { state: "neutral" };
+    return classifyReactDomSource(content);
   }
   if (precondition.kind === "json_string_in") {
     let value: unknown;
@@ -1365,8 +1652,10 @@ function applyTransform(transform: RecipeTransform, files: Record<string, string
     files[transform.path] = setDependencyVersion(before!, transform.dependency, transform.version);
   } else if (transform.kind === "stripe_setter_to_config") {
     files[transform.path] = rewriteStripeSource(before!);
-  } else {
+  } else if (transform.kind === "googleapis_default_import_to_named") {
     files[transform.path] = rewriteGoogleapisSource(before!);
+  } else {
+    files[transform.path] = rewriteReactDomSource(before!);
   }
 }
 

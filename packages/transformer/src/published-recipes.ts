@@ -2,6 +2,7 @@ import type { KeyLike } from "node:crypto";
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
   GOOGLEAPIS_V25_TO_V26_RECIPE,
+  REACT_DOM_17_TO_18_RECIPE,
   STRIPE_NODE_V10_TO_V11_RECIPE,
 } from "./recipe.js";
 import {
@@ -341,11 +342,116 @@ export const GOOGLEAPIS_V25_TO_V26_ARTIFACT: ProviderRecipeArtifact = Object.fre
   },
 } as const);
 
+export const REACT_DOM_17_TO_18_ARTIFACT: ProviderRecipeArtifact = Object.freeze({
+  schemaVersion: PROVIDER_RECIPE_SCHEMA_VERSION,
+  recipeId: "react-dom-17-to-18",
+  version: 1,
+  publishedAt: "2026-08-05T00:00:00.000Z",
+  provider: {
+    slug: "react-dom",
+    category: "developer_platform",
+  },
+  change: {
+    target: "sdk",
+    kind: "breaking",
+    fromVersion: "17",
+    toVersion: "18",
+  },
+  detection: {
+    allOf: [
+      {
+        kind: "manifest_value",
+        path: "package.json",
+        selector: "/dependencies/react-dom",
+        expected: "present at a v17 range",
+        evidenceRequired: true,
+      },
+      {
+        kind: "source_pattern",
+        path: "src/index.jsx",
+        selector: "legacy react-dom render entry point",
+        expected: "default react-dom import with ReactDOM.render or ReactDOM.hydrate",
+        evidenceRequired: true,
+      },
+    ],
+  },
+  preconditions: [
+    {
+      id: "react-dom-dependency",
+      kind: "manifest_value",
+      path: "package.json",
+      selector: "/dependencies/react-dom",
+      expected: "present",
+    },
+    {
+      id: "react-dom-17-source",
+      kind: "source_pattern",
+      path: "src/index.jsx",
+      selector: "supported react-dom legacy render surface",
+      expected: "default react-dom import with render or hydrate into two arguments",
+    },
+  ],
+  boundedEdits: {
+    implementationRecipe: {
+      id: REACT_DOM_17_TO_18_RECIPE.id,
+      version: REACT_DOM_17_TO_18_RECIPE.version,
+      digest: REACT_DOM_17_TO_18_RECIPE.digest,
+    },
+    allowedPaths: ["package.json", "src/index.jsx", "src/index.tsx"],
+    allowedOperationKinds: ["replace_file"],
+    maxFilesChanged: 3,
+    maxBytesChanged: 65536,
+  },
+  verification: [
+    {
+      id: "unit-and-typecheck",
+      command: "npm test && npm run typecheck",
+      timeoutMs: 900000,
+      successCriteria: "Consumer tests and typecheck pass on the migrated v18 sources",
+      required: true,
+    },
+  ],
+  rollback: {
+    strategy: "inverse_operations",
+    verificationIds: ["unit-and-typecheck"],
+    maxRecoveryMinutes: 30,
+  },
+  evidence: {
+    requiredSourceKinds: ["provider_release", "provider_documentation", "repository_snapshot"],
+    retainInputSnapshot: true,
+    retainOperationDiffs: true,
+    retainVerificationOutput: true,
+  },
+  ownership: {
+    team: "change-intelligence",
+    maintainerPrincipalId: "human:recipe-maintainer",
+    securityReviewerPrincipalId: "human:security-reviewer",
+  },
+  compatibility: {
+    languages: ["javascript", "typescript"],
+    packageManagers: ["npm", "pnpm", "yarn"],
+    repositoryKinds: ["service", "library"],
+    runtime: {
+      name: "node",
+      minMajor: 16,
+      maxMajor: 22,
+    },
+  },
+  outcomeTelemetry: {
+    schemaVersion: 1,
+    eventName: "provider_recipe_outcome",
+    correlationFields: ["tenantId", "campaignId", "runId", "recipeArtifactSha256"],
+    metricIds: ["accepted", "reviewerEditRatio", "verificationPassed", "rollbackRequired"],
+    retentionDays: 90,
+  },
+} as const);
+
 /** All provider-recipe artifacts Mendpoint publishes into the run-path catalog. */
 export const PUBLISHED_PROVIDER_RECIPE_ARTIFACTS: readonly ProviderRecipeArtifact[] = Object.freeze([
   AWS_SDK_JS_V2_TO_V3_ARTIFACT,
   STRIPE_NODE_V10_TO_V11_ARTIFACT,
   GOOGLEAPIS_V25_TO_V26_ARTIFACT,
+  REACT_DOM_17_TO_18_ARTIFACT,
 ]);
 
 export type ProviderRecipeSigningKey = Readonly<{ keyId: string; privateKey: KeyLike }>;
