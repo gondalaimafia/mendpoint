@@ -15,6 +15,7 @@ function record(
   overrides: Partial<LiveModelProvenanceRecord> = {},
 ): LiveModelProvenanceRecord {
   return Object.freeze({
+    providerId: null,
     bodyRequestId: "chatcmpl-1",
     headerRequestId: "req-1",
     model: "muse-spark-1.2",
