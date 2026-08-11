@@ -296,6 +296,12 @@ export type TransformerAttemptLease = Readonly<{
   regenerationReview?: TransformerRegenerationReview;
 }>;
 
+export type TransformerAttemptLeaseRenewal = Readonly<{
+  leaseGeneration: number;
+  leaseTokenDigest: string;
+  leaseExpiresAt: string;
+}>;
+
 export type TransformerRoutingOutcomeRecord = Readonly<{
   idempotencyKey: string;
   executorId: string;
@@ -1643,6 +1649,56 @@ export class TransformerPilotExecutionStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  renewAttemptLease(input: MutationInput & {
+    unitId: string;
+    leaseGeneration: number;
+    leaseToken: string;
+    leaseDurationMs?: number;
+    gateConfig?: string;
+  }): TransformerAttemptLeaseRenewal {
+    const observedAt = requireTimestamp(input.observedAt);
+    const leaseDurationMs = requireLeaseDuration(input.leaseDurationMs);
+    const leaseExpiresAt = new Date(Date.parse(observedAt) + leaseDurationMs).toISOString();
+    const tokenDigest = leaseTokenDigest(input.leaseToken);
+    const campaign = this.mustGet(input.tenantId, input.campaignId);
+    const gate = authorizeTransformerWorkerAction(
+      { tenantId: input.tenantId, environment: campaign.environment },
+      input.gateConfig,
+    );
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
+    const renewed = this.mutate(
+      input,
+      "attempt.lease_renewed",
+      {
+        unitId: input.unitId,
+        leaseGeneration: input.leaseGeneration,
+        leaseTokenDigest: tokenDigest,
+        leaseDurationMs,
+        leaseExpiresAt,
+      },
+      (state) => {
+        assertAttemptFence(state, input);
+        const unit = unitById(state, input.unitId);
+        if (Date.parse(leaseExpiresAt) <= Date.parse(unit.leaseExpiresAt ?? "")) {
+          throw new Error("transformer_pilot_lease_renewal_not_extended");
+        }
+        replaceUnit(state, { ...unit, leaseExpiresAt });
+      },
+    );
+    const unit = unitById(renewed, input.unitId);
+    if (unit.state !== "running" || unit.leaseGeneration !== input.leaseGeneration ||
+        unit.leaseTokenDigest !== tokenDigest || unit.leaseExpiresAt === undefined) {
+      throw new Error("transformer_pilot_lease_renewal_replay_invalid");
+    }
+    return deepFreeze({
+      leaseGeneration: unit.leaseGeneration,
+      leaseTokenDigest: unit.leaseTokenDigest,
+      leaseExpiresAt: unit.leaseExpiresAt,
+    });
   }
 
   assertCurrentAttemptFence(input: Readonly<{

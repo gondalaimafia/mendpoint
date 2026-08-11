@@ -652,6 +652,60 @@ describe("Transformer pilot execution coordinator", () => {
     store.close();
   });
 
+  it("renews only the exact live lease and persists one idempotent extension", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-renewal-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    let store = new TransformerPilotExecutionStore(path);
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const token = "lease-token-unit-a-renewal-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-renewal-a"),
+      leaseToken: token,
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    })!;
+    const renewalInput = {
+      ...mutation(1, "renew-lease-a"),
+      observedAt: "2026-08-02T08:01:30.000Z",
+      unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    };
+
+    const renewed = store.renewAttemptLease(renewalInput);
+    expect(renewed).toEqual({
+      leaseGeneration: lease.leaseGeneration,
+      leaseTokenDigest: lease.leaseTokenDigest,
+      leaseExpiresAt: "2026-08-02T08:02:30.000Z",
+    });
+    expect(store.renewAttemptLease(renewalInput)).toEqual(renewed);
+    expect(() => store.renewAttemptLease({
+      ...renewalInput,
+      idempotencyKey: "renew-lease-stale-token",
+      leaseToken: "lease-token-unit-a-renewal-stale",
+    })).toThrow("transformer_pilot_fence_stale");
+    expect(() => store.renewAttemptLease({
+      ...renewalInput,
+      idempotencyKey: "renew-lease-non-extending",
+      leaseDurationMs: 1_000,
+    })).toThrow("transformer_pilot_lease_renewal_not_extended");
+    expect(store.listExpiredAttempts(time(2), "tenant-a")).toEqual([]);
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.lease_renewed"
+    )).toHaveLength(1);
+    store.close();
+
+    store = new TransformerPilotExecutionStore(path);
+    expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.leaseExpiresAt)
+      .toBe("2026-08-02T08:02:30.000Z");
+    expect(store.listExpiredAttempts("2026-08-02T08:02:29.999Z", "tenant-a")).toEqual([]);
+    expect(store.listExpiredAttempts("2026-08-02T08:02:30.000Z", "tenant-a")).toHaveLength(1);
+    store.close();
+  });
+
   it("rejects expired live fences and mutations at the deadline", () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
