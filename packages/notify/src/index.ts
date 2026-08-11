@@ -51,3 +51,15 @@ export async function notifyWardenEvent(
     text: `*Warden* — ${label}: ${detail}`,
   });
 }
+
+export {
+  notifyPaging,
+  clearPagingDedupe,
+  pagingEventForReadiness,
+  pagingEventForWorkerHeartbeat,
+  type PagingEvent,
+  type PagingEventType,
+  type PagingSeverity,
+  type PagingDelivery,
+  type NotifyPagingResult,
+} from "./paging.js";

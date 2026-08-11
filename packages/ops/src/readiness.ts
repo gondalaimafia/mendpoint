@@ -7,6 +7,7 @@ import { RELEASE, releaseBanner } from "./release.js";
 import { validateApiEnv } from "./env.js";
 import { featureMatrix } from "./features.js";
 import { assessCustomerBackupReadiness } from "./disaster-recovery.js";
+import { recordCounter, recordHistogram, startSpan } from "./telemetry.js";
 
 export type ProbeResult = {
   status: "ok" | "degraded" | "fail";
@@ -44,6 +45,8 @@ export function readiness(opts?: {
   dbPing?: () => boolean;
   schemaCheck?: () => boolean;
 }): ProbeResult {
+  const span = startSpan("ops.readiness");
+  const startNs = Date.now();
   const checks: ProbeResult["checks"] = [];
   const env = validateApiEnv();
   checks.push({
@@ -119,9 +122,15 @@ export function readiness(opts?: {
 
   const fail = checks.some((c) => !c.ok);
   const degraded = env.warnings.length > 0 && !fail;
+  const status = fail ? "fail" : degraded ? "degraded" : "ok";
+
+  span.setAttribute("readiness.status", status);
+  span.end(fail ? "error" : "ok");
+  recordCounter("readiness_check_total", 1, { status });
+  recordHistogram("readiness_check_duration_ms", Date.now() - startNs, { status });
 
   return {
-    status: fail ? "fail" : degraded ? "degraded" : "ok",
+    status,
     checks,
     release: {
       version: RELEASE.version,
