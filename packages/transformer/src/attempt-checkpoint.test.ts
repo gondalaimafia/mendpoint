@@ -10,6 +10,7 @@ import {
   createTransformerCandidatePublicationRequestDigest,
   createTransformerCoordinatorCompletionRequest,
   createTransformerCoordinatorCompletionRequestDigest,
+  createTransformerCoordinatorCompletionSlot,
   createTransformerCoordinatorEffectResultArtifact,
   createTransformerEffectRequestArtifact,
   createTransformerEffectResultArtifact,
@@ -859,12 +860,15 @@ describe("Transformer attempt checkpoint", () => {
       current.state.episodeId,
       repairedSeal,
     ));
+    const coordinatorCompletionDigest = digest("coordinator completion receipt");
     expect(digest(createTransformerCoordinatorCompletionRequest(
       current.state.episodeId,
       repairedSeal,
+      coordinatorCompletionDigest,
     ))).toBe(createTransformerCoordinatorCompletionRequestDigest(
       current.state.episodeId,
       repairedSeal,
+      coordinatorCompletionDigest,
     ));
 
     await expect(advanceTransformerAttemptCheckpoint(
@@ -946,16 +950,59 @@ describe("Transformer attempt checkpoint", () => {
       key,
       current.state.binding,
     );
+    const mismatchedCompletionDigest = digest("mismatched coordinator completion");
+    const mismatchedRequestPayload = createTransformerCoordinatorCompletionRequest(
+      current.state.episodeId,
+      repairedSeal,
+      mismatchedCompletionDigest,
+    );
+    const mismatchedRequestDigest = digest(mismatchedRequestPayload);
+    const mismatchedIdentity = createTransformerAttemptEffectIdentity(
+      current.state.episodeId,
+      "coordinator_complete",
+      createTransformerCoordinatorCompletionSlot(coordinatorCompletionDigest),
+      mismatchedRequestDigest,
+    );
+    const mismatchedRequest = createTransformerEffectRequestArtifact({
+      tenantId: current.state.binding.tenantId,
+      episodeId: current.state.episodeId,
+      effectId: mismatchedIdentity.effectId,
+    }, mismatchedRequestPayload, key);
+    const mismatchedJournal = journal.clone();
+    mismatchedJournal.putArtifact(mismatchedRequest.artifact.storageKey, mismatchedRequest.bytes);
+    await expect(advanceTransformerAttemptCheckpoint(
+      mismatchedJournal,
+      completionPreparedHead.stateDigest,
+      {
+        ...completionPrepared,
+        generation: completionPrepared.generation + 1,
+        pendingEffect: {
+          kind: "coordinator_complete",
+          state: "prepared" as const,
+          slot: createTransformerCoordinatorCompletionSlot(coordinatorCompletionDigest),
+          ...mismatchedIdentity,
+          requestDigest: mismatchedRequestDigest,
+          requestArtifact: mismatchedRequest.artifact,
+        },
+        previousCheckpointDigest: completionPreparedHead.stateDigest,
+        createdAt: new Date(
+          Date.parse(completionPrepared.createdAt) + 60_000,
+        ).toISOString(),
+      },
+      key,
+      current.state.binding,
+    )).rejects.toThrow("transformer_attempt_checkpoint_effect_invalid");
     await expect(consumeEffect(
       journal.clone(),
       completionPreparedHead,
       completionPrepared,
       {
         kind: "coordinator_complete",
-        slot: "coordinator:completion",
+        slot: createTransformerCoordinatorCompletionSlot(coordinatorCompletionDigest),
         requestPayload: createTransformerCoordinatorCompletionRequest(
           current.state.episodeId,
           repairedSeal,
+          coordinatorCompletionDigest,
         ),
         createResult: (effectId) => createTransformerCoordinatorEffectResultArtifact({
           tenantId: current.state.binding.tenantId,
@@ -971,10 +1018,11 @@ describe("Transformer attempt checkpoint", () => {
     )).rejects.toThrow("transformer_attempt_checkpoint_coordinator_result_invalid");
     const terminal = await consumeEffect(journal, completionPreparedHead, completionPrepared, {
       kind: "coordinator_complete",
-      slot: "coordinator:completion",
+      slot: createTransformerCoordinatorCompletionSlot(coordinatorCompletionDigest),
       requestPayload: createTransformerCoordinatorCompletionRequest(
         current.state.episodeId,
         repairedSeal,
+        coordinatorCompletionDigest,
       ),
       createResult: (effectId) => createTransformerCoordinatorEffectResultArtifact({
         tenantId: current.state.binding.tenantId,
@@ -983,7 +1031,7 @@ describe("Transformer attempt checkpoint", () => {
       }, {
         schemaVersion: 1,
         status: "accepted",
-        completionDigest: digest("coordinator completion receipt"),
+        completionDigest: coordinatorCompletionDigest,
       }, key),
       consume: () => ({ stage: "terminal" as const }),
     });

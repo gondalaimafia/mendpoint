@@ -26,6 +26,7 @@ const STAGES = [
 const EFFECT_KINDS = [
   "model", "verifier", "workspace_publish", "candidate_publish", "coordinator_complete",
 ] as const;
+const COORDINATOR_COMPLETION_SLOT = /^coordinator:completion:([a-f0-9]{64})$/;
 
 export type TransformerAttemptCheckpointStage = typeof STAGES[number];
 export type TransformerAttemptCheckpointEffectKind = typeof EFFECT_KINDS[number];
@@ -873,18 +874,35 @@ function validateCandidateSeal(
 export function createTransformerCoordinatorCompletionRequestDigest(
   episodeId: string,
   seal: TransformerCandidateSeal,
+  completionDigest: string,
 ): string {
-  return sha256(createTransformerCoordinatorCompletionRequest(episodeId, seal));
+  return sha256(createTransformerCoordinatorCompletionRequest(
+    episodeId,
+    seal,
+    completionDigest,
+  ));
 }
 
 export function createTransformerCoordinatorCompletionRequest(
   episodeId: string,
   seal: TransformerCandidateSeal,
+  completionDigest: string,
 ): Uint8Array {
   if (!ID.test(episodeId)) throw new Error("transformer_attempt_checkpoint_terminal_invalid");
+  requireDigest(completionDigest, "transformer_attempt_checkpoint_terminal_invalid");
   return Buffer.from(canonical({
-    protocol: `${PROTOCOL}:coordinator-completion`, episodeId, seal,
+    protocol: `${PROTOCOL}:coordinator-completion`, episodeId, seal, completionDigest,
   }), "utf8");
+}
+
+export function createTransformerCoordinatorCompletionSlot(completionDigest: string): string {
+  requireDigest(completionDigest, "transformer_attempt_checkpoint_terminal_invalid");
+  return `coordinator:completion:${completionDigest.slice("sha256:".length)}`;
+}
+
+function coordinatorCompletionDigestFromSlot(slot: string): string | null {
+  const matched = COORDINATOR_COMPLETION_SLOT.exec(slot);
+  return matched ? `sha256:${matched[1]}` : null;
 }
 
 export function createTransformerCandidatePublicationRequestDigest(
@@ -1020,7 +1038,8 @@ function validateEffect(
     (effect.kind === "verifier" && /^verification:sha256:[a-f0-9]{64}:[0-9]+:[0-9]+$/.test(effect.slot)) ||
     (effect.kind === "workspace_publish" && /^workspace:sha256:[a-f0-9]{64}:[0-9]+$/.test(effect.slot)) ||
     (effect.kind === "candidate_publish" && effect.slot === "candidate:seal") ||
-    (effect.kind === "coordinator_complete" && effect.slot === "coordinator:completion");
+    (effect.kind === "coordinator_complete" &&
+      coordinatorCompletionDigestFromSlot(effect.slot) !== null);
   if (!slotValid) throw new Error("transformer_attempt_checkpoint_effect_invalid");
   requireDigest(effect.requestDigest, "transformer_attempt_checkpoint_effect_invalid");
   validateEncryptedArtifact(effect.requestArtifact, "transformer_attempt_checkpoint_effect_invalid");
@@ -1258,6 +1277,17 @@ function validateState(state: TransformerAttemptCheckpointState): void {
       (effect.kind === "candidate_publish" && state.stage === "adaptive") ||
       (effect.kind === "coordinator_complete" && state.stage === "completion_prepared");
     if (!stageValid) throw new Error("transformer_attempt_checkpoint_effect_invalid");
+    if (effect.kind === "coordinator_complete") {
+      const completionDigest = coordinatorCompletionDigestFromSlot(effect.slot);
+      if (completionDigest === null || state.candidateSeal === null ||
+          effect.requestDigest !== createTransformerCoordinatorCompletionRequestDigest(
+            state.episodeId,
+            state.candidateSeal,
+            completionDigest,
+          )) {
+        throw new Error("transformer_attempt_checkpoint_effect_invalid");
+      }
+    }
     if (effect.kind === "verifier") {
       const round = verificationRound(
         state.verificationReceipts,
@@ -1293,17 +1323,26 @@ function validateState(state: TransformerAttemptCheckpointState): void {
     throw new Error("transformer_attempt_checkpoint_effect_invalid");
   }
   if (state.stage === "terminal") {
-    const completion = state.completedEffects.find((receipt) =>
-      receipt.kind === "coordinator_complete" && receipt.slot === "coordinator:completion"
+    const completions = state.completedEffects.filter((receipt) =>
+      receipt.kind === "coordinator_complete" &&
+      coordinatorCompletionDigestFromSlot(receipt.slot) !== null
     );
+    const completion = completions[0];
+    const completionDigest = completion
+      ? coordinatorCompletionDigestFromSlot(completion.slot)
+      : null;
     if (state.pendingEffect.kind !== "none" || state.candidateSeal === null ||
         state.commandCursor !== state.binding.requiredVerificationCount ||
         state.verificationReceipts.slice(-state.commandCursor).some((receipt) =>
           receipt.workspaceManifestDigest !== state.workspaceArtifact.manifestDigest ||
           receipt.status !== "passed"
         ) ||
-        completion === undefined || completion.requestDigest !==
-          createTransformerCoordinatorCompletionRequestDigest(state.episodeId, state.candidateSeal)) {
+        completions.length !== 1 || completion === undefined || completionDigest === null ||
+        completion.requestDigest !== createTransformerCoordinatorCompletionRequestDigest(
+          state.episodeId,
+          state.candidateSeal,
+          completionDigest,
+        )) {
       throw new Error("transformer_attempt_checkpoint_terminal_invalid");
     }
   }
@@ -1614,8 +1653,12 @@ function validateTransition(
     throw new Error("transformer_attempt_checkpoint_receipt_invalid");
   }
   if (currentEffect.kind === "coordinator_complete") {
-    if (completedResultPayload === null ||
-        parseCoordinatorEffectResult(completedResultPayload).status !== "accepted") {
+    const expectedCompletionDigest = coordinatorCompletionDigestFromSlot(currentEffect.slot);
+    const result = completedResultPayload === null
+      ? null
+      : parseCoordinatorEffectResult(completedResultPayload);
+    if (expectedCompletionDigest === null || result === null || result.status !== "accepted" ||
+        result.completionDigest !== expectedCompletionDigest) {
       throw new Error("transformer_attempt_checkpoint_coordinator_result_invalid");
     }
   }

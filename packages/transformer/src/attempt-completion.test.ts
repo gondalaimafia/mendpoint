@@ -110,4 +110,20 @@ describe("Transformer attempt completion intent", () => {
       evidenceRefs: [...value.evidenceRefs].reverse(),
     })).toBe(createTransformerAttemptCompletionDigest(value));
   });
+
+  it("rejects identifiers that only become valid after string coercion", () => {
+    const value = intent();
+    expect(() => createTransformerAttemptCompletionDigest({
+      ...value,
+      tenantId: 123,
+    } as unknown as TransformerAttemptCompletionIntent)).toThrow(
+      "transformer_attempt_completion_invalid",
+    );
+    expect(() => createTransformerAttemptCompletionDigest({
+      ...value,
+      episodeId: undefined,
+    } as unknown as TransformerAttemptCompletionIntent)).toThrow(
+      "transformer_attempt_completion_invalid",
+    );
+  });
 });

@@ -98,6 +98,8 @@ function validateIntent(value: TransformerAttemptCompletionIntent): TransformerA
   const observedAt = Date.parse(value.observedAt);
   if (
     value.schemaVersion !== 1 ||
+    typeof value.tenantId !== "string" || typeof value.campaignId !== "string" ||
+    typeof value.unitId !== "string" || typeof value.episodeId !== "string" ||
     !ID.test(value.tenantId) || !ID.test(value.campaignId) || !ID.test(value.unitId) ||
     !ID.test(value.episodeId) ||
     !DIGEST.test(value.candidateSealDigest) || !DIGEST.test(value.leaseTokenDigest) ||
