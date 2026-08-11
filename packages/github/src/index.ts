@@ -18,6 +18,12 @@ import {
   type ExactDraftDeliveryInput,
   type ExactDraftDeliveryResult,
 } from "./exact-draft.js";
+import {
+  createGitLabDelivery,
+  gitlabAsReviewableChangeDelivery,
+  type ReviewableChangeDelivery,
+  type ScmDeliveryProvider,
+} from "./gitlab.js";
 
 export type PullRequestResult = {
   number: number;
@@ -594,6 +600,21 @@ export function createGitHubDelivery(mode = process.env.GITHUB_MODE ?? "mock"): 
   return new MockGitHubDelivery();
 }
 
+/**
+ * Provider-neutral delivery selector. Routes to the GitLab draft-MR adapter
+ * when the caller (or SCM_PROVIDER) asks for GitLab; defaults to GitHub so all
+ * existing GitHub behavior is unchanged when GitLab is not configured.
+ */
+export function createReviewableChangeDelivery(
+  provider: ScmDeliveryProvider = (process.env.SCM_PROVIDER?.trim().toLowerCase() as ScmDeliveryProvider) ||
+    "github",
+): ReviewableChangeDelivery {
+  if (provider === "gitlab") {
+    return gitlabAsReviewableChangeDelivery(createGitLabDelivery());
+  }
+  return createGitHubDelivery();
+}
+
 export {
   ExactDraftRemoteSideEffectUncertainError,
   type ExactDraftFileMode,
@@ -660,3 +681,18 @@ export {
   resolveGitHubAccountTenantBinding,
   resolveGitHubTenantAccountBinding,
 } from "./owner-bindings.js";
+
+export {
+  MockGitLabDelivery,
+  HttpGitLabDelivery,
+  GitLabDeliveryError,
+  createGitLabDelivery,
+  gitlabAsReviewableChangeDelivery,
+  type GitLabDelivery,
+  type GitLabDeliveryOperation,
+  type GitLabFetch,
+  type MergeRequestResult,
+  type ReviewableChange,
+  type ReviewableChangeDelivery,
+  type ScmDeliveryProvider,
+} from "./gitlab.js";
