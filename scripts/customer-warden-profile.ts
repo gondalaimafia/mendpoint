@@ -116,7 +116,7 @@ export function customerWardenChildEnvironment(
 const REQUIRED_SETTINGS = Object.freeze({
   MENDPOINT_DEPLOYMENT_PROFILE: "customer",
   MENDPOINT_DEPLOYMENT_CLASS: "customer",
-  MENDPOINT_CUSTOMER_READY: "1",
+  MENDPOINT_CUSTOMER_READY: "0",
   MENDPOINT_CUSTOMER_TOPOLOGY: "single_node",
   GITHUB_MODE: "real",
   MENDPOINT_FEED_POLLING_ENABLED: "1",
