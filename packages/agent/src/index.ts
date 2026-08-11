@@ -56,6 +56,27 @@ export {
   resolveAgentModelName,
 } from "./model-endpoint.js";
 export {
+  resolveModelBackend,
+  resolveProviderEndpoint,
+  modelProvider,
+  registeredModelProviderIds,
+  MODEL_PROVIDER_ENV_VAR,
+  DEFAULT_PROVIDER_ID,
+  type ModelWireFormat,
+  type ModelTransport,
+  type ModelProviderDescriptor,
+  type ResolvedModelBackend,
+} from "./model-providers.js";
+export {
+  buildNonOpenAiModelRequest,
+  parseNonOpenAiModelResponse,
+  type NonOpenAiWireFormat,
+  type ParsedModelResponse,
+  type NormalizedModelUsage,
+  type BuiltModelRequest,
+  type ModelRequestParams,
+} from "./model-adapters.js";
+export {
   buildLiveModelProvenance,
   computeModelCostUsd,
   DEFAULT_MODEL_PRICE_TABLE,
