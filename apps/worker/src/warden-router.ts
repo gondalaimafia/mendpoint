@@ -295,7 +295,7 @@ function buildTaskSpec(input: WardenRoutingRequestInput): RouterTaskSpec {
       retryableFailures: ["timeout", "rate_limited", "provider_unavailable"],
       fallbackFailures: ["provider_unavailable", "executor_unavailable"],
     },
-    privacy: { classification: input.classification ?? "confidential" },
+    privacy: { classification: input.classification ?? "restricted" },
     risk: input.risk ?? "medium",
     quality: { minimumScore: 0 },
     latency: { maximumMs: input.maximumLatencyMs ?? 3_600_000 },

@@ -27,6 +27,15 @@ export type ToolSourceContextState = {
   sourceEvidenceFiles: Map<string, { digest: string; bytes: number }>;
   /** Current working content used by the read before write mutation fence. */
   observedFiles: Map<string, { digest: string; bytes: number }>;
+  /** Exact fully observed working content, retained only inside the private run. */
+  observedContents: Map<string, { digest: string; content: string }>;
+  /** Character ranges actually exposed to the planner for each current digest. */
+  readCoverage: Map<string, {
+    digest: string;
+    bytes: number;
+    totalChars: number;
+    ranges: Array<{ start: number; end: number }>;
+  }>;
   observedDirectories: Set<string>;
   searches: Set<string>;
   observedBytes: number;
@@ -193,8 +202,115 @@ function walk(
   return out;
 }
 
+function walkPage(
+  dir: string,
+  root: string,
+  offset: number,
+  maxFiles: number,
+): { files: string[]; nextOffset: number | null; totalFiles: number | null; truncated: boolean } {
+  const collected: string[] = [];
+  let codeFilesSeen = 0;
+  let hasMore = false;
+  const visit = (directory: string, depth: number): boolean => {
+    if (depth > 32) return false;
+    let entries: string[];
+    try {
+      entries = readdirSync(directory).sort();
+    } catch {
+      return false;
+    }
+    for (const name of entries) {
+      if (name === "node_modules" || name === ".git" || name === "dist" || name === ".next") {
+        continue;
+      }
+      const absolute = join(directory, name);
+      let stat;
+      try {
+        const link = lstatSync(absolute);
+        if (link.isSymbolicLink()) continue;
+        stat = statSync(absolute);
+      } catch {
+        continue;
+      }
+      if (stat.isDirectory()) {
+        if (visit(absolute, depth + 1)) return true;
+        continue;
+      }
+      if (!isCodeExt(name)) continue;
+      if (codeFilesSeen >= offset) collected.push(relative(root, absolute).replace(/\\/g, "/"));
+      codeFilesSeen++;
+      if (collected.length > maxFiles) {
+        hasMore = true;
+        return true;
+      }
+    }
+    return false;
+  };
+  visit(dir, 0);
+  const files = collected.slice(0, maxFiles);
+  return {
+    files,
+    nextOffset: hasMore ? offset + files.length : null,
+    totalFiles: hasMore ? null : codeFilesSeen,
+    truncated: hasMore,
+  };
+}
+
 function sha256(value: string | Buffer): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+/** Read the current digest of one repository file through the same path fence as tools. */
+export function currentToolFileDigest(ctx: ToolContext, path: string): string | null {
+  const safe = safeRel(ctx.repoRoot, path);
+  if (!safe || safe === ".") return null;
+  const absolute = join(realpathSync(resolve(ctx.repoRoot)), safe);
+  try {
+    const stat = statSync(absolute);
+    if (!stat.isFile()) return null;
+    return sha256(readFileSync(absolute));
+  } catch {
+    return null;
+  }
+}
+
+/** One literal replacement implementation shared by policy simulation and execution. */
+export function replaceLiteralOccurrences(
+  original: string,
+  from: string,
+  to: string,
+  global = true,
+): string {
+  if (!from) return original;
+  const expression = new RegExp(
+    from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    global ? "g" : "",
+  );
+  return original.replace(expression, to);
+}
+
+function recordReadCoverage(
+  state: ToolSourceContextState,
+  safe: string,
+  digest: string,
+  bytes: number,
+  totalChars: number,
+  start: number,
+  end: number,
+): boolean {
+  const existing = state.readCoverage.get(safe);
+  const ranges = existing?.digest === digest && existing.totalChars === totalChars
+    ? [...existing.ranges, { start, end }]
+    : [{ start, end }];
+  ranges.sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const range of ranges) {
+    const prior = merged.at(-1);
+    if (!prior || range.start > prior.end) merged.push({ ...range });
+    else prior.end = Math.max(prior.end, range.end);
+  }
+  state.readCoverage.set(safe, { digest, bytes, totalChars, ranges: merged });
+  return totalChars === 0 || (merged.length === 1 && merged[0]!.start === 0 && merged[0]!.end >= totalChars);
 }
 
 function blockMutation(ctx: ToolContext, tool: ToolCall["tool"], summary: string, error: string): ToolResult {
@@ -238,7 +354,15 @@ function recordMutation(ctx: ToolContext, safe: string, content: string): void {
   const bytes = Buffer.byteLength(content, "utf8");
   state.changedBytes += bytes;
   state.groundedMutations++;
-  state.observedFiles.set(safe, { digest: sha256(content), bytes });
+  const digest = sha256(content);
+  state.observedFiles.set(safe, { digest, bytes });
+  state.observedContents.set(safe, { digest, content });
+  state.readCoverage.set(safe, {
+    digest,
+    bytes,
+    totalChars: content.length,
+    ranges: [{ start: 0, end: content.length }],
+  });
 }
 
 function captureOriginal(
@@ -323,18 +447,28 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
           return { ok: true, tool, summary: `file ${safe}`, data: { files: [safe] } };
         }
         ctx.sourceContext?.observedDirectories.add(safe);
-        const files = walk(
-          abs,
-          ctx.repoRoot,
-          [],
-          0,
-          Math.min(ctx.sourceContext?.budget.maxSearchFiles ?? 200, 2_000),
-        ).slice(0, 200);
+        const requestedOffset = Number(args.offset ?? 0);
+        const offset = Number.isFinite(requestedOffset)
+          ? Math.max(0, Math.min(Math.floor(requestedOffset), 1_000_000))
+          : 0;
+        const requestedMaxFiles = Number(args.maxFiles ?? 200);
+        const maxFiles = Number.isFinite(requestedMaxFiles)
+          ? Math.max(1, Math.min(Math.floor(requestedMaxFiles), 200))
+          : 200;
+        const page = walkPage(abs, ctx.repoRoot, offset, maxFiles);
         return {
           ok: true,
           tool,
-          summary: `${files.length} code files under ${safe}`,
-          data: { files },
+          summary: page.truncated
+            ? `${page.files.length} code files under ${safe}; continue at offset ${page.nextOffset}`
+            : `${page.files.length} final code files under ${safe}`,
+          data: {
+            files: page.files,
+            offset,
+            nextOffset: page.nextOffset,
+            totalFiles: page.totalFiles,
+            truncated: page.truncated,
+          },
         };
       }
 
@@ -353,28 +487,54 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         }
         const bytes = readFileSync(abs);
         const state = ctx.sourceContext;
-        if (state && state.observedBytes + bytes.byteLength > state.budget.maxTotalReadBytes) {
-          return { ok: false, tool, summary: "source read budget exhausted", error: "source_budget" };
-        }
         const requestedMax = Number(args.maxChars ?? 12_000);
         const max = Number.isFinite(requestedMax)
           ? Math.max(1, Math.min(Math.floor(requestedMax), maxFileBytes))
           : Math.min(12_000, maxFileBytes);
         const content = bytes.toString("utf8");
+        const requestedOffset = Number(args.offset ?? 0);
+        const offset = Number.isFinite(requestedOffset)
+          ? Math.max(0, Math.min(Math.floor(requestedOffset), content.length))
+          : 0;
+        const window = content.slice(offset, offset + max);
+        const nextOffset = offset + window.length;
+        const exposedBytes = Buffer.byteLength(window, "utf8");
+        if (state && state.observedBytes + exposedBytes > state.budget.maxTotalReadBytes) {
+          return { ok: false, tool, summary: "source read budget exhausted", error: "source_budget" };
+        }
         if (state) {
-          state.observedBytes += bytes.byteLength;
+          state.observedBytes += exposedBytes;
           const observation = { digest: sha256(bytes), bytes: bytes.byteLength };
-          if (!state.sourceEvidenceFiles.has(safe)) {
-            state.sourceEvidenceFiles.set(safe, observation);
+          const fullyObserved = recordReadCoverage(
+            state,
+            safe,
+            observation.digest,
+            observation.bytes,
+            content.length,
+            offset,
+            nextOffset,
+          );
+          if (fullyObserved) {
+            if (!state.sourceEvidenceFiles.has(safe)) {
+              state.sourceEvidenceFiles.set(safe, observation);
+            }
+            state.observedFiles.set(safe, observation);
+            state.observedContents.set(safe, { digest: observation.digest, content });
           }
-          state.observedFiles.set(safe, observation);
-          if (content.length > max) state.truncatedObservations++;
+          if (offset > 0 || nextOffset < content.length) state.truncatedObservations++;
         }
         return {
           ok: true,
           tool,
-          summary: `read ${safe} (${content.length} chars)`,
-          data: { path: safe, content: content.slice(0, max) },
+          summary: `read ${safe} chars ${offset} to ${nextOffset} of ${content.length}`,
+          data: {
+            path: safe,
+            content: window,
+            offset,
+            nextOffset,
+            totalChars: content.length,
+            truncated: offset > 0 || nextOffset < content.length,
+          },
         };
       }
 
@@ -383,11 +543,20 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         if (!query || query.length < 2) {
           return { ok: false, tool, summary: "query too short", error: "args" };
         }
+        const rawScope = String(args.scopePath ?? ".");
+        const scopePath = safeRel(ctx.repoRoot, rawScope);
+        if (!scopePath || pathBlocked(scopePath, never)) {
+          return { ok: false, tool, summary: "blocked search scope", error: "policy" };
+        }
+        const scopeRoot = join(ctx.repoRoot, scopePath === "." ? "" : scopePath);
+        if (!existsSync(scopeRoot) || !statSync(scopeRoot).isDirectory()) {
+          return { ok: false, tool, summary: "search scope not found", error: "ENOENT" };
+        }
         const state = ctx.sourceContext;
         const maxFiles = state?.budget.maxSearchFiles ?? 2_000;
         const maxBytes = state?.budget.maxSearchBytes ?? 8 * 1024 * 1024;
         const maxHits = state?.budget.maxSearchHits ?? 40;
-        const files = walk(ctx.repoRoot, ctx.repoRoot, [], 0, maxFiles);
+        const files = walk(scopeRoot, ctx.repoRoot, [], 0, maxFiles);
         const hits: Array<{ path: string; line: number; text: string }> = [];
         const re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
         let scannedBytes = 0;
@@ -412,7 +581,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
           });
         }
         if (state) {
-          state.searches.add(query);
+          state.searches.add(`${scopePath}:${query}`);
           state.searchBytes += scannedBytes;
           if (files.length >= maxFiles || scannedBytes >= maxBytes || hits.length >= maxHits) {
             state.truncatedObservations++;
@@ -421,8 +590,8 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         return {
           ok: true,
           tool,
-          summary: `${hits.length} hits for ${JSON.stringify(query)}`,
-          data: { hits },
+          summary: `${hits.length} hits for ${JSON.stringify(query)} under ${scopePath}`,
+          data: { scopePath, hits },
         };
       }
 
@@ -486,14 +655,10 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         const original = readFileSync(abs, "utf8");
         const sourceFence = assertObservedMutation(ctx, safe, abs);
         if (sourceFence) return { ...sourceFence, tool };
-        const re = new RegExp(
-          from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-          global ? "g" : "",
-        );
-        if (!re.test(original)) {
+        if (!original.includes(from)) {
           return { ok: false, tool, summary: `pattern not found in ${safe}`, error: "no_match" };
         }
-        const updated = original.replace(re, to);
+        const updated = replaceLiteralOccurrences(original, from, to, global);
         if (updated === original) {
           return {
             ok: false,

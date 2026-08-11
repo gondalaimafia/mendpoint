@@ -3,6 +3,7 @@ import {
   redactSourceForModel,
   verificationControlPath,
 } from "@mendpoint/agent";
+import { deploymentProfile } from "@mendpoint/ops";
 
 export type WardenRunInput = Readonly<{
   goal: string;
@@ -24,6 +25,14 @@ const OPTIONAL_BOOLEAN_ERRORS = new Set([
   "dryRun must be a boolean",
   "useLlm must be a boolean",
 ]);
+
+export function resolveWardenUseLlm(
+  input: Readonly<{ useLlm?: boolean }>,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (deploymentProfile(env) === "customer") return true;
+  return input.useLlm ?? env.LLM_AGENT === "1";
+}
 
 function optionalBoolean(value: unknown, field: string): boolean | undefined {
   if (value === undefined) return undefined;

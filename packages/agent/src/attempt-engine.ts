@@ -591,6 +591,7 @@ function compareTrees(
 }
 
 function reviewEvidence(
+  agent: AgentRunResult,
   task: Omit<AgentTask, "repoRoot" | "tenantId">,
   changedPaths: readonly string[],
   commands: readonly VerificationRecord[],
@@ -610,22 +611,61 @@ function reviewEvidence(
     summary: `All ${commands.length} configured verification commands passed on the exact candidate.`,
     commands: commands.map((command) => ({ ...command, ok: true as const, exitCode: 0 as const })),
   };
+  const intentsByPath = new Map<string, Array<NonNullable<AgentRunResult["steps"][number]["call"]["intent"]>>>();
+  for (const step of agent.steps) {
+    const intent = step.call.intent;
+    if (
+      !step.result.ok ||
+      (step.call.tool !== "write_file" && step.call.tool !== "replace_in_file") ||
+      !intent ||
+      intent.targetPath !== step.call.args.path
+    ) continue;
+    const intents = intentsByPath.get(intent.targetPath) ?? [];
+    intents.push(intent);
+    intentsByPath.set(intent.targetPath, intents);
+  }
   const evidence: CandidateReviewEvidence = {
     schemaVersion: 1 as const,
-    summary: "Every reviewed file is bound to the source snapshot and exact verifier evidence. Semantic risk and confidence are unavailable because this planner contract did not measure them.",
+    summary: "Every reviewed file is bound to the source snapshot, its accepted execution intent, and exact verifier evidence.",
     verification,
-    edits: changedPaths.map((path) => ({
-      path,
-      rationale: null,
-      category: null,
-      risk: null,
-      confidence: null,
-      assessmentSource: "unavailable" as const,
-      verification: {
-        summary: `${verification.summary} Repair objective: ${objective}`,
-        commandOutputSha256: verification.commands.map((command) => command.outputSha256),
-      },
-    })),
+    edits: changedPaths.map((path) => {
+      const intents = intentsByPath.get(path) ?? [];
+      if (!intents.length) {
+        throw new AttemptError(
+          "warden_attempt_mutation_intent_missing",
+          `Changed file has no accepted mutation intent: ${path}`,
+        );
+      }
+      if (intents.some((intent) => intent.risk === "critical")) {
+        throw new AttemptError(
+          "warden_attempt_critical_risk_requires_escalation",
+          `Critical-risk mutation cannot enter delivery review: ${path}`,
+        );
+      }
+      const intent = intents.at(-1)!;
+      const risk = intents.some((candidate) => candidate.risk === "high")
+        ? "high" as const
+        : intents.some((candidate) => candidate.risk === "medium")
+          ? "medium" as const
+          : "low" as const;
+      const allModelAssessed = intents.every((candidate) => candidate.assessmentSource === "model");
+      return {
+        path,
+        rationale: intent.hypothesis.slice(0, 500),
+        category: `${intent.assessmentSource === "heuristic" ? "heuristic:" : ""}${intent.targetSymbol ?? "repository_mutation"}`.slice(0, 100),
+        risk,
+        confidence: allModelAssessed
+          ? Math.min(...intents.map((candidate) => candidate.confidence))
+          : null,
+        assessmentSource: allModelAssessed
+          ? "planner" as const
+          : "unavailable" as const,
+        verification: {
+          summary: `${verification.summary} Repair objective: ${objective}`,
+          commandOutputSha256: verification.commands.map((command) => command.outputSha256),
+        },
+      };
+    }),
   };
   return Object.freeze(evidence);
 }
@@ -829,6 +869,18 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       fail("warden_attempt_source_mutated", "The immutable source changed during agent execution.");
     }
     if (!agent.ok) {
+      if (agent.stoppedReason === "mutation_intent_critical_requires_escalation") {
+        fail(
+          "warden_attempt_critical_risk_requires_escalation",
+          "Warden blocked a critical-risk mutation before repository execution.",
+        );
+      }
+      if (agent.stoppedReason === "verifier_mutated_candidate") {
+        fail(
+          "warden_attempt_verifier_mutated_candidate",
+          "Warden rejected an in-agent verifier that changed candidate bytes.",
+        );
+      }
       fail("warden_attempt_agent_failed", `Warden rejected the candidate: ${agent.stoppedReason}`);
     }
     const agentCandidateManifest = scanTree(
@@ -836,6 +888,20 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       input.limits,
       "warden_attempt_candidate_symlink",
     );
+    for (const path of agent.filesChanged) {
+      const expected = [...agent.steps].reverse().find((step) =>
+        step.result.ok &&
+        (step.call.tool === "write_file" || step.call.tool === "replace_in_file") &&
+        step.call.intent?.targetPath === path
+      )?.call.intent?.expectedResultDigest;
+      const actual = agentCandidateManifest.entries.find((entry) => entry.path === path)?.sha256;
+      if (!expected || actual !== expected) {
+        fail(
+          "warden_attempt_verifier_mutated_candidate",
+          `Candidate bytes do not match the latest accepted mutation intent: ${path}.`,
+        );
+      }
+    }
 
     const target = await verify(
       input.verification.targetCommand,
@@ -941,7 +1007,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       },
       changedPaths: difference.changedPaths,
       changedBytes: difference.changedBytes,
-      review: reviewEvidence(input.task, difference.changedPaths, [
+      review: reviewEvidence(agent, input.task, difference.changedPaths, [
         target.record,
         ...regression.records,
         ...security.records,

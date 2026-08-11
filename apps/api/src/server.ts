@@ -207,7 +207,10 @@ import {
 } from "./ci-check.js";
 import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
-import { parseWardenRunInput } from "./warden-run-input.js";
+import {
+  parseWardenRunInput,
+  resolveWardenUseLlm,
+} from "./warden-run-input.js";
 import {
   readWardenCandidate,
 } from "./warden-candidate.js";
@@ -273,6 +276,7 @@ const {
   designPartnerRoutes,
   pilotSuccessRoutes,
   migrationPrRoutes,
+  tenantMembershipRoutes,
 } = durableState;
 const app = new Hono<ApiEnv>();
 const startedAt = Date.now();
@@ -676,6 +680,7 @@ app.route("/billing", billingRoutes);
 app.route("/design-partner-applications", designPartnerRoutes);
 app.route("/pilot-success-contracts", pilotSuccessRoutes);
 app.route("/prs", migrationPrRoutes);
+app.route("/tenants/memberships", tenantMembershipRoutes);
 
 // Persist alerts under data/
 try {
@@ -2541,7 +2546,7 @@ app.post("/agent/runs", async (c) => {
       errorLog: body.errorLog,
       maxSteps: body.maxSteps,
       dryRun: body.dryRun,
-      useLlm: body.useLlm ?? process.env.LLM_AGENT === "1",
+      useLlm: resolveWardenUseLlm(body),
       allowNetwork: false,
       sessionId,
     };

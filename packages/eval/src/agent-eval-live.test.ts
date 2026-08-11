@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,16 +26,46 @@ type MockConfig = {
     tool: string;
     args: Readonly<Record<string, unknown>>;
     thought: string;
+    intent?: unknown;
   }>[];
 };
 
 type MockToolCall = NonNullable<MockConfig["toolCalls"]>[number];
 
+const LIVE_CLIENT_DIGEST = `sha256:${createHash("sha256")
+  .update("export const chargePath = '/v1/chargess';\n", "utf8")
+  .digest("hex")}`;
+
+function modelToolCall(toolCall: MockToolCall): MockToolCall {
+  if (toolCall.tool !== "write_file" && toolCall.tool !== "replace_in_file") {
+    return { ...toolCall, intent: null };
+  }
+  const path = String(toolCall.args.path);
+  return {
+    ...toolCall,
+    intent: {
+      schemaVersion: 1,
+      hypothesis: toolCall.thought,
+      targetPath: path,
+      targetSymbol: "chargePath",
+      targetDigest: LIVE_CLIENT_DIGEST,
+      evidenceRefs: [{ path, digest: LIVE_CLIENT_DIGEST }],
+      precondition: "The observed client still contains the failing endpoint path.",
+      expectedObservation: "The exact failing endpoint path is replaced once.",
+      postcondition: "The hidden endpoint verifier passes.",
+      rollback: "Restore the exact observed client bytes.",
+      confidence: 0.9,
+      risk: "medium",
+      stopCondition: "Stop if the observed digest changes or verification fails.",
+    },
+  };
+}
+
 function modelResponse(toolCall: MockToolCall, request: number): Response {
   return new Response(JSON.stringify({
     id: `chatcmpl-live-${request}`,
     model: APPROVED_MODEL,
-    choices: [{ message: { content: JSON.stringify(toolCall) } }],
+    choices: [{ message: { content: JSON.stringify(modelToolCall(toolCall)) } }],
     usage: { prompt_tokens: 200, completion_tokens: 160, total_tokens: 360 },
   }), {
     status: 200,
@@ -61,11 +92,11 @@ function startMockServer(config: MockConfig): Promise<{ server: Server; port: nu
         model: config.echoModel,
         choices: [{
           message: {
-            content: JSON.stringify(config.toolCalls?.[calls - 1] ?? {
+            content: JSON.stringify(modelToolCall(config.toolCalls?.[calls - 1] ?? {
               tool: "read_file",
               args: { path: "client.js" },
               thought: "inspect the client",
-            }),
+            })),
           },
         }],
         // Muse Spark is a reasoning model; completions carry real headroom.
@@ -360,10 +391,11 @@ describe("Warden live eval runner", () => {
     expect(failed).toEqual(expect.arrayContaining([
       "objective.completed",
       "objective.verifier_passed",
+      "objective.stop_reason",
       "objective.exact_allowed_files",
       "objective.hidden_semantic_judge",
-      "objective.no_rollback",
     ]));
+    expect(failed).not.toContain("objective.no_rollback");
     expect(failed).not.toContain("objective.verifier_immutable");
     expect(report.passed).toBe(false);
   });

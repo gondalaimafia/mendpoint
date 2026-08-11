@@ -56,6 +56,7 @@ import {
   processJobsOnce,
   maintainWardenArtifactsOnce,
   resolveWardenModelSourcePolicy,
+  resolveWardenRepositoryClassification,
   resolveWorkerRepoPath,
   retryDelayMs,
   waitForWorkerDelay,
@@ -161,11 +162,29 @@ function meteredWardenPlanner(): AgentPlanner {
       };
     }
     if (!tools.includes("replace_in_file")) {
+      const target = input.observedEvidenceDigests?.find((entry) => entry.path === "client.js");
+      if (!target) throw new Error("client.js evidence missing before mutation");
       return {
         call: {
           tool: "replace_in_file",
           args: { path: "client.js", from: "chargess", to: "charges" },
           thought: "Apply the source grounded path correction",
+          intent: {
+            schemaVersion: 1,
+            hypothesis: "The duplicated s in the observed charge path causes the verifier failure.",
+            targetPath: target.path,
+            targetSymbol: "path",
+            targetDigest: target.digest,
+            evidenceRefs: [{ path: target.path, digest: target.digest }],
+            precondition: "The observed client still contains /v1/chargess.",
+            expectedObservation: "The exact observed path literal can be replaced once.",
+            postcondition: "The client uses /v1/charges and the protected verifier passes.",
+            rollback: "Restore the exact observed client.js bytes.",
+            confidence: 0.96,
+            risk: "low",
+            stopCondition: "Stop if the target digest changes or the verifier still fails.",
+            assessmentSource: "planner",
+          },
         },
         usage: PER_CALL_USAGE,
       };
@@ -450,6 +469,22 @@ describe("worker runtime", () => {
         feedPollOk: true,
       }),
     ).toThrow(/absolute/i);
+  });
+
+  it("binds model source to an explicit tenant and stable remote repository classification", () => {
+    const env = {
+      MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS: JSON.stringify({
+        "tenant-a": { "repo-123": "internal" },
+      }),
+    };
+    expect(resolveWardenRepositoryClassification("tenant-a", "repo-123", env)).toBe("internal");
+    expect(() => resolveWardenRepositoryClassification("tenant-b", "repo-123", env))
+      .toThrow("warden_repository_classification_required");
+    expect(() => resolveWardenRepositoryClassification("tenant-a", "repo-456", env))
+      .toThrow("warden_repository_classification_required");
+    expect(() => resolveWardenRepositoryClassification("tenant-a", "repo-123", {
+      MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS: "not-json",
+    })).toThrow("warden_repository_classifications_invalid");
   });
 
   it("keeps customer feed readiness false after restart when the latest poll failed", () => {
@@ -1236,6 +1271,9 @@ describe("worker runtime", () => {
       MENDPOINT_WORKER_HEARTBEAT_PATH: join(repos, "worker-heartbeat.json"),
     };
     expect(validateWorkerProductionEnv(customerProfile)).toContain(
+      "Customer worker requires Warden model source execution",
+    );
+    expect(validateWorkerProductionEnv(customerProfile)).toContain(
       "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
     );
     expect(validateWorkerProductionEnv({
@@ -1245,10 +1283,28 @@ describe("worker runtime", () => {
     })).toContain(
       "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
     );
-    expect(validateWorkerProductionEnv({
+    const completeCustomerProfile = {
       ...customerProfile,
       GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant_default"}',
-    })).toEqual([]);
+      MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
+      MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_default",
+      MENDPOINT_WARDEN_MODEL_PROVIDER: "openai-compatible",
+      MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
+      MENDPOINT_WARDEN_MODEL_REGION: "us-central",
+      MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+      MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS:
+        JSON.stringify({ tenant_default: { "repository-1": "internal" } }),
+      MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
+      MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
+      LLM_AGENT_MODEL: "model-a",
+      LLM_AGENT_URL: "https://models.example/v1",
+      OPENAI_API_KEY: "configured",
+    };
+    expect(validateWorkerProductionEnv({
+      ...completeCustomerProfile,
+      MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "0",
+    })).toContain("Customer worker requires external model processing to be explicitly allowed");
+    expect(validateWorkerProductionEnv(completeCustomerProfile)).toEqual([]);
   });
 
   it("allows a PAT canary only for one pinned tenant and exact connected repository", async () => {
@@ -2084,6 +2140,8 @@ describe("worker runtime", () => {
         MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "0",
         MENDPOINT_WARDEN_MODEL_REGION: "us-central",
         MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+        MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS:
+          JSON.stringify({ tenant_test: { "tenant_test/fixture": "internal" } }),
         MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
         MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
         LLM_AGENT_MODEL: "model-a",
@@ -2103,6 +2161,43 @@ describe("worker runtime", () => {
       expect.objectContaining({ reasons: expect.arrayContaining(["privacy_disallowed"]) }),
     ]);
     fixture.db.raw.close();
+  }, 30_000);
+
+  it("fails a customer Warden job before execution when its tenant has no approved model policy", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-customer-model-policy-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      useLlm: false,
+    });
+    const planner = vi.fn(meteredWardenPlanner());
+
+    try {
+      const result = await processJobsOnce(fixture.db, {
+        tenantId: "tenant_test",
+        workerId: "worker-customer-model-policy",
+        leaseMs: 30_000,
+        wardenPlanner: planner,
+        wardenEnv: {
+          MENDPOINT_DATA_DIR: fixture.dataRoot,
+          MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+        },
+      });
+
+      expect(result.claimed).toBe(1);
+      expect(result.succeeded).toBe(0);
+      expect(planner).not.toHaveBeenCalled();
+      expect(existsSync(fixture.candidateRoot)
+        ? readdirSync(fixture.candidateRoot)
+        : []).toEqual([]);
+      expect(listJobs(fixture.db, 10, "tenant_test")[0]).toMatchObject({
+        error_code: "customer_warden_model_policy_required",
+      });
+    } finally {
+      fixture.db.raw.close();
+    }
   }, 30_000);
 
   it("does not apply a routing outcome after the Warden lease transfers", async () => {
@@ -2242,6 +2337,8 @@ describe("worker runtime", () => {
       MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
       MENDPOINT_WARDEN_MODEL_REGION: "us-central",
       MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+      MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS:
+        JSON.stringify({ tenant_test: { "tenant_test/fixture": "internal" } }),
       MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
       MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
       LLM_AGENT_MODEL: "model-a",
@@ -2320,6 +2417,8 @@ describe("worker runtime", () => {
         MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
         MENDPOINT_WARDEN_MODEL_REGION: "us-central",
         MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+        MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS:
+          JSON.stringify({ tenant_test: { "tenant_test/fixture": "internal" } }),
         MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
         MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
         LLM_AGENT_MODEL: "model-a",

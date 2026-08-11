@@ -6,6 +6,7 @@ import { createBillingEconomicsRoutes } from "./billing-economics.js";
 import { createDesignPartnerApplicationRoutes } from "./design-partner-applications.js";
 import { createPilotSuccessContractRoutes } from "./pilot-success-contracts.js";
 import { createMigrationPrReviewRoutes } from "./review-routes.js";
+import { createTenantMembershipRoutes } from "./tenant-memberships.js";
 import { initializeApiDurableState } from "./production.js";
 
 export function initializeApiRuntime(
@@ -24,6 +25,7 @@ export function initializeApiRuntime(
       designPartnerRoutes: createDesignPartnerApplicationRoutes({ db, env }),
       pilotSuccessRoutes: createPilotSuccessContractRoutes({ db }),
       migrationPrRoutes: createMigrationPrReviewRoutes({ db }),
+      tenantMembershipRoutes: createTenantMembershipRoutes({ db }),
     };
   }, env);
 }

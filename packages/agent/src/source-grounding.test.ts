@@ -44,6 +44,8 @@ function setup(): { root: string; context: ToolContext; source: ToolSourceContex
     },
     sourceEvidenceFiles: new Map(),
     observedFiles: new Map(),
+    observedContents: new Map(),
+    readCoverage: new Map(),
     observedDirectories: new Set(),
     searches: new Set(),
     observedBytes: 0,

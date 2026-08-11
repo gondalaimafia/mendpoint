@@ -32,7 +32,9 @@ import { DatabaseSync } from "node:sqlite";
 export const DISASTER_RECOVERY_POLICY_SCHEMA_VERSION = 1 as const;
 export const BACKUP_MANIFEST_SCHEMA_VERSION = 3 as const;
 export const RECOVERY_DRILL_REPORT_SCHEMA_VERSION = 1 as const;
-export const LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION = 1 as const;
+export const LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION = 2 as const;
+export const OBJECT_BACKUP_COMMIT_SCHEMA_VERSION = 1 as const;
+export const OBJECT_BACKUP_RECOVERY_RECEIPT_SCHEMA_VERSION = 1 as const;
 
 export type SqliteRecoveryResourceKind =
   | "database"
@@ -122,14 +124,49 @@ export interface BackupManifest {
   integrity: Readonly<{ algorithm: "hmac-sha256"; keyId: string; digest: string }>;
 }
 
+export interface ObjectBackupPublication {
+  kind: "s3";
+  backupId: string;
+  bucket: string;
+  prefix: string;
+  endpointOrigin: string;
+  commitDigest: string;
+  manifestSha256: string;
+}
+
+export interface ObjectBackupCommit {
+  schemaVersion: typeof OBJECT_BACKUP_COMMIT_SCHEMA_VERSION;
+  backupId: string;
+  bucket: string;
+  prefix: string;
+  endpointOrigin: string;
+  manifestSha256: string;
+  manifestAuthentication: string;
+  objectCount: number;
+  sizeBytes: number;
+  publishedAt: string;
+  integrity: Readonly<{ algorithm: "hmac-sha256"; digest: string }>;
+}
+
+export interface ObjectBackupRecoveryReceipt {
+  schemaVersion: typeof OBJECT_BACKUP_RECOVERY_RECEIPT_SCHEMA_VERSION;
+  backupId: string;
+  keyId: string;
+  verifiedAt: string;
+  manifestAuthentication: string;
+  publication: Readonly<ObjectBackupPublication>;
+  integrity: Readonly<{ algorithm: "hmac-sha256"; digest: string }>;
+}
+
 export interface LastVerifiedBackupEvidence {
-  schemaVersion: typeof LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION;
+  schemaVersion: 1 | typeof LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION;
   backupId: string;
   backupRoot: string;
   createdAt: string;
   verifiedAt: string;
   keyId: string;
   manifestAuthentication: string;
+  publication?: Readonly<ObjectBackupPublication>;
   integrity: Readonly<{ algorithm: "hmac-sha256"; keyId: string; digest: string }>;
 }
 
@@ -190,7 +227,7 @@ export interface ApplicationConsistentBackupInput extends CreateBackupBundleInpu
   fenceRoot: string;
   outputRoot?: string;
   evidencePath?: string;
-  storageClass?: "durable_isolated_mount";
+  storageClass?: "durable_isolated_mount" | "isolated_publish_staging";
   requireDistinctDevice?: boolean;
   waitTimeoutMs?: number;
   pollIntervalMs?: number;
@@ -230,6 +267,164 @@ function derivedKey(key: Buffer, backupId: string, purpose: string): Buffer {
     Buffer.from(`mendpoint:${purpose}:v1`, "utf8"),
     32,
   ));
+}
+
+const OBJECT_PREFIX = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/;
+const BUCKET_NAME = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+
+function validateObjectPublicationIdentity(input: {
+  backupId: string;
+  bucket: string;
+  prefix: string;
+  endpointOrigin: string;
+  manifestSha256: string;
+}): void {
+  if (!CUSTOMER_BACKUP_ID.test(input.backupId)) throw new Error("object_backup_id_invalid");
+  if (!BUCKET_NAME.test(input.bucket)) throw new Error("object_backup_bucket_invalid");
+  if (
+    !OBJECT_PREFIX.test(input.prefix) ||
+    input.prefix.startsWith("/") ||
+    input.prefix.endsWith("/") ||
+    input.prefix.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
+  ) throw new Error("object_backup_prefix_invalid");
+  let endpoint: URL;
+  try {
+    endpoint = new URL(input.endpointOrigin);
+  } catch {
+    throw new Error("object_backup_endpoint_invalid");
+  }
+  if (
+    endpoint.protocol !== "https:" ||
+    endpoint.username ||
+    endpoint.password ||
+    endpoint.origin !== input.endpointOrigin
+  ) throw new Error("object_backup_endpoint_invalid");
+  if (!/^[a-f0-9]{64}$/.test(input.manifestSha256)) {
+    throw new Error("object_backup_manifest_sha256_invalid");
+  }
+}
+
+export function createObjectBackupCommit(
+  input: Omit<ObjectBackupCommit, "schemaVersion" | "integrity">,
+  key: Buffer,
+): ObjectBackupCommit {
+  if (key.byteLength !== 32) throw new Error("object_backup_key_invalid");
+  validateObjectPublicationIdentity(input);
+  if (!/^[a-f0-9]{64}$/.test(input.manifestAuthentication)) {
+    throw new Error("object_backup_manifest_authentication_invalid");
+  }
+  if (!Number.isSafeInteger(input.objectCount) || input.objectCount <= 0) {
+    throw new Error("object_backup_object_count_invalid");
+  }
+  if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes <= 0) {
+    throw new Error("object_backup_size_invalid");
+  }
+  validDate(input.publishedAt, "object_backup_published_at");
+  const unsigned = {
+    schemaVersion: OBJECT_BACKUP_COMMIT_SCHEMA_VERSION,
+    ...input,
+  };
+  return {
+    ...unsigned,
+    integrity: {
+      algorithm: "hmac-sha256",
+      digest: hmacSha256(
+        derivedKey(key, input.backupId, "object-backup-commit"),
+        JSON.stringify(unsigned),
+      ),
+    },
+  };
+}
+
+export function verifyObjectBackupCommit(
+  commit: ObjectBackupCommit,
+  key: Buffer,
+): { ok: boolean; issues: string[] } {
+  try {
+    if (commit.schemaVersion !== OBJECT_BACKUP_COMMIT_SCHEMA_VERSION) {
+      return { ok: false, issues: ["object_backup_commit_schema_unsupported"] };
+    }
+    if (commit.integrity?.algorithm !== "hmac-sha256") {
+      return { ok: false, issues: ["object_backup_commit_integrity_algorithm_invalid"] };
+    }
+    const expected = createObjectBackupCommit(withoutIntegrity(commit), key);
+    return safeEqualHex(expected.integrity.digest, commit.integrity?.digest ?? "")
+      ? { ok: true, issues: [] }
+      : { ok: false, issues: ["object_backup_commit_authentication_failed"] };
+  } catch (error) {
+    return {
+      ok: false,
+      issues: [error instanceof Error ? error.message : "object_backup_commit_invalid"],
+    };
+  }
+}
+
+export function createObjectBackupRecoveryReceipt(
+  input: Omit<ObjectBackupRecoveryReceipt, "schemaVersion" | "integrity">,
+  key: Buffer,
+): ObjectBackupRecoveryReceipt {
+  if (key.byteLength !== 32) throw new Error("object_backup_key_invalid");
+  if (input.publication.backupId !== input.backupId) {
+    throw new Error("object_backup_recovery_receipt_id_mismatch");
+  }
+  const { backupId: _publicationBackupId, ...publicationIdentity } = input.publication;
+  validateObjectPublicationIdentity({ backupId: input.backupId, ...publicationIdentity });
+  if (!/^[a-f0-9]{64}$/.test(input.publication.commitDigest)) {
+    throw new Error("object_backup_commit_digest_invalid");
+  }
+  if (!input.publication.prefix.endsWith(`/${input.backupId}`)) {
+    throw new Error("object_backup_prefix_id_mismatch");
+  }
+  if (!/^[a-f0-9]{64}$/.test(input.manifestAuthentication)) {
+    throw new Error("object_backup_manifest_authentication_invalid");
+  }
+  const keyId = requiredText(input.keyId, "object_backup_recovery_receipt_key_id");
+  validDate(input.verifiedAt, "object_backup_recovery_receipt_verified_at");
+  const unsigned = {
+    schemaVersion: OBJECT_BACKUP_RECOVERY_RECEIPT_SCHEMA_VERSION,
+    backupId: input.backupId,
+    keyId,
+    verifiedAt: input.verifiedAt,
+    manifestAuthentication: input.manifestAuthentication,
+    publication: input.publication,
+  };
+  return {
+    ...unsigned,
+    integrity: {
+      algorithm: "hmac-sha256",
+      digest: hmacSha256(
+        derivedKey(key, input.backupId, "object-backup-recovery-receipt"),
+        JSON.stringify(unsigned),
+      ),
+    },
+  };
+}
+
+export function verifyObjectBackupRecoveryReceipt(
+  receipt: ObjectBackupRecoveryReceipt,
+  key: Buffer,
+  expectedKeyId: string,
+): { ok: boolean; issues: string[] } {
+  try {
+    if (receipt.schemaVersion !== OBJECT_BACKUP_RECOVERY_RECEIPT_SCHEMA_VERSION) {
+      return { ok: false, issues: ["object_backup_recovery_receipt_schema_unsupported"] };
+    }
+    if (receipt.integrity?.algorithm !== "hmac-sha256") {
+      return { ok: false, issues: ["object_backup_recovery_receipt_integrity_algorithm_invalid"] };
+    }
+    if (receipt.keyId !== expectedKeyId) {
+      return { ok: false, issues: ["object_backup_recovery_receipt_key_id_mismatch"] };
+    }
+    const expected = createObjectBackupRecoveryReceipt(withoutIntegrity(receipt), key);
+    return safeEqualHex(expected.integrity.digest, receipt.integrity?.digest ?? "")
+      ? { ok: true, issues: [] }
+      : { ok: false, issues: ["object_backup_recovery_receipt_authentication_failed"] };
+  } catch (error) {
+    return {
+      ok: false,
+      issues: [error instanceof Error ? error.message : "object_backup_recovery_receipt_invalid"],
+    };
+  }
 }
 
 export function parseCustomerBackupKey(value: string | undefined): Buffer {
@@ -858,7 +1053,12 @@ export function customerBackupInputFromEnv(
   );
   if (!isAbsolute(sourceRoot)) throw new Error("customer_backup_source_root_must_be_absolute");
   if (!isAbsolute(outputRoot)) throw new Error("customer_backup_output_root_must_be_absolute");
-  if (env.MENDPOINT_BACKUP_STORAGE_CLASS !== "durable_isolated_mount") {
+  const storageClass = env.MENDPOINT_BACKUP_STORAGE_CLASS === "object_store_publish"
+    ? "isolated_publish_staging" as const
+    : env.MENDPOINT_BACKUP_STORAGE_CLASS === "durable_isolated_mount"
+      ? "durable_isolated_mount" as const
+      : null;
+  if (!storageClass) {
     throw new Error("customer_backup_storage_class_required");
   }
   const key = parseCustomerBackupKey(env.MENDPOINT_BACKUP_KEY);
@@ -967,7 +1167,7 @@ export function customerBackupInputFromEnv(
     backupRoot: resolve(safePaths.outputRoot, backupId),
     fenceRoot: safePaths.fenceRoot,
     evidencePath: safePaths.evidencePath,
-    storageClass: "durable_isolated_mount",
+    storageClass,
     requireDistinctDevice: true,
     key,
     keyId,
@@ -1196,7 +1396,11 @@ export function prepareCustomerBackupDirectories(
 
 function validateDurableBackupMount(input: ApplicationConsistentBackupInput): void {
   if (!input.requireDistinctDevice) return;
-  if (input.storageClass !== "durable_isolated_mount" || !input.outputRoot) {
+  if (
+    (input.storageClass !== "durable_isolated_mount" &&
+      input.storageClass !== "isolated_publish_staging") ||
+    !input.outputRoot
+  ) {
     throw new Error("customer_backup_durable_mount_required");
   }
   const source = statSync(resolve(input.sourceRoot));
@@ -1517,8 +1721,7 @@ function evidenceDigest(evidence: LastVerifiedBackupEvidence, key: Buffer): stri
   );
 }
 
-export function recordLastVerifiedBackupEvidence(input: {
-  evidencePath: string;
+type LastVerifiedBackupEvidenceMaterial = {
   key: Buffer;
   keyId: string;
   backupId: string;
@@ -1526,14 +1729,31 @@ export function recordLastVerifiedBackupEvidence(input: {
   createdAt: string;
   verifiedAt: string;
   manifestAuthentication: string;
-}): LastVerifiedBackupEvidence {
-  if (!isAbsolute(input.evidencePath)) throw new Error("backup_evidence_path_must_be_absolute");
+  publication?: ObjectBackupPublication;
+};
+
+export function createLastVerifiedBackupEvidence(
+  input: LastVerifiedBackupEvidenceMaterial,
+): LastVerifiedBackupEvidence {
   if (!isAbsolute(input.backupRoot)) throw new Error("backup_evidence_root_must_be_absolute");
   if (input.key.byteLength !== 32) throw new Error("backup_evidence_key_invalid");
   validDate(input.createdAt, "backup_evidence_created_at");
   validDate(input.verifiedAt, "backup_evidence_verified_at");
   if (!/^[a-f0-9]{64}$/.test(input.manifestAuthentication)) {
     throw new Error("backup_evidence_manifest_authentication_invalid");
+  }
+  if (input.publication) {
+    if (input.publication.backupId !== input.backupId) {
+      throw new Error("object_backup_publication_id_mismatch");
+    }
+    const { backupId: _publicationBackupId, ...publicationIdentity } = input.publication;
+    validateObjectPublicationIdentity({ backupId: input.backupId, ...publicationIdentity });
+    if (!/^[a-f0-9]{64}$/.test(input.publication.commitDigest)) {
+      throw new Error("object_backup_commit_digest_invalid");
+    }
+    if (!input.publication.prefix.endsWith(`/${input.backupId}`)) {
+      throw new Error("object_backup_prefix_id_mismatch");
+    }
   }
   const unsigned = {
     schemaVersion: LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION,
@@ -1543,6 +1763,7 @@ export function recordLastVerifiedBackupEvidence(input: {
     verifiedAt: input.verifiedAt,
     keyId: requiredText(input.keyId, "backup_evidence_key_id"),
     manifestAuthentication: input.manifestAuthentication,
+    ...(input.publication ? { publication: input.publication } : {}),
   };
   const evidence = {
     ...unsigned,
@@ -1555,10 +1776,55 @@ export function recordLastVerifiedBackupEvidence(input: {
       ),
     },
   } satisfies LastVerifiedBackupEvidence;
+  return evidence;
+}
+
+export function recordLastVerifiedBackupEvidence(
+  input: LastVerifiedBackupEvidenceMaterial & { evidencePath: string },
+): LastVerifiedBackupEvidence {
+  if (!isAbsolute(input.evidencePath)) throw new Error("backup_evidence_path_must_be_absolute");
+  const evidence = createLastVerifiedBackupEvidence(input);
   mkdirSync(dirname(input.evidencePath), { recursive: true, mode: 0o700 });
   const stagingPath = `${resolve(input.evidencePath)}.staging-${randomUUID()}`;
   writeFileSync(stagingPath, `${JSON.stringify(evidence, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   renameSync(stagingPath, resolve(input.evidencePath));
+  return evidence;
+}
+
+export function loadAuthenticatedLastVerifiedBackupEvidence(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): LastVerifiedBackupEvidence {
+  const input = customerBackupInputFromEnv(env);
+  const evidence = JSON.parse(readFileSync(input.evidencePath!, "utf8")) as LastVerifiedBackupEvidence;
+  return verifyAuthenticatedLastVerifiedBackupEvidence(evidence, input.key, input.keyId);
+}
+
+export function verifyAuthenticatedLastVerifiedBackupEvidence(
+  evidence: LastVerifiedBackupEvidence,
+  key: Buffer,
+  keyId: string,
+): LastVerifiedBackupEvidence {
+  if (
+    (evidence.schemaVersion !== 1 &&
+      evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION) ||
+    evidence.integrity?.algorithm !== "hmac-sha256" ||
+    evidence.integrity.keyId !== keyId ||
+    evidence.keyId !== keyId ||
+    !safeEqualHex(evidence.integrity.digest, evidenceDigest(evidence, key)) ||
+    !/^[a-f0-9]{64}$/.test(evidence.manifestAuthentication)
+  ) throw new Error("last_verified_backup_evidence_invalid");
+  if (evidence.publication) {
+    if (evidence.publication.backupId !== evidence.backupId) {
+      throw new Error("last_verified_backup_publication_invalid");
+    }
+    const { backupId: _publicationBackupId, ...publicationIdentity } = evidence.publication;
+    validateObjectPublicationIdentity({ backupId: evidence.backupId, ...publicationIdentity });
+    if (
+      evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION ||
+      !/^[a-f0-9]{64}$/.test(evidence.publication.commitDigest) ||
+      !evidence.publication.prefix.endsWith(`/${evidence.backupId}`)
+    ) throw new Error("last_verified_backup_publication_invalid");
+  }
   return evidence;
 }
 
@@ -1571,25 +1837,39 @@ export function assessCustomerBackupReadiness(
     const input = customerBackupInputFromEnv(env, now);
     const evidence = JSON.parse(readFileSync(input.evidencePath!, "utf8")) as LastVerifiedBackupEvidence;
     if (
-      evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION ||
+      (evidence.schemaVersion !== 1 &&
+        evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION) ||
       evidence.integrity?.algorithm !== "hmac-sha256" ||
       evidence.integrity.keyId !== input.keyId ||
       evidence.keyId !== input.keyId ||
       !safeEqualHex(evidence.integrity.digest, evidenceDigest(evidence, input.key)) ||
       !/^[a-f0-9]{64}$/.test(evidence.manifestAuthentication)
     ) return { ok: false, detail: "missing_or_invalid" };
-    const outputRoot = resolve(input.outputRoot!);
-    const backupRoot = resolve(evidence.backupRoot);
-    if (!backupRoot.startsWith(`${outputRoot}${sep}`) || !existsSync(backupRoot)) {
-      return { ok: false, detail: "missing_or_invalid" };
+    if (evidence.publication) {
+      const { backupId: publicationBackupId, ...publicationIdentity } = evidence.publication;
+      if (publicationBackupId !== evidence.backupId) {
+        return { ok: false, detail: "missing_or_invalid" };
+      }
+      validateObjectPublicationIdentity({ backupId: evidence.backupId, ...publicationIdentity });
+      if (
+        evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION ||
+        !/^[a-f0-9]{64}$/.test(evidence.publication.commitDigest) ||
+        !evidence.publication.prefix.endsWith(`/${evidence.backupId}`)
+      ) return { ok: false, detail: "missing_or_invalid" };
+    } else {
+      const outputRoot = resolve(input.outputRoot!);
+      const backupRoot = resolve(evidence.backupRoot);
+      if (!backupRoot.startsWith(`${outputRoot}${sep}`) || !existsSync(backupRoot)) {
+        return { ok: false, detail: "missing_or_invalid" };
+      }
+      const manifest = loadAuthenticatedBackupManifest(backupRoot, input.key);
+      if (
+        manifest.backupId !== evidence.backupId ||
+        manifest.createdAt !== evidence.createdAt ||
+        manifest.integrity.keyId !== evidence.keyId ||
+        !safeEqualHex(manifest.integrity.digest, evidence.manifestAuthentication)
+      ) return { ok: false, detail: "missing_or_invalid" };
     }
-    const manifest = loadAuthenticatedBackupManifest(backupRoot, input.key);
-    if (
-      manifest.backupId !== evidence.backupId ||
-      manifest.createdAt !== evidence.createdAt ||
-      manifest.integrity.keyId !== evidence.keyId ||
-      !safeEqualHex(manifest.integrity.digest, evidence.manifestAuthentication)
-    ) return { ok: false, detail: "missing_or_invalid" };
     const createdAt = validDate(evidence.createdAt, "backup_evidence_created_at");
     const verifiedAt = validDate(evidence.verifiedAt, "backup_evidence_verified_at");
     if (verifiedAt < createdAt || verifiedAt > now || createdAt > now) {

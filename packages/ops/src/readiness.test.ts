@@ -125,6 +125,33 @@ describe("readiness storage boundary", () => {
       writeFileSync(join(outputRoot, "customer-001", ciphertextPath!), "tampered");
       expect(readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true }).status)
         .toBe("fail");
+
+      rmSync(join(outputRoot, "customer-001"), { recursive: true, force: true });
+      recordLastVerifiedBackupEvidence({
+        evidencePath,
+        key,
+        keyId: "customer-backup-key-v1",
+        backupId: manifest.backupId,
+        backupRoot: join(outputRoot, "customer-001"),
+        createdAt: manifest.createdAt,
+        verifiedAt: new Date().toISOString(),
+        manifestAuthentication: manifest.integrity.digest,
+        publication: {
+          kind: "s3",
+          backupId: manifest.backupId,
+          bucket: "customer-backups",
+          prefix: `backups/${manifest.backupId}`,
+          endpointOrigin: "https://fly.storage.tigris.dev",
+          commitDigest: "b".repeat(64),
+          manifestSha256: "c".repeat(64),
+        },
+      });
+      const objectReport = readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true });
+      expect(objectReport.checks).toContainEqual({
+        name: "last_verified_backup",
+        ok: true,
+        detail: "current",
+      });
     } finally {
       for (const key of Object.keys(process.env)) {
         if (!(key in previous)) delete process.env[key];
