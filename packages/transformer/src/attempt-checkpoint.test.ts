@@ -41,9 +41,19 @@ import {
   type TransformerWorkspaceArtifact,
 } from "./attempt-checkpoint.js";
 import {
+  finalizeTransformerPilotAttemptCheckpoint,
+  type TransformerAttemptCheckpointArtifactStore,
+} from "./attempt-checkpoint-storage.js";
+import {
+  createTransformerAttemptAuthorizationDigest,
   createTransformerAttemptCompletionDigest,
   type TransformerAttemptCompletionIntent,
 } from "./attempt-completion.js";
+import {
+  transformerAttemptCheckpointEnvelopeStorageKey,
+  type TransformerAttemptCheckpointCompletionInput,
+  type TransformerPilotExecutionStore,
+} from "./pilot-execution.js";
 import { recipeFilesDigest } from "./recipe.js";
 
 const key = Buffer.from("81".repeat(32), "hex");
@@ -880,7 +890,7 @@ describe("Transformer attempt checkpoint", () => {
       sourceDigest: current.state.workspaceArtifact.filesDigest,
       candidateRevision: current.state.binding.candidateRevision,
       candidateDigest: current.state.binding.candidateDigest,
-      authorizationDigest: digest("completion authorization"),
+      authorizationDigest: createTransformerAttemptAuthorizationDigest(undefined),
       verificationPassed: true,
       actualCostUsd: 0,
       accounting: {
@@ -892,7 +902,7 @@ describe("Transformer attempt checkpoint", () => {
         actualCostUsd: 0,
         wallTimeMs: 0,
       },
-      observedAt: "2026-08-11T18:15:30.000Z",
+      observedAt: "2026-08-11T19:30:00.000Z",
       evidenceRefs: ["evidence://attempt/terminal"],
     } satisfies TransformerAttemptCompletionIntent;
     const coordinatorCompletionDigest = createTransformerAttemptCompletionDigest(
@@ -1155,12 +1165,190 @@ describe("Transformer attempt checkpoint", () => {
       key,
       current.state.binding,
     )).rejects.toThrow("transformer_attempt_checkpoint_terminal_atomic_required");
-    expect(await journal.compareAndSwap(terminalPrepared.operation)).toBe(true);
+    const stored = new Map<string, Uint8Array>();
+    const pending: string[] = [];
+    const referenced: string[] = [];
+    const unreferenced: string[] = [];
+    const currentBytes = Buffer.from(JSON.stringify(coordinatorDispatchedHead), "utf8");
+    const currentEnvelopeDigest = digest(currentBytes);
+    const currentStorageKey = transformerAttemptCheckpointEnvelopeStorageKey({
+      tenantId: current.state.binding.tenantId,
+      campaignId: current.state.binding.campaignId,
+      unitId: current.state.binding.unitId,
+      episodeId: current.state.episodeId,
+      generation: coordinatorDispatchedHead.generation,
+      envelopeDigest: currentEnvelopeDigest,
+    });
+    stored.set(currentStorageKey, currentBytes);
+    stored.set(completionRequest.artifact.storageKey, completionRequest.bytes);
+    const artifactStore: TransformerAttemptCheckpointArtifactStore = {
+      async read(storageKey) {
+        const value = stored.get(storageKey);
+        return value ? new Uint8Array(value) : null;
+      },
+      async publishImmutableDurable(storageKey, bytes) {
+        const existing = stored.get(storageKey);
+        if (existing && !Buffer.from(existing).equals(Buffer.from(bytes))) {
+          throw new Error("artifact_conflict");
+        }
+        stored.set(storageKey, new Uint8Array(bytes));
+      },
+      async recordPending(storageKey) {
+        pending.push(storageKey);
+      },
+      async recordReferenced(storageKey) {
+        referenced.push(storageKey);
+      },
+      async recordUnreferenced(storageKey) {
+        unreferenced.push(storageKey);
+      },
+    };
+    let currentHead = {
+      schemaVersion: 1 as const,
+      episodeId: current.state.episodeId,
+      stateDigest: coordinatorDispatchedHead.stateDigest,
+      envelopeStorageKey: currentStorageKey,
+      envelopeDigest: currentEnvelopeDigest,
+      generation: coordinatorDispatchedHead.generation,
+      attemptNumber: current.state.attemptNumber,
+      writerLeaseGeneration: current.state.writerLeaseGeneration,
+      writerLeaseTokenDigest: current.state.writerLeaseTokenDigest,
+    };
+    const completionInputs: TransformerAttemptCheckpointCompletionInput[] = [];
+    let lostResponsesRemaining = 2;
+    let committedResult: Readonly<{
+      campaign: typeof campaign;
+      receipt: Readonly<{
+        schemaVersion: 1;
+        tenantId: string;
+        campaignId: string;
+        unitId: string;
+        episodeId: string;
+        completionDigest: string;
+        campaignRevision: number;
+        observedAt: string;
+        checkpointHead: TransformerAttemptCheckpointCompletionInput["nextCheckpointHead"];
+      }>;
+    }> | null = null;
+    const campaign = {
+      environment: current.state.binding.environment,
+      constraintDigest: current.state.binding.constraintDigest,
+      units: [{
+        id: current.state.binding.unitId,
+        snapshot: {
+          repositoryId: current.state.binding.repositoryId,
+          snapshotId: current.state.binding.snapshotId,
+          revision: current.state.binding.sourceRevision,
+          digest: coordinatorCompletionIntent.sourceDigest,
+        },
+        candidateRevision: current.state.binding.candidateRevision,
+        candidateDigest: current.state.binding.candidateDigest,
+        recipe: { digest: current.state.binding.recipeDigest },
+      }],
+    };
+    const pilotStore = {
+      getCampaign() {
+        return campaign;
+      },
+      readAttemptCheckpointHead() {
+        return currentHead;
+      },
+      readAttemptCheckpointLease() {
+        return {
+          attemptNumber: current.state.attemptNumber,
+          generation: current.state.writerLeaseGeneration,
+          tokenDigest: current.state.writerLeaseTokenDigest,
+        };
+      },
+      completeAttemptWithCheckpointHead(input: TransformerAttemptCheckpointCompletionInput) {
+        completionInputs.push(input);
+        if (committedResult === null) {
+          currentHead = input.nextCheckpointHead;
+          committedResult = {
+            campaign,
+            receipt: {
+              schemaVersion: 1 as const,
+              tenantId: input.tenantId,
+              campaignId: input.campaignId,
+              unitId: input.completionIntent.unitId,
+              episodeId: input.completionIntent.episodeId,
+              completionDigest: coordinatorCompletionDigest,
+              campaignRevision: 7,
+              observedAt: input.observedAt,
+              checkpointHead: input.nextCheckpointHead,
+            },
+          };
+        }
+        if (lostResponsesRemaining > 0) {
+          lostResponsesRemaining -= 1;
+          throw new Error("simulated_commit_response_loss");
+        }
+        return committedResult;
+      },
+    } as unknown as TransformerPilotExecutionStore;
+    const finalizeInput = {
+      pilotStore,
+      artifactStore,
+      tenantId: current.state.binding.tenantId,
+      campaignId: current.state.binding.campaignId,
+      unitId: current.state.binding.unitId,
+      binding: current.state.binding,
+      encryptionKey: key,
+      leaseToken: "lease-a",
+      evidenceRefs: coordinatorCompletionIntent.evidenceRefs,
+      expectedStateDigest: coordinatorDispatchedHead.stateDigest,
+      resultArtifact: completionResult.artifact,
+      resultBytes: completionResult.bytes,
+      completionIntent: coordinatorCompletionIntent,
+      candidateSeal: repairedSeal,
+    } as const;
+    const recoveredInProcess = await finalizeTransformerPilotAttemptCheckpoint(finalizeInput);
+    expect(currentHead.stateDigest).not.toBe(coordinatorDispatchedHead.stateDigest);
+    expect(recoveredInProcess.receipt.checkpointHead).toEqual(currentHead);
+    expect(unreferenced).toEqual([]);
+    const finalized = await finalizeTransformerPilotAttemptCheckpoint(finalizeInput);
+    expect(completionInputs).toHaveLength(4);
+    expect(completionInputs[1]).toEqual(completionInputs[0]);
+    expect(completionInputs[2]).toEqual(completionInputs[0]);
+    expect(completionInputs[3]).toEqual(completionInputs[0]);
+    expect(finalized.receipt.checkpointHead).toEqual(completionInputs[0]!.nextCheckpointHead);
     expect(openTransformerAttemptCheckpoint(
-      terminalPrepared.operation.next,
+      finalized.envelope,
       key,
       current.state.binding,
     ).stage).toBe("terminal");
+    expect(pending).toHaveLength(2);
+    expect(new Set(referenced)).toEqual(new Set([
+      finalized.receipt.checkpointHead.envelopeStorageKey,
+      completionResult.artifact.storageKey,
+    ]));
+    expect(unreferenced).toEqual([]);
+
+    currentHead = {
+      schemaVersion: 1,
+      episodeId: current.state.episodeId,
+      stateDigest: coordinatorDispatchedHead.stateDigest,
+      envelopeStorageKey: currentStorageKey,
+      envelopeDigest: currentEnvelopeDigest,
+      generation: coordinatorDispatchedHead.generation,
+      attemptNumber: current.state.attemptNumber,
+      writerLeaseGeneration: current.state.writerLeaseGeneration,
+      writerLeaseTokenDigest: current.state.writerLeaseTokenDigest,
+    };
+    committedResult = null;
+    lostResponsesRemaining = 0;
+    pending.length = 0;
+    referenced.length = 0;
+    unreferenced.length = 0;
+    completionInputs.length = 0;
+    const siblings = await Promise.all([
+      finalizeTransformerPilotAttemptCheckpoint(finalizeInput),
+      finalizeTransformerPilotAttemptCheckpoint(finalizeInput),
+    ]);
+    expect(siblings[0]!.receipt.checkpointHead).toEqual(siblings[1]!.receipt.checkpointHead);
+    expect(currentHead).toEqual(siblings[0]!.receipt.checkpointHead);
+    expect(unreferenced).toHaveLength(1);
+    expect(unreferenced[0]).not.toBe(currentHead.envelopeStorageKey);
   });
 
   it("rejects cursor skips, unbound verification plans, hollow seals, and premature terminal state", async () => {

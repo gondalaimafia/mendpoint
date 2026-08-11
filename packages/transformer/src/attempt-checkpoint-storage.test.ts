@@ -218,6 +218,8 @@ function checkpointFixture(
 
 class DurableArtifactStore implements TransformerAttemptCheckpointArtifactStore {
   readonly values = new Map<string, Uint8Array>();
+  readonly pending: string[] = [];
+  readonly referenced: string[] = [];
   readonly unreferenced: string[] = [];
 
   async read(storageKey: string): Promise<Uint8Array | null> {
@@ -231,6 +233,14 @@ class DurableArtifactStore implements TransformerAttemptCheckpointArtifactStore 
       throw new Error("artifact_conflict");
     }
     this.values.set(storageKey, new Uint8Array(bytes));
+  }
+
+  async recordPending(storageKey: string): Promise<void> {
+    this.pending.push(storageKey);
+  }
+
+  async recordReferenced(storageKey: string): Promise<void> {
+    this.referenced.push(storageKey);
   }
 
   async recordUnreferenced(storageKey: string): Promise<void> {
