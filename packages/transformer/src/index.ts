@@ -140,6 +140,10 @@ export {
 
 export * from "./attempt-checkpoint.js";
 export * from "./attempt-checkpoint-storage.js";
+export {
+  createTransformerPilotAttemptCheckpointConfig,
+  type TransformerPilotAttemptCheckpointConfigInput,
+} from "./attempt-checkpoint-execution.js";
 
 export {
   AWS_SDK_JS_V2_TO_V3_ARTIFACT,
@@ -197,6 +201,11 @@ export {
   type TransformerAdaptiveRepairConfig,
   type TransformerAdaptiveSummary,
   type TransformerAttemptClaimInput,
+  type TransformerAttemptCheckpointCompletion,
+  type TransformerAttemptCheckpointConfig,
+  type TransformerAttemptCheckpointExecutionController,
+  type TransformerAttemptCheckpointFailure,
+  type TransformerAttemptCheckpointOpenInput,
   type TransformerAttemptCompletionInput,
   type TransformerAttemptCoordinatorPort,
   type TransformerAttemptFailureArtifact,

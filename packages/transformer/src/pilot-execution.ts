@@ -589,6 +589,18 @@ export type TransformerAttemptCheckpointCompletionResult = Readonly<{
   receipt: TransformerAttemptCheckpointCompletionReceipt;
 }>;
 
+export type TransformerAttemptCheckpointFailureInput = MutationInput & Readonly<{
+  unitId: string;
+  episodeId: string;
+  leaseGeneration: number;
+  leaseToken: string;
+  expectedStateDigest: string;
+  code: TransformerAttemptFailureCode;
+  errorCode?: string;
+  accounting: TransformerAdaptiveAttemptAccounting;
+  gateConfig?: string;
+}>;
+
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);
   if (value && typeof value === "object") {
@@ -2569,6 +2581,67 @@ export class TransformerPilotExecutionStore {
         completionDigest,
       ),
     });
+  }
+
+  recordAttemptFailureWithCheckpointHead(
+    input: TransformerAttemptCheckpointFailureInput,
+  ): TransformerPilotCampaign {
+    const code = requireAttemptFailureCode(input.code);
+    requireDigest(input.expectedStateDigest, "transformer_pilot_checkpoint_head_invalid");
+    requireId(input.episodeId, "transformer_pilot_checkpoint_episode_invalid");
+    const campaign = this.mustGet(input.tenantId, input.campaignId);
+    const gate = authorizeTransformerWorkerAction(
+      { tenantId: input.tenantId, environment: campaign.environment },
+      input.gateConfig,
+    );
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
+    return this.mutate(
+      input,
+      "attempt.failed_with_checkpoint",
+      {
+        unitId: input.unitId,
+        episodeId: input.episodeId,
+        expectedStateDigest: input.expectedStateDigest,
+        leaseGeneration: input.leaseGeneration,
+        leaseTokenDigest: leaseTokenDigest(input.leaseToken),
+        code,
+        errorCode: input.errorCode ?? code,
+        accounting: input.accounting,
+      },
+      (state) => {
+        assertAttemptFence(state, input);
+        const unit = unitById(state, input.unitId);
+        const current = requireCheckpointHeadForScope(
+          unit.attemptCheckpointHead,
+          input.tenantId,
+          input.campaignId,
+          input.unitId,
+          input.episodeId,
+        );
+        if (current.stateDigest !== input.expectedStateDigest) {
+          throw new Error("transformer_pilot_checkpoint_head_conflict");
+        }
+        const accounted = applyAdaptiveAccounting(state, unit, input.accounting);
+        const routingSettlement = routingTerminal(
+          accounted,
+          input.accounting,
+          input.observedAt,
+          requireEvidence(input.evidenceRefs),
+          "failed",
+          input.errorCode ?? code,
+        );
+        replaceUnit(state, {
+          ...accounted,
+          state: "failed",
+          retryAuthorized: false,
+          ...(routingSettlement ? { routingSettlement } : {}),
+        });
+        state.state = "paused";
+        state.exceptions.push(openedException(state, code, input.observedAt, input.evidenceRefs, unit));
+      },
+    );
   }
 
   recordAttemptFailure(input: MutationInput & {

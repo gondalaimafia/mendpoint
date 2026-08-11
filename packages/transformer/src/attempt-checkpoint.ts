@@ -2123,6 +2123,77 @@ export async function supersedeTransformerAttemptCheckpointCoordinatorCompletion
   throw new Error("transformer_attempt_checkpoint_head_conflict");
 }
 
+export async function supersedeTransformerAttemptCheckpointFailedVerifier(
+  journal: TransformerAttemptCheckpointJournal,
+  expectedHeadDigest: string,
+  createdAt: string,
+  key: Uint8Array,
+  expectedBinding: TransformerAttemptCheckpointBinding,
+): Promise<TransformerAttemptCheckpointEnvelope> {
+  requireDigest(expectedHeadDigest, "transformer_attempt_checkpoint_head_invalid");
+  const currentEnvelope = await journal.read(createTransformerEpisodeId(expectedBinding));
+  if (currentEnvelope === null || currentEnvelope.stateDigest !== expectedHeadDigest) {
+    throw new Error("transformer_attempt_checkpoint_head_conflict");
+  }
+  const current = openTransformerAttemptCheckpoint(currentEnvelope, key, expectedBinding);
+  const activeLease = await journal.readLease(current.episodeId);
+  if (activeLease === null) throw new Error("transformer_attempt_checkpoint_lease_mismatch");
+  validateLease(activeLease);
+  const newerLease = activeLease.attemptNumber > current.attemptNumber ||
+    (activeLease.attemptNumber === current.attemptNumber &&
+      activeLease.generation > current.writerLeaseGeneration);
+  const effect = current.pendingEffect;
+  if (!newerLease || current.stage !== "verification" || effect.kind !== "verifier" ||
+      effect.state !== "completed" ||
+      !Number.isFinite(Date.parse(createdAt)) || new Date(Date.parse(createdAt)).toISOString() !== createdAt ||
+      Date.parse(createdAt) < Date.parse(current.createdAt)) {
+    throw new Error("transformer_attempt_checkpoint_verifier_retry_invalid");
+  }
+  const resultBytes = await journal.readArtifact(effect.resultArtifact.storageKey);
+  if (resultBytes === null) throw new Error("transformer_attempt_checkpoint_artifact_missing");
+  const result = openTransformerVerifierEffectResultArtifact(
+    effect.resultArtifact,
+    resultBytes,
+    key,
+    { tenantId: expectedBinding.tenantId, episodeId: current.episodeId, effectId: effect.effectId },
+  );
+  if (result.status !== "failed") {
+    throw new Error("transformer_attempt_checkpoint_verifier_retry_invalid");
+  }
+  const nextState = {
+    ...current,
+    generation: current.generation + 1,
+    attemptNumber: activeLease.attemptNumber,
+    writerLeaseGeneration: activeLease.generation,
+    writerLeaseTokenDigest: activeLease.tokenDigest,
+    pendingEffect: Object.freeze({
+      kind: "verifier" as const,
+      state: "prepared" as const,
+      effectId: effect.effectId,
+      slot: effect.slot,
+      idempotencyKey: effect.idempotencyKey,
+      requestDigest: effect.requestDigest,
+      requestArtifact: effect.requestArtifact,
+    }),
+    previousCheckpointDigest: currentEnvelope.stateDigest,
+    createdAt,
+  } satisfies TransformerAttemptCheckpointState;
+  validateState(nextState);
+  await verifyPendingEffectRequestStored(journal, nextState, key);
+  const next = seal(nextState, key);
+  if (await journal.compareAndSwap({
+    episodeId: current.episodeId,
+    expectedStateDigest: currentEnvelope.stateDigest,
+    activeLease,
+    next,
+  })) {
+    return next;
+  }
+  const raced = await journal.read(current.episodeId);
+  if (raced !== null && sameState(raced, nextState, key)) return raced;
+  throw new Error("transformer_attempt_checkpoint_head_conflict");
+}
+
 export async function advanceTransformerAttemptCheckpoint(
   journal: TransformerAttemptCheckpointJournal,
   expectedHeadDigest: string,

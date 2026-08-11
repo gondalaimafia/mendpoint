@@ -231,9 +231,20 @@ export type TransformerAttemptCheckpointCompletion = Readonly<{
   operationTimeoutMs: number;
 }>;
 
+export type TransformerAttemptCheckpointFailure = Readonly<{
+  recoveryCode: "verification_failed";
+  errorCode: string;
+  accounting: TransformerAdaptiveAttemptAccounting;
+  observedAt: string;
+  evidenceRefs: readonly string[];
+  signal: AbortSignal;
+  operationTimeoutMs: number;
+}>;
+
 export type TransformerAttemptCheckpointExecutionController = Readonly<{
   verificationControl: RecipeVerificationControl;
   complete(input: TransformerAttemptCheckpointCompletion): MaybePromise<void>;
+  fail?(input: TransformerAttemptCheckpointFailure): MaybePromise<void>;
 }>;
 
 export type TransformerAttemptCheckpointConfig = Readonly<{
@@ -1880,6 +1891,50 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
       const recoveryCode = checkpointFailure.recoveryCode === "verification_failed"
         ? "verification_failed"
         : "worker_crash";
+      if (recoveryCode === "verification_failed" && checkpointController?.fail) {
+        const failCheckpoint = checkpointController.fail;
+        const failureObservedAt = input.observedAt("failure");
+        const failureAccounting = attemptAccounting(
+          lease,
+          failureObservedAt,
+          accountingExecutionCost(input, execution),
+        );
+        const operationTimeoutMs = checkpointOperationTimeoutMs(input.checkpoint!, input.leaseDurationMs);
+        try {
+          await runCheckpointOperation(
+            (signal) => failCheckpoint({
+              recoveryCode,
+              errorCode: checkpointFailure.errorCode,
+              accounting: failureAccounting,
+              observedAt: failureObservedAt,
+              evidenceRefs: lease.gateEvidenceRefs,
+              signal,
+              operationTimeoutMs,
+            }),
+            heartbeat!.signal,
+            operationTimeoutMs,
+          );
+        } catch (failureError) {
+          if (isStale(failureError)) {
+            return Object.freeze({
+              status: "stale",
+              summary: "Transformer attempt fence became stale before checkpoint failure recording",
+              nextActions: Object.freeze(["Discard the stale result and claim a current attempt"]),
+              artifacts: Object.freeze(artifact ? [artifact] : []),
+              ...(checkpointFailure.rollback ? { rollback: checkpointFailure.rollback } : {}),
+            });
+          }
+          return Object.freeze({
+            status: "failed",
+            summary: `transformer_attempt_checkpoint_failure_record_failed:${errorCode(failureError)}`,
+            nextActions: Object.freeze(nextActions("worker_crash")),
+            artifacts: Object.freeze(artifact ? [artifact] : []),
+            recoveryCode: "worker_crash",
+            errorCode: errorCode(failureError),
+            ...(checkpointFailure.rollback ? { rollback: checkpointFailure.rollback } : {}),
+          });
+        }
+      }
       return Object.freeze({
         status: "failed",
         summary: checkpointFailure.errorCode,
