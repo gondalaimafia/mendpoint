@@ -4,6 +4,7 @@ import type { TransformerAdaptiveAttemptAccounting } from "./pilot-execution.js"
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const REVISION = /^[a-f0-9]{40}$/;
+const MAX_COMPLETION_PAYLOAD_BYTES = 64 * 1024;
 const ACCOUNTING_KEYS = Object.freeze([
   "plannerCalls",
   "modelCalls",
@@ -134,6 +135,47 @@ function validateIntent(value: TransformerAttemptCompletionIntent): TransformerA
 export function createTransformerAttemptCompletionDigest(
   value: TransformerAttemptCompletionIntent,
 ): string {
+  return `sha256:${createHash("sha256").update(
+    createTransformerAttemptCompletionPayload(value),
+  ).digest("hex")}`;
+}
+
+export function createTransformerAttemptAuthorizationDigest(
+  gateConfig: string | undefined,
+): string {
+  if (gateConfig !== undefined && typeof gateConfig !== "string") {
+    throw new Error("transformer_attempt_completion_authorization_invalid");
+  }
+  return `sha256:${createHash("sha256").update(canonical({
+    gateConfig: gateConfig ?? null,
+  }), "utf8").digest("hex")}`;
+}
+
+export function createTransformerAttemptCompletionPayload(
+  value: TransformerAttemptCompletionIntent,
+): Uint8Array {
   const normalized = validateIntent(value);
-  return `sha256:${createHash("sha256").update(canonical(normalized), "utf8").digest("hex")}`;
+  return Buffer.from(canonical(normalized), "utf8");
+}
+
+export function openTransformerAttemptCompletionPayload(
+  payload: Uint8Array,
+): TransformerAttemptCompletionIntent {
+  try {
+    if (!(payload instanceof Uint8Array) || payload.byteLength === 0 ||
+      payload.byteLength > MAX_COMPLETION_PAYLOAD_BYTES) {
+      throw new Error("transformer_attempt_completion_invalid");
+    }
+    const source = Buffer.from(payload);
+    const normalized = validateIntent(
+      JSON.parse(source.toString("utf8")) as TransformerAttemptCompletionIntent,
+    );
+    const expected = Buffer.from(canonical(normalized), "utf8");
+    if (!source.equals(expected)) {
+      throw new Error("transformer_attempt_completion_invalid");
+    }
+    return normalized;
+  } catch {
+    throw new Error("transformer_attempt_completion_invalid");
+  }
 }

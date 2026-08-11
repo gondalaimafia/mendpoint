@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  createTransformerAttemptCompletionPayload,
   createTransformerAttemptCompletionDigest,
+  openTransformerAttemptCompletionPayload,
   type TransformerAttemptCompletionIntent,
 } from "./attempt-completion.js";
 
@@ -123,6 +126,27 @@ describe("Transformer attempt completion intent", () => {
       ...value,
       episodeId: undefined,
     } as unknown as TransformerAttemptCompletionIntent)).toThrow(
+      "transformer_attempt_completion_invalid",
+    );
+  });
+
+  it("persists the complete canonical intent for successor-node replay", () => {
+    const value = intent();
+    const payload = createTransformerAttemptCompletionPayload({
+      ...value,
+      evidenceRefs: [...value.evidenceRefs].reverse(),
+    });
+    expect(openTransformerAttemptCompletionPayload(payload)).toEqual({
+      ...value,
+      accounting: { ...value.accounting },
+      evidenceRefs: [...value.evidenceRefs].sort(),
+    });
+    expect(createTransformerAttemptCompletionDigest(value)).toBe(
+      `sha256:${createHash("sha256").update(payload).digest("hex")}`,
+    );
+    const tampered = Buffer.from(payload);
+    tampered[tampered.length - 2] = tampered[tampered.length - 2]! ^ 1;
+    expect(() => openTransformerAttemptCompletionPayload(tampered)).toThrow(
       "transformer_attempt_completion_invalid",
     );
   });

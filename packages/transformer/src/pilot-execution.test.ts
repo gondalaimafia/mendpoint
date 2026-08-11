@@ -6,6 +6,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import { createOrganizationConstraintContract } from "./organization-constraints.js";
 import {
+  createTransformerAttemptAuthorizationDigest,
+  createTransformerAttemptCompletionDigest,
+  type TransformerAttemptCompletionIntent,
+} from "./attempt-completion.js";
+import {
+  createTransformerAttemptEffectIdentity,
+  createTransformerCoordinatorCompletionRequestDigest,
+  createTransformerCoordinatorCompletionSlot,
+  type TransformerCandidateSeal,
+} from "./attempt-checkpoint.js";
+import {
   transformerAttemptCheckpointEnvelopeStorageKey,
   TransformerPilotExecutionStore,
   type TransformerAttemptFailureCode,
@@ -866,6 +877,7 @@ describe("Transformer pilot execution coordinator", () => {
     });
     const terminal = checkpointHead(lease, 2, "a");
     const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    const authorization = gateConfig();
     expect(() => store.completeAttempt({
       ...mutation(3, "complete-checkpoint-terminal-legacy"),
       unitId: lease.unitId,
@@ -878,33 +890,85 @@ describe("Transformer pilot execution coordinator", () => {
       verificationPassed: true,
       actualCostUsd: 0.25,
       accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
-      gateConfig: gateConfig(),
+      gateConfig: authorization,
     })).toThrow("transformer_pilot_terminal_checkpoint_required");
-    const input = {
-      ...mutation(3, "complete-checkpoint-terminal"),
+    const candidateSeal = {
+      schemaVersion: 1,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      workspaceManifestDigest: digest("d"),
+      workspacePayloadDigest: digest("e"),
+      sealDigest: digest("f"),
+    } satisfies TransformerCandidateSeal;
+    const completionIntent = {
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
       unitId: lease.unitId,
+      episodeId: terminal.episodeId,
+      candidateSealDigest: candidateSeal.sealDigest,
       attemptNumber: lease.attemptNumber,
       leaseGeneration: lease.leaseGeneration,
-      leaseToken,
-      expectedStateDigest: current.stateDigest,
-      nextCheckpointHead: terminal,
+      leaseTokenDigest: lease.leaseTokenDigest,
       sourceRevision: candidate.snapshot.revision,
       sourceDigest: candidate.snapshot.digest,
       candidateRevision: candidate.candidateRevision,
       candidateDigest: candidate.candidateDigest,
+      authorizationDigest: createTransformerAttemptAuthorizationDigest(authorization),
       verificationPassed: true,
       actualCostUsd: 0.25,
       accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
-      gateConfig: gateConfig(),
+      observedAt: time(3),
+      evidenceRefs: ["evidence://operation/complete-checkpoint-terminal"],
+    } satisfies TransformerAttemptCompletionIntent;
+    const completionDigest = createTransformerAttemptCompletionDigest(completionIntent);
+    const completionRequestDigest = createTransformerCoordinatorCompletionRequestDigest(
+      terminal.episodeId,
+      candidateSeal,
+      completionIntent,
+    );
+    const completionIdentity = createTransformerAttemptEffectIdentity(
+      terminal.episodeId,
+      "coordinator_complete",
+      createTransformerCoordinatorCompletionSlot(completionDigest),
+      completionRequestDigest,
+    );
+    const input = {
+      ...mutation(3, "complete-checkpoint-terminal"),
+      idempotencyKey: completionIdentity.idempotencyKey,
+      leaseToken,
+      expectedStateDigest: current.stateDigest,
+      nextCheckpointHead: terminal,
+      candidateSeal,
+      completionIntent,
+      gateConfig: authorization,
     };
 
     const completed = store.completeAttemptWithCheckpointHead(input);
-    expect(completed.units[0]).toMatchObject({
+    expect(completed.campaign.units[0]).toMatchObject({
       state: "executed",
       verificationPassed: true,
       attemptCheckpointHead: terminal,
     });
     expect(store.completeAttemptWithCheckpointHead(input)).toEqual(completed);
+    expect(completed.receipt).toEqual({
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: terminal.episodeId,
+      completionDigest,
+      campaignRevision: completed.campaign.revision,
+      observedAt: time(3),
+      checkpointHead: terminal,
+    });
+    store.control({
+      ...mutation(4, "pause-after-checkpoint-completion"),
+      action: "pause",
+    });
+    const replayed = store.completeAttemptWithCheckpointHead(input);
+    expect(replayed.receipt).toEqual(completed.receipt);
+    expect(replayed.campaign.revision).toBeGreaterThan(completed.campaign.revision);
     expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
       event.type === "attempt.completed_with_checkpoint"
     )).toHaveLength(1);
@@ -934,23 +998,57 @@ describe("Transformer pilot execution coordinator", () => {
     });
     const terminal = checkpointHead(lease, 2, "a");
     const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
-
-    expect(() => store.completeAttemptWithCheckpointHead({
-      ...mutation(2, "complete-checkpoint-terminal-stale"),
+    const authorization = gateConfig();
+    const candidateSeal = {
+      schemaVersion: 1,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      workspaceManifestDigest: digest("d"),
+      workspacePayloadDigest: digest("e"),
+      sealDigest: digest("f"),
+    } satisfies TransformerCandidateSeal;
+    const completionIntent = {
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
       unitId: lease.unitId,
+      episodeId: terminal.episodeId,
+      candidateSealDigest: candidateSeal.sealDigest,
       attemptNumber: lease.attemptNumber,
       leaseGeneration: lease.leaseGeneration,
-      leaseToken,
-      expectedStateDigest: current.stateDigest,
-      nextCheckpointHead: terminal,
+      leaseTokenDigest: lease.leaseTokenDigest,
       sourceRevision: candidate.snapshot.revision,
       sourceDigest: candidate.snapshot.digest,
       candidateRevision: candidate.candidateRevision,
       candidateDigest: candidate.candidateDigest,
+      authorizationDigest: createTransformerAttemptAuthorizationDigest(authorization),
       verificationPassed: true,
       actualCostUsd: 0.25,
       accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
-      gateConfig: gateConfig(),
+      observedAt: time(2),
+      evidenceRefs: ["evidence://operation/complete-checkpoint-terminal-stale"],
+    } satisfies TransformerAttemptCompletionIntent;
+    const completionDigest = createTransformerAttemptCompletionDigest(completionIntent);
+    const completionIdentity = createTransformerAttemptEffectIdentity(
+      terminal.episodeId,
+      "coordinator_complete",
+      createTransformerCoordinatorCompletionSlot(completionDigest),
+      createTransformerCoordinatorCompletionRequestDigest(
+        terminal.episodeId,
+        candidateSeal,
+        completionIntent,
+      ),
+    );
+
+    expect(() => store.completeAttemptWithCheckpointHead({
+      ...mutation(2, "complete-checkpoint-terminal-stale"),
+      idempotencyKey: completionIdentity.idempotencyKey,
+      leaseToken,
+      expectedStateDigest: current.stateDigest,
+      nextCheckpointHead: terminal,
+      candidateSeal,
+      completionIntent,
+      gateConfig: authorization,
     })).toThrow("transformer_pilot_fence_expired");
     expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]).toMatchObject({
       state: "running",

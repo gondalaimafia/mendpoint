@@ -4,6 +4,12 @@ import {
   createHash,
   randomBytes,
 } from "node:crypto";
+import {
+  createTransformerAttemptCompletionDigest,
+  createTransformerAttemptCompletionPayload,
+  openTransformerAttemptCompletionPayload,
+  type TransformerAttemptCompletionIntent,
+} from "./attempt-completion.js";
 
 const PROTOCOL = "mendpoint.transformer.attempt-checkpoint.v1";
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -119,6 +125,13 @@ export type TransformerCoordinatorEffectResult = Readonly<{
   schemaVersion: 1;
   status: "accepted" | "rejected";
   completionDigest: string;
+}>;
+
+export type TransformerCoordinatorCompletionRequest = Readonly<{
+  episodeId: string;
+  seal: TransformerCandidateSeal;
+  completionDigest: string;
+  completionIntent: TransformerAttemptCompletionIntent;
 }>;
 
 type EffectCommon = Readonly<{
@@ -874,25 +887,96 @@ function validateCandidateSeal(
 export function createTransformerCoordinatorCompletionRequestDigest(
   episodeId: string,
   seal: TransformerCandidateSeal,
-  completionDigest: string,
+  completionIntent: TransformerAttemptCompletionIntent,
 ): string {
   return sha256(createTransformerCoordinatorCompletionRequest(
     episodeId,
     seal,
-    completionDigest,
+    completionIntent,
   ));
 }
 
 export function createTransformerCoordinatorCompletionRequest(
   episodeId: string,
   seal: TransformerCandidateSeal,
-  completionDigest: string,
+  completionIntent: TransformerAttemptCompletionIntent,
 ): Uint8Array {
-  if (!ID.test(episodeId)) throw new Error("transformer_attempt_checkpoint_terminal_invalid");
-  requireDigest(completionDigest, "transformer_attempt_checkpoint_terminal_invalid");
+  const normalizedIntent = openTransformerAttemptCompletionPayload(
+    createTransformerAttemptCompletionPayload(completionIntent),
+  );
+  validateCoordinatorCompletionRequestBinding(episodeId, seal, normalizedIntent);
+  const completionDigest = createTransformerAttemptCompletionDigest(normalizedIntent);
   return Buffer.from(canonical({
-    protocol: `${PROTOCOL}:coordinator-completion`, episodeId, seal, completionDigest,
+    protocol: `${PROTOCOL}:coordinator-completion`,
+    episodeId,
+    seal,
+    completionDigest,
+    completionIntent: normalizedIntent,
   }), "utf8");
+}
+
+function validateCoordinatorCompletionRequestBinding(
+  episodeId: string,
+  seal: TransformerCandidateSeal,
+  completionIntent: TransformerAttemptCompletionIntent,
+): void {
+  if (!ID.test(episodeId) || completionIntent.episodeId !== episodeId) {
+    throw new Error("transformer_attempt_checkpoint_terminal_invalid");
+  }
+  exactKeys(seal, [
+    "schemaVersion", "candidateRevision", "candidateDigest", "workspaceManifestDigest",
+    "workspacePayloadDigest", "sealDigest",
+  ], "transformer_attempt_checkpoint_terminal_invalid");
+  if (seal.schemaVersion !== 1 ||
+      seal.candidateRevision !== completionIntent.candidateRevision ||
+      seal.candidateDigest !== completionIntent.candidateDigest ||
+      seal.sealDigest !== completionIntent.candidateSealDigest) {
+    throw new Error("transformer_attempt_checkpoint_terminal_invalid");
+  }
+  for (const value of [
+    seal.candidateDigest,
+    seal.workspaceManifestDigest,
+    seal.workspacePayloadDigest,
+    seal.sealDigest,
+  ]) {
+    requireDigest(value, "transformer_attempt_checkpoint_terminal_invalid");
+  }
+}
+
+export function openTransformerCoordinatorCompletionRequest(
+  payload: Uint8Array,
+): TransformerCoordinatorCompletionRequest {
+  try {
+    const source = Buffer.from(payload);
+    const parsed = JSON.parse(source.toString("utf8")) as Record<string, unknown>;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("transformer_attempt_checkpoint_terminal_invalid");
+    }
+    exactKeys(parsed, [
+      "protocol", "episodeId", "seal", "completionDigest", "completionIntent",
+    ], "transformer_attempt_checkpoint_terminal_invalid");
+    if (parsed.protocol !== `${PROTOCOL}:coordinator-completion` ||
+        typeof parsed.episodeId !== "string") {
+      throw new Error("transformer_attempt_checkpoint_terminal_invalid");
+    }
+    const completionIntent = openTransformerAttemptCompletionPayload(
+      Buffer.from(canonical(parsed.completionIntent), "utf8"),
+    );
+    const seal = parsed.seal as TransformerCandidateSeal;
+    validateCoordinatorCompletionRequestBinding(parsed.episodeId, seal, completionIntent);
+    const completionDigest = createTransformerAttemptCompletionDigest(completionIntent);
+    if (parsed.completionDigest !== completionDigest || canonical(parsed) !== source.toString("utf8")) {
+      throw new Error("transformer_attempt_checkpoint_terminal_invalid");
+    }
+    return Object.freeze({
+      episodeId: parsed.episodeId,
+      seal: Object.freeze({ ...seal }),
+      completionDigest,
+      completionIntent,
+    });
+  } catch {
+    throw new Error("transformer_attempt_checkpoint_terminal_invalid");
+  }
 }
 
 export function createTransformerCoordinatorCompletionSlot(completionDigest: string): string {
@@ -1279,12 +1363,7 @@ function validateState(state: TransformerAttemptCheckpointState): void {
     if (!stageValid) throw new Error("transformer_attempt_checkpoint_effect_invalid");
     if (effect.kind === "coordinator_complete") {
       const completionDigest = coordinatorCompletionDigestFromSlot(effect.slot);
-      if (completionDigest === null || state.candidateSeal === null ||
-          effect.requestDigest !== createTransformerCoordinatorCompletionRequestDigest(
-            state.episodeId,
-            state.candidateSeal,
-            completionDigest,
-          )) {
+      if (completionDigest === null || state.candidateSeal === null) {
         throw new Error("transformer_attempt_checkpoint_effect_invalid");
       }
     }
@@ -1338,11 +1417,7 @@ function validateState(state: TransformerAttemptCheckpointState): void {
           receipt.status !== "passed"
         ) ||
         completions.length !== 1 || completion === undefined || completionDigest === null ||
-        completion.requestDigest !== createTransformerCoordinatorCompletionRequestDigest(
-          state.episodeId,
-          state.candidateSeal,
-          completionDigest,
-        )) {
+        completion.requestArtifact.payloadDigest !== completion.requestDigest) {
       throw new Error("transformer_attempt_checkpoint_terminal_invalid");
     }
   }
@@ -1784,17 +1859,37 @@ async function verifyPendingEffectRequestStored(
   journal: TransformerAttemptCheckpointJournal,
   state: TransformerAttemptCheckpointState,
   key: Uint8Array,
-): Promise<void> {
+): Promise<Uint8Array | null> {
   const effect = state.pendingEffect;
-  if (effect.kind === "none") return;
+  if (effect.kind === "none") return null;
   const bytes = await journal.readArtifact(effect.requestArtifact.storageKey);
   if (bytes === null) throw new Error("transformer_attempt_checkpoint_artifact_missing");
-  verifyTransformerEffectRequestArtifact(
+  const payload = verifyTransformerEffectRequestArtifact(
     effect.requestArtifact,
     bytes,
     key,
     { tenantId: state.binding.tenantId, episodeId: state.episodeId, effectId: effect.effectId },
   );
+  if (effect.kind === "coordinator_complete") {
+    const request = openTransformerCoordinatorCompletionRequest(payload);
+    const expectedCompletionDigest = coordinatorCompletionDigestFromSlot(effect.slot);
+    if (expectedCompletionDigest === null || state.candidateSeal === null ||
+        request.episodeId !== state.episodeId ||
+        canonical(request.seal) !== canonical(state.candidateSeal) ||
+        request.completionDigest !== expectedCompletionDigest ||
+        request.completionIntent.tenantId !== state.binding.tenantId ||
+        request.completionIntent.campaignId !== state.binding.campaignId ||
+        request.completionIntent.unitId !== state.binding.unitId ||
+        request.completionIntent.attemptNumber !== state.attemptNumber ||
+        request.completionIntent.leaseGeneration !== state.writerLeaseGeneration ||
+        request.completionIntent.leaseTokenDigest !== state.writerLeaseTokenDigest ||
+        request.completionIntent.sourceRevision !== state.binding.sourceRevision ||
+        request.completionIntent.candidateRevision !== state.binding.candidateRevision ||
+        request.completionIntent.candidateDigest !== state.binding.candidateDigest) {
+      throw new Error("transformer_attempt_checkpoint_effect_invalid");
+    }
+  }
+  return payload;
 }
 
 export async function commitTransformerAttemptCheckpointGenesis(
@@ -1844,6 +1939,7 @@ export async function prepareTransformerAttemptCheckpointAdvance(
   const activeLease = await journal.readLease(current.episodeId);
   if (activeLease === null) throw new Error("transformer_attempt_checkpoint_lease_mismatch");
   validateState(nextState);
+  await verifyPendingEffectRequestStored(journal, current, key);
   const completedResultPayload = await verifyCompletedEffectStored(journal, current, key);
   validateTransition(
     current,

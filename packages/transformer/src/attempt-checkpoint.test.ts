@@ -23,6 +23,7 @@ import {
   createTransformerWorkspaceTransitionRequest,
   createTransformerWorkspaceTransitionDigest,
   openTransformerCoordinatorEffectResultArtifact,
+  openTransformerCoordinatorCompletionRequest,
   openTransformerModelEffectResultArtifact,
   openTransformerAttemptCheckpoint,
   openTransformerVerifierEffectResultArtifact,
@@ -38,6 +39,10 @@ import {
   type TransformerEncryptedArtifact,
   type TransformerWorkspaceArtifact,
 } from "./attempt-checkpoint.js";
+import {
+  createTransformerAttemptCompletionDigest,
+  type TransformerAttemptCompletionIntent,
+} from "./attempt-completion.js";
 import { recipeFilesDigest } from "./recipe.js";
 
 const key = Buffer.from("81".repeat(32), "hex");
@@ -860,16 +865,58 @@ describe("Transformer attempt checkpoint", () => {
       current.state.episodeId,
       repairedSeal,
     ));
-    const coordinatorCompletionDigest = digest("coordinator completion receipt");
+    const coordinatorCompletionIntent = {
+      schemaVersion: 1,
+      tenantId: current.state.binding.tenantId,
+      campaignId: current.state.binding.campaignId,
+      unitId: current.state.binding.unitId,
+      episodeId: current.state.episodeId,
+      candidateSealDigest: repairedSeal.sealDigest,
+      attemptNumber: current.state.attemptNumber,
+      leaseGeneration: current.state.writerLeaseGeneration,
+      leaseTokenDigest: current.state.writerLeaseTokenDigest,
+      sourceRevision: current.state.binding.sourceRevision,
+      sourceDigest: current.state.workspaceArtifact.filesDigest,
+      candidateRevision: current.state.binding.candidateRevision,
+      candidateDigest: current.state.binding.candidateDigest,
+      authorizationDigest: digest("completion authorization"),
+      verificationPassed: true,
+      actualCostUsd: 0,
+      accounting: {
+        plannerCalls: 0,
+        modelCalls: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        actualCostUsd: 0,
+        wallTimeMs: 0,
+      },
+      observedAt: "2026-08-11T18:15:30.000Z",
+      evidenceRefs: ["evidence://attempt/terminal"],
+    } satisfies TransformerAttemptCompletionIntent;
+    const coordinatorCompletionDigest = createTransformerAttemptCompletionDigest(
+      coordinatorCompletionIntent,
+    );
+    const coordinatorRequest = createTransformerCoordinatorCompletionRequest(
+      current.state.episodeId,
+      repairedSeal,
+      coordinatorCompletionIntent,
+    );
     expect(digest(createTransformerCoordinatorCompletionRequest(
       current.state.episodeId,
       repairedSeal,
-      coordinatorCompletionDigest,
+      coordinatorCompletionIntent,
     ))).toBe(createTransformerCoordinatorCompletionRequestDigest(
       current.state.episodeId,
       repairedSeal,
-      coordinatorCompletionDigest,
+      coordinatorCompletionIntent,
     ));
+    expect(openTransformerCoordinatorCompletionRequest(coordinatorRequest)).toEqual({
+      episodeId: current.state.episodeId,
+      seal: repairedSeal,
+      completionDigest: coordinatorCompletionDigest,
+      completionIntent: coordinatorCompletionIntent,
+    });
 
     await expect(advanceTransformerAttemptCheckpoint(
       journal,
@@ -950,11 +997,14 @@ describe("Transformer attempt checkpoint", () => {
       key,
       current.state.binding,
     );
-    const mismatchedCompletionDigest = digest("mismatched coordinator completion");
+    const mismatchedCompletionIntent = {
+      ...coordinatorCompletionIntent,
+      evidenceRefs: ["evidence://attempt/mismatched"],
+    } satisfies TransformerAttemptCompletionIntent;
     const mismatchedRequestPayload = createTransformerCoordinatorCompletionRequest(
       current.state.episodeId,
       repairedSeal,
-      mismatchedCompletionDigest,
+      mismatchedCompletionIntent,
     );
     const mismatchedRequestDigest = digest(mismatchedRequestPayload);
     const mismatchedIdentity = createTransformerAttemptEffectIdentity(
@@ -1002,7 +1052,7 @@ describe("Transformer attempt checkpoint", () => {
         requestPayload: createTransformerCoordinatorCompletionRequest(
           current.state.episodeId,
           repairedSeal,
-          coordinatorCompletionDigest,
+          coordinatorCompletionIntent,
         ),
         createResult: (effectId) => createTransformerCoordinatorEffectResultArtifact({
           tenantId: current.state.binding.tenantId,
@@ -1022,7 +1072,7 @@ describe("Transformer attempt checkpoint", () => {
       requestPayload: createTransformerCoordinatorCompletionRequest(
         current.state.episodeId,
         repairedSeal,
-        coordinatorCompletionDigest,
+        coordinatorCompletionIntent,
       ),
       createResult: (effectId) => createTransformerCoordinatorEffectResultArtifact({
         tenantId: current.state.binding.tenantId,
