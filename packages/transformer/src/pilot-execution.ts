@@ -16,6 +16,7 @@ import {
 } from "./organization-constraints.js";
 import { resolveRecipe, type RecipeFileModes, type RecipeReference } from "./recipe.js";
 import { TransformerDomainError } from "./types.js";
+import type { TransformerAttemptCheckpointLease } from "./attempt-checkpoint.js";
 
 export const TRANSFORMER_PILOT_EXECUTION_SCHEMA_VERSION = "2026-08-06.v2" as const;
 
@@ -24,6 +25,7 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const BRANCH = /^(?!\/)(?!.*(?:\.\.|\/\/|@\{))[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/;
 const MANIFEST_SHA256 = /^[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const CHECKPOINT_STORAGE_KEY = /^(?![A-Za-z]:)(?![\/])(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]{1,1000}$/;
 const ROUTING_ERROR_CODE = /^[A-Za-z0-9][A-Za-z0-9._,:-]{0,499}$/;
 const DEFAULT_LEASE_DURATION_MS = 60_000;
 const MIN_LEASE_DURATION_MS = 1_000;
@@ -219,6 +221,18 @@ export type TransformerPilotException = Readonly<{
   evidenceRefs: readonly string[];
 }>;
 
+export type TransformerAttemptCheckpointHead = Readonly<{
+  schemaVersion: 1;
+  episodeId: string;
+  stateDigest: string;
+  envelopeStorageKey: string;
+  envelopeDigest: string;
+  generation: number;
+  attemptNumber: number;
+  writerLeaseGeneration: number;
+  writerLeaseTokenDigest: string;
+}>;
+
 export type TransformerPilotUnit = Readonly<{
   id: string;
   title: string;
@@ -251,6 +265,7 @@ export type TransformerPilotUnit = Readonly<{
   adaptiveCandidateHandoffHistory?: readonly TransformerAdaptiveCandidateHandoffRecord[];
   regenerationReview?: TransformerRegenerationReview;
   routingSettlement?: TransformerRoutingSettlementRecord;
+  attemptCheckpointHead?: TransformerAttemptCheckpointHead;
   reviewerEditLines?: number;
   legacyItemsRemoved?: number;
 }>;
@@ -645,6 +660,92 @@ function requireRevision(value: string, code: string): string {
 function requireDigest(value: string, code: string): string {
   if (!DIGEST.test(value)) throw new Error(code);
   return value;
+}
+
+const CHECKPOINT_HEAD_KEYS = Object.freeze([
+  "schemaVersion",
+  "episodeId",
+  "stateDigest",
+  "envelopeStorageKey",
+  "envelopeDigest",
+  "generation",
+  "attemptNumber",
+  "writerLeaseGeneration",
+  "writerLeaseTokenDigest",
+]);
+
+export function transformerAttemptCheckpointEnvelopeStorageKey(input: Readonly<{
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  episodeId: string;
+  generation: number;
+  envelopeDigest: string;
+}>): string {
+  requireId(input.tenantId, "transformer_pilot_checkpoint_head_invalid");
+  requireId(input.campaignId, "transformer_pilot_checkpoint_head_invalid");
+  requireId(input.unitId, "transformer_pilot_checkpoint_head_invalid");
+  requireId(input.episodeId, "transformer_pilot_checkpoint_head_invalid");
+  requirePositiveInteger(input.generation, 1_000_000_000,
+    "transformer_pilot_checkpoint_head_invalid");
+  requireDigest(input.envelopeDigest, "transformer_pilot_checkpoint_head_invalid");
+  const scopeDigest = sha256({
+    protocol: "transformer-attempt-checkpoint-head:v1",
+    tenantId: input.tenantId,
+    campaignId: input.campaignId,
+    unitId: input.unitId,
+    episodeId: input.episodeId,
+  }).slice("sha256:".length);
+  return `transformer/checkpoints/${scopeDigest}/${input.generation}-${input.envelopeDigest.slice("sha256:".length)}.json`;
+}
+
+function requireCheckpointHead(value: unknown): TransformerAttemptCheckpointHead {
+  const code = "transformer_pilot_checkpoint_head_invalid";
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).sort().join("\0") !== [...CHECKPOINT_HEAD_KEYS].sort().join("\0")) {
+    throw new Error(code);
+  }
+  const candidate = value as TransformerAttemptCheckpointHead;
+  if (
+    candidate.schemaVersion !== 1 ||
+    !CHECKPOINT_STORAGE_KEY.test(candidate.envelopeStorageKey) ||
+    candidate.envelopeStorageKey.includes("\\") ||
+    candidate.envelopeStorageKey.includes(":")
+  ) {
+    throw new Error(code);
+  }
+  requireId(candidate.episodeId, code);
+  requireDigest(candidate.stateDigest, code);
+  requireDigest(candidate.envelopeDigest, code);
+  requireDigest(candidate.writerLeaseTokenDigest, code);
+  requirePositiveInteger(candidate.generation, 1_000_000_000, code);
+  requirePositiveInteger(candidate.attemptNumber, 1_000_000_000, code);
+  requirePositiveInteger(candidate.writerLeaseGeneration, 1_000_000_000, code);
+  return deepFreeze(clone(candidate));
+}
+
+function requireCheckpointHeadForScope(
+  value: unknown,
+  tenantId: string,
+  campaignId: string,
+  unitId: string,
+  episodeId: string,
+): TransformerAttemptCheckpointHead {
+  const head = requireCheckpointHead(value);
+  if (head.episodeId !== episodeId) {
+    throw new Error("transformer_pilot_checkpoint_episode_mismatch");
+  }
+  if (head.envelopeStorageKey !== transformerAttemptCheckpointEnvelopeStorageKey({
+    tenantId,
+    campaignId,
+    unitId,
+    episodeId,
+    generation: head.generation,
+    envelopeDigest: head.envelopeDigest,
+  })) {
+    throw new Error("transformer_pilot_checkpoint_storage_key_mismatch");
+  }
+  return head;
 }
 
 function requireNonnegative(value: number, code: string): number {
@@ -1711,6 +1812,141 @@ export class TransformerPilotExecutionStore {
   }>): void {
     const state = this.mustGet(input.tenantId, input.campaignId);
     assertAttemptFence(state, input);
+  }
+
+  readAttemptCheckpointHead(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    unitId: string;
+    episodeId: string;
+  }>): TransformerAttemptCheckpointHead | null {
+    requireId(input.episodeId, "transformer_pilot_checkpoint_episode_invalid");
+    const state = this.mustGet(input.tenantId, input.campaignId);
+    const head = unitById(state, input.unitId).attemptCheckpointHead;
+    if (!head) return null;
+    return requireCheckpointHeadForScope(
+      head,
+      input.tenantId,
+      input.campaignId,
+      input.unitId,
+      input.episodeId,
+    );
+  }
+
+  readAttemptCheckpointLease(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    unitId: string;
+    episodeId: string;
+    observedAt: string;
+  }>): TransformerAttemptCheckpointLease | null {
+    requireId(input.episodeId, "transformer_pilot_checkpoint_episode_invalid");
+    const observedAt = Date.parse(requireTimestamp(input.observedAt));
+    const state = this.mustGet(input.tenantId, input.campaignId);
+    const unit = unitById(state, input.unitId);
+    if (
+      state.state !== "running" || unit.state !== "running" ||
+      !unit.leaseTokenDigest || !unit.leaseExpiresAt || !unit.startedAt
+    ) {
+      return null;
+    }
+    const leaseExpiresAt = Date.parse(unit.leaseExpiresAt);
+    if (!Number.isFinite(leaseExpiresAt) || observedAt >= leaseExpiresAt) return null;
+    const head = unit.attemptCheckpointHead;
+    if (head) requireCheckpointHeadForScope(
+      head,
+      input.tenantId,
+      input.campaignId,
+      input.unitId,
+      input.episodeId,
+    );
+    return deepFreeze({
+      attemptNumber: unit.attemptNumber,
+      generation: unit.leaseGeneration,
+      tokenDigest: unit.leaseTokenDigest,
+    });
+  }
+
+  compareAndSwapAttemptCheckpointHead(input: MutationInput & Readonly<{
+    unitId: string;
+    attemptNumber: number;
+    leaseGeneration: number;
+    leaseToken: string;
+    expectedStateDigest: string | null;
+    next: TransformerAttemptCheckpointHead;
+    gateConfig?: string;
+  }>): TransformerAttemptCheckpointHead {
+    const next = requireCheckpointHeadForScope(
+      input.next,
+      input.tenantId,
+      input.campaignId,
+      input.unitId,
+      input.next.episodeId,
+    );
+    if (input.expectedStateDigest !== null) {
+      requireDigest(input.expectedStateDigest, "transformer_pilot_checkpoint_head_invalid");
+    }
+    const campaign = this.mustGet(input.tenantId, input.campaignId);
+    const gate = authorizeTransformerWorkerAction(
+      { tenantId: input.tenantId, environment: campaign.environment },
+      input.gateConfig,
+    );
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
+    const updated = this.mutate(
+      input,
+      "attempt.checkpoint_head_advanced",
+      {
+        unitId: input.unitId,
+        attemptNumber: input.attemptNumber,
+        leaseGeneration: input.leaseGeneration,
+        leaseTokenDigest: leaseTokenDigest(input.leaseToken),
+        expectedStateDigest: input.expectedStateDigest,
+        next,
+      },
+      (state) => {
+        assertAttemptFence(state, input);
+        const unit = unitById(state, input.unitId);
+        if (unit.attemptNumber !== input.attemptNumber) {
+          throw new Error("transformer_pilot_checkpoint_attempt_mismatch");
+        }
+        const current = unit.attemptCheckpointHead
+          ? requireCheckpointHeadForScope(
+            unit.attemptCheckpointHead,
+            input.tenantId,
+            input.campaignId,
+            input.unitId,
+            unit.attemptCheckpointHead.episodeId,
+          )
+          : undefined;
+        if ((current?.stateDigest ?? null) !== input.expectedStateDigest) {
+          throw new Error("transformer_pilot_checkpoint_head_conflict");
+        }
+        if (current && current.episodeId !== next.episodeId) {
+          throw new Error("transformer_pilot_checkpoint_episode_mismatch");
+        }
+        if (
+          next.generation !== (current?.generation ?? 0) + 1 ||
+          next.attemptNumber !== unit.attemptNumber ||
+          next.writerLeaseGeneration !== unit.leaseGeneration ||
+          next.writerLeaseTokenDigest !== unit.leaseTokenDigest
+        ) {
+          throw new Error("transformer_pilot_checkpoint_head_invalid");
+        }
+        replaceUnit(state, { ...unit, attemptCheckpointHead: next });
+      },
+    );
+    const head = unitById(updated, input.unitId).attemptCheckpointHead;
+    if (!head) throw new Error("transformer_pilot_checkpoint_head_missing");
+    requireCheckpointHeadForScope(
+      head,
+      input.tenantId,
+      input.campaignId,
+      input.unitId,
+      head.episodeId,
+    );
+    return next;
   }
 
   recordAdaptiveAttemptUsage(input: MutationInput & {
