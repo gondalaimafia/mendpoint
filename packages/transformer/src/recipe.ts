@@ -161,6 +161,7 @@ export type RecipeAnalysis = Readonly<{
 type RecipeDefinition = Omit<MigrationRecipeContract, "digest">;
 
 const NODE_18_SELECTORS = ["18", "18.x", "^18.0.0", ">=18 <19"] as const;
+const NODE_20_SELECTORS = ["20", "20.x", "^20.0.0", ">=20 <21"] as const;
 
 function sha256(value: string): string {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
@@ -290,6 +291,84 @@ const NODE_RUNTIME_18_TO_20_V2 = createRecipe({
   ],
   rollback: NODE_RUNTIME_18_TO_20_V1.rollback,
 });
+
+// ---------------------------------------------------------------------------
+// Node runtime 20 -> 22 (language/runtime family, flagship)
+//
+// Bumps the Node major-version pins across the same allowlisted config surface
+// the 18->20 recipe handles: the `.nvmrc`/`.node-version` runtime declarations,
+// the `Dockerfile` base image tag, and the `package.json` `engines.node` range.
+// It reuses the existing runtime precondition and transform kinds rather than
+// inventing new ones.
+//
+// Supported surface (everything else is reported out-of-scope by analysis, so
+// the recipe abstains rather than producing a wrong edit):
+//   - `package.json` `engines.node` equal to one of the recognized Node 20
+//     selectors (`20`, `20.x`, `^20.0.0`, `>=20 <21`). A non-numeric or ranged
+//     value outside that set (for example `>=20`) is out-of-scope.
+//   - `.nvmrc` / `.node-version` whose major reads `20` (optional files).
+//   - `Dockerfile` `FROM node:20...` base image tags (optional file). A base
+//     image at any other major (for example `node:21`) is out-of-scope.
+// A repository whose pins already read Node 22 classifies as already applied.
+// ---------------------------------------------------------------------------
+
+const RUNTIME_DECLARATIONS_SCRIPT_22 =
+  "const fs=require('node:fs');const fail=()=>{throw new Error('runtime declaration mismatch')};for(const p of ['.nvmrc','.node-version']){if(!fs.existsSync(p))continue;const v=fs.readFileSync(p,'utf8').trim().replace(/^v/,'').split('.')[0];if(v!=='22')fail()}if(fs.existsSync('Dockerfile')){const d=fs.readFileSync('Dockerfile','utf8').split(/\\r?\\n/).filter(l=>/^\\s*FROM\\b/i.test(l)&&/\\bnode:/i.test(l));if(!d.length||d.some(l=>!/^\\s*FROM(?:\\s+--\\S+)?\\s+node:22(?=[.\\-@\\s]|$)/i.test(l)))fail()}";
+
+const NODE_RUNTIME_20_TO_22_V1 = createRecipe({
+  id: "node-runtime-20-to-22",
+  version: 1,
+  title: "Node runtime 20 to 22",
+  source: "node@20",
+  target: "node@22",
+  allowedPaths: [".node-version", ".nvmrc", "Dockerfile", "package.json"],
+  preconditions: [
+    {
+      kind: "json_string_in",
+      path: "package.json",
+      pointer: "/engines/node",
+      allowedValues: NODE_20_SELECTORS,
+    },
+    { kind: "optional_node_version", path: ".nvmrc", major: 20 },
+    { kind: "optional_node_version", path: ".node-version", major: 20 },
+    { kind: "optional_docker_node_major", path: "Dockerfile", major: 20 },
+  ],
+  transforms: [
+    {
+      kind: "json_string_set",
+      path: "package.json",
+      pointer: "/engines/node",
+      value: ">=22 <23",
+    },
+    { kind: "node_version_set", path: ".nvmrc", value: "22" },
+    { kind: "node_version_set", path: ".node-version", value: "22" },
+    {
+      kind: "docker_node_major_set",
+      path: "Dockerfile",
+      fromMajor: 20,
+      toMajor: 22,
+    },
+  ],
+  verificationCommands: [
+    {
+      id: "runtime-declarations",
+      command: `node -e "${RUNTIME_DECLARATIONS_SCRIPT_22}"`,
+      successCriteria: "Optional runtime declarations target Node 22",
+    },
+    {
+      id: "package-engine",
+      command:
+        "node -e \"const p=require('./package.json'); if(p.engines?.node !== '>=22 <23') process.exit(1)\"",
+      successCriteria: "package.json requires Node 22",
+    },
+  ],
+  rollback: {
+    strategy: "inverse_operations",
+    requireCurrentDigest: true,
+  },
+});
+
+export const NODE_RUNTIME_20_TO_22_RECIPE = NODE_RUNTIME_20_TO_22_V1;
 
 // ---------------------------------------------------------------------------
 // AWS SDK for JavaScript v2 -> v3 (bounded, deterministic subset)
@@ -1259,6 +1338,10 @@ const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${NODE_RUNTIME_18_TO_20_V2.id}@${NODE_RUNTIME_18_TO_20_V2.version}`,
     NODE_RUNTIME_18_TO_20_V2,
+  ],
+  [
+    `${NODE_RUNTIME_20_TO_22_V1.id}@${NODE_RUNTIME_20_TO_22_V1.version}`,
+    NODE_RUNTIME_20_TO_22_V1,
   ],
   [
     `${AWS_SDK_JS_V2_TO_V3_V1.id}@${AWS_SDK_JS_V2_TO_V3_V1.version}`,

@@ -2,6 +2,7 @@ import type { KeyLike } from "node:crypto";
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
   GOOGLEAPIS_V25_TO_V26_RECIPE,
+  NODE_RUNTIME_20_TO_22_RECIPE,
   REACT_DOM_17_TO_18_RECIPE,
   STRIPE_NODE_V10_TO_V11_RECIPE,
 } from "./recipe.js";
@@ -352,7 +353,7 @@ export const REACT_DOM_17_TO_18_ARTIFACT: ProviderRecipeArtifact = Object.freeze
     category: "developer_platform",
   },
   change: {
-    target: "sdk",
+    target: "framework",
     kind: "breaking",
     fromVersion: "17",
     toVersion: "18",
@@ -446,12 +447,117 @@ export const REACT_DOM_17_TO_18_ARTIFACT: ProviderRecipeArtifact = Object.freeze
   },
 } as const);
 
+export const NODE_RUNTIME_20_TO_22_ARTIFACT: ProviderRecipeArtifact = Object.freeze({
+  schemaVersion: PROVIDER_RECIPE_SCHEMA_VERSION,
+  recipeId: "node-runtime-20-to-22",
+  version: 1,
+  publishedAt: "2026-08-05T00:00:00.000Z",
+  provider: {
+    slug: "node",
+    category: "developer_platform",
+  },
+  change: {
+    target: "runtime",
+    kind: "breaking",
+    fromVersion: "20",
+    toVersion: "22",
+  },
+  detection: {
+    allOf: [
+      {
+        kind: "manifest_value",
+        path: "package.json",
+        selector: "/engines/node",
+        expected: "present at a recognized Node 20 selector",
+        evidenceRequired: true,
+      },
+      {
+        kind: "source_pattern",
+        path: "Dockerfile",
+        selector: "node base image pin",
+        expected: "FROM node:20 base image tag",
+        evidenceRequired: true,
+      },
+    ],
+  },
+  preconditions: [
+    {
+      id: "node-engine",
+      kind: "manifest_value",
+      path: "package.json",
+      selector: "/engines/node",
+      expected: "recognized Node 20 selector",
+    },
+    {
+      id: "node-runtime-declarations",
+      kind: "source_pattern",
+      path: "Dockerfile",
+      selector: "supported Node 20 pin surface",
+      expected: "node:20 base image and optional .nvmrc/.node-version at major 20",
+    },
+  ],
+  boundedEdits: {
+    implementationRecipe: {
+      id: NODE_RUNTIME_20_TO_22_RECIPE.id,
+      version: NODE_RUNTIME_20_TO_22_RECIPE.version,
+      digest: NODE_RUNTIME_20_TO_22_RECIPE.digest,
+    },
+    allowedPaths: [".node-version", ".nvmrc", "Dockerfile", "package.json"],
+    allowedOperationKinds: ["replace_file"],
+    maxFilesChanged: 4,
+    maxBytesChanged: 65536,
+  },
+  verification: [
+    {
+      id: "unit-and-typecheck",
+      command: "npm test && npm run typecheck",
+      timeoutMs: 900000,
+      successCriteria: "Consumer tests and typecheck pass on the migrated Node 22 pins",
+      required: true,
+    },
+  ],
+  rollback: {
+    strategy: "inverse_operations",
+    verificationIds: ["unit-and-typecheck"],
+    maxRecoveryMinutes: 30,
+  },
+  evidence: {
+    requiredSourceKinds: ["provider_release", "provider_documentation", "repository_snapshot"],
+    retainInputSnapshot: true,
+    retainOperationDiffs: true,
+    retainVerificationOutput: true,
+  },
+  ownership: {
+    team: "change-intelligence",
+    maintainerPrincipalId: "human:recipe-maintainer",
+    securityReviewerPrincipalId: "human:security-reviewer",
+  },
+  compatibility: {
+    languages: ["javascript", "typescript"],
+    packageManagers: ["npm", "pnpm", "yarn"],
+    repositoryKinds: ["service", "library"],
+    runtime: {
+      name: "node",
+      minMajor: 20,
+      maxMajor: 22,
+    },
+  },
+  outcomeTelemetry: {
+    schemaVersion: 1,
+    eventName: "provider_recipe_outcome",
+    correlationFields: ["tenantId", "campaignId", "runId", "recipeArtifactSha256"],
+    metricIds: ["accepted", "reviewerEditRatio", "verificationPassed", "rollbackRequired"],
+    retentionDays: 90,
+  },
+} as const);
+
 /** All provider-recipe artifacts Mendpoint publishes into the run-path catalog. */
 export const PUBLISHED_PROVIDER_RECIPE_ARTIFACTS: readonly ProviderRecipeArtifact[] = Object.freeze([
   AWS_SDK_JS_V2_TO_V3_ARTIFACT,
   STRIPE_NODE_V10_TO_V11_ARTIFACT,
   GOOGLEAPIS_V25_TO_V26_ARTIFACT,
   REACT_DOM_17_TO_18_ARTIFACT,
+  NODE_RUNTIME_20_TO_22_ARTIFACT,
 ]);
 
 export type ProviderRecipeSigningKey = Readonly<{ keyId: string; privateKey: KeyLike }>;

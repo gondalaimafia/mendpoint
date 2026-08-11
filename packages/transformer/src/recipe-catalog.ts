@@ -23,6 +23,7 @@ export const PROVIDER_CATEGORIES = [
 export const PROVIDER_CHANGE_TARGETS = [
   "api",
   "sdk",
+  "framework",
   "runtime",
   "authentication",
   "webhook",
