@@ -1,5 +1,18 @@
 import { z } from "zod";
 
+export {
+  MODEL_EGRESS_MODES,
+  modelEgressMode,
+  isValidModelEgressMode,
+  configuredModelEndpointUrl,
+  parseModelLocalHosts,
+  isPrivateModelHost,
+  assessModelEgress,
+  type ModelEgressMode,
+  type ModelEgressViolation,
+  type ModelEgressAssessment,
+} from "./model-egress.js";
+
 export const ReviewedVerificationCommandSchema = z.object({
   command: z.string().min(1).max(500),
   ok: z.literal(true),

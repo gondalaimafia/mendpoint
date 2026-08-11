@@ -186,6 +186,19 @@ export function validateCustomerWardenRuntime(
       );
     }
   }
+  // Enforced no-egress mode: when local_only is requested, the configured model
+  // endpoint (if any) must resolve to a private host before the profile boots.
+  const egress = assessModelEgress(env);
+  if (egress.violation === "model_egress_mode_invalid") {
+    errors.push(
+      "Customer Warden profile requires MENDPOINT_MODEL_EGRESS=local_only or external_allowed",
+    );
+  } else if (egress.violation) {
+    errors.push(
+      "Customer Warden profile requires a private, loopback, link-local, or allowlisted model endpoint when MENDPOINT_MODEL_EGRESS=local_only",
+    );
+  }
   return errors;
 }
 import { loadCustomerObjectStoreConfig } from "./customer-object-store.js";
+import { assessModelEgress } from "@mendpoint/shared";

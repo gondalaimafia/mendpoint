@@ -25,6 +25,55 @@ describe("Warden model endpoint", () => {
   it("returns null when no provider endpoint is configured", () => {
     expect(resolveAgentModelEndpoint({})).toBeNull();
   });
+
+  it("external_allowed (default) still reaches a public provider unchanged", () => {
+    expect(resolveAgentModelEndpoint({ LLM_AGENT_URL: "https://api.meta.ai/v1" }))
+      .toBe("https://api.meta.ai/v1/chat/completions");
+    expect(resolveAgentModelEndpoint({
+      MENDPOINT_MODEL_EGRESS: "external_allowed",
+      LLM_AGENT_URL: "https://api.meta.ai/v1",
+    })).toBe("https://api.meta.ai/v1/chat/completions");
+  });
+});
+
+describe("Warden model endpoint no-egress mode", () => {
+  it("accepts loopback, private, link-local, unique-local, and allowlisted hosts", () => {
+    for (const host of [
+      "http://127.0.0.1:8080/v1",
+      "http://localhost:11434/v1",
+      "http://10.1.2.3/v1",
+      "http://172.16.0.9/v1",
+      "http://192.168.1.5/v1",
+      "http://169.254.10.20/v1",
+      "http://[::1]:8000/v1",
+      "http://[fc00::1]/v1",
+      "http://[fe80::1]/v1",
+      "http://model.local/v1",
+    ]) {
+      expect(resolveAgentModelEndpoint({ MENDPOINT_MODEL_EGRESS: "local_only", LLM_AGENT_URL: host }))
+        .toContain("/v1/chat/completions");
+    }
+    expect(resolveAgentModelEndpoint({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_LOCAL_HOSTS: "model.internal, other.host",
+      LLM_AGENT_URL: "https://model.internal/v1",
+    })).toBe("https://model.internal/v1/chat/completions");
+  });
+
+  it("rejects a public host with model_egress_local_only_violation", () => {
+    expect(() => resolveAgentModelEndpoint({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "https://api.meta.ai/v1",
+    })).toThrow("model_egress_local_only_violation");
+    expect(() => resolveAgentModelEndpoint({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "https://8.8.8.8/v1",
+    })).toThrow("model_egress_local_only_violation");
+  });
+
+  it("allows the heuristic-only path (no endpoint) under local_only", () => {
+    expect(resolveAgentModelEndpoint({ MENDPOINT_MODEL_EGRESS: "local_only" })).toBeNull();
+  });
 });
 
 describe("Warden model name resolution", () => {

@@ -7,6 +7,7 @@ import {
   loadAppCredentials,
   parseGitHubAccountTenantBindings,
 } from "@mendpoint/github";
+import { assessModelEgress } from "@mendpoint/shared";
 import { customerBackupInputFromEnv } from "./disaster-recovery.js";
 
 export type EnvReport = {
@@ -64,6 +65,9 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     MENDPOINT_REPOS_DIR: env.MENDPOINT_REPOS_DIR,
     WEB_URL: env.WEB_URL,
     GITHUB_MODE: env.GITHUB_MODE,
+    MENDPOINT_MODEL_EGRESS: env.MENDPOINT_MODEL_EGRESS,
+    MENDPOINT_MODEL_LOCAL_HOSTS: env.MENDPOINT_MODEL_LOCAL_HOSTS,
+    LLM_AGENT_URL: env.LLM_AGENT_URL,
     MENDPOINT_DEPLOYMENT_PROFILE: env.MENDPOINT_DEPLOYMENT_PROFILE,
     MENDPOINT_DEPLOYMENT_CLASS: env.MENDPOINT_DEPLOYMENT_CLASS,
     MENDPOINT_FEED_POLLING_ENABLED: env.MENDPOINT_FEED_POLLING_ENABLED,
@@ -90,6 +94,23 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     TRUST_PROXY: env.TRUST_PROXY,
     TRUST_PROXY_SECRET: env.TRUST_PROXY_SECRET ? "[set]" : undefined,
   };
+
+  // Enforced no-egress mode: fail fast at boot when local_only is configured
+  // but an external model endpoint would be used, rather than at first run.
+  const egress = assessModelEgress(env);
+  if (egress.violation === "model_egress_mode_invalid") {
+    errors.push(
+      "MENDPOINT_MODEL_EGRESS must be exactly local_only or external_allowed",
+    );
+  } else if (egress.violation === "model_egress_local_only_violation") {
+    errors.push(
+      "MENDPOINT_MODEL_EGRESS=local_only forbids an external model endpoint; LLM_AGENT_URL must resolve to a private, loopback, link-local, or allowlisted host",
+    );
+  } else if (egress.violation === "warden_model_endpoint_invalid") {
+    errors.push(
+      "LLM_AGENT_URL must be a valid URL when MENDPOINT_MODEL_EGRESS=local_only",
+    );
+  }
 
   const githubMode =
     env.GITHUB_MODE ?? (mode === "production" ? "" : "mock");
