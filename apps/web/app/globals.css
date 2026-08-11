@@ -6,6 +6,8 @@
   --muted: #9299ad;
   --accent: #356cff;
   --accent-light: #7698ff;
+  --accent-action: #3266f2;
+  --accent-action-hover: #2f61e5;
   --cyan: #00bcc1;
   --success: #22c55e;
   --danger: #f87171;
@@ -370,8 +372,8 @@ a:hover {
 }
 
 .btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-action);
+  border-color: var(--accent-action);
   color: #ffffff;
   font-weight: 600;
 }
@@ -533,8 +535,8 @@ button,
 
 button.primary,
 .btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-action);
+  border-color: var(--accent-action);
   color: #ffffff;
 }
 
@@ -545,8 +547,8 @@ button:hover,
 
 button.primary:hover,
 .btn.primary:hover {
-  border-color: var(--accent-light);
-  background: var(--accent-light);
+  border-color: var(--accent-action-hover);
+  background: var(--accent-action-hover);
 }
 
 .hero-actions {
