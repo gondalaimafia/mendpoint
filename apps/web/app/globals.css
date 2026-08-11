@@ -4,8 +4,9 @@
   --border: #292e49;
   --text: #eff1f5;
   --muted: #9299ad;
-  --accent: #356cff;
-  --accent-light: #7698ff;
+  --brand-primary: #356cff;
+  --accent: #7698ff;
+  --accent-light: #99b1ff;
   --accent-action: #3266f2;
   --accent-action-hover: #2f61e5;
   --cyan: #00bcc1;

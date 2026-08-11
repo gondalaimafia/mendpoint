@@ -34,13 +34,14 @@ describe("Mendpoint brand contract", () => {
   it("uses the website color and typography tokens", () => {
     const css = readFileSync(new URL("./globals.css", import.meta.url), "utf8");
 
-    expect(css).toContain("--accent: #356cff");
+    expect(css).toContain("--brand-primary: #356cff");
+    expect(css).toContain("--accent: #7698ff");
     expect(css).toContain("--cyan: #00bcc1");
     expect(css).toContain("--success: #22c55e");
     expect(css).toContain("--font: var(--font-inter)");
     expect(css).toContain("--display: var(--font-sora)");
     expect(css).toContain("--mono: var(--font-jetbrains-mono)");
-    expect(css).not.toContain("--accent: #34d399");
+    expect(css).not.toContain("--brand-primary: #34d399");
   });
 
   it("keeps filled primary actions above the WCAG AA contrast threshold", () => {
@@ -52,5 +53,10 @@ describe("Mendpoint brand contract", () => {
     expect(actionHover).toBeDefined();
     expect(contrastRatio("#ffffff", actionBlue!)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio("#ffffff", actionHover!)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("keeps accent text above the WCAG AA contrast threshold on product surfaces", () => {
+    expect(contrastRatio("#7698ff", "#070a18")).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio("#7698ff", "#0d1124")).toBeGreaterThanOrEqual(4.5);
   });
 });
