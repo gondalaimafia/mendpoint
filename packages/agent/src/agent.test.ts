@@ -48,7 +48,7 @@ const TEST_MODEL_SOURCE = Object.freeze({
     tenantId: "tenant-test",
     policyDigest: `sha256:${"a".repeat(64)}`,
     provider: "test-provider",
-    model: "test-model",
+    model: "muse-spark-1.2",
     endpoint: "https://models.example/v1/chat/completions",
   }),
   externalModelAccounting: Object.freeze({
@@ -2420,8 +2420,10 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
     const priorUrl = process.env.LLM_AGENT_URL;
     const priorKey = process.env.OPENAI_API_KEY;
+    const priorModel = process.env.LLM_AGENT_MODEL;
     process.env.LLM_AGENT_URL = "https://models.example/v1";
     process.env.OPENAI_API_KEY = "test-key";
+    process.env.LLM_AGENT_MODEL = "muse-spark-1.2";
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -2461,6 +2463,8 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
       else process.env.LLM_AGENT_URL = priorUrl;
       if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = priorKey;
+      if (priorModel === undefined) delete process.env.LLM_AGENT_MODEL;
+      else process.env.LLM_AGENT_MODEL = priorModel;
     }
   });
 
@@ -2471,8 +2475,10 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
     const priorUrl = process.env.LLM_AGENT_URL;
     const priorKey = process.env.OPENAI_API_KEY;
+    const priorModel = process.env.LLM_AGENT_MODEL;
     process.env.LLM_AGENT_URL = "https://models.example/v1";
     process.env.OPENAI_API_KEY = "test-key";
+    process.env.LLM_AGENT_MODEL = "muse-spark-1.2";
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({
       model: "muse-spark-1.2",
       choices: [{ message: { content: JSON.stringify({
@@ -2527,6 +2533,8 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
       else process.env.LLM_AGENT_URL = priorUrl;
       if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = priorKey;
+      if (priorModel === undefined) delete process.env.LLM_AGENT_MODEL;
+      else process.env.LLM_AGENT_MODEL = priorModel;
     }
   });
 
@@ -2586,8 +2594,8 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     }
   });
 
-  it("sends the approved contributor tier model and prices it accordingly", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-contributor-"));
+  it("fails closed when the transmitted or echoed model diverges from the tenant policy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-divergent-"));
     dirs.push(dir);
     writeFileSync(join(dir, "client.js"), "export const client = true;\n");
     writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
@@ -2596,6 +2604,8 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     const priorModel = process.env.LLM_AGENT_MODEL;
     process.env.LLM_AGENT_URL = "https://models.example/v1";
     process.env.OPENAI_API_KEY = "test-key";
+    // TEST_MODEL_SOURCE approves "muse-spark-1.2". A run that transmits and echoes
+    // a different model the tenant never approved must never settle or certify.
     process.env.LLM_AGENT_MODEL = "muse-spark-1.2-contributor";
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({
       id: "chatcmpl-contrib-1",
@@ -2620,12 +2630,66 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
         maxSteps: 20,
         modelBudget: { maxCalls: 1 },
       });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).model)
-        .toBe("muse-spark-1.2-contributor");
+      expect(result.stoppedReason).toBe("model_source_policy_denied");
+      expect(result.metrics.model).toMatchObject({
+        calls: 1,
+        successfulCalls: 0,
+        failedCalls: 1,
+      });
+      expect(result.ok).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+      if (priorModel === undefined) delete process.env.LLM_AGENT_MODEL;
+      else process.env.LLM_AGENT_MODEL = priorModel;
+    }
+  });
+
+  it("allows a call whose transmitted and echoed model match the tenant policy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-approved-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    const priorModel = process.env.LLM_AGENT_MODEL;
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    // Transmitted and echoed model both equal the approved policy model.
+    process.env.LLM_AGENT_MODEL = "muse-spark-1.2";
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({
+      id: "chatcmpl-approved-1",
+      model: "muse-spark-1.2",
+      choices: [{ message: { content: JSON.stringify({
+        tool: "read_file",
+        args: { path: "client.js" },
+        thought: "inspect the client",
+      }) } }],
+      usage: { prompt_tokens: 200, completion_tokens: 160, total_tokens: 360 },
+    }), { headers: { "content-type": "application/json", "x-request-id": "req-approved-1" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const result = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        ...TEST_MODEL_SOURCE,
+        maxSteps: 20,
+        modelBudget: { maxCalls: 1 },
+      });
+      expect(result.stoppedReason).toBe("model_call_budget_exhausted");
+      expect(result.metrics.model).toMatchObject({
+        calls: 1,
+        successfulCalls: 1,
+        failedCalls: 0,
+      });
       const record = result.metrics.model.provenance[0]!;
-      expect(record.model).toBe("muse-spark-1.2-contributor");
-      expect(record.costUsd).toBeCloseTo((200 * 0.1 + 160 * 0.2) / 1_000_000, 12);
+      expect(record.model).toBe("muse-spark-1.2");
     } finally {
       vi.unstubAllGlobals();
       if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
@@ -2903,8 +2967,10 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
     const priorUrl = process.env.LLM_AGENT_URL;
     const priorKey = process.env.OPENAI_API_KEY;
+    const priorModel = process.env.LLM_AGENT_MODEL;
     process.env.LLM_AGENT_URL = "https://models.example/v1";
     process.env.OPENAI_API_KEY = "test-key";
+    process.env.LLM_AGENT_MODEL = "muse-spark-1.2";
     let calls = 0;
     vi.stubGlobal(
       "fetch",
@@ -2946,6 +3012,8 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
       else process.env.LLM_AGENT_URL = priorUrl;
       if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = priorKey;
+      if (priorModel === undefined) delete process.env.LLM_AGENT_MODEL;
+      else process.env.LLM_AGENT_MODEL = priorModel;
     }
   });
 });

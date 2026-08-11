@@ -125,6 +125,12 @@ describe("live model machine verification", () => {
     expect(failedIds(result)).toContain("planner.model_source");
   });
 
+  it("rejects a mixed trajectory with even one non-model graded step", () => {
+    const result = gradeLiveModelProvenance(input({ plannerSources: ["model", "heuristic"] }));
+    expect(result.passed).toBe(false);
+    expect(failedIds(result)).toContain("planner.model_source");
+  });
+
   it("fails when a scripted planner was injected", () => {
     const result = gradeLiveModelProvenance(input({ scriptedPlannerInjected: true }));
     expect(result.passed).toBe(false);

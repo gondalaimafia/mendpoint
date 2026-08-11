@@ -29,9 +29,11 @@ export function resolveAgentModelEndpoint(
 }
 
 /**
- * Resolve the exact model id used for a live provider call from configuration.
- * The live evidence lane (not this generic client) enforces the approved-model
- * allowlist, so a policy change is a config change, not a code change here.
+ * Resolve the exact model id used for a live provider call from configuration,
+ * so a policy change is a config change, not a code change here. The live
+ * evidence lane owns the approved-model allowlist; when a run carries a tenant
+ * source policy the caller additionally binds this resolved model, and the
+ * provider echo, to the policy model and fails closed on any mismatch.
  */
 export function resolveAgentModelName(
   env: NodeJS.ProcessEnv = process.env,
