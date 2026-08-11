@@ -1447,3 +1447,17 @@ Acceptance: every customer or performance statement is backed by a dated consent
 - [ ] Obtain independent adversarial review and close every P0/P1 before staging each release.
 
 Program acceptance: the underlying product does everything claimed within explicitly stated supported scopes. Unsupported providers, languages, repositories, deployment modes, prices, identity systems, and outcomes remain unavailable until their individual release acceptance evidence passes.
+
+## Customer Warden entrypoint: 2026-08-10
+
+- [x] Add red-first web proxy tests for authenticated `POST /warden/pilot` and tenant membership administration, including OIDC bearer preservation and method/path denial.
+- [x] Allow only the exact trusted Warden pilot and tenant membership routes through the same-origin web proxy.
+- [x] In customer mode, replace raw goal/path/verifier authority with provider and consumer references sent to `/api/warden/pilot`; retain the existing raw form only for demo mode.
+- [x] Add focused customer/demo form regressions and stable customer-facing failure copy.
+- [x] Run focused web/API tests, full workspace tests, typecheck, production build, GA checks, dependency audit, and diff integrity.
+- [ ] Obtain independent adversarial review, merge through protected main, verify exact deployed revision, then retry the Warden-only customer profile.
+- [ ] Run the consented private GitHub canary and object-store restore drill without merging or deploying customer code.
+
+Acceptance: an authenticated customer operator can select only an approved provider and tenant-owned consumer, producing one reference-only Warden pilot request through the web boundary. The browser cannot submit repository paths, verifier commands, model policy, budget, snapshots, or delivery authority.
+
+Review: the customer web path now forces the same-origin proxy, preserves the operator OIDC bearer, and accepts only provider and repository references. Preview access receives `company_identity_required`, raw `/agent/runs` is unavailable in customer mode, and membership administration is exposed only through exact OIDC-protected routes. Red tests first reproduced the missing proxy routes and the preview-session privilege escalation. The corrected tree passes 28 focused web tests, the full workspace suite, every workspace typecheck, the 22-page production build, GA/spec/claim/action checks, a zero-vulnerability production audit, and diff integrity. Independent adversarial rereview found no remaining P0 or P1. Protected-main deployment, customer-profile readiness, the private canary, and restore receipts remain pending.

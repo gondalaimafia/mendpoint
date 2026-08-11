@@ -1,18 +1,64 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import { waitForJob } from "../../lib/job-poll";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
+type WardenRequestInput = Readonly<{
+  customerMode: boolean;
+  providerSlug: string;
+  consumerId: string;
+  goal: string;
+  allowedPaths: string;
+  errorLog: string;
+}>;
+
+export function buildWardenRequest(input: WardenRequestInput): Readonly<{
+  endpoint: "/warden/pilot" | "/agent/runs";
+  body: Record<string, unknown>;
+}> {
+  if (input.customerMode) {
+    return {
+      endpoint: "/warden/pilot",
+      body: {
+        providerSlug: input.providerSlug,
+        consumerId: input.consumerId,
+      },
+    };
+  }
+  return {
+    endpoint: "/agent/runs",
+    body: {
+      goal: input.goal,
+      consumerId: input.consumerId,
+      allowedChangedPaths: input.allowedPaths
+        .split(/[\n,]/)
+        .map((path) => path.trim())
+        .filter(Boolean),
+      errorLog: input.errorLog || undefined,
+      maxSteps: 20,
+      async: true,
+    },
+  };
+}
+
 export function AgentForm({
   consumers,
+  customerMode,
 }: {
-  consumers: Array<{ id: string; name: string }>;
+  consumers: Array<{
+    id: string;
+    name: string;
+    providers: Array<{ slug: string; name: string }>;
+  }>;
+  customerMode: boolean;
 }) {
   const router = useRouter();
   const [consumerId, setConsumerId] = useState(consumers[0]?.id ?? "");
+  const [providerSlug, setProviderSlug] = useState(consumers[0]?.providers[0]?.slug ?? "");
+  const approvedProviders = consumers.find((consumer) => consumer.id === consumerId)?.providers ?? [];
   const [goal, setGoal] = useState(
     "Fix API 404: path typo chargess. Rename amount_cents to amount for charges API.",
   );
@@ -30,22 +76,21 @@ export function AgentForm({
     setErr(null);
     setOut(null);
     try {
-      const body: Record<string, unknown> = {
-        goal,
+      const request = buildWardenRequest({
+        customerMode,
+        providerSlug,
         consumerId,
-        allowedChangedPaths: allowedPaths
-          .split(/[\n,]/)
-          .map((path) => path.trim())
-          .filter(Boolean),
-        errorLog: errorLog || undefined,
-        maxSteps: 20,
-        async: true,
-      };
-      const payload = JSON.stringify(body);
-      if (!idempotency.current || idempotency.current.payload !== payload) {
-        idempotency.current = { payload, key: crypto.randomUUID() };
+        goal,
+        allowedPaths,
+        errorLog,
+      });
+      const payload = JSON.stringify(request.body);
+      const requestIdentity = `${request.endpoint}\n${payload}`;
+      if (!idempotency.current || idempotency.current.payload !== requestIdentity) {
+        idempotency.current = { payload: requestIdentity, key: crypto.randomUUID() };
       }
-      const res = await fetch(`${API_URL}/agent/runs`, {
+      const apiBase = customerMode ? "/api" : API_URL;
+      const res = await fetch(`${apiBase}${request.endpoint}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -53,14 +98,23 @@ export function AgentForm({
         },
         body: payload,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? res.statusText);
+      const data = await res.json() as Record<string, unknown>;
+      if (!res.ok) {
+        const requestId = res.headers.get("x-request-id");
+        throw new Error(
+          requestId
+            ? `Warden could not start this request. Reference ${requestId}`
+            : "Warden could not start this request. Check system status and try again.",
+        );
+      }
       idempotency.current = null;
       if (res.status === 202 || data.status === "queued") {
         setOut(
-          `QUEUED · session ${data.sessionId} · job ${data.jobId}\nThe recovery worker will process this job`,
+          customerMode
+            ? `QUEUED · job ${String(data.jobId)}\nWarden will derive the bounded migration scope from approved evidence`
+            : `QUEUED · session ${String(data.sessionId)} · job ${String(data.jobId)}\nThe recovery worker will process this job`,
         );
-        const job = await waitForJob(API_URL, data.jobId);
+        const job = await waitForJob(API_URL, String(data.jobId));
         setOut((current) =>
           job
             ? `${current ?? ""}\nCompleted with status: ${job.status}`
@@ -69,7 +123,7 @@ export function AgentForm({
         router.refresh();
       } else {
         setOut(
-          `${data.ok ? "OK" : "NEEDS HUMAN"} · ${data.steps} steps · files: ${(data.filesChanged ?? []).join(", ") || "—"}\n\n${data.reportMarkdown ?? ""}`,
+          `${data.ok ? "OK" : "NEEDS HUMAN"} · ${String(data.steps)} steps · files: ${Array.isArray(data.filesChanged) ? data.filesChanged.join(", ") || "none" : "none"}\n\n${String(data.reportMarkdown ?? "")}`,
         );
       }
       if (res.status !== 202 && data.status !== "queued") router.refresh();
@@ -82,7 +136,7 @@ export function AgentForm({
 
   return (
     <section className="card" aria-busy={busy}>
-      <h2>New Warden run</h2>
+      <h2>{customerMode ? "New bounded pilot" : "New Warden run"}</h2>
       <form
         className="stack"
         onSubmit={(event) => {
@@ -90,12 +144,39 @@ export function AgentForm({
           void run();
         }}
       >
+        {customerMode && (
+          <>
+            <p className="muted small">
+              Warden derives repository scope, verification, model policy, budget, and delivery authority from approved tenant evidence.
+            </p>
+            <label>
+              Approved provider
+              <select
+                className="input"
+                value={providerSlug}
+                onChange={(event) => setProviderSlug(event.target.value)}
+                required
+              >
+                {approvedProviders.map((provider) => (
+                  <option key={provider.slug} value={provider.slug}>
+                    {provider.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
         <label>
-          Consumer
+          {customerMode ? "Connected repository" : "Consumer"}
           <select
             className="input"
             value={consumerId}
-            onChange={(e) => setConsumerId(e.target.value)}
+            onChange={(event) => {
+              const nextConsumerId = event.target.value;
+              const nextConsumer = consumers.find((consumer) => consumer.id === nextConsumerId);
+              setConsumerId(nextConsumerId);
+              setProviderSlug(nextConsumer?.providers[0]?.slug ?? "");
+            }}
           >
             {consumers.map((c) => (
               <option key={c.id} value={c.id}>
@@ -104,42 +185,54 @@ export function AgentForm({
             ))}
           </select>
         </label>
-        <label>
-          Goal
-          <textarea
-            className="input"
-            rows={3}
-            value={goal}
-            onChange={(e) => setGoal(e.target.value)}
-          />
-        </label>
-        <label>
-          Files Warden may change
-          <textarea
-            className="input"
-            rows={2}
-            value={allowedPaths}
-            onChange={(e) => setAllowedPaths(e.target.value)}
-            placeholder="src/payments.ts"
-            required
-          />
-          <span className="muted">Enter one repository file path per line.</span>
-        </label>
-        <label>
-          Error log (optional seed)
-          <textarea
-            className="input"
-            rows={2}
-            value={errorLog}
-            onChange={(e) => setErrorLog(e.target.value)}
-          />
-        </label>
+        {!customerMode && (
+          <>
+            <label>
+              Goal
+              <textarea
+                className="input"
+                rows={3}
+                value={goal}
+                onChange={(event) => setGoal(event.target.value)}
+              />
+            </label>
+            <label>
+              Files Warden may change
+              <textarea
+                className="input"
+                rows={2}
+                value={allowedPaths}
+                onChange={(event) => setAllowedPaths(event.target.value)}
+                placeholder="src/payments.ts"
+                required
+              />
+              <span className="muted">Enter one repository file path per line.</span>
+            </label>
+            <label>
+              Error log (optional seed)
+              <textarea
+                className="input"
+                rows={2}
+                value={errorLog}
+                onChange={(event) => setErrorLog(event.target.value)}
+              />
+            </label>
+          </>
+        )}
         <button
           type="submit"
           className="btn primary"
-          disabled={busy || !consumerId || !allowedPaths.trim()}
+          disabled={
+            busy ||
+            !consumerId ||
+            (customerMode ? !providerSlug : !allowedPaths.trim())
+          }
         >
-          {busy ? "Warden running…" : "Run Warden"}
+          {busy
+            ? "Warden running…"
+            : customerMode
+              ? "Start bounded pilot"
+              : "Run Warden"}
         </button>
         {err && <p className="error" role="alert">{err}</p>}
         {out && <pre className="code-block" role="status" aria-live="polite">{out}</pre>}
