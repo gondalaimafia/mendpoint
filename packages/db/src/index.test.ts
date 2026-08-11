@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  recordAgentRunMeter,
   insertProvider,
   recordAudit,
   listProviders,
@@ -529,6 +530,69 @@ describe("db", () => {
     expect(columnsOf(migrated)).toEqual(columnsOf(fresh));
     expect(indexesOf(migrated)).toEqual(indexesOf(fresh));
     expect(indexesOf(fresh)).toContain("agent_runs_tenant_job_uidx");
+  });
+
+  it("boots a pre-Wave-3b schema (no agent_run_meters) and converges with a fresh DB", () => {
+    // Pre-change production shape: agent_runs exists but the Wave 3b
+    // agent_run_meters metering table does not. Booting createDb must create it
+    // (static DDL) and converge byte-for-byte with a fresh database, and the
+    // per-run metering path must work against the migrated database.
+    const legacyDir = mkdtempSync(join(tmpdir(), "mendpoint-db-meter-legacy-"));
+    dirs.push(legacyDir);
+    const legacyPath = join(legacyDir, "legacy.sqlite");
+    const legacy = new DatabaseSync(legacyPath);
+    legacy.exec(`
+      CREATE TABLE agent_runs (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        job_id TEXT,
+        goal TEXT NOT NULL,
+        repo_path TEXT NOT NULL,
+        status TEXT NOT NULL,
+        ok INTEGER NOT NULL DEFAULT 0,
+        steps INTEGER NOT NULL DEFAULT 0,
+        files_changed_json TEXT,
+        report_md TEXT,
+        result_json TEXT,
+        created_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS agent_runs_created_idx ON agent_runs(created_at);
+      INSERT INTO agent_runs (id, tenant_id, job_id, goal, repo_path, status, created_at, finished_at)
+      VALUES ('legacy-run', 'tenant_default', NULL, 'fix', '/repo', 'candidate_ready',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:05.000Z');
+    `);
+    legacy.close();
+
+    const migrated = createDb(legacyPath);
+    dbs.push(migrated);
+
+    const freshDir = mkdtempSync(join(tmpdir(), "mendpoint-db-meter-fresh-"));
+    dirs.push(freshDir);
+    const fresh = createDb(join(freshDir, "fresh.sqlite"));
+    dbs.push(fresh);
+
+    const columnsOf = (db: { raw: DatabaseSync }) =>
+      (db.raw.prepare("PRAGMA table_info(agent_run_meters)").all() as Array<{ name: string }>)
+        .map((c) => c.name)
+        .sort();
+    const indexesOf = (db: { raw: DatabaseSync }) =>
+      (db.raw.prepare("PRAGMA index_list(agent_run_meters)").all() as Array<{ name: string }>)
+        .map((i) => i.name)
+        .sort();
+
+    expect(columnsOf(migrated)).toEqual(columnsOf(fresh));
+    expect(columnsOf(fresh).length).toBeGreaterThan(0);
+    expect(indexesOf(migrated)).toEqual(indexesOf(fresh));
+
+    // The metering path works against the migrated database.
+    const meter = recordAgentRunMeter(migrated, {
+      tenantId: "tenant_default",
+      runId: "legacy-run",
+      meteredAt: "2026-01-01T00:00:05.500Z",
+    });
+    expect(meter.outcome).toBe("candidate_ready");
+    expect(meter.durationMs).toBe(5000);
   });
 
   it("creates tables and records audit", () => {

@@ -29,6 +29,9 @@ import type {
 
 export type * from "./schema.js";
 export * from "./warden-model-accounting.js";
+export * from "./external-baseline.js";
+export * from "./outcome-metrics.js";
+export * from "./agent-run-meter.js";
 
 export type AppDb = {
   raw: DatabaseSync;
@@ -1083,6 +1086,30 @@ CREATE TABLE IF NOT EXISTS routing_executor_health (
   PRIMARY KEY (tenant_id, scope, executor_id, provider_id)
 );
 
+-- Wave 3b: per-agent-run metering feed. One row per run captures its outcome,
+-- token usage, and MEASURED cost (null when unmeasured — never fabricated).
+-- Cost/tokens are sourced from routing_ledger at metering time. Every column
+-- lives in this table's own CREATE and the indexes reference only its own
+-- columns, so the whole table is safe in the static DDL (no additive migration
+-- adds a column it depends on).
+CREATE TABLE IF NOT EXISTS agent_run_meters (
+  tenant_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  candidate_ready_at TEXT,
+  duration_ms INTEGER,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  total_tokens INTEGER,
+  cost_usd REAL,
+  cost_measured INTEGER NOT NULL DEFAULT 0 CHECK (cost_measured IN (0, 1)),
+  metered_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, run_id)
+);
+CREATE INDEX IF NOT EXISTS agent_run_meters_tenant_created_idx
+  ON agent_run_meters(tenant_id, created_at);
+
 -- Durable review state for Transformer *adaptive* candidates. When the bounded
 -- adaptive repair loop converges on a fix that DIVERGES from the deterministic
 -- recipe output, that fix is not auto-promoted: it is recorded here as a
@@ -1570,6 +1597,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     "jobs",
     "repair_sessions",
     "agent_runs",
+    "agent_run_meters",
     "audit_events",
     "suppressed_patterns",
   ]) {
