@@ -19,18 +19,22 @@ import {
   upsertScmConnection,
 } from "@mendpoint/db";
 import {
+  AWS_SDK_JS_V2_TO_V3_RECIPE,
   NODE_RUNTIME_18_TO_20_RECIPE,
   RecipeAnalysisCache,
   RecipeWorkspaceExecutionError,
   TransformerPilotExecutionStore,
+  analyzeRecipe,
   applyRecipe,
   createCampaign,
   createOrganizationConstraintContract,
+  createPublishedProviderRecipeCatalog,
   executeRecipeInWorkspace,
   planMultiRepoAgents,
   recipeFilesDigest,
   recipeReference,
   restoreRecipeExecutionInWorkspace,
+  signPublishedProviderRecipes,
   type ExactSourceSnapshot,
   type RecipeCommandRunner,
   type RecipeExecutionFence,
@@ -38,6 +42,8 @@ import {
   type RecipeWorkspaceExecutionResult,
   type TransformerCandidateManifest,
 } from "@mendpoint/transformer";
+import { generateKeyPairSync } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import { runTransformerPilotLaneOnce } from "@mendpoint/worker/transformer-pilot-lane";
 import {
@@ -54,6 +60,23 @@ const SWE_BENCH = "https://github.com/SWE-bench/SWE-bench";
 const INSPECT_SCORING = "https://inspect.aisi.org.uk/scoring.html";
 const METR_TASK_STANDARD = "https://github.com/METR/task-standard";
 const SECRET_SENTINEL = "transformer_eval_secret_must_not_escape";
+const AWS_SDK_UPGRADE_GUIDE =
+  "https://docs.aws.amazon.com/sdk-for-javascript/v3/developer-guide/migrating-to-v3.html";
+
+const AWS_FIXTURE_ROOT = "../../../fixtures/consumers/aws-sdk-v2-to-v3/";
+
+function loadAwsFixture(sub: string, paths: readonly string[]): RecipeFiles {
+  const files: Record<string, string> = {};
+  for (const path of paths) {
+    files[path] = readFileSync(
+      fileURLToPath(new URL(`${AWS_FIXTURE_ROOT}${sub}/${path}`, import.meta.url)),
+      "utf8",
+    );
+  }
+  return Object.freeze(files);
+}
+
+const AWS_SUPPORTED_PATHS = ["package.json", "src/s3.js", "src/dynamo.js"] as const;
 
 const FILES: RecipeFiles = Object.freeze({
   "src/server.cjs": [
@@ -1046,9 +1069,268 @@ const PRODUCTION_RUNNER_SCENARIO: AgentEvalScenario = Object.freeze({
   },
 });
 
+const AWS_SDK_EXECUTION_SCENARIO: AgentEvalScenario = Object.freeze({
+  id: "transformer.execute.aws_sdk_v2_to_v3.heldout",
+  product: "transformer",
+  family: "recipe_execution",
+  tier: "common",
+  critical: true,
+  sourceRefs: Object.freeze([AWS_SDK_UPGRADE_GUIDE, SWE_BENCH, HARBOR_TASKS]),
+  deterministic: true,
+  budget: Object.freeze({
+    maxDurationMs: 10_000,
+    maxSteps: 12,
+    maxChangedFiles: 3,
+    maxChangedBytes: 128 * 1024,
+    maxEvidenceBytes: 128 * 1024,
+  }),
+  run: async () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-transformer-aws-sdk-eval-"));
+    const tempRoot = join(root, "workspaces");
+    const evidenceDirectory = join(root, "evidence");
+    const started = Date.now();
+    try {
+      // Publish -> sign -> resolve through the real run-path catalog seam.
+      const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+      const keyId = "aws-sdk-eval-key-2026-08";
+      const catalog = createPublishedProviderRecipeCatalog({
+        signedArtifacts: signPublishedProviderRecipes({ keyId, privateKey }),
+        trustedKeys: [{ keyId, algorithm: "ed25519", publicKey }],
+        now: "2026-08-06T00:00:00.000Z",
+      });
+      const resolved = catalog.resolve({
+        providerSlug: "aws-sdk-js",
+        providerCategory: "cloud",
+        changeTarget: "sdk",
+        changeKind: "breaking",
+        fromVersion: "2",
+        toVersion: "3",
+        language: "javascript",
+        packageManager: "npm",
+        repositoryKind: "service",
+        runtime: { name: "node", major: 20 },
+      });
+      const reference = resolved.artifact.boundedEdits.implementationRecipe;
+      const resolutionBinds = reference.digest === AWS_SDK_JS_V2_TO_V3_RECIPE.digest &&
+        reference.id === AWS_SDK_JS_V2_TO_V3_RECIPE.id;
+
+      const files = loadAwsFixture("before", AWS_SUPPORTED_PATHS);
+      const fileModes = Object.freeze(
+        Object.fromEntries(Object.keys(files).map((path) => [path, "100644"])),
+      ) as Record<string, "100644" | "100755">;
+      const fence: RecipeExecutionFence = Object.freeze({
+        tenantId: "tenant-aws-eval",
+        campaignId: "campaign-aws-eval",
+        unitId: "unit-aws-eval",
+        attemptId: "attempt-aws-eval",
+        leaseGeneration: 3,
+        leaseToken: "transformer-aws-eval-lease-token",
+      });
+
+      const execution = await executeRecipeInWorkspace({
+        fence,
+        assertFence: () => true,
+        source: {
+          repositoryId: "repository-aws-eval",
+          revision: "b".repeat(40),
+          digest: recipeFilesDigest(files),
+          files,
+          fileModes,
+        },
+        recipe: reference,
+        evidenceDirectory,
+        tempRoot,
+        observedAt: "2026-08-06T00:01:00.000Z",
+      });
+      const restore = await restoreRecipeExecutionInWorkspace({
+        execution,
+        currentFiles: execution.outputFiles,
+        fence,
+        assertFence: () => true,
+        evidenceDirectory,
+        tempRoot,
+        observedAt: "2026-08-06T00:02:00.000Z",
+      });
+
+      const durationMs = Date.now() - started;
+      const operations = execution.operations.map((operation) => operation.path).sort();
+      const commandsPassed = execution.commands.length === 2 &&
+        execution.commands.every((command) => command.exitCode === 0);
+      const leaks = workspaceCount(tempRoot);
+      const restoredExact = restore.outputDigest === execution.inputDigest;
+      const evidenceText = existsSync(execution.evidence.path)
+        ? readFileSync(execution.evidence.path, "utf8")
+        : "";
+      const observation: AgentEvalObservation = Object.freeze({
+        disposition: "passed",
+        semanticDigest: agentEvalDigest({
+          resolutionBinds,
+          status: execution.analysis.status,
+          operations,
+          inputDigest: execution.inputDigest,
+          outputDigest: execution.outputDigest,
+          restoredDigest: restore.outputDigest,
+          commands: execution.commands.map((command) => [command.id, command.exitCode]),
+        }),
+        metrics: Object.freeze({
+          durationMs,
+          steps: execution.commands.length + 2,
+          changedFiles: operations.length,
+          changedBytes: Buffer.byteLength(JSON.stringify(execution.outputFiles), "utf8"),
+          evidenceBytes: Buffer.byteLength(evidenceText, "utf8"),
+        }),
+        details: Object.freeze({
+          resolutionBinds,
+          status: execution.analysis.status,
+          operations,
+          commands: execution.commands.map((command) => `${command.id}:${command.exitCode}`),
+          restoredExact,
+          workspaceLeaks: leaks,
+        }),
+      });
+      const grades = Object.freeze([
+        evalGrade({
+          id: "catalog.resolves_executable_recipe",
+          critical: true,
+          passed: resolutionBinds,
+          expected: "published catalog resolves aws-sdk-js v2->v3 to the executable recipe digest",
+          observed: { digest: reference.digest, id: reference.id },
+        }),
+        evalGrade({
+          id: "recipe.applies_on_supported_fixture",
+          critical: true,
+          passed: execution.analysis.status === "applicable" &&
+            operations.join(",") === "package.json,src/dynamo.js,src/s3.js",
+          expected: "applicable analysis with three allowlisted operations",
+          observed: { status: execution.analysis.status, operations },
+        }),
+        evalGrade({
+          id: "recipe.verification_passes",
+          critical: true,
+          passed: commandsPassed,
+          expected: "two allowlisted verification commands with exit code zero",
+          observed: execution.commands.map((command) => `${command.id}:${command.exitCode}`),
+        }),
+        evalGrade({
+          id: "recipe.allowlisted_paths",
+          critical: true,
+          passed: operations.every((path) => AWS_SDK_JS_V2_TO_V3_RECIPE.allowedPaths.includes(path)),
+          expected: AWS_SDK_JS_V2_TO_V3_RECIPE.allowedPaths,
+          observed: operations,
+        }),
+        evalGrade({
+          id: "recipe.inverse_restores_exact_input",
+          critical: true,
+          passed: restoredExact,
+          expected: execution.inputDigest,
+          observed: restore.outputDigest,
+        }),
+        evalGrade({
+          id: "workspace.disposed",
+          critical: true,
+          passed: leaks === 0,
+          expected: 0,
+          observed: leaks,
+        }),
+      ]);
+      return Object.freeze({ observation, grades });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+});
+
+const AWS_SDK_ABSTAIN_SCENARIO: AgentEvalScenario = Object.freeze({
+  id: "transformer.analysis.aws_sdk_abstain.heldout",
+  product: "transformer",
+  family: "recipe_analysis",
+  tier: "adversarial",
+  critical: true,
+  sourceRefs: Object.freeze([AWS_SDK_UPGRADE_GUIDE, INSPECT_SCORING]),
+  deterministic: true,
+  budget: Object.freeze({
+    maxDurationMs: 2_000,
+    maxSteps: 6,
+    maxChangedFiles: 0,
+    maxChangedBytes: 0,
+    maxEvidenceBytes: 32 * 1024,
+  }),
+  run: async () => {
+    const started = Date.now();
+    const reference = recipeReference(AWS_SDK_JS_V2_TO_V3_RECIPE);
+    const supported = loadAwsFixture("before", AWS_SUPPORTED_PATHS);
+    const outOfScope = loadAwsFixture("out-of-scope", ["package.json", "src/s3.js"]);
+
+    const supportedAnalysis = analyzeRecipe(reference, supported);
+    const abstainAnalysis = analyzeRecipe(reference, outOfScope);
+    const migrated = applyRecipe(reference, supported);
+    const idempotentAnalysis = analyzeRecipe(reference, migrated.files);
+
+    const durationMs = Date.now() - started;
+    const applicable = supportedAnalysis.status === "applicable" &&
+      [...supportedAnalysis.matchedPaths].sort().join(",") ===
+        "package.json,src/dynamo.js,src/s3.js";
+    const abstains = abstainAnalysis.status === "unsupported" &&
+      abstainAnalysis.reasons.includes("recipe_aws_unsupported_service:SQS") &&
+      abstainAnalysis.matchedPaths.length === 0;
+    const idempotent = idempotentAnalysis.status === "already_applied";
+    const observation: AgentEvalObservation = Object.freeze({
+      disposition: applicable && abstains && idempotent ? "passed" : "failed",
+      semanticDigest: agentEvalDigest({
+        supported: supportedAnalysis.status,
+        matched: [...supportedAnalysis.matchedPaths].sort(),
+        abstain: abstainAnalysis.status,
+        reasons: [...abstainAnalysis.reasons].sort(),
+        idempotent: idempotentAnalysis.status,
+      }),
+      metrics: Object.freeze({
+        durationMs,
+        steps: 3,
+        changedFiles: 0,
+        changedBytes: 0,
+        evidenceBytes: 0,
+      }),
+      details: Object.freeze({
+        supported: supportedAnalysis.status,
+        abstain: abstainAnalysis.status,
+        abstainReasons: abstainAnalysis.reasons,
+        idempotent: idempotentAnalysis.status,
+      }),
+    });
+    return Object.freeze({
+      observation,
+      grades: Object.freeze([
+        evalGrade({
+          id: "analysis.supported_is_applicable",
+          critical: true,
+          passed: applicable,
+          expected: "applicable with three matched allowlisted paths",
+          observed: { status: supportedAnalysis.status, matched: supportedAnalysis.matchedPaths },
+        }),
+        evalGrade({
+          id: "analysis.out_of_scope_abstains",
+          critical: true,
+          passed: abstains,
+          expected: "unsupported analysis naming the out-of-scope service, zero matched paths",
+          observed: { status: abstainAnalysis.status, reasons: abstainAnalysis.reasons },
+        }),
+        evalGrade({
+          id: "analysis.idempotent_already_applied",
+          critical: true,
+          passed: idempotent,
+          expected: "already_applied",
+          observed: idempotentAnalysis.status,
+        }),
+      ]),
+    });
+  },
+});
+
 export const TRANSFORMER_AGENT_EVAL_SCENARIOS: readonly AgentEvalScenario[] = Object.freeze([
   PLANNING_SCENARIO,
   ANALYSIS_SCENARIO,
   PRODUCTION_RUNNER_SCENARIO,
+  AWS_SDK_EXECUTION_SCENARIO,
+  AWS_SDK_ABSTAIN_SCENARIO,
   ...WORKSPACE_CASES.map(workspaceScenario),
 ]);

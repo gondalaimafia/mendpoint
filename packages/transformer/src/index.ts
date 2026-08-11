@@ -87,6 +87,7 @@ export {
   type TransformerDeliveryAuthorizationInput,
 } from "./delivery-authorization.js";
 export {
+  AWS_SDK_JS_V2_TO_V3_RECIPE,
   NODE_RUNTIME_18_TO_20_RECIPE,
   RecipeAnalysisCache,
   analyzeRecipe,
@@ -129,6 +130,16 @@ export {
   restoreRecipeExecutionInWorkspace,
   runRecipeVerificationGate,
 } from "./recipe-workspace-execution.js";
+
+export {
+  AWS_SDK_JS_V2_TO_V3_ARTIFACT,
+  PUBLISHED_PROVIDER_RECIPE_ARTIFACTS,
+  createPublishedProviderRecipeCatalog,
+  signPublishedProviderRecipes,
+  type CreatePublishedProviderRecipeCatalogInput,
+  type ProviderRecipeSigningKey,
+  type ProviderRecipeTrustedKey,
+} from "./published-recipes.js";
 
 export {
   DEFAULT_ADAPTIVE_REPAIR_BOUNDS,

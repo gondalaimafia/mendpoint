@@ -4,11 +4,11 @@ import { runWardenTransformerEval } from "./agent-eval.js";
 describe("Warden and Transformer held out evals", () => {
   it("passes observable behavior, safety, recovery, and budget graders", async () => {
     const report = await runWardenTransformerEval(1);
-    expect(report.behavior.scenarioCount).toBe(30);
+    expect(report.behavior.scenarioCount).toBe(32);
     expect(report.behavior.byProduct.warden.total).toBe(16);
-    expect(report.behavior.byProduct.transformer.total).toBe(14);
+    expect(report.behavior.byProduct.transformer.total).toBe(16);
     expect(report.behavior.byEvidenceLane).toEqual({
-      contract: { passed: 27, total: 27 },
+      contract: { passed: 29, total: 29 },
       simulated_scripted: { passed: 3, total: 3 },
       live_model: { passed: 0, total: 0 },
     });

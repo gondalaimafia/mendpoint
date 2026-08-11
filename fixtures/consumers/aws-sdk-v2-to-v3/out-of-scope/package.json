@@ -1,0 +1,7 @@
+{
+  "name": "aws-sdk-consumer-out-of-scope",
+  "private": true,
+  "dependencies": {
+    "aws-sdk": "^2.1600.0"
+  }
+}

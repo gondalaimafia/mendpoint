@@ -23,6 +23,15 @@ export type RecipePrecondition =
       kind: "optional_docker_node_major";
       path: string;
       major: number;
+    }>
+  | Readonly<{
+      kind: "json_dependency_present";
+      path: string;
+      dependencies: readonly string[];
+    }>
+  | Readonly<{
+      kind: "aws_sdk_v2_source";
+      path: string;
     }>;
 
 export type RecipeTransform =
@@ -42,6 +51,16 @@ export type RecipeTransform =
       path: string;
       fromMajor: number;
       toMajor: number;
+    }>
+  | Readonly<{
+      kind: "aws_dependency_swap";
+      path: string;
+      remove: readonly string[];
+      add: Readonly<Record<string, string>>;
+    }>
+  | Readonly<{
+      kind: "aws_sdk_source_v2_to_v3";
+      path: string;
     }>;
 
 export type RecipeVerificationCommand = Readonly<{
@@ -237,6 +256,325 @@ const NODE_RUNTIME_18_TO_20_V2 = createRecipe({
   rollback: NODE_RUNTIME_18_TO_20_V1.rollback,
 });
 
+// ---------------------------------------------------------------------------
+// AWS SDK for JavaScript v2 -> v3 (bounded, deterministic subset)
+//
+// Supported surface (everything else is reported out-of-scope by analysis, so
+// the recipe abstains rather than producing a wrong edit):
+//   - Module import of the default `aws-sdk` namespace, either
+//     `const AWS = require("aws-sdk")` (CommonJS) or `import AWS from "aws-sdk"`
+//     (ESM). Any other alias or import form is out-of-scope.
+//   - Clients: `new AWS.S3(...)` and `new AWS.DynamoDB.DocumentClient(...)`.
+//     Any other `new AWS.<Service>(...)` is out-of-scope.
+//   - S3 operations getObject/putObject/deleteObject/headObject/listObjectsV2
+//     and DocumentClient operations get/put/delete/query/update/scan, used in
+//     `.<op>(<params>).promise()` call style with no nested parentheses in the
+//     params. Callback style, unsupported operations, or nested-paren params
+//     are out-of-scope.
+//   - package.json: drops the `aws-sdk` dependency and adds the v3 packages for
+//     the supported services.
+// The edits are content-addressed replace_file operations over an allowlisted
+// set of paths, mirroring the Node runtime recipe.
+// ---------------------------------------------------------------------------
+
+const AWS_S3_OPERATIONS: Readonly<Record<string, string>> = {
+  getObject: "GetObjectCommand",
+  putObject: "PutObjectCommand",
+  deleteObject: "DeleteObjectCommand",
+  headObject: "HeadObjectCommand",
+  listObjectsV2: "ListObjectsV2Command",
+};
+
+const AWS_DOC_OPERATIONS: Readonly<Record<string, string>> = {
+  get: "GetCommand",
+  put: "PutCommand",
+  delete: "DeleteCommand",
+  query: "QueryCommand",
+  update: "UpdateCommand",
+  scan: "ScanCommand",
+};
+
+const AWS_OPERATION_COMMANDS: Readonly<Record<string, string>> = {
+  ...AWS_S3_OPERATIONS,
+  ...AWS_DOC_OPERATIONS,
+};
+
+const AWS_MODULE_SYMBOLS: readonly (readonly [string, readonly string[]])[] = [
+  [
+    "@aws-sdk/client-s3",
+    [
+      "S3Client",
+      "GetObjectCommand",
+      "PutObjectCommand",
+      "DeleteObjectCommand",
+      "HeadObjectCommand",
+      "ListObjectsV2Command",
+    ],
+  ],
+  ["@aws-sdk/client-dynamodb", ["DynamoDBClient"]],
+  [
+    "@aws-sdk/lib-dynamodb",
+    [
+      "DynamoDBDocumentClient",
+      "GetCommand",
+      "PutCommand",
+      "DeleteCommand",
+      "QueryCommand",
+      "UpdateCommand",
+      "ScanCommand",
+    ],
+  ],
+];
+
+const AWS_SDK_V3_DEPENDENCIES: Readonly<Record<string, string>> = {
+  "@aws-sdk/client-s3": "^3.658.0",
+  "@aws-sdk/client-dynamodb": "^3.658.0",
+  "@aws-sdk/lib-dynamodb": "^3.658.0",
+};
+
+const AWS_REQUIRE_LINE =
+  /^([ \t]*)(?:const|let|var)\s+AWS\s*=\s*require\(\s*["']aws-sdk["']\s*\);?[ \t]*\r?$/m;
+const AWS_IMPORT_LINE = /^([ \t]*)import\s+AWS\s+from\s+["']aws-sdk["'];?[ \t]*\r?$/m;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function awsConstructorArgs(args: string): string {
+  const trimmed = args.trim();
+  return trimmed.length ? trimmed : "{}";
+}
+
+function buildAwsImportBlock(source: string, syntax: "cjs" | "esm", indent: string): string {
+  const lines: string[] = [];
+  for (const [moduleName, symbols] of AWS_MODULE_SYMBOLS) {
+    const used = symbols.filter((symbol) => new RegExp(`\\b${symbol}\\b`).test(source));
+    if (!used.length) continue;
+    const named = used.join(", ");
+    lines.push(
+      syntax === "esm"
+        ? `${indent}import { ${named} } from "${moduleName}";`
+        : `${indent}const { ${named} } = require("${moduleName}");`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function rewriteAwsSource(content: string): string {
+  const requireMatch = AWS_REQUIRE_LINE.exec(content);
+  const importMatch = requireMatch ? null : AWS_IMPORT_LINE.exec(content);
+  const syntax: "cjs" | "esm" | undefined = requireMatch ? "cjs" : importMatch ? "esm" : undefined;
+  if (!syntax) return content;
+  const indent = (requireMatch ?? importMatch)![1] ?? "";
+
+  let out = content;
+  out = out.replace(
+    /new\s+AWS\.DynamoDB\.DocumentClient\(([^()]*)\)/g,
+    (_match, args: string) =>
+      `DynamoDBDocumentClient.from(new DynamoDBClient(${awsConstructorArgs(args)}))`,
+  );
+  out = out.replace(
+    /new\s+AWS\.S3\(([^()]*)\)/g,
+    (_match, args: string) => `new S3Client(${awsConstructorArgs(args)})`,
+  );
+  out = out.replace(
+    /\.(getObject|putObject|deleteObject|headObject|listObjectsV2|get|put|delete|query|update|scan)\(([^()]*)\)\.promise\(\)/g,
+    (match, op: string, args: string) => {
+      const command = AWS_OPERATION_COMMANDS[op];
+      return command ? `.send(new ${command}(${args}))` : match;
+    },
+  );
+
+  const importBlock = buildAwsImportBlock(out, syntax, indent);
+  out = out.replace(syntax === "cjs" ? AWS_REQUIRE_LINE : AWS_IMPORT_LINE, () => importBlock);
+  return out;
+}
+
+function swapAwsDependencies(
+  content: string,
+  remove: readonly string[],
+  add: Readonly<Record<string, string>>,
+): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return content;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return content;
+  const record = parsed as Record<string, unknown>;
+  const current = record.dependencies;
+  const deps: Record<string, unknown> =
+    current && typeof current === "object" && !Array.isArray(current)
+      ? { ...(current as Record<string, unknown>) }
+      : {};
+  let changed = false;
+  for (const dependency of remove) {
+    if (dependency in deps) {
+      delete deps[dependency];
+      changed = true;
+    }
+  }
+  for (const [dependency, version] of Object.entries(add)) {
+    if (deps[dependency] !== version) {
+      deps[dependency] = version;
+      changed = true;
+    }
+  }
+  if (!changed) return content;
+  record.dependencies = deps;
+  return `${stableJson(record, true)}\n`;
+}
+
+function classifyAwsSource(content: string): PreconditionState {
+  const hasV2Import = AWS_REQUIRE_LINE.test(content) || AWS_IMPORT_LINE.test(content);
+  const hasAwsMember = /\bAWS\.[A-Za-z]/.test(content);
+  const hasPromise = /\.promise\(\)/.test(content);
+  const hasV3 = /@aws-sdk\//.test(content);
+  const hasV2 = hasV2Import || hasAwsMember || hasPromise;
+  if (!hasV2 && !hasV3) return { state: "neutral" };
+  if (!hasV2) return { state: "target" };
+  if (!hasV2Import) {
+    return { state: "unsupported", reason: "recipe_aws_import_unrecognized" };
+  }
+  const unsupportedService = [...content.matchAll(/new\s+AWS\.([A-Za-z0-9_.]+)\s*\(/g)]
+    .map((match) => match[1]!)
+    .find((service) => service !== "S3" && service !== "DynamoDB.DocumentClient");
+  if (unsupportedService) {
+    return { state: "unsupported", reason: `recipe_aws_unsupported_service:${unsupportedService}` };
+  }
+  const clients: Array<readonly [string, Readonly<Record<string, string>>]> = [];
+  for (const match of content.matchAll(
+    /(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*new\s+AWS\.S3\b/g,
+  )) {
+    clients.push([match[1]!, AWS_S3_OPERATIONS]);
+  }
+  for (const match of content.matchAll(
+    /(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*new\s+AWS\.DynamoDB\.DocumentClient\b/g,
+  )) {
+    clients.push([match[1]!, AWS_DOC_OPERATIONS]);
+  }
+  for (const [name, operations] of clients) {
+    const escaped = escapeRegExp(name);
+    const calls = [...content.matchAll(new RegExp(`\\b${escaped}\\.([A-Za-z0-9_]+)\\s*\\(`, "g"))];
+    for (const call of calls) {
+      if (!(call[1]! in operations)) {
+        return {
+          state: "unsupported",
+          reason: `recipe_aws_unsupported_operation:${name}.${call[1]}`,
+        };
+      }
+    }
+    const promiseCalls = content.match(
+      new RegExp(
+        `\\b${escaped}\\.(?:${Object.keys(operations).join("|")})\\([^()]*\\)\\.promise\\(\\)`,
+        "g",
+      ),
+    );
+    if ((promiseCalls?.length ?? 0) !== calls.length) {
+      return { state: "unsupported", reason: `recipe_aws_unsupported_call_style:${name}` };
+    }
+  }
+  const transformed = rewriteAwsSource(content);
+  if (
+    /require\(\s*["']aws-sdk["']\s*\)/.test(transformed) ||
+    /from\s+["']aws-sdk["']/.test(transformed) ||
+    /\bAWS\.[A-Za-z]/.test(transformed) ||
+    /\.promise\(\)/.test(transformed)
+  ) {
+    return { state: "unsupported", reason: "recipe_aws_residual_v2_surface" };
+  }
+  return { state: "source" };
+}
+
+function classifyAwsDependencies(
+  content: string,
+  removes: readonly string[],
+  swap: Extract<RecipeTransform, { kind: "aws_dependency_swap" }> | undefined,
+): PreconditionState {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return { state: "unsupported", reason: "recipe_aws_manifest_invalid" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { state: "unsupported", reason: "recipe_aws_manifest_invalid" };
+  }
+  const dependencies = (parsed as Record<string, unknown>).dependencies;
+  const deps: Record<string, unknown> =
+    dependencies && typeof dependencies === "object" && !Array.isArray(dependencies)
+      ? (dependencies as Record<string, unknown>)
+      : {};
+  if (removes.some((dependency) => deps[dependency] !== undefined)) return { state: "source" };
+  const adds = swap ? Object.keys(swap.add) : [];
+  if (adds.length && adds.every((dependency) => deps[dependency] !== undefined)) {
+    return { state: "target" };
+  }
+  return { state: "neutral" };
+}
+
+const AWS_SDK_SOURCE_VERIFIER =
+  "const fs=require('node:fs');const fail=(m)=>{throw new Error(m)};" +
+  "const files=['src/s3.js','src/dynamo.js'];let migrated=0;" +
+  "for(const f of files){if(!fs.existsSync(f))continue;const s=fs.readFileSync(f,'utf8');" +
+  "if(/[\\x27\\x22]aws-sdk[\\x27\\x22]/.test(s))fail('aws_sdk_module_ref:'+f);" +
+  "if(/\\bnew AWS\\./.test(s))fail('aws_v2_client:'+f);" +
+  "if(/\\.promise\\(\\)/.test(s))fail('aws_v2_promise:'+f);" +
+  "if(/@aws-sdk\\//.test(s))migrated++;}" +
+  "if(migrated===0)fail('aws_v3_imports_missing');";
+
+const AWS_SDK_MANIFEST_VERIFIER =
+  "const fs=require('node:fs');const fail=(m)=>{throw new Error(m)};" +
+  "const p=JSON.parse(fs.readFileSync('package.json','utf8'));" +
+  "const d=Object.assign({},p.dependencies||{});" +
+  "if(d['aws-sdk']!==undefined)fail('aws_sdk_dependency_present');" +
+  "if(d['@aws-sdk/client-s3']===undefined&&d['@aws-sdk/client-dynamodb']===undefined)" +
+  "fail('aws_v3_dependency_missing');";
+
+const AWS_SDK_JS_V2_TO_V3_V1 = createRecipe({
+  id: "aws-sdk-js-v2-to-v3",
+  version: 1,
+  title: "AWS SDK for JavaScript v2 to v3 (S3 and DynamoDB DocumentClient)",
+  source: "aws-sdk-v2",
+  target: "aws-sdk-v3",
+  allowedPaths: ["package.json", "src/dynamo.js", "src/s3.js"],
+  preconditions: [
+    { kind: "json_dependency_present", path: "package.json", dependencies: ["aws-sdk"] },
+    { kind: "aws_sdk_v2_source", path: "src/s3.js" },
+    { kind: "aws_sdk_v2_source", path: "src/dynamo.js" },
+  ],
+  transforms: [
+    {
+      kind: "aws_dependency_swap",
+      path: "package.json",
+      remove: ["aws-sdk"],
+      add: AWS_SDK_V3_DEPENDENCIES,
+    },
+    { kind: "aws_sdk_source_v2_to_v3", path: "src/s3.js" },
+    { kind: "aws_sdk_source_v2_to_v3", path: "src/dynamo.js" },
+  ],
+  verificationCommands: [
+    {
+      id: "aws-sdk-v3-source",
+      command: `node -e "${AWS_SDK_SOURCE_VERIFIER}"`,
+      successCriteria:
+        "Migrated sources import @aws-sdk v3 modules with no aws-sdk import, no new AWS. client, and no .promise() usage",
+    },
+    {
+      id: "aws-sdk-v3-manifest",
+      command: `node -e "${AWS_SDK_MANIFEST_VERIFIER}"`,
+      successCriteria: "package.json drops aws-sdk and declares the v3 client packages",
+    },
+  ],
+  rollback: {
+    strategy: "inverse_operations",
+    requireCurrentDigest: true,
+  },
+});
+
+export const AWS_SDK_JS_V2_TO_V3_RECIPE = AWS_SDK_JS_V2_TO_V3_V1;
+
 const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${NODE_RUNTIME_18_TO_20_V1.id}@${NODE_RUNTIME_18_TO_20_V1.version}`,
@@ -245,6 +583,10 @@ const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${NODE_RUNTIME_18_TO_20_V2.id}@${NODE_RUNTIME_18_TO_20_V2.version}`,
     NODE_RUNTIME_18_TO_20_V2,
+  ],
+  [
+    `${AWS_SDK_JS_V2_TO_V3_V1.id}@${AWS_SDK_JS_V2_TO_V3_V1.version}`,
+    AWS_SDK_JS_V2_TO_V3_V1,
   ],
 ]);
 
@@ -369,6 +711,17 @@ function preconditionState(
   precondition: RecipePrecondition,
 ): PreconditionState {
   const transform = expectedTransform(recipe, precondition);
+  if (precondition.kind === "aws_sdk_v2_source") {
+    const content = files[precondition.path];
+    if (content === undefined) return { state: "neutral" };
+    return classifyAwsSource(content);
+  }
+  if (precondition.kind === "json_dependency_present") {
+    const content = files[precondition.path];
+    if (content === undefined) return { state: "neutral" };
+    const swap = transform?.kind === "aws_dependency_swap" ? transform : undefined;
+    return classifyAwsDependencies(content, precondition.dependencies, swap);
+  }
   if (precondition.kind === "json_string_in") {
     let value: unknown;
     try {
@@ -566,9 +919,13 @@ function applyTransform(transform: RecipeTransform, files: Record<string, string
     files[transform.path] = setNodeEngine(before!, transform.value);
   } else if (transform.kind === "node_version_set") {
     files[transform.path] = `${transform.value}\n`;
-  } else {
+  } else if (transform.kind === "docker_node_major_set") {
     const marker = new RegExp(`^(\\s*FROM\\s+node:)${transform.fromMajor}(?=[.\\-\\s]|$)`, "gim");
     files[transform.path] = before!.replace(marker, `$1${transform.toMajor}`);
+  } else if (transform.kind === "aws_dependency_swap") {
+    files[transform.path] = swapAwsDependencies(before!, transform.remove, transform.add);
+  } else {
+    files[transform.path] = rewriteAwsSource(before!);
   }
 }
 
