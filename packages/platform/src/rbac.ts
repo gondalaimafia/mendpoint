@@ -105,12 +105,41 @@ export function canMutateSystemCatalog(
   );
 }
 
-/** Tenant isolation: resource must match principal tenant (or global empty). */
+/**
+ * Genuinely global/shared catalog resources. Rows here carry no tenant_id because they
+ * describe public provider / API-change data shared across every tenant. This is the ONLY
+ * allowlist for which an empty or undefined resourceTenantId is permitted.
+ */
+export const GLOBAL_CATALOG_RESOURCES: ReadonlySet<string> = new Set([
+  "api_changes",
+  "api_versions",
+  "provider",
+  "providers",
+]);
+
+/**
+ * Tenant isolation: a customer-owned resource must belong to the principal's tenant.
+ *
+ * Fail closed: an empty or undefined resourceTenantId now DENIES by default. A row that
+ * reaches this check without a tenant is a scoping failure, not a global allow. The sole
+ * exception is the explicit `GLOBAL_CATALOG_RESOURCES` allowlist of shared provider-catalog
+ * tables that legitimately carry no tenant; callers opt in by passing `resourceType`.
+ */
 export function assertTenant(
   principal: Principal,
   resourceTenantId: string | undefined | null,
+  resourceType?: string,
 ): void {
-  if (!resourceTenantId || resourceTenantId === "") return;
+  if (
+    resourceTenantId === undefined ||
+    resourceTenantId === null ||
+    resourceTenantId.trim() === ""
+  ) {
+    if (resourceType && GLOBAL_CATALOG_RESOURCES.has(resourceType)) return;
+    throw new Error(
+      `rbac_tenant_scope_required: principal=${principal.tenantId} resourceType=${resourceType ?? "unknown"}`,
+    );
+  }
   if (resourceTenantId !== principal.tenantId) {
     throw new Error(
       `rbac_tenant_mismatch: principal=${principal.tenantId} resource=${resourceTenantId}`,

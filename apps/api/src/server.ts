@@ -235,6 +235,7 @@ import {
   requestIdMiddleware,
   securityHeadersMiddleware,
   rateLimitMiddleware,
+  tenantQuotaMiddleware,
   mutationAdmissionMiddleware,
   corsOrigins,
 } from "./production.js";
@@ -479,6 +480,10 @@ function requestAudit(
 function requestTenantId(c: Context<ApiEnv>): string {
   const principal = c.get("principal");
   if (!principal) throw new Error("authenticated_principal_required");
+  // A blank tenantId (e.g. an empty x-tenant-id header parsed into a principal) must
+  // never reach a tenant-scoped query, where the fail-open branch would drop the filter
+  // and read across tenants. Fail closed instead.
+  if (principal.tenantId.trim() === "") throw new Error("tenant_scope_required");
   return principal.tenantId;
 }
 
@@ -675,6 +680,10 @@ app.use("*", async (c, next) => {
   return next();
 });
 
+// Per-tenant quota runs after the principal (API key, OIDC, or header-parsed) is resolved,
+// so it can budget by tenant. Disabled by default; see tenantQuotaMiddleware.
+app.use("*", tenantQuotaMiddleware());
+
 registerTransformerControlPlaneRoutes(app, transformerCampaigns);
 registerTransformerPilotExecutionRoutes(app, transformerExecutions);
 app.route("/change-sources", changeSourceRoutes);
@@ -754,7 +763,7 @@ app.get("/graph/changes/:id", (c) => {
     const includeApi = c.req.query("includeApi") !== "0";
     const g = buildChangeImpactGraph(db, c.req.param("id"), {
       consumerId,
-      tenantId: c.get("principal")?.tenantId,
+      tenantId: requestTenantId(c),
       includeApiGraph: includeApi,
     });
     if (!g) return c.json({ error: "change not found" }, 404);
@@ -773,7 +782,7 @@ app.get("/graph/consumers/:id", (c) => {
     }
     const g = buildChangeImpactGraph(db, changeId, {
       consumerId: c.req.param("id"),
-      tenantId: c.get("principal")?.tenantId,
+      tenantId: requestTenantId(c),
       includeApiGraph: true,
     });
     if (!g) return c.json({ error: "change not found" }, 404);
@@ -828,7 +837,7 @@ app.post("/warden/plans/from-spec", async (c) => {
     const consumers = listConsumersForProvider(
       db,
       provider.slug,
-      c.get("principal")?.tenantId,
+      requestTenantId(c),
     );
     return c.json({
       plan,
@@ -910,7 +919,7 @@ app.get("/registry/providers/:slug/consumers", (c) => {
   const hits = listConsumersForProvider(
     db,
     slug,
-    c.get("principal")?.tenantId,
+    requestTenantId(c),
   );
   return c.json({
     providerSlug: slug,
@@ -926,7 +935,7 @@ app.get("/registry/changes/:id/consumers", (c) => {
     consumers: listConsumersImpactedByChange(
       db,
       id,
-      c.get("principal")?.tenantId,
+      requestTenantId(c),
     ),
   });
 });
@@ -1417,7 +1426,7 @@ app.get("/graph/product", (c) => {
     }
     c.header("Cache-Control", "private, max-age=5");
     return c.json(
-      buildProductKnowledgeGraph(db, f, c.get("principal")?.tenantId),
+      buildProductKnowledgeGraph(db, f, requestTenantId(c)),
     );
   } catch (e) {
     return internalErrorResponse(c, e);
@@ -1627,6 +1636,11 @@ app.get("/changes", (c) => {
 });
 
 app.get("/changes/:id", (c) => {
+  // Shared-catalog contract: the change row and its diff come from `api_changes`, a shared
+  // provider / API-change catalog that is tenant-agnostic BY DESIGN (see getChange). Only
+  // public provider spec data is exposed here. Everything tenant-private — impact findings
+  // and migration PRs — is read through tenant-scoped accessors so tenant A can never see
+  // tenant B's findings or PRs on the same shared change.
   const change = getChange(db, c.req.param("id"));
   if (!change) return c.json({ error: "not found" }, 404);
   const tenantId = requestTenantId(c);
@@ -1727,7 +1741,7 @@ app.post("/consumers/:id/monitor", async (c) => {
   const consumer = getConsumer(
     db,
     c.req.param("id"),
-    c.get("principal")?.tenantId,
+    requestTenantId(c),
   );
   if (!consumer) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<{ providerSlug: string }>();
@@ -1748,7 +1762,7 @@ app.post("/consumers/:id/detect", async (c) => {
   const consumer = getConsumer(
     db,
     c.req.param("id"),
-    c.get("principal")?.tenantId,
+    requestTenantId(c),
   );
   if (!consumer) return c.json({ error: "not found" }, 404);
   const owned = tenantConsumerRepo(consumer.id, requestTenantId(c));
@@ -1833,7 +1847,7 @@ app.get("/learning/suppressed", (c) => {
   const consumerId = c.req.query("consumerId") ?? undefined;
   if (
     consumerId &&
-    !getConsumer(db, consumerId, c.get("principal")?.tenantId)
+    !getConsumer(db, consumerId, requestTenantId(c))
   ) {
     return c.json({ error: "not found" }, 404);
   }
@@ -1857,20 +1871,20 @@ app.get("/prs", (c) => {
 });
 
 app.get("/prs/:id", (c) => {
-  const pr = getPr(db, c.req.param("id"), c.get("principal")?.tenantId);
+  const pr = getPr(db, c.req.param("id"), requestTenantId(c));
   if (!pr) return c.json({ error: "not found" }, 404);
   return c.json(prToApi(pr));
 });
 
 app.post("/prs/:id/feedback", async (c) => {
-  const tenantId = c.get("principal")?.tenantId;
+  const tenantId = requestTenantId(c);
   const pr = getPr(db, c.req.param("id"), tenantId);
   if (!pr) return c.json({ error: "not found" }, 404);
   const body = await c.req.json();
   const parsed = FeedbackOutcomeSchema.safeParse(body.outcome);
   if (!parsed.success) return c.json({ error: "invalid outcome" }, 400);
   await applyPrFeedback(db, pr.id, parsed.data, {
-    tenantId: tenantId ?? requestTenantId(c),
+    tenantId,
     experiment: body.experiment,
     planId: body.planId,
   });
@@ -1883,12 +1897,12 @@ app.post("/prs/:id/feedback", async (c) => {
 
 /** Phase D: advisory CI check body (and optional mock post) for a migration PR */
 app.post("/prs/:id/ci-check", async (c) => {
-  const tenantId = c.get("principal")?.tenantId;
+  const tenantId = requestTenantId(c);
   const pr = getPr(db, c.req.param("id"), tenantId);
   if (!pr) return c.json({ error: "not found" }, 404);
   const consumer = getConsumer(db, pr.consumer_id, tenantId);
   if (!consumer) return c.json({ error: "consumer missing" }, 400);
-  const findings = listFindingsForChange(db, pr.change_id, requestTenantId(c));
+  const findings = listFindingsForChange(db, pr.change_id, tenantId);
   const body = await c.req
     .json<{
       harness?: CiHarnessEvidence[];
@@ -2214,6 +2228,9 @@ app.post("/webhooks/github", async (c) => {
         number: event.number,
       });
       if (match) {
+        // Explicit allowlisted global read: the GitHub webhook has no authenticated
+        // principal, so there is no request tenant. The tenant is derived from the
+        // matched PR's consumer row and used to scope every subsequent write.
         const consumer = getConsumer(db, match.consumer_id);
         if (!consumer) {
           return c.json({ error: "webhook_consumer_not_found" }, 409);
@@ -2282,7 +2299,7 @@ app.get("/metrics/design-partner", (c) =>
 
 /** Pre-customer A2: consumer exposure report (Warden) */
 app.get("/consumers/:id/exposure", (c) => {
-  if (!getConsumer(db, c.req.param("id"), c.get("principal")?.tenantId)) {
+  if (!getConsumer(db, c.req.param("id"), requestTenantId(c))) {
     return c.json({ error: "not found" }, 404);
   }
   const report = buildExposureReport(db, c.req.param("id"));
@@ -2291,7 +2308,7 @@ app.get("/consumers/:id/exposure", (c) => {
 });
 
 app.get("/consumers/:id/exposure.md", (c) => {
-  if (!getConsumer(db, c.req.param("id"), c.get("principal")?.tenantId)) {
+  if (!getConsumer(db, c.req.param("id"), requestTenantId(c))) {
     return c.text("not found", 404);
   }
   const report = buildExposureReport(db, c.req.param("id"));
@@ -3111,7 +3128,7 @@ app.get("/github/app/install-url", (c) => {
 
 app.get("/github/app/installations", (c) =>
   c.json(
-    listGitHubInstallations(db, c.get("principal")?.tenantId).map(
+    listGitHubInstallations(db, requestTenantId(c)).map(
       githubInstallationToApi,
     ),
   ),

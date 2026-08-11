@@ -68,6 +68,7 @@ export {
   canMutateSystemCatalog,
   assertCan,
   assertTenant,
+  GLOBAL_CATALOG_RESOURCES,
   parsePrincipalFromHeaders,
   isPublicRoute,
   permissionForRoute,

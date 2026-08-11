@@ -17,6 +17,13 @@ export {
   type RateLimitOpts,
 } from "./rate-limit.js";
 export {
+  tenantQuota,
+  clearTenantQuotas,
+  tenantQuotaBucketCount,
+  type TenantQuotaResult,
+  type TenantQuotaOpts,
+} from "./tenant-quota.js";
+export {
   isFeatureEnabled,
   featureMatrix,
   assertGaOnly,
