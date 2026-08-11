@@ -221,6 +221,8 @@ export type AgentModelBudget = Readonly<{
  * the request we intended), so a live evidence lane can prove the call.
  */
 export type LiveModelProvenanceRecord = Readonly<{
+  /** Gateway provider id that served the call (null for legacy default path). */
+  providerId: string | null;
   /** OpenAI-compatible response body `id` (null when the body omits it). */
   bodyRequestId: string | null;
   /** `x-request-id` response header (null when the provider omits it). */

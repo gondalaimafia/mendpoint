@@ -66,6 +66,8 @@ function nonNegativeInteger(value: unknown): number {
 export function buildLiveModelProvenance(input: Readonly<{
   url: string;
   headerRequestId: string | null;
+  /** Gateway provider id that served the call. Null for the legacy default path. */
+  providerId?: string | null;
   body: Readonly<{
     id?: unknown;
     model?: unknown;
@@ -83,6 +85,7 @@ export function buildLiveModelProvenance(input: Readonly<{
   const completionTokens = nonNegativeInteger(input.body.usage?.completion_tokens);
   const totalTokens = nonNegativeInteger(input.body.usage?.total_tokens);
   return Object.freeze({
+    providerId: input.providerId ?? null,
     bodyRequestId: trimmedString(input.body.id),
     headerRequestId: trimmedString(input.headerRequestId),
     model,
