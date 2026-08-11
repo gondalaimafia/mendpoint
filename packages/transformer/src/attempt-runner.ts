@@ -33,6 +33,7 @@ import {
   type RecipeCommandRunner,
   type RecipeExecutionFence,
   type RecipeExecutionRollback,
+  type RecipeVerificationControl,
   type RecipeWorkspaceExecutionResult,
 } from "./recipe-workspace-execution.js";
 import {
@@ -205,6 +206,111 @@ export type TransformerAttemptCoordinatorPort = Readonly<{
   completeAttempt(input: TransformerAttemptCompletionInput): MaybePromise<unknown>;
   recordAttemptFailure(input: TransformerAttemptFailureInput): MaybePromise<unknown>;
 }>;
+
+export type TransformerAttemptCheckpointOpenInput = Readonly<{
+  scope: TransformerAttemptScope;
+  lease: TransformerExecutableAttemptLease;
+  leaseToken: string;
+  attemptId: string;
+  source: ExactSourceSnapshot;
+  fence: RecipeExecutionFence;
+  assertFence(): Promise<void>;
+  observedAt: string;
+  signal: AbortSignal;
+  operationTimeoutMs: number;
+}>;
+
+export type TransformerAttemptCheckpointCompletion = Readonly<{
+  execution: RecipeWorkspaceExecutionResult;
+  artifact: TransformerCandidateArtifact;
+  actualCostUsd: number;
+  accounting: TransformerAdaptiveAttemptAccounting;
+  observedAt: string;
+  evidenceRefs: readonly string[];
+  signal: AbortSignal;
+  operationTimeoutMs: number;
+}>;
+
+export type TransformerAttemptCheckpointExecutionController = Readonly<{
+  verificationControl: RecipeVerificationControl;
+  complete(input: TransformerAttemptCheckpointCompletion): MaybePromise<void>;
+}>;
+
+export type TransformerAttemptCheckpointConfig = Readonly<{
+  operationTimeoutMs?: number;
+  open(input: TransformerAttemptCheckpointOpenInput):
+    MaybePromise<TransformerAttemptCheckpointExecutionController>;
+}>;
+
+export class TransformerAttemptCheckpointUncertainError extends Error {
+  constructor(code: string, cause?: unknown) {
+    super(code, cause === undefined ? undefined : { cause });
+    this.name = "TransformerAttemptCheckpointUncertainError";
+  }
+}
+
+function checkpointOperationTimeoutMs(
+  config: TransformerAttemptCheckpointConfig,
+  leaseDurationMs: number,
+): number {
+  const value = config.operationTimeoutMs ?? Math.min(60_000, Math.max(250, Math.floor(leaseDurationMs / 3)));
+  if (!Number.isSafeInteger(value) || value < 1 || value > Math.max(1, Math.floor(leaseDurationMs / 2))) {
+    throw new AttemptRunnerError(
+      "execution_failed",
+      "transformer_attempt_checkpoint_timeout_invalid",
+    );
+  }
+  return value;
+}
+
+async function runCheckpointOperation<T>(
+  operation: (signal: AbortSignal) => MaybePromise<T>,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<T> {
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const operationController = new AbortController();
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = (): void => {
+      const reason = signal.reason;
+      const failure = isStale(reason)
+        ? new StaleAttemptFenceError(reason)
+        : new TransformerAttemptCheckpointUncertainError(
+          "transformer_attempt_checkpoint_operation_aborted",
+          reason,
+        );
+      operationController.abort(failure);
+      finish(() => reject(failure));
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      const failure = new TransformerAttemptCheckpointUncertainError(
+        "transformer_attempt_checkpoint_operation_timeout",
+      );
+      operationController.abort(failure);
+      finish(() => reject(failure));
+    }, timeoutMs);
+    timer.unref();
+    Promise.resolve()
+      .then(() => operation(operationController.signal))
+      .then(
+        (value) => finish(() => resolve(value)),
+        (error: unknown) => finish(() => reject(error)),
+      );
+  });
+}
 
 export type TransformerCandidateFileManifest = Readonly<{
   path: string;
@@ -398,6 +504,8 @@ export type RunTransformerAttemptInput = Readonly<{
   commandTimeoutMs?: number;
   tempRoot?: string;
   actualCostUsd?: number | ((execution: RecipeWorkspaceExecutionResult) => number);
+  /** Opt-in authenticated checkpoint controller. The legacy path is unchanged when absent. */
+  checkpoint?: TransformerAttemptCheckpointConfig;
   adaptiveRepair?: TransformerAdaptiveRepairConfig;
   /**
    * Invoked when adaptive repair converges on a candidate that diverges from the
@@ -889,6 +997,9 @@ function isStale(error: unknown): boolean {
     "attempt_not_running",
     "campaign_not_running",
     "lease_expired_before_renewal",
+    "checkpoint_head_conflict",
+    "checkpoint_lease_mismatch",
+    "checkpoint_lease_expired",
   ].some((marker) => code.includes(marker));
 }
 
@@ -1597,6 +1708,8 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
   let usageCheckpointFailed = false;
   let durableExternalAccounting = false;
   let heartbeat: TransformerLeaseHeartbeat | undefined;
+  let checkpointController: TransformerAttemptCheckpointExecutionController | undefined;
+  let checkpointOwned = false;
   try {
     validateLease(lease, input.scope, leaseToken);
     attemptId = transformerAttemptId(lease);
@@ -1614,6 +1727,38 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
     bindSource(source, lease);
     const executionObservedAt = input.observedAt("execute");
     assertObservedAt(executionObservedAt);
+    if (input.checkpoint) {
+      checkpointOwned = true;
+      const checkpointSource = source;
+      const checkpointFence = fence;
+      const operationTimeoutMs = checkpointOperationTimeoutMs(input.checkpoint, input.leaseDurationMs);
+      checkpointController = await runCheckpointOperation(
+        (signal) => input.checkpoint!.open({
+          scope: input.scope,
+          lease,
+          leaseToken,
+          attemptId,
+          source: checkpointSource,
+          fence: checkpointFence,
+          assertFence: async () => await assertCurrentFence(
+            input.coordinator, lease, checkpointFence, input.observedAt("execute"), heartbeat,
+          ),
+          observedAt: executionObservedAt,
+          signal,
+          operationTimeoutMs,
+        }),
+        heartbeat!.signal,
+        operationTimeoutMs,
+      );
+      if (!checkpointController || typeof checkpointController !== "object" ||
+          typeof checkpointController.complete !== "function" ||
+          !checkpointController.verificationControl) {
+        throw new AttemptRunnerError(
+          "worker_crash",
+          "transformer_attempt_checkpoint_controller_invalid",
+        );
+      }
+    }
     execution = await executeRecipeInWorkspace({
       fence,
       assertFence: async () => await assertCurrentFence(
@@ -1626,6 +1771,9 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
       tempRoot: input.tempRoot,
       commandTimeoutMs: input.commandTimeoutMs,
       commandRunner: input.commandRunner,
+      ...(checkpointController
+        ? { verificationControl: checkpointController.verificationControl }
+        : {}),
     });
     bindCandidate(execution, lease);
     await assertCurrentFence(
@@ -1640,26 +1788,55 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
       completionObservedAt,
       executionCostUsd,
     );
-    const completionKey = input.idempotencyKey("complete", attemptId);
-    assertIdentifier(completionKey, "transformer_attempt_complete_idempotency_key_invalid");
-    await input.coordinator.completeAttempt({
-      tenantId: lease.tenantId,
-      campaignId: lease.campaignId,
-      unitId: lease.unitId,
-      leaseGeneration: lease.leaseGeneration,
-      leaseToken,
-      sourceRevision: lease.snapshot.revision,
-      sourceDigest: lease.snapshot.digest,
-      candidateRevision: lease.candidateRevision,
-      candidateDigest: lease.candidateDigest,
-      verificationPassed: true,
-      actualCostUsd: executionCostUsd,
-      accounting: completionAccounting,
-      observedAt: completionObservedAt,
-      evidenceRefs: artifact.evidenceRefs,
-      idempotencyKey: completionKey,
-      gateConfig: input.gateConfig,
-    });
+    if (checkpointController) {
+      const operationTimeoutMs = checkpointOperationTimeoutMs(input.checkpoint!, input.leaseDurationMs);
+      const completionInput: TransformerAttemptCheckpointCompletion = {
+        execution,
+        artifact,
+        actualCostUsd: executionCostUsd,
+        accounting: completionAccounting,
+        observedAt: completionObservedAt,
+        evidenceRefs: artifact.evidenceRefs,
+        signal: heartbeat.signal,
+        operationTimeoutMs,
+      };
+      const complete = async (): Promise<void> => await runCheckpointOperation(
+        (signal) => checkpointController!.complete({ ...completionInput, signal }),
+        heartbeat!.signal,
+        operationTimeoutMs,
+      );
+      try {
+        await complete();
+      } catch (error) {
+        if (!(error instanceof TransformerAttemptCheckpointUncertainError) ||
+            error.message === "transformer_attempt_checkpoint_operation_timeout" ||
+            error.message === "transformer_attempt_checkpoint_operation_aborted") {
+          throw error;
+        }
+        await complete();
+      }
+    } else {
+      const completionKey = input.idempotencyKey("complete", attemptId);
+      assertIdentifier(completionKey, "transformer_attempt_complete_idempotency_key_invalid");
+      await input.coordinator.completeAttempt({
+        tenantId: lease.tenantId,
+        campaignId: lease.campaignId,
+        unitId: lease.unitId,
+        leaseGeneration: lease.leaseGeneration,
+        leaseToken,
+        sourceRevision: lease.snapshot.revision,
+        sourceDigest: lease.snapshot.digest,
+        candidateRevision: lease.candidateRevision,
+        candidateDigest: lease.candidateDigest,
+        verificationPassed: true,
+        actualCostUsd: executionCostUsd,
+        accounting: completionAccounting,
+        observedAt: completionObservedAt,
+        evidenceRefs: artifact.evidenceRefs,
+        idempotencyKey: completionKey,
+        gateConfig: input.gateConfig,
+      });
+    }
     return Object.freeze({
       status: "completed",
       summary: artifact.reused
@@ -1678,6 +1855,16 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
         ...(error instanceof RecipeWorkspaceExecutionError ? { rollback: error.rollback } : {}),
       });
     }
+    if (error instanceof TransformerAttemptCheckpointUncertainError) {
+      return Object.freeze({
+        status: "failed",
+        summary: error.message,
+        nextActions: Object.freeze(nextActions("worker_crash")),
+        artifacts: Object.freeze(artifact ? [artifact] : []),
+        recoveryCode: "worker_crash",
+        errorCode: error.message,
+      });
+    }
     if (error instanceof LeaseRenewalUncertainError) {
       return Object.freeze({
         status: "failed",
@@ -1686,6 +1873,21 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
         artifacts: Object.freeze(artifact ? [artifact] : []),
         recoveryCode: "worker_crash",
         errorCode: error.message,
+      });
+    }
+    if (checkpointOwned) {
+      const checkpointFailure = classify(error);
+      const recoveryCode = checkpointFailure.recoveryCode === "verification_failed"
+        ? "verification_failed"
+        : "worker_crash";
+      return Object.freeze({
+        status: "failed",
+        summary: checkpointFailure.errorCode,
+        nextActions: Object.freeze(nextActions(recoveryCode)),
+        artifacts: Object.freeze(artifact ? [artifact] : []),
+        recoveryCode,
+        errorCode: checkpointFailure.errorCode,
+        ...(checkpointFailure.rollback ? { rollback: checkpointFailure.rollback } : {}),
       });
     }
     let classified = classify(error);

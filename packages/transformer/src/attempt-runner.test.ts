@@ -16,6 +16,7 @@ import {
   type RunTransformerAttemptInput,
   type TransformerAttemptCoordinatorPort,
   type TransformerExecutableAttemptLease,
+  TransformerAttemptCheckpointUncertainError,
 } from "./attempt-runner.js";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
@@ -30,6 +31,7 @@ import type {
   AdaptiveVerifierResult,
 } from "./adaptive-loop.js";
 import { TransformerPilotExecutionStore } from "./pilot-execution.js";
+import { createRecipeVerificationControl } from "./recipe-workspace-execution.js";
 
 const roots: string[] = [];
 
@@ -233,6 +235,265 @@ describe("Transformer production attempt runner", () => {
       evidenceRefs: artifact.evidenceRefs,
     }));
     expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
+  it("replays an authenticated verifier prefix and delegates atomic checkpoint completion", async () => {
+    const commandRunner = vi.fn(async () => ({ exitCode: 0, stdout: "suffix ok", stderr: "" }));
+    const checkpointComplete = vi.fn(async () => undefined);
+    const checkpointOpen = vi.fn(async () => ({
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: APPLICATION.files,
+        restoredFileModes: FILE_MODES,
+        recoveredResults: [{
+          result: { exitCode: 0, stdout: "prefix ok", stderr: "" },
+          provenance: {
+            kind: "checkpoint_replay" as const,
+            commandDigest: sha256(APPLICATION.verificationCommands[0]!.command),
+            workspaceManifestDigest: sha256("restored-workspace"),
+            effectResultDigest: sha256("restored-result"),
+          },
+        }],
+        execute: async ({ run }) => ({
+          result: await run(),
+          provenance: { kind: "executed" as const },
+        }),
+      }),
+      complete: checkpointComplete,
+    }));
+    const { input, spies } = harness({ commandRunner });
+
+    const result = await runTransformerAttempt({
+      ...input,
+      checkpoint: { open: checkpointOpen },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(checkpointOpen).toHaveBeenCalledTimes(1);
+    expect(commandRunner).toHaveBeenCalledTimes(1);
+    expect(checkpointComplete).toHaveBeenCalledWith(expect.objectContaining({
+      execution: expect.objectContaining({ outputDigest: APPLICATION.outputDigest }),
+      artifact: expect.objectContaining({ outputDigest: APPLICATION.outputDigest }),
+      actualCostUsd: 0.12,
+      accounting: expect.objectContaining({ actualCostUsd: 0.12 }),
+    }));
+    expect(spies.completeAttempt).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
+  it("does not record a conflicting failure while checkpoint completion is uncertain", async () => {
+    const checkpointComplete = vi.fn(async () => {
+      throw new TransformerAttemptCheckpointUncertainError(
+        "transformer_attempt_checkpoint_commit_uncertain",
+      );
+    });
+    const { input, spies } = harness();
+    const result = await runTransformerAttempt({
+      ...input,
+      checkpoint: {
+        open: async () => ({
+          verificationControl: createRecipeVerificationControl({
+            restoredFiles: APPLICATION.files,
+            restoredFileModes: FILE_MODES,
+            recoveredResults: [],
+            execute: async ({ run }) => ({
+              result: await run(),
+              provenance: { kind: "executed" as const },
+            }),
+          }),
+          complete: checkpointComplete,
+        }),
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      recoveryCode: "worker_crash",
+      errorCode: "transformer_attempt_checkpoint_commit_uncertain",
+    });
+    expect(checkpointComplete).toHaveBeenCalledTimes(2);
+    expect(spies.completeAttempt).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
+  it("reconciles an uncertain checkpoint completion before reporting success", async () => {
+    const checkpointComplete = vi.fn()
+      .mockRejectedValueOnce(new TransformerAttemptCheckpointUncertainError(
+        "transformer_attempt_checkpoint_commit_uncertain",
+      ))
+      .mockResolvedValueOnce(undefined);
+    const { input, spies } = harness();
+    const result = await runTransformerAttempt({
+      ...input,
+      checkpoint: {
+        open: async () => ({
+          verificationControl: createRecipeVerificationControl({
+            restoredFiles: APPLICATION.files,
+            restoredFileModes: FILE_MODES,
+            recoveredResults: [],
+            execute: async ({ run }) => ({
+              result: await run(),
+              provenance: { kind: "executed" as const },
+            }),
+          }),
+          complete: checkpointComplete,
+        }),
+      },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(checkpointComplete).toHaveBeenCalledTimes(2);
+    expect(spies.completeAttempt).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
+  it("treats a checkpoint head race as stale without failing the winning attempt", async () => {
+    const { input, spies } = harness();
+    const result = await runTransformerAttempt({
+      ...input,
+      checkpoint: {
+        open: async () => {
+          throw new Error("transformer_attempt_checkpoint_head_conflict");
+        },
+      },
+    });
+
+    expect(result.status).toBe("stale");
+    expect(spies.completeAttempt).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
+  it("keeps post-open verification failures checkpoint-owned", async () => {
+    const { input, spies } = harness();
+    const result = await runTransformerAttempt({
+      ...input,
+      checkpoint: {
+        open: async () => ({
+          verificationControl: createRecipeVerificationControl({
+            restoredFiles: APPLICATION.files,
+            restoredFileModes: FILE_MODES,
+            recoveredResults: [],
+            execute: async () => {
+              throw new Error("checkpoint verifier storage unavailable");
+            },
+          }),
+          complete: async () => undefined,
+        }),
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      recoveryCode: "worker_crash",
+    });
+    expect(spies.completeAttempt).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
+  it("bounds checkpoint open and leaves a hung store checkpoint-owned", async () => {
+    const { input, spies } = harness();
+    let operationSignal: AbortSignal | undefined;
+    let lateMutation = false;
+    const result = await runTransformerAttempt({
+      ...input,
+      checkpoint: {
+        operationTimeoutMs: 10,
+        open: async ({ signal }) => {
+          operationSignal = signal;
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          if (!signal.aborted) lateMutation = true;
+          throw signal.reason;
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      recoveryCode: "worker_crash",
+      errorCode: "transformer_attempt_checkpoint_operation_timeout",
+    });
+    expect(operationSignal?.aborted).toBe(true);
+    expect(lateMutation).toBe(false);
+    expect(spies.completeAttempt).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  }, 1_000);
+
+  it("bounds checkpoint completion and preserves the resumable checkpoint", async () => {
+    const { input, spies } = harness();
+    let operationSignal: AbortSignal | undefined;
+    let lateMutation = false;
+    const result = await runTransformerAttempt({
+      ...input,
+      checkpoint: {
+        operationTimeoutMs: 10,
+        open: async () => ({
+          verificationControl: createRecipeVerificationControl({
+            restoredFiles: APPLICATION.files,
+            restoredFileModes: FILE_MODES,
+            recoveredResults: [],
+            execute: async ({ run }) => ({
+              result: await run(),
+              provenance: { kind: "executed" as const },
+            }),
+          }),
+          complete: async ({ signal }) => {
+            operationSignal = signal;
+            await new Promise<void>((resolve) => {
+              signal.addEventListener("abort", () => resolve(), { once: true });
+            });
+            if (!signal.aborted) lateMutation = true;
+            throw signal.reason;
+          },
+        }),
+      },
+    });
+    expect(operationSignal?.aborted).toBe(true);
+    expect(lateMutation).toBe(false);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      recoveryCode: "worker_crash",
+      errorCode: "transformer_attempt_checkpoint_operation_timeout",
+    });
+    expect(spies.completeAttempt).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
+  it("aborts checkpoint I/O when lease renewal authority becomes uncertain", async () => {
+    vi.useFakeTimers();
+    let markOpenStarted!: () => void;
+    const openStarted = new Promise<void>((resolve) => {
+      markOpenStarted = resolve;
+    });
+    const { input, spies } = harness();
+    spies.renewAttemptLease.mockRejectedValueOnce(new Error("coordinator unavailable"));
+    try {
+      const running = runTransformerAttempt({
+        ...input,
+        checkpoint: {
+          operationTimeoutMs: 30_000,
+          open: async ({ signal }) => {
+            markOpenStarted();
+            return await new Promise<never>((_resolve, reject) => {
+              signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+            });
+          },
+        },
+      });
+      await openStarted;
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(running).resolves.toMatchObject({
+        status: "failed",
+        recoveryCode: "worker_crash",
+        errorCode: "transformer_attempt_checkpoint_operation_aborted",
+      });
+      expect(spies.completeAttempt).not.toHaveBeenCalled();
+      expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renews one lease while a verification command remains in flight", async () => {
