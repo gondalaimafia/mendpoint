@@ -238,6 +238,15 @@ export async function runVerificationCommand(
       };
     }
   }
+  // SECURITY — RESIDUAL RISK: verification runs WITHOUT network isolation.
+  // The Node permission model below (--permission / --allow-fs-read /
+  // --allow-fs-write) restricts filesystem access only; it does NOT restrict
+  // egress. An approved-but-malicious verifier command (or a compromised
+  // toolchain it invokes) can still open outbound network connections and
+  // exfiltrate data. Egress MUST be gated at the infrastructure layer
+  // (netns / firewall / Fly network policy) — the Node runtime cannot do it.
+  // See docs/SANDBOX_VERIFIER.md for the full local-verify egress residual-risk
+  // note and where the sandbox backend is expected to carry the egress gate.
   const args =
     production && invocation.profile === "node-check"
       ? [

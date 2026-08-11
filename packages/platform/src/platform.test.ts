@@ -46,6 +46,23 @@ describe("sandbox", () => {
       sbx.dispose();
     }
   });
+
+  it("does not leak host process.env secrets into executed commands", () => {
+    const sentinel = `sekret_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    process.env.MENDPOINT_TEST_SECRET = sentinel;
+    const sbx = createSandbox({});
+    try {
+      const r = sbx.run(
+        "node -e \"console.log(process.env.MENDPOINT_TEST_SECRET ?? 'ABSENT')\"",
+      );
+      expect(r.ok).toBe(true);
+      expect(r.stdout).not.toContain(sentinel);
+      expect(r.stdout).toMatch(/ABSENT/);
+    } finally {
+      sbx.dispose();
+      delete process.env.MENDPOINT_TEST_SECRET;
+    }
+  });
 });
 
 describe("canary", () => {
