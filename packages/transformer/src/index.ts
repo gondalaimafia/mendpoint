@@ -138,6 +138,8 @@ export {
   runRecipeVerificationGate,
 } from "./recipe-workspace-execution.js";
 
+export * from "./attempt-checkpoint.js";
+
 export {
   AWS_SDK_JS_V2_TO_V3_ARTIFACT,
   GOOGLEAPIS_V25_TO_V26_ARTIFACT,
