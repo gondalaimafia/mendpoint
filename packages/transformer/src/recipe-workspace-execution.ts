@@ -16,7 +16,9 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
+  GOOGLEAPIS_V25_TO_V26_RECIPE,
   NODE_RUNTIME_18_TO_20_RECIPE,
+  STRIPE_NODE_V10_TO_V11_RECIPE,
   RecipeAnalysisCache,
   applyInverseOperations,
   getRecipe,
@@ -224,6 +226,8 @@ const SIGNED_NODE_RECIPES = [
   getRecipe(NODE_RUNTIME_18_TO_20_RECIPE.id, 1),
   NODE_RUNTIME_18_TO_20_RECIPE,
   AWS_SDK_JS_V2_TO_V3_RECIPE,
+  STRIPE_NODE_V10_TO_V11_RECIPE,
+  GOOGLEAPIS_V25_TO_V26_RECIPE,
 ] as const;
 
 const NODE_RECIPE_COMMANDS = new Map(

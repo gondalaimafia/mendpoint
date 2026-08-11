@@ -1,5 +1,9 @@
 import type { KeyLike } from "node:crypto";
-import { AWS_SDK_JS_V2_TO_V3_RECIPE } from "./recipe.js";
+import {
+  AWS_SDK_JS_V2_TO_V3_RECIPE,
+  GOOGLEAPIS_V25_TO_V26_RECIPE,
+  STRIPE_NODE_V10_TO_V11_RECIPE,
+} from "./recipe.js";
 import {
   PROVIDER_RECIPE_SCHEMA_VERSION,
   createProviderRecipeCatalog,
@@ -129,9 +133,219 @@ export const AWS_SDK_JS_V2_TO_V3_ARTIFACT: ProviderRecipeArtifact = Object.freez
   },
 } as const);
 
+export const STRIPE_NODE_V10_TO_V11_ARTIFACT: ProviderRecipeArtifact = Object.freeze({
+  schemaVersion: PROVIDER_RECIPE_SCHEMA_VERSION,
+  recipeId: "stripe-node-v10-to-v11",
+  version: 1,
+  publishedAt: "2026-08-05T00:00:00.000Z",
+  provider: {
+    slug: "stripe-node",
+    category: "payments",
+  },
+  change: {
+    target: "sdk",
+    kind: "breaking",
+    fromVersion: "10",
+    toVersion: "11",
+  },
+  detection: {
+    allOf: [
+      {
+        kind: "manifest_value",
+        path: "package.json",
+        selector: "/dependencies/stripe",
+        expected: "present at a v10 range",
+        evidenceRequired: true,
+      },
+      {
+        kind: "source_pattern",
+        path: "src/payments.js",
+        selector: "removed stripe config setter calls",
+        expected: "stripe client with .setApiVersion/.setTimeout style setter calls",
+        evidenceRequired: true,
+      },
+    ],
+  },
+  preconditions: [
+    {
+      id: "stripe-dependency",
+      kind: "manifest_value",
+      path: "package.json",
+      selector: "/dependencies/stripe",
+      expected: "present",
+    },
+    {
+      id: "stripe-v10-source",
+      kind: "source_pattern",
+      path: "src/payments.js",
+      selector: "supported stripe v10 setter surface",
+      expected: "single stripe construction with supported config setter calls",
+    },
+  ],
+  boundedEdits: {
+    implementationRecipe: {
+      id: STRIPE_NODE_V10_TO_V11_RECIPE.id,
+      version: STRIPE_NODE_V10_TO_V11_RECIPE.version,
+      digest: STRIPE_NODE_V10_TO_V11_RECIPE.digest,
+    },
+    allowedPaths: ["package.json", "src/payments.js"],
+    allowedOperationKinds: ["replace_file"],
+    maxFilesChanged: 2,
+    maxBytesChanged: 65536,
+  },
+  verification: [
+    {
+      id: "unit-and-typecheck",
+      command: "npm test && npm run typecheck",
+      timeoutMs: 900000,
+      successCriteria: "Consumer tests and typecheck pass on the migrated v11 sources",
+      required: true,
+    },
+  ],
+  rollback: {
+    strategy: "inverse_operations",
+    verificationIds: ["unit-and-typecheck"],
+    maxRecoveryMinutes: 30,
+  },
+  evidence: {
+    requiredSourceKinds: ["provider_release", "provider_documentation", "repository_snapshot"],
+    retainInputSnapshot: true,
+    retainOperationDiffs: true,
+    retainVerificationOutput: true,
+  },
+  ownership: {
+    team: "change-intelligence",
+    maintainerPrincipalId: "human:recipe-maintainer",
+    securityReviewerPrincipalId: "human:security-reviewer",
+  },
+  compatibility: {
+    languages: ["javascript", "typescript"],
+    packageManagers: ["npm", "pnpm", "yarn"],
+    repositoryKinds: ["service", "library"],
+    runtime: {
+      name: "node",
+      minMajor: 16,
+      maxMajor: 22,
+    },
+  },
+  outcomeTelemetry: {
+    schemaVersion: 1,
+    eventName: "provider_recipe_outcome",
+    correlationFields: ["tenantId", "campaignId", "runId", "recipeArtifactSha256"],
+    metricIds: ["accepted", "reviewerEditRatio", "verificationPassed", "rollbackRequired"],
+    retentionDays: 90,
+  },
+} as const);
+
+export const GOOGLEAPIS_V25_TO_V26_ARTIFACT: ProviderRecipeArtifact = Object.freeze({
+  schemaVersion: PROVIDER_RECIPE_SCHEMA_VERSION,
+  recipeId: "googleapis-v25-to-v26",
+  version: 1,
+  publishedAt: "2026-08-05T00:00:00.000Z",
+  provider: {
+    slug: "googleapis",
+    category: "developer_platform",
+  },
+  change: {
+    target: "sdk",
+    kind: "breaking",
+    fromVersion: "25",
+    toVersion: "26",
+  },
+  detection: {
+    allOf: [
+      {
+        kind: "manifest_value",
+        path: "package.json",
+        selector: "/dependencies/googleapis",
+        expected: "present at a v25 range",
+        evidenceRequired: true,
+      },
+      {
+        kind: "source_pattern",
+        path: "src/client.js",
+        selector: "default googleapis import",
+        expected: "const google = require('googleapis') or import google from 'googleapis'",
+        evidenceRequired: true,
+      },
+    ],
+  },
+  preconditions: [
+    {
+      id: "googleapis-dependency",
+      kind: "manifest_value",
+      path: "package.json",
+      selector: "/dependencies/googleapis",
+      expected: "present",
+    },
+    {
+      id: "googleapis-v25-source",
+      kind: "source_pattern",
+      path: "src/client.js",
+      selector: "supported googleapis default import",
+      expected: "default require or import binding of googleapis",
+    },
+  ],
+  boundedEdits: {
+    implementationRecipe: {
+      id: GOOGLEAPIS_V25_TO_V26_RECIPE.id,
+      version: GOOGLEAPIS_V25_TO_V26_RECIPE.version,
+      digest: GOOGLEAPIS_V25_TO_V26_RECIPE.digest,
+    },
+    allowedPaths: ["package.json", "src/client.js"],
+    allowedOperationKinds: ["replace_file"],
+    maxFilesChanged: 2,
+    maxBytesChanged: 65536,
+  },
+  verification: [
+    {
+      id: "unit-and-typecheck",
+      command: "npm test && npm run typecheck",
+      timeoutMs: 900000,
+      successCriteria: "Consumer tests and typecheck pass on the migrated v26 sources",
+      required: true,
+    },
+  ],
+  rollback: {
+    strategy: "inverse_operations",
+    verificationIds: ["unit-and-typecheck"],
+    maxRecoveryMinutes: 30,
+  },
+  evidence: {
+    requiredSourceKinds: ["provider_release", "provider_documentation", "repository_snapshot"],
+    retainInputSnapshot: true,
+    retainOperationDiffs: true,
+    retainVerificationOutput: true,
+  },
+  ownership: {
+    team: "change-intelligence",
+    maintainerPrincipalId: "human:recipe-maintainer",
+    securityReviewerPrincipalId: "human:security-reviewer",
+  },
+  compatibility: {
+    languages: ["javascript", "typescript"],
+    packageManagers: ["npm", "pnpm", "yarn"],
+    repositoryKinds: ["service", "library"],
+    runtime: {
+      name: "node",
+      minMajor: 16,
+      maxMajor: 22,
+    },
+  },
+  outcomeTelemetry: {
+    schemaVersion: 1,
+    eventName: "provider_recipe_outcome",
+    correlationFields: ["tenantId", "campaignId", "runId", "recipeArtifactSha256"],
+    metricIds: ["accepted", "reviewerEditRatio", "verificationPassed", "rollbackRequired"],
+    retentionDays: 90,
+  },
+} as const);
+
 /** All provider-recipe artifacts Mendpoint publishes into the run-path catalog. */
 export const PUBLISHED_PROVIDER_RECIPE_ARTIFACTS: readonly ProviderRecipeArtifact[] = Object.freeze([
   AWS_SDK_JS_V2_TO_V3_ARTIFACT,
+  STRIPE_NODE_V10_TO_V11_ARTIFACT,
+  GOOGLEAPIS_V25_TO_V26_ARTIFACT,
 ]);
 
 export type ProviderRecipeSigningKey = Readonly<{ keyId: string; privateKey: KeyLike }>;

@@ -1,0 +1,7 @@
+{
+  "name": "googleapis-consumer",
+  "private": true,
+  "dependencies": {
+    "googleapis": "^25.0.1"
+  }
+}

@@ -111,3 +111,120 @@ Rollback is by inverse operations, which restores the exact input digest.
   verify, inverse-restore) and `transformer.analysis.aws_sdk_abstain.heldout`
   (applies on supported sources, abstains on out-of-scope). No live model is
   used in this stage.
+
+## `stripe-node-v10-to-v11`
+
+Migrates the mechanically-deterministic slice of the stripe-node v10 to v11
+major bump. v11 removed the deprecated client configuration setter methods
+([migration guide for v11](https://github.com/stripe/stripe-node/wiki/Migration-guide-for-v11));
+the supported values move into the options object passed as the second argument
+to the Stripe constructor. Anything outside the supported surface is reported as
+out-of-scope and the recipe abstains. Every migration is delivered as a
+human-reviewed draft PR with no auto-merge.
+
+Executable recipe: `STRIPE_NODE_V10_TO_V11_RECIPE` (`recipe.ts`).
+Allowlisted paths: `package.json`, `src/payments.js`.
+
+### Supported
+
+- Exactly one client construction that binds a variable:
+  `const <var> = Stripe(<key>)`, `const <var> = new Stripe(<key>)`, or
+  `const <var> = require("stripe")(<key>)`. The `<key>` argument must be a single
+  expression with no nested parentheses, comma, or object literal.
+- Setter calls `<var>.<setter>(<value>)` in single-statement style with no
+  nested parentheses in `<value>`, folded into the constructor options object in
+  source order. Supported setters and their option keys: `setApiVersion` ->
+  `apiVersion`, `setTimeout` -> `timeout`, `setHost` -> `host`, `setPort` ->
+  `port`, `setProtocol` -> `protocol`, `setMaxNetworkRetries` ->
+  `maxNetworkRetries`, `setTelemetryEnabled` -> `telemetry`, `setAppInfo` ->
+  `appInfo`, `setHttpAgent` -> `httpAgent`.
+- `package.json`: bumps the existing `stripe` dependency range to `^11.0.0`.
+
+### Out-of-scope (analysis abstains, status `unsupported`)
+
+- `setApiKey`, which rewrites the constructor's first argument rather than the
+  options object.
+- Any unrecognized `<var>.setX(...)` call, callback or nested-parenthesis call
+  styles, or setter calls that cannot be anchored to the client variable.
+- A construction that already carries an options object while setter calls
+  remain, missing constructions, or more than one construction.
+
+### Verification and rollback
+
+The executable recipe runs two allowlisted `node -e` verification commands in a
+disposable workspace:
+
+1. `stripe-v11-source`: the migrated source contains no removed config setter
+   calls.
+2. `stripe-v11-manifest`: `package.json` declares the `stripe` dependency at v11.
+
+Rollback is by inverse operations, which restores the exact input digest.
+
+### Fixtures and evals
+
+- Synthetic before/after consumer fixtures:
+  `fixtures/consumers/stripe-node-v10-to-v11/` (supported `before/`,
+  deterministic `after/`, and an `out-of-scope/` case using `setApiKey`).
+- Unit coverage: `packages/transformer/src/recipe-stripe-node.test.ts` and
+  `packages/transformer/src/published-recipes.test.ts`.
+- Held-out contract-lane evals in
+  `packages/eval/src/transformer-agent-eval.ts`:
+  `transformer.execute.stripe_node_v10_to_v11.heldout` and
+  `transformer.analysis.stripe_node_v10_to_v11_abstain.heldout`.
+
+## `googleapis-v25-to-v26`
+
+Migrates the mechanically-deterministic import change of the googleapis v25 to
+v26 major bump. v26.0.0 optimized the package for es6 modules and made the
+default import a breaking change: `const google = require("googleapis")` must
+become the named import `const {google} = require("googleapis")`
+([v26.0.0 release notes](https://github.com/googleapis/google-api-nodejs-client/releases/tag/v26.0.0)).
+Consumer `google.*` usage is byte identical before and after, so only the import
+line changes. Anything outside the supported surface is reported as out-of-scope
+and the recipe abstains. Every migration is delivered as a human-reviewed draft
+PR with no auto-merge.
+
+Executable recipe: `GOOGLEAPIS_V25_TO_V26_RECIPE` (`recipe.ts`).
+Allowlisted paths: `package.json`, `src/client.js`.
+
+### Supported
+
+- CommonJS default require bound to an identifier:
+  `const <id> = require("googleapis")` becomes
+  `const { google } = require("googleapis")` when `<id>` is `google`, or
+  `const { google: <id> } = require("googleapis")` otherwise.
+- ESM default import: `import <id> from "googleapis"` becomes
+  `import { google } from "googleapis"` (or `import { google as <id> }`). The
+  original declaration keyword (`const`/`let`/`var`) is preserved.
+- `package.json`: bumps the existing `googleapis` dependency range to `^26.0.0`.
+
+### Out-of-scope (analysis abstains, status `unsupported`)
+
+- Namespace imports (`import * as x from "googleapis"`) or any googleapis
+  reference that is not a recognized default or named import.
+- A default binding whose usage already reads `<id>.google` (the v26 manual
+  form), which would be double-migrated.
+
+### Verification and rollback
+
+The executable recipe runs two allowlisted `node -e` verification commands in a
+disposable workspace:
+
+1. `googleapis-v26-source`: the migrated source uses the named `google` import
+   and contains no default `googleapis` import.
+2. `googleapis-v26-manifest`: `package.json` declares the `googleapis`
+   dependency at v26.
+
+Rollback is by inverse operations, which restores the exact input digest.
+
+### Fixtures and evals
+
+- Synthetic before/after consumer fixtures:
+  `fixtures/consumers/googleapis-v25-to-v26/` (supported `before/`,
+  deterministic `after/`, and an `out-of-scope/` namespace-import case).
+- Unit coverage: `packages/transformer/src/recipe-googleapis.test.ts` and
+  `packages/transformer/src/published-recipes.test.ts`.
+- Held-out contract-lane evals in
+  `packages/eval/src/transformer-agent-eval.ts`:
+  `transformer.execute.googleapis_v25_to_v26.heldout` and
+  `transformer.analysis.googleapis_v25_to_v26_abstain.heldout`.

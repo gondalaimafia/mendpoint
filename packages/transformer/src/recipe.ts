@@ -32,6 +32,19 @@ export type RecipePrecondition =
   | Readonly<{
       kind: "aws_sdk_v2_source";
       path: string;
+    }>
+  | Readonly<{
+      kind: "json_dependency_version";
+      path: string;
+      dependency: string;
+    }>
+  | Readonly<{
+      kind: "stripe_v10_setter_source";
+      path: string;
+    }>
+  | Readonly<{
+      kind: "googleapis_default_import_source";
+      path: string;
     }>;
 
 export type RecipeTransform =
@@ -60,6 +73,20 @@ export type RecipeTransform =
     }>
   | Readonly<{
       kind: "aws_sdk_source_v2_to_v3";
+      path: string;
+    }>
+  | Readonly<{
+      kind: "json_dependency_version_set";
+      path: string;
+      dependency: string;
+      version: string;
+    }>
+  | Readonly<{
+      kind: "stripe_setter_to_config";
+      path: string;
+    }>
+  | Readonly<{
+      kind: "googleapis_default_import_to_named";
       path: string;
     }>;
 
@@ -575,6 +602,380 @@ const AWS_SDK_JS_V2_TO_V3_V1 = createRecipe({
 
 export const AWS_SDK_JS_V2_TO_V3_RECIPE = AWS_SDK_JS_V2_TO_V3_V1;
 
+// ---------------------------------------------------------------------------
+// Generic manifest dependency version bump (shared by the stripe-node and
+// googleapis recipes). It only changes the version range of an existing
+// dependency; it never adds or removes a package. Source/target classification
+// mirrors the runtime-declaration transforms: a manifest whose dependency range
+// already equals the target range classifies as `target` (already applied), a
+// present-but-different range as `source`, and an absent dependency as neutral.
+// ---------------------------------------------------------------------------
+
+function readDependencies(content: string): Record<string, unknown> | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const dependencies = (parsed as Record<string, unknown>).dependencies;
+  return dependencies && typeof dependencies === "object" && !Array.isArray(dependencies)
+    ? (dependencies as Record<string, unknown>)
+    : {};
+}
+
+function classifyDependencyVersion(
+  content: string,
+  dependency: string,
+  transform: Extract<RecipeTransform, { kind: "json_dependency_version_set" }> | undefined,
+): PreconditionState {
+  const deps = readDependencies(content);
+  if (!deps) return { state: "unsupported", reason: `recipe_manifest_invalid:${dependency}` };
+  const value = deps[dependency];
+  if (value === undefined) return { state: "neutral" };
+  if (transform && value === transform.version) return { state: "target" };
+  if (typeof value === "string") return { state: "source" };
+  return { state: "unsupported", reason: `recipe_manifest_invalid:${dependency}` };
+}
+
+function setDependencyVersion(content: string, dependency: string, version: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return content;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return content;
+  const record = parsed as Record<string, unknown>;
+  const current = record.dependencies;
+  const deps: Record<string, unknown> =
+    current && typeof current === "object" && !Array.isArray(current)
+      ? { ...(current as Record<string, unknown>) }
+      : {};
+  if (deps[dependency] === version) return content;
+  deps[dependency] = version;
+  record.dependencies = deps;
+  return `${stableJson(record, true)}\n`;
+}
+
+// ---------------------------------------------------------------------------
+// Stripe Node v10 -> v11 (bounded, deterministic subset)
+//
+// v11 removed the deprecated client configuration setter methods
+// (https://github.com/stripe/stripe-node/wiki/Migration-guide-for-v11). The
+// supported values are moved into the options object passed as the second
+// argument to the Stripe constructor.
+//
+// Supported surface (everything else is reported out-of-scope by analysis, so
+// the recipe abstains rather than producing a wrong edit):
+//   - Exactly one client construction that binds a variable, of the form
+//     `const <var> = Stripe(<key>)`, `const <var> = new Stripe(<key>)`, or
+//     `const <var> = require("stripe")(<key>)`. The `<key>` argument must be a
+//     single expression with no nested parentheses, comma, or object literal
+//     (an existing options object is out-of-scope).
+//   - Setter calls `<var>.<setter>(<value>)` in `.setX(...).` statement style
+//     with no nested parentheses in `<value>`, where `<setter>` is one of:
+//     setApiVersion, setTimeout, setHost, setPort, setProtocol,
+//     setMaxNetworkRetries, setTelemetryEnabled, setAppInfo, setHttpAgent.
+//   - package.json: bumps the existing `stripe` dependency range to v11.
+// `setApiKey` (which changes the first constructor argument), unrecognized
+// setters, callback/nested-paren call styles, missing or multiple constructions,
+// and an already-present options object are all out-of-scope.
+// ---------------------------------------------------------------------------
+
+const STRIPE_SETTER_CONFIG: Readonly<Record<string, string>> = {
+  setApiVersion: "apiVersion",
+  setTimeout: "timeout",
+  setHost: "host",
+  setPort: "port",
+  setProtocol: "protocol",
+  setMaxNetworkRetries: "maxNetworkRetries",
+  setTelemetryEnabled: "telemetry",
+  setAppInfo: "appInfo",
+  setHttpAgent: "httpAgent",
+};
+
+const STRIPE_ALL_SETTERS =
+  "ApiVersion|Timeout|Host|Port|Protocol|MaxNetworkRetries|TelemetryEnabled|AppInfo|HttpAgent|ApiKey";
+const STRIPE_DOTTED_SETTER = new RegExp(`\\.set(?:${STRIPE_ALL_SETTERS})[ \\t]*\\(`);
+const STRIPE_CONSTRUCTION_SOURCE =
+  "^([ \\t]*)((?:const|let|var)[ \\t]+([A-Za-z0-9_$]+)[ \\t]*=[ \\t]*" +
+  "(?:new[ \\t]+Stripe|Stripe|require\\([ \\t]*[\"']stripe[\"'][ \\t]*\\))[ \\t]*\\(([^()]*)\\))";
+
+function stripeConstructions(content: string): RegExpMatchArray[] {
+  return [...content.matchAll(new RegExp(STRIPE_CONSTRUCTION_SOURCE, "gm"))];
+}
+
+function stripeConstructionUsable(match: RegExpMatchArray): boolean {
+  const keyArg = match[4] ?? "";
+  return keyArg.trim().length > 0 && !/[,{}]/.test(keyArg);
+}
+
+function rewriteStripeSource(content: string): string {
+  const constructions = stripeConstructions(content);
+  if (constructions.length !== 1) return content;
+  const match = constructions[0]!;
+  const indent = match[1] ?? "";
+  const body = match[2]!;
+  const varName = match[3]!;
+  const keyArg = match[4]!;
+  if (!stripeConstructionUsable(match)) return content;
+  const escaped = escapeRegExp(varName);
+  const setterLine = new RegExp(
+    `^[ \\t]*${escaped}\\.set([A-Za-z0-9]+)[ \\t]*\\(([^()]*)\\)[ \\t]*;?[ \\t]*\\r?\\n?`,
+    "gm",
+  );
+  const entries: string[] = [];
+  const withoutSetters = content.replace(setterLine, (whole, name: string, value: string) => {
+    const key = STRIPE_SETTER_CONFIG[`set${name}`];
+    if (!key) return whole;
+    entries.push(`${indent}  ${key}: ${value.trim()},`);
+    return "";
+  });
+  if (!entries.length) return content;
+  const configObject = `{\n${entries.join("\n")}\n${indent}}`;
+  const newBody = `${body.slice(0, body.lastIndexOf("("))}(${keyArg.trim()}, ${configObject})`;
+  return withoutSetters.replace(body, () => newBody);
+}
+
+function classifyStripeSource(content: string): PreconditionState {
+  const hasSetterSurface = STRIPE_DOTTED_SETTER.test(content);
+  const constructions = stripeConstructions(content);
+  if (!constructions.length) {
+    return hasSetterSurface
+      ? { state: "unsupported", reason: "recipe_stripe_construction_unrecognized" }
+      : { state: "neutral" };
+  }
+  if (constructions.length > 1) {
+    return { state: "unsupported", reason: "recipe_stripe_multiple_constructions" };
+  }
+  const match = constructions[0]!;
+  if (!stripeConstructionUsable(match)) {
+    // The construction already carries an options object. With no removed setters
+    // remaining this is an already-migrated source (target); if setter calls are
+    // still present it is a genuinely ambiguous mix, so abstain.
+    return hasSetterSurface
+      ? { state: "unsupported", reason: "recipe_stripe_constructor_options_present" }
+      : { state: "target" };
+  }
+  const varName = match[3]!;
+  const escaped = escapeRegExp(varName);
+  const varSetters = [...content.matchAll(new RegExp(`\\b${escaped}\\.set([A-Za-z0-9]+)[ \\t]*\\(`, "g"))];
+  if (!varSetters.length) {
+    return hasSetterSurface
+      ? { state: "unsupported", reason: "recipe_stripe_setter_unanchored" }
+      : { state: "neutral" };
+  }
+  for (const setter of varSetters) {
+    const name = `set${setter[1]}`;
+    if (!(name in STRIPE_SETTER_CONFIG)) {
+      return { state: "unsupported", reason: `recipe_stripe_unsupported_setter:${name}` };
+    }
+  }
+  const supported = Object.keys(STRIPE_SETTER_CONFIG).map((setter) => setter.slice(3)).join("|");
+  const cleanCalls = content.match(
+    new RegExp(`\\b${escaped}\\.set(?:${supported})[ \\t]*\\([^()]*\\)`, "g"),
+  );
+  if ((cleanCalls?.length ?? 0) !== varSetters.length) {
+    return { state: "unsupported", reason: "recipe_stripe_unsupported_call_style" };
+  }
+  const totalSurface = content.match(new RegExp(STRIPE_DOTTED_SETTER.source, "g"))?.length ?? 0;
+  if (totalSurface !== varSetters.length) {
+    return { state: "unsupported", reason: "recipe_stripe_setter_unanchored" };
+  }
+  if (STRIPE_DOTTED_SETTER.test(rewriteStripeSource(content))) {
+    return { state: "unsupported", reason: "recipe_stripe_residual_setter" };
+  }
+  return { state: "source" };
+}
+
+// ---------------------------------------------------------------------------
+// googleapis v25 -> v26 (bounded, deterministic subset)
+//
+// v26.0.0 optimized the package for es6 modules and made the default import a
+// breaking change: `const google = require("googleapis")` must become the named
+// import `const {google} = require("googleapis")`
+// (https://github.com/googleapis/google-api-nodejs-client release notes for
+// 26.0.0). This recipe rewrites the default import form to the named form and
+// bumps the dependency range to v26. Consumer usages of `google.*` are byte
+// identical before and after, so only the import line changes.
+//
+// Supported surface (everything else is out-of-scope, so the recipe abstains):
+//   - CommonJS default require bound to an identifier:
+//     `const <id> = require("googleapis")` becomes
+//     `const {google} = require("googleapis")` when `<id>` is `google`, or
+//     `const {google: <id>} = require("googleapis")` otherwise.
+//   - ESM default import: `import <id> from "googleapis"` becomes
+//     `import {google} from "googleapis"` (or `import {google as <id>}`).
+//   - package.json: bumps the existing `googleapis` dependency range to v26.
+// Namespace imports (`import * as x`), inline `require("googleapis").google`,
+// and a default binding that already reads `<id>.google` (the v26 manual form)
+// are out-of-scope.
+// ---------------------------------------------------------------------------
+
+const GOOGLEAPIS_DEFAULT_CJS =
+  /(?:const|let|var)[ \t]+([A-Za-z0-9_$]+)[ \t]*=[ \t]*require\([ \t]*["']googleapis["'][ \t]*\)/;
+const GOOGLEAPIS_DEFAULT_ESM = /import[ \t]+([A-Za-z0-9_$]+)[ \t]+from[ \t]*["']googleapis["']/;
+const GOOGLEAPIS_NAMED_CJS =
+  /(?:const|let|var)[ \t]*\{[^}]*\bgoogle\b[^}]*\}[ \t]*=[ \t]*require\([ \t]*["']googleapis["'][ \t]*\)/;
+const GOOGLEAPIS_NAMED_ESM = /import[ \t]*\{[^}]*\bgoogle\b[^}]*\}[ \t]+from[ \t]*["']googleapis["']/;
+
+function rewriteGoogleapisSource(content: string): string {
+  let out = content.replace(
+    /^([ \t]*)(const|let|var)[ \t]+([A-Za-z0-9_$]+)[ \t]*=[ \t]*require\([ \t]*["']googleapis["'][ \t]*\)[ \t]*;?[ \t]*\r?$/gm,
+    (_whole, indent: string, keyword: string, id: string) =>
+      id === "google"
+        ? `${indent}${keyword} { google } = require("googleapis");`
+        : `${indent}${keyword} { google: ${id} } = require("googleapis");`,
+  );
+  out = out.replace(
+    /^([ \t]*)import[ \t]+([A-Za-z0-9_$]+)[ \t]+from[ \t]*["']googleapis["'][ \t]*;?[ \t]*\r?$/gm,
+    (_whole, indent: string, id: string) =>
+      id === "google"
+        ? `${indent}import { google } from "googleapis";`
+        : `${indent}import { google as ${id} } from "googleapis";`,
+  );
+  return out;
+}
+
+function classifyGoogleapisSource(content: string): PreconditionState {
+  if (!/["']googleapis["']/.test(content)) return { state: "neutral" };
+  const cjs = GOOGLEAPIS_DEFAULT_CJS.exec(content);
+  const esm = GOOGLEAPIS_DEFAULT_ESM.exec(content);
+  const binding = cjs?.[1] ?? esm?.[1];
+  const named = GOOGLEAPIS_NAMED_CJS.test(content) || GOOGLEAPIS_NAMED_ESM.test(content);
+  if (!binding) {
+    return named
+      ? { state: "target" }
+      : { state: "unsupported", reason: "recipe_googleapis_import_unrecognized" };
+  }
+  if (new RegExp(`\\b${escapeRegExp(binding)}\\.google\\b`).test(content)) {
+    return { state: "unsupported", reason: "recipe_googleapis_named_access_present" };
+  }
+  const transformed = rewriteGoogleapisSource(content);
+  if (GOOGLEAPIS_DEFAULT_CJS.test(transformed) || GOOGLEAPIS_DEFAULT_ESM.test(transformed)) {
+    return { state: "unsupported", reason: "recipe_googleapis_residual_default_import" };
+  }
+  return { state: "source" };
+}
+
+const STRIPE_SOURCE_VERIFIER =
+  "const fs=require('node:fs');const fail=(m)=>{throw new Error(m)};" +
+  "const files=['src/payments.js'];let checked=0;" +
+  "for(const f of files){if(!fs.existsSync(f))continue;const s=fs.readFileSync(f,'utf8');" +
+  "if(/\\.set(?:ApiVersion|Timeout|Host|Port|Protocol|MaxNetworkRetries|TelemetryEnabled|AppInfo|HttpAgent|ApiKey)\\s*\\(/.test(s))" +
+  "fail('stripe_v10_setter_present:'+f);checked++;}" +
+  "if(checked===0)fail('stripe_source_missing');";
+
+const STRIPE_MANIFEST_VERIFIER =
+  "const fs=require('node:fs');const fail=(m)=>{throw new Error(m)};" +
+  "const p=JSON.parse(fs.readFileSync('package.json','utf8'));" +
+  "const v=(p.dependencies||{}).stripe;" +
+  "if(typeof v!==('str'+'ing'))fail('stripe_dependency_missing');" +
+  "if(!/^[\\^~]?11\\./.test(v))fail('stripe_dependency_not_v11:'+v);";
+
+const STRIPE_NODE_V10_TO_V11_V1 = createRecipe({
+  id: "stripe-node-v10-to-v11",
+  version: 1,
+  title: "Stripe Node v10 to v11 (config setter methods to constructor options)",
+  source: "stripe-node-v10",
+  target: "stripe-node-v11",
+  allowedPaths: ["package.json", "src/payments.js"],
+  preconditions: [
+    { kind: "json_dependency_version", path: "package.json", dependency: "stripe" },
+    { kind: "stripe_v10_setter_source", path: "src/payments.js" },
+  ],
+  transforms: [
+    {
+      kind: "json_dependency_version_set",
+      path: "package.json",
+      dependency: "stripe",
+      version: "^11.0.0",
+    },
+    { kind: "stripe_setter_to_config", path: "src/payments.js" },
+  ],
+  verificationCommands: [
+    {
+      id: "stripe-v11-source",
+      command: `node -e "${STRIPE_SOURCE_VERIFIER}"`,
+      successCriteria:
+        "The migrated source contains no removed Stripe config setter calls",
+    },
+    {
+      id: "stripe-v11-manifest",
+      command: `node -e "${STRIPE_MANIFEST_VERIFIER}"`,
+      successCriteria: "package.json declares the stripe dependency at v11",
+    },
+  ],
+  rollback: {
+    strategy: "inverse_operations",
+    requireCurrentDigest: true,
+  },
+});
+
+export const STRIPE_NODE_V10_TO_V11_RECIPE = STRIPE_NODE_V10_TO_V11_V1;
+
+const GOOGLEAPIS_SOURCE_VERIFIER =
+  "const fs=require('node:fs');const fail=(m)=>{throw new Error(m)};" +
+  "const files=['src/client.js'];let named=0;" +
+  "for(const f of files){if(!fs.existsSync(f))continue;const s=fs.readFileSync(f,'utf8');" +
+  "if(/(?:const|let|var)\\s+[A-Za-z0-9_$]+\\s*=\\s*require\\(\\s*[\\x27\\x22]googleapis[\\x27\\x22]\\s*\\)/.test(s))" +
+  "fail('googleapis_default_require:'+f);" +
+  "if(/import\\s+[A-Za-z0-9_$]+\\s+from\\s+[\\x27\\x22]googleapis[\\x27\\x22]/.test(s))" +
+  "fail('googleapis_default_import:'+f);" +
+  "if(/\\{[^}]*\\bgoogle\\b[^}]*\\}\\s*=\\s*require\\(\\s*[\\x27\\x22]googleapis[\\x27\\x22]\\s*\\)/.test(s)||" +
+  "/import\\s*\\{[^}]*\\bgoogle\\b[^}]*\\}\\s+from\\s+[\\x27\\x22]googleapis[\\x27\\x22]/.test(s))named++;}" +
+  "if(named===0)fail('googleapis_named_import_missing');";
+
+const GOOGLEAPIS_MANIFEST_VERIFIER =
+  "const fs=require('node:fs');const fail=(m)=>{throw new Error(m)};" +
+  "const p=JSON.parse(fs.readFileSync('package.json','utf8'));" +
+  "const v=(p.dependencies||{}).googleapis;" +
+  "if(typeof v!==('str'+'ing'))fail('googleapis_dependency_missing');" +
+  "if(!/^[\\^~]?26\\./.test(v))fail('googleapis_dependency_not_v26:'+v);";
+
+const GOOGLEAPIS_V25_TO_V26_V1 = createRecipe({
+  id: "googleapis-v25-to-v26",
+  version: 1,
+  title: "googleapis v25 to v26 (default import to named google import)",
+  source: "googleapis-v25",
+  target: "googleapis-v26",
+  allowedPaths: ["package.json", "src/client.js"],
+  preconditions: [
+    { kind: "json_dependency_version", path: "package.json", dependency: "googleapis" },
+    { kind: "googleapis_default_import_source", path: "src/client.js" },
+  ],
+  transforms: [
+    {
+      kind: "json_dependency_version_set",
+      path: "package.json",
+      dependency: "googleapis",
+      version: "^26.0.0",
+    },
+    { kind: "googleapis_default_import_to_named", path: "src/client.js" },
+  ],
+  verificationCommands: [
+    {
+      id: "googleapis-v26-source",
+      command: `node -e "${GOOGLEAPIS_SOURCE_VERIFIER}"`,
+      successCriteria:
+        "The migrated source uses the named google import and no default googleapis import",
+    },
+    {
+      id: "googleapis-v26-manifest",
+      command: `node -e "${GOOGLEAPIS_MANIFEST_VERIFIER}"`,
+      successCriteria: "package.json declares the googleapis dependency at v26",
+    },
+  ],
+  rollback: {
+    strategy: "inverse_operations",
+    requireCurrentDigest: true,
+  },
+});
+
+export const GOOGLEAPIS_V25_TO_V26_RECIPE = GOOGLEAPIS_V25_TO_V26_V1;
+
 const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${NODE_RUNTIME_18_TO_20_V1.id}@${NODE_RUNTIME_18_TO_20_V1.version}`,
@@ -587,6 +988,14 @@ const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${AWS_SDK_JS_V2_TO_V3_V1.id}@${AWS_SDK_JS_V2_TO_V3_V1.version}`,
     AWS_SDK_JS_V2_TO_V3_V1,
+  ],
+  [
+    `${STRIPE_NODE_V10_TO_V11_V1.id}@${STRIPE_NODE_V10_TO_V11_V1.version}`,
+    STRIPE_NODE_V10_TO_V11_V1,
+  ],
+  [
+    `${GOOGLEAPIS_V25_TO_V26_V1.id}@${GOOGLEAPIS_V25_TO_V26_V1.version}`,
+    GOOGLEAPIS_V25_TO_V26_V1,
   ],
 ]);
 
@@ -693,9 +1102,19 @@ type PreconditionState = Readonly<{
 }>;
 
 function preconditionFailure(precondition: RecipePrecondition): string {
-  return precondition.kind === "json_string_in"
-    ? `recipe_precondition_failed:${precondition.path}:${precondition.pointer}`
-    : `recipe_precondition_failed:${precondition.path}:node_major`;
+  if (precondition.kind === "json_string_in") {
+    return `recipe_precondition_failed:${precondition.path}:${precondition.pointer}`;
+  }
+  if (precondition.kind === "json_dependency_version") {
+    return `recipe_precondition_failed:${precondition.path}:${precondition.dependency}`;
+  }
+  if (precondition.kind === "stripe_v10_setter_source") {
+    return `recipe_precondition_failed:${precondition.path}:stripe_setter`;
+  }
+  if (precondition.kind === "googleapis_default_import_source") {
+    return `recipe_precondition_failed:${precondition.path}:googleapis_import`;
+  }
+  return `recipe_precondition_failed:${precondition.path}:node_major`;
 }
 
 function expectedTransform(
@@ -721,6 +1140,22 @@ function preconditionState(
     if (content === undefined) return { state: "neutral" };
     const swap = transform?.kind === "aws_dependency_swap" ? transform : undefined;
     return classifyAwsDependencies(content, precondition.dependencies, swap);
+  }
+  if (precondition.kind === "json_dependency_version") {
+    const content = files[precondition.path];
+    if (content === undefined) return { state: "neutral" };
+    const bump = transform?.kind === "json_dependency_version_set" ? transform : undefined;
+    return classifyDependencyVersion(content, precondition.dependency, bump);
+  }
+  if (precondition.kind === "stripe_v10_setter_source") {
+    const content = files[precondition.path];
+    if (content === undefined) return { state: "neutral" };
+    return classifyStripeSource(content);
+  }
+  if (precondition.kind === "googleapis_default_import_source") {
+    const content = files[precondition.path];
+    if (content === undefined) return { state: "neutral" };
+    return classifyGoogleapisSource(content);
   }
   if (precondition.kind === "json_string_in") {
     let value: unknown;
@@ -924,8 +1359,14 @@ function applyTransform(transform: RecipeTransform, files: Record<string, string
     files[transform.path] = before!.replace(marker, `$1${transform.toMajor}`);
   } else if (transform.kind === "aws_dependency_swap") {
     files[transform.path] = swapAwsDependencies(before!, transform.remove, transform.add);
-  } else {
+  } else if (transform.kind === "aws_sdk_source_v2_to_v3") {
     files[transform.path] = rewriteAwsSource(before!);
+  } else if (transform.kind === "json_dependency_version_set") {
+    files[transform.path] = setDependencyVersion(before!, transform.dependency, transform.version);
+  } else if (transform.kind === "stripe_setter_to_config") {
+    files[transform.path] = rewriteStripeSource(before!);
+  } else {
+    files[transform.path] = rewriteGoogleapisSource(before!);
   }
 }
 
