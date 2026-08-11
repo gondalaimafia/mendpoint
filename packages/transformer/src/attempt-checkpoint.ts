@@ -703,6 +703,39 @@ export function verifyTransformerEffectRequestArtifact(
   return decryptArtifact(artifact, bytes, key, { purpose: "effect-request", ...scope });
 }
 
+export function openTransformerModelEffectResultArtifact(
+  artifact: TransformerEncryptedArtifact,
+  bytes: Uint8Array,
+  key: Uint8Array,
+  scope: Readonly<{ tenantId: string; episodeId: string; effectId: string }>,
+): TransformerModelEffectResult {
+  return parseModelEffectResult(verifyTransformerEffectResultArtifact(
+    artifact, bytes, key, scope,
+  ));
+}
+
+export function openTransformerVerifierEffectResultArtifact(
+  artifact: TransformerEncryptedArtifact,
+  bytes: Uint8Array,
+  key: Uint8Array,
+  scope: Readonly<{ tenantId: string; episodeId: string; effectId: string }>,
+): TransformerVerifierEffectResult {
+  return parseVerifierEffectResult(verifyTransformerEffectResultArtifact(
+    artifact, bytes, key, scope,
+  ));
+}
+
+export function openTransformerCoordinatorEffectResultArtifact(
+  artifact: TransformerEncryptedArtifact,
+  bytes: Uint8Array,
+  key: Uint8Array,
+  scope: Readonly<{ tenantId: string; episodeId: string; effectId: string }>,
+): TransformerCoordinatorEffectResult {
+  return parseCoordinatorEffectResult(verifyTransformerEffectResultArtifact(
+    artifact, bytes, key, scope,
+  ));
+}
+
 export function createTransformerWorkspaceTransitionDigest(
   current: TransformerWorkspaceArtifact,
   next: TransformerWorkspaceArtifact,
@@ -815,12 +848,15 @@ export function createTransformerCandidatePublicationRequest(
   }), "utf8");
 }
 
-export function verifyTransformerWorkspaceArtifact(
+function decodeTransformerWorkspaceArtifact(
   artifact: TransformerWorkspaceArtifact,
   bytes: Uint8Array,
   key: Uint8Array,
   scope: Readonly<{ tenantId: string; episodeId: string }>,
-): readonly TransformerWorkspaceManifestEntry[] {
+): Readonly<{
+  manifest: readonly TransformerWorkspaceManifestEntry[];
+  files: readonly TransformerWorkspaceArtifactFile[];
+}> {
   validateWorkspaceArtifact(artifact);
   const {
     kind: _kind,
@@ -847,6 +883,7 @@ export function verifyTransformerWorkspaceArtifact(
     throw new Error("transformer_attempt_checkpoint_workspace_artifact_invalid");
   }
   const manifest: TransformerWorkspaceManifestEntry[] = [];
+  const files: TransformerWorkspaceArtifactFile[] = [];
   const paths = new Set<string>();
   for (const raw of parsed) {
     if (raw === null || typeof raw !== "object") {
@@ -864,6 +901,7 @@ export function verifyTransformerWorkspaceArtifact(
     }
     paths.add(entry.path.toLowerCase());
     manifest.push({ path: entry.path, digest: sha256(content), bytes: content.byteLength, mode: entry.mode });
+    files.push({ path: entry.path, content, mode: entry.mode });
   }
   const normalized = normalizedManifest(manifest);
   if (createTransformerWorkspaceManifestDigest(normalized) !== artifact.manifestDigest) {
@@ -882,7 +920,25 @@ export function verifyTransformerWorkspaceArtifact(
   if (filesDigest !== artifact.filesDigest) {
     throw new Error("transformer_attempt_checkpoint_workspace_artifact_mismatch");
   }
-  return normalized;
+  return { manifest: normalized, files };
+}
+
+export function verifyTransformerWorkspaceArtifact(
+  artifact: TransformerWorkspaceArtifact,
+  bytes: Uint8Array,
+  key: Uint8Array,
+  scope: Readonly<{ tenantId: string; episodeId: string }>,
+): readonly TransformerWorkspaceManifestEntry[] {
+  return decodeTransformerWorkspaceArtifact(artifact, bytes, key, scope).manifest;
+}
+
+export function openTransformerWorkspaceArtifact(
+  artifact: TransformerWorkspaceArtifact,
+  bytes: Uint8Array,
+  key: Uint8Array,
+  scope: Readonly<{ tenantId: string; episodeId: string }>,
+): readonly TransformerWorkspaceArtifactFile[] {
+  return decodeTransformerWorkspaceArtifact(artifact, bytes, key, scope).files;
 }
 
 function validateEffect(

@@ -21,7 +21,11 @@ import {
   createTransformerWorkspaceManifestDigest,
   createTransformerWorkspaceTransitionRequest,
   createTransformerWorkspaceTransitionDigest,
+  openTransformerCoordinatorEffectResultArtifact,
+  openTransformerModelEffectResultArtifact,
   openTransformerAttemptCheckpoint,
+  openTransformerVerifierEffectResultArtifact,
+  openTransformerWorkspaceArtifact,
   verifyTransformerWorkspaceArtifact,
   type TransformerAttemptCheckpointEnvelope,
   type TransformerAttemptCheckpointJournal,
@@ -318,6 +322,75 @@ describe("Transformer attempt checkpoint", () => {
       key,
       current.state.binding,
     )).toThrow(/transformer_attempt_checkpoint_(authentication|envelope)/);
+  });
+
+  it("reopens exact portable workspace and typed effect results", () => {
+    const current = fixture();
+    const scope = {
+      tenantId: current.state.binding.tenantId,
+      episodeId: current.state.episodeId,
+    };
+    expect(openTransformerWorkspaceArtifact(
+      current.state.workspaceArtifact,
+      current.artifactBytes,
+      key,
+      scope,
+    )).toEqual([{
+      path: "package.json",
+      content: Buffer.from('{"name":"fixture"}\n'),
+      mode: "file",
+    }]);
+
+    const effectId = "effect-a";
+    const effectScope = { ...scope, effectId };
+    const modelResult = {
+      schemaVersion: 1 as const,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      costUsd: 0.01,
+      wallTimeMs: 250,
+      responseDigest: digest("model response"),
+      responseBase64: Buffer.from("model response").toString("base64"),
+    };
+    const modelArtifact = createTransformerModelEffectResultArtifact(
+      effectScope, modelResult, key,
+    );
+    expect(openTransformerModelEffectResultArtifact(
+      modelArtifact.artifact, modelArtifact.bytes, key, effectScope,
+    )).toEqual(modelResult);
+
+    const verifierResult = {
+      schemaVersion: 1 as const,
+      status: "failed" as const,
+      outputDigest: digest("verifier output"),
+      outputBase64: Buffer.from("verifier output").toString("base64"),
+    };
+    const verifierArtifact = createTransformerVerifierEffectResultArtifact(
+      effectScope, verifierResult, key,
+    );
+    expect(openTransformerVerifierEffectResultArtifact(
+      verifierArtifact.artifact, verifierArtifact.bytes, key, effectScope,
+    )).toEqual(verifierResult);
+
+    const coordinatorResult = {
+      schemaVersion: 1 as const,
+      status: "accepted" as const,
+      completionDigest: digest("completion"),
+    };
+    const coordinatorArtifact = createTransformerCoordinatorEffectResultArtifact(
+      effectScope, coordinatorResult, key,
+    );
+    expect(openTransformerCoordinatorEffectResultArtifact(
+      coordinatorArtifact.artifact, coordinatorArtifact.bytes, key, effectScope,
+    )).toEqual(coordinatorResult);
+
+    expect(() => openTransformerWorkspaceArtifact(
+      current.state.workspaceArtifact,
+      current.artifactBytes,
+      key,
+      { ...scope, episodeId: "episode-wrong" },
+    )).toThrow("transformer_attempt_checkpoint_artifact_authentication_failed");
   });
 
   it("atomically chooses one sibling, replays it exactly, and rejects a stale lease", async () => {
