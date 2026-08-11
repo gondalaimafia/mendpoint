@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import {
+  AWS_SDK_JS_V2_TO_V3_RECIPE,
   NODE_RUNTIME_18_TO_20_RECIPE,
   RecipeAnalysisCache,
   applyInverseOperations,
@@ -222,6 +223,7 @@ function signedNodeCommands(recipe: MigrationRecipeContract): ReadonlyMap<string
 const SIGNED_NODE_RECIPES = [
   getRecipe(NODE_RUNTIME_18_TO_20_RECIPE.id, 1),
   NODE_RUNTIME_18_TO_20_RECIPE,
+  AWS_SDK_JS_V2_TO_V3_RECIPE,
 ] as const;
 
 const NODE_RECIPE_COMMANDS = new Map(
