@@ -36,7 +36,7 @@ const payload: WardenCheckpointPayload = Object.freeze({
       step: 17,
       tool: "replace_in_file",
       ok: true,
-      summary: "replaced client.ts",
+      summary: "replace_in_file_succeeded",
       plannerSource: "model",
       callDigest: `sha256:${"1".repeat(64)}`,
       resultDigest: `sha256:${"2".repeat(64)}`,
@@ -139,6 +139,17 @@ describe("Warden checkpoint envelope", () => {
   });
 
   it("rejects unbounded or source-bearing metadata before it can be signed", () => {
+    expect(() => createWardenCheckpointEnvelope(
+      {
+        ...payload,
+        steps: [{
+          ...payload.steps[0]!,
+          summary: "private source code",
+        }],
+      },
+      key,
+    )).toThrow("warden_checkpoint_step_invalid");
+
     expect(() => createWardenCheckpointEnvelope(
       {
         ...payload,

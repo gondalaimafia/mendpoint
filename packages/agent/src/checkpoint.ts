@@ -3,6 +3,7 @@ import type { AgentStep, ToolName } from "./types.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const DIAGNOSTIC_CODE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const WORKSPACE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 const RELATIVE_PATH = /^(?![A-Za-z]:)(?![\\/])(?!.*(?:^|[\\/])\.\.(?:[\\/]|$)).{1,1000}$/;
 const MAX_STEPS = 256;
@@ -189,10 +190,11 @@ function validateStep(value: WardenCheckpointStep): void {
     "finish",
   ].includes(value.tool)) throw new Error("warden_checkpoint_step_invalid");
   if (typeof value.ok !== "boolean") throw new Error("warden_checkpoint_step_invalid");
-  if (typeof value.summary !== "string" || value.summary.length > 500) {
+  if (typeof value.summary !== "string" || !DIAGNOSTIC_CODE.test(value.summary)) {
     throw new Error("warden_checkpoint_step_invalid");
   }
-  if (value.error !== undefined && (typeof value.error !== "string" || value.error.length > 500)) {
+  if (value.error !== undefined &&
+      (typeof value.error !== "string" || !DIAGNOSTIC_CODE.test(value.error))) {
     throw new Error("warden_checkpoint_step_invalid");
   }
   if (!["model", "heuristic", "system"].includes(value.plannerSource)) {
