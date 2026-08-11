@@ -67,7 +67,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       Math.floor(token.expires_in ?? OIDC_SESSION_MAX_AGE_SECONDS),
       OIDC_SESSION_MAX_AGE_SECONDS,
     ));
-    const response = NextResponse.redirect(new URL(flow.returnTo, request.url));
+    const response = NextResponse.redirect(new URL(flow.returnTo, flow.redirectUri));
     clearFlow(response);
     response.cookies.set(WEB_SESSION_COOKIE, await createOidcWebSession({
       accessToken: token.access_token,

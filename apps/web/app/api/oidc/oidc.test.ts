@@ -105,7 +105,7 @@ describe("browser OIDC authorization code flow", () => {
     expect(started.headers.get("set-cookie")).toContain("SameSite=lax");
 
     const completed = await oidcCallback(new NextRequest(
-      `https://console.example/api/oidc/callback?code=authorization-code&state=${encodeURIComponent(state)}`,
+      `https://0.0.0.0:3000/api/oidc/callback?code=authorization-code&state=${encodeURIComponent(state)}`,
       { headers: { Cookie: flowCookie } },
     ));
     expect(completed.status).toBe(307);

@@ -1461,3 +1461,13 @@ Program acceptance: the underlying product does everything claimed within explic
 Acceptance: an authenticated customer operator can select only an approved provider and tenant-owned consumer, producing one reference-only Warden pilot request through the web boundary. The browser cannot submit repository paths, verifier commands, model policy, budget, snapshots, or delivery authority.
 
 Review: the customer web path now forces the same-origin proxy, preserves the operator OIDC bearer, and accepts only provider and repository references. Preview access receives `company_identity_required`, raw `/agent/runs` is unavailable in customer mode, and membership administration is exposed only through exact OIDC-protected routes. Red tests first reproduced the missing proxy routes and the preview-session privilege escalation. The corrected tree passes 28 focused web tests, the full workspace suite, every workspace typecheck, the 22-page production build, GA/spec/claim/action checks, a zero-vulnerability production audit, and diff integrity. Independent adversarial rereview found no remaining P0 or P1. Protected-main deployment, customer-profile readiness, the private canary, and restore receipts remain pending.
+
+## Production OIDC public redirect: 2026-08-10
+
+- [x] Reproduce the Fly internal-host redirect after a successful Auth0 callback.
+- [x] Anchor the local return path to the configured public OIDC callback origin.
+- [x] Prove external return paths remain rejected and the human OIDC session still delegates its bearer token server side.
+- [x] Run focused web tests, web typecheck, production build, and diff integrity.
+- [ ] Merge through protected main, verify the exact deployed revision, and repeat the browser sign-in flow.
+
+Acceptance: a successful production OIDC callback always returns to the configured public Mendpoint origin, never Fly's internal listener address, while preserving the encrypted local return path and all existing session security controls.

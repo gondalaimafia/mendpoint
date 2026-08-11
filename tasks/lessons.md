@@ -17,3 +17,8 @@
 **Mistake:** I treated gaps discovered from the public website as a request to edit the marketing website itself.
 **Correction:** Talal clarified that the website is the source of product gaps and the work is to build those capabilities in Mendpoint.
 **Rule:** When asked to build gaps from a claims matrix, use the claims as acceptance inputs, implement and verify the underlying product, and do not redirect effort to the publishing surface unless explicitly requested.
+
+### 2026-08-10 — Browser extension profile detection
+**Mistake:** I treated a diagnostic miss in Chrome's selected Default profile as proof that the ChatGPT extension was not installed.
+**Correction:** Talal confirmed the extension is enabled in both Chrome and Edge.
+**Rule:** Treat a profile-specific extension diagnostic as a connection or profile-selection problem when the user confirms installation. Retry the requested browser connection and diagnose the active profile before asking for reinstall.
