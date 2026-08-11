@@ -1,7 +1,15 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 import type { AgentStep, ToolName } from "./types.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
+const HMAC_DIGEST = /^hmac-sha256:[a-f0-9]{64}$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const GIT_REVISION = /^[a-f0-9]{40}$/;
 const DIAGNOSTIC_CODE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -13,6 +21,7 @@ const MAX_DIRECTORIES = 512;
 const MAX_SEARCHES = 512;
 const MAX_CHANGED_FILES = 256;
 const MAX_ACTION_FINGERPRINTS = 512;
+const MAX_PRIVATE_RUNTIME_STATE_BYTES = 64 * 1024 * 1024;
 const COUNTER_KEYS = [
   "mutationCount",
   "toolCalls",
@@ -90,6 +99,7 @@ export type WardenCheckpointPayload = Readonly<{
   writerLeaseGeneration: number;
   workspaceName: string;
   workspaceDigest: string;
+  runtimeStateCommitment: string;
   phase: "agent_running" | "verification_feedback" | "terminal";
   nextStep: number;
   steps: readonly WardenCheckpointStep[];
@@ -115,8 +125,23 @@ export type WardenCheckpointEnvelope = Readonly<{
   authenticationTag: string;
 }>;
 
+export type WardenSealedRuntimeState = Readonly<{
+  schemaVersion: 1;
+  algorithm: "AES-256-GCM";
+  runtimeSchemaVersion: 1;
+  codec: "opaque-bytes-v1";
+  keyId: string;
+  checkpointPayloadDigest: string;
+  runtimeStateCommitment: string;
+  plaintextBytes: number;
+  nonce: string;
+  ciphertext: string;
+  authenticationTag: string;
+}>;
+
 export type WardenCheckpointJournalRecord = Readonly<{
   envelope: WardenCheckpointEnvelope | null;
+  sealedRuntimeState: WardenSealedRuntimeState | null;
   activeWriterLeaseGeneration: number;
 }>;
 
@@ -127,6 +152,7 @@ export type WardenCheckpointJournal = Readonly<{
     expectedPayloadDigest: string | null;
     expectedActiveWriterLeaseGeneration: number;
     nextEnvelope: WardenCheckpointEnvelope;
+    nextSealedRuntimeState: WardenSealedRuntimeState;
   }>) => Promise<boolean>;
 }>;
 
@@ -298,6 +324,7 @@ function validatePayload(value: WardenCheckpointPayload): void {
     "writerLeaseGeneration",
     "workspaceName",
     "workspaceDigest",
+    "runtimeStateCommitment",
     "phase",
     "nextStep",
     "steps",
@@ -316,6 +343,9 @@ function validatePayload(value: WardenCheckpointPayload): void {
   positiveInteger(value.writerLeaseGeneration, "warden_checkpoint_lease_invalid");
   if (!WORKSPACE_NAME.test(value.workspaceName)) throw new Error("warden_checkpoint_workspace_invalid");
   validDigest(value.workspaceDigest, "warden_checkpoint_workspace_invalid");
+  if (!HMAC_DIGEST.test(value.runtimeStateCommitment)) {
+    throw new Error("warden_checkpoint_runtime_state_invalid");
+  }
   if (!["agent_running", "verification_feedback", "terminal"].includes(value.phase)) {
     throw new Error("warden_checkpoint_phase_invalid");
   }
@@ -470,6 +500,205 @@ export function verifyWardenCheckpointEnvelope(
   return payload;
 }
 
+function runtimeCommitmentKey(key: Uint8Array): Buffer {
+  return createHmac("sha256", Buffer.from(key))
+    .update("mendpoint:warden-private-runtime-state-commitment-key:v1", "utf8")
+    .digest();
+}
+
+export function createWardenRuntimeStateCommitment(
+  value: Uint8Array,
+  key: Uint8Array,
+  binding: WardenCheckpointBinding,
+  workspaceName: string,
+  generation: number,
+): string {
+  keyMaterial(key);
+  validateBinding(binding);
+  if (!(value instanceof Uint8Array) || value.byteLength < 1 ||
+      value.byteLength > MAX_PRIVATE_RUNTIME_STATE_BYTES ||
+      !WORKSPACE_NAME.test(workspaceName)) {
+    throw new Error("warden_checkpoint_runtime_state_invalid");
+  }
+  positiveInteger(generation, "warden_checkpoint_generation_invalid");
+  return `hmac-sha256:${createHmac("sha256", runtimeCommitmentKey(key))
+    .update(canonical({ binding, workspaceName, generation }), "utf8")
+    .update("\0", "utf8")
+    .update(value)
+    .digest("hex")}`;
+}
+
+function runtimeStateKey(key: Uint8Array, checkpointPayloadDigest: string): Buffer {
+  return createHmac("sha256", Buffer.from(key))
+    .update("mendpoint:warden-private-runtime-state:v1\0", "utf8")
+    .update(checkpointPayloadDigest, "utf8")
+    .digest();
+}
+
+function runtimeStateAad(
+  checkpoint: WardenCheckpointEnvelope,
+  metadata: Readonly<{
+    runtimeStateCommitment: string;
+    plaintextBytes: number;
+    keyId: string;
+  }>,
+): Buffer {
+  return Buffer.from(canonical({
+    schemaVersion: 1,
+    runtimeSchemaVersion: 1,
+    codec: "opaque-bytes-v1",
+    keyId: metadata.keyId,
+    checkpointPayloadDigest: checkpoint.payloadDigest,
+    binding: checkpoint.payload.binding,
+    generation: checkpoint.payload.generation,
+    previousEnvelopeDigest: checkpoint.payload.previousEnvelopeDigest,
+    writerLeaseGeneration: checkpoint.payload.writerLeaseGeneration,
+    workspaceDigest: checkpoint.payload.workspaceDigest,
+    runtimeStateCommitment: metadata.runtimeStateCommitment,
+    plaintextBytes: metadata.plaintextBytes,
+  }), "utf8");
+}
+
+function runtimeStateKeyId(key: Uint8Array): string {
+  return `wdrt_${createHmac("sha256", Buffer.from(key))
+    .update("mendpoint:warden-private-runtime-state-key-id:v1", "utf8")
+    .digest("hex")
+    .slice(0, 24)}`;
+}
+
+function canonicalBase64(value: string, expectedBytes?: number): Buffer {
+  if (typeof value !== "string" || !value.length || value.length >
+      Math.ceil(MAX_PRIVATE_RUNTIME_STATE_BYTES * 4 / 3) + 8) {
+    throw new Error("warden_checkpoint_runtime_state_invalid");
+  }
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.toString("base64") !== value ||
+      (expectedBytes !== undefined && decoded.byteLength !== expectedBytes)) {
+    throw new Error("warden_checkpoint_runtime_state_invalid");
+  }
+  return decoded;
+}
+
+export function sealWardenRuntimeState(
+  state: Uint8Array,
+  checkpoint: WardenCheckpointEnvelope,
+  key: Uint8Array,
+  expectedBinding: WardenCheckpointBinding,
+): WardenSealedRuntimeState {
+  authenticateWardenCheckpointEnvelope(checkpoint, key, expectedBinding);
+  if (!(state instanceof Uint8Array) || state.byteLength < 1 ||
+      state.byteLength > MAX_PRIVATE_RUNTIME_STATE_BYTES) {
+    throw new Error("warden_checkpoint_runtime_state_invalid");
+  }
+  const commitment = createWardenRuntimeStateCommitment(
+    state,
+    key,
+    checkpoint.payload.binding,
+    checkpoint.payload.workspaceName,
+    checkpoint.payload.generation,
+  );
+  if (commitment !== checkpoint.payload.runtimeStateCommitment) {
+    throw new Error("warden_checkpoint_runtime_state_mismatch");
+  }
+  const metadata = {
+    runtimeStateCommitment: commitment,
+    plaintextBytes: state.byteLength,
+    keyId: runtimeStateKeyId(key),
+  } as const;
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv(
+    "aes-256-gcm",
+    runtimeStateKey(key, checkpoint.payloadDigest),
+    nonce,
+  );
+  cipher.setAAD(runtimeStateAad(checkpoint, metadata));
+  const ciphertext = Buffer.concat([cipher.update(state), cipher.final()]);
+  return Object.freeze({
+    schemaVersion: 1,
+    algorithm: "AES-256-GCM",
+    runtimeSchemaVersion: 1,
+    codec: "opaque-bytes-v1",
+    keyId: metadata.keyId,
+    checkpointPayloadDigest: checkpoint.payloadDigest,
+    runtimeStateCommitment: commitment,
+    plaintextBytes: state.byteLength,
+    nonce: nonce.toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+    authenticationTag: cipher.getAuthTag().toString("base64"),
+  });
+}
+
+export function openWardenRuntimeState(
+  sealed: WardenSealedRuntimeState,
+  checkpoint: WardenCheckpointEnvelope,
+  key: Uint8Array,
+  expectedBinding: WardenCheckpointBinding,
+  expectedWriterLeaseGeneration: number,
+): Uint8Array {
+  const payload = authenticateWardenCheckpointEnvelope(checkpoint, key, expectedBinding);
+  positiveInteger(expectedWriterLeaseGeneration, "warden_checkpoint_lease_mismatch");
+  if (payload.writerLeaseGeneration !== expectedWriterLeaseGeneration) {
+    throw new Error("warden_checkpoint_lease_mismatch");
+  }
+  exactKeys(sealed, [
+    "schemaVersion",
+    "algorithm",
+    "runtimeSchemaVersion",
+    "codec",
+    "keyId",
+    "checkpointPayloadDigest",
+    "runtimeStateCommitment",
+    "plaintextBytes",
+    "nonce",
+    "ciphertext",
+    "authenticationTag",
+  ], "warden_checkpoint_runtime_state_invalid");
+  if (sealed.schemaVersion !== 1 || sealed.algorithm !== "AES-256-GCM" ||
+      sealed.runtimeSchemaVersion !== 1 || sealed.codec !== "opaque-bytes-v1" ||
+      sealed.keyId !== runtimeStateKeyId(key) ||
+      sealed.checkpointPayloadDigest !== checkpoint.payloadDigest ||
+      sealed.runtimeStateCommitment !== payload.runtimeStateCommitment) {
+    throw new Error("warden_checkpoint_runtime_state_mismatch");
+  }
+  if (!HMAC_DIGEST.test(sealed.runtimeStateCommitment)) {
+    throw new Error("warden_checkpoint_runtime_state_invalid");
+  }
+  nonnegativeInteger(sealed.plaintextBytes, "warden_checkpoint_runtime_state_invalid");
+  const nonce = canonicalBase64(sealed.nonce, 12);
+  const ciphertext = canonicalBase64(sealed.ciphertext);
+  const authenticationTag = canonicalBase64(sealed.authenticationTag, 16);
+  if (ciphertext.byteLength < 1 || ciphertext.byteLength > MAX_PRIVATE_RUNTIME_STATE_BYTES) {
+    throw new Error("warden_checkpoint_runtime_state_invalid");
+  }
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      runtimeStateKey(key, checkpoint.payloadDigest),
+      nonce,
+    );
+    decipher.setAAD(runtimeStateAad(checkpoint, sealed));
+    decipher.setAuthTag(authenticationTag);
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    if (plaintext.byteLength !== sealed.plaintextBytes ||
+        createWardenRuntimeStateCommitment(
+          plaintext,
+          key,
+          payload.binding,
+          payload.workspaceName,
+          payload.generation,
+        ) !== sealed.runtimeStateCommitment) {
+      throw new Error("warden_checkpoint_runtime_state_authentication_failed");
+    }
+    return plaintext;
+  } catch (error) {
+    if (error instanceof Error &&
+        error.message === "warden_checkpoint_runtime_state_authentication_failed") {
+      throw error;
+    }
+    throw new Error("warden_checkpoint_runtime_state_authentication_failed");
+  }
+}
+
 function hasCanonicalPrefix(current: readonly unknown[], next: readonly unknown[]): boolean {
   return current.length <= next.length && current.every((value, index) =>
     canonical(value) === canonical(next[index])
@@ -576,9 +805,33 @@ function advanceWardenCheckpointEnvelope(
   return signWardenCheckpointEnvelope(nextPayload, key);
 }
 
+function validateJournalRecord(record: WardenCheckpointJournalRecord): void {
+  exactKeys(record, [
+    "envelope",
+    "sealedRuntimeState",
+    "activeWriterLeaseGeneration",
+  ], "warden_checkpoint_journal_record_invalid");
+  positiveInteger(
+    record.activeWriterLeaseGeneration,
+    "warden_checkpoint_lease_mismatch",
+  );
+  if ((record.envelope === null) !== (record.sealedRuntimeState === null)) {
+    throw new Error("warden_checkpoint_runtime_state_missing");
+  }
+  if (record.envelope !== null &&
+      record.sealedRuntimeState!.checkpointPayloadDigest !== record.envelope.payloadDigest) {
+    throw new Error("warden_checkpoint_runtime_state_mismatch");
+  }
+  if (record.envelope !== null &&
+      record.activeWriterLeaseGeneration < record.envelope.payload.writerLeaseGeneration) {
+    throw new Error("warden_checkpoint_lease_mismatch");
+  }
+}
+
 export async function commitWardenCheckpoint(
   journal: WardenCheckpointJournal,
   nextPayload: WardenCheckpointPayload,
+  nextRuntimeState: Uint8Array,
   key: Uint8Array,
   expectedBinding: WardenCheckpointBinding,
 ): Promise<WardenCheckpointEnvelope> {
@@ -587,13 +840,33 @@ export async function commitWardenCheckpoint(
   if (canonical(nextPayload.binding) !== canonical(expectedBinding)) {
     throw new Error("warden_checkpoint_binding_mismatch");
   }
-  const currentRecord = await journal.read(expectedBinding);
-  positiveInteger(
-    currentRecord.activeWriterLeaseGeneration,
-    "warden_checkpoint_lease_mismatch",
+  if (!(nextRuntimeState instanceof Uint8Array) || nextRuntimeState.byteLength < 1 ||
+      nextRuntimeState.byteLength > MAX_PRIVATE_RUNTIME_STATE_BYTES) {
+    throw new Error("warden_checkpoint_runtime_state_invalid");
+  }
+  const nextRuntimeStateCommitment = createWardenRuntimeStateCommitment(
+    nextRuntimeState,
+    key,
+    nextPayload.binding,
+    nextPayload.workspaceName,
+    nextPayload.generation,
   );
+  if (nextRuntimeStateCommitment !== nextPayload.runtimeStateCommitment) {
+    throw new Error("warden_checkpoint_runtime_state_mismatch");
+  }
+  const currentRecord = await journal.read(expectedBinding);
+  validateJournalRecord(currentRecord);
   if (nextPayload.writerLeaseGeneration !== currentRecord.activeWriterLeaseGeneration) {
     throw new Error("warden_checkpoint_lease_mismatch");
+  }
+  if (currentRecord.envelope !== null) {
+    openWardenRuntimeState(
+      currentRecord.sealedRuntimeState!,
+      currentRecord.envelope,
+      key,
+      expectedBinding,
+      currentRecord.envelope.payload.writerLeaseGeneration,
+    );
   }
 
   const nextEnvelope = currentRecord.envelope === null
@@ -605,17 +878,38 @@ export async function commitWardenCheckpoint(
         expectedBinding,
         currentRecord.activeWriterLeaseGeneration,
       );
-  if (nextEnvelope === currentRecord.envelope) return nextEnvelope;
+  if (nextEnvelope === currentRecord.envelope) {
+    const sealed = currentRecord.sealedRuntimeState!;
+    if (sealed.runtimeStateCommitment !== nextRuntimeStateCommitment) {
+      throw new Error("warden_checkpoint_runtime_state_mismatch");
+    }
+    openWardenRuntimeState(
+      sealed,
+      nextEnvelope,
+      key,
+      expectedBinding,
+      currentRecord.activeWriterLeaseGeneration,
+    );
+    return nextEnvelope;
+  }
+  const nextSealedRuntimeState = sealWardenRuntimeState(
+    nextRuntimeState,
+    nextEnvelope,
+    key,
+    expectedBinding,
+  );
 
   const committed = await journal.compareAndSwap({
     binding: expectedBinding,
     expectedPayloadDigest: currentRecord.envelope?.payloadDigest ?? null,
     expectedActiveWriterLeaseGeneration: currentRecord.activeWriterLeaseGeneration,
     nextEnvelope,
+    nextSealedRuntimeState,
   });
   if (committed) return nextEnvelope;
 
   const latest = await journal.read(expectedBinding);
+  validateJournalRecord(latest);
   if (latest.envelope !== null &&
       latest.activeWriterLeaseGeneration === nextPayload.writerLeaseGeneration) {
     const latestPayload = authenticateWardenCheckpointEnvelope(
@@ -623,7 +917,17 @@ export async function commitWardenCheckpoint(
       key,
       expectedBinding,
     );
-    if (canonical(latestPayload) === canonical(nextPayload)) return latest.envelope;
+    if (canonical(latestPayload) === canonical(nextPayload) &&
+        latest.sealedRuntimeState!.runtimeStateCommitment === nextRuntimeStateCommitment) {
+      openWardenRuntimeState(
+        latest.sealedRuntimeState!,
+        latest.envelope,
+        key,
+        expectedBinding,
+        latest.activeWriterLeaseGeneration,
+      );
+      return latest.envelope;
+    }
   }
   throw new Error("warden_checkpoint_compare_and_swap_conflict");
 }

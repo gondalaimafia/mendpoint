@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  commitWardenCheckpoint,
+  commitWardenCheckpoint as commitWardenCheckpointRecord,
   createWardenCheckpointEnvelope,
+  createWardenRuntimeStateCommitment,
+  openWardenRuntimeState,
+  sealWardenRuntimeState,
   verifyWardenCheckpointEnvelope,
   type WardenCheckpointBinding,
   type WardenCheckpointEnvelope,
@@ -43,6 +46,13 @@ const zeroCounters: WardenCheckpointPayload["counters"] = Object.freeze({
   blockedMutations: 0,
 });
 
+const genesisRuntimeState = Buffer.from(JSON.stringify({
+  generation: 1,
+  nextStep: 0,
+  privatePlannerState: "private-state-1",
+  recentObservation: "private source bytes",
+}), "utf8");
+
 const genesisPayload: WardenCheckpointPayload = Object.freeze({
   schemaVersion: 1,
   binding,
@@ -50,6 +60,13 @@ const genesisPayload: WardenCheckpointPayload = Object.freeze({
   writerLeaseGeneration: 7,
   workspaceName: "attempt-a-2f8c4d",
   workspaceDigest: `sha256:${"f".repeat(64)}`,
+  runtimeStateCommitment: createWardenRuntimeStateCommitment(
+    genesisRuntimeState,
+    key,
+    binding,
+    "attempt-a-2f8c4d",
+    1,
+  ),
   phase: "agent_running",
   nextStep: 0,
   steps: Object.freeze([]),
@@ -63,12 +80,55 @@ const genesisPayload: WardenCheckpointPayload = Object.freeze({
   createdAt: "2026-08-10T17:59:00.000Z",
 });
 
+function runtimeStateFor(payload: WardenCheckpointPayload): Uint8Array {
+  return Buffer.from(JSON.stringify({
+    generation: payload.generation,
+    nextStep: payload.nextStep,
+    privatePlannerState: `private-state-${payload.generation}`,
+    recentObservation: "private source bytes",
+  }), "utf8");
+}
+
+function bindRuntimeState(
+  payload: WardenCheckpointPayload,
+  signingKey: Uint8Array = key,
+): WardenCheckpointPayload {
+  const runtimeState = runtimeStateFor(payload);
+  return {
+    ...payload,
+    runtimeStateCommitment: createWardenRuntimeStateCommitment(
+      runtimeState,
+      signingKey,
+      payload.binding,
+      payload.workspaceName,
+      payload.generation,
+    ),
+  };
+}
+
+function commitWardenCheckpoint(
+  journal: WardenCheckpointJournal,
+  payload: WardenCheckpointPayload,
+  signingKey: Uint8Array,
+  expectedBinding: WardenCheckpointBinding,
+): ReturnType<typeof commitWardenCheckpointRecord> {
+  const runtimeState = runtimeStateFor(payload);
+  const boundPayload = bindRuntimeState(payload, signingKey);
+  return commitWardenCheckpointRecord(
+    journal,
+    boundPayload,
+    runtimeState,
+    signingKey,
+    expectedBinding,
+  );
+}
+
 function mutationSuccessor(current: WardenCheckpointEnvelope): WardenCheckpointPayload {
   const step = current.payload.nextStep;
   const mutationCount = current.payload.counters.mutationCount + 1;
   const callDigest = `sha256:${"1".repeat(64)}`;
   const resultDigest = `sha256:${"2".repeat(64)}`;
-  return {
+  return bindRuntimeState({
     ...current.payload,
     generation: current.payload.generation + 1,
     workspaceDigest: `sha256:${"e".repeat(64)}`,
@@ -117,7 +177,7 @@ function mutationSuccessor(current: WardenCheckpointEnvelope): WardenCheckpointP
     },
     previousEnvelopeDigest: current.payloadDigest,
     createdAt: new Date(Date.parse(current.payload.createdAt) + 60_000).toISOString(),
-  };
+  });
 }
 
 function successor(
@@ -127,7 +187,7 @@ function successor(
   writerLeaseGeneration = current.payload.writerLeaseGeneration,
 ): WardenCheckpointPayload {
   const step = current.payload.nextStep;
-  return {
+  return bindRuntimeState({
     ...current.payload,
     generation: current.payload.generation + 1,
     writerLeaseGeneration,
@@ -152,7 +212,7 @@ function successor(
     },
     previousEnvelopeDigest: current.payloadDigest,
     createdAt: new Date(Date.parse(current.payload.createdAt) + 60_000).toISOString(),
-  };
+  });
 }
 
 function memoryJournal(activeWriterLeaseGeneration: number): WardenCheckpointJournal & {
@@ -160,6 +220,7 @@ function memoryJournal(activeWriterLeaseGeneration: number): WardenCheckpointJou
 } {
   let record: Awaited<ReturnType<WardenCheckpointJournal["read"]>> = {
     envelope: null,
+    sealedRuntimeState: null,
     activeWriterLeaseGeneration,
   };
   return {
@@ -174,6 +235,7 @@ function memoryJournal(activeWriterLeaseGeneration: number): WardenCheckpointJou
       }
       record = {
         envelope: input.nextEnvelope,
+        sealedRuntimeState: input.nextSealedRuntimeState,
         activeWriterLeaseGeneration: record.activeWriterLeaseGeneration,
       };
       return true;
@@ -185,6 +247,49 @@ function memoryJournal(activeWriterLeaseGeneration: number): WardenCheckpointJou
 }
 
 describe("Warden checkpoint envelope", () => {
+  it("encrypts private runtime state and binds it to the exact checkpoint", () => {
+    const checkpoint = createWardenCheckpointEnvelope(genesisPayload, key);
+    const runtimeState = genesisRuntimeState;
+
+    const sealed = sealWardenRuntimeState(runtimeState, checkpoint, key, binding);
+
+    expect(JSON.stringify(sealed)).not.toContain("private source bytes");
+    expect(openWardenRuntimeState(
+      sealed,
+      checkpoint,
+      key,
+      binding,
+      genesisPayload.writerLeaseGeneration,
+    )).toEqual(runtimeState);
+    expect(() => sealWardenRuntimeState(
+      Buffer.from("different but valid state", "utf8"),
+      checkpoint,
+      key,
+      binding,
+    )).toThrow("warden_checkpoint_runtime_state_mismatch");
+    expect(() => openWardenRuntimeState(
+      { ...sealed, ciphertext: `${sealed.ciphertext.slice(0, -2)}AA` },
+      checkpoint,
+      key,
+      binding,
+      genesisPayload.writerLeaseGeneration,
+    )).toThrow("warden_checkpoint_runtime_state_authentication_failed");
+    expect(() => openWardenRuntimeState(
+      sealed,
+      checkpoint,
+      Buffer.alloc(32, 7),
+      binding,
+      genesisPayload.writerLeaseGeneration,
+    )).toThrow("warden_checkpoint_authentication_failed");
+    expect(() => openWardenRuntimeState(
+      sealed,
+      checkpoint,
+      key,
+      { ...binding, tenantId: "tenant-b" },
+      genesisPayload.writerLeaseGeneration,
+    )).toThrow("warden_checkpoint_binding_mismatch");
+  });
+
   it("authenticates bounded checkpoint metadata and verifies the exact execution binding", () => {
     const envelope = createWardenCheckpointEnvelope(genesisPayload, key);
 
@@ -311,6 +416,75 @@ describe("Warden checkpoint envelope", () => {
 
     const journal = memoryJournal(genesisPayload.writerLeaseGeneration);
     const genesis = await commitWardenCheckpoint(journal, genesisPayload, key, binding);
+    const genesisRecord = await journal.read(binding);
+    expect(genesisRecord.sealedRuntimeState).toBeDefined();
+    await expect(commitWardenCheckpointRecord(
+      journal,
+      genesis.payload,
+      Buffer.from("different private state", "utf8"),
+      key,
+      binding,
+    )).rejects.toThrow("warden_checkpoint_runtime_state_mismatch");
+    const missingStateJournal: WardenCheckpointJournal = {
+      async read() {
+        return {
+          envelope: genesis,
+          sealedRuntimeState: null,
+          activeWriterLeaseGeneration: genesisPayload.writerLeaseGeneration,
+        };
+      },
+      async compareAndSwap() {
+        throw new Error("compare_and_swap_must_not_run");
+      },
+    };
+    await expect(commitWardenCheckpoint(
+      missingStateJournal,
+      successor(genesis, "target_verifier_failed", "d"),
+      key,
+      binding,
+    )).rejects.toThrow("warden_checkpoint_runtime_state_missing");
+    const corruptedStateJournal: WardenCheckpointJournal = {
+      async read() {
+        return {
+          ...genesisRecord,
+          sealedRuntimeState: {
+            ...genesisRecord.sealedRuntimeState!,
+            authenticationTag: Buffer.alloc(16, 0).toString("base64"),
+          },
+        };
+      },
+      async compareAndSwap() {
+        throw new Error("compare_and_swap_must_not_run");
+      },
+    };
+    await expect(commitWardenCheckpoint(
+      corruptedStateJournal,
+      successor(genesis, "target_verifier_failed", "e"),
+      key,
+      binding,
+    )).rejects.toThrow("warden_checkpoint_runtime_state_authentication_failed");
+    const regressedLeaseJournal: WardenCheckpointJournal = {
+      async read() {
+        return {
+          ...genesisRecord,
+          activeWriterLeaseGeneration: genesisPayload.writerLeaseGeneration - 1,
+        };
+      },
+      async compareAndSwap() {
+        return true;
+      },
+    };
+    await expect(commitWardenCheckpoint(
+      regressedLeaseJournal,
+      successor(
+        genesis,
+        "target_verifier_failed",
+        "f",
+        genesisPayload.writerLeaseGeneration - 1,
+      ),
+      key,
+      binding,
+    )).rejects.toThrow("warden_checkpoint_lease_mismatch");
     const siblingA = successor(genesis, "target_verifier_failed", "a");
     const siblingB = successor(genesis, "regression_verifier_failed", "b");
     const outcomes = await Promise.allSettled([
