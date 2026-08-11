@@ -209,6 +209,21 @@ export type TransformerAttemptCheckpointJournal = Readonly<{
   }>): Promise<boolean>;
 }>;
 
+export type TransformerPreparedAttemptCheckpointAdvance =
+  | Readonly<{
+    kind: "replay";
+    envelope: TransformerAttemptCheckpointEnvelope;
+  }>
+  | Readonly<{
+    kind: "advance";
+    operation: Readonly<{
+      episodeId: string;
+      expectedStateDigest: string;
+      activeLease: TransformerAttemptCheckpointLease;
+      next: TransformerAttemptCheckpointEnvelope;
+    }>;
+  }>;
+
 function canonical(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -1726,17 +1741,19 @@ export async function commitTransformerAttemptCheckpointGenesis(
   throw new Error("transformer_attempt_checkpoint_head_conflict");
 }
 
-export async function advanceTransformerAttemptCheckpoint(
+export async function prepareTransformerAttemptCheckpointAdvance(
   journal: TransformerAttemptCheckpointJournal,
   expectedHeadDigest: string,
   nextState: TransformerAttemptCheckpointState,
   key: Uint8Array,
   expectedBinding: TransformerAttemptCheckpointBinding,
-): Promise<TransformerAttemptCheckpointEnvelope> {
+): Promise<TransformerPreparedAttemptCheckpointAdvance> {
   requireDigest(expectedHeadDigest, "transformer_attempt_checkpoint_head_invalid");
   const currentEnvelope = await journal.read(createTransformerEpisodeId(expectedBinding));
   if (currentEnvelope === null || currentEnvelope.stateDigest !== expectedHeadDigest) {
-    if (currentEnvelope !== null && sameState(currentEnvelope, nextState, key)) return currentEnvelope;
+    if (currentEnvelope !== null && sameState(currentEnvelope, nextState, key)) {
+      return Object.freeze({ kind: "replay", envelope: currentEnvelope });
+    }
     throw new Error("transformer_attempt_checkpoint_head_conflict");
   }
   const current = openTransformerAttemptCheckpoint(currentEnvelope, key, expectedBinding);
@@ -1757,13 +1774,34 @@ export async function advanceTransformerAttemptCheckpoint(
   }
   await verifyCompletedEffectStored(journal, nextState, key);
   const next = seal(nextState, key);
-  if (await journal.compareAndSwap({
-    episodeId: current.episodeId,
-    expectedStateDigest: currentEnvelope.stateDigest,
-    activeLease,
-    next,
-  })) return next;
-  const raced = await journal.read(current.episodeId);
+  return Object.freeze({
+    kind: "advance",
+    operation: Object.freeze({
+      episodeId: current.episodeId,
+      expectedStateDigest: currentEnvelope.stateDigest,
+      activeLease: Object.freeze({ ...activeLease }),
+      next,
+    }),
+  });
+}
+
+export async function advanceTransformerAttemptCheckpoint(
+  journal: TransformerAttemptCheckpointJournal,
+  expectedHeadDigest: string,
+  nextState: TransformerAttemptCheckpointState,
+  key: Uint8Array,
+  expectedBinding: TransformerAttemptCheckpointBinding,
+): Promise<TransformerAttemptCheckpointEnvelope> {
+  const prepared = await prepareTransformerAttemptCheckpointAdvance(
+    journal,
+    expectedHeadDigest,
+    nextState,
+    key,
+    expectedBinding,
+  );
+  if (prepared.kind === "replay") return prepared.envelope;
+  if (await journal.compareAndSwap(prepared.operation)) return prepared.operation.next;
+  const raced = await journal.read(prepared.operation.episodeId);
   if (raced !== null && sameState(raced, nextState, key)) return raced;
   throw new Error("transformer_attempt_checkpoint_head_conflict");
 }

@@ -26,6 +26,7 @@ import {
   openTransformerAttemptCheckpoint,
   openTransformerVerifierEffectResultArtifact,
   openTransformerWorkspaceArtifact,
+  prepareTransformerAttemptCheckpointAdvance,
   verifyTransformerWorkspaceArtifact,
   type TransformerAttemptCheckpointEnvelope,
   type TransformerAttemptCheckpointJournal,
@@ -439,6 +440,37 @@ describe("Transformer attempt checkpoint", () => {
       key,
       current.state.binding,
     )).rejects.toThrow(/transformer_attempt_checkpoint_(head|lease)/);
+  });
+
+  it("prepares an authenticated transition without publishing the checkpoint head", async () => {
+    const journal = new Journal();
+    const current = fixture();
+    install(journal, current);
+    const head = await commitTransformerAttemptCheckpointGenesis(journal, current.state, key);
+    const nextState = {
+      ...current.state,
+      generation: 2,
+      previousCheckpointDigest: head.stateDigest,
+      createdAt: "2026-08-11T18:01:00.000Z",
+    } satisfies TransformerAttemptCheckpointState;
+
+    const prepared = await prepareTransformerAttemptCheckpointAdvance(
+      journal,
+      head.stateDigest,
+      nextState,
+      key,
+      current.state.binding,
+    );
+
+    expect(prepared.kind).toBe("advance");
+    expect((await journal.read(current.state.episodeId))?.stateDigest).toBe(head.stateDigest);
+    if (prepared.kind !== "advance") throw new Error("expected prepared advance");
+    expect(await journal.compareAndSwap(prepared.operation)).toBe(true);
+    expect(openTransformerAttemptCheckpoint(
+      prepared.operation.next,
+      key,
+      current.state.binding,
+    )).toEqual(nextState);
   });
 
   it("publishes and reconstructs an exact encrypted workspace on another node", async () => {
