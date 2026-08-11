@@ -3,6 +3,7 @@ import type { AgentStep, ToolName } from "./types.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const GIT_REVISION = /^[a-f0-9]{40}$/;
 const DIAGNOSTIC_CODE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const WORKSPACE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 const RELATIVE_PATH = /^(?![A-Za-z]:)(?![\\/])(?!.*(?:^|[\\/])\.\.(?:[\\/]|$)).{1,1000}$/;
@@ -12,6 +13,23 @@ const MAX_DIRECTORIES = 512;
 const MAX_SEARCHES = 512;
 const MAX_CHANGED_FILES = 256;
 const MAX_ACTION_FINGERPRINTS = 512;
+const COUNTER_KEYS = [
+  "mutationCount",
+  "toolCalls",
+  "verifierCalls",
+  "modelCalls",
+  "modelSuccessfulCalls",
+  "modelFailedCalls",
+  "promptTokens",
+  "completionTokens",
+  "totalTokens",
+  "costUsd",
+  "observedBytes",
+  "searchBytes",
+  "changedBytes",
+  "groundedMutations",
+  "blockedMutations",
+] as const;
 
 export type WardenCheckpointBinding = Readonly<{
   schemaVersion: 1;
@@ -97,6 +115,21 @@ export type WardenCheckpointEnvelope = Readonly<{
   authenticationTag: string;
 }>;
 
+export type WardenCheckpointJournalRecord = Readonly<{
+  envelope: WardenCheckpointEnvelope | null;
+  activeWriterLeaseGeneration: number;
+}>;
+
+export type WardenCheckpointJournal = Readonly<{
+  read: (binding: WardenCheckpointBinding) => Promise<WardenCheckpointJournalRecord>;
+  compareAndSwap: (input: Readonly<{
+    binding: WardenCheckpointBinding;
+    expectedPayloadDigest: string | null;
+    expectedActiveWriterLeaseGeneration: number;
+    nextEnvelope: WardenCheckpointEnvelope;
+  }>) => Promise<boolean>;
+}>;
+
 function canonical(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -158,7 +191,7 @@ function validateBinding(value: WardenCheckpointBinding): void {
   ]) {
     if (!IDENTIFIER.test(id)) throw new Error("warden_checkpoint_binding_invalid");
   }
-  validText(value.revision, 255, "warden_checkpoint_binding_invalid");
+  if (!GIT_REVISION.test(value.revision)) throw new Error("warden_checkpoint_binding_invalid");
   validDigest(value.sourceManifestSha256, "warden_checkpoint_binding_invalid");
   validDigest(value.allowedPathsDigest, "warden_checkpoint_binding_invalid");
   validDigest(value.verificationProfileDigest, "warden_checkpoint_binding_invalid");
@@ -241,25 +274,8 @@ function validateSourceEvidence(value: WardenCheckpointSourceEvidence): void {
 }
 
 function validateCounters(value: WardenCheckpointCounters): void {
-  const keys = [
-    "mutationCount",
-    "toolCalls",
-    "verifierCalls",
-    "modelCalls",
-    "modelSuccessfulCalls",
-    "modelFailedCalls",
-    "promptTokens",
-    "completionTokens",
-    "totalTokens",
-    "costUsd",
-    "observedBytes",
-    "searchBytes",
-    "changedBytes",
-    "groundedMutations",
-    "blockedMutations",
-  ] as const;
-  exactKeys(value, keys, "warden_checkpoint_counters_invalid");
-  for (const key of keys) {
+  exactKeys(value, COUNTER_KEYS, "warden_checkpoint_counters_invalid");
+  for (const key of COUNTER_KEYS) {
     if (key === "costUsd") continue;
     nonnegativeInteger(value[key], "warden_checkpoint_counters_invalid");
   }
@@ -370,7 +386,7 @@ function authenticationTag(
     .digest("hex")}`;
 }
 
-export function createWardenCheckpointEnvelope(
+function signWardenCheckpointEnvelope(
   payload: WardenCheckpointPayload,
   key: Uint8Array,
 ): WardenCheckpointEnvelope {
@@ -385,11 +401,31 @@ export function createWardenCheckpointEnvelope(
   });
 }
 
-export function verifyWardenCheckpointEnvelope(
+export function createWardenCheckpointEnvelope(
+  payload: WardenCheckpointPayload,
+  key: Uint8Array,
+): WardenCheckpointEnvelope {
+  validatePayload(payload);
+  if (payload.generation !== 1 ||
+      payload.previousEnvelopeDigest !== null ||
+      payload.phase !== "agent_running" ||
+      payload.nextStep !== 0 ||
+      payload.steps.length !== 0 ||
+      payload.sourceEvidence.length !== 0 ||
+      payload.observedDirectories.length !== 0 ||
+      payload.searchDigests.length !== 0 ||
+      payload.changedFiles.length !== 0 ||
+      payload.actionFingerprints.length !== 0 ||
+      COUNTER_KEYS.some((counter) => payload.counters[counter] !== 0)) {
+    throw new Error("warden_checkpoint_genesis_invalid");
+  }
+  return signWardenCheckpointEnvelope(payload, key);
+}
+
+function authenticateWardenCheckpointEnvelope(
   envelope: WardenCheckpointEnvelope,
   key: Uint8Array,
   expectedBinding: WardenCheckpointBinding,
-  expectedWriterLeaseGeneration: number,
 ): WardenCheckpointPayload {
   exactKeys(envelope, [
     "schemaVersion",
@@ -403,7 +439,6 @@ export function verifyWardenCheckpointEnvelope(
   }
   validatePayload(envelope.payload);
   validateBinding(expectedBinding);
-  positiveInteger(expectedWriterLeaseGeneration, "warden_checkpoint_lease_mismatch");
   const digest = payloadDigest(envelope.payload);
   if (digest !== envelope.payloadDigest) {
     throw new Error("warden_checkpoint_payload_digest_mismatch");
@@ -418,8 +453,177 @@ export function verifyWardenCheckpointEnvelope(
   if (canonical(envelope.payload.binding) !== canonical(expectedBinding)) {
     throw new Error("warden_checkpoint_binding_mismatch");
   }
-  if (envelope.payload.writerLeaseGeneration !== expectedWriterLeaseGeneration) {
+  return envelope.payload;
+}
+
+export function verifyWardenCheckpointEnvelope(
+  envelope: WardenCheckpointEnvelope,
+  key: Uint8Array,
+  expectedBinding: WardenCheckpointBinding,
+  expectedWriterLeaseGeneration: number,
+): WardenCheckpointPayload {
+  const payload = authenticateWardenCheckpointEnvelope(envelope, key, expectedBinding);
+  positiveInteger(expectedWriterLeaseGeneration, "warden_checkpoint_lease_mismatch");
+  if (payload.writerLeaseGeneration !== expectedWriterLeaseGeneration) {
     throw new Error("warden_checkpoint_lease_mismatch");
   }
-  return envelope.payload;
+  return payload;
+}
+
+function hasCanonicalPrefix(current: readonly unknown[], next: readonly unknown[]): boolean {
+  return current.length <= next.length && current.every((value, index) =>
+    canonical(value) === canonical(next[index])
+  );
+}
+
+function preservesSourceEvidence(
+  current: readonly WardenCheckpointSourceEvidence[],
+  next: readonly WardenCheckpointSourceEvidence[],
+): boolean {
+  const nextByPath = new Map(next.map((evidence) => [evidence.path, evidence]));
+  if (nextByPath.size !== next.length) return false;
+  return current.every((evidence) => {
+    const candidate = nextByPath.get(evidence.path);
+    return candidate !== undefined &&
+      candidate.digest === evidence.digest &&
+      candidate.bytes === evidence.bytes &&
+      candidate.totalChars === evidence.totalChars &&
+      (!evidence.fullyObserved || candidate.fullyObserved) &&
+      evidence.ranges.every((range) => candidate.ranges.some((candidateRange) =>
+        candidateRange.start <= range.start && candidateRange.end >= range.end
+      ));
+  });
+}
+
+function retainsChangedPaths(
+  current: readonly Readonly<{ path: string; digest: string }>[],
+  next: readonly Readonly<{ path: string; digest: string }>[],
+): boolean {
+  const nextPaths = new Set(next.map((file) => file.path));
+  return nextPaths.size === next.length && current.every((file) => nextPaths.has(file.path));
+}
+
+function advanceWardenCheckpointEnvelope(
+  currentEnvelope: WardenCheckpointEnvelope,
+  nextPayload: WardenCheckpointPayload,
+  key: Uint8Array,
+  expectedBinding: WardenCheckpointBinding,
+  expectedWriterLeaseGeneration: number,
+): WardenCheckpointEnvelope {
+  const current = authenticateWardenCheckpointEnvelope(currentEnvelope, key, expectedBinding);
+  validatePayload(nextPayload);
+
+  if (nextPayload.writerLeaseGeneration !== expectedWriterLeaseGeneration) {
+    throw new Error("warden_checkpoint_lease_mismatch");
+  }
+  if (canonical(nextPayload) === canonical(current)) return currentEnvelope;
+  if (current.phase === "terminal") throw new Error("warden_checkpoint_terminal_sealed");
+  if (canonical(nextPayload.binding) !== canonical(current.binding)) {
+    throw new Error("warden_checkpoint_binding_mismatch");
+  }
+  if (nextPayload.workspaceName !== current.workspaceName) {
+    throw new Error("warden_checkpoint_workspace_mismatch");
+  }
+  if (nextPayload.generation !== current.generation + 1) {
+    throw new Error("warden_checkpoint_generation_mismatch");
+  }
+  if (nextPayload.previousEnvelopeDigest !== currentEnvelope.payloadDigest) {
+    throw new Error("warden_checkpoint_history_mismatch");
+  }
+  if (COUNTER_KEYS.some((counter) => nextPayload.counters[counter] < current.counters[counter])) {
+    throw new Error("warden_checkpoint_budget_regressed");
+  }
+  const appendedSteps = nextPayload.steps.slice(current.steps.length);
+  const successfulMutations = appendedSteps.filter((step) =>
+    step.ok && (step.tool === "write_file" || step.tool === "replace_in_file")
+  );
+  const modelPlannedSteps = appendedSteps.filter((step) => step.plannerSource === "model").length;
+  const modelCallDelta = nextPayload.counters.modelCalls - current.counters.modelCalls;
+  const modelSuccessDelta = nextPayload.counters.modelSuccessfulCalls -
+    current.counters.modelSuccessfulCalls;
+  const modelFailureDelta = nextPayload.counters.modelFailedCalls -
+    current.counters.modelFailedCalls;
+  const appendedActions = nextPayload.actionFingerprints.slice(current.actionFingerprints.length);
+  const workspaceChanged = nextPayload.workspaceDigest !== current.workspaceDigest;
+  const changedFileStateChanged = canonical(nextPayload.changedFiles) !== canonical(current.changedFiles);
+  if (Date.parse(nextPayload.createdAt) < Date.parse(current.createdAt) ||
+      nextPayload.nextStep !== current.nextStep + appendedSteps.length ||
+      appendedSteps.some((step, index) => step.step !== current.nextStep + index) ||
+      nextPayload.counters.toolCalls !== current.counters.toolCalls + appendedSteps.length ||
+      modelSuccessDelta !== modelPlannedSteps ||
+      modelCallDelta !== modelSuccessDelta + modelFailureDelta ||
+      nextPayload.counters.mutationCount !== current.counters.mutationCount + successfulMutations.length ||
+      nextPayload.counters.groundedMutations !==
+        current.counters.groundedMutations + successfulMutations.length ||
+      appendedActions.length !== successfulMutations.length ||
+      successfulMutations.some((step, index) =>
+        appendedActions[index]?.callDigest !== step.callDigest ||
+        appendedActions[index]?.resultDigest !== step.resultDigest ||
+        appendedActions[index]?.mutationCount !== current.counters.mutationCount + index + 1
+      ) ||
+      (successfulMutations.length > 0 && nextPayload.changedFiles.length === 0) ||
+      (successfulMutations.length > 0 && !workspaceChanged) ||
+      (successfulMutations.length === 0 && (workspaceChanged || changedFileStateChanged)) ||
+      !hasCanonicalPrefix(current.steps, nextPayload.steps) ||
+      !hasCanonicalPrefix(current.actionFingerprints, nextPayload.actionFingerprints) ||
+      !hasCanonicalPrefix(current.observedDirectories, nextPayload.observedDirectories) ||
+      !hasCanonicalPrefix(current.searchDigests, nextPayload.searchDigests) ||
+      !preservesSourceEvidence(current.sourceEvidence, nextPayload.sourceEvidence) ||
+      !retainsChangedPaths(current.changedFiles, nextPayload.changedFiles)) {
+    throw new Error("warden_checkpoint_history_mismatch");
+  }
+
+  return signWardenCheckpointEnvelope(nextPayload, key);
+}
+
+export async function commitWardenCheckpoint(
+  journal: WardenCheckpointJournal,
+  nextPayload: WardenCheckpointPayload,
+  key: Uint8Array,
+  expectedBinding: WardenCheckpointBinding,
+): Promise<WardenCheckpointEnvelope> {
+  validateBinding(expectedBinding);
+  validatePayload(nextPayload);
+  if (canonical(nextPayload.binding) !== canonical(expectedBinding)) {
+    throw new Error("warden_checkpoint_binding_mismatch");
+  }
+  const currentRecord = await journal.read(expectedBinding);
+  positiveInteger(
+    currentRecord.activeWriterLeaseGeneration,
+    "warden_checkpoint_lease_mismatch",
+  );
+  if (nextPayload.writerLeaseGeneration !== currentRecord.activeWriterLeaseGeneration) {
+    throw new Error("warden_checkpoint_lease_mismatch");
+  }
+
+  const nextEnvelope = currentRecord.envelope === null
+    ? createWardenCheckpointEnvelope(nextPayload, key)
+    : advanceWardenCheckpointEnvelope(
+        currentRecord.envelope,
+        nextPayload,
+        key,
+        expectedBinding,
+        currentRecord.activeWriterLeaseGeneration,
+      );
+  if (nextEnvelope === currentRecord.envelope) return nextEnvelope;
+
+  const committed = await journal.compareAndSwap({
+    binding: expectedBinding,
+    expectedPayloadDigest: currentRecord.envelope?.payloadDigest ?? null,
+    expectedActiveWriterLeaseGeneration: currentRecord.activeWriterLeaseGeneration,
+    nextEnvelope,
+  });
+  if (committed) return nextEnvelope;
+
+  const latest = await journal.read(expectedBinding);
+  if (latest.envelope !== null &&
+      latest.activeWriterLeaseGeneration === nextPayload.writerLeaseGeneration) {
+    const latestPayload = authenticateWardenCheckpointEnvelope(
+      latest.envelope,
+      key,
+      expectedBinding,
+    );
+    if (canonical(latestPayload) === canonical(nextPayload)) return latest.envelope;
+  }
+  throw new Error("warden_checkpoint_compare_and_swap_conflict");
 }
