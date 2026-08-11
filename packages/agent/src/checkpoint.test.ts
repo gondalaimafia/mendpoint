@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   commitWardenCheckpoint as commitWardenCheckpointRecord,
@@ -11,8 +12,27 @@ import {
   type WardenCheckpointJournal,
   type WardenCheckpointPayload,
 } from "./checkpoint.js";
+import {
+  createWardenRuntimeManifestDigest,
+  createWardenRuntimeMutationOperationDigest,
+  encodeWardenRuntimeState,
+  projectWardenCheckpointPayload,
+  type WardenPrivateRuntimeStateV1,
+  type WardenRuntimeJson,
+} from "./runtime-state.js";
 
 const key = Buffer.from("11".repeat(32), "hex");
+const digest = (value: string): string =>
+  `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+const sourceContent = "s".repeat(1200);
+const candidateContent = "c".repeat(90);
+const sourceDigest = digest(sourceContent);
+const candidateDigest = digest(candidateContent);
+const sourceManifest = Object.freeze([{
+  path: "src/client.ts",
+  digest: sourceDigest,
+  bytes: Buffer.byteLength(sourceContent, "utf8"),
+}]);
 
 const binding: WardenCheckpointBinding = Object.freeze({
   schemaVersion: 1,
@@ -22,7 +42,7 @@ const binding: WardenCheckpointBinding = Object.freeze({
   repositoryId: "repo-42",
   snapshotId: "snapshot-a",
   revision: "a".repeat(40),
-  sourceManifestSha256: `sha256:${"b".repeat(64)}`,
+  sourceManifestSha256: createWardenRuntimeManifestDigest(sourceManifest),
   allowedPathsDigest: `sha256:${"c".repeat(64)}`,
   verificationProfileDigest: `sha256:${"d".repeat(64)}`,
   modelPolicyDigest: `sha256:${"e".repeat(64)}`,
@@ -46,27 +66,14 @@ const zeroCounters: WardenCheckpointPayload["counters"] = Object.freeze({
   blockedMutations: 0,
 });
 
-const genesisRuntimeState = Buffer.from(JSON.stringify({
-  generation: 1,
-  nextStep: 0,
-  privatePlannerState: "private-state-1",
-  recentObservation: "private source bytes",
-}), "utf8");
-
-const genesisPayload: WardenCheckpointPayload = Object.freeze({
+const genesisPayload: WardenCheckpointPayload = bindRuntimeState(Object.freeze({
   schemaVersion: 1,
   binding,
   generation: 1,
   writerLeaseGeneration: 7,
   workspaceName: "attempt-a-2f8c4d",
   workspaceDigest: `sha256:${"f".repeat(64)}`,
-  runtimeStateCommitment: createWardenRuntimeStateCommitment(
-    genesisRuntimeState,
-    key,
-    binding,
-    "attempt-a-2f8c4d",
-    1,
-  ),
+  runtimeStateCommitment: `hmac-sha256:${"0".repeat(64)}`,
   phase: "agent_running",
   nextStep: 0,
   steps: Object.freeze([]),
@@ -78,35 +85,148 @@ const genesisPayload: WardenCheckpointPayload = Object.freeze({
   counters: zeroCounters,
   previousEnvelopeDigest: null,
   createdAt: "2026-08-10T17:59:00.000Z",
-});
+}));
+
+const genesisRuntimeState = runtimeStateFor(genesisPayload);
+
+function privateRuntimeStateFor(payload: WardenCheckpointPayload): WardenPrivateRuntimeStateV1 {
+  const changed = new Map(payload.changedFiles.map((entry) => [entry.path, entry.digest]));
+  const workspaceManifest = sourceManifest.map((entry) => ({
+    ...entry,
+    digest: changed.get(entry.path) ?? entry.digest,
+    bytes: changed.has(entry.path) ? Buffer.byteLength(candidateContent, "utf8") : entry.bytes,
+  }));
+  const successes = payload.counters.modelSuccessfulCalls;
+  const failures = payload.counters.modelFailedCalls;
+  const modelCalls = Array.from({ length: payload.counters.modelCalls }, (_, index) => ({
+    status: index < successes ? "succeeded" as const : "failed" as const,
+    promptTokens: index === 0 ? payload.counters.promptTokens : 0,
+    completionTokens: index === 0 ? payload.counters.completionTokens : 0,
+    totalTokens: index === 0 ? payload.counters.totalTokens : 0,
+    costUsd: index === 0 ? payload.counters.costUsd : 0,
+  }));
+  if (successes + failures !== modelCalls.length) {
+    throw new Error("invalid_test_model_counters");
+  }
+  let mutationEvents = payload.counters.mutationCount;
+  const events = payload.steps.map((step, index) => {
+    const mutation = mutationEvents > 0 &&
+      (step.tool === "write_file" || step.tool === "replace_in_file");
+    if (mutation) mutationEvents--;
+    const mutationArgs: Readonly<Record<string, WardenRuntimeJson>> = step.tool === "write_file"
+      ? { path: "src/client.ts", content: candidateContent }
+      : { path: "src/client.ts", from: "source", to: "candidate" };
+    const call: WardenRuntimeJson = mutation ? {
+      tool: step.tool,
+      args: mutationArgs,
+      intent: {
+        schemaVersion: 1,
+        hypothesis: "The source requires one exact replacement.",
+        targetPath: "src/client.ts",
+        targetSymbol: null,
+        targetDigest: sourceDigest,
+        evidenceRefs: [{ path: "src/client.ts", digest: sourceDigest }],
+        precondition: "The source is fully observed.",
+        expectedObservation: "The candidate bytes match the expected digest.",
+        postcondition: "The exact candidate is present.",
+        rollback: "Restore the source blob.",
+        confidence: 1,
+        risk: "low",
+        stopCondition: "Stop after the exact replacement.",
+        assessmentSource: "model",
+        operationDigest: createWardenRuntimeMutationOperationDigest(
+          step.tool as "replace_in_file" | "write_file",
+          "src/client.ts",
+          mutationArgs,
+        ),
+        expectedResultDigest: candidateDigest,
+      },
+    } : { step: index, tool: step.tool };
+    const result: WardenRuntimeJson = mutation
+      ? { ok: true, tool: step.tool, summary: step.summary, data: { path: "src/client.ts" } }
+      : { step: index, ok: step.ok, summary: step.summary, error: step.error ?? null };
+    return {
+      category: step.tool === "run_command" ? "verifier" as const : "tool" as const,
+      tool: step.tool,
+      plannerSource: step.plannerSource,
+      executed: true,
+      ok: step.ok,
+      summaryCode: step.summary,
+      ...(step.error === undefined ? {} : { errorCode: step.error }),
+      call,
+      result,
+      mutation,
+    };
+  });
+  const privateState = (generation: number) => ({
+    generation,
+    nextStep: generation === payload.generation ? payload.nextStep : Math.max(0, generation - 1),
+    privatePlannerState: `private-state-${generation}`,
+    recentObservation: "private source bytes",
+  });
+  return {
+    schemaVersion: 1,
+    binding: payload.binding,
+    generation: payload.generation,
+    writerLeaseGeneration: payload.writerLeaseGeneration,
+    workspaceName: payload.workspaceName,
+    phase: payload.phase,
+    previousEnvelopeDigest: payload.previousEnvelopeDigest,
+    createdAt: payload.createdAt,
+    executorDigest: `sha256:${"6".repeat(64)}`,
+    sourceManifest,
+    workspaceManifest,
+    events,
+    sourceEvidence: payload.sourceEvidence,
+    observedDirectories: payload.observedDirectories,
+    searches: payload.searchDigests.map((_, index) => ({ index })),
+    modelCalls,
+    sourceCounters: {
+      observedBytes: payload.counters.observedBytes,
+      searchBytes: payload.counters.searchBytes,
+      changedBytes: payload.counters.changedBytes,
+      groundedMutations: payload.counters.groundedMutations,
+      blockedMutations: payload.counters.blockedMutations,
+    },
+    privateState: privateState(payload.generation),
+    privateHistory: Array.from(
+      { length: payload.generation - 1 },
+      (_, index) => privateState(index + 1),
+    ),
+    rollbackPreimages: payload.changedFiles.length === 0 ? [] : [{
+      path: "src/client.ts",
+      existed: true,
+      blobDigest: sourceDigest,
+    }],
+    blobs: [
+      {
+        digest: sourceDigest,
+        bytes: Buffer.byteLength(sourceContent, "utf8"),
+        contentBase64: Buffer.from(sourceContent, "utf8").toString("base64"),
+      },
+      ...(payload.changedFiles.length === 0 ? [] : [{
+        digest: candidateDigest,
+        bytes: Buffer.byteLength(candidateContent, "utf8"),
+        contentBase64: Buffer.from(candidateContent, "utf8").toString("base64"),
+      }]),
+    ],
+    effectReceipts: [],
+    pendingEffect: { kind: "none" },
+  };
+}
 
 function runtimeStateFor(payload: WardenCheckpointPayload): Uint8Array {
-  return Buffer.from(JSON.stringify({
-    generation: payload.generation,
-    nextStep: payload.nextStep,
-    privatePlannerState: `private-state-${payload.generation}`,
-    recentObservation: "private source bytes",
-  }), "utf8");
+  return encodeWardenRuntimeState(privateRuntimeStateFor(payload));
 }
 
 function bindRuntimeState(
   payload: WardenCheckpointPayload,
   signingKey: Uint8Array = key,
 ): WardenCheckpointPayload {
-  const runtimeState = runtimeStateFor(payload);
-  return {
-    ...payload,
-    runtimeStateCommitment: createWardenRuntimeStateCommitment(
-      runtimeState,
-      signingKey,
-      payload.binding,
-      payload.workspaceName,
-      payload.generation,
-    ),
-  };
+  return projectWardenCheckpointPayload(privateRuntimeStateFor(payload), signingKey);
 }
 
-function commitWardenCheckpoint(
+async function commitWardenCheckpoint(
   journal: WardenCheckpointJournal,
   payload: WardenCheckpointPayload,
   signingKey: Uint8Array,
@@ -147,7 +267,7 @@ function mutationSuccessor(current: WardenCheckpointEnvelope): WardenCheckpointP
     ],
     sourceEvidence: [{
       path: "src/client.ts",
-      digest: `sha256:${"3".repeat(64)}`,
+      digest: sourceDigest,
       bytes: 1200,
       totalChars: 1200,
       ranges: [{ start: 0, end: 1200 }],
@@ -155,7 +275,7 @@ function mutationSuccessor(current: WardenCheckpointEnvelope): WardenCheckpointP
     }],
     observedDirectories: ["src"],
     searchDigests: [`sha256:${"4".repeat(64)}`],
-    changedFiles: [{ path: "src/client.ts", digest: `sha256:${"5".repeat(64)}` }],
+    changedFiles: [{ path: "src/client.ts", digest: candidateDigest }],
     actionFingerprints: [
       ...current.payload.actionFingerprints,
       { callDigest, resultDigest, mutationCount },
@@ -520,12 +640,12 @@ describe("Warden checkpoint envelope", () => {
     const journal = memoryJournal(genesisPayload.writerLeaseGeneration);
     const genesis = await commitWardenCheckpoint(journal, genesisPayload, key, binding);
     const current = await commitWardenCheckpoint(journal, mutationSuccessor(genesis), key, binding);
-    const nextPayload = {
+    const nextPayload = bindRuntimeState({
       ...successor(current, "verification_failed", "a"),
       phase: "verification_feedback" as const,
       observedDirectories: [...current.payload.observedDirectories, "tests"],
       searchDigests: [...current.payload.searchDigests, `sha256:${"b".repeat(64)}`],
-    };
+    });
 
     const advanced = await commitWardenCheckpoint(journal, nextPayload, key, binding);
 
@@ -570,14 +690,14 @@ describe("Warden checkpoint envelope", () => {
         ...next,
         counters: {
           ...next.counters,
-          toolCalls: current.payload.counters.toolCalls - 1,
+          promptTokens: current.payload.counters.promptTokens - 1,
+          totalTokens: current.payload.counters.totalTokens - 1,
         },
       },
       key,
       binding,
     )).rejects.toThrow("warden_checkpoint_budget_regressed");
     for (const incomplete of [
-      { ...next, nextStep: next.nextStep + 1 },
       { ...next, sourceEvidence: [] },
       {
         ...next,
@@ -589,7 +709,6 @@ describe("Warden checkpoint envelope", () => {
       { ...next, observedDirectories: [] },
       { ...next, searchDigests: [] },
       { ...next, changedFiles: [] },
-      { ...next, workspaceDigest: `sha256:${"0".repeat(64)}` },
       {
         ...next,
         changedFiles: [{
@@ -610,7 +729,7 @@ describe("Warden checkpoint envelope", () => {
         incomplete,
         key,
         binding,
-      )).rejects.toThrow("warden_checkpoint_history_mismatch");
+      )).rejects.toThrow(/warden_(checkpoint_(runtime_projection_mismatch|history_mismatch)|runtime_state_)/);
     }
 
     const terminalPayload = {

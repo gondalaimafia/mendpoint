@@ -7,6 +7,12 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import type { AgentStep, ToolName } from "./types.js";
+import {
+  decodeWardenRuntimeState,
+  projectWardenCheckpointPayload,
+  validateWardenRuntimeStateTransition,
+  type WardenPrivateRuntimeStateV1,
+} from "./runtime-state.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const HMAC_DIGEST = /^hmac-sha256:[a-f0-9]{64}$/;
@@ -163,6 +169,29 @@ function canonical(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) =>
     `${JSON.stringify(key)}:${canonical(record[key])}`
   ).join(",")}}`;
+}
+
+function validateRuntimeProjection(
+  runtimeState: Uint8Array,
+  payload: WardenCheckpointPayload,
+  key: Uint8Array,
+  expectedBinding: WardenCheckpointBinding,
+): WardenPrivateRuntimeStateV1 {
+  let projected: WardenCheckpointPayload;
+  let decoded: WardenPrivateRuntimeStateV1;
+  try {
+    decoded = decodeWardenRuntimeState(runtimeState, expectedBinding);
+    projected = projectWardenCheckpointPayload(decoded, key);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("warden_runtime_state_")) {
+      throw new Error("warden_checkpoint_runtime_projection_mismatch");
+    }
+    throw error;
+  }
+  if (canonical(projected) !== canonical(payload)) {
+    throw new Error("warden_checkpoint_runtime_projection_mismatch");
+  }
+  return decoded;
 }
 
 function exactKeys(value: object, expected: readonly string[], code: string): void {
@@ -689,6 +718,7 @@ export function openWardenRuntimeState(
         ) !== sealed.runtimeStateCommitment) {
       throw new Error("warden_checkpoint_runtime_state_authentication_failed");
     }
+    validateRuntimeProjection(plaintext, payload, key, expectedBinding);
     return plaintext;
   } catch (error) {
     if (error instanceof Error &&
@@ -703,6 +733,21 @@ function hasCanonicalPrefix(current: readonly unknown[], next: readonly unknown[
   return current.length <= next.length && current.every((value, index) =>
     canonical(value) === canonical(next[index])
   );
+}
+
+function retainsCanonicalMultiset(current: readonly unknown[], next: readonly unknown[]): boolean {
+  const counts = new Map<string, number>();
+  for (const value of next) {
+    const key = canonical(value);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  for (const value of current) {
+    const key = canonical(value);
+    const count = counts.get(key) ?? 0;
+    if (count < 1) return false;
+    counts.set(key, count - 1);
+  }
+  return true;
 }
 
 function preservesSourceEvidence(
@@ -795,8 +840,8 @@ function advanceWardenCheckpointEnvelope(
       (successfulMutations.length === 0 && (workspaceChanged || changedFileStateChanged)) ||
       !hasCanonicalPrefix(current.steps, nextPayload.steps) ||
       !hasCanonicalPrefix(current.actionFingerprints, nextPayload.actionFingerprints) ||
-      !hasCanonicalPrefix(current.observedDirectories, nextPayload.observedDirectories) ||
-      !hasCanonicalPrefix(current.searchDigests, nextPayload.searchDigests) ||
+      !retainsCanonicalMultiset(current.observedDirectories, nextPayload.observedDirectories) ||
+      !retainsCanonicalMultiset(current.searchDigests, nextPayload.searchDigests) ||
       !preservesSourceEvidence(current.sourceEvidence, nextPayload.sourceEvidence) ||
       !retainsChangedPaths(current.changedFiles, nextPayload.changedFiles)) {
     throw new Error("warden_checkpoint_history_mismatch");
@@ -854,13 +899,20 @@ export async function commitWardenCheckpoint(
   if (nextRuntimeStateCommitment !== nextPayload.runtimeStateCommitment) {
     throw new Error("warden_checkpoint_runtime_state_mismatch");
   }
+  const nextDecoded = validateRuntimeProjection(
+    nextRuntimeState,
+    nextPayload,
+    key,
+    expectedBinding,
+  );
   const currentRecord = await journal.read(expectedBinding);
   validateJournalRecord(currentRecord);
   if (nextPayload.writerLeaseGeneration !== currentRecord.activeWriterLeaseGeneration) {
     throw new Error("warden_checkpoint_lease_mismatch");
   }
+  let currentRuntimeState: Uint8Array | null = null;
   if (currentRecord.envelope !== null) {
-    openWardenRuntimeState(
+    currentRuntimeState = openWardenRuntimeState(
       currentRecord.sealedRuntimeState!,
       currentRecord.envelope,
       key,
@@ -878,6 +930,10 @@ export async function commitWardenCheckpoint(
         expectedBinding,
         currentRecord.activeWriterLeaseGeneration,
       );
+  if (currentRuntimeState !== null && nextEnvelope !== currentRecord.envelope) {
+    const currentDecoded = decodeWardenRuntimeState(currentRuntimeState, expectedBinding);
+    validateWardenRuntimeStateTransition(currentDecoded, nextDecoded);
+  }
   if (nextEnvelope === currentRecord.envelope) {
     const sealed = currentRecord.sealedRuntimeState!;
     if (sealed.runtimeStateCommitment !== nextRuntimeStateCommitment) {
