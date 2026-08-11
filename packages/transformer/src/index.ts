@@ -88,7 +88,9 @@ export {
 } from "./delivery-authorization.js";
 export {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
+  GOOGLEAPIS_V25_TO_V26_RECIPE,
   NODE_RUNTIME_18_TO_20_RECIPE,
+  STRIPE_NODE_V10_TO_V11_RECIPE,
   RecipeAnalysisCache,
   analyzeRecipe,
   applyInverseOperations,
@@ -133,6 +135,8 @@ export {
 
 export {
   AWS_SDK_JS_V2_TO_V3_ARTIFACT,
+  GOOGLEAPIS_V25_TO_V26_ARTIFACT,
+  STRIPE_NODE_V10_TO_V11_ARTIFACT,
   PUBLISHED_PROVIDER_RECIPE_ARTIFACTS,
   createPublishedProviderRecipeCatalog,
   signPublishedProviderRecipes,

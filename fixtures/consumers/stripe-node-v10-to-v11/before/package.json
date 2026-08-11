@@ -1,0 +1,7 @@
+{
+  "name": "stripe-consumer",
+  "private": true,
+  "dependencies": {
+    "stripe": "^10.17.0"
+  }
+}

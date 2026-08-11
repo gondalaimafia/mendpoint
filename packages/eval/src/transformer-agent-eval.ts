@@ -20,7 +20,9 @@ import {
 } from "@mendpoint/db";
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
+  GOOGLEAPIS_V25_TO_V26_RECIPE,
   NODE_RUNTIME_18_TO_20_RECIPE,
+  STRIPE_NODE_V10_TO_V11_RECIPE,
   RecipeAnalysisCache,
   RecipeWorkspaceExecutionError,
   TransformerPilotExecutionStore,
@@ -36,6 +38,8 @@ import {
   restoreRecipeExecutionInWorkspace,
   signPublishedProviderRecipes,
   type ExactSourceSnapshot,
+  type MigrationRecipeContract,
+  type ProviderRecipeResolution,
   type RecipeCommandRunner,
   type RecipeExecutionFence,
   type RecipeFiles,
@@ -62,6 +66,10 @@ const METR_TASK_STANDARD = "https://github.com/METR/task-standard";
 const SECRET_SENTINEL = "transformer_eval_secret_must_not_escape";
 const AWS_SDK_UPGRADE_GUIDE =
   "https://docs.aws.amazon.com/sdk-for-javascript/v3/developer-guide/migrating-to-v3.html";
+const STRIPE_NODE_UPGRADE_GUIDE =
+  "https://github.com/stripe/stripe-node/wiki/Migration-guide-for-v11";
+const GOOGLEAPIS_UPGRADE_GUIDE =
+  "https://github.com/googleapis/google-api-nodejs-client/releases/tag/v26.0.0";
 
 const AWS_FIXTURE_ROOT = "../../../fixtures/consumers/aws-sdk-v2-to-v3/";
 
@@ -1326,11 +1334,351 @@ const AWS_SDK_ABSTAIN_SCENARIO: AgentEvalScenario = Object.freeze({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Held-out contract-lane evals for the additional signed SDK migration recipes
+// (stripe-node v10->v11 and googleapis v25->v26). Each recipe gets one
+// execution scenario (publish -> sign -> resolve -> execute -> verify ->
+// inverse-restore through the real catalog seam) and one analysis scenario
+// (applies on the supported fixture, abstains on the out-of-scope fixture,
+// reports already_applied on migrated sources). No live model is used.
+// ---------------------------------------------------------------------------
+
+type SdkRecipeEvalConfig = Readonly<{
+  idSlug: string;
+  recipe: MigrationRecipeContract;
+  fixtureDir: string;
+  supportedPaths: readonly string[];
+  outOfScopePaths: readonly string[];
+  operationsCsv: string;
+  abstainReason: string;
+  guideUrl: string;
+  query: ProviderRecipeResolution;
+  fence: RecipeExecutionFence;
+}>;
+
+function loadRecipeFixture(dir: string, sub: string, paths: readonly string[]): RecipeFiles {
+  const files: Record<string, string> = {};
+  for (const path of paths) {
+    files[path] = readFileSync(
+      fileURLToPath(new URL(`../../../fixtures/consumers/${dir}/${sub}/${path}`, import.meta.url)),
+      "utf8",
+    );
+  }
+  return Object.freeze(files);
+}
+
+function sdkExecutionScenario(config: SdkRecipeEvalConfig): AgentEvalScenario {
+  return Object.freeze({
+    id: `transformer.execute.${config.idSlug}.heldout`,
+    product: "transformer",
+    family: "recipe_execution",
+    tier: "common",
+    critical: true,
+    sourceRefs: Object.freeze([config.guideUrl, SWE_BENCH, HARBOR_TASKS]),
+    deterministic: true,
+    budget: Object.freeze({
+      maxDurationMs: 10_000,
+      maxSteps: 12,
+      maxChangedFiles: 3,
+      maxChangedBytes: 128 * 1024,
+      maxEvidenceBytes: 128 * 1024,
+    }),
+    run: async () => {
+      const root = mkdtempSync(join(tmpdir(), `mendpoint-transformer-${config.idSlug}-eval-`));
+      const tempRoot = join(root, "workspaces");
+      const evidenceDirectory = join(root, "evidence");
+      const started = Date.now();
+      try {
+        // Publish -> sign -> resolve through the real run-path catalog seam.
+        const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+        const keyId = `${config.idSlug.replace(/_/g, "-")}-eval-key-2026-08`;
+        const catalog = createPublishedProviderRecipeCatalog({
+          signedArtifacts: signPublishedProviderRecipes({ keyId, privateKey }),
+          trustedKeys: [{ keyId, algorithm: "ed25519", publicKey }],
+          now: "2026-08-06T00:00:00.000Z",
+        });
+        const resolved = catalog.resolve(config.query);
+        const reference = resolved.artifact.boundedEdits.implementationRecipe;
+        const resolutionBinds = reference.digest === config.recipe.digest &&
+          reference.id === config.recipe.id;
+
+        const files = loadRecipeFixture(config.fixtureDir, "before", config.supportedPaths);
+        const fileModes = Object.freeze(
+          Object.fromEntries(Object.keys(files).map((path) => [path, "100644"])),
+        ) as Record<string, "100644" | "100755">;
+
+        const execution = await executeRecipeInWorkspace({
+          fence: config.fence,
+          assertFence: () => true,
+          source: {
+            repositoryId: `repository-${config.idSlug}-eval`,
+            revision: "b".repeat(40),
+            digest: recipeFilesDigest(files),
+            files,
+            fileModes,
+          },
+          recipe: reference,
+          evidenceDirectory,
+          tempRoot,
+          observedAt: "2026-08-06T00:01:00.000Z",
+        });
+        const restore = await restoreRecipeExecutionInWorkspace({
+          execution,
+          currentFiles: execution.outputFiles,
+          fence: config.fence,
+          assertFence: () => true,
+          evidenceDirectory,
+          tempRoot,
+          observedAt: "2026-08-06T00:02:00.000Z",
+        });
+
+        const durationMs = Date.now() - started;
+        const operations = execution.operations.map((operation) => operation.path).sort();
+        const commandsPassed = execution.commands.length === 2 &&
+          execution.commands.every((command) => command.exitCode === 0);
+        const leaks = workspaceCount(tempRoot);
+        const restoredExact = restore.outputDigest === execution.inputDigest;
+        const evidenceText = existsSync(execution.evidence.path)
+          ? readFileSync(execution.evidence.path, "utf8")
+          : "";
+        const observation: AgentEvalObservation = Object.freeze({
+          disposition: "passed",
+          semanticDigest: agentEvalDigest({
+            resolutionBinds,
+            status: execution.analysis.status,
+            operations,
+            inputDigest: execution.inputDigest,
+            outputDigest: execution.outputDigest,
+            restoredDigest: restore.outputDigest,
+            commands: execution.commands.map((command) => [command.id, command.exitCode]),
+          }),
+          metrics: Object.freeze({
+            durationMs,
+            steps: execution.commands.length + 2,
+            changedFiles: operations.length,
+            changedBytes: Buffer.byteLength(JSON.stringify(execution.outputFiles), "utf8"),
+            evidenceBytes: Buffer.byteLength(evidenceText, "utf8"),
+          }),
+          details: Object.freeze({
+            resolutionBinds,
+            status: execution.analysis.status,
+            operations,
+            commands: execution.commands.map((command) => `${command.id}:${command.exitCode}`),
+            restoredExact,
+            workspaceLeaks: leaks,
+          }),
+        });
+        const grades = Object.freeze([
+          evalGrade({
+            id: "catalog.resolves_executable_recipe",
+            critical: true,
+            passed: resolutionBinds,
+            expected: "published catalog resolves the migration to the executable recipe digest",
+            observed: { digest: reference.digest, id: reference.id },
+          }),
+          evalGrade({
+            id: "recipe.applies_on_supported_fixture",
+            critical: true,
+            passed: execution.analysis.status === "applicable" &&
+              operations.join(",") === config.operationsCsv,
+            expected: `applicable analysis with operations ${config.operationsCsv}`,
+            observed: { status: execution.analysis.status, operations },
+          }),
+          evalGrade({
+            id: "recipe.verification_passes",
+            critical: true,
+            passed: commandsPassed,
+            expected: "two allowlisted verification commands with exit code zero",
+            observed: execution.commands.map((command) => `${command.id}:${command.exitCode}`),
+          }),
+          evalGrade({
+            id: "recipe.allowlisted_paths",
+            critical: true,
+            passed: operations.every((path) => config.recipe.allowedPaths.includes(path)),
+            expected: config.recipe.allowedPaths,
+            observed: operations,
+          }),
+          evalGrade({
+            id: "recipe.inverse_restores_exact_input",
+            critical: true,
+            passed: restoredExact,
+            expected: execution.inputDigest,
+            observed: restore.outputDigest,
+          }),
+          evalGrade({
+            id: "workspace.disposed",
+            critical: true,
+            passed: leaks === 0,
+            expected: 0,
+            observed: leaks,
+          }),
+        ]);
+        return Object.freeze({ observation, grades });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  });
+}
+
+function sdkAbstainScenario(config: SdkRecipeEvalConfig): AgentEvalScenario {
+  return Object.freeze({
+    id: `transformer.analysis.${config.idSlug}_abstain.heldout`,
+    product: "transformer",
+    family: "recipe_analysis",
+    tier: "adversarial",
+    critical: true,
+    sourceRefs: Object.freeze([config.guideUrl, INSPECT_SCORING]),
+    deterministic: true,
+    budget: Object.freeze({
+      maxDurationMs: 2_000,
+      maxSteps: 6,
+      maxChangedFiles: 0,
+      maxChangedBytes: 0,
+      maxEvidenceBytes: 32 * 1024,
+    }),
+    run: async () => {
+      const started = Date.now();
+      const reference = recipeReference(config.recipe);
+      const supported = loadRecipeFixture(config.fixtureDir, "before", config.supportedPaths);
+      const outOfScope = loadRecipeFixture(config.fixtureDir, "out-of-scope", config.outOfScopePaths);
+
+      const supportedAnalysis = analyzeRecipe(reference, supported);
+      const abstainAnalysis = analyzeRecipe(reference, outOfScope);
+      const migrated = applyRecipe(reference, supported);
+      const idempotentAnalysis = analyzeRecipe(reference, migrated.files);
+
+      const durationMs = Date.now() - started;
+      const applicable = supportedAnalysis.status === "applicable" &&
+        [...supportedAnalysis.matchedPaths].sort().join(",") === config.operationsCsv;
+      const abstains = abstainAnalysis.status === "unsupported" &&
+        abstainAnalysis.reasons.includes(config.abstainReason) &&
+        abstainAnalysis.matchedPaths.length === 0;
+      const idempotent = idempotentAnalysis.status === "already_applied";
+      const observation: AgentEvalObservation = Object.freeze({
+        disposition: applicable && abstains && idempotent ? "passed" : "failed",
+        semanticDigest: agentEvalDigest({
+          supported: supportedAnalysis.status,
+          matched: [...supportedAnalysis.matchedPaths].sort(),
+          abstain: abstainAnalysis.status,
+          reasons: [...abstainAnalysis.reasons].sort(),
+          idempotent: idempotentAnalysis.status,
+        }),
+        metrics: Object.freeze({
+          durationMs,
+          steps: 3,
+          changedFiles: 0,
+          changedBytes: 0,
+          evidenceBytes: 0,
+        }),
+        details: Object.freeze({
+          supported: supportedAnalysis.status,
+          abstain: abstainAnalysis.status,
+          abstainReasons: abstainAnalysis.reasons,
+          idempotent: idempotentAnalysis.status,
+        }),
+      });
+      return Object.freeze({
+        observation,
+        grades: Object.freeze([
+          evalGrade({
+            id: "analysis.supported_is_applicable",
+            critical: true,
+            passed: applicable,
+            expected: `applicable with matched paths ${config.operationsCsv}`,
+            observed: { status: supportedAnalysis.status, matched: supportedAnalysis.matchedPaths },
+          }),
+          evalGrade({
+            id: "analysis.out_of_scope_abstains",
+            critical: true,
+            passed: abstains,
+            expected: `unsupported analysis with reason ${config.abstainReason}, zero matched paths`,
+            observed: { status: abstainAnalysis.status, reasons: abstainAnalysis.reasons },
+          }),
+          evalGrade({
+            id: "analysis.idempotent_already_applied",
+            critical: true,
+            passed: idempotent,
+            expected: "already_applied",
+            observed: idempotentAnalysis.status,
+          }),
+        ]),
+      });
+    },
+  });
+}
+
+const STRIPE_NODE_EVAL_CONFIG: SdkRecipeEvalConfig = Object.freeze({
+  idSlug: "stripe_node_v10_to_v11",
+  recipe: STRIPE_NODE_V10_TO_V11_RECIPE,
+  fixtureDir: "stripe-node-v10-to-v11",
+  supportedPaths: ["package.json", "src/payments.js"],
+  outOfScopePaths: ["package.json", "src/payments.js"],
+  operationsCsv: "package.json,src/payments.js",
+  abstainReason: "recipe_stripe_unsupported_setter:setApiKey",
+  guideUrl: STRIPE_NODE_UPGRADE_GUIDE,
+  query: Object.freeze({
+    providerSlug: "stripe-node",
+    providerCategory: "payments",
+    changeTarget: "sdk",
+    changeKind: "breaking",
+    fromVersion: "10",
+    toVersion: "11",
+    language: "javascript",
+    packageManager: "npm",
+    repositoryKind: "service",
+    runtime: { name: "node", major: 20 },
+  }),
+  fence: Object.freeze({
+    tenantId: "tenant-stripe-eval",
+    campaignId: "campaign-stripe-eval",
+    unitId: "unit-stripe-eval",
+    attemptId: "attempt-stripe-eval",
+    leaseGeneration: 3,
+    leaseToken: "transformer-stripe-eval-lease-token",
+  }),
+});
+
+const GOOGLEAPIS_EVAL_CONFIG: SdkRecipeEvalConfig = Object.freeze({
+  idSlug: "googleapis_v25_to_v26",
+  recipe: GOOGLEAPIS_V25_TO_V26_RECIPE,
+  fixtureDir: "googleapis-v25-to-v26",
+  supportedPaths: ["package.json", "src/client.js"],
+  outOfScopePaths: ["package.json", "src/client.js"],
+  operationsCsv: "package.json,src/client.js",
+  abstainReason: "recipe_googleapis_import_unrecognized",
+  guideUrl: GOOGLEAPIS_UPGRADE_GUIDE,
+  query: Object.freeze({
+    providerSlug: "googleapis",
+    providerCategory: "developer_platform",
+    changeTarget: "sdk",
+    changeKind: "breaking",
+    fromVersion: "25",
+    toVersion: "26",
+    language: "javascript",
+    packageManager: "npm",
+    repositoryKind: "service",
+    runtime: { name: "node", major: 20 },
+  }),
+  fence: Object.freeze({
+    tenantId: "tenant-googleapis-eval",
+    campaignId: "campaign-googleapis-eval",
+    unitId: "unit-googleapis-eval",
+    attemptId: "attempt-googleapis-eval",
+    leaseGeneration: 3,
+    leaseToken: "transformer-googleapis-eval-lease-token",
+  }),
+});
+
 export const TRANSFORMER_AGENT_EVAL_SCENARIOS: readonly AgentEvalScenario[] = Object.freeze([
   PLANNING_SCENARIO,
   ANALYSIS_SCENARIO,
   PRODUCTION_RUNNER_SCENARIO,
   AWS_SDK_EXECUTION_SCENARIO,
   AWS_SDK_ABSTAIN_SCENARIO,
+  sdkExecutionScenario(STRIPE_NODE_EVAL_CONFIG),
+  sdkAbstainScenario(STRIPE_NODE_EVAL_CONFIG),
+  sdkExecutionScenario(GOOGLEAPIS_EVAL_CONFIG),
+  sdkAbstainScenario(GOOGLEAPIS_EVAL_CONFIG),
   ...WORKSPACE_CASES.map(workspaceScenario),
 ]);

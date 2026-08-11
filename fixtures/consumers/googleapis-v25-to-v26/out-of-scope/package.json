@@ -1,0 +1,7 @@
+{
+  "name": "googleapis-consumer-out-of-scope",
+  "private": true,
+  "dependencies": {
+    "googleapis": "^25.0.1"
+  }
+}

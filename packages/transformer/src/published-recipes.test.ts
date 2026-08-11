@@ -2,11 +2,17 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   AWS_SDK_JS_V2_TO_V3_ARTIFACT,
+  GOOGLEAPIS_V25_TO_V26_ARTIFACT,
   PUBLISHED_PROVIDER_RECIPE_ARTIFACTS,
+  STRIPE_NODE_V10_TO_V11_ARTIFACT,
   createPublishedProviderRecipeCatalog,
   signPublishedProviderRecipes,
 } from "./published-recipes.js";
-import { AWS_SDK_JS_V2_TO_V3_RECIPE } from "./recipe.js";
+import {
+  AWS_SDK_JS_V2_TO_V3_RECIPE,
+  GOOGLEAPIS_V25_TO_V26_RECIPE,
+  STRIPE_NODE_V10_TO_V11_RECIPE,
+} from "./recipe.js";
 import {
   recipeArtifactSha256,
   verifyProviderRecipeSignature,
@@ -29,6 +35,32 @@ const AWS_QUERY: ProviderRecipeResolution = {
   runtime: { name: "node", major: 20 },
 };
 
+const STRIPE_QUERY: ProviderRecipeResolution = {
+  providerSlug: "stripe-node",
+  providerCategory: "payments",
+  changeTarget: "sdk",
+  changeKind: "breaking",
+  fromVersion: "10",
+  toVersion: "11",
+  language: "javascript",
+  packageManager: "npm",
+  repositoryKind: "service",
+  runtime: { name: "node", major: 20 },
+};
+
+const GOOGLEAPIS_QUERY: ProviderRecipeResolution = {
+  providerSlug: "googleapis",
+  providerCategory: "developer_platform",
+  changeTarget: "sdk",
+  changeKind: "breaking",
+  fromVersion: "25",
+  toVersion: "26",
+  language: "javascript",
+  packageManager: "npm",
+  repositoryKind: "service",
+  runtime: { name: "node", major: 20 },
+};
+
 function catalog() {
   return createPublishedProviderRecipeCatalog({
     signedArtifacts: signPublishedProviderRecipes({ keyId: KEY_ID, privateKey }),
@@ -38,32 +70,44 @@ function catalog() {
 }
 
 describe("published provider recipes", () => {
-  it("publishes exactly the aws-sdk-js artifact bound to the executable recipe", () => {
-    expect(PUBLISHED_PROVIDER_RECIPE_ARTIFACTS).toHaveLength(1);
-    expect(AWS_SDK_JS_V2_TO_V3_ARTIFACT.recipeId).toBe("aws-sdk-js-v2-to-v3");
-    expect(AWS_SDK_JS_V2_TO_V3_ARTIFACT.boundedEdits.implementationRecipe.digest).toBe(
-      AWS_SDK_JS_V2_TO_V3_RECIPE.digest,
-    );
-    expect([...AWS_SDK_JS_V2_TO_V3_ARTIFACT.boundedEdits.allowedPaths].sort()).toEqual(
-      [...AWS_SDK_JS_V2_TO_V3_RECIPE.allowedPaths].sort(),
-    );
+  it("publishes the three artifacts each bound to its executable recipe", () => {
+    expect(PUBLISHED_PROVIDER_RECIPE_ARTIFACTS).toHaveLength(3);
+    const bindings = [
+      [AWS_SDK_JS_V2_TO_V3_ARTIFACT, AWS_SDK_JS_V2_TO_V3_RECIPE, "aws-sdk-js-v2-to-v3"],
+      [STRIPE_NODE_V10_TO_V11_ARTIFACT, STRIPE_NODE_V10_TO_V11_RECIPE, "stripe-node-v10-to-v11"],
+      [GOOGLEAPIS_V25_TO_V26_ARTIFACT, GOOGLEAPIS_V25_TO_V26_RECIPE, "googleapis-v25-to-v26"],
+    ] as const;
+    for (const [artifact, recipe, id] of bindings) {
+      expect(artifact.recipeId).toBe(id);
+      expect(artifact.boundedEdits.implementationRecipe.digest).toBe(recipe.digest);
+      expect([...artifact.boundedEdits.allowedPaths].sort()).toEqual(
+        [...recipe.allowedPaths].sort(),
+      );
+    }
   });
 
-  it("signs and verifies the published artifact", () => {
-    const [signed] = signPublishedProviderRecipes({ keyId: KEY_ID, privateKey });
-    expect(verifyProviderRecipeSignature(signed!, publicKey)).toBe(true);
-    expect(signed!.integrity.artifactSha256).toBe(recipeArtifactSha256(signed!.artifact));
+  it("signs and verifies every published artifact", () => {
+    const signed = signPublishedProviderRecipes({ keyId: KEY_ID, privateKey });
+    expect(signed).toHaveLength(3);
+    for (const artifact of signed) {
+      expect(verifyProviderRecipeSignature(artifact, publicKey)).toBe(true);
+      expect(artifact.integrity.artifactSha256).toBe(recipeArtifactSha256(artifact.artifact));
+    }
   });
 
-  it("resolves the aws-sdk-js v2 to v3 migration to the executable recipe reference", () => {
-    const resolved = catalog().resolve(AWS_QUERY);
-    expect(resolved.artifact.recipeId).toBe("aws-sdk-js-v2-to-v3");
-    expect(resolved.artifact.boundedEdits.implementationRecipe.digest).toBe(
-      AWS_SDK_JS_V2_TO_V3_RECIPE.digest,
-    );
-    expect(resolved.artifact.boundedEdits.implementationRecipe.id).toBe(
-      AWS_SDK_JS_V2_TO_V3_RECIPE.id,
-    );
+  it("resolves each published migration to its executable recipe reference", () => {
+    const resolver = catalog();
+    const cases = [
+      [AWS_QUERY, AWS_SDK_JS_V2_TO_V3_RECIPE, "aws-sdk-js-v2-to-v3"],
+      [STRIPE_QUERY, STRIPE_NODE_V10_TO_V11_RECIPE, "stripe-node-v10-to-v11"],
+      [GOOGLEAPIS_QUERY, GOOGLEAPIS_V25_TO_V26_RECIPE, "googleapis-v25-to-v26"],
+    ] as const;
+    for (const [query, recipe, id] of cases) {
+      const resolved = resolver.resolve(query);
+      expect(resolved.artifact.recipeId).toBe(id);
+      expect(resolved.artifact.boundedEdits.implementationRecipe.digest).toBe(recipe.digest);
+      expect(resolved.artifact.boundedEdits.implementationRecipe.id).toBe(recipe.id);
+    }
   });
 
   it("fails closed when the signing key is not trusted", () => {
