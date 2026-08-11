@@ -64,6 +64,9 @@ import {
   releaseUsageReservation,
   reserveUsage,
   settleUsageReservation,
+  releaseRunUsage,
+  RUN_USAGE_RESERVATION_KEY,
+  RUN_USAGE_RESERVED_MCU_KEY,
   listTenants,
   getTenant,
   getTenantBySlug,
@@ -256,6 +259,7 @@ import {
 } from "./transformer-pilot-executions.js";
 import { closeDefaultChangeSourceStore } from "./change-sources.js";
 import { billingPlanChangeDecision } from "./billing-plan-control.js";
+import { admitRunUsage, estimateRunMcuMicros } from "./usage-enforcement.js";
 import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
 import { createWardenPilotIntakeRoutes } from "./warden-pilot-intake.js";
 import { createOutcomeMetricsRoutes } from "./outcome-metrics-routes.js";
@@ -2355,6 +2359,18 @@ app.post("/changes/:id/severity", async (c) => {
   return c.json(changeToApi(getChange(db, ch.id)!));
 });
 
+/** Reservation id a usage-enforced run carries in its job payload, or null. */
+function runReservationIdFromJob(job: { payload_json: string } | undefined): string | null {
+  if (!job) return null;
+  try {
+    const payload = JSON.parse(job.payload_json) as Record<string, unknown>;
+    const reservationId = payload[RUN_USAGE_RESERVATION_KEY];
+    return typeof reservationId === "string" && reservationId ? reservationId : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Fan-out job: run pipeline for a provider across consumers */
 app.post("/jobs/fanout", async (c) => {
   const body = await c.req.json<{
@@ -2366,19 +2382,52 @@ app.post("/jobs/fanout", async (c) => {
     repairVerifyCommands?: string[];
   }>();
   if (!body.providerSlug) return c.json({ error: "providerSlug required" }, 400);
+  const tenantId = requestTenantId(c);
   const id = newId();
+  // Wave C: reserve the run's deterministic MCU estimate before admitting work.
+  // Default-OFF (MENDPOINT_USAGE_ENFORCEMENT); when off this is a no-op and the
+  // enqueue below is byte-for-byte identical to the legacy path.
+  let usageHold: { reservationId: string; reservedMcuMicros: number } | undefined;
+  try {
+    const targetCount = listConsumersForProvider(db, body.providerSlug, tenantId).length;
+    const admission = admitRunUsage(db, {
+      tenantId,
+      runId: id,
+      mcuMicros: estimateRunMcuMicros({ targetCount }),
+      reason: `run admission: pipeline.fanout ${body.providerSlug}`,
+      actorPrincipalId: c.get("trustPrincipalId"),
+      createdAt: nowIso(),
+    });
+    if (admission.enforced && !admission.admitted) {
+      return c.json(admission.body, admission.status);
+    }
+    if (admission.enforced && admission.admitted) {
+      usageHold = {
+        reservationId: admission.reservationId,
+        reservedMcuMicros: admission.reservedMcuMicros,
+      };
+    }
+  } catch (error) {
+    return mappedErrorResponse(c, error, USAGE_ERRORS);
+  }
   enqueueJob(db, {
     id,
-    tenantId: requestTenantId(c),
+    tenantId,
     type: "pipeline.fanout",
     payload: {
       providerSlug: body.providerSlug,
-      tenantId: requestTenantId(c),
+      tenantId,
       severity: body.severity,
       notificationsOnly: body.notificationsOnly,
       contractCases: body.contractCases,
       securityScanOk: body.securityScanOk,
       repairVerifyCommands: body.repairVerifyCommands,
+      ...(usageHold
+        ? {
+            [RUN_USAGE_RESERVATION_KEY]: usageHold.reservationId,
+            [RUN_USAGE_RESERVED_MCU_KEY]: usageHold.reservedMcuMicros,
+          }
+        : {}),
     },
     createdAt: nowIso(),
   });
@@ -2430,11 +2479,34 @@ app.post("/jobs/:id/cancel", async (c) => {
     .json<{ reason?: string }>()
     .catch((): { reason?: string } => ({}));
   const tenantId = requestTenantId(c);
-  const cancelled = cancelJob(db, c.req.param("id"), nowIso(), {
+  const jobId = c.req.param("id");
+  const jobBeforeCancel = getJob(db, jobId, tenantId);
+  const cancelled = cancelJob(db, jobId, nowIso(), {
     tenantId,
     reason: body.reason,
   });
   if (!cancelled) return c.json({ error: "job is not eligible for cancellation" }, 409);
+  // Wave C: release the run's usage hold so a cancelled run burns no quota. Only
+  // runs admitted with enforcement on carry a reservation id, so when the flag was
+  // never on this branch never runs and the legacy path is unchanged.
+  const cancelledReservationId = runReservationIdFromJob(jobBeforeCancel);
+  if (cancelledReservationId) {
+    try {
+      releaseRunUsage(db, {
+        tenantId,
+        reservationId: cancelledReservationId,
+        reason: `run cancelled: job ${jobId}`,
+        actorPrincipalId: c.get("trustPrincipalId"),
+        createdAt: nowIso(),
+      });
+    } catch (error) {
+      console.error(
+        `usage release skipped for cancelled job=${jobId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
   requestAudit(c, {
     actor: "operator",
     action: "job.cancelled",

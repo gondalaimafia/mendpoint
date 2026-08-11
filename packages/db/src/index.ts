@@ -2771,6 +2771,28 @@ export {
   reconcileUsageLedger,
 } from "./usage.js";
 export {
+  MCU_MICROS,
+  RUN_MCU_ESTIMATE,
+  RUN_USAGE_RESERVATION_KEY,
+  RUN_USAGE_RESERVED_MCU_KEY,
+  estimateRunMcuMicros,
+  reserveRunUsage,
+  settleRunUsage,
+  releaseRunUsage,
+} from "./usage-run.js";
+export {
+  USAGE_PLAN_CATALOG,
+  USAGE_PLAN_CURRENCY,
+  USAGE_PLAN_FORMULA_VERSION,
+  USAGE_PLAN_PRICE_PER_MCU_MONEY_MICROS,
+  getUsagePlanSpec,
+  provisionEntitlementForPlan,
+  resolvePlanQuotaMcuMicros,
+  type UsagePlanAllowance,
+  type UsagePlanId,
+  type UsagePlanSpec,
+} from "./usage-plan.js";
+export {
   appendWardenRunEvent,
   replayWardenRun,
   WARDEN_RUN_EVENT_KINDS,
