@@ -2127,6 +2127,64 @@ describe("Warden (API debug agent)", () => {
     expect(result.reportMarkdown).toContain("Warden");
   }, 60_000);
 
+  it("rejects a repository-owned header repair when its exact replacement is not single-site", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-multisite-header-"));
+    dirs.push(dir);
+    const original = [
+      "export const first = { method: 'POST', headers: {}, body: '{}' };",
+      "export const second = { method: 'POST', headers: {}, body: '{}' };",
+      "",
+    ].join("\n");
+    writeFileSync(join(dir, "client.js"), original);
+    writeFileSync(join(dir, "check.mjs"), [
+      'import { first, second } from "./client.js";',
+      'if (first.headers["Content-Type"] !== "application/json") process.exit(1);',
+      'if (second.headers["Content-Type"] !== "application/json") process.exit(1);',
+      "",
+    ].join("\n"));
+
+    const result = await runWarden({
+      goal: "Send both JSON requests with the required content type.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      maxSteps: 8,
+      errorLog: "HTTP 415 expected application/json Content-Type header",
+    });
+
+    expect(result.stoppedReason).toBe("mutation_intent_critical_requires_escalation");
+    expect(result.metrics.sourceContext.blockedMutations).toBe(1);
+    expect(readFileSync(join(dir, "client.js"), "utf8")).toBe(original);
+  });
+
+  it("rejects a deterministic epoch conversion inside security timing logic", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-security-epoch-"));
+    dirs.push(dir);
+    const original = [
+      "export function tokenIsFresh(issuedAtMs) {",
+      "  return Date.now() - issuedAtMs < 3600000;",
+      "}",
+      "",
+    ].join("\n");
+    writeFileSync(join(dir, "client.js"), original);
+    writeFileSync(join(dir, "check.mjs"), [
+      'import { tokenIsFresh } from "./client.js";',
+      "if (!tokenIsFresh(Math.floor(Date.now() / 1000) - 60)) process.exit(1);",
+      "",
+    ].join("\n"));
+
+    const result = await runWarden({
+      goal: "Use epoch seconds rather than milliseconds.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      maxSteps: 8,
+      errorLog: "Expected seconds since epoch but Date.now returns milliseconds",
+    });
+
+    expect(result.stoppedReason).toBe("mutation_intent_critical_requires_escalation");
+    expect(result.metrics.sourceContext.blockedMutations).toBe(1);
+    expect(readFileSync(join(dir, "client.js"), "utf8")).toBe(original);
+  });
+
   it("fixes rename-only goal without canned amount_cents special-case text", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-rename-"));
     dirs.push(dir);

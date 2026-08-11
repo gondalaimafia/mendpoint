@@ -1298,3 +1298,21 @@ Research baseline: GitHub App least privilege, short lived tokens, frequent auth
 Acceptance: Warden can serve a clean mid scale design partner through one joined, recoverable, least privilege, evidence-backed workflow; Transformer can turn an objective into a governed multi-repository campaign; both agents pass sealed long-horizon evaluations and conservative live-model gates; the platform survives bounded failures without data loss or duplicate external effects; public claims match deployed proof exactly.
 
 Review: the immediate repository-controlled release blockers are closed and the settled tree passes the full workspace test command, every workspace typecheck, the 22-page production build, GA/spec/claim/action checks, 90 held-out agent trials with pass at one and pass at three equal to 1.000, a zero-vulnerability production audit, and isolated `/live`, `/ready`, `/health`, and `/version` probes. Independent rereview found no P0 or P1 in the one-way GitHub delivery identity, privileged path safety, or customer Compose topology slices. Current production remains a demo profile, not a customer-ready deployment. The open items above are material mid-scale gaps: joined clean-tenant proof, long-horizon agent controls and evals, objective-to-campaign Transformer intake, shared durable cloud state, telemetry, tested image provenance, capacity evidence, and external provider configuration.
+
+## Bounded Warden pilot release: 2026-08-10
+
+- [x] Isolate the Warden-only customer release from Transformer and broader UX work.
+- [x] Fix the customer Warden model gate and complete tenant membership administration.
+- [x] Add the single-machine customer deployment profile with real OIDC, GitHub App, provider feed, model, and object-backup contracts.
+- [x] Add object-native encrypted backup publication and total-volume-loss restore recovery.
+- [x] Prevent a one-version feed baseline from creating a deterministic dead letter and preserve terminal evidence during acknowledgement.
+- [x] Fix the protected CI Warden false rejection without weakening untrusted model mutation controls.
+- [x] Pass the full local test command and three-repetition held-out agent evaluation.
+- [ ] Obtain green protected CI, merge the reviewed pull request, and deploy the exact customer profile.
+- [ ] Acknowledge the preserved Stripe baseline dead letter without retrying it.
+- [ ] Redeliver the genuine GitHub installation repository event, run the consented private draft pull request canary, and complete the object-store restore drill.
+- [ ] Verify the deployed customer journey in Chrome and retain screenshots, logs, revision, backup, restore, and draft pull request evidence.
+
+### Bounded Warden pilot review
+
+The first protected run exposed six Warden false rejections hidden behind the combined report. Repository-owned deterministic repairs were being classified like untrusted model edits whenever their executable shape changed. Runtime-only provenance now authorizes only six exact, single-site built-in transformations; model-proposed edits cannot forge that provenance, and broad multi-site replacements still stop before mutation. Full workspace tests pass. The three-repetition held-out evaluation passes Warden 16 of 16, Transformer 14 of 14, all 90 trials, pass at one and pass at three equal to 1.000, with zero critical or deterministic failures. Production remains unchanged until the updated protected run is green.

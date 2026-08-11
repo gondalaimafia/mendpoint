@@ -20,6 +20,8 @@ export type HeuristicState = {
   triedFixes: Set<string>;
   /** Classified failure mode ids for reporting */
   diagnosedModes?: string[];
+  /** Runtime-only provenance for the exact repository-owned repair proposal. */
+  trustedRepairModeId?: string;
 };
 
 export { extractHints, extractRenames, extractApiPaths } from "./heuristics-core.js";
@@ -28,6 +30,7 @@ const API_KEYWORDS =
   /fetch|axios|http|api|endpoint|Bearer|Authorization|status|json\(|\.get\(|\.post\(|\/v\d+\/|Content-Type|apiKey|api_key|amount_cents|starting_after|max_tokens|webhook|retry|timeout|graphql|grpc|rate.?limit|idempoten/i;
 
 export function nextHeuristicCall(state: HeuristicState): ToolCall {
+  state.trustedRepairModeId = undefined;
   if (!state.diagnosedModes) {
     state.diagnosedModes = classifyFailures(state.goal, state.errorLog).map((m) => m.id);
   }
@@ -72,6 +75,7 @@ export function nextHeuristicCall(state: HeuristicState): ToolCall {
     if (fix) {
       state.phase = "fix";
       state.triedFixes.add(fix.key);
+      state.trustedRepairModeId = fix.modeId;
       return {
         ...fix.call,
         thought: fix.call.thought ?? `Apply Warden fix${fix.modeId ? ` [${fix.modeId}]` : ""}`,

@@ -342,6 +342,7 @@ function platformMutationRisk(
   intent: Pick<AgentExecutionIntent, "risk" | "hypothesis" | "targetSymbol" | "precondition" | "expectedObservation" | "postcondition" | "rollback" | "stopCondition">,
   mutationArgs: Readonly<Record<string, unknown>>,
   currentContent?: string,
+  trustedHeuristicModeId?: string,
 ): AgentExecutionIntent["risk"] {
   const semanticEvidence = [
     intent.targetSymbol,
@@ -355,12 +356,100 @@ function platformMutationRisk(
   if (
     intent.risk === "critical" ||
     SENSITIVE_MUTATION_PATH.test(targetPath) ||
-    SENSITIVE_MUTATION_SIGNAL.test(semanticEvidence) ||
-    mutationDisablesSecurityControl(tool, targetPath, mutationArgs, currentContent)
+    SENSITIVE_MUTATION_SIGNAL.test(semanticEvidence)
   ) return "critical";
+  if (trustedHeuristicRepair(
+    trustedHeuristicModeId,
+    tool,
+    targetPath,
+    mutationArgs,
+    currentContent,
+  )) return "high";
+  if (mutationDisablesSecurityControl(tool, targetPath, mutationArgs, currentContent)) return "critical";
   if (tool === "write_file") return "high";
   return "high";
 }
+
+function trustedHeuristicRepair(
+  modeId: string | undefined,
+  tool: ToolName,
+  targetPath: string,
+  args: Readonly<Record<string, unknown>>,
+  currentContent?: string,
+): boolean {
+  if (!modeId || tool !== "replace_in_file" || args.global !== true ||
+    typeof args.from !== "string" || typeof args.to !== "string" ||
+    typeof currentContent !== "string") return false;
+  const from = args.from;
+  const to = args.to;
+  if (currentContent.split(from).length - 1 !== 1) return false;
+  if (modeId === "content_type_json") {
+    return from === "headers: {" && to === 'headers: { "Content-Type": "application/json",';
+  }
+  if (modeId === "accept_header") {
+    return from === "headers: {" && to === 'headers: { Accept: "application/json",';
+  }
+  if (modeId === "api_version_header") {
+    return from === "headers: {" &&
+      /^headers: \{ "[A-Za-z0-9_-]*[Vv]ersion[A-Za-z0-9_-]*": "[A-Za-z0-9._-]+",$/.test(to);
+  }
+  if (modeId === "retry_4xx") {
+    const match = from.match(/^if\s*\(\s*(res(?:ponse)?)\.status\s*>=\s*400\s*\)$/i);
+    return Boolean(match) &&
+      to === `if ([408, 429].includes(${match![1]}.status) || ${match![1]}.status >= 500)`;
+  }
+  if (modeId === "no_status_check") {
+    const match = from.match(/^const\s+\w+\s*=\s*await\s+(res(?:ponse)?)\.json\(\)$/i);
+    return Boolean(match) &&
+      to === `if (!${match![1]}.ok) throw new Error(\`HTTP \${${match![1]}.status}\`); // Warden: check status before parse\n  ${from}`;
+  }
+  if (modeId === "timezone_semantic") {
+    return from === "Date.now()" && to === "Math.floor(Date.now() / 1000)" &&
+      isStandaloneEpochTimestampExport(targetPath, currentContent);
+  }
+  return false;
+}
+
+function isStandaloneEpochTimestampExport(targetPath: string, value: string): boolean {
+  const extension = targetPath.toLowerCase();
+  if (!/\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts)$/.test(extension)) return false;
+  const source = ts.createSourceFile(
+    targetPath,
+    value,
+    ts.ScriptTarget.Latest,
+    true,
+    extension.endsWith(".tsx")
+      ? ts.ScriptKind.TSX
+      : extension.endsWith(".jsx")
+        ? ts.ScriptKind.JSX
+        : extension.endsWith(".ts") || extension.endsWith(".mts") || extension.endsWith(".cts")
+          ? ts.ScriptKind.TS
+          : ts.ScriptKind.JS,
+  );
+  const diagnostics = (source as ts.SourceFile & {
+    parseDiagnostics?: readonly ts.Diagnostic[];
+  }).parseDiagnostics ?? [];
+  if (diagnostics.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error) ||
+    source.statements.length !== 1) return false;
+  const statement = source.statements[0];
+  if (!statement || !ts.isVariableStatement(statement) ||
+    !statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ||
+    (statement.declarationList.flags & ts.NodeFlags.Const) === 0 ||
+    statement.declarationList.declarations.length !== 1) return false;
+  const declaration = statement.declarationList.declarations[0];
+  if (!declaration || !ts.isIdentifier(declaration.name) ||
+    !/^(?:issuedAt|timestamp|epochSeconds)$/i.test(declaration.name.text) ||
+    !declaration.initializer || !ts.isArrowFunction(declaration.initializer) ||
+    declaration.initializer.parameters.length !== 0 ||
+    !ts.isCallExpression(declaration.initializer.body) ||
+    declaration.initializer.body.arguments.length !== 0 ||
+    !ts.isPropertyAccessExpression(declaration.initializer.body.expression)) return false;
+  const callee = declaration.initializer.body.expression;
+  return ts.isIdentifier(callee.expression) && callee.expression.text === "Date" &&
+    callee.name.text === "now";
+}
+
+const trustedHeuristicRepairModes = new WeakMap<AgentExecutionIntent, string>();
 
 /**
  * Runtime-owned policy for control-disablement transitions. Planner prose and
@@ -1447,12 +1536,14 @@ function applyRuntimeMutationRisk(
   if (!call.intent || !MUTATION_TOOLS.has(call.tool)) return call;
   const targetPath = typeof call.args.path === "string" ? call.args.path : "";
   const observedContent = sourceContext.observedContents.get(targetPath);
+  const trustedHeuristicModeId = trustedHeuristicRepairModes.get(call.intent);
   const risk = platformMutationRisk(
     call.tool,
     targetPath,
     call.intent,
     call.args,
     observedContent?.digest === call.intent.targetDigest ? observedContent.content : undefined,
+    trustedHeuristicModeId,
   );
   const proposed = proposedMutation(call.tool, call.args, observedContent?.content);
   const runtimeIntent = {
@@ -1470,7 +1561,9 @@ function applyRuntimeMutationRisk(
       }
       : {}),
   };
-  return { ...call, intent: Object.freeze(runtimeIntent) };
+  const frozenIntent = Object.freeze(runtimeIntent);
+  if (trustedHeuristicModeId) trustedHeuristicRepairModes.set(frozenIntent, trustedHeuristicModeId);
+  return { ...call, intent: frozenIntent };
 }
 
 export function validatedToolCall(value: unknown): ToolCall | null {
@@ -1539,12 +1632,13 @@ export function validatedToolCall(value: unknown): ToolCall | null {
 function heuristicExecutionIntent(
   call: ToolCall,
   sourceContext: ToolSourceContextState,
+  trustedHeuristicModeId?: string,
 ): AgentExecutionIntent | null {
   if (!MUTATION_TOOLS.has(call.tool)) return null;
   const targetPath = typeof call.args.path === "string" ? call.args.path : "";
   const observed = sourceContext.observedFiles.get(targetPath);
   if (!targetPath || !observed) return null;
-  return Object.freeze({
+  const intent = Object.freeze({
     schemaVersion: 1,
     hypothesis: call.thought?.trim() || "A deterministic Warden rule proposed this mutation.",
     targetPath,
@@ -1565,10 +1659,14 @@ function heuristicExecutionIntent(
       postcondition: "",
       rollback: "",
       stopCondition: "",
-    }, call.args),
+    }, call.args, sourceContext.observedContents.get(targetPath)?.content, trustedHeuristicModeId),
     stopCondition: "Stop if the target digest changes or verification does not pass.",
     assessmentSource: "heuristic",
   });
+  if (trustedHeuristicModeId && hasAutomaticWardenRepair(trustedHeuristicModeId)) {
+    trustedHeuristicRepairModes.set(intent, trustedHeuristicModeId);
+  }
+  return intent;
 }
 
 function mutationIntentRejection(
@@ -2758,7 +2856,7 @@ export async function runWarden(task: AgentTask): Promise<AgentRunResult> {
     }
     if (!call) call = nextHeuristicCall(hState);
     if (plannerSource === "heuristic" && MUTATION_TOOLS.has(call.tool) && !call.intent) {
-      const intent = heuristicExecutionIntent(call, sourceContext);
+      const intent = heuristicExecutionIntent(call, sourceContext, hState.trustedRepairModeId);
       if (intent) call = { ...call, intent };
     }
     if (task.shouldContinue?.() === false) {
