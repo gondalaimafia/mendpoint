@@ -17,6 +17,11 @@ function publicPath(pathname: string): boolean {
     pathname === "/api/oidc/start" ||
     pathname === "/api/oidc/callback" ||
     pathname === "/api/oidc/config" ||
+    pathname === "/api/saml/start" ||
+    pathname === "/api/saml/acs" ||
+    pathname === "/api/saml/config" ||
+    pathname === "/api/saml/metadata" ||
+    pathname === "/api/saml/jwks" ||
     pathname === "/livez" ||
     pathname === "/healthz" ||
     pathname === "/icon.svg" ||

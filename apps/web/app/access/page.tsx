@@ -8,6 +8,7 @@ export default function AccessPage() {
   const [message, setMessage] = useState("");
   const [next, setNext] = useState("/console");
   const [identityEnabled, setIdentityEnabled] = useState<boolean | null>(null);
+  const [samlEnabled, setSamlEnabled] = useState<boolean | null>(null);
   const returningFromGitHub = next.startsWith("/github/setup?");
 
   useEffect(() => {
@@ -17,6 +18,10 @@ export default function AccessPage() {
       .then(async (response) => response.json())
       .then((body: { enabled?: boolean }) => setIdentityEnabled(body.enabled === true))
       .catch(() => setIdentityEnabled(false));
+    void fetch("/api/saml/config", { cache: "no-store" })
+      .then(async (response) => response.json())
+      .then((body: { enabled?: boolean }) => setSamlEnabled(body.enabled === true))
+      .catch(() => setSamlEnabled(false));
   }, []);
 
   async function signIn() {
@@ -46,12 +51,17 @@ export default function AccessPage() {
           <a className="btn primary" href={`/api/oidc/start?next=${encodeURIComponent(next)}`}>
             Sign in with company identity
           </a>
-        ) : identityEnabled === false ? (
+        ) : identityEnabled === false && samlEnabled !== true ? (
           <p className="muted small">
             Company identity is not configured for this private preview. Human decisions are unavailable.
           </p>
-        ) : (
+        ) : identityEnabled === null ? (
           <p className="muted small">Checking company identity</p>
+        ) : null}
+        {samlEnabled === true && (
+          <a className="btn primary" href={`/api/saml/start?next=${encodeURIComponent(next)}`}>
+            Sign in with SAML SSO
+          </a>
         )}
         <hr />
         <p className="muted small">
