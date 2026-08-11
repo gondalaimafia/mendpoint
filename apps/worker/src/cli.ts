@@ -125,6 +125,7 @@ import {
   assertWardenModelAccountingSettled,
   createWardenModelAccountingRuntime,
 } from "./warden-model-accounting.js";
+import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
 
 const WORKER_ID =
   process.env.MENDPOINT_WORKER_ID ?? `worker:${process.pid}:${randomUUID()}`;
@@ -528,6 +529,14 @@ type WardenJobPayload = Readonly<{
   reviewFeedback?: string;
   supersedesRunId?: string;
   reviewerPrincipalId?: string;
+  source?: Readonly<{
+    pipelineJobId: string;
+    changeId: string;
+    providerSlug: string;
+    repositoryId: string;
+    snapshotId: string;
+    revision: string;
+  }>;
 }>;
 
 type WardenVerificationPolicy = Readonly<{
@@ -676,6 +685,61 @@ function wardenVerificationPolicy(
       "warden_ci_files",
     )),
   });
+}
+
+function validatedWardenPilotSource(
+  db: AppDb,
+  tenantId: string,
+  consumerId: string,
+  sessionId: string,
+  binding: Readonly<{
+    repositoryId: string;
+    snapshotId: string;
+    revision: string;
+  }>,
+  source: WardenJobPayload["source"],
+): WardenJobPayload["source"] {
+  if (!source) return undefined;
+  if (
+    !source.pipelineJobId ||
+    !source.changeId ||
+    !source.providerSlug ||
+    source.repositoryId !== binding.repositoryId ||
+    source.snapshotId !== binding.snapshotId ||
+    source.revision !== binding.revision
+  ) {
+    throw new Error("warden_pilot_source_binding_mismatch");
+  }
+  const pipelineJob = getJob(db, source.pipelineJobId, tenantId);
+  if (!pipelineJob || pipelineJob.type !== "pipeline.fanout" || pipelineJob.status !== "done") {
+    throw new Error("warden_pilot_source_job_not_complete");
+  }
+  const pipelinePayload = JSON.parse(pipelineJob.payload_json) as Record<string, unknown>;
+  if (
+    pipelinePayload.wardenPilot !== true ||
+    pipelinePayload.providerSlug !== source.providerSlug ||
+    !Array.isArray(pipelinePayload.consumerIds) ||
+    !pipelinePayload.consumerIds.includes(consumerId)
+  ) {
+    throw new Error("warden_pilot_source_job_mismatch");
+  }
+  const pipelineResult = pipelineJob.result_json
+    ? JSON.parse(pipelineJob.result_json) as Record<string, unknown>
+    : null;
+  const wardenRuns = Array.isArray(pipelineResult?.wardenRuns)
+    ? pipelineResult.wardenRuns as Array<Record<string, unknown>>
+    : [];
+  if (
+    pipelineResult?.changeId !== source.changeId ||
+    !wardenRuns.some((run) =>
+      run.consumerId === consumerId &&
+      run.runId === sessionId &&
+      (run.status === "queued" || run.status === "replayed")
+    )
+  ) {
+    throw new Error("warden_pilot_source_result_mismatch");
+  }
+  return Object.freeze({ ...source });
 }
 
 function privateWardenDirectory(path: string): string {
@@ -1917,6 +1981,7 @@ async function processJobsOnceUnfenced(
     runWardenMaintenance?: boolean;
     wardenPlanner?: AgentPlanner;
     wardenEnv?: NodeJS.ProcessEnv;
+    pipelineRunner?: typeof runChangePipeline;
     transformerAdaptiveGithub?: GitHubDelivery;
     transformerAdaptiveRepositoryResolver?: ResolveTransformerAdaptiveRepository;
     wardenCandidateGithub?: GitHubDelivery;
@@ -2100,6 +2165,16 @@ async function processJobsOnceUnfenced(
             env: workerEnv,
           },
         );
+        const wardenPilotSource = binding.sourceKind === "immutable_snapshot"
+          ? validatedWardenPilotSource(
+              db,
+              job.tenant_id,
+              consumer.id,
+              sessionId,
+              binding,
+              payload.source,
+            )
+          : undefined;
         console.log(`Job ${job.id} agent.run ${binding.root}`);
 
         if (binding.sourceKind === "legacy_local") {
@@ -2409,6 +2484,7 @@ async function processJobsOnceUnfenced(
                 jobId: job.id,
                 product: "warden",
                 sourceKind: "immutable_snapshot",
+                ...(wardenPilotSource ? { intake: wardenPilotSource } : {}),
                 routing: {
                   action: routed.routing.action,
                   envelopeId: routed.routing.envelopeId,
@@ -2444,6 +2520,7 @@ async function processJobsOnceUnfenced(
             jobId: job.id,
             product: "warden",
             sourceKind: "immutable_snapshot",
+            ...(wardenPilotSource ? { intake: wardenPilotSource } : {}),
             attemptStatus: attempt.status,
             ...(attempt.status === "rejected" ? { code: attempt.code } : {}),
             summary: attempt.summary,
@@ -2614,19 +2691,23 @@ async function processJobsOnceUnfenced(
 
       const payload = JSON.parse(job.payload_json) as {
         providerSlug: string;
+        consumerIds?: string[];
         severity?: "required" | "recommended" | "optional";
         notificationsOnly?: boolean;
+        wardenPilot?: boolean;
         contractCases?: ContractCase[];
         securityScanOk?: boolean;
         repairVerifyCommands?: string[];
       };
       console.log(`Job ${job.id} pipeline.fanout ${payload.providerSlug}`);
-      const report = await runChangePipeline({
+      const pipelineRunner = opts.pipelineRunner ?? runChangePipeline;
+      const report = await pipelineRunner({
         tenantId: job.tenant_id,
         providerSlug: payload.providerSlug,
         db,
+        consumerIds: payload.consumerIds,
         severity: payload.severity,
-        notificationsOnly: payload.notificationsOnly,
+        notificationsOnly: payload.wardenPilot ? true : payload.notificationsOnly,
         contractCases: payload.contractCases,
         securityScanOk: payload.securityScanOk,
         repairVerifyCommands: payload.repairVerifyCommands,
@@ -2647,11 +2728,50 @@ async function processJobsOnceUnfenced(
         );
       }
       if (leaseLost) throw new Error("lease_lost_before_pipeline_completion");
+      if (payload.wardenPilot) {
+        db.raw.exec("BEGIN IMMEDIATE");
+        try {
+          const joinedWardenRuns = enqueuePipelineWardenRuns(db, {
+            tenantId: job.tenant_id,
+            pipelineJobId: job.id,
+            providerSlug: payload.providerSlug,
+            report,
+            observedAt: nowIso(),
+            useLlm: true,
+          });
+          if (
+            !completeJob(
+              db,
+              job.id,
+              {
+                changeId: report.changeId,
+                consumers: report.consumers,
+                wardenRuns: joinedWardenRuns,
+              },
+              nowIso(),
+              fence,
+            )
+          ) {
+            throw new Error("lease_lost_before_pipeline_completion");
+          }
+          db.raw.exec("COMMIT");
+        } catch (error) {
+          if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+          throw error;
+        }
+        result.succeeded++;
+        console.log(`  done change=${report.changeId}`);
+        continue;
+      }
       if (
         !completeJob(
           db,
           job.id,
-          { changeId: report.changeId, consumers: report.consumers },
+          {
+            changeId: report.changeId,
+            consumers: report.consumers,
+            wardenRuns: [],
+          },
           nowIso(),
           fence,
         )

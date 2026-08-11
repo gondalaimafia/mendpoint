@@ -12,3 +12,8 @@
 **Mistake:** The active goal contained inherited Claude changes whose implementation claims and release evidence had not yet been independently separated from later work.
 **Correction:** Talal required a complete review of Claude's changes before continuing the broader goal.
 **Rule:** When resuming work from another coding agent, first identify its exact commits and diff, independently verify behavior and release evidence, remediate confirmed defects, and only then build the next capability slice.
+
+### 2026-08-10 — Treat website claims as product requirements
+**Mistake:** I treated gaps discovered from the public website as a request to edit the marketing website itself.
+**Correction:** Talal clarified that the website is the source of product gaps and the work is to build those capabilities in Mendpoint.
+**Rule:** When asked to build gaps from a claims matrix, use the claims as acceptance inputs, implement and verify the underlying product, and do not redirect effort to the publishing surface unless explicitly requested.

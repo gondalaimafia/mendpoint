@@ -1343,3 +1343,107 @@ Incident evidence: customer release v56 restarted because the web production val
 Acceptance: the application and website are recognizably one product without weakening the application's truthful preview boundaries. A public claim is marked functional only when its production path, automated proof, and deployed evidence all agree. Claims that are partial, roadmap, unpriced, or unproven must be corrected or explicitly qualified rather than inferred from component existence.
 
 Review: the product app now uses the website's arrow mark, blue-to-cyan identity, Sora headings, Inter interface text, JetBrains Mono technical labels, and dark indigo grid/glow surface while keeping the truthful bounded-pilot copy. The full workspace tests and typecheck pass, the 22-page production build passes, GA/spec/claim/action checks pass, the production dependency audit reports zero vulnerabilities, and diff integrity passes. The exact production build returns 200 at desktop and mobile widths with no console errors, no horizontal overflow, the expected fonts and logo, and no unnamed buttons or links. The exact final build also passes axe WCAG A/AA with zero violations at both widths; filled actions and text accents use accessible variants while the official `#356CFF` pigment remains the brand identity. The claim audit does not certify the current marketing page as truthful: real GitHub delivery remains disabled in the live demo, Transformer and GitLab are not customer-functional, commercial pricing/trials and SAML are unavailable, no-egress and universal-coverage wording is false or overstated, outcome numbers are not customer evidence, and every non-GitHub conversion button on the marketing site is inert. Website source and deployment access remain outside this repository, so those public-page corrections are still an external release blocker.
+
+## Claims-derived product closure program: 2026-08-10
+
+Baseline: exact deployed-main source revision `1ab7eebf935a5d4587496c6d0b8bad379ab51f28`. The public website is an input to this backlog, not a delivery target. Completion requires product implementation, automated proof, deployed evidence, and the named external acceptance evidence. Component existence alone is not functional completion.
+
+### Release 1: joined GitHub Warden pilot
+
+- [ ] Join one submitted OpenAPI change to normalized change evidence, bounded JS/TS impact analysis, a source-bound Warden candidate, configured target/regression/security verification, attributed human approval, exact-base draft pull request delivery, webhook reconciliation, and restore.
+- [ ] Derive repository, snapshot, allowed paths, verification profile, network policy, model policy, budget, and delivery authority server-side. Customer text and repository content cannot widen them.
+- [ ] Make intake, worker execution, model accounting, candidate seal, branch creation, draft pull request creation, webhook reconciliation, and restore exactly-once across retries and process interruption.
+- [ ] Prove one consented private repository canary end to end with exact source, candidate, verifier, approval, pull request, cost, audit, and restore receipts. Never merge or deploy customer code.
+- [ ] Measure and expose unsupported, ambiguous, truncated, and abstained analysis so supported-scope coverage is honest and universal recall is never inferred.
+
+Acceptance: one real approved OpenAPI migration for one connected private GitHub repository reaches exactly one verified human-approved draft pull request and can be restored without duplicate remote effects or source mutation.
+
+#### Release 1 internal intake and join review
+
+- [x] Add authenticated reference-only Warden pilot intake. The caller selects only an approved provider and tenant-owned consumer; repository, snapshot, changed paths, verification, network, model, budget, and delivery authority remain runtime-owned.
+- [x] Join real OpenAPI pipeline impact evidence to one immutable-snapshot `agent.run`, preserve the source chain in the candidate, abstain on unsupported scope, and create no draft before attributed human approval.
+- [x] Make child enqueue and fenced parent completion one transaction. Equivalent later parent requests reuse the canonical child, retain immutable execution provenance, and append an audited replay linkage.
+- [x] Pass API 197/197, Worker 166/166, full workspace tests, full typecheck, the 22-page production build, GA/spec/claims/action checks, dependency audit, and diff integrity. Independent adversarial review found no remaining P0 or P1 in this slice.
+- [ ] Run the consented private GitHub App canary through Warden execution, candidate review, exact draft delivery, webhook reconciliation, and object-store restore. This external proof remains the Release 1 completion gate.
+
+Review: this slice closes the missing trusted OpenAPI-to-Warden handoff without broadening public claims. It does not complete Release 1 until the real private canary, approval, draft pull request, reconciliation, and restore receipts exist. It does not start Transformer, GitLab, billing, enterprise identity, multi-node scaling, or claim-grade outcome work.
+
+### Release 2: Warden long-horizon operation and debug evidence
+
+- [ ] Add persistent mission planning, evidence-linked hypotheses, bounded context compaction, crash-safe checkpoints, exact resume, verification-feedback replanning, and cumulative budget continuity.
+- [ ] Persist privacy-safe trajectories across request, queue, model, tool, verifier, approval, SCM, CI, and restore boundaries.
+- [ ] Provide operator replay of decisions and receipts without replaying external side effects or exposing raw source, prompts, credentials, or internal errors.
+- [ ] Pass multi-file, large-file, ambiguous-symbol, mid-mutation crash, regression-feedback, stale-base, and security-injection evaluations for at least three repetitions.
+
+Acceptance: Warden can investigate and repair a bounded multi-file API migration across process interruption, explain every accepted action from retained evidence, and resume without duplicate model charges, commits, or pull requests.
+
+### Release 3: governed provider monitoring and coverage
+
+- [ ] Add a tenant-approved provider source catalog, signed source/version identity, freshness, deduplication, baseline handling, retry and dead-letter recovery, and per-source health.
+- [ ] Bind detected changes to exact OpenAPI/changelog evidence and supported repair recipes before creating customer work.
+- [ ] Add measured precision, recall, ambiguity, truncation, unsupported-language, and runtime-evidence coverage by provider and repository profile.
+- [ ] Add load, soak, provider-quota, queue-age, and cost bounds for the single-node pilot tier.
+
+Acceptance: monitoring can safely create a Warden mission only from fresh, attributable, non-duplicate provider evidence and reports measured bounded coverage rather than universal coverage.
+
+### Release 4: trusted Transformer execution
+
+- [ ] Connect reviewed objectives and blueprints to tenant-scoped authoritative constraints, exact repository snapshots, human approval, trusted compilation, durable pilot state, and immutable receipts.
+- [ ] Reject raw caller-authored authority, budgets, snapshots, candidates, constraints, or execution policy.
+- [ ] Add fenced phase checkpoints, crash resume, independent same-wave repository concurrency, dependency and merge fences, campaign-level verification, exact draft delivery, reconciliation, regeneration, and reverse-dependency restore.
+- [ ] Prove a two-repository campaign first, then a four-repository Node runtime migration with branch drift, partial-wave failure, resume, and exact draft pull requests.
+
+Acceptance: an approved Transformer objective produces bounded, verified, dependency-safe draft migration pull requests across multiple repositories without trusting caller-authored execution state.
+
+### Release 5: GitLab production path
+
+- [ ] Add production OAuth or scoped PAT authorization, stable group/project identity, selection, immutable snapshots, branches, commits, draft merge requests, webhooks, pipelines, discussions, approvals, revocation, reconciliation, and restore through the SCM-neutral contract.
+- [ ] Add tenant isolation, credential encryption, least privilege, retry and uncertain-side-effect recovery equivalent to GitHub.
+- [ ] Run a consented private GitLab project canary and recovery drill.
+
+Acceptance: the same bounded Warden workflow reaches exactly one human-reviewable draft merge request through real GitLab credentials and survives revocation, replay, drift, and crash boundaries.
+
+### Release 6: commercial plans and billing
+
+- [ ] Define founder-approved pilot, trial, plan, entitlement, repository, provider, usage, and support limits. Do not infer current website prices or outcome terms as approved policy.
+- [ ] Add payment processor integration, customer and subscription lifecycle, invoices, taxes, credits, cancellation, delinquency, refunds, webhook reconciliation, and ledger-to-invoice evidence.
+- [ ] Bind MCU/usage pricing only to independently defined billable outcomes; separate measured provider cost, platform cost, and customer price.
+- [ ] Add finance-safe idempotency, audit, reconciliation, failure recovery, access control, and customer-visible receipts.
+
+Acceptance: one test-mode customer can start an approved plan, consume bounded service, receive an exact reconciled invoice, cancel, and be restored/refunded without duplicate charge or entitlement drift.
+
+### Release 7: enterprise identity and deployment
+
+- [ ] Complete OIDC membership administration and MFA/ACR evidence, then add SAML federation, SCIM provisioning/offboarding, session policy, service principals, reviewer attribution, and break-glass recovery.
+- [ ] Define and prove the supported single-node self-hosted tier: sizing, TLS, installation, upgrade, backup, object-store restore, monitoring, support, retention, RPO, RTO, and no duplicate worker guarantees.
+- [ ] Treat no-egress as a separate mode requiring local model policy, offline dependencies, customer-managed SCM, telemetry and backup destinations, and a verified egress deny test.
+- [ ] Add multi-node shared durable state, stateless API/web, worker-class scaling, distributed claims, and generation fencing only after the bounded single-node pilot succeeds.
+
+Acceptance: an enterprise tenant can provision and revoke people and services through approved identity systems, deploy the documented tier, restore it, and prove its exact egress and support boundary.
+
+### Release 8: governed multi-model routing and observability
+
+- [ ] Add approved provider adapters only through the existing router authority, with tenant policy, data classification, residency, endpoint, model revision, rate, budget, usage, refusal, and fallback evidence.
+- [ ] Add Claude, GPT, Gemini, and xAI only when each has a real authorized adapter and live eval. LiteLLM or another gateway and Langfuse or another telemetry backend are implementation choices, not requirements or claims.
+- [ ] Export privacy-safe OpenTelemetry traces, metrics, and structured logs for latency, saturation, errors, tokens, cost, verifier outcomes, retries, and SCM side effects without source or prompts by default.
+- [ ] Add provider outage, quota, timeout, malformed usage, region, and data-classification failure drills.
+
+Acceptance: every external model call is policy-authorized, source-classified, durably accounted, observable, and fail-closed; unavailable providers cannot silently broaden data handling or spend.
+
+### Release 9: customer and outcome proof
+
+- [ ] Define the first design partner, pilot scope, support limit, success contract, consent, retention, and termination terms.
+- [ ] Record observed repository count, affected usages, accepted pull requests, elapsed engineering effort, defects, intervention, support load, model cost, and customer outcome in an immutable ledger.
+- [ ] Keep synthetic estimates, demonstrations, and illustrative figures separate from observed customer outcomes.
+- [ ] Run claim-grade Warden and Transformer specialty evaluations against a native Devin arm only after the corresponding product paths are live and retain signed receipts.
+
+Acceptance: every customer or performance statement is backed by a dated consented cohort and immutable evidence; no illustrative statistic can be presented as a customer result.
+
+### Program release gates
+
+- [ ] Every production change begins with a failing acceptance test and passes focused, full workspace, typecheck, build, GA, claim, action-pin, audit, container, deployment, and browser gates as applicable.
+- [ ] Every database change boots both a fresh database and the exact prior production schema before deployment.
+- [ ] Build once, attest the image, deploy the tested digest, verify exact revision, run a joined canary, and retain rollback evidence.
+- [ ] Obtain independent adversarial review and close every P0/P1 before staging each release.
+
+Program acceptance: the underlying product does everything claimed within explicitly stated supported scopes. Unsupported providers, languages, repositories, deployment modes, prices, identity systems, and outcomes remain unavailable until their individual release acceptance evidence passes.

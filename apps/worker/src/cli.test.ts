@@ -24,9 +24,12 @@ import {
   getAgentRun,
   getRoutingLedgerForJob,
   insertAgentRun,
+  insertApiVersion,
   insertConsumer,
   insertConsumerRepo,
   insertConnectedRepository,
+  insertMonitoredApi,
+  insertProvider,
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
   recordAdaptiveCandidate,
@@ -39,6 +42,7 @@ import {
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
+import type { PipelineReport } from "@mendpoint/pipeline";
 import {
   GitHubAppDelivery,
   OctokitGitHubDelivery,
@@ -692,6 +696,321 @@ describe("worker runtime", () => {
     db.raw.close();
   });
 
+  it("joins a bounded pipeline fanout to one pending snapshot-bound Warden run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-joined-warden-"));
+    dirs.push(root);
+    const snapshotRoot = join(root, "snapshot");
+    mkdirSync(snapshotRoot);
+    writeFileSync(join(snapshotRoot, "check.mjs"), "process.exit(0);\n", "utf8");
+    const db = createDb(join(root, "jobs.sqlite"));
+    const at = nowIso();
+    const connection = upsertScmConnection(db, {
+      id: "connection-joined-warden",
+      tenantId: "tenant-a",
+      provider: "github",
+      credentialRef: "github-app://installation/100",
+      externalAccountId: "100",
+      displayName: "Acme",
+      createdAt: at,
+      updatedAt: at,
+    });
+    const repository = insertConnectedRepository(db, {
+      id: "repository-joined-warden",
+      tenantId: "tenant-a",
+      connectionId: connection.id,
+      remoteId: "200",
+      owner: "acme",
+      name: "customer-api",
+      defaultBranch: "main",
+      status: "ready",
+      createdAt: at,
+      updatedAt: at,
+    });
+    insertRepositorySnapshot(db, {
+      id: "snapshot-joined-warden",
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+      requestedRef: "main",
+      resolvedSha: "a".repeat(40),
+      manifestSha256: "b".repeat(64),
+      storagePath: snapshotRoot,
+      createdAt: at,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    insertRepositorySnapshotPolicy(db, {
+      id: "policy-joined-warden",
+      tenantId: "tenant-a",
+      snapshotId: "snapshot-joined-warden",
+      codeowners: [],
+      ciFiles: ["check.mjs"],
+      verificationCommands: ["node check.mjs"],
+      protectedBranch: { name: "main", exactCommit: "a".repeat(40) },
+      createdAt: at,
+    });
+    insertConsumer(db, {
+      id: "consumer-joined-warden",
+      name: "Customer API",
+      githubOwner: "acme",
+      githubRepo: "customer-api",
+      tenantId: "tenant-a",
+      createdAt: at,
+    });
+    insertConsumerRepo(db, {
+      id: "consumer-repo-joined-warden",
+      consumerId: "consumer-joined-warden",
+      localPath: snapshotRoot,
+      createdAt: at,
+    });
+    bindConsumerRepoSnapshot(db, {
+      tenantId: "tenant-a",
+      consumerRepoId: "consumer-repo-joined-warden",
+      connectionId: connection.id,
+      connectedRepositoryId: repository.id,
+      snapshotId: "snapshot-joined-warden",
+    });
+    enqueueJob(db, {
+      id: "pipeline-joined-warden",
+      tenantId: "tenant-a",
+      type: "pipeline.fanout",
+      createdAt: at,
+      payload: {
+        providerSlug: "stripe",
+        consumerIds: ["consumer-joined-warden"],
+        wardenPilot: true,
+      },
+    });
+    const pipelineRunner = vi.fn(async (): Promise<PipelineReport> => ({
+      changeId: "change-joined-warden",
+      risk: "breaking",
+      summary: "The charges endpoint changed",
+      diff: { risk: "breaking", summary: "The charges endpoint changed", entries: [] },
+      surfaces: 1,
+      consumers: [{
+        consumerId: "consumer-joined-warden",
+        name: "Customer API",
+        findings: 1,
+        candidates: 1,
+        confirmed: 1,
+        overallConfidence: "high",
+        prStatus: "notification_only",
+        impactReport: {
+          surfaces: [],
+          sites: [{
+            filePath: "src/client.ts",
+            lineStart: 1,
+            lineEnd: 1,
+            symbol: "createCharge",
+            confidence: "high",
+            evidence: "static call",
+            impactType: "direct_call",
+            surfaceIds: ["surface-a"],
+            relatedOps: [],
+            confirmationPath: "static",
+          }],
+          overallRisk: "breaking",
+          overallConfidence: "high",
+          strategySummary: "Static evidence",
+          candidateCount: 1,
+          confirmedCount: 1,
+          lowConfidenceNotifications: [],
+        },
+      }],
+    }));
+
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a",
+      workerId: "worker-joined-warden",
+      maxJobs: 1,
+      runWardenMaintenance: false,
+      pipelineRunner,
+    })).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+
+    expect(pipelineRunner).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "tenant-a",
+      providerSlug: "stripe",
+      consumerIds: ["consumer-joined-warden"],
+      notificationsOnly: true,
+    }));
+    expect(listJobs(db, 20, "tenant-a")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "pipeline-joined-warden", status: "done" }),
+      expect.objectContaining({ type: "agent.run", status: "pending" }),
+    ]));
+    expect(listJobs(db, 20, "tenant-a").filter((job) => job.type === "agent.run"))
+      .toHaveLength(1);
+
+    const firstWarden = listJobs(db, 20, "tenant-a").find((job) => job.type === "agent.run")!;
+    db.raw.prepare("UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?")
+      .run(nowIso(), firstWarden.id);
+    enqueueJob(db, {
+      id: "pipeline-joined-warden-stale",
+      tenantId: "tenant-a",
+      type: "pipeline.fanout",
+      createdAt: nowIso(),
+      payload: {
+        providerSlug: "stripe",
+        consumerIds: ["consumer-joined-warden"],
+        wardenPilot: true,
+        severity: "required",
+      },
+    });
+    const staleRunner = vi.fn(async (): Promise<PipelineReport> => {
+      db.raw.prepare(
+        "UPDATE jobs SET lease_owner = 'replacement-worker', lease_generation = lease_generation + 1 WHERE id = ?",
+      ).run("pipeline-joined-warden-stale");
+      const value = await pipelineRunner();
+      return { ...value, changeId: "change-joined-warden-stale" };
+    });
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a",
+      workerId: "worker-joined-warden",
+      maxJobs: 1,
+      runWardenMaintenance: false,
+      pipelineRunner: staleRunner,
+    })).resolves.toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    expect(listJobs(db, 20, "tenant-a").filter((job) => job.type === "agent.run"))
+      .toHaveLength(1);
+    db.raw.close();
+  });
+
+  it("joins real OpenAPI impact evidence to a bounded Warden run without opening a draft", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-real-joined-warden-"));
+    dirs.push(root);
+    const repoRoot = join(process.cwd(), "..", "..", "fixtures", "consumers", "shop-app");
+    const providerRoot = join(process.cwd(), "..", "..", "fixtures", "providers", "acme-payments");
+    const db = createDb(join(root, "jobs.sqlite"));
+    const at = nowIso();
+    insertProvider(db, {
+      id: "provider-real-joined-warden",
+      slug: "acme-payments",
+      name: "Acme Payments",
+      website: null,
+      createdAt: at,
+    });
+    insertApiVersion(db, {
+      id: "version-real-joined-warden-v1",
+      providerId: "provider-real-joined-warden",
+      versionLabel: "1.0.0",
+      openapiJson: readFileSync(join(providerRoot, "openapi-v1.json"), "utf8"),
+      changelogMd: null,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+    });
+    insertApiVersion(db, {
+      id: "version-real-joined-warden-v2",
+      providerId: "provider-real-joined-warden",
+      versionLabel: "2.0.0",
+      openapiJson: readFileSync(join(providerRoot, "openapi-v2.json"), "utf8"),
+      changelogMd: null,
+      publishedAt: "2026-07-01T00:00:00.000Z",
+    });
+    const connection = upsertScmConnection(db, {
+      id: "connection-real-joined-warden",
+      tenantId: "tenant-a",
+      provider: "github",
+      credentialRef: "github-app://installation/100",
+      externalAccountId: "100",
+      displayName: "Acme",
+      createdAt: at,
+      updatedAt: at,
+    });
+    const repository = insertConnectedRepository(db, {
+      id: "repository-real-joined-warden",
+      tenantId: "tenant-a",
+      connectionId: connection.id,
+      remoteId: "200",
+      owner: "acme",
+      name: "shop-app",
+      defaultBranch: "main",
+      status: "ready",
+      createdAt: at,
+      updatedAt: at,
+    });
+    insertRepositorySnapshot(db, {
+      id: "snapshot-real-joined-warden",
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+      requestedRef: "main",
+      resolvedSha: "a".repeat(40),
+      manifestSha256: snapshotManifest(repoRoot),
+      storagePath: repoRoot,
+      createdAt: at,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    insertRepositorySnapshotPolicy(db, {
+      id: "policy-real-joined-warden",
+      tenantId: "tenant-a",
+      snapshotId: "snapshot-real-joined-warden",
+      codeowners: [],
+      ciFiles: ["check.mjs"],
+      verificationCommands: ["node check.mjs"],
+      protectedBranch: { name: "main", exactCommit: "a".repeat(40) },
+      createdAt: at,
+    });
+    insertConsumer(db, {
+      id: "consumer-real-joined-warden",
+      name: "Shop",
+      githubOwner: "acme",
+      githubRepo: "shop-app",
+      tenantId: "tenant-a",
+      createdAt: at,
+    });
+    insertConsumerRepo(db, {
+      id: "consumer-repo-real-joined-warden",
+      consumerId: "consumer-real-joined-warden",
+      localPath: repoRoot,
+      createdAt: at,
+    });
+    bindConsumerRepoSnapshot(db, {
+      tenantId: "tenant-a",
+      consumerRepoId: "consumer-repo-real-joined-warden",
+      connectionId: connection.id,
+      connectedRepositoryId: repository.id,
+      snapshotId: "snapshot-real-joined-warden",
+    });
+    insertMonitoredApi(db, {
+      id: "monitor-real-joined-warden",
+      consumerId: "consumer-real-joined-warden",
+      providerId: "provider-real-joined-warden",
+      detectionSource: "approved_pilot",
+    });
+    enqueueJob(db, {
+      id: "pipeline-real-joined-warden",
+      tenantId: "tenant-a",
+      type: "pipeline.fanout",
+      createdAt: at,
+      payload: {
+        providerSlug: "acme-payments",
+        consumerIds: ["consumer-real-joined-warden"],
+        wardenPilot: true,
+      },
+    });
+
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a",
+      workerId: "worker-real-joined-warden",
+      maxJobs: 1,
+      runWardenMaintenance: false,
+    })).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+
+    const jobs = listJobs(db, 20, "tenant-a");
+    expect(jobs.find((job) => job.id === "pipeline-real-joined-warden"))
+      .toMatchObject({ status: "done" });
+    const warden = jobs.find((job) => job.type === "agent.run");
+    expect(warden).toMatchObject({ status: "pending" });
+    const payload = JSON.parse(warden!.payload_json) as {
+      allowedChangedPaths: string[];
+      source: { changeId: string; pipelineJobId: string };
+    };
+    expect(payload.allowedChangedPaths.length).toBeGreaterThan(0);
+    expect(payload.allowedChangedPaths.every((path) => path.startsWith("src/"))).toBe(true);
+    expect(payload.source).toMatchObject({
+      pipelineJobId: "pipeline-real-joined-warden",
+      changeId: expect.any(String),
+    });
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM migration_prs WHERE status = 'draft'")
+      .get()).toEqual({ count: 0 });
+    db.raw.close();
+  });
+
   it("requires production repositories to stay under the configured mount", () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-worker-"));
     dirs.push(parent);
@@ -915,6 +1234,27 @@ describe("worker runtime", () => {
       snapshotId: "snapshot-warden-a",
     });
     enqueueJob(db, {
+      id: "pipeline-job-snapshot",
+      tenantId: "tenant_test",
+      type: "pipeline.fanout",
+      createdAt: at,
+      payload: {
+        providerSlug: "stripe",
+        consumerIds: ["consumer-warden-snapshot"],
+        wardenPilot: true,
+      },
+    });
+    db.raw.prepare(
+      "UPDATE jobs SET status = 'done', result_json = ?, finished_at = ? WHERE id = ?",
+    ).run(JSON.stringify({
+      changeId: "change-snapshot",
+      wardenRuns: [{
+        consumerId: "consumer-warden-snapshot",
+        status: "queued",
+        runId: "session-warden-snapshot",
+      }],
+    }), at, "pipeline-job-snapshot");
+    enqueueJob(db, {
       id: "job-warden-snapshot",
       tenantId: "tenant_test",
       type: "agent.run",
@@ -928,6 +1268,14 @@ describe("worker runtime", () => {
         allowedChangedPaths: ["client.js"],
         maxSteps: 20,
         useLlm: false,
+        source: {
+          pipelineJobId: "pipeline-job-snapshot",
+          changeId: "change-snapshot",
+          providerSlug: "stripe",
+          repositoryId: repository.id,
+          snapshotId: "snapshot-warden-a",
+          revision,
+        },
       },
     });
 
@@ -951,8 +1299,24 @@ describe("worker runtime", () => {
     const persisted = JSON.parse(run!.result_json!) as {
       artifacts: { candidateWorkspace: string; candidateManifest: string; evidence: string };
       retention: { expiresAt: string };
+      intake: {
+        pipelineJobId: string;
+        changeId: string;
+        providerSlug: string;
+        repositoryId: string;
+        snapshotId: string;
+        revision: string;
+      };
     };
     expect(persisted.retention.expiresAt).toBe(snapshotExpiresAt);
+    expect(persisted.intake).toEqual({
+      pipelineJobId: "pipeline-job-snapshot",
+      changeId: "change-snapshot",
+      providerSlug: "stripe",
+      repositoryId: repository.id,
+      snapshotId: "snapshot-warden-a",
+      revision,
+    });
     expect(readFileSync(join(persisted.artifacts.candidateWorkspace, "client.js"), "utf8"))
       .toContain("/v1/charges");
     expect(existsSync(persisted.artifacts.candidateManifest)).toBe(true);
