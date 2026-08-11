@@ -1,4 +1,4 @@
-import { apiGet } from "../../lib/api";
+import { apiGet, type Consumer, type Provider } from "../../lib/api";
 import Link from "next/link";
 import { AgentForm } from "./agent-form";
 
@@ -15,21 +15,28 @@ type Run = {
   createdAt: string;
 };
 
-type Consumer = { id: string; name: string };
+type AgentConsumer = Consumer & {
+  monitored: Array<{ provider_id: string }>;
+};
 
 export default async function AgentPage() {
   let runs: Run[] = [];
-  let consumers: Consumer[] = [];
+  let consumers: AgentConsumer[] = [];
+  let providers: Provider[] = [];
   let error: string | null = null;
-  const [runsResult, consumersResult] = await Promise.allSettled([
+  const customerMode = process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer";
+  const [runsResult, consumersResult, providersResult] = await Promise.allSettled([
     apiGet<Run[]>("/agent/runs"),
-    apiGet<Consumer[]>("/consumers"),
+    apiGet<AgentConsumer[]>("/consumers"),
+    customerMode ? apiGet<Provider[]>("/providers") : Promise.resolve([]),
   ]);
   if (runsResult.status === "fulfilled") runs = runsResult.value;
   if (consumersResult.status === "fulfilled") consumers = consumersResult.value;
+  if (providersResult.status === "fulfilled") providers = providersResult.value;
   error = [
-    runsResult.status === "rejected" ? `Runs unavailable: ${String(runsResult.reason)}` : null,
-    consumersResult.status === "rejected" ? `Repositories unavailable: ${String(consumersResult.reason)}` : null,
+    runsResult.status === "rejected" ? "Warden runs are temporarily unavailable" : null,
+    consumersResult.status === "rejected" ? "Connected repositories are temporarily unavailable" : null,
+    providersResult.status === "rejected" ? "Approved providers are temporarily unavailable" : null,
   ].filter(Boolean).join(". ") || null;
   const successfulStatus = (status: string) =>
     ["ok", "no_action", "candidate_ready", "candidate_approved"].includes(status);
@@ -51,7 +58,17 @@ export default async function AgentPage() {
         </div>
       )}
 
-      <AgentForm consumers={consumers} />
+      <AgentForm
+        consumers={consumers.map(({ id, name, monitored }) => ({
+          id,
+          name,
+          providers: monitored.flatMap((entry) => {
+            const provider = providers.find((candidate) => candidate.id === entry.provider_id);
+            return provider ? [{ slug: provider.slug, name: provider.name }] : [];
+          }),
+        }))}
+        customerMode={customerMode}
+      />
 
       <section className="card">
         <h2>Recent runs</h2>

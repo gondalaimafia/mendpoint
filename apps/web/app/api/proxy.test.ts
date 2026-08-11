@@ -8,11 +8,13 @@ import {
   POST as login,
 } from "./session/route.js";
 import { middleware } from "../../middleware.js";
+import { createOidcWebSession } from "../../lib/proxy-auth.js";
 
 const originalEnv = {
   NODE_ENV: process.env.NODE_ENV,
   MENDPOINT_API_KEY: process.env.MENDPOINT_API_KEY,
   MENDPOINT_API_URL: process.env.MENDPOINT_API_URL,
+  MENDPOINT_DEPLOYMENT_PROFILE: process.env.MENDPOINT_DEPLOYMENT_PROFILE,
   MENDPOINT_WEB_ACCESS_TOKEN: process.env.MENDPOINT_WEB_ACCESS_TOKEN,
   MENDPOINT_WEB_ALLOWED_ORIGINS: process.env.MENDPOINT_WEB_ALLOWED_ORIGINS,
   TRUST_PROXY_SECRET: process.env.TRUST_PROXY_SECRET,
@@ -327,6 +329,177 @@ describe("web credential proxy", () => {
     );
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({ id: "consumer-a" });
+  });
+
+  it("forwards the OIDC bearer for the reference only Warden pilot", async () => {
+    process.env.MENDPOINT_WEB_ACCESS_TOKEN = "web-secret";
+    process.env.MENDPOINT_WEB_ALLOWED_ORIGINS = "https://console.example";
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const oidcAccessToken = "oidc-access-token-for-tenant-owner";
+    const oidcSession = await createOidcWebSession({
+      accessToken: oidcAccessToken,
+      sessionSecret: "web-secret",
+      now: new Date(),
+    });
+    const upstream = vi.fn(async (url: URL, init?: RequestInit) => {
+      expect(url.toString()).toBe("http://api.internal:3001/warden/pilot");
+      expect(init?.method).toBe("POST");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe(`Bearer ${oidcAccessToken}`);
+      expect(headers.get("idempotency-key")).toBe("warden-pilot-browser-1");
+      expect(await new Response(init?.body).json()).toEqual({
+        providerSlug: "stripe",
+        consumerId: "consumer-a",
+      });
+      return Response.json({ jobId: "job-a", status: "pending", replayed: false }, { status: 202 });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await POST(
+      new NextRequest("https://console.example/api/warden/pilot", {
+        method: "POST",
+        headers: {
+          Cookie: `mendpoint_web_session=${oidcSession}`,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "warden-pilot-browser-1",
+        },
+        body: JSON.stringify({ providerSlug: "stripe", consumerId: "consumer-a" }),
+      }),
+      { params: Promise.resolve({ path: ["warden", "pilot"] }) },
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ jobId: "job-a" });
+    expect(upstream).toHaveBeenCalledOnce();
+  });
+
+  it("keeps preview access read only for Warden pilot intake", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await POST(
+      new NextRequest("https://console.example/api/warden/pilot", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "warden-pilot-preview-1",
+        },
+        body: JSON.stringify({ providerSlug: "stripe", consumerId: "consumer-a" }),
+      }),
+      { params: Promise.resolve({ path: ["warden", "pilot"] }) },
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "company_identity_required" });
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("blocks the raw Warden authority route in customer mode", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_DEPLOYMENT_PROFILE = "customer";
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await POST(
+      new NextRequest("https://console.example/api/agent/runs", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          goal: "Try to widen authority",
+          consumerId: "consumer-a",
+          allowedChangedPaths: ["private.ts"],
+        }),
+      }),
+      { params: Promise.resolve({ path: ["agent", "runs"] }) },
+    );
+
+    expect(response.status).toBe(404);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("allows only the exact tenant membership administration routes", async () => {
+    const previewCookie = await sessionCookie();
+    const preview = await GET(
+      new NextRequest("https://console.example/api/tenants/memberships", {
+        headers: { Cookie: previewCookie },
+      }),
+      { params: Promise.resolve({ path: ["tenants", "memberships"] }) },
+    );
+    expect(preview.status).toBe(403);
+    await expect(preview.json()).resolves.toEqual({ error: "company_identity_required" });
+
+    const oidcAccessToken = "oidc-access-token-for-membership-admin";
+    const oidcSession = await createOidcWebSession({
+      accessToken: oidcAccessToken,
+      sessionSecret: "web-secret",
+      now: new Date(),
+    });
+    const cookie = `mendpoint_web_session=${oidcSession}`;
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn(async (_url: URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${oidcAccessToken}`);
+      return Response.json({ data: [] });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const allowed: Array<{
+      method: "GET" | "POST" | "PATCH";
+      path: string[];
+    }> = [
+      { method: "GET", path: ["tenants", "memberships"] },
+      { method: "POST", path: ["tenants", "memberships"] },
+      { method: "POST", path: ["tenants", "memberships", "bootstrap"] },
+      { method: "PATCH", path: ["tenants", "memberships", "role"] },
+      { method: "POST", path: ["tenants", "memberships", "offboard"] },
+    ];
+    for (const entry of allowed) {
+      const handler = entry.method === "GET" ? GET : entry.method === "PATCH" ? PATCH : POST;
+      const response = await handler(
+        new NextRequest(`https://console.example/api/${entry.path.join("/")}`, {
+          method: entry.method,
+          headers: {
+            Cookie: cookie,
+            Origin: "https://console.example",
+            "Sec-Fetch-Site": "same-origin",
+            "Content-Type": "application/json",
+          },
+          body: entry.method === "GET" ? undefined : JSON.stringify({}),
+        }),
+        { params: Promise.resolve({ path: entry.path }) },
+      );
+      expect(response.status).toBe(200);
+    }
+
+    const denied = await POST(
+      new NextRequest("https://console.example/api/tenants/memberships/owner", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+        },
+      }),
+      { params: Promise.resolve({ path: ["tenants", "memberships", "owner"] }) },
+    );
+    expect(denied.status).toBe(404);
+    expect(upstream).toHaveBeenCalledTimes(allowed.length);
   });
 
   it("allows candidate reads and same origin human review", async () => {

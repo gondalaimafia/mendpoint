@@ -87,6 +87,13 @@ async function readBodyWithinLimit(
 }
 
 function matchesAllowedRoute(method: string, path: string): boolean {
+  if (
+    process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer" &&
+    method === "POST" &&
+    path === "agent/runs"
+  ) {
+    return false;
+  }
   const rules: Array<[string, RegExp]> = [
     ["GET", /^status$/],
     ["GET", /^jobs$/],
@@ -101,6 +108,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["GET", /^design-partner-applications\/[^/]+$/],
     ["GET", /^pilot-success-contracts$/],
     ["GET", /^pilot-success-contracts\/[^/]+$/],
+    ["GET", /^tenants\/memberships$/],
     ["GET", /^graph\//],
     ["GET", /^prs\/[^/]+\/reviews$/],
     ["GET", /^transformer\/gate$/],
@@ -110,6 +118,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["POST", /^tenants\/[^/]+\/plan$/],
     ["POST", /^brands\/[^/]+\/preview$/],
     ["POST", /^agent\/runs$/],
+    ["POST", /^warden\/pilot$/],
     ["POST", /^agent\/runs\/[^/]+\/candidate\/review$/],
     ["POST", /^consumers$/],
     ["POST", /^consumers\/[^/]+\/detect$/],
@@ -128,14 +137,20 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["POST", /^pilot-success-contracts$/],
     ["POST", /^pilot-success-contracts\/[^/]+\/revisions$/],
     ["POST", /^pilot-success-contracts\/[^/]+\/versions\/\d+\/approvals$/],
+    ["POST", /^tenants\/memberships(?:\/(?:bootstrap|offboard))?$/],
     ["POST", /^transformer\/control-plane\/campaigns$/],
     ["POST", /^transformer\/control-plane\/campaigns\/[^/]+\/(?:review|transitions|exceptions)$/],
     ["POST", /^transformer\/adaptive-candidates\/[^/]+\/(?:review|promote)$/],
     ["PATCH", /^platform\/plans\/[^/]+$/],
+    ["PATCH", /^tenants\/memberships\/role$/],
   ];
   return rules.some(([allowedMethod, pattern]) =>
     allowedMethod === method && pattern.test(path),
   );
+}
+
+function requiresCompanyIdentity(path: string): boolean {
+  return path === "warden/pilot" || /^tenants\/memberships(?:\/(?:bootstrap|role|offboard))?$/.test(path);
 }
 
 async function proxy(request: NextRequest, context: RouteContext): Promise<Response> {
@@ -147,6 +162,9 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
   const credential = await authenticatedWebCredential(request);
   if (!credential) {
     return Response.json({ error: "web_session_required" }, { status: 401 });
+  }
+  if (requiresCompanyIdentity(decodedPath) && credential.subject.kind !== "human_oidc") {
+    return Response.json({ error: "company_identity_required" }, { status: 403 });
   }
   const mutation = request.method !== "GET" && request.method !== "HEAD";
   if (mutation && !isAllowedMutationOrigin(request)) {
