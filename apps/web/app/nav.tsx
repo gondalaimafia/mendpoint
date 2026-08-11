@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { BrandMark } from "./brand-mark";
 
 const GROUPS = [
   {
@@ -58,7 +59,7 @@ export function Nav() {
     return (
       <header className="public-nav">
         <Link href="/" className="brand" aria-label="Mendpoint home" prefetch={false}>
-          <span className="brand-mark" aria-hidden />
+          <BrandMark />
           Mendpoint
         </Link>
         <nav aria-label="Public navigation">
@@ -75,7 +76,7 @@ export function Nav() {
     return (
       <header className="access-header">
         <Link href="/console" className="brand" aria-label="Mendpoint workspace" prefetch={false}>
-          <span className="brand-mark" aria-hidden />
+          <BrandMark />
           Mendpoint
         </Link>
         <span className="muted small">Design partner access</span>
@@ -87,7 +88,7 @@ export function Nav() {
     <aside className="app-sidebar">
       <div className="sidebar-head">
         <Link href="/console" className="brand" aria-label="Mendpoint workspace" prefetch={false}>
-          <span className="brand-mark" aria-hidden />
+          <BrandMark />
           Mendpoint
         </Link>
         <p>API change operations</p>

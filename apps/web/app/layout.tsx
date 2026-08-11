@@ -1,7 +1,16 @@
 import type { Metadata } from "next";
+import { Inter, JetBrains_Mono, Sora } from "next/font/google";
 import type { ReactNode } from "react";
 import "./globals.css";
 import { Nav } from "./nav";
+
+const inter = Inter({ display: "swap", subsets: ["latin"], variable: "--font-inter" });
+const sora = Sora({ display: "swap", subsets: ["latin"], variable: "--font-sora" });
+const jetBrainsMono = JetBrains_Mono({
+  display: "swap",
+  subsets: ["latin"],
+  variable: "--font-jetbrains-mono",
+});
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://www.mendpoint.ai"),
@@ -27,7 +36,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className={`${inter.variable} ${sora.variable} ${jetBrainsMono.variable}`}>
       <body>
         <a className="skip-link" href="#main">
           Skip to content
