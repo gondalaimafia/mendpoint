@@ -120,6 +120,7 @@ function lease(overrides: Partial<TransformerExecutableAttemptLease> = {}): Tran
 
 type CoordinatorSpies = Readonly<{
   claimNextAttempt: ReturnType<typeof vi.fn>;
+  renewAttemptLease: ReturnType<typeof vi.fn>;
   assertCurrentAttemptFence: ReturnType<typeof vi.fn>;
   recordAdaptiveAttemptUsage: ReturnType<typeof vi.fn>;
   completeAttempt: ReturnType<typeof vi.fn>;
@@ -137,12 +138,18 @@ function harness(options: Readonly<{
   }>;
   assertFence?: () => boolean | void;
   commandRunner?: RunTransformerAttemptInput["commandRunner"];
+  observedAt?: RunTransformerAttemptInput["observedAt"];
 }> = {}) {
   const root = mkdtempSync(join(tmpdir(), "transformer-attempt-runner-"));
   roots.push(root);
   const claimed = options.lease ?? lease();
   const spies: CoordinatorSpies = {
     claimNextAttempt: vi.fn(async () => claimed),
+    renewAttemptLease: vi.fn(async () => ({
+      leaseGeneration: claimed.leaseGeneration,
+      leaseTokenDigest: claimed.leaseTokenDigest,
+      leaseExpiresAt: "2026-08-05T10:06:00.000Z",
+    })),
     assertCurrentAttemptFence: vi.fn(async () => options.assertFence?.() ?? true),
     recordAdaptiveAttemptUsage: vi.fn(async () => undefined),
     completeAttempt: vi.fn(async () => undefined),
@@ -165,13 +172,14 @@ function harness(options: Readonly<{
     candidateRoot: join(root, "candidates"),
     leaseDurationMs: 60_000,
     tempRoot: join(root, "workspaces"),
-    observedAt: (phase) => ({
+    observedAt: options.observedAt ?? ((phase) => ({
       claim: "2026-08-05T10:00:00.000Z",
       execute: "2026-08-05T10:01:00.000Z",
+      renew: "2026-08-05T10:01:00.000Z",
       usage: "2026-08-05T10:01:00.000Z",
       complete: "2026-08-05T10:02:00.000Z",
       failure: "2026-08-05T10:03:00.000Z",
-    })[phase],
+    })[phase]),
     idempotencyKey: (phase, attemptId) => `runner:${phase}:${attemptId ?? "claim"}`,
     leaseToken: () => LEASE_TOKEN,
     commandRunner: options.commandRunner ?? (async () => ({ exitCode: 0, stdout: "ok", stderr: "" })),
@@ -225,6 +233,174 @@ describe("Transformer production attempt runner", () => {
       evidenceRefs: artifact.evidenceRefs,
     }));
     expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
+  it("renews one lease while a verification command remains in flight", async () => {
+    vi.useFakeTimers();
+    let releaseCommand!: (value: { exitCode: number; stdout: string; stderr: string }) => void;
+    let markCommandStarted!: () => void;
+    const commandStarted = new Promise<void>((resolve) => {
+      markCommandStarted = resolve;
+    });
+    const command = new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
+      releaseCommand = resolve;
+    });
+    const commandRunner = vi.fn(async () => {
+      markCommandStarted();
+      return await command;
+    });
+    const { input, spies } = harness({ commandRunner });
+    try {
+      const running = runTransformerAttempt(input);
+      await commandStarted;
+      expect(commandRunner).toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(spies.renewAttemptLease).toHaveBeenCalledTimes(1);
+      expect(spies.renewAttemptLease).toHaveBeenCalledWith(expect.objectContaining({
+        unitId: "unit-a",
+        leaseGeneration: 1,
+        leaseToken: LEASE_TOKEN,
+        leaseDurationMs: 60_000,
+        idempotencyKey: expect.stringContaining(":renew:"),
+      }));
+      releaseCommand({ exitCode: 0, stdout: "ok", stderr: "" });
+      await expect(running).resolves.toMatchObject({ status: "completed" });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renews a nearly expired returned lease before starting repository work", async () => {
+    const commandRunner = vi.fn(async () => ({ exitCode: 0, stdout: "ok", stderr: "" }));
+    const { input, spies, loadExactSource } = harness({
+      lease: lease({ leaseExpiresAt: "2026-08-05T10:01:05.000Z" }),
+      commandRunner,
+    });
+
+    const result = await runTransformerAttempt(input);
+
+    expect(result.status).toBe("completed");
+    expect(spies.renewAttemptLease).toHaveBeenCalledTimes(1);
+    expect(spies.renewAttemptLease.mock.invocationCallOrder[0]).toBeLessThan(
+      loadExactSource.mock.invocationCallOrder[0]!,
+    );
+    expect(spies.renewAttemptLease.mock.invocationCallOrder[0]).toBeLessThan(
+      commandRunner.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("returns stale when the returned lease has expired before renewal", async () => {
+    const { input, spies, loadExactSource } = harness({
+      lease: lease({ leaseExpiresAt: "2026-08-05T10:01:00.000Z" }),
+    });
+
+    const result = await runTransformerAttempt(input);
+
+    expect(result.status).toBe("stale");
+    expect(spies.renewAttemptLease).not.toHaveBeenCalled();
+    expect(loadExactSource).not.toHaveBeenCalled();
+    expect(spies.completeAttempt).not.toHaveBeenCalled();
+    expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
+  it("uses distinct idempotency ordinals for repeated lease renewals", async () => {
+    vi.useFakeTimers();
+    let releaseCommand!: (value: { exitCode: number; stdout: string; stderr: string }) => void;
+    let markCommandStarted!: () => void;
+    const commandStarted = new Promise<void>((resolve) => {
+      markCommandStarted = resolve;
+    });
+    const command = new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
+      releaseCommand = resolve;
+    });
+    const { input, spies } = harness({
+      commandRunner: async () => {
+        markCommandStarted();
+        return await command;
+      },
+    });
+    spies.renewAttemptLease
+      .mockResolvedValueOnce({
+        leaseGeneration: 1,
+        leaseTokenDigest: sha256(LEASE_TOKEN),
+        leaseExpiresAt: "2026-08-05T10:06:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        leaseGeneration: 1,
+        leaseTokenDigest: sha256(LEASE_TOKEN),
+        leaseExpiresAt: "2026-08-05T10:07:00.000Z",
+      });
+    try {
+      const running = runTransformerAttempt(input);
+      await commandStarted;
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(spies.renewAttemptLease).toHaveBeenCalledTimes(2);
+      const firstKey = spies.renewAttemptLease.mock.calls[0]![0].idempotencyKey;
+      const secondKey = spies.renewAttemptLease.mock.calls[1]![0].idempotencyKey;
+      expect(firstKey).not.toBe(secondKey);
+      releaseCommand({ exitCode: 0, stdout: "ok", stderr: "" });
+      await expect(running).resolves.toMatchObject({ status: "completed" });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a hung renewal within the current lease window", async () => {
+    vi.useFakeTimers();
+    const { input, spies } = harness({
+      lease: lease({ leaseExpiresAt: "2026-08-05T10:01:05.000Z" }),
+    });
+    spies.renewAttemptLease.mockImplementationOnce(async () => await new Promise(() => undefined));
+    try {
+      const running = runTransformerAttempt(input);
+      await vi.advanceTimersByTimeAsync(2_500);
+      await expect(running).resolves.toMatchObject({
+        status: "failed",
+        recoveryCode: "worker_crash",
+        errorCode: "transformer_attempt_lease_renewal_failed",
+      });
+      expect(spies.completeAttempt).not.toHaveBeenCalled();
+      expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    "transformer_pilot_fence_stale",
+    "transformer_pilot_fence_expired",
+  ])("returns stale without completion or failure writes when renewal is rejected: %s", async (code) => {
+    vi.useFakeTimers();
+    let releaseCommand!: (value: { exitCode: number; stdout: string; stderr: string }) => void;
+    let markCommandStarted!: () => void;
+    const commandStarted = new Promise<void>((resolve) => {
+      markCommandStarted = resolve;
+    });
+    const command = new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
+      releaseCommand = resolve;
+    });
+    const commandRunner = vi.fn(async () => {
+      markCommandStarted();
+      return await command;
+    });
+    const { input, spies } = harness({ commandRunner });
+    spies.renewAttemptLease.mockRejectedValueOnce(new Error(code));
+    try {
+      const running = runTransformerAttempt(input);
+      await commandStarted;
+      expect(commandRunner).toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(20_000);
+      releaseCommand({ exitCode: 0, stdout: "ok", stderr: "" });
+      await expect(running).resolves.toMatchObject({ status: "stale" });
+      expect(spies.completeAttempt).not.toHaveBeenCalled();
+      expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("records source drift before executing commands or creating candidate artifacts", async () => {
@@ -344,11 +520,12 @@ describe("Transformer production attempt runner", () => {
     const replay = await runTransformerAttempt({
       ...input,
       observedAt: (phase) => ({
-        claim: "2026-08-05T10:10:00.000Z",
-        execute: "2026-08-05T10:11:00.000Z",
-        usage: "2026-08-05T10:11:00.000Z",
-        complete: "2026-08-05T10:12:00.000Z",
-        failure: "2026-08-05T10:13:00.000Z",
+        claim: "2026-08-05T10:02:30.000Z",
+        execute: "2026-08-05T10:03:00.000Z",
+        renew: "2026-08-05T10:03:00.000Z",
+        usage: "2026-08-05T10:03:00.000Z",
+        complete: "2026-08-05T10:04:00.000Z",
+        failure: "2026-08-05T10:04:30.000Z",
       })[phase],
     });
 
@@ -441,6 +618,43 @@ describe("Transformer production attempt runner", () => {
     expect(result.adaptive!.convergedCandidate!.adaptiveChangedPaths).toEqual(["package.json"]);
     expect(result.adaptive!.convergedFiles!["package.json"]).toContain("adaptively-fixed");
     expect(spies.recordAttemptFailure).toHaveBeenCalledWith(expect.objectContaining({ code: "verification_failed" }));
+  });
+
+  it("aborts adaptive planner work when lease renewal authority becomes uncertain", async () => {
+    vi.useFakeTimers();
+    let markPlannerStarted!: () => void;
+    const plannerStarted = new Promise<void>((resolve) => {
+      markPlannerStarted = resolve;
+    });
+    const planner = vi.fn<AdaptiveRepairPlanner>(async (_loopInput, options) => {
+      markPlannerStarted();
+      return await new Promise<never>((_resolve, reject) => {
+        options.signal?.addEventListener(
+          "abort",
+          () => reject(new Error("planner_aborted_after_lease_loss")),
+          { once: true },
+        );
+      });
+    });
+    const { input, spies } = harness({
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "verifier failed" }),
+    });
+    spies.renewAttemptLease.mockRejectedValueOnce(new Error("transformer_coordinator_unavailable"));
+    try {
+      const running = runTransformerAttempt({ ...input, adaptiveRepair: { planner } });
+      await plannerStarted;
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(running).resolves.toMatchObject({
+        status: "failed",
+        recoveryCode: "worker_crash",
+        errorCode: "transformer_attempt_lease_renewal_failed",
+      });
+      expect(spies.completeAttempt).not.toHaveBeenCalled();
+      expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("fails a regeneration closed before planner use without external review authorization", async () => {

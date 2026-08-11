@@ -59,6 +59,7 @@ export type TransformerPilotLaneStore = Pick<
   | "listAdaptiveCandidateHandoffs"
   | "bindRoutingAttempt"
   | "claimNextAttempt"
+  | "renewAttemptLease"
   | "assertCurrentAttemptFence"
   | "recordAdaptiveAttemptUsage"
   | "reserveAdaptiveModelCall"
@@ -170,6 +171,7 @@ function requireAdaptiveRetention(value: number | undefined): number {
 function asCoordinator(store: TransformerPilotLaneStore): TransformerAttemptCoordinatorPort {
   return {
     claimNextAttempt: (input) => store.claimNextAttempt(input),
+    renewAttemptLease: (input) => store.renewAttemptLease(input),
     assertCurrentAttemptFence: (input) => store.assertCurrentAttemptFence(input),
     recordAdaptiveAttemptUsage: (input) => store.recordAdaptiveAttemptUsage(input),
     reserveAdaptiveModelCall: (input) => store.reserveAdaptiveModelCall(input),
