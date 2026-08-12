@@ -62,6 +62,8 @@ import {
 import { assessFeedFreshness, nowIso } from "@mendpoint/shared";
 import {
   createAppDelivery,
+  createGitLabDelivery,
+  gitlabAsExactDraftDelivery,
   loadAppCredentials,
   OctokitGitHubDelivery,
   parseGitHubAccountTenantBindings,
@@ -2057,6 +2059,44 @@ export function transformerAdaptiveGitHubDelivery(
   };
 }
 
+/**
+ * GitLab exact-draft delivery for Transformer's approved candidate: the same
+ * sealed intent is delivered as a GitLab draft merge request via the Wave B
+ * GitLabDelivery (mock by default; real HTTP over GITLAB_TOKEN when
+ * GITLAB_MODE=real). This is token-authenticated draft-MR delivery, not an
+ * org-wide GitLab App install. The other GitHubDelivery methods are unused by
+ * this delivery path and stay unsupported.
+ */
+export function transformerAdaptiveGitLabDelivery(env: NodeJS.ProcessEnv): GitHubDelivery {
+  const unsupported = async (): Promise<never> => {
+    throw new Error("transformer_adaptive_delivery_exact_draft_only");
+  };
+  const exactDraft = gitlabAsExactDraftDelivery(createGitLabDelivery(env.GITLAB_MODE));
+  return {
+    deliverExactDraft: (input: ExactDraftDeliveryInput) => exactDraft.deliverExactDraft(input),
+    createBranch: unsupported as GitHubDelivery["createBranch"],
+    commitFiles: unsupported as GitHubDelivery["commitFiles"],
+    openPullRequest: unsupported as GitHubDelivery["openPullRequest"],
+  };
+}
+
+/**
+ * Select the exact-draft delivery provider for Transformer's approved candidate.
+ * SCM_PROVIDER=gitlab routes to the GitLab draft-MR path; anything else (unset
+ * or "github") returns the GitHub App / PAT delivery unchanged, so a default
+ * deployment is byte-identical.
+ */
+export function transformerAdaptiveScmDelivery(
+  db: AppDb,
+  tenantId: string,
+  env: NodeJS.ProcessEnv,
+): GitHubDelivery {
+  if (env.SCM_PROVIDER?.trim().toLowerCase() === "gitlab") {
+    return transformerAdaptiveGitLabDelivery(env);
+  }
+  return transformerAdaptiveGitHubDelivery(db, tenantId, env);
+}
+
 async function processJobsOnceUnfenced(
   db: AppDb,
   opts: {
@@ -2196,7 +2236,7 @@ async function processJobsOnceUnfenced(
         const delivery = await runTransformerAdaptiveDelivery({
           db,
           job,
-          github: opts.transformerAdaptiveGithub ?? transformerAdaptiveGitHubDelivery(
+          github: opts.transformerAdaptiveGithub ?? transformerAdaptiveScmDelivery(
             db,
             job.tenant_id,
             workerEnv,
