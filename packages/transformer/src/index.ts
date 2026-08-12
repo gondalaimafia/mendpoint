@@ -323,6 +323,24 @@ export {
   type TransformerAdaptiveBudgetOverride,
   type TransformerAdaptiveCampaignBudget,
 } from "./pilot-execution.js";
+export {
+  MODERNIZATION_REPORT_SCHEMA_VERSION,
+  generateModernizationReport,
+  renderModernizationReportMarkdown,
+  type ModernizationReportSource,
+  type ModernizationReport,
+  type ModernizationReportSummary,
+  type ModernizationReportCompletion,
+  type ModernizationReportProgress,
+  type ModernizationReportUnitProgress,
+  type ModernizationReportWaveProgress,
+  type ModernizationReportPullRequests,
+  type ModernizationReportRecipeBreakdown,
+  type ModernizationReportExceptions,
+  type ModernizationReportRisks,
+  type ModernizationReportGap,
+} from "./modernization-report.js";
+
 export type {
   ExactSourceSnapshot,
   PersistedRecipeEvidence,

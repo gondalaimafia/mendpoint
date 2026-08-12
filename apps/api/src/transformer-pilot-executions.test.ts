@@ -508,4 +508,75 @@ describe("Transformer pilot execution API", () => {
     expect(persisted.status).toBe(200);
     expect(await persisted.json()).toEqual(plan);
   });
+
+  it("exposes a gated modernization report reflecting real campaign state", async () => {
+    const service = open(databasePath());
+    const instance = app(service);
+    const units = [
+      unit("unit-a", "repo-a", "a", "c"),
+      unit("unit-b", "repo-b", "b", "d"),
+    ];
+    expect((await post(instance, "/transformer/executions", "create", campaign(units))).status).toBe(201);
+
+    for (const [unitId, token, source, candidate] of [
+      ["unit-a", "lease-token-unit-a-00000001", "a", "c"],
+      ["unit-b", "lease-token-unit-b-00000001", "b", "d"],
+    ] as const) {
+      const claim = await post(
+        instance,
+        "/transformer/executions/campaign-a/attempts/claim",
+        `claim-${unitId}`,
+        { leaseToken: token },
+      );
+      const lease = await claim.json() as { lease: { leaseGeneration: number } };
+      expect((await post(
+        instance,
+        "/transformer/executions/campaign-a/attempts/complete",
+        `complete-${unitId}`,
+        completion(unitId, token, lease.lease.leaseGeneration, source, candidate),
+      )).status).toBe(200);
+    }
+    await post(instance, "/transformer/executions/campaign-a/drafts/authorize", "authorize-drafts", {});
+    await post(
+      instance,
+      "/transformer/executions/campaign-a/observations",
+      "observe-partial",
+      {
+        wave: 1,
+        observations: [observation("unit-a", "merged", "a", "c"), observation("unit-b", "draft", "b", "d")],
+      },
+    );
+
+    const response = await instance.request(
+      "/transformer/executions/campaign-a/report",
+      { headers: headers("read-report") },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      report: {
+        summary: { completion: { unitCompletionRate: number; waveCompletionRate: number } };
+        exceptions: { open: number; register: Array<{ code: string }> };
+        risks: { humanReviewQueue: { unitsAwaitingReview: number; openExceptions: number } };
+      };
+      markdown: string;
+    };
+    expect(body.report.summary.completion).toMatchObject({ unitCompletionRate: 0.5, waveCompletionRate: 0 });
+    expect(body.report.exceptions.open).toBe(1);
+    expect(body.report.exceptions.register[0]).toMatchObject({ code: "partial_wave_merge" });
+    expect(body.report.risks.humanReviewQueue).toEqual({ unitsAwaitingReview: 1, openExceptions: 1 });
+    expect(body.markdown).toContain("Unit completion: 50.0%");
+    close(service);
+  });
+
+  it("keeps the modernization report behind the Transformer gate", async () => {
+    const service = open(databasePath(), "");
+    const instance = app(service);
+    const response = await instance.request(
+      "/transformer/executions/campaign-a/report",
+      { headers: headers("gated-report") },
+    );
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: "transformer_pilot_gate_denied" });
+    close(service);
+  });
 });

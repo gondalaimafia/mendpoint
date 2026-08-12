@@ -3,6 +3,8 @@ import { Hono, type Context } from "hono";
 import {
   TransformerDomainError,
   TransformerPilotExecutionStore,
+  generateModernizationReport,
+  renderModernizationReportMarkdown,
   type TransformerAdaptiveAttemptAccounting,
   type TransformerPilotCampaignInput,
   type TransformerRollbackAction,
@@ -408,6 +410,12 @@ export class TransformerPilotExecutionService {
     return this.store.metrics(tenantId, campaignId);
   }
 
+  report(tenantId: string, campaignId: string) {
+    this.get(tenantId, campaignId);
+    const report = generateModernizationReport(this.store, tenantId, campaignId);
+    return { report, markdown: renderModernizationReportMarkdown(report) };
+  }
+
   claim(request: MutationRequest, campaignId: string, rawInput: unknown) {
     this.requireGate(request.tenantId, "worker_action");
     const input = record(rawInput, "transformer_pilot_claim_required");
@@ -566,6 +574,16 @@ export function registerTransformerPilotExecutionRoutes(
       const principal = c.get("principal");
       if (!principal) throw new Error("authenticated_principal_required");
       return c.json({ metrics: service.metrics(principal.tenantId, c.req.param("campaignId")) });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+
+  app.get("/transformer/executions/:campaignId/report", (c) => {
+    try {
+      const principal = c.get("principal");
+      if (!principal) throw new Error("authenticated_principal_required");
+      return c.json(service.report(principal.tenantId, c.req.param("campaignId")));
     } catch (error) {
       return errorResponse(c, error);
     }
