@@ -11,6 +11,7 @@ import {
   runTransformerAttempt,
   sealAdaptiveCandidate,
   type RecipeCommandRunner,
+  type TransformerAttemptCheckpointConfig,
   type TransformerAttemptCoordinatorPort,
   type TransformerPilotExecutionStore,
 } from "@mendpoint/transformer";
@@ -109,6 +110,19 @@ export type RunTransformerPilotLaneInput = Readonly<{
   }>): Readonly<{ allowed: boolean; evidenceRef?: string }>;
   /** Test seam for durable adaptive-candidate recording. */
   adaptiveCandidateRecorder?: typeof recordAdaptiveCandidate;
+  /**
+   * Optional tenant-scoped checkpoint provider. Production keeps this absent
+   * until a shared coordinator, immutable artifact store, and tenant key are
+   * configured. A configured provider must fail closed rather than silently
+   * falling back to the legacy attempt path.
+   */
+  checkpointForCampaign?(scope: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    environment: string;
+  }>): TransformerAttemptCheckpointConfig | undefined | PromiseLike<
+    TransformerAttemptCheckpointConfig | undefined
+  >;
 }>;
 
 const ERROR_CODE = /^[A-Za-z0-9][A-Za-z0-9._,:-]{0,499}$/;
@@ -123,6 +137,62 @@ function boundedError(error: unknown): string {
     return "transformer_lane_database_locked";
   }
   return ERROR_CODE.test(raw) ? raw : "transformer_lane_internal_error";
+}
+
+function snapshotCheckpointConfig(
+  value: unknown,
+  leaseDurationMs: number,
+): TransformerAttemptCheckpointConfig | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Partial<TransformerAttemptCheckpointConfig>;
+  const open = candidate.open;
+  const operationTimeoutMs = candidate.operationTimeoutMs;
+  if (typeof open !== "function" ||
+      (operationTimeoutMs !== undefined &&
+        (!Number.isSafeInteger(operationTimeoutMs) || operationTimeoutMs < 1 ||
+          operationTimeoutMs > Math.max(1, Math.floor(leaseDurationMs / 2))))) {
+    return undefined;
+  }
+  return Object.freeze({
+    open: (input) => Reflect.apply(open, value, [input]),
+    ...(operationTimeoutMs === undefined ? {} : { operationTimeoutMs }),
+  });
+}
+
+async function resolveCheckpointProvider(
+  provider: NonNullable<RunTransformerPilotLaneInput["checkpointForCampaign"]>,
+  scope: Readonly<{ tenantId: string; campaignId: string; environment: string }>,
+  leaseDurationMs: number,
+): Promise<Readonly<{
+  checkpoint?: TransformerAttemptCheckpointConfig;
+  errorCode?: string;
+}>> {
+  const timeoutMs = Math.min(5_000, Math.max(1, Math.floor(leaseDurationMs / 3)));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const providedCheckpoint = await Promise.race([
+      Promise.resolve().then(() => provider(scope)),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("transformer_lane_checkpoint_provider_timeout")),
+          timeoutMs,
+        );
+      }),
+    ]);
+    const checkpoint = snapshotCheckpointConfig(providedCheckpoint, leaseDurationMs);
+    if (!checkpoint) {
+      return Object.freeze({
+        errorCode: "transformer_lane_checkpoint_provider_invalid",
+      });
+    }
+    return Object.freeze({ checkpoint });
+  } catch {
+    return Object.freeze({
+      errorCode: "transformer_lane_checkpoint_provider_unavailable",
+    });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function stableId(prefix: string, ...parts: readonly string[]): string {
@@ -467,6 +537,25 @@ export async function runTransformerPilotLaneOnce(
       errors.push(`transformer_lane_campaign_denied:${campaign.campaignId}`);
       continue;
     }
+    let checkpoint: TransformerAttemptCheckpointConfig | undefined;
+    if (input.checkpointForCampaign) {
+      const resolvedCheckpoint = await resolveCheckpointProvider(
+        input.checkpointForCampaign,
+        {
+          tenantId: campaign.tenantId,
+          campaignId: campaign.campaignId,
+          environment: campaign.environment,
+        },
+        leaseDurationMs,
+      );
+      if (resolvedCheckpoint.errorCode) {
+        attempted++;
+        failed++;
+        errors.push(resolvedCheckpoint.errorCode);
+        continue;
+      }
+      checkpoint = resolvedCheckpoint.checkpoint;
+    }
     const adaptiveAdapter = input.adaptivePlannerAdapterForTenant?.(campaign.tenantId);
     let adaptiveAuthorizationEvidenceRef: string | undefined;
     if (adaptiveAdapter) {
@@ -605,6 +694,7 @@ export async function runTransformerPilotLaneOnce(
                 ),
           leaseToken: createLeaseToken,
           ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
+          ...(checkpoint ? { checkpoint } : {}),
           actualCostUsd: 0,
           ...(adaptiveAdapter ? { adaptiveRepair: { planner: adaptiveAdapter.planner } } : {}),
           // A converged adaptive fix that diverges from the deterministic recipe

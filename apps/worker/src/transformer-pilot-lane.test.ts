@@ -28,8 +28,11 @@ import {
   TransformerPilotExecutionStore,
   applyRecipe,
   createOrganizationConstraintContract,
+  createTransformerPilotAttemptCheckpointConfig,
+  createTransformerPilotCheckpointAuthority,
   recipeFilesDigest,
   recipeReference,
+  type TransformerAttemptCheckpointArtifactStore,
   type RecipeFiles,
 } from "@mendpoint/transformer";
 import {
@@ -63,6 +66,7 @@ const databases: AppDb[] = [];
 const stores: TransformerPilotExecutionStore[] = [];
 
 afterEach(() => {
+  vi.useRealTimers();
   while (stores.length) stores.pop()?.close();
   while (databases.length) databases.pop()?.raw.close();
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
@@ -208,6 +212,35 @@ function recursiveFiles(path: string): string[] {
   });
 }
 
+class MemoryCheckpointArtifacts implements TransformerAttemptCheckpointArtifactStore {
+  readonly values = new Map<string, Uint8Array>();
+  readonly referenced = new Set<string>();
+  readonly unreferenced = new Set<string>();
+
+  async read(storageKey: string): Promise<Uint8Array | null> {
+    const value = this.values.get(storageKey);
+    return value ? new Uint8Array(value) : null;
+  }
+
+  async publishImmutableDurable(storageKey: string, bytes: Uint8Array): Promise<void> {
+    const existing = this.values.get(storageKey);
+    if (existing && !Buffer.from(existing).equals(Buffer.from(bytes))) {
+      throw new Error("checkpoint_artifact_conflict");
+    }
+    this.values.set(storageKey, new Uint8Array(bytes));
+  }
+
+  async recordPending(): Promise<void> {}
+
+  async recordReferenced(storageKey: string): Promise<void> {
+    this.referenced.add(storageKey);
+  }
+
+  async recordUnreferenced(storageKey: string): Promise<void> {
+    this.unreferenced.add(storageKey);
+  }
+}
+
 function adaptiveModelEnv(): NodeJS.ProcessEnv {
   return {
     MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED: "1",
@@ -303,6 +336,201 @@ describe("Transformer production pilot lane", () => {
       path.endsWith("manifest.json")
     )).toBe(true);
     expect(recursiveFiles(join(root, "workspaces"))).toEqual([]);
+  });
+
+  it("injects a tenant scoped checkpoint provider into the routed attempt", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(RUN_AT);
+    const { root, db, store } = setup();
+    const artifacts = new MemoryCheckpointArtifacts();
+    let checkpointClock = 0;
+    const checkpoint = createTransformerPilotAttemptCheckpointConfig({
+      authority: createTransformerPilotCheckpointAuthority(store),
+      artifactStore: artifacts,
+      encryptionKey: Buffer.from("92".repeat(32), "hex"),
+      executorDigest: `sha256:${"e".repeat(64)}`,
+      evidenceRefs: ["evidence:worker-checkpoint-provider"],
+      gateConfig: gateConfig(),
+      now: () => new Date(Date.parse(RUN_AT) + checkpointClock++).toISOString(),
+      operationTimeoutMs: 5_000,
+    });
+    let openReads = 0;
+    let timeoutReads = 0;
+    const statefulCheckpoint = new Proxy(checkpoint, {
+      get(target, property, receiver) {
+        if (property === "open" && openReads++ > 0) {
+          throw new Error("checkpoint open was read twice");
+        }
+        if (property === "operationTimeoutMs" && timeoutReads++ > 0) {
+          throw new Error("checkpoint timeout was read twice");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const checkpointForCampaign = vi.fn(async () => statefulCheckpoint);
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-checkpoint-provider",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-checkpoint-provider",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-checkpoint-provider-token-0001",
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+      checkpointForCampaign,
+    });
+
+    expect(result).toMatchObject({ attempted: 1, completed: 1, failed: 0, errors: [] });
+    expect(checkpointForCampaign).toHaveBeenCalledOnce();
+    expect(checkpointForCampaign).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      environment: "staging",
+    });
+    expect(openReads).toBe(1);
+    expect(timeoutReads).toBe(1);
+    const unit = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    expect(unit).toMatchObject({ state: "executed", verificationPassed: true });
+    expect(unit.attemptCheckpointHead).toBeDefined();
+    expect(artifacts.referenced).toContain(unit.attemptCheckpointHead?.envelopeStorageKey);
+  });
+
+  it("fails closed when a configured checkpoint provider returns no controller", async () => {
+    const { root, db, store } = setup();
+    const claim = vi.spyOn(store, "claimNextAttempt");
+    const complete = vi.spyOn(store, "completeAttempt");
+    const failure = vi.spyOn(store, "recordAttemptFailure");
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-invalid-checkpoint-provider",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      runId: "run-invalid-checkpoint-provider",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-invalid-checkpoint-token-0001",
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+      checkpointForCampaign: async () => undefined,
+    });
+
+    expect(result).toMatchObject({ attempted: 1, completed: 0, failed: 1 });
+    expect(result.errors).toContain("transformer_lane_checkpoint_provider_invalid");
+    expect(claim).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(failure).not.toHaveBeenCalled();
+    const pendingUnit = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    expect(pendingUnit.state).toBe("pending");
+    expect(pendingUnit.routingSettlement).toBeUndefined();
+
+    claim.mockRestore();
+    complete.mockRestore();
+    failure.mockRestore();
+    const recovered = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-valid-after-invalid-checkpoint-provider",
+      evidenceRoot: join(root, "evidence-recovered"),
+      candidateRoot: join(root, "candidates-recovered"),
+      runId: "run-valid-after-invalid-checkpoint-provider",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-valid-checkpoint-token-00001",
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+    });
+    expect(recovered).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
+  });
+
+  it("rejects a throwing checkpoint config before routing or claim", async () => {
+    const { root, db, store } = setup();
+    const claim = vi.spyOn(store, "claimNextAttempt");
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-throwing-checkpoint-provider",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      runId: "run-throwing-checkpoint-provider",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-throwing-checkpoint-token-001",
+      checkpointForCampaign: async () => new Proxy({}, {
+        get() {
+          throw new Error("provider getter failed");
+        },
+      }) as never,
+    });
+
+    expect(result).toMatchObject({ attempted: 1, completed: 0, failed: 1 });
+    expect(result.errors).toContain("transformer_lane_checkpoint_provider_unavailable");
+    expect(claim).not.toHaveBeenCalled();
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.routingSettlement)
+      .toBeUndefined();
+  });
+
+  it("rejects an oversized checkpoint timeout before routing or claim", async () => {
+    const { root, db, store } = setup();
+    const claim = vi.spyOn(store, "claimNextAttempt");
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-oversized-checkpoint-timeout",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      runId: "run-oversized-checkpoint-timeout",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-oversized-checkpoint-token-01",
+      checkpointForCampaign: async () => ({
+        operationTimeoutMs: 450_001,
+        open: async () => {
+          throw new Error("must not open invalid checkpoint config");
+        },
+      }),
+    });
+
+    expect(result).toMatchObject({ attempted: 1, completed: 0, failed: 1 });
+    expect(result.errors).toContain("transformer_lane_checkpoint_provider_invalid");
+    expect(claim).not.toHaveBeenCalled();
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.routingSettlement)
+      .toBeUndefined();
+  });
+
+  it("bounds a nonresponsive checkpoint provider before routing or claim", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(RUN_AT);
+    const { root, db, store } = setup();
+    const claim = vi.spyOn(store, "claimNextAttempt");
+    const pending = runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-nonresponsive-checkpoint-provider",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      runId: "run-nonresponsive-checkpoint-provider",
+      now: () => RUN_AT,
+      leaseDurationMs: 1_000,
+      leaseToken: () => "transformer-nonresponsive-token-000001",
+      checkpointForCampaign: () => new Promise(() => {}),
+    });
+    await vi.advanceTimersByTimeAsync(334);
+    const result = await pending;
+
+    expect(result).toMatchObject({ attempted: 1, completed: 0, failed: 1 });
+    expect(result.errors).toContain("transformer_lane_checkpoint_provider_unavailable");
+    expect(claim).not.toHaveBeenCalled();
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.routingSettlement)
+      .toBeUndefined();
   });
 
   it("reconciles a committed pilot terminal outcome without rerunning after transient routing persistence failure", async () => {
