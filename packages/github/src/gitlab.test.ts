@@ -51,9 +51,11 @@ describe("MockGitLabDelivery", () => {
   it("creates a branch, commits files, and opens a draft merge request", async () => {
     const delivery = new MockGitLabDelivery();
     await delivery.createBranch(NS, PROJECT, SOURCE, TARGET);
-    await delivery.commitFiles(NS, PROJECT, SOURCE, "Apply migration", [
+    const commitSha = await delivery.commitFiles(NS, PROJECT, SOURCE, "Apply migration", [
       { path: "src/client.ts", content: "export const v = 2\n" },
     ]);
+    // The mock returns a deterministic 40-hex commit id, like a real GitLab SHA.
+    expect(commitSha).toMatch(/^[a-f0-9]{40}$/);
     const mr = await delivery.openDraftMergeRequest(
       NS,
       PROJECT,
@@ -145,14 +147,16 @@ describe("HttpGitLabDelivery", () => {
       {
         method: "POST",
         match: (u) => u.endsWith("/repository/commits"),
-        reply: { ok: true, status: 201, json: { id: "deadbeef" } },
+        reply: { ok: true, status: 201, json: { id: "c".repeat(40) } },
       },
     ]);
     const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
-    await delivery.commitFiles(NS, PROJECT, SOURCE, "Apply migration", [
+    const commitSha = await delivery.commitFiles(NS, PROJECT, SOURCE, "Apply migration", [
       { path: "existing.ts", content: "a" },
       { path: "new.ts", content: "b" },
     ]);
+    // The real adapter returns GitLab's reported commit id verbatim.
+    expect(commitSha).toBe("c".repeat(40));
     const commit = calls.find((c) => c.method === "POST" && c.url.endsWith("/repository/commits"));
     expect(commit).toBeDefined();
     expect(commit!.headers["PRIVATE-TOKEN"]).toBe("glpat-abc");
