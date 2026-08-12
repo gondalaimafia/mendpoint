@@ -198,6 +198,22 @@ export {
 } from "./router.js";
 
 export {
+  ADAPTIVE_ROUTER_ENV,
+  ADAPTIVE_QUALITY_SMOOTHING,
+  ADAPTIVE_QUALITY_GAIN,
+  ADAPTIVE_COST_SMOOTHING,
+  ADAPTIVE_LATENCY_SMOOTHING,
+  aggregateRouterOutcomes,
+  adaptiveAggregateKey,
+  effectiveRoutingMetrics,
+  indexAdaptiveStats,
+  isAdaptiveRoutingEnabled,
+  type AdaptiveRoutingStats,
+  type AdaptiveBaselineMetrics,
+  type RouterOutcomeAggregate,
+} from "./router-adaptive.js";
+
+export {
   InMemoryRouterEvidenceStore,
   JsonlRouterEvidenceStore,
   PolicyRouterRuntime,

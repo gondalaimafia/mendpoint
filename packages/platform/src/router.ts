@@ -1,4 +1,10 @@
 import { createHash } from "node:crypto";
+import {
+  adaptiveAggregateKey,
+  effectiveRoutingMetrics,
+  indexAdaptiveStats,
+  type AdaptiveRoutingStats,
+} from "./router-adaptive.js";
 
 export type DataClassification =
   | "public"
@@ -388,6 +394,14 @@ export type RouteTaskInput = Readonly<{
   circuitBreaker: ExecutorAvailability;
   remainingBudgetUsd: number;
   decidedAt: Date;
+  /**
+   * Recorded outcome aggregates that adapt the ranking of eligible candidates.
+   * Undefined (the default) keeps routing byte-identical to the static-only
+   * ranking. Adaptivity only re-orders eligible candidates; it never changes
+   * eligibility, so policy, privacy, region, risk, quality, latency, budget,
+   * and circuit-breaker gates are unaffected.
+   */
+  adaptiveStats?: AdaptiveRoutingStats;
 }>;
 
 export function routeTask(input: RouteTaskInput): RoutingOutcome {
@@ -430,7 +444,11 @@ export function routeTask(input: RouteTaskInput): RoutingOutcome {
   );
   const eligible = evaluations
     .filter((evaluation) => evaluation.eligible)
-    .sort(compareEligible);
+    .sort(
+      input.adaptiveStats
+        ? adaptiveEligibleComparator(input.task.kind, input.adaptiveStats)
+        : compareEligible,
+    );
 
   if (eligible.length === 0) {
     const budgetExhausted =
@@ -613,6 +631,48 @@ function compareEligible(a: ExecutorEvaluation, b: ExecutorEvaluation): number {
     a.expectedLatencyMs - b.expectedLatencyMs ||
     compareText(a.executorId, b.executorId)
   );
+}
+
+/**
+ * Mirrors {@link compareEligible} but ranks quality, cost, and latency on the
+ * history-adjusted effective metrics. Deterministic class and health remain the
+ * primary keys so structural preferences (deterministic recipes first, healthy
+ * before degraded) are preserved; only otherwise-comparable candidates are
+ * re-ordered. With no matching aggregate the effective metrics equal the static
+ * baseline, so an empty or cold-start history reproduces {@link compareEligible}.
+ */
+function adaptiveEligibleComparator(
+  taskKind: string,
+  stats: AdaptiveRoutingStats,
+): (a: ExecutorEvaluation, b: ExecutorEvaluation) => number {
+  const index = indexAdaptiveStats(stats);
+  const metricsFor = (evaluation: ExecutorEvaluation) =>
+    effectiveRoutingMetrics(
+      {
+        qualityScore: evaluation.expectedQualityScore,
+        costUsd: evaluation.expectedCostUsd,
+        latencyMs: evaluation.expectedLatencyMs,
+      },
+      index.get(
+        adaptiveAggregateKey(
+          evaluation.executorId,
+          taskKind,
+          evaluation.providerId,
+        ),
+      ),
+    );
+  return (a, b) => {
+    const am = metricsFor(a);
+    const bm = metricsFor(b);
+    return (
+      EXECUTOR_KIND_RANK[a.executorKind] - EXECUTOR_KIND_RANK[b.executorKind] ||
+      HEALTH_RANK[a.healthStatus] - HEALTH_RANK[b.healthStatus] ||
+      bm.qualityScore - am.qualityScore ||
+      am.costUsd - bm.costUsd ||
+      am.latencyMs - bm.latencyMs ||
+      compareText(a.executorId, b.executorId)
+    );
+  };
 }
 
 function chooseRegion(
