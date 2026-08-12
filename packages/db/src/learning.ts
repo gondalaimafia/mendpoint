@@ -1043,6 +1043,24 @@ export function listAdmittableLearningRecords(
   );
 }
 
+/**
+ * Count every member of a dataset version, eligible or not. Read-only. Used to
+ * report how many sealed members an export excluded for lost eligibility
+ * (revoked consent, deletion, or temporal cutoff) versus how many it surfaced.
+ */
+export function countLearningDatasetMembers(
+  db: AppDb,
+  input: { tenantId: string; datasetVersionId: string },
+): number {
+  const row = one<{ member_count: number }>(
+    db,
+    `SELECT COUNT(*) AS member_count FROM learning_dataset_members
+     WHERE tenant_id = ? AND dataset_version_id = ?`,
+    [input.tenantId, input.datasetVersionId],
+  );
+  return row?.member_count ?? 0;
+}
+
 export function getLatestLearningDatasetVersion(
   db: AppDb,
   input: { tenantId: string; purpose: string; residencyRegion: string },
@@ -1053,6 +1071,19 @@ export function getLatestLearningDatasetVersion(
      WHERE tenant_id = ? AND purpose = ? AND residency_region = ?
      ORDER BY version DESC LIMIT 1`,
     [input.tenantId, input.purpose, input.residencyRegion],
+  );
+}
+
+/** A single dataset version by id, tenant-scoped. Read-only, or undefined. */
+export function getLearningDatasetVersion(
+  db: AppDb,
+  tenantId: string,
+  id: string,
+): LearningDatasetVersionRow | undefined {
+  return one<LearningDatasetVersionRow>(
+    db,
+    `SELECT * FROM learning_dataset_versions WHERE id = ? AND tenant_id = ?`,
+    [id, tenantId],
   );
 }
 
