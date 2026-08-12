@@ -1,0 +1,7 @@
+{
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "name": "node-runtime-consumer",
+  "private": true
+}

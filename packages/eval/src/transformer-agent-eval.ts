@@ -22,6 +22,7 @@ import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
   GOOGLEAPIS_V25_TO_V26_RECIPE,
   NODE_RUNTIME_18_TO_20_RECIPE,
+  NODE_RUNTIME_20_TO_22_RECIPE,
   REACT_DOM_17_TO_18_RECIPE,
   STRIPE_NODE_V10_TO_V11_RECIPE,
   RecipeAnalysisCache,
@@ -73,6 +74,8 @@ const GOOGLEAPIS_UPGRADE_GUIDE =
   "https://github.com/googleapis/google-api-nodejs-client/releases/tag/v26.0.0";
 const REACT_18_UPGRADE_GUIDE =
   "https://react.dev/blog/2022/03/08/react-18-upgrade-guide";
+const NODE_22_RELEASE_NOTES =
+  "https://nodejs.org/en/blog/release/v22.0.0";
 
 const AWS_FIXTURE_ROOT = "../../../fixtures/consumers/aws-sdk-v2-to-v3/";
 
@@ -1357,6 +1360,7 @@ type SdkRecipeEvalConfig = Readonly<{
   guideUrl: string;
   query: ProviderRecipeResolution;
   fence: RecipeExecutionFence;
+  maxChangedFiles?: number;
 }>;
 
 function loadRecipeFixture(dir: string, sub: string, paths: readonly string[]): RecipeFiles {
@@ -1382,7 +1386,7 @@ function sdkExecutionScenario(config: SdkRecipeEvalConfig): AgentEvalScenario {
     budget: Object.freeze({
       maxDurationMs: 10_000,
       maxSteps: 12,
-      maxChangedFiles: 3,
+      maxChangedFiles: config.maxChangedFiles ?? 3,
       maxChangedBytes: 128 * 1024,
       maxEvidenceBytes: 128 * 1024,
     }),
@@ -1685,7 +1689,7 @@ const REACT_DOM_EVAL_CONFIG: SdkRecipeEvalConfig = Object.freeze({
   query: Object.freeze({
     providerSlug: "react-dom",
     providerCategory: "developer_platform",
-    changeTarget: "sdk",
+    changeTarget: "framework",
     changeKind: "breaking",
     fromVersion: "17",
     toVersion: "18",
@@ -1704,6 +1708,38 @@ const REACT_DOM_EVAL_CONFIG: SdkRecipeEvalConfig = Object.freeze({
   }),
 });
 
+const NODE_RUNTIME_EVAL_CONFIG: SdkRecipeEvalConfig = Object.freeze({
+  idSlug: "node_runtime_20_to_22",
+  recipe: NODE_RUNTIME_20_TO_22_RECIPE,
+  fixtureDir: "node-runtime-20-to-22",
+  supportedPaths: [".node-version", ".nvmrc", "Dockerfile", "package.json"],
+  outOfScopePaths: [".node-version", ".nvmrc", "Dockerfile", "package.json"],
+  operationsCsv: ".node-version,.nvmrc,Dockerfile,package.json",
+  abstainReason: "recipe_precondition_failed:Dockerfile:node_major",
+  guideUrl: NODE_22_RELEASE_NOTES,
+  maxChangedFiles: 4,
+  query: Object.freeze({
+    providerSlug: "node",
+    providerCategory: "developer_platform",
+    changeTarget: "runtime",
+    changeKind: "breaking",
+    fromVersion: "20",
+    toVersion: "22",
+    language: "javascript",
+    packageManager: "npm",
+    repositoryKind: "service",
+    runtime: { name: "node", major: 20 },
+  }),
+  fence: Object.freeze({
+    tenantId: "tenant-node-runtime-eval",
+    campaignId: "campaign-node-runtime-eval",
+    unitId: "unit-node-runtime-eval",
+    attemptId: "attempt-node-runtime-eval",
+    leaseGeneration: 3,
+    leaseToken: "transformer-node-runtime-eval-lease-token",
+  }),
+});
+
 export const TRANSFORMER_AGENT_EVAL_SCENARIOS: readonly AgentEvalScenario[] = Object.freeze([
   PLANNING_SCENARIO,
   ANALYSIS_SCENARIO,
@@ -1716,5 +1752,7 @@ export const TRANSFORMER_AGENT_EVAL_SCENARIOS: readonly AgentEvalScenario[] = Ob
   sdkAbstainScenario(GOOGLEAPIS_EVAL_CONFIG),
   sdkExecutionScenario(REACT_DOM_EVAL_CONFIG),
   sdkAbstainScenario(REACT_DOM_EVAL_CONFIG),
+  sdkExecutionScenario(NODE_RUNTIME_EVAL_CONFIG),
+  sdkAbstainScenario(NODE_RUNTIME_EVAL_CONFIG),
   ...WORKSPACE_CASES.map(workspaceScenario),
 ]);
