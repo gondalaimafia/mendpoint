@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FileEdit } from "./index.js";
 
 /**
@@ -77,13 +78,18 @@ export interface GitLabDelivery {
     branch: string,
     fromBranch?: string,
   ): Promise<void>;
+  /**
+   * Commit the exact files onto the source branch and return the created
+   * commit's SHA (GitLab reports a 40-hex SHA-1 as `id`). Returns an empty
+   * string only if GitLab omits the id; callers fall back accordingly.
+   */
   commitFiles(
     namespace: string,
     project: string,
     branch: string,
     message: string,
     files: FileEdit[],
-  ): Promise<void>;
+  ): Promise<string>;
   openDraftMergeRequest(
     namespace: string,
     project: string,
@@ -267,8 +273,8 @@ export class HttpGitLabDelivery implements GitLabDelivery {
     branch: string,
     message: string,
     files: FileEdit[],
-  ): Promise<void> {
-    if (!files.length) return;
+  ): Promise<string> {
+    if (!files.length) return "";
     assertBranch(branch);
     const id = this.projectId(namespace, project);
     const actions: Array<{ action: "create" | "update"; file_path: string; content: string }> = [];
@@ -299,6 +305,9 @@ export class HttpGitLabDelivery implements GitLabDelivery {
     if (!committed.ok) {
       throw new GitLabDeliveryError("commitFiles", committed.status, committed.json);
     }
+    // GitLab's create-commit response carries the new commit SHA as `id`.
+    const commitId = (committed.json as { id?: unknown } | null)?.id;
+    return typeof commitId === "string" ? commitId : "";
   }
 
   async openDraftMergeRequest(
@@ -399,9 +408,9 @@ export class MockGitLabDelivery implements GitLabDelivery {
     namespace: string,
     project: string,
     branch: string,
-    _message: string,
+    message: string,
     files: FileEdit[],
-  ): Promise<void> {
+  ): Promise<string> {
     assertBranch(branch);
     const proj = this.#project(namespace, project);
     const contents = proj.branches.get(branch) ?? new Map<string, string>();
@@ -409,6 +418,20 @@ export class MockGitLabDelivery implements GitLabDelivery {
       contents.set(normalizePath(file.path), file.content);
     }
     proj.branches.set(branch, contents);
+    // A deterministic 40-hex SHA-1 over the commit inputs, mirroring a real
+    // GitLab commit id: stable across replay of the same commit, so exact-draft
+    // evidence threads it through unchanged.
+    return createHash("sha1")
+      .update(
+        JSON.stringify({
+          namespace,
+          project,
+          branch,
+          message,
+          files: files.map((file) => ({ path: normalizePath(file.path), content: file.content })),
+        }),
+      )
+      .digest("hex");
   }
 
   async openDraftMergeRequest(
@@ -460,8 +483,11 @@ export function gitlabAsReviewableChangeDelivery(
   return {
     createBranch: (owner, repo, branch, fromBranch) =>
       delivery.createBranch(owner, repo, branch, fromBranch),
-    commitFiles: (owner, repo, branch, message, files) =>
-      delivery.commitFiles(owner, repo, branch, message, files),
+    commitFiles: async (owner, repo, branch, message, files) => {
+      // The provider-neutral contract returns void; the commit SHA is used only
+      // by the exact-draft adapter, not this reviewable-change wrapper.
+      await delivery.commitFiles(owner, repo, branch, message, files);
+    },
     openPullRequest: (owner, repo, branch, title, body, base) =>
       delivery.openDraftMergeRequest(owner, repo, branch, title, body, base),
   };

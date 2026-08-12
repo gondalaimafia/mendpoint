@@ -5,6 +5,8 @@ import { MockGitLabDelivery, type GitLabDelivery, type MergeRequestResult } from
 import { gitlabAsExactDraftDelivery } from "./gitlab-exact-draft.js";
 
 const BASE_SHA = "a".repeat(40);
+/** A real-looking 40-hex GitLab commit id the recording adapter returns. */
+const COMMIT_SHA = "ab".repeat(20);
 
 function intent(overrides: Partial<ExactDraftDeliveryInput> = {}): ExactDraftDeliveryInput {
   return Object.freeze({
@@ -28,6 +30,7 @@ function intent(overrides: Partial<ExactDraftDeliveryInput> = {}): ExactDraftDel
 /** A recording GitLabDelivery that returns a draft merge request by default. */
 function recordingGitLab(
   mrOverrides: Partial<MergeRequestResult> = {},
+  commitSha: string = COMMIT_SHA,
 ): GitLabDelivery & {
   calls: {
     createBranch: unknown[][];
@@ -47,6 +50,7 @@ function recordingGitLab(
     },
     async commitFiles(namespace, project, branch, message, files) {
       calls.commitFiles.push([namespace, project, branch, message, files]);
+      return commitSha;
     },
     async openDraftMergeRequest(namespace, project, sourceBranch, title, body, targetBranch) {
       calls.openDraftMergeRequest.push([namespace, project, sourceBranch, title, body, targetBranch]);
@@ -103,15 +107,20 @@ describe("gitlabAsExactDraftDelivery", () => {
       baseBranch: "main",
       baseSha: BASE_SHA,
     });
-    expect(result.commitSha).toMatch(/^[a-f0-9]{64}$/);
+    // Evidence threads the real 40-hex commit SHA GitLab returned, not a digest.
+    expect(result.commitSha).toBe(COMMIT_SHA);
+    expect(result.commitSha).toMatch(/^[a-f0-9]{40}$/);
   });
 
-  it("derives a deterministic commit id for the same sealed intent", async () => {
-    const first = await gitlabAsExactDraftDelivery(recordingGitLab()).deliverExactDraft(intent());
-    const second = await gitlabAsExactDraftDelivery(recordingGitLab()).deliverExactDraft(intent());
+  it("falls back to a deterministic synthesized commit id when GitLab omits the SHA", async () => {
+    const first = await gitlabAsExactDraftDelivery(recordingGitLab({}, "")).deliverExactDraft(intent());
+    const second = await gitlabAsExactDraftDelivery(recordingGitLab({}, "")).deliverExactDraft(intent());
+    // No real commit id, so the labeled 64-hex fallback is used, deterministic
+    // per sealed intent.
+    expect(first.commitSha).toMatch(/^[a-f0-9]{64}$/);
     expect(second.commitSha).toBe(first.commitSha);
 
-    const changed = await gitlabAsExactDraftDelivery(recordingGitLab()).deliverExactDraft(
+    const changed = await gitlabAsExactDraftDelivery(recordingGitLab({}, "")).deliverExactDraft(
       intent({
         files: Object.freeze([
           { path: "package.json", content: "{\"name\":\"other\"}\n", mode: "100644" as const },
@@ -150,6 +159,8 @@ describe("gitlabAsExactDraftDelivery", () => {
       baseSha: BASE_SHA,
     });
     expect(first.url).toBe("https://gitlab.com/acme/customer/-/merge_requests/1");
+    // The mock threads a deterministic 40-hex commit SHA (not the fallback).
+    expect(first.commitSha).toMatch(/^[a-f0-9]{40}$/);
     // Re-delivering the same sealed intent returns the same merge request.
     const replay = await delivery.deliverExactDraft(intent());
     expect(replay.number).toBe(first.number);

@@ -2081,10 +2081,11 @@ export function transformerAdaptiveGitLabDelivery(env: NodeJS.ProcessEnv): GitHu
 }
 
 /**
- * Select the exact-draft delivery provider for Transformer's approved candidate.
- * SCM_PROVIDER=gitlab routes to the GitLab draft-MR path; anything else (unset
- * or "github") returns the GitHub App / PAT delivery unchanged, so a default
- * deployment is byte-identical.
+ * Select the exact-draft delivery provider for an approved candidate. Both the
+ * Warden candidate delivery and the Transformer adaptive delivery construction
+ * sites route through this selector. SCM_PROVIDER=gitlab routes to the GitLab
+ * draft-MR path; anything else (unset or "github") returns the GitHub App / PAT
+ * delivery unchanged, so a default deployment is byte-identical.
  */
 export function transformerAdaptiveScmDelivery(
   db: AppDb,
@@ -2216,7 +2217,7 @@ async function processJobsOnceUnfenced(
         const delivery = await runWardenCandidateDelivery({
           db,
           job,
-          github: opts.wardenCandidateGithub ?? transformerAdaptiveGitHubDelivery(
+          github: opts.wardenCandidateGithub ?? transformerAdaptiveScmDelivery(
             db,
             job.tenant_id,
             workerEnv,

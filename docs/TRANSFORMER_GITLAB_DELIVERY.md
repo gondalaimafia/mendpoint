@@ -40,11 +40,11 @@ draft. If the returned merge request is not a draft, delivery raises
 reporting success. Nothing is merged and no branch is force-updated. Human
 review and manual merge stay in force, the same as the GitHub path.
 
-Because GitLab's commit API does not surface a commit SHA through the Wave B
-delivery interface, the delivery evidence records a deterministic hex commit
-identifier derived from the immutable commit inputs (base revision, branch,
-message, date, and the sorted file tree). It is stable on replay of the same
-sealed intent.
+Delivery evidence records the real 40-hex commit SHA GitLab returns from the
+commit (`commitFiles` surfaces GitLab's `id`). If GitLab ever omits the commit
+id, evidence falls back to a deterministic hex identifier derived from the
+immutable commit inputs (base revision, branch, message, date, and the sorted
+file tree), stable on replay of the same sealed intent.
 
 ## Provider selection
 
@@ -59,8 +59,8 @@ the worker constructs the delivery for a `transformer.adaptive.deliver` job
   default and the real HTTP client only when `GITLAB_MODE=real` and
   `GITLAB_TOKEN` are set.
 
-The Warden candidate delivery path is not affected by this selector and stays on
-GitHub.
+The Warden candidate delivery path routes through the same selector; see
+[`WARDEN_GITLAB_DELIVERY.md`](./WARDEN_GITLAB_DELIVERY.md).
 
 ## Configuration
 

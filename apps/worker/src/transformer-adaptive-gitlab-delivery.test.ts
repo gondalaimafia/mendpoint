@@ -220,7 +220,7 @@ describe("Transformer adaptive GitLab draft delivery", () => {
       draftPrNumber: 1,
       draftPrUrl: "https://gitlab.com/acme/customer/-/merge_requests/1",
     });
-    expect(persisted.commitSha).toMatch(/^[a-f0-9]{64}$/);
+    expect(persisted.commitSha).toMatch(/^[a-f0-9]{40}$/);
     expect(value.db.raw.prepare("SELECT status FROM jobs WHERE id = ?").get(value.job.id))
       .toEqual({ status: "done" });
 
@@ -241,7 +241,9 @@ describe("Transformer adaptive GitLab draft delivery", () => {
     const value = fixture();
     const nonDraft: GitLabDelivery = {
       async createBranch() {},
-      async commitFiles() {},
+      async commitFiles() {
+        return "f".repeat(40);
+      },
       async openDraftMergeRequest(namespace, project, sourceBranch, title) {
         return {
           number: 4,

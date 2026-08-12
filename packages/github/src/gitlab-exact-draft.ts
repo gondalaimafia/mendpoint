@@ -17,13 +17,16 @@ export interface ExactDraftDelivery {
   deliverExactDraft(input: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult>;
 }
 
+/** GitLab commit ids are 40-hex SHA-1 object names, like GitHub's. */
+const GITLAB_COMMIT_SHA = /^[a-f0-9]{40}$/;
+
 /**
- * Derive a stable, hex commit identifier from the immutable commit inputs of an
- * exact-draft intent. GitLab's commit API does not surface a commit SHA through
- * the Wave B delivery interface, so delivery evidence uses this deterministic
- * digest of the exact base, branch, message, date, and sorted file tree. It is
- * shaped like a 64-char Git object id so the durable success record accepts it,
- * and it is identical on replay of the same sealed intent.
+ * Labeled fallback commit identifier used only when GitLab does not surface a
+ * commit SHA (commitFiles returns an empty id). It is a deterministic digest of
+ * the exact base, branch, message, date, and sorted file tree, shaped like a
+ * 64-char Git object id so the durable success record still accepts it, and it
+ * is identical on replay of the same sealed intent. The normal path threads the
+ * real 40-hex commit id returned by commitFiles instead.
  */
 function exactDraftCommitSha(input: ExactDraftDeliveryInput): string {
   return createHash("sha256")
@@ -48,6 +51,8 @@ function exactDraftCommitSha(input: ExactDraftDeliveryInput): string {
  * (branch, exact files, title/body) is delivered as a GitLab *draft* merge
  * request: create the source branch from the approved base, commit the exact
  * files, then open a draft merge request against the base branch. Delivery
+ * evidence reports the real 40-hex commit SHA GitLab returned from the commit
+ * (falling back to a synthesized digest only if GitLab omits it). Delivery
  * fails closed if GitLab does not confirm the merge request is a draft; nothing
  * is merged and no branch is force-updated. This reuses GitLabDelivery rather
  * than rebuilding it, so the delivery worker stays delivery-interface-shaped.
@@ -61,7 +66,13 @@ export function gitlabAsExactDraftDelivery(delivery: GitLabDelivery): ExactDraft
         content: file.content,
       }));
       await delivery.createBranch(input.owner, input.repo, input.branch, input.baseBranch);
-      await delivery.commitFiles(input.owner, input.repo, input.branch, input.commitMessage, files);
+      const committedSha = await delivery.commitFiles(
+        input.owner,
+        input.repo,
+        input.branch,
+        input.commitMessage,
+        files,
+      );
       const mergeRequest = await delivery.openDraftMergeRequest(
         input.owner,
         input.repo,
@@ -81,7 +92,9 @@ export function gitlabAsExactDraftDelivery(delivery: GitLabDelivery): ExactDraft
         draft: true,
         baseBranch: input.baseBranch,
         baseSha: input.expectedBaseSha,
-        commitSha: exactDraftCommitSha(input),
+        // Prefer the real commit SHA GitLab returned; fall back to the
+        // synthesized digest only if GitLab omitted it.
+        commitSha: GITLAB_COMMIT_SHA.test(committedSha) ? committedSha : exactDraftCommitSha(input),
       });
     },
   };
