@@ -255,6 +255,21 @@ export {
 } from "./adapter-lifecycle.js";
 
 export {
+  PostTrainedAdmissionError,
+  resolvePostTrainedExecutor,
+  type PostTrainedAdmissionErrorCode,
+  type PostTrainedConsentSnapshot,
+  type PostTrainedDispatchAuthorization,
+  type PostTrainedDispatchIntent,
+  type PostTrainedExecutorAdmission,
+  type PostTrainedExpectedBindings,
+  type PostTrainedLifecycleSource,
+  type PostTrainedPreDispatchGuard,
+  type PostTrainedRuntimeBindings,
+  type ResolvePostTrainedExecutorInput,
+} from "./post-trained-runtime.js";
+
+export {
   GitLabFixtureAdapter,
   GitLabFixtureError,
   type GitLabFixtureAuth,

@@ -12,6 +12,25 @@ export type {
 export { TransformerDomainError } from "./types.js";
 
 export {
+  collectBsgAnnotations,
+  verifyExtractedBehavioralSpecGraph,
+  type BsgEvidenceAssertion,
+  type ExtractedBehavioralSpecGraph,
+} from "./bsg-extractor.js";
+
+export {
+  extractLegacyBehavior,
+  LegacyBehaviorExtractionError,
+  type LegacyBehaviorArtifact,
+  type LegacyBehaviorCollector,
+  type LegacyBehaviorCollectorPin,
+  type LegacyBehaviorExtractionInput,
+  type LegacyBehaviorExtractionPolicy,
+  type LegacyBehaviorExtractionResult,
+  type LegacyBehaviorJsonValue,
+} from "./legacy-behavior-extraction.js";
+
+export {
   CampaignValidationError,
   emptyBsg,
   orderDag,
@@ -377,3 +396,11 @@ export type {
   RecipeVerificationGateResult,
   RunRecipeVerificationGateInput,
 } from "./recipe-workspace-execution.js";
+export {
+  generateBehaviorDocumentation,
+  BehaviorDocumentationError,
+  type BehaviorDocumentationEvidenceRef,
+  type BehaviorDocumentationInput,
+  type BehaviorDocumentationPolicy,
+  type BehaviorDocumentationResult,
+} from "./behavior-documentation.js";

@@ -13,7 +13,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@mendpoint/shared": "*"
+    "@mendpoint/shared": "*",
+    "graphql": "^16.14.2"
   },
   "devDependencies": {
     "typescript": "^5.8.2",

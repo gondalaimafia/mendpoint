@@ -1486,3 +1486,80 @@ Acceptance: a successful production OIDC callback always returns to the configur
 Acceptance: protected main contains one coherent, reviewed release; required checks are green; the intended revision is live and browser-verified; unsafe or incomplete experiments remain out of production; and every capability claim is tied to code, tests, and deployed evidence.
 
 Review before PR: the release branch was created from current `origin/main` at `7d8cb3a`. It includes the complete reviewed Warden checkpoint foundation and the complete reviewed Transformer checkpoint and cross-worker resume foundation. The two dirty experimental worktrees remain unchanged and were not merged. Focused verification passed Warden 33 of 33, Transformer 126 of 126, and worker/Fly preflight 18 of 18. `./scripts/verify.sh` passed every workspace typecheck, all tests, production build, GA checks, and diff integrity. Independent final review found no P0 or P1 and separately passed Agent 294 of 294, Transformer 304 of 304, and Worker 188 of 188. Transformer activation remains off because production is still one machine with local state and no shared checkpoint coordinator or artifact backend.
+## Generalized migration foundations: 2026-08-12
+
+Scope: build complete, testable, default-off foundations on `codex/generalized-foundations`. Do not push, merge, deploy, activate, change Fly or CI configuration, provision secrets, call external training services, or mutate customer repositories.
+
+### Architecture and safety
+
+- [x] Create an isolated worktree from current `origin/main` and preserve the dirty Warden and Transformer experiments untouched.
+- [x] Run the full repository baseline before implementation.
+- [x] Define fail-closed boundaries for GraphQL, legacy extraction, documentation, attestations, post-trained adapters, and multi-node compute.
+- [x] Keep all new runtime paths absent or disabled by default and prove importing them has no network, process, filesystem, listener, training, publishing, or deployment side effect.
+
+### Generalized GraphQL ingestion
+
+- [x] Add red-first SDL and introspection normalization tests with canonical schema identity and bounded input handling.
+- [x] Add deterministic GraphQL diffing for types, fields, arguments, input fields, enums, unions, interfaces, and nullability/default changes.
+- [x] Classify breaking, dangerous, additive, and nonbreaking changes with exact locations and migration hints.
+- [x] Export the library without wiring API routes, feeds, queues, or production polling.
+
+### Automatic legacy behavior extraction
+
+- [x] Add red-first deterministic collector orchestration over snapshot-bound code, test, schema, trace, and graph evidence.
+- [x] Pin collector identity, version, and digest; enforce tenant, repository, revision, snapshot, content digest, and evidence limits.
+- [x] Feed only explicit grounded assertions and relations into the existing BSG extractor; never infer executable behavior from labels or model output.
+- [x] Keep repository read and mutation authority false in the resulting graph.
+
+### Evidence-linked documentation generation
+
+- [x] Add red-first deterministic Markdown projection from an authenticated BSG.
+- [x] Require exact evidence locators for every active statement, separate stale or deleted evidence, escape Markdown, redact secrets, and bound output.
+- [x] Return only a draft artifact with `mayWriteRepository=false` and `mayPublish=false`.
+
+### Formal software attestations
+
+- [x] Add red-first DSSE-style signed statement envelopes over existing artifact, verification, policy, source, candidate, and delivery evidence.
+- [x] Canonicalize statements, domain-separate signatures, verify key identity and algorithm, reject tamper, replay, malformed payloads, and cross-tenant subjects.
+- [x] Keep signing and persistence behind injected ports; add no production keys, routes, or automatic publication.
+
+### Post-trained model lifecycle
+
+- [x] Add red-first adapter deployment manifest validation and lifecycle admission through the existing adapter authority and policy router.
+- [x] Require exact tenant, base model, dataset, consent, artifact, serving revision, evaluation, infrastructure approval, canary, rollback, and evidence bindings.
+- [x] Recheck lifecycle and consent immediately before dispatch; expose no model invoker and perform no training or network call.
+- [x] Prove deterministic recipes remain preferred when eligible and revoked or rolled-back adapters fail closed.
+
+### Default-off multi-node Transformer compute
+
+- [x] Add a red-first authenticated, bounded coordinator client contract with exact checkpoint identity, idempotent replay, timeout, abort, and stale-error handling.
+- [x] Add an immutable encrypted artifact adapter with create-only publication, exact readback, collision detection, bounded I/O, and conservative lifecycle evidence.
+- [x] Add exact source materialization and an explicit `run-transformer-service` role that constructs no local coordinator or AppDb and has no legacy fallback.
+- [x] Add private readiness that proves coordinator and artifact access without mutating state.
+- [x] Keep the foundation unreachable from existing runtime commands; leave existing `run-service`, Fly, Docker, CI, profiles, gates, and production unchanged.
+- [x] State the honest boundary: complete local multi worker service with one SQLite coordinator and shared immutable artifacts, not a deployed or highly available coordinator.
+
+### Verification and review
+
+- [x] Run focused red-green suites for every new module.
+- [x] Run package typechecks for every changed package and full changed-package tests.
+- [x] Run production build, GA/spec/claim/action checks, dependency audit, and diff integrity where applicable.
+- [x] Obtain independent specification and code-quality review; close every P0 and P1.
+- [x] Confirm no push, PR, merge, deployment, activation, external training, or customer mutation occurred.
+
+Acceptance: the repository contains six evidence-bound, fail-closed foundations with real tests and stable public APIs, but no new production behavior. Every external side effect remains behind an unconfigured injected authority or an explicit disabled command.
+
+Review: this original foundation milestone was superseded by the scope correction below. The libraries remain default off, and each is now integrated into a complete local application path. Production topology and activation remain deliberately unchanged.
+
+### Scope correction: complete local features, still unshipped
+
+- [x] Integrate GraphQL ingestion with authenticated tenant-scoped API, durable schema versions, baseline selection, retrieval, and pipeline evidence.
+- [x] Add snapshot-backed built-in legacy collectors, persisted BSG artifacts, draft documentation persistence, and authenticated retrieval.
+- [x] Add authoritative attestation pipeline persistence, signed envelope verification and retrieval, plus durable post-trained adapter administration and route dry runs.
+- [x] Add the full Transformer coordinator RPC surface, source materialization, concrete shared artifact transport, dedicated worker command, and private readiness.
+- [x] Run joined end-to-end tests proving each feature through its application boundary while production remains disabled.
+- [x] Keep all production deployment, Fly, CI, customer flags, secrets, external training, repository writes, pushes, merges, and activation unchanged.
+
+Corrected acceptance: every requested capability is a complete, elaborate, locally runnable product feature. "Do not ship" applies only to source-control publication, deployment, production configuration, external training, and customer activation; it does not permit stopping at an internal library foundation.
+
+Review: GraphQL ingestion now accepts SDL and introspection, stores immutable tenant schema versions, selects explicit or latest baselines, classifies compatibility changes, and exposes authenticated retrieval. Legacy analysis now loads authoritative snapshots, runs grounded built-in collectors, verifies and persists behavioral graphs, and produces evidence-linked draft documentation. Software attestations now use interoperable DSSE and in-toto envelopes with durable scope verification, while post-trained model administration owns dataset consent, fenced training, authenticated receipts, adapter registration, and router dry runs. Transformer now has an authenticated coordinator, exact source service, encrypted filesystem and S3-compatible artifacts, an explicit service command, readiness, response-loss reconciliation, and two-worker takeover tests. All paths are default off. No push, merge, Fly or CI change, secret provisioning, external training call, customer repository write, activation, or deployment occurred.

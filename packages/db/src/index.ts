@@ -32,6 +32,7 @@ export type * from "./schema.js";
 export { assertTenantScope } from "./tenant-scope.js";
 export * from "./warden-model-accounting.js";
 export * from "./external-baseline.js";
+export * from "./graphql-schema-version.js";
 export * from "./outcome-metrics.js";
 export * from "./agent-run-meter.js";
 export * from "./capability-adoption-opportunity.js";
