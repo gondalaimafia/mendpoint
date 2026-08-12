@@ -6,7 +6,9 @@ import {
   GitHubAppDelivery,
   InstallationTokenCache,
   hasGitHubAppCredentials,
+  listInstallationRepositories,
   loadAppCredentials,
+  mockInstallationRepositories,
 } from "./app-runtime.js";
 import { MockGitHubDelivery } from "./index.js";
 
@@ -323,6 +325,96 @@ describe("github app runtime", () => {
       commitSha: EXACT_COMMIT_SHA,
       number: 23,
     });
+  });
+
+  it("returns a deterministic installation repository listing in mock mode", async () => {
+    const first = await listInstallationRepositories({
+      installationId: 55,
+      accountLogin: "acme",
+      env: {} as NodeJS.ProcessEnv,
+      mockRepositories: [
+        { name: "shop" },
+        { name: "billing", archived: true },
+        { name: "docs", owner: "acme-labs", disabled: true },
+      ],
+    });
+    const second = await listInstallationRepositories({
+      installationId: 55,
+      accountLogin: "acme",
+      env: { GITHUB_MODE: "mock" } as NodeJS.ProcessEnv,
+      mockRepositories: [
+        { name: "shop" },
+        { name: "billing", archived: true },
+        { name: "docs", owner: "acme-labs", disabled: true },
+      ],
+    });
+    expect(second).toEqual(first);
+    expect(first).toEqual(
+      mockInstallationRepositories({
+        installationId: 55,
+        accountLogin: "acme",
+        repositories: [
+          { name: "shop" },
+          { name: "billing", archived: true },
+          { name: "docs", owner: "acme-labs", disabled: true },
+        ],
+      }),
+    );
+    expect(first.map((r) => `${r.owner}/${r.name}`)).toEqual([
+      "acme/shop",
+      "acme/billing",
+      "acme-labs/docs",
+    ]);
+    expect(first[1]?.archived).toBe(true);
+    expect(first[2]?.disabled).toBe(true);
+  });
+
+  it("lists installation repositories via the App client in real mode", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const fetchToken = vi.fn(async (installationId: number) => ({
+      token: "ghs_real",
+      expiresAt: "2026-01-01T01:00:00.000Z",
+      installationId,
+    }));
+    const lister = vi.fn(async (token: string) => {
+      expect(token).toBe("ghs_real");
+      return [
+        {
+          id: 101,
+          owner: "acme",
+          name: "shop",
+          fullName: "acme/shop",
+          defaultBranch: "main",
+          private: true,
+          archived: false,
+          disabled: false,
+        },
+      ];
+    });
+    const repos = await listInstallationRepositories({
+      installationId: 42,
+      accountLogin: "acme",
+      env: { GITHUB_MODE: "real" } as NodeJS.ProcessEnv,
+      credentials: { appId: "99", privateKeyPem: pem },
+      fetchToken,
+      lister,
+      now: () => Date.parse("2026-01-01T00:00:00.000Z"),
+    });
+    expect(fetchToken).toHaveBeenCalledTimes(1);
+    expect(lister).toHaveBeenCalledTimes(1);
+    expect(repos.map((r) => r.name)).toEqual(["shop"]);
+  });
+
+  it("requires App credentials in real mode", async () => {
+    await expect(
+      listInstallationRepositories({
+        installationId: 42,
+        accountLogin: "acme",
+        env: { GITHUB_MODE: "real" } as NodeJS.ProcessEnv,
+        credentials: null,
+      }),
+    ).rejects.toThrow("github_app_credentials_missing");
   });
 
   it("delivers to many repos via mock delivery", async () => {
