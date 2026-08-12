@@ -18,6 +18,14 @@ import {
   type RouterTaskSpec,
   type RoutingDecisionRecord,
 } from "./router.js";
+import {
+  adaptiveAggregateKey,
+  aggregateRouterOutcomes,
+  effectiveRoutingMetrics,
+  indexAdaptiveStats,
+  isAdaptiveRoutingEnabled,
+  type AdaptiveRoutingStats,
+} from "./router-adaptive.js";
 
 export type RouterRetryPolicy = Readonly<{
   maxAttempts: number;
@@ -110,6 +118,14 @@ export type RouterPreparedEnvelope = Readonly<{
     maximumAuthorizedCostUsd: number;
   }>;
   handoffReason?: HumanHandoffReason;
+  /**
+   * Recorded outcome aggregates that fed adaptive ranking for this decision.
+   * Present only when adaptive routing is enabled; frozen into the envelope so
+   * `replay()` reproduces the exact decision from the same history. Absent (and
+   * omitted from the envelope fingerprint) when adaptive routing is off, so the
+   * envelope and decision stay byte-identical to static-only routing.
+   */
+  adaptiveStatsSnapshot?: AdaptiveRoutingStats;
 }>;
 
 export type RouterAttemptEvidence = Readonly<{
@@ -163,6 +179,12 @@ export type RouterEvidenceEvent = Readonly<{
 export interface RouterEvidenceStore {
   append(event: RouterEvidenceEvent): void;
   read(envelopeId: string): readonly RouterEvidenceEvent[];
+  /**
+   * Every recorded event across all envelopes. Used to derive adaptive routing
+   * aggregates from the durable telemetry that is already persisted here; no
+   * parallel telemetry store is introduced.
+   */
+  readAll(): readonly RouterEvidenceEvent[];
 }
 
 export class InMemoryRouterEvidenceStore implements RouterEvidenceStore {
@@ -181,6 +203,14 @@ export class InMemoryRouterEvidenceStore implements RouterEvidenceStore {
         Object.freeze(structuredClone(event)),
       ),
     );
+  }
+
+  readAll(): readonly RouterEvidenceEvent[] {
+    const all: RouterEvidenceEvent[] = [];
+    for (const events of this.#events.values()) {
+      for (const event of events) all.push(Object.freeze(structuredClone(event)));
+    }
+    return Object.freeze(all);
   }
 }
 
@@ -207,6 +237,10 @@ export class JsonlRouterEvidenceStore implements RouterEvidenceStore {
     return Object.freeze(events.map((event) => Object.freeze(event)));
   }
 
+  readAll(): readonly RouterEvidenceEvent[] {
+    return Object.freeze(this.#readAll().map((event) => Object.freeze(event)));
+  }
+
   #readAll(): RouterEvidenceEvent[] {
     if (!existsSync(this.path)) return [];
     const lines = readFileSync(this.path, "utf8").split(/\r?\n/).filter(Boolean);
@@ -230,10 +264,15 @@ export type PrepareRouterRuntimeInput = Readonly<{
 }>;
 
 export class PolicyRouterRuntime {
+  readonly #adaptive: boolean;
+
   constructor(
     readonly store: RouterEvidenceStore,
     readonly circuitBreaker: ExecutorAvailability,
-  ) {}
+    options: Readonly<{ adaptive?: boolean }> = {},
+  ) {
+    this.#adaptive = options.adaptive ?? isAdaptiveRoutingEnabled();
+  }
 
   prepare(input: PrepareRouterRuntimeInput): RouterRuntimeDisposition {
     validIso(input.policy.capturedAt, "Router policy capture time");
@@ -248,9 +287,13 @@ export class PolicyRouterRuntime {
       ),
     }));
     const availability = new SnapshotAvailability(availabilitySnapshot);
+    const adaptiveStatsSnapshot = this.#adaptive
+      ? aggregateRouterOutcomes(this.store.readAll())
+      : undefined;
     const outcome = routeTask({
       ...input,
       circuitBreaker: availability,
+      adaptiveStats: adaptiveStatsSnapshot,
     });
     const retryPolicy = normalizeRetryPolicy(input.retryPolicy, input.task);
     const prepared = buildPreparedEnvelope({
@@ -259,6 +302,7 @@ export class PolicyRouterRuntime {
       availabilitySnapshot,
       retryPolicy,
       outcome,
+      adaptiveStatsSnapshot,
     });
     const existing = this.store.read(prepared.envelopeId);
     if (existing.length > 0) {
@@ -476,6 +520,7 @@ export class PolicyRouterRuntime {
       circuitBreaker: new SnapshotAvailability(expected.availabilitySnapshot),
       remainingBudgetUsd: expected.decision.remainingBudgetUsd,
       decidedAt: new Date(expected.createdAt),
+      adaptiveStats: expected.adaptiveStatsSnapshot,
     });
     const replayedEnvelopeId = preparedEnvelopeId({
       task: expected.task,
@@ -485,6 +530,7 @@ export class PolicyRouterRuntime {
       remainingBudgetUsd: expected.decision.remainingBudgetUsd,
       decidedAt: expected.createdAt,
       retryPolicy: expected.retryPolicy,
+      adaptiveStatsSnapshot: expected.adaptiveStatsSnapshot,
     });
     return Object.freeze({
       matches:
@@ -584,6 +630,7 @@ function buildPreparedEnvelope(input: {
   }>[];
   retryPolicy: RouterRetryPolicy;
   outcome: ReturnType<typeof routeTask>;
+  adaptiveStatsSnapshot?: AdaptiveRoutingStats;
 }): RouterPreparedEnvelope {
   const { task, policy, remainingBudgetUsd, decidedAt } = input.input;
   const effectiveBudget = Math.min(
@@ -593,7 +640,7 @@ function buildPreparedEnvelope(input: {
   );
   const eligibleExecutors = input.outcome.decision.evaluations
     .filter((item) => item.eligible && item.executionRegion)
-    .sort(compareEvaluation)
+    .sort(evaluationComparator(task.kind, input.adaptiveStatsSnapshot))
     .map(serializableRoute);
   const primary = input.outcome.action === "execute"
     ? serializablePlanRoute(input.outcome.plan.primary)
@@ -609,6 +656,7 @@ function buildPreparedEnvelope(input: {
     remainingBudgetUsd,
     decidedAt: decidedAt.toISOString(),
     retryPolicy: input.retryPolicy,
+    adaptiveStatsSnapshot: input.adaptiveStatsSnapshot,
   });
   const selected = input.outcome.action === "execute" ? primary! : null;
   return Object.freeze({
@@ -649,6 +697,7 @@ function buildPreparedEnvelope(input: {
     handoffReason: input.outcome.action === "human_handoff"
       ? input.outcome.handoff.reason
       : undefined,
+    adaptiveStatsSnapshot: input.adaptiveStatsSnapshot,
   });
 }
 
@@ -904,6 +953,51 @@ function compareEvaluation(
     a.expectedLatencyMs - b.expectedLatencyMs ||
     a.executorId.localeCompare(b.executorId)
   );
+}
+
+/**
+ * Orders the informational eligible-executor listing. Without an adaptive
+ * snapshot it is exactly {@link compareEvaluation}, keeping the envelope
+ * byte-identical to static-only routing; with a snapshot it ranks on the same
+ * history-adjusted effective metrics used by the plan's ranking.
+ */
+function evaluationComparator(
+  taskKind: string,
+  stats: AdaptiveRoutingStats | undefined,
+): (
+  a: RoutingDecisionRecord["evaluations"][number],
+  b: RoutingDecisionRecord["evaluations"][number],
+) => number {
+  if (!stats) return compareEvaluation;
+  const index = indexAdaptiveStats(stats);
+  const metricsFor = (
+    evaluation: RoutingDecisionRecord["evaluations"][number],
+  ) =>
+    effectiveRoutingMetrics(
+      {
+        qualityScore: evaluation.expectedQualityScore,
+        costUsd: evaluation.expectedCostUsd,
+        latencyMs: evaluation.expectedLatencyMs,
+      },
+      index.get(
+        adaptiveAggregateKey(
+          evaluation.executorId,
+          taskKind,
+          evaluation.providerId,
+        ),
+      ),
+    );
+  return (a, b) => {
+    const am = metricsFor(a);
+    const bm = metricsFor(b);
+    return (
+      EXECUTOR_KIND_RANK[a.executorKind] - EXECUTOR_KIND_RANK[b.executorKind] ||
+      bm.qualityScore - am.qualityScore ||
+      am.costUsd - bm.costUsd ||
+      am.latencyMs - bm.latencyMs ||
+      a.executorId.localeCompare(b.executorId)
+    );
+  };
 }
 
 const EXECUTOR_KIND_RANK: Record<ExecutorDescriptor["kind"], number> = {

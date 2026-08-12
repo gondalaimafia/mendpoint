@@ -392,6 +392,76 @@ describe("policy router runtime evidence", () => {
     expect(runtime.replay(prepared.envelopeId).matches).toBe(true);
   });
 
+  it("learns from recorded outcomes to prefer an out-performing model", () => {
+    const store = new InMemoryRouterEvidenceStore();
+    const breaker = new ExecutorCircuitBreaker();
+    const runtime = new PolicyRouterRuntime(store, breaker, { adaptive: true });
+
+    const strong = executor("model-strong", { qualityScore: 0.9 });
+    const learns = executor("model-learns", { qualityScore: 0.85 });
+
+    function seedTask(id: string): RouterTaskSpec {
+      return { ...task(), taskId: id, idempotencyKey: `${id}-route` };
+    }
+    function seed(exec: ExecutorDescriptor, id: string, succeed: boolean): void {
+      const prepared = runtime.prepare({
+        task: seedTask(id),
+        policy: policy(),
+        registry: registry(exec),
+        remainingBudgetUsd: 5,
+        decidedAt,
+      });
+      runtime.recordOutcome(prepared.envelopeId, {
+        idempotencyKey: `${id}-attempt`,
+        executorId: exec.executorId,
+        providerId: exec.providerId,
+        outcome: succeed ? "succeeded" : "failed",
+        startedAt: "2026-08-01T12:00:01.000Z",
+        completedAt: "2026-08-01T12:00:03.000Z",
+        actualLatencyMs: 2_000,
+        actualCostUsd: 0.5,
+        ...(succeed ? { actualQualityScore: 0.95 } : { errorCode: "invalid_request" as const }),
+        verification: {
+          verdict: succeed ? "passed" : "failed",
+          evidenceArtifactIds: [`verify-${id}`],
+          verifierId: "warden-verifier",
+        },
+      });
+    }
+
+    for (let i = 1; i <= 4; i += 1) seed(learns, `learns-${i}`, true);
+    for (let i = 1; i <= 3; i += 1) seed(strong, `strong-${i}`, false);
+
+    const finalInput = {
+      task: seedTask("final-decision"),
+      policy: policy(),
+      registry: registry(strong, learns),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    };
+
+    const adaptivePrepared = runtime.prepare(finalInput);
+    expect(adaptivePrepared.selectedExecutorId).toBe("model-learns");
+    expect(runtime.replay(adaptivePrepared.envelopeId).matches).toBe(true);
+
+    // Flag off ignores the recorded history entirely and stays byte-identical
+    // to routing with no history at all.
+    const offRuntime = new PolicyRouterRuntime(store, breaker, { adaptive: false });
+    const offPrepared = offRuntime.prepare(finalInput);
+    expect(offPrepared.selectedExecutorId).toBe("model-strong");
+
+    const pristine = new PolicyRouterRuntime(
+      new InMemoryRouterEvidenceStore(),
+      new ExecutorCircuitBreaker(),
+      { adaptive: false },
+    ).prepare(finalInput);
+    expect(offPrepared.envelopeId).toBe(pristine.envelopeId);
+    expect(offPrepared.evidence.prepared.decision.decisionId).toBe(
+      pristine.evidence.prepared.decision.decisionId,
+    );
+    expect(offPrepared.evidence.prepared.adaptiveStatsSnapshot).toBeUndefined();
+  });
+
   it("rejects noncanonical policy timestamps", () => {
     const runtime = new PolicyRouterRuntime(
       new InMemoryRouterEvidenceStore(),

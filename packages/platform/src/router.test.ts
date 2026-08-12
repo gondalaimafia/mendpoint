@@ -8,6 +8,10 @@ import {
   type RouterPolicySnapshot,
   type RouterTaskSpec,
 } from "./router.js";
+import type {
+  AdaptiveRoutingStats,
+  RouterOutcomeAggregate,
+} from "./router-adaptive.js";
 
 const decidedAt = new Date("2026-08-01T12:00:00.000Z");
 
@@ -338,6 +342,112 @@ describe("Gate 7 policy router", () => {
     if (outcome.action !== "human_handoff") throw new Error("expected handoff");
     expect(outcome.handoff.reason).toBe("no_eligible_executor");
     expect(outcome.decision.selectedExecutorId).toBeNull();
+  });
+
+  it("reproduces the static ranking on a cold-start adaptive history", () => {
+    const shared = {
+      task: task(),
+      policy: policy(),
+      registry: registry(
+        executor("executor-a", { qualityScore: 0.9 }),
+        executor("executor-b", { qualityScore: 0.85 }),
+      ),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    };
+
+    const staticOutcome = routeTask(shared);
+    const coldStart = routeTask({ ...shared, adaptiveStats: [] });
+
+    if (staticOutcome.action !== "execute" || coldStart.action !== "execute") {
+      throw new Error("expected execution");
+    }
+    expect(coldStart.plan.primary.executorId).toBe(
+      staticOutcome.plan.primary.executorId,
+    );
+    expect(coldStart.decision).toEqual(staticOutcome.decision);
+  });
+
+  it("prefers an out-performing model once history favors it", () => {
+    function aggregate(
+      executorId: string,
+      samples: number,
+      acceptedSamples: number,
+    ): RouterOutcomeAggregate {
+      return {
+        executorId,
+        taskKind: "api-migration",
+        providerId: `provider-${executorId}`,
+        samples,
+        acceptedSamples,
+        costSamples: 0,
+        totalCostUsd: 0,
+        latencySamples: 0,
+        totalLatencyMs: 0,
+      };
+    }
+    const shared = {
+      task: task(),
+      policy: policy(),
+      registry: registry(
+        executor("executor-high", { qualityScore: 0.9 }),
+        executor("executor-learn", { qualityScore: 0.85 }),
+      ),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    };
+
+    const staticOutcome = routeTask(shared);
+    if (staticOutcome.action !== "execute") throw new Error("expected execution");
+    expect(staticOutcome.plan.primary.executorId).toBe("executor-high");
+
+    const history: AdaptiveRoutingStats = [
+      aggregate("executor-high", 8, 0),
+      aggregate("executor-learn", 8, 8),
+    ];
+    const adaptiveOutcome = routeTask({ ...shared, adaptiveStats: history });
+    if (adaptiveOutcome.action !== "execute") throw new Error("expected execution");
+    expect(adaptiveOutcome.plan.primary.executorId).toBe("executor-learn");
+    expect(adaptiveOutcome.plan.fallbacks[0]?.executorId).toBe("executor-high");
+  });
+
+  it("never lets adaptive history override a policy gate", () => {
+    // executor-learn is below the quality gate; a perfect history cannot make it
+    // eligible, and adaptive ordering only re-orders eligible candidates.
+    const history: AdaptiveRoutingStats = [
+      {
+        executorId: "executor-learn",
+        taskKind: "api-migration",
+        providerId: "provider-executor-learn",
+        samples: 20,
+        acceptedSamples: 20,
+        costSamples: 0,
+        totalCostUsd: 0,
+        latencySamples: 0,
+        totalLatencyMs: 0,
+      },
+    ];
+    const outcome = routeTask({
+      task: task(),
+      policy: policy(),
+      registry: registry(
+        executor("executor-high", { qualityScore: 0.9 }),
+        executor("executor-learn", { qualityScore: 0.2 }),
+      ),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+      adaptiveStats: history,
+    });
+    if (outcome.action !== "execute") throw new Error("expected execution");
+    expect(outcome.plan.primary.executorId).toBe("executor-high");
+    expect(
+      outcome.decision.evaluations.find(
+        (candidate) => candidate.executorId === "executor-learn",
+      )?.reasons,
+    ).toContain("quality_below_minimum");
   });
 
   it("rejects malformed runtime policy values before evaluating executors", () => {
