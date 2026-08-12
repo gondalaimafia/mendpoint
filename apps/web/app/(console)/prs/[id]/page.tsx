@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { ConsoleShell } from "../../components/console/console-shell";
-import { PrDetailView } from "../../components/console/pr-detail-view";
-import { findPullRequest } from "../../components/console/fixtures";
+import { PrDetailView } from "../../../components/console/pr-detail-view";
+import { findPullRequest } from "../../../components/console/fixtures";
 
 export const metadata: Metadata = { title: "Pull request review" };
 
@@ -15,9 +14,5 @@ export default async function PullRequestDetailPage({
   const pr = findPullRequest(id);
   if (!pr) notFound();
 
-  return (
-    <ConsoleShell view="prs">
-      <PrDetailView pr={pr} />
-    </ConsoleShell>
-  );
+  return <PrDetailView pr={pr} />;
 }

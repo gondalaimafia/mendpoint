@@ -62,13 +62,18 @@ export function AppShell({
   view,
   onNavigate,
   onPrimary,
+  primaryLabel,
+  primaryIcon,
   children,
 }: {
   view: string;
   onNavigate: (id: string) => void;
   onPrimary?: () => void;
+  primaryLabel?: string;
+  primaryIcon?: (props: IconProps) => React.JSX.Element;
   children: React.ReactNode;
 }) {
+  const PrimaryIcon = primaryIcon;
   return (
     <div className="ds-shell">
       <aside className="ds-shell__rail">
@@ -117,7 +122,7 @@ export function AppShell({
         </div>
       </aside>
 
-      <main className="ds-shell__main">
+      <main id="main" className="ds-shell__main">
         <header className="ds-shell__topbar">
           <div className="ds-shell__search">
             <span className="ds-shell__search-icon">
@@ -138,14 +143,16 @@ export function AppShell({
             >
               <BellIcon size={16} />
             </button>
-            <button
-              type="button"
-              className="ds-btn ds-btn--primary indigo-glow"
-              onClick={onPrimary}
-            >
-              <GitPullRequestIcon size={15} />
-              Open all PRs
-            </button>
+            {primaryLabel && (
+              <button
+                type="button"
+                className="ds-btn ds-btn--primary indigo-glow"
+                onClick={onPrimary}
+              >
+                {PrimaryIcon && <PrimaryIcon size={15} />}
+                {primaryLabel}
+              </button>
+            )}
           </div>
         </header>
         <div className="ds-shell__body">{children}</div>

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono, Sora } from "next/font/google";
 import type { ReactNode } from "react";
 import "./globals.css";
-import { Nav } from "./nav";
+import { AppChrome } from "./app-chrome";
 
 const inter = Inter({ display: "swap", subsets: ["latin"], variable: "--font-inter" });
 const sora = Sora({ display: "swap", subsets: ["latin"], variable: "--font-sora" });
@@ -41,12 +41,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <a className="skip-link" href="#main">
           Skip to content
         </a>
-        <div className="app-shell">
-          <Nav />
-          <main id="main" className="app-content">
-            {children}
-          </main>
-        </div>
+        <AppChrome>{children}</AppChrome>
       </body>
     </html>
   );

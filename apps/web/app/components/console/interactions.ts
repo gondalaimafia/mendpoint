@@ -20,6 +20,11 @@ export const SETTINGS_SAVED_TOAST: ToastPayload = {
   description: "Spec source and pull request defaults updated",
 };
 
+export const ANALYZE_TOAST: ToastPayload = {
+  title: "Analysis started",
+  description: "Warden is re-scanning the latest spec diff",
+};
+
 /** Confirm handler for the "Open all PRs" alert dialog. */
 export function confirmOpenAllPrs(): void {
   pushToast(OPEN_ALL_TOAST);
@@ -33,4 +38,9 @@ export function approveAndMerge(prNumber: number): void {
 /** Handler for the settings "Save changes" primary action. */
 export function saveSettings(): void {
   pushToast(SETTINGS_SAVED_TOAST);
+}
+
+/** Handler for the "Analyze a change" primary action on the changes overview. */
+export function analyzeChange(): void {
+  pushToast(ANALYZE_TOAST);
 }

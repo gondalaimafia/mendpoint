@@ -2,10 +2,12 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// The console views navigate with next/link + next/navigation; stub both so the
-// presentational output can be rendered to static markup in a node environment.
+// The console views + shell use next/navigation; stub it. `nav.pathname` is
+// mutable so each test can render the shell for a specific console route.
+const nav = vi.hoisted(() => ({ pathname: "/prs" }));
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: () => {}, replace: () => {}, prefetch: () => {} }),
+  usePathname: () => nav.pathname,
 }));
 vi.mock("next/link", () => ({
   default: ({
@@ -22,55 +24,76 @@ import { ChangesView } from "./changes-view";
 import { PrsView } from "./prs-view";
 import { PrDetailView } from "./pr-detail-view";
 import { SettingsView } from "./settings-view";
+import { ConsoleShell } from "./console-shell";
 import { AlertDialog } from "./alert-dialog";
-import { AppShell } from "../ds/index";
+import { AppShell, GitPullRequestIcon } from "../ds/index";
 import { PULL_REQUESTS, findPullRequest } from "./fixtures";
-import {
-  toastStore,
-  Toaster,
-  pushToast,
-} from "./toast";
+import { toastStore, Toaster, pushToast } from "./toast";
 import {
   OPEN_ALL_TOAST,
+  ANALYZE_TOAST,
   confirmOpenAllPrs,
   approveAndMerge,
+  analyzeChange,
 } from "./interactions";
 
 function countGlow(markup: string): number {
   return markup.match(/indigo-glow/g)?.length ?? 0;
 }
 
-describe("DS3 console views — indigo CTA discipline", () => {
-  it("keeps at most one indigo-glow CTA per view, and exactly one on the primary-action views", () => {
-    const changes = renderToStaticMarkup(<ChangesView />);
-    const prs = renderToStaticMarkup(<PrsView prs={PULL_REQUESTS} />);
-    const detail = renderToStaticMarkup(
-      <PrDetailView pr={findPullRequest("4821")!} />,
-    );
-    const settings = renderToStaticMarkup(<SettingsView />);
+/** Render a full console screen (contextual shell CTA + view) for a route. */
+function renderScreen(pathname: string, view: React.ReactElement): string {
+  nav.pathname = pathname;
+  return renderToStaticMarkup(<ConsoleShell>{view}</ConsoleShell>);
+}
 
-    // Views without their own primary action defer the single screen CTA to the
-    // shell topbar ("Open all PRs"); they author no indigo of their own.
-    expect(countGlow(changes)).toBe(0);
-    expect(countGlow(prs)).toBe(0);
-
-    // The two views that own a primary action render exactly one indigo CTA.
-    expect(countGlow(detail)).toBe(1);
-    expect(countGlow(settings)).toBe(1);
-
-    // No view ever double-fills indigo.
-    for (const markup of [changes, prs, detail, settings]) {
-      expect(countGlow(markup)).toBeLessThanOrEqual(1);
-    }
+describe("DS4 console — one indigo CTA per screen", () => {
+  it("gives the view bodies no indigo of their own", () => {
+    // Every console primary action now lives in the shell topbar, so no view
+    // authors an indigo button — not even the detail/settings screens.
+    expect(countGlow(renderToStaticMarkup(<ChangesView />))).toBe(0);
+    expect(countGlow(renderToStaticMarkup(<PrsView prs={PULL_REQUESTS} />))).toBe(0);
+    expect(
+      countGlow(renderToStaticMarkup(<PrDetailView pr={findPullRequest("4821")!} />)),
+    ).toBe(0);
+    expect(countGlow(renderToStaticMarkup(<SettingsView />))).toBe(0);
   });
 
-  it("gives the shell frame exactly one indigo-glow CTA", () => {
-    const shell = renderToStaticMarkup(
+  it("renders exactly one indigo-glow per console screen (shell + view combined)", () => {
+    expect(countGlow(renderScreen("/changes", <ChangesView />))).toBe(1);
+    expect(countGlow(renderScreen("/prs", <PrsView prs={PULL_REQUESTS} />))).toBe(1);
+    expect(
+      countGlow(renderScreen("/prs/4821", <PrDetailView pr={findPullRequest("4821")!} />)),
+    ).toBe(1);
+    expect(countGlow(renderScreen("/settings", <SettingsView />))).toBe(1);
+  });
+
+  it("labels the topbar CTA for the route's primary action", () => {
+    expect(renderScreen("/changes", <div />)).toContain("Analyze a change");
+    expect(renderScreen("/prs", <div />)).toContain("Open all PRs");
+    expect(renderScreen("/prs/4821", <div />)).toContain("Approve &amp; merge");
+    expect(renderScreen("/settings", <div />)).toContain("Save");
+  });
+
+  it("renders the shell CTA only when a primary action is supplied", () => {
+    const withCta = renderToStaticMarkup(
+      <AppShell
+        view="prs"
+        onNavigate={() => {}}
+        primaryLabel="Open all PRs"
+        primaryIcon={GitPullRequestIcon}
+        onPrimary={() => {}}
+      >
+        <div />
+      </AppShell>,
+    );
+    const withoutCta = renderToStaticMarkup(
       <AppShell view="changes" onNavigate={() => {}}>
         <div />
       </AppShell>,
     );
-    expect(countGlow(shell)).toBe(1);
+    expect(countGlow(withCta)).toBe(1);
+    expect(countGlow(withoutCta)).toBe(0);
   });
 });
 
@@ -94,23 +117,26 @@ describe("DS3 console views — content fidelity", () => {
     expect(html).toContain("TRANSFORMER");
   });
 
-  it("renders the PR review with an amber alert and the merge CTA", () => {
-    const html = renderToStaticMarkup(
-      <PrDetailView pr={findPullRequest("4821")!} />,
-    );
-    expect(html).toContain("Breaking change · POST /v1/charges");
-    expect(html).toContain("Approve &amp; merge");
-    expect(html).toContain("Open on GitHub");
-    expect(html).toContain("ds-alert");
+  it("renders the PR review with an amber alert and Open on GitHub; the merge CTA is the shell topbar", () => {
+    const view = renderToStaticMarkup(<PrDetailView pr={findPullRequest("4821")!} />);
+    expect(view).toContain("Breaking change · POST /v1/charges");
+    expect(view).toContain("Open on GitHub");
+    expect(view).toContain("ds-alert");
+    // The indigo primary action moved out of the view body into the shell.
+    expect(countGlow(view)).toBe(0);
+    const screen = renderScreen("/prs/4821", <PrDetailView pr={findPullRequest("4821")!} />);
+    expect(screen).toContain("Approve &amp; merge");
   });
 
-  it("renders the settings form with both cards and Save/Cancel", () => {
-    const html = renderToStaticMarkup(<SettingsView />);
-    expect(html).toContain("SPEC SOURCE");
-    expect(html).toContain("PULL REQUESTS");
-    expect(html).toContain("Open PRs as drafts");
-    expect(html).toContain("Save changes");
-    expect(html).toContain("Cancel");
+  it("renders the settings form with both cards and a ghost Cancel; Save is the shell CTA", () => {
+    const view = renderToStaticMarkup(<SettingsView />);
+    expect(view).toContain("SPEC SOURCE");
+    expect(view).toContain("PULL REQUESTS");
+    expect(view).toContain("Open PRs as drafts");
+    expect(view).toContain("Cancel");
+    expect(countGlow(view)).toBe(0);
+    const screen = renderScreen("/settings", <SettingsView />);
+    expect(screen).toContain("Save");
   });
 });
 
@@ -149,6 +175,14 @@ describe("DS3 interactions — AlertDialog + toast", () => {
     const toasts = toastStore.getSnapshot();
     expect(toasts).toHaveLength(1);
     expect(toasts[0]!.title).toBe("PR #4821 merged");
+  });
+
+  it("fires the analyze toast from the changes primary action", () => {
+    analyzeChange();
+    const toasts = toastStore.getSnapshot();
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]!.title).toBe("Analysis started");
+    expect(ANALYZE_TOAST.title).toBe("Analysis started");
   });
 
   it("renders whatever the toast store is showing", () => {

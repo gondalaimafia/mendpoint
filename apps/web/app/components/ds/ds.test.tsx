@@ -9,6 +9,7 @@ import { DiffView } from "./diff-view.js";
 import { Terminal } from "./terminal.js";
 import { PullRequestCard } from "./pull-request-card.js";
 import { AppShell } from "./app-shell.js";
+import { GitPullRequestIcon } from "./icons.js";
 
 describe("DS2 signature components", () => {
   it("Logo reuses the approved brand mark and sizes the wordmark at 0.78x", () => {
@@ -113,9 +114,15 @@ describe("DS2 signature components", () => {
     expect(html).toContain("7 files");
   });
 
-  it("AppShell frames a 244px rail and 64px topbar with one primary CTA", () => {
+  it("AppShell frames a 244px rail and 64px topbar with the contextual primary CTA", () => {
     const html = renderToStaticMarkup(
-      <AppShell view="prs" onNavigate={() => {}} onPrimary={() => {}}>
+      <AppShell
+        view="prs"
+        onNavigate={() => {}}
+        onPrimary={() => {}}
+        primaryLabel="Open all PRs"
+        primaryIcon={GitPullRequestIcon}
+      >
         <div>body</div>
       </AppShell>,
     );
@@ -123,9 +130,19 @@ describe("DS2 signature components", () => {
     expect(html).toContain("ds-shell__topbar");
     // Active rail row reflects the current view.
     expect(html).toContain("ds-shell__item--active");
-    // Exactly one indigo-glow primary button in the frame.
+    // Exactly one indigo-glow primary button in the frame — the CTA supplied.
     expect(html.match(/indigo-glow/g)?.length).toBe(1);
     expect(html).toContain("Open all PRs");
     expect(html).toContain("body");
+  });
+
+  it("AppShell renders no primary CTA when none is supplied", () => {
+    const html = renderToStaticMarkup(
+      <AppShell view="changes" onNavigate={() => {}}>
+        <div>body</div>
+      </AppShell>,
+    );
+    expect(html).toContain("ds-shell__topbar");
+    expect(html.match(/indigo-glow/g)?.length ?? 0).toBe(0);
   });
 });

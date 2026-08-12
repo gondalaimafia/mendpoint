@@ -2,13 +2,13 @@
 
 import React from "react";
 import { CheckIcon, ChevronDownIcon, SectionLabel } from "../ds/index.js";
-import { saveSettings } from "./interactions.js";
 
 /**
  * `/settings` — workspace settings, capped at 640px. Two cards: spec source (a
  * mono URL input and a target-version select) and pull requests (a "drafts"
- * checkbox with its consequence line and two switches). Save is the single
- * indigo CTA; Cancel is ghost. Save fires a confirmation toast.
+ * checkbox with its consequence line and two switches). Cancel is a ghost button
+ * in the footer; the single indigo primary action for this screen ("Save") lives
+ * in the console topbar, wired by `ConsoleShell` to fire the confirmation toast.
  */
 export function SettingsView() {
   const [drafts, setDrafts] = React.useState(true);
@@ -106,13 +106,6 @@ export function SettingsView() {
         </div>
 
         <div className="ds-form-foot">
-          <button
-            type="button"
-            className="ds-btn ds-btn--primary indigo-glow"
-            onClick={saveSettings}
-          >
-            Save changes
-          </button>
           <button type="button" className="ds-btn ds-btn--ghost">
             Cancel
           </button>

@@ -9,13 +9,11 @@ import {
   CheckCircleIcon,
   DiffView,
   ExternalLinkIcon,
-  GitMergeIcon,
   StatusPill,
   WandSparklesIcon,
   type DiffHunk,
 } from "../ds/index.js";
 import { PR_DETAIL_CHECKS, type PullRequest } from "./fixtures.js";
-import { approveAndMerge } from "./interactions.js";
 
 const CLIENT_HUNKS: DiffHunk[] = [
   {
@@ -40,11 +38,11 @@ const SESSION_HUNKS: DiffHunk[] = [
 ];
 
 /**
- * `/prs/[id]` — one PR in review. Back link, a title row with the `StatusPill`,
- * an outline "Open on GitHub" and the single indigo "Approve & merge" CTA, then
- * an amber alert naming the breaking change. The body is a two-column grid:
- * stacked `DiffView`s on the left, checks and provenance cards on the right.
- * Approve & merge fires the success toast.
+ * `/prs/[id]` — one PR in review. Back link, a title row with the `StatusPill`
+ * and an outline "Open on GitHub", then an amber alert naming the breaking
+ * change. The body is a two-column grid: stacked `DiffView`s on the left, checks
+ * and provenance cards on the right. The single indigo primary action for this
+ * screen ("Approve & merge") lives in the console topbar, wired by `ConsoleShell`.
  */
 export function PrDetailView({ pr }: { pr: PullRequest }) {
   return (
@@ -68,14 +66,6 @@ export function PrDetailView({ pr }: { pr: PullRequest }) {
           <button type="button" className="ds-btn ds-btn--outline">
             <ExternalLinkIcon size={15} />
             Open on GitHub
-          </button>
-          <button
-            type="button"
-            className="ds-btn ds-btn--primary indigo-glow"
-            onClick={() => approveAndMerge(pr.number)}
-          >
-            <GitMergeIcon size={15} />
-            Approve &amp; merge
           </button>
         </div>
       </header>
