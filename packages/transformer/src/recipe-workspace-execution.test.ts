@@ -8,6 +8,7 @@ import {
   createRecipeVerificationControl,
   executeRecipeInWorkspace,
   restoreRecipeExecutionInWorkspace,
+  runRecipeVerificationGate,
   type ExactSourceSnapshot,
   type RecipeCommandInvocation,
   type RecipeCommandRunner,
@@ -336,6 +337,165 @@ describe("bounded recipe workspace execution", () => {
       }),
     })).rejects.toMatchObject({ code: "recipe_execution_fence_stale" });
 
+    expect(runnerCalls).toBe(0);
+  });
+
+  it("replays an authenticated adaptive gate prefix and executes only the suffix", async () => {
+    const paths = fixture();
+    const snapshot = source();
+    const recipe = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+    const application = applyRecipe(recipe, snapshot.files);
+    const adaptiveFiles = {
+      ...application.files,
+      "package.json": `${JSON.stringify({
+        ...JSON.parse(application.files["package.json"]!),
+        mendpointAdaptiveReview: "fixed",
+      }, null, 2)}\n`,
+    };
+    let runnerCalls = 0;
+    const controlledIndexes: number[] = [];
+    const verificationControl = createRecipeVerificationControl({
+      restoredFiles: adaptiveFiles,
+      restoredFileModes: snapshot.fileModes,
+      recoveredResults: [replayed(application.verificationCommands[0]!, {
+        exitCode: 0,
+        stdout: "replayed adaptive prefix\n",
+        stderr: "",
+      })],
+      execute: async ({ index, run }) => {
+        controlledIndexes.push(index);
+        return { result: await run(), provenance: { kind: "executed" } };
+      },
+    });
+
+    const result = await runRecipeVerificationGate({
+      files: adaptiveFiles,
+      fileModes: snapshot.fileModes,
+      recipe,
+      tempRoot: paths.tempRoot,
+      commandRunner: async () => {
+        runnerCalls++;
+        return { exitCode: 0, stdout: "adaptive suffix verified\n", stderr: "" };
+      },
+      verificationControl,
+    });
+
+    expect(result.passed).toBe(true);
+    expect(runnerCalls).toBe(1);
+    expect(controlledIndexes).toEqual([1]);
+  });
+
+  it("fails closed on forged or mismatched adaptive gate checkpoints", async () => {
+    const paths = fixture();
+    const snapshot = source();
+    const recipe = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+    const application = applyRecipe(recipe, snapshot.files);
+    let runnerCalls = 0;
+    const base = {
+      files: application.files,
+      fileModes: snapshot.fileModes,
+      recipe,
+      tempRoot: paths.tempRoot,
+      commandRunner: async () => {
+        runnerCalls++;
+        return { exitCode: 0, stdout: "unexpected", stderr: "" };
+      },
+    } as const;
+
+    await expect(runRecipeVerificationGate({
+      ...base,
+      verificationControl: {
+        restoredFiles: application.files,
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [],
+        execute: async ({ run }) => ({
+          result: await run(), provenance: { kind: "executed" },
+        }),
+      },
+    })).rejects.toThrow("recipe_execution_verification_control_untrusted");
+    expect(runnerCalls).toBe(0);
+
+    await expect(runRecipeVerificationGate({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: { ...application.files, "package.json": "{}\n" },
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [],
+        execute: async ({ run }) => ({
+          result: await run(), provenance: { kind: "executed" },
+        }),
+      }),
+    })).rejects.toThrow("recipe_execution_checkpoint_restore_mismatch");
+    expect(runnerCalls).toBe(0);
+
+    await expect(runRecipeVerificationGate({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: application.files,
+        restoredFileModes: {
+          ...snapshot.fileModes,
+          "package.json": snapshot.fileModes?.["package.json"] === "100755" ? "100644" : "100755",
+        },
+        recoveredResults: [],
+        execute: async ({ run }) => ({
+          result: await run(), provenance: { kind: "executed" },
+        }),
+      }),
+    })).rejects.toThrow("recipe_execution_checkpoint_restore_mismatch");
+    expect(runnerCalls).toBe(0);
+
+    await expect(runRecipeVerificationGate({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: application.files,
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [replayed(application.verificationCommands[1]!, {
+          exitCode: 0,
+          stdout: "wrong command replay",
+          stderr: "",
+        })],
+        execute: async ({ run }) => ({
+          result: await run(), provenance: { kind: "executed" },
+        }),
+      }),
+    })).rejects.toThrow("recipe_execution_command_provenance_invalid");
+    expect(runnerCalls).toBe(0);
+
+    await expect(runRecipeVerificationGate({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: application.files,
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [],
+        execute: async () => replayed(application.verificationCommands[1]!, {
+          exitCode: 0,
+          stdout: "wrong controlled command replay",
+          stderr: "",
+        }),
+      }),
+    })).rejects.toThrow("recipe_execution_command_provenance_invalid");
+    expect(runnerCalls).toBe(0);
+
+    const failed = await runRecipeVerificationGate({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: application.files,
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [replayed(application.verificationCommands[0]!, {
+          exitCode: 9,
+          stdout: "",
+          stderr: "persisted adaptive failure",
+        })],
+        execute: async () => {
+          throw new Error("later verifier must not run");
+        },
+      }),
+    });
+    expect(failed).toMatchObject({
+      passed: false,
+      failingCommandId: application.verificationCommands[0]!.id,
+    });
+    expect(failed.output).toContain("persisted adaptive failure");
     expect(runnerCalls).toBe(0);
   });
 

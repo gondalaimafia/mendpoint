@@ -785,6 +785,8 @@ export type RunRecipeVerificationGateInput = Readonly<{
   commandRunner?: RecipeCommandRunner;
   commandTimeoutMs?: number;
   tempRoot?: string;
+  /** Authenticated adaptive workspace and verifier prefix restored from a checkpoint. */
+  verificationControl?: RecipeVerificationControl;
 }>;
 
 const GATE_OUTPUT_MAX_CHARS = 8_192;
@@ -804,6 +806,23 @@ export async function runRecipeVerificationGate(
     throw new Error("recipe_execution_command_timeout_invalid");
   }
   const recipe = resolveRecipe(input.recipe);
+  const verificationControl = input.verificationControl;
+  if (verificationControl && !TRUSTED_VERIFICATION_CONTROLS.has(verificationControl)) {
+    throw new Error("recipe_execution_verification_control_untrusted");
+  }
+  const expectedModes = normalizeRecipeFileModes(input.files, input.fileModes);
+  if (verificationControl) {
+    validateFiles(verificationControl.restoredFiles);
+    const restoredModes = normalizeRecipeFileModes(
+      verificationControl.restoredFiles,
+      verificationControl.restoredFileModes,
+    );
+    if (stableJson(verificationControl.restoredFiles) !== stableJson(input.files) ||
+        stableJson(restoredModes) !== stableJson(expectedModes) ||
+        verificationControl.recoveredResults.length > recipe.verificationCommands.length) {
+      throw new Error("recipe_execution_checkpoint_restore_mismatch");
+    }
+  }
   const implicatedPaths = Object.freeze(
     recipe.allowedPaths.filter((path) => input.files[path] !== undefined),
   );
@@ -811,11 +830,26 @@ export async function runRecipeVerificationGate(
   let workspace: string | undefined;
   try {
     workspace = createWorkspace(input.tempRoot);
-    materializeFiles(workspace, input.files, input.fileModes);
-    for (const command of recipe.verificationCommands) {
+    materializeFiles(
+      workspace,
+      verificationControl?.restoredFiles ?? input.files,
+      verificationControl?.restoredFileModes ?? expectedModes,
+    );
+    for (const [index, command] of recipe.verificationCommands.entries()) {
       const invocation = allowlistedInvocation(input.recipe, command, workspace, timeout);
-      const result = await runner(invocation);
-      if (!Number.isSafeInteger(result.exitCode)) throw new Error("recipe_execution_command_result_invalid");
+      let runs = 0;
+      const run = async (): Promise<RecipeCommandResult> => {
+        runs++;
+        if (runs > 1) throw new Error("recipe_execution_command_replayed_in_process");
+        return await runner(invocation);
+      };
+      const recovered = verificationControl?.recoveredResults[index];
+      const controlled = recovered ?? (verificationControl
+        ? await verificationControl.execute({ index, command, invocation, run })
+        : { result: await run(), provenance: { kind: "executed" as const } });
+      const normalized = snapshotControlledCommandResult(controlled);
+      commandEvidence(command, normalized.result, normalized.provenance);
+      const result = normalized.result;
       if (result.exitCode !== 0) {
         const output = `${result.stdout}\n${result.stderr}`.slice(0, GATE_OUTPUT_MAX_CHARS);
         return deepFreeze({ passed: false, failingCommandId: command.id, output, implicatedPaths });
