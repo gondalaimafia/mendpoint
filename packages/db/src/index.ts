@@ -2738,11 +2738,13 @@ export type {
 export {
   addLearningDatasetMember,
   admitLearningRecord,
+  countLearningDatasetMembers,
   createLearningDatasetVersion,
   deleteLearningRecord,
   findActiveLearningConsent,
   getLatestLearningDatasetVersion,
   getLatestSealedLearningDatasetVersion,
+  getLearningDatasetVersion,
   getLearningRecord,
   getLearningRecordRedactedContent,
   grantLearningConsent,
@@ -2751,6 +2753,20 @@ export {
   revokeLearningConsent,
   sealLearningDatasetVersion,
 } from "./learning.js";
+export {
+  LEARNING_CORPUS_SCHEMA_VERSION,
+  buildLearningCorpus,
+  formatLearningCorpusStats,
+  serializeLearningCorpusJsonl,
+} from "./learning-corpus.js";
+export type {
+  BuildLearningCorpusInput,
+  LearningCorpusEdit,
+  LearningCorpusExample,
+  LearningCorpusExclusionReason,
+  LearningCorpusResult,
+  LearningCorpusStats,
+} from "./learning-corpus.js";
 export {
   addWardenCampaignTarget,
   claimReadyWardenTargets,
