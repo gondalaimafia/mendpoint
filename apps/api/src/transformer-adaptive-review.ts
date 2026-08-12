@@ -13,6 +13,7 @@ import {
   recordAudit,
   requestAdaptiveCandidateRegeneration,
   reviewAdaptiveCandidate,
+  signOffAdaptiveEscalation,
   type AppDb,
   type AdaptiveCandidateHistoryCursor,
   type TransformerAdaptiveCandidateRecord,
@@ -92,6 +93,10 @@ const ADAPTIVE_REVIEW_ERRORS = [
     "transformer_adaptive_candidate_review_rationale_invalid",
     "transformer_adaptive_candidate_reviewer_invalid",
     "transformer_adaptive_candidate_lineage_conflict",
+    "transformer_adaptive_candidate_blocked",
+    "transformer_adaptive_candidate_escalation_required",
+    "transformer_adaptive_candidate_escalation_not_required",
+    "transformer_adaptive_candidate_escalation_conflict",
     "warden_candidate_delivery_conflict",
   ].map((internalCode) => ({ internalCode, status: 409 as const })),
   { internalCode: "transformer_adaptive_candidate_expired", status: 410 },
@@ -167,6 +172,7 @@ function candidateSummary(db: AppDb, tenantId: string, candidate: TransformerAda
     id: candidate.id,
     kind: candidate.kind,
     status: candidate.status,
+    reviewTier: candidate.reviewTier,
     campaignId: candidate.campaignId,
     unitId: candidate.unitId,
     attemptId: candidate.attemptId,
@@ -185,6 +191,11 @@ function candidateSummary(db: AppDb, tenantId: string, candidate: TransformerAda
     reviewerPrincipalId: candidate.reviewerPrincipalId,
     reviewDecision: candidate.reviewDecision,
     reviewRationale: candidate.reviewRationale,
+    escalationReviewerPrincipalId: candidate.escalationReviewerPrincipalId,
+    escalationReviewedAt: candidate.escalationReviewedAt,
+    escalationRationale: candidate.escalationRationale,
+    escalationSignOffRequired:
+      candidate.reviewTier === "escalated" && candidate.escalationReviewerPrincipalId === null,
     supersedesCandidateId: candidate.supersedesCandidateId,
     supersededByCandidateId: candidate.supersededByCandidateId,
     generation: candidate.generation,
@@ -232,9 +243,13 @@ function reviewResponse(
     id: record.id,
     kind: record.kind,
     status: record.status,
+    reviewTier: record.reviewTier,
     reviewDecision: record.reviewDecision,
     reviewerPrincipalId: record.reviewerPrincipalId,
     reviewedAt: record.reviewedAt,
+    escalationReviewerPrincipalId: record.escalationReviewerPrincipalId,
+    escalationReviewedAt: record.escalationReviewedAt,
+    escalationRationale: record.escalationRationale,
     candidateDigest: record.candidateDigest,
     divergedFromDigest: record.divergedFromDigest,
     failingCommandId: record.failingCommandId,
@@ -406,6 +421,7 @@ function candidateDetailResponse(
     id: record.id,
     kind: record.kind,
     status: record.status,
+    reviewTier: record.reviewTier,
     campaignId: record.campaignId,
     unitId: record.unitId,
     attemptId: record.attemptId,
@@ -422,6 +438,11 @@ function candidateDetailResponse(
     reviewDecision: record.reviewDecision,
     reviewerPrincipalId: record.reviewerPrincipalId,
     reviewRationale: record.reviewRationale,
+    escalationReviewerPrincipalId: record.escalationReviewerPrincipalId,
+    escalationReviewedAt: record.escalationReviewedAt,
+    escalationRationale: record.escalationRationale,
+    escalationSignOffRequired:
+      record.reviewTier === "escalated" && record.escalationReviewerPrincipalId === null,
     supersedesCandidateId: record.supersedesCandidateId,
     supersededByCandidateId: record.supersededByCandidateId,
     generation: record.generation,
@@ -730,6 +751,83 @@ export function registerTransformerAdaptiveReviewRoutes(
       reviewResponse(reviewed, delivery, regeneration),
       delivery || regeneration ? 202 : 200,
     );
+  });
+
+  app.post("/transformer/adaptive-candidates/:id/escalation-sign-off", async (c) => {
+    const principal = c.get("principal");
+    const tenantId = principal?.tenantId;
+    if (!tenantId) return c.json({ error: "unauthorized" }, 401);
+    // The escalation sign-off is itself a direct-human action: same principal
+    // rule as approval. It records the second, distinct sign-off an escalated
+    // candidate requires; it NEVER approves, delivers, or merges anything.
+    const trustPrincipalId = c.get("trustPrincipalId");
+    const trustPrincipal = trustPrincipalId
+      ? getPrincipal(db, tenantId, trustPrincipalId)
+      : undefined;
+    if (!isHumanWardenReviewer(principal, trustPrincipal, tenantId, c.get("apiKeyId"))) {
+      return c.json({ error: "human_review_required" }, 403);
+    }
+    const record = getAdaptiveCandidate(db, tenantId, c.req.param("id"));
+    if (!record) return c.json({ error: "not found" }, 404);
+    const body: { rationale?: unknown } = await c.req
+      .json<{ rationale?: unknown }>()
+      .catch(() => ({}));
+    const rationale = typeof body.rationale === "string" ? body.rationale.trim() : "";
+    if (!rationale || rationale.length > 2_000) {
+      return c.json({ error: "escalation rationale is required and must be at most 2000 characters" }, 400);
+    }
+    if (markExpiredIfDue(db, record, tenantId)) {
+      return c.json({ error: "adaptive_candidate_expired" }, 410);
+    }
+    let signed: TransformerAdaptiveCandidateRecord;
+    db.raw.exec("BEGIN IMMEDIATE");
+    try {
+      signed = signOffAdaptiveEscalation(db, {
+        tenantId,
+        id: record.id,
+        reviewerPrincipalId: principal.id,
+        rationale,
+      });
+      if (signed.status !== "expired") {
+        audit(c, {
+          id: stableAuditId("escalation_sign_off", signed, principal.id),
+          actor: "operator",
+          action: "transformer.adaptive_candidate.escalation_signed_off",
+          resourceType: "transformer_adaptive_candidate",
+          resourceId: record.id,
+          metadata: {
+            product: "transformer",
+            kind: "adaptive",
+            reviewTier: record.reviewTier,
+            divergedFromDigest: record.divergedFromDigest,
+            candidateDigest: record.candidateDigest,
+            escalationReviewerPrincipalId: principal.id,
+            rationale,
+          },
+        });
+      }
+      db.raw.exec("COMMIT");
+    } catch (error) {
+      if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+      return mappedErrorResponse(c, error, ADAPTIVE_REVIEW_ERRORS);
+    }
+    if (signed.status === "expired") {
+      return c.json({ error: "adaptive_candidate_expired" }, 410);
+    }
+    return c.json({
+      id: signed.id,
+      kind: signed.kind,
+      status: signed.status,
+      reviewTier: signed.reviewTier,
+      escalationReviewerPrincipalId: signed.escalationReviewerPrincipalId,
+      escalationReviewedAt: signed.escalationReviewedAt,
+      escalationRationale: signed.escalationRationale,
+      escalationSignOffRequired:
+        signed.reviewTier === "escalated" && signed.escalationReviewerPrincipalId === null,
+      statement:
+        "Recorded a second, distinct human escalation sign-off. Human approval by a " +
+        "different reviewer is still required before any draft is delivered; nothing auto-merges.",
+    });
   });
 
   app.post("/transformer/adaptive-candidates/:id/promote", (c) => {
