@@ -696,3 +696,8 @@ export {
   type ReviewableChangeDelivery,
   type ScmDeliveryProvider,
 } from "./gitlab.js";
+
+export {
+  gitlabAsExactDraftDelivery,
+  type ExactDraftDelivery,
+} from "./gitlab-exact-draft.js";
