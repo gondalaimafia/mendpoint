@@ -22,3 +22,8 @@
 **Mistake:** I treated a diagnostic miss in Chrome's selected Default profile as proof that the ChatGPT extension was not installed.
 **Correction:** Talal confirmed the extension is enabled in both Chrome and Edge.
 **Rule:** Treat a profile-specific extension diagnostic as a connection or profile-selection problem when the user confirms installation. Retry the requested browser connection and diagnose the active profile before asking for reinstall.
+
+### 2026-08-11 — Integrate parallel agent work from current main
+**Mistake:** Parallel Claude and Codex work accumulated on divergent branches and dirty worktrees without one coherent release branch.
+**Correction:** Talal required all work from both agents to be reviewed, merged, and shipped together carefully.
+**Rule:** When parallel agents work on the same product, inventory provenance first, preserve dirty experiments, replay reviewed logical bundles onto current main, run the full combined gate, and ship only through one reviewed release candidate.
