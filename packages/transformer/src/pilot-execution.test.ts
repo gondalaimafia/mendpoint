@@ -6,8 +6,21 @@ import { afterEach, describe, expect, it } from "vitest";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import { createOrganizationConstraintContract } from "./organization-constraints.js";
 import {
+  createTransformerAttemptAuthorizationDigest,
+  createTransformerAttemptCompletionDigest,
+  type TransformerAttemptCompletionIntent,
+} from "./attempt-completion.js";
+import {
+  createTransformerAttemptEffectIdentity,
+  createTransformerCoordinatorCompletionRequestDigest,
+  createTransformerCoordinatorCompletionSlot,
+  type TransformerCandidateSeal,
+} from "./attempt-checkpoint.js";
+import {
+  transformerAttemptCheckpointEnvelopeStorageKey,
   TransformerPilotExecutionStore,
   type TransformerAttemptFailureCode,
+  type TransformerAttemptCheckpointHead,
   type TransformerAttemptLease,
   type TransformerPilotCampaignInput,
   type TransformerPilotUnitInput,
@@ -129,6 +142,34 @@ function mutation(minute: number, key: string) {
     observedAt: time(minute),
     evidenceRefs: [`evidence://operation/${key}`],
     idempotencyKey: key,
+  };
+}
+
+function checkpointHead(
+  lease: TransformerAttemptLease,
+  generation: number,
+  stateCharacter: string,
+): TransformerAttemptCheckpointHead {
+  const head = {
+    schemaVersion: 1,
+    episodeId: `transformer-episode-${"e".repeat(32)}`,
+    stateDigest: digest(stateCharacter),
+    envelopeDigest: digest(stateCharacter === "d" ? "e" : "f"),
+    generation,
+    attemptNumber: lease.attemptNumber,
+    writerLeaseGeneration: lease.leaseGeneration,
+    writerLeaseTokenDigest: lease.leaseTokenDigest,
+  } satisfies Omit<TransformerAttemptCheckpointHead, "envelopeStorageKey">;
+  return {
+    ...head,
+    envelopeStorageKey: transformerAttemptCheckpointEnvelopeStorageKey({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: head.episodeId,
+      generation: head.generation,
+      envelopeDigest: head.envelopeDigest,
+    }),
   };
 }
 
@@ -649,6 +690,692 @@ describe("Transformer pilot execution coordinator", () => {
     expect(store.listRunnableCampaigns("tenant-a")).toEqual([
       runnableCampaign("campaign-a"),
     ]);
+    store.close();
+  });
+
+  it("renews only the exact live lease and persists one idempotent extension", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-renewal-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    let store = new TransformerPilotExecutionStore(path);
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const token = "lease-token-unit-a-renewal-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-renewal-a"),
+      leaseToken: token,
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    })!;
+    const renewalInput = {
+      ...mutation(1, "renew-lease-a"),
+      observedAt: "2026-08-02T08:01:30.000Z",
+      unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: token,
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    };
+
+    const renewed = store.renewAttemptLease(renewalInput);
+    expect(renewed).toEqual({
+      leaseGeneration: lease.leaseGeneration,
+      leaseTokenDigest: lease.leaseTokenDigest,
+      leaseExpiresAt: "2026-08-02T08:02:30.000Z",
+    });
+    expect(store.renewAttemptLease(renewalInput)).toEqual(renewed);
+    expect(() => store.renewAttemptLease({
+      ...renewalInput,
+      idempotencyKey: "renew-lease-stale-token",
+      leaseToken: "lease-token-unit-a-renewal-stale",
+    })).toThrow("transformer_pilot_fence_stale");
+    expect(() => store.renewAttemptLease({
+      ...renewalInput,
+      idempotencyKey: "renew-lease-non-extending",
+      leaseDurationMs: 1_000,
+    })).toThrow("transformer_pilot_lease_renewal_not_extended");
+    expect(store.listExpiredAttempts(time(2), "tenant-a")).toEqual([]);
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.lease_renewed"
+    )).toHaveLength(1);
+    store.close();
+
+    store = new TransformerPilotExecutionStore(path);
+    expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.leaseExpiresAt)
+      .toBe("2026-08-02T08:02:30.000Z");
+    expect(store.listExpiredAttempts("2026-08-02T08:02:29.999Z", "tenant-a")).toEqual([]);
+    expect(store.listExpiredAttempts("2026-08-02T08:02:30.000Z", "tenant-a")).toHaveLength(1);
+    store.close();
+  });
+
+  it("persists only an authenticated checkpoint head across coordinator restart", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-checkpoint-head-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    let store = new TransformerPilotExecutionStore(path);
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-checkpoint-head-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-checkpoint-head"),
+      leaseToken,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const head = checkpointHead(lease, 1, "d");
+
+    expect(store.readAttemptCheckpointHead({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: head.episodeId,
+    })).toBeNull();
+    expect(store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(2, "checkpoint-head-genesis"),
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: null,
+      next: head,
+      gateConfig: gateConfig(),
+    })).toEqual(head);
+    const events = store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.checkpoint_head_advanced"
+    );
+    expect(events).toHaveLength(1);
+    expect(JSON.stringify(events)).not.toContain("ciphertextBase64");
+    expect(JSON.stringify(store.getCampaign("tenant-a", "campaign-a")))
+      .not.toContain("ciphertextBase64");
+    store.close();
+
+    store = new TransformerPilotExecutionStore(path);
+    expect(store.readAttemptCheckpointHead({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: head.episodeId,
+    })).toEqual(head);
+    expect(store.readAttemptCheckpointLease({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: head.episodeId,
+      observedAt: time(3),
+    })).toEqual({
+      attemptNumber: lease.attemptNumber,
+      generation: lease.leaseGeneration,
+      tokenDigest: lease.leaseTokenDigest,
+    });
+    store.close();
+  });
+
+  it("allows exactly one coordinator connection to advance a checkpoint head", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-checkpoint-cas-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    const first = new TransformerPilotExecutionStore(path);
+    const second = new TransformerPilotExecutionStore(path);
+    first.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-checkpoint-cas-000001";
+    const lease = first.claimNextAttempt({
+      ...mutation(1, "claim-checkpoint-cas"),
+      leaseToken,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const winner = checkpointHead(lease, 1, "d");
+    const loser = checkpointHead(lease, 1, "a");
+    const input = {
+      ...mutation(2, "checkpoint-cas-winner"),
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: null,
+      gateConfig: gateConfig(),
+    };
+
+    expect(first.compareAndSwapAttemptCheckpointHead({ ...input, next: winner }))
+      .toEqual(winner);
+    expect(() => second.compareAndSwapAttemptCheckpointHead({
+      ...input,
+      idempotencyKey: "checkpoint-cas-loser",
+      next: loser,
+    })).toThrow("transformer_pilot_checkpoint_head_conflict");
+    expect(second.readAttemptCheckpointHead({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: winner.episodeId,
+    })).toEqual(winner);
+    expect(first.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.checkpoint_head_advanced"
+    )).toHaveLength(1);
+    second.close();
+    first.close();
+  });
+
+  it("atomically completes an attempt with its terminal checkpoint head", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-checkpoint-terminal-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-checkpoint-terminal"),
+      leaseToken,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const current = checkpointHead(lease, 1, "d");
+    store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(2, "checkpoint-terminal-current"),
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: null,
+      next: current,
+      gateConfig: gateConfig(),
+    });
+    const terminal = checkpointHead(lease, 2, "a");
+    const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    const authorization = gateConfig();
+    expect(() => store.completeAttempt({
+      ...mutation(3, "complete-checkpoint-terminal-legacy"),
+      unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      sourceRevision: candidate.snapshot.revision,
+      sourceDigest: candidate.snapshot.digest,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      verificationPassed: true,
+      actualCostUsd: 0.25,
+      accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
+      gateConfig: authorization,
+    })).toThrow("transformer_pilot_terminal_checkpoint_required");
+    const candidateSeal = {
+      schemaVersion: 1,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      workspaceManifestDigest: digest("d"),
+      workspacePayloadDigest: digest("e"),
+      sealDigest: digest("f"),
+    } satisfies TransformerCandidateSeal;
+    const completionIntent = {
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: terminal.episodeId,
+      candidateSealDigest: candidateSeal.sealDigest,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseTokenDigest: lease.leaseTokenDigest,
+      sourceRevision: candidate.snapshot.revision,
+      sourceDigest: candidate.snapshot.digest,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      authorizationDigest: createTransformerAttemptAuthorizationDigest(authorization),
+      verificationPassed: true,
+      actualCostUsd: 0.25,
+      accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
+      observedAt: time(3),
+      evidenceRefs: ["evidence://operation/complete-checkpoint-terminal"],
+    } satisfies TransformerAttemptCompletionIntent;
+    const completionDigest = createTransformerAttemptCompletionDigest(completionIntent);
+    const completionRequestDigest = createTransformerCoordinatorCompletionRequestDigest(
+      terminal.episodeId,
+      candidateSeal,
+      completionIntent,
+    );
+    const completionIdentity = createTransformerAttemptEffectIdentity(
+      terminal.episodeId,
+      "coordinator_complete",
+      createTransformerCoordinatorCompletionSlot(completionDigest),
+      completionRequestDigest,
+    );
+    const input = {
+      ...mutation(3, "complete-checkpoint-terminal"),
+      idempotencyKey: completionIdentity.idempotencyKey,
+      leaseToken,
+      expectedStateDigest: current.stateDigest,
+      nextCheckpointHead: terminal,
+      candidateSeal,
+      completionIntent,
+      gateConfig: authorization,
+    };
+
+    const completed = store.completeAttemptWithCheckpointHead(input);
+    expect(completed.campaign.units[0]).toMatchObject({
+      state: "executed",
+      verificationPassed: true,
+      attemptCheckpointHead: terminal,
+    });
+    expect(store.completeAttemptWithCheckpointHead(input)).toEqual(completed);
+    expect(completed.receipt).toEqual({
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: terminal.episodeId,
+      completionDigest,
+      campaignRevision: completed.campaign.revision,
+      observedAt: time(3),
+      checkpointHead: terminal,
+    });
+    store.control({
+      ...mutation(4, "pause-after-checkpoint-completion"),
+      action: "pause",
+    });
+    const replayed = store.completeAttemptWithCheckpointHead(input);
+    expect(replayed.receipt).toEqual(completed.receipt);
+    expect(replayed.campaign.revision).toBeGreaterThan(completed.campaign.revision);
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.completed_with_checkpoint"
+    )).toHaveLength(1);
+    store.close();
+  });
+
+  it("does not publish a terminal checkpoint when completion loses its fence", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-checkpoint-terminal-stale";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-checkpoint-terminal-stale"),
+      leaseToken,
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    })!;
+    const current = checkpointHead(lease, 1, "d");
+    store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(1, "checkpoint-terminal-stale-current"),
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: null,
+      next: current,
+      gateConfig: gateConfig(),
+    });
+    const terminal = checkpointHead(lease, 2, "a");
+    const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    const authorization = gateConfig();
+    const candidateSeal = {
+      schemaVersion: 1,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      workspaceManifestDigest: digest("d"),
+      workspacePayloadDigest: digest("e"),
+      sealDigest: digest("f"),
+    } satisfies TransformerCandidateSeal;
+    const completionIntent = {
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: terminal.episodeId,
+      candidateSealDigest: candidateSeal.sealDigest,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseTokenDigest: lease.leaseTokenDigest,
+      sourceRevision: candidate.snapshot.revision,
+      sourceDigest: candidate.snapshot.digest,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      authorizationDigest: createTransformerAttemptAuthorizationDigest(authorization),
+      verificationPassed: true,
+      actualCostUsd: 0.25,
+      accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
+      observedAt: time(2),
+      evidenceRefs: ["evidence://operation/complete-checkpoint-terminal-stale"],
+    } satisfies TransformerAttemptCompletionIntent;
+    const completionDigest = createTransformerAttemptCompletionDigest(completionIntent);
+    const completionIdentity = createTransformerAttemptEffectIdentity(
+      terminal.episodeId,
+      "coordinator_complete",
+      createTransformerCoordinatorCompletionSlot(completionDigest),
+      createTransformerCoordinatorCompletionRequestDigest(
+        terminal.episodeId,
+        candidateSeal,
+        completionIntent,
+      ),
+    );
+
+    expect(() => store.completeAttemptWithCheckpointHead({
+      ...mutation(2, "complete-checkpoint-terminal-stale"),
+      idempotencyKey: completionIdentity.idempotencyKey,
+      leaseToken,
+      expectedStateDigest: current.stateDigest,
+      nextCheckpointHead: terminal,
+      candidateSeal,
+      completionIntent,
+      gateConfig: authorization,
+    })).toThrow("transformer_pilot_fence_expired");
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]).toMatchObject({
+      state: "running",
+      attemptCheckpointHead: current,
+    });
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.completed_with_checkpoint"
+    )).toHaveLength(0);
+    store.close();
+  });
+
+  it("rejects oversized or cross-scope checkpoint locators without mutation", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-checkpoint-shape-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-checkpoint-shape"),
+      leaseToken,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const head = checkpointHead(lease, 1, "d");
+    const revisionBefore = store.getCampaign("tenant-a", "campaign-a")!.revision;
+    const eventsBefore = store.listEvents("tenant-a", "campaign-a").length;
+    const baseInput = {
+      ...mutation(2, "checkpoint-invalid-shape"),
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: null,
+      gateConfig: gateConfig(),
+    };
+
+    expect(() => store.compareAndSwapAttemptCheckpointHead({
+      ...baseInput,
+      next: { ...head, ciphertextBase64: "x".repeat(100_000) } as TransformerAttemptCheckpointHead,
+    })).toThrow("transformer_pilot_checkpoint_head_invalid");
+    expect(() => store.compareAndSwapAttemptCheckpointHead({
+      ...baseInput,
+      idempotencyKey: "checkpoint-cross-tenant-key",
+      next: {
+        ...head,
+        envelopeStorageKey: transformerAttemptCheckpointEnvelopeStorageKey({
+          tenantId: "tenant-b",
+          campaignId: "campaign-a",
+          unitId: lease.unitId,
+          episodeId: head.episodeId,
+          generation: head.generation,
+          envelopeDigest: head.envelopeDigest,
+        }),
+      },
+    })).toThrow("transformer_pilot_checkpoint_storage_key_mismatch");
+    const invalidKeys = [
+      transformerAttemptCheckpointEnvelopeStorageKey({
+        tenantId: "tenant-a",
+        campaignId: "campaign-b",
+        unitId: lease.unitId,
+        episodeId: head.episodeId,
+        generation: head.generation,
+        envelopeDigest: head.envelopeDigest,
+      }),
+      transformerAttemptCheckpointEnvelopeStorageKey({
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        unitId: "unit-b",
+        episodeId: head.episodeId,
+        generation: head.generation,
+        envelopeDigest: head.envelopeDigest,
+      }),
+      transformerAttemptCheckpointEnvelopeStorageKey({
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        unitId: lease.unitId,
+        episodeId: "transformer-episode-other",
+        generation: head.generation,
+        envelopeDigest: head.envelopeDigest,
+      }),
+      transformerAttemptCheckpointEnvelopeStorageKey({
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        unitId: lease.unitId,
+        episodeId: head.episodeId,
+        generation: head.generation,
+        envelopeDigest: digest("b"),
+      }),
+      "a//b",
+      "a/./b",
+      "a/b/",
+    ];
+    invalidKeys.forEach((envelopeStorageKey, index) => {
+      expect(() => store.compareAndSwapAttemptCheckpointHead({
+        ...baseInput,
+        idempotencyKey: `checkpoint-unrelated-key-${index}`,
+        next: { ...head, envelopeStorageKey },
+      })).toThrow("transformer_pilot_checkpoint_storage_key_mismatch");
+    });
+    expect(store.getCampaign("tenant-a", "campaign-a")!.revision).toBe(revisionBefore);
+    expect(store.listEvents("tenant-a", "campaign-a")).toHaveLength(eventsBefore);
+    store.close();
+  });
+
+  it("never returns checkpoint authority for a corrupt persisted lease expiry", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-checkpoint-expiry-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    let store = new TransformerPilotExecutionStore(path);
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-checkpoint-corrupt-expiry"),
+      leaseToken: "lease-token-checkpoint-expiry-0001",
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    store.close();
+
+    const probe = new DatabaseSync(path);
+    const row = probe.prepare(
+      "SELECT body_json FROM tf_pilot_campaigns WHERE tenant_id = ? AND campaign_id = ?",
+    ).get("tenant-a", "campaign-a") as { body_json: string };
+    const body = JSON.parse(row.body_json) as { units: Array<{ leaseExpiresAt?: string }> };
+    body.units[0]!.leaseExpiresAt = "not-a-timestamp";
+    probe.prepare(
+      "UPDATE tf_pilot_campaigns SET body_json = ? WHERE tenant_id = ? AND campaign_id = ?",
+    ).run(JSON.stringify(body), "tenant-a", "campaign-a");
+    probe.close();
+
+    store = new TransformerPilotExecutionStore(path);
+    expect(store.readAttemptCheckpointLease({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: "transformer-episode-corrupt-expiry",
+      observedAt: time(2),
+    })).toBeNull();
+    store.close();
+  });
+
+  it("replays the exact checkpoint result after a later head advances", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-checkpoint-replay-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-checkpoint-replay"),
+      leaseToken,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const first = checkpointHead(lease, 1, "d");
+    const second = checkpointHead(lease, 2, "a");
+    const firstInput = {
+      ...mutation(2, "checkpoint-replay-first"),
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: null,
+      next: first,
+      gateConfig: gateConfig(),
+    };
+    expect(store.compareAndSwapAttemptCheckpointHead(firstInput)).toEqual(first);
+    expect(store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(3, "checkpoint-replay-second"),
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: first.stateDigest,
+      next: second,
+      gateConfig: gateConfig(),
+    })).toEqual(second);
+
+    expect(store.compareAndSwapAttemptCheckpointHead(firstInput)).toEqual(first);
+    expect(store.readAttemptCheckpointHead({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: first.episodeId,
+    })).toEqual(second);
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.checkpoint_head_advanced"
+    )).toHaveLength(2);
+    store.close();
+  });
+
+  it("binds checkpoint heads to the exact live lease across renewal and expiry", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-checkpoint-fence-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-checkpoint-fence"),
+      leaseToken,
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    })!;
+    const head = checkpointHead(lease, 1, "d");
+
+    expect(() => store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(1, "checkpoint-wrong-token"),
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken: "lease-token-checkpoint-stale-0001",
+      expectedStateDigest: null,
+      next: head,
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_fence_stale");
+    store.renewAttemptLease({
+      ...mutation(1, "renew-checkpoint-fence"),
+      observedAt: "2026-08-02T08:01:30.000Z",
+      unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    });
+    expect(store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(2, "checkpoint-after-renewal"),
+      observedAt: "2026-08-02T08:02:00.000Z",
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: null,
+      next: head,
+      gateConfig: gateConfig(),
+    })).toEqual(head);
+    expect(store.readAttemptCheckpointLease({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: head.episodeId,
+      observedAt: "2026-08-02T08:02:30.000Z",
+    })).toBeNull();
+    expect(() => store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(3, "checkpoint-after-expiry"),
+      observedAt: "2026-08-02T08:02:30.000Z",
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: head.stateDigest,
+      next: checkpointHead(lease, 2, "b"),
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_fence_expired");
+    store.close();
+  });
+
+  it("continues one checkpoint episode only under an authorized successor lease", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const originalToken = "lease-token-checkpoint-original-001";
+    const original = store.claimNextAttempt({
+      ...mutation(1, "claim-checkpoint-original"),
+      leaseToken: originalToken,
+      gateConfig: gateConfig(),
+    })!;
+    const first = checkpointHead(original, 1, "d");
+    store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(1, "checkpoint-original-head"),
+      unitId: original.unitId,
+      attemptNumber: original.attemptNumber,
+      leaseGeneration: original.leaseGeneration,
+      leaseToken: originalToken,
+      expectedStateDigest: null,
+      next: first,
+      gateConfig: gateConfig(),
+    });
+    const expired = store.expireAttempt({
+      ...mutation(2, "expire-checkpoint-original"),
+      unitId: original.unitId,
+      leaseGeneration: original.leaseGeneration,
+      gateConfig: gateConfig(),
+    });
+    store.control({
+      ...mutation(3, "authorize-checkpoint-successor"),
+      action: "authorize_retry",
+      unitId: original.unitId,
+    });
+    store.control({
+      ...mutation(4, "resolve-checkpoint-original"),
+      action: "resolve_exception",
+      exceptionId: expired.exceptions[0]!.id,
+      resolution: "Successor continues the authenticated checkpoint episode",
+    });
+    store.control({ ...mutation(5, "resume-checkpoint-successor"), action: "resume" });
+    const successorToken = "lease-token-checkpoint-successor-01";
+    const successor = store.claimNextAttempt({
+      ...mutation(6, "claim-checkpoint-successor"),
+      leaseToken: successorToken,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const secondBase = checkpointHead(successor, 2, "a");
+    const second = {
+      ...secondBase,
+      episodeId: first.episodeId,
+      envelopeStorageKey: transformerAttemptCheckpointEnvelopeStorageKey({
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        unitId: successor.unitId,
+        episodeId: first.episodeId,
+        generation: secondBase.generation,
+        envelopeDigest: secondBase.envelopeDigest,
+      }),
+    };
+
+    expect(() => store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(7, "checkpoint-original-stale"),
+      unitId: original.unitId,
+      attemptNumber: original.attemptNumber,
+      leaseGeneration: original.leaseGeneration,
+      leaseToken: originalToken,
+      expectedStateDigest: first.stateDigest,
+      next: second,
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_fence_stale");
+    expect(store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(7, "checkpoint-successor-head"),
+      unitId: successor.unitId,
+      attemptNumber: successor.attemptNumber,
+      leaseGeneration: successor.leaseGeneration,
+      leaseToken: successorToken,
+      expectedStateDigest: first.stateDigest,
+      next: second,
+      gateConfig: gateConfig(),
+    })).toEqual(second);
     store.close();
   });
 

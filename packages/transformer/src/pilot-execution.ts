@@ -16,6 +16,20 @@ import {
 } from "./organization-constraints.js";
 import { resolveRecipe, type RecipeFileModes, type RecipeReference } from "./recipe.js";
 import { TransformerDomainError } from "./types.js";
+import {
+  createTransformerAttemptEffectIdentity,
+  createTransformerCoordinatorCompletionRequestDigest,
+  createTransformerCoordinatorCompletionSlot,
+  type TransformerAttemptCheckpointLease,
+  type TransformerCandidateSeal,
+} from "./attempt-checkpoint.js";
+import {
+  createTransformerAttemptAuthorizationDigest,
+  createTransformerAttemptCompletionDigest,
+  createTransformerAttemptCompletionPayload,
+  openTransformerAttemptCompletionPayload,
+  type TransformerAttemptCompletionIntent,
+} from "./attempt-completion.js";
 
 export const TRANSFORMER_PILOT_EXECUTION_SCHEMA_VERSION = "2026-08-06.v2" as const;
 
@@ -24,6 +38,7 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const BRANCH = /^(?!\/)(?!.*(?:\.\.|\/\/|@\{))[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/;
 const MANIFEST_SHA256 = /^[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const CHECKPOINT_STORAGE_KEY = /^(?![A-Za-z]:)(?![\/])(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]{1,1000}$/;
 const ROUTING_ERROR_CODE = /^[A-Za-z0-9][A-Za-z0-9._,:-]{0,499}$/;
 const DEFAULT_LEASE_DURATION_MS = 60_000;
 const MIN_LEASE_DURATION_MS = 1_000;
@@ -219,6 +234,18 @@ export type TransformerPilotException = Readonly<{
   evidenceRefs: readonly string[];
 }>;
 
+export type TransformerAttemptCheckpointHead = Readonly<{
+  schemaVersion: 1;
+  episodeId: string;
+  stateDigest: string;
+  envelopeStorageKey: string;
+  envelopeDigest: string;
+  generation: number;
+  attemptNumber: number;
+  writerLeaseGeneration: number;
+  writerLeaseTokenDigest: string;
+}>;
+
 export type TransformerPilotUnit = Readonly<{
   id: string;
   title: string;
@@ -251,6 +278,7 @@ export type TransformerPilotUnit = Readonly<{
   adaptiveCandidateHandoffHistory?: readonly TransformerAdaptiveCandidateHandoffRecord[];
   regenerationReview?: TransformerRegenerationReview;
   routingSettlement?: TransformerRoutingSettlementRecord;
+  attemptCheckpointHead?: TransformerAttemptCheckpointHead;
   reviewerEditLines?: number;
   legacyItemsRemoved?: number;
 }>;
@@ -294,6 +322,12 @@ export type TransformerAttemptLease = Readonly<{
   gateEvidenceRefs: readonly string[];
   adaptiveBudgetRemaining: TransformerAdaptiveCampaignBudgetTotals;
   regenerationReview?: TransformerRegenerationReview;
+}>;
+
+export type TransformerAttemptLeaseRenewal = Readonly<{
+  leaseGeneration: number;
+  leaseTokenDigest: string;
+  leaseExpiresAt: string;
 }>;
 
 export type TransformerRoutingOutcomeRecord = Readonly<{
@@ -514,6 +548,101 @@ type MutationInput = Readonly<{
   idempotencyKey: string;
 }>;
 
+export type TransformerAttemptCompletionInput = MutationInput & Readonly<{
+  unitId: string;
+  leaseGeneration: number;
+  leaseToken: string;
+  sourceRevision: string;
+  sourceDigest: string;
+  candidateRevision: string;
+  candidateDigest: string;
+  verificationPassed: boolean;
+  actualCostUsd: number;
+  accounting: TransformerAdaptiveAttemptAccounting;
+  gateConfig?: string;
+}>;
+
+export type TransformerAttemptCheckpointCompletionInput =
+  MutationInput & Readonly<{
+    leaseToken: string;
+    expectedStateDigest: string;
+    nextCheckpointHead: TransformerAttemptCheckpointHead;
+    candidateSeal: TransformerCandidateSeal;
+    completionIntent: TransformerAttemptCompletionIntent;
+    gateConfig?: string;
+  }>;
+
+export type TransformerAttemptCheckpointCompletionReceipt = Readonly<{
+  schemaVersion: 1;
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  episodeId: string;
+  completionDigest: string;
+  campaignRevision: number;
+  observedAt: string;
+  checkpointHead: TransformerAttemptCheckpointHead;
+}>;
+
+export type TransformerAttemptCheckpointCompletionResult = Readonly<{
+  campaign: TransformerPilotCampaign;
+  receipt: TransformerAttemptCheckpointCompletionReceipt;
+}>;
+
+export type TransformerAttemptCheckpointFailureInput = MutationInput & Readonly<{
+  unitId: string;
+  episodeId: string;
+  leaseGeneration: number;
+  leaseToken: string;
+  expectedStateDigest: string;
+  code: TransformerAttemptFailureCode;
+  errorCode?: string;
+  accounting: TransformerAdaptiveAttemptAccounting;
+  gateConfig?: string;
+}>;
+
+export type TransformerAttemptCheckpointFailureReceipt = Readonly<{
+  schemaVersion: 1;
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  episodeId: string;
+  expectedStateDigest: string;
+  idempotencyKey: string;
+  failureDigest: string;
+  campaignRevision: number;
+  observedAt: string;
+}>;
+
+function attemptCheckpointFailurePayload(
+  input: TransformerAttemptCheckpointFailureInput,
+): Readonly<Record<string, unknown>> {
+  const code = requireAttemptFailureCode(input.code);
+  return Object.freeze({
+    unitId: input.unitId,
+    episodeId: input.episodeId,
+    expectedStateDigest: input.expectedStateDigest,
+    leaseGeneration: input.leaseGeneration,
+    leaseTokenDigest: leaseTokenDigest(input.leaseToken),
+    code,
+    errorCode: input.errorCode ?? code,
+    accounting: input.accounting,
+  });
+}
+
+export function createTransformerAttemptCheckpointFailureDigest(
+  input: TransformerAttemptCheckpointFailureInput,
+): string {
+  return sha256({
+    tenantId: input.tenantId,
+    campaignId: input.campaignId,
+    observedAt: input.observedAt,
+    evidenceRefs: [...input.evidenceRefs].sort(),
+    idempotencyKey: input.idempotencyKey,
+    payload: attemptCheckpointFailurePayload(input),
+  });
+}
+
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);
   if (value && typeof value === "object") {
@@ -639,6 +768,92 @@ function requireRevision(value: string, code: string): string {
 function requireDigest(value: string, code: string): string {
   if (!DIGEST.test(value)) throw new Error(code);
   return value;
+}
+
+const CHECKPOINT_HEAD_KEYS = Object.freeze([
+  "schemaVersion",
+  "episodeId",
+  "stateDigest",
+  "envelopeStorageKey",
+  "envelopeDigest",
+  "generation",
+  "attemptNumber",
+  "writerLeaseGeneration",
+  "writerLeaseTokenDigest",
+]);
+
+export function transformerAttemptCheckpointEnvelopeStorageKey(input: Readonly<{
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  episodeId: string;
+  generation: number;
+  envelopeDigest: string;
+}>): string {
+  requireId(input.tenantId, "transformer_pilot_checkpoint_head_invalid");
+  requireId(input.campaignId, "transformer_pilot_checkpoint_head_invalid");
+  requireId(input.unitId, "transformer_pilot_checkpoint_head_invalid");
+  requireId(input.episodeId, "transformer_pilot_checkpoint_head_invalid");
+  requirePositiveInteger(input.generation, 1_000_000_000,
+    "transformer_pilot_checkpoint_head_invalid");
+  requireDigest(input.envelopeDigest, "transformer_pilot_checkpoint_head_invalid");
+  const scopeDigest = sha256({
+    protocol: "transformer-attempt-checkpoint-head:v1",
+    tenantId: input.tenantId,
+    campaignId: input.campaignId,
+    unitId: input.unitId,
+    episodeId: input.episodeId,
+  }).slice("sha256:".length);
+  return `transformer/checkpoints/${scopeDigest}/${input.generation}-${input.envelopeDigest.slice("sha256:".length)}.json`;
+}
+
+function requireCheckpointHead(value: unknown): TransformerAttemptCheckpointHead {
+  const code = "transformer_pilot_checkpoint_head_invalid";
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).sort().join("\0") !== [...CHECKPOINT_HEAD_KEYS].sort().join("\0")) {
+    throw new Error(code);
+  }
+  const candidate = value as TransformerAttemptCheckpointHead;
+  if (
+    candidate.schemaVersion !== 1 ||
+    !CHECKPOINT_STORAGE_KEY.test(candidate.envelopeStorageKey) ||
+    candidate.envelopeStorageKey.includes("\\") ||
+    candidate.envelopeStorageKey.includes(":")
+  ) {
+    throw new Error(code);
+  }
+  requireId(candidate.episodeId, code);
+  requireDigest(candidate.stateDigest, code);
+  requireDigest(candidate.envelopeDigest, code);
+  requireDigest(candidate.writerLeaseTokenDigest, code);
+  requirePositiveInteger(candidate.generation, 1_000_000_000, code);
+  requirePositiveInteger(candidate.attemptNumber, 1_000_000_000, code);
+  requirePositiveInteger(candidate.writerLeaseGeneration, 1_000_000_000, code);
+  return deepFreeze(clone(candidate));
+}
+
+function requireCheckpointHeadForScope(
+  value: unknown,
+  tenantId: string,
+  campaignId: string,
+  unitId: string,
+  episodeId: string,
+): TransformerAttemptCheckpointHead {
+  const head = requireCheckpointHead(value);
+  if (head.episodeId !== episodeId) {
+    throw new Error("transformer_pilot_checkpoint_episode_mismatch");
+  }
+  if (head.envelopeStorageKey !== transformerAttemptCheckpointEnvelopeStorageKey({
+    tenantId,
+    campaignId,
+    unitId,
+    episodeId,
+    generation: head.generation,
+    envelopeDigest: head.envelopeDigest,
+  })) {
+    throw new Error("transformer_pilot_checkpoint_storage_key_mismatch");
+  }
+  return head;
 }
 
 function requireNonnegative(value: number, code: string): number {
@@ -1049,6 +1264,52 @@ function requireAttemptFailureCode(value: string): TransformerAttemptFailureCode
 
 function replaceUnit(state: StoredCampaign, next: TransformerPilotUnit): void {
   state.units = state.units.map((unit) => unit.id === next.id ? next : unit);
+}
+
+function requireAttemptCompletion(input: TransformerAttemptCompletionInput): void {
+  requireRevision(input.sourceRevision, "transformer_pilot_source_revision_invalid");
+  requireDigest(input.sourceDigest, "transformer_pilot_source_digest_invalid");
+  requireRevision(input.candidateRevision, "transformer_pilot_candidate_revision_invalid");
+  requireDigest(input.candidateDigest, "transformer_pilot_candidate_digest_invalid");
+  requireNonnegative(input.actualCostUsd, "transformer_pilot_cost_invalid");
+}
+
+function applyAttemptCompletion(
+  state: StoredCampaign,
+  input: TransformerAttemptCompletionInput,
+  checkpointHead?: TransformerAttemptCheckpointHead,
+): void {
+  assertAttemptFence(state, input);
+  const unit = unitById(state, input.unitId);
+  if (unit.attemptCheckpointHead && !checkpointHead) {
+    throw new Error("transformer_pilot_terminal_checkpoint_required");
+  }
+  if (unit.snapshot.revision !== input.sourceRevision || unit.snapshot.digest !== input.sourceDigest) {
+    throw new Error("transformer_pilot_source_drift");
+  }
+  if (unit.candidateRevision !== input.candidateRevision || unit.candidateDigest !== input.candidateDigest) {
+    throw new Error("transformer_pilot_candidate_drift");
+  }
+  if (!input.verificationPassed) throw new Error("transformer_pilot_verification_failed");
+  const accounted = applyAdaptiveAccounting(state, unit, input.accounting);
+  const executionEvidenceRefs = requireEvidence(input.evidenceRefs);
+  const routingSettlement = routingTerminal(
+    accounted,
+    input.accounting,
+    input.observedAt,
+    executionEvidenceRefs,
+    "succeeded",
+  );
+  replaceUnit(state, {
+    ...accounted,
+    state: "executed",
+    verificationPassed: true,
+    actualCostUsd: input.actualCostUsd,
+    executedAt: input.observedAt,
+    executionEvidenceRefs,
+    ...(checkpointHead ? { attemptCheckpointHead: checkpointHead } : {}),
+    ...(routingSettlement ? { routingSettlement } : {}),
+  });
 }
 
 function openedException(
@@ -1645,6 +1906,56 @@ export class TransformerPilotExecutionStore {
     }
   }
 
+  renewAttemptLease(input: MutationInput & {
+    unitId: string;
+    leaseGeneration: number;
+    leaseToken: string;
+    leaseDurationMs?: number;
+    gateConfig?: string;
+  }): TransformerAttemptLeaseRenewal {
+    const observedAt = requireTimestamp(input.observedAt);
+    const leaseDurationMs = requireLeaseDuration(input.leaseDurationMs);
+    const leaseExpiresAt = new Date(Date.parse(observedAt) + leaseDurationMs).toISOString();
+    const tokenDigest = leaseTokenDigest(input.leaseToken);
+    const campaign = this.mustGet(input.tenantId, input.campaignId);
+    const gate = authorizeTransformerWorkerAction(
+      { tenantId: input.tenantId, environment: campaign.environment },
+      input.gateConfig,
+    );
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
+    const renewed = this.mutate(
+      input,
+      "attempt.lease_renewed",
+      {
+        unitId: input.unitId,
+        leaseGeneration: input.leaseGeneration,
+        leaseTokenDigest: tokenDigest,
+        leaseDurationMs,
+        leaseExpiresAt,
+      },
+      (state) => {
+        assertAttemptFence(state, input);
+        const unit = unitById(state, input.unitId);
+        if (Date.parse(leaseExpiresAt) <= Date.parse(unit.leaseExpiresAt ?? "")) {
+          throw new Error("transformer_pilot_lease_renewal_not_extended");
+        }
+        replaceUnit(state, { ...unit, leaseExpiresAt });
+      },
+    );
+    const unit = unitById(renewed, input.unitId);
+    if (unit.state !== "running" || unit.leaseGeneration !== input.leaseGeneration ||
+        unit.leaseTokenDigest !== tokenDigest || unit.leaseExpiresAt === undefined) {
+      throw new Error("transformer_pilot_lease_renewal_replay_invalid");
+    }
+    return deepFreeze({
+      leaseGeneration: unit.leaseGeneration,
+      leaseTokenDigest: unit.leaseTokenDigest,
+      leaseExpiresAt: unit.leaseExpiresAt,
+    });
+  }
+
   assertCurrentAttemptFence(input: Readonly<{
     tenantId: string;
     campaignId: string;
@@ -1655,6 +1966,141 @@ export class TransformerPilotExecutionStore {
   }>): void {
     const state = this.mustGet(input.tenantId, input.campaignId);
     assertAttemptFence(state, input);
+  }
+
+  readAttemptCheckpointHead(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    unitId: string;
+    episodeId: string;
+  }>): TransformerAttemptCheckpointHead | null {
+    requireId(input.episodeId, "transformer_pilot_checkpoint_episode_invalid");
+    const state = this.mustGet(input.tenantId, input.campaignId);
+    const head = unitById(state, input.unitId).attemptCheckpointHead;
+    if (!head) return null;
+    return requireCheckpointHeadForScope(
+      head,
+      input.tenantId,
+      input.campaignId,
+      input.unitId,
+      input.episodeId,
+    );
+  }
+
+  readAttemptCheckpointLease(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    unitId: string;
+    episodeId: string;
+    observedAt: string;
+  }>): TransformerAttemptCheckpointLease | null {
+    requireId(input.episodeId, "transformer_pilot_checkpoint_episode_invalid");
+    const observedAt = Date.parse(requireTimestamp(input.observedAt));
+    const state = this.mustGet(input.tenantId, input.campaignId);
+    const unit = unitById(state, input.unitId);
+    if (
+      state.state !== "running" || unit.state !== "running" ||
+      !unit.leaseTokenDigest || !unit.leaseExpiresAt || !unit.startedAt
+    ) {
+      return null;
+    }
+    const leaseExpiresAt = Date.parse(unit.leaseExpiresAt);
+    if (!Number.isFinite(leaseExpiresAt) || observedAt >= leaseExpiresAt) return null;
+    const head = unit.attemptCheckpointHead;
+    if (head) requireCheckpointHeadForScope(
+      head,
+      input.tenantId,
+      input.campaignId,
+      input.unitId,
+      input.episodeId,
+    );
+    return deepFreeze({
+      attemptNumber: unit.attemptNumber,
+      generation: unit.leaseGeneration,
+      tokenDigest: unit.leaseTokenDigest,
+    });
+  }
+
+  compareAndSwapAttemptCheckpointHead(input: MutationInput & Readonly<{
+    unitId: string;
+    attemptNumber: number;
+    leaseGeneration: number;
+    leaseToken: string;
+    expectedStateDigest: string | null;
+    next: TransformerAttemptCheckpointHead;
+    gateConfig?: string;
+  }>): TransformerAttemptCheckpointHead {
+    const next = requireCheckpointHeadForScope(
+      input.next,
+      input.tenantId,
+      input.campaignId,
+      input.unitId,
+      input.next.episodeId,
+    );
+    if (input.expectedStateDigest !== null) {
+      requireDigest(input.expectedStateDigest, "transformer_pilot_checkpoint_head_invalid");
+    }
+    const campaign = this.mustGet(input.tenantId, input.campaignId);
+    const gate = authorizeTransformerWorkerAction(
+      { tenantId: input.tenantId, environment: campaign.environment },
+      input.gateConfig,
+    );
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
+    const updated = this.mutate(
+      input,
+      "attempt.checkpoint_head_advanced",
+      {
+        unitId: input.unitId,
+        attemptNumber: input.attemptNumber,
+        leaseGeneration: input.leaseGeneration,
+        leaseTokenDigest: leaseTokenDigest(input.leaseToken),
+        expectedStateDigest: input.expectedStateDigest,
+        next,
+      },
+      (state) => {
+        assertAttemptFence(state, input);
+        const unit = unitById(state, input.unitId);
+        if (unit.attemptNumber !== input.attemptNumber) {
+          throw new Error("transformer_pilot_checkpoint_attempt_mismatch");
+        }
+        const current = unit.attemptCheckpointHead
+          ? requireCheckpointHeadForScope(
+            unit.attemptCheckpointHead,
+            input.tenantId,
+            input.campaignId,
+            input.unitId,
+            unit.attemptCheckpointHead.episodeId,
+          )
+          : undefined;
+        if ((current?.stateDigest ?? null) !== input.expectedStateDigest) {
+          throw new Error("transformer_pilot_checkpoint_head_conflict");
+        }
+        if (current && current.episodeId !== next.episodeId) {
+          throw new Error("transformer_pilot_checkpoint_episode_mismatch");
+        }
+        if (
+          next.generation !== (current?.generation ?? 0) + 1 ||
+          next.attemptNumber !== unit.attemptNumber ||
+          next.writerLeaseGeneration !== unit.leaseGeneration ||
+          next.writerLeaseTokenDigest !== unit.leaseTokenDigest
+        ) {
+          throw new Error("transformer_pilot_checkpoint_head_invalid");
+        }
+        replaceUnit(state, { ...unit, attemptCheckpointHead: next });
+      },
+    );
+    const head = unitById(updated, input.unitId).attemptCheckpointHead;
+    if (!head) throw new Error("transformer_pilot_checkpoint_head_missing");
+    requireCheckpointHeadForScope(
+      head,
+      input.tenantId,
+      input.campaignId,
+      input.unitId,
+      head.episodeId,
+    );
+    return next;
   }
 
   recordAdaptiveAttemptUsage(input: MutationInput & {
@@ -2047,24 +2493,8 @@ export class TransformerPilotExecutionStore {
     );
   }
 
-  completeAttempt(input: MutationInput & {
-    unitId: string;
-    leaseGeneration: number;
-    leaseToken: string;
-    sourceRevision: string;
-    sourceDigest: string;
-    candidateRevision: string;
-    candidateDigest: string;
-    verificationPassed: boolean;
-    actualCostUsd: number;
-    accounting: TransformerAdaptiveAttemptAccounting;
-    gateConfig?: string;
-  }): TransformerPilotCampaign {
-    requireRevision(input.sourceRevision, "transformer_pilot_source_revision_invalid");
-    requireDigest(input.sourceDigest, "transformer_pilot_source_digest_invalid");
-    requireRevision(input.candidateRevision, "transformer_pilot_candidate_revision_invalid");
-    requireDigest(input.candidateDigest, "transformer_pilot_candidate_digest_invalid");
-    requireNonnegative(input.actualCostUsd, "transformer_pilot_cost_invalid");
+  completeAttempt(input: TransformerAttemptCompletionInput): TransformerPilotCampaign {
+    requireAttemptCompletion(input);
     const campaign = this.mustGet(input.tenantId, input.campaignId);
     const gate = authorizeTransformerWorkerAction(
       { tenantId: input.tenantId, environment: campaign.environment },
@@ -2076,34 +2506,229 @@ export class TransformerPilotExecutionStore {
     return this.mutate(input, "attempt.completed", {
       ...input,
       leaseToken: leaseTokenDigest(input.leaseToken),
-    }, (state) => {
-      const unit = unitById(state, input.unitId);
-      assertAttemptFence(state, input);
-      if (unit.snapshot.revision !== input.sourceRevision || unit.snapshot.digest !== input.sourceDigest) {
-        throw new Error("transformer_pilot_source_drift");
+    }, (state) => applyAttemptCompletion(state, input));
+  }
+
+  completeAttemptWithCheckpointHead(
+    input: TransformerAttemptCheckpointCompletionInput,
+  ): TransformerAttemptCheckpointCompletionResult {
+    const intent = openTransformerAttemptCompletionPayload(
+      createTransformerAttemptCompletionPayload(input.completionIntent),
+    );
+    const evidenceRefs = requireEvidence(input.evidenceRefs);
+    if (intent.tenantId !== input.tenantId || intent.campaignId !== input.campaignId ||
+        intent.observedAt !== input.observedAt ||
+        JSON.stringify(intent.evidenceRefs) !== JSON.stringify(evidenceRefs) ||
+        intent.leaseTokenDigest !== leaseTokenDigest(input.leaseToken) ||
+        intent.authorizationDigest !== createTransformerAttemptAuthorizationDigest(input.gateConfig)) {
+      throw new Error("transformer_pilot_checkpoint_completion_intent_invalid");
+    }
+    const completionDigest = createTransformerAttemptCompletionDigest(intent);
+    const completionRequestDigest = createTransformerCoordinatorCompletionRequestDigest(
+      intent.episodeId,
+      input.candidateSeal,
+      intent,
+    );
+    const completionIdentity = createTransformerAttemptEffectIdentity(
+      intent.episodeId,
+      "coordinator_complete",
+      createTransformerCoordinatorCompletionSlot(completionDigest),
+      completionRequestDigest,
+    );
+    if (input.idempotencyKey !== completionIdentity.idempotencyKey) {
+      throw new Error("transformer_pilot_checkpoint_completion_idempotency_invalid");
+    }
+    const completionInput: TransformerAttemptCompletionInput = {
+      tenantId: intent.tenantId,
+      campaignId: intent.campaignId,
+      observedAt: intent.observedAt,
+      evidenceRefs: intent.evidenceRefs,
+      idempotencyKey: input.idempotencyKey,
+      unitId: intent.unitId,
+      leaseGeneration: intent.leaseGeneration,
+      leaseToken: input.leaseToken,
+      sourceRevision: intent.sourceRevision,
+      sourceDigest: intent.sourceDigest,
+      candidateRevision: intent.candidateRevision,
+      candidateDigest: intent.candidateDigest,
+      verificationPassed: intent.verificationPassed,
+      actualCostUsd: intent.actualCostUsd,
+      accounting: intent.accounting,
+      ...(input.gateConfig === undefined ? {} : { gateConfig: input.gateConfig }),
+    };
+    requireAttemptCompletion(completionInput);
+    requireDigest(input.expectedStateDigest, "transformer_pilot_checkpoint_head_invalid");
+    const nextCheckpointHead = requireCheckpointHead(input.nextCheckpointHead);
+    const campaign = this.mustGet(input.tenantId, input.campaignId);
+    const gate = authorizeTransformerWorkerAction(
+      { tenantId: input.tenantId, environment: campaign.environment },
+      input.gateConfig,
+    );
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
+    const eventPayload = {
+      unitId: intent.unitId,
+      episodeId: intent.episodeId,
+      attemptNumber: intent.attemptNumber,
+      leaseGeneration: intent.leaseGeneration,
+      leaseToken: leaseTokenDigest(input.leaseToken),
+      expectedStateDigest: input.expectedStateDigest,
+      nextCheckpointHead,
+      completionDigest,
+      authorizationDigest: intent.authorizationDigest,
+    };
+    const completed = this.mutate(input, "attempt.completed_with_checkpoint", eventPayload, (state) => {
+      assertAttemptFence(state, completionInput);
+      const unit = unitById(state, intent.unitId);
+      if (unit.attemptNumber !== intent.attemptNumber) {
+        throw new Error("transformer_pilot_checkpoint_attempt_mismatch");
       }
-      if (unit.candidateRevision !== input.candidateRevision || unit.candidateDigest !== input.candidateDigest) {
-        throw new Error("transformer_pilot_candidate_drift");
+      if (!unit.attemptCheckpointHead) {
+        throw new Error("transformer_pilot_checkpoint_head_missing");
       }
-      if (!input.verificationPassed) throw new Error("transformer_pilot_verification_failed");
-      const accounted = applyAdaptiveAccounting(state, unit, input.accounting);
-      const executionEvidenceRefs = requireEvidence(input.evidenceRefs);
-      const routingSettlement = routingTerminal(
-        accounted,
-        input.accounting,
-        input.observedAt,
-        executionEvidenceRefs,
-        "succeeded",
+      const current = requireCheckpointHeadForScope(
+        unit.attemptCheckpointHead,
+        intent.tenantId,
+        intent.campaignId,
+        intent.unitId,
+        intent.episodeId,
       );
-      replaceUnit(state, {
-        ...accounted,
-        state: "executed",
-        verificationPassed: true,
-        actualCostUsd: input.actualCostUsd,
-        executedAt: input.observedAt,
-        executionEvidenceRefs,
-        ...(routingSettlement ? { routingSettlement } : {}),
-      });
+      if (current.stateDigest !== input.expectedStateDigest) {
+        throw new Error("transformer_pilot_checkpoint_head_conflict");
+      }
+      const terminal = requireCheckpointHeadForScope(
+        nextCheckpointHead,
+        intent.tenantId,
+        intent.campaignId,
+        intent.unitId,
+        intent.episodeId,
+      );
+      if (
+        terminal.generation !== current.generation + 1 ||
+        terminal.attemptNumber !== unit.attemptNumber ||
+        terminal.writerLeaseGeneration !== unit.leaseGeneration ||
+        terminal.writerLeaseTokenDigest !== unit.leaseTokenDigest
+      ) {
+        throw new Error("transformer_pilot_checkpoint_head_invalid");
+      }
+      applyAttemptCompletion(state, completionInput, terminal);
+    });
+    return deepFreeze({
+      campaign: completed,
+      receipt: this.readAttemptCheckpointCompletionReceipt(
+        input.tenantId,
+        input.campaignId,
+        input.idempotencyKey,
+        completionDigest,
+      ),
+    });
+  }
+
+  recordAttemptFailureWithCheckpointHead(
+    input: TransformerAttemptCheckpointFailureInput,
+  ): TransformerPilotCampaign {
+    const code = requireAttemptFailureCode(input.code);
+    requireDigest(input.expectedStateDigest, "transformer_pilot_checkpoint_head_invalid");
+    requireId(input.episodeId, "transformer_pilot_checkpoint_episode_invalid");
+    const campaign = this.mustGet(input.tenantId, input.campaignId);
+    const gate = authorizeTransformerWorkerAction(
+      { tenantId: input.tenantId, environment: campaign.environment },
+      input.gateConfig,
+    );
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
+    return this.mutate(
+      input,
+      "attempt.failed_with_checkpoint",
+      attemptCheckpointFailurePayload(input),
+      (state) => {
+        assertAttemptFence(state, input);
+        const unit = unitById(state, input.unitId);
+        const current = requireCheckpointHeadForScope(
+          unit.attemptCheckpointHead,
+          input.tenantId,
+          input.campaignId,
+          input.unitId,
+          input.episodeId,
+        );
+        if (current.stateDigest !== input.expectedStateDigest) {
+          throw new Error("transformer_pilot_checkpoint_head_conflict");
+        }
+        const accounted = applyAdaptiveAccounting(state, unit, input.accounting);
+        const routingSettlement = routingTerminal(
+          accounted,
+          input.accounting,
+          input.observedAt,
+          requireEvidence(input.evidenceRefs),
+          "failed",
+          input.errorCode ?? code,
+        );
+        replaceUnit(state, {
+          ...accounted,
+          state: "failed",
+          retryAuthorized: false,
+          ...(routingSettlement ? { routingSettlement } : {}),
+        });
+        state.state = "paused";
+        state.exceptions.push(openedException(state, code, input.observedAt, input.evidenceRefs, unit));
+      },
+    );
+  }
+
+  readAttemptCheckpointFailureReceipt(
+    input: TransformerAttemptCheckpointFailureInput,
+  ): TransformerAttemptCheckpointFailureReceipt | null {
+    const row = this.db.prepare(`
+      SELECT i.scope, i.request_digest, i.result_revision, e.observed_at,
+             e.evidence_refs_json, e.payload_json
+      FROM tf_pilot_idempotency i
+      JOIN tf_pilot_events e
+        ON e.tenant_id = i.tenant_id
+       AND e.campaign_id = i.campaign_id
+       AND e.campaign_revision = i.result_revision
+       AND e.type = i.scope
+      WHERE i.tenant_id = ? AND i.idempotency_key = ? AND i.campaign_id = ?
+    `).get(input.tenantId, input.idempotencyKey, input.campaignId) as Readonly<{
+      scope: string;
+      request_digest: string;
+      result_revision: number;
+      observed_at: string;
+      evidence_refs_json: string;
+      payload_json: string;
+    }> | undefined;
+    if (!row) return null;
+    const expectedPayload = attemptCheckpointFailurePayload(input);
+    if (row.scope !== "attempt.failed_with_checkpoint" ||
+        row.request_digest !== sha256(expectedPayload) ||
+        !Number.isSafeInteger(row.result_revision) || row.result_revision < 1 ||
+        row.observed_at !== input.observedAt) {
+      throw new Error("transformer_pilot_checkpoint_failure_receipt_invalid");
+    }
+    let payload: unknown;
+    let evidenceRefs: unknown;
+    try {
+      payload = JSON.parse(row.payload_json);
+      evidenceRefs = JSON.parse(row.evidence_refs_json);
+    } catch {
+      throw new Error("transformer_pilot_checkpoint_failure_receipt_invalid");
+    }
+    if (sha256(payload) !== sha256(expectedPayload) ||
+        sha256(evidenceRefs) !== sha256([...input.evidenceRefs].sort())) {
+      throw new Error("transformer_pilot_checkpoint_failure_receipt_invalid");
+    }
+    return deepFreeze({
+      schemaVersion: 1,
+      tenantId: input.tenantId,
+      campaignId: input.campaignId,
+      unitId: input.unitId,
+      episodeId: input.episodeId,
+      expectedStateDigest: input.expectedStateDigest,
+      idempotencyKey: input.idempotencyKey,
+      failureDigest: createTransformerAttemptCheckpointFailureDigest(input),
+      campaignRevision: row.result_revision,
+      observedAt: row.observed_at,
     });
   }
 
@@ -2662,6 +3287,60 @@ export class TransformerPilotExecutionStore {
     const state = this.getCampaign(tenantId, campaignId);
     if (!state) throw new Error("transformer_pilot_campaign_not_found");
     return clone(state) as StoredCampaign;
+  }
+
+  private readAttemptCheckpointCompletionReceipt(
+    tenantId: string,
+    campaignId: string,
+    idempotencyKey: string,
+    expectedCompletionDigest: string,
+  ): TransformerAttemptCheckpointCompletionReceipt {
+    const row = this.db.prepare(`
+      SELECT i.scope, i.result_revision, e.observed_at, e.payload_json
+      FROM tf_pilot_idempotency i
+      JOIN tf_pilot_events e
+        ON e.tenant_id = i.tenant_id
+       AND e.campaign_id = i.campaign_id
+       AND e.campaign_revision = i.result_revision
+       AND e.type = i.scope
+      WHERE i.tenant_id = ? AND i.idempotency_key = ? AND i.campaign_id = ?
+    `).get(tenantId, idempotencyKey, campaignId) as Readonly<{
+      scope: string;
+      result_revision: number;
+      observed_at: string;
+      payload_json: string;
+    }> | undefined;
+    if (!row || row.scope !== "attempt.completed_with_checkpoint" ||
+        !Number.isSafeInteger(row.result_revision) || row.result_revision < 1) {
+      throw new Error("transformer_pilot_checkpoint_completion_receipt_missing");
+    }
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+    } catch {
+      throw new Error("transformer_pilot_checkpoint_completion_receipt_invalid");
+    }
+    if (payload.completionDigest !== expectedCompletionDigest ||
+        typeof payload.unitId !== "string" || typeof payload.episodeId !== "string") {
+      throw new Error("transformer_pilot_checkpoint_completion_receipt_invalid");
+    }
+    const checkpointHead = requireCheckpointHead(
+      payload.nextCheckpointHead as TransformerAttemptCheckpointHead,
+    );
+    if (checkpointHead.episodeId !== payload.episodeId) {
+      throw new Error("transformer_pilot_checkpoint_completion_receipt_invalid");
+    }
+    return deepFreeze({
+      schemaVersion: 1,
+      tenantId,
+      campaignId,
+      unitId: payload.unitId,
+      episodeId: payload.episodeId,
+      completionDigest: expectedCompletionDigest,
+      campaignRevision: row.result_revision,
+      observedAt: row.observed_at,
+      checkpointHead,
+    });
   }
 
   private mutate(

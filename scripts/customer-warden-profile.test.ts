@@ -15,7 +15,7 @@ function customerRuntime(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     MENDPOINT_DEPLOYMENT_PROFILE: "customer",
     MENDPOINT_DEPLOYMENT_CLASS: "customer",
-    MENDPOINT_CUSTOMER_READY: "1",
+    MENDPOINT_CUSTOMER_READY: "0",
     MENDPOINT_CUSTOMER_TOPOLOGY: "single_node",
     MENDPOINT_CUSTOMER_MAX_MACHINES: "1",
     FLY_MACHINE_ID: "machine-approved",
@@ -51,7 +51,7 @@ describe("Warden-only customer Fly profile", () => {
     for (const setting of [
       'MENDPOINT_DEPLOYMENT_PROFILE = "customer"',
       'MENDPOINT_DEPLOYMENT_CLASS = "customer"',
-      'MENDPOINT_CUSTOMER_READY = "1"',
+      'MENDPOINT_CUSTOMER_READY = "0"',
       'MENDPOINT_CUSTOMER_TOPOLOGY = "single_node"',
       'MENDPOINT_CUSTOMER_MAX_MACHINES = "1"',
       'GITHUB_MODE = "real"',

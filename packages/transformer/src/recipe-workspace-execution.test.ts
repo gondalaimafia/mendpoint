@@ -1,11 +1,14 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   RecipeWorkspaceExecutionError,
+  createRecipeVerificationControl,
   executeRecipeInWorkspace,
   restoreRecipeExecutionInWorkspace,
+  runRecipeVerificationGate,
   type ExactSourceSnapshot,
   type RecipeCommandInvocation,
   type RecipeCommandRunner,
@@ -13,13 +16,32 @@ import {
 } from "./recipe-workspace-execution.js";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
+  applyRecipe,
   getRecipe,
   recipeFilesDigest,
   recipeReference,
   type RecipeFiles,
+  type RecipeVerificationCommand,
 } from "./recipe.js";
 
 const roots: string[] = [];
+const digest = (value: string): string =>
+  `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
+function replayed(
+  command: RecipeVerificationCommand,
+  result: Readonly<{ exitCode: number; stdout: string; stderr: string }>,
+) {
+  return {
+    result,
+    provenance: {
+      kind: "checkpoint_replay" as const,
+      commandDigest: digest(command.command),
+      workspaceManifestDigest: digest("workspace-manifest"),
+      effectResultDigest: digest(`effect:${command.id}`),
+    },
+  };
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -132,7 +154,7 @@ describe("bounded recipe workspace execution", () => {
       cacheHit: false,
     });
     expect(first.evidence.record).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       analysis: {
         status: "applicable",
         estimatedOperations: 4,
@@ -149,6 +171,332 @@ describe("bounded recipe workspace execution", () => {
       expect(existsSync(invocation.cwd)).toBe(false);
       expect(invocation.env).not.toHaveProperty("NODE_OPTIONS");
     }
+  });
+
+  it("replays an authenticated verifier prefix and executes only the remaining suffix", async () => {
+    const paths = fixture();
+    const snapshot = source();
+    const recipe = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+    const application = applyRecipe(recipe, snapshot.files);
+    const controlledIndexes: number[] = [];
+    let runnerCalls = 0;
+    const restoredFiles = { ...application.files };
+    const restoredFileModes = { ...snapshot.fileModes };
+    const recoveredResults = [replayed(application.verificationCommands[0]!, {
+      exitCode: 0,
+      stdout: "prefix verified\n",
+      stderr: "",
+    })];
+    const verificationControl = createRecipeVerificationControl({
+      restoredFiles,
+      restoredFileModes,
+      recoveredResults,
+      execute: async ({ index, run }) => {
+        controlledIndexes.push(index);
+        return { result: await run(), provenance: { kind: "executed" } };
+      },
+    });
+    restoredFiles["package.json"] = "{}\n";
+    restoredFileModes["src/server.js"] = "100644";
+    recoveredResults[0] = replayed(application.verificationCommands[0]!, {
+      exitCode: 9,
+      stdout: "mutated",
+      stderr: "mutated",
+    });
+
+    const execution = await executeRecipeInWorkspace({
+      fence: FENCE,
+      assertFence: () => true,
+      source: snapshot,
+      recipe,
+      evidenceDirectory: paths.evidenceDirectory,
+      tempRoot: paths.tempRoot,
+      observedAt: "2026-08-01T20:00:00.000Z",
+      commandRunner: async () => {
+        runnerCalls++;
+        return { exitCode: 0, stdout: "suffix verified\n", stderr: "" };
+      },
+      verificationControl,
+    });
+
+    expect(runnerCalls).toBe(1);
+    expect(controlledIndexes).toEqual([1]);
+    expect(execution.commands).toHaveLength(2);
+    expect(execution.commands[0]?.stdoutDigest).not.toBe(execution.commands[1]?.stdoutDigest);
+    expect(execution.commands.map((command) => command.provenance.kind)).toEqual([
+      "checkpoint_replay",
+      "executed",
+    ]);
+    expect(execution.outputFileModes["src/server.js"]).toBe("100755");
+  });
+
+  it("fails closed on restored workspace drift and replays a consumed verifier failure", async () => {
+    const paths = fixture();
+    const snapshot = source();
+    const recipe = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+    const application = applyRecipe(recipe, snapshot.files);
+    let runnerCalls = 0;
+    const base = {
+      fence: FENCE,
+      assertFence: () => true,
+      source: snapshot,
+      recipe,
+      evidenceDirectory: paths.evidenceDirectory,
+      tempRoot: paths.tempRoot,
+      observedAt: "2026-08-01T20:00:00.000Z",
+      commandRunner: async () => {
+        runnerCalls++;
+        return { exitCode: 0, stdout: "unexpected", stderr: "" };
+      },
+    } as const;
+
+    const sparse = new Array(1) as Parameters<typeof createRecipeVerificationControl>[0]["recoveredResults"];
+    expect(() => createRecipeVerificationControl({
+      restoredFiles: application.files,
+      restoredFileModes: snapshot.fileModes,
+      recoveredResults: sparse,
+      execute: async ({ run }) => ({
+        result: await run(), provenance: { kind: "executed" },
+      }),
+    })).toThrow("recipe_execution_verification_control_invalid");
+
+    await expect(executeRecipeInWorkspace({
+      ...base,
+      verificationControl: {
+        restoredFiles: application.files,
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: application.verificationCommands.map((command) => replayed(command, {
+          exitCode: 0, stdout: "forged pass", stderr: "",
+        })),
+        execute: async ({ run }) => ({
+          result: await run(), provenance: { kind: "executed" },
+        }),
+      },
+    })).rejects.toMatchObject({ code: "recipe_execution_verification_control_untrusted" });
+    expect(runnerCalls).toBe(0);
+
+    await expect(executeRecipeInWorkspace({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: { ...application.files, "package.json": "{}\n" },
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [],
+        execute: async ({ run }) => ({
+          result: await run(), provenance: { kind: "executed" },
+        }),
+      }),
+    })).rejects.toMatchObject({ code: "recipe_execution_checkpoint_restore_mismatch" });
+    expect(runnerCalls).toBe(0);
+
+    await expect(executeRecipeInWorkspace({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: application.files,
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [replayed(application.verificationCommands[0]!, {
+          exitCode: 9, stdout: "", stderr: "persisted failure",
+        })],
+        execute: async () => {
+          throw new Error("later verifier must not run");
+        },
+      }),
+    })).rejects.toMatchObject({
+      code: "recipe_execution_verification_failed:runtime-declarations",
+    });
+    expect(runnerCalls).toBe(0);
+  });
+
+  it("rechecks the lease fence after checkpoint dispatch and before verifier execution", async () => {
+    const paths = fixture();
+    const snapshot = source();
+    const recipe = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+    const application = applyRecipe(recipe, snapshot.files);
+    let stale = false;
+    let runnerCalls = 0;
+
+    await expect(executeRecipeInWorkspace({
+      fence: FENCE,
+      assertFence: () => !stale,
+      source: snapshot,
+      recipe,
+      evidenceDirectory: paths.evidenceDirectory,
+      tempRoot: paths.tempRoot,
+      observedAt: "2026-08-01T20:00:00.000Z",
+      commandRunner: async () => {
+        runnerCalls++;
+        return { exitCode: 0, stdout: "unexpected", stderr: "" };
+      },
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: application.files,
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [],
+        execute: async ({ run }) => {
+          stale = true;
+          return { result: await run(), provenance: { kind: "executed" } };
+        },
+      }),
+    })).rejects.toMatchObject({ code: "recipe_execution_fence_stale" });
+
+    expect(runnerCalls).toBe(0);
+  });
+
+  it("replays an authenticated adaptive gate prefix and executes only the suffix", async () => {
+    const paths = fixture();
+    const snapshot = source();
+    const recipe = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+    const application = applyRecipe(recipe, snapshot.files);
+    const adaptiveFiles = {
+      ...application.files,
+      "package.json": `${JSON.stringify({
+        ...JSON.parse(application.files["package.json"]!),
+        mendpointAdaptiveReview: "fixed",
+      }, null, 2)}\n`,
+    };
+    let runnerCalls = 0;
+    const controlledIndexes: number[] = [];
+    const verificationControl = createRecipeVerificationControl({
+      restoredFiles: adaptiveFiles,
+      restoredFileModes: snapshot.fileModes,
+      recoveredResults: [replayed(application.verificationCommands[0]!, {
+        exitCode: 0,
+        stdout: "replayed adaptive prefix\n",
+        stderr: "",
+      })],
+      execute: async ({ index, run }) => {
+        controlledIndexes.push(index);
+        return { result: await run(), provenance: { kind: "executed" } };
+      },
+    });
+
+    const result = await runRecipeVerificationGate({
+      files: adaptiveFiles,
+      fileModes: snapshot.fileModes,
+      recipe,
+      tempRoot: paths.tempRoot,
+      commandRunner: async () => {
+        runnerCalls++;
+        return { exitCode: 0, stdout: "adaptive suffix verified\n", stderr: "" };
+      },
+      verificationControl,
+    });
+
+    expect(result.passed).toBe(true);
+    expect(runnerCalls).toBe(1);
+    expect(controlledIndexes).toEqual([1]);
+  });
+
+  it("fails closed on forged or mismatched adaptive gate checkpoints", async () => {
+    const paths = fixture();
+    const snapshot = source();
+    const recipe = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+    const application = applyRecipe(recipe, snapshot.files);
+    let runnerCalls = 0;
+    const base = {
+      files: application.files,
+      fileModes: snapshot.fileModes,
+      recipe,
+      tempRoot: paths.tempRoot,
+      commandRunner: async () => {
+        runnerCalls++;
+        return { exitCode: 0, stdout: "unexpected", stderr: "" };
+      },
+    } as const;
+
+    await expect(runRecipeVerificationGate({
+      ...base,
+      verificationControl: {
+        restoredFiles: application.files,
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [],
+        execute: async ({ run }) => ({
+          result: await run(), provenance: { kind: "executed" },
+        }),
+      },
+    })).rejects.toThrow("recipe_execution_verification_control_untrusted");
+    expect(runnerCalls).toBe(0);
+
+    await expect(runRecipeVerificationGate({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: { ...application.files, "package.json": "{}\n" },
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [],
+        execute: async ({ run }) => ({
+          result: await run(), provenance: { kind: "executed" },
+        }),
+      }),
+    })).rejects.toThrow("recipe_execution_checkpoint_restore_mismatch");
+    expect(runnerCalls).toBe(0);
+
+    await expect(runRecipeVerificationGate({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: application.files,
+        restoredFileModes: {
+          ...snapshot.fileModes,
+          "package.json": snapshot.fileModes?.["package.json"] === "100755" ? "100644" : "100755",
+        },
+        recoveredResults: [],
+        execute: async ({ run }) => ({
+          result: await run(), provenance: { kind: "executed" },
+        }),
+      }),
+    })).rejects.toThrow("recipe_execution_checkpoint_restore_mismatch");
+    expect(runnerCalls).toBe(0);
+
+    await expect(runRecipeVerificationGate({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: application.files,
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [replayed(application.verificationCommands[1]!, {
+          exitCode: 0,
+          stdout: "wrong command replay",
+          stderr: "",
+        })],
+        execute: async ({ run }) => ({
+          result: await run(), provenance: { kind: "executed" },
+        }),
+      }),
+    })).rejects.toThrow("recipe_execution_command_provenance_invalid");
+    expect(runnerCalls).toBe(0);
+
+    await expect(runRecipeVerificationGate({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: application.files,
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [],
+        execute: async () => replayed(application.verificationCommands[1]!, {
+          exitCode: 0,
+          stdout: "wrong controlled command replay",
+          stderr: "",
+        }),
+      }),
+    })).rejects.toThrow("recipe_execution_command_provenance_invalid");
+    expect(runnerCalls).toBe(0);
+
+    const failed = await runRecipeVerificationGate({
+      ...base,
+      verificationControl: createRecipeVerificationControl({
+        restoredFiles: application.files,
+        restoredFileModes: snapshot.fileModes,
+        recoveredResults: [replayed(application.verificationCommands[0]!, {
+          exitCode: 9,
+          stdout: "",
+          stderr: "persisted adaptive failure",
+        })],
+        execute: async () => {
+          throw new Error("later verifier must not run");
+        },
+      }),
+    });
+    expect(failed).toMatchObject({
+      passed: false,
+      failingCommandId: application.verificationCommands[0]!.id,
+    });
+    expect(failed.output).toContain("persisted adaptive failure");
+    expect(runnerCalls).toBe(0);
   });
 
   it("verifies v2 runtime declarations with the real runner on the current host", async () => {
