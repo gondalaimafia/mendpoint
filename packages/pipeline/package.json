@@ -22,6 +22,7 @@
     "@mendpoint/db": "*",
     "@mendpoint/generation": "*",
     "@mendpoint/github": "*",
+    "@mendpoint/notify": "*",
     "@mendpoint/orchestrator": "*",
     "@mendpoint/policy": "*",
     "@mendpoint/repair": "*",

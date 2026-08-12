@@ -6,6 +6,7 @@ import {
   listProviders,
   getProviderBySlug,
   listChanges,
+  listCapabilityAdoptionOpportunities,
   getChange,
   listConsumers,
   listPrs,
@@ -1460,6 +1461,17 @@ app.get("/providers/:slug", (c) => {
   if (!p) return c.json({ error: "not found" }, 404);
   const versions = listVersionsForProvider(db, p.id).map(versionToApi);
   return c.json({ ...providerToApi(p), versions });
+});
+
+// Read-only: capability-adoption opportunities (NEW capabilities linked consumers
+// are not yet using), tenant-scoped for this provider.
+app.get("/providers/:slug/capability-opportunities", (c) => {
+  const p = getProviderBySlug(db, c.req.param("slug"));
+  if (!p) return c.json({ error: "not found" }, 404);
+  const opportunities = listCapabilityAdoptionOpportunities(db, requestTenantId(c), {
+    providerSlug: p.slug,
+  });
+  return c.json({ opportunities });
 });
 
 app.post("/providers", async (c) => {

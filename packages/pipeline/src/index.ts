@@ -28,13 +28,15 @@ import {
   getPrincipalBySubject,
   insertPrincipal,
   registrySummaryMarkdown,
+  recordCapabilityAdoptionOpportunity,
   type AppDb,
 } from "@mendpoint/db";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
 import { normalizeChange } from "@mendpoint/change-intel";
-import { analyzeImpact, reportToFindings } from "@mendpoint/code-impact";
+import { analyzeCapabilityAdoption, analyzeImpact, reportToFindings } from "@mendpoint/code-impact";
+import { notifyCapabilityAdoptionOpportunity } from "@mendpoint/notify";
 import { generateMigration } from "@mendpoint/generation";
 import {
   createAppDelivery,
@@ -685,12 +687,23 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       throw new Error("lease_lost_during_pipeline");
     }
   };
+  // Linked consumers (with local repos) for the capability-adoption pass below.
+  const capabilityConsumers: Array<{
+    consumerId: string;
+    consumerName: string;
+    repoRoot: string;
+  }> = [];
 
   for (const mon of monitored) {
     assertActive();
     const consumer = getConsumer(db, mon.consumer_id, input.tenantId);
     const repo = getConsumerRepo(db, mon.consumer_id, input.tenantId);
     if (!consumer || !repo) continue;
+    capabilityConsumers.push({
+      consumerId: consumer.id,
+      consumerName: consumer.name,
+      repoRoot: repo.local_path,
+    });
     const existingPr = existingPrByConsumer.get(consumer.id);
     if (existingPr) {
       const existingFindings = [...findingKeys].filter((key) =>
@@ -1639,6 +1652,76 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       impactReport,
       repair: repairMeta,
     });
+  }
+
+  // Capability-adoption alerts (G1f). Read-only analysis + idempotent persistence
+  // + Slack-gated notify. Runs AFTER the delivery loop and is fully best-effort:
+  // any failure here is recorded and swallowed so it can never affect
+  // change-detection, PR generation, or delivery. Detection short-circuits (no
+  // indexing cost) when the change introduces no additive capabilities.
+  try {
+    const opportunities = analyzeCapabilityAdoption(diff, capabilityConsumers, {
+      providerSlug: provider.slug,
+      providerNotes: to.changelog_md ?? undefined,
+    });
+    for (const opp of opportunities) {
+      recordCapabilityAdoptionOpportunity(db, {
+        tenantId: input.tenantId,
+        changeId,
+        providerSlug: provider.slug,
+        capabilityId: opp.capability.capabilityId,
+        op: opp.capability.op,
+        endpoint: opp.capability.endpoint,
+        path: opp.capability.path ?? null,
+        method: opp.capability.method ?? null,
+        field: opp.capability.field ?? null,
+        linkedConsumerCount: opp.linkedConsumerCount,
+        adoptingCount: opp.adoptingCount,
+        nonAdoptingCount: opp.nonAdoptingCount,
+        adoptionRate: opp.adoptionRate,
+        priority: opp.priority,
+        adoptingConsumers: opp.adoptingConsumers,
+        nonAdoptingConsumers: opp.nonAdoptingConsumers,
+        suggestedAction: opp.suggestedAction,
+        valueBasis: opp.valueBasis,
+      });
+      void notifyCapabilityAdoptionOpportunity({
+        provider: provider.slug,
+        capability: opp.capability.endpoint,
+        endpoint: opp.capability.endpoint,
+        adoptingConsumers: opp.adoptingConsumers.map((c) => c.consumerName),
+        nonAdoptingConsumers: opp.nonAdoptingConsumers.map((c) => c.consumerName),
+        suggestedAction: opp.suggestedAction,
+        priority: opp.priority,
+      }).catch(() => undefined);
+    }
+    if (opportunities.length) {
+      recordAudit(db, {
+        tenantId: input.tenantId,
+        actor: "pipeline",
+        action: "capability.opportunities",
+        resourceType: "api_change",
+        resourceId: changeId,
+        metadata: {
+          product: "warden",
+          count: opportunities.length,
+          capabilities: opportunities.map((o) => o.capability.endpoint),
+        },
+      });
+    }
+  } catch (error) {
+    try {
+      recordAudit(db, {
+        tenantId: input.tenantId,
+        actor: "pipeline",
+        action: "capability.opportunities_failed",
+        resourceType: "api_change",
+        resourceId: changeId,
+        metadata: { error: error instanceof Error ? error.message : String(error) },
+      });
+    } catch {
+      /* capability-adoption alerts must never break the delivery loop */
+    }
   }
 
   return report;

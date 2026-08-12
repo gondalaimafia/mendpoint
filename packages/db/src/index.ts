@@ -34,6 +34,7 @@ export * from "./warden-model-accounting.js";
 export * from "./external-baseline.js";
 export * from "./outcome-metrics.js";
 export * from "./agent-run-meter.js";
+export * from "./capability-adoption-opportunity.js";
 
 export type AppDb = {
   raw: DatabaseSync;
@@ -290,6 +291,38 @@ CREATE TABLE IF NOT EXISTS suppressed_patterns (
 );
 CREATE INDEX IF NOT EXISTS suppressed_patterns_consumer_idx ON suppressed_patterns(consumer_id);
 CREATE INDEX IF NOT EXISTS suppressed_patterns_pattern_idx ON suppressed_patterns(pattern);
+
+-- Warden capability-adoption opportunities: NEW provider capabilities that linked
+-- consumers are not yet using (measured from static code presence). Idempotent per
+-- (tenant, change, capability); re-measurement upserts the counts.
+CREATE TABLE IF NOT EXISTS capability_adoption_opportunities (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  change_id TEXT NOT NULL,
+  provider_slug TEXT NOT NULL,
+  capability_id TEXT NOT NULL,
+  op TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  path TEXT,
+  method TEXT,
+  field TEXT,
+  linked_consumer_count INTEGER NOT NULL DEFAULT 0,
+  adopting_count INTEGER NOT NULL DEFAULT 0,
+  non_adopting_count INTEGER NOT NULL DEFAULT 0,
+  adoption_rate REAL NOT NULL DEFAULT 0,
+  priority INTEGER NOT NULL DEFAULT 0,
+  adopting_consumers_json TEXT NOT NULL DEFAULT '[]',
+  non_adopting_consumers_json TEXT NOT NULL DEFAULT '[]',
+  suggested_action TEXT NOT NULL DEFAULT '',
+  value_basis TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, change_id, capability_id)
+);
+CREATE INDEX IF NOT EXISTS capability_adoption_opportunities_tenant_idx
+  ON capability_adoption_opportunities(tenant_id, provider_slug, priority);
+CREATE INDEX IF NOT EXISTS capability_adoption_opportunities_change_idx
+  ON capability_adoption_opportunities(tenant_id, change_id);
 
 -- Phase D: multi-tenant API keys (hashed secrets)
 CREATE TABLE IF NOT EXISTS api_keys (
