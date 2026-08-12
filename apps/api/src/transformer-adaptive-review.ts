@@ -25,6 +25,10 @@ import {
   MAX_ADAPTIVE_REVIEW_TOTAL_BYTES,
   readAdaptiveCandidateArtifact,
 } from "@mendpoint/transformer";
+import {
+  admitRejectedOutcomeLearningRecord,
+  rejectedOutcomeCaptureEnabled,
+} from "@mendpoint/worker/transformer-learning-rejected";
 import type { ApiEnv } from "./auth.js";
 import {
   internalErrorResponse,
@@ -510,6 +514,12 @@ export function registerTransformerAdaptiveReviewRoutes(
       allowed: boolean;
       reasons: readonly string[];
     }>;
+    /**
+     * Environment used to gate opt-in rejected-outcome learning capture. Defaults
+     * to process.env; injected in tests. Default-off means the reject path does no
+     * extra work and stays byte-identical to today.
+     */
+    learningEnv?: NodeJS.ProcessEnv;
   }> = {},
 ): void {
   app.get("/transformer/adaptive-candidates", (c) => {
@@ -737,6 +747,27 @@ export function registerTransformerAdaptiveReviewRoutes(
       return c.json({ error: "adaptive_candidate_expired" }, 410);
     }
     if (body.decision === "reject") {
+      // Opt-in NEGATIVE capture: read the sealed artifact BEFORE it is discarded
+      // and admit a redacted, consent-gated rejected-outcome learning record. It is
+      // strictly best-effort and never affects the reject/discard flow. Default-off
+      // (loop disabled or no rejected-outcome consent) it does nothing, so the
+      // reject path and the corpus stay byte-identical to today.
+      const learningEnv = options.learningEnv ?? process.env;
+      if (rejectedOutcomeCaptureEnabled(learningEnv)) {
+        try {
+          const rejectedArtifact = readBoundArtifact(record);
+          admitRejectedOutcomeLearningRecord({
+            db,
+            tenantId,
+            candidate: reviewed,
+            artifact: rejectedArtifact,
+            now: nowIso(),
+            env: learningEnv,
+          });
+        } catch {
+          /* best-effort: negative capture never affects reject or discard */
+        }
+      }
       try {
         discardAdaptiveCandidate({
           tenantId,

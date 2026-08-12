@@ -148,24 +148,28 @@ consent/eligibility count), and distributions `byDecision`, `byOverallRisk`, and
 
 ## What is deliberately absent (moat-plan findings)
 
-The sealed learning shape today does not carry three things a richer training
-corpus would want, so the exporter emits them honestly rather than fabricating:
-
 1. **No migration `family` / `provider` / `framework` label.** The redacted
    approved-outcome document carries `failingCommandId`, `changedPaths`, per-edit
    `semanticCategory` / `risk` / `rationale`, `overallRisk`, `confidence`, and the
    verification summary — but no discrete family (sdk / framework / runtime /
    internal-api / warden-provider) or provider/framework name. These labels are
-   emitted as `null`. The consent `purpose` and `sourceObjectType` (in
-   `provenance`) are the only present proxies.
-2. **No raw diff / after-content.** Redaction deliberately excludes raw file
-   bodies. The `output` is therefore the accepted *change specification*
-   (paths, semantic category, risk, rationale, verification), not literal diff
-   hunks. Supervised diff-generation fine-tuning would require the accepted
-   after-content to be carried through admission, which it is not today.
-3. **No negative / preference signal.** `admitLearningRecord` admits only
-   verified, human-approved outcomes, so every example is `decision: "accepted"`
-   and `verificationPassed: true`. Rejected outcomes and reviewer edits are never
-   stored in the learning tables, so preference-style (accepted-vs-rejected)
-   training pairs cannot be produced from sealed learning data without a new,
-   separately consented rejected-outcome capture path.
+   emitted as `null`. The recipe/provider context that would determine them is
+   dropped at the adaptive-candidate seal boundary and is not reachable at the
+   producer seam, so persisting a real classification is a separate, schema-safety
+   -disciplined change to the candidate-seal pipeline (tracked independently). The
+   consent `purpose` and `sourceObjectType` (in `provenance`) are the only present
+   proxies today.
+2. **Raw diff / after-content — now available as an opt-in purpose.** The base
+   `output` is the accepted *change specification*, not literal diff hunks. Under
+   the separate, opt-in consent purpose `transformer-adaptive-training-content`,
+   the redacted accepted **after-content** (real before/after file bodies) is
+   captured as its own learning record and surfaced by the exporter as
+   `output.afterContent`. Default-off (purpose ungranted) the base corpus is
+   byte-identical. See `docs/LEARNING_CAPTURE.md`.
+3. **Negative / preference signal — now available as an opt-in purpose.** The base
+   loop admits only human-approved outcomes (`decision: "accepted"`). Under the
+   separate, opt-in consent purpose `transformer-adaptive-rejected-outcomes`,
+   rejected candidates are captured as negative records labeled
+   `decision: "rejected"` with the reviewer's `output.rejectionRationale`, enabling
+   preference-style (accepted-vs-rejected) training. Default-off the base corpus is
+   byte-identical. See `docs/LEARNING_CAPTURE.md`.
