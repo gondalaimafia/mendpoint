@@ -19,6 +19,7 @@ import {
   recordAdaptiveCandidate,
   requestAdaptiveCandidateRegeneration,
   reviewAdaptiveCandidate,
+  signOffAdaptiveEscalation,
   type AppDb,
 } from "./index.js";
 
@@ -147,6 +148,145 @@ describe("transformer adaptive candidate store", () => {
       now: "2026-08-06T02:00:00.000Z",
     });
     expect(promoted.status).toBe("promoted");
+  });
+
+  it("defaults to the standard tier and keeps single-approval behavior unchanged", () => {
+    const db = freshDb();
+    const rec = record(db);
+    expect(rec.reviewTier).toBe("standard");
+    expect(rec.escalationReviewerPrincipalId).toBeNull();
+    // A standard candidate approves with a single human, exactly as before.
+    const approved = reviewAdaptiveCandidate(db, {
+      tenantId: "tenant-a",
+      id: rec.id,
+      decision: "approve",
+      reviewerPrincipalId: "human:reviewer-1",
+      now: "2026-08-06T01:00:00.000Z",
+    });
+    expect(approved.status).toBe("approved");
+    // Signing off a standard candidate is not applicable.
+    expect(() =>
+      signOffAdaptiveEscalation(db, {
+        tenantId: "tenant-a",
+        id: rec.id,
+        reviewerPrincipalId: "human:senior-1",
+        rationale: "not needed",
+      }),
+    ).toThrow("transformer_adaptive_candidate_escalation_not_required");
+  });
+
+  it("escalated: a single standard approval is insufficient; needs a distinct second sign-off", () => {
+    const db = freshDb();
+    const rec = record(db, { reviewTier: "escalated" });
+    expect(rec.reviewTier).toBe("escalated");
+    // Approval without any escalation sign-off is refused.
+    expect(() =>
+      reviewAdaptiveCandidate(db, {
+        tenantId: "tenant-a",
+        id: rec.id,
+        decision: "approve",
+        reviewerPrincipalId: "human:reviewer-1",
+        now: "2026-08-06T01:00:00.000Z",
+      }),
+    ).toThrow("transformer_adaptive_candidate_escalation_required");
+    expect(getAdaptiveCandidate(db, "tenant-a", rec.id)?.status).toBe("review_pending");
+    // The escalation sign-off records a second human but does not approve.
+    const signed = signOffAdaptiveEscalation(db, {
+      tenantId: "tenant-a",
+      id: rec.id,
+      reviewerPrincipalId: "human:senior-1",
+      rationale: "Second sign-off: reviewed the high-risk change and it is safe.",
+      now: "2026-08-06T01:05:00.000Z",
+    });
+    expect(signed.status).toBe("review_pending");
+    expect(signed.escalationReviewerPrincipalId).toBe("human:senior-1");
+    // The signer cannot also be the approver (must be two distinct humans).
+    expect(() =>
+      reviewAdaptiveCandidate(db, {
+        tenantId: "tenant-a",
+        id: rec.id,
+        decision: "approve",
+        reviewerPrincipalId: "human:senior-1",
+        now: "2026-08-06T01:06:00.000Z",
+      }),
+    ).toThrow("transformer_adaptive_candidate_escalation_required");
+    // A distinct approver finalizes through the unchanged standard path.
+    const approved = reviewAdaptiveCandidate(db, {
+      tenantId: "tenant-a",
+      id: rec.id,
+      decision: "approve",
+      reviewerPrincipalId: "human:reviewer-1",
+      now: "2026-08-06T01:07:00.000Z",
+    });
+    expect(approved.status).toBe("approved");
+    expect(approved.reviewerPrincipalId).toBe("human:reviewer-1");
+    const promoted = promoteAdaptiveCandidate(db, {
+      tenantId: "tenant-a",
+      id: rec.id,
+      now: "2026-08-06T01:08:00.000Z",
+    });
+    expect(promoted.status).toBe("promoted");
+  });
+
+  it("escalation sign-off is idempotent for the same signer and conflicts on a distinct signer", () => {
+    const db = freshDb();
+    const rec = record(db, { reviewTier: "escalated" });
+    const first = signOffAdaptiveEscalation(db, {
+      tenantId: "tenant-a",
+      id: rec.id,
+      reviewerPrincipalId: "human:senior-1",
+      rationale: "Second sign-off rationale.",
+      now: "2026-08-06T01:00:00.000Z",
+    });
+    const replay = signOffAdaptiveEscalation(db, {
+      tenantId: "tenant-a",
+      id: rec.id,
+      reviewerPrincipalId: "human:senior-1",
+      rationale: "Second sign-off rationale.",
+      now: "2026-08-06T01:01:00.000Z",
+    });
+    expect(replay.escalationReviewedAt).toBe(first.escalationReviewedAt);
+    expect(() =>
+      signOffAdaptiveEscalation(db, {
+        tenantId: "tenant-a",
+        id: rec.id,
+        reviewerPrincipalId: "human:senior-2",
+        rationale: "A different senior tries to sign off.",
+        now: "2026-08-06T01:02:00.000Z",
+      }),
+    ).toThrow("transformer_adaptive_candidate_escalation_conflict");
+  });
+
+  it("blocked: cannot be approved or promoted, but can be rejected", () => {
+    const db = freshDb();
+    const rec = record(db, { reviewTier: "blocked" });
+    expect(rec.reviewTier).toBe("blocked");
+    expect(() =>
+      reviewAdaptiveCandidate(db, {
+        tenantId: "tenant-a",
+        id: rec.id,
+        decision: "approve",
+        reviewerPrincipalId: "human:reviewer-1",
+        now: "2026-08-06T01:00:00.000Z",
+      }),
+    ).toThrow("transformer_adaptive_candidate_blocked");
+    // Never reaches an approved state, so promotion is impossible.
+    expect(() =>
+      promoteAdaptiveCandidate(db, {
+        tenantId: "tenant-a",
+        id: rec.id,
+        now: "2026-08-06T01:01:00.000Z",
+      }),
+    ).toThrow("transformer_adaptive_candidate_not_approved");
+    // Rejection is always permitted (it delivers nothing).
+    const rejected = reviewAdaptiveCandidate(db, {
+      tenantId: "tenant-a",
+      id: rec.id,
+      decision: "reject",
+      reviewerPrincipalId: "human:reviewer-1",
+      now: "2026-08-06T01:02:00.000Z",
+    });
+    expect(rejected.status).toBe("rejected");
   });
 
   it("retains the reviewed candidate and links a scheduled immutable regeneration", () => {

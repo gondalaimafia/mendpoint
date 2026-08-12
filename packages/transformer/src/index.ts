@@ -249,6 +249,18 @@ export {
 } from "./adaptive-candidate.js";
 
 export {
+  classifyReviewTier,
+  resolveReviewTierPolicy,
+  isReviewTier,
+  DEFAULT_REVIEW_TIER_POLICY,
+  RECOMMENDED_REVIEW_TIER_POLICY,
+  type ReviewTier,
+  type ReviewTierBand,
+  type ReviewTierPolicy,
+  type ReviewTierClassifierInput,
+} from "./review-tier.js";
+
+export {
   planStagedPullRequestBatches,
   reconcileStagedPullRequestResume,
   type StagedPullRequestProvider,

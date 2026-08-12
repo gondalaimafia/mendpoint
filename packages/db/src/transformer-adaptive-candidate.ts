@@ -29,6 +29,30 @@ export type AdaptiveCandidateStatus =
 
 export type AdaptiveReviewDecision = "approve" | "reject" | "regenerate";
 
+/**
+ * Selective review-tier of an adaptive candidate. Scales the REQUIRED human
+ * sign-off strength; it never lets a candidate skip human review.
+ *
+ *   - `standard`  : the existing single-human-approval path, unchanged.
+ *   - `escalated` : requires a second, distinct human escalation sign-off ON TOP
+ *                   of the normal approval before it can be approved/delivered.
+ *   - `blocked`   : held; cannot be approved or promoted until the blocker clears.
+ *
+ * The tier is computed once (deterministically) from the sealed review evidence
+ * at record time and persisted. The default is `standard`, so an unconfigured
+ * flow behaves exactly as today.
+ */
+export type AdaptiveReviewTier = "standard" | "escalated" | "blocked";
+
+const REVIEW_TIERS = new Set<AdaptiveReviewTier>(["standard", "escalated", "blocked"]);
+
+function requireTier(value: unknown, code: string): AdaptiveReviewTier {
+  if (typeof value !== "string" || !REVIEW_TIERS.has(value as AdaptiveReviewTier)) {
+    throw new Error(code);
+  }
+  return value as AdaptiveReviewTier;
+}
+
 export type TransformerAdaptiveCandidateRecord = Readonly<{
   id: string;
   tenantId: string;
@@ -41,6 +65,7 @@ export type TransformerAdaptiveCandidateRecord = Readonly<{
   expectedBaseRevision: string;
   kind: "adaptive";
   status: AdaptiveCandidateStatus;
+  reviewTier: AdaptiveReviewTier;
   divergedFromDigest: string;
   candidateDigest: string;
   failingCommandId: string | null;
@@ -51,6 +76,9 @@ export type TransformerAdaptiveCandidateRecord = Readonly<{
   reviewDecision: AdaptiveReviewDecision | null;
   reviewRationale: string | null;
   reviewedAt: string | null;
+  escalationReviewerPrincipalId: string | null;
+  escalationReviewedAt: string | null;
+  escalationRationale: string | null;
   promotedAt: string | null;
   supersedesCandidateId: string | null;
   supersededByCandidateId: string | null;
@@ -72,6 +100,7 @@ type Row = {
   expected_base_revision: string;
   kind: string;
   status: string;
+  review_tier: string | null;
   diverged_from_digest: string;
   candidate_digest: string;
   failing_command_id: string | null;
@@ -82,6 +111,9 @@ type Row = {
   review_decision: string | null;
   review_rationale: string | null;
   reviewed_at: string | null;
+  escalation_reviewer_principal_id: string | null;
+  escalation_reviewed_at: string | null;
+  escalation_rationale: string | null;
   promoted_at: string | null;
   supersedes_candidate_id: string | null;
   superseded_by_candidate_id: string | null;
@@ -165,6 +197,12 @@ function mapRow(row: Row): TransformerAdaptiveCandidateRecord {
     expectedBaseRevision: row.expected_base_revision,
     kind: "adaptive",
     status: row.status as AdaptiveCandidateStatus,
+    // A pre-tiering row (added column defaulted) reads as `standard`, so legacy
+    // candidates keep the existing single-approval behavior.
+    reviewTier: requireTier(
+      row.review_tier ?? "standard",
+      "transformer_adaptive_candidate_tier_invalid",
+    ),
     divergedFromDigest: row.diverged_from_digest,
     candidateDigest: row.candidate_digest,
     failingCommandId: row.failing_command_id,
@@ -175,6 +213,9 @@ function mapRow(row: Row): TransformerAdaptiveCandidateRecord {
     reviewDecision: (row.review_decision as AdaptiveReviewDecision | null) ?? null,
     reviewRationale: row.review_rationale,
     reviewedAt: row.reviewed_at,
+    escalationReviewerPrincipalId: row.escalation_reviewer_principal_id,
+    escalationReviewedAt: row.escalation_reviewed_at,
+    escalationRationale: row.escalation_rationale,
     promotedAt: row.promoted_at,
     supersedesCandidateId: row.supersedes_candidate_id,
     supersededByCandidateId: row.superseded_by_candidate_id,
@@ -211,6 +252,8 @@ export type RecordAdaptiveCandidateInput = Readonly<{
   sealedPath: string;
   sealedSha256: string;
   changedPaths: readonly string[];
+  /** Required human-review tier. Defaults to `standard` (today's behavior). */
+  reviewTier?: AdaptiveReviewTier;
   expiresAt: string;
   now?: string;
 }>;
@@ -261,6 +304,9 @@ export function recordAdaptiveCandidate(
   const changedPaths = input.changedPaths.map((value) =>
     requiredString(value, "transformer_adaptive_candidate_changed_paths_invalid", 1_000),
   );
+  const reviewTier = input.reviewTier === undefined
+    ? "standard"
+    : requireTier(input.reviewTier, "transformer_adaptive_candidate_tier_invalid");
   const expiresAt = requireTimestamp(input.expiresAt, "transformer_adaptive_candidate_expiry_invalid");
   const now = input.now ? requireTimestamp(input.now, "transformer_adaptive_candidate_now_invalid") : new Date().toISOString();
   const id = candidateId(tenantId, campaignId, unitId, attemptId);
@@ -308,14 +354,15 @@ export function recordAdaptiveCandidate(
       .prepare(
         `INSERT INTO transformer_adaptive_candidates
           (id, tenant_id, campaign_id, unit_id, attempt_id, repository_id,
-           snapshot_id, base_branch, expected_base_revision, kind, status,
+           snapshot_id, base_branch, expected_base_revision, kind, status, review_tier,
            diverged_from_digest, candidate_digest, failing_command_id,
            sealed_path, sealed_sha256, changed_paths_json,
            reviewer_principal_id, review_decision, review_rationale, reviewed_at, promoted_at,
+           escalation_reviewer_principal_id, escalation_reviewed_at, escalation_rationale,
            supersedes_candidate_id, superseded_by_candidate_id, generation,
            expires_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'adaptive', 'review_pending',
-           ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'adaptive', 'review_pending', ?,
+           ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -327,6 +374,7 @@ export function recordAdaptiveCandidate(
         snapshotId,
         baseBranch,
         expectedBaseRevision,
+        reviewTier,
         divergedFromDigest,
         candidateDigest,
         failingCommandId,
@@ -611,6 +659,24 @@ export function reviewAdaptiveCandidate(
     if (current.status !== "review_pending") {
       throw new Error("transformer_adaptive_candidate_not_pending");
     }
+    // Selective review tiering. Every existing approval guard is preserved; the
+    // tier requirement is ADDED on top of an approval, never in place of one.
+    // A rejection is always permitted (it never delivers anything).
+    if (input.decision === "approve") {
+      // Blocked: held, not deliverable until the blocker clears (e.g. regenerate).
+      if (current.reviewTier === "blocked") {
+        throw new Error("transformer_adaptive_candidate_blocked");
+      }
+      // Escalated: a single standard approval is insufficient. A second, DISTINCT
+      // human must have recorded an escalation sign-off first.
+      if (
+        current.reviewTier === "escalated" &&
+        (current.escalationReviewerPrincipalId === null ||
+          current.escalationReviewerPrincipalId === reviewerPrincipalId)
+      ) {
+        throw new Error("transformer_adaptive_candidate_escalation_required");
+      }
+    }
     const changed = db.raw
       .prepare(
         `UPDATE transformer_adaptive_candidates
@@ -620,6 +686,100 @@ export function reviewAdaptiveCandidate(
       )
       .run(nextStatus, input.decision, rationale, reviewerPrincipalId, now, now, id, tenantId, now);
     if (Number(changed.changes) !== 1) throw new Error("transformer_adaptive_candidate_review_conflict");
+    if (ownsTransaction) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+  return loadRow(db, tenantId, id)!;
+}
+
+export type SignOffAdaptiveEscalationInput = Readonly<{
+  tenantId: string;
+  id: string;
+  reviewerPrincipalId: string;
+  rationale: string;
+  now?: string;
+}>;
+
+/**
+ * Record the second, DISTINCT human escalation sign-off required by an
+ * `escalated` candidate. This does NOT approve or promote anything — it only
+ * satisfies the added tier requirement so that a later approval (by a different
+ * reviewer) may proceed through the unchanged standard path. Only an escalated,
+ * still-pending candidate can be signed off; re-signing with the identical
+ * reviewer and rationale is idempotent, and a second distinct signer conflicts.
+ */
+export function signOffAdaptiveEscalation(
+  db: AppDb,
+  input: SignOffAdaptiveEscalationInput,
+): TransformerAdaptiveCandidateRecord {
+  const tenantId = requiredString(input.tenantId, "transformer_adaptive_candidate_tenant_invalid", 200);
+  const id = requiredString(input.id, "transformer_adaptive_candidate_id_invalid", 200);
+  const reviewerPrincipalId = requiredString(
+    input.reviewerPrincipalId,
+    "transformer_adaptive_candidate_reviewer_invalid",
+    200,
+  );
+  const rationale = requiredString(
+    input.rationale,
+    "transformer_adaptive_candidate_review_rationale_invalid",
+    2_000,
+  );
+  const now = input.now
+    ? requireTimestamp(input.now, "transformer_adaptive_candidate_now_invalid")
+    : new Date().toISOString();
+
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const current = loadRow(db, tenantId, id);
+    if (!current) throw new Error("transformer_adaptive_candidate_not_found");
+    if (current.kind !== "adaptive") throw new Error("transformer_adaptive_candidate_kind_invalid");
+    if (current.reviewTier !== "escalated") {
+      throw new Error("transformer_adaptive_candidate_escalation_not_required");
+    }
+    if (
+      current.status === "review_pending" &&
+      Date.parse(now) >= Date.parse(current.expiresAt)
+    ) {
+      db.raw
+        .prepare(
+          `UPDATE transformer_adaptive_candidates
+           SET status = 'expired', updated_at = ?
+           WHERE id = ? AND tenant_id = ? AND kind = 'adaptive'
+             AND status = 'review_pending' AND expires_at <= ?`,
+        )
+        .run(now, id, tenantId, now);
+      if (ownsTransaction) db.raw.exec("COMMIT");
+      return loadRow(db, tenantId, id)!;
+    }
+    if (current.escalationReviewerPrincipalId !== null) {
+      if (
+        current.escalationReviewerPrincipalId === reviewerPrincipalId &&
+        current.escalationRationale === rationale
+      ) {
+        if (ownsTransaction) db.raw.exec("COMMIT");
+        return current;
+      }
+      throw new Error("transformer_adaptive_candidate_escalation_conflict");
+    }
+    if (current.status !== "review_pending") {
+      throw new Error("transformer_adaptive_candidate_not_pending");
+    }
+    const changed = db.raw
+      .prepare(
+        `UPDATE transformer_adaptive_candidates
+         SET escalation_reviewer_principal_id = ?, escalation_reviewed_at = ?,
+             escalation_rationale = ?, updated_at = ?
+         WHERE id = ? AND tenant_id = ? AND kind = 'adaptive'
+           AND review_tier = 'escalated' AND status = 'review_pending'
+           AND escalation_reviewer_principal_id IS NULL AND expires_at > ?`,
+      )
+      .run(reviewerPrincipalId, now, rationale, now, id, tenantId, now);
+    if (Number(changed.changes) !== 1) {
+      throw new Error("transformer_adaptive_candidate_escalation_conflict");
+    }
     if (ownsTransaction) db.raw.exec("COMMIT");
   } catch (error) {
     if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");

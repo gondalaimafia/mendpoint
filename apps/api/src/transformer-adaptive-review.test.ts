@@ -46,7 +46,7 @@ const CONVERGED_FILES: RecipeFiles = Object.freeze({
   "src/index.ts": "export const value = 1;\n",
 });
 
-type ActorKey = "human-a" | "apikey-human-a" | "human-b";
+type ActorKey = "human-a" | "human-a2" | "apikey-human-a" | "human-b";
 
 function reviewBody(decision: "approve" | "reject" | "regenerate"): string {
   return JSON.stringify({ decision, rationale: "Verified the exact proposed files" });
@@ -60,6 +60,10 @@ const IDENTITIES: Record<ActorKey, {
   "human-a": {
     principal: { id: "human:reviewer@a.com", tenantId: "tenant-a", role: "owner" },
     trustPrincipalId: "trust-human-a",
+  },
+  "human-a2": {
+    principal: { id: "human:reviewer2@a.com", tenantId: "tenant-a", role: "owner" },
+    trustPrincipalId: "trust-human-a2",
   },
   "apikey-human-a": {
     principal: { id: "human:reviewer@a.com", tenantId: "tenant-a", role: "owner" },
@@ -98,6 +102,14 @@ function fixture(
     createdAt: NOW,
   });
   insertPrincipal(db, {
+    id: "trust-human-a2",
+    tenantId: "tenant-a",
+    kind: "human",
+    subject: "reviewer2@a.com",
+    displayName: "Reviewer A2",
+    createdAt: NOW,
+  });
+  insertPrincipal(db, {
     id: "trust-human-b",
     tenantId: "tenant-b",
     kind: "human",
@@ -130,7 +142,12 @@ function fixture(
 function seedCandidate(
   db: AppDb,
   tenantId: string,
-  overrides: { files?: RecipeFiles; unitId?: string; expiresAt?: string } = {},
+  overrides: {
+    files?: RecipeFiles;
+    unitId?: string;
+    expiresAt?: string;
+    reviewTier?: "standard" | "escalated" | "blocked";
+  } = {},
 ): { id: string; sealPath: string; sealSha256: string; candidateDigest: string } {
   const files = overrides.files ?? CONVERGED_FILES;
   const divergedFromDigest = recipeFilesDigest(RECIPE_FILES);
@@ -193,6 +210,7 @@ function seedCandidate(
     sealedPath: seal.path,
     sealedSha256: seal.sha256,
     changedPaths: ["package.json"],
+    ...(overrides.reviewTier ? { reviewTier: overrides.reviewTier } : {}),
     expiresAt: overrides.expiresAt ?? "2099-01-01T00:00:00.000Z",
     now: NOW,
   });
@@ -293,6 +311,126 @@ describe("transformer adaptive candidate review routes", () => {
         jobId: delivery!.jobId,
       },
     });
+  });
+
+  it("surfaces the standard tier by default and keeps single-approval delivery unchanged", async () => {
+    const { app, db } = fixture();
+    const seeded = seedCandidate(db, "tenant-a");
+    const detailRes = await app.request(`/transformer/adaptive-candidates/${seeded.id}`, {
+      headers: { "X-Test-Actor": "human-a" },
+    });
+    expect(await detailRes.json()).toMatchObject({
+      reviewTier: "standard",
+      escalationSignOffRequired: false,
+    });
+    const res = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
+      method: "POST",
+      headers: { "X-Test-Actor": "human-a", "content-type": "application/json" },
+      body: reviewBody("approve"),
+    });
+    expect(res.status).toBe(202);
+    expect((await res.json())).toMatchObject({ status: "approved", reviewTier: "standard" });
+    expect(getAdaptiveDeliveryByCandidate(db, "tenant-a", seeded.id)?.status).toBe(
+      "delivery_pending",
+    );
+  });
+
+  it("escalated: refuses a single standard approval until a distinct second human signs off", async () => {
+    const { app, db } = fixture();
+    const seeded = seedCandidate(db, "tenant-a", { reviewTier: "escalated" });
+
+    // A single approval is refused; nothing is delivered and review stays open.
+    const refused = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
+      method: "POST",
+      headers: { "X-Test-Actor": "human-a", "content-type": "application/json" },
+      body: reviewBody("approve"),
+    });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({
+      error: "transformer_adaptive_candidate_escalation_required",
+    });
+    expect(getAdaptiveCandidate(db, "tenant-a", seeded.id)?.status).toBe("review_pending");
+    expect(getAdaptiveDeliveryByCandidate(db, "tenant-a", seeded.id)).toBeUndefined();
+
+    // The escalation sign-off requires a direct human, never an API key.
+    const apiKeySignoff = await app.request(
+      `/transformer/adaptive-candidates/${seeded.id}/escalation-sign-off`,
+      {
+        method: "POST",
+        headers: { "X-Test-Actor": "apikey-human-a", "content-type": "application/json" },
+        body: JSON.stringify({ rationale: "Second sign-off attempt via API key." }),
+      },
+    );
+    expect(apiKeySignoff.status).toBe(403);
+
+    // A second, distinct human records the escalation sign-off (no approval yet).
+    const signoff = await app.request(
+      `/transformer/adaptive-candidates/${seeded.id}/escalation-sign-off`,
+      {
+        method: "POST",
+        headers: { "X-Test-Actor": "human-a2", "content-type": "application/json" },
+        body: JSON.stringify({ rationale: "Senior review: the high-risk change is safe." }),
+      },
+    );
+    expect(signoff.status).toBe(200);
+    expect(await signoff.json()).toMatchObject({
+      status: "review_pending",
+      reviewTier: "escalated",
+      escalationReviewerPrincipalId: "human:reviewer2@a.com",
+    });
+    expect(getAdaptiveDeliveryByCandidate(db, "tenant-a", seeded.id)).toBeUndefined();
+
+    // The signer cannot also be the approver: two distinct humans are required.
+    const selfApprove = await app.request(
+      `/transformer/adaptive-candidates/${seeded.id}/review`,
+      {
+        method: "POST",
+        headers: { "X-Test-Actor": "human-a2", "content-type": "application/json" },
+        body: reviewBody("approve"),
+      },
+    );
+    expect(selfApprove.status).toBe(409);
+    expect(await selfApprove.json()).toMatchObject({
+      error: "transformer_adaptive_candidate_escalation_required",
+    });
+
+    // A distinct approver finalizes through the unchanged standard path.
+    const approve = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
+      method: "POST",
+      headers: { "X-Test-Actor": "human-a", "content-type": "application/json" },
+      body: reviewBody("approve"),
+    });
+    expect(approve.status).toBe(202);
+    expect(await approve.json()).toMatchObject({ status: "approved", reviewTier: "escalated" });
+    expect(getAdaptiveDeliveryByCandidate(db, "tenant-a", seeded.id)?.status).toBe(
+      "delivery_pending",
+    );
+  });
+
+  it("blocked: cannot be approved and never enqueues a delivery, but can be rejected", async () => {
+    const { app, db } = fixture();
+    const seeded = seedCandidate(db, "tenant-a", { reviewTier: "blocked" });
+
+    const blocked = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
+      method: "POST",
+      headers: { "X-Test-Actor": "human-a", "content-type": "application/json" },
+      body: reviewBody("approve"),
+    });
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toMatchObject({
+      error: "transformer_adaptive_candidate_blocked",
+    });
+    expect(getAdaptiveCandidate(db, "tenant-a", seeded.id)?.status).toBe("review_pending");
+    expect(getAdaptiveDeliveryByCandidate(db, "tenant-a", seeded.id)).toBeUndefined();
+
+    // A blocked candidate can still be rejected (a rejection delivers nothing).
+    const rejected = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
+      method: "POST",
+      headers: { "X-Test-Actor": "human-a", "content-type": "application/json" },
+      body: reviewBody("reject"),
+    });
+    expect(rejected.status).toBe(200);
+    expect(getAdaptiveCandidate(db, "tenant-a", seeded.id)?.status).toBe("rejected");
   });
 
   it("records an attributed regeneration request while retaining immutable evidence", async () => {

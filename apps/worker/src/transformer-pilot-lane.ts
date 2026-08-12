@@ -6,11 +6,14 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import {
+  classifyReviewTier,
+  DEFAULT_REVIEW_TIER_POLICY,
   discardAdaptiveCandidate,
   readAdaptiveCandidateArtifact,
   runTransformerAttempt,
   sealAdaptiveCandidate,
   type RecipeCommandRunner,
+  type ReviewTierPolicy,
   type TransformerAttemptCheckpointConfig,
   type TransformerAttemptCoordinatorPort,
   type TransformerPilotExecutionStore,
@@ -110,6 +113,12 @@ export type RunTransformerPilotLaneInput = Readonly<{
   }>): Readonly<{ allowed: boolean; evidenceRef?: string }>;
   /** Test seam for durable adaptive-candidate recording. */
   adaptiveCandidateRecorder?: typeof recordAdaptiveCandidate;
+  /**
+   * Selective review-tier policy applied to converged adaptive candidates.
+   * Absent (the default) leaves tiering DISABLED, so every candidate records as
+   * `standard` and follows the existing uniform single-approval review path.
+   */
+  adaptiveReviewTierPolicy?: ReviewTierPolicy;
   /**
    * Optional tenant-scoped checkpoint provider. Production keeps this absent
    * until a shared coordinator, immutable artifact store, and tenant key are
@@ -262,6 +271,7 @@ export async function runTransformerPilotLaneOnce(
   const maxCampaigns = requireLimit(input.maxCampaigns);
   const leaseDurationMs = requireLeaseDuration(input.leaseDurationMs);
   const adaptiveRetentionMs = requireAdaptiveRetention(input.adaptiveCandidateRetentionMs);
+  const reviewTierPolicy = input.adaptiveReviewTierPolicy ?? DEFAULT_REVIEW_TIER_POLICY;
   const createLeaseToken = input.leaseToken ?? (() => randomBytes(32).toString("hex"));
   const errors: string[] = [];
   let expired = 0;
@@ -793,6 +803,20 @@ export async function runTransformerPilotLaneOnce(
                 gateConfig: rawGate,
               });
               handoffRecorded = true;
+              // Deterministically classify the required human-review tier from the
+              // sealed review evidence. The default policy is disabled, so this is
+              // `standard` unless a tier policy is explicitly configured. The tier
+              // only raises the required sign-off; every candidate still needs
+              // human approval and nothing ever auto-merges.
+              const reviewTier = classifyReviewTier(
+                {
+                  overallRisk: handoff.review.overallRisk,
+                  confidence: handoff.review.confidence,
+                  changedFileCount: handoff.changedPaths.length,
+                  verificationPassed: handoff.review.verification.passed,
+                },
+                reviewTierPolicy,
+              );
               const recordedCandidate = (input.adaptiveCandidateRecorder ?? recordAdaptiveCandidate)(input.db, {
                 tenantId: handoff.tenantId,
                 campaignId: handoff.campaignId,
@@ -808,6 +832,7 @@ export async function runTransformerPilotLaneOnce(
                 sealedPath: seal.path,
                 sealedSha256: seal.sha256,
                 changedPaths: handoff.changedPaths,
+                reviewTier,
                 expiresAt,
                 now: observedAt,
               });

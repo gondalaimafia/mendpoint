@@ -1166,6 +1166,7 @@ CREATE TABLE IF NOT EXISTS transformer_adaptive_candidates (
   status TEXT NOT NULL CHECK (
     status IN ('review_pending', 'approved', 'rejected', 'superseded', 'promoted', 'expired')
   ),
+  review_tier TEXT NOT NULL DEFAULT 'standard',
   diverged_from_digest TEXT NOT NULL,
   candidate_digest TEXT NOT NULL,
   failing_command_id TEXT,
@@ -1176,6 +1177,9 @@ CREATE TABLE IF NOT EXISTS transformer_adaptive_candidates (
   review_decision TEXT CHECK (review_decision IN ('approve', 'reject', 'regenerate')),
   review_rationale TEXT,
   reviewed_at TEXT,
+  escalation_reviewer_principal_id TEXT,
+  escalation_reviewed_at TEXT,
+  escalation_rationale TEXT,
   promoted_at TEXT,
   supersedes_candidate_id TEXT,
   superseded_by_candidate_id TEXT,
@@ -1501,6 +1505,26 @@ function migrateProvidersFeedColumns(db: AppDb) {
     {
       table: "transformer_adaptive_candidates",
       name: "review_rationale",
+      sql: "TEXT",
+    },
+    {
+      table: "transformer_adaptive_candidates",
+      name: "review_tier",
+      sql: "TEXT NOT NULL DEFAULT 'standard'",
+    },
+    {
+      table: "transformer_adaptive_candidates",
+      name: "escalation_reviewer_principal_id",
+      sql: "TEXT",
+    },
+    {
+      table: "transformer_adaptive_candidates",
+      name: "escalation_reviewed_at",
+      sql: "TEXT",
+    },
+    {
+      table: "transformer_adaptive_candidates",
+      name: "escalation_rationale",
       sql: "TEXT",
     },
     {
@@ -2718,17 +2742,20 @@ export {
   markAdaptiveRegenerationScheduled,
   recordAdaptiveRegenerationScheduleFailure,
   reviewAdaptiveCandidate,
+  signOffAdaptiveEscalation,
   promoteAdaptiveCandidate,
   expireAdaptiveCandidate,
   type AdaptiveCandidateStatus,
   type AdaptiveCandidateHistoryCursor,
   type AdaptiveCandidateHistoryPage,
   type AdaptiveReviewDecision,
+  type AdaptiveReviewTier,
   type AdaptiveRegenerationStatus,
   type TransformerAdaptiveCandidateRecord,
   type TransformerAdaptiveRegenerationRecord,
   type RecordAdaptiveCandidateInput,
   type ReviewAdaptiveCandidateInput,
+  type SignOffAdaptiveEscalationInput,
   type PromoteAdaptiveCandidateInput,
   type ExpireAdaptiveCandidateInput,
 } from "./transformer-adaptive-candidate.js";
