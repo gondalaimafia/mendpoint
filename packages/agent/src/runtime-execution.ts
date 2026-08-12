@@ -13,10 +13,11 @@ import {
   type WardenPrivateRuntimeStateV1,
   type WardenRuntimeJson,
 } from "./runtime-state.js";
+import { validatedToolCall } from "./agent.js";
 
-// Model accounting is intentionally excluded until checkpoint transitions can
-// commit a paid planner receipt independently from its later tool proposal.
-type EffectKind = "tool" | "verifier" | "artifact";
+// Model effects use the runtime state's authenticated call and accounting
+// binding so a paid planner result can be durable before its tool executes.
+type EffectKind = "model" | "tool" | "verifier" | "artifact";
 
 export type WardenRuntimeEffectInput<T extends WardenRuntimeJson> = Readonly<{
   kind: EffectKind;
@@ -120,6 +121,16 @@ function canonical(value: WardenRuntimeJson): string {
   ).join(",")}}`;
 }
 
+function deepFreezeJson<T extends WardenRuntimeJson>(value: T): T {
+  if (value && typeof value === "object") {
+    for (const child of Array.isArray(value) ? value : Object.values(value)) {
+      deepFreezeJson(child as WardenRuntimeJson);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
 function sha256(value: string | Uint8Array): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
@@ -151,6 +162,41 @@ function resultBytes(value: WardenRuntimeJson): Uint8Array {
   return Buffer.from(canonical(value), "utf8");
 }
 
+function modelReceiptFields(value: WardenRuntimeJson): Readonly<{
+  plannedCallDigest: string;
+  modelAccounting: WardenPrivateRuntimeStateV1["modelCalls"][number];
+}> {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    throw new Error("warden_runtime_effect_model_result_invalid");
+  }
+  const result = value as Readonly<Record<string, WardenRuntimeJson>>;
+  if (Object.keys(result).sort().join(",") !== "accounting,call" ||
+      !result.call || Array.isArray(result.call) || typeof result.call !== "object" ||
+      !result.accounting || Array.isArray(result.accounting) || typeof result.accounting !== "object") {
+    throw new Error("warden_runtime_effect_model_result_invalid");
+  }
+  const call = validatedToolCall(result.call);
+  const accounting = result.accounting as unknown as Record<string, unknown>;
+  if (!call || canonical(call as unknown as WardenRuntimeJson) !== canonical(result.call) ||
+      Object.keys(accounting).sort().join(",") !==
+        "completionTokens,costUsd,promptTokens,status,totalTokens" ||
+      accounting.status !== "succeeded" ||
+      !Number.isSafeInteger(accounting.promptTokens) || (accounting.promptTokens as number) < 0 ||
+      !Number.isSafeInteger(accounting.completionTokens) ||
+        (accounting.completionTokens as number) < 0 ||
+      !Number.isSafeInteger(accounting.totalTokens) ||
+      accounting.totalTokens !==
+        (accounting.promptTokens as number) + (accounting.completionTokens as number) ||
+      typeof accounting.costUsd !== "number" || !Number.isFinite(accounting.costUsd) ||
+      accounting.costUsd < 0) {
+    throw new Error("warden_runtime_effect_model_result_invalid");
+  }
+  return {
+    plannedCallDigest: sha256(canonical(call as unknown as WardenRuntimeJson)),
+    modelAccounting: result.accounting as WardenPrivateRuntimeStateV1["modelCalls"][number],
+  };
+}
+
 function decodeResult<T extends WardenRuntimeJson>(
   state: WardenPrivateRuntimeStateV1,
   resultDigest: string,
@@ -171,7 +217,12 @@ function decodeResult<T extends WardenRuntimeJson>(
   if (canonical(parsed) !== bytes.toString("utf8")) {
     throw new Error("warden_runtime_effect_result_invalid");
   }
-  return validate(parsed);
+  const authenticatedCanonical = canonical(parsed);
+  const validated = validate(parsed);
+  if (canonical(validated) !== authenticatedCanonical) {
+    throw new Error("warden_runtime_effect_result_invalid");
+  }
+  return deepFreezeJson(JSON.parse(authenticatedCanonical) as T);
 }
 
 function withResultBlob(
@@ -353,8 +404,10 @@ export async function openWardenRuntimeExecution(
           if (receipt.kind !== effect.kind || receipt.requestDigest !== requestDigest) {
             throw new Error("warden_runtime_effect_identity_conflict");
           }
+          const value = decodeResult<T>(current, receipt.resultDigest, effect.validateResult);
+          if (effect.kind === "model") modelReceiptFields(value);
           return {
-            value: decodeResult<T>(current, receipt.resultDigest, effect.validateResult),
+            value,
             replayed: true,
           };
         }
@@ -404,6 +457,7 @@ export async function openWardenRuntimeExecution(
             executedHere = true;
           }
           value = effect.validateResult(value);
+          if (effect.kind === "model") modelReceiptFields(value);
           const stored = withResultBlob(current, value);
           await commitState(() => ({
             ...stored.state,
@@ -416,6 +470,7 @@ export async function openWardenRuntimeExecution(
           continue;
         }
         const value = decodeResult<T>(current, pending.resultDigest!, effect.validateResult);
+        const modelFields = effect.kind === "model" ? modelReceiptFields(value) : undefined;
         await commitState((state) => {
           const reducerState = decodeWardenRuntimeState(
             encodeWardenRuntimeState(state),
@@ -436,6 +491,7 @@ export async function openWardenRuntimeExecution(
               effectId,
               requestDigest,
               resultDigest: pending.resultDigest!,
+              ...(modelFields ?? {}),
             }],
             pendingEffect: { kind: "none" },
           };

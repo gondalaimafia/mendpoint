@@ -140,6 +140,135 @@ function memoryJournal(activeWriterLeaseGeneration = 1): MemoryJournal {
 }
 
 describe("Warden runtime effect execution", () => {
+  it("checkpoints a paid model result before its planned tool step", async () => {
+    const journal = memoryJournal();
+    const execution = await openWardenRuntimeExecution({
+      binding,
+      journal,
+      key,
+      executorDigest,
+      writerLeaseGeneration: 1,
+      genesis: genesis(),
+      now: () => "2026-08-11T18:00:01.000Z",
+    });
+    const accounting = Object.freeze({
+      status: "succeeded" as const,
+      promptTokens: 12,
+      completionTokens: 4,
+      totalTokens: 16,
+      costUsd: 0.02,
+    });
+    const result = Object.freeze({
+      call: Object.freeze({ tool: "read_file", args: Object.freeze({ path: "src/client.ts" }) }),
+      accounting,
+    });
+
+    await execution.runEffect({
+      kind: "model",
+      slot: "planner:1",
+      request: { prompt: "inspect the client" },
+      executor: {
+        reconcile: async () => null,
+        executeIdempotent: async ({ assertFence }) => {
+          await assertFence();
+          return result;
+        },
+      },
+      validateResult: (value) => value as typeof result,
+      apply: (state, value) => ({
+        ...state,
+        modelCalls: [...state.modelCalls, value.accounting],
+      }),
+    });
+
+    expect(execution.state().events).toHaveLength(0);
+    expect(execution.state().modelCalls).toEqual([accounting]);
+    expect(execution.state().effectReceipts[0]).toMatchObject({
+      kind: "model",
+      modelAccounting: accounting,
+    });
+    const generation = execution.state().generation;
+    await expect(execution.runEffect({
+      kind: "model",
+      slot: "planner:2",
+      request: { prompt: "return an invalid call" },
+      executor: {
+        reconcile: async () => null,
+        executeIdempotent: async () => ({
+          call: { tool: "bogus", args: {} },
+          accounting,
+        }),
+      },
+      validateResult: (value) => value as typeof result,
+      apply: (state) => state,
+    })).rejects.toThrow("warden_runtime_effect_model_result_invalid");
+    expect(execution.state().generation).toBe(generation + 1);
+    expect(execution.state().pendingEffect).toMatchObject({ state: "prepared" });
+
+    const reopened = await openWardenRuntimeExecution({
+      binding,
+      journal,
+      key,
+      executorDigest,
+      writerLeaseGeneration: 1,
+    });
+    await expect(reopened.runEffect({
+      kind: "model",
+      slot: "planner:1",
+      request: { prompt: "inspect the client" },
+      executor: {
+        reconcile: async () => { throw new Error("must_not_reconcile"); },
+        executeIdempotent: async () => { throw new Error("must_not_execute"); },
+      },
+      validateResult: () => ({
+        call: { tool: "run_command", args: { command: "npm test" } },
+        accounting,
+      }),
+      apply: (state) => state,
+    })).rejects.toThrow("warden_runtime_effect_result_invalid");
+    await expect(reopened.runEffect({
+      kind: "model",
+      slot: "planner:1",
+      request: { prompt: "inspect the client" },
+      executor: {
+        reconcile: async () => { throw new Error("must_not_reconcile"); },
+        executeIdempotent: async () => { throw new Error("must_not_execute"); },
+      },
+      validateResult: (value) => {
+        (value as { call: { tool: string; args: Record<string, string> } }).call = {
+          tool: "run_command",
+          args: { command: "npm test" },
+        };
+        return value as typeof result;
+      },
+      apply: (state) => state,
+    })).rejects.toThrow("warden_runtime_effect_result_invalid");
+    const queuedMutationReplay = await reopened.runEffect({
+      kind: "model",
+      slot: "planner:1",
+      request: { prompt: "inspect the client" },
+      executor: {
+        reconcile: async () => { throw new Error("must_not_reconcile"); },
+        executeIdempotent: async () => { throw new Error("must_not_execute"); },
+      },
+      validateResult: (value) => {
+        queueMicrotask(() => {
+          (value as { call: { tool: string; args: Record<string, string> } }).call = {
+            tool: "run_command",
+            args: { command: "npm test" },
+          };
+        });
+        return value as typeof result;
+      },
+      apply: (state) => state,
+    });
+    expect(queuedMutationReplay.value.call).toEqual({
+      tool: "read_file",
+      args: { path: "src/client.ts" },
+    });
+    expect(Object.isFrozen(queuedMutationReplay.value)).toBe(true);
+  });
+
   it("resumes a durable external result without executing the effect twice", async () => {
     const journal = memoryJournal();
     const externalResults = new Map<string, Readonly<{ locator: string }>>();
