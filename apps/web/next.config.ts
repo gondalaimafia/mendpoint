@@ -3,6 +3,19 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   output: "standalone",
+  // The design-system components (app/components/ds, app/components/console) use
+  // NodeNext-style `.js` import specifiers that point at `.ts`/`.tsx` sources.
+  // tsc (moduleResolution: bundler) and Vitest resolve these already; teach the
+  // production webpack resolver the same mapping so those modules bundle.
+  webpack(config) {
+    config.resolve = config.resolve ?? {};
+    config.resolve.extensionAlias = {
+      ...(config.resolve.extensionAlias ?? {}),
+      ".js": [".ts", ".tsx", ".js"],
+      ".jsx": [".tsx", ".jsx"],
+    };
+    return config;
+  },
   async redirects() {
     return [
       { source: "/contact", destination: "/design-partners", permanent: false },
