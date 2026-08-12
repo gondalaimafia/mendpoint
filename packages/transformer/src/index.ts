@@ -173,6 +173,8 @@ export {
   type AdaptiveRepairPlannerOutput,
   type AdaptiveRepairPlannerUsage,
   type AdaptiveRepairReviewEvidence,
+  type LearningPrecedentEdit,
+  type LearningPrecedentEntry,
   type AdaptiveReviewRisk,
   type AdaptiveSemanticCategory,
   type AdaptiveRepairUsage,

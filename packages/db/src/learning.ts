@@ -953,3 +953,136 @@ export function deleteLearningRecord(
     [input.id],
   )!;
 }
+
+// ---------------------------------------------------------------------------
+// Read-only query helpers.
+//
+// These support a producer that admits approved outcomes and a consumer that
+// seals and surfaces them. They never insert or mutate and never weaken the
+// admission guards above: every write still goes through admitLearningRecord,
+// addLearningDatasetMember, and sealLearningDatasetVersion.
+// ---------------------------------------------------------------------------
+
+export function getLearningRecord(
+  db: AppDb,
+  tenantId: string,
+  id: string,
+): LearningRecordRow | undefined {
+  return one<LearningRecordRow>(
+    db,
+    `SELECT * FROM learning_records WHERE id = ? AND tenant_id = ?`,
+    [id, tenantId],
+  );
+}
+
+function consentActiveAt(db: AppDb, consent: LearningConsentRow, atMs: number): boolean {
+  if (consent.action !== "granted") return false;
+  if (time(consent.effective_at, "learning_consent_effective_at") > atMs) return false;
+  if (consent.expires_at && time(consent.expires_at, "learning_consent_expires_at") <= atMs) {
+    return false;
+  }
+  const revoked = one<{ id: string }>(
+    db,
+    `SELECT id FROM learning_consents
+     WHERE tenant_id = ? AND action = 'revoked' AND supersedes_consent_id = ? LIMIT 1`,
+    [consent.tenant_id, consent.id],
+  );
+  return !revoked;
+}
+
+/**
+ * Return the single active granted consent for (tenant, purpose), or undefined.
+ * Fails closed on ambiguity: if more than one residency has an active consent
+ * for this purpose, the caller must not guess a residency, so undefined is
+ * returned and no learning use is authorized.
+ */
+export function findActiveLearningConsent(
+  db: AppDb,
+  input: { tenantId: string; purpose: string; at: string },
+): LearningConsentRow | undefined {
+  const atMs = time(input.at, "learning_consent_check_time");
+  const granted = many<LearningConsentRow>(
+    db,
+    `SELECT * FROM learning_consents
+     WHERE tenant_id = ? AND purpose = ? AND action = 'granted'
+     ORDER BY residency_region, consent_version DESC`,
+    [input.tenantId, input.purpose],
+  );
+  const active = granted.filter((consent) => consentActiveAt(db, consent, atMs));
+  return active.length === 1 ? active[0] : undefined;
+}
+
+/**
+ * Records that are candidates for dataset membership: matching purpose and
+ * residency, observed strictly before the temporal cutoff, and not deleted.
+ * addLearningDatasetMember re-validates consent, temporal cutoff, and residency
+ * before admitting each one, so this is a pre-filter, not the eligibility gate.
+ */
+export function listAdmittableLearningRecords(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    purpose: string;
+    residencyRegion: string;
+    before: string;
+  },
+): LearningRecordRow[] {
+  time(input.before, "learning_dataset_cutoff");
+  return many<LearningRecordRow>(
+    db,
+    `SELECT r.* FROM learning_records r
+     WHERE r.tenant_id = ? AND r.purpose = ? AND r.residency_region = ?
+       AND r.observed_at < ?
+       AND NOT EXISTS (
+         SELECT 1 FROM learning_deletion_events d
+         WHERE d.tenant_id = r.tenant_id AND d.learning_record_id = r.id
+           AND d.action = 'deleted'
+       )
+     ORDER BY r.observed_at, r.id`,
+    [input.tenantId, input.purpose, input.residencyRegion, input.before],
+  );
+}
+
+export function getLatestLearningDatasetVersion(
+  db: AppDb,
+  input: { tenantId: string; purpose: string; residencyRegion: string },
+): LearningDatasetVersionRow | undefined {
+  return one<LearningDatasetVersionRow>(
+    db,
+    `SELECT * FROM learning_dataset_versions
+     WHERE tenant_id = ? AND purpose = ? AND residency_region = ?
+     ORDER BY version DESC LIMIT 1`,
+    [input.tenantId, input.purpose, input.residencyRegion],
+  );
+}
+
+export function getLatestSealedLearningDatasetVersion(
+  db: AppDb,
+  input: { tenantId: string; purpose: string; residencyRegion: string },
+): LearningDatasetVersionRow | undefined {
+  return one<LearningDatasetVersionRow>(
+    db,
+    `SELECT * FROM learning_dataset_versions
+     WHERE tenant_id = ? AND purpose = ? AND residency_region = ? AND status = 'sealed'
+     ORDER BY version DESC LIMIT 1`,
+    [input.tenantId, input.purpose, input.residencyRegion],
+  );
+}
+
+/** The redacted artifact content backing a learning record, or null. */
+export function getLearningRecordRedactedContent(
+  db: AppDb,
+  tenantId: string,
+  learningRecordId: string,
+): string | null {
+  const row = one<{ content_text: string | null }>(
+    db,
+    `SELECT a.content_text AS content_text
+     FROM learning_records r
+     JOIN artifact_manifests a
+       ON a.id = r.redacted_artifact_id AND a.tenant_id = r.tenant_id
+     WHERE r.id = ? AND r.tenant_id = ?`,
+    [learningRecordId, tenantId],
+  );
+  return row ? row.content_text : null;
+}

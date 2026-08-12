@@ -18,6 +18,7 @@ import {
   readAdaptiveCandidateArtifact,
   type AdaptiveCandidateArtifact,
 } from "@mendpoint/transformer";
+import { admitApprovedOutcomeLearningRecord } from "./transformer-learning-producer.js";
 import type {
   ExactDraftDeliveryInput,
   ExactDraftDeliveryResult,
@@ -478,7 +479,7 @@ export async function runTransformerAdaptiveDelivery(
       const completedAt = requireIsoTimestamp(
         (input.now ?? (() => new Date().toISOString()))(),
       );
-      return inOuterTransaction(input.db, () => {
+      const delivered = inOuterTransaction(input.db, () => {
         recordAdaptiveDeliverySuccess(input.db, {
         tenantId: input.job.tenant_id,
         deliveryId: delivery.id,
@@ -556,6 +557,22 @@ export async function runTransformerAdaptiveDelivery(
           commitSha: result.commitSha,
         });
       });
+      // Learning admission runs after the delivery is durably committed and is
+      // strictly best-effort: it never throws and default-off it does nothing,
+      // so the delivered result and all durable state are unchanged.
+      try {
+        admitApprovedOutcomeLearningRecord({
+          db: input.db,
+          tenantId: input.job.tenant_id,
+          candidate,
+          artifact,
+          now: completedAt,
+          env: input.artifactEnv ?? process.env,
+        });
+      } catch {
+        /* best-effort: learning admission never affects delivery */
+      }
+      return delivered;
     } catch (error) {
       if (
         error instanceof Error &&

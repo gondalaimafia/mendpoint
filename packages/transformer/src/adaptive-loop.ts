@@ -150,6 +150,31 @@ export type AdaptiveRepairContextFile = Readonly<{
   truncated: boolean;
 }>;
 
+export type LearningPrecedentEdit = Readonly<{
+  path: string;
+  semanticCategory: string;
+  risk: string;
+  rationale: string;
+}>;
+
+/**
+ * One sealed, human-approved, redacted prior adaptive outcome surfaced to the
+ * model-sourced planner as reference precedent. Only ever built from consented,
+ * sealed learning-dataset members. It carries redacted change evidence, never
+ * raw file bodies and never in-flight or unconsented data.
+ */
+export type LearningPrecedentEntry = Readonly<{
+  contentSha256: string;
+  failingCommandId: string | null;
+  overallRisk: string;
+  confidence: number;
+  changedPaths: readonly string[];
+  edits: readonly LearningPrecedentEdit[];
+  verificationSummary: string;
+  verificationCommandId: string;
+  observedAt: string;
+}>;
+
 export type AdaptiveRepairPlannerInput = Readonly<{
   schemaVersion: 1;
   unitId: string;
@@ -165,6 +190,12 @@ export type AdaptiveRepairPlannerInput = Readonly<{
   priorChangedPaths: readonly string[];
   /** Durable campaign headroom available before this planner invocation. */
   budget?: AdaptiveRepairPlannerBudget;
+  /**
+   * Sealed, human-approved, redacted prior outcomes offered as reference
+   * precedent. Present only when the learning loop is enabled and consented
+   * sealed data exists; absent otherwise so the request is unchanged.
+   */
+  precedent?: readonly LearningPrecedentEntry[];
 }>;
 
 export type AdaptiveRepairPlannerBudget = Readonly<{
