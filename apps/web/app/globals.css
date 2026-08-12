@@ -1,9 +1,13 @@
 :root {
-  --bg: #070a18;
-  --panel: #0d1124;
-  --border: #292e49;
-  --text: #eff1f5;
-  --muted: #9299ad;
+  /* Core surface + ink re-valued to the design system's exact oklch ground
+     (near-black navy). Existing names are kept so the ~2000 lines below and
+     every page keep resolving; see the "DESIGN SYSTEM (DS1)" block at the end
+     of this file for the full canonical token set and aliases. */
+  --bg: oklch(0.085 0.018 264); /* was #070a18 · DS --background */
+  --panel: oklch(0.115 0.018 264); /* was #0d1124 · DS --card/--popover/--sidebar */
+  --border: oklch(0.22 0.018 264); /* was #292e49 · DS --border/--input, solid navy */
+  --text: oklch(0.94 0.008 240); /* was #eff1f5 · DS --foreground */
+  --muted: #9299ad; /* muted-foreground role in this app; kept (see DS1 note) */
   --brand-primary: #356cff;
   --accent: #7698ff;
   --accent-light: #99b1ff;
@@ -2091,5 +2095,269 @@ input:focus-visible {
 
   .public-footer {
     display: grid;
+  }
+}
+
+/* =============================================================================
+   DESIGN SYSTEM (DS1) — foundation layer
+   Adopted from mendpoint-design-system/design_handoff_web_app_ui
+   (tokens/colors.css + src/mendpoint-app.css). Authored in OKLCH.
+
+   This block is ADDITIVE. It introduces the design system's canonical token
+   names (navy ground + one indigo accent, cyan = Warden, amber = breaking
+   changes only, emerald = added lines / passing only) so new components can
+   use them, WITHOUT redefining the app's existing, in-use names:
+     - --accent stays the app's a11y-tuned light indigo (#7698ff); the vivid
+       DS accent lives under --primary / --indigo (fills only).
+     - --muted stays a muted-FOREGROUND token in this app; the DS muted SURFACE
+       is --secondary / --surface-inset. The DS caption ink is --muted-foreground.
+     - --cyan / --success / --danger / --warn / --info keep their app values;
+       the DS ramps are added under distinct names.
+   ========================================================================== */
+:root {
+  /* ----------------------------- Color ramps ------------------------------ */
+  --navy-1000: oklch(0.06 0.018 264);
+  --navy-950: oklch(0.085 0.018 264);
+  --navy-900: oklch(0.1 0.018 264);
+  --navy-850: oklch(0.115 0.018 264);
+  --navy-800: oklch(0.14 0.018 264);
+  --navy-700: oklch(0.18 0.018 264);
+  --slate-700: oklch(0.22 0.018 264);
+  --slate-600: oklch(0.3 0.018 264);
+  --slate-500: oklch(0.42 0.015 240);
+  --slate-400: oklch(0.58 0.015 240);
+  --slate-300: oklch(0.75 0.01 240);
+  --slate-200: oklch(0.85 0.008 240);
+  --slate-100: oklch(0.9 0.008 240);
+  --slate-50: oklch(0.94 0.008 240);
+
+  --indigo-200: oklch(0.85 0.09 264.5);
+  --indigo-300: oklch(0.75 0.15 264.5);
+  --indigo-400: oklch(0.68 0.19 264.5);
+  --indigo-500: oklch(0.585 0.233 264.5);
+  --indigo-600: oklch(0.52 0.233 264.5);
+  --indigo-700: oklch(0.45 0.2 264.5);
+
+  --cyan-300: oklch(0.82 0.12 198);
+  --cyan-400: oklch(0.77 0.14 198);
+  --cyan-500: oklch(0.72 0.16 198);
+  --cyan-600: oklch(0.65 0.15 198);
+
+  --amber-300: oklch(0.86 0.13 75);
+  --amber-400: oklch(0.82 0.15 75);
+  --amber-500: oklch(0.78 0.17 75);
+  --amber-600: oklch(0.7 0.16 75);
+
+  --red-300: oklch(0.78 0.14 25);
+  --red-400: oklch(0.72 0.19 25);
+  --red-500: oklch(0.65 0.22 25);
+  --red-600: oklch(0.58 0.21 25);
+  --red-700: oklch(0.5 0.18 25);
+
+  --violet-300: oklch(0.75 0.14 300);
+  --violet-400: oklch(0.62 0.15 300);
+  --violet-500: oklch(0.5 0.15 300);
+
+  --emerald-300: oklch(0.82 0.14 162);
+  --emerald-400: oklch(0.77 0.155 162);
+  --emerald-500: oklch(0.72 0.17 162);
+  --emerald-600: oklch(0.64 0.16 162);
+  --emerald-700: oklch(0.54 0.14 162);
+
+  /* ---------------------- Brand aliases (DS-named) ------------------------ */
+  --indigo: oklch(0.585 0.233 264.5); /* the one accent — CTA, active, focus */
+  --indigo-light: oklch(0.68 0.19 264.5); /* accent on tinted fills, active icons */
+  --amber: oklch(0.78 0.17 75); /* breaking changes ONLY */
+  --destructive: oklch(0.65 0.22 25);
+  --emerald: oklch(0.72 0.17 162); /* added lines / passing ONLY */
+
+  /* -------------------------- Tint fills ---------------------------------- */
+  --tint-indigo: oklch(0.585 0.233 264.5 / 0.1);
+  --tint-indigo-16: oklch(0.585 0.233 264.5 / 0.16);
+  --tint-indigo-28: oklch(0.585 0.233 264.5 / 0.28);
+  --tint-cyan: oklch(0.72 0.16 198 / 0.1);
+  --tint-cyan-28: oklch(0.72 0.16 198 / 0.28);
+  --tint-amber: oklch(0.78 0.17 75 / 0.1);
+  --tint-amber-28: oklch(0.78 0.17 75 / 0.28);
+  --tint-red: oklch(0.65 0.22 25 / 0.1);
+  --tint-emerald: oklch(0.72 0.17 162 / 0.1);
+
+  /* ------------------ Surface + border steps (DS-named) ------------------- */
+  --surface-hover: oklch(1 0 0 / 0.04);
+  --surface-active: oklch(1 0 0 / 0.07);
+  --border-subtle: oklch(0.18 0.018 264);
+  --border-strong: oklch(0.3 0.018 264);
+
+  /* -------------------------- Diff surfaces ------------------------------- */
+  --diff-add-bg: var(--tint-emerald);
+  --diff-add-bar: var(--emerald-500);
+  --diff-add-fg: var(--emerald-300);
+  --diff-del-bg: var(--tint-red);
+  --diff-del-bar: var(--red-500);
+  --diff-del-fg: var(--red-300);
+  --diff-gutter: oklch(0.42 0.015 240);
+
+  /* ------------------------------ Status ---------------------------------- */
+  --status-open: var(--emerald-500);
+  --status-merged: var(--violet-400);
+  --status-failing: var(--red-500);
+  --status-pending: var(--amber-500);
+  --status-draft: var(--slate-400);
+
+  /* --------------------- Agent identity (marker only) --------------------- */
+  --warden: var(--cyan); /* cyan — resolves to the app's --cyan (#00bcc1) */
+  --transformer: var(--indigo);
+
+  /* --------------------- Textures (indigo-tinted) ------------------------- */
+  --grid-line: oklch(0.585 0.233 264.5 / 0.04);
+  --grid-dot: oklch(0.585 0.233 264.5 / 0.12);
+
+  /* --------------------------- Motion ------------------------------------- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 150ms;
+  --dur-base: 200ms;
+  --dur-entrance: 500ms;
+  --stagger: 80ms;
+
+  /* ============ shadcn-style canonical semantic tokens (DS) ==============
+     New names, unused elsewhere in the app, so purely additive. --accent and
+     --muted are intentionally NOT redefined here (see block header). */
+  --background: oklch(0.085 0.018 264);
+  --foreground: oklch(0.94 0.008 240);
+  --card: oklch(0.115 0.018 264);
+  --card-foreground: oklch(0.94 0.008 240);
+  --popover: oklch(0.115 0.018 264);
+  --popover-foreground: oklch(0.94 0.008 240);
+  --primary: oklch(0.585 0.233 264.5);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.14 0.018 264);
+  --secondary-foreground: oklch(0.75 0.01 240);
+  --muted-foreground: oklch(0.58 0.015 240);
+  --accent-foreground: oklch(0.98 0 0);
+  --destructive-foreground: oklch(0.98 0 0);
+  --input: oklch(0.22 0.018 264);
+  --ring: oklch(0.585 0.233 264.5);
+  --sidebar: oklch(0.115 0.018 264);
+  --sidebar-foreground: oklch(0.94 0.008 240);
+  --sidebar-primary: oklch(0.585 0.233 264.5);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.14 0.018 264);
+  --sidebar-accent-foreground: oklch(0.94 0.008 240);
+  --sidebar-border: oklch(0.22 0.018 264);
+  --sidebar-ring: oklch(0.585 0.233 264.5);
+  --chart-1: oklch(0.585 0.233 264.5);
+  --chart-2: oklch(0.72 0.16 198);
+  --chart-3: oklch(0.78 0.17 75);
+  --chart-4: oklch(0.65 0.22 25);
+  --chart-5: oklch(0.5 0.15 300);
+}
+
+/* --------------------------------------------------------------------------
+   Utilities
+   -------------------------------------------------------------------------- */
+
+/* Section label — the eyebrow. Inter 600, 0.7rem, 0.12em, uppercase, preceded
+   by a 16x2px indigo -> cyan gradient dash. Tones: accent (default), muted
+   (structure, no dash), warden (cyan). */
+.section-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--indigo);
+}
+.section-label::before {
+  content: "";
+  display: inline-block;
+  width: 16px;
+  height: 2px;
+  flex: none;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--indigo), var(--cyan));
+}
+.section-label--accent {
+  color: var(--indigo);
+}
+.section-label--muted {
+  color: var(--muted-foreground);
+}
+.section-label--muted::before {
+  display: none;
+}
+.section-label--warden {
+  color: var(--cyan);
+}
+.section-label--warden::before {
+  background: linear-gradient(90deg, var(--cyan), var(--indigo));
+}
+
+/* Entrance — fade up 40px -> 0 over 500ms, 80ms stagger via --i. */
+.fade-up {
+  opacity: 0;
+  animation: mp-fade-up var(--dur-entrance) var(--ease-out) forwards;
+  animation-delay: calc(var(--i, 0) * var(--stagger));
+}
+@keyframes mp-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Card hover lift — 4px, 200ms. The app's only hover transform. */
+.lift {
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out);
+}
+.lift:hover {
+  transform: translateY(-4px);
+  border-color: var(--border-strong);
+  box-shadow: 0 20px 44px -14px oklch(0.06 0.018 264 / 0.75);
+}
+
+/* Indigo glow — the primary CTA only. */
+.indigo-glow {
+  box-shadow:
+    0 0 40px oklch(0.585 0.233 264.5 / 0.18),
+    0 0 80px oklch(0.585 0.233 264.5 / 0.08);
+}
+
+/* Depth textures — one per section, never both. Cards sit on the texture. */
+.mendpoint-grid-bg {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+.mendpoint-dot-bg {
+  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* prefers-reduced-motion disables the lift and the fade-up. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-entrance: 0ms;
+    --stagger: 0ms;
+  }
+  .fade-up {
+    opacity: 1;
+    animation: none;
+  }
+  .lift:hover {
+    transform: none;
   }
 }
