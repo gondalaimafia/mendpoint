@@ -1471,3 +1471,16 @@ Review: the customer web path now forces the same-origin proxy, preserves the op
 - [ ] Merge through protected main, verify the exact deployed revision, and repeat the browser sign-in flow.
 
 Acceptance: a successful production OIDC callback always returns to the configured public Mendpoint origin, never Fly's internal listener address, while preserving the encrypted local return path and all existing session security controls.
+
+## Coherent Claude and Codex release: 2026-08-11
+
+- [ ] Inventory every worktree, branch, pull request, commit, and dirty file created today; retain exact provenance and leave experimental work recoverable.
+- [ ] Review current protected main and the Codex Warden and Transformer commit train for P0 and P1 safety, integrity, tenancy, accounting, replay, and deployment risks.
+- [ ] Build one clean integration branch from current `origin/main`; integrate only commits that remain correct against the combined tree.
+- [ ] Run focused package tests, the repository verification entrypoint, full typecheck, production build, GA checks, claim checks, dependency audit, container and deployment checks as applicable.
+- [ ] Obtain independent adversarial review of the final combined diff and close every P0 and P1 before staging.
+- [ ] Push the reviewed branch, use protected checks, merge without bypassing hooks, and confirm the deployed release is the intended merged revision.
+- [ ] Verify live liveness, health, authenticated status, OIDC return, desktop and mobile app behavior, and rollback readiness without mutating customer repositories.
+- [ ] Publish an evidence-backed capability rundown that separates production-functional behavior, default-off foundations, and work deliberately excluded from the release.
+
+Acceptance: protected main contains one coherent, reviewed release; required checks are green; the intended revision is live and browser-verified; unsafe or incomplete experiments remain out of production; and every capability claim is tied to code, tests, and deployed evidence.
