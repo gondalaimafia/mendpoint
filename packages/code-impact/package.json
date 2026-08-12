@@ -14,12 +14,12 @@
   },
   "dependencies": {
     "@mendpoint/call-graph": "*",
+    "@mendpoint/change-intel": "*",
     "@mendpoint/codebase-index": "*",
     "@mendpoint/shared": "*"
   },
 
   "devDependencies": {
-    "@mendpoint/change-intel": "*",
     "typescript": "^5.8.2",
     "vitest": "^3.0.9"
   }

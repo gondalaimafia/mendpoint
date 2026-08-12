@@ -29,6 +29,12 @@ import { confirmImpacts, partitionByConfidence } from "./confirm.js";
 export { discoverCandidates } from "./candidates.js";
 export { expandContexts } from "./expand.js";
 export { confirmImpacts, partitionByConfidence } from "./confirm.js";
+export {
+  analyzeCapabilityAdoption,
+  assessConsumerAdoption,
+  consumerUsesCapability,
+  type CapabilityConsumerInput,
+} from "./capability-adoption.js";
 
 export type AnalyzeOptions = {
   minConfidence?: Confidence;

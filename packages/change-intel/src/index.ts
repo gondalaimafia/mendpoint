@@ -57,6 +57,17 @@ export {
   type UnifiedSourceInput,
 } from "./unified-change-evidence.js";
 
+export {
+  buildCapabilityOpportunity,
+  detectNewCapabilities,
+  prioritizeCapabilityOpportunities,
+  type CapabilityAdoptionOpportunity,
+  type CapabilityConsumerRef,
+  type CapabilityOpportunityOptions,
+  type ConsumerCapabilityAdoption,
+  type NewCapability,
+} from "./capability-adoption.js";
+
 type Json = Record<string, unknown>;
 
 function asObj(v: unknown): Json {
