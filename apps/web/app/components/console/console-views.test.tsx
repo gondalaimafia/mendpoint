@@ -27,7 +27,12 @@ import { SettingsView } from "./settings-view";
 import { ConsoleShell } from "./console-shell";
 import { AlertDialog } from "./alert-dialog";
 import { AppShell, GitPullRequestIcon } from "../ds/index";
-import { PULL_REQUESTS, findPullRequest } from "./fixtures";
+import {
+  PULL_REQUESTS,
+  SAMPLE_CHANGES_DATA,
+  SAMPLE_PR_DETAIL,
+  SAMPLE_SETTINGS,
+} from "./fixtures";
 import { toastStore, Toaster, pushToast } from "./toast";
 import {
   OPEN_ALL_TOAST,
@@ -51,21 +56,21 @@ describe("DS4 console — one indigo CTA per screen", () => {
   it("gives the view bodies no indigo of their own", () => {
     // Every console primary action now lives in the shell topbar, so no view
     // authors an indigo button — not even the detail/settings screens.
-    expect(countGlow(renderToStaticMarkup(<ChangesView />))).toBe(0);
+    expect(countGlow(renderToStaticMarkup(<ChangesView data={SAMPLE_CHANGES_DATA} />))).toBe(0);
     expect(countGlow(renderToStaticMarkup(<PrsView prs={PULL_REQUESTS} />))).toBe(0);
     expect(
-      countGlow(renderToStaticMarkup(<PrDetailView pr={findPullRequest("4821")!} />)),
+      countGlow(renderToStaticMarkup(<PrDetailView pr={SAMPLE_PR_DETAIL} />)),
     ).toBe(0);
-    expect(countGlow(renderToStaticMarkup(<SettingsView />))).toBe(0);
+    expect(countGlow(renderToStaticMarkup(<SettingsView data={SAMPLE_SETTINGS} />))).toBe(0);
   });
 
   it("renders exactly one indigo-glow per console screen (shell + view combined)", () => {
-    expect(countGlow(renderScreen("/changes", <ChangesView />))).toBe(1);
+    expect(countGlow(renderScreen("/changes", <ChangesView data={SAMPLE_CHANGES_DATA} />))).toBe(1);
     expect(countGlow(renderScreen("/prs", <PrsView prs={PULL_REQUESTS} />))).toBe(1);
     expect(
-      countGlow(renderScreen("/prs/4821", <PrDetailView pr={findPullRequest("4821")!} />)),
+      countGlow(renderScreen("/prs/4821", <PrDetailView pr={SAMPLE_PR_DETAIL} />)),
     ).toBe(1);
-    expect(countGlow(renderScreen("/settings", <SettingsView />))).toBe(1);
+    expect(countGlow(renderScreen("/settings", <SettingsView data={SAMPLE_SETTINGS} />))).toBe(1);
   });
 
   it("labels the topbar CTA for the route's primary action", () => {
@@ -99,7 +104,7 @@ describe("DS4 console — one indigo CTA per screen", () => {
 
 describe("DS3 console views — content fidelity", () => {
   it("renders the Warden overview: eyebrow, version, stats, and severities", () => {
-    const html = renderToStaticMarkup(<ChangesView />);
+    const html = renderToStaticMarkup(<ChangesView data={SAMPLE_CHANGES_DATA} />);
     expect(html).toContain("WARDEN");
     expect(html).toContain("payments-api");
     expect(html).toContain("v2.9.4");
@@ -118,25 +123,50 @@ describe("DS3 console views — content fidelity", () => {
   });
 
   it("renders the PR review with an amber alert and Open on GitHub; the merge CTA is the shell topbar", () => {
-    const view = renderToStaticMarkup(<PrDetailView pr={findPullRequest("4821")!} />);
+    const view = renderToStaticMarkup(<PrDetailView pr={SAMPLE_PR_DETAIL} />);
     expect(view).toContain("Breaking change · POST /v1/charges");
     expect(view).toContain("Open on GitHub");
     expect(view).toContain("ds-alert");
     // The indigo primary action moved out of the view body into the shell.
     expect(countGlow(view)).toBe(0);
-    const screen = renderScreen("/prs/4821", <PrDetailView pr={findPullRequest("4821")!} />);
+    const screen = renderScreen("/prs/4821", <PrDetailView pr={SAMPLE_PR_DETAIL} />);
     expect(screen).toContain("Approve &amp; merge");
   });
 
   it("renders the settings form with both cards and a ghost Cancel; Save is the shell CTA", () => {
-    const view = renderToStaticMarkup(<SettingsView />);
+    const view = renderToStaticMarkup(<SettingsView data={SAMPLE_SETTINGS} />);
     expect(view).toContain("SPEC SOURCE");
     expect(view).toContain("PULL REQUESTS");
     expect(view).toContain("Open PRs as drafts");
     expect(view).toContain("Cancel");
     expect(countGlow(view)).toBe(0);
-    const screen = renderScreen("/settings", <SettingsView />);
+    const screen = renderScreen("/settings", <SettingsView data={SAMPLE_SETTINGS} />);
     expect(screen).toContain("Save");
+  });
+});
+
+describe("DS console views — honest empty states", () => {
+  it("renders a Warden empty state when no change is available", () => {
+    const html = renderToStaticMarkup(<ChangesView data={null} />);
+    expect(html).toContain("WARDEN");
+    expect(html).toContain("No structural change is staged yet");
+    expect(countGlow(html)).toBe(0);
+  });
+
+  it("renders an empty PR list when the feed has no pull requests", () => {
+    const html = renderToStaticMarkup(<PrsView prs={[]} />);
+    expect(html).toContain("No pull requests staged yet.");
+    // All four tabs still render, each counting zero.
+    for (const label of ["All", "Needs review", "Failing", "Merged"]) {
+      expect(html).toContain(label);
+    }
+  });
+
+  it("derives PR tab counts from the injected list, not a constant", () => {
+    const html = renderToStaticMarkup(<PrsView prs={PULL_REQUESTS} />);
+    const counts = [...html.matchAll(/ds-tab__count">(\d+)</g)].map((m) => m[1]);
+    // 5 total, 3 needs-review (open+draft), 1 failing, 1 merged.
+    expect(counts).toEqual(["5", "3", "1", "1"]);
   });
 });
 

@@ -11,10 +11,11 @@ import {
 } from "./fixtures.js";
 
 /**
- * `/prs` — Transformer's pull-request list. A tab control (All / Needs review /
- * Failing / Merged, counts in a mono chip) filters the list client-side; each
- * row is a DS2 `PullRequestCard` staggered on mount and routes to the detail on
- * click. No indigo CTA lives here — the console frame owns the single one.
+ * `/prs` — Transformer's pull-request list, driven by the live `/prs` feed. A
+ * tab control (All / Needs review / Failing / Merged) filters the list
+ * client-side; each tab's count is derived from the real list. Every row is a
+ * DS2 `PullRequestCard` staggered on mount and routes to the detail by PR id.
+ * No indigo CTA lives here — the console frame owns the single one.
  */
 export function PrsView({ prs }: { prs: PullRequest[] }) {
   const router = useRouter();
@@ -41,23 +42,32 @@ export function PrsView({ prs }: { prs: PullRequest[] }) {
               onClick={() => setTab(t.id)}
             >
               {t.label}
-              <span className="ds-tab__count">{t.count}</span>
+              <span className="ds-tab__count">
+                {filterPullRequests(prs, t.id).length}
+              </span>
             </button>
           );
         })}
       </div>
 
       <div className="ds-pr-list">
+        {visible.length === 0 && (
+          <p className="ds-pr-card__repo" style={{ padding: "1rem" }}>
+            {prs.length === 0
+              ? "No pull requests staged yet."
+              : "No pull requests in this view."}
+          </p>
+        )}
         {visible.map((pr, i) => (
           <div
-            key={pr.number}
+            key={pr.id}
             className="fade-up"
             style={{ "--i": i } as React.CSSProperties}
           >
             <PullRequestCard
               repo={pr.repo}
               title={pr.title}
-              number={pr.number}
+              number={pr.number ?? undefined}
               status={pr.status}
               agent="transformer"
               additions={pr.additions}
@@ -65,7 +75,7 @@ export function PrsView({ prs }: { prs: PullRequest[] }) {
               files={pr.files}
               checks={pr.checks}
               time={pr.time}
-              onClick={() => router.push(`/prs/${pr.number}`)}
+              onClick={() => router.push(`/prs/${pr.id}`)}
             />
           </div>
         ))}

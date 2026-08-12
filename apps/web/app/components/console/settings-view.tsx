@@ -2,18 +2,29 @@
 
 import React from "react";
 import { CheckIcon, ChevronDownIcon, SectionLabel } from "../ds/index.js";
+import type { SettingsData } from "./fixtures.js";
 
 /**
- * `/settings` — workspace settings, capped at 640px. Two cards: spec source (a
- * mono URL input and a target-version select) and pull requests (a "drafts"
- * checkbox with its consequence line and two switches). Cancel is a ghost button
- * in the footer; the single indigo primary action for this screen ("Save") lives
- * in the console topbar, wired by `ConsoleShell` to fire the confirmation toast.
+ * `/settings` — workspace settings, capped at 640px, seeded from live config
+ * (`SettingsData`) read in the page: spec-source URL + target version from the
+ * provider, and the PR-policy toggles from `/policies/defaults`. Two cards: spec
+ * source (a mono URL input and a target-version select) and pull requests (a
+ * "drafts" checkbox with its consequence line and two switches). Cancel is a
+ * ghost button in the footer; the single indigo primary action ("Save") lives in
+ * the console topbar, wired by `ConsoleShell` to fire the confirmation toast.
+ * Reads are live; persisting edits is a follow-up.
  */
-export function SettingsView() {
-  const [drafts, setDrafts] = React.useState(true);
-  const [autoOpen, setAutoOpen] = React.useState(true);
-  const [notifySlack, setNotifySlack] = React.useState(false);
+export function SettingsView({ data }: { data: SettingsData }) {
+  const [drafts, setDrafts] = React.useState(data.drafts);
+  const [autoOpen, setAutoOpen] = React.useState(data.autoOpen);
+  const [notifySlack, setNotifySlack] = React.useState(data.notifySlack);
+
+  const versionOptions =
+    data.versionOptions.length > 0
+      ? data.versionOptions
+      : data.targetVersion
+        ? [data.targetVersion]
+        : [];
 
   return (
     <div className="ds-view ds-settings">
@@ -32,7 +43,8 @@ export function SettingsView() {
             <input
               id="spec-url"
               className="ds-input ds-input--mono"
-              defaultValue="https://api.acme.dev/openapi.yaml"
+              defaultValue={data.specUrl}
+              placeholder="No spec source configured"
             />
             <span className="ds-field__hint">Polled on every tagged release.</span>
           </div>
@@ -44,10 +56,14 @@ export function SettingsView() {
               <select
                 id="target-version"
                 className="ds-select"
-                defaultValue="v3.0.0"
+                defaultValue={data.targetVersion}
               >
-                <option>v3.0.0</option>
-                <option>v2.9.4</option>
+                {versionOptions.length === 0 && (
+                  <option value="">No versions published</option>
+                )}
+                {versionOptions.map((v) => (
+                  <option key={v}>{v}</option>
+                ))}
               </select>
               <span className="ds-select-wrap__caret" aria-hidden>
                 <ChevronDownIcon size={14} />
