@@ -89,6 +89,7 @@ export {
 export {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
   GOOGLEAPIS_V25_TO_V26_RECIPE,
+  INTERNAL_API_ACME_USER_RENAME_RECIPE,
   NODE_RUNTIME_18_TO_20_RECIPE,
   NODE_RUNTIME_20_TO_22_RECIPE,
   REACT_DOM_17_TO_18_RECIPE,
@@ -98,12 +99,14 @@ export {
   applyInverseOperations,
   applyRecipe,
   assertRecipePathAllowed,
+  createInternalApiRenameRecipe,
   getRecipe,
   normalizeRecipeFileModes,
   recipeFilesDigest,
   recipeReference,
   resolveRecipe,
   validateRecipe,
+  type InternalApiRenameSpec,
 } from "./recipe.js";
 
 export {
@@ -138,6 +141,7 @@ export {
 export {
   AWS_SDK_JS_V2_TO_V3_ARTIFACT,
   GOOGLEAPIS_V25_TO_V26_ARTIFACT,
+  INTERNAL_API_ACME_USER_RENAME_ARTIFACT,
   NODE_RUNTIME_20_TO_22_ARTIFACT,
   REACT_DOM_17_TO_18_ARTIFACT,
   STRIPE_NODE_V10_TO_V11_ARTIFACT,

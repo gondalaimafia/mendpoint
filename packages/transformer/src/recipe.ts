@@ -49,6 +49,13 @@ export type RecipePrecondition =
   | Readonly<{
       kind: "react_dom_render_source";
       path: string;
+    }>
+  | Readonly<{
+      kind: "internal_api_rename_source";
+      path: string;
+      module: string;
+      from: string;
+      to: string;
     }>;
 
 export type RecipeTransform =
@@ -96,6 +103,13 @@ export type RecipeTransform =
   | Readonly<{
       kind: "react_dom_render_to_root";
       path: string;
+    }>
+  | Readonly<{
+      kind: "internal_api_rename";
+      path: string;
+      module: string;
+      from: string;
+      to: string;
     }>;
 
 export type RecipeVerificationCommand = Readonly<{
@@ -1330,10 +1344,556 @@ const REACT_DOM_17_TO_18_V1 = createRecipe({
 
 export const REACT_DOM_17_TO_18_RECIPE = REACT_DOM_17_TO_18_V1;
 
+// ---------------------------------------------------------------------------
+// Internal / custom API refactor (config/spec-driven, bounded)
+//
+// Unlike the SDK, framework, and runtime families, there is no single universal
+// "internal API." A customer's internal refactor is described by a spec (data),
+// and this recipe applies it deterministically. The spec is part of the recipe
+// definition, so it is folded into the content-addressed digest: different specs
+// produce different digests and are signed as independent artifacts. This family
+// is NOT a general semantic refactorer. It carries exactly one mechanically-safe
+// operation for v1:
+//
+//   rename an imported named binding and its call sites. Given a spec
+//   `{ module, from, to }`, rename a named import `from` (imported from exactly
+//   `module`) to `to` and rewrite every bare-identifier call site `from(...)` to
+//   `to(...)`. Import specifier and call sites are located with a string- and
+//   comment-aware scanner (never a naive regex), so strings, comments, template
+//   literals, regex literals, and unrelated identifiers are never corrupted.
+//
+// Supported surface (everything else is reported out-of-scope by analysis, so
+// the recipe abstains rather than producing a wrong edit):
+//   - Exactly one supported import of `from` from `module`, either an ESM named
+//     import `import { from } from "module"` or a CommonJS destructure
+//     `const { from } = require("module")`. Additional named specifiers on the
+//     same statement are preserved.
+//   - Every non-import reference to the `from` identifier is a bare call site
+//     `from(...)` in value position. Member calls on other objects
+//     (`obj.from(...)`) belong to a different binding and are ignored.
+//
+// Out-of-scope (analysis abstains, status `unsupported`):
+//   - The same identifier imported from a DIFFERENT module (the classic
+//     false-positive trap): `recipe_internal_api_binding_unresolved`.
+//   - An aliased import (`from as x`), or `from` imported from `module` on more
+//     than one statement.
+//   - Any non-call reference to the binding: a value reference, spread
+//     (`...from`), member access on the binding (`from.field`), a local
+//     declaration or shadow (`const from`, `function from`), an object/class
+//     method definition named `from`, or a computed/dynamic call form.
+//   - A repository where the target name `to` already appears as a code
+//     identifier (`recipe_internal_api_target_conflict`).
+// A repository whose import already reads `to` with no remaining `from` binding
+// classifies as already applied.
+// ---------------------------------------------------------------------------
+
+type CodeIdent = Readonly<{ name: string; start: number; end: number }>;
+
+const INTERNAL_API_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const INTERNAL_API_ID_START = /[A-Za-z_$]/;
+const INTERNAL_API_ID_PART = /[A-Za-z0-9_$]/;
+// Keywords after which a `/` begins a regex literal rather than a division.
+const INTERNAL_API_REGEX_PRECEDER_WORDS = new Set([
+  "return",
+  "typeof",
+  "instanceof",
+  "in",
+  "of",
+  "new",
+  "delete",
+  "void",
+  "do",
+  "else",
+  "yield",
+  "await",
+  "case",
+]);
+// Keywords that, immediately before `name(`, mark a declaration or method rather
+// than a call, so the recipe abstains instead of renaming.
+const INTERNAL_API_DECL_KEYWORDS = new Set([
+  "function",
+  "class",
+  "const",
+  "let",
+  "var",
+  "import",
+  "export",
+  "interface",
+  "type",
+  "enum",
+  "namespace",
+  "get",
+  "set",
+  "async",
+  "static",
+]);
+const INTERNAL_API_REGEX_PRECEDER_CHARS = "(,=:[!&|?{};+-*%<>~^";
+
+// Single-pass scanner returning every identifier that appears in code position.
+// It skips string literals, template-literal text, line/block comments, and
+// regex literals, and it re-enters code mode inside template `${ ... }`
+// substitutions so nothing inside a string or comment is ever treated as code.
+function scanCodeIdentifiers(content: string): CodeIdent[] {
+  const idents: CodeIdent[] = [];
+  type Frame = { kind: "code"; brace: number } | { kind: "template" };
+  const stack: Frame[] = [{ kind: "code", brace: 0 }];
+  const n = content.length;
+  let i = 0;
+  let prevChar = "";
+  let prevWord = "";
+  while (i < n) {
+    const frame = stack[stack.length - 1]!;
+    const c = content[i]!;
+    if (frame.kind === "template") {
+      if (c === "\\") {
+        i += 2;
+        continue;
+      }
+      if (c === "`") {
+        stack.pop();
+        i++;
+        continue;
+      }
+      if (c === "$" && content[i + 1] === "{") {
+        stack.push({ kind: "code", brace: 0 });
+        i += 2;
+        prevChar = "{";
+        prevWord = "";
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (c === " " || c === "\t" || c === "\r" || c === "\n") {
+      i++;
+      continue;
+    }
+    if (c === "/" && content[i + 1] === "/") {
+      i += 2;
+      while (i < n && content[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && content[i + 1] === "*") {
+      i += 2;
+      while (i < n && !(content[i] === "*" && content[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      i++;
+      while (i < n) {
+        if (content[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (content[i] === c) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      prevChar = c;
+      prevWord = "";
+      continue;
+    }
+    if (c === "`") {
+      stack.push({ kind: "template" });
+      i++;
+      prevChar = "`";
+      prevWord = "";
+      continue;
+    }
+    if (c === "/") {
+      const regexContext =
+        prevChar === "" ||
+        INTERNAL_API_REGEX_PRECEDER_CHARS.includes(prevChar) ||
+        (INTERNAL_API_ID_PART.test(prevChar) && INTERNAL_API_REGEX_PRECEDER_WORDS.has(prevWord));
+      if (regexContext) {
+        i++;
+        let inClass = false;
+        while (i < n) {
+          const rc = content[i]!;
+          if (rc === "\\") {
+            i += 2;
+            continue;
+          }
+          if (rc === "[") {
+            inClass = true;
+            i++;
+            continue;
+          }
+          if (rc === "]") {
+            inClass = false;
+            i++;
+            continue;
+          }
+          if (rc === "/" && !inClass) {
+            i++;
+            break;
+          }
+          if (rc === "\n") break;
+          i++;
+        }
+        while (i < n && /[a-z]/i.test(content[i]!)) i++;
+      } else {
+        i++;
+      }
+      prevChar = "/";
+      prevWord = "";
+      continue;
+    }
+    if (c === "{") {
+      frame.brace++;
+      prevChar = "{";
+      prevWord = "";
+      i++;
+      continue;
+    }
+    if (c === "}") {
+      if (frame.brace > 0) {
+        frame.brace--;
+      } else if (stack.length > 1) {
+        stack.pop();
+      }
+      prevChar = "}";
+      prevWord = "";
+      i++;
+      continue;
+    }
+    if (INTERNAL_API_ID_START.test(c)) {
+      const start = i;
+      i++;
+      while (i < n && INTERNAL_API_ID_PART.test(content[i]!)) i++;
+      const name = content.slice(start, i);
+      idents.push({ name, start, end: i });
+      prevChar = content[i - 1]!;
+      prevWord = name;
+      continue;
+    }
+    prevChar = c;
+    prevWord = "";
+    i++;
+  }
+  return idents;
+}
+
+type InternalApiImportSpan = Readonly<{ specifiers: string; braceStart: number; braceEnd: number }>;
+
+function internalApiImportSpans(content: string, module: string): InternalApiImportSpan[] {
+  const escaped = escapeRegExp(module);
+  const spans: InternalApiImportSpan[] = [];
+  const patterns = [
+    new RegExp(`import\\s*\\{([^}]*)\\}\\s*from\\s*["']${escaped}["']`, "g"),
+    new RegExp(`(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*require\\(\\s*["']${escaped}["']\\s*\\)`, "g"),
+  ];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(content))) {
+      const open = content.indexOf("{", match.index);
+      if (open < 0) continue;
+      const close = content.indexOf("}", open);
+      if (close < 0) continue;
+      spans.push({ specifiers: match[1]!, braceStart: open + 1, braceEnd: close });
+    }
+  }
+  return spans;
+}
+
+type InternalApiBindingStatus =
+  | Readonly<{ status: "none" }>
+  | Readonly<{ status: "aliased" }>
+  | Readonly<{ status: "multiple" }>
+  | Readonly<{ status: "ok"; braceStart: number; braceEnd: number }>;
+
+function internalApiBindingStatus(
+  content: string,
+  module: string,
+  name: string,
+): InternalApiBindingStatus {
+  const hits: Array<{ braceStart: number; braceEnd: number }> = [];
+  let aliased = false;
+  for (const span of internalApiImportSpans(content, module)) {
+    for (const raw of span.specifiers.split(",")) {
+      const specifier = raw.trim();
+      if (!specifier) continue;
+      const alias = /^([A-Za-z0-9_$]+)\s+as\s+([A-Za-z0-9_$]+)$/.exec(specifier);
+      if (alias) {
+        if (alias[1] === name) aliased = true;
+        continue;
+      }
+      if (specifier === name) hits.push({ braceStart: span.braceStart, braceEnd: span.braceEnd });
+    }
+  }
+  if (hits.length === 1) {
+    return { status: "ok", braceStart: hits[0]!.braceStart, braceEnd: hits[0]!.braceEnd };
+  }
+  if (hits.length > 1) return { status: "multiple" };
+  if (aliased) return { status: "aliased" };
+  return { status: "none" };
+}
+
+// Classify a single non-import occurrence of the binding identifier as a member
+// access on another object (ignore), a clean call site (rename), or anything
+// else (abstain).
+function internalApiReferenceKind(
+  content: string,
+  tokens: readonly CodeIdent[],
+  index: number,
+): "member" | "call" | "other" {
+  const token = tokens[index]!;
+  let back = token.start - 1;
+  while (back >= 0 && /\s/.test(content[back]!)) back--;
+  const prevChar = back >= 0 ? content[back]! : "";
+  if (prevChar === ".") {
+    return back - 1 >= 0 && content[back - 1] === "." ? "other" : "member";
+  }
+  let forward = token.end;
+  while (forward < content.length && /\s/.test(content[forward]!)) forward++;
+  if (content[forward] !== "(") return "other";
+  const previous = tokens[index - 1];
+  if (
+    previous &&
+    /^\s*$/.test(content.slice(previous.end, token.start)) &&
+    INTERNAL_API_DECL_KEYWORDS.has(previous.name)
+  ) {
+    return "other";
+  }
+  const scan = scanReactCallArgs(content, forward);
+  if (!scan) return "other";
+  let after = scan.end + 1;
+  while (after < content.length && /\s/.test(content[after]!)) after++;
+  if (content[after] === "{") return "other";
+  return "call";
+}
+
+function applyInternalApiRanges(
+  content: string,
+  to: string,
+  ranges: readonly (readonly [number, number])[],
+): string {
+  let out = content;
+  for (const [start, end] of [...ranges].sort((left, right) => right[0] - left[0])) {
+    out = out.slice(0, start) + to + out.slice(end);
+  }
+  return out;
+}
+
+type InternalApiPlan = Readonly<{
+  state: PreconditionState["state"];
+  reason?: string;
+  ranges?: readonly (readonly [number, number])[];
+}>;
+
+function planInternalApiRename(
+  content: string,
+  module: string,
+  from: string,
+  to: string,
+): InternalApiPlan {
+  if (!new RegExp(`["']${escapeRegExp(module)}["']`).test(content)) return { state: "neutral" };
+  const tokens = scanCodeIdentifiers(content);
+  const fromStatus = internalApiBindingStatus(content, module, from);
+  const toStatus = internalApiBindingStatus(content, module, to);
+  const nonMemberFrom = tokens.filter(
+    (token, index) =>
+      token.name === from && internalApiReferenceKind(content, tokens, index) !== "member",
+  );
+
+  if (toStatus.status === "ok" && fromStatus.status === "none") {
+    return nonMemberFrom.length === 0
+      ? { state: "target" }
+      : { state: "unsupported", reason: "recipe_internal_api_partial_migration" };
+  }
+  if (fromStatus.status === "aliased") {
+    return { state: "unsupported", reason: "recipe_internal_api_aliased_import" };
+  }
+  if (fromStatus.status === "multiple") {
+    return { state: "unsupported", reason: "recipe_internal_api_multiple_imports" };
+  }
+  if (fromStatus.status === "none") {
+    return nonMemberFrom.length === 0
+      ? { state: "neutral" }
+      : { state: "unsupported", reason: "recipe_internal_api_binding_unresolved" };
+  }
+  const specToken = tokens.find(
+    (token) =>
+      token.name === from && token.start >= fromStatus.braceStart && token.end <= fromStatus.braceEnd,
+  );
+  if (!specToken) return { state: "unsupported", reason: "recipe_internal_api_import_unresolved" };
+  if (tokens.some((token) => token.name === to)) {
+    return { state: "unsupported", reason: "recipe_internal_api_target_conflict" };
+  }
+  const ranges: Array<readonly [number, number]> = [[specToken.start, specToken.end]];
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token.name !== from || token === specToken) continue;
+    const kind = internalApiReferenceKind(content, tokens, index);
+    if (kind === "member") continue;
+    if (kind === "call") {
+      ranges.push([token.start, token.end]);
+      continue;
+    }
+    return { state: "unsupported", reason: "recipe_internal_api_unsupported_reference" };
+  }
+  const transformed = applyInternalApiRanges(content, to, ranges);
+  if (internalApiBindingStatus(transformed, module, from).status !== "none") {
+    return { state: "unsupported", reason: "recipe_internal_api_residual_import" };
+  }
+  return { state: "source", ranges };
+}
+
+function classifyInternalApiRenameSource(
+  content: string,
+  module: string,
+  from: string,
+  to: string,
+): PreconditionState {
+  const plan = planInternalApiRename(content, module, from, to);
+  return plan.reason ? { state: plan.state, reason: plan.reason } : { state: plan.state };
+}
+
+function rewriteInternalApiRenameSource(
+  content: string,
+  module: string,
+  from: string,
+  to: string,
+): string {
+  const plan = planInternalApiRename(content, module, from, to);
+  if (plan.state !== "source" || !plan.ranges) return content;
+  return applyInternalApiRanges(content, to, plan.ranges);
+}
+
+export type InternalApiRenameSpec = Readonly<{
+  recipeId: string;
+  version: number;
+  title: string;
+  source: string;
+  target: string;
+  module: string;
+  from: string;
+  to: string;
+  paths: readonly string[];
+}>;
+
+function internalApiVerifierScript(
+  paths: readonly string[],
+  identifier: string,
+  present: boolean,
+  missingFailure: string,
+  presentFailure: string,
+): string {
+  const pathList = paths.map((path) => `'${path}'`).join(",");
+  const callRegex = `new RegExp('(?<![\\\\w$.])${identifier}\\\\s*\\\\(')`;
+  const body = present
+    ? `let seen=0;for(const p of paths){if(!fs.existsSync(p))continue;const s=fs.readFileSync(p,'utf8');if(call.test(s))seen++;}if(seen===0)fail('${missingFailure}');`
+    : `let checked=0;for(const p of paths){if(!fs.existsSync(p))continue;checked++;const s=fs.readFileSync(p,'utf8');if(call.test(s))fail('${presentFailure}:'+p);}if(checked===0)fail('${missingFailure}');`;
+  return (
+    "const fs=require('node:fs');" +
+    "const fail=(m)=>{throw new Error(m)};" +
+    `const paths=[${pathList}];` +
+    `const call=${callRegex};` +
+    body
+  );
+}
+
+export function createInternalApiRenameRecipe(spec: InternalApiRenameSpec): MigrationRecipeContract {
+  if (!INTERNAL_API_IDENTIFIER.test(spec.from) || !INTERNAL_API_IDENTIFIER.test(spec.to)) {
+    throw new Error("recipe_internal_api_identifier_invalid");
+  }
+  if (spec.from === spec.to) throw new Error("recipe_internal_api_noop");
+  if (!spec.module || /["'\\]/.test(spec.module)) throw new Error("recipe_internal_api_module_invalid");
+  const paths = [...spec.paths].sort();
+  if (!paths.length) throw new Error("recipe_internal_api_paths_required");
+  const preconditions = paths.map(
+    (path) =>
+      ({
+        kind: "internal_api_rename_source",
+        path,
+        module: spec.module,
+        from: spec.from,
+        to: spec.to,
+      }) as const,
+  );
+  const transforms = paths.map(
+    (path) =>
+      ({
+        kind: "internal_api_rename",
+        path,
+        module: spec.module,
+        from: spec.from,
+        to: spec.to,
+      }) as const,
+  );
+  return createRecipe({
+    id: spec.recipeId,
+    version: spec.version,
+    title: spec.title,
+    source: spec.source,
+    target: spec.target,
+    allowedPaths: paths,
+    preconditions,
+    transforms,
+    verificationCommands: [
+      {
+        id: "internal-api-old-surface-absent",
+        command: `node -e "${internalApiVerifierScript(
+          paths,
+          spec.from,
+          false,
+          "internal_api_source_missing",
+          "internal_api_old_call_present",
+        )}"`,
+        successCriteria: `Migrated consumer sources contain no ${spec.from} call sites`,
+      },
+      {
+        id: "internal-api-new-surface-present",
+        command: `node -e "${internalApiVerifierScript(
+          paths,
+          spec.to,
+          true,
+          "internal_api_new_call_missing",
+          "internal_api_new_call_present",
+        )}"`,
+        successCriteria: `Migrated consumer sources call ${spec.to} in at least one file`,
+      },
+    ],
+    rollback: {
+      strategy: "inverse_operations",
+      requireCurrentDigest: true,
+    },
+  });
+}
+
+// Worked example: an internal user-service refactor that renamed the exported
+// binding `getUser` to `fetchUser` in the internal package `@acme/user-service`.
+// This instantiates the factory with a concrete spec; the spec is folded into
+// the recipe digest, so a different spec would sign as an independent artifact.
+const INTERNAL_API_ACME_USER_RENAME_SPEC: InternalApiRenameSpec = {
+  recipeId: "internal-api-acme-user-getuser-to-fetchuser",
+  version: 1,
+  title: "Internal API refactor: acme user-service getUser to fetchUser",
+  source: "acme-user-service-getUser",
+  target: "acme-user-service-fetchUser",
+  module: "@acme/user-service",
+  from: "getUser",
+  to: "fetchUser",
+  paths: ["src/profile.ts", "src/settings.ts"],
+};
+
+const INTERNAL_API_ACME_USER_RENAME_V1 = createInternalApiRenameRecipe(
+  INTERNAL_API_ACME_USER_RENAME_SPEC,
+);
+
+export const INTERNAL_API_ACME_USER_RENAME_RECIPE = INTERNAL_API_ACME_USER_RENAME_V1;
+
 const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${NODE_RUNTIME_18_TO_20_V1.id}@${NODE_RUNTIME_18_TO_20_V1.version}`,
     NODE_RUNTIME_18_TO_20_V1,
+  ],
+  [
+    `${NODE_RUNTIME_18_TO_20_V2.id}@${NODE_RUNTIME_18_TO_20_V2.version}`,
+    NODE_RUNTIME_18_TO_20_V2,
   ],
   [
     `${NODE_RUNTIME_18_TO_20_V2.id}@${NODE_RUNTIME_18_TO_20_V2.version}`,
@@ -1358,6 +1918,10 @@ const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${REACT_DOM_17_TO_18_V1.id}@${REACT_DOM_17_TO_18_V1.version}`,
     REACT_DOM_17_TO_18_V1,
+  ],
+  [
+    `${INTERNAL_API_ACME_USER_RENAME_V1.id}@${INTERNAL_API_ACME_USER_RENAME_V1.version}`,
+    INTERNAL_API_ACME_USER_RENAME_V1,
   ],
 ]);
 
@@ -1479,6 +2043,9 @@ function preconditionFailure(precondition: RecipePrecondition): string {
   if (precondition.kind === "react_dom_render_source") {
     return `recipe_precondition_failed:${precondition.path}:react_dom_render`;
   }
+  if (precondition.kind === "internal_api_rename_source") {
+    return `recipe_precondition_failed:${precondition.path}:internal_api_rename`;
+  }
   return `recipe_precondition_failed:${precondition.path}:node_major`;
 }
 
@@ -1526,6 +2093,16 @@ function preconditionState(
     const content = files[precondition.path];
     if (content === undefined) return { state: "neutral" };
     return classifyReactDomSource(content);
+  }
+  if (precondition.kind === "internal_api_rename_source") {
+    const content = files[precondition.path];
+    if (content === undefined) return { state: "neutral" };
+    return classifyInternalApiRenameSource(
+      content,
+      precondition.module,
+      precondition.from,
+      precondition.to,
+    );
   }
   if (precondition.kind === "json_string_in") {
     let value: unknown;
@@ -1737,8 +2314,15 @@ function applyTransform(transform: RecipeTransform, files: Record<string, string
     files[transform.path] = rewriteStripeSource(before!);
   } else if (transform.kind === "googleapis_default_import_to_named") {
     files[transform.path] = rewriteGoogleapisSource(before!);
-  } else {
+  } else if (transform.kind === "react_dom_render_to_root") {
     files[transform.path] = rewriteReactDomSource(before!);
+  } else {
+    files[transform.path] = rewriteInternalApiRenameSource(
+      before!,
+      transform.module,
+      transform.from,
+      transform.to,
+    );
   }
 }
 

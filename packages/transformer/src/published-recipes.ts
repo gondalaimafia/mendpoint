@@ -2,6 +2,7 @@ import type { KeyLike } from "node:crypto";
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
   GOOGLEAPIS_V25_TO_V26_RECIPE,
+  INTERNAL_API_ACME_USER_RENAME_RECIPE,
   NODE_RUNTIME_20_TO_22_RECIPE,
   REACT_DOM_17_TO_18_RECIPE,
   STRIPE_NODE_V10_TO_V11_RECIPE,
@@ -551,6 +552,120 @@ export const NODE_RUNTIME_20_TO_22_ARTIFACT: ProviderRecipeArtifact = Object.fre
   },
 } as const);
 
+/**
+ * Internal / custom API-refactor family worked example. This is a config-driven
+ * recipe, NOT a general refactorer: the internal team renamed the exported
+ * binding `getUser` to `fetchUser` in the internal package `@acme/user-service`,
+ * and this artifact carries the deterministic consumer-side rename. The
+ * `provider` honestly represents an internal API (not a third-party vendor) and
+ * `change.target` is `api`. The recipe digest is derived from the spec baked
+ * into the executable recipe, so a different internal refactor would sign as a
+ * separate artifact.
+ */
+export const INTERNAL_API_ACME_USER_RENAME_ARTIFACT: ProviderRecipeArtifact = Object.freeze({
+  schemaVersion: PROVIDER_RECIPE_SCHEMA_VERSION,
+  recipeId: "internal-api-acme-user-getuser-to-fetchuser",
+  version: 1,
+  publishedAt: "2026-08-05T00:00:00.000Z",
+  provider: {
+    slug: "acme-internal-user-api",
+    category: "identity",
+  },
+  change: {
+    target: "api",
+    kind: "breaking",
+    fromVersion: "1",
+    toVersion: "2",
+  },
+  detection: {
+    allOf: [
+      {
+        kind: "source_pattern",
+        path: "src/profile.ts",
+        selector: "named getUser import from @acme/user-service",
+        expected: "import { getUser } from @acme/user-service with getUser call sites",
+        evidenceRequired: true,
+      },
+      {
+        kind: "source_pattern",
+        path: "src/settings.ts",
+        selector: "named getUser import from @acme/user-service",
+        expected: "import { getUser } from @acme/user-service with getUser call sites",
+        evidenceRequired: true,
+      },
+    ],
+  },
+  preconditions: [
+    {
+      id: "profile-getuser-binding",
+      kind: "source_pattern",
+      path: "src/profile.ts",
+      selector: "supported internal getUser binding",
+      expected: "single named getUser import from @acme/user-service used only in call position",
+    },
+    {
+      id: "settings-getuser-binding",
+      kind: "source_pattern",
+      path: "src/settings.ts",
+      selector: "supported internal getUser binding",
+      expected: "single named getUser import from @acme/user-service used only in call position",
+    },
+  ],
+  boundedEdits: {
+    implementationRecipe: {
+      id: INTERNAL_API_ACME_USER_RENAME_RECIPE.id,
+      version: INTERNAL_API_ACME_USER_RENAME_RECIPE.version,
+      digest: INTERNAL_API_ACME_USER_RENAME_RECIPE.digest,
+    },
+    allowedPaths: ["src/profile.ts", "src/settings.ts"],
+    allowedOperationKinds: ["replace_file"],
+    maxFilesChanged: 2,
+    maxBytesChanged: 65536,
+  },
+  verification: [
+    {
+      id: "unit-and-typecheck",
+      command: "npm test && npm run typecheck",
+      timeoutMs: 900000,
+      successCriteria: "Consumer tests and typecheck pass on the renamed fetchUser sources",
+      required: true,
+    },
+  ],
+  rollback: {
+    strategy: "inverse_operations",
+    verificationIds: ["unit-and-typecheck"],
+    maxRecoveryMinutes: 30,
+  },
+  evidence: {
+    requiredSourceKinds: ["repository_snapshot", "customer_incident"],
+    retainInputSnapshot: true,
+    retainOperationDiffs: true,
+    retainVerificationOutput: true,
+  },
+  ownership: {
+    team: "change-intelligence",
+    maintainerPrincipalId: "human:recipe-maintainer",
+    securityReviewerPrincipalId: "human:security-reviewer",
+  },
+  compatibility: {
+    languages: ["javascript", "typescript"],
+    packageManagers: ["npm", "pnpm", "yarn"],
+    repositoryKinds: ["service", "library"],
+    runtime: {
+      name: "node",
+      minMajor: 16,
+      maxMajor: 22,
+    },
+  },
+  outcomeTelemetry: {
+    schemaVersion: 1,
+    eventName: "provider_recipe_outcome",
+    correlationFields: ["tenantId", "campaignId", "runId", "recipeArtifactSha256"],
+    metricIds: ["accepted", "reviewerEditRatio", "verificationPassed", "rollbackRequired"],
+    retentionDays: 90,
+  },
+} as const);
+
 /** All provider-recipe artifacts Mendpoint publishes into the run-path catalog. */
 export const PUBLISHED_PROVIDER_RECIPE_ARTIFACTS: readonly ProviderRecipeArtifact[] = Object.freeze([
   AWS_SDK_JS_V2_TO_V3_ARTIFACT,
@@ -558,6 +673,7 @@ export const PUBLISHED_PROVIDER_RECIPE_ARTIFACTS: readonly ProviderRecipeArtifac
   GOOGLEAPIS_V25_TO_V26_ARTIFACT,
   REACT_DOM_17_TO_18_ARTIFACT,
   NODE_RUNTIME_20_TO_22_ARTIFACT,
+  INTERNAL_API_ACME_USER_RENAME_ARTIFACT,
 ]);
 
 export type ProviderRecipeSigningKey = Readonly<{ keyId: string; privateKey: KeyLike }>;
