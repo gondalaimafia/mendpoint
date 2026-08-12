@@ -17,10 +17,13 @@ export type WardenCampaign = Readonly<{
   createdAt: string; updatedAt: string;
 }>;
 
+export type WardenEnrollmentSource = "manual" | "auto";
+
 export type WardenCampaignTarget = Readonly<{
   id: string; tenantId: string; campaignId: string; repositoryId: string; snapshotId: string;
   packageArtifactId: string | null; ownerPrincipalId: string; stage: WardenTargetStage;
   dependsOn: string[]; attemptCount: number; maxAttempts: number; exceptionCode: string | null;
+  enrollmentSource: WardenEnrollmentSource; enrolledInstallationId: string | null;
   revision: number; createdAt: string; updatedAt: string;
 }>;
 
@@ -74,6 +77,7 @@ type TargetRow = {
   id: string; tenant_id: string; campaign_id: string; repository_id: string; snapshot_id: string;
   package_artifact_id: string | null; owner_principal_id: string; stage: WardenTargetStage;
   depends_on_json: string; attempt_count: number; max_attempts: number; exception_code: string | null;
+  enrollment_source: WardenEnrollmentSource | null; enrolled_installation_id: string | null;
   revision: number; created_at: string; updated_at: string;
 };
 type RolloutDecisionRow = {
@@ -108,7 +112,9 @@ function target(row: TargetRow): WardenCampaignTarget {
     repositoryId: row.repository_id, snapshotId: row.snapshot_id,
     packageArtifactId: row.package_artifact_id, ownerPrincipalId: row.owner_principal_id,
     stage: row.stage, dependsOn, attemptCount: row.attempt_count, maxAttempts: row.max_attempts,
-    exceptionCode: row.exception_code, revision: row.revision,
+    exceptionCode: row.exception_code,
+    enrollmentSource: row.enrollment_source ?? "manual",
+    enrolledInstallationId: row.enrolled_installation_id ?? null, revision: row.revision,
     createdAt: row.created_at, updatedAt: row.updated_at });
 }
 function assertPrincipal(db: AppDb, tenantId: string, principalId: string) {
@@ -161,10 +167,13 @@ export function createWardenCampaign(db: AppDb, input: {
 
 export function addWardenCampaignTarget(db: AppDb, input: {
   id: string; tenantId: string; campaignId: string; repositoryId: string; snapshotId: string;
-  ownerPrincipalId: string; dependsOn?: string[]; maxAttempts?: number; eventId: string;
+  ownerPrincipalId: string; dependsOn?: string[]; maxAttempts?: number;
+  enrollmentSource?: WardenEnrollmentSource; enrolledInstallationId?: string | null; eventId: string;
   idempotencyKey: string; correlationId: string; createdAt: string;
 }): WardenCampaignTarget {
   assertPrincipal(db, input.tenantId, input.ownerPrincipalId);
+  const enrollmentSource: WardenEnrollmentSource = input.enrollmentSource ?? "manual";
+  const enrolledInstallationId = input.enrolledInstallationId ?? null;
   const parent = one<CampaignRow>(db, `SELECT * FROM warden_campaigns WHERE id = ? AND tenant_id = ?`, [input.campaignId, input.tenantId]);
   if (!parent || parent.status !== "draft") throw new Error("warden_campaign_not_draft");
   const repo = one<{ snapshot_id: string }>(db, `SELECT rs.id AS snapshot_id FROM connected_repositories cr
@@ -183,12 +192,14 @@ export function addWardenCampaignTarget(db: AppDb, input: {
   try {
     db.raw.prepare(`INSERT INTO warden_campaign_targets
       (id, tenant_id, campaign_id, repository_id, snapshot_id, owner_principal_id, stage, depends_on_json,
-       attempt_count, max_attempts, revision, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, 1, ?, ?)`).run(input.id, input.tenantId,
+       attempt_count, max_attempts, enrollment_source, enrolled_installation_id, revision, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, 1, ?, ?)`).run(input.id, input.tenantId,
         input.campaignId, input.repositoryId, input.snapshotId, input.ownerPrincipalId,
-        JSON.stringify(dependencies), maxAttempts, input.createdAt, input.createdAt);
+        JSON.stringify(dependencies), maxAttempts, enrollmentSource, enrolledInstallationId,
+        input.createdAt, input.createdAt);
     event(db, { ...input, actorPrincipalId: input.ownerPrincipalId, eventType: "warden.target.added",
-      payload: { targetId: input.id, dependencies, revision: 1 } });
+      payload: { targetId: input.id, dependencies, revision: 1,
+        enrollmentSource, enrolledInstallationId } });
     const value = target(one<TargetRow>(db, `SELECT * FROM warden_campaign_targets WHERE id = ?`, [input.id])!);
     db.raw.exec("COMMIT"); return value;
   } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
@@ -267,6 +278,133 @@ export function transitionWardenTarget(db: AppDb, input: { tenantId: string; cam
 
 export function listWardenCampaignTargets(db: AppDb, tenantId: string, campaignId: string) {
   return all<TargetRow>(db, `SELECT * FROM warden_campaign_targets WHERE tenant_id = ? AND campaign_id = ? ORDER BY created_at, id`, [tenantId, campaignId]).map(target);
+}
+
+// A repository the installation can reach, surfaced by the org crawler. `remoteId`
+// matches connected_repositories.remote_id (the provider repository id).
+export type WardenOrgRepositoryCandidate = Readonly<{
+  remoteId: string;
+  owner: string;
+  name: string;
+  archived: boolean;
+  disabled: boolean;
+}>;
+
+export type WardenOrgEnrollmentSkipReason =
+  | "archived"
+  | "disabled"
+  | "not_connected"
+  | "not_provider_consumer"
+  | "snapshot_missing"
+  | "already_enrolled";
+
+export type WardenOrgEnrollmentSkip = Readonly<{
+  remoteId: string;
+  owner: string;
+  name: string;
+  reason: WardenOrgEnrollmentSkipReason;
+}>;
+
+export type WardenOrgEnrollmentResult = Readonly<{
+  campaignId: string;
+  providerSlug: string;
+  installationId: string;
+  scanned: number;
+  enrolled: readonly WardenCampaignTarget[];
+  skipped: readonly WardenOrgEnrollmentSkip[];
+}>;
+
+/**
+ * Crawl an installation's accessible repositories and enroll the eligible ones
+ * into a draft campaign as targets. Enrollment is additive and idempotent: a
+ * re-scan enrolls only newly eligible repositories and never duplicates.
+ *
+ * Eligibility (deliberately conservative, never "enroll everything"):
+ *  - the repository is accessible to the installation (the crawler only lists
+ *    installation repos) AND is a tenant-owned connected repository bound to
+ *    that same installation's SCM connection (scoping / least privilege);
+ *  - it is not archived or disabled on the provider;
+ *  - it is a plausible consumer of the campaign's provider, reusing the existing
+ *    detect signal: a consumer repo bound to this connected repository monitors
+ *    the provider (consumer_repos -> consumers -> monitored_apis -> providers) —
+ *    the same "provider monitored" signal the Warden pilot intake enforces;
+ *  - it has at least one materialized snapshot (targets bind to an exact commit).
+ */
+export function autoEnrollWardenCampaignOrg(db: AppDb, input: {
+  tenantId: string; campaignId: string; providerSlug: string; installationId: string;
+  ownerPrincipalId: string; accessibleRepositories: readonly WardenOrgRepositoryCandidate[];
+  maxAttempts?: number; correlationId: string; createdAt: string;
+}): WardenOrgEnrollmentResult {
+  required("tenant_id", input.tenantId);
+  const campaignId = required("warden_campaign_id", input.campaignId);
+  const providerSlug = required("warden_org_provider_slug", input.providerSlug);
+  const installationId = required("warden_org_installation_id", input.installationId);
+  if (!/^[1-9][0-9]{0,19}$/.test(installationId)) throw new Error("warden_org_installation_id_invalid");
+  assertPrincipal(db, input.tenantId, input.ownerPrincipalId);
+  const campaign = one<CampaignRow>(db, `SELECT * FROM warden_campaigns WHERE id = ? AND tenant_id = ?`, [campaignId, input.tenantId]);
+  if (!campaign) throw new Error("warden_campaign_not_found");
+  if (campaign.status !== "draft") throw new Error("warden_campaign_not_draft");
+  const provider = one<{ id: string }>(db, `SELECT id FROM providers WHERE slug = ?`, [providerSlug]);
+  if (!provider) throw new Error("warden_org_provider_unknown");
+  // Bind the scan to a tenant-owned, non-revoked GitHub installation connection.
+  const connection = one<{ id: string }>(db,
+    `SELECT id FROM scm_connections
+     WHERE tenant_id = ? AND provider = 'github' AND external_account_id = ? AND revoked_at IS NULL`,
+    [input.tenantId, installationId]);
+  if (!connection) throw new Error("warden_org_installation_not_connected");
+
+  const enrolled: WardenCampaignTarget[] = [];
+  const skipped: WardenOrgEnrollmentSkip[] = [];
+  const seen = new Set<string>();
+  let scanned = 0;
+  for (const candidate of input.accessibleRepositories) {
+    const remoteId = candidate.remoteId;
+    if (!remoteId || seen.has(remoteId)) continue;
+    seen.add(remoteId);
+    scanned += 1;
+    const skip = (reason: WardenOrgEnrollmentSkipReason) =>
+      skipped.push(Object.freeze({ remoteId, owner: candidate.owner, name: candidate.name, reason }));
+    if (candidate.archived) { skip("archived"); continue; }
+    if (candidate.disabled) { skip("disabled"); continue; }
+    // Only enroll repositories the installation reaches AND the tenant already
+    // connected through that same installation. Never widen beyond granted access.
+    const repository = one<{ id: string }>(db,
+      `SELECT cr.id FROM connected_repositories cr
+       JOIN scm_connections sc ON sc.id = cr.connection_id
+       WHERE cr.tenant_id = ? AND cr.remote_id = ? AND cr.status != 'revoked'
+         AND sc.provider = 'github' AND sc.external_account_id = ? AND sc.revoked_at IS NULL`,
+      [input.tenantId, remoteId, installationId]);
+    if (!repository) { skip("not_connected"); continue; }
+    // Idempotency reflects stored state, not current eligibility: an already
+    // enrolled repository is skipped regardless of provider/snapshot signal.
+    const existing = one<{ id: string }>(db,
+      `SELECT id FROM warden_campaign_targets WHERE tenant_id = ? AND campaign_id = ? AND repository_id = ?`,
+      [input.tenantId, campaignId, repository.id]);
+    if (existing) { skip("already_enrolled"); continue; }
+    const consumes = one<{ ok: number }>(db,
+      `SELECT 1 AS ok FROM consumer_repos crp
+       JOIN consumers cons ON cons.id = crp.consumer_id AND cons.tenant_id = ?
+       JOIN monitored_apis m ON m.consumer_id = cons.id
+       WHERE crp.connected_repository_id = ? AND m.provider_id = ? LIMIT 1`,
+      [input.tenantId, repository.id, provider.id]);
+    if (!consumes) { skip("not_provider_consumer"); continue; }
+    const snapshot = one<{ id: string }>(db,
+      `SELECT id FROM repository_snapshots WHERE tenant_id = ? AND repository_id = ?
+       ORDER BY created_at DESC, id DESC LIMIT 1`, [input.tenantId, repository.id]);
+    if (!snapshot) { skip("snapshot_missing"); continue; }
+    const targetId = `wct_${createHash("sha256").update(`${campaignId}\0${repository.id}`, "utf8").digest("hex")}`;
+    enrolled.push(addWardenCampaignTarget(db, {
+      id: targetId, tenantId: input.tenantId, campaignId, repositoryId: repository.id,
+      snapshotId: snapshot.id, ownerPrincipalId: input.ownerPrincipalId, dependsOn: [],
+      maxAttempts: input.maxAttempts, enrollmentSource: "auto", enrolledInstallationId: installationId,
+      eventId: `${targetId}:enrolled`, idempotencyKey: `${targetId}:enrolled`,
+      correlationId: input.correlationId, createdAt: input.createdAt,
+    }));
+  }
+  return Object.freeze({
+    campaignId, providerSlug, installationId, scanned,
+    enrolled: Object.freeze(enrolled), skipped: Object.freeze(skipped),
+  });
 }
 
 const RISK_ORDER: Record<WardenRolloutTargetProfile["risk"], number> = {

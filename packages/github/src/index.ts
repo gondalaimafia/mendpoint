@@ -656,8 +656,14 @@ export {
   GitHubAppDelivery,
   deliverToManyRepos,
   createAppDelivery,
+  defaultListInstallationRepositories,
+  listInstallationRepositories,
+  mockInstallationRepositories,
   type AppCredentials,
   type InstallationToken,
+  type InstallationRepository,
+  type InstallationRepositoryLister,
+  type MockInstallationRepositoryInput,
 } from "./app-runtime.js";
 
 export {

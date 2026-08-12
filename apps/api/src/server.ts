@@ -263,6 +263,7 @@ import { billingPlanChangeDecision } from "./billing-plan-control.js";
 import { admitRunUsage, estimateRunMcuMicros } from "./usage-enforcement.js";
 import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
 import { createWardenPilotIntakeRoutes } from "./warden-pilot-intake.js";
+import { createWardenCampaignEnrollmentRoutes } from "./warden-campaign-enrollment.js";
 import { createOutcomeMetricsRoutes } from "./outcome-metrics-routes.js";
 import { initializeApiRuntime } from "./api-runtime.js";
 import {
@@ -698,6 +699,7 @@ app.route("/pilot-success-contracts", pilotSuccessRoutes);
 app.route("/prs", migrationPrRoutes);
 app.route("/tenants/memberships", tenantMembershipRoutes);
 app.route("/warden/pilot", createWardenPilotIntakeRoutes({ db }));
+app.route("/warden/campaigns", createWardenCampaignEnrollmentRoutes({ db }));
 app.route("/metrics/outcomes", createOutcomeMetricsRoutes({ db }));
 
 // Persist alerts under data/
