@@ -21,6 +21,7 @@ import {
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
   GOOGLEAPIS_V25_TO_V26_RECIPE,
+  INTERNAL_API_ACME_USER_RENAME_RECIPE,
   NODE_RUNTIME_18_TO_20_RECIPE,
   NODE_RUNTIME_20_TO_22_RECIPE,
   REACT_DOM_17_TO_18_RECIPE,
@@ -76,6 +77,8 @@ const REACT_18_UPGRADE_GUIDE =
   "https://react.dev/blog/2022/03/08/react-18-upgrade-guide";
 const NODE_22_RELEASE_NOTES =
   "https://nodejs.org/en/blog/release/v22.0.0";
+const RENAME_FUNCTION_REFACTORING =
+  "https://refactoring.com/catalog/renameField.html";
 
 const AWS_FIXTURE_ROOT = "../../../fixtures/consumers/aws-sdk-v2-to-v3/";
 
@@ -1740,6 +1743,42 @@ const NODE_RUNTIME_EVAL_CONFIG: SdkRecipeEvalConfig = Object.freeze({
   }),
 });
 
+// Internal / custom API-refactor family (config/spec-driven). The worked
+// example renames the internal `getUser` binding to `fetchUser`. The abstain
+// scenario proves the classic false-positive trap: the same identifier imported
+// from a different module is never renamed.
+const INTERNAL_API_EVAL_CONFIG: SdkRecipeEvalConfig = Object.freeze({
+  idSlug: "internal_api_acme_user_rename",
+  recipe: INTERNAL_API_ACME_USER_RENAME_RECIPE,
+  fixtureDir: "internal-api-acme-user-rename",
+  supportedPaths: ["src/profile.ts", "src/settings.ts"],
+  outOfScopePaths: ["src/profile.ts", "src/settings.ts"],
+  operationsCsv: "src/profile.ts,src/settings.ts",
+  abstainReason: "recipe_internal_api_binding_unresolved",
+  guideUrl: RENAME_FUNCTION_REFACTORING,
+  maxChangedFiles: 2,
+  query: Object.freeze({
+    providerSlug: "acme-internal-user-api",
+    providerCategory: "identity",
+    changeTarget: "api",
+    changeKind: "breaking",
+    fromVersion: "1",
+    toVersion: "2",
+    language: "typescript",
+    packageManager: "npm",
+    repositoryKind: "service",
+    runtime: { name: "node", major: 20 },
+  }),
+  fence: Object.freeze({
+    tenantId: "tenant-internal-api-eval",
+    campaignId: "campaign-internal-api-eval",
+    unitId: "unit-internal-api-eval",
+    attemptId: "attempt-internal-api-eval",
+    leaseGeneration: 3,
+    leaseToken: "transformer-internal-api-eval-lease-token",
+  }),
+});
+
 export const TRANSFORMER_AGENT_EVAL_SCENARIOS: readonly AgentEvalScenario[] = Object.freeze([
   PLANNING_SCENARIO,
   ANALYSIS_SCENARIO,
@@ -1754,5 +1793,7 @@ export const TRANSFORMER_AGENT_EVAL_SCENARIOS: readonly AgentEvalScenario[] = Ob
   sdkAbstainScenario(REACT_DOM_EVAL_CONFIG),
   sdkExecutionScenario(NODE_RUNTIME_EVAL_CONFIG),
   sdkAbstainScenario(NODE_RUNTIME_EVAL_CONFIG),
+  sdkExecutionScenario(INTERNAL_API_EVAL_CONFIG),
+  sdkAbstainScenario(INTERNAL_API_EVAL_CONFIG),
   ...WORKSPACE_CASES.map(workspaceScenario),
 ]);
