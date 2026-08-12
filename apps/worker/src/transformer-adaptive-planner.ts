@@ -20,6 +20,7 @@ import type {
   AdaptiveRepairPlanner,
   AdaptiveRepairPlannerInput,
   AdaptiveRepairPlannerOutput,
+  LearningPrecedentEntry,
 } from "@mendpoint/transformer";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -170,7 +171,35 @@ export type TransformerAdaptivePlannerAdapterOptions = Readonly<{
   maxResponseBytes?: number;
   priceTable?: Readonly<Record<string, LiveModelPrice>>;
   onProvenance?(record: TransformerAdaptiveModelProvenance): void;
+  /**
+   * Optional supplier of sealed, human-approved, redacted precedent for the
+   * planner input. When absent the request is byte-for-byte unchanged; the
+   * production wiring only supplies it when the learning loop is enabled.
+   */
+  loadPrecedent?(input: AdaptiveRepairPlannerInput): readonly LearningPrecedentEntry[];
 }>;
+
+/**
+ * Attach precedent to a planner input, or return the input unchanged when there
+ * is no supplier or no precedent. Returning the same reference keeps the request
+ * byte-identical to the pre-learning path whenever precedent is absent.
+ */
+export function enrichPlannerInputWithPrecedent(
+  input: AdaptiveRepairPlannerInput,
+  loadPrecedent?: (input: AdaptiveRepairPlannerInput) => readonly LearningPrecedentEntry[],
+): AdaptiveRepairPlannerInput {
+  if (!loadPrecedent) return input;
+  let precedent: readonly LearningPrecedentEntry[];
+  try {
+    precedent = loadPrecedent(input);
+  } catch {
+    // Precedent is best-effort reference context; a lookup failure must never
+    // block planning, so fall back to the unchanged input.
+    return input;
+  }
+  if (precedent.length === 0) return input;
+  return Object.freeze({ ...input, precedent });
+}
 
 function requiredConfiguredValue(value: string | undefined, code: string): string {
   const trimmed = value?.trim() ?? "";
@@ -588,12 +617,13 @@ export function resolveTransformerAdaptivePlannerAdapter(
     if (plannerOptions.signal?.aborted) {
       throw new Error("transformer_adaptive_model_cancelled");
     }
+    const requestInput = enrichPlannerInputWithPrecedent(input, options.loadPrecedent);
     const {
       body,
       maxTokens,
       promptTokenUpperBound,
       costUpperBoundUsd,
-    } = budgetedPlannerRequest(input, policy.model, priceTable);
+    } = budgetedPlannerRequest(requestInput, policy.model, priceTable);
     if (Buffer.byteLength(body, "utf8") > maxRequestBytes) {
       throw new Error("transformer_adaptive_model_request_too_large");
     }
@@ -662,7 +692,7 @@ export function resolveTransformerAdaptivePlannerAdapter(
       }
       const parsed = parseResponse(
         await readBoundedResponse(response, maxResponseBytes),
-        input,
+        requestInput,
         policy,
       );
       const baseProvenance = buildLiveModelProvenance({

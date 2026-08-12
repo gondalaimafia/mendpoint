@@ -118,6 +118,8 @@ import {
   authorizeConfiguredTransformerAdaptiveExternalProcessing,
   resolveTransformerAdaptivePlannerAdapter,
 } from "./transformer-adaptive-planner.js";
+import { buildLearningPrecedent } from "./transformer-learning-consumer.js";
+import { learningLoopEnabled } from "./transformer-learning-outcome.js";
 import {
   runTransformerAdaptiveDelivery,
   type ResolveTransformerAdaptiveRepository,
@@ -138,10 +140,19 @@ const wardenMaintenanceRowOffsets = new Map<string, number>();
 
 export function transformerAdaptiveProductionPorts(
   env: NodeJS.ProcessEnv = process.env,
+  db?: AppDb,
 ) {
+  const precedentEnabled = Boolean(db) && learningLoopEnabled(env);
   return Object.freeze({
     adaptivePlannerAdapterForTenant: (tenantId: string) =>
-      resolveTransformerAdaptivePlannerAdapter(tenantId, env),
+      resolveTransformerAdaptivePlannerAdapter(tenantId, env, {
+        ...(precedentEnabled
+          ? {
+              loadPrecedent: () =>
+                buildLearningPrecedent({ db: db!, tenantId, at: nowIso(), env }),
+            }
+          : {}),
+      }),
     authorizeAdaptiveExternalProcessing: (
       authorization: Parameters<
         typeof authorizeConfiguredTransformerAdaptiveExternalProcessing
@@ -3192,7 +3203,7 @@ async function runService(intervalMs: number) {
           ),
           shouldContinue: () => !shutdown.signal.aborted,
           adaptiveCandidateDataRoot: dataRoot,
-          ...transformerAdaptiveProductionPorts(process.env),
+          ...transformerAdaptiveProductionPorts(process.env, transformerDb),
         });
         transformer = transformerPilotHeartbeatAfterResult(transformer, result, nowIso());
         failures = result.infrastructureError ? failures + 1 : 0;
