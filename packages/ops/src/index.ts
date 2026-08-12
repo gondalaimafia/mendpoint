@@ -42,6 +42,16 @@ export {
   type TransformerGateInput,
   type TransformerGateDecision,
 } from "./transformer-gate.js";
+export {
+  TRANSFORMER_CANARY_ACCEPTANCE_EVIDENCE_REF,
+  PILOT_SAMPLE_TENANT_ID,
+  PILOT_SAMPLE_ENVIRONMENT,
+  PILOT_SAMPLE_DELIVERY_APPROVAL_REF,
+  generatePilotTransformerGateConfig,
+  serializePilotTransformerGateConfig,
+  samplePilotTransformerGateConfig,
+  type PilotTransformerEnablementOptions,
+} from "./transformer-enablement.js";
 export { liveness, readiness, type ProbeResult } from "./readiness.js";
 export {
   DISASTER_RECOVERY_POLICY_SCHEMA_VERSION,
