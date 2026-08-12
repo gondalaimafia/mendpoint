@@ -23,6 +23,7 @@
     "phase-e:java": "tsx packages/phase-a/src/harness-java.ts",
     "phase-e:ruby": "tsx packages/phase-a/src/harness-ruby.ts",
     "db:seed": "tsx scripts/seed.ts",
+    "learning:export-corpus": "tsx scripts/learning-export-corpus.ts",
     "dr:drill": "tsx scripts/dr-drill.ts",
     "backup:customer": "tsx scripts/customer-backup.ts",
     "restore:customer": "tsx scripts/customer-restore.ts",
