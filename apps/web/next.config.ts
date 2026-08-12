@@ -23,13 +23,20 @@ const nextConfig: NextConfig = {
     ];
   },
   async headers() {
+    // Next.js dev mode (HMR / React Refresh) evaluates strings as JavaScript,
+    // which a strict production CSP forbids, so the dev server never hydrates.
+    // Allow 'unsafe-eval' ONLY in development; production stays strict.
+    const scriptSrc =
+      process.env.NODE_ENV === "production"
+        ? "script-src 'self' 'unsafe-inline'"
+        : "script-src 'self' 'unsafe-inline' 'unsafe-eval'";
     return [
       {
         source: "/:path*",
         headers: [
           {
             key: "Content-Security-Policy",
-            value: "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+            value: `default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; ${scriptSrc}; style-src 'self' 'unsafe-inline'`,
           },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()" },
           { key: "Referrer-Policy", value: "no-referrer" },
