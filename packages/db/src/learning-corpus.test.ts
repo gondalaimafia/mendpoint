@@ -205,6 +205,58 @@ function outcomeJson(prefix: string): string {
   });
 }
 
+function afterContentJson(prefix: string): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    failingCommandId: `cmd-${prefix}`,
+    overallRisk: "low",
+    confidence: 82,
+    changedPaths: [`src/${prefix}.ts`],
+    edits: [
+      {
+        path: `src/${prefix}.ts`,
+        semanticCategory: "behavior",
+        risk: "low",
+        rationale: `Adapt ${prefix} to the new signature`,
+      },
+    ],
+    verificationSummary: "vitest passed",
+    verificationCommandId: `verify-${prefix}`,
+    observedAt: observed,
+    afterContent: [
+      {
+        path: `src/${prefix}.ts`,
+        changeType: "modify",
+        beforeContent: "export const x = 0;\n",
+        afterContent: "export const x = 1;\n",
+      },
+    ],
+  });
+}
+
+function rejectedJson(prefix: string): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    failingCommandId: `cmd-${prefix}`,
+    overallRisk: "medium",
+    confidence: 40,
+    changedPaths: [`src/${prefix}.ts`],
+    edits: [
+      {
+        path: `src/${prefix}.ts`,
+        semanticCategory: "behavior",
+        risk: "medium",
+        rationale: `Proposed change for ${prefix}`,
+      },
+    ],
+    verificationSummary: "vitest passed",
+    verificationCommandId: `verify-${prefix}`,
+    observedAt: observed,
+    decision: "rejected",
+    rejectionRationale: `Rejected ${prefix}: the fix hides the real defect.`,
+  });
+}
+
 /**
  * Build the redaction/verification/contamination/review evidence bundle for one
  * outcome. `redactedContent` is stored as the redacted artifact body (null to
@@ -586,6 +638,89 @@ describe("learning corpus export", () => {
     });
     expect(explicit.reason).toBe("dataset_not_found_or_unsealed");
     expect(explicit.examples).toEqual([]);
+  });
+
+  it("emits after-content on the output when the redacted doc carries it (opt-in content)", () => {
+    const db = setup();
+    grant(db);
+    const base = admit(db, "base", outcomeJson("base"));
+    const content = admit(db, "content", afterContentJson("content"));
+    const version = dataset(db);
+    member(db, version.id, base.id);
+    member(db, version.id, content.id);
+    seal(db, version.id);
+
+    const result = buildLearningCorpus({ db, tenantId: "tenant-a", purpose: PURPOSE, at: later });
+    expect(result.stats.exported).toBe(2);
+    expect(result.stats.byDecision).toEqual({ accepted: 2 });
+
+    const contentExample = result.examples.find(
+      (e) => e.provenance.learningRecordId === content.id,
+    )!;
+    expect(contentExample.output.afterContent).toEqual([
+      {
+        path: "src/content.ts",
+        changeType: "modify",
+        beforeContent: "export const x = 0;\n",
+        afterContent: "export const x = 1;\n",
+      },
+    ]);
+    expect(contentExample.labels.decision).toBe("accepted");
+    expect(contentExample.labels.verificationPassed).toBe(true);
+
+    // The base example is byte-identical to today: no after-content / rejection keys.
+    const baseExample = result.examples.find((e) => e.provenance.learningRecordId === base.id)!;
+    expect("afterContent" in baseExample.output).toBe(false);
+    expect("rejectionRationale" in baseExample.output).toBe(false);
+    expect(baseExample.labels).toEqual({
+      family: null,
+      provider: null,
+      framework: null,
+      semanticCategories: ["behavior"],
+      overallRisk: "low",
+      confidence: 82,
+      verificationPassed: true,
+      decision: "accepted",
+    });
+  });
+
+  it("emits negatives labeled decision=rejected with the rejection rationale (opt-in negatives)", () => {
+    const db = setup();
+    grant(db);
+    const good = admit(db, "good", outcomeJson("good"));
+    const bad = admit(db, "bad", rejectedJson("bad"));
+    const version = dataset(db);
+    member(db, version.id, good.id);
+    member(db, version.id, bad.id);
+    seal(db, version.id);
+
+    const result = buildLearningCorpus({ db, tenantId: "tenant-a", purpose: PURPOSE, at: later });
+    expect(result.stats.exported).toBe(2);
+    expect(result.stats.byDecision).toEqual({ accepted: 1, rejected: 1 });
+
+    const negative = result.examples.find((e) => e.provenance.learningRecordId === bad.id)!;
+    expect(negative.labels.decision).toBe("rejected");
+    expect(negative.output.rejectionRationale).toBe("Rejected bad: the fix hides the real defect.");
+    // The negative's change-spec is still exported so a preference pair can be built.
+    expect(negative.input.changedPaths).toEqual(["src/bad.ts"]);
+    expect("afterContent" in negative.output).toBe(false);
+  });
+
+  it("keeps the base (accepted-only) corpus byte-identical when no opt-in docs are present", () => {
+    const db = setup();
+    grant(db);
+    const record = admit(db, "identical", outcomeJson("identical"));
+    const version = dataset(db);
+    member(db, version.id, record.id);
+    seal(db, version.id);
+
+    const jsonl = serializeLearningCorpusJsonl(
+      buildLearningCorpus({ db, tenantId: "tenant-a", purpose: PURPOSE, at: later }).examples,
+    );
+    expect(jsonl).not.toContain("afterContent");
+    expect(jsonl).not.toContain("rejectionRationale");
+    expect(jsonl).toContain('"decision":"accepted"');
+    expect(jsonl).toContain('"verificationPassed":true');
   });
 
   it("never exports another tenant's data for the same purpose", () => {

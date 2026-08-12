@@ -10,6 +10,8 @@ import {
   getAdaptiveDeliveryByCandidate,
   getAdaptiveRegenerationByCandidate,
   getJob,
+  getLearningRecordRedactedContent,
+  grantLearningConsent,
   insertPrincipal,
   markAdaptiveRegenerationScheduled,
   recordAdaptiveCandidate,
@@ -79,6 +81,7 @@ const IDENTITIES: Record<ActorKey, {
 function fixture(
   audit: Parameters<typeof registerTransformerAdaptiveReviewRoutes>[2] = () => {},
   regenerationAllowed = true,
+  learningEnv?: NodeJS.ProcessEnv,
 ) {
   const directory = mkdtempSync(join(tmpdir(), "mendpoint-adaptive-api-"));
   const dataDir = mkdtempSync(join(tmpdir(), "mendpoint-adaptive-api-data-"));
@@ -135,6 +138,7 @@ function fixture(
       allowed: regenerationAllowed,
       reasons: regenerationAllowed ? [] : ["tenant_not_allowed"],
     }),
+    ...(learningEnv ? { learningEnv } : {}),
   });
   return { app, db };
 }
@@ -1384,5 +1388,102 @@ describe("transformer adaptive candidate review routes", () => {
     });
     expect(reviewRes.status).toBe(404);
     expect(getAdaptiveCandidate(db, "tenant-a", seeded.id)?.status).toBe("review_pending");
+  });
+});
+
+describe("transformer adaptive review: rejected-outcome negative capture", () => {
+  const LEARNING_ON: NodeJS.ProcessEnv = { MENDPOINT_TRANSFORMER_LEARNING_ENABLED: "1" };
+  const REJECTED_PURPOSE = "transformer-adaptive-rejected-outcomes";
+
+  function seedReviewerAndConsent(db: AppDb): void {
+    // The auth principal id used by "human-a" must exist as a principal so the
+    // learning record's admittedByPrincipalId resolves.
+    insertPrincipal(db, {
+      id: "human:reviewer@a.com",
+      tenantId: "tenant-a",
+      kind: "human",
+      subject: "reviewer-auth@a.com",
+      displayName: "Reviewer Auth A",
+      createdAt: NOW,
+    });
+    grantLearningConsent(db, {
+      id: "learn-consent-rejected",
+      tenantId: "tenant-a",
+      consentVersion: 1,
+      purpose: REJECTED_PURPOSE,
+      residencyRegion: "us-east",
+      authorizedByPrincipalId: "trust-human-a",
+      effectiveAt: NOW,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      reason: "Authorized negative-outcome capture",
+      idempotencyKey: "grant-rejected",
+      createdAt: NOW,
+    });
+  }
+
+  function rejectedRecords(db: AppDb): Array<{ id: string }> {
+    return db.raw
+      .prepare("SELECT id FROM learning_records WHERE tenant_id = ? AND purpose = ?")
+      .all("tenant-a", REJECTED_PURPOSE) as Array<{ id: string }>;
+  }
+
+  it("captures a redacted, labeled negative record on reject when enabled and consented", async () => {
+    const { app, db } = fixture(() => {}, true, LEARNING_ON);
+    seedReviewerAndConsent(db);
+    const seeded = seedCandidate(db, "tenant-a");
+
+    const response = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
+      method: "POST",
+      headers: { "X-Test-Actor": "human-a", "content-type": "application/json" },
+      body: reviewBody("reject"),
+    });
+    expect(response.status).toBe(200);
+    expect(getAdaptiveCandidate(db, "tenant-a", seeded.id)?.status).toBe("rejected");
+
+    const rows = rejectedRecords(db);
+    expect(rows).toHaveLength(1);
+    const content = getLearningRecordRedactedContent(db, "tenant-a", rows[0]!.id);
+    const doc = JSON.parse(content!) as Record<string, unknown>;
+    expect(doc.decision).toBe("rejected");
+    expect(doc.rejectionRationale).toBe("Verified the exact proposed files");
+  });
+
+  it("captures nothing on reject when the loop is disabled (byte-identical to today)", async () => {
+    // learningEnv = {} => capture gate is off; the reject/discard flow is unchanged.
+    const { app, db } = fixture(() => {}, true, {});
+    seedReviewerAndConsent(db);
+    const seeded = seedCandidate(db, "tenant-a");
+
+    const response = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
+      method: "POST",
+      headers: { "X-Test-Actor": "human-a", "content-type": "application/json" },
+      body: reviewBody("reject"),
+    });
+    expect(response.status).toBe(200);
+    expect(getAdaptiveCandidate(db, "tenant-a", seeded.id)?.status).toBe("rejected");
+    expect(rejectedRecords(db)).toHaveLength(0);
+  });
+
+  it("captures nothing on reject when enabled but the rejected-outcome consent is absent", async () => {
+    const { app, db } = fixture(() => {}, true, LEARNING_ON);
+    // Reviewer principal exists, but NO rejected-outcome consent is granted.
+    insertPrincipal(db, {
+      id: "human:reviewer@a.com",
+      tenantId: "tenant-a",
+      kind: "human",
+      subject: "reviewer-auth@a.com",
+      displayName: "Reviewer Auth A",
+      createdAt: NOW,
+    });
+    const seeded = seedCandidate(db, "tenant-a");
+
+    const response = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
+      method: "POST",
+      headers: { "X-Test-Actor": "human-a", "content-type": "application/json" },
+      body: reviewBody("reject"),
+    });
+    expect(response.status).toBe(200);
+    expect(getAdaptiveCandidate(db, "tenant-a", seeded.id)?.status).toBe("rejected");
+    expect(rejectedRecords(db)).toHaveLength(0);
   });
 });

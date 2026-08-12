@@ -17,7 +17,11 @@ import type {
   AdaptiveRepairPlannerInput,
   LearningPrecedentEntry,
 } from "@mendpoint/transformer";
-import { admitApprovedOutcomeLearningRecord } from "./transformer-learning-producer.js";
+import {
+  admitApprovedOutcomeContentLearningRecord,
+  admitApprovedOutcomeLearningRecord,
+} from "./transformer-learning-producer.js";
+import { admitRejectedOutcomeLearningRecord } from "./transformer-learning-rejected.js";
 import {
   buildLearningPrecedent,
   sealApprovedLearningOutcomes,
@@ -74,6 +78,45 @@ function grant(db: AppDb): void {
     idempotencyKey: "grant-a",
     createdAt: AT,
   });
+}
+
+function grantContent(db: AppDb, residencyRegion = "eu-west"): void {
+  grantLearningConsent(db, {
+    id: "consent-content",
+    tenantId: TENANT,
+    consentVersion: 1,
+    purpose: "transformer-adaptive-training-content",
+    residencyRegion,
+    authorizedByPrincipalId: HUMAN,
+    effectiveAt: AT,
+    expiresAt: "2026-12-01T00:00:00.000Z",
+    reason: "Authorized after-content capture",
+    idempotencyKey: "grant-content",
+    createdAt: AT,
+  });
+}
+
+function grantRejected(db: AppDb, residencyRegion = "ap-south"): void {
+  grantLearningConsent(db, {
+    id: "consent-rejected",
+    tenantId: TENANT,
+    consentVersion: 1,
+    purpose: "transformer-adaptive-rejected-outcomes",
+    residencyRegion,
+    authorizedByPrincipalId: HUMAN,
+    effectiveAt: AT,
+    expiresAt: "2026-12-01T00:00:00.000Z",
+    reason: "Authorized rejected-outcome capture",
+    idempotencyKey: "grant-rejected",
+    createdAt: AT,
+  });
+}
+
+function learningRecordCount(db: AppDb): number {
+  const row = db.raw
+    .prepare("SELECT COUNT(*) AS n FROM learning_records WHERE tenant_id = ?")
+    .get(TENANT) as { n: number };
+  return row.n;
 }
 
 function candidate(
@@ -285,6 +328,240 @@ describe("transformer learning producer", () => {
     expect(second.admitted).toBe(true);
     expect(second.reason).toBe("already_admitted");
     expect(recordCount(db)).toBe(1);
+  });
+});
+
+describe("transformer after-content producer (opt-in content purpose)", () => {
+  function contentDoc(db: AppDb, recordId: string): Record<string, unknown> {
+    const content = getLearningRecordRedactedContent(db, TENANT, recordId);
+    expect(content).toBeTruthy();
+    return JSON.parse(content!) as Record<string, unknown>;
+  }
+
+  it("captures redacted after-content as its own record under the content consent", () => {
+    const db = setup();
+    grant(db);
+    grantContent(db, "eu-west");
+    const result = admitApprovedOutcomeContentLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: candidate(),
+      artifact: artifact(),
+      now: NOW,
+      env: ON,
+    });
+    expect(result.admitted).toBe(true);
+    const record = getLearningRecord(db, TENANT, result.recordId!);
+    // Residency inherits from the content consent, not the base consent.
+    expect(record?.purpose).toBe("transformer-adaptive-training-content");
+    expect(record?.residency_region).toBe("eu-west");
+    expect(record?.consent_id).toBe("consent-content");
+    const doc = contentDoc(db, result.recordId!);
+    expect(doc.afterContent).toEqual([
+      {
+        path: "src/app.ts",
+        changeType: "modify",
+        beforeContent: "export const x = 0;\n",
+        afterContent: "export const x = 1;\n",
+      },
+    ]);
+  });
+
+  it("does NOT capture after-content without the content consent (base stays byte-identical)", () => {
+    const db = setup();
+    grant(db); // base consent only, no content consent
+    const base = admitApprovedOutcomeLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: candidate(),
+      artifact: artifact(),
+      now: NOW,
+      env: ON,
+    });
+    expect(base.admitted).toBe(true);
+    const before = learningRecordCount(db);
+    const content = admitApprovedOutcomeContentLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: candidate(),
+      artifact: artifact(),
+      now: NOW,
+      env: ON,
+    });
+    expect(content.admitted).toBe(false);
+    expect(content.reason).toBe("no_active_consent");
+    // No extra learning record was written: exactly the base record remains.
+    expect(learningRecordCount(db)).toBe(before);
+  });
+
+  it("scrubs secrets out of the stored after-content bytes", () => {
+    const db = setup();
+    grant(db);
+    grantContent(db);
+    const secret = `ghp_${"aB3dE7gH9jK1mN4pQ6rT8uV0wX2yZ5cD7eF"}`;
+    const leaky = {
+      ...artifact(),
+      files: { "src/app.ts": `export const x = 1; // rotate ${secret} before shipping\n` },
+    } as unknown as AdaptiveCandidateArtifact;
+    const result = admitApprovedOutcomeContentLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: candidate(),
+      artifact: leaky,
+      now: NOW,
+      env: ON,
+    });
+    expect(result.admitted).toBe(true);
+    const content = getLearningRecordRedactedContent(db, TENANT, result.recordId!);
+    expect(content).not.toContain(secret);
+    expect(content).toContain("[REDACTED");
+  });
+
+  it("fails closed (stores nothing) when redacting the after-content would not yield valid JSON", () => {
+    const db = setup();
+    grant(db);
+    grantContent(db);
+    const secret = `ghp_${"aB3dE7gH9jK1mN4pQ6rT8uV0wX2yZ5cD7eF"}`;
+    // A quoted secret assignment redacts to text that breaks JSON quoting; the
+    // wrapper refuses it rather than storing a weaker/partial scrub.
+    const leaky = {
+      ...artifact(),
+      files: { "src/app.ts": `export const token = "${secret}";\n` },
+    } as unknown as AdaptiveCandidateArtifact;
+    const result = admitApprovedOutcomeContentLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: candidate(),
+      artifact: leaky,
+      now: NOW,
+      env: ON,
+    });
+    expect(result.admitted).toBe(false);
+    expect(result.reason).toBe("redaction_unparseable");
+    expect(learningRecordCount(db)).toBe(0);
+  });
+
+  it("captures nothing and writes nothing when the flag is off", () => {
+    const db = setup();
+    grant(db);
+    grantContent(db);
+    const result = admitApprovedOutcomeContentLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: candidate(),
+      artifact: artifact(),
+      now: NOW,
+      env: OFF,
+    });
+    expect(result).toEqual({ admitted: false, reason: "disabled" });
+    expect(learningRecordCount(db)).toBe(0);
+  });
+
+  it("captures nothing for an unapproved candidate", () => {
+    const db = setup();
+    grant(db);
+    grantContent(db);
+    const result = admitApprovedOutcomeContentLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: candidate({ reviewDecision: "reject" }),
+      artifact: artifact(),
+      now: NOW,
+      env: ON,
+    });
+    expect(result.admitted).toBe(false);
+    expect(result.reason).toBe("not_approved");
+  });
+});
+
+describe("transformer rejected-outcome producer (opt-in negatives purpose)", () => {
+  function rejectedCandidate(rationale = "Rejected: the fix hides the real defect.") {
+    return candidate({ reviewDecision: "reject", rationale });
+  }
+
+  it("captures a redacted, labeled negative record under the rejected consent", () => {
+    const db = setup();
+    grantRejected(db, "ap-south");
+    const result = admitRejectedOutcomeLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: rejectedCandidate(),
+      artifact: artifact(),
+      now: NOW,
+      env: ON,
+    });
+    expect(result.admitted).toBe(true);
+    const record = getLearningRecord(db, TENANT, result.recordId!);
+    expect(record?.purpose).toBe("transformer-adaptive-rejected-outcomes");
+    expect(record?.residency_region).toBe("ap-south");
+    const content = getLearningRecordRedactedContent(db, TENANT, result.recordId!);
+    const doc = JSON.parse(content!) as Record<string, unknown>;
+    expect(doc.decision).toBe("rejected");
+    expect(doc.rejectionRationale).toBe("Rejected: the fix hides the real defect.");
+  });
+
+  it("captures nothing for an approved candidate", () => {
+    const db = setup();
+    grantRejected(db);
+    const result = admitRejectedOutcomeLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: candidate(), // approved
+      artifact: artifact(),
+      now: NOW,
+      env: ON,
+    });
+    expect(result.admitted).toBe(false);
+    expect(result.reason).toBe("not_rejected");
+  });
+
+  it("captures nothing without the rejected-outcome consent (fail closed)", () => {
+    const db = setup();
+    grant(db); // base consent only; no rejected-outcome consent
+    const result = admitRejectedOutcomeLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: rejectedCandidate(),
+      artifact: artifact(),
+      now: NOW,
+      env: ON,
+    });
+    expect(result.admitted).toBe(false);
+    expect(result.reason).toBe("no_active_consent");
+    expect(learningRecordCount(db)).toBe(0);
+  });
+
+  it("scrubs secrets out of the stored rejection rationale", () => {
+    const db = setup();
+    grantRejected(db);
+    const secret = `ghp_${"aB3dE7gH9jK1mN4pQ6rT8uV0wX2yZ5cD7eF"}`;
+    const result = admitRejectedOutcomeLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: rejectedCandidate(`Rejected: rotate the leaked token ${secret} first.`),
+      artifact: artifact(),
+      now: NOW,
+      env: ON,
+    });
+    expect(result.admitted).toBe(true);
+    const content = getLearningRecordRedactedContent(db, TENANT, result.recordId!);
+    expect(content).not.toContain(secret);
+    expect(content).toContain("[REDACTED");
+  });
+
+  it("captures nothing and writes nothing when the flag is off", () => {
+    const db = setup();
+    grantRejected(db);
+    const result = admitRejectedOutcomeLearningRecord({
+      db,
+      tenantId: TENANT,
+      candidate: rejectedCandidate(),
+      artifact: artifact(),
+      now: NOW,
+      env: OFF,
+    });
+    expect(result).toEqual({ admitted: false, reason: "disabled" });
+    expect(learningRecordCount(db)).toBe(0);
   });
 });
 

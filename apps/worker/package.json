@@ -8,6 +8,7 @@
     "./transformer-pilot-lane": "./src/transformer-pilot-lane.ts",
     "./transformer-adaptive-planner": "./src/transformer-adaptive-planner.ts",
     "./transformer-adaptive-regeneration": "./src/transformer-adaptive-regeneration.ts",
+    "./transformer-learning-rejected": "./src/transformer-learning-rejected.ts",
     "./transformer-router": "./src/transformer-router.ts"
   },
   "scripts": {

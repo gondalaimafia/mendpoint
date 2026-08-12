@@ -18,7 +18,10 @@ import {
   readAdaptiveCandidateArtifact,
   type AdaptiveCandidateArtifact,
 } from "@mendpoint/transformer";
-import { admitApprovedOutcomeLearningRecord } from "./transformer-learning-producer.js";
+import {
+  admitApprovedOutcomeContentLearningRecord,
+  admitApprovedOutcomeLearningRecord,
+} from "./transformer-learning-producer.js";
 import type {
   ExactDraftDeliveryInput,
   ExactDraftDeliveryResult,
@@ -571,6 +574,21 @@ export async function runTransformerAdaptiveDelivery(
         });
       } catch {
         /* best-effort: learning admission never affects delivery */
+      }
+      // Opt-in after-content capture: a SEPARATE record under a SEPARATE consent
+      // purpose. Default-off (no content consent) it does nothing, so the delivered
+      // result, the approved-outcome record, and the base corpus are unchanged.
+      try {
+        admitApprovedOutcomeContentLearningRecord({
+          db: input.db,
+          tenantId: input.job.tenant_id,
+          candidate,
+          artifact,
+          now: completedAt,
+          env: input.artifactEnv ?? process.env,
+        });
+      } catch {
+        /* best-effort: after-content admission never affects delivery */
       }
       return delivered;
     } catch (error) {
