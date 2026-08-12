@@ -4,6 +4,7 @@ import type {
   TransformerAttemptCheckpointEnvelope,
   TransformerAttemptCheckpointJournal,
   TransformerAttemptCheckpointLease,
+  TransformerAttemptCheckpointState,
   TransformerCandidateSeal,
   TransformerEncryptedArtifact,
 } from "./attempt-checkpoint.js";
@@ -15,6 +16,8 @@ import {
   openTransformerCoordinatorCompletionRequest,
   openTransformerCoordinatorEffectResultArtifact,
   openTransformerAttemptCheckpoint,
+  openTransformerWorkspaceArtifact,
+  openTransformerWorkspaceTransitionRequest,
   prepareTransformerAttemptCheckpointTerminalAdvance,
   verifyTransformerEffectRequestArtifact,
 } from "./attempt-checkpoint.js";
@@ -27,7 +30,10 @@ import {
 import {
   transformerAttemptCheckpointEnvelopeStorageKey,
   TransformerPilotExecutionStore,
+  type TransformerAttemptCheckpointCompletionInput,
   type TransformerAttemptCheckpointCompletionReceipt,
+  type TransformerAttemptCheckpointFailureInput,
+  type TransformerAttemptCheckpointFailureReceipt,
   type TransformerAttemptCheckpointHead,
 } from "./pilot-execution.js";
 
@@ -43,8 +49,111 @@ export type TransformerAttemptCheckpointArtifactStore = Readonly<{
   recordUnreferenced(storageKey: string): Promise<void>;
 }>;
 
+type MaybePromise<T> = T | PromiseLike<T>;
+
+export type TransformerAttemptCheckpointBindingAuthority = Readonly<{
+  tenantId: string;
+  environment: string;
+  campaignId: string;
+  unitId: string;
+  repositoryId: string;
+  snapshotId: string;
+  sourceRevision: string;
+  sourceDigest: string;
+  candidateRevision: string;
+  candidateDigest: string;
+  recipeDigest: string;
+  constraintDigest: string;
+}>;
+
+export type TransformerAttemptCheckpointHeadMutation = Readonly<{
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  observedAt: string;
+  evidenceRefs: readonly string[];
+  idempotencyKey: string;
+  attemptNumber: number;
+  leaseGeneration: number;
+  leaseToken: string;
+  expectedStateDigest: string | null;
+  next: TransformerAttemptCheckpointHead;
+  gateConfig?: string;
+}>;
+
+export type TransformerAttemptCheckpointAuthorityPort = Readonly<{
+  readBindingAuthority(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    unitId: string;
+    signal?: AbortSignal;
+  }>): MaybePromise<TransformerAttemptCheckpointBindingAuthority | null>;
+  readLease(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    unitId: string;
+    episodeId: string;
+    observedAt: string;
+  }>): MaybePromise<TransformerAttemptCheckpointLease | null>;
+  readHead(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    unitId: string;
+    episodeId: string;
+  }>): MaybePromise<TransformerAttemptCheckpointHead | null>;
+  compareAndSwapHead(
+    input: TransformerAttemptCheckpointHeadMutation,
+  ): MaybePromise<TransformerAttemptCheckpointHead>;
+  completeWithHead(
+    input: TransformerAttemptCheckpointCompletionInput,
+  ): MaybePromise<Readonly<{ receipt: TransformerAttemptCheckpointCompletionReceipt }>>;
+  failWithHead(input: TransformerAttemptCheckpointFailureInput): MaybePromise<void>;
+  readFailureReceipt(
+    input: TransformerAttemptCheckpointFailureInput,
+  ): MaybePromise<TransformerAttemptCheckpointFailureReceipt | null>;
+}>;
+
+export function createTransformerPilotCheckpointAuthority(
+  pilotStore: TransformerPilotExecutionStore,
+): TransformerAttemptCheckpointAuthorityPort {
+  if (!(pilotStore instanceof TransformerPilotExecutionStore)) {
+    throw new Error("transformer_attempt_checkpoint_authority_invalid");
+  }
+  return Object.freeze({
+    readBindingAuthority(input) {
+      const campaign = pilotStore.getCampaign(input.tenantId, input.campaignId);
+      const unit = campaign?.units.find((candidate) => candidate.id === input.unitId);
+      if (!campaign || !unit) return null;
+      return Object.freeze({
+        tenantId: campaign.tenantId,
+        environment: campaign.environment,
+        campaignId: campaign.campaignId,
+        unitId: unit.id,
+        repositoryId: unit.snapshot.repositoryId,
+        snapshotId: unit.snapshot.snapshotId,
+        sourceRevision: unit.snapshot.revision,
+        sourceDigest: unit.snapshot.digest,
+        candidateRevision: unit.candidateRevision,
+        candidateDigest: unit.candidateDigest,
+        recipeDigest: unit.recipe.digest,
+        constraintDigest: campaign.constraintDigest,
+      });
+    },
+    readLease: (input) => pilotStore.readAttemptCheckpointLease(input),
+    readHead: (input) => pilotStore.readAttemptCheckpointHead(input),
+    compareAndSwapHead: (input) => pilotStore.compareAndSwapAttemptCheckpointHead(input),
+    completeWithHead: (input) => pilotStore.completeAttemptWithCheckpointHead(input),
+    failWithHead(input) {
+      pilotStore.recordAttemptFailureWithCheckpointHead(input);
+    },
+    readFailureReceipt(input) {
+      return pilotStore.readAttemptCheckpointFailureReceipt(input);
+    },
+  });
+}
+
 export type TransformerPilotCheckpointJournalInput = Readonly<{
-  pilotStore: TransformerPilotExecutionStore;
+  authority: TransformerAttemptCheckpointAuthorityPort;
   artifactStore: TransformerAttemptCheckpointArtifactStore;
   tenantId: string;
   campaignId: string;
@@ -54,6 +163,7 @@ export type TransformerPilotCheckpointJournalInput = Readonly<{
   leaseToken: string;
   evidenceRefs: readonly string[];
   gateConfig?: string;
+  signal?: AbortSignal;
 }>;
 
 export type TransformerPilotCheckpointTerminalFinalizeInput =
@@ -142,28 +252,34 @@ async function publishAndVerify(
   if (stored === null || digest(stored) !== expectedDigest) throw new Error(mismatchCode);
 }
 
-export function createTransformerPilotCheckpointJournal(
+export async function createTransformerPilotCheckpointJournal(
   input: TransformerPilotCheckpointJournalInput,
-): TransformerAttemptCheckpointJournal {
+): Promise<TransformerAttemptCheckpointJournal> {
   const binding = Object.freeze(structuredClone(input.binding));
   const evidenceRefs = Object.freeze([...input.evidenceRefs]);
   if (binding.tenantId !== input.tenantId ||
       binding.campaignId !== input.campaignId || binding.unitId !== input.unitId) {
     throw new Error("transformer_attempt_checkpoint_binding_mismatch");
   }
-  const campaign = input.pilotStore.getCampaign(input.tenantId, input.campaignId);
-  const unit = campaign?.units.find((candidate) => candidate.id === input.unitId);
-  if (!campaign || !unit || campaign.environment !== binding.environment ||
-      unit.snapshot.repositoryId !== binding.repositoryId ||
-      unit.snapshot.snapshotId !== binding.snapshotId ||
-      unit.snapshot.revision !== binding.sourceRevision ||
-      unit.candidateRevision !== binding.candidateRevision ||
-      unit.candidateDigest !== binding.candidateDigest ||
-      unit.recipe.digest !== binding.recipeDigest ||
-      campaign.constraintDigest !== binding.constraintDigest) {
+  const authority = await input.authority.readBindingAuthority({
+    tenantId: input.tenantId,
+    campaignId: input.campaignId,
+    unitId: input.unitId,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+  if (!authority || authority.tenantId !== input.tenantId ||
+      authority.campaignId !== input.campaignId || authority.unitId !== input.unitId ||
+      authority.environment !== binding.environment ||
+      authority.repositoryId !== binding.repositoryId ||
+      authority.snapshotId !== binding.snapshotId ||
+      authority.sourceRevision !== binding.sourceRevision ||
+      authority.candidateRevision !== binding.candidateRevision ||
+      authority.candidateDigest !== binding.candidateDigest ||
+      authority.recipeDigest !== binding.recipeDigest ||
+      authority.constraintDigest !== binding.constraintDigest) {
     throw new Error("transformer_attempt_checkpoint_binding_authority_mismatch");
   }
-  const sourceDigest = unit.snapshot.digest;
+  const sourceDigest = authority.sourceDigest;
   const episodeId = createTransformerEpisodeId(binding);
   const encryptionKey = new Uint8Array(input.encryptionKey);
   const artifactPrefix = `transformer/${input.tenantId}/${episodeId}/`;
@@ -174,18 +290,50 @@ export function createTransformerPilotCheckpointJournal(
     }
   };
   const readLease = async (observedAt = trustedNow()): Promise<TransformerAttemptCheckpointLease | null> =>
-    input.pilotStore.readAttemptCheckpointLease({
+    input.authority.readLease({
       tenantId: input.tenantId,
       campaignId: input.campaignId,
       unitId: input.unitId,
       episodeId,
       observedAt,
     });
+  const verifySourceAuthority = async (state: TransformerAttemptCheckpointState): Promise<void> => {
+    let sourceArtifact = state.workspaceArtifact;
+    if (state.stage !== "source_loaded") {
+      const publication = state.completedEffects.find((effect) => effect.kind === "workspace_publish");
+      if (publication === undefined) {
+        throw new Error("transformer_attempt_checkpoint_source_authority_mismatch");
+      }
+      const requestBytes = await input.artifactStore.read(publication.requestArtifact.storageKey);
+      if (requestBytes === null) {
+        throw new Error("transformer_attempt_checkpoint_source_authority_mismatch");
+      }
+      sourceArtifact = openTransformerWorkspaceTransitionRequest(
+        publication.requestArtifact,
+        requestBytes,
+        encryptionKey,
+        { tenantId: input.tenantId, episodeId, effectId: publication.effectId },
+      ).current;
+    }
+    const sourceBytes = await input.artifactStore.read(sourceArtifact.storageKey);
+    if (sourceBytes === null) {
+      throw new Error("transformer_attempt_checkpoint_source_authority_mismatch");
+    }
+    openTransformerWorkspaceArtifact(
+      sourceArtifact,
+      sourceBytes,
+      encryptionKey,
+      { tenantId: input.tenantId, episodeId },
+    );
+    if (sourceArtifact.filesDigest !== sourceDigest) {
+      throw new Error("transformer_attempt_checkpoint_source_authority_mismatch");
+    }
+  };
 
   return Object.freeze({
     async read(episodeId) {
       requireEpisode(episodeId);
-      const head = input.pilotStore.readAttemptCheckpointHead({
+      const head = await input.authority.readHead({
         tenantId: input.tenantId,
         campaignId: input.campaignId,
         unitId: input.unitId,
@@ -203,7 +351,8 @@ export function createTransformerPilotCheckpointJournal(
           envelope.writerLeaseTokenDigest !== head.writerLeaseTokenDigest) {
         throw new Error("transformer_attempt_checkpoint_envelope_artifact_mismatch");
       }
-      openTransformerAttemptCheckpoint(envelope, encryptionKey, binding);
+      const state = openTransformerAttemptCheckpoint(envelope, encryptionKey, binding);
+      await verifySourceAuthority(state);
       return Object.freeze(structuredClone(envelope));
     },
     async readLease(episodeId) {
@@ -252,6 +401,17 @@ export function createTransformerPilotCheckpointJournal(
         generation: operation.next.generation,
         envelopeDigest,
       });
+      const expectedHead: TransformerAttemptCheckpointHead = Object.freeze({
+        schemaVersion: 1,
+        episodeId,
+        stateDigest: operation.next.stateDigest,
+        envelopeStorageKey: storageKey,
+        envelopeDigest,
+        generation: operation.next.generation,
+        attemptNumber: activeLease.attemptNumber,
+        writerLeaseGeneration: activeLease.generation,
+        writerLeaseTokenDigest: activeLease.tokenDigest,
+      });
       let headCommitted = false;
       try {
         await input.artifactStore.recordPending(storageKey);
@@ -269,7 +429,7 @@ export function createTransformerPilotCheckpointJournal(
         if (timestamp(commitAt) < timestamp(startedAt)) {
           throw new Error("transformer_attempt_checkpoint_clock_regressed");
         }
-        input.pilotStore.compareAndSwapAttemptCheckpointHead({
+        const committedHead = await input.authority.compareAndSwapHead({
           tenantId: input.tenantId,
           campaignId: input.campaignId,
           unitId: input.unitId,
@@ -280,23 +440,38 @@ export function createTransformerPilotCheckpointJournal(
           leaseGeneration: activeLease.generation,
           leaseToken: input.leaseToken,
           expectedStateDigest: operation.expectedStateDigest,
-          next: {
-            schemaVersion: 1,
-            episodeId,
-            stateDigest: operation.next.stateDigest,
-            envelopeStorageKey: storageKey,
-            envelopeDigest,
-            generation: operation.next.generation,
-            attemptNumber: activeLease.attemptNumber,
-            writerLeaseGeneration: activeLease.generation,
-            writerLeaseTokenDigest: activeLease.tokenDigest,
-          },
+          next: expectedHead,
           gateConfig: input.gateConfig,
         });
+        if (!sameCheckpointHead(committedHead, expectedHead)) {
+          throw new Error("transformer_attempt_checkpoint_head_authority_mismatch");
+        }
+        const authoritativeHead = await input.authority.readHead({
+          tenantId: input.tenantId,
+          campaignId: input.campaignId,
+          unitId: input.unitId,
+          episodeId,
+        });
+        if (authoritativeHead === null || !sameCheckpointHead(authoritativeHead, expectedHead)) {
+          throw new Error("transformer_attempt_checkpoint_head_authority_mismatch");
+        }
         headCommitted = true;
         await input.artifactStore.recordReferenced(storageKey);
         return true;
       } catch (error) {
+        if (!headCommitted) {
+          const authoritativeHead = await input.authority.readHead({
+            tenantId: input.tenantId,
+            campaignId: input.campaignId,
+            unitId: input.unitId,
+            episodeId,
+          });
+          if (authoritativeHead !== null && sameCheckpointHead(authoritativeHead, expectedHead)) {
+            headCommitted = true;
+            await input.artifactStore.recordReferenced(storageKey);
+            return true;
+          }
+        }
         if (!headCommitted) await input.artifactStore.recordUnreferenced(storageKey);
         if (error instanceof Error && error.message === "transformer_pilot_checkpoint_head_conflict") {
           return false;
@@ -325,8 +500,8 @@ export async function finalizeTransformerPilotAttemptCheckpoint(
     createTransformerCoordinatorCompletionSlot(completionDigest),
     requestDigest,
   );
-  const journal = createTransformerPilotCheckpointJournal(input);
-  const complete = (checkpointHead: TransformerAttemptCheckpointHead) => {
+  const journal = await createTransformerPilotCheckpointJournal(input);
+  const complete = async (checkpointHead: TransformerAttemptCheckpointHead) => {
     const completionInput = Object.freeze({
       tenantId: input.tenantId,
       campaignId: input.campaignId,
@@ -341,9 +516,9 @@ export async function finalizeTransformerPilotAttemptCheckpoint(
       ...(input.gateConfig === undefined ? {} : { gateConfig: input.gateConfig }),
     });
     try {
-      return input.pilotStore.completeAttemptWithCheckpointHead(completionInput);
+      return await input.authority.completeWithHead(completionInput);
     } catch {
-      return input.pilotStore.completeAttemptWithCheckpointHead(completionInput);
+      return await input.authority.completeWithHead(completionInput);
     }
   };
   const validateReceipt = (
@@ -364,7 +539,7 @@ export async function finalizeTransformerPilotAttemptCheckpoint(
     result: TransformerPilotCheckpointTerminalFinalizeResult;
     resultStorageKey: string;
   }> | null> => {
-    const currentHead = input.pilotStore.readAttemptCheckpointHead({
+    const currentHead = await input.authority.readHead({
       tenantId: input.tenantId,
       campaignId: input.campaignId,
       unitId: input.unitId,
@@ -427,7 +602,7 @@ export async function finalizeTransformerPilotAttemptCheckpoint(
     if (accepted.status !== "accepted" || accepted.completionDigest !== completionDigest) {
       throw new Error("transformer_attempt_checkpoint_coordinator_result_invalid");
     }
-    const completed = complete(currentHead);
+    const completed = await complete(currentHead);
     validateReceipt(completed.receipt, currentHead);
     await input.artifactStore.recordReferenced(currentHead.envelopeStorageKey);
     await input.artifactStore.recordReferenced(effect.resultArtifact.storageKey);
@@ -527,7 +702,7 @@ export async function finalizeTransformerPilotAttemptCheckpoint(
       writerLeaseGeneration: prepared.operation.activeLease.generation,
       writerLeaseTokenDigest: prepared.operation.activeLease.tokenDigest,
     });
-    const completed = complete(checkpointHead);
+    const completed = await complete(checkpointHead);
     validateReceipt(completed.receipt, checkpointHead);
     await input.artifactStore.recordReferenced(envelopeStorageKey);
     await input.artifactStore.recordReferenced(input.resultArtifact.storageKey);

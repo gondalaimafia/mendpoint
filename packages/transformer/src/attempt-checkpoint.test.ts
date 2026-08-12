@@ -43,6 +43,7 @@ import {
 } from "./attempt-checkpoint.js";
 import {
   finalizeTransformerPilotAttemptCheckpoint,
+  type TransformerAttemptCheckpointAuthorityPort,
   type TransformerAttemptCheckpointArtifactStore,
 } from "./attempt-checkpoint-storage.js";
 import {
@@ -53,7 +54,6 @@ import {
 import {
   transformerAttemptCheckpointEnvelopeStorageKey,
   type TransformerAttemptCheckpointCompletionInput,
-  type TransformerPilotExecutionStore,
 } from "./pilot-execution.js";
 import { recipeFilesDigest } from "./recipe.js";
 
@@ -1247,6 +1247,26 @@ describe("Transformer attempt checkpoint", () => {
     });
     stored.set(currentStorageKey, currentBytes);
     stored.set(completionRequest.artifact.storageKey, completionRequest.bytes);
+    const sourcePublication = coordinatorDispatched.completedEffects.find(
+      (effect) => effect.kind === "workspace_publish",
+    );
+    if (sourcePublication === undefined) throw new Error("missing source publication");
+    const sourceRequestBytes = await journal.readArtifact(sourcePublication.requestArtifact.storageKey);
+    if (sourceRequestBytes === null) throw new Error("missing source publication request");
+    stored.set(sourcePublication.requestArtifact.storageKey, sourceRequestBytes);
+    const sourceArtifact = openTransformerWorkspaceTransitionRequest(
+      sourcePublication.requestArtifact,
+      sourceRequestBytes,
+      key,
+      {
+        tenantId: current.state.binding.tenantId,
+        episodeId: current.state.episodeId,
+        effectId: sourcePublication.effectId,
+      },
+    ).current;
+    const sourceWorkspaceBytes = await journal.readArtifact(sourceArtifact.storageKey);
+    if (sourceWorkspaceBytes === null) throw new Error("missing source workspace artifact");
+    stored.set(sourceArtifact.storageKey, sourceWorkspaceBytes);
     const artifactStore: TransformerAttemptCheckpointArtifactStore = {
       async read(storageKey) {
         const value = stored.get(storageKey);
@@ -1312,21 +1332,38 @@ describe("Transformer attempt checkpoint", () => {
         recipe: { digest: current.state.binding.recipeDigest },
       }],
     };
-    const pilotStore = {
-      getCampaign() {
-        return campaign;
+    const authority: TransformerAttemptCheckpointAuthorityPort = {
+      async readBindingAuthority() {
+        const unit = campaign.units[0]!;
+        return {
+          tenantId: current.state.binding.tenantId,
+          environment: campaign.environment,
+          campaignId: current.state.binding.campaignId,
+          unitId: unit.id,
+          repositoryId: unit.snapshot.repositoryId,
+          snapshotId: unit.snapshot.snapshotId,
+          sourceRevision: unit.snapshot.revision,
+          sourceDigest: unit.snapshot.digest,
+          candidateRevision: unit.candidateRevision,
+          candidateDigest: unit.candidateDigest,
+          recipeDigest: unit.recipe.digest,
+          constraintDigest: campaign.constraintDigest,
+        };
       },
-      readAttemptCheckpointHead() {
+      async readHead() {
         return currentHead;
       },
-      readAttemptCheckpointLease() {
+      async readLease() {
         return {
           attemptNumber: current.state.attemptNumber,
           generation: current.state.writerLeaseGeneration,
           tokenDigest: current.state.writerLeaseTokenDigest,
         };
       },
-      completeAttemptWithCheckpointHead(input: TransformerAttemptCheckpointCompletionInput) {
+      async compareAndSwapHead() {
+        throw new Error("unexpected_checkpoint_head_cas");
+      },
+      async completeWithHead(input: TransformerAttemptCheckpointCompletionInput) {
         completionInputs.push(input);
         if (committedResult === null) {
           currentHead = input.nextCheckpointHead;
@@ -1351,9 +1388,15 @@ describe("Transformer attempt checkpoint", () => {
         }
         return committedResult;
       },
-    } as unknown as TransformerPilotExecutionStore;
+      async failWithHead() {
+        throw new Error("unexpected_checkpoint_failure");
+      },
+      async readFailureReceipt() {
+        return null;
+      },
+    };
     const finalizeInput = {
-      pilotStore,
+      authority,
       artifactStore,
       tenantId: current.state.binding.tenantId,
       campaignId: current.state.binding.campaignId,

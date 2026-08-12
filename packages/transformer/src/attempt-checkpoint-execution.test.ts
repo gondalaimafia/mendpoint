@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import { createTransformerPilotAttemptCheckpointConfig } from "./attempt-checkpoint-execution.js";
-import type { TransformerAttemptCheckpointArtifactStore } from "./attempt-checkpoint-storage.js";
+import {
+  createTransformerPilotCheckpointAuthority,
+  type TransformerAttemptCheckpointArtifactStore,
+} from "./attempt-checkpoint-storage.js";
 import { createOrganizationConstraintContract } from "./organization-constraints.js";
 import {
   TransformerPilotExecutionStore,
@@ -182,6 +185,68 @@ function coordinatorFor(
 }
 
 describe("Transformer attempt checkpoint execution controller", () => {
+  it("bounds and aborts the initial remote authority lookup", async () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(campaignInput());
+    const lease = store.claimNextAttempt({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      observedAt: time(1),
+      evidenceRefs: ["evidence://attempt/claim"],
+      idempotencyKey: "claim-campaign-a",
+      leaseToken: LEASE_TOKEN,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const localAuthority = createTransformerPilotCheckpointAuthority(store);
+    let authoritySignal: AbortSignal | undefined;
+    const checkpoint = createTransformerPilotAttemptCheckpointConfig({
+      authority: Object.freeze({
+        ...localAuthority,
+        readBindingAuthority(input: Parameters<typeof localAuthority.readBindingAuthority>[0]) {
+          authoritySignal = input.signal;
+          return new Promise<never>(() => {});
+        },
+      }),
+      artifactStore: new MemoryArtifactStore(),
+      encryptionKey: ENCRYPTION_KEY,
+      executorDigest: sha256("transformer-attempt-executor-v1"),
+      evidenceRefs: ["evidence://checkpoint/controller"],
+      gateConfig: gateConfig(),
+      now: () => time(2),
+      operationTimeoutMs: 10,
+    });
+    const signal = new AbortController().signal;
+
+    await expect(checkpoint.open({
+      scope: { tenantId: "tenant-a", environment: "staging", campaignId: "campaign-a" },
+      lease,
+      leaseToken: LEASE_TOKEN,
+      attemptId: "attempt-a",
+      source: {
+        repositoryId: "repo-a",
+        revision: "a".repeat(40),
+        digest: recipeFilesDigest(SOURCE_FILES),
+        files: SOURCE_FILES,
+        fileModes: SOURCE_MODES,
+      },
+      fence: {
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        unitId: "unit-a",
+        attemptId: "attempt-a",
+        leaseGeneration: lease.leaseGeneration,
+        leaseToken: LEASE_TOKEN,
+      },
+      assertFence: async () => {},
+      observedAt: time(2),
+      signal,
+      operationTimeoutMs: 10,
+    })).rejects.toThrow("transformer_attempt_checkpoint_operation_timeout");
+    expect(authoritySignal?.aborted).toBe(true);
+    store.close();
+  });
+
   it("resumes after a verifier crash and completes atomically without replaying consumed work", async () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-checkpoint-controller-"));
     roots.push(root);
@@ -200,7 +265,7 @@ describe("Transformer attempt checkpoint execution controller", () => {
     const artifactStore = new MemoryArtifactStore();
     let clock = 2;
     const checkpoint = createTransformerPilotAttemptCheckpointConfig({
-      pilotStore: store,
+      authority: createTransformerPilotCheckpointAuthority(store),
       artifactStore,
       encryptionKey: ENCRYPTION_KEY,
       executorDigest: sha256("transformer-attempt-executor-v1"),
@@ -300,8 +365,20 @@ describe("Transformer attempt checkpoint execution controller", () => {
       leaseDurationMs: 3_600_000,
       gateConfig: gateConfig(),
     })!;
+    const localAuthority = createTransformerPilotCheckpointAuthority(store);
+    let failureCalls = 0;
+    let durableFailureInput: Parameters<typeof localAuthority.failWithHead>[0] | undefined;
     const checkpoint = createTransformerPilotAttemptCheckpointConfig({
-      pilotStore: store,
+      authority: Object.freeze({
+        ...localAuthority,
+        async failWithHead(input) {
+          failureCalls += 1;
+          if (failureCalls <= 2) return;
+          durableFailureInput = input;
+          await localAuthority.failWithHead(input);
+          if (failureCalls === 3) throw new Error("simulated_failure_response_loss");
+        },
+      }),
       artifactStore: new MemoryArtifactStore(),
       encryptionKey: ENCRYPTION_KEY,
       executorDigest: sha256("transformer-attempt-executor-v1"),
@@ -339,6 +416,11 @@ describe("Transformer attempt checkpoint execution controller", () => {
       actualCostUsd: 0,
       checkpoint,
     } as const;
+    const falseAcknowledgement = await runTransformerAttempt(attemptInput);
+    expect(falseAcknowledgement).toMatchObject({ status: "failed", recoveryCode: "worker_crash" });
+    expect(commandRunner).toHaveBeenCalledTimes(1);
+    expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.state).toBe("running");
+
     const result = await runTransformerAttempt(attemptInput);
     expect(result).toMatchObject({ status: "failed", recoveryCode: "verification_failed" });
     expect(commandRunner).toHaveBeenCalledTimes(1);
@@ -346,6 +428,18 @@ describe("Transformer attempt checkpoint execution controller", () => {
     expect(campaign.state).toBe("paused");
     expect(campaign.units[0]).toMatchObject({ state: "failed", retryAuthorized: false });
     expect(campaign.units[0]?.attemptCheckpointHead).toBeDefined();
+    expect(failureCalls).toBe(4);
+    expect(store.listEvents("tenant-a", "campaign-a")
+      .filter((event) => event.type === "attempt.failed_with_checkpoint")).toHaveLength(1);
+    if (durableFailureInput === undefined) throw new Error("missing durable failure input");
+    expect(await localAuthority.readFailureReceipt(durableFailureInput)).toMatchObject({
+      idempotencyKey: durableFailureInput.idempotencyKey,
+      expectedStateDigest: durableFailureInput.expectedStateDigest,
+    });
+    expect(await localAuthority.readFailureReceipt({
+      ...durableFailureInput,
+      idempotencyKey: "different-failure-idempotency-key",
+    })).toBeNull();
 
     const exceptionId = campaign.exceptions[0]!.id;
     store.control({
@@ -378,6 +472,10 @@ describe("Transformer attempt checkpoint execution controller", () => {
     expect(retry.status).toBe("completed");
     expect(commandRunner).toHaveBeenCalledTimes(3);
     expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.state).toBe("executed");
+    expect(await localAuthority.readFailureReceipt(durableFailureInput)).toMatchObject({
+      idempotencyKey: durableFailureInput.idempotencyKey,
+      expectedStateDigest: durableFailureInput.expectedStateDigest,
+    });
     store.close();
   });
 });

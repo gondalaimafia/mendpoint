@@ -45,6 +45,7 @@ import {
 import {
   createTransformerPilotCheckpointJournal,
   finalizeTransformerPilotAttemptCheckpoint,
+  type TransformerAttemptCheckpointAuthorityPort,
   type TransformerAttemptCheckpointArtifactStore,
 } from "./attempt-checkpoint-storage.js";
 import type {
@@ -70,7 +71,7 @@ import {
   type RecipeFiles,
 } from "./recipe.js";
 import {
-  TransformerPilotExecutionStore,
+  createTransformerAttemptCheckpointFailureDigest,
   type TransformerAdaptiveAttemptAccounting,
 } from "./pilot-execution.js";
 
@@ -78,7 +79,7 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const DEFAULT_OPERATION_TIMEOUT_MS = 30_000;
 
 export type TransformerPilotAttemptCheckpointConfigInput = Readonly<{
-  pilotStore: TransformerPilotExecutionStore;
+  authority: TransformerAttemptCheckpointAuthorityPort;
   artifactStore: TransformerAttemptCheckpointArtifactStore;
   encryptionKey: Uint8Array;
   executorDigest: string;
@@ -125,10 +126,11 @@ function assertSignal(signal: AbortSignal): void {
 async function boundedOperation<T>(
   signal: AbortSignal,
   timeoutMs: number,
-  operation: () => Promise<T>,
+  operation: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   assertSignal(signal);
   return await new Promise<T>((resolve, reject) => {
+    const operationController = new AbortController();
     let settled = false;
     const finish = (callback: () => void): void => {
       if (settled) return;
@@ -137,17 +139,21 @@ async function boundedOperation<T>(
       signal.removeEventListener("abort", onAbort);
       callback();
     };
-    const onAbort = (): void => finish(() => reject(
-      signal.reason instanceof Error
+    const onAbort = (): void => {
+      const reason = signal.reason instanceof Error
         ? signal.reason
-        : new Error("transformer_attempt_checkpoint_operation_aborted"),
-    ));
-    const timer = setTimeout(() => finish(() => reject(
-      new Error("transformer_attempt_checkpoint_operation_timeout"),
-    )), timeoutMs);
+        : new Error("transformer_attempt_checkpoint_operation_aborted");
+      operationController.abort(reason);
+      finish(() => reject(reason));
+    };
+    const timer = setTimeout(() => {
+      const reason = new Error("transformer_attempt_checkpoint_operation_timeout");
+      operationController.abort(reason);
+      finish(() => reject(reason));
+    }, timeoutMs);
     timer.unref();
     signal.addEventListener("abort", onAbort, { once: true });
-    Promise.resolve(operation()).then(
+    Promise.resolve(operation(operationController.signal)).then(
       (value) => finish(() => resolve(value)),
       (error: unknown) => finish(() => reject(error)),
     );
@@ -252,7 +258,14 @@ function uniqueEvidence(...groups: readonly (readonly string[])[]): readonly str
 }
 
 function validateFactoryInput(input: TransformerPilotAttemptCheckpointConfigInput): void {
-  if (!(input.pilotStore instanceof TransformerPilotExecutionStore) ||
+  if (!input.authority || typeof input.authority !== "object" ||
+      typeof input.authority.readBindingAuthority !== "function" ||
+      typeof input.authority.readLease !== "function" ||
+      typeof input.authority.readHead !== "function" ||
+      typeof input.authority.compareAndSwapHead !== "function" ||
+      typeof input.authority.completeWithHead !== "function" ||
+      typeof input.authority.failWithHead !== "function" ||
+      typeof input.authority.readFailureReceipt !== "function" ||
       !input.artifactStore || typeof input.artifactStore.read !== "function" ||
       !(input.encryptionKey instanceof Uint8Array) || input.encryptionKey.byteLength !== 32 ||
       !DIGEST.test(input.executorDigest) || !Array.isArray(input.evidenceRefs) ||
@@ -334,7 +347,7 @@ async function openController(context: Readonly<{
   });
   const episodeId = createTransformerEpisodeId(binding);
   const journalInput = Object.freeze({
-    pilotStore: factory.pilotStore,
+    authority: factory.authority,
     artifactStore: factory.artifactStore,
     tenantId: input.lease.tenantId,
     campaignId: input.lease.campaignId,
@@ -345,7 +358,11 @@ async function openController(context: Readonly<{
     evidenceRefs: uniqueEvidence(factory.evidenceRefs, input.lease.gateEvidenceRefs),
     ...(factory.gateConfig === undefined ? {} : { gateConfig: factory.gateConfig }),
   });
-  const journal = createTransformerPilotCheckpointJournal(journalInput);
+  const journal = await boundedOperation(
+    input.signal,
+    factory.operationTimeoutMs,
+    async (signal) => await createTransformerPilotCheckpointJournal({ ...journalInput, signal }),
+  );
   let head: TransformerAttemptCheckpointEnvelope;
   let state: TransformerAttemptCheckpointState;
   let serialized = Promise.resolve();
@@ -503,9 +520,13 @@ async function openController(context: Readonly<{
   }
 
   const repairReachableArtifacts = async (): Promise<void> => {
-    const checkpointHead = factory.pilotStore
-      .getCampaign(binding.tenantId, binding.campaignId)
-      ?.units.find((unit) => unit.id === binding.unitId)?.attemptCheckpointHead;
+    const checkpointHead = await boundedOperation(input.signal, factory.operationTimeoutMs, async () =>
+      await factory.authority.readHead({
+        tenantId: binding.tenantId,
+        campaignId: binding.campaignId,
+        unitId: binding.unitId,
+        episodeId,
+      }));
     if (!checkpointHead || checkpointHead.stateDigest !== head.stateDigest ||
         checkpointHead.episodeId !== episodeId) {
       throw new Error("transformer_attempt_checkpoint_head_conflict");
@@ -1152,8 +1173,7 @@ async function openController(context: Readonly<{
       const idempotencyKey = `tfcheckpointfailure_${sha256(
         `${episodeId}\0${head.stateDigest}\0${failure.errorCode}`,
       ).slice("sha256:".length, "sha256:".length + 32)}`;
-      await boundedOperation(failure.signal, factory.operationTimeoutMs, async () => {
-        factory.pilotStore.recordAttemptFailureWithCheckpointHead({
+      const failureInput = Object.freeze({
         tenantId: binding.tenantId,
         campaignId: binding.campaignId,
         unitId: binding.unitId,
@@ -1168,8 +1188,35 @@ async function openController(context: Readonly<{
         evidenceRefs: uniqueEvidence(factory.evidenceRefs, input.lease.gateEvidenceRefs, failure.evidenceRefs),
         idempotencyKey,
         ...(factory.gateConfig === undefined ? {} : { gateConfig: factory.gateConfig }),
-        });
       });
+      const failureDigest = createTransformerAttemptCheckpointFailureDigest(failureInput);
+      const recordFailure = async (): Promise<void> => {
+        await boundedOperation(
+          failure.signal,
+          factory.operationTimeoutMs,
+          async () => await factory.authority.failWithHead(failureInput),
+        );
+        const receipt = await boundedOperation(
+          failure.signal,
+          factory.operationTimeoutMs,
+          async () => await factory.authority.readFailureReceipt(failureInput),
+        );
+        if (receipt === null || receipt.schemaVersion !== 1 ||
+            receipt.tenantId !== failureInput.tenantId ||
+            receipt.campaignId !== failureInput.campaignId ||
+            receipt.unitId !== failureInput.unitId || receipt.episodeId !== failureInput.episodeId ||
+            receipt.expectedStateDigest !== failureInput.expectedStateDigest ||
+            receipt.idempotencyKey !== failureInput.idempotencyKey ||
+            receipt.failureDigest !== failureDigest || receipt.observedAt !== failureInput.observedAt) {
+          throw new Error("transformer_attempt_checkpoint_failure_authority_mismatch");
+        }
+      };
+      try {
+        await recordFailure();
+      } catch (error) {
+        assertSignal(failure.signal);
+        await recordFailure();
+      }
       assertSignal(failure.signal);
     });
 

@@ -17,7 +17,9 @@ import {
   type TransformerAttemptCheckpointState,
 } from "./attempt-checkpoint.js";
 import {
+  createTransformerPilotCheckpointAuthority,
   createTransformerPilotCheckpointJournal,
+  type TransformerAttemptCheckpointAuthorityPort,
   type TransformerAttemptCheckpointArtifactStore,
 } from "./attempt-checkpoint-storage.js";
 import { createOrganizationConstraintContract } from "./organization-constraints.js";
@@ -280,16 +282,162 @@ class EnvelopeJournal implements TransformerAttemptCheckpointJournal {
   }
 }
 
+function remoteAuthority(
+  store: TransformerPilotExecutionStore,
+): TransformerAttemptCheckpointAuthorityPort {
+  const local = createTransformerPilotCheckpointAuthority(store);
+  return Object.freeze({
+    readBindingAuthority: async (input) => await local.readBindingAuthority(input),
+    readLease: async (input) => await local.readLease(input),
+    readHead: async (input) => await local.readHead(input),
+    compareAndSwapHead: async (input) => await local.compareAndSwapHead(input),
+    completeWithHead: async (input) => await local.completeWithHead(input),
+    failWithHead: async (input) => await local.failWithHead(input),
+    readFailureReceipt: async (input) => await local.readFailureReceipt(input),
+  });
+}
+
 describe("Transformer attempt checkpoint storage", () => {
-  it("rejects a sealed binding that disagrees with coordinator authority", () => {
+  it("awaits remote authority and rejects a mismatched binding before publication", async () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput());
+    const leaseToken = "lease-token-checkpoint-remote-authority";
+    const lease = claim(store, leaseToken);
+    const checkpoint = checkpointFixture(lease);
+    const artifactStore = new DurableArtifactStore();
+    const authority = remoteAuthority(store);
+    const mismatchedAuthority = Object.freeze({
+      ...authority,
+      async readBindingAuthority(input: Parameters<typeof authority.readBindingAuthority>[0]) {
+        const resolved = await authority.readBindingAuthority(input);
+        return resolved === null ? null : Object.freeze({
+          ...resolved,
+          candidateDigest: digest("b"),
+        });
+      },
+    });
+
+    await expect(createTransformerPilotCheckpointJournal({
+      authority: mismatchedAuthority,
+      artifactStore,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      binding: checkpoint.binding,
+      encryptionKey,
+      leaseToken,
+      evidenceRefs: ["evidence://checkpoint/remote-authority"],
+      gateConfig: gateConfig(),
+    })).rejects.toThrow("transformer_attempt_checkpoint_binding_authority_mismatch");
+    expect(artifactStore.pending).toEqual([]);
+    expect(artifactStore.values.size).toBe(0);
+    store.close();
+  });
+
+  it("reconciles a committed head after the remote CAS response is lost", async () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput());
+    const leaseToken = "lease-token-checkpoint-response-loss";
+    const lease = claim(store, leaseToken);
+    const checkpoint = checkpointFixture(lease);
+    const artifactStore = new DurableArtifactStore();
+    await artifactStore.publishImmutableDurable(
+      checkpoint.state.workspaceArtifact.storageKey,
+      checkpoint.workspaceBytes,
+    );
+    const authority = remoteAuthority(store);
+    const lossyAuthority: TransformerAttemptCheckpointAuthorityPort = Object.freeze({
+      ...authority,
+      async compareAndSwapHead(input) {
+        await authority.compareAndSwapHead(input);
+        throw new Error("simulated_remote_response_loss");
+      },
+    });
+    const journal = await createTransformerPilotCheckpointJournal({
+      authority: lossyAuthority,
+      artifactStore,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      binding: checkpoint.binding,
+      encryptionKey,
+      leaseToken,
+      evidenceRefs: ["evidence://checkpoint/response-loss"],
+      gateConfig: gateConfig(),
+    });
+
+    const committed = await commitTransformerAttemptCheckpointGenesis(
+      journal,
+      checkpoint.state,
+      encryptionKey,
+    );
+    const head = store.readAttemptCheckpointHead({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      episodeId: checkpoint.state.episodeId,
+    });
+    expect(head?.stateDigest).toBe(committed.stateDigest);
+    expect(artifactStore.referenced).toContain(head?.envelopeStorageKey);
+    expect(artifactStore.unreferenced).not.toContain(head?.envelopeStorageKey);
+    store.close();
+  });
+
+  it("rejects a remote CAS acknowledgement that did not advance authority", async () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput());
+    const leaseToken = "lease-token-checkpoint-false-ack";
+    const lease = claim(store, leaseToken);
+    const checkpoint = checkpointFixture(lease);
+    const artifactStore = new DurableArtifactStore();
+    await artifactStore.publishImmutableDurable(
+      checkpoint.state.workspaceArtifact.storageKey,
+      checkpoint.workspaceBytes,
+    );
+    const authority = remoteAuthority(store);
+    const falseAuthority: TransformerAttemptCheckpointAuthorityPort = Object.freeze({
+      ...authority,
+      async compareAndSwapHead(input) {
+        return input.next;
+      },
+    });
+    const journal = await createTransformerPilotCheckpointJournal({
+      authority: falseAuthority,
+      artifactStore,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      binding: checkpoint.binding,
+      encryptionKey,
+      leaseToken,
+      evidenceRefs: ["evidence://checkpoint/false-ack"],
+      gateConfig: gateConfig(),
+    });
+
+    await expect(commitTransformerAttemptCheckpointGenesis(
+      journal,
+      checkpoint.state,
+      encryptionKey,
+    )).rejects.toThrow("transformer_attempt_checkpoint_head_authority_mismatch");
+    expect(store.readAttemptCheckpointHead({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      episodeId: checkpoint.state.episodeId,
+    })).toBeNull();
+    expect(artifactStore.unreferenced).toHaveLength(1);
+    store.close();
+  });
+
+  it("rejects a sealed binding that disagrees with coordinator authority", async () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign(createInput());
     const leaseToken = "lease-token-checkpoint-authority-01";
     const lease = claim(store, leaseToken);
     const checkpoint = checkpointFixture(lease);
 
-    expect(() => createTransformerPilotCheckpointJournal({
-      pilotStore: store,
+    await expect(createTransformerPilotCheckpointJournal({
+      authority: remoteAuthority(store),
       artifactStore: new DurableArtifactStore(),
       tenantId: "tenant-a",
       campaignId: "campaign-a",
@@ -299,7 +447,7 @@ describe("Transformer attempt checkpoint storage", () => {
       leaseToken,
       evidenceRefs: ["evidence://checkpoint/authority"],
       gateConfig: gateConfig(),
-    })).toThrow("transformer_attempt_checkpoint_binding_authority_mismatch");
+    })).rejects.toThrow("transformer_attempt_checkpoint_binding_authority_mismatch");
     store.close();
   });
 
@@ -314,8 +462,8 @@ describe("Transformer attempt checkpoint storage", () => {
       checkpoint.state.workspaceArtifact.storageKey,
       checkpoint.workspaceBytes,
     );
-    const journal = createTransformerPilotCheckpointJournal({
-      pilotStore: store,
+    const journal = await createTransformerPilotCheckpointJournal({
+      authority: remoteAuthority(store),
       artifactStore,
       tenantId: "tenant-a",
       campaignId: "campaign-a",
@@ -356,8 +504,8 @@ describe("Transformer attempt checkpoint storage", () => {
       checkpoint.state.workspaceArtifact.storageKey,
       checkpoint.workspaceBytes,
     );
-    let journal = createTransformerPilotCheckpointJournal({
-      pilotStore,
+    let journal = await createTransformerPilotCheckpointJournal({
+      authority: remoteAuthority(pilotStore),
       artifactStore,
       tenantId: "tenant-a",
       campaignId: "campaign-a",
@@ -379,8 +527,8 @@ describe("Transformer attempt checkpoint storage", () => {
     pilotStore.close();
 
     pilotStore = new TransformerPilotExecutionStore(dbPath);
-    journal = createTransformerPilotCheckpointJournal({
-      pilotStore,
+    journal = await createTransformerPilotCheckpointJournal({
+      authority: remoteAuthority(pilotStore),
       artifactStore,
       tenantId: "tenant-a",
       campaignId: "campaign-a",
@@ -398,6 +546,28 @@ describe("Transformer attempt checkpoint storage", () => {
       tokenDigest: activeLease.leaseTokenDigest,
     });
     expect(await journal.readLease(episodeId)).not.toBeNull();
+
+    const changedSourceAuthority: TransformerAttemptCheckpointAuthorityPort = Object.freeze({
+      ...remoteAuthority(pilotStore),
+      async readBindingAuthority(input) {
+        const resolved = await remoteAuthority(pilotStore).readBindingAuthority(input);
+        return resolved === null ? null : Object.freeze({ ...resolved, sourceDigest: digest("b") });
+      },
+    });
+    const changedSourceJournal = await createTransformerPilotCheckpointJournal({
+      authority: changedSourceAuthority,
+      artifactStore,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      binding: checkpoint.binding,
+      encryptionKey,
+      leaseToken,
+      evidenceRefs: ["evidence://checkpoint/changed-source-authority"],
+      gateConfig: gateConfig(),
+    });
+    await expect(changedSourceJournal.read(episodeId))
+      .rejects.toThrow("transformer_attempt_checkpoint_source_authority_mismatch");
     pilotStore.close();
   });
 
@@ -419,7 +589,7 @@ describe("Transformer attempt checkpoint storage", () => {
     );
     const adapter = (pilotStore: TransformerPilotExecutionStore) =>
       createTransformerPilotCheckpointJournal({
-        pilotStore,
+        authority: remoteAuthority(pilotStore),
         artifactStore,
         tenantId: "tenant-a",
         campaignId: "campaign-a",
@@ -450,19 +620,21 @@ describe("Transformer attempt checkpoint storage", () => {
       encryptionKey,
     );
 
-    await expect(adapter(firstStore).compareAndSwap({
+    const firstJournal = await adapter(firstStore);
+    const secondJournal = await adapter(secondStore);
+    await expect(firstJournal.compareAndSwap({
       episodeId,
       expectedStateDigest: null,
       activeLease,
       next: winner,
     })).resolves.toBe(true);
-    await expect(adapter(secondStore).compareAndSwap({
+    await expect(secondJournal.compareAndSwap({
       episodeId,
       expectedStateDigest: null,
       activeLease,
       next: loser,
     })).resolves.toBe(false);
-    expect(await adapter(secondStore).read(episodeId)).toEqual(winner);
+    expect(await secondJournal.read(episodeId)).toEqual(winner);
     expect(loser.stateDigest).not.toBe(winner.stateDigest);
     expect(artifactStore.unreferenced).toHaveLength(1);
     expect(firstStore.listEvents("tenant-a", "campaign-a").filter((event) =>

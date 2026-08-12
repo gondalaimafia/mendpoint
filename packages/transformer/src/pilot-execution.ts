@@ -601,6 +601,48 @@ export type TransformerAttemptCheckpointFailureInput = MutationInput & Readonly<
   gateConfig?: string;
 }>;
 
+export type TransformerAttemptCheckpointFailureReceipt = Readonly<{
+  schemaVersion: 1;
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  episodeId: string;
+  expectedStateDigest: string;
+  idempotencyKey: string;
+  failureDigest: string;
+  campaignRevision: number;
+  observedAt: string;
+}>;
+
+function attemptCheckpointFailurePayload(
+  input: TransformerAttemptCheckpointFailureInput,
+): Readonly<Record<string, unknown>> {
+  const code = requireAttemptFailureCode(input.code);
+  return Object.freeze({
+    unitId: input.unitId,
+    episodeId: input.episodeId,
+    expectedStateDigest: input.expectedStateDigest,
+    leaseGeneration: input.leaseGeneration,
+    leaseTokenDigest: leaseTokenDigest(input.leaseToken),
+    code,
+    errorCode: input.errorCode ?? code,
+    accounting: input.accounting,
+  });
+}
+
+export function createTransformerAttemptCheckpointFailureDigest(
+  input: TransformerAttemptCheckpointFailureInput,
+): string {
+  return sha256({
+    tenantId: input.tenantId,
+    campaignId: input.campaignId,
+    observedAt: input.observedAt,
+    evidenceRefs: [...input.evidenceRefs].sort(),
+    idempotencyKey: input.idempotencyKey,
+    payload: attemptCheckpointFailurePayload(input),
+  });
+}
+
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);
   if (value && typeof value === "object") {
@@ -2600,16 +2642,7 @@ export class TransformerPilotExecutionStore {
     return this.mutate(
       input,
       "attempt.failed_with_checkpoint",
-      {
-        unitId: input.unitId,
-        episodeId: input.episodeId,
-        expectedStateDigest: input.expectedStateDigest,
-        leaseGeneration: input.leaseGeneration,
-        leaseTokenDigest: leaseTokenDigest(input.leaseToken),
-        code,
-        errorCode: input.errorCode ?? code,
-        accounting: input.accounting,
-      },
+      attemptCheckpointFailurePayload(input),
       (state) => {
         assertAttemptFence(state, input);
         const unit = unitById(state, input.unitId);
@@ -2642,6 +2675,61 @@ export class TransformerPilotExecutionStore {
         state.exceptions.push(openedException(state, code, input.observedAt, input.evidenceRefs, unit));
       },
     );
+  }
+
+  readAttemptCheckpointFailureReceipt(
+    input: TransformerAttemptCheckpointFailureInput,
+  ): TransformerAttemptCheckpointFailureReceipt | null {
+    const row = this.db.prepare(`
+      SELECT i.scope, i.request_digest, i.result_revision, e.observed_at,
+             e.evidence_refs_json, e.payload_json
+      FROM tf_pilot_idempotency i
+      JOIN tf_pilot_events e
+        ON e.tenant_id = i.tenant_id
+       AND e.campaign_id = i.campaign_id
+       AND e.campaign_revision = i.result_revision
+       AND e.type = i.scope
+      WHERE i.tenant_id = ? AND i.idempotency_key = ? AND i.campaign_id = ?
+    `).get(input.tenantId, input.idempotencyKey, input.campaignId) as Readonly<{
+      scope: string;
+      request_digest: string;
+      result_revision: number;
+      observed_at: string;
+      evidence_refs_json: string;
+      payload_json: string;
+    }> | undefined;
+    if (!row) return null;
+    const expectedPayload = attemptCheckpointFailurePayload(input);
+    if (row.scope !== "attempt.failed_with_checkpoint" ||
+        row.request_digest !== sha256(expectedPayload) ||
+        !Number.isSafeInteger(row.result_revision) || row.result_revision < 1 ||
+        row.observed_at !== input.observedAt) {
+      throw new Error("transformer_pilot_checkpoint_failure_receipt_invalid");
+    }
+    let payload: unknown;
+    let evidenceRefs: unknown;
+    try {
+      payload = JSON.parse(row.payload_json);
+      evidenceRefs = JSON.parse(row.evidence_refs_json);
+    } catch {
+      throw new Error("transformer_pilot_checkpoint_failure_receipt_invalid");
+    }
+    if (sha256(payload) !== sha256(expectedPayload) ||
+        sha256(evidenceRefs) !== sha256([...input.evidenceRefs].sort())) {
+      throw new Error("transformer_pilot_checkpoint_failure_receipt_invalid");
+    }
+    return deepFreeze({
+      schemaVersion: 1,
+      tenantId: input.tenantId,
+      campaignId: input.campaignId,
+      unitId: input.unitId,
+      episodeId: input.episodeId,
+      expectedStateDigest: input.expectedStateDigest,
+      idempotencyKey: input.idempotencyKey,
+      failureDigest: createTransformerAttemptCheckpointFailureDigest(input),
+      campaignRevision: row.result_revision,
+      observedAt: row.observed_at,
+    });
   }
 
   recordAttemptFailure(input: MutationInput & {
