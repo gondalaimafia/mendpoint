@@ -663,6 +663,102 @@ describe("Warden checkpoint envelope", () => {
     )).resolves.toEqual(advanced);
   });
 
+  it("commits a paid model receipt before the later model-planned tool step", async () => {
+    const journal = memoryJournal(genesisPayload.writerLeaseGeneration);
+    const genesis = await commitWardenCheckpoint(journal, genesisPayload, key, binding);
+    const base = privateRuntimeStateFor(genesis.payload);
+    const requestBytes = Buffer.from('{"prompt":"repair the failing client"}', "utf8");
+    const modelAccounting = {
+      status: "succeeded" as const,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      costUsd: 0.01,
+    };
+    const resultBytes = Buffer.from(
+      JSON.stringify({ call: { tool: "read_file", args: { path: "src/client.ts" } },
+        accounting: modelAccounting }),
+      "utf8",
+    );
+    const requestDigest = digest(requestBytes.toString("utf8"));
+    const resultDigest = digest(resultBytes.toString("utf8"));
+    const effectId = digest("planner:1");
+    const commitRuntime = async (state: WardenPrivateRuntimeStateV1) =>
+      await commitWardenCheckpointRecord(
+        journal,
+        projectWardenCheckpointPayload(state, key),
+        encodeWardenRuntimeState(state),
+        key,
+        binding,
+      );
+    const preparedState: WardenPrivateRuntimeStateV1 = {
+      ...base,
+      generation: 2,
+      previousEnvelopeDigest: genesis.payloadDigest,
+      createdAt: "2026-08-10T18:00:00.000Z",
+      blobs: [...base.blobs, {
+        digest: requestDigest,
+        bytes: requestBytes.byteLength,
+        contentBase64: requestBytes.toString("base64"),
+      }],
+      pendingEffect: {
+        kind: "model",
+        state: "prepared",
+        effectId,
+        requestDigest,
+      },
+    };
+    const prepared = await commitRuntime(preparedState);
+    const completedState: WardenPrivateRuntimeStateV1 = {
+      ...preparedState,
+      generation: 3,
+      previousEnvelopeDigest: prepared.payloadDigest,
+      createdAt: "2026-08-10T18:00:01.000Z",
+      blobs: [...preparedState.blobs, {
+        digest: resultDigest,
+        bytes: resultBytes.byteLength,
+        contentBase64: resultBytes.toString("base64"),
+      }],
+      pendingEffect: {
+        kind: "model",
+        state: "completed",
+        effectId,
+        requestDigest,
+        resultDigest,
+      },
+    };
+    const completed = await commitRuntime(completedState);
+    const consumedState: WardenPrivateRuntimeStateV1 = {
+      ...completedState,
+      generation: 4,
+      previousEnvelopeDigest: completed.payloadDigest,
+      createdAt: "2026-08-10T18:00:02.000Z",
+      modelCalls: [modelAccounting],
+      effectReceipts: [{
+        kind: "model",
+        effectId,
+        requestDigest,
+        resultDigest,
+        plannedCallDigest: digest('{"args":{"path":"src/client.ts"},"tool":"read_file"}'),
+        modelAccounting,
+      }],
+      pendingEffect: { kind: "none" },
+    };
+
+    const consumed = await commitRuntime(consumedState);
+
+    expect(consumed.payload.counters).toMatchObject({
+      modelCalls: 1,
+      modelSuccessfulCalls: 1,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      costUsd: 0.01,
+      toolCalls: 0,
+    });
+    expect(consumed.payload.steps).toHaveLength(0);
+  });
+
   it("rejects generation skips, history rewrites, budget regression, and terminal advancement", async () => {
     const journal = memoryJournal(genesisPayload.writerLeaseGeneration);
     const genesis = await commitWardenCheckpoint(journal, genesisPayload, key, binding);

@@ -811,7 +811,6 @@ function advanceWardenCheckpointEnvelope(
   const successfulMutations = appendedSteps.filter((step) =>
     step.ok && (step.tool === "write_file" || step.tool === "replace_in_file")
   );
-  const modelPlannedSteps = appendedSteps.filter((step) => step.plannerSource === "model").length;
   const modelCallDelta = nextPayload.counters.modelCalls - current.counters.modelCalls;
   const modelSuccessDelta = nextPayload.counters.modelSuccessfulCalls -
     current.counters.modelSuccessfulCalls;
@@ -824,7 +823,6 @@ function advanceWardenCheckpointEnvelope(
       nextPayload.nextStep !== current.nextStep + appendedSteps.length ||
       appendedSteps.some((step, index) => step.step !== current.nextStep + index) ||
       nextPayload.counters.toolCalls !== current.counters.toolCalls + appendedSteps.length ||
-      modelSuccessDelta !== modelPlannedSteps ||
       modelCallDelta !== modelSuccessDelta + modelFailureDelta ||
       nextPayload.counters.mutationCount !== current.counters.mutationCount + successfulMutations.length ||
       nextPayload.counters.groundedMutations !==

@@ -5,6 +5,7 @@ import {
   type WardenCheckpointPayload,
   type WardenCheckpointSourceEvidence,
 } from "./checkpoint.js";
+import { validatedToolCall } from "./agent.js";
 import type { AgentStep, ToolName } from "./types.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -38,6 +39,7 @@ export type WardenRuntimeEvent = Readonly<{
   ok: boolean;
   summaryCode: string;
   errorCode?: string;
+  modelEffectId?: string;
   call: WardenRuntimeJson;
   result: WardenRuntimeJson;
   mutation: boolean;
@@ -66,6 +68,8 @@ export type WardenRuntimeEffectReceipt = Readonly<{
   effectId: string;
   requestDigest: string;
   resultDigest: string;
+  plannedCallDigest?: string;
+  modelAccounting?: WardenRuntimeModelCall;
 }>;
 
 export type WardenPrivateRuntimeStateV1 = Readonly<{
@@ -189,9 +193,50 @@ function jsonRecord(value: WardenRuntimeJson, code: string): Record<string, Ward
   return value as Record<string, WardenRuntimeJson>;
 }
 
+function validateModelCall(call: WardenRuntimeModelCall): void {
+  exactKeys(call, [
+    "status", "promptTokens", "completionTokens", "totalTokens", "costUsd",
+  ], "warden_runtime_state_accounting_invalid");
+  nonnegative(call.promptTokens, "warden_runtime_state_accounting_invalid");
+  nonnegative(call.completionTokens, "warden_runtime_state_accounting_invalid");
+  nonnegative(call.totalTokens, "warden_runtime_state_accounting_invalid");
+  if (call.totalTokens !== call.promptTokens + call.completionTokens ||
+      !Number.isFinite(call.costUsd) || call.costUsd < 0 ||
+      (call.status !== "succeeded" && call.status !== "failed")) {
+    throw new Error("warden_runtime_state_accounting_invalid");
+  }
+}
+
+function modelResultFromBytes(content: Uint8Array): Readonly<{
+  plannedCallDigest: string;
+  accounting: WardenRuntimeModelCall;
+}> {
+  const code = "warden_runtime_state_model_result_invalid";
+  let parsed: WardenRuntimeJson;
+  try {
+    parsed = JSON.parse(Buffer.from(content).toString("utf8")) as WardenRuntimeJson;
+  } catch {
+    throw new Error(code);
+  }
+  validateJson(parsed);
+  const result = jsonRecord(parsed, code);
+  exactKeys(result, ["call", "accounting"], code);
+  const call = validatedToolCall(result.call);
+  if (!call || canonical(call) !== canonical(result.call)) throw new Error(code);
+  const accounting = result.accounting as WardenRuntimeModelCall;
+  try {
+    validateModelCall(accounting);
+  } catch {
+    throw new Error(code);
+  }
+  if (accounting.status !== "succeeded") throw new Error(code);
+  return { plannedCallDigest: sha256(canonical(call)), accounting };
+}
+
 function mutationIdentity(event: WardenRuntimeEvent): Readonly<{ path: string; digest: string }> {
   const code = "warden_runtime_state_event_invalid";
   const call = jsonRecord(event.call, code);
+  if (call.tool !== event.tool) throw new Error(code);
   exactKeys(call, [
     "tool", "args", "intent", ...(call.thought === undefined ? [] : ["thought"]),
   ], code);
@@ -330,6 +375,7 @@ function validateEvent(event: WardenRuntimeEvent): void {
   exactKeys(event, [
     "category", "tool", "plannerSource", "executed", "ok", "summaryCode",
     ...(event.errorCode === undefined ? [] : ["errorCode"]),
+    ...(event.modelEffectId === undefined ? [] : ["modelEffectId"]),
     "call", "result", "mutation",
   ], "warden_runtime_state_event_invalid");
   if (!(["tool", "verifier"] as const).includes(event.category) ||
@@ -337,6 +383,8 @@ function validateEvent(event: WardenRuntimeEvent): void {
       typeof event.executed !== "boolean" || typeof event.ok !== "boolean" ||
       typeof event.mutation !== "boolean" || !CODE.test(event.summaryCode) ||
       (event.errorCode !== undefined && !CODE.test(event.errorCode)) ||
+      (event.modelEffectId !== undefined &&
+        (event.plannerSource !== "model" || !event.executed || !IDENTIFIER.test(event.modelEffectId))) ||
       !(["list_dir", "read_file", "search", "write_file", "replace_in_file",
         "run_command", "http_probe", "finish"] as const).includes(event.tool)) {
     throw new Error("warden_runtime_state_event_invalid");
@@ -347,6 +395,10 @@ function validateEvent(event: WardenRuntimeEvent): void {
   }
   validateJson(event.call);
   validateJson(event.result);
+  const call = jsonRecord(event.call, "warden_runtime_state_event_invalid");
+  if (call.tool !== event.tool) {
+    throw new Error("warden_runtime_state_event_invalid");
+  }
   if (event.mutation) mutationIdentity(event);
 }
 
@@ -376,6 +428,8 @@ function validatePendingEffect(effect: WardenRuntimePendingEffect): void {
 function validateEffectReceipt(receipt: WardenRuntimeEffectReceipt): void {
   exactKeys(receipt, [
     "kind", "effectId", "requestDigest", "resultDigest",
+    ...(receipt.plannedCallDigest === undefined ? [] : ["plannedCallDigest"]),
+    ...(receipt.modelAccounting === undefined ? [] : ["modelAccounting"]),
   ], "warden_runtime_state_effect_receipt_invalid");
   if (!( ["model", "tool", "verifier", "artifact"] as const).includes(receipt.kind) ||
       !IDENTIFIER.test(receipt.effectId)) {
@@ -383,6 +437,14 @@ function validateEffectReceipt(receipt: WardenRuntimeEffectReceipt): void {
   }
   validDigest(receipt.requestDigest, "warden_runtime_state_effect_receipt_invalid");
   validDigest(receipt.resultDigest, "warden_runtime_state_effect_receipt_invalid");
+  if ((receipt.kind === "model") !== (receipt.plannedCallDigest !== undefined) ||
+      (receipt.kind === "model") !== (receipt.modelAccounting !== undefined)) {
+    throw new Error("warden_runtime_state_effect_receipt_invalid");
+  }
+  if (receipt.plannedCallDigest !== undefined) {
+    validDigest(receipt.plannedCallDigest, "warden_runtime_state_effect_receipt_invalid");
+    validateModelCall(receipt.modelAccounting!);
+  }
 }
 
 function validateState(state: WardenPrivateRuntimeStateV1): void {
@@ -431,17 +493,7 @@ function validateState(state: WardenPrivateRuntimeStateV1): void {
   for (const search of state.searches) validateJson(search);
   if (state.modelCalls.length > 256) throw new Error("warden_runtime_state_accounting_invalid");
   for (const call of state.modelCalls) {
-    exactKeys(call, [
-      "status", "promptTokens", "completionTokens", "totalTokens", "costUsd",
-    ], "warden_runtime_state_accounting_invalid");
-    nonnegative(call.promptTokens, "warden_runtime_state_accounting_invalid");
-    nonnegative(call.completionTokens, "warden_runtime_state_accounting_invalid");
-    nonnegative(call.totalTokens, "warden_runtime_state_accounting_invalid");
-    if (call.totalTokens !== call.promptTokens + call.completionTokens ||
-        !Number.isFinite(call.costUsd) || call.costUsd < 0 ||
-        (call.status !== "succeeded" && call.status !== "failed")) {
-      throw new Error("warden_runtime_state_accounting_invalid");
-    }
+    validateModelCall(call);
   }
   exactKeys(state.sourceCounters, [
     "observedBytes", "searchBytes", "changedBytes", "groundedMutations", "blockedMutations",
@@ -479,6 +531,7 @@ function validateState(state: WardenPrivateRuntimeStateV1): void {
   }
   if (state.blobs.length > MAX_COLLECTION) throw new Error("warden_runtime_state_blob_invalid");
   const blobDigests = new Set<string>();
+  const blobContents = new Map<string, Uint8Array>();
   for (const blob of state.blobs) {
     exactKeys(blob, ["digest", "bytes", "contentBase64"], "warden_runtime_state_blob_invalid");
     validDigest(blob.digest, "warden_runtime_state_blob_invalid");
@@ -489,6 +542,7 @@ function validateState(state: WardenPrivateRuntimeStateV1): void {
       throw new Error("warden_runtime_state_blob_invalid");
     }
     blobDigests.add(blob.digest);
+    blobContents.set(blob.digest, content);
   }
   if (!Array.isArray(state.effectReceipts) || state.effectReceipts.length > MAX_COLLECTION) {
     throw new Error("warden_runtime_state_effect_receipt_invalid");
@@ -500,6 +554,37 @@ function validateState(state: WardenPrivateRuntimeStateV1): void {
       throw new Error("warden_runtime_state_effect_receipt_invalid");
     }
     effectIds.add(receipt.effectId);
+    if (receipt.kind === "model") {
+      const content = blobContents.get(receipt.resultDigest);
+      if (!content) throw new Error("warden_runtime_state_model_result_invalid");
+      const result = modelResultFromBytes(content);
+      if (result.plannedCallDigest !== receipt.plannedCallDigest ||
+          canonical(result.accounting) !== canonical(receipt.modelAccounting)) {
+        throw new Error("warden_runtime_state_model_result_invalid");
+      }
+    }
+  }
+  const modelReceipts = new Map(state.effectReceipts
+    .filter((receipt) => receipt.kind === "model")
+    .map((receipt) => [receipt.effectId, receipt]));
+  const usedModelEffects = new Set<string>();
+  let legacyModelEvents = 0;
+  for (const event of state.events) {
+    if (event.plannerSource !== "model" || !event.executed) continue;
+    if (event.modelEffectId === undefined) {
+      legacyModelEvents++;
+      continue;
+    }
+    const receipt = modelReceipts.get(event.modelEffectId);
+    if (!receipt || usedModelEffects.has(event.modelEffectId) ||
+        sha256(canonical(event.call)) !== receipt.plannedCallDigest) {
+      throw new Error("warden_runtime_state_model_event_invalid");
+    }
+    usedModelEffects.add(event.modelEffectId);
+  }
+  const successfulModelCalls = state.modelCalls.filter((call) => call.status === "succeeded").length;
+  if (successfulModelCalls !== modelReceipts.size + legacyModelEvents) {
+    throw new Error("warden_runtime_state_accounting_invalid");
   }
   validatePendingEffect(state.pendingEffect);
   if (state.pendingEffect.kind !== "none" && effectIds.has(state.pendingEffect.effectId)) {
@@ -661,6 +746,45 @@ export function validateWardenRuntimeStateTransition(
   const currentEffect = current.pendingEffect;
   const nextEffect = next.pendingEffect;
   const appendedReceipts = next.effectReceipts.slice(current.effectReceipts.length);
+  const appendedSuccessfulModelCalls = next.modelCalls.slice(current.modelCalls.length)
+    .filter((call) => call.status === "succeeded");
+  const appendedModelCalls = next.modelCalls.slice(current.modelCalls.length);
+  const appendedModelReceipts = appendedReceipts.filter((receipt) => receipt.kind === "model");
+  const appendedModelEvents = next.events.slice(current.events.length)
+    .filter((event) => event.plannerSource === "model" && event.executed);
+  const currentModelReceipts = new Map(current.effectReceipts
+    .filter((receipt) => receipt.kind === "model")
+    .map((receipt) => [receipt.effectId, receipt]));
+  const usedModelEffectIds = new Set(current.events
+    .filter((event) => event.modelEffectId !== undefined)
+    .map((event) => event.modelEffectId!));
+  for (const event of appendedModelEvents) {
+    if (event.modelEffectId === undefined) continue;
+    const receipt = currentModelReceipts.get(event.modelEffectId);
+    if (!receipt || usedModelEffectIds.has(event.modelEffectId) ||
+        jsonRecord(event.call, "warden_runtime_state_event_invalid").tool !== event.tool ||
+        sha256(canonical(event.call)) !== receipt.plannedCallDigest) {
+      reject("model_event");
+    }
+    usedModelEffectIds.add(event.modelEffectId);
+  }
+  const appendedLegacyModelEvents = appendedModelEvents
+    .filter((event) => event.modelEffectId === undefined).length;
+  const appendedUnexecutedModelEvents = next.events.slice(current.events.length)
+    .filter((event) => event.plannerSource === "model" && !event.executed).length;
+  const receiptConsumptionInvalid = appendedModelReceipts.length > 0 &&
+    (appendedModelCalls.length !== appendedModelReceipts.length ||
+      appendedSuccessfulModelCalls.length !== appendedModelReceipts.length ||
+      appendedModelEvents.length !== 0);
+  const receiptAccountingInvalid = appendedModelReceipts.some((receipt, index) =>
+    canonical(receipt.modelAccounting) !== canonical(appendedModelCalls[index])
+  );
+  const legacyOrToolStepInvalid = appendedModelReceipts.length === 0 &&
+    appendedLegacyModelEvents !== appendedSuccessfulModelCalls.length;
+  if (appendedUnexecutedModelEvents > 0 || receiptConsumptionInvalid ||
+      receiptAccountingInvalid || legacyOrToolStepInvalid) {
+    reject("model_calls");
+  }
   if (currentEffect.kind === "none") {
     if (appendedReceipts.length !== 0 ||
         (nextEffect.kind !== "none" && nextEffect.state !== "prepared")) {
@@ -679,12 +803,11 @@ export function validateWardenRuntimeStateTransition(
     return;
   }
   if (nextEffect.kind === "none") {
-    if (appendedReceipts.length !== 1 || !same(appendedReceipts[0], {
-      kind: currentEffect.kind,
-      effectId: currentEffect.effectId,
-      requestDigest: currentEffect.requestDigest,
-      resultDigest: currentEffect.resultDigest!,
-    })) {
+    const receipt = appendedReceipts[0];
+    if (appendedReceipts.length !== 1 || receipt?.kind !== currentEffect.kind ||
+        receipt.effectId !== currentEffect.effectId ||
+        receipt.requestDigest !== currentEffect.requestDigest ||
+        receipt.resultDigest !== currentEffect.resultDigest) {
       throw new Error("warden_runtime_state_pending_effect_transition_invalid");
     }
     return;
