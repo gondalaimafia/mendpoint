@@ -1,10 +1,13 @@
+import React from "react";
 import { apiGet } from "../../lib/api";
+import { selfServeOnboardingEnabled } from "../../lib/proxy-auth";
 import { InstallWizard } from "./wizard";
 import {
   PilotSuccessContractPanel,
   type PilotContractSummary,
 } from "./pilot-success-contract";
 import { PilotReadinessChecklist } from "./pilot-readiness-checklist";
+import { OnboardingSteps, type OnboardingStatus } from "../onboarding/onboarding-steps";
 
 type AppConfig = {
   appId: string | null;
@@ -44,6 +47,20 @@ type ScmReadiness = {
 };
 
 export default async function InstallPage() {
+  // Self-serve first-run: when the full self-serve stack is on, the guided
+  // onboarding flow replaces the operator wizard + evidence checklist as the
+  // customer's entry point. The operator artifacts below stay intact for the
+  // pilot path and render byte-for-byte unchanged whenever the flag is off.
+  if (selfServeOnboardingEnabled()) {
+    let onboarding: OnboardingStatus | null = null;
+    try {
+      onboarding = await apiGet<OnboardingStatus>("/self-serve/onboarding");
+    } catch {
+      onboarding = null;
+    }
+    if (onboarding) return <OnboardingSteps status={onboarding} />;
+  }
+
   let config: AppConfig | null = null;
   let installations: Installation[] = [];
   let pilotContracts: PilotContractSummary[] = [];

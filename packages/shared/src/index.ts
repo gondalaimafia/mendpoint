@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+export {
+  explainError,
+  normalizeErrorCode,
+  cataloguedErrorCodes,
+  type ExplainedError,
+  type ErrorGuidanceEntry,
+  type ExplainErrorInput,
+} from "./error-guidance.js";
+
 /**
  * Model egress boundary policy.
  *

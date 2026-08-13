@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { ErrorGuidanceNote } from "../components/error-guidance-note";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
@@ -9,10 +10,12 @@ export function DetectButton({ consumerId }: { consumerId: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
 
   async function run() {
     setBusy(true);
     setMsg(null);
+    setError(null);
     try {
       const res = await fetch(`${API_URL}/consumers/${consumerId}/detect`, {
         method: "POST",
@@ -27,7 +30,7 @@ export function DetectButton({ consumerId }: { consumerId: string }) {
       );
       router.refresh();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
+      setError(e);
     } finally {
       setBusy(false);
     }
@@ -39,6 +42,7 @@ export function DetectButton({ consumerId }: { consumerId: string }) {
         {busy ? "Detecting…" : "Auto-detect APIs"}
       </button>
       {msg && <p className="muted">{msg}</p>}
+      {error != null && <ErrorGuidanceNote error={error} />}
     </div>
   );
 }
