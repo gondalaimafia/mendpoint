@@ -37,6 +37,8 @@ export * from "./external-baseline.js";
 export * from "./graphql-schema-version.js";
 export * from "./outcome-metrics.js";
 export * from "./agent-run-meter.js";
+export * from "./developer-satisfaction.js";
+export * from "./self-serve-dashboard.js";
 export * from "./capability-adoption-opportunity.js";
 
 export type AppDb = {
@@ -1149,6 +1151,26 @@ CREATE TABLE IF NOT EXISTS agent_run_meters (
 );
 CREATE INDEX IF NOT EXISTS agent_run_meters_tenant_created_idx
   ON agent_run_meters(tenant_id, created_at);
+
+-- S3: optional developer-satisfaction capture. There is no pre-existing
+-- satisfaction signal in the schema; rather than let the self-serve dashboard
+-- fabricate one, a developer can attach a 1-5 rating to a reviewed run or PR.
+-- The dashboard summarizes ONLY these real rows (unavailable when none exist).
+-- The rating CHECK makes an out-of-range score impossible at the storage layer.
+-- Every column lives in this table's own CREATE, so the index below is safe in
+-- the static DDL (no additive migration adds a column it depends on).
+CREATE TABLE IF NOT EXISTS developer_satisfaction_signals (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  run_id TEXT,
+  pr_id TEXT,
+  rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  comment TEXT,
+  submitted_by TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS developer_satisfaction_signals_tenant_created_idx
+  ON developer_satisfaction_signals(tenant_id, created_at);
 
 -- Durable review state for Transformer *adaptive* candidates. When the bounded
 -- adaptive repair loop converges on a fix that DIVERGES from the deterministic
