@@ -417,6 +417,91 @@ describe("Warden canonical private runtime state", () => {
     })).toThrow("warden_runtime_state_pending_effect_invalid");
   });
 
+  it("binds a consumed tool receipt to exactly one matching runtime event", () => {
+    const current = state();
+    const requestValue = {
+      call: { tool: "read_file", args: { path: "src/client.ts" } },
+      plannerSource: "heuristic",
+    };
+    const resultValue = {
+      ok: true,
+      tool: "read_file",
+      summary: "read source",
+      data: { path: "src/client.ts" },
+    };
+    const request = Buffer.from(
+      '{"call":{"args":{"path":"src/client.ts"},"tool":"read_file"},"plannerSource":"heuristic"}',
+      "utf8",
+    );
+    const result = Buffer.from(
+      '{"result":{"data":{"path":"src/client.ts"},"ok":true,"summary":"read source","tool":"read_file"}}',
+      "utf8",
+    );
+    const requestDigest = digest(request.toString("utf8"));
+    const resultDigest = digest(result.toString("utf8"));
+    const effectId = digest("tool effect");
+    const completed: WardenPrivateRuntimeStateV1 = {
+      ...current,
+      blobs: [
+        ...current.blobs,
+        { digest: requestDigest, bytes: request.length, contentBase64: request.toString("base64") },
+        { digest: resultDigest, bytes: result.length, contentBase64: result.toString("base64") },
+      ],
+      pendingEffect: {
+        kind: "tool",
+        state: "completed",
+        effectId,
+        requestDigest,
+        resultDigest,
+      },
+    };
+    const receipt = {
+      kind: "tool" as const,
+      effectId,
+      requestDigest,
+      resultDigest,
+    };
+    const consumedWithoutEvent: WardenPrivateRuntimeStateV1 = {
+      ...completed,
+      generation: completed.generation + 1,
+      createdAt: "2026-08-11T17:01:00.000Z",
+      effectReceipts: [receipt],
+      pendingEffect: { kind: "none" },
+    };
+
+    expect(() => validateWardenRuntimeStateTransition(completed, consumedWithoutEvent))
+      .toThrow("warden_runtime_state_pending_effect_transition_invalid");
+
+    const consumed = {
+      ...consumedWithoutEvent,
+      events: [...completed.events, {
+        category: "tool" as const,
+        tool: "read_file" as const,
+        plannerSource: "heuristic" as const,
+        executed: true,
+        ok: true,
+        summaryCode: "read_file_succeeded",
+        effectId,
+        call: requestValue.call,
+        result: resultValue,
+        mutation: false,
+      }],
+    } as unknown as WardenPrivateRuntimeStateV1;
+
+    expect(() => validateWardenRuntimeStateTransition(completed, consumed)).not.toThrow();
+    expect(() => encodeWardenRuntimeState(consumed)).not.toThrow();
+    expect(() => encodeWardenRuntimeState({
+      ...consumed,
+      events: consumed.events.map((event) => event.effectId === effectId
+        ? { ...event, plannerSource: "system" }
+        : event),
+    })).toThrow("warden_runtime_state_effect_event_invalid");
+    expect(() => validateWardenRuntimeStateTransition(completed, {
+      ...consumed,
+      events: [...consumed.events, consumed.events.at(-1)!],
+    })).toThrow("warden_runtime_state_pending_effect_transition_invalid");
+  });
+
   it("binds durable model receipts and legacy model steps to successful calls", () => {
     const current = state();
     const nextGeneration = {

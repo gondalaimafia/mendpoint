@@ -14,7 +14,8 @@ export type Permission =
   | "outcome:label"
   | "tenant:admin"
   | "dogfood:read"
-  | "sandbox:run";
+  | "sandbox:run"
+  | "transformer:worker";
 
 const ROLE_PERMS: Record<Role, Permission[]> = {
   owner: [
@@ -70,6 +71,7 @@ const ROLE_PERMS: Record<Role, Permission[]> = {
     "plan:execute",
     "sandbox:run",
     "outcome:label",
+    "transformer:worker",
   ],
 };
 
@@ -193,6 +195,8 @@ export function permissionForRoute(
 ): Permission | null {
   const m = method.toUpperCase();
   if (isPublicRoute(m, path)) return null;
+  if (path.startsWith("/v1/transformer/attempt-coordinator/"))
+    return "transformer:worker";
 
   if (m === "GET" || m === "HEAD" || m === "OPTIONS") {
     // Sensitive reads still permission-mapped when X-Role is present (middleware enforces)

@@ -1,10 +1,12 @@
 import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { Hono, type Context } from "hono";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
   TransformerDomainError,
   TransformerControlPlaneStore,
   recipeReference,
+  resolveRecipe,
   type BlueprintPolicy,
   type CampaignState,
   type MutationContext,
@@ -143,6 +145,8 @@ const TRANSFORMER_CONTROL_PLANE_ERRORS: readonly PublicErrorRule[] = [
     "bsg_nodes_limit",
     "bsg_edges_limit",
     "review_required",
+    "blueprint_reviewer_not_authorized",
+    "independent_blueprint_reviewer_required",
     "transition_required",
     "exception_required",
     "exception_id_required",
@@ -226,14 +230,19 @@ function requiredString(value: unknown, code: string, max = 2_000): string {
   return value.trim();
 }
 
+export function transformerBlueprintApprovalId(blueprintId: string, reviewerId: string): string {
+  const reviewerDigest = createHash("sha256").update(reviewerId, "utf8").digest("hex").slice(0, 24);
+  return `blueprint-review-${blueprintId}-${reviewerDigest}`;
+}
+
 function record(value: unknown, code: string): JsonRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(code);
   return value as JsonRecord;
 }
 
-function stringArray(value: unknown, code: string): string[] {
+function stringArray(value: unknown, code: string, max = 500): string[] {
   if (!Array.isArray(value) || value.length === 0) throw new Error(code);
-  return value.map((item) => requiredString(item, code, 500));
+  return value.map((item) => requiredString(item, code, max));
 }
 
 function safeReference(value: string, code: string): string {
@@ -245,17 +254,19 @@ function safeReference(value: string, code: string): string {
 }
 
 function exactRecipe(value: unknown): BlueprintPolicy["recipe"] {
-  const expected = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
-  if (value === undefined) return expected;
+  if (value === undefined) return recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
   const supplied = record(value, "blueprint_recipe_invalid");
-  if (
-    supplied.id !== expected.id ||
-    supplied.version !== expected.version ||
-    supplied.digest !== expected.digest
-  ) {
+  const reference = {
+    id: requiredString(supplied.id, "blueprint_recipe_invalid", 200),
+    version: positiveRevision(supplied.version, "blueprint_recipe_invalid"),
+    digest: requiredString(supplied.digest, "blueprint_recipe_invalid", 80),
+  };
+  try {
+    resolveRecipe(reference);
+  } catch {
     throw new Error("blueprint_recipe_mismatch");
   }
-  return expected;
+  return reference;
 }
 
 function parsePolicy(value: unknown): BlueprintPolicy {
@@ -297,7 +308,7 @@ function parsePolicy(value: unknown): BlueprintPolicy {
       };
     }),
     verification: {
-      commands: stringArray(verification.commands, "blueprint_verification_required"),
+      commands: stringArray(verification.commands, "blueprint_verification_required", 10_000),
     },
     rollback: {
       strategy:
@@ -309,6 +320,7 @@ function parsePolicy(value: unknown): BlueprintPolicy {
       verificationCommands: stringArray(
         rollback.verificationCommands,
         "blueprint_rollback_verification_required",
+        10_000,
       ),
     },
     approval: {
@@ -546,6 +558,15 @@ export class TransformerCampaignService {
       const blueprint = this.store.getBlueprint(request.tenantId, campaign.blueprintId);
       const bsg = this.store.getBsg(request.tenantId, campaign.bsgId);
       if (!blueprint || !bsg) throw new Error("campaign_bundle_incomplete");
+      const plannerActorId = typeof blueprint.content.plannerActorId === "string"
+        ? blueprint.content.plannerActorId
+        : undefined;
+      if (plannerActorId === request.actorId) {
+        throw new Error("independent_blueprint_reviewer_required");
+      }
+      if (!blueprint.policy.approval.reviewerIds.includes(request.actorId)) {
+        throw new Error("blueprint_reviewer_not_authorized");
+      }
       const initial =
         campaign.state === "draft" &&
         campaign.revision === revisions.campaign &&
@@ -562,6 +583,51 @@ export class TransformerCampaignService {
         bsg.state === "locked" &&
         bsg.revision === revisions.bsg + 1;
       if (!initial && !replay) throw new Error("review_revision_conflict");
+      const approvalId = transformerBlueprintApprovalId(blueprint.id, request.actorId);
+      const existingApproval = this.store.getApproval(request.tenantId, approvalId);
+      if (!existingApproval) {
+        const approval = this.store.createApproval({
+          tenantId: request.tenantId,
+          campaignId,
+          id: approvalId,
+          subjectType: "blueprint",
+          subjectId: blueprint.id,
+        }, context(request, "blueprint-review-created"));
+        this.store.transitionApproval(
+          request.tenantId,
+          approval.id,
+          "approved",
+          { reviewerId: request.actorId },
+          approval.revision,
+          context(request, "blueprint-review-approved"),
+        );
+      } else if (
+        existingApproval.state !== "approved" ||
+        existingApproval.subjectType !== "blueprint" ||
+        existingApproval.subjectId !== blueprint.id ||
+        existingApproval.reviewerId !== request.actorId
+      ) {
+        throw new Error("blueprint_reviewer_not_authorized");
+      }
+      const review = blueprint.content.review && typeof blueprint.content.review === "object" &&
+          !Array.isArray(blueprint.content.review)
+        ? blueprint.content.review as JsonRecord
+        : undefined;
+      const minimumApprovals = review?.minimumApprovals === undefined
+        ? 1
+        : positiveRevision(review.minimumApprovals, "blueprint_approval_required");
+      if (minimumApprovals > blueprint.policy.approval.reviewerIds.length) {
+        throw new Error("blueprint_approval_required");
+      }
+      const approvalCount = blueprint.policy.approval.reviewerIds.filter((reviewerId) => {
+        const candidate = this.store.getApproval(
+          request.tenantId,
+          transformerBlueprintApprovalId(blueprint.id, reviewerId),
+        );
+        return candidate?.state === "approved" && candidate.reviewerId === reviewerId &&
+          candidate.subjectType === "blueprint" && candidate.subjectId === blueprint.id;
+      }).length;
+      if (approvalCount < minimumApprovals) return this.get(request.tenantId, campaignId);
       this.store.transitionBlueprint(
         request.tenantId,
         campaign.blueprintId,

@@ -281,6 +281,7 @@ import { createWardenPilotIntakeRoutes } from "./warden-pilot-intake.js";
 import { createWardenCampaignEnrollmentRoutes } from "./warden-campaign-enrollment.js";
 import { createOutcomeMetricsRoutes } from "./outcome-metrics-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
+import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
 import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
 import {
   createGraphQLSchemaIngestionRoutes,
@@ -309,6 +310,7 @@ const {
   db,
   transformerCampaigns,
   transformerExecutions,
+  transformerMissionRoutes,
   changeSourceRoutes,
   billingRoutes,
   designPartnerRoutes,
@@ -737,11 +739,13 @@ app.route("/advanced-ai", createAdvancedAiApplicationRoutes({
 
 registerTransformerControlPlaneRoutes(app, transformerCampaigns);
 registerTransformerPilotExecutionRoutes(app, transformerExecutions);
+app.route("/transformer/missions", transformerMissionRoutes);
 app.route("/v1/transformer/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
   enabled: process.env.MENDPOINT_TRANSFORMER_MULTINODE_COORDINATOR_ENABLED === "1",
   store: transformerExecutions.store,
   gateConfig: process.env.MENDPOINT_TRANSFORMER_GATE,
   loadExactSource: (lease, observedAt) => loadTransformerRecipeSnapshot(db, lease, observedAt),
+  resolveDraftRepository: createTransformerDraftRepositoryAuthority(db, process.env),
 }));
 app.route("/auth/signup", createSelfServeSignupRoutes({
   db,

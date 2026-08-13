@@ -619,7 +619,11 @@ export function registerTransformerPilotExecutionRoutes(
   mutation("/transformer/executions/:campaignId/control", (request, campaignId, body) => service.control(request, campaignId, body));
   mutation("/transformer/executions/:campaignId/drafts/authorize", (request, campaignId, body) => ({
     actions: service.authorizeDrafts(request, campaignId, body),
-    delivery: "external",
+    delivery: service.get(request.tenantId, campaignId).units
+      .filter((unit) => unit.state === "draft")
+      .every((unit) => unit.draftDelivery !== undefined)
+        ? "queued"
+        : "external",
   }));
 
   app.post("/transformer/executions/:campaignId/rollback-plan", (c) => {

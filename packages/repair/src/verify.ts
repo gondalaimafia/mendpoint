@@ -191,6 +191,7 @@ export async function runVerificationCommand(
   command: string,
   repoRoot: string,
   timeoutMs = 120_000,
+  signal?: AbortSignal,
 ): Promise<VerificationExecution> {
   const invocation = parseVerificationCommand(command, repoRoot);
   if (!invocation) {
@@ -283,6 +284,7 @@ export async function runVerificationCommand(
       windowsHide: true,
       maxBuffer: 2 * 1024 * 1024,
       env,
+      signal,
     }, (error, stdout, stderr) => {
       if (!error) {
         resolveExecution({

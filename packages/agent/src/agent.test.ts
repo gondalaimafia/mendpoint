@@ -15,10 +15,15 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ABSENT_FILE_EVIDENCE_DIGEST,
+  createWardenRuntimeModelAuthorityDigest,
   runWarden,
+  runWardenWithRuntime,
   validatedToolCall,
   WARDEN_TOOL_CALL_SCHEMA,
 } from "./agent.js";
+import type { WardenRuntimeExecution } from "./runtime-execution.js";
+import type { WardenCheckpointBinding } from "./checkpoint.js";
+import type { WardenRuntimeJson } from "./runtime-state.js";
 import { extractHints, extractRenames, extractApiPaths } from "./heuristics.js";
 import { pathBlocked, commandBlocked } from "./policies.js";
 import {
@@ -58,6 +63,22 @@ const TEST_MODEL_SOURCE = Object.freeze({
     settle: async () => undefined,
   }),
 });
+
+function runtimeModelAuthorityDigest(): string {
+  return createWardenRuntimeModelAuthorityDigest({
+    goal: "Repair the API path typo.",
+    errorLog: "HTTP 404 for /v1/chargess",
+    repoRoot: "runtime-authority-fixture",
+    verifyCommand: "node check.mjs",
+    maxSteps: 3,
+    useLlm: true,
+    planner: async () => ({
+      call: { tool: "finish", args: { ok: false, message: "authority only" } },
+      usage: TEST_MODEL_USAGE,
+    }),
+    ...TEST_MODEL_SOURCE,
+  });
+}
 
 afterEach(() => {
   while (dirs.length) {
@@ -570,6 +591,513 @@ describe("Warden (API debug agent)", () => {
     ].join("\n"));
     return dir;
   }
+
+  it("replays a durable paid planner decision without another provider call", async () => {
+    const dir = intentFixture();
+    const planner = vi.fn(async () => {
+      throw new Error("planner_must_not_run");
+    });
+    const reserve = vi.fn(async () => undefined);
+    const settle = vi.fn(async () => undefined);
+    const binding: WardenCheckpointBinding = Object.freeze({
+      schemaVersion: 1,
+      tenantId: TEST_MODEL_SOURCE.tenantId,
+      jobId: "job-runtime-replay",
+      attemptId: "attempt-runtime-replay",
+      repositoryId: "repository-runtime-replay",
+      snapshotId: "snapshot-runtime-replay",
+      revision: "revision-runtime-replay",
+      sourceManifestSha256: `sha256:${"1".repeat(64)}`,
+      allowedPathsDigest: `sha256:${"2".repeat(64)}`,
+      verificationProfileDigest: `sha256:${"3".repeat(64)}`,
+      modelPolicyDigest: runtimeModelAuthorityDigest(),
+    });
+    const execution = {
+      state: () => ({ binding, pendingEffect: { kind: "none" } }),
+      effectRequest: () => Object.freeze({
+        schemaVersion: 1,
+        input: Object.freeze({
+          schemaVersion: 1,
+          goal: "Repair the API path typo.",
+          errorLog: "HTTP 404 for /v1/chargess",
+          verifyCommand: "node check.mjs",
+          diagnosedModes: Object.freeze([]),
+          recentSteps: Object.freeze([]),
+          observedEvidenceDigests: Object.freeze([]),
+        }),
+        budget: Object.freeze({
+          maxCalls: 1,
+          requestTimeoutMs: 1_000,
+          maxResponseBytes: 16_384,
+          maxOutputTokens: 512,
+        }),
+      }),
+      assertCurrent: async () => undefined,
+      runEffect: async () => ({
+        value: Object.freeze({
+          call: Object.freeze({
+            tool: "finish",
+            args: Object.freeze({ ok: false, message: "review required" }),
+          }),
+          accounting: Object.freeze({
+            status: "succeeded",
+            promptTokens: TEST_MODEL_USAGE.promptTokens,
+            completionTokens: TEST_MODEL_USAGE.completionTokens,
+            totalTokens: TEST_MODEL_USAGE.totalTokens,
+            costUsd: TEST_MODEL_USAGE.costUsd,
+          }),
+          telemetry: Object.freeze({
+            responseBytes: 321,
+            provenance: Object.freeze([Object.freeze({
+              providerId: "test-provider",
+              bodyRequestId: "body-request-1",
+              headerRequestId: "header-request-1",
+              model: "muse-spark-1.2",
+              promptTokens: TEST_MODEL_USAGE.promptTokens,
+              completionTokens: TEST_MODEL_USAGE.completionTokens,
+              totalTokens: TEST_MODEL_USAGE.totalTokens,
+              host: "models.example",
+              protocol: "https:",
+              costUsd: TEST_MODEL_USAGE.costUsd,
+              monotonicTimestampMs: 123.5,
+            })]),
+          }),
+        }),
+        replayed: true,
+      }),
+    } as unknown as WardenRuntimeExecution;
+
+    const result = await runWardenWithRuntime({
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      externalModelAccounting: {
+        ...TEST_MODEL_SOURCE.externalModelAccounting,
+        reserve,
+        settle,
+      },
+      maxSteps: 3,
+      planner,
+    }, {
+      execution,
+      binding,
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+    });
+
+    expect(planner).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(settle).not.toHaveBeenCalled();
+    expect(result.stoppedReason).toBe("review required");
+    expect(result.metrics.model).toMatchObject({
+      calls: 1,
+      successfulCalls: 1,
+      promptTokens: TEST_MODEL_USAGE.promptTokens,
+      completionTokens: TEST_MODEL_USAGE.completionTokens,
+      totalTokens: TEST_MODEL_USAGE.totalTokens,
+      costUsd: TEST_MODEL_USAGE.costUsd,
+      responseBytes: 321,
+    });
+    expect(result.metrics.model.provenance).toEqual([
+      expect.objectContaining({
+        providerId: "test-provider",
+        bodyRequestId: "body-request-1",
+        model: "muse-spark-1.2",
+      }),
+    ]);
+    expect(result.metrics.sourceContext.promptEvidenceBytes).toBe(0);
+  });
+
+  it("retains reserve and settle controls for a fresh runtime planner call", async () => {
+    const dir = intentFixture();
+    const reserve = vi.fn(async () => undefined);
+    const settle = vi.fn(async () => undefined);
+    const planner = vi.fn(async () => ({
+      call: { tool: "finish" as const, args: { ok: false, message: "review required" } },
+      usage: TEST_MODEL_USAGE,
+    }));
+    const binding: WardenCheckpointBinding = Object.freeze({
+      schemaVersion: 1,
+      tenantId: TEST_MODEL_SOURCE.tenantId,
+      jobId: "job-runtime-live",
+      attemptId: "attempt-runtime-live",
+      repositoryId: "repository-runtime-live",
+      snapshotId: "snapshot-runtime-live",
+      revision: "revision-runtime-live",
+      sourceManifestSha256: `sha256:${"4".repeat(64)}`,
+      allowedPathsDigest: `sha256:${"5".repeat(64)}`,
+      verificationProfileDigest: `sha256:${"6".repeat(64)}`,
+      modelPolicyDigest: runtimeModelAuthorityDigest(),
+    });
+    const execution = {
+      state: () => ({ binding, pendingEffect: { kind: "none" } }),
+      effectRequest: () => null,
+      assertCurrent: async () => undefined,
+      runEffect: async (raw: unknown) => {
+        const effect = raw as {
+          executor: {
+            reconcile: (input: { effectId: string; requestDigest: string; signal: AbortSignal }) =>
+              Promise<{ status: string }>;
+            executeIdempotent: (input: {
+              effectId: string;
+              requestDigest: string;
+              writerLeaseGeneration: number;
+              signal: AbortSignal;
+              assertFence: () => Promise<void>;
+            }) => Promise<WardenRuntimeJson>;
+          };
+          validateResult: (value: WardenRuntimeJson) => WardenRuntimeJson;
+        };
+        const controller = new AbortController();
+        expect(await effect.executor.reconcile({
+          effectId: `sha256:${"7".repeat(64)}`,
+          requestDigest: `sha256:${"8".repeat(64)}`,
+          signal: controller.signal,
+        })).toEqual({ status: "unknown" });
+        const value = await effect.executor.executeIdempotent({
+          effectId: `sha256:${"7".repeat(64)}`,
+          requestDigest: `sha256:${"8".repeat(64)}`,
+          writerLeaseGeneration: 1,
+          signal: controller.signal,
+          assertFence: async () => undefined,
+        });
+        return { value: effect.validateResult(value), replayed: false };
+      },
+    } as unknown as WardenRuntimeExecution;
+
+    const result = await runWardenWithRuntime({
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      externalModelAccounting: {
+        ...TEST_MODEL_SOURCE.externalModelAccounting,
+        reserve,
+        settle,
+      },
+      maxSteps: 3,
+      planner,
+    }, {
+      execution,
+      binding,
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+    });
+
+    expect(planner).toHaveBeenCalledTimes(1);
+    expect(reserve).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(result.metrics.model).toMatchObject({ calls: 1, successfulCalls: 1 });
+  });
+
+  it("aborts the runtime planner before a stale settlement can commit", async () => {
+    const dir = intentFixture();
+    const settle = vi.fn(async () => undefined);
+    let plannerObservedAbort = false;
+    const planner = vi.fn(async (_input, options) => {
+      await new Promise<void>((resolve) => {
+        options.signal.addEventListener("abort", () => {
+          plannerObservedAbort = true;
+          resolve();
+        }, { once: true });
+      });
+      throw new Error("planner_aborted");
+    });
+    const binding: WardenCheckpointBinding = Object.freeze({
+      schemaVersion: 1,
+      tenantId: TEST_MODEL_SOURCE.tenantId,
+      jobId: "job-runtime-abort",
+      attemptId: "attempt-runtime-abort",
+      repositoryId: "repository-runtime-abort",
+      snapshotId: "snapshot-runtime-abort",
+      revision: "revision-runtime-abort",
+      sourceManifestSha256: `sha256:${"7".repeat(64)}`,
+      allowedPathsDigest: `sha256:${"8".repeat(64)}`,
+      verificationProfileDigest: `sha256:${"9".repeat(64)}`,
+      modelPolicyDigest: runtimeModelAuthorityDigest(),
+    });
+    const execution = {
+      state: () => ({ binding, pendingEffect: { kind: "none" } }),
+      effectRequest: () => null,
+      assertCurrent: async () => undefined,
+      runEffect: async (raw: unknown) => {
+        const effect = raw as {
+          executor: {
+            executeIdempotent: (input: {
+              effectId: string;
+              requestDigest: string;
+              writerLeaseGeneration: number;
+              signal: AbortSignal;
+              assertFence: () => Promise<void>;
+            }) => Promise<WardenRuntimeJson>;
+          };
+        };
+        const controller = new AbortController();
+        setTimeout(() => controller.abort("lease_lost"), 5);
+        return await effect.executor.executeIdempotent({
+          effectId: `sha256:${"a".repeat(64)}`,
+          requestDigest: `sha256:${"b".repeat(64)}`,
+          writerLeaseGeneration: 1,
+          signal: controller.signal,
+          assertFence: async () => undefined,
+        });
+      },
+    } as unknown as WardenRuntimeExecution;
+
+    await expect(runWardenWithRuntime({
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      externalModelAccounting: {
+        ...TEST_MODEL_SOURCE.externalModelAccounting,
+        reserve: async () => undefined,
+        settle,
+      },
+      maxSteps: 3,
+      planner,
+    }, {
+      execution,
+      binding,
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+    })).rejects.toThrow("lease_lost");
+
+    expect(plannerObservedAbort).toBe(true);
+    expect(settle).not.toHaveBeenCalled();
+  });
+
+  it.each(["reserve", "settle"] as const)(
+    "stops a runtime planner when the lease changes during %s",
+    async (boundary) => {
+      const dir = intentFixture();
+      let stale = false;
+      const planner = vi.fn(async () => ({
+        call: { tool: "finish" as const, args: { ok: false, message: "review required" } },
+        usage: TEST_MODEL_USAGE,
+      }));
+      const reserve = vi.fn(async () => {
+        if (boundary === "reserve") stale = true;
+      });
+      const settle = vi.fn(async () => {
+        if (boundary === "settle") stale = true;
+      });
+      const runtimeTask = {
+        goal: "Repair the API path typo.",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "HTTP 404 for /v1/chargess",
+        useLlm: true,
+        ...TEST_MODEL_SOURCE,
+        externalModelAccounting: {
+          ...TEST_MODEL_SOURCE.externalModelAccounting,
+          reserve,
+          settle,
+        },
+        maxSteps: 3,
+        planner,
+      };
+      const binding: WardenCheckpointBinding = Object.freeze({
+        schemaVersion: 1,
+        tenantId: TEST_MODEL_SOURCE.tenantId,
+        jobId: `job-runtime-${boundary}`,
+        attemptId: `attempt-runtime-${boundary}`,
+        repositoryId: `repository-runtime-${boundary}`,
+        snapshotId: `snapshot-runtime-${boundary}`,
+        revision: `revision-runtime-${boundary}`,
+        sourceManifestSha256: `sha256:${"1".repeat(64)}`,
+        allowedPathsDigest: `sha256:${"2".repeat(64)}`,
+        verificationProfileDigest: `sha256:${"3".repeat(64)}`,
+        modelPolicyDigest: createWardenRuntimeModelAuthorityDigest(runtimeTask),
+      });
+      const execution = {
+        state: () => ({ binding, pendingEffect: { kind: "none" } }),
+        effectRequest: () => null,
+        assertCurrent: async () => {
+          if (stale) throw new Error("warden_runtime_effect_lease_stale");
+        },
+        runEffect: async (raw: unknown) => {
+          const effect = raw as {
+            executor: {
+              executeIdempotent: (input: {
+                effectId: string;
+                requestDigest: string;
+                writerLeaseGeneration: number;
+                signal: AbortSignal;
+                assertFence: () => Promise<void>;
+              }) => Promise<WardenRuntimeJson>;
+            };
+          };
+          return await effect.executor.executeIdempotent({
+            effectId: `sha256:${"4".repeat(64)}`,
+            requestDigest: `sha256:${"5".repeat(64)}`,
+            writerLeaseGeneration: 1,
+            signal: new AbortController().signal,
+            assertFence: async () => {
+              if (stale) throw new Error("warden_runtime_effect_lease_stale");
+            },
+          });
+        },
+      } as unknown as WardenRuntimeExecution;
+
+      await expect(runWardenWithRuntime(runtimeTask, {
+        execution,
+        binding,
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+      })).rejects.toThrow("warden_runtime_effect_lease_stale");
+
+      expect(reserve).toHaveBeenCalledTimes(1);
+      expect(planner).toHaveBeenCalledTimes(boundary === "reserve" ? 0 : 1);
+      expect(settle).toHaveBeenCalledTimes(boundary === "reserve" ? 0 : 1);
+    },
+  );
+
+  it("rejects runtime task authority drift before planner or tool execution", async () => {
+    const dir = intentFixture();
+    const planner = vi.fn(async () => {
+      throw new Error("planner_must_not_run");
+    });
+    const binding: WardenCheckpointBinding = Object.freeze({
+      schemaVersion: 1,
+      tenantId: "tenant-authoritative",
+      jobId: "job-runtime-authority",
+      attemptId: "attempt-runtime-authority",
+      repositoryId: "repository-runtime-authority",
+      snapshotId: "snapshot-runtime-authority",
+      revision: "revision-runtime-authority",
+      sourceManifestSha256: `sha256:${"9".repeat(64)}`,
+      allowedPathsDigest: `sha256:${"a".repeat(64)}`,
+      verificationProfileDigest: `sha256:${"b".repeat(64)}`,
+      modelPolicyDigest: runtimeModelAuthorityDigest(),
+    });
+    const execution = {
+      state: () => ({ binding, pendingEffect: { kind: "none" } }),
+      effectRequest: () => null,
+      assertCurrent: async () => undefined,
+      runEffect: async () => {
+        throw new Error("effect_must_not_run");
+      },
+    } as unknown as WardenRuntimeExecution;
+
+    await expect(runWardenWithRuntime({
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      planner,
+    }, {
+      execution,
+      binding,
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+    })).rejects.toThrow("warden_runtime_task_authority_mismatch");
+    expect(planner).not.toHaveBeenCalled();
+  });
+
+  it("rejects runtime budget drift before planner execution", async () => {
+    const dir = intentFixture();
+    const planner = vi.fn(async () => {
+      throw new Error("planner_must_not_run");
+    });
+    const authoritativeTask = {
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      maxSteps: 3,
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      planner,
+    };
+    const binding: WardenCheckpointBinding = Object.freeze({
+      schemaVersion: 1,
+      tenantId: TEST_MODEL_SOURCE.tenantId,
+      jobId: "job-runtime-budget",
+      attemptId: "attempt-runtime-budget",
+      repositoryId: "repository-runtime-budget",
+      snapshotId: "snapshot-runtime-budget",
+      revision: "revision-runtime-budget",
+      sourceManifestSha256: `sha256:${"c".repeat(64)}`,
+      allowedPathsDigest: `sha256:${"d".repeat(64)}`,
+      verificationProfileDigest: `sha256:${"e".repeat(64)}`,
+      modelPolicyDigest: createWardenRuntimeModelAuthorityDigest(authoritativeTask),
+    });
+    const execution = {
+      state: () => ({ binding, pendingEffect: { kind: "none" } }),
+      effectRequest: () => null,
+      assertCurrent: async () => undefined,
+      runEffect: async () => {
+        throw new Error("effect_must_not_run");
+      },
+    } as unknown as WardenRuntimeExecution;
+
+    await expect(runWardenWithRuntime({
+      ...authoritativeTask,
+      modelBudget: { maxCalls: 2 },
+    }, {
+      execution,
+      binding,
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+    })).rejects.toThrow("warden_runtime_task_authority_mismatch");
+    expect(planner).not.toHaveBeenCalled();
+  });
+
+  it("rejects runtime execution mode drift before planner execution", async () => {
+    const dir = intentFixture();
+    const planner = vi.fn(async () => {
+      throw new Error("planner_must_not_run");
+    });
+    const authoritativeTask = {
+      goal: "Repair the API path typo.",
+      errorLog: "HTTP 404 for /v1/chargess",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      maxSteps: 3,
+      dryRun: true,
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      planner,
+    };
+    const binding: WardenCheckpointBinding = Object.freeze({
+      schemaVersion: 1,
+      tenantId: TEST_MODEL_SOURCE.tenantId,
+      jobId: "job-runtime-mode",
+      attemptId: "attempt-runtime-mode",
+      repositoryId: "repository-runtime-mode",
+      snapshotId: "snapshot-runtime-mode",
+      revision: "revision-runtime-mode",
+      sourceManifestSha256: `sha256:${"c".repeat(64)}`,
+      allowedPathsDigest: `sha256:${"d".repeat(64)}`,
+      verificationProfileDigest: `sha256:${"e".repeat(64)}`,
+      modelPolicyDigest: createWardenRuntimeModelAuthorityDigest(authoritativeTask),
+    });
+    const execution = {
+      state: () => ({ binding, pendingEffect: { kind: "none" } }),
+      effectRequest: () => null,
+      assertCurrent: async () => undefined,
+      runEffect: async () => { throw new Error("effect_must_not_run"); },
+    } as unknown as WardenRuntimeExecution;
+
+    await expect(runWardenWithRuntime({
+      ...authoritativeTask,
+      dryRun: false,
+    }, {
+      execution,
+      binding,
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+    })).rejects.toThrow("warden_runtime_task_authority_mismatch");
+    expect(planner).not.toHaveBeenCalled();
+  });
 
   it("rejects a planner mutation without a versioned execution intent", async () => {
     const dir = intentFixture();

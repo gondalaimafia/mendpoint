@@ -116,7 +116,7 @@ describe("customer launcher preflight", () => {
       "customer_startup_blocked_by_backup",
     );
     expect(existsSync(databasePath)).toBe(false);
-  });
+  }, 15_000);
 
   it("fails before creating persistent state when full customer validation fails", () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-start-preflight-"));

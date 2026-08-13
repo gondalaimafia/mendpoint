@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -77,10 +77,12 @@ import {
 } from "@mendpoint/github";
 import {
   deploymentProfile,
+  parseCustomerBackupKey,
   resolveMutationFenceRoot,
   tryAcquireMutationLease,
   initializeWithMutationLease,
 } from "@mendpoint/ops";
+import { createWardenCheckpointJobJournal } from "./warden-checkpoint-journal.js";
 
 export function initializeWorkerDurableState<T>(
   initialize: () => T,
@@ -2209,6 +2211,7 @@ async function processJobsOnceUnfenced(
       leaseGeneration: job.lease_generation,
     };
     let leaseLost = false;
+    const leaseAbort = new AbortController();
     let pendingAgentRun: Readonly<{
       sessionId: string;
       goal: string;
@@ -2236,9 +2239,11 @@ async function processJobsOnceUnfenced(
           })
         ) {
           leaseLost = true;
+          leaseAbort.abort("lease_lost_during_warden");
         }
       } catch (error) {
         leaseLost = true;
+        leaseAbort.abort("lease_lost_during_warden");
         console.error(
           `  lease renewal failed job=${job.id}: ${
             error instanceof Error ? error.message : String(error)
@@ -2563,6 +2568,34 @@ async function processJobsOnceUnfenced(
             executorId: routingDescriptor.executorId,
             providerId: routingDescriptor.providerId,
             run: async () => {
+              const checkpointKeyText = workerEnv.MENDPOINT_APPLICATION_DATA_KEY?.trim();
+              if (!checkpointKeyText && deploymentProfile(workerEnv) === "customer") {
+                throw new Error("customer_warden_checkpoint_key_required");
+              }
+              const runtime = checkpointKeyText
+                ? {
+                    jobId: job.id,
+                    journal: createWardenCheckpointJobJournal({
+                      db,
+                      tenantId: job.tenant_id,
+                      jobId: job.id,
+                      workerId: fence.workerId,
+                      leaseGeneration: fence.leaseGeneration,
+                    }),
+                    key: createHmac(
+                      "sha256",
+                      parseCustomerBackupKey(checkpointKeyText),
+                    ).update("mendpoint:warden-runtime-checkpoint:v1", "utf8").digest(),
+                    writerLeaseGeneration: fence.leaseGeneration,
+                    executorDigest: `sha256:${createHash("sha256")
+                      .update("mendpoint-warden-runtime-v2", "utf8").digest("hex")}`,
+                    operationTimeoutMs: Math.min(
+                      300_000,
+                      Math.max(1_000, Math.floor(leaseMs * 2 / 3)),
+                    ),
+                    signal: leaseAbort.signal,
+                  }
+                : undefined;
               const attempt = await runWardenAttempt({
                 scope: { tenantId: job.tenant_id, attemptId: job.id },
                 source: {
@@ -2599,6 +2632,7 @@ async function processJobsOnceUnfenced(
                   ...WARDEN_ATTEMPT_LIMITS,
                   allowedChangedPaths: [...allowedChangedPaths],
                 },
+                ...(runtime ? { runtime } : {}),
               });
               capturedAttempt = attempt;
               if (leaseLost || attempt.agent?.stoppedReason === "lease_lost") {
