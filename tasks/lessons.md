@@ -27,3 +27,7 @@
 **Mistake:** Parallel Claude and Codex work accumulated on divergent branches and dirty worktrees without one coherent release branch.
 **Correction:** Talal required all work from both agents to be reviewed, merged, and shipped together carefully.
 **Rule:** When parallel agents work on the same product, inventory provenance first, preserve dirty experiments, replay reviewed logical bundles onto current main, run the full combined gate, and ship only through one reviewed release candidate.
+### 2026-08-12 — Build complete features before withholding shipment
+**Mistake:** I interpreted "build but do not ship" as permission to stop at default-off library foundations.
+**Correction:** Talal wants elaborate end-to-end features built into the application, with only merge, activation, deployment, and customer rollout withheld.
+**Rule:** Separate implementation completeness from shipment state. When asked to build but not ship, integrate and verify the full local product path while leaving production flags, infrastructure activation, pushes, merges, and deployments untouched.

@@ -135,6 +135,7 @@ import {
   createWardenModelAccountingRuntime,
 } from "./warden-model-accounting.js";
 import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
+import { runTransformerServiceCli } from "./transformer-service-cli.js";
 
 const WORKER_ID =
   process.env.MENDPOINT_WORKER_ID ?? `worker:${process.pid}:${randomUUID()}`;
@@ -3347,15 +3348,19 @@ async function main() {
     await runJobWorker(args.intervalMs);
   } else if (cmd === "run-service") {
     await runService(args.intervalMs);
+  } else if (cmd === "run-transformer-service") {
+    await runTransformerServiceCli();
+    await new Promise(() => undefined);
   } else if (cmd === "sdk-signals") {
     console.log(JSON.stringify(await probeKnownSdks({ localOnly: args.localOnly }), null, 2));
   } else {
-    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|sdk-signals]
+    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals]
   poll-once [--local] [--no-pipeline] [--slug acme-payments]
   poll [--local] [--interval 60000]
   process-jobs
   run-jobs [--interval 5000]
   run-service [--interval 5000]
+  run-transformer-service
   sdk-signals [--local]`);
     process.exitCode = 1;
   }

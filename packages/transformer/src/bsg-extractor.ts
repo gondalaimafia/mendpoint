@@ -128,6 +128,186 @@ export class BsgExtractionError extends Error {
   }
 }
 
+function sameCanonical(left: unknown, right: unknown): boolean {
+  return canonical(left) === canonical(right);
+}
+
+function verifyGraphProvenance(
+  provenance: BsgProvenance,
+  tenantId: string,
+  snapshots: ReadonlyMap<string, ExtractedBehavioralSpecGraph["snapshots"][number]>,
+  evaluatedEpoch: number,
+): void {
+  if (text(provenance.sourceId, "bsg_graph_provenance_invalid", 500) !== provenance.sourceId ||
+    !["code", "test", "schema", "trace", "human"].includes(provenance.kind) ||
+    provenance.tenantId !== tenantId ||
+    text(provenance.locator, "bsg_graph_provenance_invalid", 2_000) !== provenance.locator ||
+    !DIGEST.test(provenance.contentDigest)) {
+    fail("bsg_graph_provenance_invalid");
+  }
+  const snapshot = snapshots.get(provenance.repositoryId);
+  if (!snapshot || snapshot.snapshotId !== provenance.snapshotId ||
+    snapshot.revision !== provenance.revision ||
+    snapshot.snapshotDigest !== provenance.snapshotDigest) {
+    fail("bsg_graph_provenance_snapshot_invalid");
+  }
+  const observedEpoch = Date.parse(provenance.observedAt);
+  const staleEpoch = Date.parse(provenance.staleAt);
+  if (!Number.isFinite(observedEpoch) || !Number.isFinite(staleEpoch) ||
+    observedEpoch > evaluatedEpoch || staleEpoch < observedEpoch) {
+    fail("bsg_graph_provenance_time_invalid");
+  }
+  let expectedState: BsgEvidenceState = staleEpoch < evaluatedEpoch ? "stale" : "active";
+  if (provenance.deletedAt !== undefined) {
+    const deletedEpoch = Date.parse(provenance.deletedAt);
+    if (!Number.isFinite(deletedEpoch) || deletedEpoch < observedEpoch || deletedEpoch > evaluatedEpoch) {
+      fail("bsg_graph_provenance_time_invalid");
+    }
+    expectedState = "deleted";
+  }
+  if (provenance.state !== expectedState) fail("bsg_graph_provenance_state_invalid");
+  if (provenance.kind === "human") {
+    text(provenance.approvalId, "bsg_graph_provenance_approval_invalid", 500);
+  } else if (provenance.approvalId !== undefined) {
+    fail("bsg_graph_provenance_approval_invalid");
+  }
+}
+
+function graphProvenanceIdentity(provenance: BsgProvenance): string {
+  return canonical({
+    kind: provenance.kind,
+    tenantId: provenance.tenantId,
+    repositoryId: provenance.repositoryId,
+    snapshotId: provenance.snapshotId,
+    revision: provenance.revision,
+    snapshotDigest: provenance.snapshotDigest,
+    contentDigest: provenance.contentDigest,
+    observedAt: provenance.observedAt,
+    state: provenance.state,
+    staleAt: provenance.staleAt,
+    ...(provenance.deletedAt ? { deletedAt: provenance.deletedAt } : {}),
+    ...(provenance.approvalId ? { approvalId: provenance.approvalId } : {}),
+  });
+}
+
+/**
+ * Verify that a serialized extracted graph still has the identity and derived
+ * state produced by this module before another foundation consumes it.
+ */
+export function verifyExtractedBehavioralSpecGraph(
+  value: ExtractedBehavioralSpecGraph,
+): ExtractedBehavioralSpecGraph {
+  if (!value || typeof value !== "object") fail("bsg_graph_invalid");
+  const graph = structuredClone(value);
+  if (graph.schemaVersion !== "2026-08-02.v1" || !Array.isArray(graph.snapshots) ||
+    !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
+    fail("bsg_graph_invalid");
+  }
+  const { id, digest, ...body } = graph;
+  const expectedDigest = sha256(body);
+  if (digest !== expectedDigest || id !== `bsg_${expectedDigest.slice(7, 31)}`) {
+    fail("bsg_graph_identity_invalid");
+  }
+  const evaluatedEpoch = Date.parse(graph.evaluatedAt);
+  if (!Number.isFinite(evaluatedEpoch)) fail("bsg_graph_evaluated_at_invalid");
+  if (text(graph.tenantId, "bsg_graph_invalid", 200) !== graph.tenantId ||
+    text(graph.title, "bsg_graph_invalid", 500) !== graph.title ||
+    text(graph.sourceSystem, "bsg_graph_invalid", 500) !== graph.sourceSystem ||
+    text(graph.targetSystem, "bsg_graph_invalid", 500) !== graph.targetSystem ||
+    graph.nodes.length > MAX_NODES || graph.edges.length > MAX_EDGES ||
+    graph.snapshots.length > MAX_SOURCES) {
+    fail("bsg_graph_invalid");
+  }
+  const snapshotByRepository = new Map(graph.snapshots.map((snapshot) => [snapshot.repositoryId, snapshot]));
+  if (snapshotByRepository.size !== graph.snapshots.length) fail("bsg_graph_snapshot_conflict");
+  for (const snapshot of graph.snapshots) {
+    if (text(snapshot.repositoryId, "bsg_graph_snapshot_invalid", 500) !== snapshot.repositoryId ||
+      text(snapshot.snapshotId, "bsg_graph_snapshot_invalid", 500) !== snapshot.snapshotId ||
+      !REVISION.test(snapshot.revision) || !DIGEST.test(snapshot.snapshotDigest)) {
+      fail("bsg_graph_snapshot_invalid");
+    }
+  }
+  const nodeIds = new Set<string>();
+  const nodeKeys = new Set<string>();
+  const provenanceBySource = new Map<string, string>();
+  const recordProvenance = (provenance: BsgProvenance): void => {
+    verifyGraphProvenance(provenance, graph.tenantId, snapshotByRepository, evaluatedEpoch);
+    const identity = graphProvenanceIdentity(provenance);
+    const existing = provenanceBySource.get(provenance.sourceId);
+    if (existing !== undefined && existing !== identity) fail("bsg_graph_source_alias_conflict");
+    provenanceBySource.set(provenance.sourceId, identity);
+  };
+  for (const node of graph.nodes) {
+    if (nodeIds.has(node.id) || nodeKeys.has(node.key)) fail("bsg_graph_node_conflict");
+    nodeIds.add(node.id);
+    nodeKeys.add(node.key);
+    if (text(node.key, "bsg_graph_node_invalid", 500) !== node.key ||
+      !["precondition", "postcondition", "invariant", "behavior"].includes(node.kind) ||
+      text(node.label, "bsg_graph_node_invalid", 1_000) !== node.label ||
+      text(node.spec, "bsg_graph_node_invalid") !== node.spec ||
+      node.id !== `bsgn_${sha256({ tenantId: graph.tenantId, key: node.key }).slice(7, 31)}` ||
+      !Array.isArray(node.provenance) || node.provenance.length === 0) {
+      fail("bsg_graph_node_invalid");
+    }
+    for (const provenance of node.provenance) {
+      recordProvenance(provenance);
+    }
+    if (node.state !== aggregateState(node.provenance.map((item) => item.state))) {
+      fail("bsg_graph_node_state_invalid");
+    }
+    const expectedRefs = [...new Set(node.provenance.map((item) => item.locator))].sort();
+    if (!sameCanonical(node.sourceRefs, expectedRefs)) fail("bsg_graph_node_refs_invalid");
+  }
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const edgeIds = new Set<string>();
+  for (const edge of graph.edges) {
+    if (edgeIds.has(edge.id)) fail("bsg_graph_edge_conflict");
+    edgeIds.add(edge.id);
+    const from = nodeById.get(edge.from);
+    const to = nodeById.get(edge.to);
+    if (!from || !to || !Array.isArray(edge.provenance) || edge.provenance.length === 0) {
+      fail("bsg_graph_edge_invalid");
+    }
+    if (from === to || !["implies", "orders", "refines"].includes(edge.kind)) {
+      fail("bsg_graph_edge_invalid");
+    }
+    for (const provenance of edge.provenance) {
+      recordProvenance(provenance);
+    }
+    const expectedId = `bsge_${sha256({
+      tenantId: graph.tenantId,
+      from: from.key,
+      to: to.key,
+      kind: edge.kind,
+    }).slice(7, 31)}`;
+    if (edge.id !== expectedId || edge.state !== relationState(
+      edge.provenance.map((item) => item.state),
+      from.state,
+      to.state,
+    )) {
+      fail("bsg_graph_edge_state_invalid");
+    }
+  }
+  const executableNodeIds = graph.nodes.filter((node) => node.state === "active").map((node) => node.id);
+  const excludedNodeIds = graph.nodes.filter((node) => node.state !== "active").map((node) => node.id);
+  const executableEdgeIds = graph.edges.filter((edge) => edge.state === "active").map((edge) => edge.id);
+  const excludedEdgeIds = graph.edges.filter((edge) => edge.state !== "active").map((edge) => edge.id);
+  if (!sameCanonical(graph.execution, {
+    allowed: true,
+    activeNodeCount: executableNodeIds.length,
+    executableNodeIds,
+    excludedNodeIds,
+    executableEdgeIds,
+    excludedEdgeIds,
+  }) || !sameCanonical(graph.automation, {
+    mayReadRepository: false,
+    mayMutateRepository: false,
+  })) {
+    fail("bsg_graph_execution_invalid");
+  }
+  return deepFreeze(graph);
+}
+
 /**
  * Collect explicit behavior annotations from code, test, schema, or trace
  * fixtures. The strict line format keeps extraction reproducible and makes the

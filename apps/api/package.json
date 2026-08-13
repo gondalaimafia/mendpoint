@@ -19,6 +19,7 @@
     "@mendpoint/orchestrator": "*",
     "@mendpoint/contract": "*",
     "@mendpoint/transformer": "*",
+    "@mendpoint/worker": "*",
     "@mendpoint/platform": "*",
     "@mendpoint/graph-learn": "*",
     "@mendpoint/harness": "*",
@@ -33,7 +34,6 @@
     "jose": "^6.2.7"
   },
   "devDependencies": {
-    "@mendpoint/worker": "*",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vitest": "^3.0.9"

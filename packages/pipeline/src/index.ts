@@ -69,6 +69,9 @@ import {
 } from "@mendpoint/contract";
 import { createWardenDraftPrPackage } from "./warden-pr-package.js";
 export * from "./warden-campaign-executor.js";
+export * from "./software-attestation-operation.js";
+export * from "./post-trained-application.js";
+export * from "./post-trained-training.js";
 import {
   getGraphLearnDb,
   ingestControlPlane,

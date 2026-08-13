@@ -68,6 +68,24 @@ export {
   type NewCapability,
 } from "./capability-adoption.js";
 
+export {
+  GraphQLSchemaError,
+  diffGraphQLSchemas,
+  normalizeGraphQLSchema,
+  type CanonicalGraphQLArgument,
+  type CanonicalGraphQLDefinition,
+  type CanonicalGraphQLField,
+  type CanonicalGraphQLSchema,
+  type GraphQLChangeClassification,
+  type GraphQLDefinitionKind,
+  type GraphQLSchemaChange,
+  type GraphQLSchemaDiff,
+  type GraphQLSchemaErrorCode,
+  type GraphQLSchemaLimits,
+  type GraphQLSchemaSourceFormat,
+  type GraphQLSourceLocation,
+} from "./graphql-schema.js";
+
 type Json = Record<string, unknown>;
 
 function asObj(v: unknown): Json {

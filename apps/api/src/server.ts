@@ -219,6 +219,7 @@ import {
   readWardenCandidate,
 } from "./warden-candidate.js";
 import { registerTransformerAdaptiveReviewRoutes } from "./transformer-adaptive-review.js";
+import { registerLegacyBehaviorRoutes } from "./legacy-behavior.js";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
   createAuthMiddleware,
@@ -265,6 +266,20 @@ import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.j
 import { createWardenPilotIntakeRoutes } from "./warden-pilot-intake.js";
 import { createWardenCampaignEnrollmentRoutes } from "./warden-campaign-enrollment.js";
 import { createOutcomeMetricsRoutes } from "./outcome-metrics-routes.js";
+import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
+import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
+import {
+  createGraphQLSchemaIngestionRoutes,
+  graphqlSchemaIngestionEnabled,
+} from "./graphql-schema-ingestion.js";
+import {
+  advancedAiApplicationsEnabled,
+  advancedAiAttestationCryptoFromEnv,
+  advancedAiTrainingRuntimeFromEnv,
+  createDurableAttestationScopeAuthority,
+  createDurablePostTrainedConsentReader,
+  createAdvancedAiApplicationRoutes,
+} from "./advanced-ai-applications.js";
 import { initializeApiRuntime } from "./api-runtime.js";
 import {
   internalErrorResponse,
@@ -690,8 +705,27 @@ app.use("*", async (c, next) => {
 // so it can budget by tenant. Disabled by default; see tenantQuotaMiddleware.
 app.use("*", tenantQuotaMiddleware());
 
+app.route("/graphql/schemas", createGraphQLSchemaIngestionRoutes({
+  db,
+  enabled: graphqlSchemaIngestionEnabled(process.env),
+}));
+app.route("/advanced-ai", createAdvancedAiApplicationRoutes({
+  db,
+  enabled: advancedAiApplicationsEnabled(process.env),
+  ...advancedAiAttestationCryptoFromEnv(process.env),
+  ...advancedAiTrainingRuntimeFromEnv(db, process.env),
+  authorizeAttestationScope: createDurableAttestationScopeAuthority(),
+  readConsent: createDurablePostTrainedConsentReader(db),
+}));
+
 registerTransformerControlPlaneRoutes(app, transformerCampaigns);
 registerTransformerPilotExecutionRoutes(app, transformerExecutions);
+app.route("/v1/transformer/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+  enabled: process.env.MENDPOINT_TRANSFORMER_MULTINODE_COORDINATOR_ENABLED === "1",
+  store: transformerExecutions.store,
+  gateConfig: process.env.MENDPOINT_TRANSFORMER_GATE,
+  loadExactSource: (lease, observedAt) => loadTransformerRecipeSnapshot(db, lease, observedAt),
+}));
 app.route("/change-sources", changeSourceRoutes);
 app.route("/billing", billingRoutes);
 app.route("/design-partner-applications", designPartnerRoutes);
@@ -2617,6 +2651,11 @@ registerWardenCandidateReviewRoutes(app, db, requestAudit);
 // fixes that diverge from the deterministic recipe output).
 registerTransformerAdaptiveReviewRoutes(app, db, requestAudit, {
   regenerationGate: (tenantId) => transformerExecutions.gate(tenantId, "api_control_plane"),
+});
+
+registerLegacyBehaviorRoutes(app, db, {
+  enabled: process.env.MENDPOINT_LEGACY_BEHAVIOR_ENABLED === "1",
+  now: nowIso,
 });
 
 /**

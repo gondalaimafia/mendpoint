@@ -1,14 +1,34 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   BsgExtractionError,
   collectBsgAnnotations,
   extractBehavioralSpecGraph,
+  verifyExtractedBehavioralSpecGraph,
   type BsgExtractionInput,
+  type ExtractedBehavioralSpecGraph,
 } from "./bsg-extractor.js";
 
 const REVISION = "a".repeat(40);
 const SNAPSHOT_DIGEST = `sha256:${"b".repeat(64)}`;
 const DIGEST = (character: string) => `sha256:${character.repeat(64)}`;
+
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
+    .join(",")}}`;
+}
+
+function reseal(value: ExtractedBehavioralSpecGraph): ExtractedBehavioralSpecGraph {
+  const { id: _id, digest: _digest, ...body } = value;
+  const digest = `sha256:${createHash("sha256").update(canonical(body)).digest("hex")}`;
+  value.digest = digest;
+  value.id = `bsg_${digest.slice(7, 31)}`;
+  return value;
+}
 
 function fixture(): BsgExtractionInput {
   const shared = {
@@ -130,6 +150,25 @@ function fixture(): BsgExtractionInput {
 }
 
 describe("Behavioral Specification Graph extraction", () => {
+  it("verifies valid serialized graphs and rejects resealed edge provenance tampering", () => {
+    const extracted = extractBehavioralSpecGraph(fixture());
+    const verified = verifyExtractedBehavioralSpecGraph(extracted);
+    expect(verified).toEqual(extracted);
+    expect(Object.isFrozen(verified.edges[0]!.provenance)).toBe(true);
+
+    const tampered = structuredClone(extracted);
+    tampered.edges[0]!.provenance[0]!.snapshotId = "snapshot-forged";
+    reseal(tampered);
+
+    expect(() => verifyExtractedBehavioralSpecGraph(tampered)).toThrow(BsgExtractionError);
+
+    const aliased = structuredClone(extracted);
+    aliased.edges[0]!.provenance[0]!.contentDigest = DIGEST("f");
+    reseal(aliased);
+
+    expect(() => verifyExtractedBehavioralSpecGraph(aliased)).toThrow(BsgExtractionError);
+  });
+
   it("collects strict source annotations with exact line provenance", () => {
     const records = collectBsgAnnotations([
       "export function calculatePayment() {",

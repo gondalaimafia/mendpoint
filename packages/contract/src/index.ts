@@ -131,3 +131,27 @@ export {
   type AuditExportRecord,
   type GovernedAuditExport,
 } from "./audit-governance.js";
+
+export {
+  DSSE_IN_TOTO_PAYLOAD_TYPE,
+  IN_TOTO_STATEMENT_V1,
+  MENDPOINT_SOFTWARE_ATTESTATION_PREDICATE_V1,
+  SOFTWARE_ATTESTATION_MAX_PAYLOAD_BYTES,
+  canonicalSoftwareAttestationStatementJson,
+  createSoftwareAttestationStatementV1,
+  dssePreAuthEncode,
+  signSoftwareAttestation,
+  verifySoftwareAttestation,
+  type DsseEnvelope,
+  type SoftwareAttestationArtifact,
+  type SoftwareAttestationArtifactInput,
+  type SoftwareAttestationExpectedScope,
+  type SoftwareAttestationScope,
+  type SoftwareAttestationScopeInput,
+  type SoftwareAttestationSigner,
+  type SoftwareAttestationStatementInput,
+  type SoftwareAttestationStatementV1,
+  type SoftwareAttestationTrustedKey,
+  type SoftwareAttestationTrustPolicy,
+  type VerifiedSoftwareAttestation,
+} from "./software-attestation.js";

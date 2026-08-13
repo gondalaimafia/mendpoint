@@ -1,0 +1,103 @@
+import { createServer, type Server } from "node:http";
+import { resolve } from "node:path";
+import {
+  createFilesystemTransformerArtifactBackend,
+  createS3CompatibleTransformerArtifactBackend,
+} from "./transformer-shared-artifact-backends.js";
+import { createSigV4S3ArtifactTransport } from "./transformer-s3-transport.js";
+import {
+  createFetchTransformerMultinodeTransport,
+  createTransformerMultinodeService,
+} from "./transformer-multinode-service.js";
+
+export type RunningTransformerService = Readonly<{ close(): Promise<void>; readinessUrl: string }>;
+
+export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.env): Promise<RunningTransformerService> {
+  if (env.MENDPOINT_TRANSFORMER_MULTINODE_ENABLED !== "1") throw new Error("transformer_multinode_service_disabled");
+  const workerId = required(env.MENDPOINT_TRANSFORMER_WORKER_ID, "transformer_multinode_worker_id_required");
+  const tenantId = required(env.MENDPOINT_TRANSFORMER_TENANT_ID, "transformer_multinode_tenant_required");
+  const campaignId = required(env.MENDPOINT_TRANSFORMER_CAMPAIGN_ID, "transformer_multinode_campaign_required");
+  const dataRoot = resolve(required(env.MENDPOINT_TRANSFORMER_PRIVATE_DATA_ROOT, "transformer_multinode_data_root_required"));
+  const encryptionKey = decodeKey(required(env.MENDPOINT_TRANSFORMER_CHECKPOINT_KEY, "transformer_multinode_checkpoint_key_required"));
+  const intervalMs = integer(env.MENDPOINT_TRANSFORMER_INTERVAL_MS ?? "5000", 100, 60_000, "transformer_multinode_interval_invalid");
+  const readinessPort = integer(env.MENDPOINT_TRANSFORMER_READINESS_PORT ?? "9465", 1, 65_535, "transformer_multinode_readiness_port_invalid");
+  const transport = createFetchTransformerMultinodeTransport({
+    baseUrl: required(env.MENDPOINT_TRANSFORMER_COORDINATOR_URL, "transformer_multinode_coordinator_url_required"),
+    authToken: required(env.MENDPOINT_TRANSFORMER_COORDINATOR_TOKEN, "transformer_multinode_coordinator_token_required"),
+    workerId,
+    timeoutMs: integer(env.MENDPOINT_TRANSFORMER_COORDINATOR_TIMEOUT_MS ?? "30000", 1, 120_000, "transformer_multinode_timeout_invalid"),
+    maxResponseBytes: integer(env.MENDPOINT_TRANSFORMER_MAX_RESPONSE_BYTES ?? String(64 * 1024 * 1024), 1_024, 128 * 1024 * 1024, "transformer_multinode_response_limit_invalid"),
+  });
+  const artifactMode = required(env.MENDPOINT_TRANSFORMER_ARTIFACT_BACKEND, "transformer_multinode_artifact_backend_required");
+  const backend = artifactMode === "filesystem"
+    ? createFilesystemTransformerArtifactBackend({ root: resolve(required(env.MENDPOINT_TRANSFORMER_SHARED_ARTIFACT_ROOT, "transformer_multinode_artifact_root_required")), maxStoredBytes: 64 * 1024 * 1024 })
+    : artifactMode === "s3"
+      ? createS3CompatibleTransformerArtifactBackend({ bucket: required(env.MENDPOINT_TRANSFORMER_S3_BUCKET, "transformer_multinode_s3_bucket_required"), keyPrefix: required(env.MENDPOINT_TRANSFORMER_S3_PREFIX, "transformer_multinode_s3_prefix_required"), maxStoredBytes: 64 * 1024 * 1024 }, createSigV4S3ArtifactTransport({ endpoint: required(env.MENDPOINT_TRANSFORMER_S3_ENDPOINT, "transformer_multinode_s3_endpoint_required"), region: required(env.MENDPOINT_TRANSFORMER_S3_REGION, "transformer_multinode_s3_region_required"), accessKeyId: required(env.MENDPOINT_TRANSFORMER_S3_ACCESS_KEY_ID, "transformer_multinode_s3_access_key_required"), secretAccessKey: required(env.MENDPOINT_TRANSFORMER_S3_SECRET_ACCESS_KEY, "transformer_multinode_s3_secret_required"), ...(env.MENDPOINT_TRANSFORMER_S3_SESSION_TOKEN?.trim() ? { sessionToken: env.MENDPOINT_TRANSFORMER_S3_SESSION_TOKEN.trim() } : {}), timeoutMs: 30_000 }))
+      : (() => { throw new Error("transformer_multinode_artifact_backend_invalid"); })();
+  const service = createTransformerMultinodeService({
+    enabled: true,
+    mode: "checkpoint_required",
+    workerId,
+    tenantId,
+    campaignId,
+    environment: required(env.MENDPOINT_TRANSFORMER_ENVIRONMENT, "transformer_multinode_environment_required"),
+    evidenceRoot: resolve(dataRoot, "evidence"),
+    candidateRoot: resolve(dataRoot, "candidates"),
+    leaseDurationMs: integer(env.MENDPOINT_TRANSFORMER_LEASE_MS ?? "900000", 1_000, 3_600_000, "transformer_multinode_lease_invalid"),
+    executorDigest: required(env.MENDPOINT_TRANSFORMER_EXECUTOR_DIGEST, "transformer_multinode_executor_digest_required"),
+    encryptionKey,
+    operationSecret: decodeKey(required(env.MENDPOINT_TRANSFORMER_OPERATION_SECRET, "transformer_multinode_operation_secret_required")),
+    evidenceRefs: evidenceRefs(required(env.MENDPOINT_TRANSFORMER_EVIDENCE_REFS, "transformer_multinode_evidence_refs_required")),
+    gateConfig: required(env.MENDPOINT_TRANSFORMER_GATE, "transformer_multinode_gate_required"),
+  }, transport, backend);
+  let closing = false;
+  let healthy = false;
+  let lastError: string | null = null;
+  const stop = new AbortController();
+  const readiness: Server = createServer((request, response) => {
+    if (request.method !== "GET" || request.url !== "/readyz") { response.writeHead(404).end(); return; }
+    response.setHeader("content-type", "application/json");
+    response.writeHead(healthy && !closing ? 200 : 503).end(JSON.stringify({ ready: healthy && !closing, mode: "checkpoint_required", workerId, lastError }));
+  });
+  await new Promise<void>((resolveReady, reject) => {
+    readiness.once("error", reject);
+    readiness.listen(readinessPort, "127.0.0.1", () => { readiness.off("error", reject); resolveReady(); });
+  });
+  const probe = async () => {
+    await transport.request({ path: "/v1/transformer/attempt-coordinator/readyz", body: { tenantId } });
+    const sentinelKey = `readiness/${tenantId}/${workerId}`;
+    const sentinel = new TextEncoder().encode(`transformer-readiness:${tenantId}:${workerId}`);
+    await backend.createOnly(sentinelKey, sentinel);
+    const readback = await backend.read(sentinelKey);
+    if (!readback || new TextDecoder().decode(readback) !== new TextDecoder().decode(sentinel)) throw new Error("transformer_multinode_artifact_probe_failed");
+  };
+  try { await probe(); healthy = true; } catch (error) { healthy = false; lastError = error instanceof Error ? error.message : "transformer_multinode_probe_failed"; }
+  const loop = async () => {
+    while (!closing) {
+      try {
+        await probe();
+        await service.runOnce(); healthy = true; lastError = null;
+      }
+      catch (error) { healthy = false; lastError = error instanceof Error ? error.message : "transformer_multinode_unknown"; }
+      if (!closing) await new Promise<void>((resolveWait) => {
+        const timer = setTimeout(resolveWait, intervalMs);
+        stop.signal.addEventListener("abort", () => { clearTimeout(timer); resolveWait(); }, { once: true });
+      });
+    }
+  };
+  const running = loop();
+  return Object.freeze({
+    readinessUrl: `http://127.0.0.1:${readinessPort}/readyz`,
+    async close() {
+      closing = true;
+      stop.abort();
+      await new Promise<void>((resolveClose, reject) => readiness.close((error) => error ? reject(error) : resolveClose()));
+      await running;
+    },
+  });
+}
+
+function required(value: string | undefined, code: string): string { if (!value?.trim()) throw new Error(code); return value.trim(); }
+function integer(value: string, minimum: number, maximum: number, code: string): number { const parsed = Number(value); if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) throw new Error(code); return parsed; }
+function decodeKey(value: string): Uint8Array { const bytes = Buffer.from(value, "base64"); if (bytes.byteLength !== 32 || bytes.toString("base64") !== value) throw new Error("transformer_multinode_checkpoint_key_invalid"); return new Uint8Array(bytes); }
+function evidenceRefs(value: string): readonly string[] { const refs = value.split(",").map((item) => item.trim()).filter(Boolean); if (!refs.length || new Set(refs).size !== refs.length) throw new Error("transformer_multinode_evidence_refs_invalid"); return Object.freeze(refs); }
