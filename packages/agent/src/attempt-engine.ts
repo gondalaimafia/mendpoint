@@ -35,11 +35,7 @@ import {
 } from "./agent.js";
 import { verificationControlPath } from "./policies.js";
 import type { AgentExecutionMetrics, AgentRunResult, AgentTask } from "./types.js";
-import {
-  openWardenRuntimeExecution,
-  type WardenRuntimeExecution,
-  type WardenRuntimeTerminalEvidence,
-} from "./runtime-execution.js";
+import { openWardenRuntimeExecution } from "./runtime-execution.js";
 import { createWardenRuntimeManifestDigest, type WardenPrivateRuntimeStateV1 } from "./runtime-state.js";
 import type { WardenCheckpointJournal } from "./checkpoint.js";
 
@@ -149,7 +145,6 @@ export type WardenAttemptResult =
       changedPaths: readonly string[];
       agent: WardenAttemptAgentSummary;
       artifacts: AttemptArtifacts;
-      finalizeTerminal?: () => Promise<WardenRuntimeTerminalEvidence>;
     }>
   | Readonly<{
       status: "rejected";
@@ -771,7 +766,6 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
   let candidateDigest: string | undefined;
   let agentSummary: WardenAttemptAgentSummary | undefined;
   let createdArtifacts: { candidateManifest: string; evidence: string } | undefined;
-  let runtimeExecution: WardenRuntimeExecution | undefined;
   try {
     const validated = validateInput(input);
     assertAttemptContinues(input);
@@ -947,7 +941,6 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
         genesis,
         now: input.runtime.now,
       });
-      runtimeExecution = execution;
       agent = await runWardenWithRuntime(agentTask, {
         execution,
         binding,
@@ -1124,26 +1117,6 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
     );
     createdArtifacts = artifacts;
     assertAttemptContinues(input);
-    const terminalOutcome = runtimeExecution
-      ? {
-          schemaVersion: 1,
-          status: "succeeded" as const,
-          candidateDigest: /^[a-f0-9]{64}$/.test(candidateManifest.digest)
-            ? `sha256:${candidateManifest.digest}`
-            : sha256(candidateManifest.digest),
-          candidateManifestDigest: sha256(readFileSync(artifacts.candidateManifest)),
-          evidenceDigest: sha256(readFileSync(artifacts.evidence)),
-          changedPathsDigest: sha256(canonicalJson(difference.changedPaths)),
-        } as const
-      : undefined;
-    const finalizeTerminal = runtimeExecution && terminalOutcome
-      ? (() => {
-          const execution = runtimeExecution;
-          const outcome = terminalOutcome;
-          return async (): Promise<WardenRuntimeTerminalEvidence> =>
-            await execution.finalize(outcome);
-        })()
-      : undefined;
     const result = freezeResult({
       status: "succeeded",
       summary: "Warden produced a source bound candidate that passed independent verification.",
@@ -1157,7 +1130,6 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
         sourceDigest: sourceManifest.digest,
         candidateDigest: candidateManifest.digest,
       }),
-      ...(finalizeTerminal ? { finalizeTerminal } : {}),
     });
     workspace = undefined;
     createdArtifacts = undefined;

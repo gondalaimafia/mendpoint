@@ -5,7 +5,6 @@ import {
   type WardenCheckpointBinding,
   type WardenCheckpointEnvelope,
   type WardenCheckpointJournal,
-  type WardenSealedRuntimeState,
 } from "./checkpoint.js";
 import {
   decodeWardenRuntimeState,
@@ -47,20 +46,6 @@ export type WardenRuntimeEffectOutcome<T extends WardenRuntimeJson> = Readonly<{
   resultDigest: string;
 }>;
 
-export type WardenRuntimeTerminalOutcome = Readonly<{
-  schemaVersion: 1;
-  status: "succeeded";
-  candidateDigest: string;
-  candidateManifestDigest: string;
-  evidenceDigest: string;
-  changedPathsDigest: string;
-}>;
-
-export type WardenRuntimeTerminalEvidence = Readonly<{
-  envelope: WardenCheckpointEnvelope;
-  sealedRuntimeState: WardenSealedRuntimeState;
-}>;
-
 export type WardenRuntimeEffectReconciliation<T extends WardenRuntimeJson> =
   | Readonly<{ status: "completed"; value: T }>
   | Readonly<{ status: "not_started" }>
@@ -92,7 +77,6 @@ export type WardenRuntimeExecution = Readonly<{
   runEffect: <T extends WardenRuntimeJson>(
     input: WardenRuntimeEffectInput<T>,
   ) => Promise<WardenRuntimeEffectOutcome<T>>;
-  finalize: (outcome: WardenRuntimeTerminalOutcome) => Promise<WardenRuntimeTerminalEvidence>;
 }>;
 
 export type OpenWardenRuntimeExecutionInput = Readonly<{
@@ -322,35 +306,6 @@ function withResultBlob(
   };
 }
 
-function terminalOutcome(value: WardenRuntimeTerminalOutcome): WardenRuntimeTerminalOutcome {
-  const record = value as unknown as Record<string, unknown>;
-  const keys = Object.keys(record).sort();
-  if (canonical(keys) !== canonical([
-    "candidateDigest",
-    "candidateManifestDigest",
-    "changedPathsDigest",
-    "evidenceDigest",
-    "schemaVersion",
-    "status",
-  ]) || value.schemaVersion !== 1 || value.status !== "succeeded" ||
-      ![value.candidateDigest, value.candidateManifestDigest, value.evidenceDigest,
-        value.changedPathsDigest].every((digest) => /^sha256:[a-f0-9]{64}$/.test(digest))) {
-    throw new Error("warden_runtime_terminal_outcome_invalid");
-  }
-  return Object.freeze(JSON.parse(canonical(value)) as WardenRuntimeTerminalOutcome);
-}
-
-function terminalOutcomeFromState(state: WardenPrivateRuntimeStateV1): WardenRuntimeTerminalOutcome {
-  if (!state.privateState || Array.isArray(state.privateState) ||
-      typeof state.privateState !== "object" ||
-      !("terminalOutcome" in state.privateState)) {
-    throw new Error("warden_runtime_terminal_state_invalid");
-  }
-  return terminalOutcome(
-    (state.privateState as Record<string, unknown>).terminalOutcome as WardenRuntimeTerminalOutcome,
-  );
-}
-
 function openRecordState(
   record: Awaited<ReturnType<WardenCheckpointJournal["read"]>>,
   key: Uint8Array,
@@ -451,12 +406,9 @@ export async function openWardenRuntimeExecution(
 
   async function commitState(
     update: (state: WardenPrivateRuntimeStateV1) => WardenPrivateRuntimeStateV1,
-    phaseTransition?: "terminal",
   ): Promise<void> {
     const expected = update(current);
-    if (expected.phase !== current.phase &&
-        !(phaseTransition === "terminal" && current.phase === "agent_running" &&
-          expected.phase === "terminal")) {
+    if (expected.phase !== current.phase) {
       throw new Error("warden_runtime_effect_phase_invalid");
     }
     const next: WardenPrivateRuntimeStateV1 = {
@@ -497,7 +449,6 @@ export async function openWardenRuntimeExecution(
     effect: WardenRuntimeEffectInput<T>,
   ): Promise<WardenRuntimeEffectOutcome<T>> {
     if (active) throw new Error("warden_runtime_effect_concurrent");
-    if (current.phase === "terminal") throw new Error("warden_runtime_terminal_sealed");
     active = true;
     try {
       const requestDigest = sha256(canonical(effect.request));
@@ -652,61 +603,10 @@ export async function openWardenRuntimeExecution(
     return decodeResult(current, requestDigest, (value) => value);
   }
 
-  async function terminalEvidence(): Promise<WardenRuntimeTerminalEvidence> {
-    const latest = await journalOperation(async () => await input.journal.read(input.binding));
-    if (latest.activeWriterLeaseGeneration !== input.writerLeaseGeneration) {
-      throw new Error("warden_runtime_effect_lease_stale");
-    }
-    if (!latest.envelope || !latest.sealedRuntimeState || latest.envelope.payload.phase !== "terminal" ||
-        latest.envelope.payloadDigest !== envelope.payloadDigest) {
-      throw new Error("warden_runtime_terminal_state_invalid");
-    }
-    return Object.freeze({
-      envelope: Object.freeze(JSON.parse(canonical(latest.envelope)) as WardenCheckpointEnvelope),
-      sealedRuntimeState: Object.freeze(
-        JSON.parse(canonical(latest.sealedRuntimeState)) as WardenSealedRuntimeState,
-      ),
-    });
-  }
-
-  async function finalize(
-    value: WardenRuntimeTerminalOutcome,
-  ): Promise<WardenRuntimeTerminalEvidence> {
-    if (active) throw new Error("warden_runtime_effect_concurrent");
-    active = true;
-    try {
-      const outcome = terminalOutcome(value);
-      await readAuthoritative();
-      if (current.phase === "terminal") {
-        if (canonical(terminalOutcomeFromState(current)) !== canonical(outcome)) {
-          throw new Error("warden_runtime_terminal_conflict");
-        }
-        return await terminalEvidence();
-      }
-      if (current.pendingEffect.kind !== "none") {
-        throw new Error("warden_runtime_state_terminal_effect_unresolved");
-      }
-      await assertFence();
-      await commitState((state) => ({
-        ...state,
-        phase: "terminal",
-        privateState: {
-          ...(state.privateState as Record<string, WardenRuntimeJson>),
-          terminalOutcome: outcome,
-        },
-        privateHistory: [...state.privateHistory, state.privateState],
-      }), "terminal");
-      return await terminalEvidence();
-    } finally {
-      active = false;
-    }
-  }
-
   return Object.freeze({
     state: () => decodeWardenRuntimeState(encodeWardenRuntimeState(current), input.binding),
     effectRequest,
     assertCurrent: assertFence,
     runEffect,
-    finalize,
   });
 }
