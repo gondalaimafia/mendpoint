@@ -153,6 +153,19 @@ export type TenantMembershipRow = {
   offboarded_at: string | null;
 };
 
+export type MemberScopeType = "repository" | "environment";
+
+export type MemberScopeRow = {
+  id: string;
+  tenant_id: string;
+  issuer: string;
+  subject: string;
+  scope_type: MemberScopeType;
+  scope_value: string;
+  created_at: string;
+  created_by: string;
+};
+
 export type GitHubInstallationRow = {
   id: string;
   installation_id: string;
