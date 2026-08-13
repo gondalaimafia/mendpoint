@@ -23,7 +23,7 @@ const ROUTE_BY_NAV: Record<string, string> = {
   changes: "/changes",
   specs: "/changes",
   prs: "/prs",
-  runs: "/runs",
+  runs: "/prs",
   settings: "/settings",
 };
 
@@ -31,7 +31,6 @@ const ROUTE_BY_NAV: Record<string, string> = {
 function navViewFor(pathname: string): string {
   if (pathname.startsWith("/changes")) return "changes";
   if (pathname.startsWith("/settings")) return "settings";
-  if (pathname.startsWith("/runs")) return "runs";
   if (pathname.startsWith("/prs")) return "prs";
   return "";
 }

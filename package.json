@@ -54,8 +54,7 @@
     "actions:check": "vitest run scripts/github-actions-pins-check.test.ts && tsx scripts/github-actions-pins-check.ts",
     "ga:check": "npm run spec:check && npm run claims:check && npm run actions:check && tsx scripts/ga-check.ts",
     "auth:bootstrap": "tsx scripts/bootstrap-key.ts",
-    "start:api": "npm run start -w @mendpoint/api",
-    "verify:config": "tsx scripts/verify-external-config.ts"
+    "start:api": "npm run start -w @mendpoint/api"
   },
   "dependencies": {
     "@mendpoint/db": "*",
