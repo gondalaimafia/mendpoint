@@ -59,6 +59,47 @@ export function listConsumersForProvider(
   }));
 }
 
+export type TenantMonitoredProvider = {
+  providerSlug: string;
+  providerName: string;
+  latestChangeAt: string | null;
+};
+
+/**
+ * Providers monitored by a tenant's own consumers, ordered so the provider with
+ * the most recent api_change comes first (providers with no change yet sort
+ * last). Used by the self-serve scan trigger to auto-pick the tenant's latest
+ * provider change without ever seeing another tenant's providers.
+ */
+export function listTenantMonitoredProviders(
+  db: AppDb,
+  tenantId: string,
+): TenantMonitoredProvider[] {
+  const rows = db.raw
+    .prepare(
+      `SELECT p.slug AS provider_slug, p.name AS provider_name,
+              MAX(ch.created_at) AS latest_change_at
+       FROM monitored_apis m
+       JOIN consumers c ON c.id = m.consumer_id
+       JOIN providers p ON p.id = m.provider_id
+       LEFT JOIN api_changes ch ON ch.provider_id = p.id
+       WHERE c.tenant_id = ?
+       GROUP BY p.id
+       ORDER BY (latest_change_at IS NULL), latest_change_at DESC, p.slug`,
+    )
+    .all(tenantId) as Array<{
+    provider_slug: string;
+    provider_name: string;
+    latest_change_at: string | null;
+  }>;
+
+  return rows.map((r) => ({
+    providerSlug: r.provider_slug,
+    providerName: r.provider_name,
+    latestChangeAt: r.latest_change_at ?? null,
+  }));
+}
+
 export function listConsumersImpactedByChange(
   db: AppDb,
   changeId: string,

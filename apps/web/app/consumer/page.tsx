@@ -1,6 +1,9 @@
 import Link from "next/link";
+import React from "react";
 import { apiGet, type Consumer, type MigrationPr } from "../../lib/api";
+import { selfServeWardenEnabled } from "../../lib/proxy-auth";
 import { DetectButton } from "./detect-button";
+import { ScanTrigger } from "./scan-trigger";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +29,7 @@ export default async function ConsumerPage() {
   }
 
   const pending = prs.filter((p) => p.status === "open" || p.status === "low_confidence" || p.status === "draft");
+  const selfServeWarden = selfServeWardenEnabled();
 
   return (
     <div>
@@ -34,6 +38,15 @@ export default async function ConsumerPage() {
         Connected repos, auto-detected APIs, suppressed patterns from closed PRs, and pending
         migrations.
       </p>
+      {selfServeWarden && (
+        <div className="card">
+          <h2>Scan for impact</h2>
+          <p className="muted">
+            Kick off an impact scan across your linked repos for your latest provider change.
+          </p>
+          <ScanTrigger />
+        </div>
+      )}
       {error && (
         <div className="card">
           <p className="muted">API unavailable: {error}</p>
@@ -115,7 +128,11 @@ export default async function ConsumerPage() {
           {!pending.length && (
             <tr>
               <td colSpan={4} className="muted">
-                No pending PRs — run <code>npm run demo</code> after seed.
+                {selfServeWarden ? (
+                  <>No pending PRs yet — use <strong>Scan for impact</strong> above to start a run.</>
+                ) : (
+                  <>No pending PRs — run <code>npm run demo</code> after seed.</>
+                )}
               </td>
             </tr>
           )}
