@@ -59,6 +59,32 @@ describe("github app install", () => {
     });
   });
 
+  it("unlocks the credentialed install flow via the self-serve connect flag", () => {
+    const base = {
+      NODE_ENV: "production",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_SLUG: "mendpoint",
+      GITHUB_APP_PRIVATE_KEY: "private-key",
+    };
+    // Off by default: byte-identical to the pre-flag gate.
+    expect(getGitHubAppConfig(base).configured).toBe(false);
+    expect(getGitHubAppConfig(base).installEnabled).toBe(false);
+
+    const enabled = { ...base, MENDPOINT_SELF_SERVE_CONNECT: "1" };
+    const cfg = getGitHubAppConfig(enabled);
+    expect(cfg.configured).toBe(true);
+    expect(cfg.installEnabled).toBe(true);
+
+    // Still credential-gated: the flag alone cannot enable it without app creds.
+    expect(
+      getGitHubAppConfig({
+        NODE_ENV: "production",
+        GITHUB_APP_ID: "123",
+        MENDPOINT_SELF_SERVE_CONNECT: "1",
+      }).configured,
+    ).toBe(false);
+  });
+
   it("normalizes mock install payload", () => {
     const n = normalizeMockInstall({ accountLogin: "acme" });
     expect(n.accountLogin).toBe("acme");

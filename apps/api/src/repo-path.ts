@@ -60,6 +60,34 @@ export function canonicalRepoPath(
   return candidate;
 }
 
+/**
+ * Intended on-disk checkout path for a consumer repo key, computed without
+ * requiring the checkout (or the tenant directory) to exist yet. Mirrors
+ * resolveRepoKey's layout so a clone written here is exactly what resolveRepoKey
+ * later resolves. The tenant boundary is enforced lexically because the tenant
+ * directory may not exist until clone-on-connect creates it; resolveRepoKey then
+ * re-validates the real path via realpath once the checkout is present.
+ */
+export function repoKeyCheckoutDestination(
+  repoKey: string,
+  tenantId: string,
+  env: RepoPathEnv = process.env,
+): string {
+  const root = configuredReposRoot(env);
+  if (!repoKey || isAbsolute(repoKey)) {
+    throw new Error("repo_key_must_be_relative");
+  }
+  const boundary =
+    env.NODE_ENV === "production"
+      ? resolve(root, safeTenantId(tenantId))
+      : root;
+  const candidate = resolve(boundary, repoKey);
+  if (!isWithin(boundary, candidate)) {
+    throw new Error("repo_path_outside_tenant_root");
+  }
+  return candidate;
+}
+
 export function resolveRepoKey(
   repoKey: string,
   tenantId: string,
