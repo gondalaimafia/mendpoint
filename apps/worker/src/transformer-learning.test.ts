@@ -21,6 +21,10 @@ import {
   admitApprovedOutcomeContentLearningRecord,
   admitApprovedOutcomeLearningRecord,
 } from "./transformer-learning-producer.js";
+import {
+  buildApprovedOutcome,
+  serializeApprovedOutcome,
+} from "./transformer-learning-outcome.js";
 import { admitRejectedOutcomeLearningRecord } from "./transformer-learning-rejected.js";
 import {
   buildLearningPrecedent,
@@ -126,10 +130,16 @@ function candidate(
     reviewedAt: string | null;
     rationale: string;
     paths: readonly string[];
+    family: string | null;
+    provider: string | null;
+    framework: string | null;
   }> = {},
 ): TransformerAdaptiveCandidateRecord {
   return {
     id: overrides.id ?? "tfadapt_candidate_1",
+    family: overrides.family ?? null,
+    provider: overrides.provider ?? null,
+    framework: overrides.framework ?? null,
     tenantId: TENANT,
     campaignId: "camp-1",
     unitId: "unit-1",
@@ -693,5 +703,26 @@ describe("planner precedent enrichment", () => {
       throw new Error("boom");
     });
     expect(enriched).toBe(input);
+  });
+});
+
+describe("buildApprovedOutcome classification labels", () => {
+  it("embeds the candidate's real labels and omits nulls for byte-identity", () => {
+    const labeled = buildApprovedOutcome(
+      candidate({ family: "sdk", provider: "aws-sdk-js", framework: null }),
+      artifact(),
+      OBSERVED,
+    );
+    expect(labeled.family).toBe("sdk");
+    expect(labeled.provider).toBe("aws-sdk-js");
+    expect("framework" in labeled).toBe(false);
+
+    // A null-label (legacy/undeterminable) candidate serializes byte-identically to
+    // the pre-labeling document: no family/provider/framework keys at all.
+    const bare = buildApprovedOutcome(candidate(), artifact(), OBSERVED);
+    const serialized = serializeApprovedOutcome(bare);
+    expect(serialized).not.toContain("family");
+    expect(serialized).not.toContain("provider");
+    expect(serialized).not.toContain("framework");
   });
 });

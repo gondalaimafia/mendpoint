@@ -70,9 +70,11 @@ export {
 
 export type {
   MigrationRecipeContract,
+  MigrationLabelFamily,
   RecipeApplication,
   RecipeAnalysis,
   RecipeApplicability,
+  RecipeClassification,
   GitBlobMode,
   RecipeFileModes,
   RecipeFiles,
@@ -99,6 +101,8 @@ export {
   applyInverseOperations,
   applyRecipe,
   assertRecipePathAllowed,
+  classifyRecipeContract,
+  classifyRecipeReference,
   createInternalApiRenameRecipe,
   getRecipe,
   normalizeRecipeFileModes,

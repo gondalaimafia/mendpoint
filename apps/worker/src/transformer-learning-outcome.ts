@@ -65,6 +65,13 @@ export type ApprovedOutcome = Readonly<{
   verificationSummary: string;
   verificationCommandId: string;
   observedAt: string;
+  // Deterministic migration classification labels, appended last and present only
+  // when the candidate carries a determinable value. A candidate with null labels
+  // (legacy or undeterminable) omits them, so its serialized outcome stays
+  // byte-identical to the pre-labeling document.
+  family?: string;
+  provider?: string;
+  framework?: string;
 }>;
 
 /**
@@ -101,6 +108,11 @@ export function buildApprovedOutcome(
     verificationSummary: artifact.review.verification.summary,
     verificationCommandId: artifact.review.verification.commandId,
     observedAt,
+    // Real corpus labels from the persisted seal-time classification. Included only
+    // when non-null so a null-label candidate serializes byte-identically to today.
+    ...(candidate.family != null ? { family: candidate.family } : {}),
+    ...(candidate.provider != null ? { provider: candidate.provider } : {}),
+    ...(candidate.framework != null ? { framework: candidate.framework } : {}),
   });
 }
 

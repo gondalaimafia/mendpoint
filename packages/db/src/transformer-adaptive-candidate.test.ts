@@ -95,6 +95,107 @@ describe("transformer adaptive candidate store", () => {
     expect(getAdaptiveCandidate(db, "tenant-a", rec.id)?.status).toBe("review_pending");
   });
 
+  it("persists deterministic classification labels and normalizes unknown values to null", () => {
+    const db = freshDb();
+    const labeled = record(db, {
+      attemptId: "tfattempt_sdk",
+      unitId: "unit-sdk",
+      family: "sdk",
+      provider: "aws-sdk-js",
+      framework: null,
+    });
+    expect(labeled.family).toBe("sdk");
+    expect(labeled.provider).toBe("aws-sdk-js");
+    expect(labeled.framework).toBeNull();
+    expect(getAdaptiveCandidate(db, "tenant-a", labeled.id)?.provider).toBe("aws-sdk-js");
+
+    // A candidate with no bound recipe stores null labels (honest undeterminable).
+    const bare = record(db, { attemptId: "tfattempt_bare", unitId: "unit-bare" });
+    expect(bare.family).toBeNull();
+    expect(bare.provider).toBeNull();
+    expect(bare.framework).toBeNull();
+
+    // An out-of-vocabulary family is coerced to null rather than blocking the row.
+    const coerced = record(db, {
+      attemptId: "tfattempt_coerce",
+      unitId: "unit-coerce",
+      family: "not-a-real-family",
+      provider: "  ",
+    });
+    expect(coerced.family).toBeNull();
+    expect(coerced.provider).toBeNull();
+  });
+
+  it("converges a pre-labeling DB on boot: adds null-label columns, keeps legacy rows intact", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-adaptive-boot-"));
+    dirs.push(dir);
+    const path = join(dir, "boot.sqlite");
+
+    // Build the CURRENT schema, then simulate a PRE-change (pre-labeling) database
+    // by dropping the three new columns before any migration runs.
+    const seed = createDb(path);
+    dbs.push(seed);
+    for (const column of ["family", "provider", "framework"]) {
+      seed.raw.exec(`ALTER TABLE transformer_adaptive_candidates DROP COLUMN ${column}`);
+    }
+    const preColumns = (
+      seed.raw.prepare("PRAGMA table_info(transformer_adaptive_candidates)").all() as Array<{
+        name: string;
+      }>
+    ).map((c) => c.name);
+    expect(preColumns).not.toContain("family");
+    expect(preColumns).not.toContain("provider");
+    expect(preColumns).not.toContain("framework");
+
+    // Insert a legacy row against the pre-change shape (no label columns exist yet).
+    seed.raw.exec(
+      `INSERT INTO transformer_adaptive_candidates
+        (id, tenant_id, campaign_id, unit_id, attempt_id, repository_id, snapshot_id,
+         base_branch, expected_base_revision, kind, status, review_tier,
+         diverged_from_digest, candidate_digest, failing_command_id,
+         sealed_path, sealed_sha256, changed_paths_json, generation,
+         expires_at, created_at, updated_at)
+       VALUES ('tfadapt_legacy', 'tenant-a', 'campaign-1', 'unit-legacy', 'tfattempt_legacy',
+         'repo-1', 'snapshot-1', 'main', '${"e".repeat(40)}', 'adaptive', 'review_pending',
+         'standard', '${DIVERGED}', '${CANDIDATE}', 'verify:typecheck',
+         '/data/x.json', '${SEAL}', '["package.json"]', 1,
+         '2099-01-01T00:00:00.000Z', '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z')`,
+    );
+    seed.raw.close();
+    dbs.pop();
+
+    // Boot again over the SAME file. The static DDL is a no-op (table exists) and the
+    // additive migration must add the columns without crashing or losing data.
+    const upgraded = createDb(path);
+    dbs.push(upgraded);
+    const postColumns = (
+      upgraded.raw.prepare("PRAGMA table_info(transformer_adaptive_candidates)").all() as Array<{
+        name: string;
+      }>
+    ).map((c) => c.name);
+    expect(postColumns).toContain("family");
+    expect(postColumns).toContain("provider");
+    expect(postColumns).toContain("framework");
+
+    // The legacy row survived, reads with null labels, and keeps every other field.
+    const legacy = getAdaptiveCandidate(upgraded, "tenant-a", "tfadapt_legacy");
+    expect(legacy?.status).toBe("review_pending");
+    expect(legacy?.candidateDigest).toBe(CANDIDATE);
+    expect(legacy?.family).toBeNull();
+    expect(legacy?.provider).toBeNull();
+    expect(legacy?.framework).toBeNull();
+
+    // A post-migration write persists real labels through the upgraded schema.
+    const fresh = record(upgraded, {
+      attemptId: "tfattempt_post",
+      unitId: "unit-post",
+      family: "runtime",
+      provider: "node",
+    });
+    expect(fresh.family).toBe("runtime");
+    expect(fresh.provider).toBe("node");
+  });
+
   it("enumerates every tenant and candidate for lifecycle maintenance", () => {
     const db = freshDb();
     record(db);
