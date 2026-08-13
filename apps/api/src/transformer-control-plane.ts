@@ -608,6 +608,25 @@ export class TransformerCampaignService {
       ) {
         throw new Error("blueprint_reviewer_not_authorized");
       }
+      const review = blueprint.content.review && typeof blueprint.content.review === "object" &&
+          !Array.isArray(blueprint.content.review)
+        ? blueprint.content.review as JsonRecord
+        : undefined;
+      const minimumApprovals = review?.minimumApprovals === undefined
+        ? 1
+        : positiveRevision(review.minimumApprovals, "blueprint_approval_required");
+      if (minimumApprovals > blueprint.policy.approval.reviewerIds.length) {
+        throw new Error("blueprint_approval_required");
+      }
+      const approvalCount = blueprint.policy.approval.reviewerIds.filter((reviewerId) => {
+        const candidate = this.store.getApproval(
+          request.tenantId,
+          transformerBlueprintApprovalId(blueprint.id, reviewerId),
+        );
+        return candidate?.state === "approved" && candidate.reviewerId === reviewerId &&
+          candidate.subjectType === "blueprint" && candidate.subjectId === blueprint.id;
+      }).length;
+      if (approvalCount < minimumApprovals) return this.get(request.tenantId, campaignId);
       this.store.transitionBlueprint(
         request.tenantId,
         campaign.blueprintId,

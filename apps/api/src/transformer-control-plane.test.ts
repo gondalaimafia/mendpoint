@@ -286,6 +286,43 @@ describe("Transformer campaign service", () => {
     });
   });
 
+  it("keeps a blueprint in draft until its independent approval quorum is durable", () => {
+    const service = open();
+    const candidate = bundle();
+    service.createBundle(request(), {
+      ...candidate,
+      blueprint: {
+        ...candidate.blueprint,
+        content: {
+          ...candidate.blueprint.content,
+          plannerActorId: "human:planner@example.com",
+          review: { minimumApprovals: 2 },
+        },
+        policy: {
+          ...candidate.blueprint.policy,
+          approval: {
+            required: true,
+            reviewerIds: ["human:reviewer@example.com", "human:second@example.com"],
+          },
+        },
+      },
+    });
+    const revisions = { campaign: 1, blueprint: 1, bsg: 1 };
+
+    expect(service.reviewToReady(
+      request("tenant-a", "review-first"),
+      "campaign-a",
+      revisions,
+    )).toMatchObject({ campaign: { state: "draft" }, blueprint: { state: "draft" } });
+    expect(service.reviewToReady({
+      ...request("tenant-a", "review-second"),
+      actorId: "human:second@example.com",
+    }, "campaign-a", revisions)).toMatchObject({
+      campaign: { state: "ready" },
+      blueprint: { state: "reviewed" },
+    });
+  });
+
   it("rolls back createBundle when a post-campaign write fails", () => {
     const service = open();
     const failure = vi
