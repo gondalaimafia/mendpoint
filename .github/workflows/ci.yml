@@ -126,6 +126,8 @@ jobs:
         run: docker build --target web -t mendpoint-web:ci .
       - name: Build worker image
         run: docker build --target worker -t mendpoint-worker:ci .
+      - name: Build Transformer image
+        run: docker build --target transformer -t mendpoint-transformer:ci .
       - name: Build Fly image
         run: docker build --target fly -t mendpoint-fly:ci .
       - name: Start production images

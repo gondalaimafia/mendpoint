@@ -69,6 +69,18 @@ USER node
 HEALTHCHECK NONE
 CMD ["node", "--import", "tsx", "apps/worker/src/cli.ts", "run-jobs", "--interval", "5000"]
 
+FROM api AS transformer
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /data /tmp/mendpoint-transformer \
+  && chown -R node:node /data /tmp/mendpoint-transformer \
+  && chmod 755 /app/scripts/start-transformer-entrypoint.sh
+ENTRYPOINT ["/app/scripts/start-transformer-entrypoint.sh"]
+EXPOSE 3001 9465
+HEALTHCHECK NONE
+CMD ["node", "--import", "tsx", "scripts/start-transformer-role.mjs", "worker"]
+
 FROM api AS fly
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends git rclone \

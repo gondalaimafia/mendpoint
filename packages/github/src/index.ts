@@ -668,6 +668,12 @@ export {
 } from "./app-runtime.js";
 
 export {
+  observeExactDraftWithOctokit,
+  type ExactDraftObservation,
+  type ExactDraftObservationInput,
+} from "./exact-draft-observer.js";
+
+export {
   GITHUB_DRAFT_DELIVERY_PERMISSIONS,
   GitHubAppLifecycle,
   GitHubAppLifecycleError,

@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { resolve } from "node:path";
+import { createAppDelivery, loadAppCredentials } from "@mendpoint/github";
 import {
   createFilesystemTransformerArtifactBackend,
   createS3CompatibleTransformerArtifactBackend,
@@ -21,6 +22,7 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
   const encryptionKey = decodeKey(required(env.MENDPOINT_TRANSFORMER_CHECKPOINT_KEY, "transformer_multinode_checkpoint_key_required"));
   const intervalMs = integer(env.MENDPOINT_TRANSFORMER_INTERVAL_MS ?? "5000", 100, 60_000, "transformer_multinode_interval_invalid");
   const readinessPort = integer(env.MENDPOINT_TRANSFORMER_READINESS_PORT ?? "9465", 1, 65_535, "transformer_multinode_readiness_port_invalid");
+  const readinessHost = readinessAddress(env.MENDPOINT_TRANSFORMER_READINESS_HOST ?? "127.0.0.1");
   const transport = createFetchTransformerMultinodeTransport({
     baseUrl: required(env.MENDPOINT_TRANSFORMER_COORDINATOR_URL, "transformer_multinode_coordinator_url_required"),
     authToken: required(env.MENDPOINT_TRANSFORMER_COORDINATOR_TOKEN, "transformer_multinode_coordinator_token_required"),
@@ -34,6 +36,9 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
     : artifactMode === "s3"
       ? createS3CompatibleTransformerArtifactBackend({ bucket: required(env.MENDPOINT_TRANSFORMER_S3_BUCKET, "transformer_multinode_s3_bucket_required"), keyPrefix: required(env.MENDPOINT_TRANSFORMER_S3_PREFIX, "transformer_multinode_s3_prefix_required"), maxStoredBytes: 64 * 1024 * 1024 }, createSigV4S3ArtifactTransport({ endpoint: required(env.MENDPOINT_TRANSFORMER_S3_ENDPOINT, "transformer_multinode_s3_endpoint_required"), region: required(env.MENDPOINT_TRANSFORMER_S3_REGION, "transformer_multinode_s3_region_required"), accessKeyId: required(env.MENDPOINT_TRANSFORMER_S3_ACCESS_KEY_ID, "transformer_multinode_s3_access_key_required"), secretAccessKey: required(env.MENDPOINT_TRANSFORMER_S3_SECRET_ACCESS_KEY, "transformer_multinode_s3_secret_required"), ...(env.MENDPOINT_TRANSFORMER_S3_SESSION_TOKEN?.trim() ? { sessionToken: env.MENDPOINT_TRANSFORMER_S3_SESSION_TOKEN.trim() } : {}), timeoutMs: 30_000 }))
       : (() => { throw new Error("transformer_multinode_artifact_backend_invalid"); })();
+  if (env.GITHUB_MODE !== "real") throw new Error("transformer_multinode_github_real_required");
+  const appCredentials = loadAppCredentials(env);
+  if (!appCredentials) throw new Error("transformer_multinode_github_app_credentials_required");
   const service = createTransformerMultinodeService({
     enabled: true,
     mode: "checkpoint_required",
@@ -49,6 +54,16 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
     operationSecret: decodeKey(required(env.MENDPOINT_TRANSFORMER_OPERATION_SECRET, "transformer_multinode_operation_secret_required")),
     evidenceRefs: evidenceRefs(required(env.MENDPOINT_TRANSFORMER_EVIDENCE_REFS, "transformer_multinode_evidence_refs_required")),
     gateConfig: required(env.MENDPOINT_TRANSFORMER_GATE, "transformer_multinode_gate_required"),
+    deliverDraft: (intent, target) => createAppDelivery(
+      target.installationId,
+      appCredentials,
+      [target.remoteRepositoryId],
+    ).deliverExactDraft(intent),
+    observeDraft: (observation, target) => createAppDelivery(
+      target.installationId,
+      appCredentials,
+      [target.remoteRepositoryId],
+    ).observeExactDraft(observation),
   }, transport, backend);
   let closing = false;
   let healthy = false;
@@ -61,7 +76,7 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
   });
   await new Promise<void>((resolveReady, reject) => {
     readiness.once("error", reject);
-    readiness.listen(readinessPort, "127.0.0.1", () => { readiness.off("error", reject); resolveReady(); });
+    readiness.listen(readinessPort, readinessHost, () => { readiness.off("error", reject); resolveReady(); });
   });
   const probe = async () => {
     await transport.request({ path: "/v1/transformer/attempt-coordinator/readyz", body: { tenantId } });
@@ -76,7 +91,10 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
     while (!closing) {
       try {
         await probe();
-        await service.runOnce(); healthy = true; lastError = null;
+        await service.runOnce();
+        await service.runDeliveryOnce();
+        await service.runObservationOnce();
+        healthy = true; lastError = null;
       }
       catch (error) { healthy = false; lastError = error instanceof Error ? error.message : "transformer_multinode_unknown"; }
       if (!closing) await new Promise<void>((resolveWait) => {
@@ -99,5 +117,6 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
 
 function required(value: string | undefined, code: string): string { if (!value?.trim()) throw new Error(code); return value.trim(); }
 function integer(value: string, minimum: number, maximum: number, code: string): number { const parsed = Number(value); if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) throw new Error(code); return parsed; }
+function readinessAddress(value: string): "127.0.0.1" | "0.0.0.0" { if (value === "127.0.0.1" || value === "0.0.0.0") return value; throw new Error("transformer_multinode_readiness_host_invalid"); }
 function decodeKey(value: string): Uint8Array { const bytes = Buffer.from(value, "base64"); if (bytes.byteLength !== 32 || bytes.toString("base64") !== value) throw new Error("transformer_multinode_checkpoint_key_invalid"); return new Uint8Array(bytes); }
 function evidenceRefs(value: string): readonly string[] { const refs = value.split(",").map((item) => item.trim()).filter(Boolean); if (!refs.length || new Set(refs).size !== refs.length) throw new Error("transformer_multinode_evidence_refs_invalid"); return Object.freeze(refs); }

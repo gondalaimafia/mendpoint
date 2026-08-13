@@ -165,6 +165,7 @@ export * from "./attempt-checkpoint.js";
 export * from "./attempt-checkpoint-storage.js";
 export {
   createTransformerPilotAttemptCheckpointConfig,
+  deriveTransformerAttemptCheckpointBinding,
   type TransformerPilotAttemptCheckpointConfigInput,
 } from "./attempt-checkpoint-execution.js";
 
@@ -299,6 +300,7 @@ export {
 
 export {
   planTransformerBlueprint,
+  verifyTransformerBlueprint,
   type TransformerBlueprint,
   type TransformerBlueprintFileEvidence,
   type TransformerBlueprintOrganizationEvidence,
@@ -327,6 +329,19 @@ export {
   type MendpointRolePermissions,
   type EffectiveConfig,
 } from "./agent-config.js";
+
+export {
+  compileApprovedTransformerMission,
+  type TransformerBlueprintApproval,
+  type TransformerMissionCompilationInput,
+  type TransformerMissionRepository,
+} from "./mission-compiler.js";
+
+export {
+  planTransformerMission,
+  type TransformerMissionPlanningInput,
+  type TransformerMissionPlanningRepository,
+} from "./mission-planner.js";
 
 export {
   ORGANIZATION_CONSTRAINT_SCHEMA_VERSION,
@@ -359,6 +374,10 @@ export {
   type TransformerExpiredAttempt,
   type TransformerRunnableCampaign,
   type TransformerDraftAction,
+  type TransformerDraftDeliveryRecord,
+  type TransformerDraftDeliveryLease,
+  type TransformerDraftDeliveryCompletion,
+  type TransformerDeliveredDraftObservation,
   type TransformerRollbackAction,
   type TransformerScmObservation,
   type TransformerPilotMetrics,

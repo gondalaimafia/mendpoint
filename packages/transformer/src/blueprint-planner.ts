@@ -671,3 +671,26 @@ export function planTransformerBlueprint(
   }) satisfies TransformerBlueprint;
   return deepFreeze({ decision: "planned" as const, reasons: [] as [], blueprint });
 }
+
+/**
+ * Re-authenticate a serialized blueprint before an authority consumes it.
+ * The digest covers every field except the self-identifying id and digest.
+ */
+export function verifyTransformerBlueprint(value: TransformerBlueprint): TransformerBlueprint {
+  let candidate: TransformerBlueprint;
+  try {
+    candidate = structuredClone(value);
+  } catch {
+    throw new Error("transformer_blueprint_integrity_invalid");
+  }
+  const { id, digest, ...body } = candidate;
+  const expectedDigest = sha256(body);
+  if (
+    candidate.schemaVersion !== BLUEPRINT_SCHEMA_VERSION ||
+    digest !== expectedDigest ||
+    id !== `tfb_${expectedDigest.slice("sha256:".length, "sha256:".length + 24)}`
+  ) {
+    throw new Error("transformer_blueprint_integrity_invalid");
+  }
+  return deepFreeze(candidate);
+}

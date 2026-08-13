@@ -18,12 +18,13 @@ export type EnvReport = {
   values: Record<string, string | undefined>;
 };
 
-export type DeploymentProfile = "demo" | "pilot" | "customer";
+export type DeploymentProfile = "demo" | "pilot" | "customer" | "transformer_pilot";
 
 const DEPLOYMENT_PROFILES = new Set<DeploymentProfile>([
   "demo",
   "pilot",
   "customer",
+  "transformer_pilot",
 ]);
 
 export function deploymentProfile(
@@ -117,11 +118,11 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
   const profile = deploymentProfile(env);
   if (mode === "production" && !env.MENDPOINT_DEPLOYMENT_PROFILE?.trim()) {
     errors.push(
-      "MENDPOINT_DEPLOYMENT_PROFILE must be explicitly set to demo, pilot, or customer in production",
+      "MENDPOINT_DEPLOYMENT_PROFILE must be explicitly set to demo, pilot, customer, or transformer_pilot in production",
     );
   } else if (env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() && !profile) {
     errors.push(
-      "MENDPOINT_DEPLOYMENT_PROFILE must be exactly demo, pilot, or customer",
+      "MENDPOINT_DEPLOYMENT_PROFILE must be exactly demo, pilot, customer, or transformer_pilot",
     );
   }
   if (mode === "production" && !env.GITHUB_MODE) {

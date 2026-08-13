@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentPlanner, AgentTask } from "./types.js";
+import type { WardenCheckpointJournal, WardenCheckpointJournalRecord } from "./checkpoint.js";
 import {
   runWardenAttempt,
   wardenNpmFallbackEnvironment,
@@ -26,6 +27,50 @@ const REVISION = "a".repeat(40);
 const POLICY_DIGEST = `sha256:${"c".repeat(64)}`;
 const SECRET_SENTINEL = "github_pat_warden_attempt_secret_must_not_escape_123456789";
 const roots: string[] = [];
+
+function checkpointJournal(): WardenCheckpointJournal & {
+  setLease(value: number): void;
+  failReadAfterGeneration(value: number): void;
+} {
+  let record: WardenCheckpointJournalRecord = {
+    envelope: null,
+    sealedRuntimeState: null,
+    activeWriterLeaseGeneration: 1,
+  };
+  let failReadGeneration: number | null = null;
+  let failNextRead = false;
+  return {
+    async read() {
+      if (failNextRead) {
+        failNextRead = false;
+        throw new Error("worker_crashed_after_checkpoint_commit");
+      }
+      return record;
+    },
+    async compareAndSwap(input) {
+      if (record.activeWriterLeaseGeneration !== input.expectedActiveWriterLeaseGeneration ||
+          record.envelope?.payloadDigest !== input.expectedPayloadDigest &&
+          !(record.envelope === null && input.expectedPayloadDigest === null)) {
+        return false;
+      }
+      record = {
+        envelope: input.nextEnvelope,
+        sealedRuntimeState: input.nextSealedRuntimeState,
+        activeWriterLeaseGeneration: record.activeWriterLeaseGeneration,
+      };
+      if (input.nextEnvelope.payload.generation === failReadGeneration) {
+        failNextRead = true;
+      }
+      return true;
+    },
+    setLease(value) {
+      record = { ...record, activeWriterLeaseGeneration: value };
+    },
+    failReadAfterGeneration(value) {
+      failReadGeneration = value;
+    },
+  };
+}
 
 afterEach(() => {
   while (roots.length) {
@@ -248,6 +293,182 @@ function input(
 }
 
 describe("Warden attempt engine", { timeout: 15_000 }, () => {
+  it("replays a paid planner receipt after rebuilding the candidate on takeover", async () => {
+    const value = fixture("runtime-planner-replay");
+    writeFileSync(join(value.sourceRoot, "check.mjs"), [
+      "import { path } from './client.js';",
+      "console.error(`baseline-${Date.now()}-${process.cwd()}`);",
+      "if (path !== '/v1/charges') process.exit(1);",
+      "",
+    ].join("\n"), "utf8");
+    const journal = checkpointJournal();
+    let plannerCalls = 0;
+    let reservations = 0;
+    let settlements = 0;
+    const finishPlanner: AgentPlanner = async () => {
+      plannerCalls++;
+      return {
+        call: { tool: "finish", args: { ok: false, message: "review required" } },
+        usage: PER_CALL_USAGE,
+      };
+    };
+    const firstTask = task(finishPlanner);
+    const firstInput = input(value, {
+      task: {
+        ...firstTask,
+        externalModelAccounting: {
+          ...firstTask.externalModelAccounting!,
+          reserve: async () => { reservations++; },
+          settle: async () => { settlements++; },
+        },
+      },
+      runtime: {
+        jobId: "job-runtime-planner-replay",
+        journal,
+        key: Buffer.alloc(32, 7),
+        writerLeaseGeneration: 1,
+        executorDigest: `sha256:${"e".repeat(64)}`,
+      },
+    });
+    // Genesis is generation 1. The checkpoint-owned baseline verifier consumes
+    // generations 2 through 5 and the paid planner consumes 6 through 9.
+    journal.failReadAfterGeneration(9);
+
+    const interrupted = await runWardenAttempt(firstInput);
+    expect(interrupted).toMatchObject({
+      status: "rejected",
+      code: "warden_attempt_internal_error",
+      summary: "worker_crashed_after_checkpoint_commit",
+    });
+    expect(plannerCalls).toBe(1);
+    expect(reservations).toBe(1);
+    expect(settlements).toBe(1);
+
+    journal.setLease(2);
+    const second = await runWardenAttempt({
+      ...firstInput,
+      task: {
+        ...firstInput.task,
+        externalModelAccounting: {
+          ...firstInput.task.externalModelAccounting!,
+          executionScopeId: `sha256:${"f".repeat(64)}`,
+        },
+      },
+      runtime: { ...firstInput.runtime!, writerLeaseGeneration: 2 },
+    });
+
+    expect(second).toMatchObject({ status: "rejected", code: "warden_attempt_agent_failed" });
+    expect(plannerCalls).toBe(1);
+    expect(reservations).toBe(1);
+    expect(settlements).toBe(1);
+  });
+
+  it("rebuilds a deleted workspace from a committed mutation without applying it twice", async () => {
+    const value = fixture("runtime-mutation-replay");
+    const journal = checkpointJournal();
+    let plannerCalls = 0;
+    let reservations = 0;
+    let settlements = 0;
+    const repairPlanner = planner();
+    const trackedPlanner: AgentPlanner = async (request, options) => {
+      plannerCalls++;
+      return await repairPlanner(request, options);
+    };
+    const trackedTask = task(trackedPlanner);
+    const firstInput = input(value, {
+      task: {
+        ...trackedTask,
+        externalModelAccounting: {
+          ...trackedTask.externalModelAccounting!,
+          reserve: async () => { reservations++; },
+          settle: async () => { settlements++; },
+        },
+      },
+      runtime: {
+        jobId: "job-runtime-mutation-replay",
+        journal,
+        key: Buffer.alloc(32, 8),
+        writerLeaseGeneration: 1,
+        executorDigest: `sha256:${"e".repeat(64)}`,
+      },
+    });
+    // Baseline: 2 to 5. Planner/read/planner/mutation each consume four
+    // generations, so generation 21 is the committed mutation receipt.
+    journal.failReadAfterGeneration(21);
+
+    const interrupted = await runWardenAttempt(firstInput);
+    expect(interrupted).toMatchObject({
+      status: "rejected",
+      code: "warden_attempt_internal_error",
+      summary: "worker_crashed_after_checkpoint_commit",
+    });
+    expect(plannerCalls).toBe(2);
+    expect(reservations).toBe(2);
+    expect(settlements).toBe(2);
+
+    journal.setLease(2);
+    const recovered = await runWardenAttempt({
+      ...firstInput,
+      runtime: { ...firstInput.runtime!, writerLeaseGeneration: 2 },
+    });
+
+    if (recovered.status === "rejected") {
+      throw new Error(`${recovered.code}: ${recovered.summary}`);
+    }
+    expect(recovered.changedPaths).toEqual(["client.js"]);
+    expect(readFileSync(join(recovered.artifacts.candidateWorkspace, "client.js"), "utf8"))
+      .toContain("/v1/charges");
+    expect(plannerCalls).toBe(3);
+    expect(reservations).toBe(3);
+    expect(settlements).toBe(3);
+  });
+
+  it("replays a committed verifier result after takeover without running it twice", async () => {
+    const value = fixture("runtime-verifier-replay");
+    const counterPath = join(value.base, "verifier-count.txt").replace(/\\/g, "\\\\");
+    writeFileSync(join(value.sourceRoot, "check.mjs"), [
+      "import { readFileSync, writeFileSync } from 'node:fs';",
+      "import { path } from './client.js';",
+      `const counter = '${counterPath}';`,
+      "let count = 0;",
+      "try { count = Number(readFileSync(counter, 'utf8')); } catch {}",
+      "writeFileSync(counter, String(count + 1));",
+      "if (path !== '/v1/charges') process.exit(1);",
+      "",
+    ].join("\n"), "utf8");
+    const journal = checkpointJournal();
+    const trackedTask = task(planner());
+    const firstInput = input(value, {
+      task: trackedTask,
+      runtime: {
+        jobId: "job-runtime-verifier-replay",
+        journal,
+        key: Buffer.alloc(32, 9),
+        writerLeaseGeneration: 1,
+        executorDigest: `sha256:${"e".repeat(64)}`,
+      },
+    });
+    // After baseline, two planners, read, and mutation, the third planner ends
+    // at generation 25. Generation 28 contains the verifier result but not its
+    // consumed receipt.
+    journal.failReadAfterGeneration(28);
+
+    const interrupted = await runWardenAttempt(firstInput);
+    expect(interrupted).toMatchObject({ status: "rejected", code: "warden_attempt_internal_error" });
+    expect(Number(readFileSync(join(value.base, "verifier-count.txt"), "utf8"))).toBe(3);
+
+    journal.setLease(2);
+    const recovered = await runWardenAttempt({
+      ...firstInput,
+      runtime: { ...firstInput.runtime!, writerLeaseGeneration: 2 },
+    });
+
+    if (recovered.status === "rejected") {
+      throw new Error(`${recovered.code}: ${recovered.summary}`);
+    }
+    expect(Number(readFileSync(join(value.base, "verifier-count.txt"), "utf8"))).toBe(5);
+  });
+
   it("repairs only a private candidate and leaves the frozen source unchanged", async () => {
     const value = fixture("valid");
     const sourceBefore = readFileSync(join(value.sourceRoot, "client.js"), "utf8");
