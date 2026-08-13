@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import React, { useState } from "react";
+import { ErrorGuidanceNote } from "../components/error-guidance-note";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
@@ -16,7 +17,7 @@ export function ScanTrigger() {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ScanResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
 
   async function run() {
     setBusy(true);
@@ -35,7 +36,7 @@ export function ScanTrigger() {
       setResult(json as ScanResult);
       router.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(e);
     } finally {
       setBusy(false);
     }
@@ -52,7 +53,7 @@ export function ScanTrigger() {
           <span className={`badge ${result.status}`}>{result.status}</span>
         </p>
       )}
-      {error && <p className="muted">{error}</p>}
+      {error != null && <ErrorGuidanceNote error={error} />}
     </div>
   );
 }
