@@ -337,6 +337,20 @@ export function selfServeWardenEnabled(): boolean {
   return process.env.MENDPOINT_SELF_SERVE_WARDEN === "1";
 }
 
+/** Self-serve repository connect is off unless MENDPOINT_SELF_SERVE_CONNECT=1 (default preview safe). */
+export function selfServeConnectEnabled(): boolean {
+  return process.env.MENDPOINT_SELF_SERVE_CONNECT === "1";
+}
+
+/**
+ * The guided onboarding flow is live only when the full self-serve stack is on
+ * (signup + connect + Warden). When any flag is unset the guided entry stays
+ * hidden and the existing operator /install page renders byte-for-byte unchanged.
+ */
+export function selfServeOnboardingEnabled(): boolean {
+  return selfServeSignupEnabled() && selfServeConnectEnabled() && selfServeWardenEnabled();
+}
+
 export function allowedWebOrigins(): Set<string> {
   const raw =
     process.env.MENDPOINT_WEB_ALLOWED_ORIGINS ??

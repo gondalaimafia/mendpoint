@@ -234,6 +234,10 @@ import {
   createSelfServeConnectRoutes,
   selfServeConnectEnabled,
 } from "./repository-connect.js";
+import {
+  createSelfServeOnboardingRoutes,
+  selfServeOnboardingEnabled,
+} from "./self-serve-onboarding.js";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
   createAuthMiddleware,
@@ -762,6 +766,10 @@ app.route("/self-serve/connect", createSelfServeConnectRoutes({
 app.route("/self-serve/scan", createSelfServeScanRoutes({
   db,
   enabled: selfServeWardenEnabled(process.env),
+}));
+app.route("/self-serve/onboarding", createSelfServeOnboardingRoutes({
+  db,
+  enabled: selfServeOnboardingEnabled(process.env),
 }));
 app.route("/change-sources", changeSourceRoutes);
 app.route("/billing", billingRoutes);
