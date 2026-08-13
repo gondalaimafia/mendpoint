@@ -536,6 +536,25 @@ CREATE TABLE IF NOT EXISTS tenant_memberships (
 CREATE INDEX IF NOT EXISTS tenant_memberships_subject_idx
   ON tenant_memberships(issuer, subject, tenant_id, status);
 
+-- S3-rbac: repository/environment access scopes narrowing a membership's role.
+-- A positive allow-list entry; enforcement intersects these with the tenant's real
+-- repositories and declared config environments (never widens the role). Brand-new
+-- table (CREATE IF NOT EXISTS is idempotent on fresh and existing DBs); no additive
+-- migration column entry is needed and no other static DDL references it.
+CREATE TABLE IF NOT EXISTS tenant_member_scopes (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  issuer TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  scope_type TEXT NOT NULL CHECK (scope_type IN ('repository', 'environment')),
+  scope_value TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  UNIQUE (tenant_id, issuer, subject, scope_type, scope_value)
+);
+CREATE INDEX IF NOT EXISTS tenant_member_scopes_member_idx
+  ON tenant_member_scopes(tenant_id, issuer, subject, scope_type);
+
 CREATE TABLE IF NOT EXISTS artifact_manifests (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -2077,6 +2096,151 @@ export function verifyAuditIntegrity(
   return { ok: true, checked: rows.length };
 }
 
+export type AuditQueryFilter = {
+  actor?: string | null;
+  action?: string | null;
+  resourceType?: string | null;
+  resourceId?: string | null;
+  /** created_at >= since (inclusive), ISO. */
+  since?: string | null;
+  /** created_at < until (exclusive), ISO. */
+  until?: string | null;
+  limit?: number | null;
+  offset?: number | null;
+};
+
+export type AuditQueryResult = {
+  tenantId: string;
+  events: AuditEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** Hash-chain verification status for the whole tenant chain. */
+  chain: { ok: boolean; checked: number; error?: string };
+  filters: {
+    actor: string | null;
+    action: string | null;
+    resourceType: string | null;
+    resourceId: string | null;
+    since: string | null;
+    until: string | null;
+  };
+};
+
+const AUDIT_QUERY_MAX_LIMIT = 500;
+const AUDIT_QUERY_DEFAULT_LIMIT = 100;
+
+function auditFilterText(name: string, value: string | null | undefined): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  if (normalized.length > 256) throw new Error(`${name}_invalid`);
+  return normalized;
+}
+
+function auditFilterIso(name: string, value: string | null | undefined): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  if (!Number.isFinite(Date.parse(normalized))) throw new Error(`${name}_invalid`);
+  return normalized;
+}
+
+/**
+ * Tenant-scoped, filterable audit read over the hash-chained {@link recordAudit}
+ * events. Fail-closed: a blank tenant is a hard error (never a cross-tenant read).
+ * Filters (actor/action/resourceType/resourceId/since/until) are exact/`>=`/`<`
+ * predicates AND-combined; `total` is the unpaginated count for the same filters.
+ * `chain` reports the whole-tenant hash-chain verification so the caller can show
+ * whether the append-only log is intact.
+ */
+export function queryTenantAuditEvents(
+  db: AppDb,
+  tenantId: string,
+  filter: AuditQueryFilter = {},
+): AuditQueryResult {
+  assertTenantScope(tenantId);
+  const scopedTenant = (tenantId ?? "").trim();
+  if (!scopedTenant) throw new Error("tenant_scope_required");
+
+  const actor = auditFilterText("audit_actor", filter.actor);
+  const action = auditFilterText("audit_action", filter.action);
+  const resourceType = auditFilterText("audit_resource_type", filter.resourceType);
+  const resourceId = auditFilterText("audit_resource_id", filter.resourceId);
+  const since = auditFilterIso("audit_since", filter.since);
+  const until = auditFilterIso("audit_until", filter.until);
+  if (since !== null && until !== null && Date.parse(until) <= Date.parse(since)) {
+    throw new Error("audit_window_invalid");
+  }
+
+  const rawLimit = filter.limit ?? AUDIT_QUERY_DEFAULT_LIMIT;
+  if (!Number.isFinite(rawLimit) || rawLimit < 1) throw new Error("audit_limit_invalid");
+  const limit = Math.min(Math.floor(rawLimit), AUDIT_QUERY_MAX_LIMIT);
+  const rawOffset = filter.offset ?? 0;
+  if (!Number.isFinite(rawOffset) || rawOffset < 0) throw new Error("audit_offset_invalid");
+  const offset = Math.floor(rawOffset);
+
+  const where: string[] = ["tenant_id = ?"];
+  const params: SQLInputValue[] = [scopedTenant];
+  if (actor !== null) { where.push("actor = ?"); params.push(actor); }
+  if (action !== null) { where.push("action = ?"); params.push(action); }
+  if (resourceType !== null) { where.push("resource_type = ?"); params.push(resourceType); }
+  if (resourceId !== null) { where.push("resource_id = ?"); params.push(resourceId); }
+  if (since !== null) { where.push("created_at >= ?"); params.push(since); }
+  if (until !== null) { where.push("created_at < ?"); params.push(until); }
+  const whereSql = where.join(" AND ");
+
+  const total = (get<{ c: number }>(
+    db,
+    `SELECT COUNT(*) AS c FROM audit_events WHERE ${whereSql}`,
+    params,
+  ))?.c ?? 0;
+  const events = all<AuditEvent>(
+    db,
+    `SELECT * FROM audit_events WHERE ${whereSql}
+     ORDER BY created_at DESC, event_sequence DESC, id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, limit, offset],
+  );
+
+  return {
+    tenantId: scopedTenant,
+    events,
+    total,
+    limit,
+    offset,
+    chain: verifyAuditIntegrity(db, scopedTenant),
+    filters: { actor, action, resourceType, resourceId, since, until },
+  };
+}
+
+function auditCsvCell(value: string | number | null | undefined): string {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
+
+/**
+ * Flatten audit events to a CSV a customer can pull for their own reporting. One
+ * row per event: when, who, what, on which resource, plus the chain fields
+ * (sequence + hashes) that let an auditor re-verify integrity offline. Raw
+ * metadata JSON is deliberately excluded (only its sha256 is emitted) so a redacted
+ * event stays redacted in the export.
+ */
+export function exportTenantAuditCsv(events: readonly AuditEvent[]): string {
+  const header = [
+    "created_at", "event_sequence", "actor", "principal_id", "action",
+    "resource_type", "resource_id", "request_id", "metadata_sha256",
+    "prev_hash", "event_hash",
+  ].join(",");
+  const lines = events.map((e) =>
+    [
+      e.created_at, e.event_sequence, e.actor, e.principal_id, e.action,
+      e.resource_type, e.resource_id, e.request_id, e.metadata_sha256,
+      e.prev_hash, e.event_hash,
+    ].map(auditCsvCell).join(","),
+  );
+  return [header, ...lines].join("\n");
+}
+
 export function insertProvider(
   db: AppDb,
   row: {
@@ -2803,6 +2967,13 @@ export {
   putTenantMembership,
   setTenantMembershipStatus,
 } from "./identity.js";
+
+export {
+  grantMemberScope,
+  listMemberScopes,
+  listTenantMemberScopes,
+  revokeMemberScope,
+} from "./member-scopes.js";
 
 export {
   approvePilotSuccessContract,
