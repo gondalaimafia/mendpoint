@@ -1592,7 +1592,7 @@ Scope: review every Mendpoint worktree and branch changed today, preserve all di
 
 - [x] Run focused changed surface tests, every changed workspace test and typecheck, full repository tests, production build, GA/spec/claim/action checks, dependency audit, diff integrity, API startup, and container checks where available.
 - [x] Obtain independent adversarial review of the exact final diff and close every P0 and P1.
-- [ ] Push only the final reviewed release branch and open a protected pull request; do not merge until exact head checks are green.
+- [x] Push only the final reviewed release branch and open a protected pull request; do not merge until exact head checks are green.
 - [ ] After protected merge, verify the exact main revision and production health before claiming shipment.
 
 Acceptance: one reviewable branch contains all safe, nonduplicative Claude and Codex work from today on current main; dirty experiments remain recoverable but excluded; every included capability is tested and honestly gated; and no direct main push, force push, hook bypass, or unverified production deployment occurs.
