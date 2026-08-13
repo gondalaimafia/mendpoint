@@ -299,6 +299,7 @@ export {
 
 export {
   planTransformerBlueprint,
+  verifyTransformerBlueprint,
   type TransformerBlueprint,
   type TransformerBlueprintFileEvidence,
   type TransformerBlueprintOrganizationEvidence,
@@ -308,6 +309,19 @@ export {
   type TransformerObjective,
   type TransformerObjectiveUnit,
 } from "./blueprint-planner.js";
+
+export {
+  compileApprovedTransformerMission,
+  type TransformerBlueprintApproval,
+  type TransformerMissionCompilationInput,
+  type TransformerMissionRepository,
+} from "./mission-compiler.js";
+
+export {
+  planTransformerMission,
+  type TransformerMissionPlanningInput,
+  type TransformerMissionPlanningRepository,
+} from "./mission-planner.js";
 
 export {
   ORGANIZATION_CONSTRAINT_SCHEMA_VERSION,

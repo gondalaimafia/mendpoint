@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { Hono, type Context } from "hono";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
@@ -143,6 +144,8 @@ const TRANSFORMER_CONTROL_PLANE_ERRORS: readonly PublicErrorRule[] = [
     "bsg_nodes_limit",
     "bsg_edges_limit",
     "review_required",
+    "blueprint_reviewer_not_authorized",
+    "independent_blueprint_reviewer_required",
     "transition_required",
     "exception_required",
     "exception_id_required",
@@ -224,6 +227,11 @@ function requiredString(value: unknown, code: string, max = 2_000): string {
     throw new Error(code);
   }
   return value.trim();
+}
+
+function blueprintApprovalId(blueprintId: string, reviewerId: string): string {
+  const reviewerDigest = createHash("sha256").update(reviewerId, "utf8").digest("hex").slice(0, 24);
+  return `blueprint-review-${blueprintId}-${reviewerDigest}`;
 }
 
 function record(value: unknown, code: string): JsonRecord {
@@ -546,6 +554,15 @@ export class TransformerCampaignService {
       const blueprint = this.store.getBlueprint(request.tenantId, campaign.blueprintId);
       const bsg = this.store.getBsg(request.tenantId, campaign.bsgId);
       if (!blueprint || !bsg) throw new Error("campaign_bundle_incomplete");
+      const plannerActorId = typeof blueprint.content.plannerActorId === "string"
+        ? blueprint.content.plannerActorId
+        : undefined;
+      if (plannerActorId === request.actorId) {
+        throw new Error("independent_blueprint_reviewer_required");
+      }
+      if (!blueprint.policy.approval.reviewerIds.includes(request.actorId)) {
+        throw new Error("blueprint_reviewer_not_authorized");
+      }
       const initial =
         campaign.state === "draft" &&
         campaign.revision === revisions.campaign &&
@@ -562,6 +579,32 @@ export class TransformerCampaignService {
         bsg.state === "locked" &&
         bsg.revision === revisions.bsg + 1;
       if (!initial && !replay) throw new Error("review_revision_conflict");
+      const approvalId = blueprintApprovalId(blueprint.id, request.actorId);
+      const existingApproval = this.store.getApproval(request.tenantId, approvalId);
+      if (!existingApproval) {
+        const approval = this.store.createApproval({
+          tenantId: request.tenantId,
+          campaignId,
+          id: approvalId,
+          subjectType: "blueprint",
+          subjectId: blueprint.id,
+        }, context(request, "blueprint-review-created"));
+        this.store.transitionApproval(
+          request.tenantId,
+          approval.id,
+          "approved",
+          { reviewerId: request.actorId },
+          approval.revision,
+          context(request, "blueprint-review-approved"),
+        );
+      } else if (
+        existingApproval.state !== "approved" ||
+        existingApproval.subjectType !== "blueprint" ||
+        existingApproval.subjectId !== blueprint.id ||
+        existingApproval.reviewerId !== request.actorId
+      ) {
+        throw new Error("blueprint_reviewer_not_authorized");
+      }
       this.store.transitionBlueprint(
         request.tenantId,
         campaign.blueprintId,

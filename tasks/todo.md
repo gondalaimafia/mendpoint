@@ -1617,6 +1617,11 @@ Objective: make Warden and Transformer self-serving coding agents in their speci
 - [x] Add crash, response-loss, stale-lease, accounting, and reconstructed-workspace cases for the Warden slice.
 - [ ] Preserve terminal Warden checkpoint evidence and re-enter the mission from post-PR CI failures.
 - [ ] Build the Transformer objective-to-blueprint-to-campaign-to-draft-PR vertical.
+  - [x] Discover an exact applicable recipe and derive units, paths, owners, and review scope from immutable snapshots.
+  - [x] Compile only integrity-checked blueprints with independent reviewer receipts into the pilot execution contract.
+  - [x] Require the acting control-plane principal to be a configured independent reviewer and persist the approval.
+  - [ ] Expose repository-backed mission planning and approved campaign creation through the authenticated API.
+  - [ ] Join terminal verified candidates to real SCM draft delivery and post-PR verification evidence.
 
 ### Verification and release
 
@@ -1628,3 +1633,5 @@ Objective: make Warden and Transformer self-serving coding agents in their speci
 Acceptance: a named specialty workflow can start from an authorized customer request and autonomously produce a verified, evidence-backed, human-reviewable delivery artifact, survive an injected worker or process failure without duplicate external effects, and complete through the production path under tenant, policy, budget, and approval controls. The broader goal remains active until both Warden and Transformer meet this bar across their supported specialty workflows.
 
 Review checkpoint: Warden recovery now durably owns paid planning, reads, mutations, and verifier commands under the production job lease. Focused drills rebuild a deleted candidate workspace from authenticated mutation bytes and replay a committed verifier result without executing it twice. The worker derives a domain-separated checkpoint key from the application data key and fails closed in the customer profile when the key is missing. Remaining Warden work is terminal evidence retention and post-PR CI repair re-entry. Transformer remains next: plain objective and connected repository must compile into an independently reviewed blueprint, internal execution, deterministic candidate review, and real draft PR.
+
+Transformer orchestration checkpoint: exact snapshot inputs now select one applicable deterministic recipe or abstain, derive scope and owners, and produce the existing evidence-bound blueprint. A new compiler verifies blueprint integrity, exact source parity, recipe output, path constraints, and independent reviewer receipts before creating a runnable pilot campaign input. Control-plane review now rejects planners and unconfigured actors and stores the approved reviewer. Full Transformer tests pass 351/351; focused API control and execution tests pass 30/30. Repository-backed API intake, campaign join, and actual draft delivery remain in progress.

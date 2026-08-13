@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NODE_RUNTIME_18_TO_20_RECIPE } from "@mendpoint/transformer";
@@ -246,6 +247,43 @@ describe("Transformer campaign service", () => {
     expect(service.store.getCampaign("tenant-a", "campaign-a")).toBeUndefined();
     expect(service.store.getBlueprint("tenant-a", "blueprint-a")).toBeUndefined();
     expect(service.store.getBsg("tenant-a", "bsg-a")).toBeUndefined();
+  });
+
+  it("requires and records an independent configured blueprint reviewer", () => {
+    const service = open();
+    const candidate = bundle();
+    service.createBundle(request(), {
+      ...candidate,
+      blueprint: {
+        ...candidate.blueprint,
+        content: { ...candidate.blueprint.content, plannerActorId: "human:planner@example.com" },
+      },
+    });
+    const revisions = { campaign: 1, blueprint: 1, bsg: 1 };
+
+    expect(() => service.reviewToReady({
+      ...request("tenant-a", "review-planner"),
+      actorId: "human:planner@example.com",
+    }, "campaign-a", revisions)).toThrow("independent_blueprint_reviewer_required");
+    expect(() => service.reviewToReady({
+      ...request("tenant-a", "review-stranger"),
+      actorId: "human:stranger@example.com",
+    }, "campaign-a", revisions)).toThrow("blueprint_reviewer_not_authorized");
+
+    service.reviewToReady(request("tenant-a", "review-authorized"), "campaign-a", revisions);
+    const reviewerDigest = createHash("sha256")
+      .update("human:reviewer@example.com", "utf8")
+      .digest("hex")
+      .slice(0, 24);
+    expect(service.store.getApproval(
+      "tenant-a",
+      `blueprint-review-blueprint-a-${reviewerDigest}`,
+    )).toMatchObject({
+      state: "approved",
+      subjectType: "blueprint",
+      subjectId: "blueprint-a",
+      reviewerId: "human:reviewer@example.com",
+    });
   });
 
   it("rolls back createBundle when a post-campaign write fails", () => {
