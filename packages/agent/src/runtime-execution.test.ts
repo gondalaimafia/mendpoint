@@ -161,6 +161,7 @@ describe("Warden runtime effect execution", () => {
     const result = Object.freeze({
       call: Object.freeze({ tool: "read_file", args: Object.freeze({ path: "src/client.ts" }) }),
       accounting,
+      telemetry: Object.freeze({ responseBytes: 256, provenance: Object.freeze([]) }),
     });
 
     await execution.runEffect({
@@ -168,7 +169,7 @@ describe("Warden runtime effect execution", () => {
       slot: "planner:1",
       request: { prompt: "inspect the client" },
       executor: {
-        reconcile: async () => null,
+        reconcile: async () => ({ status: "not_started" as const }),
         executeIdempotent: async ({ assertFence }) => {
           await assertFence();
           return result;
@@ -193,7 +194,7 @@ describe("Warden runtime effect execution", () => {
       slot: "planner:2",
       request: { prompt: "return an invalid call" },
       executor: {
-        reconcile: async () => null,
+        reconcile: async () => ({ status: "not_started" as const }),
         executeIdempotent: async () => ({
           call: { tool: "bogus", args: {} },
           accounting,
@@ -202,8 +203,8 @@ describe("Warden runtime effect execution", () => {
       validateResult: (value) => value as typeof result,
       apply: (state) => state,
     })).rejects.toThrow("warden_runtime_effect_model_result_invalid");
-    expect(execution.state().generation).toBe(generation + 1);
-    expect(execution.state().pendingEffect).toMatchObject({ state: "prepared" });
+    expect(execution.state().generation).toBe(generation + 2);
+    expect(execution.state().pendingEffect).toMatchObject({ state: "dispatched" });
 
     const reopened = await openWardenRuntimeExecution({
       binding,
@@ -269,6 +270,49 @@ describe("Warden runtime effect execution", () => {
     expect(Object.isFrozen(queuedMutationReplay.value)).toBe(true);
   });
 
+  it("rejects request drift for an already consumed logical effect slot", async () => {
+    const journal = memoryJournal();
+    const execution = await openWardenRuntimeExecution({
+      binding,
+      journal,
+      key,
+      executorDigest,
+      writerLeaseGeneration: 1,
+      genesis: genesis(),
+    });
+    let executions = 0;
+    const executor = {
+      reconcile: async () => ({ status: "not_started" as const }),
+      executeIdempotent: async ({ assertFence }: Readonly<{
+        assertFence: () => Promise<void>;
+      }>) => {
+        await assertFence();
+        executions++;
+        return { locator: "artifact:stable-slot" };
+      },
+    };
+    await execution.runEffect({
+      kind: "artifact",
+      slot: "stable-slot",
+      request: { prompt: "original" },
+      executor,
+      validateResult: locatorResult,
+      apply: (state) => state,
+    });
+    expect(execution.effectRequest("artifact", "stable-slot")).toEqual({ prompt: "original" });
+    expect(Object.isFrozen(execution.effectRequest("artifact", "stable-slot"))).toBe(true);
+
+    await expect(execution.runEffect({
+      kind: "artifact",
+      slot: "stable-slot",
+      request: { prompt: "drifted" },
+      executor,
+      validateResult: locatorResult,
+      apply: (state) => state,
+    })).rejects.toThrow("warden_runtime_effect_identity_conflict");
+    expect(executions).toBe(1);
+  });
+
   it("resumes a durable external result without executing the effect twice", async () => {
     const journal = memoryJournal();
     const externalResults = new Map<string, Readonly<{ locator: string }>>();
@@ -282,14 +326,17 @@ describe("Warden runtime effect execution", () => {
       genesis: genesis(),
       now: () => "2026-08-11T18:00:01.000Z",
     });
-    journal.failBeforeGeneration(3);
-
-    await expect(first.runEffect({
+    journal.failBeforeGeneration(4);
+    await expect(first.runEffect<Readonly<{ locator: string }>>({
       kind: "artifact",
       slot: "candidate-manifest",
       request: { path: "candidate-manifest.json" },
       executor: {
-        reconcile: async ({ effectId }) => externalResults.get(effectId) ?? null,
+        reconcile: async ({ effectId }) => {
+          const value = externalResults.get(effectId);
+          return value ? { status: "completed" as const, value: locatorResult(value) } :
+            { status: "not_started" as const };
+        },
         executeIdempotent: async ({ effectId, assertFence }) => {
           await assertFence();
           const existing = externalResults.get(effectId);
@@ -316,12 +363,16 @@ describe("Warden runtime effect execution", () => {
       writerLeaseGeneration: 1,
       now: () => "2026-08-11T18:00:02.000Z",
     });
-    const resumed = await successor.runEffect({
+    const resumed = await successor.runEffect<Readonly<{ locator: string }>>({
       kind: "artifact",
       slot: "candidate-manifest",
       request: { path: "candidate-manifest.json" },
       executor: {
-        reconcile: async ({ effectId }) => externalResults.get(effectId) ?? null,
+        reconcile: async ({ effectId }) => {
+          const value = externalResults.get(effectId);
+          return value ? { status: "completed" as const, value: locatorResult(value) } :
+            { status: "not_started" as const };
+        },
         executeIdempotent: async () => {
           executions++;
           throw new Error("effect_must_not_execute_twice");
@@ -355,14 +406,17 @@ describe("Warden runtime effect execution", () => {
       writerLeaseGeneration: 1,
       genesis: genesis(),
     });
-    journal.failBeforeGeneration(3);
+    journal.failBeforeGeneration(4);
     const effect = {
       kind: "artifact" as const,
       slot: "takeover-artifact",
       request: { path: "takeover.json" },
       executor: {
-        reconcile: async ({ effectId }: Readonly<{ effectId: string }>) =>
-          externalResults.get(effectId) ?? null,
+        reconcile: async ({ effectId }: Readonly<{ effectId: string }>) => {
+          const value = externalResults.get(effectId);
+          return value ? { status: "completed" as const, value: locatorResult(value) } :
+            { status: "not_started" as const };
+        },
         executeIdempotent: async ({
           effectId,
           assertFence,
@@ -397,6 +451,160 @@ describe("Warden runtime effect execution", () => {
     await expect(first.runEffect(effect)).rejects.toThrow("warden_runtime_effect_lease_stale");
   });
 
+  it("lets a newer lease execute an effect proven not to have started", async () => {
+    const journal = memoryJournal();
+    const first = await openWardenRuntimeExecution({
+      binding,
+      journal,
+      key,
+      executorDigest,
+      writerLeaseGeneration: 1,
+      genesis: genesis(),
+    });
+    let executions = 0;
+    journal.failBeforeGeneration(3);
+
+    await expect(first.runEffect<Readonly<{ locator: string }>>({
+      kind: "artifact",
+      slot: "prepared-before-dispatch",
+      request: { path: "prepared.json" },
+      executor: {
+        reconcile: async () => ({ status: "unknown" as const }),
+        executeIdempotent: async () => {
+          executions++;
+          return { locator: "must-not-run" };
+        },
+      },
+      validateResult: locatorResult,
+      apply: (state) => state,
+    })).rejects.toThrow("storage_unavailable_before_commit");
+    expect(executions).toBe(0);
+
+    journal.setLease(2);
+    const successor = await openWardenRuntimeExecution({
+      binding,
+      journal,
+      key,
+      executorDigest,
+      writerLeaseGeneration: 2,
+    });
+    const resumed = await successor.runEffect<Readonly<{ locator: string }>>({
+      kind: "artifact",
+      slot: "prepared-before-dispatch",
+      request: { path: "prepared.json" },
+      executor: {
+        reconcile: async () => ({ status: "not_started" as const }),
+        executeIdempotent: async ({ assertFence }) => {
+          await assertFence();
+          executions++;
+          return { locator: "artifact:prepared" };
+        },
+      },
+      validateResult: locatorResult,
+      apply: (state) => state,
+    });
+
+    expect(resumed.value).toEqual({ locator: "artifact:prepared" });
+    expect(executions).toBe(1);
+    expect(successor.state().writerLeaseGeneration).toBe(2);
+  });
+
+  it("does not redispatch an unresolved external effect after lease takeover", async () => {
+    const journal = memoryJournal();
+    let executions = 0;
+    let reconciliations = 0;
+    const first = await openWardenRuntimeExecution({
+      binding,
+      journal,
+      key,
+      executorDigest,
+      writerLeaseGeneration: 1,
+      genesis: genesis(),
+    });
+    journal.failBeforeGeneration(4);
+    const effect = {
+      kind: "artifact" as const,
+      slot: "unknown-after-takeover",
+      request: { path: "unknown.json" },
+      executor: {
+        reconcile: async () => {
+          reconciliations++;
+          return { status: "unknown" as const };
+        },
+        executeIdempotent: async ({ assertFence }: Readonly<{
+          assertFence: () => Promise<void>;
+        }>) => {
+          await assertFence();
+          executions++;
+          return { locator: "artifact:response-was-not-durable" };
+        },
+      },
+      validateResult: locatorResult,
+      apply: (state: WardenPrivateRuntimeStateV1) => state,
+    };
+    await expect(first.runEffect(effect)).rejects.toThrow("storage_unavailable_before_commit");
+    expect(executions).toBe(1);
+    journal.setLease(2);
+    const successor = await openWardenRuntimeExecution({
+      binding,
+      journal,
+      key,
+      executorDigest,
+      writerLeaseGeneration: 2,
+    });
+
+    await expect(successor.runEffect(effect))
+      .rejects.toThrow("warden_runtime_effect_outcome_uncertain");
+    expect(executions).toBe(1);
+  });
+
+  it("does not redispatch an unresolved prepared effect after a same-lease reopen", async () => {
+    const journal = memoryJournal();
+    let executions = 0;
+    let reconciliations = 0;
+    const first = await openWardenRuntimeExecution({
+      binding,
+      journal,
+      key,
+      executorDigest,
+      writerLeaseGeneration: 1,
+      genesis: genesis(),
+    });
+    journal.failBeforeGeneration(4);
+    const effect = {
+      kind: "artifact" as const,
+      slot: "unknown-same-lease",
+      request: { path: "unknown-same-lease.json" },
+      executor: {
+        reconcile: async () => {
+          reconciliations++;
+          return { status: "unknown" as const };
+        },
+        executeIdempotent: async ({ assertFence }: Readonly<{
+          assertFence: () => Promise<void>;
+        }>) => {
+          await assertFence();
+          executions++;
+          return { locator: "artifact:not-durable" };
+        },
+      },
+      validateResult: locatorResult,
+      apply: (state: WardenPrivateRuntimeStateV1) => state,
+    };
+    await expect(first.runEffect(effect)).rejects.toThrow("storage_unavailable_before_commit");
+    const reopened = await openWardenRuntimeExecution({
+      binding,
+      journal,
+      key,
+      executorDigest,
+      writerLeaseGeneration: 1,
+    });
+
+    await expect(reopened.runEffect(effect))
+      .rejects.toThrow("warden_runtime_effect_outcome_uncertain");
+    expect(executions).toBe(1);
+  });
+
   it("reconciles a committed checkpoint when the journal response is lost", async () => {
     const journal = memoryJournal();
     const execution = await openWardenRuntimeExecution({
@@ -408,7 +616,7 @@ describe("Warden runtime effect execution", () => {
       genesis: genesis(),
       now: () => "2026-08-11T18:01:00.000Z",
     });
-    journal.loseResponseAfterGeneration(3);
+    journal.loseResponseAfterGeneration(4);
     let executions = 0;
 
     const result = await execution.runEffect({
@@ -416,7 +624,7 @@ describe("Warden runtime effect execution", () => {
       slot: "evidence-bundle",
       request: { path: "evidence.json" },
       executor: {
-        reconcile: async () => null,
+        reconcile: async () => ({ status: "not_started" as const }),
         executeIdempotent: async ({ assertFence }) => {
           await assertFence();
           executions++;
@@ -432,7 +640,7 @@ describe("Warden runtime effect execution", () => {
 
     expect(executions).toBe(1);
     expect(result.replayed).toBe(false);
-    expect(journal.record().envelope?.payload.generation).toBe(4);
+    expect(journal.record().envelope?.payload.generation).toBe(5);
   });
 
   it("checks the current lease immediately before an external effect", async () => {
@@ -453,11 +661,9 @@ describe("Warden runtime effect execution", () => {
       slot: "stale-artifact",
       request: { path: "stale.json" },
       executor: {
-        reconcile: async () => {
-          journal.setLease(2);
-          return null;
-        },
+        reconcile: async () => ({ status: "unknown" as const }),
         executeIdempotent: async ({ assertFence }) => {
+          journal.setLease(2);
           await assertFence();
           executions++;
           return { locator: "artifact:stale" };
@@ -468,7 +674,7 @@ describe("Warden runtime effect execution", () => {
     })).rejects.toThrow("warden_runtime_effect_lease_stale");
 
     expect(executions).toBe(0);
-    expect(journal.record().envelope?.payload.generation).toBe(2);
+    expect(journal.record().envelope?.payload.generation).toBe(3);
   });
 
   it("rejects a journal lease that regresses behind the authenticated writer", async () => {
@@ -532,7 +738,7 @@ describe("Warden runtime effect execution", () => {
       slot: "copy-artifact",
       request: { path: "copy.json" },
       executor: {
-        reconcile: async () => null,
+        reconcile: async () => ({ status: "not_started" as const }),
         executeIdempotent: async ({ assertFence }) => {
           await assertFence();
           return { locator: "artifact:copy" };
@@ -555,6 +761,45 @@ describe("Warden runtime effect execution", () => {
     expect(JSON.stringify(execution.state())).not.toContain("injected");
   });
 
+  it("returns the authenticated effect identity and digests needed by event reducers", async () => {
+    const journal = memoryJournal();
+    const execution = await openWardenRuntimeExecution({
+      binding,
+      journal,
+      key,
+      executorDigest,
+      writerLeaseGeneration: 1,
+      genesis: genesis(),
+    });
+
+    const outcome = await execution.runEffect({
+      kind: "artifact",
+      slot: "identity-artifact",
+      request: { path: "identity.json" },
+      executor: {
+        reconcile: async () => ({ status: "not_started" as const }),
+        executeIdempotent: async ({ assertFence }) => {
+          await assertFence();
+          return { locator: "artifact:identity" };
+        },
+      },
+      validateResult: locatorResult,
+      apply: (state) => state,
+    });
+
+    expect(outcome).toMatchObject({
+      replayed: false,
+      effectId: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      requestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      resultDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    });
+    expect(execution.state().effectReceipts[0]).toMatchObject({
+      effectId: (outcome as { effectId: string }).effectId,
+      requestDigest: (outcome as { requestDigest: string }).requestDigest,
+      resultDigest: (outcome as { resultDigest: string }).resultDigest,
+    });
+  });
+
   it("aborts a bounded effect operation when its deadline expires", async () => {
     const journal = memoryJournal();
     const execution = await openWardenRuntimeExecution({
@@ -573,7 +818,7 @@ describe("Warden runtime effect execution", () => {
       slot: "bounded-artifact",
       request: { path: "bounded.json" },
       executor: {
-        reconcile: async () => null,
+        reconcile: async () => ({ status: "not_started" as const }),
         executeIdempotent: async ({ signal, assertFence }) => {
           await assertFence();
           signal.addEventListener("abort", () => {
@@ -588,7 +833,7 @@ describe("Warden runtime effect execution", () => {
     })).rejects.toThrow("warden_runtime_effect_timeout");
 
     expect(observedAbort).toBe(true);
-    expect(execution.state().pendingEffect).toMatchObject({ state: "prepared" });
+    expect(execution.state().pendingEffect).toMatchObject({ state: "dispatched" });
   });
 
   it("rejects terminal phase changes from ordinary effect reducers", async () => {
@@ -607,7 +852,7 @@ describe("Warden runtime effect execution", () => {
       slot: "unauthorized-terminal",
       request: { path: "terminal.json" },
       executor: {
-        reconcile: async () => null,
+        reconcile: async () => ({ status: "not_started" as const }),
         executeIdempotent: async ({ assertFence }) => {
           await assertFence();
           return { locator: "artifact:terminal" };
@@ -642,8 +887,8 @@ describe("Warden runtime effect execution", () => {
       slot: "abort-reconcile",
       request: { path: "abort.json" },
       executor: {
-        reconcile: async () => await new Promise<never>(() => undefined),
-        executeIdempotent: async () => ({ locator: "must-not-run" }),
+        reconcile: async () => ({ status: "unknown" as const }),
+        executeIdempotent: async () => await new Promise<never>(() => undefined),
       },
       validateResult: locatorResult,
       apply: (state) => state,

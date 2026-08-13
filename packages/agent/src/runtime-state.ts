@@ -39,7 +39,9 @@ export type WardenRuntimeEvent = Readonly<{
   ok: boolean;
   summaryCode: string;
   errorCode?: string;
+  effectId?: string;
   modelEffectId?: string;
+  modelPlannedCall?: WardenRuntimeJson;
   call: WardenRuntimeJson;
   result: WardenRuntimeJson;
   mutation: boolean;
@@ -57,7 +59,7 @@ export type WardenRuntimePendingEffect =
   | Readonly<{ kind: "none" }>
   | Readonly<{
     kind: "model" | "tool" | "verifier" | "artifact";
-    state: "prepared" | "completed";
+    state: "prepared" | "dispatched" | "completed";
     effectId: string;
     requestDigest: string;
     resultDigest?: string;
@@ -220,7 +222,7 @@ function modelResultFromBytes(content: Uint8Array): Readonly<{
   }
   validateJson(parsed);
   const result = jsonRecord(parsed, code);
-  exactKeys(result, ["call", "accounting"], code);
+  exactKeys(result, ["call", "accounting", ...(result.telemetry === undefined ? [] : ["telemetry"])], code);
   const call = validatedToolCall(result.call);
   if (!call || canonical(call) !== canonical(result.call)) throw new Error(code);
   const accounting = result.accounting as WardenRuntimeModelCall;
@@ -230,7 +232,67 @@ function modelResultFromBytes(content: Uint8Array): Readonly<{
     throw new Error(code);
   }
   if (accounting.status !== "succeeded") throw new Error(code);
+  if (result.telemetry !== undefined) {
+    const telemetry = jsonRecord(result.telemetry, code);
+    exactKeys(telemetry, ["responseBytes", "provenance"], code);
+    if (!Number.isSafeInteger(telemetry.responseBytes) || (telemetry.responseBytes as number) < 0 ||
+        !Array.isArray(telemetry.provenance)) {
+      throw new Error(code);
+    }
+  }
   return { plannedCallDigest: sha256(canonical(call)), accounting };
+}
+
+function effectEventResultFromBytes(content: Uint8Array): WardenRuntimeJson {
+  const code = "warden_runtime_state_effect_event_invalid";
+  let parsed: WardenRuntimeJson;
+  try {
+    parsed = JSON.parse(Buffer.from(content).toString("utf8")) as WardenRuntimeJson;
+  } catch {
+    throw new Error(code);
+  }
+  validateJson(parsed);
+  const envelope = jsonRecord(parsed, code);
+  exactKeys(envelope, ["result", ...(envelope.mutation === undefined ? [] : ["mutation"])], code);
+  const result = jsonRecord(envelope.result, code);
+  exactKeys(result, [
+    "ok", "tool", "summary",
+    ...(result.data === undefined ? [] : ["data"]),
+    ...(result.error === undefined ? [] : ["error"]),
+  ], code);
+  if (typeof result.ok !== "boolean" || typeof result.summary !== "string" ||
+      !( ["list_dir", "read_file", "search", "write_file", "replace_in_file",
+        "run_command", "http_probe", "finish"] as const).includes(result.tool as ToolName) ||
+      (result.error !== undefined && typeof result.error !== "string")) {
+    throw new Error(code);
+  }
+  if (envelope.mutation !== undefined) {
+    const mutation = jsonRecord(envelope.mutation, code);
+    exactKeys(mutation, [
+      "path", "preExisted", "preDigest", "preContentBase64",
+      "postDigest", "postContentBase64",
+    ], code);
+    if (typeof mutation.path !== "string" || typeof mutation.preExisted !== "boolean" ||
+        (mutation.preDigest !== null && typeof mutation.preDigest !== "string") ||
+        (mutation.preContentBase64 !== null && typeof mutation.preContentBase64 !== "string") ||
+        typeof mutation.postDigest !== "string" || typeof mutation.postContentBase64 !== "string" ||
+        mutation.preExisted !== (mutation.preDigest !== null) ||
+        mutation.preExisted !== (mutation.preContentBase64 !== null)) {
+      throw new Error(code);
+    }
+    validPath(mutation.path, code);
+    validDigest(mutation.postDigest, code);
+    const post = Buffer.from(mutation.postContentBase64, "base64");
+    if (post.toString("base64") !== mutation.postContentBase64 ||
+        sha256(post) !== mutation.postDigest) throw new Error(code);
+    if (mutation.preExisted) {
+      validDigest(mutation.preDigest as string, code);
+      const pre = Buffer.from(mutation.preContentBase64 as string, "base64");
+      if (pre.toString("base64") !== mutation.preContentBase64 ||
+          sha256(pre) !== mutation.preDigest) throw new Error(code);
+    }
+  }
+  return envelope.result!;
 }
 
 function mutationIdentity(event: WardenRuntimeEvent): Readonly<{ path: string; digest: string }> {
@@ -375,7 +437,9 @@ function validateEvent(event: WardenRuntimeEvent): void {
   exactKeys(event, [
     "category", "tool", "plannerSource", "executed", "ok", "summaryCode",
     ...(event.errorCode === undefined ? [] : ["errorCode"]),
+    ...(event.effectId === undefined ? [] : ["effectId"]),
     ...(event.modelEffectId === undefined ? [] : ["modelEffectId"]),
+    ...(event.modelPlannedCall === undefined ? [] : ["modelPlannedCall"]),
     "call", "result", "mutation",
   ], "warden_runtime_state_event_invalid");
   if (!(["tool", "verifier"] as const).includes(event.category) ||
@@ -383,8 +447,10 @@ function validateEvent(event: WardenRuntimeEvent): void {
       typeof event.executed !== "boolean" || typeof event.ok !== "boolean" ||
       typeof event.mutation !== "boolean" || !CODE.test(event.summaryCode) ||
       (event.errorCode !== undefined && !CODE.test(event.errorCode)) ||
+      (event.effectId !== undefined && (!event.executed || !IDENTIFIER.test(event.effectId))) ||
       (event.modelEffectId !== undefined &&
         (event.plannerSource !== "model" || !event.executed || !IDENTIFIER.test(event.modelEffectId))) ||
+      (event.modelPlannedCall !== undefined && event.modelEffectId === undefined) ||
       !(["list_dir", "read_file", "search", "write_file", "replace_in_file",
         "run_command", "http_probe", "finish"] as const).includes(event.tool)) {
     throw new Error("warden_runtime_state_event_invalid");
@@ -395,6 +461,7 @@ function validateEvent(event: WardenRuntimeEvent): void {
   }
   validateJson(event.call);
   validateJson(event.result);
+  if (event.modelPlannedCall !== undefined) validateJson(event.modelPlannedCall);
   const call = jsonRecord(event.call, "warden_runtime_state_event_invalid");
   if (call.tool !== event.tool) {
     throw new Error("warden_runtime_state_event_invalid");
@@ -412,7 +479,7 @@ function validatePendingEffect(effect: WardenRuntimePendingEffect): void {
     ...(effect.resultDigest === undefined ? [] : ["resultDigest"]),
   ], "warden_runtime_state_pending_effect_invalid");
   if (!(["model", "tool", "verifier", "artifact"] as const).includes(effect.kind) ||
-      !(["prepared", "completed"] as const).includes(effect.state) ||
+      !(["prepared", "dispatched", "completed"] as const).includes(effect.state) ||
       !IDENTIFIER.test(effect.effectId)) {
     throw new Error("warden_runtime_state_pending_effect_invalid");
   }
@@ -564,6 +631,46 @@ function validateState(state: WardenPrivateRuntimeStateV1): void {
       }
     }
   }
+  const runtimeEffectEvents = new Map<string, WardenRuntimeEvent>();
+  for (const event of state.events) {
+    if (event.effectId === undefined) continue;
+    if (runtimeEffectEvents.has(event.effectId)) {
+      throw new Error("warden_runtime_state_effect_event_invalid");
+    }
+    runtimeEffectEvents.set(event.effectId, event);
+  }
+  for (const receipt of state.effectReceipts) {
+    if (receipt.kind !== "tool" && receipt.kind !== "verifier") continue;
+    const event = runtimeEffectEvents.get(receipt.effectId);
+    const requestBlob = blobContents.get(receipt.requestDigest);
+    const resultBlob = blobContents.get(receipt.resultDigest);
+    if (!event || !requestBlob || !resultBlob ||
+        event.category !== (receipt.kind === "verifier" ? "verifier" : "tool") ||
+        canonical(effectEventResultFromBytes(resultBlob)) !== canonical(event.result)) {
+      throw new Error("warden_runtime_state_effect_event_invalid");
+    }
+    let request: unknown;
+    try {
+      request = JSON.parse(Buffer.from(requestBlob).toString("utf8"));
+    } catch {
+      throw new Error("warden_runtime_state_effect_event_invalid");
+    }
+    const requestRecord = jsonRecord(request as WardenRuntimeJson,
+      "warden_runtime_state_effect_event_invalid");
+    if (!Object.hasOwn(requestRecord, "call") ||
+        canonical(requestRecord.call) !== canonical(event.call)) {
+      throw new Error("warden_runtime_state_effect_event_invalid");
+    }
+    if ((Object.hasOwn(requestRecord, "plannerSource") &&
+          requestRecord.plannerSource !== event.plannerSource) ||
+        (Object.hasOwn(requestRecord, "modelEffectId") &&
+          requestRecord.modelEffectId !== (event.modelEffectId ?? null)) ||
+        (Object.hasOwn(requestRecord, "modelPlannedCall") &&
+          canonical(requestRecord.modelPlannedCall) !==
+            canonical(event.modelPlannedCall ?? null))) {
+      throw new Error("warden_runtime_state_effect_event_invalid");
+    }
+  }
   const modelReceipts = new Map(state.effectReceipts
     .filter((receipt) => receipt.kind === "model")
     .map((receipt) => [receipt.effectId, receipt]));
@@ -577,7 +684,7 @@ function validateState(state: WardenPrivateRuntimeStateV1): void {
     }
     const receipt = modelReceipts.get(event.modelEffectId);
     if (!receipt || usedModelEffects.has(event.modelEffectId) ||
-        sha256(canonical(event.call)) !== receipt.plannedCallDigest) {
+        sha256(canonical(event.modelPlannedCall ?? event.call)) !== receipt.plannedCallDigest) {
       throw new Error("warden_runtime_state_model_event_invalid");
     }
     usedModelEffects.add(event.modelEffectId);
@@ -763,7 +870,7 @@ export function validateWardenRuntimeStateTransition(
     const receipt = currentModelReceipts.get(event.modelEffectId);
     if (!receipt || usedModelEffectIds.has(event.modelEffectId) ||
         jsonRecord(event.call, "warden_runtime_state_event_invalid").tool !== event.tool ||
-        sha256(canonical(event.call)) !== receipt.plannedCallDigest) {
+        sha256(canonical(event.modelPlannedCall ?? event.call)) !== receipt.plannedCallDigest) {
       reject("model_event");
     }
     usedModelEffectIds.add(event.modelEffectId);
@@ -797,17 +904,35 @@ export function validateWardenRuntimeStateTransition(
     nextEffect.requestDigest === currentEffect.requestDigest;
   if (currentEffect.state === "prepared") {
     if (appendedReceipts.length !== 0 || !sameIdentity ||
-        (nextEffect.state !== "prepared" && nextEffect.state !== "completed")) {
+        (nextEffect.state !== "prepared" && nextEffect.state !== "dispatched")) {
+      throw new Error("warden_runtime_state_pending_effect_transition_invalid");
+    }
+    return;
+  }
+  if (currentEffect.state === "dispatched") {
+    if (appendedReceipts.length !== 0 || !sameIdentity ||
+        (nextEffect.state !== "dispatched" && nextEffect.state !== "completed")) {
       throw new Error("warden_runtime_state_pending_effect_transition_invalid");
     }
     return;
   }
   if (nextEffect.kind === "none") {
     const receipt = appendedReceipts[0];
+    const appendedEvents = next.events.slice(current.events.length);
+    const resultBlob = next.blobs.find((blob) => blob.digest === currentEffect.resultDigest);
+    const effectEventInvalid = currentEffect.kind === "tool" || currentEffect.kind === "verifier"
+      ? appendedEvents.length !== 1 ||
+        appendedEvents[0]?.effectId !== currentEffect.effectId ||
+        appendedEvents[0]?.category !== (currentEffect.kind === "verifier" ? "verifier" : "tool") ||
+        !appendedEvents[0]?.executed ||
+        !resultBlob || canonical(effectEventResultFromBytes(
+          Buffer.from(resultBlob.contentBase64, "base64"),
+        )) !== canonical(appendedEvents[0]?.result)
+      : appendedEvents.some((event) => event.effectId === currentEffect.effectId);
     if (appendedReceipts.length !== 1 || receipt?.kind !== currentEffect.kind ||
         receipt.effectId !== currentEffect.effectId ||
         receipt.requestDigest !== currentEffect.requestDigest ||
-        receipt.resultDigest !== currentEffect.resultDigest) {
+        receipt.resultDigest !== currentEffect.resultDigest || effectEventInvalid) {
       throw new Error("warden_runtime_state_pending_effect_transition_invalid");
     }
     return;

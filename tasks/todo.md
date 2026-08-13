@@ -1605,16 +1605,18 @@ Objective: make Warden and Transformer self-serving coding agents in their speci
 
 ### Baseline and capability contract
 
-- [ ] Compare exact deployed main against the authoritative product specification, Warden and Transformer gap analyses, evals, and current official Devin capabilities.
-- [ ] Build an evidence-backed parity scorecard for intake, context, planning, coding, verification, delivery, recovery, collaboration, security, and enterprise operations.
-- [ ] Identify the highest-leverage missing vertical slice using current code and runtime evidence, not roadmap intent.
+- [x] Compare exact deployed main against the authoritative product specification, Warden and Transformer gap analyses, evals, and current official Devin capabilities.
+- [x] Build an evidence-backed parity scorecard for intake, context, planning, coding, verification, delivery, recovery, collaboration, security, and enterprise operations.
+- [x] Identify the highest-leverage missing vertical slice using current code and runtime evidence, not roadmap intent.
 
 ### Red-first implementation
 
-- [ ] Define one capability eval and its regression matrix before production edits.
-- [ ] Observe the expected RED failures at the real API, worker, agent, verification, and delivery boundaries involved.
-- [ ] Implement the complete vertical slice without a legacy fallback or unowned side effect.
-- [ ] Add crash, response-loss, stale-lease, cross-tenant, accounting, and human-review cases where applicable.
+- [x] Define Warden recovery evals for model receipt, deleted-workspace mutation, completed verifier, lease abort, and response loss.
+- [x] Observe the expected RED failures at the runtime authority and attempt takeover boundaries.
+- [x] Route Warden model, tool, mutation, and verifier effects through the live job checkpoint and lease fence.
+- [x] Add crash, response-loss, stale-lease, accounting, and reconstructed-workspace cases for the Warden slice.
+- [ ] Preserve terminal Warden checkpoint evidence and re-enter the mission from post-PR CI failures.
+- [ ] Build the Transformer objective-to-blueprint-to-campaign-to-draft-PR vertical.
 
 ### Verification and release
 
@@ -1624,3 +1626,5 @@ Objective: make Warden and Transformer self-serving coding agents in their speci
 - [ ] Update the parity scorecard with what is now proven, what remains partial, and the next highest-leverage slice.
 
 Acceptance: a named specialty workflow can start from an authorized customer request and autonomously produce a verified, evidence-backed, human-reviewable delivery artifact, survive an injected worker or process failure without duplicate external effects, and complete through the production path under tenant, policy, budget, and approval controls. The broader goal remains active until both Warden and Transformer meet this bar across their supported specialty workflows.
+
+Review checkpoint: Warden recovery now durably owns paid planning, reads, mutations, and verifier commands under the production job lease. Focused drills rebuild a deleted candidate workspace from authenticated mutation bytes and replay a committed verifier result without executing it twice. The worker derives a domain-separated checkpoint key from the application data key and fails closed in the customer profile when the key is missing. Remaining Warden work is terminal evidence retention and post-PR CI repair re-entry. Transformer remains next: plain objective and connected repository must compile into an independently reviewed blueprint, internal execution, deterministic candidate review, and real draft PR.

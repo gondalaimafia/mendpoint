@@ -709,11 +709,24 @@ describe("Warden checkpoint envelope", () => {
       },
     };
     const prepared = await commitRuntime(preparedState);
-    const completedState: WardenPrivateRuntimeStateV1 = {
+    const dispatchedState: WardenPrivateRuntimeStateV1 = {
       ...preparedState,
       generation: 3,
       previousEnvelopeDigest: prepared.payloadDigest,
       createdAt: "2026-08-10T18:00:01.000Z",
+      pendingEffect: {
+        kind: "model",
+        effectId,
+        requestDigest,
+        state: "dispatched",
+      },
+    };
+    const dispatched = await commitRuntime(dispatchedState);
+    const completedState: WardenPrivateRuntimeStateV1 = {
+      ...dispatchedState,
+      generation: 4,
+      previousEnvelopeDigest: dispatched.payloadDigest,
+      createdAt: "2026-08-10T18:00:02.000Z",
       blobs: [...preparedState.blobs, {
         digest: resultDigest,
         bytes: resultBytes.byteLength,
@@ -730,9 +743,9 @@ describe("Warden checkpoint envelope", () => {
     const completed = await commitRuntime(completedState);
     const consumedState: WardenPrivateRuntimeStateV1 = {
       ...completedState,
-      generation: 4,
+      generation: 5,
       previousEnvelopeDigest: completed.payloadDigest,
-      createdAt: "2026-08-10T18:00:02.000Z",
+      createdAt: "2026-08-10T18:00:03.000Z",
       modelCalls: [modelAccounting],
       effectReceipts: [{
         kind: "model",

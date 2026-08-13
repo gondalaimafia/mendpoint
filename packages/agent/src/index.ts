@@ -108,8 +108,16 @@ export {
   type WardenAttemptAgentSummary,
   type WardenAttemptInput,
   type WardenAttemptLimits,
+  type WardenAttemptRuntime,
   type WardenAttemptResult,
 } from "./attempt-engine.js";
+export type {
+  WardenCheckpointBinding,
+  WardenCheckpointEnvelope,
+  WardenCheckpointJournal,
+  WardenCheckpointJournalRecord,
+  WardenSealedRuntimeState,
+} from "./checkpoint.js";
 export {
   redactSourceForModel,
   type SourceRedactionCounts,
