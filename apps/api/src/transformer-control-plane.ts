@@ -6,6 +6,7 @@ import {
   TransformerDomainError,
   TransformerControlPlaneStore,
   recipeReference,
+  resolveRecipe,
   type BlueprintPolicy,
   type CampaignState,
   type MutationContext,
@@ -229,7 +230,7 @@ function requiredString(value: unknown, code: string, max = 2_000): string {
   return value.trim();
 }
 
-function blueprintApprovalId(blueprintId: string, reviewerId: string): string {
+export function transformerBlueprintApprovalId(blueprintId: string, reviewerId: string): string {
   const reviewerDigest = createHash("sha256").update(reviewerId, "utf8").digest("hex").slice(0, 24);
   return `blueprint-review-${blueprintId}-${reviewerDigest}`;
 }
@@ -253,17 +254,19 @@ function safeReference(value: string, code: string): string {
 }
 
 function exactRecipe(value: unknown): BlueprintPolicy["recipe"] {
-  const expected = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
-  if (value === undefined) return expected;
+  if (value === undefined) return recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
   const supplied = record(value, "blueprint_recipe_invalid");
-  if (
-    supplied.id !== expected.id ||
-    supplied.version !== expected.version ||
-    supplied.digest !== expected.digest
-  ) {
+  const reference = {
+    id: requiredString(supplied.id, "blueprint_recipe_invalid", 200),
+    version: positiveRevision(supplied.version, "blueprint_recipe_invalid"),
+    digest: requiredString(supplied.digest, "blueprint_recipe_invalid", 80),
+  };
+  try {
+    resolveRecipe(reference);
+  } catch {
     throw new Error("blueprint_recipe_mismatch");
   }
-  return expected;
+  return reference;
 }
 
 function parsePolicy(value: unknown): BlueprintPolicy {
@@ -579,7 +582,7 @@ export class TransformerCampaignService {
         bsg.state === "locked" &&
         bsg.revision === revisions.bsg + 1;
       if (!initial && !replay) throw new Error("review_revision_conflict");
-      const approvalId = blueprintApprovalId(blueprint.id, request.actorId);
+      const approvalId = transformerBlueprintApprovalId(blueprint.id, request.actorId);
       const existingApproval = this.store.getApproval(request.tenantId, approvalId);
       if (!existingApproval) {
         const approval = this.store.createApproval({

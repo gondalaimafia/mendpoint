@@ -152,9 +152,12 @@ export function planTransformerMission(
     const application = applyRecipe(reference, repository.files);
     const scopePaths = [...new Set(application.operations.map((operation) => operation.path))]
       .sort(compareCodeUnits);
+    const operationOwnerMissing = scopePaths.some(
+      (path) => (evidenceByPath.get(path)?.ownerIds.length ?? 0) === 0,
+    );
     const ownerIds = [...new Set(scopePaths.flatMap((path) => evidenceByPath.get(path)?.ownerIds ?? []))]
       .sort(compareCodeUnits);
-    if (ownerIds.length === 0) {
+    if (operationOwnerMissing || ownerIds.length === 0) {
       reasons.push(`repository_operation_owner_missing:${repository.id}`);
       continue;
     }
