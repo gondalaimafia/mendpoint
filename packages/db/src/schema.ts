@@ -7,6 +7,12 @@ export type Provider = {
   website: string | null;
   openapi_url?: string | null;
   changelog_url?: string | null;
+  /**
+   * Tenant-private ownership (S1.1). NULL = shared, system-admin-owned catalog provider
+   * visible to every tenant (the default, unchanged behavior). A non-null value marks a
+   * self-serve tenant-private provider that only its owning tenant may see or run.
+   */
+  tenant_id?: string | null;
   created_at: string;
 };
 
