@@ -154,6 +154,7 @@ describe("Warden training knowledge", () => {
       tried,
     );
     expect(backoff?.call.tool).toBe("replace_in_file");
+    expect(backoff?.call.args.global).toBe(true);
     expect(String(backoff?.call.args.to)).toMatch(/setTimeout|2 \*\*/);
 
     const postSrc = `export function pay() {
