@@ -118,6 +118,10 @@ export type {
   WardenCheckpointJournalRecord,
   WardenSealedRuntimeState,
 } from "./checkpoint.js";
+export type {
+  WardenRuntimeTerminalEvidence,
+  WardenRuntimeTerminalOutcome,
+} from "./runtime-execution.js";
 export {
   redactSourceForModel,
   type SourceRedactionCounts,
