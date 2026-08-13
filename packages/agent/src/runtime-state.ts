@@ -836,6 +836,12 @@ export function validateWardenRuntimeStateTransition(
   if (!same(next.binding, current.binding)) reject("binding");
   if (next.workspaceName !== current.workspaceName) reject("workspace");
   if (next.executorDigest !== current.executorDigest) reject("executor");
+  if (next.phase === "terminal" && current.phase !== "agent_running") {
+    reject("phase");
+  }
+  if (current.phase === "terminal" && next.phase !== "terminal") {
+    reject("phase");
+  }
   if (!same(next.sourceManifest, current.sourceManifest)) reject("source_manifest");
   if (!prefix(current.events, next.events)) reject("events");
   if (!prefix(current.modelCalls, next.modelCalls)) reject("model_calls");

@@ -2900,21 +2900,28 @@ function runtimeJson(value: unknown): WardenRuntimeJson {
   return JSON.parse(stableSerialize(value)) as WardenRuntimeJson;
 }
 
-function validatedRuntimeToolCall(value: WardenRuntimeJson | undefined): ToolCall | null {
+function validatedRuntimeToolCall(
+  value: WardenRuntimeJson | undefined,
+  plannerSource: NonNullable<AgentStep["plannerSource"]>,
+): ToolCall | null {
   const validated = validatedToolCall(value);
   if (!validated || !value || Array.isArray(value) || typeof value !== "object" ||
       !validated.intent) return validated;
   const rawIntent = (value as Readonly<Record<string, unknown>>).intent;
   if (!rawIntent || Array.isArray(rawIntent) || typeof rawIntent !== "object") return validated;
   const record = rawIntent as Readonly<Record<string, unknown>>;
+  const assessmentSource: AgentExecutionIntent["assessmentSource"] =
+    plannerSource === "heuristic" ? "heuristic" : "model";
   if (typeof record.operationDigest !== "string" ||
       !EVIDENCE_DIGEST_PATTERN.test(record.operationDigest) ||
       typeof record.expectedResultDigest !== "string" ||
-      !EVIDENCE_DIGEST_PATTERN.test(record.expectedResultDigest)) return validated;
+      !EVIDENCE_DIGEST_PATTERN.test(record.expectedResultDigest) ||
+      record.assessmentSource !== assessmentSource) return validated;
   return {
     ...validated,
     intent: Object.freeze({
       ...validated.intent,
+      assessmentSource,
       operationDigest: record.operationDigest,
       expectedResultDigest: record.expectedResultDigest,
     }),
@@ -3040,7 +3047,7 @@ async function runtimeExecuteTool(
     throw new Error("warden_runtime_tool_request_invalid");
   }
   const requestRecord = request as Readonly<Record<string, WardenRuntimeJson>>;
-  const call = validatedRuntimeToolCall(requestRecord.call);
+  const call = validatedRuntimeToolCall(requestRecord.call, plannerSource);
   if (!call || requestRecord.schemaVersion !== 1 ||
       requestRecord.plannerSource !== plannerSource ||
       requestRecord.modelEffectId !== (modelEffectId ?? null) ||
