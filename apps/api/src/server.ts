@@ -289,6 +289,7 @@ import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.j
 import { createWardenPilotIntakeRoutes } from "./warden-pilot-intake.js";
 import { createWardenCampaignEnrollmentRoutes } from "./warden-campaign-enrollment.js";
 import { createOutcomeMetricsRoutes } from "./outcome-metrics-routes.js";
+import { createDashboardRoutes } from "./dashboard-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
 import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
@@ -822,6 +823,7 @@ app.route("/tenants/memberships", tenantMembershipRoutes);
 app.route("/warden/pilot", createWardenPilotIntakeRoutes({ db }));
 app.route("/warden/campaigns", createWardenCampaignEnrollmentRoutes({ db }));
 app.route("/metrics/outcomes", createOutcomeMetricsRoutes({ db }));
+app.route("/metrics/dashboard", createDashboardRoutes({ db }));
 
 // Persist alerts under data/
 try {
