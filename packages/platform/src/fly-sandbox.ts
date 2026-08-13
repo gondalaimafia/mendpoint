@@ -87,6 +87,9 @@ export type FlySandboxOptions = {
 };
 
 export const FLY_SANDBOX_DEFAULTS = {
+  // Built from Dockerfile.sandbox and pushed by scripts/build-sandbox-image.mjs.
+  // `:latest` tracks the current sandbox image; production pins an immutable tag
+  // via MENDPOINT_SANDBOX_FLY_IMAGE. See docs/SANDBOX_IMAGE.md.
   image: "registry.fly.io/mendpoint-sandbox:latest",
   region: "iad",
   cpuKind: "shared",
