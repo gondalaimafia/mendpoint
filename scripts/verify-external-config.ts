@@ -100,12 +100,20 @@ function buildReport(env: NodeJS.ProcessEnv): readonly Capability[] {
       title: "Per-tenant microVM isolation (Fly Machines)",
       why: "Runs customer repositories in an isolated Machine instead of the shared host.",
       checks: [
-        checkVar(env, "FLY_API_TOKEN", {
-          required: true,
-          describe: "Fly API / deploy token",
-          fix: "Create a token with `fly tokens create deploy -a <app>` and set it as a secret.",
-          shape: { minLength: 20 },
-        }),
+        // Either name works; the sandbox-scoped one is preferred (narrower credential).
+        env.MENDPOINT_SANDBOX_FLY_TOKEN?.trim()
+          ? checkVar(env, "MENDPOINT_SANDBOX_FLY_TOKEN", {
+              required: true,
+              describe: "sandbox-scoped Fly deploy token (preferred)",
+              fix: "Create with: fly tokens create deploy -a mendpoint-sandbox",
+              shape: { minLength: 20 },
+            })
+          : checkVar(env, "FLY_API_TOKEN", {
+              required: true,
+              describe: "Fly token (MENDPOINT_SANDBOX_FLY_TOKEN preferred - narrower scope)",
+              fix: "Create a sandbox-scoped token: fly tokens create deploy -a mendpoint-sandbox, then set it as MENDPOINT_SANDBOX_FLY_TOKEN.",
+              shape: { minLength: 20 },
+            }),
         checkVar(env, "MENDPOINT_SANDBOX_FLY_APP", {
           required: true,
           describe: "the Fly app that hosts sandbox Machines",
