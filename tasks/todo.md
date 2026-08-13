@@ -1634,10 +1634,10 @@ Objective: make Warden and Transformer self-serving coding agents in their speci
 
 ### Dedicated Transformer production pilot
 
-- [ ] Rebase the verified delivery slice onto current `origin/main` while preserving billing changes.
-- [ ] Add a separate Transformer Fly profile with one authoritative coordinator and independently scalable workers.
-- [ ] Require shared immutable artifact storage, exact tenant and campaign scope, checkpoint key, real GitHub App mode, and worker API authority before startup.
-- [ ] Keep the Warden application and its customer profile unchanged.
+- [x] Rebase the verified delivery slice onto current `origin/main` while preserving billing changes.
+- [x] Add a separate Transformer Fly profile with one authoritative coordinator and independently scalable workers.
+- [x] Require shared immutable artifact storage, exact tenant and campaign scope, checkpoint key, real GitHub App mode, and worker API authority before startup.
+- [x] Keep the Warden application and its customer profile unchanged.
 - [ ] Prove one-worker canary, two-worker takeover, exact draft delivery, CI observation, readiness, and rollback.
 - [ ] Merge through protected checks, deploy the exact tested revision, and verify live health plus browser behavior.
 
@@ -1649,6 +1649,8 @@ Objective: make Warden and Transformer self-serving coding agents in their speci
 - [ ] Update the parity scorecard with what is now proven, what remains partial, and the next highest-leverage slice.
 
 Acceptance: a named specialty workflow can start from an authorized customer request and autonomously produce a verified, evidence-backed, human-reviewable delivery artifact, survive an injected worker or process failure without duplicate external effects, and complete through the production path under tenant, policy, budget, and approval controls. The broader goal remains active until both Warden and Transformer meet this bar across their supported specialty workflows.
+
+Dedicated production profile review: the separate Transformer app now defines one coordinator process with durable SQLite authority and independently scalable stateless worker processes over encrypted S3 checkpoints. Startup requires exact tenant, campaign, production gate, delivery approval, real GitHub App, worker credential, keys, executor digest, and evidence bindings. The shared API preflight recognizes only this explicit profile, global RBAC maps its coordinator path to the narrow Transformer worker permission, and credential rotation transactionally revokes prior managed worker keys without touching user keys. Focused Ops, Platform, API, and Worker tests pass 66 of 66, their typechecks pass, Fly configuration validates, and the complete repository gate passed before the final authority corrections. Independent strict review approved source publication with no remaining P0 or P1. Local Docker is unavailable and Fly authentication is invalid, so container boot, live secret inventory, canary, scale-out, and production health remain release evidence to obtain after protected CI and restored Fly access.
 
 Review checkpoint: Warden recovery now durably owns paid planning, reads, mutations, and verifier commands under the production job lease. Focused drills rebuild a deleted candidate workspace from authenticated mutation bytes and replay a committed verifier result without executing it twice. The worker derives a domain-separated checkpoint key from the application data key and fails closed in the customer profile when the key is missing. Remaining Warden work is terminal evidence retention and post-PR CI repair re-entry. Transformer remains next: plain objective and connected repository must compile into an independently reviewed blueprint, internal execution, deterministic candidate review, and real draft PR.
 

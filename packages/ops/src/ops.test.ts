@@ -108,6 +108,24 @@ describe("ops GA", () => {
     expect(r.ok).toBe(true);
   });
 
+  it("accepts the dedicated Transformer pilot with customer class GitHub App delivery", () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const report = validateApiEnv({
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant-transformer"}',
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+    });
+    expect(report.ok).toBe(true);
+  });
+
   it("fails closed when trusted proxy mode has no shared secret", () => {
     const r = validateApiEnv({
       NODE_ENV: "production",
@@ -278,7 +296,7 @@ describe("ops GA", () => {
       MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
     });
     expect(missing.errors).toContain(
-      "MENDPOINT_DEPLOYMENT_PROFILE must be explicitly set to demo, pilot, or customer in production",
+      "MENDPOINT_DEPLOYMENT_PROFILE must be explicitly set to demo, pilot, customer, or transformer_pilot in production",
     );
 
     for (const profile of ["production", "CUSTOMER", " customer "]) {
@@ -292,7 +310,7 @@ describe("ops GA", () => {
         MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
       });
       expect(invalid.errors).toContain(
-        "MENDPOINT_DEPLOYMENT_PROFILE must be exactly demo, pilot, or customer",
+        "MENDPOINT_DEPLOYMENT_PROFILE must be exactly demo, pilot, customer, or transformer_pilot",
       );
     }
   });
