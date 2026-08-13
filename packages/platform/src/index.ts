@@ -61,6 +61,15 @@ export {
   formatMcu,
 } from "./mcu.js";
 
+export type { FanoutRunMeterSignals } from "./billing-metering.js";
+export {
+  SELF_SERVE_BILLING_FLAG,
+  selfServeBillingEnabled,
+  fanoutRunMcuWork,
+  computeFanoutRunMcuMicros,
+  resolveFanoutSettlementMcuMicros,
+} from "./billing-metering.js";
+
 export type { Role, Permission, Principal } from "./rbac.js";
 export {
   permissionsFor,
