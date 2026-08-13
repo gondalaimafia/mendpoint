@@ -56,8 +56,7 @@
     "sandbox:image": "node scripts/build-sandbox-image.mjs",
     "sandbox:image:push": "node scripts/build-sandbox-image.mjs --push",
     "auth:bootstrap": "tsx scripts/bootstrap-key.ts",
-    "start:api": "npm run start -w @mendpoint/api",
-    "verify:config": "tsx scripts/verify-external-config.ts"
+    "start:api": "npm run start -w @mendpoint/api"
   },
   "dependencies": {
     "@mendpoint/db": "*",

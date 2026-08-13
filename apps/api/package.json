@@ -13,7 +13,6 @@
     "@mendpoint/branding": "*",
     "@mendpoint/catalog": "*",
     "@mendpoint/change-intel": "*",
-    "@mendpoint/connectors": "*",
     "@mendpoint/db": "*",
     "@mendpoint/github": "*",
     "@mendpoint/graph": "*",

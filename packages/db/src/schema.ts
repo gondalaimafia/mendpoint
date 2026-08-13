@@ -153,19 +153,6 @@ export type TenantMembershipRow = {
   offboarded_at: string | null;
 };
 
-export type MemberScopeType = "repository" | "environment";
-
-export type MemberScopeRow = {
-  id: string;
-  tenant_id: string;
-  issuer: string;
-  subject: string;
-  scope_type: MemberScopeType;
-  scope_value: string;
-  created_at: string;
-  created_by: string;
-};
-
 export type GitHubInstallationRow = {
   id: string;
   installation_id: string;
@@ -269,24 +256,6 @@ export type RepositorySnapshotPolicyRow = {
   verification_commands_json: string;
   protected_branch_json: string;
   created_at: string;
-};
-
-export type ConnectorRow = {
-  id: string;
-  tenant_id: string;
-  kind: "ci" | "ticketing" | "docs";
-  provider: string;
-  display_name: string;
-  mode: "mock" | "real";
-  credential_envelope: string | null;
-  config_json: string;
-  health_status: "unverified" | "verified" | "failed" | "revoked";
-  verified: number;
-  error_code: string | null;
-  last_verified_at: string | null;
-  created_at: string;
-  updated_at: string;
-  revoked_at: string | null;
 };
 
 export type ScmConnectionHealthRow = {

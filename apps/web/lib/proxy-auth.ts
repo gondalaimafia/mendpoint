@@ -337,11 +337,6 @@ export function selfServeWardenEnabled(): boolean {
   return process.env.MENDPOINT_SELF_SERVE_WARDEN === "1";
 }
 
-/** Self-serve access administration is off unless MENDPOINT_SELF_SERVE_ADMIN=1 (default preview safe). */
-export function selfServeAdminEnabled(): boolean {
-  return process.env.MENDPOINT_SELF_SERVE_ADMIN === "1";
-}
-
 /** Self-serve repository connect is off unless MENDPOINT_SELF_SERVE_CONNECT=1 (default preview safe). */
 export function selfServeConnectEnabled(): boolean {
   return process.env.MENDPOINT_SELF_SERVE_CONNECT === "1";
