@@ -236,6 +236,10 @@ import {
   selfServeConnectEnabled,
 } from "./repository-connect.js";
 import {
+  createSelfServeOnboardingRoutes,
+  selfServeOnboardingEnabled,
+} from "./self-serve-onboarding.js";
+import {
   decideCatalogMutation,
   providerVisibleToTenant,
 } from "./self-serve-catalog.js";
@@ -814,6 +818,10 @@ app.route("/self-serve/connect", createSelfServeConnectRoutes({
 app.route("/self-serve/scan", createSelfServeScanRoutes({
   db,
   enabled: selfServeWardenEnabled(process.env),
+}));
+app.route("/self-serve/onboarding", createSelfServeOnboardingRoutes({
+  db,
+  enabled: selfServeOnboardingEnabled(process.env),
 }));
 app.route("/change-sources", changeSourceRoutes);
 app.route("/billing", billingRoutes);
