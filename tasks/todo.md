@@ -1598,3 +1598,29 @@ Scope: review every Mendpoint worktree and branch changed today, preserve all di
 Acceptance: one reviewable branch contains all safe, nonduplicative Claude and Codex work from today on current main; dirty experiments remain recoverable but excluded; every included capability is tested and honestly gated; and no direct main push, force push, hook bypass, or unverified production deployment occurs.
 
 Review before publication: the release branch is based on `origin/main` at `8ca583c`. The design system and Claude PR series 61 to 71 were already present on main and were not duplicated. The generalized applications remain default off. The demo bundle is excluded after review found a fixed wildcard credential that could target an arbitrary data directory. Older Warden mission resume, alternate shared coordinator, bounded pilot compiler, and overlapping UI work remain preserved in their original worktrees but excluded because they are stale, incomplete, or superseded. Confirmed release blockers were closed with focused regressions: passing attestations require successful post edit verification; Transformer polling retains one identity for response loss but creates a new session identity after process restart; GraphQL and legacy writes require graph write authority and durable producer identity; training dispatch is single flight with database fencing; registration replay ignores server time; completed training binds adapter, base model, exact evaluation, and exact canary claims; and consent plus lifecycle evidence are verified against their durable subjects. Focused verification passed API 9 of 9, Pipeline 10 of 10, Worker 4 of 4, and all affected typechecks. `scripts/verify.sh` then passed every workspace typecheck, the complete repository test suite, production build, GA/spec/claim/action checks, and diff integrity in 251 seconds. The production dependency audit reports zero vulnerabilities. A local production API startup probe with an ephemeral application key returned HTTP 200 from health. Independent final review found no remaining P0 or P1.
+
+## Self-serving Warden and Transformer parity: 2026-08-13
+
+Objective: make Warden and Transformer self-serving coding agents in their specialty areas with a complete delivery loop comparable to Devin for mid-market US software teams and fintechs. Success requires more than model output: authoritative intake, repository understanding, planning, implementation, verification, evidence, pull-request delivery, durable recovery, human controls, and production operation must work together.
+
+### Baseline and capability contract
+
+- [ ] Compare exact deployed main against the authoritative product specification, Warden and Transformer gap analyses, evals, and current official Devin capabilities.
+- [ ] Build an evidence-backed parity scorecard for intake, context, planning, coding, verification, delivery, recovery, collaboration, security, and enterprise operations.
+- [ ] Identify the highest-leverage missing vertical slice using current code and runtime evidence, not roadmap intent.
+
+### Red-first implementation
+
+- [ ] Define one capability eval and its regression matrix before production edits.
+- [ ] Observe the expected RED failures at the real API, worker, agent, verification, and delivery boundaries involved.
+- [ ] Implement the complete vertical slice without a legacy fallback or unowned side effect.
+- [ ] Add crash, response-loss, stale-lease, cross-tenant, accounting, and human-review cases where applicable.
+
+### Verification and release
+
+- [ ] Run focused tests, affected full package tests, typechecks, production build, repository verification, security audit, and joined deployment tests.
+- [ ] Obtain independent P0/P1 review and close every confirmed blocker.
+- [ ] Merge through protected checks, deploy the exact tested revision, verify live health and browser behavior, and record rollback evidence.
+- [ ] Update the parity scorecard with what is now proven, what remains partial, and the next highest-leverage slice.
+
+Acceptance: a named specialty workflow can start from an authorized customer request and autonomously produce a verified, evidence-backed, human-reviewable delivery artifact, survive an injected worker or process failure without duplicate external effects, and complete through the production path under tenant, policy, budget, and approval controls. The broader goal remains active until both Warden and Transformer meet this bar across their supported specialty workflows.
