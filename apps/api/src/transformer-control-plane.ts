@@ -240,9 +240,9 @@ function record(value: unknown, code: string): JsonRecord {
   return value as JsonRecord;
 }
 
-function stringArray(value: unknown, code: string): string[] {
+function stringArray(value: unknown, code: string, max = 500): string[] {
   if (!Array.isArray(value) || value.length === 0) throw new Error(code);
-  return value.map((item) => requiredString(item, code, 500));
+  return value.map((item) => requiredString(item, code, max));
 }
 
 function safeReference(value: string, code: string): string {
@@ -308,7 +308,7 @@ function parsePolicy(value: unknown): BlueprintPolicy {
       };
     }),
     verification: {
-      commands: stringArray(verification.commands, "blueprint_verification_required"),
+      commands: stringArray(verification.commands, "blueprint_verification_required", 10_000),
     },
     rollback: {
       strategy:
@@ -320,6 +320,7 @@ function parsePolicy(value: unknown): BlueprintPolicy {
       verificationCommands: stringArray(
         rollback.verificationCommands,
         "blueprint_rollback_verification_required",
+        10_000,
       ),
     },
     approval: {
