@@ -4,6 +4,7 @@ export const WEB_SESSION_COOKIE = "mendpoint_web_session";
 export const WEB_SESSION_VERSION = 3 as const;
 export const WEB_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
 export const OIDC_SESSION_MAX_AGE_SECONDS = 60 * 60;
+export const SELF_SERVE_SESSION_MAX_AGE_SECONDS = WEB_SESSION_MAX_AGE_SECONDS;
 
 export type WebSessionSubject = Readonly<
   | {
@@ -13,6 +14,13 @@ export type WebSessionSubject = Readonly<
     }
   | {
       kind: "human_oidc";
+      issuedAt: string;
+      expiresAt: string;
+    }
+  | {
+      kind: "self_serve";
+      tenantId: string;
+      subject: string;
       issuedAt: string;
       expiresAt: string;
     }
@@ -32,6 +40,7 @@ type WebSessionPayloadV3 = {
 
 const SESSION_PREFIX = "mendpoint-web-session-v3\n";
 const OIDC_SESSION_PREFIX = "mendpoint-web-oidc-session-v1\n";
+const SELF_SERVE_SESSION_PREFIX = "mendpoint-web-self-serve-session-v1\n";
 
 function bytesToBase64Url(bytes: Uint8Array): string {
   let binary = "";
@@ -53,10 +62,10 @@ function base64UrlToBytes(value: string): Uint8Array | null {
   }
 }
 
-async function aesKey(secret: string, usage: KeyUsage[]): Promise<CryptoKey> {
+async function aesKey(secret: string, usage: KeyUsage[], domain: string): Promise<CryptoKey> {
   const material = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(`${OIDC_SESSION_PREFIX}${secret}`),
+    new TextEncoder().encode(`${domain}${secret}`),
   );
   return crypto.subtle.importKey("raw", material, "AES-GCM", false, usage);
 }
@@ -82,7 +91,7 @@ export async function createOidcWebSession(input: {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(OIDC_SESSION_PREFIX) },
-    await aesKey(input.sessionSecret, ["encrypt"]),
+    await aesKey(input.sessionSecret, ["encrypt"], OIDC_SESSION_PREFIX),
     new TextEncoder().encode(payload),
   );
   return `oidc1.${bytesToBase64Url(iv)}.${bytesToBase64Url(new Uint8Array(encrypted))}`;
@@ -108,7 +117,7 @@ async function readOidcWebSession(input: {
   try {
     const decrypted = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv: new Uint8Array(iv), additionalData: new TextEncoder().encode(OIDC_SESSION_PREFIX) },
-      await aesKey(input.sessionSecret, ["decrypt"]),
+      await aesKey(input.sessionSecret, ["decrypt"], OIDC_SESSION_PREFIX),
       new Uint8Array(encrypted),
     );
     payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(decrypted));
@@ -130,6 +139,98 @@ async function readOidcWebSession(input: {
   return Object.freeze({
     subject: Object.freeze({
       kind: "human_oidc" as const,
+      issuedAt: new Date(payload.iat!).toISOString(),
+      expiresAt: new Date(payload.exp!).toISOString(),
+    }),
+    upstreamAccessToken: payload.accessToken,
+  });
+}
+
+export async function createSelfServeWebSession(input: {
+  apiKey: string;
+  tenantId: string;
+  subject: string;
+  sessionSecret: string;
+  expiresInSeconds?: number;
+  now?: Date;
+}): Promise<string> {
+  if (!input.apiKey) throw new Error("self_serve_api_key_required");
+  if (!input.tenantId) throw new Error("self_serve_tenant_required");
+  if (!input.subject) throw new Error("self_serve_subject_required");
+  if (!input.sessionSecret) throw new Error("web_access_not_configured");
+  const issuedAt = (input.now ?? new Date()).getTime();
+  const requestedLifetime = Math.floor(input.expiresInSeconds ?? SELF_SERVE_SESSION_MAX_AGE_SECONDS);
+  const lifetime = Math.max(1, Math.min(requestedLifetime, SELF_SERVE_SESSION_MAX_AGE_SECONDS));
+  const payload = JSON.stringify({
+    v: 1,
+    kind: "self_serve",
+    iat: issuedAt,
+    exp: issuedAt + lifetime * 1000,
+    accessToken: input.apiKey,
+    tenantId: input.tenantId,
+    subject: input.subject,
+  });
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(SELF_SERVE_SESSION_PREFIX) },
+    await aesKey(input.sessionSecret, ["encrypt"], SELF_SERVE_SESSION_PREFIX),
+    new TextEncoder().encode(payload),
+  );
+  return `self1.${bytesToBase64Url(iv)}.${bytesToBase64Url(new Uint8Array(encrypted))}`;
+}
+
+async function readSelfServeWebSession(input: {
+  value: string;
+  sessionSecret: string;
+  now?: Date;
+}): Promise<AuthenticatedWebCredential | null> {
+  const parts = input.value.split(".");
+  if (parts.length !== 3 || parts[0] !== "self1") return null;
+  const iv = base64UrlToBytes(parts[1]!);
+  const encrypted = base64UrlToBytes(parts[2]!);
+  if (!iv || iv.length !== 12 || !encrypted) return null;
+  let payload: {
+    v?: number;
+    kind?: string;
+    iat?: number;
+    exp?: number;
+    accessToken?: string;
+    tenantId?: string;
+    subject?: string;
+  };
+  try {
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: new Uint8Array(iv), additionalData: new TextEncoder().encode(SELF_SERVE_SESSION_PREFIX) },
+      await aesKey(input.sessionSecret, ["decrypt"], SELF_SERVE_SESSION_PREFIX),
+      new Uint8Array(encrypted),
+    );
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(decrypted));
+  } catch {
+    return null;
+  }
+  if (
+    payload.v !== 1 ||
+    payload.kind !== "self_serve" ||
+    !Number.isSafeInteger(payload.iat) ||
+    !Number.isSafeInteger(payload.exp) ||
+    typeof payload.accessToken !== "string" ||
+    payload.accessToken.length < 20 ||
+    typeof payload.tenantId !== "string" ||
+    payload.tenantId.length === 0 ||
+    payload.tenantId.length > 255 ||
+    typeof payload.subject !== "string" ||
+    payload.subject.length === 0 ||
+    payload.subject.length > 320 ||
+    payload.exp! <= payload.iat! ||
+    payload.exp! - payload.iat! > SELF_SERVE_SESSION_MAX_AGE_SECONDS * 1000
+  ) return null;
+  const now = (input.now ?? new Date()).getTime();
+  if (!Number.isFinite(now) || now < payload.iat! || now >= payload.exp!) return null;
+  return Object.freeze({
+    subject: Object.freeze({
+      kind: "self_serve" as const,
+      tenantId: payload.tenantId,
+      subject: payload.subject,
       issuedAt: new Date(payload.iat!).toISOString(),
       expiresAt: new Date(payload.exp!).toISOString(),
     }),
@@ -226,6 +327,11 @@ export async function readWebSessionV3(input: {
   });
 }
 
+/** Self-serve signup is off unless MENDPOINT_SELF_SERVE_SIGNUP=1 (default preview safe). */
+export function selfServeSignupEnabled(): boolean {
+  return process.env.MENDPOINT_SELF_SERVE_SIGNUP === "1";
+}
+
 export function allowedWebOrigins(): Set<string> {
   const raw =
     process.env.MENDPOINT_WEB_ALLOWED_ORIGINS ??
@@ -263,6 +369,8 @@ export async function authenticatedWebCredential(
   if (!cookie) return null;
   const oidc = await readOidcWebSession({ value: cookie, sessionSecret: accessToken, now });
   if (oidc) return oidc;
+  const selfServe = await readSelfServeWebSession({ value: cookie, sessionSecret: accessToken, now });
+  if (selfServe) return selfServe;
   const preview = await readWebSessionV3({ value: cookie, accessToken, now });
   return preview
     ? Object.freeze({ subject: preview, upstreamAccessToken: null })

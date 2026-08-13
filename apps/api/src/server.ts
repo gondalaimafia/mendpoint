@@ -220,6 +220,10 @@ import {
 } from "./warden-candidate.js";
 import { registerTransformerAdaptiveReviewRoutes } from "./transformer-adaptive-review.js";
 import { registerLegacyBehaviorRoutes } from "./legacy-behavior.js";
+import {
+  createSelfServeSignupRoutes,
+  selfServeSignupEnabled,
+} from "./self-serve-signup.js";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
   createAuthMiddleware,
@@ -725,6 +729,10 @@ app.route("/v1/transformer/attempt-coordinator", createTransformerAttemptCoordin
   store: transformerExecutions.store,
   gateConfig: process.env.MENDPOINT_TRANSFORMER_GATE,
   loadExactSource: (lease, observedAt) => loadTransformerRecipeSnapshot(db, lease, observedAt),
+}));
+app.route("/auth/signup", createSelfServeSignupRoutes({
+  db,
+  enabled: selfServeSignupEnabled(process.env),
 }));
 app.route("/change-sources", changeSourceRoutes);
 app.route("/billing", billingRoutes);
