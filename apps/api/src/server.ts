@@ -226,6 +226,10 @@ import {
   createSelfServeSignupRoutes,
   selfServeSignupEnabled,
 } from "./self-serve-signup.js";
+import {
+  createSelfServeConnectRoutes,
+  selfServeConnectEnabled,
+} from "./repository-connect.js";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
   createAuthMiddleware,
@@ -742,6 +746,10 @@ app.route("/v1/transformer/attempt-coordinator", createTransformerAttemptCoordin
 app.route("/auth/signup", createSelfServeSignupRoutes({
   db,
   enabled: selfServeSignupEnabled(process.env),
+}));
+app.route("/self-serve/connect", createSelfServeConnectRoutes({
+  db,
+  enabled: selfServeConnectEnabled(process.env),
 }));
 app.route("/change-sources", changeSourceRoutes);
 app.route("/billing", billingRoutes);

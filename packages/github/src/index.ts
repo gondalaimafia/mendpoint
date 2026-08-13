@@ -653,6 +653,7 @@ export {
   createAppJwt,
   loadAppCredentials,
   hasGitHubAppCredentials,
+  InstallationTokenCache,
   GitHubAppDelivery,
   deliverToManyRepos,
   createAppDelivery,

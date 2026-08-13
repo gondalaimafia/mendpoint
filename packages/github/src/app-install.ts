@@ -25,10 +25,15 @@ export function getGitHubAppConfig(
   const hasAppCredentials =
     Boolean(appId) &&
     Boolean(env.GITHUB_APP_PRIVATE_KEY || env.GITHUB_APP_PRIVATE_KEY_PATH);
+  // The credentialed install flow unlocks under either the legacy experimental
+  // flag or the self-serve connect flag, so a customer can drive "Connect
+  // GitHub" themselves once MENDPOINT_SELF_SERVE_CONNECT=1. Real credentials are
+  // still required (hasAppCredentials && !mockMode); mock mode is unaffected.
   const configured =
     hasAppCredentials &&
     !mockMode &&
-    env.GITHUB_APP_INSTALL_EXPERIMENTAL === "1";
+    (env.GITHUB_APP_INSTALL_EXPERIMENTAL === "1" ||
+      env.MENDPOINT_SELF_SERVE_CONNECT === "1");
   const installEnabled =
     configured || (env.NODE_ENV !== "production" && mockMode);
   return {
