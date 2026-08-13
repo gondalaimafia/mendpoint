@@ -42,6 +42,19 @@ export type LearningCorpusEdit = Readonly<{
 }>;
 
 /**
+ * One redacted after-content entry (before/after bytes of an accepted edit),
+ * present only in examples exported from the opt-in after-content dataset
+ * (`transformer-adaptive-training-content`). Absent for base and rejected
+ * examples, so those corpora stay byte-identical.
+ */
+export type LearningCorpusAfterContentEntry = Readonly<{
+  path: string;
+  changeType: string;
+  beforeContent: string | null;
+  afterContent: string;
+}>;
+
+/**
  * One labeled training example. `input`, `output`, and `labels` are the trainable
  * fields a post-training run consumes; `provenance` is audit metadata (tenant,
  * dataset, hashes) that a pipeline strips before it reaches a model.
@@ -59,20 +72,29 @@ export type LearningCorpusExample = Readonly<{
     edits: readonly LearningCorpusEdit[];
     verificationSummary: string;
     verificationCommandId: string;
+    // Present only for after-content examples (opt-in content purpose); absent
+    // otherwise so base and rejected examples stay byte-identical.
+    afterContent?: readonly LearningCorpusAfterContentEntry[];
+    // Present only for rejected examples (opt-in rejected purpose); the reviewer's
+    // rejection rationale. Absent otherwise.
+    rejectionRationale?: string;
   }>;
   labels: Readonly<{
-    // Not carried by the sealed learning shape today; emitted as null rather than
-    // fabricated. See docs/LEARNING_CORPUS.md ("What is deliberately absent").
-    family: null;
-    provider: null;
-    framework: null;
+    // Deterministic migration classification captured at seal time. Null for
+    // legacy/undeterminable outcomes (never fabricated). See docs/LEARNING_CORPUS.md.
+    family: string | null;
+    provider: string | null;
+    framework: string | null;
     semanticCategories: readonly string[];
     overallRisk: string;
     confidence: number;
-    // Admission invariants: only verified, approved outcomes are ever admitted,
-    // so both are constant across every example a sealed dataset can produce.
-    verificationPassed: true;
-    decision: "accepted";
+    // For approved and after-content examples this is a passing objective
+    // verification; a rejected example carries the objective verification result as
+    // captured (the human rejected the change despite it). Defaults to true for the
+    // approved-only shape, so base corpora stay byte-identical.
+    verificationPassed: boolean;
+    // "accepted" for approved and after-content examples; "rejected" for negatives.
+    decision: "accepted" | "rejected";
   }>;
   provenance: Readonly<{
     tenantId: string;
@@ -129,11 +151,42 @@ type ParsedOutcome = Readonly<{
   failingCommandId: string | null;
   overallRisk: string;
   confidence: number;
+  // Real classification labels; null when the outcome doc omits them (legacy or
+  // undeterminable), keeping legacy corpora byte-identical.
+  family: string | null;
+  provider: string | null;
+  framework: string | null;
   changedPaths: readonly string[];
   edits: readonly LearningCorpusEdit[];
   verificationSummary: string;
   verificationCommandId: string;
+  // Additive, opt-in fields. Legacy approved-outcome docs omit them and resolve to
+  // the constants below, so the base corpus is byte-identical.
+  decision: "accepted" | "rejected";
+  verificationPassed: boolean;
+  afterContent?: readonly LearningCorpusAfterContentEntry[];
+  rejectionRationale?: string;
 }>;
+
+/** Defensively parse the optional after-content array; undefined when absent. */
+function parseAfterContent(value: unknown): readonly LearningCorpusAfterContentEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return Object.freeze(
+    value
+      .filter(
+        (entry): entry is Record<string, unknown> =>
+          Boolean(entry) && typeof entry === "object" && !Array.isArray(entry),
+      )
+      .map((entry) =>
+        Object.freeze({
+          path: typeof entry.path === "string" ? entry.path : "",
+          changeType: typeof entry.changeType === "string" ? entry.changeType : "modify",
+          beforeContent: typeof entry.beforeContent === "string" ? entry.beforeContent : null,
+          afterContent: typeof entry.afterContent === "string" ? entry.afterContent : "",
+        }),
+      ),
+  );
+}
 
 /**
  * Parse the redacted approved-outcome JSON defensively. Mirrors the precedent
@@ -169,17 +222,30 @@ function parseRedactedOutcome(redactedContent: string): ParsedOutcome | null | u
         rationale: typeof edit.rationale === "string" ? edit.rationale : "",
       }),
     );
+  const afterContent = parseAfterContent(outcome.afterContent);
   return Object.freeze({
     failingCommandId:
       typeof outcome.failingCommandId === "string" ? outcome.failingCommandId : null,
     overallRisk: typeof outcome.overallRisk === "string" ? outcome.overallRisk : "unknown",
     confidence: typeof outcome.confidence === "number" ? outcome.confidence : 0,
+    family: typeof outcome.family === "string" ? outcome.family : null,
+    provider: typeof outcome.provider === "string" ? outcome.provider : null,
+    framework: typeof outcome.framework === "string" ? outcome.framework : null,
     changedPaths: Object.freeze(changedPaths),
     edits: Object.freeze(edits),
     verificationSummary:
       typeof outcome.verificationSummary === "string" ? outcome.verificationSummary : "",
     verificationCommandId:
       typeof outcome.verificationCommandId === "string" ? outcome.verificationCommandId : "",
+    // Legacy approved-outcome docs omit these; they resolve to the today-constants,
+    // so a base (accepted-only) corpus is byte-identical.
+    decision: outcome.decision === "rejected" ? "rejected" : "accepted",
+    verificationPassed:
+      typeof outcome.verificationPassed === "boolean" ? outcome.verificationPassed : true,
+    ...(afterContent ? { afterContent } : {}),
+    ...(typeof outcome.rejectionRationale === "string"
+      ? { rejectionRationale: outcome.rejectionRationale }
+      : {}),
   });
 }
 
@@ -332,16 +398,22 @@ export function buildLearningCorpus(input: BuildLearningCorpusInput): LearningCo
           edits: parsed.edits,
           verificationSummary: parsed.verificationSummary,
           verificationCommandId: parsed.verificationCommandId,
+          // Additive, opt-in fields appended last: absent for base examples, so a
+          // base (accepted-only) corpus is byte-identical to today.
+          ...(parsed.afterContent ? { afterContent: parsed.afterContent } : {}),
+          ...(parsed.rejectionRationale !== undefined
+            ? { rejectionRationale: parsed.rejectionRationale }
+            : {}),
         }),
         labels: Object.freeze({
-          family: null,
-          provider: null,
-          framework: null,
+          family: parsed.family,
+          provider: parsed.provider,
+          framework: parsed.framework,
           semanticCategories,
           overallRisk: parsed.overallRisk,
           confidence: parsed.confidence,
-          verificationPassed: true,
-          decision: "accepted",
+          verificationPassed: parsed.verificationPassed,
+          decision: parsed.decision,
         }),
         provenance: Object.freeze({
           tenantId,
@@ -358,7 +430,7 @@ export function buildLearningCorpus(input: BuildLearningCorpusInput): LearningCo
       }),
     );
 
-    byDecision.accepted = (byDecision.accepted ?? 0) + 1;
+    byDecision[parsed.decision] = (byDecision[parsed.decision] ?? 0) + 1;
     byOverallRisk[parsed.overallRisk] = (byOverallRisk[parsed.overallRisk] ?? 0) + 1;
     for (const category of semanticCategories) {
       bySemanticCategory[category] = (bySemanticCategory[category] ?? 0) + 1;

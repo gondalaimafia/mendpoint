@@ -70,9 +70,11 @@ export {
 
 export type {
   MigrationRecipeContract,
+  MigrationLabelFamily,
   RecipeApplication,
   RecipeAnalysis,
   RecipeApplicability,
+  RecipeClassification,
   GitBlobMode,
   RecipeFileModes,
   RecipeFiles,
@@ -99,6 +101,8 @@ export {
   applyInverseOperations,
   applyRecipe,
   assertRecipePathAllowed,
+  classifyRecipeContract,
+  classifyRecipeReference,
   createInternalApiRenameRecipe,
   getRecipe,
   normalizeRecipeFileModes,
@@ -249,6 +253,18 @@ export {
 } from "./adaptive-candidate.js";
 
 export {
+  classifyReviewTier,
+  resolveReviewTierPolicy,
+  isReviewTier,
+  DEFAULT_REVIEW_TIER_POLICY,
+  RECOMMENDED_REVIEW_TIER_POLICY,
+  type ReviewTier,
+  type ReviewTierBand,
+  type ReviewTierPolicy,
+  type ReviewTierClassifierInput,
+} from "./review-tier.js";
+
+export {
   planStagedPullRequestBatches,
   reconcileStagedPullRequestResume,
   type StagedPullRequestProvider,
@@ -323,6 +339,24 @@ export {
   type TransformerAdaptiveBudgetOverride,
   type TransformerAdaptiveCampaignBudget,
 } from "./pilot-execution.js";
+export {
+  MODERNIZATION_REPORT_SCHEMA_VERSION,
+  generateModernizationReport,
+  renderModernizationReportMarkdown,
+  type ModernizationReportSource,
+  type ModernizationReport,
+  type ModernizationReportSummary,
+  type ModernizationReportCompletion,
+  type ModernizationReportProgress,
+  type ModernizationReportUnitProgress,
+  type ModernizationReportWaveProgress,
+  type ModernizationReportPullRequests,
+  type ModernizationReportRecipeBreakdown,
+  type ModernizationReportExceptions,
+  type ModernizationReportRisks,
+  type ModernizationReportGap,
+} from "./modernization-report.js";
+
 export type {
   ExactSourceSnapshot,
   PersistedRecipeEvidence,

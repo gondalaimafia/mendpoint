@@ -6,6 +6,7 @@ import {
   listProviders,
   getProviderBySlug,
   listChanges,
+  listCapabilityAdoptionOpportunities,
   getChange,
   listConsumers,
   listPrs,
@@ -262,6 +263,7 @@ import { billingPlanChangeDecision } from "./billing-plan-control.js";
 import { admitRunUsage, estimateRunMcuMicros } from "./usage-enforcement.js";
 import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
 import { createWardenPilotIntakeRoutes } from "./warden-pilot-intake.js";
+import { createWardenCampaignEnrollmentRoutes } from "./warden-campaign-enrollment.js";
 import { createOutcomeMetricsRoutes } from "./outcome-metrics-routes.js";
 import { initializeApiRuntime } from "./api-runtime.js";
 import {
@@ -697,6 +699,7 @@ app.route("/pilot-success-contracts", pilotSuccessRoutes);
 app.route("/prs", migrationPrRoutes);
 app.route("/tenants/memberships", tenantMembershipRoutes);
 app.route("/warden/pilot", createWardenPilotIntakeRoutes({ db }));
+app.route("/warden/campaigns", createWardenCampaignEnrollmentRoutes({ db }));
 app.route("/metrics/outcomes", createOutcomeMetricsRoutes({ db }));
 
 // Persist alerts under data/
@@ -1460,6 +1463,17 @@ app.get("/providers/:slug", (c) => {
   if (!p) return c.json({ error: "not found" }, 404);
   const versions = listVersionsForProvider(db, p.id).map(versionToApi);
   return c.json({ ...providerToApi(p), versions });
+});
+
+// Read-only: capability-adoption opportunities (NEW capabilities linked consumers
+// are not yet using), tenant-scoped for this provider.
+app.get("/providers/:slug/capability-opportunities", (c) => {
+  const p = getProviderBySlug(db, c.req.param("slug"));
+  if (!p) return c.json({ error: "not found" }, 404);
+  const opportunities = listCapabilityAdoptionOpportunities(db, requestTenantId(c), {
+    providerSlug: p.slug,
+  });
+  return c.json({ opportunities });
 });
 
 app.post("/providers", async (c) => {

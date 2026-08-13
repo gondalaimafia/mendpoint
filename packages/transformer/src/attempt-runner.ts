@@ -19,9 +19,11 @@ import { dirname, isAbsolute, join, posix, relative, resolve } from "node:path";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
 import {
   applyRecipe,
+  classifyRecipeReference,
   normalizeRecipeFileModes,
   recipeFilesDigest,
   resolveRecipe,
+  type MigrationLabelFamily,
   type RecipeFileModes,
   type RecipeFiles,
 } from "./recipe.js";
@@ -457,6 +459,14 @@ export type TransformerAdaptiveCandidateHandoff = Readonly<{
   files: RecipeFiles;
   fileModes: RecipeFileModes;
   review: AdaptiveCandidateReviewEvidence;
+  /**
+   * Deterministic migration classification of the lease-bound recipe. Pure
+   * metadata for the learning corpus; null where undeterminable. It never gates
+   * the seal, the review, or delivery.
+   */
+  family: MigrationLabelFamily | null;
+  provider: string | null;
+  framework: string | null;
 }>;
 
 export type TransformerAdaptiveSummary = Readonly<{
@@ -2084,6 +2094,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
               adaptiveSummary.convergedFiles,
               source.fileModes,
             );
+            const classification = classifyRecipeReference(lease.recipe);
             await input.onAdaptiveCandidateConverged({
               tenantId: lease.tenantId,
               campaignId: lease.campaignId,
@@ -2103,6 +2114,9 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
               files: adaptiveSummary.convergedFiles,
               fileModes: adaptiveFileModes,
               review: converged.review,
+              family: classification.family,
+              provider: classification.provider,
+              framework: classification.framework,
             });
           } catch (handoffError) {
             classified = classify(new AttemptRunnerError(

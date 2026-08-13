@@ -202,6 +202,137 @@ export async function defaultFetchInstallationToken(
   };
 }
 
+export type InstallationRepository = Readonly<{
+  id: number;
+  owner: string;
+  name: string;
+  fullName: string;
+  defaultBranch: string;
+  private: boolean;
+  archived: boolean;
+  disabled: boolean;
+}>;
+
+export type InstallationRepositoryLister = (
+  token: string,
+) => Promise<InstallationRepository[]>;
+
+type RawInstallationRepository = {
+  id?: number;
+  name?: string;
+  full_name?: string;
+  private?: boolean;
+  archived?: boolean;
+  disabled?: boolean;
+  default_branch?: string;
+  owner?: { login?: string } | null;
+};
+
+function normalizeInstallationRepository(
+  repo: RawInstallationRepository,
+): InstallationRepository {
+  const owner = repo.owner?.login ?? "";
+  const name = repo.name ?? "";
+  return Object.freeze({
+    id: Number(repo.id ?? 0),
+    owner,
+    name,
+    fullName: repo.full_name ?? `${owner}/${name}`,
+    defaultBranch: repo.default_branch ?? "main",
+    private: Boolean(repo.private),
+    archived: Boolean(repo.archived),
+    disabled: Boolean(repo.disabled),
+  });
+}
+
+/** Real listing of an installation's accessible repositories (App/Octokit). */
+export async function defaultListInstallationRepositories(
+  token: string,
+): Promise<InstallationRepository[]> {
+  const octokit = octokitFor(token, "mendpoint-app");
+  const repos = (await octokit.paginate("GET /installation/repositories", {
+    per_page: 100,
+  })) as RawInstallationRepository[];
+  return repos.map(normalizeInstallationRepository);
+}
+
+export type MockInstallationRepositoryInput = Readonly<{
+  owner?: string;
+  name: string;
+  archived?: boolean;
+  disabled?: boolean;
+  private?: boolean;
+  defaultBranch?: string;
+  id?: number;
+}>;
+
+/** Deterministic installation repository listing for GITHUB_MODE=mock. */
+export function mockInstallationRepositories(
+  input: Readonly<{
+    installationId: number | string;
+    accountLogin: string;
+    repositories?: readonly MockInstallationRepositoryInput[];
+  }>,
+): InstallationRepository[] {
+  const base = Number(input.installationId) || 0;
+  const repos = input.repositories ?? [{ name: "shop-app" }];
+  return repos.map((repo, index) => {
+    const owner = repo.owner ?? input.accountLogin;
+    return normalizeInstallationRepository({
+      id: repo.id ?? base * 1000 + index + 1,
+      owner: { login: owner },
+      name: repo.name,
+      full_name: `${owner}/${repo.name}`,
+      private: repo.private ?? true,
+      archived: repo.archived ?? false,
+      disabled: repo.disabled ?? false,
+      default_branch: repo.defaultBranch ?? "main",
+    });
+  });
+}
+
+/**
+ * List an installation's accessible repositories. Uses the App/Octokit client
+ * with real credentials when GITHUB_MODE=real; otherwise returns a deterministic
+ * mock so org enrollment works without real GitHub credentials. Reuses the
+ * existing installation token cache; auth is not rebuilt here.
+ */
+export async function listInstallationRepositories(
+  input: Readonly<{
+    installationId: number;
+    accountLogin: string;
+    env?: NodeJS.ProcessEnv;
+    credentials?: AppCredentials | null;
+    fetchToken?: TokenFetcher;
+    lister?: InstallationRepositoryLister;
+    mockRepositories?: readonly MockInstallationRepositoryInput[];
+    now?: () => number;
+  }>,
+): Promise<InstallationRepository[]> {
+  const env = input.env ?? process.env;
+  if ((env.GITHUB_MODE ?? "mock") !== "real") {
+    return mockInstallationRepositories({
+      installationId: input.installationId,
+      accountLogin: input.accountLogin,
+      repositories: input.mockRepositories,
+    });
+  }
+  if (!Number.isSafeInteger(input.installationId) || input.installationId < 1) {
+    throw new Error("github_installation_id_invalid");
+  }
+  const credentials = input.credentials ?? loadAppCredentials(env);
+  if (!credentials) throw new Error("github_app_credentials_missing");
+  const cache = new InstallationTokenCache(
+    credentials,
+    input.installationId,
+    input.fetchToken ?? defaultFetchInstallationToken,
+    input.now ?? Date.now,
+  );
+  const token = await cache.get();
+  const lister = input.lister ?? defaultListInstallationRepositories;
+  return lister(token);
+}
+
 export class GitHubAppDelivery implements GitHubDelivery {
   private readonly tokenCache: InstallationTokenCache;
   private readonly existingBranches = new Set<string>();

@@ -25,6 +25,7 @@ import {
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
+  RECOMMENDED_REVIEW_TIER_POLICY,
   TransformerPilotExecutionStore,
   applyRecipe,
   createOrganizationConstraintContract,
@@ -746,11 +747,15 @@ describe("Transformer production pilot lane", () => {
         unitId: "unit-a",
         kind: "adaptive",
         status: "review_pending",
+        // Default policy is disabled: the candidate records as `standard`, so the
+        // existing uniform single-approval review path is unchanged.
+        reviewTier: "standard",
         failingCommandId: "runtime-declarations",
         changedPaths: [".node-version", ".nvmrc", "Dockerfile", "package.json"],
       }),
     ]);
     expect(recorder).toHaveBeenCalledTimes(1);
+    expect(recorder.mock.calls[0]![1].reviewTier).toBe("standard");
     expect(result.adaptiveModelEvidence).toEqual([
       expect.objectContaining({
         tenantId: "tenant-a",
@@ -788,6 +793,64 @@ describe("Transformer production pilot lane", () => {
         headerRequestId: "adaptive-header-request-a",
       })],
     });
+  });
+
+  it("records an escalated tier when a review-tier policy is configured", async () => {
+    const { root, db, store } = setup();
+    const adapter = adaptiveAdapter();
+    const recorder = vi.fn<typeof dbModule.recordAdaptiveCandidate>((candidateDb, input) =>
+      dbModule.recordAdaptiveCandidate(candidateDb, input),
+    );
+    // Enable tiering with an escalate band that any real candidate trips (the
+    // converged fix changes four files > 1). This proves the configured policy
+    // flows through the lane and raises the required sign-off. It never lowers
+    // the bar: every candidate is still human-reviewed, nothing auto-merges.
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-adaptive-tier",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-adaptive-tier",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-adaptive-lease-token-0003",
+      adaptivePlannerAdapterForTenant: () => adapter,
+      authorizeAdaptiveExternalProcessing: (authorization) =>
+        authorizeConfiguredTransformerAdaptiveExternalProcessing(
+          authorization,
+          adaptiveModelEnv(),
+        ),
+      adaptiveCandidateDataRoot: root,
+      adaptiveCandidateRecorder: recorder,
+      adaptiveReviewTierPolicy: {
+        ...RECOMMENDED_REVIEW_TIER_POLICY,
+        enabled: true,
+        escalate: {
+          ...RECOMMENDED_REVIEW_TIER_POLICY.escalate,
+          minConfidence: 100,
+          maxChangedFiles: 1,
+        },
+      },
+      commandRunner: async ({ cwd }) => {
+        const content = readFileSync(join(cwd, "package.json"), "utf8");
+        const passed = content.includes('"mendpointAdaptiveReview": "fixed"');
+        return {
+          exitCode: passed ? 0 : 9,
+          stdout: passed ? "verified" : "",
+          stderr: passed ? "" : "deterministic gate failed",
+        };
+      },
+    });
+
+    expect(result).toMatchObject({ attempted: 1, completed: 0, failed: 1 });
+    expect(recorder).toHaveBeenCalledTimes(1);
+    expect(recorder.mock.calls[0]![1].reviewTier).toBe("escalated");
+    expect(listAdaptiveCandidates(db, "tenant-a")).toEqual([
+      expect.objectContaining({ kind: "adaptive", status: "review_pending", reviewTier: "escalated" }),
+    ]);
   });
 
   it("recovers the exact fenced seal after App DB import fails", async () => {

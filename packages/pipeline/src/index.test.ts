@@ -11,6 +11,7 @@ import {
   insertConsumerRepo,
   insertMonitoredApi,
   insertPolicy,
+  listCapabilityAdoptionOpportunities,
   listPrs,
   listChanges,
   listFindingsForChange,
@@ -208,6 +209,70 @@ describe("pipeline", () => {
 
     expect(report.consumers[0]?.prStatus).toBe("draft");
     expect(github.sourceBranches).toEqual(["trunk"]);
+  });
+
+  it("emits and persists a capability-adoption opportunity for an unused new capability", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop });
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-capop-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(deliveryRoot),
+      persistIndex: false,
+    });
+
+    // acme v1->v2 adds /v1/balance, which shop-app does not use -> opportunity.
+    const opportunities = listCapabilityAdoptionOpportunities(db, "tenant_default", {
+      providerSlug: "acme-payments",
+    });
+    const balance = opportunities.find((o) => o.path === "/v1/balance");
+    expect(balance).toBeDefined();
+    expect(balance!.adoptingCount).toBe(0);
+    expect(balance!.nonAdoptingCount).toBeGreaterThanOrEqual(1);
+    expect(balance!.nonAdoptingConsumers.map((cn) => cn.consumerName)).toContain("Shop");
+    expect(balance!.suggestedAction).toContain("adopt-PR");
+    expect(listAudit(db).some((event) => event.action === "capability.opportunities")).toBe(true);
+    // The per-consumer delivery loop still produced its result.
+    expect(report.consumers.length).toBe(1);
+  });
+
+  it("never fails the pipeline when the capability-adoption step throws", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop });
+    // Force persistence inside the capability-adoption step to throw.
+    db.raw.exec("DROP TABLE capability_adoption_opportunities");
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-capop-fail-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(deliveryRoot),
+      persistIndex: false,
+      contractCases: [
+        { id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } },
+      ],
+      securityScanOk: true,
+    });
+
+    // Delivery completed despite the capability-adoption step failing.
+    expect(report.consumers[0]?.prStatus).toBe("draft");
+    expect(
+      listAudit(db).some((event) => event.action === "capability.opportunities_failed"),
+    ).toBe(true);
   });
 
   it("fails closed before SCM delivery when reviewer ownership is incomplete", async () => {
