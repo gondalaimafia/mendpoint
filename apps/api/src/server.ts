@@ -227,6 +227,10 @@ import {
   selfServeSignupEnabled,
 } from "./self-serve-signup.js";
 import {
+  createSelfServeScanRoutes,
+  selfServeWardenEnabled,
+} from "./self-serve-scan.js";
+import {
   createSelfServeConnectRoutes,
   selfServeConnectEnabled,
 } from "./repository-connect.js";
@@ -750,6 +754,10 @@ app.route("/auth/signup", createSelfServeSignupRoutes({
 app.route("/self-serve/connect", createSelfServeConnectRoutes({
   db,
   enabled: selfServeConnectEnabled(process.env),
+}));
+app.route("/self-serve/scan", createSelfServeScanRoutes({
+  db,
+  enabled: selfServeWardenEnabled(process.env),
 }));
 app.route("/change-sources", changeSourceRoutes);
 app.route("/billing", billingRoutes);
