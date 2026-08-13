@@ -68,6 +68,24 @@ export {
   type ResolvedModelBackend,
 } from "./model-providers.js";
 export {
+  resolveTenantModelBackend,
+  resolveTenantModelTier,
+  resolveNonTrainingModelBackend,
+  assertBackendAllowedForTenant,
+  customerModelRoutingEnabled,
+  parseTenantAllowlist,
+  trainingTierModelSet,
+  isTrainingTierModel,
+  isTrainingTierBackend,
+  CUSTOMER_MODEL_ROUTING_ENV_VAR,
+  TRAINING_TIER_TENANTS_ENV_VAR,
+  TRAINING_TIER_MODELS_ENV_VAR,
+  NON_TRAINING_MODEL_PROVIDER_ENV_VAR,
+  TRAINING_TIER_FORBIDDEN_ERROR,
+  DEFAULT_TRAINING_TIER_MODELS,
+  type TenantModelTier,
+} from "./model-tenant-routing.js";
+export {
   buildNonOpenAiModelRequest,
   parseNonOpenAiModelResponse,
   type NonOpenAiWireFormat,
