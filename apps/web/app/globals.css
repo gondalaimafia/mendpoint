@@ -1,9 +1,13 @@
 :root {
-  --bg: #070a18;
-  --panel: #0d1124;
-  --border: #292e49;
-  --text: #eff1f5;
-  --muted: #9299ad;
+  /* Core surface + ink re-valued to the design system's exact oklch ground
+     (near-black navy). Existing names are kept so the ~2000 lines below and
+     every page keep resolving; see the "DESIGN SYSTEM (DS1)" block at the end
+     of this file for the full canonical token set and aliases. */
+  --bg: oklch(0.085 0.018 264); /* was #070a18 · DS --background */
+  --panel: oklch(0.115 0.018 264); /* was #0d1124 · DS --card/--popover/--sidebar */
+  --border: oklch(0.22 0.018 264); /* was #292e49 · DS --border/--input, solid navy */
+  --text: oklch(0.94 0.008 240); /* was #eff1f5 · DS --foreground */
+  --muted: #9299ad; /* muted-foreground role in this app; kept (see DS1 note) */
   --brand-primary: #356cff;
   --accent: #7698ff;
   --accent-light: #99b1ff;
@@ -61,7 +65,7 @@ a:hover {
 
 .nav {
   border-bottom: 1px solid var(--border);
-  background: rgba(7, 10, 24, 0.9);
+  background: color-mix(in oklab, var(--navy-1000) 90%, transparent);
   backdrop-filter: blur(8px);
   position: sticky;
   top: 0;
@@ -205,7 +209,7 @@ a:hover {
   width: 100%;
   height: auto;
   min-height: 420px;
-  background: #070a18;
+  background: var(--navy-1000);
   border: 1px solid var(--border);
   border-radius: 10px;
   margin-top: 0.5rem;
@@ -290,9 +294,9 @@ a:hover {
   margin-top: 0.75rem;
   padding: 0.65rem 0.85rem;
   border-radius: 8px;
-  border: 1px solid rgba(248, 113, 113, 0.45);
-  background: rgba(248, 113, 113, 0.1);
-  color: #fecaca;
+  border: 1px solid color-mix(in oklab, var(--danger) 45%, transparent);
+  background: color-mix(in oklab, var(--danger) 10%, transparent);
+  color: var(--danger);
   font-size: 0.9rem;
   display: flex;
   align-items: center;
@@ -326,8 +330,8 @@ a:hover {
 
 .badge.high {
   color: var(--accent);
-  border-color: rgba(53, 108, 255, 0.4);
-  background: rgba(53, 108, 255, 0.1);
+  border-color: color-mix(in oklab, var(--indigo) 40%, transparent);
+  background: var(--tint-indigo);
 }
 
 .badge.medium {
@@ -384,7 +388,7 @@ a:hover {
   left: -9999px;
   top: 0;
   background: var(--accent);
-  color: #070a18;
+  color: var(--navy-1000);
   padding: 0.5rem 1rem;
   z-index: 100;
 }
@@ -447,8 +451,8 @@ h2 {
 
 .badge.breaking {
   color: var(--danger);
-  border-color: rgba(248, 113, 113, 0.4);
-  background: rgba(248, 113, 113, 0.1);
+  border-color: color-mix(in oklab, var(--danger) 40%, transparent);
+  background: color-mix(in oklab, var(--danger) 10%, transparent);
 }
 
 .badge.non_breaking {
@@ -505,7 +509,7 @@ code {
 }
 
 pre {
-  background: #070a18;
+  background: var(--navy-1000);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1rem;
@@ -604,7 +608,7 @@ button.primary:hover,
   flex-direction: column;
   padding: 1.25rem 0.85rem 1rem;
   border-right: 1px solid var(--border);
-  background: rgba(7, 10, 24, 0.96);
+  background: color-mix(in oklab, var(--navy-1000) 96%, transparent);
   z-index: 20;
 }
 
@@ -675,8 +679,8 @@ button.primary:hover,
 
 .nav-group-links a.active {
   color: var(--text);
-  border-color: rgba(53, 108, 255, 0.18);
-  background: rgba(53, 108, 255, 0.08);
+  border-color: color-mix(in oklab, var(--indigo) 18%, transparent);
+  background: color-mix(in oklab, var(--indigo) 8%, transparent);
 }
 
 .nav-glyph {
@@ -685,15 +689,15 @@ button.primary:hover,
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  border: 1px solid #303756;
+  border: 1px solid var(--border-strong);
   border-radius: 5px;
-  color: #9aa4c1;
+  color: var(--muted);
   font-family: var(--mono);
   font-size: 0.65rem;
 }
 
 .nav-group-links a.active .nav-glyph {
-  color: #070a18;
+  color: var(--navy-1000);
   border-color: var(--accent);
   background: var(--accent);
 }
@@ -733,7 +737,7 @@ button.primary:hover,
   justify-content: space-between;
   padding: 0 1.25rem;
   border-bottom: 1px solid var(--border);
-  background: rgba(7, 10, 24, 0.96);
+  background: color-mix(in oklab, var(--navy-1000) 96%, transparent);
   z-index: 20;
 }
 
@@ -907,15 +911,15 @@ button.primary:hover,
   place-items: center;
   flex: 0 0 auto;
   border-radius: 50%;
-  color: #070a18;
+  color: var(--navy-1000);
   background: var(--success);
   font-weight: 800;
 }
 
 .attention-callout {
   display: grid;
-  border-color: rgba(248, 113, 113, 0.25);
-  background: rgba(248, 113, 113, 0.05);
+  border-color: color-mix(in oklab, var(--danger) 25%, transparent);
+  background: color-mix(in oklab, var(--danger) 5%, transparent);
 }
 
 .attention-callout .btn { justify-self: start; }
@@ -1010,7 +1014,7 @@ button.primary:hover,
 
 .state-pill.success { color: var(--success); border-color: rgba(34, 197, 94, 0.3); }
 .state-pill.active { color: var(--info); border-color: rgba(96, 165, 250, 0.3); }
-.state-pill.danger { color: var(--danger); border-color: rgba(248, 113, 113, 0.3); }
+.state-pill.danger { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 30%, transparent); }
 
 .next-actions {
   display: grid;
@@ -1038,7 +1042,7 @@ button.primary:hover,
   text-decoration: none;
 }
 
-.action-links a:hover { border-color: rgba(53, 108, 255, 0.45); }
+.action-links a:hover { border-color: color-mix(in oklab, var(--indigo) 45%, transparent); }
 .action-links span { color: var(--muted); font-size: 0.72rem; }
 
 .deferred,
@@ -1049,7 +1053,7 @@ button.primary:hover,
 
 .skeleton {
   border-radius: 6px;
-  background: linear-gradient(90deg, #11162d 25%, #1a2140 45%, #11162d 65%);
+  background: linear-gradient(90deg, var(--navy-800) 25%, var(--navy-700) 45%, var(--navy-800) 65%);
   background-size: 300% 100%;
   animation: skeleton-shift 1.4s ease infinite;
 }
@@ -1109,7 +1113,7 @@ button.primary:hover,
 }
 
 .transformer-notice.success { border-color: rgba(34, 197, 94, 0.35); color: var(--success); }
-.transformer-notice.error { border-color: rgba(248, 113, 113, 0.4); color: var(--danger); }
+.transformer-notice.error { border-color: color-mix(in oklab, var(--danger) 40%, transparent); color: var(--danger); }
 
 .transformer-load {
   display: grid;
@@ -1144,7 +1148,7 @@ button.primary:hover,
 }
 
 .danger-button {
-  border-color: rgba(248, 113, 113, 0.35);
+  border-color: color-mix(in oklab, var(--danger) 35%, transparent);
   color: var(--danger);
 }
 
@@ -1327,9 +1331,9 @@ button.primary:hover,
 
 .transformer-review-problem {
   padding: 0.9rem 1rem;
-  border: 1px solid rgba(248, 113, 113, 0.4);
+  border: 1px solid color-mix(in oklab, var(--danger) 40%, transparent);
   border-radius: 10px;
-  background: rgba(248, 113, 113, 0.06);
+  background: color-mix(in oklab, var(--danger) 6%, transparent);
 }
 
 .transformer-review-problem h1,
@@ -1386,7 +1390,7 @@ button.primary:hover,
 .transformer-verification-summary {
   display: grid;
   gap: 0.75rem;
-  border-color: rgba(53, 108, 255, 0.3);
+  border-color: color-mix(in oklab, var(--indigo) 30%, transparent);
 }
 
 .transformer-verification-summary h3,
@@ -1611,10 +1615,10 @@ button.primary:hover,
 .transformer-review-blockers {
   margin: 0;
   padding: 0.8rem 0.8rem 0.8rem 1.8rem;
-  border: 1px solid rgba(248, 113, 113, 0.35);
+  border: 1px solid color-mix(in oklab, var(--danger) 35%, transparent);
   border-radius: 9px;
   color: var(--danger);
-  background: rgba(248, 113, 113, 0.05);
+  background: color-mix(in oklab, var(--danger) 5%, transparent);
 }
 
 .transformer-decision-record,
@@ -1768,7 +1772,7 @@ input:focus-visible {
   gap: 1rem;
   padding: 0.8rem clamp(1rem, 4vw, 4rem);
   border-bottom: 1px solid var(--border);
-  background: rgba(7, 10, 24, 0.9);
+  background: color-mix(in oklab, var(--navy-1000) 90%, transparent);
   backdrop-filter: blur(14px);
   position: sticky;
   top: 0;
@@ -1806,9 +1810,9 @@ input:focus-visible {
   pointer-events: none;
   background-image:
     radial-gradient(circle at 72% 24%, rgba(0, 188, 193, 0.12), transparent 28%),
-    radial-gradient(circle at 28% 18%, rgba(53, 108, 255, 0.18), transparent 32%),
-    linear-gradient(rgba(53, 108, 255, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(53, 108, 255, 0.045) 1px, transparent 1px);
+    radial-gradient(circle at 28% 18%, color-mix(in oklab, var(--indigo) 18%, transparent), transparent 32%),
+    linear-gradient(color-mix(in oklab, var(--indigo) 4.5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklab, var(--indigo) 4.5%, transparent) 1px, transparent 1px);
   background-size: auto, auto, 48px 48px, 48px 48px;
   mask-image: linear-gradient(to bottom, black 15%, transparent 92%);
 }
@@ -1848,10 +1852,10 @@ input:focus-visible {
 
 .preview-pill {
   padding: 0.38rem 0.65rem;
-  border: 1px solid rgba(53, 108, 255, 0.34);
+  border: 1px solid color-mix(in oklab, var(--indigo) 34%, transparent);
   border-radius: 999px;
   color: var(--accent);
-  background: rgba(53, 108, 255, 0.06);
+  background: color-mix(in oklab, var(--indigo) 6%, transparent);
   font-size: 0.72rem;
   font-weight: 700;
 }
@@ -1942,8 +1946,8 @@ input:focus-visible {
 }
 
 .public-card.featured {
-  border-color: rgba(53, 108, 255, 0.38);
-  background: rgba(53, 108, 255, 0.055);
+  border-color: color-mix(in oklab, var(--indigo) 38%, transparent);
+  background: color-mix(in oklab, var(--indigo) 5.5%, transparent);
 }
 
 .public-section.split {
@@ -2091,5 +2095,1455 @@ input:focus-visible {
 
   .public-footer {
     display: grid;
+  }
+}
+
+/* =============================================================================
+   DESIGN SYSTEM (DS1) — foundation layer
+   Adopted from mendpoint-design-system/design_handoff_web_app_ui
+   (tokens/colors.css + src/mendpoint-app.css). Authored in OKLCH.
+
+   This block is ADDITIVE. It introduces the design system's canonical token
+   names (navy ground + one indigo accent, cyan = Warden, amber = breaking
+   changes only, emerald = added lines / passing only) so new components can
+   use them, WITHOUT redefining the app's existing, in-use names:
+     - --accent stays the app's a11y-tuned light indigo (#7698ff); the vivid
+       DS accent lives under --primary / --indigo (fills only).
+     - --muted stays a muted-FOREGROUND token in this app; the DS muted SURFACE
+       is --secondary / --surface-inset. The DS caption ink is --muted-foreground.
+     - --cyan / --success / --danger / --warn / --info keep their app values;
+       the DS ramps are added under distinct names.
+   ========================================================================== */
+:root {
+  /* ----------------------------- Color ramps ------------------------------ */
+  --navy-1000: oklch(0.06 0.018 264);
+  --navy-950: oklch(0.085 0.018 264);
+  --navy-900: oklch(0.1 0.018 264);
+  --navy-850: oklch(0.115 0.018 264);
+  --navy-800: oklch(0.14 0.018 264);
+  --navy-700: oklch(0.18 0.018 264);
+  --slate-700: oklch(0.22 0.018 264);
+  --slate-600: oklch(0.3 0.018 264);
+  --slate-500: oklch(0.42 0.015 240);
+  --slate-400: oklch(0.58 0.015 240);
+  --slate-300: oklch(0.75 0.01 240);
+  --slate-200: oklch(0.85 0.008 240);
+  --slate-100: oklch(0.9 0.008 240);
+  --slate-50: oklch(0.94 0.008 240);
+
+  --indigo-200: oklch(0.85 0.09 264.5);
+  --indigo-300: oklch(0.75 0.15 264.5);
+  --indigo-400: oklch(0.68 0.19 264.5);
+  --indigo-500: oklch(0.585 0.233 264.5);
+  --indigo-600: oklch(0.52 0.233 264.5);
+  --indigo-700: oklch(0.45 0.2 264.5);
+
+  --cyan-300: oklch(0.82 0.12 198);
+  --cyan-400: oklch(0.77 0.14 198);
+  --cyan-500: oklch(0.72 0.16 198);
+  --cyan-600: oklch(0.65 0.15 198);
+
+  --amber-300: oklch(0.86 0.13 75);
+  --amber-400: oklch(0.82 0.15 75);
+  --amber-500: oklch(0.78 0.17 75);
+  --amber-600: oklch(0.7 0.16 75);
+
+  --red-300: oklch(0.78 0.14 25);
+  --red-400: oklch(0.72 0.19 25);
+  --red-500: oklch(0.65 0.22 25);
+  --red-600: oklch(0.58 0.21 25);
+  --red-700: oklch(0.5 0.18 25);
+
+  --violet-300: oklch(0.75 0.14 300);
+  --violet-400: oklch(0.62 0.15 300);
+  --violet-500: oklch(0.5 0.15 300);
+
+  --emerald-300: oklch(0.82 0.14 162);
+  --emerald-400: oklch(0.77 0.155 162);
+  --emerald-500: oklch(0.72 0.17 162);
+  --emerald-600: oklch(0.64 0.16 162);
+  --emerald-700: oklch(0.54 0.14 162);
+
+  /* ---------------------- Brand aliases (DS-named) ------------------------ */
+  --indigo: oklch(0.585 0.233 264.5); /* the one accent — CTA, active, focus */
+  --indigo-light: oklch(0.68 0.19 264.5); /* accent on tinted fills, active icons */
+  --amber: oklch(0.78 0.17 75); /* breaking changes ONLY */
+  --destructive: oklch(0.65 0.22 25);
+  --emerald: oklch(0.72 0.17 162); /* added lines / passing ONLY */
+
+  /* -------------------------- Tint fills ---------------------------------- */
+  --tint-indigo: oklch(0.585 0.233 264.5 / 0.1);
+  --tint-indigo-16: oklch(0.585 0.233 264.5 / 0.16);
+  --tint-indigo-28: oklch(0.585 0.233 264.5 / 0.28);
+  --tint-cyan: oklch(0.72 0.16 198 / 0.1);
+  --tint-cyan-28: oklch(0.72 0.16 198 / 0.28);
+  --tint-amber: oklch(0.78 0.17 75 / 0.1);
+  --tint-amber-28: oklch(0.78 0.17 75 / 0.28);
+  --tint-red: oklch(0.65 0.22 25 / 0.1);
+  --tint-emerald: oklch(0.72 0.17 162 / 0.1);
+
+  /* ------------------ Surface + border steps (DS-named) ------------------- */
+  --surface-hover: oklch(1 0 0 / 0.04);
+  --surface-active: oklch(1 0 0 / 0.07);
+  --border-subtle: oklch(0.18 0.018 264);
+  --border-strong: oklch(0.3 0.018 264);
+
+  /* -------------------------- Diff surfaces ------------------------------- */
+  --diff-add-bg: var(--tint-emerald);
+  --diff-add-bar: var(--emerald-500);
+  --diff-add-fg: var(--emerald-300);
+  --diff-del-bg: var(--tint-red);
+  --diff-del-bar: var(--red-500);
+  --diff-del-fg: var(--red-300);
+  --diff-gutter: oklch(0.42 0.015 240);
+
+  /* ------------------------------ Status ---------------------------------- */
+  --status-open: var(--emerald-500);
+  --status-merged: var(--violet-400);
+  --status-failing: var(--red-500);
+  --status-pending: var(--amber-500);
+  --status-draft: var(--slate-400);
+
+  /* --------------------- Agent identity (marker only) --------------------- */
+  --warden: var(--cyan); /* cyan — resolves to the app's --cyan (#00bcc1) */
+  --transformer: var(--indigo);
+
+  /* --------------------- Textures (indigo-tinted) ------------------------- */
+  --grid-line: oklch(0.585 0.233 264.5 / 0.04);
+  --grid-dot: oklch(0.585 0.233 264.5 / 0.12);
+
+  /* --------------------------- Motion ------------------------------------- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 150ms;
+  --dur-base: 200ms;
+  --dur-entrance: 500ms;
+  --stagger: 80ms;
+
+  /* ============ shadcn-style canonical semantic tokens (DS) ==============
+     New names, unused elsewhere in the app, so purely additive. --accent and
+     --muted are intentionally NOT redefined here (see block header). */
+  --background: oklch(0.085 0.018 264);
+  --foreground: oklch(0.94 0.008 240);
+  --card: oklch(0.115 0.018 264);
+  --card-foreground: oklch(0.94 0.008 240);
+  --popover: oklch(0.115 0.018 264);
+  --popover-foreground: oklch(0.94 0.008 240);
+  --primary: oklch(0.585 0.233 264.5);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.14 0.018 264);
+  --secondary-foreground: oklch(0.75 0.01 240);
+  --muted-foreground: oklch(0.58 0.015 240);
+  --accent-foreground: oklch(0.98 0 0);
+  --destructive-foreground: oklch(0.98 0 0);
+  --input: oklch(0.22 0.018 264);
+  --ring: oklch(0.585 0.233 264.5);
+  --sidebar: oklch(0.115 0.018 264);
+  --sidebar-foreground: oklch(0.94 0.008 240);
+  --sidebar-primary: oklch(0.585 0.233 264.5);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.14 0.018 264);
+  --sidebar-accent-foreground: oklch(0.94 0.008 240);
+  --sidebar-border: oklch(0.22 0.018 264);
+  --sidebar-ring: oklch(0.585 0.233 264.5);
+  --chart-1: oklch(0.585 0.233 264.5);
+  --chart-2: oklch(0.72 0.16 198);
+  --chart-3: oklch(0.78 0.17 75);
+  --chart-4: oklch(0.65 0.22 25);
+  --chart-5: oklch(0.5 0.15 300);
+}
+
+/* --------------------------------------------------------------------------
+   Utilities
+   -------------------------------------------------------------------------- */
+
+/* Section label — the eyebrow. Inter 600, 0.7rem, 0.12em, uppercase, preceded
+   by a 16x2px indigo -> cyan gradient dash. Tones: accent (default), muted
+   (structure, no dash), warden (cyan). */
+.section-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--indigo);
+}
+.section-label::before {
+  content: "";
+  display: inline-block;
+  width: 16px;
+  height: 2px;
+  flex: none;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--indigo), var(--cyan));
+}
+.section-label--accent {
+  color: var(--indigo);
+}
+.section-label--muted {
+  color: var(--muted-foreground);
+}
+.section-label--muted::before {
+  display: none;
+}
+.section-label--warden {
+  color: var(--cyan);
+}
+.section-label--warden::before {
+  background: linear-gradient(90deg, var(--cyan), var(--indigo));
+}
+
+/* Entrance — fade up 40px -> 0 over 500ms, 80ms stagger via --i. */
+.fade-up {
+  opacity: 0;
+  animation: mp-fade-up var(--dur-entrance) var(--ease-out) forwards;
+  animation-delay: calc(var(--i, 0) * var(--stagger));
+}
+@keyframes mp-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Card hover lift — 4px, 200ms. The app's only hover transform. */
+.lift {
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out);
+}
+.lift:hover {
+  transform: translateY(-4px);
+  border-color: var(--border-strong);
+  box-shadow: 0 20px 44px -14px oklch(0.06 0.018 264 / 0.75);
+}
+
+/* Indigo glow — the primary CTA only. */
+.indigo-glow {
+  box-shadow:
+    0 0 40px oklch(0.585 0.233 264.5 / 0.18),
+    0 0 80px oklch(0.585 0.233 264.5 / 0.08);
+}
+
+/* Depth textures — one per section, never both. Cards sit on the texture. */
+.mendpoint-grid-bg {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+.mendpoint-dot-bg {
+  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* prefers-reduced-motion disables the lift and the fade-up. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-entrance: 0ms;
+    --stagger: 0ms;
+  }
+  .fade-up {
+    opacity: 1;
+    animation: none;
+  }
+  .lift:hover {
+    transform: none;
+  }
+}
+
+/* =============================================================================
+   DESIGN SYSTEM (DS2) — signature component layer
+   App-native (plain CSS + React) translation of the shadcn/Radix handoff
+   components (design_handoff_web_app_ui/src/components + components.css). Every
+   color references the DS1 tokens above — no hardcoded hex. Radii use the DS
+   scale as literals (sm 4 / md 6 / lg 8 / xl 12px), matching the app's existing
+   CSS. Spacing/type sizes are literal values translated from the handoff's
+   space and text scales. Icons render at strokeWidth 1.75 (see icons.tsx).
+   ========================================================================== */
+:root {
+  /* Tint fills the DS2 pills/badges need that DS1 did not yet define. Authored
+     in OKLCH like the DS1 tint fills. */
+  --tint-emerald-30: oklch(0.72 0.17 162 / 0.3);
+  --tint-red-28: oklch(0.65 0.22 25 / 0.28);
+  --tint-violet-12: oklch(0.5 0.15 300 / 0.12);
+  --tint-violet-30: oklch(0.5 0.15 300 / 0.3);
+}
+
+/* Caret / pulse used by StatusPill (pulse) and Terminal (caret). */
+@keyframes mp-caret {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  61%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ------------------------------- Logo ------------------------------------ */
+.ds-logo {
+  display: inline-flex;
+  align-items: center;
+}
+.ds-logo__mark {
+  display: inline-flex;
+  flex: none;
+}
+.ds-logo__glyph {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.ds-logo__word {
+  font-family: var(--font);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: var(--foreground);
+}
+
+/* ----------------------------- StatusPill -------------------------------- */
+.ds-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1;
+  padding: 5px 10px 5px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  white-space: nowrap;
+}
+.ds-status__dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--status-draft);
+}
+.ds-status--open {
+  color: var(--emerald-300);
+  border-color: var(--tint-emerald-30);
+  background: var(--tint-emerald);
+}
+.ds-status--open .ds-status__dot {
+  background: var(--status-open);
+}
+.ds-status--merged {
+  color: var(--violet-300);
+  border-color: var(--tint-violet-30);
+  background: var(--tint-violet-12);
+}
+.ds-status--merged .ds-status__dot {
+  background: var(--status-merged);
+}
+.ds-status--failing {
+  color: var(--red-300);
+  border-color: var(--tint-red-28);
+  background: var(--tint-red);
+}
+.ds-status--failing .ds-status__dot {
+  background: var(--status-failing);
+}
+.ds-status--pending {
+  color: var(--amber-300);
+  border-color: var(--tint-amber-28);
+  background: var(--tint-amber);
+}
+.ds-status--pending .ds-status__dot {
+  background: var(--status-pending);
+}
+.ds-status--draft {
+  color: var(--muted-foreground);
+}
+.ds-status--draft .ds-status__dot {
+  background: var(--status-draft);
+}
+.ds-status--pulse .ds-status__dot {
+  animation: mp-caret 1.4s var(--ease-out) infinite;
+}
+
+/* -------------------------------- Badge ---------------------------------- */
+.ds-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.ds-badge--neutral {
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  border-color: var(--border-subtle);
+}
+.ds-badge--danger {
+  background: var(--tint-red);
+  color: var(--red-300);
+  border-color: var(--tint-red-28);
+}
+.ds-badge--warn {
+  background: var(--tint-amber);
+  color: var(--amber-300);
+  border-color: var(--tint-amber-28);
+}
+.ds-badge--emerald {
+  background: var(--tint-emerald);
+  color: var(--emerald-300);
+  border-color: var(--tint-emerald-30);
+}
+.ds-badge--accent {
+  background: var(--tint-indigo);
+  color: var(--indigo-300);
+  border-color: var(--tint-indigo-28);
+}
+
+/* ------------------------------- DiffView -------------------------------- */
+.ds-diff {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--background);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.ds-diff__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+.ds-diff__path {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.ds-diff__stat {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 12px;
+}
+.ds-diff__stat .add {
+  color: var(--emerald);
+}
+.ds-diff__stat .del {
+  color: var(--destructive);
+}
+.ds-diff__hunk {
+  padding: 0.25rem 0 0.5rem;
+}
+.ds-diff__hunkhead {
+  padding: 2px 0.75rem;
+  color: var(--diff-gutter);
+  background: var(--surface-hover);
+  font-size: 12px;
+}
+.ds-diff__row {
+  display: flex;
+  white-space: pre;
+}
+.ds-diff__gutter {
+  width: 44px;
+  flex: none;
+  text-align: right;
+  padding-right: 0.75rem;
+  color: var(--diff-gutter);
+  user-select: none;
+  font-size: 12px;
+}
+.ds-diff__sign {
+  width: 16px;
+  flex: none;
+  text-align: center;
+  user-select: none;
+}
+.ds-diff__code {
+  flex: 1;
+  padding-right: 0.75rem;
+  color: var(--secondary-foreground);
+  overflow-x: auto;
+}
+.ds-diff__row--add {
+  background: var(--diff-add-bg);
+  box-shadow: inset 2px 0 0 var(--diff-add-bar);
+}
+.ds-diff__row--add .ds-diff__code,
+.ds-diff__row--add .ds-diff__sign {
+  color: var(--diff-add-fg);
+}
+.ds-diff__row--del {
+  background: var(--diff-del-bg);
+  box-shadow: inset 2px 0 0 var(--diff-del-bar);
+}
+.ds-diff__row--del .ds-diff__code,
+.ds-diff__row--del .ds-diff__sign {
+  color: var(--diff-del-fg);
+}
+.ds-diff__note {
+  padding: 0.75rem;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
+/* ------------------------------- Terminal -------------------------------- */
+.ds-term {
+  background: var(--navy-1000);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--secondary-foreground);
+  overflow-x: auto;
+}
+.ds-term__row {
+  display: flex;
+  gap: 0.5rem;
+  white-space: pre;
+}
+.ds-term__prompt {
+  color: var(--indigo-light);
+  user-select: none;
+}
+.ds-term__prompt--hidden {
+  visibility: hidden;
+}
+.ds-term__out {
+  color: var(--muted-foreground);
+}
+.ds-term__ok {
+  color: var(--emerald);
+}
+.ds-term__err {
+  color: var(--destructive);
+}
+.ds-term__warn {
+  color: var(--amber);
+}
+.ds-term__caret {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  background: var(--indigo-light);
+  vertical-align: -2px;
+  animation: mp-caret 1s steps(1) infinite;
+}
+
+/* --------------------------- PullRequestCard ----------------------------- */
+.ds-pr-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  padding: 1.25rem;
+}
+.ds-pr-card--interactive {
+  cursor: pointer;
+}
+.ds-pr-card__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.ds-pr-card__icon--warden {
+  color: var(--warden);
+}
+.ds-pr-card__icon--transformer {
+  color: var(--transformer);
+}
+.ds-pr-card__repo {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.ds-pr-card__status {
+  margin-left: auto;
+}
+.ds-pr-card__titlerow {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.ds-pr-card__title {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.4;
+  color: var(--foreground);
+}
+.ds-pr-card__num {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.ds-pr-card__meta {
+  margin-top: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.ds-pr-card__meta .add {
+  color: var(--emerald);
+}
+.ds-pr-card__meta .del {
+  color: var(--destructive);
+}
+.ds-pr-card__time {
+  margin-left: auto;
+}
+
+/* ------------------------------- AppShell -------------------------------- */
+.ds-shell {
+  display: grid;
+  min-height: 100vh;
+  grid-template-columns: 244px minmax(0, 1fr);
+}
+.ds-shell__rail {
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+  border-right: 1px solid var(--border);
+  background: var(--sidebar);
+}
+.ds-shell__brand {
+  padding: 0.5rem 0.75rem 1rem;
+}
+.ds-shell__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ds-shell__group {
+  margin-bottom: 0.5rem;
+}
+.ds-shell__heading {
+  padding: 1rem 0.75rem 0.5rem;
+}
+.ds-shell__item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  text-align: left;
+  padding: 7px 0.75rem;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--secondary-foreground);
+  font-family: var(--font);
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.ds-shell__item:hover {
+  background: var(--surface-hover);
+  color: var(--foreground);
+}
+.ds-shell__item--active {
+  background: var(--surface-active);
+  color: var(--foreground);
+  font-weight: 500;
+}
+.ds-shell__item-icon {
+  display: flex;
+  flex: none;
+  color: var(--muted-foreground);
+}
+.ds-shell__item--active .ds-shell__item-icon {
+  color: var(--indigo-light);
+}
+.ds-shell__item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-shell__item-meta {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.ds-shell__foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.ds-shell__avatar {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary-foreground);
+  background: var(--indigo);
+}
+.ds-shell__user {
+  font-size: 12px;
+  color: var(--secondary-foreground);
+}
+.ds-shell__foot-caret {
+  margin-left: auto;
+  color: var(--muted-foreground);
+}
+.ds-shell__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ds-shell__topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  height: 64px;
+  padding: 0 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.ds-shell__search {
+  position: relative;
+  flex: 1;
+  max-width: 320px;
+}
+.ds-shell__search-icon {
+  position: absolute;
+  left: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+.ds-shell__search-input {
+  width: 100%;
+  height: 2.25rem;
+  padding: 0 0.75rem 0 2.25rem;
+  border: 1px solid var(--input);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.ds-shell__topbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.ds-shell__body {
+  flex: 1;
+  padding: 2rem 2rem 6rem;
+}
+
+/* -------------------------- DS button primitive --------------------------
+   Minimal DS-styled button — the app's existing .btn is shorter than the
+   2.75rem touch minimum and carries the legacy look, so AppShell (and DS3)
+   use these. Focus is covered by the app's global button:focus-visible ring. */
+.ds-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0 1rem;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-family: var(--font);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.ds-btn--primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-weight: 600;
+}
+.ds-btn--primary:hover {
+  background: var(--indigo-600);
+}
+.ds-btn--outline {
+  background: var(--card);
+  color: var(--foreground);
+  border-color: var(--border);
+}
+.ds-btn--outline:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+.ds-btn--icon {
+  width: 2.75rem;
+  padding: 0;
+}
+
+/* prefers-reduced-motion disables the pulse and caret. */
+@media (prefers-reduced-motion: reduce) {
+  .ds-status--pulse .ds-status__dot,
+  .ds-term__caret {
+    animation: none;
+  }
+}
+
+/* =============================================================================
+   DESIGN SYSTEM (DS3) — console views + interactions
+   App-native realization of the four product-console views (design_handoff_
+   web_app_ui/prototypes/app) mounted in the DS2 AppShell, plus the app-native
+   AlertDialog + toast interactions. Every color references a DS1/DS2 token — no
+   hardcoded hex. Radii use the DS scale as literals (sm 4 / md 6 / lg 8 / xl
+   12px). Spacing/type sizes are translated from the handoff's scales. Amber is
+   confined to breaking-change severity; the one indigo-filled CTA per view is
+   the .indigo-glow button. Focus is covered by the app's global
+   button/a/input:focus-visible ring.
+   ========================================================================== */
+
+/* -------------------------------- View shell ---------------------------- */
+.ds-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+}
+.ds-view__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.ds-view__header--stack {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+.ds-view__title {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.018em;
+  line-height: 1.3;
+  color: var(--foreground);
+}
+
+/* A ghost text link with a trailing/leading icon. */
+.ds-link-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-family: var(--font);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--secondary-foreground);
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.ds-link-ghost:hover {
+  color: var(--foreground);
+}
+
+/* ------------------------------ Stat grid ------------------------------- */
+.ds-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+}
+.ds-stat {
+  padding: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+.ds-stat__label {
+  font-family: var(--font);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.ds-stat__figure {
+  margin-top: 0.5rem;
+  font-family: var(--display);
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+.ds-stat__figure--amber {
+  color: var(--amber);
+}
+.ds-stat__figure--cyan {
+  color: var(--cyan);
+}
+.ds-stat__figure--indigo {
+  color: var(--indigo-light);
+}
+
+/* --------------------------- Panel (generic card) ----------------------- */
+.ds-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  overflow: hidden;
+}
+.ds-panel--pad {
+  padding: 1.5rem;
+}
+.ds-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.ds-panel__title {
+  font-family: var(--font);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.ds-panel__head .ds-link-ghost {
+  margin-left: auto;
+}
+
+/* ----------------------------- Spec-diff table -------------------------- */
+.ds-spec-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ds-spec-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.ds-spec-row:last-child {
+  border-bottom: 0;
+}
+.ds-spec-row__endpoint {
+  flex: none;
+  min-width: 210px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--foreground);
+}
+.ds-spec-row__note {
+  font-family: var(--font);
+  font-size: 0.875rem;
+  color: var(--secondary-foreground);
+}
+.ds-spec-row__meta {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+/* --------------------------------- Tabs --------------------------------- */
+.ds-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--secondary);
+  width: fit-content;
+}
+.ds-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0 0.875rem;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--secondary-foreground);
+  font-family: var(--font);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.ds-tab:hover {
+  color: var(--foreground);
+}
+.ds-tab--active {
+  background: var(--card);
+  color: var(--foreground);
+}
+.ds-tab__count {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-active);
+  color: var(--muted-foreground);
+}
+.ds-tab--active .ds-tab__count {
+  color: var(--foreground);
+}
+
+/* ------------------------------ PR list --------------------------------- */
+.ds-pr-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* ----------------------------- PR detail -------------------------------- */
+.ds-detail__back {
+  align-self: flex-start;
+}
+.ds-detail__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+}
+.ds-detail__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.ds-detail__repo {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.ds-detail__num {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+.ds-detail__actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.75rem;
+  flex: none;
+}
+.ds-detail__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 1.5rem;
+}
+.ds-detail__diffs {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+.ds-detail__aside {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* -------------------------------- Alert --------------------------------- */
+.ds-alert {
+  display: flex;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--tint-amber-28);
+  border-radius: 8px;
+  background: var(--tint-amber);
+  font-family: var(--font);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--secondary-foreground);
+}
+.ds-alert__icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--amber);
+}
+.ds-alert__title {
+  display: block;
+  margin-bottom: 2px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+/* ------------------------------- Checks --------------------------------- */
+.ds-check-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.ds-check-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: var(--font);
+  font-size: 0.875rem;
+  color: var(--secondary-foreground);
+}
+.ds-check-row__icon {
+  flex: none;
+  color: var(--emerald);
+}
+.ds-check-row__state {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+/* ------------------------------- Author --------------------------------- */
+.ds-author {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  font-family: var(--font);
+  font-size: 0.875rem;
+  color: var(--foreground);
+}
+.ds-author__icon {
+  flex: none;
+  color: var(--transformer);
+}
+.ds-author__note {
+  margin: 0.75rem 0 0;
+  font-family: var(--font);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+/* ------------------------------ Settings -------------------------------- */
+.ds-settings {
+  max-width: 640px;
+}
+.ds-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  margin-top: 1.25rem;
+}
+.ds-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.ds-field__label {
+  font-family: var(--font);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--secondary-foreground);
+}
+.ds-field__hint {
+  font-family: var(--font);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.ds-input {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--input);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font);
+  font-size: 0.875rem;
+}
+.ds-input--mono {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.ds-select-wrap {
+  position: relative;
+}
+.ds-select {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0 2.25rem 0 0.75rem;
+  border: 1px solid var(--input);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font);
+  font-size: 0.875rem;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+.ds-select-wrap__caret {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+/* Checkbox — a button styled as a labelled control. */
+.ds-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--secondary-foreground);
+}
+.ds-check__box {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--background);
+  color: var(--primary-foreground);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.ds-check--on .ds-check__box {
+  background: var(--indigo);
+  border-color: var(--indigo);
+}
+.ds-check__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ds-check__label {
+  font-family: var(--font);
+  font-size: 0.875rem;
+  color: var(--foreground);
+}
+.ds-check__hint {
+  font-family: var(--font);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+/* Switch — a button styled as a toggle. */
+.ds-switch {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--secondary-foreground);
+}
+.ds-switch__track {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--surface-active);
+  border: 1px solid var(--border-strong);
+  transition: background-color var(--dur-base) var(--ease-out);
+}
+.ds-switch__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--slate-300);
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    background-color var(--dur-base) var(--ease-out);
+}
+.ds-switch--on .ds-switch__track {
+  background: var(--indigo);
+  border-color: var(--indigo);
+}
+.ds-switch--on .ds-switch__thumb {
+  transform: translateX(16px);
+  background: var(--primary-foreground);
+}
+.ds-switch__label {
+  font-family: var(--font);
+  font-size: 0.875rem;
+}
+.ds-switch--on .ds-switch__label {
+  color: var(--foreground);
+}
+
+.ds-form-foot {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.75rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+/* ---------------------- DS button ghost variant ------------------------- */
+.ds-btn--ghost {
+  background: none;
+  color: var(--secondary-foreground);
+  border-color: transparent;
+}
+.ds-btn--ghost:hover {
+  background: var(--surface-hover);
+  color: var(--foreground);
+}
+
+/* ------------------------------ AlertDialog ----------------------------- */
+.ds-dialog__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: oklch(0.06 0.018 264 / 0.72);
+}
+.ds-dialog {
+  width: 100%;
+  max-width: 440px;
+  padding: 1.75rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--popover);
+  box-shadow: 0 24px 60px -18px oklch(0.06 0.018 264 / 0.85);
+}
+.ds-dialog__title {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  color: var(--foreground);
+}
+.ds-dialog__desc {
+  margin: 0.75rem 0 0;
+  font-family: var(--font);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--secondary-foreground);
+}
+.ds-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+/* -------------------------------- Toast --------------------------------- */
+.ds-toaster {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  z-index: 110;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(360px, calc(100vw - 3rem));
+}
+.ds-toast {
+  position: relative;
+  padding: 0.875rem 2.5rem 0.875rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--popover);
+  box-shadow: 0 16px 40px -16px oklch(0.06 0.018 264 / 0.8);
+}
+.ds-toast__title {
+  font-family: var(--font);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.ds-toast__desc {
+  margin-top: 2px;
+  font-family: var(--font);
+  font-size: 0.8125rem;
+  color: var(--secondary-foreground);
+}
+.ds-toast__close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted-foreground);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.ds-toast__close:hover {
+  color: var(--foreground);
+  background: var(--surface-hover);
+}
+
+/* Responsive: collapse the multi-column layouts on narrow viewports. */
+@media (max-width: 900px) {
+  .ds-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .ds-detail__body {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
