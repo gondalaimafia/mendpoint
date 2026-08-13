@@ -240,6 +240,10 @@ import {
   selfServeConnectEnabled,
 } from "./repository-connect.js";
 import {
+  createSelfServeOnboardingRoutes,
+  selfServeOnboardingEnabled,
+} from "./self-serve-onboarding.js";
+import {
   decideCatalogMutation,
   providerVisibleToTenant,
 } from "./self-serve-catalog.js";
@@ -293,6 +297,7 @@ import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.j
 import { createWardenPilotIntakeRoutes } from "./warden-pilot-intake.js";
 import { createWardenCampaignEnrollmentRoutes } from "./warden-campaign-enrollment.js";
 import { createOutcomeMetricsRoutes } from "./outcome-metrics-routes.js";
+import { createDiagnosticsRoutes } from "./diagnostics-routes.js";
 import { createDashboardRoutes } from "./dashboard-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
@@ -822,6 +827,10 @@ app.route("/self-serve/admin", createSelfServeAdminRoutes({
   db,
   enabled: selfServeAdminEnabled(process.env),
 }));
+app.route("/self-serve/onboarding", createSelfServeOnboardingRoutes({
+  db,
+  enabled: selfServeOnboardingEnabled(process.env),
+}));
 app.route("/change-sources", changeSourceRoutes);
 app.route("/billing", billingRoutes);
 app.route("/design-partner-applications", designPartnerRoutes);
@@ -831,6 +840,7 @@ app.route("/tenants/memberships", tenantMembershipRoutes);
 app.route("/warden/pilot", createWardenPilotIntakeRoutes({ db }));
 app.route("/warden/campaigns", createWardenCampaignEnrollmentRoutes({ db }));
 app.route("/metrics/outcomes", createOutcomeMetricsRoutes({ db }));
+app.route("/diagnostics", createDiagnosticsRoutes({ db }));
 app.route("/metrics/dashboard", createDashboardRoutes({ db }));
 
 // Persist alerts under data/

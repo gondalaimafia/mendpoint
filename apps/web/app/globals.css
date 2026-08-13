@@ -3548,3 +3548,34 @@ input:focus-visible {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* S3 self-service diagnostics + inline error guidance */
+.diagnostics-checks {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.guidance {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.guidance ul {
+  margin: 0.35rem 0 0.5rem;
+  padding-left: 1.1rem;
+}
+
+.guidance li {
+  margin: 0.2rem 0;
+}
+
+.guidance-note {
+  margin-top: 0.85rem;
+  border-left: 3px solid var(--accent, #356cff);
+}
+
+.guidance-note > strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
