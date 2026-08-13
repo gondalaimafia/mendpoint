@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDb, type AppDb } from "./index.js";
+import { createDb, insertPrincipal, type AppDb } from "./index.js";
 import {
   getGraphQLSchemaVersion,
   getGraphQLSchemaVersionByLabel,
@@ -26,6 +26,7 @@ function path() {
 
 function open(file = path()) {
   const db = createDb(file);
+  insertPrincipal(db, { id: "principal-graphql", tenantId: "tenant-a", kind: "service", subject: "graphql-test", displayName: "GraphQL Test", createdAt: "2026-08-12T12:00:00.000Z" });
   dbs.push(db);
   return db;
 }
@@ -55,6 +56,7 @@ function version(overrides: Record<string, unknown> = {}) {
       oldDigest: null,
       newDigest: `sha256:${"a".repeat(64)}`,
     },
+    producerPrincipalId: "principal-graphql",
     createdAt: "2026-08-12T12:00:00.000Z",
     ...overrides,
   };

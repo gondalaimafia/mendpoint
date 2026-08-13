@@ -64,7 +64,7 @@ function fixture(enabled: boolean) {
   app.use("*", async (c, next) => {
     const tenantId = c.req.header("X-Test-Tenant");
     if (tenantId === "tenant-a" || tenantId === "tenant-b") {
-      c.set("principal", { id: `${tenantId}@example.com`, tenantId, role: "owner" });
+      c.set("principal", { id: `${tenantId}@example.com`, tenantId, role: (c.req.header("X-Test-Role") ?? "owner") as "owner" | "viewer" });
       c.set("trustPrincipalId", `principal-${tenantId}`);
       c.set("requestId", `request-${tenantId}`);
     }
@@ -222,6 +222,20 @@ describe("legacy behavior API", () => {
     expect(found.documentation.markdown).toContain("GraphQL type Payment");
     expect(found.documentation.markdown).toContain("snapshot\\://repository-a/snapshot-a/src/payment.ts:1");
     expect(found.graph.nodes.every((node: any) => node.provenance.every((item: any) => item.state === "active"))).toBe(true);
+  });
+
+  it("rejects read-only extraction without persisting authority records", async () => {
+    const { app, db, root } = fixture(true);
+    seedSnapshot(db, root);
+    const response = await app.request("/transformer/legacy-behavior/extractions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-Tenant": "tenant-a", "X-Test-Role": "viewer" },
+      body: JSON.stringify(requestBody),
+    });
+    expect(response.status).toBe(403);
+    expect(listArtifactManifests(db, "tenant-a")).toEqual([]);
+    expect(listEvidenceRecords(db, "tenant-a", "repository_snapshot", "snapshot-a")).toEqual([]);
+    expect(listDomainEvents(db, "tenant-a")).toEqual([]);
   });
 
   it("fails closed on snapshot content tampering without persisting artifacts", async () => {

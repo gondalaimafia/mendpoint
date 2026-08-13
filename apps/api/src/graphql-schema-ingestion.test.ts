@@ -26,10 +26,11 @@ function fixture(enabled = true) {
   dbs.push(db);
   const tenantA = createApiKey(db, { id: `key-a-${dirs.length}`, name: "A", tenantId: "tenant-a", scopes: ["*"], createdAt: "2026-08-12T12:00:00.000Z" });
   const tenantB = createApiKey(db, { id: `key-b-${dirs.length}`, name: "B", tenantId: "tenant-b", scopes: ["*"], createdAt: "2026-08-12T12:00:00.000Z" });
+  const viewer = createApiKey(db, { id: `key-viewer-${dirs.length}`, name: "Viewer", tenantId: "tenant-a", scopes: ["graph:read"], createdAt: "2026-08-12T12:00:00.000Z" });
   const app = new Hono<ApiEnv>();
   app.use("*", createAuthMiddleware(db));
   app.route("/graphql/schemas", createGraphQLSchemaIngestionRoutes({ db, enabled, now: (() => { let n = 0; return () => `2026-08-12T12:0${n++}:00.000Z`; })() }));
-  return { app, tenantA: tenantA.token, tenantB: tenantB.token };
+  return { app, db, tenantA: tenantA.token, tenantB: tenantB.token, viewer: viewer.token };
 }
 
 const auth = (token: string) => ({ Authorization: `Bearer ${token}`, "content-type": "application/json" });
@@ -50,6 +51,13 @@ describe("GraphQL schema ingestion API", () => {
     const injected = await app.request("/graphql/schemas/payments/versions", { method: "POST", headers: auth(tenantA), body: JSON.stringify({ tenantId: "tenant-b", versionLabel: "v1", format: "sdl", schema: "type Query { ok: Boolean! }" }) });
     expect(injected.status).toBe(400);
     expect(await injected.json()).toMatchObject({ error: "graphql_request_keys_invalid" });
+  });
+
+  it("requires graph write authority and records the durable producer", async () => {
+    const { app, db, viewer } = fixture();
+    const response = await app.request("/graphql/schemas/payments/versions", { method: "POST", headers: auth(viewer), body: JSON.stringify({ versionLabel: "v1", format: "sdl", schema: "type Query { ok: Boolean! }" }) });
+    expect(response.status).toBe(403);
+    expect((db.raw.prepare("SELECT COUNT(*) AS count FROM evidence_records WHERE tenant_id = 'tenant-a' AND subject_type = 'graphql_schema_source'").get() as { count: number }).count).toBe(0);
   });
 
   it("ingests SDL, selects the latest baseline, and returns structured breaking evidence", async () => {

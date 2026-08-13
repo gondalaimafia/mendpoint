@@ -142,14 +142,21 @@ export function createDurableAttestationScopeAuthority(): NonNullable<AdvancedAi
     };
     const snapshot = db.raw.prepare("SELECT manifest_sha256 FROM repository_snapshots WHERE id = ? AND tenant_id = ? AND repository_id = ?").get(scope.snapshotArtifact.artifactId, input.tenantId, input.repositoryId) as { manifest_sha256: string } | undefined;
     const verificationKinds = new Map([["warden-baseline-verification", false], ["warden-post-edit-verification", true]]);
+    let successfulPostEditVerifications = 0;
     const verification = scope.verificationArtifacts.every((artifact) => {
       const ref = refs.find((candidate) => candidate.id === artifact.artifactId && candidate.sha256 === artifact.sha256 && candidate.eventType === "warden.run.verification_completed");
       if (!ref || !verificationKinds.has(ref.kind) || !exact(artifact, ref.kind, "warden.run.verification_completed")) return false;
       if (!verificationKinds.get(ref.kind)) return true;
       const row = db.raw.prepare("SELECT content_text FROM artifact_manifests WHERE tenant_id = ? AND id = ?").get(input.tenantId, artifact.artifactId) as { content_text: string };
-      try { return (JSON.parse(row.content_text) as { comparison?: { ok?: boolean } }).comparison?.ok === true; } catch { return false; }
+      try {
+        const passed = (JSON.parse(row.content_text) as { comparison?: { ok?: boolean } }).comparison?.ok === true;
+        if (passed) successfulPostEditVerifications += 1;
+        return passed;
+      } catch { return false; }
     });
-    return Boolean(snapshot?.manifest_sha256 === scope.snapshotArtifact.sha256
+    return Boolean(input.outcome === "passed"
+      && successfulPostEditVerifications > 0
+      && snapshot?.manifest_sha256 === scope.snapshotArtifact.sha256
       && scope.sourceArtifacts.every((artifact) => exact(artifact, "warden-source-envelope", "warden.run.artifact_ingested"))
       && exact(scope.candidateArtifact, "warden-candidate", "warden.run.candidate_generated")
       && verification

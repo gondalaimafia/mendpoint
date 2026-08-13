@@ -58,6 +58,17 @@ describe("post trained training workflow", () => {
     expect((await first).status).toBe("completed"); expect(calls).toBe(1);
   });
 
+  it("allows only one dispatcher for concurrent requests sharing one worker id", async () => {
+    const { db, path } = fixture(); const second = createDb(path); dbs.push(second); let release!: (value: PostTrainedReconciliation) => void; let calls = 0;
+    const held = new Promise<PostTrainedReconciliation>((resolve) => { release = resolve; });
+    const first = runPostTrainedTrainingJob(db, input, deps({ train: async () => { calls++; return held; }, reconcile: async () => exchange({ tenantId: "tenant", jobId: "job-1", requestDigest: "unused", leaseGeneration: 1 }, { status: "safe_to_run" }) }, "worker-shared"));
+    await Promise.resolve();
+    await expect(runPostTrainedTrainingJob(second, input, deps({ train: async () => { calls++; return exchange({ tenantId: "tenant", jobId: "job-1", requestDigest: "unused", leaseGeneration: 1 }); }, reconcile: async () => exchange({ tenantId: "tenant", jobId: "job-1", requestDigest: "unused", leaseGeneration: 1 }, { status: "safe_to_run" }) }, "worker-shared"))).rejects.toThrow("post_trained_training_lease_held");
+    const row = db.raw.prepare("SELECT request_digest, lease_generation FROM post_trained_training_effects WHERE tenant_id = 'tenant' AND job_id = 'job-1'").get() as { request_digest: string; lease_generation: number };
+    release(exchange({ tenantId: "tenant", jobId: "job-1", requestDigest: row.request_digest, leaseGeneration: row.lease_generation }));
+    expect((await first).status).toBe("completed"); expect(calls).toBe(1);
+  });
+
   it("fences a stale terminal writer after database-time takeover", async () => {
     const { db, path } = fixture(); const second = createDb(path); dbs.push(second); let release!: (value: PostTrainedReconciliation) => void;
     const held = new Promise<PostTrainedReconciliation>((resolve) => { release = resolve; });

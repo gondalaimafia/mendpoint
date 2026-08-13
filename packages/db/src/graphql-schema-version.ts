@@ -46,6 +46,7 @@ export type GraphQLSchemaVersionRecord = Readonly<{
   schema: StoredGraphQLSchema;
   baselineVersionId: string | null;
   diff: StoredGraphQLDiff;
+  producerPrincipalId: string;
   createdAt: string;
 }>;
 
@@ -62,6 +63,7 @@ export type InsertGraphQLSchemaVersionInput = Readonly<{
   schema: StoredGraphQLSchema;
   baselineVersionId: string | null;
   diff: StoredGraphQLDiff;
+  producerPrincipalId: string;
   createdAt: string;
 }>;
 
@@ -89,6 +91,7 @@ function validate(input: InsertGraphQLSchemaVersionInput): void {
   if (!SHA256.test(input.schema.digest) || input.schema.sourceFormat !== input.sourceFormat || input.schema.canonicalSdl.trim().length === 0 || !Array.isArray(input.schema.definitions)) throw new Error("graphql_schema_normalized_invalid");
   if (input.baselineVersionId !== null && !ID.test(input.baselineVersionId)) throw new Error("graphql_schema_baseline_invalid");
   if (input.diff.newDigest !== input.schema.digest || (input.baselineVersionId === null) !== (input.diff.oldDigest === null)) throw new Error("graphql_schema_diff_binding_invalid");
+  if (!ID.test(input.producerPrincipalId)) throw new Error("graphql_schema_producer_invalid");
   if (!Number.isFinite(Date.parse(input.createdAt))) throw new Error("graphql_schema_created_at_invalid");
 }
 
@@ -193,6 +196,7 @@ export function insertGraphQLSchemaVersion(db: AppDb, input: InsertGraphQLSchema
       sizeBytes: Buffer.byteLength(input.sourceContent, "utf8"),
       storageRef: `db:graphql-source:${input.sourceKey}:${sourceSha256}`,
       content: input.sourceContent,
+      producerPrincipalId: input.producerPrincipalId,
       createdAt: input.createdAt,
     }).row;
     const record: GraphQLSchemaVersionRecord = {
@@ -209,6 +213,7 @@ export function insertGraphQLSchemaVersion(db: AppDb, input: InsertGraphQLSchema
       schema: input.schema,
       baselineVersionId: input.baselineVersionId,
       diff: input.diff,
+      producerPrincipalId: input.producerPrincipalId,
       createdAt: input.createdAt,
     };
     const content = JSON.stringify(record);
@@ -222,6 +227,7 @@ export function insertGraphQLSchemaVersion(db: AppDb, input: InsertGraphQLSchema
       sizeBytes: Buffer.byteLength(content, "utf8"),
       storageRef: `db:graphql-version:${input.sourceKey}:${input.id}`,
       content,
+      producerPrincipalId: input.producerPrincipalId,
       createdAt: input.createdAt,
     }).row;
     if (schemaArtifact.id !== input.schemaArtifactId) throw new Error("graphql_schema_artifact_identity_conflict");
@@ -232,6 +238,7 @@ export function insertGraphQLSchemaVersion(db: AppDb, input: InsertGraphQLSchema
       subjectId: input.sourceKey,
       artifactId: schemaArtifact.id,
       inputArtifactId: sourceArtifact.id,
+      producerPrincipalId: input.producerPrincipalId,
       tool: "@mendpoint/change-intel/graphql",
       toolVersion: "1",
       verdict: "passed",

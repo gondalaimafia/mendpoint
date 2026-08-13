@@ -14,6 +14,7 @@ import {
   type GraphQLSchemaVersionRecord,
 } from "@mendpoint/db";
 import { newId } from "@mendpoint/shared";
+import { can, type Principal } from "@mendpoint/platform";
 import { Hono, type Context } from "hono";
 import type { ApiEnv } from "./auth.js";
 
@@ -40,10 +41,11 @@ export function graphqlSchemaIngestionEnabled(env: NodeJS.ProcessEnv = process.e
   return env.MENDPOINT_GRAPHQL_INGESTION_ENABLED === "1";
 }
 
-function tenant(c: Context<ApiEnv>): { tenantId: string; principalId: string } | undefined {
+function tenant(c: Context<ApiEnv>): { tenantId: string; principal: Principal; trustPrincipalId: string } | undefined {
   const principal = c.get("principal");
-  if (!principal?.tenantId.trim()) return undefined;
-  return { tenantId: principal.tenantId, principalId: principal.id };
+  const trustPrincipalId = c.get("trustPrincipalId");
+  if (!principal?.tenantId.trim() || !trustPrincipalId?.trim()) return undefined;
+  return { tenantId: principal.tenantId, principal, trustPrincipalId };
 }
 
 function publicRecord(record: GraphQLSchemaVersionRecord, replayed = false) {
@@ -119,6 +121,7 @@ export function createGraphQLSchemaIngestionRoutes(options: GraphQLSchemaIngesti
   routes.post("/:sourceKey/versions", async (c) => {
     const identity = tenant(c);
     if (!identity) return c.json({ error: "authenticated_principal_required" }, 401);
+    if (!can(identity.principal, "graph:write")) return c.json({ error: "forbidden" }, 403);
     const sourceKey = c.req.param("sourceKey");
     if (!SOURCE_KEY.test(sourceKey)) return c.json({ error: "graphql_source_key_invalid" }, 400);
     try {
@@ -160,6 +163,7 @@ export function createGraphQLSchemaIngestionRoutes(options: GraphQLSchemaIngesti
         schema: normalized,
         baselineVersionId: baseline?.id ?? null,
         diff: diff ? storedDiff(diff) : initialDiff(normalized.digest),
+        producerPrincipalId: identity.trustPrincipalId,
         createdAt: now(),
       });
       c.header("Location", `/graphql/schemas/${sourceKey}/versions/${inserted.record.id}`);
@@ -173,6 +177,7 @@ export function createGraphQLSchemaIngestionRoutes(options: GraphQLSchemaIngesti
   routes.get("/:sourceKey/versions", (c) => {
     const identity = tenant(c);
     if (!identity) return c.json({ error: "authenticated_principal_required" }, 401);
+    if (!can(identity.principal, "graph:read")) return c.json({ error: "forbidden" }, 403);
     const sourceKey = c.req.param("sourceKey");
     if (!SOURCE_KEY.test(sourceKey)) return c.json({ error: "graphql_source_key_invalid" }, 400);
     c.header("Cache-Control", "no-store");
@@ -182,6 +187,7 @@ export function createGraphQLSchemaIngestionRoutes(options: GraphQLSchemaIngesti
   routes.get("/:sourceKey/versions/:versionId", (c) => {
     const identity = tenant(c);
     if (!identity) return c.json({ error: "authenticated_principal_required" }, 401);
+    if (!can(identity.principal, "graph:read")) return c.json({ error: "forbidden" }, 403);
     const record = getGraphQLSchemaVersion(options.db, identity.tenantId, c.req.param("sourceKey"), c.req.param("versionId"));
     if (!record) return c.json({ error: "not_found" }, 404);
     c.header("Cache-Control", "no-store");

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { appendDomainEvent, insertArtifactManifest, insertEvidenceRecord, type AppDb } from "@mendpoint/db";
 
 export type PostTrainedTrainingInput = Readonly<{
@@ -42,6 +42,8 @@ const MAX_CORPUS_ARTIFACTS = 32;
 const MAX_CORPUS_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const MAX_CORPUS_BYTES = 64 * 1024 * 1024;
 const CORPUS_KINDS = new Set(["learning_dataset_corpus", "learning_dataset_version", "post_trained_training_corpus"]);
+const ACTIVE_EFFECTS = new Set<string>();
+const PROCESS_INSTANCE_ID = randomBytes(16).toString("hex");
 const EFFECT_TABLE = `CREATE TABLE IF NOT EXISTS post_trained_training_effects (
   tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, request_digest TEXT NOT NULL,
   owner_id TEXT NOT NULL, lease_generation INTEGER NOT NULL, lease_expires_at_ms INTEGER NOT NULL,
@@ -50,6 +52,15 @@ const EFFECT_TABLE = `CREATE TABLE IF NOT EXISTS post_trained_training_effects (
 ) STRICT`;
 
 export async function runPostTrainedTrainingJob(db: AppDb, input: PostTrainedTrainingInput, deps: PostTrainedTrainingDependencies): Promise<PostTrainedTrainingJob> {
+  const effectOwnerId = `${deps.workerId}:${PROCESS_INSTANCE_ID}`;
+  const activeKey = `${input.tenantId}\0${input.jobId}\0${effectOwnerId}`;
+  if (ACTIVE_EFFECTS.has(activeKey)) throw new Error("post_trained_training_lease_held");
+  ACTIVE_EFFECTS.add(activeKey);
+  try { return await runPostTrainedTrainingJobOwned(db, input, deps, effectOwnerId); }
+  finally { ACTIVE_EFFECTS.delete(activeKey); }
+}
+
+async function runPostTrainedTrainingJobOwned(db: AppDb, input: PostTrainedTrainingInput, deps: PostTrainedTrainingDependencies, effectOwnerId: string): Promise<PostTrainedTrainingJob> {
   if (deps.enabled !== true) throw new Error("post_trained_training_disabled");
   validateInput(input, deps);
   if (typeof deps.trainer?.train !== "function" || typeof deps.trainer?.reconcile !== "function" || typeof deps.verifyReconciliation !== "function") throw new Error("post_trained_trainer_invalid");
@@ -64,7 +75,7 @@ export async function runPostTrainedTrainingJob(db: AppDb, input: PostTrainedTra
     appendDomainEvent(db, { id: `event_${sha256(`${input.jobId}\0submitted`)}`, tenantId: input.tenantId, schemaVersion: 1, eventType: "post_trained_training.submitted", aggregateType: "post_trained_training_job", aggregateId: input.jobId, actorPrincipalId: input.actorPrincipalId, correlationId: input.idempotencyKey, idempotencyKey: `post-trained-training:${input.idempotencyKey}:submitted`, payload: { requestDigest, adapterId: input.adapterId, submittedAt: input.submittedAt, datasetId: input.datasetId, purpose: input.purpose, residencyRegion: input.residencyRegion, corpus: corpus.map(({ artifactId, sha256 }) => ({ artifactId, sha256 })), baseModelId: input.baseModelId, recipe: input.recipe }, createdAt: input.submittedAt });
     current = getPostTrainedTrainingJob(db, input.tenantId, input.jobId)!;
   }
-  const claim = claimEffect(db, input.tenantId, input.jobId, requestDigest, deps.workerId, deps.leaseMs);
+  const claim = claimEffect(db, input.tenantId, input.jobId, requestDigest, effectOwnerId, deps.leaseMs);
   if (!claim.owned) throw new Error("post_trained_training_lease_held");
   let exchange: PostTrainedReconciliation;
   if (claim.dispatch) {
@@ -85,9 +96,9 @@ export async function runPostTrainedTrainingJob(db: AppDb, input: PostTrainedTra
     ? Object.freeze([...new Set([...resolution.evidenceRefs, ...resolution.canary.evidenceRefs, resolution.evaluation.reportRef])])
     : resolution.evidenceRefs;
   if (!deps.verifyEvidence(input.tenantId, evidenceRefs, { subjectTypes: Object.freeze(["post_trained_training_job"]), subjectId: input.jobId })) throw new Error("post_trained_training_evidence_not_authoritative");
-  if (resolution.status === "failed") return settleFailure(db, input, requestDigest, claim.generation, deps.workerId, receipt, resolution);
+  if (resolution.status === "failed") return settleFailure(db, input, requestDigest, claim.generation, effectOwnerId, receipt, resolution);
   validateCompletion(resolution);
-  return settleCompletion(db, input, requestDigest, claim.generation, deps.workerId, receipt, resolution, corpus);
+  return settleCompletion(db, input, requestDigest, claim.generation, effectOwnerId, receipt, resolution, corpus);
 }
 
 export function getPostTrainedTrainingJob(db: AppDb, tenantId: string, jobId: string): PostTrainedTrainingJob | undefined {

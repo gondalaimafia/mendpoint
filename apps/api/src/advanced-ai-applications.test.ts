@@ -8,7 +8,7 @@ import type { AdapterLifecycleRecord, ExecutorDescriptor, PostTrainedConsentSnap
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ApiEnv } from "./auth.js";
-import { advancedAiAttestationCryptoFromEnv, advancedAiTrainingRuntimeFromEnv, createAdvancedAiApplicationRoutes } from "./advanced-ai-applications.js";
+import { advancedAiAttestationCryptoFromEnv, advancedAiTrainingRuntimeFromEnv, createAdvancedAiApplicationRoutes, createDurableAttestationScopeAuthority } from "./advanced-ai-applications.js";
 
 const dirs: string[] = []; const dbs: AppDb[] = [];
 afterEach(() => { dbs.splice(0).forEach((db) => db.raw.close()); dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })); });
@@ -22,6 +22,21 @@ function fixture(enabled = true) { const dir = mkdtempSync(join(tmpdir(), "advan
 function add(db: AppDb, id: string, kind = id) { const content = JSON.stringify(kind === "learning_dataset_corpus" ? { id, samples: [{ input: "a", output: "b" }] } : { id }); const digest = createHash("sha256").update(content).digest("hex"); insertArtifactManifest(db, { id, tenantId: "tenant-a", kind, schemaVersion: 1, sha256: digest, mediaType: "application/json", sizeBytes: Buffer.byteLength(content), storageRef: `sqlite://${id}`, content, producerPrincipalId: "actor", createdAt: now }); }
 
 describe("advanced AI applications API", () => {
+  it("fails closed when durable attestation evidence cannot prove a passing post-edit verification", () => {
+    const { db } = fixture();
+    const authorized = createDurableAttestationScopeAuthority()(db, {
+      tenantId: "tenant-a", repositoryId: "repo", runId: "run", correlationId: "corr",
+      actorPrincipalId: "actor", idempotencyKey: "attest-baseline", outcome: "passed",
+      issuedAt: now, artifacts: { sourceIds: [], snapshotId: "snapshot", candidateId: "candidate", verificationIds: [], policyId: "policy", deliveryId: null, rollbackId: null, waiverId: null },
+    }, {
+      tenantId: "tenant-a", repositoryId: "repo", runId: "run", correlationId: "corr",
+      sourceArtifacts: [], snapshotArtifact: { artifactId: "snapshot", sha256: "a".repeat(64) },
+      candidateArtifact: { artifactId: "candidate", sha256: "b".repeat(64) }, verificationArtifacts: [],
+      policyArtifact: { artifactId: "policy", sha256: "c".repeat(64) }, deliveryArtifact: null,
+      rollbackArtifact: null, waiverArtifact: null,
+    });
+    expect(authorized).toBe(false);
+  });
   it("is production default off", async () => { const { app } = fixture(false); expect((await app.request("/advanced-ai/attestations/a")).status).toBe(404); expect((await app.request("/advanced-ai/post-trained/adapters/a")).status).toBe(404); });
   it("constructs signer and trust only from a matching injected key pair", async () => { const keys = generateKeyPairSync("ed25519"); const wrong = generateKeyPairSync("ed25519"); expect(advancedAiAttestationCryptoFromEnv({})).toEqual({}); const env = { MENDPOINT_ATTESTATION_KEY_ID: "key-env", MENDPOINT_ATTESTATION_PRIVATE_KEY_PKCS8_BASE64: keys.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"), MENDPOINT_ATTESTATION_PUBLIC_KEY_SPKI_BASE64: keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"), MENDPOINT_ATTESTATION_TENANT_IDS: "tenant-a", MENDPOINT_ATTESTATION_PRINCIPAL_ID: "actor", MENDPOINT_ATTESTATION_KEY_VALID_FROM: "2026-08-01T00:00:00.000Z", MENDPOINT_ATTESTATION_KEY_VALID_UNTIL: "2026-09-01T00:00:00.000Z" }; const crypto = advancedAiAttestationCryptoFromEnv(env); expect(crypto.signer?.keyId).toBe("key-env"); expect(crypto.attestationPrincipalId).toBe("actor"); expect(await crypto.trustPolicy?.resolve?.("key-env")).toMatchObject({ tenantIds: ["tenant-a"] }); expect(advancedAiAttestationCryptoFromEnv({ ...env, MENDPOINT_ATTESTATION_PUBLIC_KEY_SPKI_BASE64: wrong.publicKey.export({ format: "der", type: "spki" }).toString("base64") })).toEqual({}); });
   it("constructs a bound trainer only from complete env and performs no network at startup", async () => { const { db } = fixture(); let calls = 0; const receipt = { tenantId: "tenant-a", jobId: "job", requestDigest: "digest", leaseGeneration: 1, outcome: "pending", resultDigest: postTrainedReconciliationResultDigest({ status: "pending" }), observedAt: now, signature: "0".repeat(64) }; const transport = async (url: string | URL | Request, init?: RequestInit) => { calls++; const request = JSON.parse(String(init?.body)) as { jobId: string; requestDigest: string }; return new Response(JSON.stringify({ jobId: request.jobId, requestDigest: request.requestDigest, receipt, result: { status: "pending" } }), { status: 200, headers: { "content-type": "application/json" } }); }; expect(advancedAiTrainingRuntimeFromEnv(db, {}, transport as typeof fetch)).toEqual({}); const runtime = advancedAiTrainingRuntimeFromEnv(db, { MENDPOINT_POST_TRAINED_TRAINER_URL: "http://localhost:9999/trainer/", MENDPOINT_POST_TRAINED_TRAINER_TOKEN: "secret", MENDPOINT_POST_TRAINED_TRAINER_TIMEOUT_MS: "1000", MENDPOINT_POST_TRAINED_LEASE_MS: "5000", MENDPOINT_POST_TRAINED_WORKER_ID: "worker-1", MENDPOINT_POST_TRAINED_RECEIPT_HMAC_SECRET: "a".repeat(32), MENDPOINT_POST_TRAINED_EXTERNAL_PROCESSING_APPROVED: "1" }, transport as typeof fetch); expect(calls).toBe(0); expect(runtime.trainer).toBeDefined(); const result = await runtime.trainer!.train({ tenantId: "tenant-a", jobId: "job", adapterId: "adapter", requestDigest: "digest", leaseGeneration: 1, baseModelId: "base", corpus: [], recipe: { epochs: 1, maximumExamples: 1, seed: 1 }, signal: new AbortController().signal }); expect(result).toEqual({ receipt, result: { status: "pending" } }); expect(calls).toBe(1); });

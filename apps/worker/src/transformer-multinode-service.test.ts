@@ -22,6 +22,8 @@ describe("Transformer multi-node service", () => {
     await service.runOnce().catch(() => undefined);
     await service.runOnce();
     expect((claims[0] as { idempotencyKey: string }).idempotencyKey).toBe((claims[1] as { idempotencyKey: string }).idempotencyKey);
+    await service.runOnce();
+    expect((claims[2] as { idempotencyKey: string }).idempotencyKey).not.toBe((claims[1] as { idempotencyKey: string }).idempotencyKey);
   });
 
   it("hard-times out and honors caller abort with a noncooperative fetch", async () => {

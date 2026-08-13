@@ -29,6 +29,7 @@ import {
   type LegacyBehaviorArtifact,
   type LegacyBehaviorCollector,
 } from "@mendpoint/transformer";
+import { can } from "@mendpoint/platform";
 import type { ApiEnv } from "./auth.js";
 
 const MAX_FILES = 200;
@@ -724,6 +725,7 @@ export function registerLegacyBehaviorRoutes(
     if (!tenantId || !trustPrincipalId || !getPrincipal(db, tenantId, trustPrincipalId)) {
       return c.json({ error: "unauthorized" }, 401);
     }
+    if (!principal || !can(principal, "graph:write")) return c.json({ error: "forbidden" }, 403);
     if (!enabled) return c.json({ error: "legacy_behavior_extraction_disabled" }, 404);
     const parsedBody: unknown = await c.req.json<unknown>().catch(() => ({}));
     const body: Record<string, unknown> = parsedBody && typeof parsedBody === "object" &&
@@ -755,6 +757,7 @@ export function registerLegacyBehaviorRoutes(
     const principal = c.get("principal");
     const tenantId = principal?.tenantId;
     if (!tenantId || !c.get("trustPrincipalId")) return c.json({ error: "unauthorized" }, 401);
+    if (!principal || !can(principal, "graph:read")) return c.json({ error: "forbidden" }, 403);
     if (!enabled) return c.json({ error: "legacy_behavior_extraction_disabled" }, 404);
     try {
       const result = retrieve(db, tenantId, c.req.param("id"));

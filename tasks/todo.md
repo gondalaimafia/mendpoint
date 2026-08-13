@@ -1570,23 +1570,23 @@ Scope: review every Mendpoint worktree and branch changed today, preserve all di
 
 ### Inventory and provenance
 
-- [ ] Record every worktree, local and remote branch, unique commit, stash, modified file, and untracked file from Claude and Codex.
-- [ ] Separate current main work, the generalized applications commit, demo and design system commits, Claude's bounded pilot changes, and stale Warden or Transformer experiments.
-- [ ] Preserve each dirty tree before integration and identify superseded or duplicate implementations.
+- [x] Record every worktree, local and remote branch, unique commit, stash, modified file, and untracked file from Claude and Codex.
+- [x] Separate current main work, the generalized applications commit, demo and design system commits, Claude's bounded pilot changes, and stale Warden or Transformer experiments.
+- [x] Preserve each dirty tree before integration and identify superseded or duplicate implementations.
 
 ### Review and remediation
 
-- [ ] Review Claude's bounded pilot, execution authority, compiler, evaluation, and UI changes for tenancy, authorization, durability, idempotency, accounting, rollback, and claim accuracy.
-- [ ] Review the generalized GraphQL, legacy analysis, attestation, post trained model, and multi worker Transformer applications against current main.
-- [ ] Review demo seed, demo polish, and design system overlap; retain one coherent current implementation and reject obsolete duplicates.
-- [ ] Add red regressions for every confirmed P0 or P1 and fix root causes before integration.
-- [ ] Keep unsafe Warden adaptive checkpoint and incomplete shared runtime experiments out unless their full protocol is independently proven.
+- [x] Review Claude's bounded pilot, execution authority, compiler, evaluation, and UI changes for tenancy, authorization, durability, idempotency, accounting, rollback, and claim accuracy.
+- [x] Review the generalized GraphQL, legacy analysis, attestation, post trained model, and multi worker Transformer applications against current main.
+- [x] Review demo seed, demo polish, and design system overlap; retain one coherent current implementation and reject obsolete duplicates.
+- [x] Add red regressions for every confirmed P0 or P1 and fix root causes before integration.
+- [x] Keep unsafe Warden adaptive checkpoint and incomplete shared runtime experiments out unless their full protocol is independently proven.
 
 ### Integration and release candidate
 
-- [ ] Rebase the generalized applications onto exact current `origin/main`.
-- [ ] Replay reviewed Claude and demo bundles in dependency order with explicit conflict resolution and no whole tree overwrite.
-- [ ] Produce one clean `codex/` release branch with coherent commits and an evidence backed capability summary.
+- [x] Rebase the generalized applications onto exact current `origin/main`.
+- [x] Replay reviewed additions in dependency order with explicit conflict resolution and no whole tree overwrite; the demo bundle was reviewed and removed after its fixed wildcard credential failed the release security gate.
+- [x] Produce one clean `codex/` release branch with coherent commits and an evidence backed capability summary.
 
 ### Verification and publication
 
@@ -1596,3 +1596,5 @@ Scope: review every Mendpoint worktree and branch changed today, preserve all di
 - [ ] After protected merge, verify the exact main revision and production health before claiming shipment.
 
 Acceptance: one reviewable branch contains all safe, nonduplicative Claude and Codex work from today on current main; dirty experiments remain recoverable but excluded; every included capability is tested and honestly gated; and no direct main push, force push, hook bypass, or unverified production deployment occurs.
+
+Review before full verification: the release branch is rebased onto `origin/main` at `8ca583c`. The design system and Claude PR series 61 to 71 were already present on main and were not duplicated. The generalized applications remain default off. The demo commits were briefly replayed, then reverted after review found a fixed wildcard credential that could target an arbitrary data directory. Older Warden mission resume, alternate shared coordinator, bounded pilot compiler, and overlapping UI work remain preserved in their original worktrees but excluded because they are stale, incomplete, or superseded. Confirmed release blockers were closed with focused regressions: passing attestations now require successful post edit verification, Transformer polling uses a new claim identity after each completed poll while retaining response loss replay, GraphQL and legacy writes require graph write authority and durable producer identity, same process training dispatch is single flight with database fencing across processes, registration replay ignores server time, completed training binds adapter and base model, and lifecycle evidence is verified by role. Focused verification passed API 29 of 29, Pipeline 10 of 10, Worker 3 of 3, and all affected typechecks.

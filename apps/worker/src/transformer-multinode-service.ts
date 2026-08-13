@@ -97,27 +97,38 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
   const leaseToken = stable("lease-token");
   const token = () => leaseToken;
   const observedAt = (_phase: TransformerAttemptPhase) => coordinatorTime ?? new Date().toISOString();
+  let claimOrdinal = 0;
+  let running = false;
   const idempotencyKey = (phase: TransformerAttemptPhase, attemptId?: string) => {
-    return `${config.workerId}-${phase}-${stable(`${phase}:${attemptId ?? "claim"}`).slice(0, 32)}`;
+    const identity = attemptId ?? `claim:${claimOrdinal}`;
+    return `${config.workerId}-${phase}-${stable(`${phase}:${identity}`).slice(0, 32)}`;
   };
   return Object.freeze({
     mode: "checkpoint_required" as const,
     async runOnce() {
-      await remote("/v1/transformer/attempt-coordinator/readyz", { tenantId: config.tenantId });
-      return runTransformerAttempt({
-        scope: { tenantId: config.tenantId, campaignId: config.campaignId, environment: config.environment },
-        ...(config.gateConfig === undefined ? {} : { gateConfig: config.gateConfig }),
-        coordinator,
-        loadExactSource: async (lease: TransformerExecutableAttemptLease): Promise<ExactSourceSnapshot> => await remote("/v1/transformer/attempt-coordinator/source", { tenantId: config.tenantId, lease, leaseToken }) as ExactSourceSnapshot,
-        evidenceRoot: config.evidenceRoot,
-        candidateRoot: config.candidateRoot,
-        leaseDurationMs: config.leaseDurationMs,
-        observedAt,
-        idempotencyKey,
-        leaseToken: token,
-        checkpoint,
-        ...(config.commandRunner === undefined ? {} : { commandRunner: config.commandRunner }),
-      });
+      if (running) throw new Error("transformer_multinode_run_in_progress");
+      running = true;
+      try {
+        await remote("/v1/transformer/attempt-coordinator/readyz", { tenantId: config.tenantId });
+        const result = await runTransformerAttempt({
+          scope: { tenantId: config.tenantId, campaignId: config.campaignId, environment: config.environment },
+          ...(config.gateConfig === undefined ? {} : { gateConfig: config.gateConfig }),
+          coordinator,
+          loadExactSource: async (lease: TransformerExecutableAttemptLease): Promise<ExactSourceSnapshot> => await remote("/v1/transformer/attempt-coordinator/source", { tenantId: config.tenantId, lease, leaseToken }) as ExactSourceSnapshot,
+          evidenceRoot: config.evidenceRoot,
+          candidateRoot: config.candidateRoot,
+          leaseDurationMs: config.leaseDurationMs,
+          observedAt,
+          idempotencyKey,
+          leaseToken: token,
+          checkpoint,
+          ...(config.commandRunner === undefined ? {} : { commandRunner: config.commandRunner }),
+        });
+        claimOrdinal += 1;
+        return result;
+      } finally {
+        running = false;
+      }
     },
   });
 }

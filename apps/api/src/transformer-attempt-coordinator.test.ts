@@ -49,6 +49,7 @@ describe("real Transformer multi-node coordinator", () => {
     expect(result).toMatchObject({ status: "completed" });
     expect(loseCompletionResponse).toBe(false);
     expect(service.store.getCampaign("tenant-a", "campaign-a")?.units[0]).toMatchObject({ candidateDigest: applied.outputDigest });
+    await expect(runner.runOnce()).resolves.toMatchObject({ status: "idle" });
   });
 
   it("denies missing worker auth and tenant mismatch before source loading", async () => {

@@ -30,14 +30,14 @@ export type RegisterPostTrainedAdapterInput = PostTrainedAdapterManifest & Reado
 export type PostTrainedApplicationConfig = Readonly<{
   enabled?: boolean;
   readConsent?(tenantId: string, datasetId: string, stored: PostTrainedConsentSnapshot): PostTrainedConsentSnapshot | undefined;
-  verifyEvidence?(tenantId: string, evidenceRefs: readonly string[]): boolean;
+  verifyEvidence?(tenantId: string, evidenceRefs: readonly string[], expected: Readonly<{ subjectTypes: readonly string[]; subjectId: string }>): boolean;
 }>;
 
 export function registerPostTrainedAdapter(db: AppDb, input: RegisterPostTrainedAdapterInput, config: PostTrainedApplicationConfig): PostTrainedAdapterManifest {
   requireEnabled(config);
   validateManifest(input);
   if (!db.raw.prepare("SELECT 1 FROM principals WHERE tenant_id = ? AND id = ? AND revoked_at IS NULL").get(input.tenantId, input.actorPrincipalId)) throw new Error("post_trained_actor_invalid");
-  const requestDigest = sha256(canonicalJson({ ...input, lifecycle: input.lifecycle, consent: input.consent, descriptor: input.descriptor }));
+  const requestDigest = sha256(canonicalJson({ ...input, registeredAt: undefined }));
   const replay = replayRegistration(db, input.tenantId, input.idempotencyKey, requestDigest);
   if (replay) return replay;
   if (typeof config.readConsent !== "function") throw new Error("post_trained_consent_authority_missing");
@@ -128,8 +128,11 @@ function validateManifest(input: PostTrainedAdapterManifest): void {
 
 function assertTrainingCompletion(db: AppDb, manifest: PostTrainedAdapterManifest): void {
   if (!verifyDomainEventIntegrity(db, manifest.tenantId).ok) throw new Error("post_trained_training_event_integrity_invalid");
+  const submittedEvent = db.raw.prepare("SELECT payload_json FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'post_trained_training_job' AND aggregate_id = ? AND event_type = 'post_trained_training.submitted' ORDER BY event_sequence LIMIT 1").get(manifest.tenantId, manifest.trainingJobId) as { payload_json: string } | undefined;
   const event = db.raw.prepare("SELECT payload_json FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'post_trained_training_job' AND aggregate_id = ? AND event_type = 'post_trained_training.completed' ORDER BY event_sequence DESC LIMIT 1").get(manifest.tenantId, manifest.trainingJobId) as { payload_json: string } | undefined;
-  if (!event) throw new Error("post_trained_training_completion_missing");
+  if (!submittedEvent || !event) throw new Error("post_trained_training_completion_missing");
+  const submitted = JSON.parse(submittedEvent.payload_json) as { adapterId?: string; baseModelId?: string };
+  if (submitted.adapterId !== manifest.adapterId || submitted.baseModelId !== manifest.lifecycle.baseModel.modelId) throw new Error("post_trained_training_completion_mismatch");
   const payload = JSON.parse(event.payload_json) as { artifactId?: string; adapterDigest?: string; datasetId?: string; evaluation?: { passed?: boolean }; canary?: { passed?: boolean } };
   if (!payload.artifactId || payload.adapterDigest !== manifest.lifecycle.artifactDigest || payload.datasetId !== manifest.lifecycle.trainingDataset.datasetId || payload.evaluation?.passed !== true || payload.canary?.passed !== true) throw new Error("post_trained_training_completion_mismatch");
   const artifact = db.raw.prepare("SELECT kind, sha256, size_bytes, content_text FROM artifact_manifests WHERE tenant_id = ? AND id = ?").get(manifest.tenantId, payload.artifactId) as { kind: string; sha256: string; size_bytes: number; content_text: string | null } | undefined;
@@ -166,22 +169,21 @@ function validateManifestAdmission(manifest: PostTrainedAdapterManifest, registe
 function assertAuthoritativeEvidence(manifest: PostTrainedAdapterManifest, config: PostTrainedApplicationConfig): void {
   if (typeof config.verifyEvidence !== "function") throw new Error("post_trained_evidence_authority_missing");
   const lifecycle = manifest.lifecycle;
-  const refs = [
-    ...lifecycle.evidenceRefs,
-    ...lifecycle.trainingDataset.lineageRefs,
-    ...lifecycle.trainingDataset.consent.evidenceRefs,
-    ...lifecycle.trainingDataset.sufficiency.evidenceRefs,
-    ...lifecycle.history.flatMap((event) => event.evidenceRefs),
-    ...manifest.consent.evidenceRefs,
-    lifecycle.baseModel.evidenceRef,
-    lifecycle.heldOutEvaluation?.reportRef,
-    lifecycle.approvedInfrastructure?.evidenceRef,
-    lifecycle.approver?.evidenceRef,
-    ...(lifecycle.canaryEvidence?.evidenceRefs ?? []),
-    manifest.descriptor.health.evidenceRef,
-  ].filter((value): value is string => typeof value === "string" && value.length > 0);
-  const uniqueRefs = Object.freeze([...new Set(refs)].sort());
-  if (!config.verifyEvidence(manifest.tenantId, uniqueRefs)) throw new Error("post_trained_evidence_not_authoritative");
+  const groups = [
+    { refs: [...lifecycle.evidenceRefs, ...lifecycle.history.flatMap((event) => event.evidenceRefs)], subjectTypes: ["post_trained_adapter_lifecycle"], subjectId: manifest.adapterId },
+    { refs: [...lifecycle.trainingDataset.lineageRefs, ...lifecycle.trainingDataset.sufficiency.evidenceRefs], subjectTypes: ["learning_dataset", "learning_dataset_version"], subjectId: lifecycle.trainingDataset.datasetId },
+    { refs: [...lifecycle.trainingDataset.consent.evidenceRefs, ...manifest.consent.evidenceRefs], subjectTypes: ["learning_consent"], subjectId: lifecycle.trainingDataset.datasetId },
+    { refs: [lifecycle.baseModel.evidenceRef], subjectTypes: ["base_model", "model_artifact"], subjectId: lifecycle.baseModel.modelId },
+    { refs: [lifecycle.heldOutEvaluation?.reportRef], subjectTypes: ["post_trained_evaluation"], subjectId: manifest.trainingJobId },
+    { refs: [lifecycle.approvedInfrastructure?.evidenceRef], subjectTypes: ["post_trained_infrastructure"], subjectId: manifest.adapterId },
+    { refs: [lifecycle.approver?.evidenceRef], subjectTypes: ["post_trained_approval"], subjectId: manifest.adapterId },
+    { refs: lifecycle.canaryEvidence?.evidenceRefs ?? [], subjectTypes: ["post_trained_canary"], subjectId: manifest.adapterId },
+    { refs: [manifest.descriptor.health.evidenceRef], subjectTypes: ["post_trained_health"], subjectId: manifest.descriptor.executorId },
+  ];
+  for (const group of groups) {
+    const refs = Object.freeze([...new Set(group.refs.filter((value): value is string => typeof value === "string" && value.length > 0))].sort());
+    if (!refs.length || !config.verifyEvidence(manifest.tenantId, refs, { subjectTypes: Object.freeze(group.subjectTypes), subjectId: group.subjectId })) throw new Error("post_trained_evidence_not_authoritative");
+  }
 }
 function requireEnabled(config: PostTrainedApplicationConfig): void { if (config.enabled !== true) throw new Error("post_trained_application_disabled"); }
 function freezeManifest(value: PostTrainedAdapterManifest): PostTrainedAdapterManifest { return deepFreeze(structuredClone(value)); }
