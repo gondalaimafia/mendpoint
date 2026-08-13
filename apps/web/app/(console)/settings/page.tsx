@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
+import React from "react";
 import { apiGet, type Provider } from "../../../lib/api";
+import { selfServeWardenEnabled } from "../../../lib/proxy-auth";
 import { SettingsView } from "../../components/console/settings-view";
+import { ConnectionsPanel } from "../../components/console/connections-panel";
 import type { SettingsData } from "../../components/console/fixtures";
 
 export const dynamic = "force-dynamic";
@@ -51,5 +54,15 @@ export default async function SettingsPage() {
     notifySlack: policy ? policy.notificationsOnly : false,
   };
 
-  return <SettingsView data={data} />;
+  // The Connections surface is additive and only mounts when the self-serve flag
+  // is on. Flag off => this renders nothing extra, so the page is byte-identical.
+  if (!selfServeWardenEnabled()) {
+    return <SettingsView data={data} />;
+  }
+  return (
+    <>
+      <SettingsView data={data} />
+      <ConnectionsPanel />
+    </>
+  );
 }

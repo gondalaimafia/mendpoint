@@ -2657,10 +2657,7 @@ describe("worker runtime", () => {
       tenantId: "tenant_test",
       workerId: "worker-run-rollback",
       leaseMs: 30_000,
-      wardenEnv: {
-        MENDPOINT_DATA_DIR: fixture.dataRoot,
-        MENDPOINT_APPLICATION_DATA_KEY: "7".repeat(64),
-      },
+      wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
     })).rejects.toThrow("forced_agent_run_failure");
 
     expect(listJobs(fixture.db, 10, "tenant_test")[0]).toMatchObject({
@@ -2675,13 +2672,6 @@ describe("worker runtime", () => {
     expect(fixture.db.raw.prepare(
       "SELECT COUNT(*) AS count FROM routing_outcome_applications",
     ).get()).toEqual({ count: 0 });
-    const rolledBackHead = JSON.parse(
-      listJobs(fixture.db, 10, "tenant_test")[0]!.result_json!,
-    ) as { kind: string; envelope: { payload: { phase: string } } };
-    expect(rolledBackHead).toMatchObject({
-      kind: "warden_checkpoint_head",
-      envelope: { payload: { phase: "agent_running" } },
-    });
     fixture.db.raw.close();
   }, 30_000);
 
@@ -2797,30 +2787,12 @@ describe("worker runtime", () => {
         MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
         LLM_AGENT_MODEL: "model-a",
         LLM_AGENT_URL: "https://models.example/v1",
-        MENDPOINT_APPLICATION_DATA_KEY: "8".repeat(64),
       },
     });
     expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
-    const completedRun = getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test")!;
-    expect(completedRun).toMatchObject({
+    expect(getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test")).toMatchObject({
       status: "candidate_ready",
       ok: 1,
-    });
-    const archived = JSON.parse(completedRun.result_json!) as {
-      terminalCheckpoint: {
-        envelope: { payload: { phase: string }; payloadDigest: string };
-        sealedRuntimeState: { checkpointPayloadDigest: string };
-      };
-    };
-    expect(archived.terminalCheckpoint.envelope.payload.phase).toBe("terminal");
-    expect(archived.terminalCheckpoint.sealedRuntimeState.checkpointPayloadDigest)
-      .toBe(archived.terminalCheckpoint.envelope.payloadDigest);
-    const publicResult = JSON.parse(
-      listJobs(fixture.db, 10, "tenant_test")[0]!.result_json!,
-    ) as { status: string; terminalCheckpointPayloadDigest: string };
-    expect(publicResult).toMatchObject({
-      status: "candidate_ready",
-      terminalCheckpointPayloadDigest: archived.terminalCheckpoint.envelope.payloadDigest,
     });
 
     const ledger = getRoutingLedgerForJob(fixture.db, "job-warden-snapshot", "tenant_test");

@@ -240,6 +240,7 @@ import {
   createSelfServeConnectRoutes,
   selfServeConnectEnabled,
 } from "./repository-connect.js";
+import { createConnectorsRoutes } from "./connectors.js";
 import {
   createSelfServeOnboardingRoutes,
   selfServeOnboardingEnabled,
@@ -825,6 +826,10 @@ app.route("/self-serve/scan", createSelfServeScanRoutes({
   enabled: selfServeWardenEnabled(process.env),
 }));
 app.route("/self-serve/runs", createSelfServeRunsRoutes({
+  db,
+  enabled: selfServeWardenEnabled(process.env),
+}));
+app.route("/self-serve/connectors", createConnectorsRoutes({
   db,
   enabled: selfServeWardenEnabled(process.env),
 }));

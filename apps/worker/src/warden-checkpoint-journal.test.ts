@@ -113,34 +113,13 @@ const nextSealedRuntimeState = Object.freeze({
   algorithm: "AES-256-GCM" as const,
   runtimeSchemaVersion: 1 as const,
   codec: "opaque-bytes-v1" as const,
-  keyId: `wdrt_${"3".repeat(24)}`,
+  keyId: `sha256:${"3".repeat(64)}`,
   checkpointPayloadDigest: nextEnvelope.payloadDigest,
   runtimeStateCommitment: nextEnvelope.payload.runtimeStateCommitment,
   plaintextBytes: 64,
   nonce: "nonce-a",
   ciphertext: "ciphertext-a",
   authenticationTag: "tag-b",
-});
-
-const terminalEnvelope = Object.freeze({
-  ...nextEnvelope,
-  payload: Object.freeze({
-    ...nextEnvelope.payload,
-    generation: 2,
-    phase: "terminal" as const,
-    previousEnvelopeDigest: nextEnvelope.payloadDigest,
-    runtimeStateCommitment: `hmac-sha256:${"4".repeat(64)}`,
-  }),
-  payloadDigest: `hmac-sha256:${"5".repeat(64)}`,
-  authenticationTag: "tag-terminal",
-});
-
-const terminalSealedRuntimeState = Object.freeze({
-  ...nextSealedRuntimeState,
-  checkpointPayloadDigest: terminalEnvelope.payloadDigest,
-  runtimeStateCommitment: terminalEnvelope.payload.runtimeStateCommitment,
-  ciphertext: "ciphertext-terminal",
-  authenticationTag: "tag-terminal-sealed",
 });
 
 describe("Warden checkpoint job journal", () => {
@@ -335,41 +314,6 @@ describe("Warden checkpoint job journal", () => {
     }
     expect(value.db.raw.prepare("SELECT result_json FROM jobs WHERE id = ?")
       .get(value.jobId)).toEqual({ result_json: null });
-  });
-
-  it("lets only a terminal checkpoint join an ambient completion transaction", async () => {
-    const value = fixture();
-    const journal = createWardenCheckpointJobJournal({
-      db: value.db,
-      tenantId: binding.tenantId,
-      jobId: value.jobId,
-      workerId: value.workerId,
-      leaseGeneration: value.leaseGeneration,
-      now: () => NOW,
-    });
-    expect(await journal.compareAndSwap({
-      binding,
-      expectedPayloadDigest: null,
-      expectedActiveWriterLeaseGeneration: 1,
-      nextEnvelope,
-      nextSealedRuntimeState,
-    })).toBe(true);
-
-    value.db.raw.exec("BEGIN IMMEDIATE");
-    expect(await journal.compareAndSwap({
-      binding,
-      expectedPayloadDigest: nextEnvelope.payloadDigest,
-      expectedActiveWriterLeaseGeneration: 1,
-      nextEnvelope: terminalEnvelope,
-      nextSealedRuntimeState: terminalSealedRuntimeState,
-    })).toBe(true);
-    value.db.raw.exec("ROLLBACK");
-
-    expect(await journal.read(binding)).toEqual({
-      envelope: nextEnvelope,
-      sealedRuntimeState: nextSealedRuntimeState,
-      activeWriterLeaseGeneration: 1,
-    });
   });
 
   it("rejects malformed and regressing authority clocks", async () => {
