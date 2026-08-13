@@ -2,7 +2,11 @@ node_modules/
 dist/
 .next/
 data/
+# Generated run artifacts. Anchored negation below: the console's /runs route is
+# source, and a bare `runs/` silently swallowed it (git will not descend into an
+# ignored directory, so the directory itself must be re-included, not just its files).
 runs/
+!apps/web/app/(console)/runs/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
