@@ -1,5 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authenticatedWebSubject } from "./lib/proxy-auth";
+import { authenticatedWebSubject, selfServeSignupEnabled } from "./lib/proxy-auth";
+
+/**
+ * Self-serve signup surfaces are public only while the flag is on. When the flag
+ * is unset (the default preview posture) this is inert, so the shared-token
+ * `/access` gate for every existing path is byte-for-byte unchanged.
+ */
+function selfServeSignupPath(pathname: string): boolean {
+  return pathname === "/signup" || pathname === "/api/signup";
+}
 
 function publicPath(pathname: string): boolean {
   return (
@@ -38,6 +47,9 @@ function publicPath(pathname: string): boolean {
 
 export async function middleware(request: NextRequest) {
   if (publicPath(request.nextUrl.pathname)) return NextResponse.next();
+  if (selfServeSignupEnabled() && selfServeSignupPath(request.nextUrl.pathname)) {
+    return NextResponse.next();
+  }
   const accessToken = process.env.MENDPOINT_WEB_ACCESS_TOKEN?.trim();
   if (!accessToken) {
     return new NextResponse("Web access is not configured", { status: 503 });

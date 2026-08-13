@@ -179,6 +179,10 @@ const PUBLIC_READ_PATHS = new Set([
 export function isPublicRoute(method: string, path: string): boolean {
   const m = method.toUpperCase();
   if (path.startsWith("/webhooks/")) return true;
+  // Self-serve signup intake is a pre-tenant path: it must be reachable without
+  // an API key. The route factory itself stays inert (404) unless the
+  // MENDPOINT_SELF_SERVE_SIGNUP flag is set, so this exemption is dormant by default.
+  if (m === "POST" && path === "/auth/signup") return true;
   return (m === "GET" || m === "HEAD") && PUBLIC_READ_PATHS.has(path);
 }
 
