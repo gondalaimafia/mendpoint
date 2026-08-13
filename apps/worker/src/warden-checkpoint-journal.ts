@@ -10,6 +10,7 @@ import type { AppDb, JobRow } from "@mendpoint/db";
 
 const DEFAULT_MAX_HEAD_BYTES = 8 * 1024 * 1024;
 const DIGEST = /^(?:sha256|hmac-sha256):[a-f0-9]{64}$/;
+const RUNTIME_KEY_ID = /^wdrt_[a-f0-9]{24}$/;
 
 type StoredCheckpointHead = Readonly<{
   schemaVersion: 1;
@@ -136,7 +137,7 @@ function validateSealedRuntimeState(
   ], "warden_checkpoint_head_invalid");
   if (sealed.schemaVersion !== 1 || sealed.algorithm !== "AES-256-GCM" ||
       sealed.runtimeSchemaVersion !== 1 || sealed.codec !== "opaque-bytes-v1" ||
-      typeof sealed.keyId !== "string" || !DIGEST.test(sealed.keyId) ||
+      typeof sealed.keyId !== "string" || !RUNTIME_KEY_ID.test(sealed.keyId) ||
       sealed.checkpointPayloadDigest !== envelope.payloadDigest ||
       sealed.runtimeStateCommitment !== envelope.payload.runtimeStateCommitment ||
       !Number.isSafeInteger(sealed.plaintextBytes) || (sealed.plaintextBytes as number) < 0 ||
@@ -298,7 +299,8 @@ export function createWardenCheckpointJobJournal(
     if (request.expectedActiveWriterLeaseGeneration !== input.leaseGeneration) {
       throw new Error("warden_checkpoint_job_stale");
     }
-    if (input.db.raw.isTransaction) {
+    const ownsTransaction = !input.db.raw.isTransaction;
+    if (!ownsTransaction && request.nextEnvelope.payload.phase !== "terminal") {
       throw new Error("warden_checkpoint_transaction_unsupported");
     }
     const nextRaw = serializeHead(
@@ -308,7 +310,7 @@ export function createWardenCheckpointJobJournal(
       input.leaseGeneration,
       maxHeadBytes,
     );
-    input.db.raw.exec("BEGIN IMMEDIATE");
+    if (ownsTransaction) input.db.raw.exec("BEGIN IMMEDIATE");
     try {
       const lockedAt = nextAuthorityTime();
       const job = readJobAt(input, lockedAt);
@@ -322,7 +324,7 @@ export function createWardenCheckpointJobJournal(
         ).envelope.payloadDigest;
       }
       if (currentDigest !== request.expectedPayloadDigest) {
-        input.db.raw.exec("COMMIT");
+        if (ownsTransaction) input.db.raw.exec("COMMIT");
         return false;
       }
       const commitAt = nextAuthorityTime();
@@ -342,10 +344,10 @@ export function createWardenCheckpointJobJournal(
         commitAt,
         ...(job.result_json === null ? [] : [job.result_json]),
       );
-      input.db.raw.exec("COMMIT");
+      if (ownsTransaction) input.db.raw.exec("COMMIT");
       return Number(updated.changes) === 1;
     } catch (error) {
-      if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
+      if (ownsTransaction && input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
       throw error;
     }
   }
