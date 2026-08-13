@@ -74,6 +74,148 @@ export type SettingsData = {
   notifySlack: boolean;
 };
 
+// ── Run console (/runs) ──────────────────────────────────────────────────────
+
+/** One row in the run list, mapped from the live `/self-serve/runs` feed. */
+export type RunSummary = {
+  id: string;
+  type: string;
+  status: Status;
+  statusLabel: string;
+  target: string | null;
+  goal: string | null;
+  triggeredBy: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  timeLabel: string;
+  durationLabel: string | null;
+  canCancel: boolean;
+  cancelReason: string | null;
+  canRetry: boolean;
+  retryReason: string | null;
+};
+
+export type RunPlanStep = { title: string; action: string; status: string };
+
+/** Everything `/runs/[id]` (RunDetailView) renders, mapped from a live run. */
+export type RunDetailData = {
+  run: RunSummary;
+  plan: { title: string; goal: string; steps: RunPlanStep[] } | null;
+  log: string | null;
+  verification: CheckRow[];
+  changedPaths: string[];
+  diffs: Array<{
+    path: string;
+    hunks: DiffHunk[];
+    additions: number;
+    deletions: number;
+  }>;
+  prs: Array<{ number: number | null; url: string | null; status: string }>;
+  reviewHref: string | null;
+};
+
+export const RUN_TABS: { id: RunTab; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "active", label: "Active" },
+  { id: "failed", label: "Failed" },
+  { id: "done", label: "Done" },
+];
+
+export type RunTab = "all" | "active" | "failed" | "done";
+
+/** Client-side status filter for the run list; mirrors the DS `Status` mapping. */
+export function filterRuns(runs: RunSummary[], tab: RunTab): RunSummary[] {
+  switch (tab) {
+    case "active":
+      return runs.filter((r) => r.status === "pending");
+    case "failed":
+      return runs.filter((r) => r.status === "failing");
+    case "done":
+      return runs.filter((r) => r.status === "merged" || r.status === "draft");
+    case "all":
+    default:
+      return runs;
+  }
+}
+
+export const SAMPLE_RUNS: RunSummary[] = [
+  {
+    id: "warden-job-a1",
+    type: "warden.run",
+    status: "failing",
+    statusLabel: "failed",
+    target: "acme/payments-sdk",
+    goal: "Fix charge()",
+    triggeredBy: "human:owner-a@example.com",
+    createdAt: "2026-08-13T12:00:00.000Z",
+    startedAt: "2026-08-13T12:00:01.000Z",
+    finishedAt: "2026-08-13T12:03:00.000Z",
+    timeLabel: "3m ago",
+    durationLabel: "2m 59s",
+    canCancel: true,
+    cancelReason: null,
+    canRetry: true,
+    retryReason: null,
+  },
+  {
+    id: "scan-job-a1",
+    type: "pipeline.fanout",
+    status: "pending",
+    statusLabel: "pending",
+    target: "alpha",
+    goal: null,
+    triggeredBy: null,
+    createdAt: "2026-08-13T12:01:00.000Z",
+    startedAt: null,
+    finishedAt: null,
+    timeLabel: "2m ago",
+    durationLabel: null,
+    canCancel: true,
+    cancelReason: null,
+    canRetry: false,
+    retryReason: "Run is still active",
+  },
+];
+
+export const SAMPLE_RUN_DETAIL: RunDetailData = {
+  run: SAMPLE_RUNS[0]!,
+  plan: {
+    title: "Migrate charge()",
+    goal: "Fix charge()",
+    steps: [
+      { title: "Locate call sites", action: "search", status: "done" },
+      { title: "Rewrite", action: "edit", status: "done" },
+    ],
+  },
+  log: "### Trajectory warden-run-a1\n- edit src/api/client.ts",
+  verification: [
+    { name: "npm test", state: "passed" },
+    { name: "review", state: "approve" },
+  ],
+  changedPaths: ["src/api/client.ts"],
+  diffs: [
+    {
+      path: "src/api/client.ts",
+      additions: 1,
+      deletions: 1,
+      hunks: [
+        {
+          header: "@@ -1,2 +1,2 @@",
+          lines: [
+            { type: "del", line: 1, text: "await pay.charge(total);" },
+            { type: "add", line: 1, text: "await pay.charges.create({ amount: total });" },
+          ],
+        },
+      ],
+    },
+  ],
+  prs: [
+    { number: 4821, url: "https://github.com/acme/payments-sdk/pull/4821", status: "delivered" },
+  ],
+  reviewHref: "/prs/pr-a1",
+};
+
 export const SPEC_TARGET = "payments-api · v2.9.4 → v3.0.0";
 
 export const OVERVIEW_STATS: Stat[] = [
