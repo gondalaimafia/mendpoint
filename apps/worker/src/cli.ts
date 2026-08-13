@@ -13,7 +13,11 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runChangePipeline } from "@mendpoint/pipeline";
+import { runChangePipeline, type PipelineReport } from "@mendpoint/pipeline";
+import {
+  resolveFanoutSettlementMcuMicros,
+  type FanoutRunMeterSignals,
+} from "@mendpoint/platform";
 import {
   claimNextJob,
   completeJob,
@@ -1336,26 +1340,56 @@ function persistFailedAgentJob(
 }
 
 /**
- * Wave C: settle a completed pipeline.fanout run's usage hold. Only runs admitted
- * with quota enforcement on carry a reservation id, so this is a no-op for the legacy
- * path. Fanout has no per-run MCU measurement, so we settle to the reserved estimate
- * (documented in docs/USAGE_ENFORCEMENT.md) rather than fabricating a zero. Best-effort:
- * a settlement failure is logged for reconciliation and never breaks job processing.
+ * S0-B: derive a completed run's real MCU work signals from its `PipelineReport`.
+ * Every field is a genuine count the run produced (graph scan + impact + generated
+ * edits); nothing here is client-declared or fabricated.
+ */
+function fanoutRunMeterSignalsFromReport(report: PipelineReport): FanoutRunMeterSignals {
+  let findings = 0;
+  let candidates = 0;
+  let confirmed = 0;
+  let edits = 0;
+  for (const consumer of report.consumers) {
+    findings += consumer.findings ?? 0;
+    candidates += consumer.candidates ?? 0;
+    confirmed += consumer.confirmed ?? 0;
+    edits += consumer.repair?.edits ?? 0;
+  }
+  return { surfaces: report.surfaces, findings, candidates, confirmed, edits };
+}
+
+/**
+ * Wave C + S0-B: settle a completed pipeline.fanout run's usage hold. Only runs
+ * admitted with quota enforcement on carry a reservation id, so this is a no-op for
+ * the legacy path.
+ *
+ * With the self-serve billing flag OFF (default) the run settles to the reserved
+ * estimate, byte-for-byte identical to Wave C. With the flag ON the run settles to
+ * the server-computed MCU derived from the report's real work (never the client-
+ * declared value, capped at the reservation). Best-effort: a settlement failure is
+ * logged for reconciliation and never breaks job processing.
  */
 function settleFanoutRunUsage(
   db: AppDb,
   tenantId: string,
   payload: Record<string, unknown>,
+  report: PipelineReport,
+  env: NodeJS.ProcessEnv = process.env,
 ): void {
   const reservationId = payload[RUN_USAGE_RESERVATION_KEY];
   const reserved = payload[RUN_USAGE_RESERVED_MCU_KEY];
   if (typeof reservationId !== "string" || !reservationId) return;
   if (typeof reserved !== "number" || !Number.isSafeInteger(reserved) || reserved <= 0) return;
+  const actualMcuMicros = resolveFanoutSettlementMcuMicros({
+    reservedMcuMicros: reserved,
+    signals: fanoutRunMeterSignalsFromReport(report),
+    env,
+  });
   try {
     settleRunUsage(db, {
       tenantId,
       reservationId,
-      actualMcuMicros: reserved,
+      actualMcuMicros,
       reason: "run completed: pipeline.fanout",
       createdAt: nowIso(),
     });
@@ -2890,7 +2924,7 @@ async function processJobsOnceUnfenced(
           if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
           throw error;
         }
-        settleFanoutRunUsage(db, job.tenant_id, payload);
+        settleFanoutRunUsage(db, job.tenant_id, payload, report);
         result.succeeded++;
         console.log(`  done change=${report.changeId}`);
         continue;
@@ -2910,7 +2944,7 @@ async function processJobsOnceUnfenced(
       ) {
         throw new Error("lease_lost_before_pipeline_completion");
       }
-      settleFanoutRunUsage(db, job.tenant_id, payload);
+      settleFanoutRunUsage(db, job.tenant_id, payload, report);
       result.succeeded++;
       console.log(`  done change=${report.changeId}`);
     } catch (error) {
