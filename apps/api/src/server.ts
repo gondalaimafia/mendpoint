@@ -238,7 +238,6 @@ import {
 import {
   decideCatalogMutation,
   providerVisibleToTenant,
-  selfServeWardenEnabled,
 } from "./self-serve-catalog.js";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {

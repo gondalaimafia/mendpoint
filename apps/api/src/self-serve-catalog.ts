@@ -15,9 +15,10 @@ import { can, canMutateSystemCatalog, type Principal } from "@mendpoint/platform
 
 export const SELF_SERVE_WARDEN_FLAG = "MENDPOINT_SELF_SERVE_WARDEN" as const;
 
-export function selfServeWardenEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[SELF_SERVE_WARDEN_FLAG] === "1";
-}
+// The flag predicate is defined once, in self-serve-scan.ts, and re-exported here so
+// both self-serve surfaces read the same helper (one source of truth for the flag).
+export { selfServeWardenEnabled } from "./self-serve-scan.js";
+import { selfServeWardenEnabled } from "./self-serve-scan.js";
 
 /** Minimal provider shape the decision needs: its tenant owner (null = shared catalog). */
 export type CatalogProviderOwnership = { tenant_id?: string | null };
