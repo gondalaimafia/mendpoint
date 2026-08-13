@@ -42,7 +42,7 @@ function tryReplace(
     modeId,
     call: {
       tool: "replace_in_file",
-      args: { path, from, to },
+      args: { path, from, to, global: true },
       thought,
     },
   };
