@@ -1563,3 +1563,36 @@ Review: this original foundation milestone was superseded by the scope correctio
 Corrected acceptance: every requested capability is a complete, elaborate, locally runnable product feature. "Do not ship" applies only to source-control publication, deployment, production configuration, external training, and customer activation; it does not permit stopping at an internal library foundation.
 
 Review: GraphQL ingestion now accepts SDL and introspection, stores immutable tenant schema versions, selects explicit or latest baselines, classifies compatibility changes, and exposes authenticated retrieval. Legacy analysis now loads authoritative snapshots, runs grounded built-in collectors, verifies and persists behavioral graphs, and produces evidence-linked draft documentation. Software attestations now use interoperable DSSE and in-toto envelopes with durable scope verification, while post-trained model administration owns dataset consent, fenced training, authenticated receipts, adapter registration, and router dry runs. Transformer now has an authenticated coordinator, exact source service, encrypted filesystem and S3-compatible artifacts, an explicit service command, readiness, response-loss reconciliation, and two-worker takeover tests. All paths are default off. No push, merge, Fly or CI change, secret provisioning, external training call, customer repository write, activation, or deployment occurred.
+
+## Coherent Claude and Codex integration: 2026-08-12
+
+Scope: review every Mendpoint worktree and branch changed today, preserve all dirty work, integrate only code that remains correct against current `origin/main`, close confirmed defects, push one reviewed release branch, and use protected pull request checks. Do not push experimental branches, force push, bypass hooks, mutate customer repositories, activate disabled features, or deploy directly.
+
+### Inventory and provenance
+
+- [ ] Record every worktree, local and remote branch, unique commit, stash, modified file, and untracked file from Claude and Codex.
+- [ ] Separate current main work, the generalized applications commit, demo and design system commits, Claude's bounded pilot changes, and stale Warden or Transformer experiments.
+- [ ] Preserve each dirty tree before integration and identify superseded or duplicate implementations.
+
+### Review and remediation
+
+- [ ] Review Claude's bounded pilot, execution authority, compiler, evaluation, and UI changes for tenancy, authorization, durability, idempotency, accounting, rollback, and claim accuracy.
+- [ ] Review the generalized GraphQL, legacy analysis, attestation, post trained model, and multi worker Transformer applications against current main.
+- [ ] Review demo seed, demo polish, and design system overlap; retain one coherent current implementation and reject obsolete duplicates.
+- [ ] Add red regressions for every confirmed P0 or P1 and fix root causes before integration.
+- [ ] Keep unsafe Warden adaptive checkpoint and incomplete shared runtime experiments out unless their full protocol is independently proven.
+
+### Integration and release candidate
+
+- [ ] Rebase the generalized applications onto exact current `origin/main`.
+- [ ] Replay reviewed Claude and demo bundles in dependency order with explicit conflict resolution and no whole tree overwrite.
+- [ ] Produce one clean `codex/` release branch with coherent commits and an evidence backed capability summary.
+
+### Verification and publication
+
+- [ ] Run focused changed surface tests, every changed workspace test and typecheck, full repository tests, production build, GA/spec/claim/action checks, dependency audit, diff integrity, API startup, and container checks where available.
+- [ ] Obtain independent adversarial review of the exact final diff and close every P0 and P1.
+- [ ] Push only the final reviewed release branch and open a protected pull request; do not merge until exact head checks are green.
+- [ ] After protected merge, verify the exact main revision and production health before claiming shipment.
+
+Acceptance: one reviewable branch contains all safe, nonduplicative Claude and Codex work from today on current main; dirty experiments remain recoverable but excluded; every included capability is tested and honestly gated; and no direct main push, force push, hook bypass, or unverified production deployment occurs.
