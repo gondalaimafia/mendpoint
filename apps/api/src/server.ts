@@ -65,6 +65,7 @@ import {
   releaseUsageReservation,
   reserveUsage,
   settleUsageReservation,
+  provisionEntitlementForPlan,
   releaseRunUsage,
   RUN_USAGE_RESERVATION_KEY,
   RUN_USAGE_RESERVED_MCU_KEY,
@@ -171,6 +172,7 @@ import {
   EnvSecretProvider,
   estimateCost,
   MCU_VERSION,
+  selfServeBillingEnabled,
   setAlertPersistPath,
   defaultAlertPath,
 } from "@mendpoint/platform";
@@ -220,6 +222,10 @@ import {
 } from "./warden-candidate.js";
 import { registerTransformerAdaptiveReviewRoutes } from "./transformer-adaptive-review.js";
 import { registerLegacyBehaviorRoutes } from "./legacy-behavior.js";
+import {
+  createSelfServeSignupRoutes,
+  selfServeSignupEnabled,
+} from "./self-serve-signup.js";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
   createAuthMiddleware,
@@ -260,7 +266,11 @@ import {
   registerTransformerPilotExecutionRoutes,
 } from "./transformer-pilot-executions.js";
 import { closeDefaultChangeSourceStore } from "./change-sources.js";
-import { billingPlanChangeDecision } from "./billing-plan-control.js";
+import {
+  billingPlanChangeDecision,
+  selfServePlanChangeDecision,
+  monthlyBillingPeriod,
+} from "./billing-plan-control.js";
 import { admitRunUsage, estimateRunMcuMicros } from "./usage-enforcement.js";
 import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
 import { createWardenPilotIntakeRoutes } from "./warden-pilot-intake.js";
@@ -435,6 +445,9 @@ const USAGE_ERRORS = [
     "usage_settlement_mcu_micros_invalid",
     "usage_adjustment_mcu_micros_invalid",
     "usage_reservation_empty",
+    "usage_plan_unknown",
+    "usage_plan_seats_invalid",
+    "usage_plan_quota_overflow",
   ),
   ...publicErrorRules(
     409,
@@ -725,6 +738,10 @@ app.route("/v1/transformer/attempt-coordinator", createTransformerAttemptCoordin
   store: transformerExecutions.store,
   gateConfig: process.env.MENDPOINT_TRANSFORMER_GATE,
   loadExactSource: (lease, observedAt) => loadTransformerRecipeSnapshot(db, lease, observedAt),
+}));
+app.route("/auth/signup", createSelfServeSignupRoutes({
+  db,
+  enabled: selfServeSignupEnabled(process.env),
 }));
 app.route("/change-sources", changeSourceRoutes);
 app.route("/billing", billingRoutes);
@@ -3189,7 +3206,13 @@ app.post("/tenants", async (c) => {
 app.post("/tenants/:id/plan", async (c) => {
   const principal = c.get("principal");
   if (!principal) return c.json({ error: "unauthorized" }, 401);
-  const planDecision = billingPlanChangeDecision(principal.role);
+  // S0-B: when the self-serve billing flag is on, owner/admin change their own plan
+  // (no manual-contract flag) and selecting a plan provisions its MCU entitlement.
+  // Flag off => the manual-contract gate below, byte-for-byte unchanged.
+  const selfServe = selfServeBillingEnabled();
+  const planDecision = selfServe
+    ? selfServePlanChangeDecision(principal.role)
+    : billingPlanChangeDecision(principal.role);
   if (!planDecision.allowed) return c.json({ error: planDecision.error }, planDecision.status);
   const t = getTenant(db, c.req.param("id"));
   if (!t) return c.json({ error: "not found" }, 404);
@@ -3199,6 +3222,22 @@ app.post("/tenants/:id/plan", async (c) => {
     return c.json({ error: "invalid plan", plans: BILLING_PLANS.map((p) => p.id) }, 400);
   }
   updateTenantPlan(db, t.id, body.plan);
+  if (planDecision.mode === "self_serve") {
+    const now = nowIso();
+    const period = monthlyBillingPeriod(now);
+    try {
+      provisionEntitlementForPlan(db, {
+        tenantId: t.id,
+        plan: body.plan,
+        periodStart: period.start,
+        periodEnd: period.end,
+        seats: t.seat_limit,
+        now,
+      });
+    } catch (error) {
+      return mappedErrorResponse(c, error, USAGE_ERRORS);
+    }
+  }
   requestAudit(c, {
     actor: "api",
     action: "tenant.plan_changed",

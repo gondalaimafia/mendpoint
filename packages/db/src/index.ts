@@ -6,6 +6,7 @@ import { newId, nowIso } from "@mendpoint/shared";
 import { computeProductMetrics } from "./metrics.js";
 import { settleExpiredWardenModelReservations } from "./warden-model-accounting.js";
 import { assertTenantScope } from "./tenant-scope.js";
+import { createTenantMembership, getTenantMembership } from "./identity.js";
 import type {
   ApiChange,
   ApiKeyRow,
@@ -25,6 +26,7 @@ import type {
   Provider,
   RoutingExecutorHealthRow,
   RoutingLedgerRow,
+  TenantMembershipRow,
   TenantRow,
 } from "./schema.js";
 
@@ -3087,6 +3089,103 @@ export function createApiKeyFromToken(
     ],
   );
   return { id: row.id, prefix, tenantId: row.tenantId };
+}
+
+export type CreateTenantResult = {
+  /** false when the tenant already existed and no second key was minted. */
+  created: boolean;
+  tenant: TenantRow;
+  membership: TenantMembershipRow;
+  /** Plaintext key, returned once, only on first provisioning. */
+  apiKey: { id: string; token: string; prefix: string } | null;
+};
+
+/**
+ * Self-serve tenant provisioning: create a tenant, its founding owner
+ * membership, and a scoped API key in one transaction.
+ *
+ * Idempotent on tenant slug. A repeat call by the same founding owner returns
+ * the existing tenant + owner membership without minting a second key
+ * (created === false, apiKey === null). A different owner claiming an existing
+ * slug is rejected with tenant_slug_taken so a stranger can never be attached
+ * to another tenant.
+ */
+export function createTenant(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    slug: string;
+    name: string;
+    plan?: string;
+    seatLimit?: number;
+    owner: {
+      issuer: string;
+      subject: string;
+      email: string | null;
+      displayName: string;
+    };
+    apiKeyId: string;
+    apiKeyName?: string;
+    apiKeyScopes?: string[];
+    createdAt: string;
+  },
+): CreateTenantResult {
+  const tenantId = input.tenantId.trim();
+  const slug = input.slug.trim();
+  const name = input.name.trim();
+  if (!tenantId) throw new Error("tenant_id_required");
+  if (!slug) throw new Error("tenant_slug_required");
+  if (!name) throw new Error("tenant_name_required");
+
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = get<TenantRow>(db, `SELECT * FROM tenants WHERE slug = ?`, [slug]);
+    if (existing) {
+      const membership = getTenantMembership(
+        db,
+        existing.id,
+        input.owner.issuer,
+        input.owner.subject,
+      );
+      if (!membership) throw new Error("tenant_slug_taken");
+      if (owns) db.raw.exec("COMMIT");
+      return { created: false, tenant: existing, membership, apiKey: null };
+    }
+    run(
+      db,
+      `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+      [tenantId, slug, name, input.plan ?? "free", input.seatLimit ?? 3, input.createdAt],
+    );
+    const membership = createTenantMembership(db, {
+      tenantId,
+      issuer: input.owner.issuer,
+      subject: input.owner.subject,
+      email: input.owner.email,
+      displayName: input.owner.displayName,
+      role: "owner",
+      createdAt: input.createdAt,
+    });
+    const apiKey = createApiKey(db, {
+      id: input.apiKeyId,
+      name: input.apiKeyName ?? `${name} owner key`,
+      tenantId,
+      scopes: input.apiKeyScopes ?? ["*"],
+      createdAt: input.createdAt,
+    });
+    const tenant = get<TenantRow>(db, `SELECT * FROM tenants WHERE id = ?`, [tenantId])!;
+    if (owns) db.raw.exec("COMMIT");
+    return {
+      created: true,
+      tenant,
+      membership,
+      apiKey: { id: apiKey.id, token: apiKey.token, prefix: apiKey.prefix },
+    };
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function findApiKeyByToken(db: AppDb, token: string): ApiKeyRow | undefined {

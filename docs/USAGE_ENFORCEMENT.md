@@ -80,11 +80,11 @@ so the two processes cannot double-count across restarts.
   (tenant has no plan provisioned) -> **HTTP 402** with
   `{ error: "usage_entitlement_required", summary }`. The reservation id and reserved
   amount are stored on the job payload so the worker can resolve the hold.
-- **Completion** (worker, `apps/worker/src/cli.ts`): `settleRunUsage`. Fanout has no
-  per-run MCU measurement, so it settles to the reserved estimate (documented here)
-  rather than fabricating a zero. Where a measured token/cost settlement exists for a
-  layer, that measurement is the source; where usage is unmeasured, the reserved
-  estimate is the floor.
+- **Completion** (worker, `apps/worker/src/cli.ts`): `settleRunUsage`. With the S0-B
+  self-serve flag OFF (default) fanout settles to the reserved estimate (Wave C
+  behavior). With the flag ON it settles to the **server-computed** MCU derived from
+  the completed run's real work (see "S0-B" below), capped at the reservation. Either
+  way the value is honest: never client-declared, never a fabricated zero.
 - **Failure / cancel**: `releaseRunUsage` so a failed or cancelled run burns no quota.
 
 ### Failure / release policy (explicit)
@@ -125,9 +125,38 @@ never strands a hold that was created while it was on.
 - Wired for **API-admitted** `pipeline.fanout` runs. Feed-triggered auto-fanouts
   enqueued directly by the worker are not metered by this wave (documented gap, not a
   silent one).
-- Fanout settles to the reserved estimate (no per-run MCU measurement exists for that
-  layer yet). This is honest by construction: reserve and settle net to the same
-  deterministic figure, and no zero is fabricated.
+- With the S0-B self-serve flag OFF, fanout settles to the reserved estimate (no
+  per-run MCU measurement is applied). With it ON, fanout settles to the server-
+  computed MCU from real work (see "S0-B" below). Either way is honest by
+  construction: no zero and no client value is ever fabricated.
+
+## S0-B: server-computed metering + self-serve plan provisioning
+
+Flag: `MENDPOINT_SELF_SERVE_BILLING` (default OFF). OFF => everything below is
+byte-for-byte the Wave C behavior above.
+
+- **Server-computed MCU on real runs.** On completion the worker derives the run's
+  real work from its `PipelineReport` and computes MCU with `calculateMcuV1`
+  (`packages/platform/src/billing-metering.ts`), then settles that instead of the
+  reserved estimate. Signals used are genuine counts the run produced — impactable
+  surfaces plus per-consumer findings, candidates, confirmed sites, and generated
+  edits — all mapped onto the schedule's `graphObjects` dimension.
+  - **Intentionally not measured at the fanout layer** (so left ABSENT, never
+    fabricated): retrieval bytes, model USD, and sandbox/verification vCPU/GiB
+    minutes. When a measured signal for those dimensions exists it can be added to
+    `FanoutRunMeterSignals`; until then it is a documented gap.
+  - The settlement is capped at the reservation, so it never exceeds the admitted
+    hold (the quota ceiling still binds).
+- **Quota cap.** Unchanged mechanism: `reserveUsage`/`reserveRunUsage` reject an
+  over-quota hold with `usage_quota_exceeded` (HTTP 402 at admission). Server-computed
+  settlement composes with it — a metered run can never consume above what it reserved.
+- **Plan selection -> entitlement.** When the flag is ON, `POST /tenants/:id/plan`
+  (owner/admin) provisions the tenant's entitlement via `provisionEntitlementForPlan`
+  for the current UTC month, so selecting a plan actually grants its MCU quota. This
+  is self-serve and does **not** require `MENDPOINT_MANUAL_PLAN_CHANGES_ENABLED`; with
+  the flag OFF the route falls back to the manual-contract gate unchanged.
+- **Payment processor.** Unchanged: `PaymentCollector` port with `MockPaymentCollector`
+  as the only shipped impl. No real processor, no real funds.
 
 ## Tests
 
@@ -137,3 +166,9 @@ never strands a hold that was created while it was on.
   success, reserve -> release on failure, idempotent replays.
 - `apps/api/src/usage-enforcement.test.ts`: flag-off no-op (ledger untouched), reserve
   on admission, `usage_quota_exceeded` -> 402, `usage_entitlement_required` -> 402.
+- `packages/platform/src/billing-metering.test.ts`: flag reader, real-work -> MCU work
+  mapping (no fabricated dimensions), `calculateMcuV1` computation, settlement
+  resolution (flag off = reserved, flag on = computed, capped at the hold).
+- `apps/api/src/self-serve-billing.test.ts`: self-serve decision + monthly period,
+  plan select -> entitlement quota (flat + per-seat), server-computed MCU metered (not
+  client-declared), quota cap `usage_quota_exceeded`, flag-off byte-identical path.
