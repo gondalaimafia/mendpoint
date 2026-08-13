@@ -44,9 +44,11 @@ export function buildProductKnowledgeGraph(
   const edges: GraphEdge[] = [];
   let ei = 0;
 
-  const providers = listProviders(db);
+  // Shared catalog + this tenant's own private providers/changes (S1.1); never another
+  // tenant's. With no tenant-private rows this is byte-identical to the global read.
+  const providers = listProviders(db, undefined, 0, tenantId);
   const consumers = listConsumers(db, tenantId);
-  const changes = listChanges(db);
+  const changes = listChanges(db, undefined, 0, tenantId);
   const prs = listPrs(db, tenantId);
   const tenants = listTenants(db).filter((tenant) => !tenantId || tenant.id === tenantId);
   const installs = listGitHubInstallations(db, tenantId);

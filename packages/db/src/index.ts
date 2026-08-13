@@ -37,6 +37,8 @@ export * from "./external-baseline.js";
 export * from "./graphql-schema-version.js";
 export * from "./outcome-metrics.js";
 export * from "./agent-run-meter.js";
+export * from "./developer-satisfaction.js";
+export * from "./self-serve-dashboard.js";
 export * from "./capability-adoption-opportunity.js";
 
 export type AppDb = {
@@ -72,6 +74,10 @@ CREATE TABLE IF NOT EXISTS providers (
   website TEXT,
   openapi_url TEXT,
   changelog_url TEXT,
+  -- tenant_id (S1.1 tenant-private providers): NULL = shared/system catalog. Nullable with
+  -- no default so legacy rows read NULL (shared). No static index/view references it, so an
+  -- existing DB that has not yet run the additive migration never touches it in this DDL.
+  tenant_id TEXT,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS api_versions (
@@ -1150,6 +1156,26 @@ CREATE TABLE IF NOT EXISTS agent_run_meters (
 CREATE INDEX IF NOT EXISTS agent_run_meters_tenant_created_idx
   ON agent_run_meters(tenant_id, created_at);
 
+-- S3: optional developer-satisfaction capture. There is no pre-existing
+-- satisfaction signal in the schema; rather than let the self-serve dashboard
+-- fabricate one, a developer can attach a 1-5 rating to a reviewed run or PR.
+-- The dashboard summarizes ONLY these real rows (unavailable when none exist).
+-- The rating CHECK makes an out-of-range score impossible at the storage layer.
+-- Every column lives in this table's own CREATE, so the index below is safe in
+-- the static DDL (no additive migration adds a column it depends on).
+CREATE TABLE IF NOT EXISTS developer_satisfaction_signals (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  run_id TEXT,
+  pr_id TEXT,
+  rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  comment TEXT,
+  submitted_by TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS developer_satisfaction_signals_tenant_created_idx
+  ON developer_satisfaction_signals(tenant_id, created_at);
+
 -- Durable review state for Transformer *adaptive* candidates. When the bounded
 -- adaptive repair loop converges on a fix that DIVERGES from the deterministic
 -- recipe output, that fix is not auto-promoted: it is recorded here as a
@@ -1466,6 +1492,10 @@ function migrateProvidersFeedColumns(db: AppDb) {
     name: string;
     sql: string;
   }> = [
+    // S1.1 tenant-private providers. Nullable, no default, so legacy rows read NULL (shared
+    // catalog, byte-identical). No static index/view/constraint references it, so an existing
+    // DB that has not run this migration never touches the column in the static DDL.
+    { table: "providers", name: "tenant_id", sql: "TEXT" },
     { table: "jobs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
     { table: "jobs", name: "lease_owner", sql: "TEXT" },
     { table: "jobs", name: "lease_expires_at", sql: "TEXT" },
@@ -2029,13 +2059,15 @@ export function insertProvider(
     website?: string | null;
     openapiUrl?: string | null;
     changelogUrl?: string | null;
+    /** S1.1: tenant-private owner. Omit / null => shared, system-admin catalog provider. */
+    tenantId?: string | null;
     createdAt: string;
   },
 ) {
   run(
     db,
-    `INSERT INTO providers (id, slug, name, website, openapi_url, changelog_url, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO providers (id, slug, name, website, openapi_url, changelog_url, tenant_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.slug,
@@ -2043,6 +2075,7 @@ export function insertProvider(
       row.website ?? null,
       row.openapiUrl ?? null,
       row.changelogUrl ?? null,
+      row.tenantId ?? null,
       row.createdAt,
     ],
   );
@@ -2406,11 +2439,32 @@ export function updateMigrationPrDelivery(
   if (result.changes !== 1) throw new Error("migration_pr_delivery_identity_mismatch");
 }
 
-export function listProviders(db: AppDb, limit?: number, offset = 0): Provider[] {
+/**
+ * List providers.
+ *
+ * `tenantId` follows the standard scope convention (assertTenantScope): `undefined` is the
+ * explicit global/system read (every provider, unchanged legacy behavior); a real tenant id
+ * returns the shared catalog (tenant_id IS NULL) PLUS that tenant's own private providers,
+ * never another tenant's; a present-but-blank tenant fails closed. With no tenant-private
+ * providers in the table this is byte-identical to the unscoped read.
+ */
+export function listProviders(
+  db: AppDb,
+  limit?: number,
+  offset = 0,
+  tenantId?: string,
+): Provider[] {
+  assertTenantScope(tenantId);
+  const scoped = tenantId !== undefined;
+  const params: SQLInputValue[] = [];
+  if (scoped) params.push(tenantId);
+  if (limit) params.push(limit, offset);
   return all(
     db,
-    `SELECT * FROM providers ORDER BY created_at, id ${limit ? "LIMIT ? OFFSET ?" : ""}`,
-    limit ? [limit, offset] : [],
+    `SELECT * FROM providers
+     ${scoped ? "WHERE tenant_id IS NULL OR tenant_id = ?" : ""}
+     ORDER BY created_at, id ${limit ? "LIMIT ? OFFSET ?" : ""}`,
+    params,
   );
 }
 
@@ -2418,11 +2472,39 @@ export function getProviderBySlug(db: AppDb, slug: string): Provider | undefined
   return get(db, `SELECT * FROM providers WHERE slug = ?`, [slug]);
 }
 
-export function listChanges(db: AppDb, limit?: number, offset = 0): ApiChange[] {
+export function getProviderById(db: AppDb, id: string): Provider | undefined {
+  return get(db, `SELECT * FROM providers WHERE id = ?`, [id]);
+}
+
+/**
+ * List API changes.
+ *
+ * `tenantId` follows the standard scope convention (assertTenantScope): `undefined` is the
+ * explicit global/system read (every change, unchanged legacy behavior); a real tenant id
+ * returns only changes whose provider is shared (tenant_id IS NULL) or owned by that tenant,
+ * so a tenant-private provider's changes never leak to another tenant through the shared
+ * `api_changes` catalog. With no tenant-private providers this is byte-identical to the
+ * unscoped read.
+ */
+export function listChanges(
+  db: AppDb,
+  limit?: number,
+  offset = 0,
+  tenantId?: string,
+): ApiChange[] {
+  assertTenantScope(tenantId);
+  const scoped = tenantId !== undefined;
+  const params: SQLInputValue[] = [];
+  if (scoped) params.push(tenantId);
+  if (limit) params.push(limit, offset);
   return all(
     db,
-    `SELECT * FROM api_changes ORDER BY created_at DESC, id DESC ${limit ? "LIMIT ? OFFSET ?" : ""}`,
-    limit ? [limit, offset] : [],
+    `SELECT * FROM api_changes
+     ${scoped
+       ? "WHERE provider_id IN (SELECT id FROM providers WHERE tenant_id IS NULL OR tenant_id = ?)"
+       : ""}
+     ORDER BY created_at DESC, id DESC ${limit ? "LIMIT ? OFFSET ?" : ""}`,
+    params,
   );
 }
 
