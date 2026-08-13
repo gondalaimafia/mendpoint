@@ -16,6 +16,7 @@ const revision = (value: string) => value.repeat(40);
 const files = {
   "package.json": '{"name":"service","engines":{"node":"18.x"}}\n',
   Dockerfile: "FROM node:18-alpine\n",
+  "src/unrelated.ts": "export const untouched = true;\n",
 };
 
 function input(): TransformerMissionPlanningInput {
@@ -89,6 +90,12 @@ describe("self serving Transformer mission planner", () => {
       ownerIds: ["owner-a"],
       recipe: expect.objectContaining({ id: "node-runtime-18-to-20" }),
     })]);
+    expect(result.blueprint.units[0]!.repositorySnapshotDigest).toBe(recipeFilesDigest({
+      "package.json": files["package.json"],
+      Dockerfile: files.Dockerfile,
+    }));
+    expect(result.blueprint.scope.repositories[0]!.paths.map((file) => file.path))
+      .toEqual(["Dockerfile", "package.json"]);
     expect(result.blueprint.review.state).toBe("awaiting_human_review");
   });
 

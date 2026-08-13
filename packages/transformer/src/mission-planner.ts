@@ -149,7 +149,11 @@ export function planTransformerMission(
     }
     const recipe = matching[0]!;
     const reference = recipeReference(recipe);
-    const application = applyRecipe(reference, repository.files);
+    const selectedFiles = Object.freeze(Object.fromEntries(recipe.allowedPaths
+      .filter((path: string) => repository.files[path] !== undefined)
+      .map((path: string) => [path, repository.files[path]!])));
+    const selectedEvidence = fileEvidence.filter((evidence) => recipe.allowedPaths.includes(evidence.path));
+    const application = applyRecipe(reference, selectedFiles);
     const scopePaths = [...new Set(application.operations.map((operation) => operation.path))]
       .sort(compareCodeUnits);
     const operationOwnerMissing = scopePaths.some(
@@ -165,11 +169,11 @@ export function planTransformerMission(
       id: repository.id,
       organizationId: repository.organizationId,
       revision: repository.revision,
-      snapshotDigest: repository.snapshotDigest,
+      snapshotDigest: recipeFilesDigest(selectedFiles),
       observedAt: repository.observedAt,
       evidenceRefs: [...repository.evidenceRefs],
       supportedRecipes: [reference],
-      files: fileEvidence.map((evidence) => ({
+      files: selectedEvidence.map((evidence) => ({
         path: evidence.path,
         digest: evidence.digest,
         ownerIds: [...evidence.ownerIds],

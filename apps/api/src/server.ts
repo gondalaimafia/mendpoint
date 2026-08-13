@@ -309,6 +309,7 @@ const {
   db,
   transformerCampaigns,
   transformerExecutions,
+  transformerMissionRoutes,
   changeSourceRoutes,
   billingRoutes,
   designPartnerRoutes,
@@ -737,6 +738,7 @@ app.route("/advanced-ai", createAdvancedAiApplicationRoutes({
 
 registerTransformerControlPlaneRoutes(app, transformerCampaigns);
 registerTransformerPilotExecutionRoutes(app, transformerExecutions);
+app.route("/transformer/missions", transformerMissionRoutes);
 app.route("/v1/transformer/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
   enabled: process.env.MENDPOINT_TRANSFORMER_MULTINODE_COORDINATOR_ENABLED === "1",
   store: transformerExecutions.store,

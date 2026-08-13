@@ -1621,7 +1621,11 @@ Objective: make Warden and Transformer self-serving coding agents in their speci
   - [x] Compile only integrity-checked blueprints with independent reviewer receipts into the pilot execution contract.
   - [x] Require the acting control-plane principal to be a configured independent reviewer and persist the approval.
   - [x] Join persisted blueprint review to exact source compilation and pilot execution creation in one application service.
-  - [ ] Expose repository-backed mission planning and approved campaign creation through the authenticated API.
+  - [x] Expose repository-backed mission planning and approved campaign creation through the authenticated API.
+    - [x] Derive tenant organization, reviewer, CODEOWNERS, and constraint evidence from durable authorities instead of request input.
+    - [x] Load and reverify the exact active repository snapshot with bounded UTF-8 files, modes, hashes, retention, and symlink protections.
+    - [x] Bind the reviewed organization evidence to the exact organization-constraint digest and fail launch on authority drift.
+    - [x] Require plan execution permission, a durable trust principal, exact request and idempotency evidence, and tenant-only lookup.
   - [ ] Join terminal verified candidates to real SCM draft delivery and post-PR verification evidence.
 
 ### Verification and release
@@ -1638,3 +1642,5 @@ Review checkpoint: Warden recovery now durably owns paid planning, reads, mutati
 Transformer orchestration checkpoint: exact snapshot inputs now select one applicable deterministic recipe or abstain, derive scope and owners, and produce the existing evidence-bound blueprint. A new compiler verifies blueprint integrity, exact source parity, recipe output, path constraints, and independent reviewer receipts before creating a runnable pilot campaign input. Control-plane review now rejects planners and unconfigured actors and stores the approved reviewer. Full Transformer tests pass 351/351; focused API control and execution tests pass 30/30. Repository-backed API intake, campaign join, and actual draft delivery remain in progress.
 
 Joined mission checkpoint: the API application service now persists the derived blueprint and behavior-unit graph in the control plane, refuses launch before the review quorum, reloads the authenticated blueprint and approval receipts, recompiles against the exact repository authority, and creates the existing pilot execution campaign. Focused joined API tests pass 20/20. The remaining intake work is the production AppDb snapshot adapter and authenticated routes; delivery remains the next boundary.
+
+Production intake checkpoint: authenticated `POST /transformer/missions` now derives tenant and actor solely from the authenticated principal, derives a stable campaign from the idempotency key, and reads exact retained repository bytes from the append-only snapshot manifest. CODEOWNERS, active tenant human memberships, snapshot policy, and a recomputed organization constraint contract supply scope and independent reviewers. Launch re-reads those authorities and rejects any reviewer, membership, policy, repository, or constraint drift. Recipe-specific source subsets now share the exact digest the worker reconstructs. Focused route, authority, service, control-plane, execution, planner, and compiler tests pass; API and Transformer typechecks are green. Real draft delivery remains next.

@@ -13,6 +13,7 @@ import { TransformerCampaignService } from "./transformer-control-plane.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
 import {
   TransformerMissionService,
+  type TransformerMissionOrganizationAuthority,
   type TransformerMissionRepositoryAuthority,
 } from "./transformer-missions.js";
 
@@ -121,15 +122,49 @@ function fixture() {
       rationale: "Approved runtime migration.",
     }],
   });
+  let activeConstraints = constraints;
+  const organizations: TransformerMissionOrganizationAuthority = {
+    load(tenantId, repositoryIds, plannerActorId, observedAt) {
+      if (tenantId !== "tenant-a" || repositoryIds.join(",") !== "repo-a") {
+        throw new Error("organization_not_found");
+      }
+      return {
+        constraints: activeConstraints,
+        organization: {
+          id: "organization-a",
+          revision: revision("a"),
+          digest: activeConstraints.digest,
+          observedAt,
+          repositoryIds: ["repo-a"],
+          memberIds: ["owner-a", plannerActorId, "reviewer-a"],
+          evidenceRefs: [
+            "evidence:organization:a",
+            `organization-constraint:${activeConstraints.digest}`,
+          ],
+          humanReviewPolicy: {
+            required: true,
+            minimumApprovals: 1,
+            reviewerIds: ["reviewer-a"],
+            prohibitPlannerApproval: true,
+          },
+        },
+      };
+    },
+  };
   const service = new TransformerMissionService(
     control,
     executions,
     repositories,
+    organizations,
     [NODE_RUNTIME_18_TO_20_RECIPE],
-    constraints,
     "test",
   );
-  return { control, executions, service };
+  return {
+    control,
+    executions,
+    service,
+    replaceConstraints(value: typeof constraints) { activeConstraints = value; },
+  };
 }
 
 describe("Transformer mission application service", () => {
@@ -142,21 +177,6 @@ describe("Transformer mission application service", () => {
       evaluatedAt,
       maxEvidenceAgeMs: 10 * 60_000,
       constraints: { maxUnits: 4, maxRepositories: 2, maxPathsPerUnit: 8 },
-      organization: {
-        id: "organization-a",
-        revision: revision("a"),
-        digest: digest("organization"),
-        observedAt: new Date(Date.now() - 45_000).toISOString(),
-        repositoryIds: ["repo-a"],
-        memberIds: ["owner-a", "planner-a", "reviewer-a"],
-        evidenceRefs: ["evidence:organization:a"],
-        humanReviewPolicy: {
-          required: true,
-          minimumApprovals: 1,
-          reviewerIds: ["reviewer-a"],
-          prohibitPlannerApproval: true,
-        },
-      },
       repositoryIds: ["repo-a"],
       objective: {
         id: "upgrade-node",
@@ -197,5 +217,70 @@ describe("Transformer mission application service", () => {
         changedPaths: ["Dockerfile", "package.json"],
       })],
     });
+  });
+
+  it("rejects launch when the durable organization constraint changes after review", () => {
+    const { control, service, replaceConstraints } = fixture();
+    const evaluatedAt = new Date(Date.now() - 30_000).toISOString();
+    const planned = service.plan(request("planner-a", "plan-drift"), {
+      campaignId: "campaign-drift",
+      environment: "test",
+      evaluatedAt,
+      maxEvidenceAgeMs: 10 * 60_000,
+      constraints: { maxUnits: 4, maxRepositories: 2, maxPathsPerUnit: 8 },
+      repositoryIds: ["repo-a"],
+      objective: {
+        id: "upgrade-node-drift",
+        statement: "Upgrade the service from Node 18 to Node 20.",
+        sourceSystem: "node@18",
+        targetSystem: "node@20",
+        evidenceRefs: ["evidence:objective:drift"],
+        assumptions: [{
+          id: "snapshot-stability-drift",
+          statement: "The reviewed snapshot remains immutable.",
+          evidenceRefs: ["evidence:assumption:drift"],
+        }],
+        risks: [{
+          id: "runtime-compatibility-drift",
+          statement: "Runtime behavior can change.",
+          severity: "high",
+          ownerId: "owner-a",
+          evidenceRefs: ["evidence:risk:drift"],
+        }],
+      },
+    });
+    expect(planned.decision).toBe("planned");
+    control.reviewToReady(request("reviewer-a", "review-drift"), "campaign-drift", {
+      campaign: 1,
+      blueprint: 1,
+      bsg: 1,
+    });
+    replaceConstraints(createOrganizationConstraintContract({
+      tenantId: "tenant-a",
+      organizationId: "organization-a",
+      version: 2,
+      effectiveAt: new Date(Date.now() - 10_000).toISOString(),
+      sources: [{
+        id: "policy-a",
+        kind: "explicit_policy",
+        repositoryId: "repo-a",
+        revision: revision("b"),
+        digest: digest("policy-v2"),
+        locator: "policy:repo-a:v2",
+        evidenceRefs: ["evidence:policy:a:v2"],
+      }],
+      rules: [{
+        id: "allow-repo-a",
+        sourceId: "policy-a",
+        repositoryId: "repo-a",
+        pathPattern: "**",
+        actions: ["change"],
+        effect: "allow",
+        ownerIds: ["owner-a"],
+        rationale: "Changed after review.",
+      }],
+    }));
+    expect(() => service.launch(request("reviewer-a", "launch-drift"), "campaign-drift"))
+      .toThrow("transformer_mission_authority_drift");
   });
 });

@@ -6,6 +6,7 @@ import {
   type MigrationRecipeContract,
   type OrganizationConstraintContract,
   type TransformerBlueprint,
+  type TransformerBlueprintOrganizationEvidence,
   type TransformerMissionPlanningRepository,
   type TransformerMissionRepository,
 } from "@mendpoint/transformer";
@@ -17,9 +18,26 @@ import {
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
 
 export interface TransformerMissionRepositoryAuthority {
-  load(tenantId: string, repositoryId: string, observedAt: string): Readonly<{
+  load(
+    tenantId: string,
+    repositoryId: string,
+    observedAt: string,
+    allowedPaths?: readonly string[],
+  ): Readonly<{
     planning: TransformerMissionPlanningRepository;
     execution: TransformerMissionRepository;
+  }>;
+}
+
+export interface TransformerMissionOrganizationAuthority {
+  load(
+    tenantId: string,
+    repositoryIds: readonly string[],
+    plannerActorId: string,
+    observedAt: string,
+  ): Readonly<{
+    organization: TransformerBlueprintOrganizationEvidence;
+    constraints: OrganizationConstraintContract;
   }>;
 }
 
@@ -29,7 +47,6 @@ export type TransformerMissionPlanInput = Readonly<{
   evaluatedAt: string;
   maxEvidenceAgeMs: number;
   constraints: Readonly<{ maxUnits: number; maxRepositories: number; maxPathsPerUnit: number }>;
-  organization: Parameters<typeof planTransformerMission>[0]["organization"];
   repositoryIds: readonly string[];
   objective: Parameters<typeof planTransformerMission>[0]["objective"];
 }>;
@@ -69,25 +86,41 @@ export class TransformerMissionService {
     private readonly control: TransformerCampaignService,
     private readonly executions: TransformerPilotExecutionService,
     private readonly repositories: TransformerMissionRepositoryAuthority,
+    private readonly organizations: TransformerMissionOrganizationAuthority,
     private readonly recipeCatalog: readonly MigrationRecipeContract[],
-    private readonly constraints: OrganizationConstraintContract,
     private readonly environment: string,
     private readonly now: () => string = () => new Date().toISOString(),
   ) {}
 
   plan(request: TransformerMutationRequest, input: TransformerMissionPlanInput) {
+    const gate = this.executions.gate(request.tenantId, "api_control_plane");
+    if (!gate.allowed) throw new Error("transformer_pilot_gate_denied");
     const repositoryIds = [...new Set(input.repositoryIds)].sort(compareCodeUnits);
     if (repositoryIds.length !== input.repositoryIds.length || repositoryIds.length === 0) {
       throw new Error("transformer_mission_repository_invalid");
     }
     const repositories = repositoryIds.map((repositoryId) =>
       this.repositories.load(request.tenantId, repositoryId, input.evaluatedAt).planning);
+    const authority = this.organizations.load(
+      request.tenantId,
+      repositoryIds,
+      request.actorId,
+      input.evaluatedAt,
+    );
+    if (
+      authority.organization.id !== authority.constraints.organizationId ||
+      !authority.organization.evidenceRefs.includes(
+        `organization-constraint:${authority.constraints.digest}`,
+      )
+    ) {
+      throw new Error("transformer_mission_authority_invalid");
+    }
     const planned = planTransformerMission({
       evaluatedAt: input.evaluatedAt,
       plannerActorId: request.actorId,
       maxEvidenceAgeMs: input.maxEvidenceAgeMs,
       constraints: input.constraints,
-      organization: input.organization,
+      organization: authority.organization,
       repositories,
       objective: input.objective,
       recipeCatalog: this.recipeCatalog,
@@ -143,9 +176,34 @@ export class TransformerMissionService {
           }]
         : [];
     });
-    const executionRepositories = [...new Set(blueprint.units.map((unit) => unit.repositoryId))]
-      .sort(compareCodeUnits)
-      .map((repositoryId) => this.repositories.load(request.tenantId, repositoryId, this.now()).execution);
+    const repositoryIds = [...new Set(blueprint.units.map((unit) => unit.repositoryId))]
+      .sort(compareCodeUnits);
+    const authority = this.organizations.load(
+      request.tenantId,
+      repositoryIds,
+      blueprint.review.plannerActorId,
+      this.now(),
+    );
+    if (
+      authority.organization.id !== blueprint.evidence.organization.id ||
+      authority.organization.revision !== blueprint.evidence.organization.revision ||
+      authority.organization.digest !== blueprint.evidence.organization.digest ||
+      authority.constraints.organizationId !== blueprint.evidence.organization.id ||
+      !blueprint.evidence.organization.evidenceRefs.includes(
+        `organization-constraint:${authority.constraints.digest}`,
+      )
+    ) {
+      throw new Error("transformer_mission_authority_drift");
+    }
+    const executionRepositories = repositoryIds.map((repositoryId) => {
+      const unit = blueprint.units.find((candidate) => candidate.repositoryId === repositoryId)!;
+      return this.repositories.load(
+        request.tenantId,
+        repositoryId,
+        this.now(),
+        resolveRecipe(unit.recipe).allowedPaths,
+      ).execution;
+    });
     const compiled = compileApprovedTransformerMission({
       tenantId: request.tenantId,
       organizationId: blueprint.evidence.organization.id,
@@ -154,7 +212,7 @@ export class TransformerMissionService {
       blueprint,
       approvals,
       repositories: executionRepositories,
-      constraints: this.constraints,
+      constraints: authority.constraints,
       observedAt: this.now(),
       evidenceRefs: request.evidenceRefs,
       idempotencyKey: request.idempotencyKey,
