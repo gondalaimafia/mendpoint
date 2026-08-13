@@ -40,6 +40,7 @@ export * from "./agent-run-meter.js";
 export * from "./developer-satisfaction.js";
 export * from "./self-serve-dashboard.js";
 export * from "./capability-adoption-opportunity.js";
+export * from "./connectors.js";
 
 export type AppDb = {
   raw: DatabaseSync;
@@ -1316,6 +1317,32 @@ CREATE TABLE IF NOT EXISTS warden_candidate_deliveries (
 );
 CREATE INDEX IF NOT EXISTS warden_candidate_deliveries_tenant_idx
   ON warden_candidate_deliveries(tenant_id, status, requested_at);
+
+-- Self-serve toolchain connectors (S3-connectors): CI/CD, ticketing, and docs
+-- integrations a tenant connects through guided setup. Every column lives in
+-- this table's own CREATE, so no static index/DDL depends on a column added by a
+-- later additive migration. credential_envelope stores the AES-256-GCM envelope
+-- JSON (ciphertext only) — never plaintext.
+CREATE TABLE IF NOT EXISTS connectors (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('ci', 'ticketing', 'docs')),
+  provider TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK (mode IN ('mock', 'real')),
+  credential_envelope TEXT,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  health_status TEXT NOT NULL DEFAULT 'unverified'
+    CHECK (health_status IN ('unverified', 'verified', 'failed', 'revoked')),
+  verified INTEGER NOT NULL DEFAULT 0,
+  error_code TEXT,
+  last_verified_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT,
+  UNIQUE (tenant_id, kind, provider, display_name)
+);
+CREATE INDEX IF NOT EXISTS connectors_tenant_idx ON connectors(tenant_id, kind);
 `;
 
 

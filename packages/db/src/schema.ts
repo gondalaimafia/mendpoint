@@ -258,6 +258,24 @@ export type RepositorySnapshotPolicyRow = {
   created_at: string;
 };
 
+export type ConnectorRow = {
+  id: string;
+  tenant_id: string;
+  kind: "ci" | "ticketing" | "docs";
+  provider: string;
+  display_name: string;
+  mode: "mock" | "real";
+  credential_envelope: string | null;
+  config_json: string;
+  health_status: "unverified" | "verified" | "failed" | "revoked";
+  verified: number;
+  error_code: string | null;
+  last_verified_at: string | null;
+  created_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+};
+
 export type ScmConnectionHealthRow = {
   connection_id: string;
   tenant_id: string;

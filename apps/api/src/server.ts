@@ -235,6 +235,7 @@ import {
   createSelfServeConnectRoutes,
   selfServeConnectEnabled,
 } from "./repository-connect.js";
+import { createConnectorsRoutes } from "./connectors.js";
 import {
   decideCatalogMutation,
   providerVisibleToTenant,
@@ -811,6 +812,10 @@ app.route("/self-serve/connect", createSelfServeConnectRoutes({
   enabled: selfServeConnectEnabled(process.env),
 }));
 app.route("/self-serve/scan", createSelfServeScanRoutes({
+  db,
+  enabled: selfServeWardenEnabled(process.env),
+}));
+app.route("/self-serve/connectors", createConnectorsRoutes({
   db,
   enabled: selfServeWardenEnabled(process.env),
 }));
