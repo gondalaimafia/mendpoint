@@ -7,14 +7,45 @@ export {
   retrieveKnowledge,
 } from "./memory.js";
 
-export type { SandboxKind, MockUpstream, SandboxHandle, CreateSandboxOpts } from "./sandbox.js";
+export type {
+  SandboxKind,
+  MockUpstream,
+  SandboxHandle,
+  SandboxRunResult,
+  CreateSandboxOpts,
+} from "./sandbox.js";
 export {
   createSandbox,
+  createLocalSandbox,
+  resolveSandboxKind,
   clearSandboxCache,
   getSandboxCacheStats,
   sandboxManifest,
   RUNTIME_MATRIX,
 } from "./sandbox.js";
+
+export type {
+  FlyGuest,
+  FlyMachineFile,
+  FlyMachineConfig,
+  FlyMachine,
+  FlyExecResult,
+  FlyMachineClient,
+  FlySandboxResources,
+  FlySandboxOptions,
+  FlySandboxHandle,
+  MockFlyBehavior,
+  MockFlyClient,
+} from "./fly-sandbox.js";
+export {
+  FLY_SANDBOX_DEFAULTS,
+  FlySandboxError,
+  createFlyMachinesSandbox,
+  resolveFlyClient,
+  createMockFlyClient,
+  createFlyRestClient,
+  collectWorkspaceFiles,
+} from "./fly-sandbox.js";
 
 export type { KnowledgeDoc } from "./knowledge.js";
 export {

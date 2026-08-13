@@ -15,14 +15,27 @@ import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
+import {
+  createFlyMachinesSandbox,
+  type FlyMachineClient,
+  type FlySandboxOptions,
+} from "./fly-sandbox.js";
 
-export type SandboxKind = "local" | "vm" | "in_cluster";
+export type SandboxKind = "local" | "vm" | "in_cluster" | "fly_machines";
 
 export type MockUpstream = {
   name: string;
   /** Relative path under sandbox for fixture responses */
   fixturePath?: string;
   baseUrl?: string;
+};
+
+export type SandboxRunResult = {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  exitCode?: number;
+  timedOut?: boolean;
 };
 
 export type SandboxHandle = {
@@ -34,7 +47,9 @@ export type SandboxHandle = {
   mocks: MockUpstream[];
   runtime?: string;
   dispose: () => void;
-  run: (cmd: string, opts?: { timeoutMs?: number }) => { ok: boolean; stdout: string; stderr: string };
+  run: (cmd: string, opts?: { timeoutMs?: number }) => SandboxRunResult;
+  /** Async isolated execution for VM/Machine backends (kind !== "local"). */
+  runIsolated?: (cmd: string, opts?: { timeoutMs?: number }) => Promise<SandboxRunResult>;
 };
 
 export type CreateSandboxOpts = {
@@ -47,6 +62,14 @@ export type CreateSandboxOpts = {
   runtime?: "node" | "python" | "jvm" | "dotnet" | "cobol";
   /** Persistent cache dir key (Transformer multi-PR builds) */
   cacheKey?: string;
+  /** Tenant identity — tags the isolated Machine; only this tenant's files upload. */
+  tenantId?: string;
+  /** Per-tenant sandbox backend selection (overrides the global default). */
+  tenantSandboxKind?: SandboxKind;
+  /** Fly Machines backend configuration (kind === "fly_machines"). */
+  fly?: FlySandboxOptions;
+  /** Injected Fly client for tests / dry-run (bypasses credential resolution). */
+  flyClient?: FlyMachineClient;
 };
 
 type CacheEntry = {
@@ -142,13 +165,39 @@ export function getSandboxCacheStats() {
   }));
 }
 
+/**
+ * Resolve the effective sandbox backend. Precedence: an explicit opts.kind, then
+ * a per-tenant selection, then the MENDPOINT_SANDBOX_KIND global, else local.
+ * With nothing configured the result is "local" — the default path is unchanged.
+ */
+export function resolveSandboxKind(opts: CreateSandboxOpts = {}): SandboxKind {
+  if (opts.kind) return opts.kind;
+  if (opts.tenantSandboxKind) return opts.tenantSandboxKind;
+  const env = process.env.MENDPOINT_SANDBOX_KIND;
+  if (env === "fly_machines" || env === "local" || env === "vm" || env === "in_cluster") {
+    return env;
+  }
+  return "local";
+}
+
 export function createSandbox(opts: CreateSandboxOpts = {}): SandboxHandle {
-  const kind = opts.kind ?? "local";
+  const kind = resolveSandboxKind(opts);
+  if (kind === "fly_machines") {
+    return createFlyMachinesSandbox(opts);
+  }
   if (kind !== "local") {
     throw new Error(
       `Sandbox kind ${kind} is unavailable through createSandbox; use a real backend`,
     );
   }
+  return createLocalSandbox(opts);
+}
+
+/**
+ * Local workdir backend (default). Not process or network isolation. This is the
+ * byte-identical default path — the isolated backends layer on top of it.
+ */
+export function createLocalSandbox(opts: CreateSandboxOpts = {}): SandboxHandle {
   let root: string;
   const cached = opts.cacheKey ? cacheRoots.get(opts.cacheKey) : undefined;
   if (cached && existsSync(cached.root)) {
@@ -266,6 +315,8 @@ export function sandboxManifest(h: SandboxHandle) {
     note:
       h.kind === "local"
         ? "Local workdir only; this is not process or network isolation"
-        : `Sandbox kind ${h.kind}`,
+        : h.kind === "fly_machines"
+          ? "Fly Machines microVM: per-run ephemeral isolation, torn down on teardown"
+          : `Sandbox kind ${h.kind}`,
   };
 }
