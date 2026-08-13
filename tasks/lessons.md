@@ -31,3 +31,7 @@
 **Mistake:** I interpreted "build but do not ship" as permission to stop at default-off library foundations.
 **Correction:** Talal wants elaborate end-to-end features built into the application, with only merge, activation, deployment, and customer rollout withheld.
 **Rule:** Separate implementation completeness from shipment state. When asked to build but not ship, integrate and verify the full local product path while leaving production flags, infrastructure activation, pushes, merges, and deployments untouched.
+### 2026-08-12 — Recheck release holds and live flags
+**Mistake:** I carried an earlier do not ship hold and default off assumption forward after the user changed both the publication decision and production activation state.
+**Correction:** Talal explicitly lifted the shipping hold and stated that the production activation flag is on.
+**Rule:** Before final publication or activation claims, use the latest user instruction and verify the live runtime state after the exact deployment instead of inheriting an older hold or configuration assumption.
