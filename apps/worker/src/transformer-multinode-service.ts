@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import {
   createTransformerPilotAttemptCheckpointConfig,
   runTransformerAttempt,
@@ -97,10 +97,11 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
   const leaseToken = stable("lease-token");
   const token = () => leaseToken;
   const observedAt = (_phase: TransformerAttemptPhase) => coordinatorTime ?? new Date().toISOString();
+  const serviceInstanceId = randomBytes(16).toString("hex");
   let claimOrdinal = 0;
   let running = false;
   const idempotencyKey = (phase: TransformerAttemptPhase, attemptId?: string) => {
-    const identity = attemptId ?? `claim:${claimOrdinal}`;
+    const identity = attemptId ?? `claim:${serviceInstanceId}:${claimOrdinal}`;
     return `${config.workerId}-${phase}-${stable(`${phase}:${identity}`).slice(0, 32)}`;
   };
   return Object.freeze({

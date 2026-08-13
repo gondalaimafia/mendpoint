@@ -27,7 +27,7 @@ export type AdvancedAiApplicationRoutesOptions = Readonly<{
   attestationPrincipalId?: string;
   now?: () => string;
   readConsent?(tenantId: string, datasetId: string, stored: PostTrainedConsentSnapshot): PostTrainedConsentSnapshot | undefined;
-  verifyEvidence?(tenantId: string, evidenceRefs: readonly string[]): boolean;
+  verifyEvidence?(tenantId: string, evidenceRefs: readonly string[], expected?: Readonly<{ subjectTypes: readonly string[]; subjectId: string; artifactIds?: readonly string[] }>): boolean;
   trainer?: PostTrainedTrainer;
   trainingTimeoutMs?: number;
   trainingLeaseMs?: number;
@@ -104,16 +104,7 @@ export function advancedAiTrainingRuntimeFromEnv(
       return { receipt: value.receipt, result: value.result };
     },
   });
-  const verifyEvidence = (tenantId: string, refs: readonly string[], expected?: Readonly<{ subjectTypes: readonly string[]; subjectId: string; artifactIds?: readonly string[] }>) => refs.length > 0 && refs.every((ref) => {
-    if (typeof ref !== "string" || !ref.trim()) return false;
-    const byArtifact = Boolean(expected?.artifactIds?.includes(ref));
-    const row = db.raw.prepare(`SELECT evidence.verdict, evidence.subject_type, evidence.subject_id, evidence.producer_principal_id, evidence.artifact_id,
-      artifact.sha256, artifact.content_text, principal.revoked_at FROM evidence_records evidence JOIN artifact_manifests artifact ON artifact.id = evidence.artifact_id AND artifact.tenant_id = evidence.tenant_id
-      JOIN principals principal ON principal.id = evidence.producer_principal_id AND principal.tenant_id = evidence.tenant_id
-      WHERE evidence.tenant_id = ? AND ${byArtifact ? "evidence.artifact_id" : "evidence.id"} = ? ORDER BY evidence.created_at DESC LIMIT 1`).get(tenantId, ref) as { verdict: string; subject_type: string; subject_id: string; producer_principal_id: string | null; artifact_id: string; sha256: string; content_text: string | null; revoked_at: string | null } | undefined;
-    return Boolean(row && row.verdict === "passed" && row.subject_type.trim() && row.subject_id.trim() && row.producer_principal_id && !row.revoked_at && row.content_text && createHash("sha256").update(row.content_text).digest("hex") === row.sha256
-      && (!expected || (expected.subjectTypes.includes(row.subject_type) && row.subject_id === expected.subjectId && (!byArtifact || row.artifact_id === ref))));
-  });
+  const verifyEvidence = createDurablePostTrainedEvidenceAuthority(db);
   const authorizeDataset: NonNullable<AdvancedAiApplicationRoutesOptions["authorizeDataset"]> = (input) => {
     const dataset = db.raw.prepare("SELECT status, purpose, residency_region FROM learning_dataset_versions WHERE id = ? AND tenant_id = ?").get(input.datasetId, input.tenantId) as { status: string; purpose: string; residency_region: string } | undefined;
     const consent = db.raw.prepare("SELECT id, action, expires_at FROM learning_consents WHERE tenant_id = ? AND purpose = ? AND residency_region = ? AND effective_at <= ? ORDER BY consent_version DESC LIMIT 1").get(input.tenantId, input.purpose, input.residencyRegion, input.at) as { id: string; action: string; expires_at: string | null } | undefined;
@@ -128,6 +119,24 @@ export function advancedAiTrainingRuntimeFromEnv(
     return supplied.length === expected.length && timingSafeEqual(supplied, expected);
   };
   return { trainer, trainingTimeoutMs: rawTimeout, trainingLeaseMs: rawLease, trainingWorkerId: workerId, verifyReconciliation, verifyEvidence, authorizeDataset };
+}
+
+export function createDurablePostTrainedEvidenceAuthority(db: AppDb): NonNullable<AdvancedAiApplicationRoutesOptions["verifyEvidence"]> {
+  return (tenantId, refs, expected) => refs.length > 0 && refs.every((ref) => {
+    if (typeof ref !== "string" || !ref.trim()) return false;
+    const byArtifact = Boolean(expected?.artifactIds?.includes(ref));
+    const row = db.raw.prepare(`SELECT evidence.verdict, evidence.subject_type, evidence.subject_id, evidence.producer_principal_id, evidence.artifact_id,
+      artifact.sha256, artifact.content_text, principal.revoked_at FROM evidence_records evidence JOIN artifact_manifests artifact ON artifact.id = evidence.artifact_id AND artifact.tenant_id = evidence.tenant_id
+      JOIN principals principal ON principal.id = evidence.producer_principal_id AND principal.tenant_id = evidence.tenant_id
+      WHERE evidence.tenant_id = ? AND ${byArtifact ? "evidence.artifact_id" : "evidence.id"} = ? ORDER BY evidence.created_at DESC LIMIT 1`).get(tenantId, ref) as { verdict: string; subject_type: string; subject_id: string; producer_principal_id: string | null; artifact_id: string; sha256: string; content_text: string | null; revoked_at: string | null } | undefined;
+    if (!row || row.verdict !== "passed" || !row.subject_type.trim() || !row.subject_id.trim() || !row.producer_principal_id || row.revoked_at || !row.content_text || createHash("sha256").update(row.content_text).digest("hex") !== row.sha256) return false;
+    if (!expected) return true;
+    const exactSubject = row.subject_id === expected.subjectId;
+    const consentForDataset = row.subject_type === "learning_consent" && Boolean(db.raw.prepare(`SELECT 1 FROM learning_dataset_versions dataset
+      JOIN learning_consents consent ON consent.tenant_id = dataset.tenant_id AND consent.purpose = dataset.purpose AND consent.residency_region = dataset.residency_region
+      WHERE dataset.tenant_id = ? AND dataset.id = ? AND consent.id = ? AND consent.action = 'granted' LIMIT 1`).get(tenantId, expected.subjectId, row.subject_id));
+    return expected.subjectTypes.includes(row.subject_type) && (exactSubject || consentForDataset) && (!byArtifact || row.artifact_id === ref);
+  });
 }
 
 export function createDurableAttestationScopeAuthority(): NonNullable<AdvancedAiApplicationRoutesOptions["authorizeAttestationScope"]> {

@@ -26,6 +26,20 @@ describe("Transformer multi-node service", () => {
     expect((claims[2] as { idempotencyKey: string }).idempotencyKey).not.toBe((claims[1] as { idempotencyKey: string }).idempotencyKey);
   });
 
+  it("starts a fresh claim sequence after a worker process restart", async () => {
+    const claims: string[] = [];
+    let tick = 0;
+    const transport: TransformerMultinodeTransport = { request: async ({ path, body }) => {
+      tick += 1;
+      if (path.endsWith("claimNextAttempt")) claims.push((body as { idempotencyKey: string }).idempotencyKey);
+      return { result: path.endsWith("claimNextAttempt") ? null : { ready: true }, serverTime: new Date(Date.UTC(2026, 7, 12, 12, 0, tick)).toISOString() };
+    } };
+    await createTransformerMultinodeService(base, transport, backend).runOnce();
+    await createTransformerMultinodeService(base, transport, backend).runOnce();
+    expect(claims).toHaveLength(2);
+    expect(claims[1]).not.toBe(claims[0]);
+  });
+
   it("hard-times out and honors caller abort with a noncooperative fetch", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));

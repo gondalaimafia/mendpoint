@@ -133,8 +133,10 @@ function assertTrainingCompletion(db: AppDb, manifest: PostTrainedAdapterManifes
   if (!submittedEvent || !event) throw new Error("post_trained_training_completion_missing");
   const submitted = JSON.parse(submittedEvent.payload_json) as { adapterId?: string; baseModelId?: string };
   if (submitted.adapterId !== manifest.adapterId || submitted.baseModelId !== manifest.lifecycle.baseModel.modelId) throw new Error("post_trained_training_completion_mismatch");
-  const payload = JSON.parse(event.payload_json) as { artifactId?: string; adapterDigest?: string; datasetId?: string; evaluation?: { passed?: boolean }; canary?: { passed?: boolean } };
-  if (!payload.artifactId || payload.adapterDigest !== manifest.lifecycle.artifactDigest || payload.datasetId !== manifest.lifecycle.trainingDataset.datasetId || payload.evaluation?.passed !== true || payload.canary?.passed !== true) throw new Error("post_trained_training_completion_mismatch");
+  const payload = JSON.parse(event.payload_json) as { artifactId?: string; adapterDigest?: string; datasetId?: string; evaluation?: unknown; canary?: unknown };
+  if (!payload.artifactId || payload.adapterDigest !== manifest.lifecycle.artifactDigest || payload.datasetId !== manifest.lifecycle.trainingDataset.datasetId
+    || canonicalJson(payload.evaluation) !== canonicalJson(manifest.lifecycle.heldOutEvaluation)
+    || canonicalJson(payload.canary) !== canonicalJson(manifest.lifecycle.canaryEvidence)) throw new Error("post_trained_training_completion_mismatch");
   const artifact = db.raw.prepare("SELECT kind, sha256, size_bytes, content_text FROM artifact_manifests WHERE tenant_id = ? AND id = ?").get(manifest.tenantId, payload.artifactId) as { kind: string; sha256: string; size_bytes: number; content_text: string | null } | undefined;
   if (!artifact?.content_text || artifact.kind !== "post_trained_adapter_artifact" || sha256(artifact.content_text) !== artifact.sha256 || Buffer.byteLength(artifact.content_text) !== artifact.size_bytes) throw new Error("post_trained_training_artifact_invalid");
   let encoded: unknown; try { encoded = JSON.parse(artifact.content_text); } catch { throw new Error("post_trained_training_artifact_invalid"); }
@@ -174,10 +176,9 @@ function assertAuthoritativeEvidence(manifest: PostTrainedAdapterManifest, confi
     { refs: [...lifecycle.trainingDataset.lineageRefs, ...lifecycle.trainingDataset.sufficiency.evidenceRefs], subjectTypes: ["learning_dataset", "learning_dataset_version"], subjectId: lifecycle.trainingDataset.datasetId },
     { refs: [...lifecycle.trainingDataset.consent.evidenceRefs, ...manifest.consent.evidenceRefs], subjectTypes: ["learning_consent"], subjectId: lifecycle.trainingDataset.datasetId },
     { refs: [lifecycle.baseModel.evidenceRef], subjectTypes: ["base_model", "model_artifact"], subjectId: lifecycle.baseModel.modelId },
-    { refs: [lifecycle.heldOutEvaluation?.reportRef], subjectTypes: ["post_trained_evaluation"], subjectId: manifest.trainingJobId },
+    { refs: [lifecycle.heldOutEvaluation?.reportRef, ...(lifecycle.canaryEvidence?.evidenceRefs ?? [])], subjectTypes: ["post_trained_training_job"], subjectId: manifest.trainingJobId },
     { refs: [lifecycle.approvedInfrastructure?.evidenceRef], subjectTypes: ["post_trained_infrastructure"], subjectId: manifest.adapterId },
     { refs: [lifecycle.approver?.evidenceRef], subjectTypes: ["post_trained_approval"], subjectId: manifest.adapterId },
-    { refs: lifecycle.canaryEvidence?.evidenceRefs ?? [], subjectTypes: ["post_trained_canary"], subjectId: manifest.adapterId },
     { refs: [manifest.descriptor.health.evidenceRef], subjectTypes: ["post_trained_health"], subjectId: manifest.descriptor.executorId },
   ];
   for (const group of groups) {
