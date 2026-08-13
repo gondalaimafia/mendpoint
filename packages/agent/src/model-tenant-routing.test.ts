@@ -12,7 +12,6 @@ import {
   TRAINING_TIER_FORBIDDEN_ERROR,
 } from "./model-tenant-routing.js";
 import { DEFAULT_MODEL_PRICE_TABLE } from "./model-provenance.js";
-import { resolveModelBackend } from "./model-providers.js";
 import type { ResolvedModelBackend } from "./model-providers.js";
 
 // The deployment's contributor (training) tier, served by the muse-spark provider.
@@ -108,16 +107,15 @@ describe("fail-closed guard: customer tenant can never reach a training tier", (
     expect(() => assertBackendAllowedForTenant("cust-1", null, {})).not.toThrow();
   });
 
-  it("end-to-end: a customer tenant on a contributor base tier is served the non-training model", () => {
-    // Corrected design: the Muse tiers are the same API and key, so a customer is
-    // served by substituting the non-training model id -- not by failing the run.
-    // (This previously threw, which would have broken every customer run.)
-    const backend = resolveTenantModelBackend("cust-1", {
-      ...CONTRIBUTOR_ENV,
-      MENDPOINT_CUSTOMER_MODEL_ROUTING: "on",
-    });
-    expect(backend?.model).toBe("muse-spark-1.2");
-    expect(isTrainingTierModel(backend!.model, {})).toBe(false);
+  it("end-to-end: routing a customer tenant to a training tier throws", () => {
+    // Customer routing on, no non-training provider configured, base tier is the
+    // contributor training tier: the customer cannot silently use it.
+    expect(() =>
+      resolveTenantModelBackend("cust-1", {
+        ...CONTRIBUTOR_ENV,
+        MENDPOINT_CUSTOMER_MODEL_ROUTING: "on",
+      }),
+    ).toThrow(TRAINING_TIER_FORBIDDEN_ERROR);
   });
 });
 
@@ -140,20 +138,18 @@ describe("routing: customer tenant selects a non-training provider", () => {
     expect(isTrainingTierBackend(backend!, {})).toBe(false);
   });
 
-  it("substitutes the non-training model even when the provider override lands on the contributor id", () => {
-    // Guard is model-id based. A provider override that still resolves to the
-    // contributor tier is corrected by substitution, so the customer is never
-    // served a training model (the guard remains the backstop for unmapped ids,
-    // covered by the fail-closed tests below).
-    const backend = resolveTenantModelBackend("cust-1", {
-      MENDPOINT_CUSTOMER_MODEL_ROUTING: "on",
-      MENDPOINT_NON_TRAINING_MODEL_PROVIDER: "openai-gateway",
-      LLM_AGENT_URL: "https://non-training.internal/v1",
-      OPENAI_API_KEY: "operator-supplied-key",
-      LLM_AGENT_MODEL: "muse-spark-1.2-contributor",
-    });
-    expect(backend?.model).toBe("muse-spark-1.2");
-    expect(isTrainingTierModel(backend!.model, {})).toBe(false);
+  it("still throws if the non-training provider is misconfigured onto the contributor model id", () => {
+    // Guard is model-id based: even routed to openai-gateway, an LLM_AGENT_MODEL
+    // that forces the contributor tier is caught, not silently served.
+    expect(() =>
+      resolveTenantModelBackend("cust-1", {
+        MENDPOINT_CUSTOMER_MODEL_ROUTING: "on",
+        MENDPOINT_NON_TRAINING_MODEL_PROVIDER: "openai-gateway",
+        LLM_AGENT_URL: "https://non-training.internal/v1",
+        OPENAI_API_KEY: "operator-supplied-key",
+        LLM_AGENT_MODEL: "muse-spark-1.2-contributor",
+      }),
+    ).toThrow(TRAINING_TIER_FORBIDDEN_ERROR);
   });
 
   it("resolves to null (unavailable) — never a fabricated key — when the non-training endpoint is not yet configured", () => {
@@ -213,71 +209,5 @@ describe("default-safe: existing preview/single-tenant behavior is preserved", (
     expect(backend!.providerId).toBe("default");
     expect(backend!.endpoint).toBe("https://models.example/v1/chat/completions");
     expect(backend!.model).toBe("muse-spark-1.2");
-  });
-});
-
-describe("same-API non-training substitution (muse-spark-1.2)", () => {
-  it("serves a customer tenant the non-training model on the SAME provider, endpoint, and key", () => {
-    // The bug this locks: with no separate provider configured, a customer tenant
-    // used to resolve to the contributor model and then trip the fail-closed guard,
-    // so customer runs failed outright.
-    const base = resolveModelBackend(CONTRIBUTOR_ENV);
-    const customer = resolveTenantModelBackend("tenant-customer", {
-      ...CONTRIBUTOR_ENV,
-      MENDPOINT_CUSTOMER_MODEL_ROUTING: "on",
-    });
-
-    expect(customer).not.toBeNull();
-    expect(customer?.model).toBe("muse-spark-1.2");
-    expect(isTrainingTierModel(customer!.model, {})).toBe(false);
-    // Same API: only the model id changes.
-    expect(customer?.providerId).toBe(base?.providerId);
-    expect(customer?.endpoint).toBe(base?.endpoint);
-    expect(customer?.apiKey).toBe(base?.apiKey);
-  });
-
-  it("still lets an allowlisted internal tenant use the contributor tier", () => {
-    const internal = resolveTenantModelBackend("tenant-internal", {
-      ...CONTRIBUTOR_ENV,
-      MENDPOINT_CUSTOMER_MODEL_ROUTING: "on",
-      MENDPOINT_TRAINING_TIER_TENANTS: "tenant-internal",
-    });
-    expect(internal?.model).toBe("muse-spark-1.2-contributor");
-  });
-
-  it("is byte-identical pass-through when customer routing is off", () => {
-    const off = resolveTenantModelBackend("tenant-customer", CONTRIBUTOR_ENV);
-    expect(off).toEqual(resolveModelBackend(CONTRIBUTOR_ENV));
-  });
-
-  it("honours an explicit non-training model override", () => {
-    const customer = resolveTenantModelBackend("tenant-customer", {
-      ...CONTRIBUTOR_ENV,
-      MENDPOINT_CUSTOMER_MODEL_ROUTING: "on",
-      MENDPOINT_NON_TRAINING_MODEL: "muse-spark-1.2-eu",
-    });
-    expect(customer?.model).toBe("muse-spark-1.2-eu");
-  });
-
-  it("fails closed when a training model has no known non-training counterpart", () => {
-    expect(() =>
-      resolveTenantModelBackend("tenant-customer", {
-        ...CONTRIBUTOR_ENV,
-        LLM_AGENT_MODEL: "some-other-trainer",
-        MENDPOINT_TRAINING_TIER_MODELS: "some-other-trainer",
-        MENDPOINT_CUSTOMER_MODEL_ROUTING: "on",
-      }),
-    ).toThrow(/model_non_training_substitute_unknown/);
-  });
-
-  it("never returns a training-tier model for a customer tenant, even if the map is wrong", () => {
-    expect(() =>
-      resolveTenantModelBackend("tenant-customer", {
-        ...CONTRIBUTOR_ENV,
-        MENDPOINT_CUSTOMER_MODEL_ROUTING: "on",
-        // A misconfigured substitution that points back at the training tier.
-        MENDPOINT_NON_TRAINING_MODEL: "muse-spark-1.2-contributor",
-      }),
-    ).toThrow(new RegExp(TRAINING_TIER_FORBIDDEN_ERROR));
   });
 });
