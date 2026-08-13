@@ -206,8 +206,23 @@ function resolveApp(opts: CreateSandboxOpts): string | undefined {
 }
 
 /**
+ * The sandbox Fly token. `MENDPOINT_SANDBOX_FLY_TOKEN` is preferred because it is
+ * scoped to the sandbox app specifically; `FLY_API_TOKEN` is accepted as a
+ * fallback (it is the conventional flyctl name, but an org-wide token is a
+ * broader credential than this backend needs).
+ */
+export function resolveFlySandboxToken(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const scoped = env.MENDPOINT_SANDBOX_FLY_TOKEN?.trim();
+  if (scoped) return scoped;
+  const generic = env.FLY_API_TOKEN?.trim();
+  return generic ? generic : undefined;
+}
+
+/**
  * Pick the Fly client. Injected client wins (tests / explicit dry-run). Otherwise
- * live only when FLY_API_TOKEN + a target app are present and mock mode is not
+ * live only when a sandbox token + a target app are present and mock mode is not
  * forced; else a deterministic in-memory mock (no network).
  */
 export function resolveFlyClient(
@@ -215,7 +230,7 @@ export function resolveFlyClient(
   app: string | undefined,
 ): FlyMachineClient {
   if (opts.flyClient) return opts.flyClient;
-  const token = process.env.FLY_API_TOKEN;
+  const token = resolveFlySandboxToken(process.env);
   const mode = process.env.MENDPOINT_SANDBOX_FLY_MODE;
   if (mode === "mock" || !token || !app) {
     return createMockFlyClient();

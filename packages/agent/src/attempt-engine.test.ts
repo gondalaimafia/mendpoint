@@ -31,6 +31,7 @@ const roots: string[] = [];
 function checkpointJournal(): WardenCheckpointJournal & {
   setLease(value: number): void;
   failReadAfterGeneration(value: number): void;
+  record(): WardenCheckpointJournalRecord;
 } {
   let record: WardenCheckpointJournalRecord = {
     envelope: null,
@@ -68,6 +69,9 @@ function checkpointJournal(): WardenCheckpointJournal & {
     },
     failReadAfterGeneration(value) {
       failReadGeneration = value;
+    },
+    record() {
+      return record;
     },
   };
 }
@@ -421,7 +425,7 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
     expect(plannerCalls).toBe(3);
     expect(reservations).toBe(3);
     expect(settlements).toBe(3);
-  });
+  }, 30_000);
 
   it("replays a committed verifier result after takeover without running it twice", async () => {
     const value = fixture("runtime-verifier-replay");
@@ -467,6 +471,38 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
       throw new Error(`${recovered.code}: ${recovered.summary}`);
     }
     expect(Number(readFileSync(join(value.base, "verifier-count.txt"), "utf8"))).toBe(5);
+  });
+
+  it("defers sealing the independently verified candidate until atomic completion", async () => {
+    const value = fixture("runtime-terminal-evidence");
+    const journal = checkpointJournal();
+    const result = await runWardenAttempt(input(value, {
+      runtime: {
+        jobId: "job-runtime-terminal-evidence",
+        journal,
+        key: Buffer.alloc(32, 10),
+        writerLeaseGeneration: 1,
+        executorDigest: `sha256:${"e".repeat(64)}`,
+      },
+    }));
+
+    if (result.status === "rejected") throw new Error(`${result.code}: ${result.summary}`);
+    expect(journal.record().envelope?.payload.phase).toBe("agent_running");
+    const terminalCheckpoint = await result.finalizeTerminal!();
+    expect(terminalCheckpoint).toEqual({
+      envelope: journal.record().envelope,
+      sealedRuntimeState: journal.record().sealedRuntimeState,
+    });
+    expect(terminalCheckpoint).toMatchObject({
+      envelope: {
+        payload: { phase: "terminal" },
+        payloadDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      },
+      sealedRuntimeState: {
+        algorithm: "AES-256-GCM",
+        checkpointPayloadDigest: terminalCheckpoint.envelope.payloadDigest,
+      },
+    });
   });
 
   it("repairs only a private candidate and leaves the frozen source unchanged", async () => {

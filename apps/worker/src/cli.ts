@@ -100,6 +100,7 @@ import {
   type AgentPlanner,
   type WardenAttemptLimits,
   type WardenAttemptResult,
+  type WardenRuntimeTerminalEvidence,
 } from "@mendpoint/agent";
 import {
   buildWardenExecutorRegistry,
@@ -1255,28 +1256,71 @@ class WardenAtomicFinalizationError extends Error {
   }
 }
 
-function persistCompletedAgentJob(
+function attachWardenTerminalEvidence(
+  run: AgentRunWrite,
+  evidence: WardenRuntimeTerminalEvidence,
+): AgentRunWrite {
+  const result = run.resultJson === null || run.resultJson === undefined
+    ? {}
+    : JSON.parse(run.resultJson) as Record<string, unknown>;
+  if (!result || Array.isArray(result) || typeof result !== "object" ||
+      Object.hasOwn(result, "terminalCheckpoint")) {
+    throw new Error("warden_terminal_checkpoint_archive_invalid");
+  }
+  return {
+    ...run,
+    resultJson: JSON.stringify({ ...result, terminalCheckpoint: evidence }),
+  };
+}
+
+function attachWardenTerminalReference(
+  result: unknown,
+  evidence: WardenRuntimeTerminalEvidence,
+): unknown {
+  if (!result || Array.isArray(result) || typeof result !== "object" ||
+      Object.hasOwn(result, "terminalCheckpointPayloadDigest")) {
+    throw new Error("warden_terminal_checkpoint_reference_invalid");
+  }
+  return {
+    ...(result as Record<string, unknown>),
+    terminalCheckpointPayloadDigest: evidence.envelope.payloadDigest,
+  };
+}
+
+async function persistCompletedAgentJob(
   db: AppDb,
   jobId: string,
   fence: JobFence,
   jobResult: unknown,
   run: AgentRunWrite,
   applyRoutingOutcome?: RoutingOutcomeFinalizer,
-): void {
+  finalizeTerminal?: () => Promise<WardenRuntimeTerminalEvidence>,
+): Promise<void> {
   let routingFinalizationStarted = false;
   db.raw.exec("BEGIN IMMEDIATE");
   try {
-    if (!completeJob(db, jobId, jobResult, nowIso(), fence)) {
+    const terminalEvidence = finalizeTerminal ? await finalizeTerminal() : undefined;
+    const completedResult = terminalEvidence
+      ? attachWardenTerminalReference(jobResult, terminalEvidence)
+      : jobResult;
+    const completedRun = terminalEvidence
+      ? attachWardenTerminalEvidence(run, terminalEvidence)
+      : run;
+    if (!completeJob(db, jobId, completedResult, nowIso(), fence)) {
       throw new Error("lease_lost_before_warden_completion");
     }
     if (applyRoutingOutcome) {
       routingFinalizationStarted = true;
       applyRoutingOutcome();
     }
-    insertAgentRun(db, { ...run, jobId });
+    insertAgentRun(db, { ...completedRun, jobId });
     // Wave 3b: record the per-run metering entry inside the same transaction,
     // after the routing outcome (cost/tokens) is durable.
-    recordAgentRunMeter(db, { tenantId: run.tenantId, runId: run.id, meteredAt: nowIso() });
+    recordAgentRunMeter(db, {
+      tenantId: completedRun.tenantId,
+      runId: completedRun.id,
+      meteredAt: nowIso(),
+    });
     db.raw.exec("COMMIT");
   } catch (error) {
     db.raw.exec("ROLLBACK");
@@ -2387,7 +2431,7 @@ async function processJobsOnceUnfenced(
           };
           if (!warden.ok) {
             if (warden.verifier.status === "simulated") {
-              persistCompletedAgentJob(db, job.id, fence, {
+              await persistCompletedAgentJob(db, job.id, fence, {
                 sessionId: warden.sessionId,
                 ok: false,
                 simulated: true,
@@ -2411,7 +2455,7 @@ async function processJobsOnceUnfenced(
             if (!failure.applied) console.error(`  stale lease ignored job=${job.id}`);
             continue;
           }
-          persistCompletedAgentJob(db, job.id, fence, {
+          await persistCompletedAgentJob(db, job.id, fence, {
             sessionId: warden.sessionId,
             ok: true,
             steps: warden.steps.length,
@@ -2761,7 +2805,7 @@ async function processJobsOnceUnfenced(
           continue;
         }
         try {
-          persistCompletedAgentJob(
+          await persistCompletedAgentJob(
             db,
             job.id,
             fence,
@@ -2783,6 +2827,7 @@ async function processJobsOnceUnfenced(
                 },
             runWrite,
             pendingWardenRoutingFinalizer,
+            attempt.status === "succeeded" ? attempt.finalizeTerminal : undefined,
           );
         } catch (error) {
           discardWardenAttempt(attempt, candidateRoot, evidenceRoot);
