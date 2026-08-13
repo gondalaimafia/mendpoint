@@ -17,7 +17,10 @@
     "@mendpoint/agent": "*",
     "@mendpoint/ops": "*",
     "@mendpoint/orchestrator": "*",
-    "@mendpoint/shared": "*"
+    "@mendpoint/platform": "*",
+    "@mendpoint/policy": "*",
+    "@mendpoint/shared": "*",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "typescript": "^5.8.2",

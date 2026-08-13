@@ -312,6 +312,25 @@ export {
 } from "./blueprint-planner.js";
 
 export {
+  MENDPOINT_CONFIG_SCHEMA_VERSION,
+  MendpointConfigError,
+  parseMendpointConfig,
+  resolveEffectiveConfig,
+  effectivePolicyOverrides,
+  permittedRolePermissions,
+  roleMayUse,
+  codingStandardContext,
+  isRecipeAllowed,
+  isAgentAllowed,
+  type MendpointConfig,
+  type MendpointEnvironment,
+  type MendpointCodingStandard,
+  type MendpointWorkflows,
+  type MendpointRolePermissions,
+  type EffectiveConfig,
+} from "./agent-config.js";
+
+export {
   compileApprovedTransformerMission,
   type TransformerBlueprintApproval,
   type TransformerMissionCompilationInput,
