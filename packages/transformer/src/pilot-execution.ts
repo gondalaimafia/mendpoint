@@ -285,8 +285,77 @@ export type TransformerPilotUnit = Readonly<{
   regenerationReview?: TransformerRegenerationReview;
   routingSettlement?: TransformerRoutingSettlementRecord;
   attemptCheckpointHead?: TransformerAttemptCheckpointHead;
+  draftDelivery?: TransformerDraftDeliveryRecord;
   reviewerEditLines?: number;
   legacyItemsRemoved?: number;
+}>;
+
+export type TransformerDraftDeliveryRecord = Readonly<{
+  deliveryId: string;
+  status: "pending" | "leased" | "delivered";
+  authorizedAt: string;
+  authorizationEvidenceRefs: readonly string[];
+  leaseGeneration: number;
+  leaseTokenDigest?: string;
+  leaseExpiresAt?: string;
+  leasedAt?: string;
+  deliveredAt?: string;
+  intentDigest?: string;
+  branchName?: string;
+  baseBranch?: string;
+  baseRevision?: string;
+  commitSha?: string;
+  pullRequestNumber?: number;
+  pullRequestUrl?: string;
+}>;
+
+export type TransformerDraftDeliveryLease = Readonly<{
+  type: "deliver_draft";
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  title: string;
+  deliveryId: string;
+  leaseGeneration: number;
+  leaseTokenDigest: string;
+  leaseExpiresAt: string;
+  leasedAt: string;
+  authorizedAt: string;
+  snapshot: TransformerExactSnapshot;
+  candidateRevision: string;
+  candidateDigest: string;
+  changedPaths: readonly string[];
+  recipe: RecipeReference;
+  constraintVersion: number;
+  constraintDigest: string;
+  evidenceRefs: readonly string[];
+  checkpointHead: TransformerAttemptCheckpointHead;
+}>;
+
+export type TransformerDraftDeliveryCompletion = Readonly<{
+  intentDigest: string;
+  branchName: string;
+  baseBranch: string;
+  baseRevision: string;
+  commitSha: string;
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+}>;
+
+export type TransformerDeliveredDraftObservation = Readonly<{
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  wave: number;
+  deliveryId: string;
+  snapshot: TransformerExactSnapshot;
+  branchName: string;
+  baseBranch: string;
+  baseRevision: string;
+  commitSha: string;
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+  evidenceRefs: readonly string[];
 }>;
 
 export type TransformerPilotCampaign = Readonly<{
@@ -662,7 +731,7 @@ function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareCodeUnits(left, right))
       .map(([key, child]) => [key, stableValue(child)]));
   }
   return value;
@@ -1289,6 +1358,34 @@ function requireAttemptCompletion(input: TransformerAttemptCompletionInput): voi
   requireNonnegative(input.actualCostUsd, "transformer_pilot_cost_invalid");
 }
 
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function requireDraftDeliveryCompletion(
+  value: TransformerDraftDeliveryCompletion,
+): TransformerDraftDeliveryCompletion {
+  if (!value || typeof value !== "object" ||
+      Object.keys(value).sort().join(",") !== [
+        "baseBranch", "baseRevision", "branchName", "commitSha", "intentDigest",
+        "pullRequestNumber", "pullRequestUrl",
+      ].sort().join(",") ||
+      !DIGEST.test(value.intentDigest) || !BRANCH.test(value.branchName) ||
+      !BRANCH.test(value.baseBranch) || !REVISION.test(value.baseRevision) ||
+      !REVISION.test(value.commitSha) || !Number.isSafeInteger(value.pullRequestNumber) ||
+      value.pullRequestNumber < 1) {
+    throw new Error("transformer_pilot_delivery_completion_invalid");
+  }
+  let url: URL;
+  try { url = new URL(value.pullRequestUrl); } catch {
+    throw new Error("transformer_pilot_delivery_completion_invalid");
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.hash) {
+    throw new Error("transformer_pilot_delivery_completion_invalid");
+  }
+  return deepFreeze({ ...value });
+}
+
 function applyAttemptCompletion(
   state: StoredCampaign,
   input: TransformerAttemptCompletionInput,
@@ -1390,6 +1487,12 @@ export class TransformerPilotExecutionStore {
         lease_json TEXT NOT NULL,
         PRIMARY KEY (tenant_id, idempotency_key)
       );
+      CREATE TABLE IF NOT EXISTS tf_pilot_delivery_claim_results (
+        tenant_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        lease_json TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, idempotency_key)
+      );
       CREATE TRIGGER IF NOT EXISTS tf_pilot_events_no_update BEFORE UPDATE ON tf_pilot_events
       BEGIN SELECT RAISE(ABORT, 'transformer_pilot_events_append_only'); END;
       CREATE TRIGGER IF NOT EXISTS tf_pilot_events_no_delete BEFORE DELETE ON tf_pilot_events
@@ -1402,6 +1505,10 @@ export class TransformerPilotExecutionStore {
       BEGIN SELECT RAISE(ABORT, 'transformer_pilot_claim_results_append_only'); END;
       CREATE TRIGGER IF NOT EXISTS tf_pilot_claim_results_no_delete BEFORE DELETE ON tf_pilot_claim_results
       BEGIN SELECT RAISE(ABORT, 'transformer_pilot_claim_results_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_delivery_claim_results_no_update BEFORE UPDATE ON tf_pilot_delivery_claim_results
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_delivery_claim_results_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_delivery_claim_results_no_delete BEFORE DELETE ON tf_pilot_delivery_claim_results
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_delivery_claim_results_append_only'); END;
     `);
   }
 
@@ -1457,15 +1564,15 @@ export class TransformerPilotExecutionStore {
         }, gateConfig).allowed)
       )
       .sort((left, right) =>
-        left.updatedAt.localeCompare(right.updatedAt) ||
-        left.tenantId.localeCompare(right.tenantId) ||
-        left.campaignId.localeCompare(right.campaignId)
+        compareCodeUnits(left.updatedAt, right.updatedAt) ||
+        compareCodeUnits(left.tenantId, right.tenantId) ||
+        compareCodeUnits(left.campaignId, right.campaignId)
       )
       .slice(0, limit)
       .map((campaign) => {
         const unit = campaign.units
           .filter((candidate) => attemptEligible(campaign, candidate))
-          .sort((left, right) => left.wave - right.wave || left.id.localeCompare(right.id))[0]!;
+          .sort((left, right) => left.wave - right.wave || compareCodeUnits(left.id, right.id))[0]!;
         return {
           tenantId: campaign.tenantId,
           campaignId: campaign.campaignId,
@@ -1518,10 +1625,10 @@ export class TransformerPilotExecutionStore {
           handoff: unit.adaptiveCandidateHandoff!,
         })))
       .sort((left, right) =>
-        left.handoff.observedAt.localeCompare(right.handoff.observedAt) ||
-        left.tenantId.localeCompare(right.tenantId) ||
-        left.campaignId.localeCompare(right.campaignId) ||
-        left.unitId.localeCompare(right.unitId)
+        compareCodeUnits(left.handoff.observedAt, right.handoff.observedAt) ||
+        compareCodeUnits(left.tenantId, right.tenantId) ||
+        compareCodeUnits(left.campaignId, right.campaignId) ||
+        compareCodeUnits(left.unitId, right.unitId)
       )
       .slice(0, limit)
       .map((value) => deepFreeze(value));
@@ -1554,10 +1661,10 @@ export class TransformerPilotExecutionStore {
         }];
       }))
       .sort((left, right) =>
-        left.outcome.completedAt.localeCompare(right.outcome.completedAt) ||
-        left.tenantId.localeCompare(right.tenantId) ||
-        left.campaignId.localeCompare(right.campaignId) ||
-        left.unitId.localeCompare(right.unitId)
+        compareCodeUnits(left.outcome.completedAt, right.outcome.completedAt) ||
+        compareCodeUnits(left.tenantId, right.tenantId) ||
+        compareCodeUnits(left.campaignId, right.campaignId) ||
+        compareCodeUnits(left.unitId, right.unitId)
       )
       .slice(0, limit);
     return deepFreeze(pending);
@@ -1595,12 +1702,10 @@ export class TransformerPilotExecutionStore {
         })
         .map((unit) => ({ campaign, unit })))
       .sort((left, right) =>
-        String(left.unit.leaseExpiresAt ?? "").localeCompare(
-          String(right.unit.leaseExpiresAt ?? ""),
-        ) ||
-        left.campaign.tenantId.localeCompare(right.campaign.tenantId) ||
-        left.campaign.campaignId.localeCompare(right.campaign.campaignId) ||
-        left.unit.id.localeCompare(right.unit.id)
+        compareCodeUnits(String(left.unit.leaseExpiresAt ?? ""), String(right.unit.leaseExpiresAt ?? "")) ||
+        compareCodeUnits(left.campaign.tenantId, right.campaign.tenantId) ||
+        compareCodeUnits(left.campaign.campaignId, right.campaign.campaignId) ||
+        compareCodeUnits(left.unit.id, right.unit.id)
       )
       .slice(0, limit)
       .map(({ campaign, unit }) => ({
@@ -1753,7 +1858,7 @@ export class TransformerPilotExecutionStore {
       }
       const eligible = state.units
         .filter((unit) => attemptEligible(state, unit))
-        .sort((left, right) => left.wave - right.wave || left.id.localeCompare(right.id))[0];
+        .sort((left, right) => left.wave - right.wave || compareCodeUnits(left.id, right.id))[0];
       if (!eligible) throw new Error("transformer_pilot_routing_attempt_not_bindable");
       if (eligible.routingSettlement && !eligible.routingSettlement.settledAt) {
         throw new Error("transformer_pilot_routing_settlement_pending");
@@ -1777,7 +1882,6 @@ export class TransformerPilotExecutionStore {
     const request = {
       leaseTokenDigest: tokenDigest,
       leaseDurationMs,
-      leaseExpiresAt,
     };
     const requestDigest = sha256(request);
     const leaseFrom = (
@@ -1857,7 +1961,7 @@ export class TransformerPilotExecutionStore {
       }
       const eligible = state.units
         .filter((unit) => attemptEligible(state, unit))
-        .sort((left, right) => left.wave - right.wave || left.id.localeCompare(right.id))[0];
+        .sort((left, right) => left.wave - right.wave || compareCodeUnits(left.id, right.id))[0];
       if (!eligible) {
         this.db.exec("COMMIT");
         return null;
@@ -1899,6 +2003,7 @@ export class TransformerPilotExecutionStore {
         .run(state.revision, JSON.stringify(state), state.tenantId, state.campaignId);
       this.insertEvent(state, "attempt.claimed", observedAt, evidenceRefs, {
         ...request,
+        leaseExpiresAt,
         unitId: updated.id,
         adaptiveBudgetRemaining: adaptiveBudgetRemaining(requireAdaptiveBudget(state), state),
       });
@@ -2954,9 +3059,307 @@ export class TransformerPilotExecutionStore {
       autoDeploy: false,
     }));
     this.mutate(input, "delivery.drafts_authorized", { wave, actionUnitIds: actions.map((action) => action.unitId) }, (draft) => {
-      draft.units = draft.units.map((unit) => unit.wave === wave ? { ...unit, state: "draft" as const } : unit);
+      draft.units = draft.units.map((unit) => {
+        if (unit.wave !== wave) return unit;
+        const evidenceRefs = actions.find((action) => action.unitId === unit.id)!.evidenceRefs;
+        return {
+          ...unit,
+          state: "draft" as const,
+          ...(unit.attemptCheckpointHead ? { draftDelivery: Object.freeze({
+              deliveryId: `transformer-draft-${sha256({
+                tenantId: draft.tenantId,
+                campaignId: draft.campaignId,
+                unitId: unit.id,
+                candidateDigest: unit.candidateDigest,
+              }).slice("sha256:".length, "sha256:".length + 32)}`,
+              status: "pending" as const,
+              authorizedAt: input.observedAt,
+              authorizationEvidenceRefs: Object.freeze([...evidenceRefs]),
+              leaseGeneration: 0,
+            }) } : {}),
+        };
+      });
     });
     return deepFreeze(actions);
+  }
+
+  claimNextDraftDelivery(input: MutationInput & {
+    leaseToken: string;
+    leaseDurationMs?: number;
+    gateConfig?: string;
+  }): TransformerDraftDeliveryLease | null {
+    if (!input.leaseToken || input.leaseToken.length < 24) {
+      throw new Error("transformer_pilot_delivery_lease_token_invalid");
+    }
+    const observedAt = requireTimestamp(input.observedAt);
+    const evidenceRefs = requireEvidence(input.evidenceRefs);
+    requireId(input.idempotencyKey, "transformer_pilot_idempotency_invalid");
+    const leaseDurationMs = requireLeaseDuration(input.leaseDurationMs);
+    const leaseExpiresAt = new Date(Date.parse(observedAt) + leaseDurationMs).toISOString();
+    const tokenDigest = leaseTokenDigest(input.leaseToken);
+    const request = { leaseTokenDigest: tokenDigest, leaseDurationMs };
+    const requestDigest = sha256(request);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const replay = this.idempotentReplay(
+        input.tenantId,
+        input.idempotencyKey,
+        "delivery.draft_claimed",
+        requestDigest,
+        input.campaignId,
+      );
+      if (replay) {
+        const row = this.db.prepare(
+          "SELECT lease_json FROM tf_pilot_delivery_claim_results WHERE tenant_id = ? AND idempotency_key = ?",
+        ).get(input.tenantId, input.idempotencyKey) as { lease_json: string } | undefined;
+        if (!row) throw new Error("transformer_pilot_delivery_claim_replay_invalid");
+        const lease = JSON.parse(row.lease_json) as TransformerDraftDeliveryLease;
+        if (lease.tenantId !== input.tenantId || lease.campaignId !== input.campaignId ||
+            lease.leaseTokenDigest !== tokenDigest) {
+          throw new Error("transformer_pilot_delivery_claim_replay_invalid");
+        }
+        this.db.exec("COMMIT");
+        return deepFreeze(lease);
+      }
+      const state = this.mustGet(input.tenantId, input.campaignId);
+      const gate = authorizeTransformerWorkerAction(
+        { tenantId: input.tenantId, environment: state.environment },
+        input.gateConfig,
+      );
+      if (!gate.allowed) {
+        throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+      }
+      if (state.state !== "running") {
+        this.db.exec("COMMIT");
+        return null;
+      }
+      const eligible = state.units
+        .filter((unit) => unit.state === "draft" && unit.draftDelivery &&
+          unit.draftDelivery.status !== "delivered" &&
+          (unit.draftDelivery.status === "pending" ||
+            Date.parse(unit.draftDelivery.leaseExpiresAt ?? "") <= Date.parse(observedAt)))
+        .sort((left, right) => left.wave - right.wave || compareCodeUnits(left.id, right.id))[0];
+      if (!eligible?.draftDelivery || !eligible.attemptCheckpointHead) {
+        this.db.exec("COMMIT");
+        return null;
+      }
+      const delivery = Object.freeze({
+        ...eligible.draftDelivery,
+        status: "leased" as const,
+        leaseGeneration: eligible.draftDelivery.leaseGeneration + 1,
+        leaseTokenDigest: tokenDigest,
+        leaseExpiresAt,
+        leasedAt: observedAt,
+      });
+      const checkpointHead = eligible.attemptCheckpointHead;
+      if (!checkpointHead) throw new Error("transformer_pilot_draft_checkpoint_required");
+      const updated = Object.freeze({ ...eligible, draftDelivery: delivery });
+      replaceUnit(state, updated);
+      state.revision += 1;
+      state.updatedAt = observedAt;
+      this.db.prepare("UPDATE tf_pilot_campaigns SET revision = ?, body_json = ? WHERE tenant_id = ? AND campaign_id = ?")
+        .run(state.revision, JSON.stringify(state), state.tenantId, state.campaignId);
+      this.insertEvent(state, "delivery.draft_claimed", observedAt, evidenceRefs, {
+        ...request,
+        unitId: updated.id,
+        title: updated.title,
+        deliveryId: delivery.deliveryId,
+        leaseGeneration: delivery.leaseGeneration,
+        leaseExpiresAt,
+      });
+      this.insertIdempotency(
+        state.tenantId,
+        input.idempotencyKey,
+        "delivery.draft_claimed",
+        requestDigest,
+        state.campaignId,
+        state.revision,
+      );
+      const lease: TransformerDraftDeliveryLease = deepFreeze({
+        type: "deliver_draft",
+        tenantId: state.tenantId,
+        campaignId: state.campaignId,
+        unitId: updated.id,
+        title: updated.title,
+        deliveryId: delivery.deliveryId,
+        leaseGeneration: delivery.leaseGeneration,
+        leaseTokenDigest: tokenDigest,
+        leaseExpiresAt,
+        leasedAt: observedAt,
+        authorizedAt: delivery.authorizedAt,
+        snapshot: updated.snapshot,
+        candidateRevision: updated.candidateRevision,
+        candidateDigest: updated.candidateDigest,
+        changedPaths: updated.changedPaths,
+        recipe: updated.recipe,
+        constraintVersion: state.constraintVersion,
+        constraintDigest: state.constraintDigest,
+        evidenceRefs: delivery.authorizationEvidenceRefs,
+        checkpointHead,
+      });
+      this.db.prepare("INSERT INTO tf_pilot_delivery_claim_results VALUES (?, ?, ?)")
+        .run(state.tenantId, input.idempotencyKey, JSON.stringify(lease));
+      this.db.exec("COMMIT");
+      return lease;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  assertCurrentDraftDeliveryFence(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    unitId: string;
+    deliveryId: string;
+    leaseGeneration: number;
+    leaseToken: string;
+    observedAt: string;
+    gateConfig?: string;
+  }>): void {
+    const observedAt = requireTimestamp(input.observedAt);
+    const state = this.mustGet(input.tenantId, input.campaignId);
+    if (state.state !== "running") throw new Error("transformer_pilot_delivery_fence_stale");
+    const gate = authorizeTransformerWorkerAction(
+      { tenantId: input.tenantId, environment: state.environment },
+      input.gateConfig,
+    );
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
+    const unit = unitById(state, input.unitId);
+    const delivery = unit.draftDelivery;
+    if (unit.state !== "draft" || !delivery || delivery.deliveryId !== input.deliveryId ||
+        delivery.status !== "leased" || delivery.leaseGeneration !== input.leaseGeneration ||
+        delivery.leaseTokenDigest !== leaseTokenDigest(input.leaseToken) ||
+        Date.parse(delivery.leaseExpiresAt ?? "") <= Date.parse(observedAt)) {
+      throw new Error("transformer_pilot_delivery_fence_stale");
+    }
+  }
+
+  readCurrentDraftDeliveryLease(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    unitId: string;
+    deliveryId: string;
+  }>): TransformerDraftDeliveryLease {
+    const state = this.mustGet(input.tenantId, input.campaignId);
+    const unit = unitById(state, input.unitId);
+    const delivery = unit.draftDelivery;
+    if (unit.state !== "draft" || !delivery || delivery.deliveryId !== input.deliveryId ||
+        delivery.status !== "leased" || !delivery.leaseTokenDigest || !delivery.leaseExpiresAt ||
+        !delivery.leasedAt || !unit.attemptCheckpointHead) {
+      throw new Error("transformer_pilot_delivery_lease_missing");
+    }
+    return deepFreeze({
+      type: "deliver_draft",
+      tenantId: state.tenantId,
+      campaignId: state.campaignId,
+      unitId: unit.id,
+      title: unit.title,
+      deliveryId: delivery.deliveryId,
+      leaseGeneration: delivery.leaseGeneration,
+      leaseTokenDigest: delivery.leaseTokenDigest,
+      leaseExpiresAt: delivery.leaseExpiresAt,
+      leasedAt: delivery.leasedAt,
+      authorizedAt: delivery.authorizedAt,
+      snapshot: unit.snapshot,
+      candidateRevision: unit.candidateRevision,
+      candidateDigest: unit.candidateDigest,
+      changedPaths: unit.changedPaths,
+      recipe: unit.recipe,
+      constraintVersion: state.constraintVersion,
+      constraintDigest: state.constraintDigest,
+      evidenceRefs: delivery.authorizationEvidenceRefs,
+      checkpointHead: unit.attemptCheckpointHead,
+    });
+  }
+
+  completeDraftDelivery(input: MutationInput & Readonly<{
+    unitId: string;
+    deliveryId: string;
+    leaseGeneration: number;
+    leaseToken: string;
+    completion: TransformerDraftDeliveryCompletion;
+    gateConfig?: string;
+  }>): TransformerPilotCampaign {
+    const completion = requireDraftDeliveryCompletion(input.completion);
+    const campaign = this.mustGet(input.tenantId, input.campaignId);
+    if (campaign.state !== "running") throw new Error("transformer_pilot_delivery_fence_stale");
+    const gate = authorizeTransformerWorkerAction(
+      { tenantId: input.tenantId, environment: campaign.environment },
+      input.gateConfig,
+    );
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
+    return this.mutate(input, "delivery.draft_opened", {
+      unitId: input.unitId,
+      deliveryId: input.deliveryId,
+      leaseGeneration: input.leaseGeneration,
+      leaseTokenDigest: leaseTokenDigest(input.leaseToken),
+      completion,
+    }, (state) => {
+      const unit = unitById(state, input.unitId);
+      const delivery = unit.draftDelivery;
+      if (unit.state !== "draft" || !delivery || delivery.deliveryId !== input.deliveryId ||
+          delivery.status !== "leased" || delivery.leaseGeneration !== input.leaseGeneration ||
+          delivery.leaseTokenDigest !== leaseTokenDigest(input.leaseToken) ||
+          Date.parse(delivery.leaseExpiresAt ?? "") <= Date.parse(input.observedAt) ||
+          completion.baseRevision !== unit.snapshot.revision) {
+        throw new Error("transformer_pilot_delivery_fence_stale");
+      }
+      replaceUnit(state, {
+        ...unit,
+        scmEvidenceRefs: requireEvidence(input.evidenceRefs),
+        draftDelivery: Object.freeze({
+          ...delivery,
+          status: "delivered" as const,
+          deliveredAt: input.observedAt,
+          ...completion,
+        }),
+      });
+    });
+  }
+
+  listCurrentWaveDeliveredDrafts(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+  }>): readonly TransformerDeliveredDraftObservation[] {
+    const state = this.mustGet(input.tenantId, input.campaignId);
+    if (state.state !== "running") return Object.freeze([]);
+    const remaining = state.units.filter((unit) =>
+      unit.state !== "merged" && unit.state !== "cancelled" && unit.state !== "rolled_back"
+    );
+    if (!remaining.length) return Object.freeze([]);
+    const wave = Math.min(...remaining.map((unit) => unit.wave));
+    const units = state.units.filter((unit) => unit.wave === wave);
+    if (!units.length || units.some((unit) =>
+      !["draft", "accepted"].includes(unit.state) || unit.draftDelivery?.status !== "delivered"
+    )) return Object.freeze([]);
+    return deepFreeze(units.map((unit): TransformerDeliveredDraftObservation => {
+      const delivery = unit.draftDelivery!;
+      if (!delivery.branchName || !delivery.baseBranch || !delivery.baseRevision ||
+          !delivery.commitSha || !delivery.pullRequestNumber || !delivery.pullRequestUrl) {
+        throw new Error("transformer_pilot_delivery_evidence_invalid");
+      }
+      return {
+        tenantId: state.tenantId,
+        campaignId: state.campaignId,
+        unitId: unit.id,
+        wave,
+        deliveryId: delivery.deliveryId,
+        snapshot: unit.snapshot,
+        branchName: delivery.branchName,
+        baseBranch: delivery.baseBranch,
+        baseRevision: delivery.baseRevision,
+        commitSha: delivery.commitSha,
+        pullRequestNumber: delivery.pullRequestNumber,
+        pullRequestUrl: delivery.pullRequestUrl,
+        evidenceRefs: [...new Set([...delivery.authorizationEvidenceRefs, ...unit.scmEvidenceRefs])]
+          .sort(compareCodeUnits),
+      };
+    }));
   }
 
   reconcileWave(input: MutationInput & {
@@ -2985,24 +3388,25 @@ export class TransformerPilotExecutionStore {
       }
       for (const unit of units) {
         const observation = byId.get(unit.id)!;
+        const deliveredHeadRevision = unit.draftDelivery?.commitSha ?? unit.candidateRevision;
         requireEvidence(observation.evidenceRefs, "transformer_pilot_scm_evidence_required");
         requireNonnegative(observation.approvals, "transformer_pilot_approvals_invalid");
         requireNonnegative(observation.reviewerEditLines, "transformer_pilot_reviewer_delta_invalid");
         requireNonnegative(observation.legacyItemsRemoved, "transformer_pilot_legacy_delta_invalid");
         if (observation.baseRevision !== unit.snapshot.revision) failures.push({ code: "source_drift", unit, evidenceRefs: observation.evidenceRefs });
-        if (observation.headRevision !== unit.candidateRevision) failures.push({ code: "head_drift", unit, evidenceRefs: observation.evidenceRefs });
+        if (observation.headRevision !== deliveredHeadRevision) failures.push({ code: "head_drift", unit, evidenceRefs: observation.evidenceRefs });
         if (observation.state === "closed") failures.push({ code: "draft_closed", unit, evidenceRefs: observation.evidenceRefs });
         if (observation.checks === "failure") failures.push({ code: "ci_failure", unit, evidenceRefs: observation.evidenceRefs });
         if (!observation.conversationsResolved) failures.push({ code: "conversation_unresolved", unit, evidenceRefs: observation.evidenceRefs });
         if (observation.state === "merged") {
           if (observation.checks === "running" || observation.checks === "missing") {
             failures.push({ code: "ci_incomplete", unit, evidenceRefs: observation.evidenceRefs });
-          } else if (observation.checkRevision !== unit.candidateRevision) {
+          } else if (observation.checkRevision !== deliveredHeadRevision) {
             failures.push({ code: "ci_evidence_stale", unit, evidenceRefs: observation.evidenceRefs });
           }
           if (observation.approvals < 1) {
             failures.push({ code: "review_incomplete", unit, evidenceRefs: observation.evidenceRefs });
-          } else if (observation.approvalRevision !== unit.candidateRevision) {
+          } else if (observation.approvalRevision !== deliveredHeadRevision) {
             failures.push({ code: "review_evidence_stale", unit, evidenceRefs: observation.evidenceRefs });
           }
         }
@@ -3010,13 +3414,14 @@ export class TransformerPilotExecutionStore {
       state.units = state.units.map((unit) => {
         if (unit.wave !== input.wave) return unit;
         const observation = byId.get(unit.id)!;
+        const deliveredHeadRevision = unit.draftDelivery?.commitSha ?? unit.candidateRevision;
         const accepted =
           observation.baseRevision === unit.snapshot.revision &&
-          observation.headRevision === unit.candidateRevision &&
+          observation.headRevision === deliveredHeadRevision &&
           observation.checks === "success" &&
-          observation.checkRevision === unit.candidateRevision &&
+          observation.checkRevision === deliveredHeadRevision &&
           observation.approvals >= 1 &&
-          observation.approvalRevision === unit.candidateRevision &&
+          observation.approvalRevision === deliveredHeadRevision &&
           observation.conversationsResolved;
         const merged = observation.state === "merged" && accepted;
         return {
@@ -3249,16 +3654,16 @@ export class TransformerPilotExecutionStore {
   planRollback(input: MutationInput): readonly TransformerRollbackAction[] {
     const state = this.mustGet(input.tenantId, input.campaignId);
     const actions = [...state.units]
-      .sort((left, right) => right.wave - left.wave || right.id.localeCompare(left.id))
+      .sort((left, right) => right.wave - left.wave || compareCodeUnits(right.id, left.id))
       .flatMap((unit): TransformerRollbackAction[] => {
         const evidenceRefs = [...new Set([...unit.executionEvidenceRefs, ...unit.scmEvidenceRefs, ...input.evidenceRefs])].sort();
         if (unit.state === "merged") return [{
           type: "open_revert_draft", unitId: unit.id, repositoryId: unit.snapshot.repositoryId,
-          expectedRevision: unit.candidateRevision, evidenceRefs, draft: true, autoMerge: false, autoDeploy: false,
+          expectedRevision: unit.draftDelivery?.commitSha ?? unit.candidateRevision, evidenceRefs, draft: true, autoMerge: false, autoDeploy: false,
         }];
         if (unit.state === "draft" || unit.state === "accepted") return [{
           type: "close_draft", unitId: unit.id, repositoryId: unit.snapshot.repositoryId,
-          expectedRevision: unit.candidateRevision, evidenceRefs, draft: true, autoMerge: false, autoDeploy: false,
+          expectedRevision: unit.draftDelivery?.commitSha ?? unit.candidateRevision, evidenceRefs, draft: true, autoMerge: false, autoDeploy: false,
         }];
         if (unit.state === "executed" || unit.state === "failed" || unit.state === "running") return [{
           type: "restore_workspace", unitId: unit.id, repositoryId: unit.snapshot.repositoryId,

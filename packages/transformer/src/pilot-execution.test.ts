@@ -962,8 +962,110 @@ describe("Transformer pilot execution coordinator", () => {
       observedAt: time(3),
       checkpointHead: terminal,
     });
+    store.authorizeCurrentWaveDrafts({
+      ...mutation(4, "authorize-checkpoint-draft"),
+      gateConfig: authorization,
+    });
+    const deliveryToken = "delivery-lease-token-checkpoint-terminal-01";
+    const deliveryClaim = {
+      ...mutation(5, "claim-checkpoint-draft"),
+      leaseToken: deliveryToken,
+      leaseDurationMs: 120_000,
+      gateConfig: authorization,
+    };
+    const deliveryLease = store.claimNextDraftDelivery(deliveryClaim)!;
+    expect(deliveryLease).toMatchObject({
+      type: "deliver_draft",
+      unitId: lease.unitId,
+      candidateDigest: candidate.candidateDigest,
+      checkpointHead: terminal,
+      leaseGeneration: 1,
+    });
+    expect(store.claimNextDraftDelivery({
+      ...deliveryClaim,
+      observedAt: time(6),
+    })).toEqual(deliveryLease);
+    store.assertCurrentDraftDeliveryFence({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      deliveryId: deliveryLease.deliveryId,
+      leaseGeneration: deliveryLease.leaseGeneration,
+      leaseToken: deliveryToken,
+      observedAt: time(5),
+      gateConfig: authorization,
+    });
+    store.control({ ...mutation(5, "pause-after-draft-claim"), action: "pause" });
+    expect(() => store.assertCurrentDraftDeliveryFence({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      deliveryId: deliveryLease.deliveryId,
+      leaseGeneration: deliveryLease.leaseGeneration,
+      leaseToken: deliveryToken,
+      observedAt: time(5),
+      gateConfig: authorization,
+    })).toThrow("transformer_pilot_delivery_fence_stale");
+    expect(() => store.completeDraftDelivery({
+      ...mutation(5, "complete-draft-while-paused"),
+      unitId: lease.unitId,
+      deliveryId: deliveryLease.deliveryId,
+      leaseGeneration: deliveryLease.leaseGeneration,
+      leaseToken: deliveryToken,
+      completion: {
+        intentDigest: digest("1"),
+        branchName: "mendpoint/transformer/unit-a",
+        baseBranch: "main",
+        baseRevision: candidate.snapshot.revision,
+        commitSha: revision("1"),
+        pullRequestNumber: 42,
+        pullRequestUrl: "https://github.com/acme/repo-a/pull/42",
+      },
+      gateConfig: authorization,
+    })).toThrow("transformer_pilot_delivery_fence_stale");
+    store.control({ ...mutation(5, "resume-after-draft-pause"), action: "resume" });
+    const delivered = store.completeDraftDelivery({
+      ...mutation(6, "complete-checkpoint-draft"),
+      unitId: lease.unitId,
+      deliveryId: deliveryLease.deliveryId,
+      leaseGeneration: deliveryLease.leaseGeneration,
+      leaseToken: deliveryToken,
+      completion: {
+        intentDigest: digest("1"),
+        branchName: "mendpoint/transformer/unit-a",
+        baseBranch: "main",
+        baseRevision: candidate.snapshot.revision,
+        commitSha: revision("1"),
+        pullRequestNumber: 42,
+        pullRequestUrl: "https://github.com/acme/repo-a/pull/42",
+      },
+      gateConfig: authorization,
+    });
+    expect(delivered.units[0]?.draftDelivery).toMatchObject({
+      status: "delivered",
+      commitSha: revision("1"),
+      pullRequestNumber: 42,
+    });
+    expect(store.listCurrentWaveDeliveredDrafts({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+    })).toEqual([expect.objectContaining({
+      unitId: "unit-a",
+      wave: 1,
+      branchName: "mendpoint/transformer/unit-a",
+      baseRevision: candidate.snapshot.revision,
+      commitSha: revision("1"),
+      pullRequestNumber: 42,
+    })]);
+    const observed = store.reconcileWave({
+      ...mutation(7, "observe-checkpoint-draft"),
+      wave: 1,
+      observations: [observation("unit-a", "draft", "a", "1")],
+      gateConfig: authorization,
+    });
+    expect(observed.units[0]).toMatchObject({ state: "accepted", acceptedAt: time(7) });
     store.control({
-      ...mutation(4, "pause-after-checkpoint-completion"),
+      ...mutation(8, "pause-after-checkpoint-completion"),
       action: "pause",
     });
     const replayed = store.completeAttemptWithCheckpointHead(input);
@@ -1519,7 +1621,7 @@ describe("Transformer pilot execution coordinator", () => {
     };
 
     const original = first.claimNextAttempt(claim);
-    const replay = second.claimNextAttempt(claim);
+    const replay = second.claimNextAttempt({ ...claim, observedAt: time(2) });
 
     expect(original).not.toBeNull();
     expect(replay).toEqual(original);

@@ -165,6 +165,7 @@ export * from "./attempt-checkpoint.js";
 export * from "./attempt-checkpoint-storage.js";
 export {
   createTransformerPilotAttemptCheckpointConfig,
+  deriveTransformerAttemptCheckpointBinding,
   type TransformerPilotAttemptCheckpointConfigInput,
 } from "./attempt-checkpoint-execution.js";
 
@@ -354,6 +355,10 @@ export {
   type TransformerExpiredAttempt,
   type TransformerRunnableCampaign,
   type TransformerDraftAction,
+  type TransformerDraftDeliveryRecord,
+  type TransformerDraftDeliveryLease,
+  type TransformerDraftDeliveryCompletion,
+  type TransformerDeliveredDraftObservation,
   type TransformerRollbackAction,
   type TransformerScmObservation,
   type TransformerPilotMetrics,

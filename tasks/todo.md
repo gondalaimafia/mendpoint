@@ -1626,7 +1626,20 @@ Objective: make Warden and Transformer self-serving coding agents in their speci
     - [x] Load and reverify the exact active repository snapshot with bounded UTF-8 files, modes, hashes, retention, and symlink protections.
     - [x] Bind the reviewed organization evidence to the exact organization-constraint digest and fail launch on authority drift.
     - [x] Require plan execution permission, a durable trust principal, exact request and idempotency evidence, and tenant-only lookup.
-  - [ ] Join terminal verified candidates to real SCM draft delivery and post-PR verification evidence.
+  - [x] Join terminal verified candidates to real SCM draft delivery and post-PR verification evidence.
+    - [x] Persist a coordinator-owned, lease-fenced draft delivery record when the reviewed wave is authorized.
+    - [x] Reopen the terminal checkpoint on a replacement worker and authenticate the shared candidate workspace before SCM access.
+    - [x] Deliver one deterministic GitHub draft through the existing exact delivery contract and reconcile response loss without duplicates.
+    - [x] Persist exact PR and commit evidence, then observe CI/review state and feed failures back into the campaign controls.
+
+### Dedicated Transformer production pilot
+
+- [ ] Rebase the verified delivery slice onto current `origin/main` while preserving billing changes.
+- [ ] Add a separate Transformer Fly profile with one authoritative coordinator and independently scalable workers.
+- [ ] Require shared immutable artifact storage, exact tenant and campaign scope, checkpoint key, real GitHub App mode, and worker API authority before startup.
+- [ ] Keep the Warden application and its customer profile unchanged.
+- [ ] Prove one-worker canary, two-worker takeover, exact draft delivery, CI observation, readiness, and rollback.
+- [ ] Merge through protected checks, deploy the exact tested revision, and verify live health plus browser behavior.
 
 ### Verification and release
 
