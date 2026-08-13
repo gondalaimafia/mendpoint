@@ -23,7 +23,7 @@ import { DEFAULT_NEVER_TOUCH } from "./policies.js";
 import { discoverVerifyCommand } from "./discover-verify.js";
 import { hasAutomaticWardenRepair } from "./fixes.js";
 import { redactSourceForModel } from "./source-redaction.js";
-import { resolveModelBackend } from "./model-providers.js";
+import { resolveTenantModelBackend } from "./model-tenant-routing.js";
 import {
   buildNonOpenAiModelRequest,
   parseNonOpenAiModelResponse,
@@ -2300,11 +2300,12 @@ async function llmSuggestTool(
       throw error;
     }
   }
-  // Resolve the active backend through the multi-provider gateway. With
-  // MENDPOINT_MODEL_PROVIDER unset this is byte-for-byte today's single
-  // OpenAI-compatible provider; a set provider selects its endpoint, auth,
-  // wire format, and price table from the registry (unknown ids fail closed).
-  const backend = resolveModelBackend(process.env);
+  // Resolve the active backend through the multi-provider gateway, routed by the
+  // task's tenant model tier. With customer routing off (the default) this is a
+  // byte-for-byte pass-through to today's resolution; with it on, a customer
+  // (non-training) tenant is routed to a non-training provider and fails closed
+  // (`model_training_tier_forbidden_for_tenant`) if that would be a training tier.
+  const backend = resolveTenantModelBackend(task.tenantId, process.env);
   if (!backend) return { status: "unavailable", call: null };
   const url = backend.endpoint;
   const apiKey = backend.apiKey;
