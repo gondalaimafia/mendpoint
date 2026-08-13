@@ -5,6 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   listProviders,
   getProviderBySlug,
+  getProviderById,
   listChanges,
   listCapabilityAdoptionOpportunities,
   getChange,
@@ -230,6 +231,11 @@ import {
   createSelfServeConnectRoutes,
   selfServeConnectEnabled,
 } from "./repository-connect.js";
+import {
+  decideCatalogMutation,
+  providerVisibleToTenant,
+  selfServeWardenEnabled,
+} from "./self-serve-catalog.js";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
   createAuthMiddleware,
@@ -559,6 +565,51 @@ function catalogMutationDenied(c: Context<ApiEnv>) {
     },
     403,
   );
+}
+
+function catalogAuthorityDeniedResponse(c: Context<ApiEnv>) {
+  return c.json(
+    {
+      error: "catalog_authority_required",
+      message: "Shared provider catalog changes require system administrator authority",
+    },
+    403,
+  );
+}
+
+/**
+ * Authorize a provider-catalog mutation and resolve the tenant scope to stamp on it.
+ *
+ * Returns `{ deny }` (a 403 Response) when unauthorized, otherwise `{ tenantScope }` where a
+ * null scope means the shared system catalog and a non-null scope is the owning tenant of a
+ * self-serve tenant-private provider (S1.1, MENDPOINT_SELF_SERVE_WARDEN). Pass the resolved
+ * provider for mutations of an existing provider; omit it when creating a new one. With the
+ * flag off this collapses to the legacy catalogMutationDenied behavior (shared / system-admin
+ * only), so existing shared-catalog semantics are byte-identical.
+ */
+function catalogMutationScope(
+  c: Context<ApiEnv>,
+  provider?: { tenant_id?: string | null },
+): { deny: Response } | { tenantScope: string | null } {
+  const decision = decideCatalogMutation({
+    authEnforced: effectiveAuthMode() !== "off",
+    principal: c.get("principal"),
+    provider,
+    selfServeEnabled: selfServeWardenEnabled(),
+  });
+  if (!decision.allowed) return { deny: catalogAuthorityDeniedResponse(c) };
+  return { tenantScope: decision.tenantScope };
+}
+
+/**
+ * Optional tenant scope for provider-catalog READS. `undefined` under auth-off (open/global
+ * read, unchanged legacy behavior); the authenticated tenant otherwise (requestTenantId fails
+ * closed on a blank tenant, so a tenant-private provider is never leaked). Feeds the shared+own
+ * filter on listProviders / listChanges and the provider visibility guards.
+ */
+function catalogReadTenantId(c: Context<ApiEnv>): string | undefined {
+  if (effectiveAuthMode() === "off") return undefined;
+  return requestTenantId(c);
 }
 
 function requestConsumerIds(c: Context<ApiEnv>): string[] {
@@ -1501,7 +1552,15 @@ app.get("/graph/product", (c) => {
 
 app.get("/graph/api/:providerSlug", (c) => {
   try {
-    const g = buildProviderApiGraph(db, c.req.param("providerSlug"));
+    const provider = getProviderBySlug(db, c.req.param("providerSlug"));
+    // Isolation: a tenant-private provider's API graph is 404 for anyone but its owner.
+    if (
+      !provider ||
+      !providerVisibleToTenant(provider, catalogReadTenantId(c))
+    ) {
+      return c.json({ error: "provider not found" }, 404);
+    }
+    const g = buildProviderApiGraph(db, provider.slug);
     if (!g) return c.json({ error: "provider not found" }, 404);
     c.header("Cache-Control", "private, max-age=15");
     return c.json(g);
@@ -1514,12 +1573,21 @@ app.get("/graph/api/:providerSlug", (c) => {
 app.get("/providers", (c) => {
   const limit = requestListLimit(c);
   const offset = requestListOffset(c);
-  return pagedJson(c, listProviders(db, limit, offset).map(providerToApi), limit, offset);
+  // Shared catalog + this tenant's own private providers (S1.1); never another tenant's.
+  return pagedJson(
+    c,
+    listProviders(db, limit, offset, catalogReadTenantId(c)).map(providerToApi),
+    limit,
+    offset,
+  );
 });
 
 app.get("/providers/:slug", (c) => {
   const p = getProviderBySlug(db, c.req.param("slug"));
-  if (!p) return c.json({ error: "not found" }, 404);
+  // Isolation: a tenant-private provider is 404 for anyone but its owning tenant.
+  if (!p || !providerVisibleToTenant(p, catalogReadTenantId(c))) {
+    return c.json({ error: "not found" }, 404);
+  }
   const versions = listVersionsForProvider(db, p.id).map(versionToApi);
   return c.json({ ...providerToApi(p), versions });
 });
@@ -1528,7 +1596,9 @@ app.get("/providers/:slug", (c) => {
 // are not yet using), tenant-scoped for this provider.
 app.get("/providers/:slug/capability-opportunities", (c) => {
   const p = getProviderBySlug(db, c.req.param("slug"));
-  if (!p) return c.json({ error: "not found" }, 404);
+  if (!p || !providerVisibleToTenant(p, catalogReadTenantId(c))) {
+    return c.json({ error: "not found" }, 404);
+  }
   const opportunities = listCapabilityAdoptionOpportunities(db, requestTenantId(c), {
     providerSlug: p.slug,
   });
@@ -1536,8 +1606,10 @@ app.get("/providers/:slug/capability-opportunities", (c) => {
 });
 
 app.post("/providers", async (c) => {
-  const denied = catalogMutationDenied(c);
-  if (denied) return denied;
+  // A new provider has no owner yet: a shared-catalog create needs system-admin authority,
+  // while a self-serve tenant admin (flag on) creates a provider private to their tenant.
+  const scope = catalogMutationScope(c);
+  if ("deny" in scope) return scope.deny;
   const body = await c.req.json<{
     slug: string;
     name: string;
@@ -1553,6 +1625,7 @@ app.post("/providers", async (c) => {
     website: body.website ?? null,
     openapiUrl: body.openapiUrl ?? null,
     changelogUrl: body.changelogUrl ?? null,
+    tenantId: scope.tenantScope,
     createdAt: nowIso(),
   });
   requestAudit(c, {
@@ -1565,9 +1638,9 @@ app.post("/providers", async (c) => {
 });
 
 app.patch("/providers/:slug/feed", async (c) => {
-  const denied = catalogMutationDenied(c);
-  if (denied) return denied;
   const p = getProviderBySlug(db, c.req.param("slug"));
+  const scope = catalogMutationScope(c, p);
+  if ("deny" in scope) return scope.deny;
   if (!p) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<{ openapiUrl?: string; changelogUrl?: string }>();
   updateProviderFeedUrls(db, p.slug, {
@@ -1578,9 +1651,9 @@ app.patch("/providers/:slug/feed", async (c) => {
 });
 
 app.post("/providers/:slug/versions", async (c) => {
-  const denied = catalogMutationDenied(c);
-  if (denied) return denied;
   const p = getProviderBySlug(db, c.req.param("slug"));
+  const scope = catalogMutationScope(c, p);
+  if ("deny" in scope) return scope.deny;
   if (!p) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<{
     versionLabel: string;
@@ -1600,8 +1673,9 @@ app.post("/providers/:slug/versions", async (c) => {
 });
 
 app.post("/providers/:slug/publish", async (c) => {
-  const denied = catalogMutationDenied(c);
-  if (denied) return denied;
+  const provider = getProviderBySlug(db, c.req.param("slug"));
+  const scope = catalogMutationScope(c, provider);
+  if ("deny" in scope) return scope.deny;
   try {
     const body = await c.req
       .json<{
@@ -1644,9 +1718,9 @@ app.post("/providers/:slug/publish", async (c) => {
 
 /** Phase C: upload OpenAPI version and optionally publish (run pipeline) in one step */
 app.post("/providers/:slug/publish-version", async (c) => {
-  const denied = catalogMutationDenied(c);
-  if (denied) return denied;
   const p = getProviderBySlug(db, c.req.param("slug"));
+  const scope = catalogMutationScope(c, p);
+  if ("deny" in scope) return scope.deny;
   if (!p) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<{
     versionLabel: string;
@@ -1709,7 +1783,14 @@ app.post("/providers/:slug/publish-version", async (c) => {
 app.get("/changes", (c) => {
   const limit = requestListLimit(c);
   const offset = requestListOffset(c);
-  return pagedJson(c, listChanges(db, limit, offset).map(changeToApi), limit, offset);
+  // Shared-catalog changes + this tenant's own private-provider changes (S1.1); a
+  // tenant-private provider's changes never surface to another tenant.
+  return pagedJson(
+    c,
+    listChanges(db, limit, offset, catalogReadTenantId(c)).map(changeToApi),
+    limit,
+    offset,
+  );
 });
 
 app.get("/changes/:id", (c) => {
@@ -1720,6 +1801,14 @@ app.get("/changes/:id", (c) => {
   // tenant B's findings or PRs on the same shared change.
   const change = getChange(db, c.req.param("id"));
   if (!change) return c.json({ error: "not found" }, 404);
+  // Isolation (S1.1): a change on a tenant-private provider is 404 for anyone but its owner.
+  const changeProvider = getProviderById(db, change.provider_id);
+  if (
+    changeProvider &&
+    !providerVisibleToTenant(changeProvider, catalogReadTenantId(c))
+  ) {
+    return c.json({ error: "not found" }, 404);
+  }
   const tenantId = requestTenantId(c);
   const findings = listFindingsForChange(db, change.id, tenantId).map(findingToApi);
   const prs = listPrsForChange(db, change.id, tenantId).map(prToApi);
