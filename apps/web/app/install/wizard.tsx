@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { ErrorGuidanceNote } from "../components/error-guidance-note";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
@@ -33,12 +34,14 @@ export function InstallWizard({
   const [login, setLogin] = useState("demo-org");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [installUrl, setInstallUrl] = useState<string | null>(null);
   const [installState, setInstallState] = useState<string | null>(null);
 
   async function fetchInstallUrl() {
     setBusy(true);
     setMsg(null);
+    setError(null);
     try {
       const res = await fetch(`${API_URL}/github/app/install-url`);
       const data = (await res.json()) as { url: string; mock: boolean; state: string };
@@ -47,7 +50,7 @@ export function InstallWizard({
       setStep(2);
       setMsg(data.mock ? "Mock mode — install completes without GitHub OAuth." : "Open GitHub to install.");
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
+      setError(e);
     } finally {
       setBusy(false);
     }
@@ -56,6 +59,7 @@ export function InstallWizard({
   async function completeMockInstall() {
     setBusy(true);
     setMsg(null);
+    setError(null);
     try {
       const res = await fetch(`${API_URL}/github/app/callback`, {
         method: "POST",
@@ -74,7 +78,7 @@ export function InstallWizard({
       setMsg(`Installed for ${data.installation?.accountLogin} (id ${data.installation?.installationId})`);
       router.refresh();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
+      setError(e);
     } finally {
       setBusy(false);
     }
@@ -152,6 +156,7 @@ export function InstallWizard({
         )}
 
         {msg && <p className="muted small">{msg}</p>}
+        {error != null && <ErrorGuidanceNote error={error} />}
         {initialInstallations.length > 0 && step < 3 && (
           <p className="muted small">
             Already installed: {initialInstallations.map((i) => i.accountLogin).join(", ")}

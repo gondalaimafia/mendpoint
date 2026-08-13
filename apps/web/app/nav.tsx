@@ -27,6 +27,7 @@ const GROUPS = [
     label: "Operations",
     links: [
       { href: "/status", label: "System status", glyph: "S" },
+      { href: "/diagnostics", label: "Diagnostics", glyph: "D" },
       { href: "/applications", label: "Applications", glyph: "A" },
       { href: "/metrics", label: "Metrics", glyph: "M" },
       { href: "/platform", label: "Platform", glyph: "P" },
