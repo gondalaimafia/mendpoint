@@ -28,9 +28,16 @@ import {
   type VerificationExecution,
 } from "@mendpoint/repair";
 import type { CandidateReviewEvidence } from "@mendpoint/shared";
-import { runWarden } from "./agent.js";
+import {
+  createWardenRuntimeModelAuthorityDigest,
+  runWarden,
+  runWardenWithRuntime,
+} from "./agent.js";
 import { verificationControlPath } from "./policies.js";
 import type { AgentExecutionMetrics, AgentRunResult, AgentTask } from "./types.js";
+import { openWardenRuntimeExecution } from "./runtime-execution.js";
+import { createWardenRuntimeManifestDigest, type WardenPrivateRuntimeStateV1 } from "./runtime-state.js";
+import type { WardenCheckpointJournal } from "./checkpoint.js";
 
 export type WardenAttemptLimits = Readonly<{
   maxSourceFiles: number;
@@ -43,6 +50,17 @@ export type WardenAttemptLimits = Readonly<{
   maxEvidenceBytes: number;
   verificationTimeoutMs: number;
   allowedChangedPaths: readonly string[];
+}>;
+
+export type WardenAttemptRuntime = Readonly<{
+  jobId: string;
+  journal: WardenCheckpointJournal;
+  key: Uint8Array;
+  writerLeaseGeneration: number;
+  executorDigest: string;
+  operationTimeoutMs?: number;
+  signal?: AbortSignal;
+  now?: () => string;
 }>;
 
 export type WardenAttemptInput = Readonly<{
@@ -64,6 +82,7 @@ export type WardenAttemptInput = Readonly<{
     securityCommands: readonly string[];
   }>;
   limits: WardenAttemptLimits;
+  runtime?: WardenAttemptRuntime;
 }>;
 
 type AttemptArtifacts = Readonly<{
@@ -846,7 +865,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       ...(input.task.readOnlyPaths ?? []).map(normalizeRelativePath),
       ...verifierPaths(sourceManifest),
     ])].sort();
-    const agent = await runWarden({
+    const agentTask: AgentTask = {
       ...input.task,
       tenantId: input.scope.tenantId,
       repoRoot: workspace,
@@ -856,7 +875,82 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       allowNetwork: false,
       requireSourceObservation: true,
       sourceContextBudget: sourceBudget(input),
-    });
+    };
+    let agent: AgentRunResult;
+    if (input.runtime) {
+      const sourceRuntimeManifest = Object.freeze(sourceManifest.entries.map((entry) =>
+        Object.freeze({ path: entry.path, digest: entry.sha256, bytes: entry.size })
+      ));
+      const binding = Object.freeze({
+        schemaVersion: 1 as const,
+        tenantId: input.scope.tenantId,
+        jobId: input.runtime.jobId,
+        attemptId: input.scope.attemptId,
+        repositoryId: input.source.repositoryId,
+        snapshotId: input.source.snapshotId,
+        revision: input.source.revision,
+        sourceManifestSha256: createWardenRuntimeManifestDigest(sourceRuntimeManifest),
+        allowedPathsDigest: sha256(canonicalJson([...validated.allowedPaths].sort())),
+        verificationProfileDigest: sha256(canonicalJson({
+          targetCommand: input.verification.targetCommand,
+          regressionCommands: input.verification.regressionCommands,
+          securityCommands: input.verification.securityCommands,
+        })),
+        modelPolicyDigest: createWardenRuntimeModelAuthorityDigest(agentTask),
+      });
+      const createdAt = input.runtime.now?.() ?? new Date().toISOString();
+      const genesis: WardenPrivateRuntimeStateV1 = {
+        schemaVersion: 1,
+        binding,
+        generation: 1,
+        writerLeaseGeneration: input.runtime.writerLeaseGeneration,
+        workspaceName: `${input.source.repositoryId}.${input.source.snapshotId}`,
+        phase: "agent_running",
+        previousEnvelopeDigest: null,
+        createdAt,
+        executorDigest: input.runtime.executorDigest,
+        sourceManifest: sourceRuntimeManifest,
+        workspaceManifest: sourceRuntimeManifest,
+        events: [],
+        sourceEvidence: [],
+        observedDirectories: [],
+        searches: [],
+        modelCalls: [],
+        sourceCounters: {
+          observedBytes: 0,
+          searchBytes: 0,
+          changedBytes: 0,
+          groundedMutations: 0,
+          blockedMutations: 0,
+        },
+        privateState: {},
+        privateHistory: [],
+        rollbackPreimages: [],
+        blobs: [],
+        effectReceipts: [],
+        pendingEffect: { kind: "none" },
+      };
+      const execution = await openWardenRuntimeExecution({
+        binding,
+        journal: input.runtime.journal,
+        key: input.runtime.key,
+        executorDigest: input.runtime.executorDigest,
+        writerLeaseGeneration: input.runtime.writerLeaseGeneration,
+        operationTimeoutMs: input.runtime.operationTimeoutMs,
+        signal: input.runtime.signal,
+        genesis,
+        now: input.runtime.now,
+      });
+      agent = await runWardenWithRuntime(agentTask, {
+        execution,
+        binding,
+        repoRoot: workspace,
+        verifyCommand: input.verification.targetCommand,
+        durableEffects: true,
+      });
+    } else {
+      agent = await runWarden(agentTask);
+    }
     assertAttemptContinues(input);
     agentSummary = agentEvidence(agent, input.task);
 

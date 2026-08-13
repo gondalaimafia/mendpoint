@@ -25,15 +25,38 @@ export type WardenRuntimeEffectInput<T extends WardenRuntimeJson> = Readonly<{
   request: WardenRuntimeJson;
   executor: WardenRuntimeIdempotentEffectExecutor<T>;
   validateResult: (value: WardenRuntimeJson) => T;
-  apply: (state: WardenPrivateRuntimeStateV1, result: T) => WardenPrivateRuntimeStateV1;
+  apply: (
+    state: WardenPrivateRuntimeStateV1,
+    result: T,
+    context: WardenRuntimeEffectContext,
+  ) => WardenPrivateRuntimeStateV1;
 }>;
+
+export type WardenRuntimeEffectContext = Readonly<{
+  effectId: string;
+  requestDigest: string;
+  resultDigest: string;
+}>;
+
+export type WardenRuntimeEffectOutcome<T extends WardenRuntimeJson> = Readonly<{
+  value: T;
+  replayed: boolean;
+  effectId: string;
+  requestDigest: string;
+  resultDigest: string;
+}>;
+
+export type WardenRuntimeEffectReconciliation<T extends WardenRuntimeJson> =
+  | Readonly<{ status: "completed"; value: T }>
+  | Readonly<{ status: "not_started" }>
+  | Readonly<{ status: "unknown" }>;
 
 export type WardenRuntimeIdempotentEffectExecutor<T extends WardenRuntimeJson> = Readonly<{
   reconcile: (input: Readonly<{
     effectId: string;
     requestDigest: string;
     signal: AbortSignal;
-  }>) => Promise<T | null>;
+  }>) => Promise<WardenRuntimeEffectReconciliation<T>>;
   /**
    * This is a trusted infrastructure boundary. Implementations must deduplicate
    * by effectId and enforce assertFence immediately before the external commit.
@@ -49,9 +72,11 @@ export type WardenRuntimeIdempotentEffectExecutor<T extends WardenRuntimeJson> =
 
 export type WardenRuntimeExecution = Readonly<{
   state: () => WardenPrivateRuntimeStateV1;
+  effectRequest: (kind: EffectKind, slot: string) => WardenRuntimeJson | null;
+  assertCurrent: () => Promise<void>;
   runEffect: <T extends WardenRuntimeJson>(
     input: WardenRuntimeEffectInput<T>,
-  ) => Promise<Readonly<{ value: T; replayed: boolean }>>;
+  ) => Promise<WardenRuntimeEffectOutcome<T>>;
 }>;
 
 export type OpenWardenRuntimeExecutionInput = Readonly<{
@@ -144,7 +169,6 @@ function effectIdentity(
   binding: WardenCheckpointBinding,
   kind: EffectKind,
   slot: string,
-  requestDigest: string,
 ): string {
   if (typeof slot !== "string" || !slot.trim() || slot.length > 200) {
     throw new Error("warden_runtime_effect_slot_invalid");
@@ -154,12 +178,32 @@ function effectIdentity(
     binding: binding as unknown as WardenRuntimeJson,
     kind,
     slot,
-    requestDigest,
   }));
 }
 
 function resultBytes(value: WardenRuntimeJson): Uint8Array {
   return Buffer.from(canonical(value), "utf8");
+}
+
+function validateReconciliation<T extends WardenRuntimeJson>(
+  value: WardenRuntimeEffectReconciliation<T>,
+): WardenRuntimeEffectReconciliation<T> {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    throw new Error("warden_runtime_effect_reconciliation_invalid");
+  }
+  const record = value as unknown as Readonly<Record<string, WardenRuntimeJson>>;
+  if (record.status === "completed") {
+    if (Object.keys(record).sort().join(",") !== "status,value") {
+      throw new Error("warden_runtime_effect_reconciliation_invalid");
+    }
+    canonical(record.value!);
+    return value;
+  }
+  if ((record.status === "not_started" || record.status === "unknown") &&
+      Object.keys(record).join(",") === "status") {
+    return value;
+  }
+  throw new Error("warden_runtime_effect_reconciliation_invalid");
 }
 
 function modelReceiptFields(value: WardenRuntimeJson): Readonly<{
@@ -170,7 +214,8 @@ function modelReceiptFields(value: WardenRuntimeJson): Readonly<{
     throw new Error("warden_runtime_effect_model_result_invalid");
   }
   const result = value as Readonly<Record<string, WardenRuntimeJson>>;
-  if (Object.keys(result).sort().join(",") !== "accounting,call" ||
+  const keys = Object.keys(result).sort().join(",");
+  if ((keys !== "accounting,call" && keys !== "accounting,call,telemetry") ||
       !result.call || Array.isArray(result.call) || typeof result.call !== "object" ||
       !result.accounting || Array.isArray(result.accounting) || typeof result.accounting !== "object") {
     throw new Error("warden_runtime_effect_model_result_invalid");
@@ -190,6 +235,15 @@ function modelReceiptFields(value: WardenRuntimeJson): Readonly<{
       typeof accounting.costUsd !== "number" || !Number.isFinite(accounting.costUsd) ||
       accounting.costUsd < 0) {
     throw new Error("warden_runtime_effect_model_result_invalid");
+  }
+  if (result.telemetry !== undefined) {
+    const telemetry = result.telemetry as unknown as Record<string, unknown>;
+    if (!telemetry || Array.isArray(telemetry) ||
+        Object.keys(telemetry).sort().join(",") !== "provenance,responseBytes" ||
+        !Number.isSafeInteger(telemetry.responseBytes) || (telemetry.responseBytes as number) < 0 ||
+        !Array.isArray(telemetry.provenance)) {
+      throw new Error("warden_runtime_effect_model_result_invalid");
+    }
   }
   return {
     plannedCallDigest: sha256(canonical(call as unknown as WardenRuntimeJson)),
@@ -377,8 +431,10 @@ export async function openWardenRuntimeExecution(
       ));
     } catch (error) {
       const nextRecord = await journalOperation(async () => await input.journal.read(input.binding));
-      if (nextRecord.activeWriterLeaseGeneration !== input.writerLeaseGeneration ||
-          !nextRecord.envelope || !nextRecord.sealedRuntimeState) {
+      if (nextRecord.activeWriterLeaseGeneration !== input.writerLeaseGeneration) {
+        throw new Error("warden_runtime_effect_lease_stale");
+      }
+      if (!nextRecord.envelope || !nextRecord.sealedRuntimeState) {
         throw error;
       }
       const authoritative = openRecordState(nextRecord, input.key, input.binding);
@@ -391,13 +447,14 @@ export async function openWardenRuntimeExecution(
 
   async function runEffect<T extends WardenRuntimeJson>(
     effect: WardenRuntimeEffectInput<T>,
-  ): Promise<Readonly<{ value: T; replayed: boolean }>> {
+  ): Promise<WardenRuntimeEffectOutcome<T>> {
     if (active) throw new Error("warden_runtime_effect_concurrent");
     active = true;
     try {
       const requestDigest = sha256(canonical(effect.request));
-      const effectId = effectIdentity(input.binding, effect.kind, effect.slot, requestDigest);
+      const effectId = effectIdentity(input.binding, effect.kind, effect.slot);
       let executedHere = false;
+      let dispatchedHere = false;
       for (let attempt = 0; attempt < 12; attempt++) {
         const receipt = current.effectReceipts.find((candidate) => candidate.effectId === effectId);
         if (receipt) {
@@ -409,6 +466,9 @@ export async function openWardenRuntimeExecution(
           return {
             value,
             replayed: true,
+            effectId,
+            requestDigest,
+            resultDigest: receipt.resultDigest,
           };
         }
         if (current.pendingEffect.kind === "none") {
@@ -436,12 +496,28 @@ export async function openWardenRuntimeExecution(
         }
         if (pending.state === "prepared") {
           await assertFence();
-          let value = await boundedOperation(
-            operationTimeoutMs,
-            input.signal,
-            async (signal) => await effect.executor.reconcile({ effectId, requestDigest, signal }),
-          );
-          if (value === null) {
+          await commitState((state) => ({
+            ...state,
+            pendingEffect: { ...pending, state: "dispatched" },
+          }));
+          dispatchedHere = true;
+          continue;
+        }
+        if (pending.state === "dispatched") {
+          const reconciliation = dispatchedHere
+            ? { status: "not_started" as const }
+            : validateReconciliation(await boundedOperation(
+              operationTimeoutMs,
+              input.signal,
+              async (signal) => await effect.executor.reconcile({ effectId, requestDigest, signal }),
+            ));
+          if (reconciliation.status === "unknown") {
+            throw new Error("warden_runtime_effect_outcome_uncertain");
+          }
+          let value: T;
+          if (reconciliation.status === "completed") {
+            value = reconciliation.value;
+          } else {
             await assertFence();
             value = await boundedOperation(
               operationTimeoutMs,
@@ -476,7 +552,12 @@ export async function openWardenRuntimeExecution(
             encodeWardenRuntimeState(state),
             input.binding,
           );
-          const applied = effect.apply(reducerState, value);
+          const effectContext = Object.freeze({
+            effectId,
+            requestDigest,
+            resultDigest: pending.resultDigest!,
+          });
+          const applied = effect.apply(reducerState, value, effectContext);
           const privateStateChanged = canonical(applied.privateState) !== canonical(state.privateState);
           const appendedHistory = applied.privateHistory.slice(state.privateHistory.length);
           const privateHistory = privateStateChanged &&
@@ -496,7 +577,13 @@ export async function openWardenRuntimeExecution(
             pendingEffect: { kind: "none" },
           };
         });
-        return { value, replayed: !executedHere };
+        return {
+          value,
+          replayed: !executedHere,
+          effectId,
+          requestDigest,
+          resultDigest: pending.resultDigest!,
+        };
       }
       throw new Error("warden_runtime_effect_progress_exhausted");
     } finally {
@@ -504,8 +591,22 @@ export async function openWardenRuntimeExecution(
     }
   }
 
+  function effectRequest(kind: EffectKind, slot: string): WardenRuntimeJson | null {
+    const effectId = effectIdentity(input.binding, kind, slot);
+    const receipt = current.effectReceipts.find((candidate) => candidate.effectId === effectId);
+    const pending = current.pendingEffect.kind !== "none" &&
+        current.pendingEffect.effectId === effectId
+      ? current.pendingEffect
+      : null;
+    const requestDigest = receipt?.requestDigest ?? pending?.requestDigest;
+    if (!requestDigest) return null;
+    return decodeResult(current, requestDigest, (value) => value);
+  }
+
   return Object.freeze({
     state: () => decodeWardenRuntimeState(encodeWardenRuntimeState(current), input.binding),
+    effectRequest,
+    assertCurrent: assertFence,
     runEffect,
   });
 }

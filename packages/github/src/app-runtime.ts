@@ -11,6 +11,11 @@ import {
   type ExactDraftDeliveryInput,
   type ExactDraftDeliveryResult,
 } from "./exact-draft.js";
+import {
+  observeExactDraftWithOctokit,
+  type ExactDraftObservation,
+  type ExactDraftObservationInput,
+} from "./exact-draft-observer.js";
 
 const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 const GITHUB_FILE_CONCURRENCY = 8;
@@ -368,6 +373,10 @@ export class GitHubAppDelivery implements GitHubDelivery {
 
   deliverExactDraft(input: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult> {
     return this.withAuthRetry((octokit) => deliverExactDraftWithOctokit(octokit, input));
+  }
+
+  observeExactDraft(input: ExactDraftObservationInput): Promise<ExactDraftObservation> {
+    return this.withAuthRetry((octokit) => observeExactDraftWithOctokit(octokit, input));
   }
 
   private async branchMatchesFiles(

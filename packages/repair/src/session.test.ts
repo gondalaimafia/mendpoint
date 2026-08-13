@@ -278,6 +278,20 @@ describe("repair session", () => {
     });
   });
 
+  it("terminates a verifier promptly when its lease signal is aborted", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-verify-abort-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "check.mjs"), "setTimeout(() => {}, 5000)\n", "utf8");
+    const controller = new AbortController();
+    const started = Date.now();
+    setTimeout(() => controller.abort("lease_lost"), 10);
+
+    const result = await runVerificationCommand("node check.mjs", dir, 10_000, controller.signal);
+
+    expect(result.ok).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
   it("discovers bounded repository verification profiles", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-discovery-"));
     dirs.push(dir);

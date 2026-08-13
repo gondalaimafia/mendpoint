@@ -747,6 +747,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
 export async function executeToolAsync(
   ctx: ToolContext,
   call: ToolCall,
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
   if (call.tool === "run_command") {
     const cmd = String(call.args.command ?? "");
@@ -773,6 +774,7 @@ export async function executeToolAsync(
       cmd,
       ctx.repoRoot,
       Number(call.args.timeoutMs ?? 60_000),
+      signal,
     );
     if (execution.ok) {
       return {
@@ -820,6 +822,9 @@ export async function executeToolAsync(
     }
     try {
       const ctrl = new AbortController();
+      const abortFromParent = () => ctrl.abort(signal?.reason);
+      if (signal?.aborted) ctrl.abort(signal.reason);
+      signal?.addEventListener("abort", abortFromParent, { once: true });
       const timeoutMs = Math.max(
         100,
         Math.min(Number(call.args.timeoutMs ?? 10_000), 60_000),
@@ -877,6 +882,7 @@ export async function executeToolAsync(
         };
       } finally {
         clearTimeout(t);
+        signal?.removeEventListener("abort", abortFromParent);
       }
     } catch (e) {
       return {

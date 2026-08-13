@@ -4831,8 +4831,10 @@ export function agentRunToApi(r: AgentRunRow) {
 export {
   listConsumersForProvider,
   listConsumersImpactedByChange,
+  listTenantMonitoredProviders,
   registrySummaryMarkdown,
   type RegistryHit,
+  type TenantMonitoredProvider,
 } from "./registry.js";
 
 export function computeDesignPartnerMetrics(db: AppDb, tenantId?: string) {

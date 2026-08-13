@@ -49,14 +49,17 @@ import {
   type TransformerAttemptCheckpointArtifactStore,
 } from "./attempt-checkpoint-storage.js";
 import type {
+  TransformerAttemptScope,
   TransformerAttemptCheckpointConfig,
   TransformerAttemptCheckpointCompletion,
   TransformerAttemptCheckpointExecutionController,
   TransformerAttemptCheckpointFailure,
   TransformerAttemptCheckpointOpenInput,
+  TransformerExecutableAttemptLease,
 } from "./attempt-runner.js";
 import {
   createRecipeVerificationControl,
+  type ExactSourceSnapshot,
   type RecipeCommandProvenance,
   type RecipeCommandResult,
   type RecipeControlledCommandResult,
@@ -301,15 +304,12 @@ type TrustedFactory = TransformerPilotAttemptCheckpointConfigInput & Readonly<{
   operationTimeoutMs: number;
 }>;
 
-async function openController(context: Readonly<{
-  factory: TrustedFactory;
-  input: TransformerAttemptCheckpointOpenInput;
-}>): Promise<TransformerAttemptCheckpointExecutionController> {
-  const { factory, input } = context;
-  const encryptionKey = factory.encryptionKey;
-  assertSignal(input.signal);
-  await input.assertFence();
-  assertSignal(input.signal);
+export function deriveTransformerAttemptCheckpointBinding(input: Readonly<{
+  scope: TransformerAttemptScope;
+  lease: TransformerExecutableAttemptLease;
+  source: ExactSourceSnapshot;
+  executorDigest: string;
+}>): TransformerAttemptCheckpointBinding {
   const application = applyRecipe(input.lease.recipe, input.source.files);
   if (application.outputDigest !== input.lease.candidateDigest ||
       input.source.digest !== input.lease.snapshot.digest ||
@@ -326,7 +326,7 @@ async function openController(context: Readonly<{
     commandId: command.id,
     commandDigest: sha256(command.command),
   })));
-  const binding: TransformerAttemptCheckpointBinding = Object.freeze({
+  return Object.freeze({
     schemaVersion: 1,
     tenantId: input.lease.tenantId,
     environment: input.scope.environment,
@@ -341,10 +341,38 @@ async function openController(context: Readonly<{
     candidateManifestDigest: createTransformerWorkspaceManifestDigest(candidateManifest),
     recipeDigest: input.lease.recipe.digest,
     constraintDigest: input.lease.constraintDigest,
-    executorDigest: factory.executorDigest,
+    executorDigest: input.executorDigest,
     verificationPlanDigest: createTransformerVerificationPlanDigest(verificationPlan),
     requiredVerificationCount: verificationPlan.length,
   });
+}
+
+async function openController(context: Readonly<{
+  factory: TrustedFactory;
+  input: TransformerAttemptCheckpointOpenInput;
+}>): Promise<TransformerAttemptCheckpointExecutionController> {
+  const { factory, input } = context;
+  const encryptionKey = factory.encryptionKey;
+  assertSignal(input.signal);
+  await input.assertFence();
+  assertSignal(input.signal);
+  const binding = deriveTransformerAttemptCheckpointBinding({
+    scope: input.scope,
+    lease: input.lease,
+    source: input.source,
+    executorDigest: factory.executorDigest,
+  });
+  const application = applyRecipe(input.lease.recipe, input.source.files);
+  const sourceFiles = workspaceFiles(input.source.files, input.source.fileModes);
+  const candidateModes = normalizeRecipeFileModes(application.files, input.source.fileModes);
+  const candidateFiles = workspaceFiles(application.files, candidateModes);
+  const sourceManifest = createTransformerWorkspaceManifest(sourceFiles);
+  const candidateManifest = createTransformerWorkspaceManifest(candidateFiles);
+  const verificationPlan = Object.freeze(application.verificationCommands.map((command, index) => Object.freeze({
+    index,
+    commandId: command.id,
+    commandDigest: sha256(command.command),
+  })));
   const episodeId = createTransformerEpisodeId(binding);
   const journalInput = Object.freeze({
     authority: factory.authority,

@@ -1598,3 +1598,64 @@ Scope: review every Mendpoint worktree and branch changed today, preserve all di
 Acceptance: one reviewable branch contains all safe, nonduplicative Claude and Codex work from today on current main; dirty experiments remain recoverable but excluded; every included capability is tested and honestly gated; and no direct main push, force push, hook bypass, or unverified production deployment occurs.
 
 Review before publication: the release branch is based on `origin/main` at `8ca583c`. The design system and Claude PR series 61 to 71 were already present on main and were not duplicated. The generalized applications remain default off. The demo bundle is excluded after review found a fixed wildcard credential that could target an arbitrary data directory. Older Warden mission resume, alternate shared coordinator, bounded pilot compiler, and overlapping UI work remain preserved in their original worktrees but excluded because they are stale, incomplete, or superseded. Confirmed release blockers were closed with focused regressions: passing attestations require successful post edit verification; Transformer polling retains one identity for response loss but creates a new session identity after process restart; GraphQL and legacy writes require graph write authority and durable producer identity; training dispatch is single flight with database fencing; registration replay ignores server time; completed training binds adapter, base model, exact evaluation, and exact canary claims; and consent plus lifecycle evidence are verified against their durable subjects. Focused verification passed API 9 of 9, Pipeline 10 of 10, Worker 4 of 4, and all affected typechecks. `scripts/verify.sh` then passed every workspace typecheck, the complete repository test suite, production build, GA/spec/claim/action checks, and diff integrity in 251 seconds. The production dependency audit reports zero vulnerabilities. A local production API startup probe with an ephemeral application key returned HTTP 200 from health. Independent final review found no remaining P0 or P1.
+
+## Self-serving Warden and Transformer parity: 2026-08-13
+
+Objective: make Warden and Transformer self-serving coding agents in their specialty areas with a complete delivery loop comparable to Devin for mid-market US software teams and fintechs. Success requires more than model output: authoritative intake, repository understanding, planning, implementation, verification, evidence, pull-request delivery, durable recovery, human controls, and production operation must work together.
+
+### Baseline and capability contract
+
+- [x] Compare exact deployed main against the authoritative product specification, Warden and Transformer gap analyses, evals, and current official Devin capabilities.
+- [x] Build an evidence-backed parity scorecard for intake, context, planning, coding, verification, delivery, recovery, collaboration, security, and enterprise operations.
+- [x] Identify the highest-leverage missing vertical slice using current code and runtime evidence, not roadmap intent.
+
+### Red-first implementation
+
+- [x] Define Warden recovery evals for model receipt, deleted-workspace mutation, completed verifier, lease abort, and response loss.
+- [x] Observe the expected RED failures at the runtime authority and attempt takeover boundaries.
+- [x] Route Warden model, tool, mutation, and verifier effects through the live job checkpoint and lease fence.
+- [x] Add crash, response-loss, stale-lease, accounting, and reconstructed-workspace cases for the Warden slice.
+- [ ] Preserve terminal Warden checkpoint evidence and re-enter the mission from post-PR CI failures.
+- [ ] Build the Transformer objective-to-blueprint-to-campaign-to-draft-PR vertical.
+  - [x] Discover an exact applicable recipe and derive units, paths, owners, and review scope from immutable snapshots.
+  - [x] Compile only integrity-checked blueprints with independent reviewer receipts into the pilot execution contract.
+  - [x] Require the acting control-plane principal to be a configured independent reviewer and persist the approval.
+  - [x] Join persisted blueprint review to exact source compilation and pilot execution creation in one application service.
+  - [x] Expose repository-backed mission planning and approved campaign creation through the authenticated API.
+    - [x] Derive tenant organization, reviewer, CODEOWNERS, and constraint evidence from durable authorities instead of request input.
+    - [x] Load and reverify the exact active repository snapshot with bounded UTF-8 files, modes, hashes, retention, and symlink protections.
+    - [x] Bind the reviewed organization evidence to the exact organization-constraint digest and fail launch on authority drift.
+    - [x] Require plan execution permission, a durable trust principal, exact request and idempotency evidence, and tenant-only lookup.
+  - [x] Join terminal verified candidates to real SCM draft delivery and post-PR verification evidence.
+    - [x] Persist a coordinator-owned, lease-fenced draft delivery record when the reviewed wave is authorized.
+    - [x] Reopen the terminal checkpoint on a replacement worker and authenticate the shared candidate workspace before SCM access.
+    - [x] Deliver one deterministic GitHub draft through the existing exact delivery contract and reconcile response loss without duplicates.
+    - [x] Persist exact PR and commit evidence, then observe CI/review state and feed failures back into the campaign controls.
+
+### Dedicated Transformer production pilot
+
+- [x] Rebase the verified delivery slice onto current `origin/main` while preserving billing changes.
+- [x] Add a separate Transformer Fly profile with one authoritative coordinator and independently scalable workers.
+- [x] Require shared immutable artifact storage, exact tenant and campaign scope, checkpoint key, real GitHub App mode, and worker API authority before startup.
+- [x] Keep the Warden application and its customer profile unchanged.
+- [ ] Prove one-worker canary, two-worker takeover, exact draft delivery, CI observation, readiness, and rollback.
+- [ ] Merge through protected checks, deploy the exact tested revision, and verify live health plus browser behavior.
+
+### Verification and release
+
+- [ ] Run focused tests, affected full package tests, typechecks, production build, repository verification, security audit, and joined deployment tests.
+- [ ] Obtain independent P0/P1 review and close every confirmed blocker.
+- [ ] Merge through protected checks, deploy the exact tested revision, verify live health and browser behavior, and record rollback evidence.
+- [ ] Update the parity scorecard with what is now proven, what remains partial, and the next highest-leverage slice.
+
+Acceptance: a named specialty workflow can start from an authorized customer request and autonomously produce a verified, evidence-backed, human-reviewable delivery artifact, survive an injected worker or process failure without duplicate external effects, and complete through the production path under tenant, policy, budget, and approval controls. The broader goal remains active until both Warden and Transformer meet this bar across their supported specialty workflows.
+
+Dedicated production profile review: the separate Transformer app now defines one coordinator process with durable SQLite authority and independently scalable stateless worker processes over encrypted S3 checkpoints. Startup requires exact tenant, campaign, production gate, delivery approval, real GitHub App, worker credential, keys, executor digest, and evidence bindings. The shared API preflight recognizes only this explicit profile, global RBAC maps its coordinator path to the narrow Transformer worker permission, and credential rotation transactionally revokes prior managed worker keys without touching user keys. Focused Ops, Platform, API, and Worker tests pass 66 of 66, their typechecks pass, Fly configuration validates, and the complete repository gate passed before the final authority corrections. Independent strict review approved source publication with no remaining P0 or P1. Local Docker is unavailable and Fly authentication is invalid, so container boot, live secret inventory, canary, scale-out, and production health remain release evidence to obtain after protected CI and restored Fly access.
+
+Review checkpoint: Warden recovery now durably owns paid planning, reads, mutations, and verifier commands under the production job lease. Focused drills rebuild a deleted candidate workspace from authenticated mutation bytes and replay a committed verifier result without executing it twice. The worker derives a domain-separated checkpoint key from the application data key and fails closed in the customer profile when the key is missing. Remaining Warden work is terminal evidence retention and post-PR CI repair re-entry. Transformer remains next: plain objective and connected repository must compile into an independently reviewed blueprint, internal execution, deterministic candidate review, and real draft PR.
+
+Transformer orchestration checkpoint: exact snapshot inputs now select one applicable deterministic recipe or abstain, derive scope and owners, and produce the existing evidence-bound blueprint. A new compiler verifies blueprint integrity, exact source parity, recipe output, path constraints, and independent reviewer receipts before creating a runnable pilot campaign input. Control-plane review now rejects planners and unconfigured actors and stores the approved reviewer. Full Transformer tests pass 351/351; focused API control and execution tests pass 30/30. Repository-backed API intake, campaign join, and actual draft delivery remain in progress.
+
+Joined mission checkpoint: the API application service now persists the derived blueprint and behavior-unit graph in the control plane, refuses launch before the review quorum, reloads the authenticated blueprint and approval receipts, recompiles against the exact repository authority, and creates the existing pilot execution campaign. Focused joined API tests pass 20/20. The remaining intake work is the production AppDb snapshot adapter and authenticated routes; delivery remains the next boundary.
+
+Production intake checkpoint: authenticated `POST /transformer/missions` now derives tenant and actor solely from the authenticated principal, derives a stable campaign from the idempotency key, and reads exact retained repository bytes from the append-only snapshot manifest. CODEOWNERS, active tenant human memberships, snapshot policy, and a recomputed organization constraint contract supply scope and independent reviewers. Launch re-reads those authorities and rejects any reviewer, membership, policy, repository, or constraint drift. Recipe-specific source subsets now share the exact digest the worker reconstructs. Focused route, authority, service, control-plane, execution, planner, and compiler tests pass; API and Transformer typechecks are green. Real draft delivery remains next.

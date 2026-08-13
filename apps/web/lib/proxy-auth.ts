@@ -332,6 +332,11 @@ export function selfServeSignupEnabled(): boolean {
   return process.env.MENDPOINT_SELF_SERVE_SIGNUP === "1";
 }
 
+/** Self-serve Warden scan trigger is off unless MENDPOINT_SELF_SERVE_WARDEN=1 (default preview safe). */
+export function selfServeWardenEnabled(): boolean {
+  return process.env.MENDPOINT_SELF_SERVE_WARDEN === "1";
+}
+
 export function allowedWebOrigins(): Set<string> {
   const raw =
     process.env.MENDPOINT_WEB_ALLOWED_ORIGINS ??
