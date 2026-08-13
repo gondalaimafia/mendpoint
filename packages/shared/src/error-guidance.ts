@@ -297,6 +297,44 @@ const CATALOG: Readonly<Record<string, ErrorGuidanceEntry>> = {
     docsHref: "/billing",
   },
 
+  // ── Billing settlement (Stripe) ────────────────────────────────────────
+  billing_stripe_secret_key_missing: {
+    title: "Stripe settlement key is not configured",
+    whatHappened:
+      "Settlement is set to charge through Stripe, but no Stripe secret key was found, so collection stopped before any charge.",
+    likelyCause:
+      "MENDPOINT_BILLING_COLLECTION is set to stripe while STRIPE_SECRET_KEY is missing or blank.",
+    howToFix: [
+      "Set STRIPE_SECRET_KEY to your Stripe secret key and restart the service.",
+      "To disable collection entirely, unset MENDPOINT_BILLING_COLLECTION.",
+    ],
+    docsHref: "/status",
+  },
+  billing_stripe_live_key_forbidden: {
+    title: "Live Stripe key is blocked without opt-in",
+    whatHappened:
+      "A live Stripe key (sk_live_) was configured, but the explicit live opt-in is not set, so collection was refused to avoid charging real money by accident.",
+    likelyCause:
+      "STRIPE_SECRET_KEY is a live key while MENDPOINT_BILLING_ALLOW_LIVE is not set to 1.",
+    howToFix: [
+      "Use a Stripe test key (sk_test_) for anything other than real billing.",
+      "To charge real money on purpose, set MENDPOINT_BILLING_ALLOW_LIVE=1 alongside the live key.",
+    ],
+    docsHref: "/status",
+  },
+  billing_stripe_secret_key_invalid: {
+    title: "Stripe key shape was not recognized",
+    whatHappened:
+      "The configured Stripe secret key did not look like a Stripe test or live key, so it was rejected rather than sent to Stripe.",
+    likelyCause:
+      "STRIPE_SECRET_KEY was truncated, contains extra characters, or is not a Stripe secret key.",
+    howToFix: [
+      "Copy the secret key again from the Stripe dashboard (it starts with sk_test_ or sk_live_).",
+      "Confirm no quotes or whitespace were included when the value was set.",
+    ],
+    docsHref: "/status",
+  },
+
   // ── Synthetic diagnostics-check codes ──────────────────────────────────
   // These back individual live checks on the diagnostics page. They are not
   // thrown by the API; they exist so every failing check carries the same
@@ -408,6 +446,21 @@ const FAMILY_GUIDANCE: ReadonlyArray<readonly [string, ErrorGuidanceEntry]> = [
       howToFix: [
         "Review your plan and quota on the billing page.",
         "Activate or raise an entitlement, then retry.",
+      ],
+      docsHref: "/billing",
+    },
+  ],
+  [
+    "billing_stripe_",
+    {
+      title: "Stripe settlement attempt did not complete",
+      whatHappened:
+        "An attempt to collect an invoice through Stripe did not settle. The invoice was left unchanged and the attempt can be retried.",
+      likelyCause:
+        "The card was declined, the payment needs another step, Stripe was unreachable, or the amount could not be charged as configured.",
+      howToFix: [
+        "Review the attempt in your Stripe dashboard for the decline or required action.",
+        "Confirm the customer has a valid, chargeable payment method, then retry collection.",
       ],
       docsHref: "/billing",
     },

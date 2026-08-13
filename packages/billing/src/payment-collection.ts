@@ -7,17 +7,19 @@ import {
 
 /**
  * Settlement collection is default-disabled. With the flag unset (or set to any
- * value other than "mock") the collection pipeline refuses to run, so nothing
- * ever auto-charges and the invoice-boundary behavior stays byte-identical.
+ * value that is neither "mock" nor "stripe") the collection pipeline refuses to
+ * run, so nothing ever auto-charges and the invoice-boundary behavior stays
+ * byte-identical.
  *
- * The only shipped collector is {@link MockPaymentCollector}, which moves no real
- * money. A real payment processor (Stripe/etc.) is a future adapter behind the
- * same {@link PaymentCollector} port — see docs/BILLING_SETTLEMENT.md.
+ * Two collectors ship behind the same {@link PaymentCollector} port:
+ * {@link MockPaymentCollector} (moves no real money) and the real
+ * `StripePaymentCollector` (see `stripe-collection.ts`), the latter being
+ * credential-gated and off by default — see docs/BILLING_SETTLEMENT.md.
  */
 export const BILLING_COLLECTION_ENV = "MENDPOINT_BILLING_COLLECTION" as const;
 export const DEFAULT_BILLING_COLLECTION_MODE = "disabled" as const;
 
-export type BillingCollectionMode = "disabled" | "mock";
+export type BillingCollectionMode = "disabled" | "mock" | "stripe";
 
 const GENESIS_HASH = "0".repeat(64);
 const MAX_MONEY_MICROS = Number.MAX_SAFE_INTEGER;
@@ -31,13 +33,27 @@ export type CollectionOutcome = Readonly<{
 }>;
 
 /**
+ * Per-attempt context the coordinator hands to a collector. The
+ * `idempotencyKey` is the settlement idempotency key for this attempt; a real
+ * processor derives its own request idempotency token from it so a retry with
+ * the same key can never double-charge. The mock collector ignores it.
+ */
+export type CollectionContext = Readonly<{
+  idempotencyKey: string;
+}>;
+
+/**
  * The pluggable settlement port. `attemptCollection` inspects an issued invoice
  * and reports whether the collector settled it, failed (retryable), or is still
  * pending. Implementations must be side-effect free with respect to the invoice;
- * only the coordinator mutates invoice/ledger state.
+ * only the coordinator mutates invoice/ledger state. The optional `context`
+ * carries the settlement idempotency key for processors that need it.
  */
 export interface PaymentCollector {
-  attemptCollection(invoice: Invoice): CollectionOutcome | Promise<CollectionOutcome>;
+  attemptCollection(
+    invoice: Invoice,
+    context?: CollectionContext,
+  ): CollectionOutcome | Promise<CollectionOutcome>;
 }
 
 /**
@@ -78,12 +94,18 @@ export class MockPaymentCollector implements PaymentCollector {
 
 /**
  * Resolves the collection mode from the environment. Fails safe: only the exact
- * value "mock" enables collection; everything else (including unset) is disabled.
+ * values "mock" or "stripe" enable collection; everything else (including unset)
+ * is disabled. Selecting "stripe" only chooses the adapter — the Stripe
+ * collector still fails closed at construction if its credential is missing, so
+ * this never charges by itself.
  */
 export function resolveCollectionMode(
   env: NodeJS.ProcessEnv = process.env,
 ): BillingCollectionMode {
-  return env[BILLING_COLLECTION_ENV] === "mock" ? "mock" : DEFAULT_BILLING_COLLECTION_MODE;
+  const value = env[BILLING_COLLECTION_ENV];
+  if (value === "mock") return "mock";
+  if (value === "stripe") return "stripe";
+  return DEFAULT_BILLING_COLLECTION_MODE;
 }
 
 export type SettlementLedgerEntry = Readonly<{
@@ -188,7 +210,9 @@ export class TenantSettlementLedger {
       throw new Error("billing_collection_nothing_due");
     }
 
-    const outcome = await Promise.resolve(this.#collector.attemptCollection(invoice));
+    const outcome = await Promise.resolve(
+      this.#collector.attemptCollection(invoice, { idempotencyKey }),
+    );
     const status = outcome.status;
     if (status !== "settled" && status !== "failed" && status !== "pending") {
       throw new Error("billing_collection_outcome_invalid");

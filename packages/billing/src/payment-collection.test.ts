@@ -84,11 +84,12 @@ function issuedInvoice(overrides: Partial<Parameters<typeof createInvoiceDraft>[
 }
 
 describe("payment collection settlement", () => {
-  it("defaults to disabled and only enables on the exact mock flag", () => {
+  it("defaults to disabled and only enables on the exact mock or stripe flag", () => {
     expect(DEFAULT_BILLING_COLLECTION_MODE).toBe("disabled");
     expect(resolveCollectionMode({})).toBe("disabled");
     expect(resolveCollectionMode({ MENDPOINT_BILLING_COLLECTION: "disabled" })).toBe("disabled");
-    expect(resolveCollectionMode({ MENDPOINT_BILLING_COLLECTION: "stripe" })).toBe("disabled");
+    expect(resolveCollectionMode({ MENDPOINT_BILLING_COLLECTION: "nope" })).toBe("disabled");
+    expect(resolveCollectionMode({ MENDPOINT_BILLING_COLLECTION: "stripe" })).toBe("stripe");
     expect(resolveCollectionMode({ MENDPOINT_BILLING_COLLECTION: "mock" })).toBe("mock");
   });
 
