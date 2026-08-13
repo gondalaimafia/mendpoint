@@ -231,6 +231,7 @@ import {
   createSelfServeScanRoutes,
   selfServeWardenEnabled,
 } from "./self-serve-scan.js";
+import { createSelfServeRunsRoutes } from "./self-serve-runs.js";
 import {
   createSelfServeAdminRoutes,
   selfServeAdminEnabled,
@@ -821,6 +822,10 @@ app.route("/self-serve/connect", createSelfServeConnectRoutes({
   enabled: selfServeConnectEnabled(process.env),
 }));
 app.route("/self-serve/scan", createSelfServeScanRoutes({
+  db,
+  enabled: selfServeWardenEnabled(process.env),
+}));
+app.route("/self-serve/runs", createSelfServeRunsRoutes({
   db,
   enabled: selfServeWardenEnabled(process.env),
 }));

@@ -129,6 +129,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["POST", /^repair\/sessions$/],
     ["POST", /^jobs\/[^/]+\/retry$/],
     ["POST", /^jobs\/[^/]+\/cancel$/],
+    ["POST", /^self-serve\/scan$/],
     ["POST", /^prs\/[^/]+\/feedback$/],
     ["POST", /^prs\/[^/]+\/reviews$/],
     ["POST", /^providers\/[^/]+\/publish-version$/],
