@@ -514,6 +514,53 @@ describe("learning corpus export", () => {
     expect(formatLearningCorpusStats(result.stats)).toContain("exported examples: 2");
   });
 
+  it("emits the real classification labels an outcome doc carries; legacy docs stay null", () => {
+    const db = setup();
+    grant(db);
+    const labeledJson = JSON.stringify({
+      schemaVersion: 1,
+      failingCommandId: "cmd-labeled",
+      overallRisk: "low",
+      confidence: 82,
+      changedPaths: ["src/labeled.ts"],
+      edits: [
+        {
+          path: "src/labeled.ts",
+          semanticCategory: "behavior",
+          risk: "low",
+          rationale: "Adapt labeled to the new signature",
+        },
+      ],
+      verificationSummary: "vitest passed",
+      verificationCommandId: "verify-labeled",
+      observedAt: observed,
+      family: "sdk",
+      provider: "aws-sdk-js",
+    });
+    const labeled = admit(db, "labeled", labeledJson);
+    const legacy = admit(db, "legacy", outcomeJson("legacy"));
+    const version = dataset(db);
+    member(db, version.id, labeled.id);
+    member(db, version.id, legacy.id);
+    seal(db, version.id);
+
+    const result = buildLearningCorpus({ db, tenantId: "tenant-a", purpose: PURPOSE, at: later });
+    const labeledExample = result.examples.find(
+      (e) => e.provenance.learningRecordId === labeled.id,
+    )!;
+    expect(labeledExample.labels.family).toBe("sdk");
+    expect(labeledExample.labels.provider).toBe("aws-sdk-js");
+    expect(labeledExample.labels.framework).toBeNull();
+
+    // A pre-labeling (legacy) outcome doc keeps null labels: byte-identical corpus.
+    const legacyExample = result.examples.find(
+      (e) => e.provenance.learningRecordId === legacy.id,
+    )!;
+    expect(legacyExample.labels.family).toBeNull();
+    expect(legacyExample.labels.provider).toBeNull();
+    expect(legacyExample.labels.framework).toBeNull();
+  });
+
   it("EXCLUDES members with missing, unparseable, or unexpected-schema content (fail closed)", () => {
     const db = setup();
     grant(db);

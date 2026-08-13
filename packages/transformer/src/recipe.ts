@@ -1970,6 +1970,81 @@ export function recipeReference(recipe: MigrationRecipeContract): RecipeReferenc
   return deepFreeze({ id: recipe.id, version: recipe.version, digest: recipe.digest });
 }
 
+/**
+ * Migration family label vocabulary for the learning corpus. `warden-provider`
+ * is reserved for the separate Warden provider-change candidate path (sealed in
+ * apps/api); the deterministic recipe classifier below never emits it.
+ */
+export type MigrationLabelFamily =
+  | "sdk"
+  | "framework"
+  | "runtime"
+  | "internal_api"
+  | "warden-provider";
+
+/**
+ * Deterministic, secret-free classification of a migration recipe for corpus
+ * labeling. It is pure METADATA: it never gates or changes any control-flow
+ * decision. `provider`/`framework` are populated only where the recipe context
+ * makes them unambiguous, and are null otherwise (never fabricated).
+ */
+export type RecipeClassification = Readonly<{
+  family: MigrationLabelFamily | null;
+  provider: string | null;
+  framework: string | null;
+}>;
+
+const NULL_RECIPE_CLASSIFICATION: RecipeClassification = Object.freeze({
+  family: null,
+  provider: null,
+  framework: null,
+});
+
+/**
+ * Classify a resolved recipe contract into a family/provider/framework label from
+ * its bound transform kinds. The transform kind is the deterministic identity of
+ * the migration, so this needs no external catalog and stays byte-stable. Any
+ * recipe with no recognized identifying transform classifies as all-null (honest
+ * "undeterminable") rather than a fabricated label.
+ */
+export function classifyRecipeContract(recipe: MigrationRecipeContract): RecipeClassification {
+  const kinds = new Set(recipe.transforms.map((transform) => transform.kind));
+  if (kinds.has("aws_sdk_source_v2_to_v3") || kinds.has("aws_dependency_swap")) {
+    return Object.freeze({ family: "sdk", provider: "aws-sdk-js", framework: null });
+  }
+  if (kinds.has("stripe_setter_to_config")) {
+    return Object.freeze({ family: "sdk", provider: "stripe", framework: null });
+  }
+  if (kinds.has("googleapis_default_import_to_named")) {
+    return Object.freeze({ family: "sdk", provider: "googleapis", framework: null });
+  }
+  if (kinds.has("react_dom_render_to_root")) {
+    return Object.freeze({ family: "framework", provider: "react-dom", framework: "react-dom" });
+  }
+  if (kinds.has("node_version_set") || kinds.has("docker_node_major_set")) {
+    return Object.freeze({ family: "runtime", provider: "node", framework: null });
+  }
+  if (kinds.has("internal_api_rename")) {
+    // Internal API renames are per-customer; there is no canonical provider slug
+    // or framework to attach, so those stay null while the family is determinable.
+    return Object.freeze({ family: "internal_api", provider: null, framework: null });
+  }
+  return NULL_RECIPE_CLASSIFICATION;
+}
+
+/**
+ * Classify a recipe REFERENCE. Fails closed to an all-null classification when the
+ * reference cannot be resolved (unknown recipe, digest drift), so classification
+ * can never throw on the seal/handoff path.
+ */
+export function classifyRecipeReference(reference: RecipeReference): RecipeClassification {
+  try {
+    return classifyRecipeContract(resolveRecipe(reference));
+  } catch {
+    return NULL_RECIPE_CLASSIFICATION;
+  }
+}
+
 export function assertRecipePathAllowed(recipe: MigrationRecipeContract, path: string): void {
   const safePath = validatePath(path);
   if (!recipe.allowedPaths.includes(safePath)) throw new Error(`recipe_path_not_allowed:${safePath}`);

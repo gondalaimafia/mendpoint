@@ -148,17 +148,19 @@ consent/eligibility count), and distributions `byDecision`, `byOverallRisk`, and
 
 ## What is deliberately absent (moat-plan findings)
 
-1. **No migration `family` / `provider` / `framework` label.** The redacted
-   approved-outcome document carries `failingCommandId`, `changedPaths`, per-edit
-   `semanticCategory` / `risk` / `rationale`, `overallRisk`, `confidence`, and the
-   verification summary — but no discrete family (sdk / framework / runtime /
-   internal-api / warden-provider) or provider/framework name. These labels are
-   emitted as `null`. The recipe/provider context that would determine them is
-   dropped at the adaptive-candidate seal boundary and is not reachable at the
-   producer seam, so persisting a real classification is a separate, schema-safety
-   -disciplined change to the candidate-seal pipeline (tracked independently). The
-   consent `purpose` and `sourceObjectType` (in `provenance`) are the only present
-   proxies today.
+1. **Migration `family` / `provider` / `framework` label — now populated at seal
+   time.** The adaptive-candidate seal pipeline captures the deterministic recipe
+   classification when a converged candidate is recorded (derived from the
+   lease-bound recipe's transform kinds: e.g. an AWS SDK recipe yields
+   `family: "sdk"`, `provider: "aws-sdk-js"`). Those labels are persisted on the
+   candidate row, threaded into the approved-outcome document, and emitted by the
+   exporter as `labels.family` / `labels.provider` / `labels.framework`. Values are
+   `sdk` / `framework` / `runtime` / `internal_api` (and `warden-provider` reserved
+   for the Warden path). Where the classification is genuinely undeterminable (a
+   purely adaptive candidate with no bound recipe) each label is stored and emitted
+   as `null` — never fabricated — and a pre-labeling (legacy) candidate exports the
+   same all-`null` labels it did before, so its corpus bytes are unchanged. The
+   classification is pure metadata and never gates review, promotion, or delivery.
 2. **Raw diff / after-content — now available as an opt-in purpose.** The base
    `output` is the accepted *change specification*, not literal diff hunks. Under
    the separate, opt-in consent purpose `transformer-adaptive-training-content`,

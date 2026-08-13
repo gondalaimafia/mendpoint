@@ -69,6 +69,14 @@ export type TransformerAdaptiveCandidateRecord = Readonly<{
   divergedFromDigest: string;
   candidateDigest: string;
   failingCommandId: string | null;
+  /**
+   * Deterministic migration classification labels for the learning corpus. Pure
+   * metadata captured at seal time; null for legacy rows and where the recipe
+   * binding is undeterminable. They never influence review, promotion, or delivery.
+   */
+  family: string | null;
+  provider: string | null;
+  framework: string | null;
   sealedPath: string;
   sealedSha256: string;
   changedPaths: readonly string[];
@@ -104,6 +112,9 @@ type Row = {
   diverged_from_digest: string;
   candidate_digest: string;
   failing_command_id: string | null;
+  family: string | null;
+  provider: string | null;
+  framework: string | null;
   sealed_path: string;
   sealed_sha256: string;
   changed_paths_json: string;
@@ -157,6 +168,28 @@ function requireTimestamp(value: unknown, code: string): string {
   return value;
 }
 
+const LABEL_FAMILIES = new Set([
+  "sdk",
+  "framework",
+  "runtime",
+  "internal_api",
+  "warden-provider",
+]);
+
+/**
+ * Normalize a corpus classification label to a stored value. Classification is
+ * metadata, so this NEVER throws: an unknown family or an out-of-shape label
+ * coerces to null rather than blocking the candidate record. A pre-labeling
+ * (legacy) column reads as null and the candidate keeps today's behavior.
+ */
+function normalizeLabel(value: unknown, isFamily: boolean): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 200) return null;
+  if (isFamily && !LABEL_FAMILIES.has(trimmed)) return null;
+  return trimmed;
+}
+
 /** Deterministic id so recording the same converged attempt is idempotent. */
 function candidateId(
   tenantId: string,
@@ -206,6 +239,9 @@ function mapRow(row: Row): TransformerAdaptiveCandidateRecord {
     divergedFromDigest: row.diverged_from_digest,
     candidateDigest: row.candidate_digest,
     failingCommandId: row.failing_command_id,
+    family: normalizeLabel(row.family, true),
+    provider: normalizeLabel(row.provider, false),
+    framework: normalizeLabel(row.framework, false),
     sealedPath: row.sealed_path,
     sealedSha256: row.sealed_sha256,
     changedPaths,
@@ -249,6 +285,14 @@ export type RecordAdaptiveCandidateInput = Readonly<{
   divergedFromDigest: string;
   candidateDigest: string;
   failingCommandId: string | null;
+  /**
+   * Deterministic migration classification labels (corpus metadata). Optional and
+   * default null; an unknown or out-of-shape value is stored as null. They never
+   * change any control-flow decision.
+   */
+  family?: string | null;
+  provider?: string | null;
+  framework?: string | null;
   sealedPath: string;
   sealedSha256: string;
   changedPaths: readonly string[];
@@ -307,6 +351,9 @@ export function recordAdaptiveCandidate(
   const reviewTier = input.reviewTier === undefined
     ? "standard"
     : requireTier(input.reviewTier, "transformer_adaptive_candidate_tier_invalid");
+  const family = normalizeLabel(input.family, true);
+  const provider = normalizeLabel(input.provider, false);
+  const framework = normalizeLabel(input.framework, false);
   const expiresAt = requireTimestamp(input.expiresAt, "transformer_adaptive_candidate_expiry_invalid");
   const now = input.now ? requireTimestamp(input.now, "transformer_adaptive_candidate_now_invalid") : new Date().toISOString();
   const id = candidateId(tenantId, campaignId, unitId, attemptId);
@@ -356,13 +403,14 @@ export function recordAdaptiveCandidate(
           (id, tenant_id, campaign_id, unit_id, attempt_id, repository_id,
            snapshot_id, base_branch, expected_base_revision, kind, status, review_tier,
            diverged_from_digest, candidate_digest, failing_command_id,
+           family, provider, framework,
            sealed_path, sealed_sha256, changed_paths_json,
            reviewer_principal_id, review_decision, review_rationale, reviewed_at, promoted_at,
            escalation_reviewer_principal_id, escalation_reviewed_at, escalation_rationale,
            supersedes_candidate_id, superseded_by_candidate_id, generation,
            expires_at, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'adaptive', 'review_pending', ?,
-           ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, ?, ?)`,
+           ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -378,6 +426,9 @@ export function recordAdaptiveCandidate(
         divergedFromDigest,
         candidateDigest,
         failingCommandId,
+        family,
+        provider,
+        framework,
         sealedPath,
         sealedSha256,
         JSON.stringify(changedPaths),

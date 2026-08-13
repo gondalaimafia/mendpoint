@@ -1172,6 +1172,9 @@ CREATE TABLE IF NOT EXISTS transformer_adaptive_candidates (
   diverged_from_digest TEXT NOT NULL,
   candidate_digest TEXT NOT NULL,
   failing_command_id TEXT,
+  family TEXT,
+  provider TEXT,
+  framework TEXT,
   sealed_path TEXT NOT NULL,
   sealed_sha256 TEXT NOT NULL,
   changed_paths_json TEXT NOT NULL,
@@ -1533,6 +1536,25 @@ function migrateProvidersFeedColumns(db: AppDb) {
     {
       table: "transformer_adaptive_candidates",
       name: "escalation_rationale",
+      sql: "TEXT",
+    },
+    // G2.1c seal-time corpus labels. Nullable, no default, so legacy rows read as
+    // null (byte-identical corpus for pre-labeling candidates). No static index,
+    // view, or constraint references these columns, so an existing DB that has not
+    // yet run this migration never touches them in the static DDL.
+    {
+      table: "transformer_adaptive_candidates",
+      name: "family",
+      sql: "TEXT",
+    },
+    {
+      table: "transformer_adaptive_candidates",
+      name: "provider",
+      sql: "TEXT",
+    },
+    {
+      table: "transformer_adaptive_candidates",
+      name: "framework",
       sql: "TEXT",
     },
     {

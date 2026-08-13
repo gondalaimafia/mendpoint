@@ -14,7 +14,13 @@ import {
   assessOrganizationConstraint,
   type OrganizationConstraintContract,
 } from "./organization-constraints.js";
-import { resolveRecipe, type RecipeFileModes, type RecipeReference } from "./recipe.js";
+import {
+  classifyRecipeReference,
+  resolveRecipe,
+  type MigrationLabelFamily,
+  type RecipeFileModes,
+  type RecipeReference,
+} from "./recipe.js";
 import { TransformerDomainError } from "./types.js";
 import {
   createTransformerAttemptEffectIdentity,
@@ -409,6 +415,15 @@ export type TransformerAdaptiveCandidateHandoffRecord = Readonly<{
   observedAt: string;
   evidenceRefs: readonly string[];
   importedAt?: string;
+  /**
+   * Deterministic migration classification of the unit's bound recipe, derived at
+   * handoff time so a recovery re-import (which no longer has the recipe binding)
+   * still persists the real corpus labels. Pure metadata; null where
+   * undeterminable. Optional so legacy handoff snapshots read as null.
+   */
+  family?: MigrationLabelFamily | null;
+  provider?: string | null;
+  framework?: string | null;
 }>;
 
 export type TransformerRegenerationReview = Readonly<{
@@ -2358,6 +2373,11 @@ export class TransformerPilotExecutionStore {
       throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
     }
     const unit = unitById(campaign, input.unitId);
+    // Deterministic recipe classification for corpus labels. Derived here (rather
+    // than trusted from the caller) so it is authoritative and survives a recovery
+    // re-import that no longer holds the recipe binding. Pure metadata: it never
+    // affects any guard below.
+    const classification = classifyRecipeReference(unit.recipe);
     const changedPaths = requireAdaptiveCandidatePaths(
       input.changedPaths,
       resolveRecipe(unit.recipe).allowedPaths,
@@ -2393,6 +2413,9 @@ export class TransformerPilotExecutionStore {
       expiresAt,
       observedAt: input.observedAt,
       evidenceRefs: requireEvidence(input.evidenceRefs),
+      family: classification.family,
+      provider: classification.provider,
+      framework: classification.framework,
     });
     return this.mutate(
       input,

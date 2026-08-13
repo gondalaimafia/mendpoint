@@ -80,11 +80,11 @@ export type LearningCorpusExample = Readonly<{
     rejectionRationale?: string;
   }>;
   labels: Readonly<{
-    // Not carried by the sealed learning shape today; emitted as null rather than
-    // fabricated. See docs/LEARNING_CORPUS.md ("What is deliberately absent").
-    family: null;
-    provider: null;
-    framework: null;
+    // Deterministic migration classification captured at seal time. Null for
+    // legacy/undeterminable outcomes (never fabricated). See docs/LEARNING_CORPUS.md.
+    family: string | null;
+    provider: string | null;
+    framework: string | null;
     semanticCategories: readonly string[];
     overallRisk: string;
     confidence: number;
@@ -151,6 +151,11 @@ type ParsedOutcome = Readonly<{
   failingCommandId: string | null;
   overallRisk: string;
   confidence: number;
+  // Real classification labels; null when the outcome doc omits them (legacy or
+  // undeterminable), keeping legacy corpora byte-identical.
+  family: string | null;
+  provider: string | null;
+  framework: string | null;
   changedPaths: readonly string[];
   edits: readonly LearningCorpusEdit[];
   verificationSummary: string;
@@ -223,6 +228,9 @@ function parseRedactedOutcome(redactedContent: string): ParsedOutcome | null | u
       typeof outcome.failingCommandId === "string" ? outcome.failingCommandId : null,
     overallRisk: typeof outcome.overallRisk === "string" ? outcome.overallRisk : "unknown",
     confidence: typeof outcome.confidence === "number" ? outcome.confidence : 0,
+    family: typeof outcome.family === "string" ? outcome.family : null,
+    provider: typeof outcome.provider === "string" ? outcome.provider : null,
+    framework: typeof outcome.framework === "string" ? outcome.framework : null,
     changedPaths: Object.freeze(changedPaths),
     edits: Object.freeze(edits),
     verificationSummary:
@@ -398,9 +406,9 @@ export function buildLearningCorpus(input: BuildLearningCorpusInput): LearningCo
             : {}),
         }),
         labels: Object.freeze({
-          family: null,
-          provider: null,
-          framework: null,
+          family: parsed.family,
+          provider: parsed.provider,
+          framework: parsed.framework,
           semanticCategories,
           overallRisk: parsed.overallRisk,
           confidence: parsed.confidence,
