@@ -27,7 +27,7 @@ const publicPages = [
       "Turn submitted OpenAPI changes into evidence backed migration pull request candidates for supported GitHub repositories.",
   },
   { path: "/design-partners", heading: "Start with one bounded migration problem" },
-  { path: "/docs", heading: "Supported Warden pilot scope" },
+  { path: "/docs", heading: "Supported Fettler pilot scope" },
   { path: "/security", heading: "Concrete controls and visible limitations" },
   { path: "/privacy", heading: "Private preview application data" },
   { path: "/service-status", heading: /Pilot deployment (?:is operational|needs attention)/ },
