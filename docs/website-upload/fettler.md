@@ -25,6 +25,7 @@ npm run agent:demo
 - Bounded repository diagnosis, source observation, edits, and verification
 - Durable mission plans, checkpoint takeover, verifier-driven replanning, and terminal evidence
 - Human candidate approval, draft delivery, CI observation, and bounded same-branch repair
+- Current head requested change feedback reentry under inherited cumulative budgets
 
 ## When to use it
 
@@ -66,7 +67,7 @@ npm run agent:demo
 ## Limitations
 
 - Language and migration coverage is bounded and unsupported work can abstain.
-- Review-comment feedback reentry is not yet implemented.
+- Review feedback reentry requires fully paginated, current head, active GitHub change requests and does not widen the approved path scope.
 - Production depth depends on the connected repository and configured verifier.
 
 ## See also

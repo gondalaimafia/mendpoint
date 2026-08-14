@@ -22,6 +22,7 @@ Approve a sealed candidate whose source, files, verification, and target reposit
 - Draft-only pull request creation
 - Same-request replay, response-loss adoption, and drift rejection
 - Required-check observation and bounded same-branch Fettler repair after fresh approval
+- Authoritative current head requested change observation and bounded repair reentry
 
 ## When to use it
 
@@ -55,11 +56,13 @@ Approve a sealed candidate whose source, files, verification, and target reposit
 
 - Delivery is draft-only and cannot merge or deploy.
 - Human approval is candidate-specific and expires on changed authority.
+- Review comments are untrusted evidence and do not authorize mutation.
+- Every feedback repair requires fresh Mendpoint human approval before the branch changes.
 - The final remote side effect requires a current lease, pause state, expected head, and one-use intent.
 
 ## Limitations
 
-- GitHub review comments are observed only as limited state today; full requested-change feedback reentry is next work.
+- Feedback reentry accepts only fully paginated, current head, active GitHub change requests under the existing cumulative cycle budget.
 - Production availability depends on App permissions and exact tenant-repository installation binding.
 - Cross-SCM feature parity is not complete.
 
