@@ -149,7 +149,9 @@ import {
 import {
   evaluatePrGates,
   reviewOpenApiDesign,
+  securityAttestationPolicyFromEnv,
   type ContractCase,
+  type SecurityScanAttestation,
 } from "@mendpoint/contract";
 import {
   seedMemoryForAgent,
@@ -1026,6 +1028,8 @@ app.post(`${base}/gates`, async (c) => {
       securityScanAttested?: boolean;
       /** @deprecated Ambiguous name — clients should send `securityScanAttested`. */
       securityScanOk?: boolean;
+      /** Structured, subject-bound attestation from a current client. */
+      securityScanAttestation?: SecurityScanAttestation;
     }>();
     let oldSpec = body.oldSpec;
     let newSpec = body.newSpec;
@@ -1044,6 +1048,9 @@ app.post(`${base}/gates`, async (c) => {
       providerSlug: body.providerSlug,
       contractCases: body.contractCases,
       securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
+      securityScanAttestation: body.securityScanAttestation,
+      // The dry-run evaluator reflects the same deployment policy as delivery.
+      securityAttestationPolicy: securityAttestationPolicyFromEnv(process.env),
     });
     return c.json(result);
   } catch (e) {
@@ -1715,6 +1722,7 @@ app.post("/providers/:slug/publish", async (c) => {
         securityScanAttested?: boolean;
         /** @deprecated Ambiguous name — send `securityScanAttested`. */
         securityScanOk?: boolean;
+        securityScanAttestation?: SecurityScanAttestation;
       }>()
       .catch(() => (
         {} as {
@@ -1724,6 +1732,7 @@ app.post("/providers/:slug/publish", async (c) => {
           contractCases?: ContractCase[];
           securityScanAttested?: boolean;
           securityScanOk?: boolean;
+          securityScanAttestation?: SecurityScanAttestation;
         }
       ));
     const report = await runChangePipeline({
@@ -1736,6 +1745,7 @@ app.post("/providers/:slug/publish", async (c) => {
       mode: body.mode,
       contractCases: body.contractCases,
       securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
+      securityScanAttestation: body.securityScanAttestation,
     });
     invalidateGraphCaches();
     void notifyWardenEvent(
@@ -1763,6 +1773,7 @@ app.post("/providers/:slug/publish-version", async (c) => {
     securityScanAttested?: boolean;
     /** @deprecated Ambiguous name — send `securityScanAttested`. */
     securityScanOk?: boolean;
+    securityScanAttestation?: SecurityScanAttestation;
     repairVerifyCommands?: string[];
   }>();
   if (!body.versionLabel || body.openapi === undefined) {
@@ -1795,6 +1806,7 @@ app.post("/providers/:slug/publish-version", async (c) => {
         providerSlug: p.slug,
         contractCases: body.contractCases,
         securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
+        securityScanAttestation: body.securityScanAttestation,
         repairVerifyCommands: body.repairVerifyCommands,
       },
       createdAt: nowIso(),
@@ -2577,6 +2589,7 @@ app.post("/jobs/fanout", async (c) => {
     securityScanAttested?: boolean;
     /** @deprecated Ambiguous name — send `securityScanAttested`. */
     securityScanOk?: boolean;
+    securityScanAttestation?: SecurityScanAttestation;
     repairVerifyCommands?: string[];
   }>();
   if (!body.providerSlug) return c.json({ error: "providerSlug required" }, 400);
@@ -2619,6 +2632,7 @@ app.post("/jobs/fanout", async (c) => {
       notificationsOnly: body.notificationsOnly,
       contractCases: body.contractCases,
       securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
+      securityScanAttestation: body.securityScanAttestation,
       repairVerifyCommands: body.repairVerifyCommands,
       ...(usageHold
         ? {

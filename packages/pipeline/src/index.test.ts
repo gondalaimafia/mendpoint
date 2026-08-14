@@ -25,7 +25,11 @@ import {
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
 import { MockGitHubDelivery } from "@mendpoint/github";
-import { issueVerificationWaiver } from "@mendpoint/contract";
+import {
+  changeSubjectDigest,
+  issueVerificationWaiver,
+  type SecurityScanAttestation,
+} from "@mendpoint/contract";
 import { applyPrFeedback, runChangePipeline } from "./index.js";
 import {
   openGraphLearnMemory,
@@ -702,6 +706,152 @@ describe("pipeline", () => {
     });
     expect(attested.consumers[0]?.prStatus).toBe("draft");
     expect(existsSync(join(deliveryRoot, "org", "sec-gate-shop", "pulls"))).toBe(true);
+  });
+
+  it("writes a durable audit record of a scanner attestation (who/when/subject/tier/outcome)", async () => {
+    const dir = join(tmpdir(), `mendpoint-pipe-sec-audit-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    dirs.push(dir);
+    const repoDir = join(dir, "shop");
+    cpSync(shop, repoDir, { recursive: true });
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, {
+      name: "Audit Shop",
+      repo: "audit-shop",
+      localPath: repoDir,
+    });
+    const oldSpec = JSON.parse(readFileSync(join(acme, "openapi-v1.json"), "utf8"));
+    const newSpec = JSON.parse(readFileSync(join(acme, "openapi-v2.json"), "utf8"));
+    const subject = changeSubjectDigest(oldSpec, newSpec);
+    const attestation: SecurityScanAttestation = {
+      tier: "scanner",
+      principal: "ci-scanner@acme",
+      attestedAt: "2026-07-02T00:00:00.000Z",
+      subject: { algo: "sha256", digest: subject },
+      tool: { name: "scanalot", version: "3.2.1" },
+      evidenceRef: "s3://evidence/acme-v2.json",
+    };
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(join(dir, "delivery")),
+      persistIndex: false,
+      contractCases: [
+        { id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } },
+      ],
+      securityScanAttestation: attestation,
+    });
+    expect(report.consumers[0]?.prStatus).toBe("draft");
+
+    const events = listDomainEvents(db, "tenant_default", "api_change", report.changeId);
+    const record = events.find((e) => e.event_type === "change.security_attestation");
+    expect(record).toBeDefined();
+    const payload = JSON.parse(record!.payload_json) as Record<string, unknown>;
+    expect(payload.tier).toBe("scanner");
+    expect(payload.verified).toBe(true);
+    expect(payload.satisfied).toBe(true);
+    expect(payload.attestingPrincipal).toBe("ci-scanner@acme");
+    expect(payload.attestedAt).toBe("2026-07-02T00:00:00.000Z");
+    expect(payload.subjectDigest).toBe(subject);
+    expect(payload.evidenceRef).toBe("s3://evidence/acme-v2.json");
+    expect(record!.actor_principal_id).toBeTruthy();
+    expect(verifyDomainEventIntegrity(db, "tenant_default").ok).toBe(true);
+  });
+
+  it("customer-profile policy blocks a bare claim, and the operator override accepts it as a logged downgrade", async () => {
+    const dir = join(tmpdir(), `mendpoint-pipe-sec-policy-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    dirs.push(dir);
+    const repoDir = join(dir, "shop");
+    cpSync(shop, repoDir, { recursive: true });
+    const priorProfile = process.env.MENDPOINT_DEPLOYMENT_PROFILE;
+    const priorOverride = process.env.MENDPOINT_SECURITY_ATTESTATION_ALLOW_UNVERIFIED;
+    const contractCases = [
+      { id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } },
+    ];
+    try {
+      // Customer profile requires a verified scanner result: a bare claim blocks.
+      process.env.MENDPOINT_DEPLOYMENT_PROFILE = "customer";
+      delete process.env.MENDPOINT_SECURITY_ATTESTATION_ALLOW_UNVERIFIED;
+      const db = seedProviderVersions();
+      const provider = db.raw
+        .prepare("SELECT id FROM providers WHERE slug = ?")
+        .get("acme-payments") as { id: string };
+      addMonitoredConsumer(db, provider.id, {
+        name: "Policy Shop",
+        repo: "policy-shop",
+        localPath: repoDir,
+      });
+      const deliveryRoot = join(dir, "delivery");
+      const blocked = await runChangePipeline({
+        tenantId: "tenant_default",
+        providerSlug: "acme-payments",
+        db,
+        graphDb: testGraphDb(),
+        github: new MockGitHubDelivery(deliveryRoot),
+        persistIndex: false,
+        contractCases,
+        securityScanAttested: true,
+      });
+      expect(blocked.consumers[0]?.prStatus).toBe("gates_failed");
+      expect(existsSync(join(deliveryRoot, "org", "policy-shop", "pulls"))).toBe(false);
+      const blockedEvents = listDomainEvents(db, "tenant_default", "api_change", blocked.changeId);
+      const blockedRecord = blockedEvents.find(
+        (e) => e.event_type === "change.security_attestation",
+      );
+      const blockedPayload = JSON.parse(blockedRecord!.payload_json) as Record<string, unknown>;
+      expect(blockedPayload.satisfied).toBe(false);
+      expect(blockedPayload.requiredTier).toBe("scanner");
+      expect(blockedPayload.code).toBe("policy_insufficient");
+
+      // With the operator override set, the same bare claim is accepted and the
+      // downgrade is recorded in both the audit record and the PR evidence.
+      process.env.MENDPOINT_SECURITY_ATTESTATION_ALLOW_UNVERIFIED = "1";
+      const db2 = seedProviderVersions();
+      const provider2 = db2.raw
+        .prepare("SELECT id FROM providers WHERE slug = ?")
+        .get("acme-payments") as { id: string };
+      addMonitoredConsumer(db2, provider2.id, {
+        name: "Override Shop",
+        repo: "override-shop",
+        localPath: repoDir,
+      });
+      const deliveryRoot2 = join(dir, "delivery2");
+      const accepted = await runChangePipeline({
+        tenantId: "tenant_default",
+        providerSlug: "acme-payments",
+        db: db2,
+        graphDb: testGraphDb(),
+        github: new MockGitHubDelivery(deliveryRoot2),
+        persistIndex: false,
+        contractCases,
+        securityScanAttested: true,
+      });
+      expect(accepted.consumers[0]?.prStatus).toBe("draft");
+      const acceptedEvents = listDomainEvents(db2, "tenant_default", "api_change", accepted.changeId);
+      const acceptedRecord = acceptedEvents.find(
+        (e) => e.event_type === "change.security_attestation",
+      );
+      const acceptedPayload = JSON.parse(acceptedRecord!.payload_json) as Record<string, unknown>;
+      expect(acceptedPayload.satisfied).toBe(true);
+      expect(acceptedPayload.downgradeApplied).toBe(true);
+      expect(acceptedPayload.policySource).toBe("operator_override");
+      const delivered = JSON.parse(
+        readFileSync(join(deliveryRoot2, "org", "override-shop", "pulls", "1.json"), "utf8"),
+      ) as { body: string };
+      expect(delivered.body).toMatch(/operator override/i);
+    } finally {
+      if (priorProfile === undefined) delete process.env.MENDPOINT_DEPLOYMENT_PROFILE;
+      else process.env.MENDPOINT_DEPLOYMENT_PROFILE = priorProfile;
+      if (priorOverride === undefined)
+        delete process.env.MENDPOINT_SECURITY_ATTESTATION_ALLOW_UNVERIFIED;
+      else process.env.MENDPOINT_SECURITY_ATTESTATION_ALLOW_UNVERIFIED = priorOverride;
+    }
   });
 
   it("persists delivery failure and does not duplicate completed consumers on rerun", async () => {

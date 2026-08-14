@@ -11,6 +11,27 @@ export {
 } from "./conformance.js";
 
 export {
+  SECURITY_ATTESTATION_SCHEMA_VERSION,
+  SECURITY_ATTESTATION_CUSTOMER_PROFILE,
+  DEPLOYMENT_PROFILE_ENV,
+  SECURITY_ATTESTATION_REQUIRE_VERIFIED_ENV,
+  SECURITY_ATTESTATION_ALLOW_UNVERIFIED_ENV,
+  DEFAULT_SECURITY_ATTESTATION_POLICY,
+  changeSubjectDigest,
+  evaluateSecurityAttestation,
+  securityAttestationPolicyFromEnv,
+  type SecurityAttestationTier,
+  type SecurityAttestationSubject,
+  type SecurityScanClaim,
+  type SecurityScanResult,
+  type SecurityScanAttestation,
+  type SecurityAttestationPolicy,
+  type SecurityAttestationPolicySource,
+  type SecurityAttestationCode,
+  type SecurityAttestationOutcome,
+} from "./security-attestation.js";
+
+export {
   reviewOpenApiDesign,
   type ApiReviewFinding,
   type ApiReviewReport,
