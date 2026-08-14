@@ -11,6 +11,7 @@ import {
   type AppDb,
   type JobRow,
   type WardenCandidateDeliveryRecord,
+  enqueueWardenCiCycle,
 } from "@mendpoint/db";
 import {
   type ExactDraftDeliveryInput,
@@ -36,7 +37,8 @@ class WardenCandidateDeliveryFinalizationError extends Error {
 
 export type ResolveWardenCandidateRepository = (input: Readonly<{
   tenantId: string; repositoryId: string; snapshotId: string; baseBranch: string; expectedBaseRevision: string;
-}>) => Readonly<{ owner: string; repo: string; baseBranch: string }> | Promise<Readonly<{ owner: string; repo: string; baseBranch: string }>>;
+}>) => Readonly<{ owner: string; repo: string; baseBranch: string; remoteRepositoryId?: number; installationId?: number }> |
+  Promise<Readonly<{ owner: string; repo: string; baseBranch: string; remoteRepositoryId?: number; installationId?: number }>>;
 
 export type WardenCandidateDeliveryWorkerInput = Readonly<{
   db: AppDb;
@@ -45,6 +47,12 @@ export type WardenCandidateDeliveryWorkerInput = Readonly<{
   resolveRepository: ResolveWardenCandidateRepository;
   artifactEnv?: NodeJS.ProcessEnv;
   now?: () => string;
+  ciReentry?: Readonly<{
+    requiredChecks: readonly string[];
+    maxCycles: number;
+    maxModelCalls: number;
+    maximumCostUsd: number;
+  }>;
 }>;
 
 function parsePayload(job: JobRow): { deliveryId: string; runId: string } {
@@ -238,6 +246,24 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
         recordWardenCandidateDeliverySuccess(input.db, { tenantId: delivery.tenantId, deliveryId: delivery.id,
           branchName: remote.branch, baseRevision: remote.baseSha, commitSha: remote.commitSha,
           draftPrNumber: remote.number, draftPrUrl: remote.url, observedAt: completedAt });
+        if (input.ciReentry) {
+          if (!repository.remoteRepositoryId || !repository.installationId) {
+            throw new Error("warden_ci_repository_identity_required");
+          }
+          enqueueWardenCiCycle(input.db, {
+            tenantId: delivery.tenantId,
+            deliveryId: delivery.id,
+            repositoryId: delivery.repositoryId,
+            remoteRepositoryId: repository.remoteRepositoryId,
+            installationId: repository.installationId,
+            requiredChecks: input.ciReentry.requiredChecks,
+            allowedChangedPaths: reviewedChanges.edits.map((edit) => edit.path),
+            maxCycles: input.ciReentry.maxCycles,
+            maxModelCalls: input.ciReentry.maxModelCalls,
+            maximumCostUsd: input.ciReentry.maximumCostUsd,
+            observedAt: completedAt,
+          });
+        }
         recordAudit(input.db, { id: `warden_delivery_audit_${createHash("sha256").update([delivery.tenantId, delivery.id].join("\0")).digest("hex").slice(0, 32)}`,
           tenantId: delivery.tenantId, actor: "agent", requestId: input.job.id,
           action: "agent.candidate.draft_delivered", resourceType: "agent_run", resourceId: delivery.runId,

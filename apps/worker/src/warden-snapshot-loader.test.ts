@@ -16,7 +16,10 @@ import {
   type AppDb,
   type ConsumerRepo,
 } from "@mendpoint/db";
-import { loadWardenSnapshotBinding } from "./warden-snapshot-loader.js";
+import {
+  loadWardenSnapshotBinding,
+  loadWardenSnapshotBindingFromAuthority,
+} from "./warden-snapshot-loader.js";
 
 const CREATED_AT = "2026-08-05T10:00:00.000Z";
 const OBSERVED_AT = "2026-08-05T12:00:00.000Z";
@@ -132,6 +135,43 @@ function snapshotDirectory(reposRoot: string, tenantId = "tenant-a", name = "sna
 }
 
 describe("Warden snapshot loader", () => {
+  it("loads an explicit immutable repair snapshot without changing the consumer binding", () => {
+    const { db, reposRoot } = setup();
+    const oldRoot = snapshotDirectory(reposRoot, "tenant-a", "old");
+    const repairRoot = snapshotDirectory(reposRoot, "tenant-a", "repair");
+    addRepository(db, "tenant-a", "repository-a");
+    addSnapshot(db, { storagePath: repairRoot });
+    const repo = consumerRepo(oldRoot, { snapshot_id: "old-snapshot", exact_commit: "c".repeat(40) });
+
+    const binding = loadWardenSnapshotBindingFromAuthority(
+      db,
+      "tenant-a",
+      repo,
+      { repositoryId: "repository-a", snapshotId: "snapshot-a", revision: REVISION, manifestSha256: MANIFEST },
+      OBSERVED_AT,
+      { env: productionEnv(reposRoot) },
+    );
+
+    expect(binding.root).toBe(repairRoot);
+    expect(repo).toMatchObject({ local_path: oldRoot, snapshot_id: "old-snapshot", exact_commit: "c".repeat(40) });
+  });
+
+  it("rejects an explicit repair snapshot for a different connected repository", () => {
+    const { db, reposRoot } = setup();
+    const root = snapshotDirectory(reposRoot);
+    addRepository(db, "tenant-a", "repository-a");
+    addSnapshot(db, { storagePath: root });
+
+    expect(() => loadWardenSnapshotBindingFromAuthority(
+      db,
+      "tenant-a",
+      consumerRepo(root, { connected_repository_id: "repository-b" }),
+      { repositoryId: "repository-a", snapshotId: "snapshot-a", revision: REVISION, manifestSha256: MANIFEST },
+      OBSERVED_AT,
+      { env: productionEnv(reposRoot) },
+    )).toThrow("warden_snapshot_repository_mismatch");
+  });
+
   it("returns a frozen exact binding for one active tenant snapshot", () => {
     const { db, reposRoot } = setup();
     const root = snapshotDirectory(reposRoot);

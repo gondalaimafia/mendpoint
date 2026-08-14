@@ -5,12 +5,18 @@ import {
   agentRunToApi,
   enqueueJob,
   enqueueWardenCandidateDelivery,
+  enqueueWardenCiUpdate,
   getAgentRun,
   getJob,
   getPrincipal,
   getWardenCandidateDeliveryByRun,
+  getWardenCiCycle,
+  getWardenCiUpdateByRun,
   insertAgentRun,
   listRepositorySnapshots,
+  listWardenCiObservations,
+  pauseWardenCiCycle,
+  rebindWardenCiRepair,
   recordAudit,
   type AppDb,
 } from "@mendpoint/db";
@@ -72,6 +78,10 @@ const WARDEN_REVIEW_ERRORS = [
     "warden_candidate_tenant_root_escape",
     "warden_candidate_workspace_escape",
     "warden_candidate_workspace_invalid",
+    "warden_ci_update_not_authorized",
+    "warden_ci_update_conflict",
+    "warden_ci_repair_rebind_not_authorized",
+    "warden_ci_mutation_in_flight",
   ].map((internalCode) => ({ internalCode, status: 409 as const })),
   { internalCode: "warden_candidate_expired", status: 410 },
 ] satisfies readonly PublicErrorRule[];
@@ -106,6 +116,25 @@ function sourceBinding(db: AppDb, tenantId: string, result: Record<string, unkno
   return { repositoryId, snapshotId, revision, baseBranch: snapshot.requested_ref };
 }
 
+function ciRepairAuthority(db: AppDb, tenantId: string, runId: string, result: Record<string, unknown>, repositoryId: string) {
+  if (!result.ciFailure || typeof result.ciFailure !== "object" || Array.isArray(result.ciFailure)) return null;
+  const failure = result.ciFailure as Record<string, unknown>;
+  const cycleId = typeof failure.cycleId === "string" ? failure.cycleId : "";
+  const cycle = cycleId ? getWardenCiCycle(db, tenantId, cycleId) : undefined;
+  if (!cycle || cycle.status !== "repair_pending" || cycle.repairRunId !== runId ||
+      cycle.repositoryId !== repositoryId || failure.deliveryId !== cycle.deliveryId ||
+      failure.pullRequestNumber !== cycle.pullRequestNumber || failure.failedHeadSha !== cycle.currentHeadSha ||
+      failure.observationDigest !== cycle.currentObservationDigest) {
+    throw new Error("warden_ci_update_not_authorized");
+  }
+  const observation = listWardenCiObservations(db, tenantId, cycle.id).find((candidate) =>
+    candidate.verdict === "failure" && candidate.headSha === cycle.currentHeadSha &&
+    candidate.observationDigest === cycle.currentObservationDigest);
+  if (!observation || failure.evidenceArtifactId !== observation.evidenceArtifactId ||
+      failure.evidenceDigest !== observation.evidenceDigest) throw new Error("warden_ci_update_not_authorized");
+  return Object.freeze({ cycle, observation });
+}
+
 export function registerWardenCandidateReviewRoutes(
   app: Hono<ApiEnv>,
   db: AppDb,
@@ -117,6 +146,53 @@ export function registerWardenCandidateReviewRoutes(
 ): void {
   const clock = options.now ?? nowIso;
   const sealApproval = options.sealApproval ?? sealWardenCandidateApproval;
+  const requireHuman = (c: Context<ApiEnv>) => {
+    const principal = c.get("principal");
+    if (!principal) return null;
+    const trustId = c.get("trustPrincipalId");
+    const trust = trustId ? getPrincipal(db, principal.tenantId, trustId) : undefined;
+    return isHumanWardenReviewer(principal, trust, principal.tenantId, c.get("apiKeyId"))
+      ? principal : null;
+  };
+
+  app.get("/agent/ci-cycles/:id", (c) => {
+    const principal = requireHuman(c);
+    if (!principal) return c.json({ error: c.get("principal") ? "human_review_required" : "authenticated_principal_required" },
+      c.get("principal") ? 403 : 401);
+    const cycle = getWardenCiCycle(db, principal.tenantId, c.req.param("id"));
+    if (!cycle) return c.json({ error: "not found" }, 404);
+    return c.json({ cycle, observations: listWardenCiObservations(db, principal.tenantId, cycle.id),
+      update: cycle.repairRunId ? getWardenCiUpdateByRun(db, principal.tenantId, cycle.repairRunId) ?? null : null });
+  });
+
+  app.post("/agent/ci-cycles/:id/pause", async (c) => {
+    const principal = requireHuman(c);
+    if (!principal) return c.json({ error: c.get("principal") ? "human_review_required" : "authenticated_principal_required" },
+      c.get("principal") ? 403 : 401);
+    const body = await c.req.json<unknown>().catch(() => null);
+    const reason = body && typeof body === "object" && typeof (body as Record<string, unknown>).reason === "string"
+      ? String((body as Record<string, unknown>).reason).trim() : "";
+    if (!reason) return c.json({ error: "pause reason is required" }, 400);
+    if (reason.length > 2_000) return c.json({ error: "pause reason must be at most 2000 characters" }, 400);
+    try {
+      const cycle = pauseWardenCiCycle(db, { tenantId: principal.tenantId, cycleId: c.req.param("id"),
+        actorPrincipalId: principal.id, reason, observedAt: clock() });
+      audit(c, { actor: "operator", action: "agent.ci_cycle.paused", resourceType: "warden_ci_cycle",
+        resourceId: cycle.id, metadata: { reason, product: "warden", actorPrincipalId: principal.id } });
+      return c.json({ cycle });
+    } catch (error) {
+      if (error instanceof Error && error.message === "warden_ci_cycle_not_found") {
+        return c.json({ error: "not found" }, 404);
+      }
+      return mappedErrorResponse(c, error, [
+        { internalCode: "warden_ci_cycle_terminal", status: 409 },
+        { internalCode: "warden_ci_mutation_in_flight", status: 409 },
+        { internalCode: "warden_ci_pause_actor_invalid", status: 400 },
+        { internalCode: "warden_ci_pause_reason_invalid", status: 400 },
+      ]);
+    }
+  });
+
   app.post("/agent/runs/:id/candidate/review", async (c) => {
     const principal = c.get("principal");
     if (!principal) return c.json({ error: "authenticated_principal_required" }, 401);
@@ -139,13 +215,19 @@ export function registerWardenCandidateReviewRoutes(
       if (body.decision === "regenerate" && typeof prior.supersedingRunId === "string" && typeof prior.supersedingJobId === "string") {
         return c.json({ status: run.status, supersedingRunId: prior.supersedingRunId, supersedingJobId: prior.supersedingJobId, replayed: true }, 202);
       }
-      return c.json({ ...agentRunToApi(run), delivery: getWardenCandidateDeliveryByRun(db, tenantId, run.id) ?? null });
+      return c.json({ ...agentRunToApi(run), delivery: getWardenCandidateDeliveryByRun(db, tenantId, run.id) ?? null,
+        update: getWardenCiUpdateByRun(db, tenantId, run.id) ?? null });
     }
     if (run.status !== "candidate_ready") return c.json({ error: "candidate is not awaiting review" }, 409);
     const reviewedAt = clock();
     let binding: ReturnType<typeof sourceBinding> | null = null;
-    if (body.decision === "approve") {
-      try { binding = sourceBinding(db, tenantId, result); }
+    let ciAuthority: ReturnType<typeof ciRepairAuthority> = null;
+    if (body.decision === "approve" || (result.ciFailure && typeof result.ciFailure === "object")) {
+      try {
+        binding = sourceBinding(db, tenantId, result);
+        ciAuthority = ciRepairAuthority(db, tenantId, run.id, result, binding.repositoryId);
+        if (body.decision === "approve" && ciAuthority) binding = { ...binding, baseBranch: ciAuthority.cycle.baseBranch };
+      }
       catch (error) { return mappedErrorResponse(c, error, WARDEN_REVIEW_ERRORS); }
     }
     let seal: Awaited<ReturnType<typeof sealWardenCandidateApproval>> | null = null;
@@ -182,6 +264,11 @@ export function registerWardenCandidateReviewRoutes(
           resultJson: JSON.stringify({ jobId: next.jobId, product: "warden", supersedesRunId: run.id,
             regenerationFeedback: body.rationale, reviewerPrincipalId: principal.id }),
           createdAt: reviewedAt, finishedAt: null });
+        if (ciAuthority) {
+          rebindWardenCiRepair(db, { tenantId, cycleId: ciAuthority.cycle.id,
+            currentRepairRunId: run.id, nextRepairRunId: next.runId, nextRepairJobId: next.jobId,
+            observedAt: reviewedAt });
+        }
         reviewedResult = { ...result, review: { decision: body.decision, rationale: body.rationale,
           reviewedAt, reviewerPrincipalId: principal.id, supersedingRunId: next.runId, supersedingJobId: next.jobId },
           supersededByRunId: next.runId, cleanup: { status: "pending", attempts: 0 } };
@@ -192,6 +279,10 @@ export function registerWardenCandidateReviewRoutes(
           ...(seal ? { artifacts: { ...artifacts, approval: { path: seal.path, sha256: seal.sha256 } } } : {}),
           ...(body.decision === "reject" ? { cleanup: { status: "pending", attempts: 0 } } : {}) };
         response = { status };
+        if (body.decision === "reject" && ciAuthority) {
+          pauseWardenCiCycle(db, { tenantId, cycleId: ciAuthority.cycle.id,
+            actorPrincipalId: principal.id, reason: "candidate_rejected", observedAt: reviewedAt });
+        }
       }
       const updated = db.raw.prepare(
         `UPDATE agent_runs SET status = ?, result_json = ?, finished_at = ?
@@ -199,11 +290,19 @@ export function registerWardenCandidateReviewRoutes(
       ).run(status, JSON.stringify(reviewedResult), reviewedAt, run.id, tenantId);
       if (Number(updated.changes) !== 1) throw new Error("warden_candidate_review_conflict");
       if (body.decision === "approve") {
-        const delivery = enqueueWardenCandidateDelivery(db, { tenantId, runId: run.id,
-          repositoryId: binding!.repositoryId, snapshotId: binding!.snapshotId, baseBranch: binding!.baseBranch,
-          expectedBaseRevision: binding!.revision, sealedPath: seal!.path, sealedSha256: seal!.sha256,
-          requesterPrincipalId: principal.id, rationale: body.rationale, now: reviewedAt });
-        response = { ...response, delivery };
+        if (ciAuthority) {
+          const update = enqueueWardenCiUpdate(db, { tenantId, cycleId: ciAuthority.cycle.id,
+            repairRunId: run.id, expectedHeadSha: ciAuthority.cycle.currentHeadSha,
+            sealedPath: seal!.path, sealedSha256: seal!.sha256, reviewerPrincipalId: principal.id,
+            rationale: body.rationale, observedAt: reviewedAt });
+          response = { ...response, update };
+        } else {
+          const delivery = enqueueWardenCandidateDelivery(db, { tenantId, runId: run.id,
+            repositoryId: binding!.repositoryId, snapshotId: binding!.snapshotId, baseBranch: binding!.baseBranch,
+            expectedBaseRevision: binding!.revision, sealedPath: seal!.path, sealedSha256: seal!.sha256,
+            requesterPrincipalId: principal.id, rationale: body.rationale, now: reviewedAt });
+          response = { ...response, delivery };
+        }
       }
       audit(c, { actor: "operator", action: body.decision === "approve" ? "agent.candidate.approved"
         : body.decision === "reject" ? "agent.candidate.rejected" : "agent.candidate.regeneration_requested",

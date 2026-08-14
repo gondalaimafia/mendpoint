@@ -1669,3 +1669,38 @@ Production intake checkpoint: authenticated `POST /transformer/missions` now der
 Warden terminal evidence review: successful attempts now defer terminal sealing until the worker's existing completion transaction. The authenticated terminal checkpoint, public job completion, routing outcome, `agent_runs` archive, and metering commit or roll back together, so no running job can be stranded behind a sealed terminal head. The runtime reconciles lost terminal responses, rejects stale leases and conflicting outcomes, holds exclusive controller ownership while finalizing, and rejects later effects. The worker archive keeps the exact encrypted terminal envelope and publishes only its digest in the public job result. Forced failure after terminal CAS restores the prior resumable checkpoint and leaves no partial routing or run record. Full Agent tests pass 333 of 333; full Worker tests pass 253 of 253; both typechecks and diff integrity pass. Independent strict review found no remaining P0 or P1 in this slice. Post PR CI repair reentry remains deliberately separate and unfinished.
 
 Post-rebase regression review: the checkpointed mutation path now preserves the existing `replace_in_file.global` argument instead of stripping it between trusted heuristic planning and runtime event validation. The forced terminal rollback drill passes, the Warden training knowledge tests pass 5 of 5, Agent and Worker typechecks pass, and the held-out contract evaluation is restored to Warden 16 of 16, Transformer 26 of 26, contract evidence 39 of 39, with zero critical or deterministic failures. The intermittent Windows backup rename failure was rerun in isolation and passed 19 of 19, so no speculative production retry logic was added.
+
+## Warden post PR CI repair reentry: 2026-08-13
+
+Objective: extend a human-approved Warden draft delivery into a durable, bounded CI feedback loop. The system must observe the exact draft head, diagnose actionable check failures, repair the same branch under fresh authority, and stop safely on success, pause, stale state, policy exhaustion, or human intervention. It must never merge or deploy.
+
+### Protocol and authority
+
+- [x] Bind every observation to tenant, Warden run, delivery, repository, pull request, base SHA, head branch, and exact head SHA.
+- [x] Persist one idempotent CI cycle and one lease-fenced attempt per observed head.
+- [x] Require the original approved scope, allowed paths, model policy, verification profile, and an explicit bounded repair budget.
+- [x] Reject foreign, stale, superseded, running, missing, ambiguous, or manually paused observations before any model or repository mutation.
+
+### Red-first joined behavior
+
+- [x] Observe RED tests for failed CI detail capture, same-head idempotency, response loss, stale lease, human pause, and exhausted budget.
+- [x] Observe RED tests proving a replacement worker repairs the same draft branch with compare-and-swap head authority and cannot duplicate commits or pull requests.
+- [x] Observe RED tests proving successful checks terminalize the cycle without a repair and no path can merge, publish, or deploy.
+
+### Implementation
+
+- [x] Extend exact draft observation with bounded, authenticated failed-check details and exact required-check identities.
+- [x] Add an exact existing-draft branch update that requires the expected head SHA and reconciles response loss byte-for-byte.
+- [x] Add the durable CI cycle coordinator, worker job, immutable source reconstruction, Warden repair execution, and same-branch delivery join.
+- [x] Wire polling and bounded enqueue behavior without reusing the mutable legacy `repair.run` checkout path.
+
+### Verification and release
+
+- [x] Run focused GitHub, DB, Agent, API, Worker, and joined CI reentry tests plus affected full package suites.
+- [x] Run typechecks, held-out evals, production build, repository verify, dependency audit, diff integrity, and deployment tests.
+- [x] Obtain independent P0 and P1 review and close every confirmed blocker.
+- [ ] Ship through a protected pull request, verify exact main and production health, and update the handover and parity report.
+
+Acceptance: after a human approves and delivers a Warden draft, an exact failed CI head can trigger only one bounded repair mission. A replacement worker can reconstruct the branch, produce and verify a scoped patch, update that same draft branch exactly once, and observe the rerun. Success, human pause, stale authority, policy exhaustion, and uncertain external outcomes all stop fail-closed. No code path merges or deploys.
+
+Review before publication: Warden now observes only configured GitHub check-run identities on an exact open draft head, stores bounded redacted failure evidence, and opens one durable tenant-scoped CI cycle. A repair uses a fresh immutable snapshot, inherits the original path, model, verification, and cumulative budget authorities, and requires a new human-approved candidate before updating the same draft branch. The update protocol persists a lease-fenced one-use intent, reconciles response loss read-only, compares every tracked leaf and every approved blob byte-for-byte, and cannot mutate after pause or stale authority. Reject, regenerate, expiry, polling exhaustion, and terminal worker errors settle the cycle instead of stranding it. The feature has no merge or deploy capability. Full affected suites passed GitHub 115 of 115, DB 202 of 202, API 338 of 338, and Worker 276 of 276; all affected typechecks passed. `scripts/verify.sh` passed all workspace typechecks, the complete repository tests, production build, GA/spec/claim/action checks, and diff integrity in 245 seconds. `npm audit --omit=dev` found zero vulnerabilities. Independent strict review approved the final reconciliation and control protocol with no remaining P0 or P1. Protected publication and live production verification remain pending.

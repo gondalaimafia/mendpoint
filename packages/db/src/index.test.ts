@@ -2290,6 +2290,9 @@ describe("db", () => {
       "routing_executor_health",
       "routing_outcome_applications",
       "repository_snapshot_files",
+      "warden_ci_cycles",
+      "warden_ci_observations",
+      "warden_ci_updates",
     ]) {
       expect(columnsOf(migrated, table)).toEqual(columnsOf(fresh, table));
       expect(indexesOf(migrated, table)).toEqual(indexesOf(fresh, table));

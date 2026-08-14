@@ -669,9 +669,19 @@ export {
 
 export {
   observeExactDraftWithOctokit,
+  type ExactDraftFailure,
+  type ExactDraftCheckResult,
   type ExactDraftObservation,
   type ExactDraftObservationInput,
 } from "./exact-draft-observer.js";
+
+export {
+  updateExactDraftWithOctokit,
+  reconcileExactDraftUpdateWithOctokit,
+  type ExactDraftUpdateInput,
+  type ExactDraftUpdateReconciliation,
+  type ExactDraftUpdateResult,
+} from "./exact-draft-update.js";
 
 export {
   GITHUB_DRAFT_DELIVERY_PERMISSIONS,
