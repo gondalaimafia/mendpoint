@@ -496,6 +496,31 @@ export function classifyJobFailure(error: unknown): {
   return { message, errorCode, retryable };
 }
 
+// The agent planner reports a non-ok model status as the stop reason
+// `model_<status>` (see runWarden in @mendpoint/agent). A subset of those
+// statuses are transient — timeouts, dropped connections, 429 rate limits, and
+// 5xx-class HTTP failures — and must consume the retry budget instead of
+// dead-lettering the run. Match on the `model_` prefix (or a bare suffix) so the
+// comparison actually fires; the previous allowlist compared against unprefixed
+// values that the planner never emits.
+const RETRYABLE_MODEL_STOP_REASON_SUFFIXES = new Set([
+  "request_timeout",
+  "request_failed",
+  "rate_limited",
+  "http_transient_error",
+  "http_error",
+]);
+
+export function isRetryableModelStopReason(
+  stoppedReason: string | null | undefined,
+): boolean {
+  if (!stoppedReason) return false;
+  const suffix = stoppedReason.startsWith("model_")
+    ? stoppedReason.slice("model_".length)
+    : stoppedReason;
+  return RETRYABLE_MODEL_STOP_REASON_SUFFIXES.has(suffix);
+}
+
 export function parseLeaseMs(value: string | number | undefined): number {
   const parsed = value === undefined ? 900_000 : Number(value);
   if (
@@ -2635,14 +2660,15 @@ async function processJobsOnceUnfenced(
               result.succeeded++;
               continue;
             }
+            const retryable = isRetryableModelStopReason(warden.stoppedReason);
             const failure = persistFailedAgentJob(
               db,
               job.id,
               fence,
               {
                 message: `Fettler failed: ${warden.stoppedReason}`,
-                errorCode: "warden_needs_human",
-                retryable: false,
+                errorCode: retryable ? "warden_model_transient_error" : "warden_needs_human",
+                retryable,
               },
               legacyRun,
             );
@@ -2996,7 +3022,7 @@ async function processJobsOnceUnfenced(
         };
         if (attempt.status === "rejected" && !noAction) {
           const retryable = attempt.code === "warden_attempt_internal_error" ||
-            ["request_timeout", "http_error"].includes(attempt.agent?.stoppedReason ?? "");
+            isRetryableModelStopReason(attempt.agent?.stoppedReason);
           const failure = persistFailedAgentJob(
             db,
             job.id,

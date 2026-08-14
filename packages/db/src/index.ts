@@ -4419,6 +4419,11 @@ export function retryJob(
     tenantId?: string;
     now?: string;
     resetAttempts?: boolean;
+    // For agent.run jobs, `result_json` holds the Warden checkpoint head (see
+    // apps/worker warden-checkpoint-journal); a re-run resumes from it instead of
+    // restarting from zero. Retry therefore preserves it by default. Pass
+    // `discardCheckpoint: true` to explicitly throw the resumable progress away.
+    discardCheckpoint?: boolean;
   } = {},
 ): boolean {
   assertTenantScope(opts.tenantId);
@@ -4429,7 +4434,7 @@ export function retryJob(
        SET status = 'pending',
            attempts = CASE WHEN ? THEN 0 ELSE attempts END,
            error = NULL,
-           result_json = NULL,
+           result_json = CASE WHEN ? THEN NULL ELSE result_json END,
            error_code = NULL,
            last_error_at = NULL,
            available_at = ?,
@@ -4443,7 +4448,13 @@ export function retryJob(
          AND status IN ('dead_letter', 'failed', 'cancelled')
          ${opts.tenantId ? "AND tenant_id = ?" : ""}`,
     )
-    .run(opts.resetAttempts === false ? 0 : 1, now, id, ...(opts.tenantId ? [opts.tenantId] : []));
+    .run(
+      opts.resetAttempts === false ? 0 : 1,
+      opts.discardCheckpoint === true ? 1 : 0,
+      now,
+      id,
+      ...(opts.tenantId ? [opts.tenantId] : []),
+    );
   return Number(retried.changes) === 1;
 }
 

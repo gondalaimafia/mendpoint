@@ -17,7 +17,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
   bindConsumerRepoSnapshot,
+  claimNextJob,
   enqueueJob,
+  failJob,
   enqueueAdaptiveDelivery,
   getAdaptiveCandidate,
   getAdaptiveDeliveryByCandidate,
@@ -59,6 +61,7 @@ import {
   parseJobConcurrency,
   classifyJobFailure,
   enqueueFeedPipelineJob,
+  isRetryableModelStopReason,
   processJobsOnce,
   maintainWardenArtifactsOnce,
   resolveWardenModelSourcePolicy,
@@ -3135,4 +3138,91 @@ describe("worker runtime", () => {
     });
     db.raw.close();
   }, 30_000);
+});
+
+describe("model stop-reason retryability (defect 1)", () => {
+  it("treats transient model stop reasons as retryable and non-transient ones as terminal", () => {
+    // The planner emits `model_<status>`; the allowlist must match on that prefix.
+    expect(isRetryableModelStopReason("model_request_timeout")).toBe(true);
+    expect(isRetryableModelStopReason("model_request_failed")).toBe(true);
+    expect(isRetryableModelStopReason("model_rate_limited")).toBe(true); // 429
+    expect(isRetryableModelStopReason("model_http_transient_error")).toBe(true); // 503
+    expect(isRetryableModelStopReason("model_http_error")).toBe(true);
+    // Non-transient / unrelated stop reasons stay terminal.
+    expect(isRetryableModelStopReason("model_response_invalid")).toBe(false);
+    expect(isRetryableModelStopReason("model_unavailable")).toBe(false);
+    expect(isRetryableModelStopReason("lease_lost")).toBe(false);
+    expect(isRetryableModelStopReason(null)).toBe(false);
+    expect(isRetryableModelStopReason(undefined)).toBe(false);
+    expect(isRetryableModelStopReason("")).toBe(false);
+  });
+
+  it("consumes the attempt budget for a transient model error instead of dead-lettering", () => {
+    // Mirrors both worker failure paths: retryable is derived from the model
+    // stop reason and handed to failJob. A 429/503/timeout must retry (pending),
+    // not dead_letter, until the 3-attempt budget is exhausted.
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-model-retry-"));
+    dirs.push(root);
+    const db = createDb(join(root, "worker.sqlite"));
+    const now = nowIso();
+    for (const stoppedReason of [
+      "model_request_timeout",
+      "model_rate_limited",
+      "model_http_transient_error",
+    ]) {
+      const id = `job-${stoppedReason}`;
+      enqueueJob(db, {
+        id,
+        tenantId: "tenant-a",
+        type: "agent.run",
+        payload: { goal: "x" },
+        createdAt: now,
+      });
+      const claimed = claimNextJob(db, ["agent.run"], {
+        tenantId: "tenant-a",
+        workerId: "worker-a",
+        now,
+      })!;
+      const failure = failJob(db, id, `Fettler failed: ${stoppedReason}`, now, {
+        workerId: "worker-a",
+        leaseGeneration: claimed.lease_generation,
+        errorCode: "warden_model_transient_error",
+        retryable: isRetryableModelStopReason(stoppedReason),
+      });
+      expect(failure.applied).toBe(true);
+      expect(failure.status).toBe("pending");
+      expect(getJob(db, id)?.status).toBe("pending");
+      expect(getJob(db, id)?.attempts).toBe(1);
+    }
+    db.raw.close();
+  });
+
+  it("dead-letters a non-transient model error", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-model-terminal-"));
+    dirs.push(root);
+    const db = createDb(join(root, "worker.sqlite"));
+    const now = nowIso();
+    enqueueJob(db, {
+      id: "job-invalid",
+      tenantId: "tenant-a",
+      type: "agent.run",
+      payload: { goal: "x" },
+      createdAt: now,
+    });
+    const claimed = claimNextJob(db, ["agent.run"], {
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      now,
+    })!;
+    const failure = failJob(db, "job-invalid", "Fettler failed: model_response_invalid", now, {
+      workerId: "worker-a",
+      leaseGeneration: claimed.lease_generation,
+      errorCode: "warden_needs_human",
+      retryable: isRetryableModelStopReason("model_response_invalid"),
+    });
+    expect(failure.applied).toBe(true);
+    expect(failure.status).toBe("dead_letter");
+    expect(getJob(db, "job-invalid")?.status).toBe("dead_letter");
+    db.raw.close();
+  });
 });
