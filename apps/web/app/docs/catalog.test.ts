@@ -103,6 +103,21 @@ describe("public product documentation catalog", () => {
     expect(deployment?.limitations).toEqual(expect.arrayContaining(deploymentClaim.limitations));
   });
 
+  it("describes the bounded Fettler review-feedback path as implemented", () => {
+    const fettler = PRODUCT_DOCS.find((page) => page.slug === "fettler");
+    const delivery = PRODUCT_DOCS.find((page) => page.slug === "draft-delivery");
+    const publicCopy = JSON.stringify([fettler, delivery]);
+
+    expect(publicCopy).not.toMatch(/review.feedback.*not yet implemented|full requested.change feedback reentry is next work/i);
+    expect(fettler?.capabilities).toEqual(expect.arrayContaining([
+      expect.stringMatching(/requested.change feedback reentry/i),
+    ]));
+    expect(delivery?.guardrails).toEqual(expect.arrayContaining([
+      expect.stringMatching(/comments.*do not authorize mutation/i),
+      expect.stringMatching(/fresh.*human approval/i),
+    ]));
+  });
+
   it("points every public evidence item at an existing repository file", () => {
     for (const page of PRODUCT_DOCS) {
       for (const evidence of page.evidence) {
