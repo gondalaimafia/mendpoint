@@ -82,10 +82,21 @@ export function PilotSuccessContractPanel({
         { severity: "standard", responseMinutes: 240, coverage: "Agreed pilot support window" },
       ],
       privacy: {
-        dataCategories: ["repository source", "verification logs"],
+        dataCategories: [
+          "repository working checkout (deletable on request)",
+          "snapshot file metadata, generated patch content, and audit events (append-only, retained)",
+        ],
         retentionDays: 30,
         processingRegions: ["agreed pilot region"],
-        deletionProcedure: "The customer owner requests an operator retention purge and receives evidence.",
+        // Scoped deliberately to what the platform can actually perform. The only
+        // byte-deletion path is the on-disk checkout purge; snapshot metadata,
+        // patch content, and audit events sit behind BEFORE DELETE triggers and
+        // cannot be removed by any code path. Do not widen this wording without
+        // building a deletion path for those tables first.
+        deletionProcedure:
+          "On request, the operator deletes the on-disk working checkout for the repository and returns evidence. " +
+          "Retention is not automatically enforced; deletion is operator-initiated. " +
+          "Snapshot file metadata, generated patch content, and audit events are append-only and are not removed by this procedure.",
       },
       rollback: {
         trigger: "A critical verification regression or an unauthorized file change.",
