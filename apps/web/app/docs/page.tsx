@@ -1,65 +1,72 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import claimRegistry from "../../../../docs/PUBLIC_CLAIMS.json";
 import { PublicFooter } from "../public-footer";
+import { docsByCategory, PRODUCT_DOCS } from "./catalog.js";
 
 export const metadata: Metadata = {
-  title: "Supported scope",
-  description: "Current Fettler pilot inputs, repository boundary, verification, and product status.",
+  title: "Product documentation",
+  description: "Build and operate Mendpoint with evidence-backed guides for Fettler, Regauge, change intelligence, delivery, verification, AI infrastructure, and production operations.",
   alternates: { canonical: "/docs" },
 };
 
-function wording(id: string) {
-  const claim = claimRegistry.claims.find((entry) => entry.id === id);
-  if (!claim) throw new Error(`Missing public claim ${id}`);
-  return claim.wording;
-}
-
 export default function DocumentationPage() {
   return (
-    <div className="public-page public-document">
-      <header>
-        <p className="public-kicker">Documentation</p>
-        <h1>Supported Fettler pilot scope</h1>
-        <p className="public-lead">{wording("CLM-002")}</p>
+    <div className="public-page docs-hub">
+      <header className="docs-hero">
+        <p className="public-kicker">Mendpoint documentation</p>
+        <h1>Build safe software migration workflows</h1>
+        <p className="public-lead">
+          Start with an exact repository snapshot, understand the change, produce a bounded candidate,
+          verify it, and deliver it for human review.
+        </p>
+        <p className="public-lead">
+          Fettler — the first AI API Engineer. Regauge — the first AI Legacy Engineer.
+        </p>
+        <div className="public-actions">
+          <Link className="btn primary" href="/docs/fettler">Start with Fettler</Link>
+          <Link className="btn" href="/docs/regauge">Plan a Regauge campaign</Link>
+        </div>
       </header>
 
-      <section>
-        <h2>Inputs</h2>
+      <section className="docs-start" aria-labelledby="docs-start-title">
+        <div>
+          <p className="public-kicker">Start here</p>
+          <h2 id="docs-start-title">Run the local evidence-backed demo</h2>
+          <p>Use synthetic fixtures and mock source control. No external account is required.</p>
+        </div>
+        <pre aria-label="Quickstart command"><code>npm install{"\n"}npm run demo</code></pre>
+      </section>
+
+      {docsByCategory().map(({ category, pages }) => (
+        <section className="docs-group" key={category} aria-labelledby={`category-${category.replaceAll(" ", "-").toLowerCase()}`}>
+          <h2 id={`category-${category.replaceAll(" ", "-").toLowerCase()}`}>{category}</h2>
+          <div className="docs-card-grid">
+            {pages.map((page) => (
+              <Link className="docs-card" href={`/docs/${page.slug}`} key={page.slug}>
+                <span className={`docs-status docs-status-${page.status}`}>{page.statusLabel}</span>
+                <h3>{page.title}</h3>
+                <p>{page.summary}</p>
+                <span className="docs-card-link">Read the guide</span>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ))}
+
+      <section className="docs-machine" aria-labelledby="machine-readable-title">
+        <div>
+          <p className="public-kicker">Machine-readable resources</p>
+          <h2 id="machine-readable-title">The same documentation for coding agents</h2>
+          <p>Append <code>.md</code> to any component guide, or use the manifest to enumerate every page.</p>
+        </div>
         <ul className="public-list">
-          <li>Submitted OpenAPI JSON and approved configured feeds</li>
-          <li>Configured repository snapshots owned by the pilot team</li>
-          <li>Approved verification commands discovered from repository policy</li>
+          <li><Link href="/docs/fettler.md">Fettler as Markdown</Link></li>
+          <li><Link href="/docs/regauge.md">Regauge as Markdown</Link></li>
+          <li><Link href="/docs/manifest.json">Documentation manifest</Link></li>
         </ul>
       </section>
 
-      <section>
-        <h2>Workflow</h2>
-        <ol className="public-list">
-          <li>Classify a supported OpenAPI change.</li>
-          <li>Build bounded static and graph backed impact candidates.</li>
-          <li>Generate a proposed patch for a supported migration pattern.</li>
-          <li>Run configured verification and retain evidence.</li>
-          <li>Open a draft pull request for human review when delivery gates pass.</li>
-        </ol>
-      </section>
-
-      <section>
-        <h2>Boundaries</h2>
-        <ul className="public-list">
-          <li>Coverage varies by language, change class, repository size, and verification profile.</li>
-          <li>Static analysis may not see runtime generated behavior.</li>
-          <li>Ambiguous work reports confidence and can abstain.</li>
-          <li>Fettler does not merge pull requests.</li>
-          <li>Regauge is an experimental planning preview.</li>
-          <li>GitLab delivery, SSO, SAML, and standard public billing remain roadmap work.</li>
-        </ul>
-      </section>
-
-      <div className="public-actions">
-        <Link className="btn primary" href="/design-partners">Apply with one scoped repository</Link>
-        <Link className="btn" href="/security">Review security</Link>
-      </div>
+      <p className="docs-count">{PRODUCT_DOCS.length} component guides, generated from one evidence-backed catalog.</p>
       <PublicFooter />
     </div>
   );

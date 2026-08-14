@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Draft delivery | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / Connect and deliver</nav>
+    <header class="hero">
+      <p class="kicker">Connect and deliver</p>
+      <h1>Draft delivery</h1>
+      <p>Publish one exact, review-first source change to a draft pull request and reconcile uncertain responses without duplicate delivery.</p>
+      <dl><dt>Status</dt><dd>GitHub production path</dd><dt>Availability</dt><dd>GitHub draft delivery for approved pilot repositories. GitLab delivery is on the roadmap.</dd><dt>Last verified</dt><dd>2026-08-14</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Approve a sealed candidate whose source, files, verification, and target repository still match current authority.</p><ol><li>Review the candidate and verification evidence.</li><li>Record a fresh human approval bound to the exact candidate and head.</li><li>Authorize deterministic draft delivery.</li><li>Observe the remote draft and reconcile exact branch, commit, and pull request evidence.</li></ol></section>
+    <section><h2>What it does</h2><ul><li>Exact-base branch creation and content-addressed Git commits</li><li>File bytes and executable mode preservation</li><li>Draft-only pull request creation</li><li>Same-request replay, response-loss adoption, and drift rejection</li><li>Required-check observation and bounded same-branch Fettler repair after fresh approval</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>A verified candidate is ready for human code review.</li><li>A worker may crash after a remote write.</li><li>A failed CI head needs one approved same-branch repair.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>The delivery intent binds repository, base SHA, branch, commit tree, candidate digest, and approval.</li><li>The GitHub App creates or adopts the exact commit and draft pull request.</li><li>A post-read verifies remote identity and bytes before local completion.</li><li>Uncertain writes enter read-only reconciliation; divergent state pauses for human review.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>Exact draft intent</code></td><td>Artifact</td><td>Repository, base, branch, tree, commit, PR, approval, and idempotency binding.</td></tr><tr><td><code>Draft delivered</code></td><td>Event</td><td>Immutable commit and pull-request evidence.</td></tr><tr><td><code>Draft observed</code></td><td>Event</td><td>Required checks, review state, and exact head evidence.</td></tr><tr><td><code>POST /agent/ci-cycles/:id/pause</code></td><td>API</td><td>Stop new Fettler CI repair authority.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Exact GitHub draft</strong><br><code>packages/github/src/index.test.ts</code></li><li><strong>Existing draft update</strong><br><code>packages/github/src/exact-draft-update.test.ts</code></li><li><strong>Draft observation</strong><br><code>packages/github/src/exact-draft-observer.test.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>Delivery is draft-only and cannot merge or deploy.</li><li>Human approval is candidate-specific and expires on changed authority.</li><li>The final remote side effect requires a current lease, pause state, expected head, and one-use intent.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>GitHub review comments are observed only as limited state today; full requested-change feedback reentry is next work.</li><li>Production availability depends on App permissions and exact tenant-repository installation binding.</li><li>Cross-SCM feature parity is not complete.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="repository-connections.html">Repository connections</a></li><li><a href="verification-attestations.html">Verification and attestations</a></li><li><a href="fettler.html">Fettler — the first AI API Engineer</a></li><li><a href="regauge.html">Regauge — the first AI Legacy Engineer</a></li></ul></section>
+    <p class="download"><a href="draft-delivery.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>

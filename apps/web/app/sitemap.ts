@@ -1,6 +1,7 @@
 import type { MetadataRoute } from "next";
+import { PRODUCT_DOCS } from "./docs/catalog.js";
 
-const paths = ["/", "/docs", "/security", "/service-status", "/privacy", "/terms", "/design-partners"];
+const paths = ["/", "/docs", ...PRODUCT_DOCS.map((page) => `/docs/${page.slug}`), "/security", "/service-status", "/privacy", "/terms", "/design-partners"];
 
 export default function sitemap(): MetadataRoute.Sitemap {
   return paths.map((path) => ({

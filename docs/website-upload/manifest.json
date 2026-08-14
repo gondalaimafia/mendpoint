@@ -1,0 +1,149 @@
+{
+  "schemaVersion": "2026-08-14.v1",
+  "generatedFrom": "apps/web/app/docs/catalog.ts",
+  "pages": [
+    {
+      "slug": "fettler",
+      "title": "Fettler — the first AI API Engineer",
+      "category": "Specialist agents",
+      "status": "limited_availability",
+      "statusLabel": "Limited availability",
+      "availability": "Submitted OpenAPI JSON and configured GitHub pilot repositories",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/fettler",
+      "markdownPath": "./fettler.md"
+    },
+    {
+      "slug": "regauge",
+      "title": "Regauge — the first AI Legacy Engineer",
+      "category": "Specialist agents",
+      "status": "preview",
+      "statusLabel": "Experimental planning preview",
+      "availability": "Durable campaign planning and review controls; repository execution and staged pull request campaigns are not customer ready",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/regauge",
+      "markdownPath": "./regauge.md"
+    },
+    {
+      "slug": "change-ingestion",
+      "title": "Change ingestion",
+      "category": "Understand change",
+      "status": "limited_availability",
+      "statusLabel": "Mixed availability",
+      "availability": "OpenAPI active; GraphQL and several release sources are gated previews",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/change-ingestion",
+      "markdownPath": "./change-ingestion.md"
+    },
+    {
+      "slug": "change-graph",
+      "title": "Change Graph",
+      "category": "Understand change",
+      "status": "limited_availability",
+      "statusLabel": "Production pilot",
+      "availability": "Real connected snapshots with bounded language and evidence coverage",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/change-graph",
+      "markdownPath": "./change-graph.md"
+    },
+    {
+      "slug": "repository-connections",
+      "title": "Repository connections",
+      "category": "Connect and deliver",
+      "status": "limited_availability",
+      "statusLabel": "GitHub production path",
+      "availability": "GitHub App pilot path. GitLab delivery is on the roadmap.",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/repository-connections",
+      "markdownPath": "./repository-connections.md"
+    },
+    {
+      "slug": "draft-delivery",
+      "title": "Draft delivery",
+      "category": "Connect and deliver",
+      "status": "limited_availability",
+      "statusLabel": "GitHub production path",
+      "availability": "GitHub draft delivery for approved pilot repositories. GitLab delivery is on the roadmap.",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/draft-delivery",
+      "markdownPath": "./draft-delivery.md"
+    },
+    {
+      "slug": "verification-attestations",
+      "title": "Verification and attestations",
+      "category": "Trust and verification",
+      "status": "limited_availability",
+      "statusLabel": "Verification production; attestations gated",
+      "availability": "Repository verification in active flows; formal attestation API requires explicit enablement and signing authority",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/verification-attestations",
+      "markdownPath": "./verification-attestations.md"
+    },
+    {
+      "slug": "model-router",
+      "title": "Model router",
+      "category": "AI platform",
+      "status": "limited_availability",
+      "statusLabel": "Runtime component",
+      "availability": "Used by specialist runtimes; configured providers and executors vary by deployment",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/model-router",
+      "markdownPath": "./model-router.md"
+    },
+    {
+      "slug": "post-trained-models",
+      "title": "Post-trained models",
+      "category": "AI platform",
+      "status": "preview",
+      "statusLabel": "Configured integration preview",
+      "availability": "Implemented control plane; no first-party trainer or shipped Mendpoint-trained model",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/post-trained-models",
+      "markdownPath": "./post-trained-models.md"
+    },
+    {
+      "slug": "learning-system",
+      "title": "Learning system",
+      "category": "AI platform",
+      "status": "preview",
+      "statusLabel": "Governed learning preview",
+      "availability": "Capture and corpus export implemented; downstream training requires separate authorization",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/learning-system",
+      "markdownPath": "./learning-system.md"
+    },
+    {
+      "slug": "billing-usage",
+      "title": "Billing and usage",
+      "category": "Operations",
+      "status": "internal",
+      "statusLabel": "Internal commercial control",
+      "availability": "Usage accounting active in runtimes; public payment collection and standard invoicing are not active",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/billing-usage",
+      "markdownPath": "./billing-usage.md"
+    },
+    {
+      "slug": "security-governance",
+      "title": "Security and governance",
+      "category": "Trust and verification",
+      "status": "limited_availability",
+      "statusLabel": "Profile-specific pilot controls",
+      "availability": "Private preview deployments with profile-specific authentication, encryption, and governance controls",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/security-governance",
+      "markdownPath": "./security-governance.md"
+    },
+    {
+      "slug": "deployment-operations",
+      "title": "Deployment and operations",
+      "category": "Operations",
+      "status": "limited_availability",
+      "statusLabel": "Pilot evaluation",
+      "availability": "Docker Compose and Fly pilot deployment; the dedicated Regauge profile is implemented but no live Regauge deployment is claimed",
+      "lastVerified": "2026-08-14",
+      "webPath": "/docs/deployment-operations",
+      "markdownPath": "./deployment-operations.md"
+    }
+  ]
+}

@@ -139,6 +139,18 @@ describe("web credential proxy", () => {
       ),
     );
     expect(githubReturn.headers.get("x-middleware-next")).toBe("1");
+
+    for (const path of ["/docs/fettler", "/docs/regauge", "/docs/manifest.json"]) {
+      const productDocumentation = await middleware(
+        new NextRequest(`https://console.example${path}`),
+      );
+      expect(productDocumentation.headers.get("x-middleware-next")).toBe("1");
+    }
+    const markdownDocumentation = await middleware(
+      new NextRequest("https://console.example/docs/fettler.md"),
+    );
+    expect(markdownDocumentation.headers.get("x-middleware-rewrite"))
+      .toBe("https://console.example/docs/markdown/fettler");
   });
 
   it("creates and clears a same-origin HttpOnly session", async () => {
