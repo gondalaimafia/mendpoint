@@ -67,3 +67,49 @@ repositories.
 The in-code marker for this residual risk lives in
 `packages/repair/src/verify.ts` (search for `network isolation` / `egress`) so
 the disclosure cannot silently regress.
+
+## Wiring: verification runs inside the sandbox when one is configured
+
+`runVerificationCommand` now routes through the configured sandbox backend. After
+the production approval gates above pass, if `MENDPOINT_SANDBOX_KIND=fly_machines`
+is selected the command runs inside a per-run, isolated Fly Machine
+(`packages/repair/src/verify-sandbox.ts`) instead of via `execFile` in the worker
+container. The dispatch is **fail-closed**: if isolation cannot be established
+(missing credential/app, create/exec failure, or a workspace too large to hand
+over intact) verification FAILS and never falls back to host execution.
+
+- **Default is unchanged.** With no `MENDPOINT_SANDBOX_KIND` (or `local`), the
+  host `execFile` path runs exactly as before — this change is safe to ship
+  before any sandbox infrastructure is provisioned.
+- **The approval gates still apply.** The sandbox is an additional containment
+  layer, not a replacement for the operator override or the `node-check` hash
+  gate; an unapproved command is still refused before it can reach the sandbox.
+- **How the workspace reaches the Machine.** The repository working tree
+  (excluding `node_modules`, `.git`, build outputs, and symlinks) is uploaded as
+  base64 `config.files` at Machine-create time and mounted at `/workspace`; the
+  command runs there and its exit code / stdout / stderr are returned. The
+  inline-files handoff is text-oriented and bounded (max 5,000 files / 8 MiB); a
+  larger tree fails closed rather than being silently truncated.
+
+### Operator configuration required to enable it
+
+- `MENDPOINT_SANDBOX_KIND=fly_machines` — select the sandbox backend.
+- `MENDPOINT_SANDBOX_FLY_APP` — the target Fly app for sandbox Machines
+  (e.g. `mendpoint-sandbox`).
+- `MENDPOINT_SANDBOX_FLY_TOKEN` (preferred, narrower blast radius) or
+  `FLY_API_TOKEN` — the credential. Without a resolvable token the run fails
+  closed rather than degrading to the no-op mock or host path.
+- `MENDPOINT_SANDBOX_FLY_IMAGE` — pin an immutable sandbox image tag
+  (see `docs/SANDBOX_IMAGE.md`); defaults to `:latest`.
+- The existing approval gates remain required in production
+  (`MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION` and/or
+  `MENDPOINT_APPROVED_VERIFIER_SHA256S`).
+
+### What still runs in the worker container after this change
+
+- All verification when no sandbox is configured (the default `local` backend).
+- Workspace enumeration and the approval-gate checks themselves (reading the repo
+  tree and hashing `node-check` files) run in the worker before dispatch.
+- The residual egress gate is still owed by the Fly Machine's network policy: this
+  change puts execution inside a microVM, but a default-deny egress policy on the
+  sandbox app must still be provisioned for full network containment.

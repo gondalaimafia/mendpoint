@@ -16,6 +16,7 @@
     "@mendpoint/ci-loop": "*",
     "@mendpoint/generation": "*",
     "@mendpoint/github": "*",
+    "@mendpoint/platform": "*",
     "@mendpoint/shared": "*"
   },
   "devDependencies": {
