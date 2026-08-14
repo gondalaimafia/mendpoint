@@ -10,7 +10,7 @@ import { generateMigration } from "@mendpoint/generation";
 import { migrateFromFixHint, exploreMigration, app, lit } from "@mendpoint/egraph";
 import { listExamples, loadExpectedPr } from "./load.js";
 import { changeEventToDiff, changeEventToSurfaces } from "./surfaces.js";
-import { generateExampleEdits, unifiedPatch, writeEdits } from "./migrate.js";
+import { planExampleMigration, unifiedPatch, writeEdits } from "./migrate.js";
 
 export type ExampleRunResult = {
   id: string;
@@ -54,8 +54,11 @@ async function runOne(exampleId?: string): Promise<ExampleRunResult[]> {
 
     const findings = reportToFindings(report);
 
-    // Example-specific high-quality edits
-    const edits = generateExampleEdits(ev, ex.consumerPath, findings);
+    // Example-specific high-quality edits. Selection is driven by the change
+    // data; an unrecognized change abstains with a reason rather than silently
+    // producing no edits.
+    const plan = planExampleMigration(ev, ex.consumerPath, findings);
+    const edits = plan.status === "edits" ? plan.edits : [];
     const patch = unifiedPatch(edits);
 
     // E-graph exploration on fix hints + field renames from ops
@@ -115,6 +118,10 @@ async function runOne(exampleId?: string): Promise<ExampleRunResult[]> {
       JSON.stringify(
         {
           event: ev.id,
+          migration:
+            plan.status === "abstained"
+              ? { status: plan.status, reason: plan.reason }
+              : { status: plan.status, families: plan.families },
           surfaces: surfaces.length,
           findings,
           report: {
@@ -157,6 +164,11 @@ async function runOne(exampleId?: string): Promise<ExampleRunResult[]> {
     console.log(`Findings:    ${result.findings} (${result.confidence} confidence, risk=${result.risk})`);
     console.log(`Files:       ${result.files.join(", ") || "—"}`);
     console.log(`Edits:       ${edits.length} file(s)`);
+    if (plan.status === "abstained") {
+      console.log(`Migration:   abstained (${plan.reason})`);
+    } else {
+      console.log(`Migration:   ${plan.status} [${plan.families.join(", ")}]`);
+    }
     console.log(`Output:      ${runDir}`);
     if (findings.length) {
       console.log("Top findings:");

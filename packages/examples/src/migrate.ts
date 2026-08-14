@@ -26,8 +26,122 @@ function readConsumerFiles(consumerRoot: string): Array<{ rel: string; abs: stri
   return out;
 }
 
+/**
+ * The transform families this demo rewriter knows how to apply. Selection is
+ * driven by the *described change* (its `ops`, `searchTokens`, `egraphRules`,
+ * `sdkSurface`) — never by the vendor's name. A vendor we have never seen still
+ * selects the right family when its change carries the same shape, and a change
+ * whose shape we do not recognize abstains explicitly instead of silently
+ * selecting nothing.
+ */
+export type SdkTransformFamily =
+  | "stripe-cursor-pagination"
+  | "openai-token-rename"
+  | "aws-s3-modular"
+  | "http-bearer-idempotency";
+
+function hasToken(ev: ChangeEvent, test: (token: string) => boolean): boolean {
+  return (ev.searchTokens ?? []).some(test);
+}
+
+function opsMatch(
+  ev: ChangeEvent,
+  test: (op: ChangeEvent["ops"][number]) => boolean,
+): boolean {
+  return (ev.ops ?? []).some(test);
+}
+
+export function selectSdkTransformFamilies(ev: ChangeEvent): SdkTransformFamily[] {
+  const families: SdkTransformFamily[] = [];
+  const egraph = new Set(ev.egraphRules ?? []);
+  const surface = (ev.sdkSurface ?? "").toLowerCase();
+
+  // Cursor / auto-paging: the change renames or deprecates an offset/cursor
+  // field or advertises an auto-paging helper. Matched on the pagination tokens
+  // and rename ops, tolerant of snake_case and camelCase field spellings.
+  if (
+    hasToken(ev, (t) => /^starting_?after$/i.test(t) || /^has_more$/i.test(t) || /autopaging/i.test(t)) ||
+    opsMatch(ev, (o) => /starting_?after/i.test(o.fromField ?? "") || /starting_?after/i.test(o.field ?? "")) ||
+    egraph.has("prefer_auto_paging") ||
+    egraph.has("legacy_page_to_cursor")
+  ) {
+    families.push("stripe-cursor-pagination");
+  }
+
+  // Token field rename: `max_tokens` → `max_completion_tokens` (plus the
+  // `choices[].text` → `message.content` response move).
+  if (
+    opsMatch(ev, (o) => o.op === "request_field_renamed" && o.fromField === "max_tokens") ||
+    hasToken(ev, (t) => t.toLowerCase() === "max_tokens")
+  ) {
+    families.push("openai-token-rename");
+  }
+
+  // AWS SDK v2 monolith → modular v3 client.
+  if (
+    surface.startsWith("aws.s3") ||
+    hasToken(ev, (t) => /^aws-sdk$/i.test(t) || /^aws\.s3$/i.test(t) || /^new aws$/i.test(t)) ||
+    opsMatch(ev, (o) => (o.path ?? "").startsWith("AWS.S3") || (o.path ?? "") === "S3Client")
+  ) {
+    families.push("aws-s3-modular");
+  }
+
+  // HTTP header auth swap + required idempotency key.
+  if (
+    opsMatch(ev, (o) => o.op === "security_changed") ||
+    opsMatch(ev, (o) => o.op === "request_field_added_required" && o.field === "idempotency_key") ||
+    hasToken(ev, (t) => /^x-api-key$/i.test(t) || t.toLowerCase() === "idempotency_key")
+  ) {
+    families.push("http-bearer-idempotency");
+  }
+
+  return families;
+}
+
+export type ExampleMigrationResult =
+  | Readonly<{ status: "edits"; families: readonly SdkTransformFamily[]; edits: FileEdit[] }>
+  | Readonly<{ status: "no_changes"; families: readonly SdkTransformFamily[]; edits: readonly [] }>
+  | Readonly<{ status: "abstained"; reason: string; families: readonly []; edits: readonly [] }>;
+
+/**
+ * Resolve a change event to a concrete migration plan. When the change matches
+ * no known transform family this returns an explicit `abstained` result carrying
+ * a reason — it never falls through to a silent empty edit list that reads as
+ * "nothing to do".
+ */
+export function planExampleMigration(
+  ev: ChangeEvent,
+  consumerRoot: string,
+  findings: ImpactFinding[],
+): ExampleMigrationResult {
+  const families = selectSdkTransformFamilies(ev);
+  if (!families.length) {
+    const subject = ev.sdkSurface || ev.vendor || ev.id || "unknown";
+    return {
+      status: "abstained",
+      reason: `no_sdk_transform_for_change:${subject}`,
+      families: [],
+      edits: [],
+    };
+  }
+  const edits = applyFamilyTransforms(ev, families, consumerRoot, findings);
+  return edits.length
+    ? { status: "edits", families, edits }
+    : { status: "no_changes", families, edits: [] };
+}
+
 export function generateExampleEdits(
   ev: ChangeEvent,
+  consumerRoot: string,
+  findings: ImpactFinding[],
+): FileEdit[] {
+  const plan = planExampleMigration(ev, consumerRoot, findings);
+  return plan.status === "edits" ? plan.edits : [];
+}
+
+function applyFamilyTransforms(
+  ev: ChangeEvent,
+  families: readonly SdkTransformFamily[],
   consumerRoot: string,
   _findings: ImpactFinding[],
 ): FileEdit[] {
@@ -36,10 +150,9 @@ export function generateExampleEdits(
 
   for (const f of files) {
     let updated = f.text;
-    const id = ev.id;
 
     if (
-      (id.includes("stripe") || id.includes("pagination") || id.includes("feature-adoption")) &&
+      families.includes("stripe-cursor-pagination") &&
       (updated.includes("starting_after") || updated.includes("customers.list"))
     ) {
       // Direct list calls → autoPagingToArray
@@ -68,7 +181,7 @@ export function generateExampleEdits(
     }
 
 
-    if (id.includes("openai")) {
+    if (families.includes("openai-token-rename")) {
       updated = updated.replace(/\bmax_tokens\s*=/g, "max_completion_tokens=");
       updated = updated.replace(
         /response\.choices\[0\]\.text/g,
@@ -76,7 +189,7 @@ export function generateExampleEdits(
       );
     }
 
-    if (id.includes("aws-s3") || id.includes("s3-v3")) {
+    if (families.includes("aws-s3-modular")) {
       if (updated.includes("aws-sdk") || updated.includes("AWS.S3")) {
         updated = `import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 
@@ -107,7 +220,7 @@ ${updated
       }
     }
 
-    if (id.includes("fintech") || id.includes("transfers") || id.includes("payments-api")) {
+    if (families.includes("http-bearer-idempotency")) {
       updated = updated.replace(
         /"X-API-Key":\s*key/g,
         '"Authorization": `Bearer ${key}`',
