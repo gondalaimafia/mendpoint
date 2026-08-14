@@ -199,7 +199,17 @@ export type RecipeApplication = Readonly<{
   verificationCommands: readonly RecipeVerificationCommand[];
 }>;
 
-export type RecipeApplicability = "applicable" | "already_applied" | "unsupported";
+export type RecipeApplicability =
+  | "applicable"
+  | "already_applied"
+  | "unsupported"
+  // The recipe applies to its allowlisted paths, but the same source pattern it
+  // migrates survives at one or more paths its `allowedPaths` do not cover. The
+  // migration is only partial; applying it would leave a silent divergence (for
+  // example a CI Dockerfile pinned to the old runtime while production moves).
+  // This is never a clean success: `applyRecipe` refuses and the residual sites
+  // are surfaced in `residualPaths` so a reviewer sees exactly what was missed.
+  | "incomplete";
 
 export type RecipeAnalysis = Readonly<{
   recipe: RecipeReference;
@@ -208,6 +218,10 @@ export type RecipeAnalysis = Readonly<{
   matchedPaths: readonly string[];
   estimatedOperations: number;
   reasons: readonly string[];
+  // Paths OUTSIDE `allowedPaths` that still match this recipe's own source
+  // preconditions and would therefore be left un-migrated. Non-empty only when
+  // `status === "incomplete"`. Empty for every clean outcome.
+  residualPaths: readonly string[];
   cacheHit: boolean;
 }>;
 
@@ -3371,6 +3385,79 @@ function preconditionState(
   };
 }
 
+function basename(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+function isDockerfileShapedPath(path: string): boolean {
+  const base = basename(path);
+  // The root `Dockerfile` plus any variant a real repo scatters around: a
+  // suffixed `Dockerfile.ci` / `Dockerfile.prod`, or a `service.Dockerfile`.
+  return /^Dockerfile(\..+)?$/i.test(base) || /\.Dockerfile$/i.test(base);
+}
+
+function dockerNodeMajors(content: string): number[] {
+  return [...content.matchAll(/^\s*FROM\s+node:(\d+)(?=[.\-\s]|$)/gim)].map((match) =>
+    Number(match[1]),
+  );
+}
+
+// A residual site is a file the recipe did NOT list in `allowedPaths` but that
+// still matches the recipe's own source precondition — i.e. a place the recipe
+// would migrate if it reached it, left on the old version. Detection is scoped
+// to the version-declaration precondition kinds, the family whose target files
+// legitimately appear at variable locations (a CI Dockerfile, a nested workspace
+// package.json, an extra runtime pin). It never widens what the recipe EDITS; it
+// only reads the whole snapshot to decide whether an edit would be complete.
+function isResidualSite(
+  precondition: RecipePrecondition,
+  path: string,
+  content: string,
+): boolean {
+  if (precondition.kind === "optional_docker_node_major") {
+    if (!isDockerfileShapedPath(path)) return false;
+    const majors = dockerNodeMajors(content);
+    return majors.length > 0 && majors.every((major) => major === precondition.major);
+  }
+  if (precondition.kind === "optional_node_version") {
+    const base = basename(path);
+    if (base !== ".nvmrc" && base !== ".node-version") return false;
+    const major = content.trim().replace(/^v/, "").split(".")[0];
+    return major === String(precondition.major);
+  }
+  if (precondition.kind === "json_string_in") {
+    if (basename(path) !== "package.json") return false;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return false;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const value = nodeEngineValue(parsed as Record<string, unknown>);
+    return typeof value === "string" && precondition.allowedValues.includes(value);
+  }
+  return false;
+}
+
+function residualSitePaths(
+  recipe: MigrationRecipeContract,
+  files: Record<string, string>,
+): string[] {
+  const allowed = new Set(recipe.allowedPaths);
+  const residual = new Set<string>();
+  for (const [path, content] of Object.entries(files)) {
+    if (allowed.has(path)) continue;
+    for (const precondition of recipe.preconditions) {
+      if (isResidualSite(precondition, path, content)) {
+        residual.add(path);
+        break;
+      }
+    }
+  }
+  return [...residual].sort();
+}
+
 function analyzeRecipeUncached(
   reference: RecipeReference,
   input: RecipeFiles,
@@ -3395,18 +3482,29 @@ function analyzeRecipeUncached(
   const matchedPaths = [...new Set(
     states.filter((item) => item.state === "source").map((item) => item.path),
   )].sort();
+  // Un-migrated sites outside the allowlist turn a would-be clean success into an
+  // explicit incomplete outcome. A precondition failure (`reasons`) still wins:
+  // an unsupported source never reaches the apply path at all.
+  const residualPaths = reasons.length ? [] : residualSitePaths(recipe, files);
   const status: RecipeApplicability = reasons.length
     ? "unsupported"
-    : hasSource
-      ? "applicable"
-      : "already_applied";
+    : residualPaths.length
+      ? "incomplete"
+      : hasSource
+        ? "applicable"
+        : "already_applied";
+  const surfaced = status === "applicable" || status === "incomplete";
   return deepFreeze({
     recipe: recipeReference(recipe),
     sourceDigest,
     status,
-    matchedPaths: status === "applicable" ? matchedPaths : [],
-    estimatedOperations: status === "applicable" ? matchedPaths.length : 0,
-    reasons,
+    matchedPaths: surfaced ? matchedPaths : [],
+    estimatedOperations: surfaced ? matchedPaths.length : 0,
+    reasons:
+      status === "incomplete"
+        ? residualPaths.map((path) => `recipe_incomplete_residual:${path}`)
+        : reasons,
+    residualPaths,
     cacheHit: false,
   });
 }
@@ -3576,6 +3674,12 @@ function applyRecipeWithAnalysis(
   }
   if (analysis.status === "unsupported") {
     throw new Error(analysis.reasons[0] ?? "recipe_precondition_failed");
+  }
+  // Never emit a "success" for a partial migration: the recipe reaches its
+  // allowlisted paths but the same source pattern survives elsewhere. Refuse and
+  // name the first residual so the caller and the PR evidence see the divergence.
+  if (analysis.status === "incomplete") {
+    throw new Error(analysis.reasons[0] ?? "recipe_incomplete_residual");
   }
   if (analysis.status === "already_applied") throw new Error("recipe_already_applied");
   const output = { ...original };
