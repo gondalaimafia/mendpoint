@@ -1,0 +1,121 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Stripe API (trimmed extract)",
+    "version": "2024-baseline"
+  },
+  "paths": {
+    "/v1/charges": {
+      "post": {
+        "operationId": "PostCharges",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "encoding": { "shipping": { "style": "deepObject" } },
+              "schema": {
+                "type": "object",
+                "required": ["amount", "currency", "source"],
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "type": "integer",
+                    "description": "Amount intended to be collected by this payment, in the smallest currency unit."
+                  },
+                  "currency": {
+                    "type": "string",
+                    "description": "Three-letter ISO currency code, in lowercase."
+                  },
+                  "source": {
+                    "maxLength": 5000,
+                    "type": "string",
+                    "description": "A payment source to be charged. This can be the ID of a card, a bank account, a source, a token, or a Customer."
+                  },
+                  "capture": {
+                    "type": "boolean",
+                    "description": "Whether to immediately capture the charge. Defaults to `true`."
+                  },
+                  "receipt_email": {
+                    "type": "string",
+                    "description": "The email address to which this charge's receipt will be sent."
+                  },
+                  "description": {
+                    "maxLength": 40000,
+                    "type": "string",
+                    "description": "An arbitrary string which you can attach to a `Charge` object."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/charge" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/charges/{charge}": {
+      "get": {
+        "operationId": "GetChargesCharge",
+        "parameters": [
+          {
+            "name": "charge",
+            "in": "path",
+            "required": true,
+            "schema": { "maxLength": 5000, "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/charge" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "charge": {
+        "type": "object",
+        "required": ["amount", "captured", "created", "currency", "disputed", "id", "object", "paid", "status"],
+        "properties": {
+          "id": { "maxLength": 5000, "type": "string", "description": "Unique identifier for the object." },
+          "object": { "type": "string", "enum": ["charge"] },
+          "amount": { "type": "integer", "description": "Amount intended to be collected by this payment." },
+          "amount_refunded": { "type": "integer", "description": "Amount in the smallest currency unit refunded." },
+          "captured": { "type": "boolean", "description": "If the charge was created without capturing, this Boolean means whether it is still uncaptured or has since been captured." },
+          "created": { "type": "integer", "description": "Time at which the object was created. Measured in seconds since the Unix epoch." },
+          "currency": { "type": "string", "description": "Three-letter ISO currency code, in lowercase." },
+          "customer": {
+            "description": "ID of the customer this charge is for if one exists.",
+            "nullable": true,
+            "anyOf": [
+              { "maxLength": 5000, "type": "string" },
+              { "$ref": "#/components/schemas/customer" }
+            ]
+          },
+          "description": { "maxLength": 40000, "type": "string", "nullable": true, "description": "An arbitrary string attached to the object." },
+          "disputed": { "type": "boolean", "description": "Whether the charge has been disputed." },
+          "paid": { "type": "boolean", "description": "`true` if the charge succeeded, or was successfully authorized for later capture." },
+          "payment_method": { "maxLength": 5000, "type": "string", "nullable": true, "description": "ID of the payment method used in this charge." },
+          "receipt_email": { "type": "string", "nullable": true, "description": "This is the email address that the receipt for this charge was sent to." },
+          "refunded": { "type": "boolean", "description": "Whether the charge has been fully refunded." },
+          "source_transfer": { "maxLength": 5000, "type": "string", "nullable": true, "description": "The transfer which created this charge." },
+          "status": { "type": "string", "enum": ["failed", "pending", "succeeded"], "description": "The status of the payment." }
+        }
+      }
+    }
+  }
+}

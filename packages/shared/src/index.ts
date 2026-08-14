@@ -380,6 +380,7 @@ export const DiffOpSchema = z.enum([
   "method_added",
   "method_changed",
   "request_field_added_required",
+  "request_field_added",
   "request_field_removed",
   "request_field_renamed",
   "response_field_removed",

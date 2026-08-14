@@ -6,6 +6,23 @@ import type {
   StructuralDiff,
 } from "@mendpoint/shared";
 import { newId } from "@mendpoint/shared";
+import {
+  SchemaResolver,
+  buildResolutionReport,
+  schemaDeepEqual,
+  type SpecResolutionReport,
+} from "./spec-ref.js";
+
+export {
+  MAX_REF_DEPTH,
+  SchemaResolver,
+  buildResolutionReport,
+  schemaDeepEqual,
+  type FlattenedSchema,
+  type SpecRefIssue,
+  type SpecRefIssueKind,
+  type SpecResolutionReport,
+} from "./spec-ref.js";
 
 export {
   canonicalChangeSourceContentHash,
@@ -105,55 +122,77 @@ function getMethods(pathItem: unknown): Json {
   return methods;
 }
 
-function schemaProps(schema: unknown): { props: Json; required: Set<string> } {
-  const s = asObj(schema);
-  // unwrap application/json content schemas when needed
-  return {
-    props: asObj(s.properties),
-    required: new Set(Array.isArray(s.required) ? (s.required as string[]) : []),
-  };
+/**
+ * Pick the representative schema out of an OpenAPI `content` map. Real specs do
+ * not all speak `application/json`: Stripe, for one, models request bodies as
+ * `application/x-www-form-urlencoded`. Prefer JSON for determinism, then the
+ * common form encodings, then whatever media type is present, so field-level
+ * changes are seen regardless of the wire format.
+ */
+function pickContentSchema(content: Json): unknown {
+  const preferred = [
+    "application/json",
+    "application/x-www-form-urlencoded",
+    "multipart/form-data",
+  ];
+  for (const media of preferred) {
+    const schema = asObj(content[media]).schema;
+    if (schema !== undefined) return schema;
+  }
+  for (const media of Object.keys(content)) {
+    const schema = asObj(content[media]).schema;
+    if (schema !== undefined) return schema;
+  }
+  return undefined;
 }
 
-function requestBodySchema(operation: unknown): unknown {
+/**
+ * The schema behind an operation's request body. The `requestBody` wrapper may
+ * itself be a `$ref` (`#/components/requestBodies/...`), so it is dereferenced
+ * before descending into `content`. The returned schema may still be a `$ref`
+ * or a composition; the resolver flattens that when properties are read.
+ */
+function requestBodySchema(operation: unknown, resolver: SchemaResolver): unknown {
   const op = asObj(operation);
-  const rb = asObj(op.requestBody);
-  const content = asObj(rb.content);
-  const json = asObj(content["application/json"]);
-  return json.schema ?? op.requestBody;
+  const rb = asObj(resolver.deref(op.requestBody));
+  const schema = pickContentSchema(asObj(rb.content));
+  return schema ?? op.requestBody;
 }
 
-function responseSchema(operation: unknown): unknown {
+/** The success response schema for an operation, dereferencing the response wrapper. */
+function responseSchema(operation: unknown, resolver: SchemaResolver): unknown {
   const op = asObj(operation);
   const responses = asObj(op.responses);
   const success =
     responses["200"] ?? responses["201"] ?? responses["default"] ?? {};
-  const content = asObj(asObj(success).content);
-  const json = asObj(content["application/json"]);
-  return json.schema;
-}
-
-function fieldKeys(schema: unknown): Set<string> {
-  return new Set(Object.keys(schemaProps(schema).props));
+  return pickContentSchema(asObj(asObj(resolver.deref(success)).content));
 }
 
 function detectRenames(
-  oldKeys: Set<string>,
-  newKeys: Set<string>,
+  oldProps: Map<string, Json>,
+  newProps: Map<string, Json>,
 ): Array<{ from: string; to: string }> {
-  const removed = [...oldKeys].filter((k) => !newKeys.has(k));
-  const added = [...newKeys].filter((k) => !oldKeys.has(k));
+  const removed = [...oldProps.keys()].filter((k) => !newProps.has(k));
+  const added = [...newProps.keys()].filter((k) => !oldProps.has(k));
   const renames: Array<{ from: string; to: string }> = [];
-  // Simple rename heuristic: singular pairs with shared prefix/suffix
+  const usedTo = new Set<string>();
+  // A removed field pairs with an added field when their names are lexically
+  // close OR when their resolved schemas are structurally identical. The schema
+  // signal catches semantic renames whose names share nothing (source ->
+  // payment_method), which the lexical heuristic alone misses.
   for (const from of removed) {
     for (const to of added) {
-      if (
+      if (usedTo.has(to)) continue;
+      const lexical =
         from.includes(to) ||
         to.includes(from) ||
-        (from.replace(/_cents$/, "") === to) ||
-        (to.replace(/_cents$/, "") === from) ||
-        levenshtein(from, to) <= 3
-      ) {
+        from.replace(/_cents$/, "") === to ||
+        to.replace(/_cents$/, "") === from ||
+        levenshtein(from, to) <= 3;
+      const structural = schemaDeepEqual(oldProps.get(from), newProps.get(to));
+      if (lexical || structural) {
         renames.push({ from, to });
+        usedTo.add(to);
         break;
       }
     }
@@ -193,12 +232,20 @@ export function classifyRisk(entries: DiffEntry[]): ChangeRisk {
   return "non_breaking";
 }
 
-export function summarizeChange(entries: DiffEntry[], risk: ChangeRisk): string {
-  if (entries.length === 0) return "No structural API changes detected.";
+export function summarizeChange(
+  entries: DiffEntry[],
+  risk: ChangeRisk,
+  resolution?: SpecResolutionReport,
+): string {
+  const note = resolutionNote(resolution);
+  if (entries.length === 0) {
+    return `No structural API changes detected.${note}`;
+  }
   const parts: string[] = [];
   const removed = entries.filter((e) => e.op === "path_removed" || e.op === "method_removed");
   const renames = entries.filter((e) => e.op === "request_field_renamed");
   const required = entries.filter((e) => e.op === "request_field_added_required");
+  const optionalFields = entries.filter((e) => e.op === "request_field_added");
   const added = entries.filter((e) => e.op === "path_added" || e.op === "method_added");
   if (renames.length) {
     parts.push(
@@ -219,6 +266,13 @@ export function summarizeChange(entries: DiffEntry[], risk: ChangeRisk): string 
       required.map((r) => `new required field ${r.field} on ${r.method?.toUpperCase()} ${r.path}`).join("; "),
     );
   }
+  if (optionalFields.length) {
+    parts.push(
+      optionalFields
+        .map((r) => `added optional field ${r.field} on ${r.method?.toUpperCase()} ${r.path}`)
+        .join("; "),
+    );
+  }
   if (added.length) {
     parts.push(
       added
@@ -231,15 +285,53 @@ export function summarizeChange(entries: DiffEntry[], risk: ChangeRisk): string 
       !renames.includes(e) &&
       !removed.includes(e) &&
       !required.includes(e) &&
+      !optionalFields.includes(e) &&
       !added.includes(e),
   );
   if (rest.length) parts.push(`${rest.length} other structural change(s)`);
-  return `[${risk}] ${parts.join(". ")}.`;
+  return `[${risk}] ${parts.join(". ")}.${note}`;
 }
 
-export function diffOpenApi(oldSpec: unknown, newSpec: unknown): StructuralDiff {
+/** Human-readable suffix flagging that ref resolution was partial, if so. */
+function resolutionNote(resolution?: SpecResolutionReport): string {
+  if (!resolution || resolution.complete || resolution.issues.length === 0) {
+    return "";
+  }
+  const counts = new Map<string, number>();
+  for (const issue of resolution.issues) {
+    counts.set(issue.kind, (counts.get(issue.kind) ?? 0) + 1);
+  }
+  const label: Record<string, string> = {
+    external_ref: "unresolved remote reference",
+    unresolvable_ref: "unresolvable local reference",
+    cycle_bounded: "bounded cyclic reference",
+  };
+  const phrases = [...counts.entries()].map(([kind, n]) => {
+    const base = label[kind] ?? kind;
+    return `${n} ${base}${n === 1 ? "" : "s"}`;
+  });
+  return ` (partial: ${phrases.join(", ")}; diff may be incomplete)`;
+}
+
+/**
+ * A structural diff augmented with the ref-resolution report. It is a superset
+ * of {@link StructuralDiff}: consumers that only read entries/risk/summary work
+ * unchanged, while callers that care about confidence can inspect `resolution`
+ * to see whether any `$ref` was left unresolved (remote, unresolvable, or a
+ * bounded cycle).
+ */
+export interface ResolvedStructuralDiff extends StructuralDiff {
+  resolution: SpecResolutionReport;
+}
+
+export function diffOpenApi(
+  oldSpec: unknown,
+  newSpec: unknown,
+): ResolvedStructuralDiff {
   const old = asObj(oldSpec);
   const neu = asObj(newSpec);
+  const oldResolver = new SchemaResolver(old);
+  const newResolver = new SchemaResolver(neu);
   const oldPaths = getPaths(old);
   const newPaths = getPaths(neu);
   const entries: DiffEntry[] = [];
@@ -301,14 +393,18 @@ export function diffOpenApi(oldSpec: unknown, newSpec: unknown): StructuralDiff 
 
     for (const method of oldM) {
       if (!newM.has(method)) continue;
-      const oldReq = requestBodySchema(oldMethods[method]);
-      const newReq = requestBodySchema(newMethods[method]);
-      const oldKeys = fieldKeys(oldReq);
-      const newKeys = fieldKeys(newReq);
-      const { required: newRequired } = schemaProps(newReq);
-      const { required: oldRequired } = schemaProps(oldReq);
+      const oldReq = oldResolver.properties(
+        requestBodySchema(oldMethods[method], oldResolver),
+      );
+      const newReq = newResolver.properties(
+        requestBodySchema(newMethods[method], newResolver),
+      );
+      const oldKeys = new Set(oldReq.props.keys());
+      const newKeys = new Set(newReq.props.keys());
+      const newRequired = newReq.required;
+      const oldRequired = oldReq.required;
 
-      const renames = detectRenames(oldKeys, newKeys);
+      const renames = detectRenames(oldReq.props, newReq.props);
       const renamedFrom = new Set(renames.map((r) => r.from));
       const renamedTo = new Set(renames.map((r) => r.to));
 
@@ -339,7 +435,8 @@ export function diffOpenApi(oldSpec: unknown, newSpec: unknown): StructuralDiff 
       }
 
       for (const field of newKeys) {
-        if (!oldKeys.has(field) && !renamedTo.has(field) && newRequired.has(field) && !oldRequired.has(field)) {
+        if (oldKeys.has(field) || renamedTo.has(field)) continue;
+        if (newRequired.has(field) && !oldRequired.has(field)) {
           entries.push({
             op: "request_field_added_required",
             path,
@@ -348,11 +445,28 @@ export function diffOpenApi(oldSpec: unknown, newSpec: unknown): StructuralDiff 
             breaking: true,
             detail: `Required request field ${field} added`,
           });
+        } else {
+          entries.push({
+            op: "request_field_added",
+            path,
+            method,
+            field,
+            breaking: false,
+            detail: `Optional request field ${field} added`,
+          });
         }
       }
 
-      const oldResKeys = fieldKeys(responseSchema(oldMethods[method]));
-      const newResKeys = fieldKeys(responseSchema(newMethods[method]));
+      const oldResKeys = new Set(
+        oldResolver
+          .properties(responseSchema(oldMethods[method], oldResolver))
+          .props.keys(),
+      );
+      const newResKeys = new Set(
+        newResolver
+          .properties(responseSchema(newMethods[method], newResolver))
+          .props.keys(),
+      );
       for (const field of oldResKeys) {
         if (!newResKeys.has(field)) {
           entries.push({
@@ -383,11 +497,13 @@ export function diffOpenApi(oldSpec: unknown, newSpec: unknown): StructuralDiff 
   // Nested path removals already covered; also detect method-level path that existed as nested
   // e.g. /v1/charges/{id}/receipt fully removed handled by path_removed
 
+  const resolution = buildResolutionReport(oldResolver, newResolver);
   const risk = classifyRisk(entries);
   return {
     entries,
     risk,
-    summary: summarizeChange(entries, risk),
+    summary: summarizeChange(entries, risk, resolution),
+    resolution,
   };
 }
 
@@ -407,6 +523,8 @@ function migrationStrategyFor(op: DiffOp, e: DiffEntry): string {
     case "request_field_removed":
     case "response_field_removed":
       return `Stop reading/writing field ${e.field}; migrate consumers of that property.`;
+    case "request_field_added":
+      return `Optional adoption: new request field ${e.field} on ${e.method?.toUpperCase() ?? ""} ${e.path ?? ""}`.trim();
     case "path_added":
     case "method_added":
     case "response_field_added":
