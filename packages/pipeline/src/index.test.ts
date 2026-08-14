@@ -204,7 +204,7 @@ describe("pipeline", () => {
           responseBody: { id: "ok" },
         },
       ],
-      securityScanOk: true,
+      securityScanAttested: true,
     });
 
     expect(report.consumers[0]?.prStatus).toBe("draft");
@@ -265,7 +265,7 @@ describe("pipeline", () => {
       contractCases: [
         { id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } },
       ],
-      securityScanOk: true,
+      securityScanAttested: true,
     });
 
     // Delivery completed despite the capability-adoption step failing.
@@ -302,7 +302,7 @@ describe("pipeline", () => {
       github: new MockGitHubDelivery(deliveryRoot),
       persistIndex: false,
       contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
-      securityScanOk: true,
+      securityScanAttested: true,
     });
 
     expect(report.consumers[0]?.prStatus).toBe("package_failed");
@@ -403,7 +403,7 @@ describe("pipeline", () => {
           responseBody: { id: "ok" },
         },
       ],
-      securityScanOk: true,
+      securityScanAttested: true,
     });
 
     expect(report.risk).toBe("breaking");
@@ -455,6 +455,12 @@ describe("pipeline", () => {
     expect(delivered.body).toContain("#### Verification results");
     expect(delivered.body).toContain("Automatic merge: disabled");
     expect(delivered.body).toContain("Automatic deployment: disabled");
+    // Gap 2 provenance: the caller-attested security scan reaches the PR evidence
+    // labelled as an attestation, never as an independently verified result.
+    expect(delivered.body).toContain("**security-scan** _(attested, not verified)_");
+    expect(delivered.body).toContain(
+      "Gates marked _(attested, not verified)_ reflect a caller-supplied assertion",
+    );
     expect(verifyDomainEventIntegrity(db, "tenant_default").ok).toBe(true);
     expect(verifyAuditIntegrity(db, "tenant_default").ok).toBe(true);
     await applyPrFeedback(db, prId, "closed", {
@@ -533,7 +539,7 @@ describe("pipeline", () => {
           responseBody: { id: "ok" },
         },
       ],
-      securityScanOk: true,
+      securityScanAttested: true,
     });
 
     expect(report.consumers[0]?.repair?.ok).toBe(false);
@@ -637,6 +643,67 @@ describe("pipeline", () => {
     expect(packageRecord.snapshot.resolvedSha).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("fails closed on an absent security attestation even when contract evidence passes (Gap 2)", async () => {
+    const dir = join(tmpdir(), `mendpoint-pipe-sec-gate-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    dirs.push(dir);
+    const repoDir = join(dir, "shop");
+    cpSync(shop, repoDir, { recursive: true });
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, {
+      name: "Sec Gate Shop",
+      repo: "sec-gate-shop",
+      localPath: repoDir,
+    });
+    const deliveryRoot = join(dir, "delivery");
+    // Contract evidence is supplied so the contract-suite gate passes; the only
+    // missing gate is the caller's security attestation. Delivery must still be
+    // blocked, proving the attestation is fail-closed on its own.
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(deliveryRoot),
+      persistIndex: false,
+      contractCases: [
+        {
+          id: "fixture",
+          name: "fixture",
+          requiredKeys: ["id"],
+          responseBody: { id: "ok" },
+        },
+      ],
+      // securityScanAttested intentionally omitted (unattested).
+    });
+    expect(report.consumers[0]?.prStatus).toBe("gates_failed");
+    expect(existsSync(join(deliveryRoot, "org", "sec-gate-shop", "pulls"))).toBe(false);
+
+    // The same run with the attestation supplied delivers the draft PR.
+    const attested = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(deliveryRoot),
+      persistIndex: false,
+      contractCases: [
+        {
+          id: "fixture",
+          name: "fixture",
+          requiredKeys: ["id"],
+          responseBody: { id: "ok" },
+        },
+      ],
+      securityScanAttested: true,
+    });
+    expect(attested.consumers[0]?.prStatus).toBe("draft");
+    expect(existsSync(join(deliveryRoot, "org", "sec-gate-shop", "pulls"))).toBe(true);
+  });
+
   it("persists delivery failure and does not duplicate completed consumers on rerun", async () => {
     const dir = join(tmpdir(), `mendpoint-pipe-resume-${Date.now()}`);
     mkdirSync(dir, { recursive: true });
@@ -688,7 +755,7 @@ describe("pipeline", () => {
           responseBody: { id: "ok" },
         },
       ],
-      securityScanOk: true,
+      securityScanAttested: true,
     };
 
     const first = await runChangePipeline({ ...common, graphDb: testGraphDb() });

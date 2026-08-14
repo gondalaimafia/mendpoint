@@ -106,7 +106,7 @@ export function runSpecialistTool(
                 requiredKeys: [],
               },
             ],
-        securityScanOk: meta.securityScanOk !== false,
+        securityScanAttested: meta.securityScanAttested !== false,
       });
       return {
         ok: gates.ok,

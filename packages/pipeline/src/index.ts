@@ -184,8 +184,12 @@ export type PipelineInput = {
   repairVerifyCommands?: string[];
   /** Recorded contract evidence required before PR delivery. */
   contractCases?: ContractCase[];
-  /** Explicit security scan result required before PR delivery. */
-  securityScanOk?: boolean;
+  /**
+   * Caller's attestation that a security scan passed. No scanner runs in this
+   * pipeline, so this is an unverified assertion required before PR delivery,
+   * not an independently verified result.
+   */
+  securityScanAttested?: boolean;
   /** Signed human waiver for one tenant, run, and verification check. */
   verificationWaiver?: {
     runId: string;
@@ -563,7 +567,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     newSpec,
     providerSlug: provider.slug,
     contractCases: input.contractCases,
-    securityScanOk: input.securityScanOk,
+    securityScanAttested: input.securityScanAttested,
   });
   // Provider breaking changes are the reason migration PRs exist. Delivery
   // fails closed on missing runtime contract/security evidence, while the

@@ -3188,6 +3188,8 @@ async function processJobsOnceUnfenced(
         notificationsOnly?: boolean;
         wardenPilot?: boolean;
         contractCases?: ContractCase[];
+        securityScanAttested?: boolean;
+        /** @deprecated Legacy payload key from jobs enqueued before the rename. */
         securityScanOk?: boolean;
         repairVerifyCommands?: string[];
       };
@@ -3201,7 +3203,9 @@ async function processJobsOnceUnfenced(
         severity: payload.severity,
         notificationsOnly: payload.wardenPilot ? true : payload.notificationsOnly,
         contractCases: payload.contractCases,
-        securityScanOk: payload.securityScanOk,
+        // Accept the legacy key so jobs enqueued before the rename still carry
+        // their attestation across the deploy boundary; both map fail-closed.
+        securityScanAttested: payload.securityScanAttested ?? payload.securityScanOk,
         repairVerifyCommands: payload.repairVerifyCommands,
         shouldContinue: () =>
           !leaseLost && opts.shouldContinue?.() !== false,

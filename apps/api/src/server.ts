@@ -1017,6 +1017,11 @@ app.post(`${base}/gates`, async (c) => {
         requireAuth?: boolean;
         requestHeaders?: Record<string, string>;
       }>;
+      // A request body is a caller assertion, never a scan this server ran, so
+      // it is named as an attestation. `securityScanOk` is still accepted from
+      // older clients and mapped to the attested field below.
+      securityScanAttested?: boolean;
+      /** @deprecated Ambiguous name — clients should send `securityScanAttested`. */
       securityScanOk?: boolean;
     }>();
     let oldSpec = body.oldSpec;
@@ -1035,7 +1040,7 @@ app.post(`${base}/gates`, async (c) => {
       newSpec,
       providerSlug: body.providerSlug,
       contractCases: body.contractCases,
-      securityScanOk: body.securityScanOk,
+      securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
     });
     return c.json(result);
   } catch (e) {
@@ -1721,6 +1726,8 @@ app.post("/providers/:slug/publish", async (c) => {
         notificationsOnly?: boolean;
         mode?: "migrate" | "adopt";
         contractCases?: ContractCase[];
+        securityScanAttested?: boolean;
+        /** @deprecated Ambiguous name — send `securityScanAttested`. */
         securityScanOk?: boolean;
       }>()
       .catch(() => (
@@ -1729,6 +1736,7 @@ app.post("/providers/:slug/publish", async (c) => {
           notificationsOnly?: boolean;
           mode?: never;
           contractCases?: ContractCase[];
+          securityScanAttested?: boolean;
           securityScanOk?: boolean;
         }
       ));
@@ -1741,7 +1749,7 @@ app.post("/providers/:slug/publish", async (c) => {
       notificationsOnly: body.notificationsOnly,
       mode: body.mode,
       contractCases: body.contractCases,
-      securityScanOk: body.securityScanOk,
+      securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
     });
     invalidateGraphCaches();
     void notifyWardenEvent(
@@ -1766,6 +1774,8 @@ app.post("/providers/:slug/publish-version", async (c) => {
     changelogMd?: string;
     runPipeline?: boolean;
     contractCases?: ContractCase[];
+    securityScanAttested?: boolean;
+    /** @deprecated Ambiguous name — send `securityScanAttested`. */
     securityScanOk?: boolean;
     repairVerifyCommands?: string[];
   }>();
@@ -1798,7 +1808,7 @@ app.post("/providers/:slug/publish-version", async (c) => {
       payload: {
         providerSlug: p.slug,
         contractCases: body.contractCases,
-        securityScanOk: body.securityScanOk,
+        securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
         repairVerifyCommands: body.repairVerifyCommands,
       },
       createdAt: nowIso(),
@@ -2578,6 +2588,8 @@ app.post("/jobs/fanout", async (c) => {
     severity?: string;
     notificationsOnly?: boolean;
     contractCases?: ContractCase[];
+    securityScanAttested?: boolean;
+    /** @deprecated Ambiguous name — send `securityScanAttested`. */
     securityScanOk?: boolean;
     repairVerifyCommands?: string[];
   }>();
@@ -2620,7 +2632,7 @@ app.post("/jobs/fanout", async (c) => {
       severity: body.severity,
       notificationsOnly: body.notificationsOnly,
       contractCases: body.contractCases,
-      securityScanOk: body.securityScanOk,
+      securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
       repairVerifyCommands: body.repairVerifyCommands,
       ...(usageHold
         ? {
