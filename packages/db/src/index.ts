@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
 CREATE INDEX IF NOT EXISTS jobs_type_idx ON jobs(type);
 
-CREATE TABLE IF NOT EXISTS warden_model_reservations (
+CREATE TABLE IF NOT EXISTS fettler_model_reservations (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   job_id TEXT NOT NULL REFERENCES jobs(id),
@@ -161,8 +161,8 @@ CREATE TABLE IF NOT EXISTS warden_model_reservations (
   settled_at TEXT,
   UNIQUE (tenant_id, job_id, lease_generation, call_index)
 );
-CREATE INDEX IF NOT EXISTS warden_model_reservations_job_idx
-  ON warden_model_reservations(tenant_id, job_id, status, reserved_at);
+CREATE INDEX IF NOT EXISTS fettler_model_reservations_job_idx
+  ON fettler_model_reservations(tenant_id, job_id, status, reserved_at);
 
 -- Agentic repair sessions
 CREATE TABLE IF NOT EXISTS repair_sessions (
@@ -716,7 +716,7 @@ BEFORE DELETE ON actual_execution_cost_entries BEGIN
   SELECT RAISE(ABORT, 'actual_execution_cost_entries_append_only');
 END;
 
-CREATE TABLE IF NOT EXISTS warden_campaigns (
+CREATE TABLE IF NOT EXISTS fettler_campaigns (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id),
   name TEXT NOT NULL,
@@ -729,13 +729,13 @@ CREATE TABLE IF NOT EXISTS warden_campaigns (
   updated_at TEXT NOT NULL,
   UNIQUE (tenant_id, id)
 );
-CREATE INDEX IF NOT EXISTS warden_campaigns_tenant_status_idx
-  ON warden_campaigns(tenant_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS fettler_campaigns_tenant_status_idx
+  ON fettler_campaigns(tenant_id, status, updated_at);
 
-CREATE TABLE IF NOT EXISTS warden_campaign_targets (
+CREATE TABLE IF NOT EXISTS fettler_campaign_targets (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id),
-  campaign_id TEXT NOT NULL REFERENCES warden_campaigns(id),
+  campaign_id TEXT NOT NULL REFERENCES fettler_campaigns(id),
   repository_id TEXT NOT NULL REFERENCES connected_repositories(id),
   snapshot_id TEXT NOT NULL REFERENCES repository_snapshots(id),
   package_artifact_id TEXT REFERENCES artifact_manifests(id),
@@ -752,15 +752,15 @@ CREATE TABLE IF NOT EXISTS warden_campaign_targets (
   updated_at TEXT NOT NULL,
   UNIQUE (tenant_id, campaign_id, repository_id)
 );
-CREATE INDEX IF NOT EXISTS warden_targets_campaign_stage_idx
-  ON warden_campaign_targets(tenant_id, campaign_id, stage, created_at);
+CREATE INDEX IF NOT EXISTS fettler_targets_campaign_stage_idx
+  ON fettler_campaign_targets(tenant_id, campaign_id, stage, created_at);
 
-CREATE TABLE IF NOT EXISTS warden_rollout_decisions (
+CREATE TABLE IF NOT EXISTS fettler_rollout_decisions (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id),
-  campaign_id TEXT NOT NULL REFERENCES warden_campaigns(id),
+  campaign_id TEXT NOT NULL REFERENCES fettler_campaigns(id),
   campaign_revision INTEGER NOT NULL CHECK (campaign_revision > 0),
-  canary_target_id TEXT NOT NULL REFERENCES warden_campaign_targets(id),
+  canary_target_id TEXT NOT NULL REFERENCES fettler_campaign_targets(id),
   max_cohort_size INTEGER NOT NULL CHECK (max_cohort_size > 0),
   decision_json TEXT NOT NULL,
   decision_sha256 TEXT NOT NULL CHECK (length(decision_sha256) = 64),
@@ -768,8 +768,8 @@ CREATE TABLE IF NOT EXISTS warden_rollout_decisions (
   created_at TEXT NOT NULL,
   UNIQUE (tenant_id, id)
 );
-CREATE INDEX IF NOT EXISTS warden_rollout_decisions_campaign_idx
-  ON warden_rollout_decisions(tenant_id, campaign_id, campaign_revision, created_at);
+CREATE INDEX IF NOT EXISTS fettler_rollout_decisions_campaign_idx
+  ON fettler_rollout_decisions(tenant_id, campaign_id, campaign_revision, created_at);
 
 CREATE TABLE IF NOT EXISTS learning_consents (
   id TEXT PRIMARY KEY,
@@ -1183,7 +1183,7 @@ CREATE INDEX IF NOT EXISTS developer_satisfaction_signals_tenant_created_idx
 -- makes it impossible for a recipe-candidate code path to ever approve one of
 -- these rows. Every column lives in this table's own CREATE, so the index below
 -- is safe in the static DDL (no additive migration adds a column it depends on).
-CREATE TABLE IF NOT EXISTS transformer_adaptive_candidates (
+CREATE TABLE IF NOT EXISTS regauge_adaptive_candidates (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   campaign_id TEXT NOT NULL,
@@ -1223,10 +1223,10 @@ CREATE TABLE IF NOT EXISTS transformer_adaptive_candidates (
   updated_at TEXT NOT NULL,
   UNIQUE (tenant_id, campaign_id, unit_id, attempt_id)
 );
-CREATE INDEX IF NOT EXISTS transformer_adaptive_candidates_tenant_idx
-  ON transformer_adaptive_candidates(tenant_id, campaign_id, status, created_at);
+CREATE INDEX IF NOT EXISTS regauge_adaptive_candidates_tenant_idx
+  ON regauge_adaptive_candidates(tenant_id, campaign_id, status, created_at);
 
-CREATE TABLE IF NOT EXISTS transformer_adaptive_regenerations (
+CREATE TABLE IF NOT EXISTS regauge_adaptive_regenerations (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   candidate_id TEXT NOT NULL,
@@ -1245,10 +1245,10 @@ CREATE TABLE IF NOT EXISTS transformer_adaptive_regenerations (
   updated_at TEXT NOT NULL,
   UNIQUE (tenant_id, candidate_id)
 );
-CREATE INDEX IF NOT EXISTS transformer_adaptive_regenerations_pending_idx
-  ON transformer_adaptive_regenerations(status, requested_at, id);
+CREATE INDEX IF NOT EXISTS regauge_adaptive_regenerations_pending_idx
+  ON regauge_adaptive_regenerations(status, requested_at, id);
 
-CREATE TABLE IF NOT EXISTS transformer_adaptive_deliveries (
+CREATE TABLE IF NOT EXISTS regauge_adaptive_deliveries (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   candidate_id TEXT NOT NULL,
@@ -1278,10 +1278,10 @@ CREATE TABLE IF NOT EXISTS transformer_adaptive_deliveries (
   updated_at TEXT NOT NULL,
   UNIQUE (tenant_id, candidate_id)
 );
-CREATE INDEX IF NOT EXISTS transformer_adaptive_deliveries_tenant_idx
-  ON transformer_adaptive_deliveries(tenant_id, status, requested_at);
+CREATE INDEX IF NOT EXISTS regauge_adaptive_deliveries_tenant_idx
+  ON regauge_adaptive_deliveries(tenant_id, status, requested_at);
 
-CREATE TABLE IF NOT EXISTS warden_candidate_deliveries (
+CREATE TABLE IF NOT EXISTS fettler_candidate_deliveries (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
@@ -1314,10 +1314,10 @@ CREATE TABLE IF NOT EXISTS warden_candidate_deliveries (
   updated_at TEXT NOT NULL,
   UNIQUE (tenant_id, run_id)
 );
-CREATE INDEX IF NOT EXISTS warden_candidate_deliveries_tenant_idx
-  ON warden_candidate_deliveries(tenant_id, status, requested_at);
+CREATE INDEX IF NOT EXISTS fettler_candidate_deliveries_tenant_idx
+  ON fettler_candidate_deliveries(tenant_id, status, requested_at);
 
-CREATE TABLE IF NOT EXISTS warden_ci_cycles (
+CREATE TABLE IF NOT EXISTS fettler_ci_cycles (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   delivery_id TEXT NOT NULL,
@@ -1349,10 +1349,10 @@ CREATE TABLE IF NOT EXISTS warden_ci_cycles (
   updated_at TEXT NOT NULL,
   UNIQUE (tenant_id, delivery_id)
 );
-CREATE INDEX IF NOT EXISTS warden_ci_cycles_tenant_status_idx
-  ON warden_ci_cycles(tenant_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS fettler_ci_cycles_tenant_status_idx
+  ON fettler_ci_cycles(tenant_id, status, updated_at);
 
-CREATE TABLE IF NOT EXISTS warden_ci_observations (
+CREATE TABLE IF NOT EXISTS fettler_ci_observations (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   cycle_id TEXT NOT NULL,
@@ -1364,10 +1364,10 @@ CREATE TABLE IF NOT EXISTS warden_ci_observations (
   observed_at TEXT NOT NULL,
   UNIQUE (tenant_id, cycle_id, head_sha, observation_digest)
 );
-CREATE INDEX IF NOT EXISTS warden_ci_observations_cycle_idx
-  ON warden_ci_observations(tenant_id, cycle_id, observed_at);
+CREATE INDEX IF NOT EXISTS fettler_ci_observations_cycle_idx
+  ON fettler_ci_observations(tenant_id, cycle_id, observed_at);
 
-CREATE TABLE IF NOT EXISTS warden_ci_updates (
+CREATE TABLE IF NOT EXISTS fettler_ci_updates (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   cycle_id TEXT NOT NULL,
@@ -1386,8 +1386,8 @@ CREATE TABLE IF NOT EXISTS warden_ci_updates (
   updated_at TEXT NOT NULL,
   UNIQUE (tenant_id, cycle_id, repair_run_id)
 );
-CREATE INDEX IF NOT EXISTS warden_ci_updates_tenant_status_idx
-  ON warden_ci_updates(tenant_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS fettler_ci_updates_tenant_status_idx
+  ON fettler_ci_updates(tenant_id, status, updated_at);
 `;
 
 
@@ -1427,8 +1427,90 @@ export function createDb(urlOrPath?: string): AppDb {
   migrateProvidersFeedColumns({ raw });
   migrateAuditIntegrity({ raw });
   migrateArtifactContent({ raw });
+  migrateWardenTransformerTableNames({ raw });
   installTrustImmutability({ raw });
   return { raw };
+}
+
+/**
+ * Rename the Warden/Transformer tables to Fettler/Regauge on existing volumes.
+ *
+ * The static DDL above already creates every table under its NEW name, so a
+ * fresh database is correct with zero migration. On an existing production
+ * volume the old-named tables still hold rows: this copies each old table's
+ * rows into the freshly-created (empty) new table and drops the old one.
+ *
+ * Guarded entirely on sqlite_master lookups, never blind ALTER/DROP, so it is
+ * safe on a fresh, fully-migrated, or partially-migrated database, and is a
+ * no-op on repeated boots. Crucially, no static DDL statement references a
+ * table that only this migration creates -- the DDL owns the new tables and
+ * this migration only moves data -- so it cannot crash boot the way the
+ * 2026-08-05 static-DDL-ahead-of-migration outage did.
+ */
+function migrateWardenTransformerTableNames(db: AppDb): void {
+  // old -> new. Every NEW table is created by the static DDL, so on an upgrade
+  // it is guaranteed to already exist (and be empty) before this runs.
+  const renames: ReadonlyArray<readonly [string, string]> = [
+    ["warden_model_reservations", "fettler_model_reservations"],
+    ["warden_campaigns", "fettler_campaigns"],
+    ["warden_campaign_targets", "fettler_campaign_targets"],
+    ["warden_rollout_decisions", "fettler_rollout_decisions"],
+    ["warden_candidate_deliveries", "fettler_candidate_deliveries"],
+    ["warden_ci_cycles", "fettler_ci_cycles"],
+    ["warden_ci_observations", "fettler_ci_observations"],
+    ["warden_ci_updates", "fettler_ci_updates"],
+    ["transformer_adaptive_candidates", "regauge_adaptive_candidates"],
+    ["transformer_adaptive_regenerations", "regauge_adaptive_regenerations"],
+    ["transformer_adaptive_deliveries", "regauge_adaptive_deliveries"],
+  ];
+
+  const tableExists = (name: string): boolean =>
+    get<{ name: string }>(
+      db,
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      [name],
+    ) !== undefined;
+
+  // Only pairs whose OLD table is still present (and whose NEW table exists, as
+  // the DDL guarantees) need work. Skipping when there is nothing pending keeps
+  // fresh and already-migrated boots free of any transaction.
+  const pending = renames.filter(
+    ([oldName, newName]) => tableExists(oldName) && tableExists(newName),
+  );
+  if (pending.length === 0) return;
+
+  if (db.raw.isTransaction) {
+    throw new Error("warden_transformer_rename_transaction_active");
+  }
+  const foreignKeysEnabled =
+    Number(
+      (db.raw.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number })
+        .foreign_keys,
+    ) === 1;
+  // Disable foreign keys for the copy+drop: dropping an old parent table (e.g.
+  // warden_campaigns) must not fail while the old child table still references
+  // it. Copied rows keep the exact references they already held to unchanged
+  // parent tables (tenants, jobs, ...), so referential integrity is preserved
+  // by construction -- no rows are rewritten, only relocated.
+  db.raw.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.raw.exec("BEGIN IMMEDIATE");
+    for (const [oldName, newName] of pending) {
+      // The new table is the old CREATE TABLE with only its name changed, so
+      // columns match by name and position: a positional copy is exact. The new
+      // table was just created empty by the DDL, so a plain INSERT cannot
+      // conflict, and dropping the old table also drops its old-named indexes
+      // (the new-named indexes were already created by the DDL).
+      db.raw.exec(`INSERT INTO ${newName} SELECT * FROM ${oldName};`);
+      db.raw.exec(`DROP TABLE ${oldName};`);
+    }
+    db.raw.exec("COMMIT");
+  } catch (error) {
+    if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  } finally {
+    if (foreignKeysEnabled) db.raw.exec("PRAGMA foreign_keys = ON");
+  }
 }
 
 function migrateRepositorySnapshotIdentity(db: AppDb): void {
@@ -1601,11 +1683,11 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "github_installations", name: "suspended_at", sql: "TEXT" },
     { table: "github_installations", name: "deleted_at", sql: "TEXT" },
     {
-      table: "warden_campaign_targets",
+      table: "fettler_campaign_targets",
       name: "enrollment_source",
       sql: "TEXT NOT NULL DEFAULT 'manual'",
     },
-    { table: "warden_campaign_targets", name: "enrolled_installation_id", sql: "TEXT" },
+    { table: "fettler_campaign_targets", name: "enrolled_installation_id", sql: "TEXT" },
     { table: "consumer_repos", name: "scm_connection_id", sql: "TEXT" },
     { table: "consumer_repos", name: "connected_repository_id", sql: "TEXT" },
     { table: "consumer_repos", name: "snapshot_id", sql: "TEXT" },
@@ -1614,32 +1696,32 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "migration_prs", name: "github_installation_id", sql: "TEXT" },
     { table: "migration_prs", name: "github_account_id", sql: "TEXT" },
     {
-      table: "transformer_adaptive_candidates",
+      table: "regauge_adaptive_candidates",
       name: "base_branch",
       sql: "TEXT NOT NULL DEFAULT ''",
     },
     {
-      table: "transformer_adaptive_candidates",
+      table: "regauge_adaptive_candidates",
       name: "review_rationale",
       sql: "TEXT",
     },
     {
-      table: "transformer_adaptive_candidates",
+      table: "regauge_adaptive_candidates",
       name: "review_tier",
       sql: "TEXT NOT NULL DEFAULT 'standard'",
     },
     {
-      table: "transformer_adaptive_candidates",
+      table: "regauge_adaptive_candidates",
       name: "escalation_reviewer_principal_id",
       sql: "TEXT",
     },
     {
-      table: "transformer_adaptive_candidates",
+      table: "regauge_adaptive_candidates",
       name: "escalation_reviewed_at",
       sql: "TEXT",
     },
     {
-      table: "transformer_adaptive_candidates",
+      table: "regauge_adaptive_candidates",
       name: "escalation_rationale",
       sql: "TEXT",
     },
@@ -1648,22 +1730,22 @@ function migrateProvidersFeedColumns(db: AppDb) {
     // view, or constraint references these columns, so an existing DB that has not
     // yet run this migration never touches them in the static DDL.
     {
-      table: "transformer_adaptive_candidates",
+      table: "regauge_adaptive_candidates",
       name: "family",
       sql: "TEXT",
     },
     {
-      table: "transformer_adaptive_candidates",
+      table: "regauge_adaptive_candidates",
       name: "provider",
       sql: "TEXT",
     },
     {
-      table: "transformer_adaptive_candidates",
+      table: "regauge_adaptive_candidates",
       name: "framework",
       sql: "TEXT",
     },
     {
-      table: "transformer_adaptive_deliveries",
+      table: "regauge_adaptive_deliveries",
       name: "base_branch",
       sql: "TEXT NOT NULL DEFAULT ''",
     },
@@ -1693,26 +1775,26 @@ function migrateProvidersFeedColumns(db: AppDb) {
   `);
   run(
     db,
-    `UPDATE transformer_adaptive_candidates
+    `UPDATE regauge_adaptive_candidates
      SET base_branch = COALESCE((
        SELECT snapshot.requested_ref
        FROM repository_snapshots snapshot
-       WHERE snapshot.id = transformer_adaptive_candidates.snapshot_id
-         AND snapshot.tenant_id = transformer_adaptive_candidates.tenant_id
-         AND snapshot.repository_id = transformer_adaptive_candidates.repository_id
+       WHERE snapshot.id = regauge_adaptive_candidates.snapshot_id
+         AND snapshot.tenant_id = regauge_adaptive_candidates.tenant_id
+         AND snapshot.repository_id = regauge_adaptive_candidates.repository_id
      ), '')
      WHERE base_branch = ''`,
   );
   run(
     db,
-    `UPDATE transformer_adaptive_deliveries
+    `UPDATE regauge_adaptive_deliveries
      SET base_branch = COALESCE((
        SELECT candidate.base_branch
-       FROM transformer_adaptive_candidates candidate
-       WHERE candidate.id = transformer_adaptive_deliveries.candidate_id
-         AND candidate.tenant_id = transformer_adaptive_deliveries.tenant_id
-         AND candidate.repository_id = transformer_adaptive_deliveries.repository_id
-         AND candidate.snapshot_id = transformer_adaptive_deliveries.snapshot_id
+       FROM regauge_adaptive_candidates candidate
+       WHERE candidate.id = regauge_adaptive_deliveries.candidate_id
+         AND candidate.tenant_id = regauge_adaptive_deliveries.tenant_id
+         AND candidate.repository_id = regauge_adaptive_deliveries.repository_id
+         AND candidate.snapshot_id = regauge_adaptive_deliveries.snapshot_id
      ), '')
      WHERE base_branch = ''`,
   );
@@ -4088,7 +4170,7 @@ export function recoverExpiredJobs(
   settleExpiredWardenModelReservations(db, now, tenantId);
   const adaptiveSideEffectMayExist = `(
     jobs.type = 'transformer.adaptive.deliver' AND EXISTS (
-      SELECT 1 FROM transformer_adaptive_deliveries delivery
+      SELECT 1 FROM regauge_adaptive_deliveries delivery
       WHERE delivery.job_id = jobs.id
         AND delivery.tenant_id = jobs.tenant_id
         AND delivery.status = 'delivery_pending'
@@ -4097,7 +4179,7 @@ export function recoverExpiredJobs(
   )`;
   const wardenSideEffectMayExist = `(
     jobs.type = 'warden.candidate.deliver' AND EXISTS (
-      SELECT 1 FROM warden_candidate_deliveries delivery
+      SELECT 1 FROM fettler_candidate_deliveries delivery
       WHERE delivery.job_id = jobs.id
         AND delivery.tenant_id = jobs.tenant_id
         AND delivery.status = 'delivery_pending'

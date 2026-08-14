@@ -32,7 +32,7 @@ function fixture() {
     repoPath: root, status: "candidate_approved", ok: true, steps: 2, filesChanged: ["src/a.ts"],
     reportMd: null, resultJson: "{}", createdAt: "2026-08-13T12:00:00.000Z",
     finishedAt: "2026-08-13T12:01:00.000Z" });
-  db.raw.prepare(`INSERT INTO warden_candidate_deliveries
+  db.raw.prepare(`INSERT INTO fettler_candidate_deliveries
     (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
      expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
      intent_digest, branch_name, base_revision, commit_sha, draft_pr, draft_pr_number,
@@ -102,7 +102,7 @@ describe("Warden CI repair dispatch", () => {
 
   it("durably exhausts the cycle and completes the dispatch job without creating another agent run", async () => {
     const { db, cycle, job, evidence } = fixture();
-    db.raw.prepare("UPDATE warden_ci_cycles SET used_cycles = max_cycles WHERE id = ? AND tenant_id = ?")
+    db.raw.prepare("UPDATE fettler_ci_cycles SET used_cycles = max_cycles WHERE id = ? AND tenant_id = ?")
       .run(cycle.id, "tenant-a");
     const materializeHead = vi.fn();
 

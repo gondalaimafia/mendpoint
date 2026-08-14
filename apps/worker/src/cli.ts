@@ -1019,7 +1019,7 @@ function expireWardenAgentRuns(
     status = 'candidate_ready' OR
     (
       status = 'candidate_approved' AND NOT EXISTS (
-        SELECT 1 FROM warden_candidate_deliveries delivery
+        SELECT 1 FROM fettler_candidate_deliveries delivery
         WHERE delivery.tenant_id = agent_runs.tenant_id
           AND delivery.run_id = agent_runs.id
           AND delivery.status = 'delivery_pending'

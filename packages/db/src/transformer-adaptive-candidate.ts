@@ -268,7 +268,7 @@ function loadRow(
   id: string,
 ): TransformerAdaptiveCandidateRecord | undefined {
   const row = db.raw
-    .prepare("SELECT * FROM transformer_adaptive_candidates WHERE id = ? AND tenant_id = ?")
+    .prepare("SELECT * FROM regauge_adaptive_candidates WHERE id = ? AND tenant_id = ?")
     .get(id, tenantId) as Row | undefined;
   return row ? mapRow(row) : undefined;
 }
@@ -379,8 +379,8 @@ export function recordAdaptiveCandidate(
     }
     const regeneration = db.raw.prepare(
       `SELECT regeneration.id, regeneration.candidate_id, candidate.generation
-       FROM transformer_adaptive_regenerations regeneration
-       JOIN transformer_adaptive_candidates candidate
+       FROM regauge_adaptive_regenerations regeneration
+       JOIN regauge_adaptive_candidates candidate
          ON candidate.id = regeneration.candidate_id
         AND candidate.tenant_id = regeneration.tenant_id
        WHERE regeneration.tenant_id = ?
@@ -399,7 +399,7 @@ export function recordAdaptiveCandidate(
     const generation = regeneration ? regeneration.generation + 1 : 1;
     db.raw
       .prepare(
-        `INSERT INTO transformer_adaptive_candidates
+        `INSERT INTO regauge_adaptive_candidates
           (id, tenant_id, campaign_id, unit_id, attempt_id, repository_id,
            snapshot_id, base_branch, expected_base_revision, kind, status, review_tier,
            diverged_from_digest, candidate_digest, failing_command_id,
@@ -440,7 +440,7 @@ export function recordAdaptiveCandidate(
       );
     if (regeneration) {
       const linkedPrior = db.raw.prepare(
-        `UPDATE transformer_adaptive_candidates
+        `UPDATE regauge_adaptive_candidates
          SET superseded_by_candidate_id = ?, updated_at = ?
          WHERE id = ? AND tenant_id = ? AND status = 'superseded'
            AND superseded_by_candidate_id IS NULL`,
@@ -449,7 +449,7 @@ export function recordAdaptiveCandidate(
         throw new Error("transformer_adaptive_candidate_lineage_conflict");
       }
       const linkedRequest = db.raw.prepare(
-        `UPDATE transformer_adaptive_regenerations
+        `UPDATE regauge_adaptive_regenerations
          SET status = 'completed', superseding_candidate_id = ?, completed_at = ?, updated_at = ?
          WHERE id = ? AND tenant_id = ? AND status = 'scheduled'
            AND superseding_candidate_id IS NULL`,
@@ -486,10 +486,10 @@ export function listAdaptiveCandidates(
   }
   const rows = campaignId === undefined
     ? db.raw
-        .prepare("SELECT * FROM transformer_adaptive_candidates WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
+        .prepare("SELECT * FROM regauge_adaptive_candidates WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
         .all(safeTenant, limit) as Row[]
     : db.raw
-        .prepare("SELECT * FROM transformer_adaptive_candidates WHERE tenant_id = ? AND campaign_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
+        .prepare("SELECT * FROM regauge_adaptive_candidates WHERE tenant_id = ? AND campaign_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
         .all(
           safeTenant,
           requiredString(campaignId, "transformer_adaptive_candidate_campaign_invalid", 200),
@@ -525,7 +525,7 @@ export function listAdaptiveAttentionCandidates(
   params.push(MAX_ADAPTIVE_ATTENTION_CANDIDATES + 1);
   const rows = db.raw
     .prepare(
-      `SELECT * FROM transformer_adaptive_candidates
+      `SELECT * FROM regauge_adaptive_candidates
        WHERE tenant_id = ?${campaignFilter}
          AND status IN ('review_pending', 'approved')
        ORDER BY CASE status WHEN 'review_pending' THEN 0 ELSE 1 END,
@@ -596,7 +596,7 @@ export function listAdaptiveCandidateHistory(
   params.push(limit + 1);
   const rows = db.raw
     .prepare(
-      `SELECT * FROM transformer_adaptive_candidates
+      `SELECT * FROM regauge_adaptive_candidates
        WHERE ${clauses.join(" AND ")}
        ORDER BY updated_at DESC, id DESC
        LIMIT ?`,
@@ -619,7 +619,7 @@ export function listAdaptiveCandidateHistory(
  */
 export function listAdaptiveCandidateTenantIds(db: AppDb): string[] {
   const rows = db.raw
-    .prepare("SELECT DISTINCT tenant_id FROM transformer_adaptive_candidates ORDER BY tenant_id")
+    .prepare("SELECT DISTINCT tenant_id FROM regauge_adaptive_candidates ORDER BY tenant_id")
     .all() as Array<{ tenant_id: string }>;
   return rows.map((row) => requiredString(
     row.tenant_id,
@@ -639,7 +639,7 @@ export function listAdaptiveCandidatesForMaintenance(
   );
   const rows = db.raw
     .prepare(
-      "SELECT * FROM transformer_adaptive_candidates WHERE tenant_id = ? ORDER BY id",
+      "SELECT * FROM regauge_adaptive_candidates WHERE tenant_id = ? ORDER BY id",
     )
     .all(safeTenant) as Row[];
   return rows.map(mapRow);
@@ -688,7 +688,7 @@ export function reviewAdaptiveCandidate(
     ) {
       db.raw
         .prepare(
-          `UPDATE transformer_adaptive_candidates
+          `UPDATE regauge_adaptive_candidates
            SET status = 'expired', updated_at = ?
            WHERE id = ? AND tenant_id = ? AND kind = 'adaptive'
              AND status = 'review_pending' AND expires_at <= ?`,
@@ -730,7 +730,7 @@ export function reviewAdaptiveCandidate(
     }
     const changed = db.raw
       .prepare(
-        `UPDATE transformer_adaptive_candidates
+        `UPDATE regauge_adaptive_candidates
          SET status = ?, review_decision = ?, review_rationale = ?, reviewer_principal_id = ?, reviewed_at = ?, updated_at = ?
          WHERE id = ? AND tenant_id = ? AND kind = 'adaptive'
            AND status = 'review_pending' AND expires_at > ?`,
@@ -796,7 +796,7 @@ export function signOffAdaptiveEscalation(
     ) {
       db.raw
         .prepare(
-          `UPDATE transformer_adaptive_candidates
+          `UPDATE regauge_adaptive_candidates
            SET status = 'expired', updated_at = ?
            WHERE id = ? AND tenant_id = ? AND kind = 'adaptive'
              AND status = 'review_pending' AND expires_at <= ?`,
@@ -820,7 +820,7 @@ export function signOffAdaptiveEscalation(
     }
     const changed = db.raw
       .prepare(
-        `UPDATE transformer_adaptive_candidates
+        `UPDATE regauge_adaptive_candidates
          SET escalation_reviewer_principal_id = ?, escalation_reviewed_at = ?,
              escalation_rationale = ?, updated_at = ?
          WHERE id = ? AND tenant_id = ? AND kind = 'adaptive'
@@ -906,7 +906,7 @@ function loadRegeneration(
   id: string,
 ): TransformerAdaptiveRegenerationRecord | undefined {
   const row = db.raw.prepare(
-    "SELECT * FROM transformer_adaptive_regenerations WHERE id = ? AND tenant_id = ?",
+    "SELECT * FROM regauge_adaptive_regenerations WHERE id = ? AND tenant_id = ?",
   ).get(id, tenantId) as RegenerationRow | undefined;
   return row ? mapRegeneration(row) : undefined;
 }
@@ -924,7 +924,7 @@ export function getAdaptiveRegenerationByCandidate(
   candidateIdValue: string,
 ): TransformerAdaptiveRegenerationRecord | undefined {
   const row = db.raw.prepare(
-    `SELECT * FROM transformer_adaptive_regenerations
+    `SELECT * FROM regauge_adaptive_regenerations
      WHERE tenant_id = ? AND candidate_id = ?`,
   ).get(
     requiredString(tenantId, "transformer_adaptive_candidate_tenant_invalid", 200),
@@ -992,7 +992,7 @@ export function requestAdaptiveCandidateRegeneration(
       throw new Error("transformer_adaptive_candidate_not_pending");
     }
     const changed = db.raw.prepare(
-      `UPDATE transformer_adaptive_candidates
+      `UPDATE regauge_adaptive_candidates
        SET status = 'superseded', review_decision = 'regenerate', review_rationale = ?,
            reviewer_principal_id = ?, reviewed_at = ?, updated_at = ?
        WHERE id = ? AND tenant_id = ? AND kind = 'adaptive'
@@ -1002,7 +1002,7 @@ export function requestAdaptiveCandidateRegeneration(
       throw new Error("transformer_adaptive_candidate_review_conflict");
     }
     db.raw.prepare(
-      `INSERT INTO transformer_adaptive_regenerations
+      `INSERT INTO regauge_adaptive_regenerations
         (id, tenant_id, candidate_id, campaign_id, unit_id, reviewer_principal_id,
          rationale, rationale_digest, status, attempt_count, last_error_code,
          superseding_candidate_id, requested_at, scheduled_at, completed_at, updated_at)
@@ -1040,11 +1040,11 @@ export function listPendingAdaptiveRegenerations(
   }
   const rows = tenantId === undefined
     ? db.raw.prepare(
-        `SELECT * FROM transformer_adaptive_regenerations
+        `SELECT * FROM regauge_adaptive_regenerations
          WHERE status = 'pending' ORDER BY requested_at, id LIMIT ?`,
       ).all(limit) as RegenerationRow[]
     : db.raw.prepare(
-        `SELECT * FROM transformer_adaptive_regenerations
+        `SELECT * FROM regauge_adaptive_regenerations
          WHERE tenant_id = ? AND status = 'pending'
          ORDER BY requested_at, id LIMIT ?`,
       ).all(
@@ -1065,7 +1065,7 @@ export function markAdaptiveRegenerationScheduled(
   if (!current) throw new Error("transformer_adaptive_regeneration_not_found");
   if (current.status === "scheduled" || current.status === "completed") return current;
   const changed = db.raw.prepare(
-    `UPDATE transformer_adaptive_regenerations
+    `UPDATE regauge_adaptive_regenerations
      SET status = 'scheduled', attempt_count = attempt_count + 1,
          last_error_code = NULL, scheduled_at = ?, updated_at = ?
      WHERE id = ? AND tenant_id = ? AND status = 'pending'`,
@@ -1098,7 +1098,7 @@ export function markAdaptiveRegenerationBlocked(
   if (!current) throw new Error("transformer_adaptive_regeneration_not_found");
   if (current.status !== "pending" || current.lastErrorCode === reason) return current;
   const changed = db.raw.prepare(
-    `UPDATE transformer_adaptive_regenerations
+    `UPDATE regauge_adaptive_regenerations
      SET last_error_code = ?, updated_at = ?
      WHERE id = ? AND tenant_id = ? AND status = 'pending'`,
   ).run(reason, observedAt, id, tenantId);
@@ -1122,7 +1122,7 @@ export function recordAdaptiveRegenerationScheduleFailure(
   const errorCode = requiredString(input.errorCode, "transformer_adaptive_regeneration_error_invalid", 500);
   const observedAt = requireTimestamp(input.observedAt, "transformer_adaptive_candidate_now_invalid");
   const changed = db.raw.prepare(
-    `UPDATE transformer_adaptive_regenerations
+    `UPDATE regauge_adaptive_regenerations
      SET attempt_count = attempt_count + 1, last_error_code = ?, updated_at = ?
      WHERE id = ? AND tenant_id = ? AND status = 'pending'`,
   ).run(errorCode, observedAt, id, tenantId);
@@ -1163,7 +1163,7 @@ export function promoteAdaptiveCandidate(
     if (current.status !== "approved") throw new Error("transformer_adaptive_candidate_not_approved");
     const changed = db.raw
       .prepare(
-        `UPDATE transformer_adaptive_candidates
+        `UPDATE regauge_adaptive_candidates
          SET status = 'promoted', promoted_at = ?, updated_at = ?
          WHERE id = ? AND tenant_id = ? AND kind = 'adaptive'
            AND status = 'approved'`,
@@ -1214,7 +1214,7 @@ export function expireAdaptiveCandidate(
     }
     const changed = db.raw
       .prepare(
-        `UPDATE transformer_adaptive_candidates
+        `UPDATE regauge_adaptive_candidates
          SET status = 'expired', updated_at = ?
          WHERE id = ? AND tenant_id = ? AND kind = 'adaptive'
            AND status = 'review_pending'`,

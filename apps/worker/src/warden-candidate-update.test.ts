@@ -23,7 +23,7 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-warden-update-"));
   const db = createDb(join(root, "worker.sqlite"));
   opened.push({ db, root });
-  db.raw.prepare(`INSERT INTO warden_ci_cycles
+  db.raw.prepare(`INSERT INTO fettler_ci_cycles
     (id, tenant_id, delivery_id, observation_job_id, status, repository_id, remote_repository_id,
      installation_id, pull_request_number, base_branch, branch_name, base_revision, current_head_sha,
      required_checks_json, allowed_changed_paths_json, max_cycles, used_cycles, max_model_calls,
@@ -86,7 +86,7 @@ describe("Warden candidate exact draft update", () => {
 
   it("stops before GitHub when the cycle is paused after approval", async () => {
     const { db, job, artifact } = fixture();
-    db.raw.prepare("UPDATE warden_ci_cycles SET status = 'paused' WHERE id = 'cycle-a'").run();
+    db.raw.prepare("UPDATE fettler_ci_cycles SET status = 'paused' WHERE id = 'cycle-a'").run();
     const updateExactDraft = vi.fn();
     await expect(runWardenCandidateUpdate({ db, job, updateExactDraft,
       reconcileExactDraftUpdate: vi.fn(),
@@ -121,7 +121,7 @@ describe("Warden candidate exact draft update", () => {
       now: () => "2026-08-13T12:05:00.000Z" };
 
     await expect(runWardenCandidateUpdate(args)).rejects.toThrow("socket closed");
-    expect(db.raw.prepare("SELECT status FROM warden_ci_updates WHERE cycle_id = 'cycle-a'").get())
+    expect(db.raw.prepare("SELECT status FROM fettler_ci_updates WHERE cycle_id = 'cycle-a'").get())
       .toEqual({ status: "uncertain" });
     expect(() => pauseWardenCiCycle(db, { tenantId: "tenant-a", cycleId: "cycle-a",
       actorPrincipalId: "principal-b", reason: "pause during retry backoff",

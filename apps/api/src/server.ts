@@ -357,7 +357,7 @@ function apiReadiness() {
         "principals",
         "repository_snapshots",
         "tenants",
-        "transformer_adaptive_candidates",
+        "regauge_adaptive_candidates",
       ]);
       const presentTables = new Set(
         (db.raw

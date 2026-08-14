@@ -108,7 +108,7 @@ function seedCiRepairCandidate(db: AppDb) {
   db.raw.prepare("UPDATE agent_runs SET result_json = ? WHERE id = 'warden-run-1'")
     .run(JSON.stringify({ ...current, source: { repositoryId: "repo-1", snapshotId: "snapshot-1",
       revision: "d".repeat(40) }, ciFailure }));
-  db.raw.prepare(`INSERT INTO warden_ci_cycles
+  db.raw.prepare(`INSERT INTO fettler_ci_cycles
     (id, tenant_id, delivery_id, observation_job_id, status, repository_id, remote_repository_id,
      installation_id, pull_request_number, base_branch, branch_name, base_revision, current_head_sha,
      required_checks_json, allowed_changed_paths_json, max_cycles, used_cycles, max_model_calls,
@@ -117,7 +117,7 @@ function seedCiRepairCandidate(db: AppDb) {
      22, 17, 'main', 'mendpoint/warden-a', ?, ?, '["check:77:unit"]', '["src/client.ts"]',
      3, 1, 6, 3, ?, 'warden-run-1', 'source-job-1', ?, ?)`)
     .run("a".repeat(40), "d".repeat(40), `sha256:${"e".repeat(64)}`, NOW, NOW);
-  db.raw.prepare(`INSERT INTO warden_ci_observations
+  db.raw.prepare(`INSERT INTO fettler_ci_observations
     (id, tenant_id, cycle_id, head_sha, verdict, observation_digest, evidence_artifact_id,
      evidence_digest, observed_at)
     VALUES ('observation-a', 'tenant-a', 'cycle-a', ?, 'failure', ?, 'artifact-failure-a', ?, ?)`)
@@ -136,7 +136,7 @@ afterEach(() => {
 describe("Warden candidate human review", () => {
   it("lets an authorized human inspect and durably pause an active CI cycle", async () => {
     const { app, db, audit } = fixture();
-    db.raw.prepare(`INSERT INTO warden_ci_cycles
+    db.raw.prepare(`INSERT INTO fettler_ci_cycles
       (id, tenant_id, delivery_id, observation_job_id, status, repository_id, remote_repository_id,
        installation_id, pull_request_number, base_branch, branch_name, base_revision, current_head_sha,
        required_checks_json, allowed_changed_paths_json, max_cycles, used_cycles, max_model_calls,
@@ -184,7 +184,7 @@ describe("Warden candidate human review", () => {
       status: "pending", expectedHeadSha: "d".repeat(40), sealedSha256: sealSha,
       reviewerPrincipalId: "human:reviewer@example.com",
     });
-    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM warden_candidate_deliveries").get())
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get())
       .toEqual({ count: 0 });
   });
 

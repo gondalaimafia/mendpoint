@@ -246,11 +246,11 @@ describe("Transformer adaptive draft delivery worker", () => {
     const value = fixture();
     value.db.raw.exec(`
       CREATE TRIGGER delivery_before_candidate_promotion
-      BEFORE UPDATE OF status ON transformer_adaptive_candidates
+      BEFORE UPDATE OF status ON regauge_adaptive_candidates
       WHEN NEW.status = 'promoted'
       BEGIN
         SELECT CASE WHEN (
-          SELECT status FROM transformer_adaptive_deliveries
+          SELECT status FROM regauge_adaptive_deliveries
           WHERE tenant_id = NEW.tenant_id AND candidate_id = NEW.id
         ) != 'delivered' THEN RAISE(ABORT, 'delivery must precede promotion') END;
       END;
@@ -259,7 +259,7 @@ describe("Transformer adaptive draft delivery worker", () => {
       WHEN NEW.status = 'done' AND OLD.type = 'transformer.adaptive.deliver'
       BEGIN
         SELECT CASE WHEN (
-          SELECT status FROM transformer_adaptive_candidates
+          SELECT status FROM regauge_adaptive_candidates
           WHERE tenant_id = OLD.tenant_id
             AND id = json_extract(OLD.payload_json, '$.candidateId')
         ) != 'promoted' THEN RAISE(ABORT, 'promotion must precede completion') END;
@@ -509,7 +509,7 @@ describe("Transformer adaptive draft delivery worker", () => {
       WHEN NEW.status = 'dead_letter' AND OLD.type = 'transformer.adaptive.deliver'
       BEGIN
         SELECT CASE WHEN (
-          SELECT status FROM transformer_adaptive_deliveries
+          SELECT status FROM regauge_adaptive_deliveries
           WHERE job_id = OLD.id
         ) != 'delivery_failed' THEN RAISE(ABORT, 'failure must precede dead letter') END;
       END;

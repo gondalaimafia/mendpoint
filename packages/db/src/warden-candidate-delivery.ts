@@ -104,14 +104,14 @@ export type EnqueueWardenCandidateDeliveryInput = Readonly<{
 
 export function getWardenCandidateDelivery(db: AppDb, tenantId: string, deliveryId: string) {
   const row = db.raw.prepare(
-    "SELECT * FROM warden_candidate_deliveries WHERE id = ? AND tenant_id = ?",
+    "SELECT * FROM fettler_candidate_deliveries WHERE id = ? AND tenant_id = ?",
   ).get(deliveryId, tenantId) as Row | undefined;
   return row ? map(row) : undefined;
 }
 
 export function getWardenCandidateDeliveryByRun(db: AppDb, tenantId: string, runId: string) {
   const row = db.raw.prepare(
-    "SELECT * FROM warden_candidate_deliveries WHERE run_id = ? AND tenant_id = ?",
+    "SELECT * FROM fettler_candidate_deliveries WHERE run_id = ? AND tenant_id = ?",
   ).get(runId, tenantId) as Row | undefined;
   return row ? map(row) : undefined;
 }
@@ -169,7 +169,7 @@ export function enqueueWardenCandidateDelivery(
        VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?, 0)`,
     ).run(deterministic.jobId, tenantId, JOB_TYPE, payload, input.maxAttempts ?? 5, now, now);
     db.raw.prepare(
-      `INSERT INTO warden_candidate_deliveries
+      `INSERT INTO fettler_candidate_deliveries
        (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
         expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
         requested_at, updated_at)
@@ -193,7 +193,7 @@ export function bindWardenCandidateDeliveryIntent(db: AppDb, input: {
     throw new Error("warden_candidate_delivery_intent_conflict");
   }
   db.raw.prepare(
-    `UPDATE warden_candidate_deliveries SET intent_digest = ?, branch_name = ?, intent_bound_at = COALESCE(intent_bound_at, ?), updated_at = ?
+    `UPDATE fettler_candidate_deliveries SET intent_digest = ?, branch_name = ?, intent_bound_at = COALESCE(intent_bound_at, ?), updated_at = ?
      WHERE id = ? AND tenant_id = ? AND status = 'delivery_pending'`,
   ).run(input.intentDigest, input.branchName, input.observedAt, input.observedAt, input.deliveryId, input.tenantId);
   return getWardenCandidateDelivery(db, input.tenantId, input.deliveryId)!;
@@ -204,7 +204,7 @@ export function recordWardenCandidateDeliverySuccess(db: AppDb, input: {
   draftPrNumber: number; draftPrUrl: string; observedAt: string;
 }) {
   db.raw.prepare(
-    `UPDATE warden_candidate_deliveries SET status = 'delivered', branch_name = ?, base_revision = ?, commit_sha = ?,
+    `UPDATE fettler_candidate_deliveries SET status = 'delivered', branch_name = ?, base_revision = ?, commit_sha = ?,
        draft_pr = 1, draft_pr_number = ?, draft_pr_url = ?, delivered_at = ?, updated_at = ?, error_code = NULL, error_message = NULL
      WHERE id = ? AND tenant_id = ? AND status = 'delivery_pending'`,
   ).run(input.branchName, input.baseRevision, input.commitSha, input.draftPrNumber, input.draftPrUrl,
@@ -216,7 +216,7 @@ export function recordWardenCandidateDeliveryFailure(db: AppDb, input: {
   tenantId: string; deliveryId: string; errorCode: string; errorMessage: string; terminal: boolean; observedAt: string;
 }) {
   db.raw.prepare(
-    `UPDATE warden_candidate_deliveries SET status = CASE WHEN ? THEN 'delivery_failed' ELSE status END,
+    `UPDATE fettler_candidate_deliveries SET status = CASE WHEN ? THEN 'delivery_failed' ELSE status END,
        error_code = ?, error_message = ?, failed_at = CASE WHEN ? THEN ? ELSE failed_at END,
        last_error_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND status = 'delivery_pending'`,
   ).run(input.terminal ? 1 : 0, input.errorCode, input.errorMessage, input.terminal ? 1 : 0,

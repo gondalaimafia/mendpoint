@@ -194,7 +194,7 @@ function loadRow(
   deliveryId: string,
 ): TransformerAdaptiveDeliveryRecord | undefined {
   const row = db.raw
-    .prepare("SELECT * FROM transformer_adaptive_deliveries WHERE id = ? AND tenant_id = ?")
+    .prepare("SELECT * FROM regauge_adaptive_deliveries WHERE id = ? AND tenant_id = ?")
     .get(deliveryId, tenantId) as DeliveryRow | undefined;
   return row ? mapRow(row) : undefined;
 }
@@ -324,7 +324,7 @@ export function enqueueAdaptiveDelivery(
       .prepare(
         `SELECT status, kind, expires_at, repository_id, snapshot_id, base_branch,
                 expected_base_revision
-         FROM transformer_adaptive_candidates
+         FROM regauge_adaptive_candidates
          WHERE id = ? AND tenant_id = ?`,
       )
       .get(candidateId, tenantId) as CandidateRow | undefined;
@@ -348,7 +348,7 @@ export function enqueueAdaptiveDelivery(
 
     db.raw
       .prepare(
-        `INSERT INTO transformer_adaptive_deliveries
+        `INSERT INTO regauge_adaptive_deliveries
           (id, tenant_id, candidate_id, job_id, status, repository_id,
            snapshot_id, base_branch, expected_base_revision, intent_digest, branch_name,
            base_revision, commit_sha, draft_pr, draft_pr_number, draft_pr_url,
@@ -414,7 +414,7 @@ export function getAdaptiveDeliveryByCandidate(
   );
   const row = db.raw
     .prepare(
-      `SELECT * FROM transformer_adaptive_deliveries
+      `SELECT * FROM regauge_adaptive_deliveries
        WHERE tenant_id = ? AND candidate_id = ?`,
     )
     .get(safeTenant, safeCandidate) as DeliveryRow | undefined;
@@ -437,13 +437,13 @@ export function listAdaptiveDeliveries(
   const rows = status === undefined
     ? db.raw
         .prepare(
-          `SELECT * FROM transformer_adaptive_deliveries
+          `SELECT * FROM regauge_adaptive_deliveries
            WHERE tenant_id = ? ORDER BY requested_at DESC, id DESC LIMIT ?`,
         )
         .all(safeTenant, limit) as DeliveryRow[]
     : db.raw
         .prepare(
-          `SELECT * FROM transformer_adaptive_deliveries
+          `SELECT * FROM regauge_adaptive_deliveries
            WHERE tenant_id = ? AND status = ?
            ORDER BY requested_at DESC, id DESC LIMIT ?`,
         )
@@ -528,7 +528,7 @@ export function bindAdaptiveDeliveryIntent(
     }
     const changed = db.raw
       .prepare(
-        `UPDATE transformer_adaptive_deliveries
+        `UPDATE regauge_adaptive_deliveries
          SET intent_digest = ?, branch_name = ?, base_revision = ?,
              intent_bound_at = ?, updated_at = ?
          WHERE id = ? AND tenant_id = ? AND job_id = ?
@@ -611,7 +611,7 @@ export function recordAdaptiveDeliverySuccess(
     }
     const changed = db.raw
       .prepare(
-        `UPDATE transformer_adaptive_deliveries
+        `UPDATE regauge_adaptive_deliveries
          SET status = 'delivered', commit_sha = ?, draft_pr = 1,
              draft_pr_number = ?, draft_pr_url = ?, delivered_at = ?,
              error_code = NULL, error_message = NULL, last_error_at = NULL,
@@ -670,7 +670,7 @@ export function recordAdaptiveDeliveryFailure(
     }
     const changed = db.raw
       .prepare(
-        `UPDATE transformer_adaptive_deliveries
+        `UPDATE regauge_adaptive_deliveries
          SET status = ?, error_code = ?, error_message = ?, last_error_at = ?,
              failed_at = ?, updated_at = ?
          WHERE id = ? AND tenant_id = ? AND job_id = ?

@@ -99,7 +99,7 @@ describe("warden campaign control plane", () => {
     transitionWardenCampaign(db, { tenantId: "t1", campaignId: "campaign", expectedRevision: 1,
       to: "running", actorPrincipalId: "p1", eventId: "run", idempotencyKey: "run", correlationId: "corr",
       createdAt: "2026-01-02T00:00:00.000Z" });
-    db.raw.prepare(`UPDATE warden_campaign_targets SET stage = 'completed' WHERE campaign_id = 'campaign'`).run();
+    db.raw.prepare(`UPDATE fettler_campaign_targets SET stage = 'completed' WHERE campaign_id = 'campaign'`).run();
     expect(planWardenRollback(db, "t1", "campaign").map((item) => item.id)).toEqual(["target2", "target1"]);
   });
 
@@ -152,7 +152,7 @@ describe("warden campaign control plane", () => {
     expect(first.decisionSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(second.decisionSha256).toBe(first.decisionSha256);
     expect(getWardenRolloutDecision(db, "t1", "decision-1")).toEqual(first);
-    expect(db.raw.prepare(`SELECT status FROM warden_campaigns WHERE id = 'campaign'`).get()).toEqual({ status: "draft" });
+    expect(db.raw.prepare(`SELECT status FROM fettler_campaigns WHERE id = 'campaign'`).get()).toEqual({ status: "draft" });
     expect(listWardenCampaignTargets(db, "t1", "campaign").every((target) => target.stage === "queued")).toBe(true);
     expect(listDomainEvents(db, "t1", "warden_campaign", "campaign").at(-1)?.event_type).toBe("warden.rollout.planned");
   });
@@ -174,7 +174,7 @@ describe("warden campaign control plane", () => {
       actorPrincipalId: "p1", eventId: "unsafe-event", idempotencyKey: "unsafe",
       correlationId: "corr", createdAt: "2026-01-02T12:00:00.000Z" } as const;
     expect(() => planWardenRollout(db, input)).toThrow("warden_stop_conditions_invalid");
-    expect(db.raw.prepare(`SELECT count(*) AS total FROM warden_rollout_decisions`).get()).toEqual({ total: 0 });
+    expect(db.raw.prepare(`SELECT count(*) AS total FROM fettler_rollout_decisions`).get()).toEqual({ total: 0 });
     insertPrincipal(db, { id: "service-planner", tenantId: "t1", kind: "service",
       subject: "rollout-service", displayName: "Rollout service",
       createdAt: "2026-01-02T00:00:00.000Z" });
@@ -186,7 +186,7 @@ describe("warden campaign control plane", () => {
     expect(() => planWardenRollout(db, { ...input, stopConditions: { ...input.stopConditions,
       pauseFailureRate: 0.1 }, id: "unsafe-canary", eventId: "unsafe-canary-event",
       idempotencyKey: "unsafe-canary" })).toThrow("warden_canary_ineligible");
-    expect(db.raw.prepare(`SELECT count(*) AS total FROM warden_rollout_decisions`).get()).toEqual({ total: 0 });
+    expect(db.raw.prepare(`SELECT count(*) AS total FROM fettler_rollout_decisions`).get()).toEqual({ total: 0 });
     expect(() => planWardenRollout(db, { ...input, stopConditions: { ...input.stopConditions,
       pauseFailureRate: 0.1 }, canaryTargetId: "target1", id: "unsafe-confidence",
       eventId: "unsafe-confidence-event", idempotencyKey: "unsafe-confidence" }))

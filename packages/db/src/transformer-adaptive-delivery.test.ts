@@ -170,7 +170,7 @@ describe("transformer adaptive delivery outbox", () => {
       "transformer_adaptive_delivery_conflict",
     );
     db.raw.prepare(
-      "UPDATE transformer_adaptive_candidates SET status = 'expired' WHERE id = ?",
+      "UPDATE regauge_adaptive_candidates SET status = 'expired' WHERE id = ?",
     ).run(candidate.id);
     expect(enqueue(db, candidate.id).jobId).toBe(first.jobId);
   });
@@ -179,7 +179,7 @@ describe("transformer adaptive delivery outbox", () => {
     const db = freshDb();
     const candidate = approvedCandidate(db);
     const first = enqueue(db, candidate.id);
-    db.raw.prepare("DELETE FROM transformer_adaptive_deliveries WHERE id = ?").run(first.id);
+    db.raw.prepare("DELETE FROM regauge_adaptive_deliveries WHERE id = ?").run(first.id);
     db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ?").run(
       JSON.stringify({ candidateId: "tfadapt_collision" }),
       first.jobId,
