@@ -785,7 +785,8 @@ export function registerTransformerControlPlaneRoutes(
     );
   };
 
-  app.get("/transformer/gate", (c) => {
+  const mount = (base: string): void => {
+  app.get(`${base}/gate`, (c) => {
     try {
       return c.json({ gate: gate(c, "ui") });
     } catch (error) {
@@ -793,19 +794,19 @@ export function registerTransformerControlPlaneRoutes(
     }
   });
 
-  app.post("/transformer/control-plane/campaigns", async (c) => {
+  app.post(`${base}/control-plane/campaigns`, async (c) => {
     try {
       const denied = requireGate(c);
       if (denied) return denied;
       const result = service.createBundle(requestMetadata(c), await json(c));
-      c.header("Location", `/transformer/control-plane/campaigns/${(result as { campaign: { id: string } }).campaign.id}`);
+      c.header("Location", `${base}/control-plane/campaigns/${(result as { campaign: { id: string } }).campaign.id}`);
       return c.json(result, 201);
     } catch (error) {
       return errorResponse(c, error);
     }
   });
 
-  app.get("/transformer/control-plane/campaigns/:campaignId", (c) => {
+  app.get(`${base}/control-plane/campaigns/:campaignId`, (c) => {
     try {
       const denied = requireGate(c);
       if (denied) return denied;
@@ -817,7 +818,7 @@ export function registerTransformerControlPlaneRoutes(
     }
   });
 
-  app.get("/transformer/control-plane/campaigns/:campaignId/events", (c) => {
+  app.get(`${base}/control-plane/campaigns/:campaignId/events`, (c) => {
     try {
       const denied = requireGate(c);
       if (denied) return denied;
@@ -831,7 +832,7 @@ export function registerTransformerControlPlaneRoutes(
     }
   });
 
-  app.post("/transformer/control-plane/campaigns/:campaignId/review", async (c) => {
+  app.post(`${base}/control-plane/campaigns/:campaignId/review`, async (c) => {
     try {
       const denied = requireGate(c);
       if (denied) return denied;
@@ -848,7 +849,7 @@ export function registerTransformerControlPlaneRoutes(
     }
   });
 
-  app.post("/transformer/control-plane/campaigns/:campaignId/transitions", async (c) => {
+  app.post(`${base}/control-plane/campaigns/:campaignId/transitions`, async (c) => {
     try {
       const denied = requireGate(c);
       if (denied) return denied;
@@ -867,7 +868,7 @@ export function registerTransformerControlPlaneRoutes(
     }
   });
 
-  app.post("/transformer/control-plane/campaigns/:campaignId/exceptions", async (c) => {
+  app.post(`${base}/control-plane/campaigns/:campaignId/exceptions`, async (c) => {
     try {
       const denied = requireGate(c);
       if (denied) return denied;
@@ -879,4 +880,9 @@ export function registerTransformerControlPlaneRoutes(
       return errorResponse(c, error);
     }
   });
+  };
+  // Canonical (Regauge) paths plus the legacy /transformer aliases (kept forever
+  // for external/legacy callers). Both register the same handlers.
+  mount("/regauge");
+  mount("/transformer");
 }

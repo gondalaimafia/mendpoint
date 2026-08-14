@@ -589,3 +589,61 @@ describe("Transformer campaign routes", () => {
     expect(otherTenantEvents.status).toBe(404);
   });
 });
+
+describe("Regauge canonical paths mirror the legacy /transformer aliases", () => {
+  it("serves the gate identically on the canonical and legacy paths", async () => {
+    const app = testApp(open());
+    const canonical = await app.request("/regauge/gate", { headers: mutationHeaders() });
+    const legacy = await app.request("/transformer/gate", { headers: mutationHeaders() });
+    expect(canonical.status).toBe(200);
+    expect(legacy.status).toBe(200);
+    expect(await canonical.json()).toEqual(await legacy.json());
+  });
+
+  it("keeps the legacy /transformer alias registered and working", async () => {
+    const app = testApp(open());
+    const legacy = await app.request("/transformer/gate", { headers: mutationHeaders() });
+    expect(legacy.status).toBe(200);
+    expect(await legacy.json()).toMatchObject({ gate: { boundary: "ui" } });
+  });
+
+  it("creates a campaign through the canonical path with a body shape identical to the legacy alias", async () => {
+    const canonical = await testApp(open()).request("/regauge/control-plane/campaigns", {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify(bundle()),
+    });
+    const legacy = await testApp(open()).request("/transformer/control-plane/campaigns", {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify(bundle()),
+    });
+    expect(canonical.status).toBe(201);
+    expect(legacy.status).toBe(201);
+    // The Location header stays self-consistent with the namespace that was called.
+    expect(canonical.headers.get("location")).toBe("/regauge/control-plane/campaigns/campaign-a");
+    expect(legacy.headers.get("location")).toBe("/transformer/control-plane/campaigns/campaign-a");
+    const canonicalBody = view(await canonical.json());
+    const legacyBody = view(await legacy.json());
+    expect(Object.keys(canonicalBody).sort()).toEqual(Object.keys(legacyBody).sort());
+    expect(canonicalBody.campaign.id).toBe(legacyBody.campaign.id);
+    expect(canonicalBody.blueprint.content).toEqual(legacyBody.blueprint.content);
+  });
+
+  it("rejects unauthenticated mutations identically on the canonical and legacy paths", async () => {
+    const app = testApp(open());
+    const canonical = await app.request("/regauge/control-plane/campaigns", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(bundle()),
+    });
+    const legacy = await app.request("/transformer/control-plane/campaigns", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(bundle()),
+    });
+    expect(canonical.status).toBe(401);
+    expect(legacy.status).toBe(401);
+    expect(await canonical.json()).toEqual(await legacy.json());
+  });
+});

@@ -210,7 +210,7 @@ export function AdaptiveCandidateReview({ candidateId }: { candidateId: string }
     setLoadError(null);
     try {
       const response = await fetch(
-        `${API_URL}/transformer/adaptive-candidates/${encodeURIComponent(candidateId)}`,
+        `${API_URL}/regauge/adaptive-candidates/${encodeURIComponent(candidateId)}`,
         { cache: "no-store", signal },
       );
       const loaded = await responseJson<AdaptiveCandidateDetail>(response);
@@ -269,7 +269,7 @@ export function AdaptiveCandidateReview({ candidateId }: { candidateId: string }
     setNotice(null);
     try {
       const response = await fetch(
-        `${API_URL}/transformer/adaptive-candidates/${encodeURIComponent(candidate.id)}/review`,
+        `${API_URL}/regauge/adaptive-candidates/${encodeURIComponent(candidate.id)}/review`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

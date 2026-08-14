@@ -41,7 +41,7 @@ describe("Warden intake form", () => {
       allowedPaths: "src/private.ts",
       errorLog: "ignored",
     })).toEqual({
-      endpoint: "/warden/pilot",
+      endpoint: "/fettler/pilot",
       body: { providerSlug: "stripe", consumerId: "consumer-a" },
     });
   });

@@ -522,7 +522,8 @@ export function registerTransformerAdaptiveReviewRoutes(
     learningEnv?: NodeJS.ProcessEnv;
   }> = {},
 ): void {
-  app.get("/transformer/adaptive-candidates", (c) => {
+  const mount = (base: string): void => {
+  app.get(`${base}/adaptive-candidates`, (c) => {
     const tenantId = tenantOf(c);
     if (!tenantId) return c.json({ error: "unauthorized" }, 401);
     c.header("Cache-Control", "private, no-store, max-age=0");
@@ -563,7 +564,7 @@ export function registerTransformerAdaptiveReviewRoutes(
     });
   });
 
-  app.get("/transformer/adaptive-candidates/:id", (c) => {
+  app.get(`${base}/adaptive-candidates/:id`, (c) => {
     const tenantId = tenantOf(c);
     if (!tenantId) return c.json({ error: "unauthorized" }, 401);
     let record = getAdaptiveCandidate(db, tenantId, c.req.param("id"));
@@ -606,7 +607,7 @@ export function registerTransformerAdaptiveReviewRoutes(
     }
   });
 
-  app.post("/transformer/adaptive-candidates/:id/review", async (c) => {
+  app.post(`${base}/adaptive-candidates/:id/review`, async (c) => {
     const principal = c.get("principal");
     const tenantId = principal?.tenantId;
     if (!tenantId) return c.json({ error: "unauthorized" }, 401);
@@ -784,7 +785,7 @@ export function registerTransformerAdaptiveReviewRoutes(
     );
   });
 
-  app.post("/transformer/adaptive-candidates/:id/escalation-sign-off", async (c) => {
+  app.post(`${base}/adaptive-candidates/:id/escalation-sign-off`, async (c) => {
     const principal = c.get("principal");
     const tenantId = principal?.tenantId;
     if (!tenantId) return c.json({ error: "unauthorized" }, 401);
@@ -861,7 +862,7 @@ export function registerTransformerAdaptiveReviewRoutes(
     });
   });
 
-  app.post("/transformer/adaptive-candidates/:id/promote", (c) => {
+  app.post(`${base}/adaptive-candidates/:id/promote`, (c) => {
     const principal = c.get("principal");
     const tenantId = principal?.tenantId;
     if (!tenantId) return c.json({ error: "unauthorized" }, 401);
@@ -894,4 +895,9 @@ export function registerTransformerAdaptiveReviewRoutes(
       ...(delivery ? { delivery: deliveryResponse(delivery) } : {}),
     }, 409);
   });
+  };
+  // Canonical (Regauge) paths plus the legacy /transformer aliases (kept forever
+  // for external/legacy callers). Both register the same handlers.
+  mount("/regauge");
+  mount("/transformer");
 }
