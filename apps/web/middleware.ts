@@ -16,7 +16,7 @@ function publicPath(pathname: string): boolean {
     pathname === "/access" ||
     pathname === "/contact" ||
     pathname === "/design-partners" ||
-    pathname === "/docs" ||
+    (pathname === "/docs" || pathname.startsWith("/docs/")) ||
     pathname === "/privacy" ||
     pathname === "/security" ||
     pathname === "/service-status" ||
@@ -46,6 +46,12 @@ function publicPath(pathname: string): boolean {
 }
 
 export async function middleware(request: NextRequest) {
+  const markdown = request.nextUrl.pathname.match(/^\/docs\/([a-z0-9-]+)\.md$/);
+  if (markdown) {
+    const target = request.nextUrl.clone();
+    target.pathname = `/docs/markdown/${markdown[1]}`;
+    return NextResponse.rewrite(target);
+  }
   if (publicPath(request.nextUrl.pathname)) return NextResponse.next();
   if (selfServeSignupEnabled() && selfServeSignupPath(request.nextUrl.pathname)) {
     return NextResponse.next();

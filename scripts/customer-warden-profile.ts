@@ -132,36 +132,36 @@ export function validateCustomerWardenRuntime(
   const errors: string[] = [];
   for (const [name, expected] of Object.entries(REQUIRED_SETTINGS)) {
     if (resolveEitherRenamedEnv(env, name)?.trim() !== expected) {
-      errors.push(`Customer Warden profile requires ${name}=${expected}`);
+      errors.push(`Customer Fettler profile requires ${name}=${expected}`);
     }
   }
   if (env.MENDPOINT_CUSTOMER_MAX_MACHINES?.trim() !== "1") {
-    errors.push("Customer Warden profile is bounded to exactly one machine");
+    errors.push("Customer Fettler profile is bounded to exactly one machine");
   }
   if (env.FLY_MACHINE_ID?.trim() !== env.MENDPOINT_ALLOWED_MACHINE_ID?.trim()) {
-    errors.push("Customer Warden profile is bound to its approved Fly machine");
+    errors.push("Customer Fettler profile is bound to its approved Fly machine");
   }
   if (resolveEitherRenamedEnv(env, "MENDPOINT_TRANSFORMER_GATE")?.trim()) {
-    errors.push("Customer Warden profile forbids MENDPOINT_TRANSFORMER_GATE");
+    errors.push("Customer Fettler profile forbids MENDPOINT_TRANSFORMER_GATE");
   }
   if (resolveEitherRenamedEnv(env, "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED")?.trim() === "1") {
     errors.push(
-      "Customer Warden profile forbids MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED=1",
+      "Customer Fettler profile forbids MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED=1",
     );
   }
   for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) {
-    if (!resolveEitherRenamedEnv(env, name)?.trim()) errors.push(`Customer Warden profile requires ${name}`);
+    if (!resolveEitherRenamedEnv(env, name)?.trim()) errors.push(`Customer Fettler profile requires ${name}`);
   }
   const transport = env.MENDPOINT_BACKUP_TRANSPORT?.trim();
   if (transport !== "rclone_s3" && transport !== "pre_mounted") {
-    errors.push("Customer Warden profile requires MENDPOINT_BACKUP_TRANSPORT=rclone_s3 or pre_mounted");
+    errors.push("Customer Fettler profile requires MENDPOINT_BACKUP_TRANSPORT=rclone_s3 or pre_mounted");
   }
   if (
     (transport === "rclone_s3" && env.MENDPOINT_BACKUP_STORAGE_CLASS?.trim() !== "object_store_publish") ||
     (transport === "pre_mounted" && env.MENDPOINT_BACKUP_STORAGE_CLASS?.trim() !== "durable_isolated_mount")
   ) {
     errors.push(
-      "Customer Warden profile requires a storage class matching its backup transport",
+      "Customer Fettler profile requires a storage class matching its backup transport",
     );
   }
   if (
@@ -169,20 +169,20 @@ export function validateCustomerWardenRuntime(
     env.MENDPOINT_BACKUP_OUTPUT_ROOT?.trim() &&
     env.MENDPOINT_BACKUP_OUTPUT_ROOT?.trim() !== env.MENDPOINT_BACKUP_STAGING_ROOT?.trim()
   ) {
-    errors.push("Customer Warden profile requires backup output to equal its isolated staging root");
+    errors.push("Customer Fettler profile requires backup output to equal its isolated staging root");
   }
   if (transport === "rclone_s3") {
     for (const name of CUSTOMER_WARDEN_RCLONE_REQUIRED_SETTINGS) {
-      if (!env[name]?.trim()) errors.push(`Customer Warden profile requires ${name}`);
+      if (!env[name]?.trim()) errors.push(`Customer Fettler profile requires ${name}`);
     }
     for (const name of CUSTOMER_WARDEN_RCLONE_REQUIRED_SECRETS) {
-      if (!env[name]?.trim()) errors.push(`Customer Warden profile requires ${name}`);
+      if (!env[name]?.trim()) errors.push(`Customer Fettler profile requires ${name}`);
     }
     try {
       loadCustomerObjectStoreConfig(env);
     } catch (error) {
       errors.push(
-        `Customer Warden profile has invalid object store settings: ${error instanceof Error ? error.message : "unknown"}`,
+        `Customer Fettler profile has invalid object store settings: ${error instanceof Error ? error.message : "unknown"}`,
       );
     }
   }
@@ -191,11 +191,11 @@ export function validateCustomerWardenRuntime(
   const egress = assessModelEgress(env);
   if (egress.violation === "model_egress_mode_invalid") {
     errors.push(
-      "Customer Warden profile requires MENDPOINT_MODEL_EGRESS=local_only or external_allowed",
+      "Customer Fettler profile requires MENDPOINT_MODEL_EGRESS=local_only or external_allowed",
     );
   } else if (egress.violation) {
     errors.push(
-      "Customer Warden profile requires a private, loopback, link-local, or allowlisted model endpoint when MENDPOINT_MODEL_EGRESS=local_only",
+      "Customer Fettler profile requires a private, loopback, link-local, or allowlisted model endpoint when MENDPOINT_MODEL_EGRESS=local_only",
     );
   }
   return errors;

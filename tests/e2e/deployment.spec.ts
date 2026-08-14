@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { PRODUCT_DOCS } from "../../apps/web/app/docs/catalog.js";
 
 const image = process.env.MENDPOINT_E2E_IMAGE ?? "mendpoint-fly:e2e";
 const webOrigin = process.env.MENDPOINT_E2E_WEB_URL ?? "http://localhost:3100";
@@ -27,7 +28,8 @@ const publicPages = [
       "Turn submitted OpenAPI changes into evidence backed migration pull request candidates for supported GitHub repositories.",
   },
   { path: "/design-partners", heading: "Start with one bounded migration problem" },
-  { path: "/docs", heading: "Supported Fettler pilot scope" },
+  { path: "/docs", heading: "Build safe software migration workflows" },
+  ...PRODUCT_DOCS.map((page) => ({ path: `/docs/${page.slug}`, heading: page.title })),
   { path: "/security", heading: "Concrete controls and visible limitations" },
   { path: "/privacy", heading: "Private preview application data" },
   { path: "/service-status", heading: /Pilot deployment (?:is operational|needs attention)/ },

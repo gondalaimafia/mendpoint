@@ -620,7 +620,7 @@ export async function runTransformerPilotLaneOnce(
       sessionId: runId,
       executorId: transformerDescriptor.executorId,
       ...(adaptiveAdapter ? { providerId: adaptiveAdapter.policy.provider } : {}),
-      goal: `Transformer recipe migration for ${campaign.campaignId}`,
+      goal: `Regauge recipe migration for ${campaign.campaignId}`,
       routingRequest: transformerRoutingRequest({
         taskId: campaign.campaignId,
         tenantId: campaign.tenantId,

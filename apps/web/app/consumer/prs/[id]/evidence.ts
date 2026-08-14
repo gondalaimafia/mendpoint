@@ -19,9 +19,16 @@ export function parsePrEvidence(body: string): {
   sections: PrEvidenceSection[];
   complete: boolean;
 } {
-  const marker = "### Structured Warden draft package";
-  const packageBody = body.slice(body.indexOf(marker) + marker.length);
-  if (!body.includes(marker)) return { sections: [], complete: false };
+  const markers = [
+    "### Structured Fettler draft package",
+    "### Structured Warden draft package",
+  ] as const;
+  const match = markers
+    .map((marker) => ({ marker, index: body.indexOf(marker) }))
+    .filter(({ index }) => index >= 0)
+    .sort((left, right) => left.index - right.index)[0];
+  if (!match) return { sections: [], complete: false };
+  const packageBody = body.slice(match.index + match.marker.length);
   const parsed = new Map<string, string>();
   for (const block of packageBody.split(/^#### /m).slice(1)) {
     const lineBreak = block.search(/\r?\n/);

@@ -170,7 +170,7 @@ function buildTaskSpec(input: TransformerRoutingRequestInput): RouterTaskSpec {
     taskId: input.taskId,
     tenantId: input.tenantId,
     kind: TRANSFORMER_TASK_KIND,
-    goal: input.goal ?? `Transformer recipe migration for ${input.campaignId}`,
+    goal: input.goal ?? `Regauge recipe migration for ${input.campaignId}`,
     idempotencyKey: input.idempotencyKey,
     inputArtifactIds: [...input.sourceArtifactIds],
     requiredCapabilities: [TRANSFORMER_CAPABILITY],

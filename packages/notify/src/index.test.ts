@@ -40,8 +40,19 @@ describe("notifyWardenEvent", () => {
     await notifyWardenEvent("pr_opened", "acme/api#42");
     expect(fetchMock).toHaveBeenCalledOnce();
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.text).toContain("*Fettler*");
     expect(body.text).toContain("PR opened");
     expect(body.text).toContain("acme/api#42");
+  });
+
+  it("renders the historical warden_finished event key as Fettler", async () => {
+    process.env.SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/T/B/X";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await notifyWardenEvent("warden_finished", "ok");
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.text).toContain("Fettler finished");
   });
 
   it("skips warden event when no webhook", async () => {

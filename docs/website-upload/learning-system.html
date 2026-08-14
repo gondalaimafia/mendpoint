@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Learning system | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / AI platform</nav>
+    <header class="hero">
+      <p class="kicker">AI platform</p>
+      <h1>Learning system</h1>
+      <p>Capture reviewed outcomes as consented, redacted, lineage-bound evidence for evaluation, ranking, and optional external training.</p>
+      <dl><dt>Status</dt><dd>Governed learning preview</dd><dt>Availability</dt><dd>Capture and corpus export implemented; downstream training requires separate authorization</dd><dt>Last verified</dt><dd>2026-08-14</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Record one approved outcome with explicit tenant consent, residency, retention, and source lineage.</p><ol><li>Capture the reviewed candidate and outcome metadata.</li><li>Apply redaction, consent, temporal cutoff, and residency eligibility.</li><li>Seal an immutable corpus export for one declared purpose.</li><li>Use the export for evaluation or a separately authorized training job.</li></ol></section>
+    <section><h2>What it does</h2><ul><li>Human-reviewed Fettler and Regauge outcome capture</li><li>Consent, residency, temporal cutoff, redaction, and lineage gates</li><li>Deterministic sealed corpus exports</li><li>Suppression and rejection evidence</li><li>Graph and router outcome feedback</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>A reviewed migration should improve future ranking or evaluation.</li><li>A tenant has explicitly consented to a defined learning purpose.</li><li>An external training job needs an exact eligible dataset lineage.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>The capture layer records approved metadata, evidence references, outcomes, and policy context.</li><li>Eligibility excludes unconsented, stale, residency-conflicting, unredacted, or incomplete rows.</li><li>The exporter orders and seals the eligible corpus under a purpose and cutoff.</li><li>Consumers receive metadata and approved redacted content only; raw secrets and unrestricted repository data are excluded.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>npm run learning:export-corpus</code></td><td>Command</td><td>Export a governed learning corpus.</td></tr><tr><td><code>GET /learning/suppressed</code></td><td>API</td><td>Inspect suppressed learning records.</td></tr><tr><td><code>Learning capture</code></td><td>Artifact</td><td>Outcome, consent, lineage, policy, and evidence references.</td></tr><tr><td><code>Sealed corpus</code></td><td>Artifact</td><td>Purpose-bound deterministic eligible dataset.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Learning capture</strong><br><code>packages/db/src/learning.test.ts</code></li><li><strong>Corpus eligibility</strong><br><code>packages/db/src/learning-corpus.test.ts</code></li><li><strong>Regauge learning loop</strong><br><code>apps/worker/src/transformer-learning.test.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>No record is eligible without active consent and purpose authority.</li><li>Redaction and lineage checks run before export.</li><li>Temporal cutoffs prevent future outcome leakage into historical evaluation.</li><li>Export does not invoke a trainer or model.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>Corpus size and outcome diversity depend on real reviewed migrations.</li><li>The current corpus does not imply a trained or promoted adapter.</li><li>Learning activation and external processing remain tenant-specific.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="post-trained-models.html">Post-trained models</a></li><li><a href="model-router.html">Model router</a></li><li><a href="security-governance.html">Security and governance</a></li></ul></section>
+    <p class="download"><a href="learning-system.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>

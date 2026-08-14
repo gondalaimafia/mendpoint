@@ -470,7 +470,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     tenantId: input.tenantId,
     kind: "service",
     subject: "warden-pipeline",
-    displayName: "Warden pipeline",
+    displayName: "Fettler pipeline",
     audience: "pipeline",
     createdAt: nowIso(),
   });

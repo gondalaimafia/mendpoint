@@ -1525,7 +1525,7 @@ describe("worker runtime", () => {
     );
   });
 
-  it("requires complete Transformer adaptive model configuration when enabled", () => {
+  it("labels incomplete Regauge adaptive model configuration", () => {
     const repos = mkdtempSync(join(tmpdir(), "mendpoint-worker-adaptive-model-"));
     dirs.push(repos);
     const base = {
@@ -1536,7 +1536,8 @@ describe("worker runtime", () => {
       MENDPOINT_REPOS_DIR: repos,
       MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED: "1",
     };
-    expect(validateWorkerProductionEnv(base)).toEqual(expect.arrayContaining([
+    const errors = validateWorkerProductionEnv(base);
+    expect(errors).toEqual(expect.arrayContaining([
       expect.stringContaining("MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS"),
       expect.stringContaining("MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER"),
       expect.stringContaining("MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT"),
@@ -1547,6 +1548,8 @@ describe("worker runtime", () => {
       expect.stringContaining("LLM_AGENT_URL or OPENAI_BASE_URL"),
       expect.stringContaining("OPENAI_API_KEY or XAI_API_KEY"),
     ]));
+    expect(errors.join("\n")).toContain("Regauge adaptive model source");
+    expect(errors.join("\n")).not.toContain("Transformer adaptive model source");
     const complete = {
       ...base,
       MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS: "tenant-a",
@@ -1640,7 +1643,7 @@ describe("worker runtime", () => {
       MENDPOINT_WORKER_HEARTBEAT_PATH: join(repos, "worker-heartbeat.json"),
     };
     expect(validateWorkerProductionEnv(customerProfile)).toContain(
-      "Customer worker requires Warden model source execution",
+      "Customer worker requires Fettler model source execution",
     );
     expect(validateWorkerProductionEnv(customerProfile)).toContain(
       "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
@@ -2258,7 +2261,7 @@ describe("worker runtime", () => {
     db.raw.close();
   });
 
-  it("continues processing jobs when Warden maintenance fails", async () => {
+  it("continues processing jobs when Fettler maintenance fails", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-maint-fail-"));
     dirs.push(parent);
     const repo = join(parent, "repo");
@@ -2312,7 +2315,7 @@ describe("worker runtime", () => {
 
     expect(
       errorSpy.mock.calls.some((call) =>
-        String(call[0]).includes("Warden maintenance unavailable"),
+        String(call[0]).includes("Fettler maintenance unavailable"),
       ),
     ).toBe(true);
     expect(getRepairSession(db, "session-maint-fail", "tenant_test")).toMatchObject({

@@ -3,15 +3,40 @@ import { resolveEitherRenamedEnv, resolveRenamedEnv } from "@mendpoint/shared";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const API_KEY = /^me_[A-Za-z0-9_-]{32,}$/;
+const FLY_MACHINE_ID = /^[a-f0-9]{14,32}$/;
 
 export type TransformerProductionRole = "coordinator" | "worker";
 
-export type TransformerProductionProfile = Readonly<{
-  role: TransformerProductionRole;
+type TransformerProductionProfileBase = Readonly<{
   tenantId: string;
   campaignId: string;
   environment: string;
 }>;
+
+export type TransformerProductionProfile =
+  | (TransformerProductionProfileBase & Readonly<{ role: "coordinator" }>)
+  | (TransformerProductionProfileBase & Readonly<{ role: "worker"; workerId: string }>);
+
+export function resolveTransformerWorkerId(env: NodeJS.ProcessEnv): string {
+  if (env.MENDPOINT_DEPLOYMENT_PROFILE === "transformer_pilot") {
+    exact(env.NODE_ENV, "production", "transformer_production_node_env_required");
+    if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_WORKER_ID")?.trim()) {
+      throw new Error("transformer_production_worker_id_override_forbidden");
+    }
+    const machineId = required(
+      env.FLY_MACHINE_ID,
+      "transformer_production_fly_machine_id_required",
+    );
+    if (!FLY_MACHINE_ID.test(machineId)) {
+      throw new Error("transformer_production_fly_machine_id_invalid");
+    }
+    return `fly-${machineId}`;
+  }
+  return identifier(
+    resolveRenamedEnv(env, "MENDPOINT_REGAUGE_WORKER_ID"),
+    "transformer_multinode_worker_id_required",
+  );
+}
 
 export function validateTransformerProductionProfile(
   env: NodeJS.ProcessEnv,
@@ -81,7 +106,15 @@ export function validateTransformerProductionProfile(
     exact(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_READINESS_HOST"), "0.0.0.0", "transformer_production_readiness_host_invalid");
   }
 
-  return Object.freeze({ role, tenantId, campaignId, environment });
+  return role === "worker"
+    ? Object.freeze({
+      role,
+      tenantId,
+      campaignId,
+      environment,
+      workerId: resolveTransformerWorkerId(env),
+    })
+    : Object.freeze({ role, tenantId, campaignId, environment });
 }
 
 function exact(value: string | undefined, expected: string, code: string): void { if (value !== expected) throw new Error(code); }

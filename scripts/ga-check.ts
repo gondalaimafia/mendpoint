@@ -11,7 +11,7 @@ function fail(msg: string): never {
 }
 
 function main() {
-  console.log("=== Mendpoint / Warden GA preflight ===");
+  console.log("=== Mendpoint / Fettler GA preflight ===");
   console.log(`version=${RELEASE.version} channel=${RELEASE.channel}`);
 
   if (RELEASE.channel !== "ga") fail("RELEASE.channel must be ga");
@@ -39,8 +39,8 @@ function main() {
   if (bench.passed < 18) fail("graph benchmark below 18/20");
 
   console.log("GA CHECK PASS");
-  console.log("Ship story: review-first migration PRs + Warden debug loop + registry + gates.");
-  console.log("Not GA: Transformer campaigns, Firecracker, GNN train, silent auto-merge.");
+  console.log("Ship story: review-first migration PRs + Fettler debug loop + registry + gates.");
+  console.log("Not GA: Regauge campaigns, Firecracker, GNN train, silent auto-merge.");
   process.exit(0);
 }
 

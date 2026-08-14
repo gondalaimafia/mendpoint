@@ -1433,23 +1433,12 @@ export function createDb(urlOrPath?: string): AppDb {
 }
 
 /**
- * Rename the Warden/Transformer tables to Fettler/Regauge on existing volumes.
- *
- * The static DDL above already creates every table under its NEW name, so a
- * fresh database is correct with zero migration. On an existing production
- * volume the old-named tables still hold rows: this copies each old table's
- * rows into the freshly-created (empty) new table and drops the old one.
- *
- * Guarded entirely on sqlite_master lookups, never blind ALTER/DROP, so it is
- * safe on a fresh, fully-migrated, or partially-migrated database, and is a
- * no-op on repeated boots. Crucially, no static DDL statement references a
- * table that only this migration creates -- the DDL owns the new tables and
- * this migration only moves data -- so it cannot crash boot the way the
- * 2026-08-05 static-DDL-ahead-of-migration outage did.
+ * Rename Warden/Transformer tables to Fettler/Regauge without assuming that the
+ * new table is empty. This is the prerequisite release for a future dual-name
+ * compatibility window: identical and disjoint rows converge, any conflicting
+ * row fails closed, and the committed schema remains new-name-only.
  */
 function migrateWardenTransformerTableNames(db: AppDb): void {
-  // old -> new. Every NEW table is created by the static DDL, so on an upgrade
-  // it is guaranteed to already exist (and be empty) before this runs.
   const renames: ReadonlyArray<readonly [string, string]> = [
     ["warden_model_reservations", "fettler_model_reservations"],
     ["warden_campaigns", "fettler_campaigns"],
@@ -1463,21 +1452,53 @@ function migrateWardenTransformerTableNames(db: AppDb): void {
     ["transformer_adaptive_regenerations", "regauge_adaptive_regenerations"],
     ["transformer_adaptive_deliveries", "regauge_adaptive_deliveries"],
   ];
-
+  const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
   const tableExists = (name: string): boolean =>
     get<{ name: string }>(
       db,
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
       [name],
     ) !== undefined;
-
-  // Only pairs whose OLD table is still present (and whose NEW table exists, as
-  // the DDL guarantees) need work. Skipping when there is nothing pending keeps
-  // fresh and already-migrated boots free of any transaction.
-  const pending = renames.filter(
-    ([oldName, newName]) => tableExists(oldName) && tableExists(newName),
-  );
+  const pending = renames.filter(([oldName]) => tableExists(oldName));
   if (pending.length === 0) return;
+  const legacyAdditions: ReadonlyArray<Readonly<{
+    table: string;
+    name: string;
+    sql: string;
+  }>> = [
+    {
+      table: "warden_campaign_targets",
+      name: "enrollment_source",
+      sql: "TEXT NOT NULL DEFAULT 'manual'",
+    },
+    { table: "warden_campaign_targets", name: "enrolled_installation_id", sql: "TEXT" },
+    {
+      table: "transformer_adaptive_candidates",
+      name: "base_branch",
+      sql: "TEXT NOT NULL DEFAULT ''",
+    },
+    { table: "transformer_adaptive_candidates", name: "review_rationale", sql: "TEXT" },
+    {
+      table: "transformer_adaptive_candidates",
+      name: "review_tier",
+      sql: "TEXT NOT NULL DEFAULT 'standard'",
+    },
+    {
+      table: "transformer_adaptive_candidates",
+      name: "escalation_reviewer_principal_id",
+      sql: "TEXT",
+    },
+    { table: "transformer_adaptive_candidates", name: "escalation_reviewed_at", sql: "TEXT" },
+    { table: "transformer_adaptive_candidates", name: "escalation_rationale", sql: "TEXT" },
+    { table: "transformer_adaptive_candidates", name: "family", sql: "TEXT" },
+    { table: "transformer_adaptive_candidates", name: "provider", sql: "TEXT" },
+    { table: "transformer_adaptive_candidates", name: "framework", sql: "TEXT" },
+    {
+      table: "transformer_adaptive_deliveries",
+      name: "base_branch",
+      sql: "TEXT NOT NULL DEFAULT ''",
+    },
+  ];
 
   if (db.raw.isTransaction) {
     throw new Error("warden_transformer_rename_transaction_active");
@@ -1487,22 +1508,169 @@ function migrateWardenTransformerTableNames(db: AppDb): void {
       (db.raw.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number })
         .foreign_keys,
     ) === 1;
-  // Disable foreign keys for the copy+drop: dropping an old parent table (e.g.
-  // warden_campaigns) must not fail while the old child table still references
-  // it. Copied rows keep the exact references they already held to unchanged
-  // parent tables (tenants, jobs, ...), so referential integrity is preserved
-  // by construction -- no rows are rewritten, only relocated.
+  const columns = (name: string) =>
+    all<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+      pk: number;
+    }>(db, `PRAGMA table_info(${quoteIdentifier(name)})`);
+  const normalizedColumns = (
+    name: string,
+    additiveDefaultColumns: ReadonlySet<string>,
+  ): string =>
+    JSON.stringify(
+      columns(name)
+        .map((column) => ({
+          name: column.name,
+          type: column.type.toUpperCase(),
+          notnull: column.notnull,
+          dflt_value: additiveDefaultColumns.has(column.name) ? null : column.dflt_value,
+          pk: column.pk,
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    );
+  const oldToNew = new Map(renames);
+  const normalizedForeignKeys = (name: string): string =>
+    JSON.stringify(
+      all<{
+        id: number;
+        seq: number;
+        table: string;
+        from: string;
+        to: string;
+        on_update: string;
+        on_delete: string;
+        match: string;
+      }>(db, `PRAGMA foreign_key_list(${quoteIdentifier(name)})`)
+        .map((foreignKey) => ({
+          ...foreignKey,
+          table: oldToNew.get(foreignKey.table) ?? foreignKey.table,
+        }))
+        .sort((left, right) => left.id - right.id || left.seq - right.seq),
+    );
+  const uniqueSignatures = (name: string): string =>
+    JSON.stringify(
+      all<{ name: string; unique: number; origin: string; partial: number }>(
+        db,
+        `PRAGMA index_list(${quoteIdentifier(name)})`,
+      )
+        .filter((index) => index.unique === 1)
+        .map((index) => ({
+          origin: index.origin,
+          partial: index.partial,
+          columns: all<{
+            seqno: number;
+            cid: number;
+            name: string | null;
+            desc: number;
+            coll: string;
+            key: number;
+          }>(db, `PRAGMA index_xinfo(${quoteIdentifier(index.name)})`)
+            .filter((column) => column.key === 1)
+            .sort((left, right) => left.seqno - right.seqno)
+            .map(({ cid, name: columnName, desc, coll }) => ({
+              cid,
+              name: columnName,
+              desc,
+              coll,
+            })),
+        }))
+        .map((signature) => JSON.stringify(signature))
+        .sort(),
+    );
+  const assertCompatibleSchema = (oldName: string, newName: string): string[] => {
+    const additiveDefaultColumns = new Set(
+      legacyAdditions
+        .filter((addition) => addition.table === oldName)
+        .map((addition) => addition.name),
+    );
+    if (
+      !tableExists(newName) ||
+      normalizedColumns(oldName, additiveDefaultColumns) !==
+        normalizedColumns(newName, additiveDefaultColumns) ||
+      normalizedForeignKeys(oldName) !== normalizedForeignKeys(newName) ||
+      uniqueSignatures(oldName) !== uniqueSignatures(newName)
+    ) {
+      throw new Error("warden_transformer_rename_schema_mismatch");
+    }
+    return columns(newName).map((column) => column.name);
+  };
+  const merge = (oldName: string, newName: string, columnNames: readonly string[]): void => {
+    const list = columnNames.map(quoteIdentifier).join(", ");
+    db.raw.exec(
+      `INSERT OR IGNORE INTO ${quoteIdentifier(newName)} (${list}) ` +
+        `SELECT ${list} FROM ${quoteIdentifier(oldName)}`,
+    );
+    const mismatch = db.raw
+      .prepare(
+        `SELECT 1 AS divergent FROM (` +
+          `SELECT ${list} FROM ${quoteIdentifier(oldName)} ` +
+          `EXCEPT SELECT ${list} FROM ${quoteIdentifier(newName)}` +
+          `) LIMIT 1`,
+      )
+      .get();
+    if (mismatch) throw new Error("warden_transformer_rename_data_conflict");
+  };
+
   db.raw.exec("PRAGMA foreign_keys = OFF");
   try {
     db.raw.exec("BEGIN IMMEDIATE");
-    for (const [oldName, newName] of pending) {
-      // The new table is the old CREATE TABLE with only its name changed, so
-      // columns match by name and position: a positional copy is exact. The new
-      // table was just created empty by the DDL, so a plain INSERT cannot
-      // conflict, and dropping the old table also drops its old-named indexes
-      // (the new-named indexes were already created by the DDL).
-      db.raw.exec(`INSERT INTO ${newName} SELECT * FROM ${oldName};`);
-      db.raw.exec(`DROP TABLE ${oldName};`);
+    // Another process may have completed the rename while this connection was
+    // waiting for the write lock, so all transactional work uses fresh state.
+    const lockedPending = renames.filter(([oldName]) => tableExists(oldName));
+    for (const addition of legacyAdditions) {
+      if (
+        tableExists(addition.table) &&
+        !columns(addition.table).some((column) => column.name === addition.name)
+      ) {
+        db.raw.exec(
+          `ALTER TABLE ${quoteIdentifier(addition.table)} ADD COLUMN ` +
+            `${quoteIdentifier(addition.name)} ${addition.sql}`,
+        );
+      }
+    }
+    if (tableExists("transformer_adaptive_candidates")) {
+      db.raw.exec(`
+        UPDATE transformer_adaptive_candidates
+        SET base_branch = COALESCE((
+          SELECT snapshot.requested_ref
+          FROM repository_snapshots snapshot
+          WHERE snapshot.id = transformer_adaptive_candidates.snapshot_id
+            AND snapshot.tenant_id = transformer_adaptive_candidates.tenant_id
+            AND snapshot.repository_id = transformer_adaptive_candidates.repository_id
+        ), '')
+        WHERE base_branch = '';
+      `);
+    }
+    if (tableExists("transformer_adaptive_deliveries")) {
+      const candidateTable = tableExists("transformer_adaptive_candidates")
+        ? "transformer_adaptive_candidates"
+        : "regauge_adaptive_candidates";
+      db.raw.exec(`
+        UPDATE transformer_adaptive_deliveries
+        SET base_branch = COALESCE((
+          SELECT candidate.base_branch
+          FROM ${quoteIdentifier(candidateTable)} candidate
+          WHERE candidate.id = transformer_adaptive_deliveries.candidate_id
+            AND candidate.tenant_id = transformer_adaptive_deliveries.tenant_id
+            AND candidate.repository_id = transformer_adaptive_deliveries.repository_id
+            AND candidate.snapshot_id = transformer_adaptive_deliveries.snapshot_id
+        ), '')
+        WHERE base_branch = '';
+      `);
+    }
+    const compatible = lockedPending.map(([oldName, newName]) => ({
+      oldName,
+      newName,
+      columnNames: assertCompatibleSchema(oldName, newName),
+    }));
+    for (const { oldName, newName, columnNames } of compatible) {
+      merge(oldName, newName, columnNames);
+    }
+    for (const { oldName } of compatible) {
+      db.raw.exec(`DROP TABLE ${quoteIdentifier(oldName)}`);
     }
     db.raw.exec("COMMIT");
   } catch (error) {

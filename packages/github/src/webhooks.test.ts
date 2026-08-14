@@ -122,7 +122,7 @@ describe("ci check comment", () => {
       ],
       policyNotes: ["Auto-merge disabled"],
     });
-    expect(body).toContain("Warden CI check (Mendpoint)");
+    expect(body).toContain("Fettler CI check (Mendpoint)");
     expect(body).toContain("TypeScript");
     expect(body).toContain("Never auto-merges");
   });

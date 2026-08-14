@@ -5,10 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDb } from "./index.js";
 
-// The Warden/Transformer -> Fettler/Regauge DB table rename. These tests are the
-// acceptance bar for the highest-risk slice: they prove the guarded, idempotent
-// migration converges an existing production-shaped volume onto the new schema
-// without ever crashing boot, and without losing a single row.
+// Release A makes the destructive old-to-new rename tolerant of a future
+// compatibility release without changing today's new-only physical schema.
 
 type Db = ReturnType<typeof createDb>;
 type SqlValue = string | number | null;
@@ -55,6 +53,14 @@ function reverseNames(sql: string): string {
   let out = sql;
   for (const [oldName, newName] of [...INDEX_RENAMES, ...TABLE_RENAMES]) {
     out = out.replace(new RegExp(`\\b${newName}\\b`, "g"), oldName);
+  }
+  return out;
+}
+
+function forwardNames(sql: string): string {
+  let out = sql;
+  for (const [oldName, newName] of [...INDEX_RENAMES, ...TABLE_RENAMES]) {
+    out = out.replace(new RegExp(`\\b${oldName}\\b`, "g"), newName);
   }
   return out;
 }
@@ -207,12 +213,9 @@ function boot(path: string): Db {
 }
 
 /**
- * Build a database whose tables in `useOldName` carry their pre-change
- * (Warden/Transformer) names and indexes, while all other renamed tables carry
- * their new (Fettler/Regauge) names. The exact schema is reflected from a fresh
- * database and reversed, so it is provably the real production shape. Every
- * renamed table is seeded with one valid row under whatever name it currently
- * has.
+ * Build a database whose tables in `useOldName` carry their pre-change names,
+ * while all other renamed tables carry their current names. The exact schema is
+ * reflected from a fresh database and reversed, and every table receives a row.
  */
 function buildVolume(path: string, useOldName: ReadonlySet<string>): void {
   const reflectDir = newDir("rename-reflect");
@@ -221,7 +224,7 @@ function buildVolume(path: string, useOldName: ReadonlySet<string>): void {
   const objects = fresh.raw
     .prepare(
       `SELECT type, tbl_name, sql FROM sqlite_master
-       WHERE sql IS NOT NULL AND tbl_name IN (${placeholders})
+       WHERE sql IS NOT NULL AND type IN ('table', 'index') AND tbl_name IN (${placeholders})
        ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name`,
     )
     .all(...NEW_TABLES) as Array<{ type: string; tbl_name: string; sql: string }>;
@@ -266,12 +269,10 @@ function rowCount(db: Db, table: string): number {
   return (db.raw.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
 }
 
-describe("warden/transformer table rename", () => {
-  it("boots a pre-change volume, converges byte-for-byte with fresh, and preserves every row", () => {
-    // Pre-change production shape: all renamed tables carry their OLD names and
-    // hold rows.
+describe("Fettler/Regauge logical database names", () => {
+  it("boots a legacy volume, converges byte-for-byte with fresh, and preserves every row", () => {
     const legacyPath = join(newDir("rename-legacy"), "legacy.sqlite");
-    buildVolume(legacyPath, new Set(NEW_TABLES.map((n) => n)));
+    buildVolume(legacyPath, new Set(NEW_TABLES));
 
     // The real boot path must not throw on the existing volume.
     const migrated = boot(legacyPath);
@@ -282,7 +283,6 @@ describe("warden/transformer table rename", () => {
     // table, index, and trigger, including SQL text.
     expect(dumpSchema(migrated)).toEqual(dumpSchema(fresh));
 
-    // Every old table is gone and every new table exists with its row intact.
     for (const [oldName, newName] of TABLE_RENAMES) {
       expect(tableExists(migrated, oldName)).toBe(false);
       expect(tableExists(migrated, newName)).toBe(true);
@@ -302,45 +302,40 @@ describe("warden/transformer table rename", () => {
     ).toEqual({ status: "review_pending" });
   });
 
-  it("boots a fresh database with the full new schema and no old tables", () => {
+  it("boots a fresh database with only Fettler and Regauge physical names", () => {
     const fresh = boot(join(newDir("rename-fresh-only"), "fresh.sqlite"));
     for (const [oldName, newName] of TABLE_RENAMES) {
-      expect(tableExists(fresh, newName)).toBe(true);
       expect(tableExists(fresh, oldName)).toBe(false);
+      expect(tableExists(fresh, newName)).toBe(true);
       expect(rowCount(fresh, newName)).toBe(0);
+    }
+    for (const [oldName, newName] of INDEX_RENAMES) {
+      const indexes = new Set(
+        (fresh.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{ name: string }>).map(
+          ({ name }) => name,
+        ),
+      );
+      expect(indexes.has(oldName)).toBe(false);
+      expect(indexes.has(newName)).toBe(true);
     }
   });
 
-  it("boots an already-migrated database as a clean no-op", () => {
+  it("restores an already-renamed database without losing data", () => {
     const path = join(newDir("rename-migrated"), "app.sqlite");
-    const first = boot(path);
-    // Seed a row (into a foreign-key-free renamed table) so we can prove the
-    // second boot leaves data untouched.
-    const seed = SEEDS.regauge_adaptive_candidates;
-    first.raw
-      .prepare(
-        `INSERT INTO regauge_adaptive_candidates (${seed.columns.join(", ")}) VALUES (${seed.columns
-          .map(() => "?")
-          .join(", ")})`,
-      )
-      .run(...seed.values);
-    first.raw.close?.();
-    openDbs.pop();
+    buildVolume(path, new Set());
 
-    // Re-booting the same volume must not throw and must not disturb the schema
-    // or the data.
     const second = boot(path);
     const fresh = boot(join(newDir("rename-migrated-fresh"), "fresh.sqlite"));
     expect(dumpSchema(second)).toEqual(dumpSchema(fresh));
     expect(rowCount(second, "regauge_adaptive_candidates")).toBe(1);
-    for (const [oldName] of TABLE_RENAMES) {
+    for (const [oldName, newName] of TABLE_RENAMES) {
       expect(tableExists(second, oldName)).toBe(false);
+      expect(tableExists(second, newName)).toBe(true);
+      expect(rowCount(second, newName)).toBe(1);
     }
   });
 
   it("converges a partially migrated database (some tables renamed, some not)", () => {
-    // Half the renamed tables were already migrated in a prior deploy (new names
-    // + new indexes); the rest still carry their old names.
     const oldHalf = new Set(NEW_TABLES.filter((_, i) => i % 2 === 0));
     const path = join(newDir("rename-partial"), "partial.sqlite");
     buildVolume(path, oldHalf);
@@ -351,22 +346,171 @@ describe("warden/transformer table rename", () => {
     expect(dumpSchema(migrated)).toEqual(dumpSchema(fresh));
     for (const [oldName, newName] of TABLE_RENAMES) {
       expect(tableExists(migrated, oldName)).toBe(false);
+      expect(tableExists(migrated, newName)).toBe(true);
       expect(rowCount(migrated, newName)).toBe(1);
     }
   });
 
   it("is idempotent: a second boot changes nothing", () => {
     const path = join(newDir("rename-idem"), "idem.sqlite");
-    buildVolume(path, new Set(NEW_TABLES.map((n) => n)));
+    buildVolume(path, new Set(NEW_TABLES));
 
     const firstBoot = boot(path);
     const schemaAfterFirst = dumpSchema(firstBoot);
-    const countsAfterFirst = NEW_TABLES.map((t) => rowCount(firstBoot, t));
+    const countsAfterFirst = NEW_TABLES.map((table) => rowCount(firstBoot, table));
     firstBoot.raw.close?.();
     openDbs.pop();
 
     const secondBoot = boot(path);
     expect(dumpSchema(secondBoot)).toEqual(schemaAfterFirst);
-    expect(NEW_TABLES.map((t) => rowCount(secondBoot, t))).toEqual(countsAfterFirst);
+    expect(NEW_TABLES.map((table) => rowCount(secondBoot, table))).toEqual(countsAfterFirst);
+  });
+
+  it("upgrades missing legacy base_branch columns in old-only and partial volumes", () => {
+    const shapes = [
+      { label: "old-only", oldNames: new Set(NEW_TABLES) },
+      {
+        label: "partial",
+        oldNames: new Set([
+          "regauge_adaptive_candidates",
+          "regauge_adaptive_deliveries",
+        ]),
+      },
+    ];
+    for (const shape of shapes) {
+      const path = join(newDir(`rename-${shape.label}-additive`), `${shape.label}.sqlite`);
+      buildVolume(path, shape.oldNames);
+      const legacy = new DatabaseSync(path);
+      legacy.exec(`
+        ALTER TABLE transformer_adaptive_deliveries DROP COLUMN base_branch;
+        ALTER TABLE transformer_adaptive_candidates DROP COLUMN base_branch;
+      `);
+      legacy.close();
+
+      const migrated = boot(path);
+      expect(tableExists(migrated, "transformer_adaptive_candidates")).toBe(false);
+      expect(tableExists(migrated, "transformer_adaptive_deliveries")).toBe(false);
+      expect(
+        migrated.raw
+          .prepare("SELECT base_branch FROM regauge_adaptive_candidates WHERE id = 'cand1'")
+          .get(),
+      ).toEqual({ base_branch: "" });
+      expect(
+        migrated.raw
+          .prepare("SELECT base_branch FROM regauge_adaptive_deliveries WHERE id = 'adel1'")
+          .get(),
+      ).toEqual({ base_branch: "" });
+    }
+  });
+
+  it("leaves the exact current predecessor rename startup with no pending old tables", () => {
+    const path = join(newDir("rename-predecessor-rollback"), "rollback.sqlite");
+    buildVolume(path, new Set(NEW_TABLES));
+    const releaseA = boot(path);
+    releaseA.raw.close();
+    openDbs.pop();
+
+    const predecessor = new DatabaseSync(path);
+    const pending = TABLE_RENAMES.filter(([oldName, newName]) => {
+      const exists = (name: string) =>
+        predecessor
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+          .get(name) !== undefined;
+      return exists(oldName) && exists(newName);
+    });
+    expect(pending).toEqual([]);
+    for (const [oldName, newName] of pending) {
+      predecessor.exec(`INSERT INTO ${newName} SELECT * FROM ${oldName};`);
+      predecessor.exec(`DROP TABLE ${oldName};`);
+    }
+    expect(
+      predecessor.prepare("SELECT status FROM regauge_adaptive_candidates WHERE id = 'cand1'").get(),
+    ).toEqual({ status: "review_pending" });
+    predecessor.close();
+  });
+
+  it("accepts identical rows in both namespaces and removes the old table", () => {
+    const identicalPath = join(newDir("rename-both-identical"), "identical.sqlite");
+    buildVolume(identicalPath, new Set(NEW_TABLES));
+    const identicalRaw = new DatabaseSync(identicalPath);
+    const oldSql = (
+      identicalRaw
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transformer_adaptive_candidates'")
+        .get() as { sql: string }
+    ).sql;
+    identicalRaw.exec(`${forwardNames(oldSql)};`);
+    const seed = SEEDS.regauge_adaptive_candidates;
+    identicalRaw
+      .prepare(
+        `INSERT INTO regauge_adaptive_candidates (${seed.columns.join(", ")}) VALUES (${seed.columns.map(() => "?").join(", ")})`,
+      )
+      .run(...seed.values);
+    identicalRaw.close();
+    const identical = boot(identicalPath);
+    expect(tableExists(identical, "transformer_adaptive_candidates")).toBe(false);
+    expect(rowCount(identical, "regauge_adaptive_candidates")).toBe(1);
+  });
+
+  it("merges disjoint rows from both namespaces before removing the old table", () => {
+    const path = join(newDir("rename-both-disjoint"), "disjoint.sqlite");
+    buildVolume(path, new Set(NEW_TABLES));
+    const raw = new DatabaseSync(path);
+    const oldSql = (
+      raw
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transformer_adaptive_candidates'")
+        .get() as { sql: string }
+    ).sql;
+    raw.exec(`${forwardNames(oldSql)};`);
+    const seed = SEEDS.regauge_adaptive_candidates;
+    raw
+      .prepare(
+        `INSERT INTO regauge_adaptive_candidates (${seed.columns.join(", ")}) VALUES (${seed.columns.map(() => "?").join(", ")})`,
+      )
+      .run(
+        ...seed.values.map((value, index) => {
+          if (seed.columns[index] === "id") return "cand-new-only";
+          if (seed.columns[index] === "attempt_id") return "att-new-only";
+          return value;
+        }),
+      );
+    raw.close();
+
+    const migrated = boot(path);
+    expect(tableExists(migrated, "transformer_adaptive_candidates")).toBe(false);
+    expect(rowCount(migrated, "regauge_adaptive_candidates")).toBe(2);
+    expect(
+      migrated.raw
+        .prepare("SELECT id FROM regauge_adaptive_candidates ORDER BY id")
+        .all(),
+    ).toEqual([{ id: "cand-new-only" }, { id: "cand1" }]);
+  });
+
+  it("fails closed when both namespaces contain a divergent row", () => {
+    const divergentPath = join(newDir("rename-both-divergent"), "divergent.sqlite");
+    buildVolume(divergentPath, new Set(NEW_TABLES));
+    const divergentRaw = new DatabaseSync(divergentPath);
+    const divergentOldSql = (
+      divergentRaw
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transformer_adaptive_candidates'")
+        .get() as { sql: string }
+    ).sql;
+    divergentRaw.exec(`${forwardNames(divergentOldSql)};`);
+    const seed = SEEDS.regauge_adaptive_candidates;
+    divergentRaw
+      .prepare(
+        `INSERT INTO regauge_adaptive_candidates (${seed.columns.join(", ")}) VALUES (${seed.columns.map(() => "?").join(", ")})`,
+      )
+      .run(...seed.values.map((value, index) => (seed.columns[index] === "status" ? "approved" : value)));
+    divergentRaw.close();
+    expect(() => createDb(divergentPath)).toThrow("warden_transformer_rename_data_conflict");
+
+    const unchanged = new DatabaseSync(divergentPath);
+    expect(
+      unchanged.prepare("SELECT status FROM transformer_adaptive_candidates WHERE id = 'cand1'").get(),
+    ).toEqual({ status: "review_pending" });
+    expect(
+      unchanged.prepare("SELECT status FROM regauge_adaptive_candidates WHERE id = 'cand1'").get(),
+    ).toEqual({ status: "approved" });
+    unchanged.close();
   });
 });

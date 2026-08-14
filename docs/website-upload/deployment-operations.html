@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Deployment and operations | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / Operations</nav>
+    <header class="hero">
+      <p class="kicker">Operations</p>
+      <h1>Deployment and operations</h1>
+      <p>Run Mendpoint with role-specific readiness, durable state, recovery controls, audit evidence, backups, and bounded rollout procedures.</p>
+      <dl><dt>Status</dt><dd>Pilot evaluation</dd><dt>Availability</dt><dd>Docker Compose and Fly pilot deployment; the dedicated Regauge profile is implemented but no live Regauge deployment is claimed</dd><dt>Last verified</dt><dd>2026-08-14</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Choose the Fettler, Regauge pilot, demo, or self-hosted profile and satisfy its complete startup contract before deployment.</p><ol><li>Validate the exact configuration and secret names without exposing values.</li><li>Build and boot the production image against an existing-state database.</li><li>Deploy one canary instance and verify liveness, readiness, storage, integrations, and rollback.</li><li>Scale only after crash, response-loss, stale-fence, and restore drills pass.</li></ol></section>
+    <section><h2>What it does</h2><ul><li>Docker multi-stage images for API, web, worker, all-in-one Fly, and dedicated Regauge roles</li><li>Fly Fettler production and dedicated Regauge coordinator/worker manifests</li><li>Liveness, readiness, worker heartbeat, alerts, metrics, trajectories, and recovery summary</li><li>Encrypted backup, restore, backup fencing, snapshots, disaster-recovery drill, and image rollback</li><li>Lease-fenced jobs and checkpointed Fettler and Regauge execution</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>An operator is preparing a new pilot environment.</li><li>A release changes persistence, jobs, external effects, or readiness.</li><li>A worker or process must be replaced without duplicating work.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>Profile validation turns configuration into an explicit authority contract.</li><li>Durable coordinators own leases and state; workers operate only under current fences.</li><li>Health endpoints separate process liveness from dependency readiness.</li><li>Deployments proceed through tests, production build, container smoke, canary, live checks, and recorded rollback.</li><li>Backups and terminal evidence retain recovery and audit authority.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>npm run ga:check</code></td><td>Command</td><td>Run specification, claim, action-pin, and GA checks.</td></tr><tr><td><code>npm run e2e:deployment</code></td><td>Command</td><td>Run the production deployment journey and crash recovery.</td></tr><tr><td><code>npm run dr:drill</code></td><td>Command</td><td>Exercise disaster recovery.</td></tr><tr><td><code>GET /live</code></td><td>API</td><td>API process liveness.</td></tr><tr><td><code>GET /ready</code></td><td>API</td><td>API dependency readiness.</td></tr><tr><td><code>GET /health</code></td><td>API</td><td>Detailed runtime health.</td></tr><tr><td><code>fly.transformer.toml</code></td><td>Configuration</td><td>Separate coordinator and stateless worker production pilot.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Deployment E2E</strong><br><code>tests/e2e/deployment.spec.ts</code></li><li><strong>Readiness</strong><br><code>packages/ops/src/readiness.test.ts</code></li><li><strong>Backup and restore</strong><br><code>packages/ops/src/disaster-recovery.test.ts</code></li><li><strong>Regauge profile contract</strong><br><code>apps/worker/src/transformer-production-profile.test.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>A release is not complete until exact commit, image, health, and rollback evidence agree.</li><li>Schema changes must boot against both fresh and pre-change databases.</li><li>Coordinator and worker identities, storage, and fences must remain distinct across scale-out.</li><li>Stopping workers preserves coordinator, volume, and immutable artifacts for evidence.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>Optional model and source control integrations can create network egress</li><li>High availability and enterprise support are not included</li><li>The hosted Fettler profile is a single Fly application, not a multi-region high-availability control plane.</li><li>No dedicated Regauge deployment is claimed live until its app, secrets, volume, health, and canary evidence are independently verified.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="security-governance.html">Security and governance</a></li><li><a href="billing-usage.html">Billing and usage</a></li><li><a href="fettler.html">Fettler — the first AI API Engineer</a></li><li><a href="regauge.html">Regauge — the first AI Legacy Engineer</a></li></ul></section>
+    <p class="download"><a href="deployment-operations.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>

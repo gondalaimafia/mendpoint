@@ -11,12 +11,13 @@ import {
   createFetchTransformerMultinodeTransport,
   createTransformerMultinodeService,
 } from "./transformer-multinode-service.js";
+import { resolveTransformerWorkerId } from "./transformer-production-profile.js";
 
 export type RunningTransformerService = Readonly<{ close(): Promise<void>; readinessUrl: string }>;
 
 export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.env): Promise<RunningTransformerService> {
   if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_MULTINODE_ENABLED") !== "1") throw new Error("transformer_multinode_service_disabled");
-  const workerId = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_WORKER_ID"), "transformer_multinode_worker_id_required");
+  const workerId = resolveTransformerWorkerId(env);
   const tenantId = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_TENANT_ID"), "transformer_multinode_tenant_required");
   const campaignId = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_CAMPAIGN_ID"), "transformer_multinode_campaign_required");
   const dataRoot = resolve(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_PRIVATE_DATA_ROOT"), "transformer_multinode_data_root_required"));

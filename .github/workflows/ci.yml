@@ -23,7 +23,7 @@ jobs:
         run: npm ci
       - name: Unit tests
         run: npm test
-      - name: Warden and Transformer agent eval gate
+      - name: Fettler and Regauge agent eval gate
         run: npm run eval:agents -- --repetitions=3 --output=test-results/agent-evals/report.json
       - name: Upload agent eval evidence
         if: always()
@@ -126,7 +126,7 @@ jobs:
         run: docker build --target web -t mendpoint-web:ci .
       - name: Build worker image
         run: docker build --target worker -t mendpoint-worker:ci .
-      - name: Build Transformer image
+      - name: Build Regauge image
         run: docker build --target transformer -t mendpoint-transformer:ci .
       - name: Build Fly image
         run: docker build --target fly -t mendpoint-fly:ci .

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Post-trained models | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / AI platform</nav>
+    <header class="hero">
+      <p class="kicker">AI platform</p>
+      <h1>Post-trained models</h1>
+      <p>Govern external adapter training, evaluation, consent, canary admission, routing, monitoring, and rollback as one evidence-bound lifecycle.</p>
+      <dl><dt>Status</dt><dd>Configured integration preview</dd><dt>Availability</dt><dd>Implemented control plane; no first-party trainer or shipped Mendpoint-trained model</dd><dt>Last verified</dt><dd>2026-08-14</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Enable the advanced AI application surface only after an approved external trainer, dataset consent, receipt authority, and signing evidence are configured.</p><ol><li>Seal an eligible consented corpus export.</li><li>Submit an idempotent training job under a durable worker lease.</li><li>Verify the authenticated trainer receipt and adapter artifact.</li><li>Register the exact lifecycle, evaluations, canary evidence, monitoring, and rollback target.</li><li>Admit the adapter to the model router only while fresh authority remains valid.</li></ol></section>
+    <section><h2>What it does</h2><ul><li>Durable single-dispatch external training jobs with leases and authenticated receipts</li><li>Canonical adapter artifact hashing and exact training-to-registration binding</li><li>Consent, held-out evaluation, canary, infrastructure, approval, monitoring, and rollback lifecycle</li><li>Fresh pre-dispatch revocation and consent checks</li><li>Router admission as an adapter executor</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>A tenant has a governed corpus and approved external trainer.</li><li>An adapter must be evaluated and monitored before routing.</li><li>Consent withdrawal or rollback must stop dispatch immediately.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>Eligible redacted records produce a sealed dataset lineage artifact.</li><li>One leased worker submits the exact training request and reconciles an authenticated receipt.</li><li>The returned artifact is bound to dataset, adapter, base model, evaluation, and canary evidence.</li><li>Lifecycle authority moves through registered, evaluated, canary, promoted, monitored, rolled-back, and retired states.</li><li>The router rechecks current consent and lifecycle immediately before dispatch.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>POST /advanced-ai/training-jobs</code></td><td>API</td><td>Run or reconcile an external training job when enabled.</td></tr><tr><td><code>POST /advanced-ai/post-trained-applications</code></td><td>API</td><td>Register an exact completed adapter lifecycle.</td></tr><tr><td><code>POST /advanced-ai/post-trained-applications/:id/route</code></td><td>API</td><td>Evaluate router eligibility without invoking a model.</td></tr><tr><td><code>Authenticated trainer receipt</code></td><td>Artifact</td><td>Job, request, artifact, evaluation, canary, and receipt MAC binding.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Training execution</strong><br><code>packages/pipeline/src/post-trained-training.test.ts</code></li><li><strong>Lifecycle registration</strong><br><code>packages/pipeline/src/post-trained-application.test.ts</code></li><li><strong>Router admission</strong><br><code>packages/platform/src/post-trained-runtime.test.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>Training requires active dataset consent and explicit external-processing authority.</li><li>Concurrent workers cannot dispatch the same training job twice.</li><li>Evaluation and canary claims must exactly match the durable completion event.</li><li>Rollback, revocation, expired consent, or stale monitoring blocks routing.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>Mendpoint does not ship a trainer, model weights, or a post-trained production endpoint in this repository.</li><li>The surface requires MENDPOINT_ADVANCED_AI_APPLICATIONS_ENABLED and complete external authority.</li><li>A production-shaped lifecycle is not evidence that a model has been trained or deployed.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="model-router.html">Model router</a></li><li><a href="learning-system.html">Learning system</a></li><li><a href="verification-attestations.html">Verification and attestations</a></li></ul></section>
+    <p class="download"><a href="post-trained-models.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>

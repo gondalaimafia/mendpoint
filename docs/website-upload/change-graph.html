@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Change Graph | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / Understand change</nav>
+    <header class="hero">
+      <p class="kicker">Understand change</p>
+      <h1>Change Graph</h1>
+      <p>Resolve an API change through repository evidence to affected operations, fields, files, symbols, tests, owners, and migration outcomes.</p>
+      <dl><dt>Status</dt><dd>Production pilot</dd><dt>Availability</dt><dd>Real connected snapshots with bounded language and evidence coverage</dd><dt>Last verified</dt><dd>2026-08-14</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Materialize a repository snapshot, index it, and query an approved change or consumer.</p><ol><li>Create the exact repository snapshot.</li><li>Build or load the repository index and call graph.</li><li>Attach the provider change and consumer binding.</li><li>Query blast radius and inspect truncation, confidence, and evidence.</li></ol></section>
+    <section><h2>What it does</h2><ul><li>API surface and consumer impact graphs</li><li>Repository, commit, pull request, file, symbol, test, owner, runtime, migration, and evidence nodes</li><li>AST, LSP, Git, control-plane, impact, and outcome ingestion</li><li>Callers, paths, field consumers, migration readiness, and reverse reachability queries</li><li>Incremental persistent indexes and temporal evidence</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>A change must be mapped to concrete code and tests.</li><li>A reviewer needs provenance behind an impact claim.</li><li>A campaign needs owners and dependency ordering.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>Schema and repository observations become typed, tenant-scoped graph nodes and edges.</li><li>Bounded traversals expand from the changed surface into consumers and code evidence.</li><li>Static, graph, and heuristic evidence are combined without hiding uncertainty.</li><li>Outcomes feed durable graph evidence for later planning and evaluation.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>GET /graph/changes/:id</code></td><td>API</td><td>Resolve the impact graph for a change.</td></tr><tr><td><code>GET /graph/consumers/:id</code></td><td>API</td><td>Resolve evidence for a consumer.</td></tr><tr><td><code>POST /graph-learn/query</code></td><td>API</td><td>Run a bounded knowledge-graph query.</td></tr><tr><td><code>GET /graph/agent/mermaid</code></td><td>API</td><td>Render the agent graph as Mermaid.</td></tr><tr><td><code>Repository evidence graph</code></td><td>Artifact</td><td>Snapshot-bound nodes, edges, source refs, and truncation metadata.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Change graph</strong><br><code>packages/graph/src/graph.test.ts</code></li><li><strong>Knowledge graph</strong><br><code>packages/graph-learn/src/graph-learn.test.ts</code></li><li><strong>Code impact</strong><br><code>packages/code-impact/src/index.test.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>Every repository observation is bound to tenant, repository, snapshot, revision, and content digest.</li><li>Traversal limits are explicit and truncation is surfaced.</li><li>Static evidence never claims to observe runtime-generated behavior it cannot see.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>Language frontends have different depth and precision.</li><li>Runtime, CI, deployment, and ownership evidence is only as complete as the configured ingestors.</li><li>The current hosted demo can contain seeded data; connected snapshots are the authority for customer results.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="change-ingestion.html">Change ingestion</a></li><li><a href="fettler.html">Fettler — the first AI API Engineer</a></li><li><a href="regauge.html">Regauge — the first AI Legacy Engineer</a></li></ul></section>
+    <p class="download"><a href="change-graph.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>

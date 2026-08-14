@@ -1732,3 +1732,34 @@ Objective: make Warden plan and execute multi-step repository repairs as an expl
 Acceptance: on a supported multi-step repository repair, Warden produces and persists an evidence-grounded plan, executes only its authorized current step, revises the plan from exact verifier feedback, survives process loss without repeating completed planning or tool work, and returns a reviewable candidate whose evidence explains the plan, revisions, actions, checks, spend, and any blocker. Unsupported or ungrounded work abstains.
 
 Review before publication: Warden now stores a bounded authenticated mission plan alongside the paid planner receipt, including exact effect and request digests, evidence-linked hypotheses, confidence, risk, acceptance checks, revision lineage, and action results. Mutations must match the active plan effect, original model call digest, target, and current repository evidence. Failed verifier results produce a causally linked revision without resetting earlier steps or accounting, and takeover replays the paid plan receipt instead of planning again. The attempt evidence and customer report expose the redacted plan lineage and blocker without raw prompts. Full Agent 335 of 335, Worker 276 of 276, and Eval 108 of 108 passed. `scripts/verify.sh` passed every workspace typecheck, the complete repository tests, production build, GA/spec/claim/action checks, and diff integrity in 243 seconds. `npm audit --omit=dev` found zero vulnerabilities. Protected publication and live production verification remain pending.
+
+## Rename hardening and dirty-work consolidation: 2026-08-14
+
+Objective: close the confirmed Fettler and Regauge rename defects on current main, preserve compatibility with existing data and integrations, recover the reviewed public documentation work, and classify every remaining dirty worktree without merging unsafe experiments.
+
+### Confirmed blockers
+
+- [x] Replace the one-way physical database rename with a rollback-safe compatibility strategy and prove current and previous binaries see the same durable rows.
+- [x] Emit Fettler in new PR evidence while retaining dual-read support for historical Warden markers.
+- [x] Replace remaining customer and operator-facing Warden and Transformer labels with Fettler and Regauge.
+- [x] Add a case-insensitive public-name gate with exact compatibility exceptions.
+- [x] Correct the Regauge navigation glyph and regenerate public documentation output without stale legacy pages.
+
+### Dirty work consolidation
+
+- [x] Inventory every dirty worktree by base revision, owned paths, tests, and overlap with current main.
+- [x] Port the reviewed Stripe-style product documentation onto this branch and reconcile the naming convention.
+- [x] Port only independently verified, non-duplicated work from other dirty trees.
+- [x] Leave unsafe or superseded experiments isolated with an explicit disposition and no destructive cleanup.
+
+### Verification and release
+
+- [x] Observe red regressions for database rollback, dual PR marker parsing, public-name enforcement, and stale generated docs.
+- [x] Run focused package tests after each fix.
+- [x] Run full workspace tests, typecheck, production build, GA checks, dependency audit, and diff integrity.
+- [x] Obtain strict review of the combined diff before commit or push.
+- [x] Record exact merge-ready and quarantined work in this section.
+
+Review: the merge-ready branch contains the rollback-tolerant database prerequisite, per-machine Regauge worker identity, public Fettler and Regauge naming with exact compatibility exceptions, 13 component documentation guides with a deterministic 29-file upload bundle, and the reviewed offline Fettler investor reel. The complete repository tests, all 31 workspace typechecks, production build, docs drift check, GA gates, public claims, product contract, action pinning, dependency audit, and diff integrity pass on current `origin/main`. Strict review found no remaining P0 or P1 in the database, naming, docs, or worker identity boundaries. The older compiler UI overlay, partial Fettler runtime-resume experiments, superseded Regauge coordinator prototype, and stale rename dogfood report remain isolated in their original worktrees; none were deleted or merged.
+
+Release note: this is database Release A. It makes the current schema tolerant of compatible legacy tables and is the rollback prerequisite for any future dual-namespace bridge. Do not combine a Release B dual-table bridge with this deployment. The dedicated Regauge Fly app still requires a valid Fly session and a live secret audit before activation evidence can be claimed; source code intentionally rejects app-wide worker identity secrets in the production pilot.

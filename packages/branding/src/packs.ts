@@ -30,24 +30,25 @@ export type BrandedAgentPack = {
 /** Neutral product footer for pipeline / migration PRs (no first-party brand pack). */
 export const WARDEN_PR_FOOTER = [
   "---",
-  "_Opened by **Warden** (Mendpoint). Graph-leaned API impact · human review required · never auto-merged by default._",
+  "_Opened by **Fettler** (Mendpoint). Graph-leaned API impact · human review required · never auto-merged by default._",
 ].join("\n");
 
 const WARDEN_MENPOINT_LINE =
-  "_Powered by **Warden** / Mendpoint. Human review required · never auto-merged by default._";
+  "_Powered by **Fettler** / Mendpoint. Human review required · never auto-merged by default._";
 
 /**
- * Ensure a PR body carries Warden / Mendpoint attribution.
+ * Ensure a PR body carries Fettler / Mendpoint attribution.
  * - No attribution → full WARDEN_PR_FOOTER
- * - Mendpoint only (typical brand pack) → short Warden/Mendpoint line
- * - Already mentions Warden → unchanged
+ * - Mendpoint only (typical brand pack) → short Fettler/Mendpoint line
+ * - Already mentions Fettler → unchanged
  */
 export function ensureWardenFooter(body: string): string {
-  if (/\bWarden\b/i.test(body)) return body;
-  if (/\bMendpoint\b/i.test(body)) {
-    return `${body.trimEnd()}\n\n${WARDEN_MENPOINT_LINE}`;
+  const renamedBody = body.replace(/\bWarden\b/g, "Fettler");
+  if (/\bFettler\b/i.test(renamedBody)) return renamedBody;
+  if (/\bMendpoint\b/i.test(renamedBody)) {
+    return `${renamedBody.trimEnd()}\n\n${WARDEN_MENPOINT_LINE}`;
   }
-  return `${body.trimEnd()}\n\n${WARDEN_PR_FOOTER}`;
+  return `${renamedBody.trimEnd()}\n\n${WARDEN_PR_FOOTER}`;
 }
 
 export const BRAND_PACKS: BrandedAgentPack[] = [
@@ -133,7 +134,7 @@ export function getBrandPackForProvider(providerSlug: string): BrandedAgentPack 
   return BRAND_PACKS.find((p) => p.providerSlug === providerSlug);
 }
 
-/** Apply brand packaging to a generated PR title/body. Always ensures Warden attribution. */
+/** Apply brand packaging to a generated PR title/body. Always ensures Fettler attribution. */
 export function applyBrandPack(
   pack: BrandedAgentPack,
   draft: { title: string; body: string },

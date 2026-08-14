@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Repository connections | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / Connect and deliver</nav>
+    <header class="hero">
+      <p class="kicker">Connect and deliver</p>
+      <h1>Repository connections</h1>
+      <p>Authorize least-privilege source access and materialize immutable repository snapshots at exact revisions.</p>
+      <dl><dt>Status</dt><dd>GitHub production path</dd><dt>Availability</dt><dd>GitHub App pilot path. GitLab delivery is on the roadmap.</dd><dt>Last verified</dt><dd>2026-08-14</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Install the Mendpoint GitHub App for an approved account and select the exact repositories it may access.</p><ol><li>Create or open the GitHub App install URL.</li><li>Complete the installation callback for the tenant account.</li><li>Register the allowed repository and selected branch.</li><li>Materialize an exact immutable snapshot before any agent run.</li></ol></section>
+    <section><h2>What it does</h2><ul><li>Tenant-bound GitHub App installation and repository authorization</li><li>Short-lived installation tokens restricted to selected repositories</li><li>Exact commit resolution, immutable file manifests, modes, hashes, and retention</li><li>Connection revocation and snapshot purge</li><li>Generic SCM capability adapters for GitHub, GitLab, Bitbucket, and Azure DevOps</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>Fettler or Regauge needs authoritative source bytes.</li><li>A repository must be read without storing a long-lived user token.</li><li>A later worker must reconstruct the exact prior source state.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>An authenticated tenant administrator authorizes a GitHub account and selected repositories.</li><li>Mendpoint exchanges App authority for repository-scoped installation tokens.</li><li>The snapshot service resolves one revision, materializes bounded files, and persists an immutable manifest.</li><li>Agents receive snapshot bindings, not an unrestricted repository handle.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>GET /github/app/install-url</code></td><td>API</td><td>Start a GitHub App installation.</td></tr><tr><td><code>POST /github/app/callback</code></td><td>API</td><td>Bind the installation to the authenticated tenant.</td></tr><tr><td><code>POST /platform/scm/repositories</code></td><td>API</td><td>Register an approved repository.</td></tr><tr><td><code>POST /platform/scm/repositories/:id/snapshots</code></td><td>API</td><td>Materialize an exact snapshot.</td></tr><tr><td><code>POST /platform/scm/connections/:id/revoke</code></td><td>API</td><td>Revoke a connection.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>GitHub App lifecycle</strong><br><code>packages/github/src/app-lifecycle.test.ts</code></li><li><strong>Repository source</strong><br><code>packages/platform/src/repository-source.test.ts</code></li><li><strong>Connection API</strong><br><code>apps/api/src/repository-connections.test.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>Tenant, account, installation, repository, and remote repository IDs must agree.</li><li>Snapshot paths, symlinks, file sizes, modes, hashes, and totals are validated.</li><li>Tokens are scoped, short-lived, and never embedded in snapshot artifacts.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>The main hosted demo uses mock GitHub; real delivery requires a customer or dedicated profile with App credentials.</li><li>End to end GitLab onboarding, checkout, delivery, review, and revocation are not available.</li><li>Bitbucket and Azure DevOps remain partial adapters.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="draft-delivery.html">Draft delivery</a></li><li><a href="security-governance.html">Security and governance</a></li><li><a href="fettler.html">Fettler — the first AI API Engineer</a></li><li><a href="regauge.html">Regauge — the first AI Legacy Engineer</a></li></ul></section>
+    <p class="download"><a href="repository-connections.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>

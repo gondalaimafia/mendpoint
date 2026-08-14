@@ -5,7 +5,7 @@ describe("pull request evidence", () => {
   it("requires every review section before approval", () => {
     const complete = [
       "intro",
-      "### Structured Warden draft package",
+      "### Structured Fettler draft package",
       ...REQUIRED_EVIDENCE_SECTIONS.flatMap((section) => [
         `#### ${section}`,
         `${section} evidence`,
@@ -21,7 +21,19 @@ describe("pull request evidence", () => {
     });
 
     expect(
-      parsePrEvidence("### Structured Warden draft package\n\n#### Summary\nReady"),
+      parsePrEvidence("### Structured Fettler draft package\n\n#### Summary\nReady"),
     ).toMatchObject({ complete: false });
+  });
+
+  it("continues reading historical Warden draft packages", () => {
+    const historical = [
+      "### Structured Warden draft package",
+      ...REQUIRED_EVIDENCE_SECTIONS.flatMap((section) => [
+        `#### ${section}`,
+        `${section} evidence`,
+      ]),
+    ].join("\n\n");
+
+    expect(parsePrEvidence(historical)).toMatchObject({ complete: true });
   });
 });

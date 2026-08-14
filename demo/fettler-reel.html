@@ -1,0 +1,1406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fettler — the first AI API Engineer | Investor Sizzle Reel</title>
+<style>
+/* =============================================================================
+   Fettler investor sizzle reel — self-contained, offline, no external assets.
+   Design system mirrored from apps/web/app/globals.css (OKLCH navy + indigo).
+   Fonts are the system stack (no web-font import). All icons are inline SVG.
+   Zero network requests: all CSS/JS/SVG inline.
+   ========================================================================== */
+:root {
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --display: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  /* Navy ground ramp */
+  --navy-1000: oklch(0.06 0.018 264);
+  --navy-950: oklch(0.085 0.018 264);
+  --navy-900: oklch(0.1 0.018 264);
+  --navy-850: oklch(0.115 0.018 264);
+  --navy-800: oklch(0.14 0.018 264);
+  --navy-700: oklch(0.18 0.018 264);
+
+  /* Semantic surfaces + ink */
+  --background: oklch(0.085 0.018 264);
+  --foreground: oklch(0.94 0.008 240);
+  --card: oklch(0.115 0.018 264);
+  --popover: oklch(0.115 0.018 264);
+  --secondary: oklch(0.14 0.018 264);
+  --secondary-foreground: oklch(0.75 0.01 240);
+  --muted-foreground: oklch(0.58 0.015 240);
+  --border: oklch(0.22 0.018 264);
+  --border-subtle: oklch(0.18 0.018 264);
+  --border-strong: oklch(0.3 0.018 264);
+  --input: oklch(0.22 0.018 264);
+  --sidebar: oklch(0.115 0.018 264);
+
+  /* One indigo accent + role colors */
+  --primary: oklch(0.585 0.233 264.5);
+  --primary-foreground: oklch(0.98 0 0);
+  --indigo: oklch(0.585 0.233 264.5);
+  --indigo-light: oklch(0.68 0.19 264.5);
+  --indigo-300: oklch(0.75 0.15 264.5);
+  --indigo-600: oklch(0.52 0.233 264.5);
+  --cyan: oklch(0.72 0.16 198);
+  --amber: oklch(0.78 0.17 75);
+  --amber-300: oklch(0.86 0.13 75);
+  --emerald: oklch(0.72 0.17 162);
+  --emerald-300: oklch(0.82 0.14 162);
+  --destructive: oklch(0.65 0.22 25);
+  --red-300: oklch(0.78 0.14 25);
+  --red-500: oklch(0.65 0.22 25);
+  --violet-300: oklch(0.75 0.14 300);
+  --violet-400: oklch(0.62 0.15 300);
+  --slate-300: oklch(0.75 0.01 240);
+  --slate-400: oklch(0.58 0.015 240);
+
+  /* Tint fills */
+  --tint-indigo: oklch(0.585 0.233 264.5 / 0.1);
+  --tint-indigo-28: oklch(0.585 0.233 264.5 / 0.28);
+  --tint-cyan: oklch(0.72 0.16 198 / 0.1);
+  --tint-cyan-28: oklch(0.72 0.16 198 / 0.28);
+  --tint-amber: oklch(0.78 0.17 75 / 0.1);
+  --tint-amber-28: oklch(0.78 0.17 75 / 0.28);
+  --tint-red: oklch(0.65 0.22 25 / 0.1);
+  --tint-red-28: oklch(0.65 0.22 25 / 0.28);
+  --tint-emerald: oklch(0.72 0.17 162 / 0.1);
+  --tint-emerald-30: oklch(0.72 0.17 162 / 0.3);
+  --tint-violet-12: oklch(0.5 0.15 300 / 0.12);
+  --tint-violet-30: oklch(0.5 0.15 300 / 0.3);
+
+  --surface-hover: oklch(1 0 0 / 0.04);
+  --surface-active: oklch(1 0 0 / 0.07);
+
+  /* Diff surfaces */
+  --diff-add-bg: var(--tint-emerald);
+  --diff-add-bar: var(--emerald);
+  --diff-add-fg: var(--emerald-300);
+  --diff-del-bg: var(--tint-red);
+  --diff-del-bar: var(--red-500);
+  --diff-del-fg: var(--red-300);
+  --diff-gutter: oklch(0.42 0.015 240);
+
+  /* Status roles */
+  --status-open: var(--emerald);
+  --status-merged: var(--violet-400);
+  --status-failing: var(--red-500);
+  --status-pending: var(--amber);
+  --status-draft: var(--slate-400);
+
+  /* Product identity colors (internal names) */
+  --fettler: var(--cyan);
+  --regauge: var(--indigo);
+
+  /* Textures + motion */
+  --grid-line: oklch(0.585 0.233 264.5 / 0.045);
+  --grid-dot: oklch(0.585 0.233 264.5 / 0.12);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 150ms;
+  --dur-base: 200ms;
+  --dur-entrance: 500ms;
+  --stagger: 80ms;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #05070f;
+  color: var(--foreground);
+  font-family: var(--font);
+  overflow: hidden;
+}
+
+/* ---- viewport + scaled 1920x1080 stage ---------------------------------- */
+.viewport {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 0%, oklch(0.585 0.233 264.5 / 0.06), transparent 60%),
+    #05070f;
+}
+#stage {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  background: var(--background);
+  transform: translate(-50%, -50%) scale(1);
+  transform-origin: center center;
+  border-radius: 2px;
+}
+
+/* ---- HUD (progress + counter + hint) ------------------------------------ */
+.hud-progress {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 4px;
+  z-index: 40;
+  background: oklch(0.22 0.018 264 / 0.6);
+}
+.hud-progress__fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--indigo), var(--cyan));
+  box-shadow: 0 0 14px oklch(0.585 0.233 264.5 / 0.5);
+}
+.hud-counter {
+  position: absolute;
+  top: 24px; right: 32px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  color: var(--muted-foreground);
+}
+.hud-counter__num { color: var(--foreground); }
+.hud-counter__label {
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+.hud-hint {
+  position: absolute;
+  bottom: 20px; left: 32px;
+  z-index: 40;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: oklch(0.58 0.015 240 / 0.65);
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+.hud-hint b { color: var(--secondary-foreground); font-weight: 600; }
+#stage.is-paused .hud-hint { opacity: 1; }
+
+/* Seeded-repository pill — persistent honesty label on the data scenes. */
+.seed-pill {
+  position: absolute;
+  top: 22px; left: 32px;
+  z-index: 41;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid var(--tint-amber-28);
+  border-radius: 999px;
+  background: oklch(0.06 0.018 264 / 0.72);
+  color: var(--amber-300);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  backdrop-filter: blur(4px);
+}
+.seed-pill::before {
+  content: "";
+  width: 6px; height: 6px;
+  border-radius: 999px;
+  background: var(--amber);
+}
+#stage.seed-on .seed-pill { display: inline-flex; }
+
+.pause-badge {
+  position: absolute;
+  top: 22px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 42;
+  display: none;
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: oklch(0.06 0.018 264 / 0.8);
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+}
+#stage.is-paused .pause-badge { display: inline-block; }
+
+/* ---- scenes + crossfade -------------------------------------------------- */
+.scenes { position: absolute; inset: 0; }
+.scene {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.6s var(--ease-out);
+}
+.scene.is-active { opacity: 1; pointer-events: auto; z-index: 2; }
+
+/* entrance: fade up 40px -> 0, staggered by --i */
+.scene .fade-up { opacity: 0; }
+.scene.is-active .fade-up {
+  animation: mp-fade-up var(--dur-entrance) var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * var(--stagger));
+}
+@keyframes mp-fade-up {
+  from { opacity: 0; transform: translateY(40px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* textures */
+.grid-bg {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+/* ---- captions (lower third narration) ----------------------------------- */
+.caption {
+  position: absolute;
+  left: 50%;
+  bottom: 44px;
+  transform: translateX(-50%);
+  z-index: 30;
+  max-width: 1240px;
+  padding: 15px 26px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: oklch(0.06 0.018 264 / 0.74);
+  backdrop-filter: blur(6px);
+  color: var(--secondary-foreground);
+  font-size: 20px;
+  line-height: 1.5;
+  text-align: center;
+  letter-spacing: -0.005em;
+}
+/* Press C to hide captions (for a clean voiceover take). */
+body.captions-off .caption { opacity: 0 !important; visibility: hidden !important; }
+
+/* =============================================================================
+   Shared DS components (translated from globals.css)
+   ========================================================================== */
+.ico { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; display: block; }
+
+/* section-label eyebrow */
+.section-label {
+  display: inline-flex; align-items: center; gap: 0.5rem;
+  font-family: var(--font); font-size: 0.7rem; font-weight: 600;
+  letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap;
+  color: var(--indigo);
+}
+.section-label::before {
+  content: ""; display: inline-block; width: 16px; height: 2px; flex: none;
+  border-radius: 2px; background: linear-gradient(90deg, var(--indigo), var(--cyan));
+}
+.section-label--muted { color: var(--muted-foreground); }
+.section-label--muted::before { display: none; }
+.section-label--fettler { color: var(--cyan); }
+.section-label--fettler::before { background: linear-gradient(90deg, var(--cyan), var(--indigo)); }
+.section-label--regauge { color: var(--indigo-light); }
+.section-label--regauge::before { background: linear-gradient(90deg, var(--indigo), var(--cyan)); }
+
+/* indigo glow — the one CTA */
+.indigo-glow {
+  box-shadow: 0 0 40px oklch(0.585 0.233 264.5 / 0.18), 0 0 80px oklch(0.585 0.233 264.5 / 0.08);
+}
+
+/* buttons */
+.ds-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  min-height: 2.75rem; padding: 0 1rem; border-radius: 6px; border: 1px solid transparent;
+  font-family: var(--font); font-size: 0.875rem; font-weight: 500; cursor: pointer;
+  white-space: nowrap; text-decoration: none;
+}
+.ds-btn--primary { background: var(--primary); color: var(--primary-foreground); font-weight: 600; }
+.ds-btn--outline { background: var(--card); color: var(--foreground); border-color: var(--border); }
+.ds-btn--ghost { background: none; color: var(--secondary-foreground); border-color: transparent; }
+.ds-btn--icon { width: 2.75rem; padding: 0; }
+
+/* status pill */
+.ds-status {
+  display: inline-flex; align-items: center; gap: 0.5rem; font-family: var(--font);
+  font-size: 0.75rem; font-weight: 500; line-height: 1; padding: 5px 10px 5px 8px;
+  border-radius: 999px; border: 1px solid var(--border-subtle); background: var(--secondary);
+  color: var(--secondary-foreground); white-space: nowrap; text-transform: capitalize;
+}
+.ds-status__dot { width: 6px; height: 6px; flex: none; border-radius: 999px; background: var(--status-draft); }
+.ds-status--open { color: var(--emerald-300); border-color: var(--tint-emerald-30); background: var(--tint-emerald); }
+.ds-status--open .ds-status__dot { background: var(--status-open); }
+.ds-status--merged { color: var(--violet-300); border-color: var(--tint-violet-30); background: var(--tint-violet-12); }
+.ds-status--merged .ds-status__dot { background: var(--status-merged); }
+.ds-status--failing { color: var(--red-300); border-color: var(--tint-red-28); background: var(--tint-red); }
+.ds-status--failing .ds-status__dot { background: var(--status-failing); }
+.ds-status--pending { color: var(--amber-300); border-color: var(--tint-amber-28); background: var(--tint-amber); }
+.ds-status--pending .ds-status__dot { background: var(--status-pending); }
+.ds-status--draft { color: var(--muted-foreground); }
+.ds-status--draft .ds-status__dot { background: var(--status-draft); }
+.ds-status--pulse .ds-status__dot { animation: mp-caret 1.4s var(--ease-out) infinite; }
+@keyframes mp-caret { 0%, 60% { opacity: 1; } 61%, 100% { opacity: 0; } }
+
+/* badge */
+.ds-badge {
+  display: inline-flex; align-items: center; gap: 0.25rem; font-family: var(--mono);
+  font-size: 0.6875rem; font-weight: 500; line-height: 1; padding: 4px 7px;
+  border-radius: 4px; border: 1px solid transparent; white-space: nowrap; text-transform: uppercase;
+}
+.ds-badge--neutral { background: var(--secondary); color: var(--secondary-foreground); border-color: var(--border-subtle); }
+.ds-badge--danger { background: var(--tint-red); color: var(--red-300); border-color: var(--tint-red-28); }
+.ds-badge--warn { background: var(--tint-amber); color: var(--amber-300); border-color: var(--tint-amber-28); }
+.ds-badge--emerald { background: var(--tint-emerald); color: var(--emerald-300); border-color: var(--tint-emerald-30); }
+.ds-badge--accent { background: var(--tint-indigo); color: var(--indigo-300); border-color: var(--tint-indigo-28); }
+.ds-badge--cyan { background: var(--tint-cyan); color: var(--cyan); border-color: var(--tint-cyan-28); }
+
+/* diff */
+.ds-diff { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--background); font-family: var(--mono); font-size: 13px; line-height: 1.6; }
+.ds-diff__head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.75rem; border-bottom: 1px solid var(--border); background: var(--card); }
+.ds-diff__path { font-size: 12px; color: var(--muted-foreground); }
+.ds-diff__stat { display: flex; gap: 0.5rem; font-size: 12px; }
+.ds-diff__stat .add { color: var(--emerald); }
+.ds-diff__stat .del { color: var(--destructive); }
+.ds-diff__hunk { padding: 0.25rem 0 0.5rem; }
+.ds-diff__hunkhead { padding: 2px 0.75rem; color: var(--diff-gutter); background: var(--surface-hover); font-size: 12px; }
+.ds-diff__row { display: flex; white-space: pre; }
+.ds-diff__gutter { width: 44px; flex: none; text-align: right; padding-right: 0.75rem; color: var(--diff-gutter); user-select: none; font-size: 12px; }
+.ds-diff__sign { width: 16px; flex: none; text-align: center; user-select: none; }
+.ds-diff__code { flex: 1; padding-right: 0.75rem; color: var(--secondary-foreground); }
+.ds-diff__row--add { background: var(--diff-add-bg); box-shadow: inset 2px 0 0 var(--diff-add-bar); }
+.ds-diff__row--add .ds-diff__code, .ds-diff__row--add .ds-diff__sign { color: var(--diff-add-fg); }
+.ds-diff__row--del { background: var(--diff-del-bg); box-shadow: inset 2px 0 0 var(--diff-del-bar); }
+.ds-diff__row--del .ds-diff__code, .ds-diff__row--del .ds-diff__sign { color: var(--diff-del-fg); }
+
+/* PR card */
+.ds-pr-card { border: 1px solid var(--border); border-radius: 8px; background: var(--card); padding: 1.25rem; }
+.ds-pr-card__head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
+.ds-pr-card__icon--fettler { color: var(--fettler); }
+.ds-pr-card__icon--regauge { color: var(--regauge); }
+.ds-pr-card__repo { font-family: var(--mono); font-size: 12px; color: var(--muted-foreground); }
+.ds-pr-card__status { margin-left: auto; }
+.ds-pr-card__titlerow { display: flex; align-items: baseline; gap: 0.5rem; }
+.ds-pr-card__title { margin: 0; font-family: var(--font); font-size: 1.125rem; font-weight: 600; letter-spacing: -0.012em; line-height: 1.4; color: var(--foreground); }
+.ds-pr-card__num { font-family: var(--mono); font-size: 12px; color: var(--muted-foreground); }
+.ds-pr-card__meta { margin-top: 1rem; display: flex; align-items: center; gap: 1rem; font-family: var(--mono); font-size: 12px; color: var(--muted-foreground); }
+.ds-pr-card__meta .add { color: var(--emerald); }
+.ds-pr-card__meta .del { color: var(--destructive); }
+.ds-pr-card__time { margin-left: auto; }
+
+/* AppShell */
+.ds-shell { display: grid; height: 1080px; grid-template-columns: 244px minmax(0, 1fr); }
+.ds-shell__rail { display: flex; flex-direction: column; padding: 1rem; border-right: 1px solid var(--border); background: var(--sidebar); }
+.ds-shell__brand { padding: 0.5rem 0.75rem 1rem; }
+.ds-shell__nav { display: flex; flex-direction: column; gap: 2px; }
+.ds-shell__group { margin-bottom: 0.5rem; }
+.ds-shell__heading { padding: 1rem 0.75rem 0.5rem; }
+.ds-shell__item { display: flex; align-items: center; gap: 0.75rem; width: 100%; text-align: left; padding: 7px 0.75rem; border: 0; border-radius: 4px; background: none; color: var(--secondary-foreground); font-family: var(--font); font-size: 0.875rem; cursor: pointer; }
+.ds-shell__item--active { background: var(--surface-active); color: var(--foreground); font-weight: 500; }
+.ds-shell__item-icon { display: flex; flex: none; color: var(--muted-foreground); }
+.ds-shell__item--active .ds-shell__item-icon { color: var(--indigo-light); }
+.ds-shell__item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-shell__item-meta { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted-foreground); }
+.ds-shell__foot { margin-top: auto; display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; border-top: 1px solid var(--border); }
+.ds-shell__avatar { display: grid; place-items: center; width: 24px; height: 24px; flex: none; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--primary-foreground); background: var(--indigo); font-family: var(--mono); }
+.ds-shell__user { font-size: 12px; color: var(--secondary-foreground); }
+.ds-shell__foot-caret { margin-left: auto; color: var(--muted-foreground); }
+.ds-shell__main { display: flex; flex-direction: column; min-width: 0; }
+.ds-shell__topbar { display: flex; align-items: center; gap: 0.75rem; height: 64px; padding: 0 1.5rem; border-bottom: 1px solid var(--border); flex: none; }
+.ds-shell__search { position: relative; flex: 1; max-width: 340px; }
+.ds-shell__search-icon { position: absolute; left: 0.75rem; top: 50%; transform: translateY(-50%); display: flex; color: var(--muted-foreground); pointer-events: none; }
+.ds-shell__search-input { width: 100%; height: 2.25rem; padding: 0 0.75rem 0 2.25rem; border: 1px solid var(--input); border-radius: 6px; background: var(--background); color: var(--foreground); font-family: var(--mono); font-size: 12px; }
+.ds-shell__topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 0.75rem; }
+.ds-shell__body { flex: 1; padding: 2rem 2rem 7rem; overflow: hidden; }
+
+/* logo lockup */
+.ds-logo { display: inline-flex; align-items: center; gap: 8px; }
+.ds-logo__mark { display: inline-flex; flex: none; width: 22px; height: 22px; }
+.ds-logo__word { font-family: var(--font); font-weight: 600; letter-spacing: -0.03em; line-height: 1; color: var(--foreground); font-size: 17px; }
+
+/* view scaffolding */
+.ds-view { display: flex; flex-direction: column; gap: 1.75rem; }
+.ds-view__header { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; }
+.ds-view__header--stack { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+.ds-view__title { margin: 0; font-family: var(--font); font-size: 22px; font-weight: 600; letter-spacing: -0.018em; line-height: 1.3; color: var(--foreground); }
+.ds-view__sub { margin: 0.25rem 0 0; font-family: var(--font); font-size: 0.875rem; color: var(--muted-foreground); }
+.ds-link-ghost { display: inline-flex; align-items: center; gap: 0.375rem; font-family: var(--font); font-size: 0.875rem; font-weight: 500; color: var(--secondary-foreground); text-decoration: none; }
+
+/* stat grid */
+.ds-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+.ds-stat { padding: 1.25rem; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
+.ds-stat__label { font-family: var(--font); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted-foreground); }
+.ds-stat__figure { margin-top: 0.5rem; font-family: var(--display); font-size: 34px; font-weight: 600; letter-spacing: -0.03em; line-height: 1; color: var(--foreground); }
+.ds-stat__figure--sm { font-size: 22px; }
+.ds-stat__figure--amber { color: var(--amber); }
+.ds-stat__figure--cyan { color: var(--cyan); }
+.ds-stat__figure--indigo { color: var(--indigo-light); }
+
+/* panel */
+.ds-panel { border: 1px solid var(--border); border-radius: 8px; background: var(--card); overflow: hidden; }
+.ds-panel--pad { padding: 1.5rem; }
+.ds-panel__head { display: flex; align-items: center; gap: 0.75rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); }
+.ds-panel__title { font-family: var(--font); font-size: 0.875rem; font-weight: 600; color: var(--foreground); }
+.ds-panel__head .ds-link-ghost { margin-left: auto; }
+
+/* spec-diff table */
+.ds-spec-list { list-style: none; margin: 0; padding: 0; }
+.ds-spec-row { display: flex; align-items: center; gap: 1rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); }
+.ds-spec-row:last-child { border-bottom: 0; }
+.ds-spec-row__endpoint { flex: none; min-width: 220px; font-family: var(--mono); font-size: 13px; color: var(--foreground); }
+.ds-spec-row__note { font-family: var(--font); font-size: 0.875rem; color: var(--secondary-foreground); }
+.ds-spec-row__note .tok-del { color: var(--red-300); font-family: var(--mono); }
+.ds-spec-row__note .tok-add { color: var(--emerald-300); font-family: var(--mono); }
+.ds-spec-row__note .tok-arrow { color: var(--muted-foreground); padding: 0 6px; }
+.ds-spec-row__meta { margin-left: auto; flex: none; font-family: var(--mono); font-size: 12px; color: var(--muted-foreground); white-space: nowrap; }
+
+/* tabs */
+.ds-tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; padding: 0.25rem; border: 1px solid var(--border); border-radius: 8px; background: var(--secondary); width: fit-content; }
+.ds-tab { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 2.75rem; padding: 0 0.875rem; border: 0; border-radius: 6px; background: none; color: var(--secondary-foreground); font-family: var(--font); font-size: 0.875rem; font-weight: 500; cursor: pointer; }
+.ds-tab--active { background: var(--card); color: var(--foreground); }
+.ds-tab__count { font-family: var(--mono); font-size: 11px; padding: 2px 6px; border-radius: 999px; background: var(--surface-active); color: var(--muted-foreground); }
+.ds-tab--active .ds-tab__count { color: var(--foreground); }
+
+/* PR list */
+.ds-pr-list { display: flex; flex-direction: column; gap: 0.75rem; }
+
+/* PR detail */
+.ds-detail__back { align-self: flex-start; }
+.ds-detail__header { display: flex; align-items: flex-start; gap: 1rem; }
+.ds-detail__eyebrow { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+.ds-detail__repo { font-family: var(--mono); font-size: 13px; color: var(--muted-foreground); }
+.ds-detail__num { font-family: var(--mono); font-size: 16px; font-weight: 400; color: var(--muted-foreground); }
+.ds-detail__actions { margin-left: auto; display: flex; gap: 0.75rem; flex: none; align-items: center; }
+.ds-detail__body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1.5rem; }
+.ds-detail__diffs { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.ds-detail__aside { display: flex; flex-direction: column; gap: 1rem; }
+
+/* alert */
+.ds-alert { display: flex; gap: 0.75rem; padding: 1rem 1.25rem; border: 1px solid var(--tint-amber-28); border-radius: 8px; background: var(--tint-amber); font-family: var(--font); font-size: 0.875rem; line-height: 1.55; color: var(--secondary-foreground); }
+.ds-alert__icon { flex: none; margin-top: 2px; color: var(--amber); }
+.ds-alert__title { display: block; margin-bottom: 2px; font-weight: 600; color: var(--foreground); }
+
+/* note banner (neutral / informational) */
+.ds-note { display: flex; gap: 0.75rem; padding: 0.875rem 1.25rem; border: 1px solid var(--tint-indigo-28); border-radius: 8px; background: var(--tint-indigo); font-family: var(--font); font-size: 0.875rem; line-height: 1.55; color: var(--secondary-foreground); }
+.ds-note__icon { flex: none; margin-top: 1px; color: var(--indigo-light); }
+.ds-note strong { color: var(--foreground); font-weight: 600; }
+.ds-note .ok { color: var(--emerald-300); font-weight: 600; }
+
+/* checks + author + scope */
+.ds-check-list { list-style: none; margin: 1rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.75rem; }
+.ds-check-row { display: flex; align-items: center; gap: 0.75rem; font-family: var(--font); font-size: 0.875rem; color: var(--secondary-foreground); }
+.ds-check-row__icon { flex: none; color: var(--emerald); }
+.ds-check-row__icon--warn { color: var(--amber); }
+.ds-check-row__state { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted-foreground); }
+.ds-author { display: flex; align-items: center; gap: 0.75rem; margin-top: 1rem; font-family: var(--font); font-size: 0.875rem; color: var(--foreground); }
+.ds-author__icon { flex: none; color: var(--fettler); }
+.ds-author__note { margin: 0.75rem 0 0; font-family: var(--font); font-size: 0.75rem; line-height: 1.5; color: var(--muted-foreground); }
+.ds-scope-list { list-style: none; margin: 1rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.625rem; }
+.ds-scope-row { display: flex; align-items: baseline; gap: 0.625rem; font-family: var(--font); font-size: 0.8125rem; color: var(--secondary-foreground); line-height: 1.4; }
+.ds-scope-row__key { flex: none; font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted-foreground); min-width: 74px; }
+
+/* =============================================================================
+   Scene 1 — hero / problem
+   ========================================================================== */
+.hero { display: grid; place-items: center; }
+.hero .hero-glow {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(circle at 50% 34%, oklch(0.585 0.233 264.5 / 0.16), transparent 42%),
+    radial-gradient(circle at 68% 62%, oklch(0.72 0.16 198 / 0.08), transparent 40%);
+  pointer-events: none;
+}
+.hero-inner { position: relative; width: 1220px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 26px; }
+.hero-mark { width: 92px; height: 92px; }
+.hero-title { margin: 0; font-family: var(--display); font-size: 70px; font-weight: 600; line-height: 1.04; letter-spacing: -0.04em; color: var(--foreground); }
+.hero-sub { margin: 0; font-family: var(--font); font-size: 24px; line-height: 1.4; letter-spacing: -0.01em; color: var(--muted-foreground); max-width: 900px; }
+.hero-spec { width: 760px; margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; background: oklch(0.06 0.018 264 / 0.66); overflow: hidden; text-align: left; }
+.hero-spec__row { display: flex; align-items: center; gap: 16px; padding: 16px 20px; font-family: var(--mono); font-size: 17px; min-height: 58px; }
+.hero-spec__sign { width: 18px; flex: none; text-align: center; font-weight: 700; }
+.hero-spec__ep { flex: none; min-width: 240px; color: var(--foreground); }
+.hero-spec__body { color: var(--secondary-foreground); }
+.hero-spec__row[data-sev="del"] .hero-spec__sign { color: var(--destructive); }
+.hero-spec__row[data-sev="add"] .hero-spec__sign { color: var(--emerald); }
+.hero-spec__row[data-sev="mod"] .hero-spec__sign { color: var(--amber); }
+.tok-del { color: var(--red-300); }
+.tok-add { color: var(--emerald-300); }
+.tok-arrow { color: var(--muted-foreground); padding: 0 8px; }
+.type-caret::after { content: "\258C"; color: var(--indigo-light); animation: mp-caret 1s steps(1) infinite; margin-left: 1px; }
+
+/* =============================================================================
+   Scene 3 — Change Graph
+   ========================================================================== */
+.ds-graph { position: relative; width: 1500px; height: 540px; margin-top: 0.25rem; }
+.ds-graph__svg { position: absolute; inset: 0; width: 1500px; height: 540px; overflow: visible; pointer-events: none; }
+.gedge { fill: none; stroke: var(--border-strong); stroke-width: 2; }
+.gedge--lit { stroke: var(--indigo-light); stroke-width: 2.5; }
+.scene.is-active .gedge { stroke-dasharray: 640; stroke-dashoffset: 640; animation: mp-draw 0.85s var(--ease-out) forwards; animation-delay: calc(var(--e, 0) * 0.11s + 0.35s); }
+@keyframes mp-draw { to { stroke-dashoffset: 0; } }
+.gedge-label { font-family: var(--mono); font-size: 12px; fill: var(--muted-foreground); }
+.gedge-label--lit { fill: var(--indigo-300); }
+.gnode { position: absolute; border: 1px solid var(--border); border-radius: 8px; background: var(--card); padding: 12px 15px; }
+.gnode__kind { display: block; font-family: var(--font); font-size: 0.625rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted-foreground); margin-bottom: 5px; }
+.gnode__path { font-family: var(--mono); font-size: 13px; color: var(--foreground); }
+.gnode__note { margin-top: 5px; font-family: var(--font); font-size: 0.75rem; color: var(--muted-foreground); }
+.gnode--root { border-color: var(--tint-amber-28); background: oklch(0.78 0.17 75 / 0.06); }
+.gnode--root .gnode__kind { color: var(--amber-300); }
+.gnode--hub { border-color: var(--tint-cyan-28); background: oklch(0.72 0.16 198 / 0.05); }
+.gnode--hub .gnode__kind { color: var(--cyan); }
+.gnode--lit { border-color: var(--indigo-light); box-shadow: 0 0 0 1px var(--indigo-light), 0 0 26px oklch(0.585 0.233 264.5 / 0.28); }
+.ds-graph__inspector { margin-top: 1.25rem; display: flex; align-items: center; gap: 0.75rem; padding: 0.875rem 1.25rem; border: 1px solid var(--tint-indigo-28); border-radius: 8px; background: var(--tint-indigo); font-family: var(--mono); font-size: 13px; color: var(--secondary-foreground); }
+.ds-graph__inspector .ico { color: var(--indigo-light); flex: none; }
+.ds-graph__inspector b { color: var(--foreground); font-weight: 600; }
+.ds-graph__inspector .tok-arrow { color: var(--indigo-300); }
+
+/* =============================================================================
+   Scene 5 — evidence record
+   ========================================================================== */
+.ds-evidence { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.ev-card { border: 1px solid var(--border); border-radius: 8px; background: var(--card); padding: 1.25rem 1.5rem; }
+.ev-card--judgment { border-color: var(--tint-amber-28); }
+.ev-card__q { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 0.875rem; }
+.ev-card__n { display: grid; place-items: center; width: 22px; height: 22px; flex: none; border-radius: 6px; font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--indigo-light); background: var(--tint-indigo); border: 1px solid var(--tint-indigo-28); }
+.ev-card__title { font-family: var(--font); font-size: 0.9375rem; font-weight: 600; color: var(--foreground); }
+.ev-card__body { font-family: var(--font); font-size: 0.875rem; line-height: 1.55; color: var(--secondary-foreground); }
+.ev-card__body .mono { font-family: var(--mono); font-size: 0.8125rem; }
+.ev-card__body .tok-del { font-family: var(--mono); color: var(--red-300); }
+.ev-card__body .tok-add { font-family: var(--mono); color: var(--emerald-300); }
+.ev-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.ev-list li { display: flex; align-items: baseline; gap: 0.5rem; font-family: var(--font); font-size: 0.8125rem; color: var(--secondary-foreground); }
+.ev-list li .path { font-family: var(--mono); font-size: 0.75rem; color: var(--foreground); }
+.ev-list li .role { margin-left: auto; font-family: var(--mono); font-size: 0.6875rem; color: var(--muted-foreground); white-space: nowrap; padding-left: 0.75rem; }
+.ev-check { display: flex; align-items: center; gap: 0.5rem; font-family: var(--font); font-size: 0.8125rem; color: var(--secondary-foreground); margin-top: 0.4rem; }
+.ev-check .ico { flex: none; }
+.ev-check__state { margin-left: auto; font-family: var(--mono); font-size: 0.6875rem; }
+.ev-check--ok .ico { color: var(--emerald); }
+.ev-check--ok .ev-check__state { color: var(--emerald-300); }
+.ev-check--warn .ico { color: var(--amber); }
+.ev-check--warn .ev-check__state { color: var(--amber-300); }
+
+/* =============================================================================
+   Scene 6 — Regauge promote animation
+   ========================================================================== */
+.promote .pill-after { display: none; }
+.promote.promoted .pill-before { display: none; }
+.promote.promoted .pill-after { display: inline-flex; }
+.promote.promoted { border-color: var(--tint-indigo-28); }
+
+/* =============================================================================
+   Scene 7 — close
+   ========================================================================== */
+.close-wrap { position: relative; display: grid; place-items: center; }
+.close-seq {
+  position: absolute; width: 1120px; display: grid; grid-template-columns: 1fr 1fr; gap: 22px;
+  transition: opacity 0.7s var(--ease-out), transform 0.7s var(--ease-out);
+}
+.close-seq__cell { padding: 30px 32px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); }
+.close-seq__cell--next { border-style: dashed; background: oklch(0.115 0.018 264 / 0.5); }
+.close-seq__eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 14px; }
+.close-seq__name { font-family: var(--display); font-size: 28px; font-weight: 600; letter-spacing: -0.03em; }
+.close-seq__name--f { color: var(--cyan); }
+.close-seq__name--r { color: var(--indigo-light); }
+.close-seq__line { font-family: var(--font); font-size: 17px; line-height: 1.45; color: var(--secondary-foreground); }
+.close-lockup {
+  position: absolute; display: flex; flex-direction: column; align-items: center; gap: 26px; text-align: center;
+  opacity: 0; transform: translateY(14px);
+  transition: opacity 0.7s var(--ease-out), transform 0.7s var(--ease-out);
+}
+.close-mark { width: 104px; height: 104px; }
+.close-title { margin: 0; font-family: var(--display); font-size: 44px; font-weight: 600; letter-spacing: -0.035em; color: var(--foreground); max-width: 1120px; }
+.close-title span { color: var(--indigo-light); }
+.close-tag { font-family: var(--mono); font-size: 17px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted-foreground); }
+.scene.to-brand .close-seq { opacity: 0; transform: translateY(-14px); pointer-events: none; }
+.scene.to-brand .close-lockup { opacity: 1; transform: none; }
+
+/* =============================================================================
+   Replay overlay
+   ========================================================================== */
+.replay {
+  position: absolute; inset: 0; z-index: 50; display: none; place-items: center;
+  background: oklch(0.05 0.018 264 / 0.62); backdrop-filter: blur(3px);
+}
+#stage.ended .replay { display: grid; }
+.replay__btn {
+  display: inline-flex; align-items: center; gap: 12px; padding: 16px 30px;
+  border: 1px solid var(--tint-indigo-28); border-radius: 999px; cursor: pointer;
+  background: var(--primary); color: var(--primary-foreground);
+  font-family: var(--font); font-size: 20px; font-weight: 600;
+  box-shadow: 0 0 40px oklch(0.585 0.233 264.5 / 0.28);
+}
+
+/* reduced motion: crossfades only, no fade-up transform, no pulse/caret/draw */
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-fast: 0ms; --dur-base: 0ms; --dur-entrance: 0ms; --stagger: 0ms; }
+  .scene .fade-up, .scene.is-active .fade-up { opacity: 1 !important; animation: none !important; transform: none !important; }
+  .ds-status--pulse .ds-status__dot, .type-caret::after { animation: none !important; }
+  .type-caret::after { content: ""; }
+  .scene.is-active .gedge { animation: none !important; stroke-dashoffset: 0 !important; }
+}
+</style>
+</head>
+<body>
+<div class="viewport">
+  <div id="stage" aria-label="Fettler sizzle reel">
+
+    <!-- inline icon symbols (offline, same-document references) -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+      <symbol id="i-pr" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/></symbol>
+      <symbol id="i-filejson" viewBox="0 0 24 24"><path d="M4 22h14a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v4"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M4 12a1 1 0 0 0-1 1v1a1 1 0 0 1-1 1 1 1 0 0 1 1 1v1a1 1 0 0 0 1 1"/><path d="M8 18a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1 1 1 0 0 1-1-1v-1a1 1 0 0 0-1-1"/></symbol>
+      <symbol id="i-graph" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+      <symbol id="i-updown" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></symbol>
+      <symbol id="i-arrow-r" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+      <symbol id="i-arrow-l" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+      <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+      <symbol id="i-check-circle" viewBox="0 0 24 24"><path d="M21.801 10A10 10 0 1 1 17 3.335"/><path d="m9 11 3 3L22 4"/></symbol>
+      <symbol id="i-wand" viewBox="0 0 24 24"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+      <symbol id="i-package" viewBox="0 0 24 24"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+      <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    </defs></svg>
+
+    <!-- HUD -->
+    <div class="hud-progress"><div class="hud-progress__fill" id="progress"></div></div>
+    <div class="hud-counter"><span class="hud-counter__num" id="counterNum">01 / 07</span><span class="hud-counter__label" id="counterLabel">The break</span></div>
+    <div class="seed-pill">Illustrative scenario</div>
+    <div class="pause-badge">Paused</div>
+    <div class="hud-hint"><b>Space</b> pause &nbsp;·&nbsp; <b>&larr; &rarr;</b> scenes &nbsp;·&nbsp; <b>C</b> captions &nbsp;·&nbsp; <b>F</b> fullscreen &nbsp;·&nbsp; <b>R</b> restart</div>
+
+    <div class="scenes">
+
+      <!-- ============ SCENE 1 — problem (Talal) ============ -->
+      <section class="scene hero grid-bg" data-scene="0">
+        <div class="hero-glow"></div>
+        <div class="hero-inner">
+          <div class="hero-mark fade-up" style="--i:0">
+            <svg viewBox="0 0 48 48" width="92" height="92" xmlns="http://www.w3.org/2000/svg" aria-label="Fettler mark">
+              <defs><linearGradient id="chev" x1="6" y1="8" x2="42" y2="40" gradientUnits="userSpaceOnUse"><stop stop-color="oklch(0.585 0.233 264.5)"/><stop offset="1" stop-color="oklch(0.72 0.16 198)"/></linearGradient></defs>
+              <g fill="none" stroke="url(#chev)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 12 L26 24 L12 36"/>
+                <path d="M24 12 L38 24 L24 36"/>
+              </g>
+            </svg>
+          </div>
+          <div class="section-label section-label--fettler fade-up" style="--i:1">Fettler — the first AI API Engineer</div>
+          <h1 class="hero-title fade-up" style="--i:2">A provider ships a breaking<br>change in seconds.</h1>
+          <p class="hero-sub fade-up" style="--i:3">Its customer spends days finding what it touches &mdash; and proving the migration is safe.</p>
+          <div class="hero-spec fade-up" style="--i:4">
+            <div class="hero-spec__row" data-sev="mod"><span class="hero-spec__sign">~</span><span class="hero-spec__ep">POST /v1/charges</span><span class="hero-spec__body" data-type="field"></span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCENE 2 — /changes (spec change ingested) ============ -->
+      <section class="scene" data-scene="1" data-seed="1">
+        <div class="ds-shell">
+          <aside class="ds-shell__rail">
+            <div class="ds-shell__brand">
+              <span class="ds-logo"><span class="ds-logo__mark">
+                <svg viewBox="0 0 48 48" width="22" height="22" xmlns="http://www.w3.org/2000/svg" aria-label="Fettler">
+                  <defs><linearGradient id="mk2" x1="4" x2="44" y1="8" y2="40" gradientUnits="userSpaceOnUse"><stop stop-color="#356cff"/><stop offset="1" stop-color="#00bcc1"/></linearGradient></defs>
+                  <path d="M4 7h12l13.5 13.5H35V13l10.5 11L35 35v-7.5h-8.5L12 12H4V7Zm0 13h18l4 4-4 4H4l4-4-4-4Zm0 21h12l13.5-13.5H35V35l10.5-11L35 13v7.5h-8.5L12 36H4v5Z" fill="url(#mk2)" fill-rule="evenodd"/>
+                </svg>
+              </span><span class="ds-logo__word">Fettler</span></span>
+            </div>
+            <nav class="ds-shell__nav">
+              <div class="ds-shell__group">
+                <div class="section-label section-label--fettler ds-shell__heading">Fettler</div>
+                <button class="ds-shell__item ds-shell__item--active"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-shield"/></svg></span><span class="ds-shell__item-label">Breaking changes</span><span class="ds-shell__item-meta">1</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-graph"/></svg></span><span class="ds-shell__item-label">Change graph</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-pr"/></svg></span><span class="ds-shell__item-label">Pull requests</span><span class="ds-shell__item-meta">1</span></button>
+              </div>
+              <div class="ds-shell__group">
+                <div class="section-label section-label--muted ds-shell__heading">Regauge</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-wand"/></svg></span><span class="ds-shell__item-label">Migration recipes</span><span class="ds-shell__item-meta">staging</span></button>
+              </div>
+              <div class="ds-shell__group">
+                <div class="section-label section-label--muted ds-shell__heading">Workspace</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-filejson"/></svg></span><span class="ds-shell__item-label">Spec sources</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-settings"/></svg></span><span class="ds-shell__item-label">Settings</span></button>
+              </div>
+            </nav>
+            <div class="ds-shell__foot"><span class="ds-shell__avatar">TS</span><span class="ds-shell__user">Talal S.</span><svg class="ico ds-shell__foot-caret" width="14" height="14"><use href="#i-updown"/></svg></div>
+          </aside>
+          <main class="ds-shell__main">
+            <header class="ds-shell__topbar">
+              <div class="ds-shell__search"><span class="ds-shell__search-icon"><svg class="ico" width="15" height="15"><use href="#i-search"/></svg></span><input class="ds-shell__search-input" value="seed/payments-service" readonly aria-label="Illustrative repository filter" tabindex="-1"></div>
+              <div class="ds-shell__topbar-actions">
+                <span class="ds-status ds-status--pending"><span class="ds-status__dot"></span>Spec ingested</span>
+                <span class="ds-btn ds-btn--outline ds-btn--icon" aria-hidden="true"><svg class="ico" width="16" height="16"><use href="#i-bell"/></svg></span>
+                <button class="ds-btn ds-btn--primary indigo-glow"><svg class="ico" width="15" height="15"><use href="#i-shield"/></svg>Analyze change</button>
+              </div>
+            </header>
+            <div class="ds-shell__body">
+              <div class="ds-view">
+                <header class="ds-view__header ds-view__header--stack">
+                  <div class="section-label section-label--fettler fade-up" style="--i:0">FETTLER &nbsp;·&nbsp; BREAKING CHANGES</div>
+                  <h1 class="ds-view__title fade-up" style="--i:1">Payments API &nbsp;·&nbsp; spec update ingested</h1>
+                  <p class="ds-view__sub fade-up" style="--i:1">Provider OpenAPI spec &nbsp;·&nbsp; charges v1 &rarr; v2</p>
+                </header>
+                <div class="ds-stat-grid">
+                  <div class="ds-stat fade-up" style="--i:2"><div class="ds-stat__label">Classification</div><div class="ds-stat__figure ds-stat__figure--amber ds-stat__figure--sm">Breaking</div></div>
+                  <div class="ds-stat fade-up" style="--i:3"><div class="ds-stat__label">Operation</div><div class="ds-stat__figure ds-stat__figure--sm">POST /v1/charges</div></div>
+                  <div class="ds-stat fade-up" style="--i:4"><div class="ds-stat__label">Field renamed</div><div class="ds-stat__figure ds-stat__figure--cyan ds-stat__figure--sm">1</div></div>
+                  <div class="ds-stat fade-up" style="--i:5"><div class="ds-stat__label">Repository</div><div class="ds-stat__figure ds-stat__figure--sm">seed &middot; 1</div></div>
+                </div>
+                <section class="ds-panel fade-up" style="--i:6">
+                  <div class="ds-panel__head"><span class="ds-panel__title">Spec diff &mdash; recorded operation and field</span><span class="ds-badge ds-badge--warn">1 breaking</span><span class="ds-link-ghost">Follow into codebase<svg class="ico" width="14" height="14"><use href="#i-arrow-r"/></svg></span></div>
+                  <ul class="ds-spec-list">
+                    <li class="ds-spec-row fade-up" style="--i:7"><span class="ds-badge ds-badge--danger">Breaking</span><span class="ds-spec-row__endpoint">POST /v1/charges</span><span class="ds-spec-row__note">request field <span class="tok-del">source</span><span class="tok-arrow">&rarr;</span><span class="tok-add">payment_method</span></span><span class="ds-spec-row__meta">renamed &middot; required</span></li>
+                    <li class="ds-spec-row fade-up" style="--i:8"><span class="ds-badge ds-badge--neutral">Recorded</span><span class="ds-spec-row__endpoint">operation + field</span><span class="ds-spec-row__note">exact change captured for the migration record</span><span class="ds-spec-row__meta">charges.v2</span></li>
+                  </ul>
+                </section>
+              </div>
+            </div>
+          </main>
+        </div>
+        <div class="caption fade-up" style="--i:10">Fettler ingests the spec change, classifies it breaking, and records the exact operation and field.</div>
+      </section>
+
+      <!-- ============ SCENE 3 — Change Graph ============ -->
+      <section class="scene" data-scene="2" data-seed="1">
+        <div class="ds-shell">
+          <aside class="ds-shell__rail">
+            <div class="ds-shell__brand">
+              <span class="ds-logo"><span class="ds-logo__mark">
+                <svg viewBox="0 0 48 48" width="22" height="22" xmlns="http://www.w3.org/2000/svg" aria-label="Fettler">
+                  <defs><linearGradient id="mk3" x1="4" x2="44" y1="8" y2="40" gradientUnits="userSpaceOnUse"><stop stop-color="#356cff"/><stop offset="1" stop-color="#00bcc1"/></linearGradient></defs>
+                  <path d="M4 7h12l13.5 13.5H35V13l10.5 11L35 35v-7.5h-8.5L12 12H4V7Zm0 13h18l4 4-4 4H4l4-4-4-4Zm0 21h12l13.5-13.5H35V35l10.5-11L35 13v7.5h-8.5L12 36H4v5Z" fill="url(#mk3)" fill-rule="evenodd"/>
+                </svg>
+              </span><span class="ds-logo__word">Fettler</span></span>
+            </div>
+            <nav class="ds-shell__nav">
+              <div class="ds-shell__group">
+                <div class="section-label section-label--fettler ds-shell__heading">Fettler</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-shield"/></svg></span><span class="ds-shell__item-label">Breaking changes</span><span class="ds-shell__item-meta">1</span></button>
+                <button class="ds-shell__item ds-shell__item--active"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-graph"/></svg></span><span class="ds-shell__item-label">Change graph</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-pr"/></svg></span><span class="ds-shell__item-label">Pull requests</span><span class="ds-shell__item-meta">1</span></button>
+              </div>
+              <div class="ds-shell__group">
+                <div class="section-label section-label--muted ds-shell__heading">Regauge</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-wand"/></svg></span><span class="ds-shell__item-label">Migration recipes</span><span class="ds-shell__item-meta">staging</span></button>
+              </div>
+              <div class="ds-shell__group">
+                <div class="section-label section-label--muted ds-shell__heading">Workspace</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-filejson"/></svg></span><span class="ds-shell__item-label">Spec sources</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-settings"/></svg></span><span class="ds-shell__item-label">Settings</span></button>
+              </div>
+            </nav>
+            <div class="ds-shell__foot"><span class="ds-shell__avatar">TS</span><span class="ds-shell__user">Talal S.</span><svg class="ico ds-shell__foot-caret" width="14" height="14"><use href="#i-updown"/></svg></div>
+          </aside>
+          <main class="ds-shell__main">
+            <header class="ds-shell__topbar">
+              <div class="ds-shell__search"><span class="ds-shell__search-icon"><svg class="ico" width="15" height="15"><use href="#i-search"/></svg></span><input class="ds-shell__search-input" value="seed/payments-service" readonly aria-label="Illustrative repository filter" tabindex="-1"></div>
+              <div class="ds-shell__topbar-actions">
+                <span class="ds-status ds-status--pending"><span class="ds-status__dot"></span>5 dependents</span>
+                <span class="ds-btn ds-btn--outline ds-btn--icon" aria-hidden="true"><svg class="ico" width="16" height="16"><use href="#i-bell"/></svg></span>
+                <button class="ds-btn ds-btn--primary indigo-glow"><svg class="ico" width="15" height="15"><use href="#i-pr"/></svg>Draft the migration</button>
+              </div>
+            </header>
+            <div class="ds-shell__body">
+              <div class="ds-view">
+                <header class="ds-view__header ds-view__header--stack">
+                  <div class="section-label section-label--fettler fade-up" style="--i:0">FETTLER &nbsp;·&nbsp; CHANGE GRAPH</div>
+                  <h1 class="ds-view__title fade-up" style="--i:1">The path from the changed field to every file it touches</h1>
+                </header>
+                <div class="ds-graph">
+                  <svg class="ds-graph__svg" viewBox="0 0 1500 540" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <!-- root -> hub -->
+                    <path class="gedge gedge--lit" style="--e:0" d="M300,280 C420,280 440,280 560,280"/>
+                    <!-- hub -> 4 dependents -->
+                    <path class="gedge gedge--lit" style="--e:1" d="M900,280 C1000,280 1020,60 1120,60"/>
+                    <path class="gedge" style="--e:2" d="M900,280 C1000,280 1020,204 1120,204"/>
+                    <path class="gedge" style="--e:3" d="M900,280 C1000,280 1020,348 1120,348"/>
+                    <path class="gedge gedge--lit" style="--e:4" d="M900,280 C1000,280 1020,492 1120,492"/>
+                    <text class="gedge-label gedge-label--lit" x="430" y="270" text-anchor="middle">defines request field</text>
+                    <text class="gedge-label" x="1010" y="150" text-anchor="middle">calls create()</text>
+                    <text class="gedge-label" x="1010" y="236" text-anchor="middle">calls refund()</text>
+                    <text class="gedge-label" x="1010" y="322" text-anchor="middle">fixture shape</text>
+                    <text class="gedge-label gedge-label--lit" x="1010" y="470" text-anchor="middle">reads response field</text>
+                  </svg>
+                  <!-- root: provider change -->
+                  <div class="gnode gnode--root fade-up" style="--i:2; left:0; top:225px; width:300px;">
+                    <span class="gnode__kind">Provider change</span>
+                    <div class="gnode__path">POST /v1/charges</div>
+                    <div class="gnode__note"><span class="tok-del">source</span> &rarr; <span class="tok-add">payment_method</span></div>
+                  </div>
+                  <!-- hub: client wrapper -->
+                  <div class="gnode gnode--hub fade-up" style="--i:3; left:560px; top:230px; width:340px;">
+                    <span class="gnode__kind">Client wrapper</span>
+                    <div class="gnode__path">src/clients/payments-client.ts</div>
+                    <div class="gnode__note">request + response model</div>
+                  </div>
+                  <!-- dependents -->
+                  <div class="gnode fade-up" style="--i:4; left:1120px; top:20px; width:380px;">
+                    <span class="gnode__kind">Service</span>
+                    <div class="gnode__path">src/services/charge-service.ts</div>
+                  </div>
+                  <div class="gnode fade-up" style="--i:5; left:1120px; top:164px; width:380px;">
+                    <span class="gnode__kind">Service</span>
+                    <div class="gnode__path">src/services/refund-service.ts</div>
+                  </div>
+                  <div class="gnode fade-up" style="--i:6; left:1120px; top:308px; width:380px;">
+                    <span class="gnode__kind">Test fixtures</span>
+                    <div class="gnode__path">tests/fixtures/charges.json</div>
+                  </div>
+                  <div class="gnode gnode--lit fade-up" style="--i:7; left:1120px; top:452px; width:380px;">
+                    <span class="gnode__kind">Background job</span>
+                    <div class="gnode__path">src/jobs/settlement-reconciler.ts</div>
+                  </div>
+                </div>
+                <div class="ds-graph__inspector fade-up" style="--i:8">
+                  <svg class="ico" width="16" height="16"><use href="#i-graph"/></svg>
+                  <span>Selected path &nbsp;·&nbsp; <b>source</b> <span class="tok-arrow">&rarr;</span> payments-client.ts <span style="color:var(--muted-foreground)">(request model)</span> <span class="tok-arrow">&rarr;</span> settlement-reconciler.ts <span style="color:var(--muted-foreground)">(reads charge.source at runtime)</span></span>
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+        <div class="caption fade-up" style="--i:10">The Change Graph shows the path that makes every affected file relevant.</div>
+      </section>
+
+      <!-- ============ SCENE 4 — /prs/[id] draft PR (narrow) ============ -->
+      <section class="scene" data-scene="3" data-seed="1">
+        <div class="ds-shell">
+          <aside class="ds-shell__rail">
+            <div class="ds-shell__brand">
+              <span class="ds-logo"><span class="ds-logo__mark">
+                <svg viewBox="0 0 48 48" width="22" height="22" xmlns="http://www.w3.org/2000/svg" aria-label="Fettler">
+                  <defs><linearGradient id="mk4" x1="4" x2="44" y1="8" y2="40" gradientUnits="userSpaceOnUse"><stop stop-color="#356cff"/><stop offset="1" stop-color="#00bcc1"/></linearGradient></defs>
+                  <path d="M4 7h12l13.5 13.5H35V13l10.5 11L35 35v-7.5h-8.5L12 12H4V7Zm0 13h18l4 4-4 4H4l4-4-4-4Zm0 21h12l13.5-13.5H35V35l10.5-11L35 13v7.5h-8.5L12 36H4v5Z" fill="url(#mk4)" fill-rule="evenodd"/>
+                </svg>
+              </span><span class="ds-logo__word">Fettler</span></span>
+            </div>
+            <nav class="ds-shell__nav">
+              <div class="ds-shell__group">
+                <div class="section-label section-label--fettler ds-shell__heading">Fettler</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-shield"/></svg></span><span class="ds-shell__item-label">Breaking changes</span><span class="ds-shell__item-meta">1</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-graph"/></svg></span><span class="ds-shell__item-label">Change graph</span></button>
+                <button class="ds-shell__item ds-shell__item--active"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-pr"/></svg></span><span class="ds-shell__item-label">Pull requests</span><span class="ds-shell__item-meta">1</span></button>
+              </div>
+              <div class="ds-shell__group">
+                <div class="section-label section-label--muted ds-shell__heading">Regauge</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-wand"/></svg></span><span class="ds-shell__item-label">Migration recipes</span><span class="ds-shell__item-meta">staging</span></button>
+              </div>
+              <div class="ds-shell__group">
+                <div class="section-label section-label--muted ds-shell__heading">Workspace</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-filejson"/></svg></span><span class="ds-shell__item-label">Spec sources</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-settings"/></svg></span><span class="ds-shell__item-label">Settings</span></button>
+              </div>
+            </nav>
+            <div class="ds-shell__foot"><span class="ds-shell__avatar">TS</span><span class="ds-shell__user">Talal S.</span><svg class="ico ds-shell__foot-caret" width="14" height="14"><use href="#i-updown"/></svg></div>
+          </aside>
+          <main class="ds-shell__main">
+            <header class="ds-shell__topbar">
+              <div class="ds-shell__search"><span class="ds-shell__search-icon"><svg class="ico" width="15" height="15"><use href="#i-search"/></svg></span><input class="ds-shell__search-input" value="seed/payments-service" readonly aria-label="Illustrative repository filter" tabindex="-1"></div>
+              <div class="ds-shell__topbar-actions">
+                <span class="ds-status ds-status--draft"><span class="ds-status__dot"></span>Draft &nbsp;·&nbsp; human review required</span>
+                <span class="ds-btn ds-btn--outline ds-btn--icon" aria-hidden="true"><svg class="ico" width="16" height="16"><use href="#i-bell"/></svg></span>
+                <button class="ds-btn ds-btn--outline"><svg class="ico" width="15" height="15"><use href="#i-external"/></svg>Open on GitHub</button>
+              </div>
+            </header>
+            <div class="ds-shell__body">
+              <div class="ds-view">
+                <span class="ds-link-ghost ds-detail__back fade-up" style="--i:0"><svg class="ico" width="14" height="14"><use href="#i-arrow-l"/></svg>All pull requests</span>
+                <header class="ds-detail__header fade-up" style="--i:1">
+                  <div>
+                    <div class="ds-detail__eyebrow"><span class="ds-detail__repo">seed/payments-service</span><span class="ds-status ds-status--draft"><span class="ds-status__dot"></span>draft</span></div>
+                    <h1 class="ds-view__title">Rename source to payment_method <span class="ds-detail__num">#1</span></h1>
+                  </div>
+                  <div class="ds-detail__actions">
+                    <span class="ds-badge ds-badge--cyan">narrow migration</span>
+                  </div>
+                </header>
+                <div class="ds-alert fade-up" style="--i:2">
+                  <svg class="ico ds-alert__icon" width="16" height="16"><use href="#i-alert"/></svg>
+                  <div><strong class="ds-alert__title">Breaking change &nbsp;·&nbsp; POST /v1/charges</strong>The request field <span class="tok-del">source</span> was renamed to <span class="tok-add">payment_method</span>. Fettler updated the request model, both call sites, and the fixtures. It did not touch anything the change did not require.</div>
+                </div>
+                <div class="ds-detail__body">
+                  <div class="ds-detail__diffs">
+                    <div class="ds-diff fade-up" style="--i:3">
+                      <div class="ds-diff__head"><span class="ds-diff__path">src/clients/payments-client.ts &nbsp;&middot;&nbsp; request model</span><span class="ds-diff__stat"><span class="add">+1</span><span class="del">&minus;1</span></span></div>
+                      <div class="ds-diff__hunk">
+                        <div class="ds-diff__hunkhead">@@ -18,7 +18,7 @@ export interface CreateChargeBody {</div>
+                        <div class="ds-diff__row"><span class="ds-diff__gutter">19</span><span class="ds-diff__sign"></span><span class="ds-diff__code">  amount: number;</span></div>
+                        <div class="ds-diff__row ds-diff__row--del"><span class="ds-diff__gutter">20</span><span class="ds-diff__sign">&minus;</span><span class="ds-diff__code">  source: string;         // card token or source id</span></div>
+                        <div class="ds-diff__row ds-diff__row--add"><span class="ds-diff__gutter">20</span><span class="ds-diff__sign">+</span><span class="ds-diff__code">  payment_method: string; // renamed in charges v2</span></div>
+                        <div class="ds-diff__row"><span class="ds-diff__gutter">21</span><span class="ds-diff__sign"></span><span class="ds-diff__code">  currency: string;</span></div>
+                      </div>
+                    </div>
+                    <div class="ds-diff fade-up" style="--i:4">
+                      <div class="ds-diff__head"><span class="ds-diff__path">src/services/charge-service.ts &nbsp;&middot;&nbsp; call site</span><span class="ds-diff__stat"><span class="add">+1</span><span class="del">&minus;1</span></span></div>
+                      <div class="ds-diff__hunk">
+                        <div class="ds-diff__hunkhead">@@ -32,6 +32,6 @@ export async function createCharge(order) {</div>
+                        <div class="ds-diff__row"><span class="ds-diff__gutter">33</span><span class="ds-diff__sign"></span><span class="ds-diff__code">    amount: order.total,</span></div>
+                        <div class="ds-diff__row ds-diff__row--del"><span class="ds-diff__gutter">34</span><span class="ds-diff__sign">&minus;</span><span class="ds-diff__code">    source: order.card.token,</span></div>
+                        <div class="ds-diff__row ds-diff__row--add"><span class="ds-diff__gutter">34</span><span class="ds-diff__sign">+</span><span class="ds-diff__code">    payment_method: order.card.token,</span></div>
+                        <div class="ds-diff__row"><span class="ds-diff__gutter">35</span><span class="ds-diff__sign"></span><span class="ds-diff__code">  return client.charges.create(body);</span></div>
+                      </div>
+                    </div>
+                    <div class="ds-diff fade-up" style="--i:5">
+                      <div class="ds-diff__head"><span class="ds-diff__path">tests/fixtures/charges.json &nbsp;&middot;&nbsp; fixtures</span><span class="ds-diff__stat"><span class="add">+1</span><span class="del">&minus;1</span></span></div>
+                      <div class="ds-diff__hunk">
+                        <div class="ds-diff__hunkhead">@@ -4,7 +4,7 @@</div>
+                        <div class="ds-diff__row"><span class="ds-diff__gutter">5</span><span class="ds-diff__sign"></span><span class="ds-diff__code">  "amount": 4200,</span></div>
+                        <div class="ds-diff__row ds-diff__row--del"><span class="ds-diff__gutter">6</span><span class="ds-diff__sign">&minus;</span><span class="ds-diff__code">  "source": "tok_visa"</span></div>
+                        <div class="ds-diff__row ds-diff__row--add"><span class="ds-diff__gutter">6</span><span class="ds-diff__sign">+</span><span class="ds-diff__code">  "payment_method": "tok_visa"</span></div>
+                      </div>
+                    </div>
+                  </div>
+                  <aside class="ds-detail__aside">
+                    <div class="ds-panel ds-panel--pad fade-up" style="--i:4">
+                      <div class="section-label section-label--muted">SCOPE</div>
+                      <ul class="ds-scope-list">
+                        <li class="ds-scope-row"><span class="ds-scope-row__key">Changed</span><span>4 files &mdash; request model, 2 call sites, test fixtures</span></li>
+                        <li class="ds-scope-row"><span class="ds-scope-row__key">Not touched</span><span>Background job flagged for review, not rewritten</span></li>
+                        <li class="ds-scope-row"><span class="ds-scope-row__key">Unrelated</span><span>No refactors, no version bumps, no formatting</span></li>
+                      </ul>
+                    </div>
+                    <div class="ds-panel ds-panel--pad fade-up" style="--i:5">
+                      <div class="section-label section-label--muted">AUTHORED BY</div>
+                      <div class="ds-author"><svg class="ico ds-author__icon" width="16" height="16"><use href="#i-wand"/></svg><span>Fettler</span></div>
+                      <p class="ds-author__note">Draft by default. Merging is always a human action &mdash; Fettler never merges.</p>
+                    </div>
+                  </aside>
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+        <div class="caption fade-up" style="--i:7">Fettler opens a draft PR &mdash; deliberately narrow, with no unrelated changes.</div>
+      </section>
+
+      <!-- ============ SCENE 5 — evidence record ============ -->
+      <section class="scene" data-scene="4" data-seed="1">
+        <div class="ds-shell">
+          <aside class="ds-shell__rail">
+            <div class="ds-shell__brand">
+              <span class="ds-logo"><span class="ds-logo__mark">
+                <svg viewBox="0 0 48 48" width="22" height="22" xmlns="http://www.w3.org/2000/svg" aria-label="Fettler">
+                  <defs><linearGradient id="mk5" x1="4" x2="44" y1="8" y2="40" gradientUnits="userSpaceOnUse"><stop stop-color="#356cff"/><stop offset="1" stop-color="#00bcc1"/></linearGradient></defs>
+                  <path d="M4 7h12l13.5 13.5H35V13l10.5 11L35 35v-7.5h-8.5L12 12H4V7Zm0 13h18l4 4-4 4H4l4-4-4-4Zm0 21h12l13.5-13.5H35V35l10.5-11L35 13v7.5h-8.5L12 36H4v5Z" fill="url(#mk5)" fill-rule="evenodd"/>
+                </svg>
+              </span><span class="ds-logo__word">Fettler</span></span>
+            </div>
+            <nav class="ds-shell__nav">
+              <div class="ds-shell__group">
+                <div class="section-label section-label--fettler ds-shell__heading">Fettler</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-shield"/></svg></span><span class="ds-shell__item-label">Breaking changes</span><span class="ds-shell__item-meta">1</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-graph"/></svg></span><span class="ds-shell__item-label">Change graph</span></button>
+                <button class="ds-shell__item ds-shell__item--active"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-pr"/></svg></span><span class="ds-shell__item-label">Pull requests</span><span class="ds-shell__item-meta">1</span></button>
+              </div>
+              <div class="ds-shell__group">
+                <div class="section-label section-label--muted ds-shell__heading">Regauge</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-wand"/></svg></span><span class="ds-shell__item-label">Migration recipes</span><span class="ds-shell__item-meta">staging</span></button>
+              </div>
+              <div class="ds-shell__group">
+                <div class="section-label section-label--muted ds-shell__heading">Workspace</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-filejson"/></svg></span><span class="ds-shell__item-label">Spec sources</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-settings"/></svg></span><span class="ds-shell__item-label">Settings</span></button>
+              </div>
+            </nav>
+            <div class="ds-shell__foot"><span class="ds-shell__avatar">TS</span><span class="ds-shell__user">Talal S.</span><svg class="ico ds-shell__foot-caret" width="14" height="14"><use href="#i-updown"/></svg></div>
+          </aside>
+          <main class="ds-shell__main">
+            <header class="ds-shell__topbar">
+              <div class="ds-shell__search"><span class="ds-shell__search-icon"><svg class="ico" width="15" height="15"><use href="#i-search"/></svg></span><input class="ds-shell__search-input" value="seed/payments-service" readonly aria-label="Illustrative repository filter" tabindex="-1"></div>
+              <div class="ds-shell__topbar-actions">
+                <span class="ds-status ds-status--draft"><span class="ds-status__dot"></span>Draft &nbsp;·&nbsp; human review required</span>
+                <span class="ds-btn ds-btn--outline ds-btn--icon" aria-hidden="true"><svg class="ico" width="16" height="16"><use href="#i-bell"/></svg></span>
+                <button class="ds-btn ds-btn--primary indigo-glow"><svg class="ico" width="15" height="15"><use href="#i-check"/></svg>Approve &amp; merge</button>
+              </div>
+            </header>
+            <div class="ds-shell__body">
+              <div class="ds-view">
+                <header class="ds-view__header fade-up" style="--i:0">
+                  <div>
+                    <div class="section-label section-label--fettler">FETTLER &nbsp;·&nbsp; REVIEW RECORD</div>
+                    <h1 class="ds-view__title" style="margin-top:0.5rem">Every PR answers four questions</h1>
+                  </div>
+                  <span class="ds-status ds-status--draft"><span class="ds-status__dot"></span>The engineer decides whether to merge</span>
+                </header>
+                <div class="ds-evidence">
+                  <div class="ev-card fade-up" style="--i:1">
+                    <div class="ev-card__q"><span class="ev-card__n">1</span><span class="ev-card__title">What changed?</span></div>
+                    <div class="ev-card__body">Provider operation <span class="mono">POST /v1/charges</span> &mdash; request field <span class="tok-del">source</span> renamed to <span class="tok-add">payment_method</span>. Classified <strong style="color:var(--amber-300)">breaking</strong> from the OpenAPI spec.</div>
+                  </div>
+                  <div class="ev-card fade-up" style="--i:2">
+                    <div class="ev-card__q"><span class="ev-card__n">2</span><span class="ev-card__title">Where does it matter?</span></div>
+                    <ul class="ev-list">
+                      <li><span class="path">payments-client.ts</span><span class="role">request model</span></li>
+                      <li><span class="path">charge-service.ts</span><span class="role">call site</span></li>
+                      <li><span class="path">refund-service.ts</span><span class="role">call site</span></li>
+                      <li><span class="path">charges.json</span><span class="role">test fixtures</span></li>
+                      <li><span class="path">settlement-reconciler.ts</span><span class="role">background job</span></li>
+                    </ul>
+                    <div class="ev-check" style="margin-top:0.75rem"><svg class="ico" width="14" height="14" style="color:var(--muted-foreground)"><use href="#i-users"/></svg>Owner<span class="ev-check__state" style="color:var(--muted-foreground)">payments-team</span></div>
+                  </div>
+                  <div class="ev-card fade-up" style="--i:3">
+                    <div class="ev-card__q"><span class="ev-card__n">3</span><span class="ev-card__title">What did Fettler alter?</span></div>
+                    <div class="ev-card__body">The smallest justified migration: request model, both call sites, and the fixtures &mdash; <strong>4 files</strong>. No unrelated edits, no version bumps, no reformatting.</div>
+                  </div>
+                  <div class="ev-card ev-card--judgment fade-up" style="--i:4">
+                    <div class="ev-card__q"><span class="ev-card__n">4</span><span class="ev-card__title">What did it verify?</span></div>
+                    <div class="ev-check"><svg class="ico" width="14" height="14"><use href="#i-check-circle"/></svg>Contract check vs charges v2<span class="ev-check__state">required</span></div>
+                    <div class="ev-check"><svg class="ico" width="14" height="14"><use href="#i-check-circle"/></svg>Repository test suite<span class="ev-check__state">required</span></div>
+                    <div class="ev-check"><svg class="ico" width="14" height="14"><use href="#i-check-circle"/></svg>Policy &mdash; draft only, no auto-merge<span class="ev-check__state">review gate</span></div>
+                    <div class="ev-check ev-check--warn"><svg class="ico" width="14" height="14"><use href="#i-alert"/></svg>Human judgment &mdash; job reads charge.source at runtime<span class="ev-check__state">flagged</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+        <div class="caption fade-up" style="--i:6">The record: what changed, where it matters, what Fettler altered, and what it verified.</div>
+      </section>
+
+      <!-- ============ SCENE 6 — Regauge (full product scene) ============ -->
+      <section class="scene" data-scene="5" data-seed="1">
+        <div class="ds-shell">
+          <aside class="ds-shell__rail">
+            <div class="ds-shell__brand">
+              <span class="ds-logo"><span class="ds-logo__mark">
+                <svg viewBox="0 0 48 48" width="22" height="22" xmlns="http://www.w3.org/2000/svg" aria-label="Fettler">
+                  <defs><linearGradient id="mk6" x1="4" x2="44" y1="8" y2="40" gradientUnits="userSpaceOnUse"><stop stop-color="#356cff"/><stop offset="1" stop-color="#00bcc1"/></linearGradient></defs>
+                  <path d="M4 7h12l13.5 13.5H35V13l10.5 11L35 35v-7.5h-8.5L12 12H4V7Zm0 13h18l4 4-4 4H4l4-4-4-4Zm0 21h12l13.5-13.5H35V35l10.5-11L35 13v7.5h-8.5L12 36H4v5Z" fill="url(#mk6)" fill-rule="evenodd"/>
+                </svg>
+              </span><span class="ds-logo__word">Fettler</span></span>
+            </div>
+            <nav class="ds-shell__nav">
+              <div class="ds-shell__group">
+                <div class="section-label section-label--muted ds-shell__heading">Fettler</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-shield"/></svg></span><span class="ds-shell__item-label">Breaking changes</span><span class="ds-shell__item-meta">1</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-graph"/></svg></span><span class="ds-shell__item-label">Change graph</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-pr"/></svg></span><span class="ds-shell__item-label">Pull requests</span><span class="ds-shell__item-meta">1</span></button>
+              </div>
+              <div class="ds-shell__group">
+                <div class="section-label section-label--regauge ds-shell__heading">Regauge</div>
+                <button class="ds-shell__item ds-shell__item--active"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-wand"/></svg></span><span class="ds-shell__item-label">Migration recipes</span><span class="ds-shell__item-meta">staging</span></button>
+              </div>
+              <div class="ds-shell__group">
+                <div class="section-label section-label--muted ds-shell__heading">Workspace</div>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-filejson"/></svg></span><span class="ds-shell__item-label">Spec sources</span></button>
+                <button class="ds-shell__item"><span class="ds-shell__item-icon"><svg class="ico" width="15" height="15"><use href="#i-settings"/></svg></span><span class="ds-shell__item-label">Settings</span></button>
+              </div>
+            </nav>
+            <div class="ds-shell__foot"><span class="ds-shell__avatar">TS</span><span class="ds-shell__user">Talal S.</span><svg class="ico ds-shell__foot-caret" width="14" height="14"><use href="#i-updown"/></svg></div>
+          </aside>
+          <main class="ds-shell__main">
+            <header class="ds-shell__topbar">
+              <div class="ds-shell__search"><span class="ds-shell__search-icon"><svg class="ico" width="15" height="15"><use href="#i-search"/></svg></span><input class="ds-shell__search-input" value="seed/* (illustrative repositories)" readonly aria-label="Illustrative repository filter" tabindex="-1"></div>
+              <div class="ds-shell__topbar-actions">
+                <span class="ds-status ds-status--pending"><svg class="ico" width="13" height="13" style="color:var(--amber)"><use href="#i-alert"/></svg>Live status not verified</span>
+                <span class="ds-btn ds-btn--outline ds-btn--icon" aria-hidden="true"><svg class="ico" width="16" height="16"><use href="#i-bell"/></svg></span>
+                <button class="ds-btn ds-btn--outline"><svg class="ico" width="15" height="15"><use href="#i-pr"/></svg>Review draft PRs</button>
+              </div>
+            </header>
+            <div class="ds-shell__body">
+              <div class="ds-view">
+                <header class="ds-view__header ds-view__header--stack">
+                  <div class="section-label section-label--regauge fade-up" style="--i:0">Regauge — the first AI Legacy Engineer &nbsp;·&nbsp; MIGRATION RECIPES</div>
+                  <h1 class="ds-view__title fade-up" style="--i:1">The same graph and verification layer, pointed inward at legacy systems</h1>
+                  <p class="ds-view__sub fade-up" style="--i:1">Deterministic recipes stage small, reversible, reviewable draft PRs across a codebase</p>
+                </header>
+                <div class="ds-note fade-up" style="--i:2">
+                  <svg class="ico ds-note__icon" width="16" height="16"><use href="#i-package"/></svg>
+                  <div><strong>Production-capable code.</strong> Deterministic recipe, checkpoint, and worker paths are implemented and covered by repository tests. This illustrative reel is not execution evidence. Live deployment and repository connection were not verified for this recording.</div>
+                </div>
+                <div class="ds-tabs fade-up" style="--i:3">
+                  <button class="ds-tab ds-tab--active">All families</button>
+                  <button class="ds-tab">SDK</button>
+                  <button class="ds-tab">Framework</button>
+                  <button class="ds-tab">Runtime</button>
+                  <button class="ds-tab">Internal API</button>
+                </div>
+                <div class="ds-pr-list">
+                  <div class="ds-pr-card promote fade-up" style="--i:4" id="promoteCard">
+                    <div class="ds-pr-card__head"><svg class="ico ds-pr-card__icon--regauge" width="16" height="16"><use href="#i-wand"/></svg><span class="ds-pr-card__repo">seed/payments-service</span><span class="ds-pr-card__status">
+                      <span class="pill-before ds-status ds-status--pending"><span class="ds-status__dot"></span>planning</span>
+                      <span class="pill-after ds-status ds-status--draft"><span class="ds-status__dot"></span>reviewable plan</span>
+                    </span></div>
+                    <div class="ds-pr-card__titlerow"><h3 class="ds-pr-card__title">aws-sdk v2 &rarr; v3 &nbsp;·&nbsp; @aws-sdk/client-s3</h3><span class="ds-pr-card__num">recipe</span></div>
+                    <div class="ds-pr-card__meta"><span><span class="add">+34</span> <span class="del">&minus;28</span></span><span>7 files</span><span class="ds-badge ds-badge--accent">SDK</span><span class="ds-badge ds-badge--emerald">test required</span><span class="ds-badge ds-badge--neutral">reversible</span><span class="ds-pr-card__time">illustrative</span></div>
+                  </div>
+                  <div class="ds-pr-card fade-up" style="--i:5">
+                    <div class="ds-pr-card__head"><svg class="ico ds-pr-card__icon--regauge" width="16" height="16"><use href="#i-wand"/></svg><span class="ds-pr-card__repo">seed/orders-web</span><span class="ds-pr-card__status"><span class="ds-status ds-status--draft"><span class="ds-status__dot"></span>illustrative plan</span></span></div>
+                    <div class="ds-pr-card__titlerow"><h3 class="ds-pr-card__title">React 17 &rarr; 18 &nbsp;·&nbsp; ReactDOM.render to createRoot</h3><span class="ds-pr-card__num">recipe</span></div>
+                    <div class="ds-pr-card__meta"><span><span class="add">+6</span> <span class="del">&minus;3</span></span><span>2 files</span><span class="ds-badge ds-badge--accent">Framework</span><span class="ds-badge ds-badge--emerald">test required</span><span class="ds-badge ds-badge--neutral">reversible</span><span class="ds-pr-card__time">illustrative</span></div>
+                  </div>
+                  <div class="ds-pr-card fade-up" style="--i:6">
+                    <div class="ds-pr-card__head"><svg class="ico ds-pr-card__icon--regauge" width="16" height="16"><use href="#i-wand"/></svg><span class="ds-pr-card__repo">seed/inventory-worker</span><span class="ds-pr-card__status"><span class="ds-status ds-status--draft"><span class="ds-status__dot"></span>illustrative plan</span></span></div>
+                    <div class="ds-pr-card__titlerow"><h3 class="ds-pr-card__title">Node 18 &rarr; 20 runtime &nbsp;·&nbsp; drop deprecated APIs</h3><span class="ds-pr-card__num">recipe</span></div>
+                    <div class="ds-pr-card__meta"><span><span class="add">+9</span> <span class="del">&minus;9</span></span><span>3 files</span><span class="ds-badge ds-badge--accent">Runtime</span><span class="ds-badge ds-badge--emerald">test required</span><span class="ds-badge ds-badge--neutral">reversible</span><span class="ds-pr-card__time">illustrative</span></div>
+                  </div>
+                  <div class="ds-pr-card fade-up" style="--i:7">
+                    <div class="ds-pr-card__head"><svg class="ico ds-pr-card__icon--regauge" width="16" height="16"><use href="#i-wand"/></svg><span class="ds-pr-card__repo">seed/internal-billing</span><span class="ds-pr-card__status"><span class="ds-status ds-status--draft"><span class="ds-status__dot"></span>illustrative plan</span></span></div>
+                    <div class="ds-pr-card__titlerow"><h3 class="ds-pr-card__title">Internal billing API v1 &rarr; v2 &nbsp;·&nbsp; typed client</h3><span class="ds-pr-card__num">recipe</span></div>
+                    <div class="ds-pr-card__meta"><span><span class="add">+18</span> <span class="del">&minus;11</span></span><span>5 files</span><span class="ds-badge ds-badge--accent">Internal API</span><span class="ds-badge ds-badge--emerald">test required</span><span class="ds-badge ds-badge--neutral">reversible</span><span class="ds-pr-card__time">illustrative</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+        <div class="caption fade-up" style="--i:9">Regauge runs legacy migrations as small, reversible, reviewable draft PRs &mdash; production-capable code, with live deployment status unverified.</div>
+      </section>
+
+      <!-- ============ SCENE 7 — close (Talal) ============ -->
+      <section class="scene hero grid-bg" data-scene="6">
+        <div class="hero-glow"></div>
+        <div class="close-wrap" style="width:1120px;height:420px">
+          <div class="close-seq">
+            <div class="close-seq__cell">
+              <div class="close-seq__eyebrow"><span class="close-seq__name close-seq__name--f">Fettler</span><span class="ds-status ds-status--open"><span class="ds-status__dot"></span>today</span></div>
+              <div class="close-seq__line">Provider breaking changes into reviewable, verified migration PRs. The change that is easiest to detect and prove.</div>
+            </div>
+            <div class="close-seq__cell close-seq__cell--next">
+              <div class="close-seq__eyebrow"><span class="close-seq__name close-seq__name--r">Regauge</span><span class="ds-status ds-status--pending"><svg class="ico" width="12" height="12" style="color:var(--amber)"><use href="#i-lock"/></svg>production-capable code &middot; live status unverified</span></div>
+              <div class="close-seq__line">The same graph and verification layer, pointed inward at legacy systems. Production-capable code; live status unverified.</div>
+            </div>
+          </div>
+          <div class="close-lockup">
+            <div class="close-mark">
+              <svg viewBox="0 0 48 48" width="104" height="104" xmlns="http://www.w3.org/2000/svg" aria-label="Fettler mark">
+                <defs><linearGradient id="chev2" x1="6" y1="8" x2="42" y2="40" gradientUnits="userSpaceOnUse"><stop stop-color="oklch(0.585 0.233 264.5)"/><stop offset="1" stop-color="oklch(0.72 0.16 198)"/></linearGradient></defs>
+                <g fill="none" stroke="url(#chev2)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12 L26 24 L12 36"/><path d="M24 12 L38 24 L24 36"/></g>
+              </svg>
+            </div>
+            <h2 class="close-title">Fettler <span>&mdash;</span> provider changes into reviewable, verified migration PRs.</h2>
+            <div class="close-tag">Graph-backed &nbsp;·&nbsp; Verify-first &nbsp;·&nbsp; Human-approved</div>
+          </div>
+        </div>
+        <div class="caption fade-up" style="--i:1">The same graph and verification layer, pointed inward through Regauge &mdash; starting with the change that is easiest to detect and prove.</div>
+      </section>
+
+    </div><!-- /scenes -->
+
+    <!-- replay overlay -->
+    <div class="replay"><button class="replay__btn" id="replayBtn"><svg class="ico" width="20" height="20" style="stroke-width:2"><use href="#i-refresh"/></svg>Replay</button></div>
+
+  </div><!-- /stage -->
+</div><!-- /viewport -->
+
+<script>
+(function () {
+  "use strict";
+  var stage = document.getElementById("stage");
+  var scenes = Array.prototype.slice.call(stage.querySelectorAll(".scene"));
+  var progress = document.getElementById("progress");
+  var counterNum = document.getElementById("counterNum");
+  var counterLabel = document.getElementById("counterLabel");
+  var replayBtn = document.getElementById("replayBtn");
+
+  // ms per scene; sums to 120000 (2:00). See fettler-demo-script.md for arithmetic.
+  var DURATIONS = [10000, 17000, 22000, 21000, 21000, 20000, 9000];
+  var TOTAL = DURATIONS.reduce(function (a, b) { return a + b; }, 0);
+  var LABELS = ["The break", "Spec change", "Change graph", "Draft PR", "Evidence record", "Regauge", "Fettler"];
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  var current = 0;
+  var elapsed = 0;          // ms elapsed within current scene
+  var priorSum = 0;         // ms sum of scene durations before current
+  var lastTs = null;
+  var paused = false;
+  var ended = false;
+  var sceneToken = 0;       // cancels per-scene timers when the scene changes
+  var timers = [];
+
+  function clearTimers() {
+    timers.forEach(function (t) { clearTimeout(t); });
+    timers = [];
+  }
+
+  function fit() {
+    var s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+    stage.style.transform = "translate(-50%, -50%) scale(" + s + ")";
+  }
+  window.addEventListener("resize", fit);
+  fit();
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+  function sumBefore(i) {
+    var s = 0;
+    for (var k = 0; k < i; k++) s += DURATIONS[k];
+    return s;
+  }
+
+  // Per-scene entrance choreography (typing, graph highlight, promote, close dissolve).
+  function runSceneScript(index) {
+    var token = ++sceneToken;
+    clearTimers();
+
+    if (index === 0) {
+      var el = scenes[0].querySelector('[data-type="field"]');
+      var line = '<span class="tok-del">source</span><span class="tok-arrow">&rarr;</span><span class="tok-add">payment_method</span>';
+      if (!el) return;
+      el.innerHTML = "";
+      if (reduced) { el.innerHTML = line; return; }
+      timers.push(setTimeout(function () {
+        if (token !== sceneToken) return;
+        el.classList.add("type-caret");
+        timers.push(setTimeout(function () {
+          if (token !== sceneToken) return;
+          el.innerHTML = line;
+          el.classList.add("type-caret");
+          timers.push(setTimeout(function () {
+            if (token !== sceneToken) return;
+            el.classList.remove("type-caret");
+          }, 900));
+        }, 320));
+      }, 1400));
+      return;
+    }
+
+    if (index === 5) {
+      var card = document.getElementById("promoteCard");
+      if (!card) return;
+      card.classList.remove("promoted");
+      if (reduced) { card.classList.add("promoted"); return; }
+      timers.push(setTimeout(function () {
+        if (token !== sceneToken) return;
+        card.classList.add("promoted");
+      }, 6000));
+      return;
+    }
+
+    if (index === 6) {
+      var sc = scenes[6];
+      sc.classList.remove("to-brand");
+      if (reduced) { sc.classList.add("to-brand"); return; }
+      timers.push(setTimeout(function () {
+        if (token !== sceneToken) return;
+        sc.classList.add("to-brand");
+      }, 4200));
+      return;
+    }
+  }
+
+  function activate(index) {
+    current = index;
+    elapsed = 0;
+    priorSum = sumBefore(index);
+
+    scenes.forEach(function (el, i) {
+      if (i === index) return;
+      el.classList.remove("is-active");
+    });
+    var target = scenes[index];
+    // force reflow so the fade-up animations restart on re-entry
+    target.classList.remove("is-active");
+    void target.offsetWidth;
+    target.classList.add("is-active");
+
+    // illustrative-scenario pill visibility
+    if (target.getAttribute("data-seed")) stage.classList.add("seed-on");
+    else stage.classList.remove("seed-on");
+
+    counterNum.textContent = pad(index + 1) + " / " + pad(scenes.length);
+    counterLabel.textContent = LABELS[index];
+
+    runSceneScript(index);
+  }
+
+  function updateProgress() {
+    var pct = ((priorSum + Math.min(elapsed, DURATIONS[current])) / TOTAL) * 100;
+    progress.style.width = pct.toFixed(3) + "%";
+  }
+
+  function endReel() {
+    ended = true;
+    paused = false;
+    stage.classList.add("ended");
+    stage.classList.remove("is-paused");
+    progress.style.width = "100%";
+    clearTimers();
+  }
+
+  function frame(ts) {
+    if (lastTs == null) lastTs = ts;
+    var dt = ts - lastTs;
+    lastTs = ts;
+
+    if (!paused && !ended) {
+      elapsed += dt;
+      updateProgress();
+      if (elapsed >= DURATIONS[current]) {
+        if (current < scenes.length - 1) {
+          activate(current + 1);
+        } else {
+          endReel();
+        }
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // ---- controls ----
+  function goto(index) {
+    index = Math.max(0, Math.min(scenes.length - 1, index));
+    if (ended) {
+      ended = false;
+      stage.classList.remove("ended");
+    }
+    lastTs = null;
+    activate(index);
+    updateProgress();
+  }
+
+  function restart() {
+    ended = false;
+    paused = false;
+    stage.classList.remove("ended", "is-paused");
+    lastTs = null;
+    activate(0);
+    updateProgress();
+  }
+
+  function togglePause() {
+    if (ended) { restart(); return; }
+    paused = !paused;
+    stage.classList.toggle("is-paused", paused);
+    if (!paused) lastTs = null;
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.code === "Space") {
+      e.preventDefault();
+      togglePause();
+    } else if (e.key === "r" || e.key === "R") {
+      restart();
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      if (ended) return;
+      if (current < scenes.length - 1) goto(current + 1);
+      else endReel();
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      goto(current - 1);
+    } else if (e.key === "c" || e.key === "C") {
+      document.body.classList.toggle("captions-off");
+    } else if (e.key === "f" || e.key === "F") {
+      e.preventDefault();
+      if (!document.fullscreenElement) {
+        var el = document.documentElement;
+        (el.requestFullscreen || el.webkitRequestFullscreen || function () {}).call(el);
+      } else {
+        (document.exitFullscreen || document.webkitExitFullscreen || function () {}).call(document);
+      }
+    }
+  });
+
+  replayBtn.addEventListener("click", restart);
+
+  // ---- boot ----
+  activate(0);
+  updateProgress();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

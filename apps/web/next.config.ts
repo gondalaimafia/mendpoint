@@ -20,6 +20,10 @@ const nextConfig: NextConfig = {
     return [
       { source: "/contact", destination: "/design-partners", permanent: false },
       { source: "/login", destination: "/access", permanent: false },
+      { source: "/docs/warden", destination: "/docs/fettler", permanent: true },
+      { source: "/docs/warden.md", destination: "/docs/fettler.md", permanent: true },
+      { source: "/docs/transformer", destination: "/docs/regauge", permanent: true },
+      { source: "/docs/transformer.md", destination: "/docs/regauge.md", permanent: true },
     ];
   },
   async headers() {

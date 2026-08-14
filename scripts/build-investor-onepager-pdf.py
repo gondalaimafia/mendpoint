@@ -17,7 +17,7 @@ class OnePager(FPDF):
         self.cell(
             0,
             4,
-            "Mendpoint / Warden  |  Evidence-backed  |  Human review on every customer PR  |  docs/INVESTOR_ONE_PAGER.md",
+            "Mendpoint / Fettler  |  Evidence-backed  |  Human review on every customer PR  |  docs/INVESTOR_ONE_PAGER.md",
             align="C",
         )
 
@@ -87,7 +87,7 @@ def main() -> None:
     pdf.cell(
         0,
         5,
-        "Investor one-pager  |  Warden product  |  Open-source monorepo  |  July 2026",
+        "Investor one-pager  |  Fettler product  |  Open-source monorepo  |  July 2026",
         new_x="LMARGIN",
         new_y="NEXT",
     )
@@ -99,7 +99,7 @@ def main() -> None:
         0,
         3.6,
         ascii(
-            "Warden is Mendpoint's API integration teammate: graph engineering (specialized verify-backed nodes, "
+            "Fettler is the first AI API Engineer: graph engineering (specialized verify-backed nodes, "
             "not one mega-agent), reviewable migration PRs, and an on-demand API debug loop. "
             "Never auto-merges by default.  github.com/gondalaimafia/mendpoint  |  MIT"
         ),
@@ -120,7 +120,7 @@ def main() -> None:
         pdf,
         "Mendpoint is an applied AI company for legacy and integration code migration—Cognition-style "
         "(reasoning + agentic systems + FDE delivery), focused on keeping codebases correct as the APIs they "
-        "depend on keep changing. Warden is the first product.",
+        "depend on keep changing. Fettler is the first product.",
     )
 
     h(pdf, "What we have shipped (evidence, not pitch)")
@@ -129,7 +129,7 @@ def main() -> None:
         "GitHub delivery: mock + real Octokit + GitHub App install/runtime path.",
         "Trust: never auto-merge by default (env hard-gate), path denylist, audit export, severity tiers, notification-only mode.",
         "Graph engineering orchestrator: change intel → expand (fan-out) → generate → verify → human review; domain call/e/product graphs.",
-        "Warden agent: on-demand API debug tool-loop; multi-category failure training; internal warden-bench 5/5.",
+        "Fettler agent: on-demand API debug tool-loop; multi-category failure training; internal warden-bench 5/5.",
         "Quality bars: TS/Python/Go/Java/Ruby harnesses; design-partner fixture eval ≥70%; vendor examples (Stripe, OpenAI, AWS, …).",
         "Pre-customer surfaces: exposure report API, flagship OpenAPI fixtures (Stripe/OpenAI/Twilio/AWS/Plaid), changelog parser, Slack notify, brand packs, dual dashboards + /graph.",
         "Open source monorepo (MIT) for diligence—20+ packages; reproducible demo: npm test && npm run demo && npm run eval:warden.",
@@ -169,7 +169,7 @@ def main() -> None:
         pdf,
         "Clone the repo. Run: npm install && npm test && npm run demo && npm run eval:warden.  "
         "Claims policy: only what the monorepo can show (docs/WARDEN_CLAIMS.md).  "
-        "Contact: Mendpoint team · Product: Warden on Mendpoint.",
+        "Contact: Mendpoint team · Product: Fettler on Mendpoint.",
     )
 
     pdf.output(OUT)

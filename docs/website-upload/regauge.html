@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Regauge — the first AI Legacy Engineer | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / Specialist agents</nav>
+    <header class="hero">
+      <p class="kicker">Specialist agents</p>
+      <h1>Regauge — the first AI Legacy Engineer</h1>
+      <p>Regauge is an experimental planning preview.</p>
+      <dl><dt>Status</dt><dd>Experimental planning preview</dd><dt>Availability</dt><dd>Durable campaign planning and review controls; repository execution and staged pull request campaigns are not customer ready</dd><dt>Last verified</dt><dd>2026-08-14</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Evaluate the planning preview against an approved snapshot without authorizing customer repository execution.</p><ol><li>Connect and snapshot an approved preview repository.</li><li>Submit a migration objective to POST /transformer/missions.</li><li>Inspect the derived blueprint, constraints, and rollback plan.</li><li>Record an independent review decision and retain the planning evidence.</li></ol></section>
+    <section><h2>What it does</h2><ul><li>Objective-to-blueprint mission planning with CODEOWNERS and organization constraints</li><li>Signed deterministic recipe selection and compilation</li><li>Durable campaign plans with units, waves, budgets, exceptions, rollback plans, and review evidence</li><li>Independent blueprint review and exact planning evidence</li><li>Internal execution, checkpoint, and draft-delivery primitives behind separate non-customer gates</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>A team is evaluating how a larger migration could be staged.</li><li>The repository matches an approved deterministic planning recipe.</li><li>Independent blueprint review and exact rollback planning are required.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>The mission planner re-verifies exact snapshot bytes, topology, owners, and policy before selecting one recipe or abstaining.</li><li>An independent reviewer evaluates the integrity-bound blueprint.</li><li>The compiler creates a durable campaign plan with units, dependencies, waves, budgets, and evidence authority.</li><li>The preview retains the plan and review evidence without granting customer repository execution.</li><li>Execution and staged draft delivery remain outside the customer-ready preview posture.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>POST /transformer/missions</code></td><td>API</td><td>Plan a repository-backed migration mission.</td></tr><tr><td><code>POST /transformer/control-plane/campaigns/:campaignId/review</code></td><td>API</td><td>Record independent blueprint review.</td></tr><tr><td><code>GET /transformer/executions/:campaignId</code></td><td>API</td><td>Inspect execution state.</td></tr><tr><td><code>npm run eval:transformer:canary</code></td><td>Command</td><td>Run the deterministic Regauge canary.</td></tr><tr><td><code>MENDPOINT_TRANSFORMER_GATE</code></td><td>Configuration</td><td>Tenant, environment, boundary, and production-delivery authority.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Mission planning and compilation</strong><br><code>packages/transformer/src/mission-planner.test.ts</code></li><li><strong>Pilot execution and checkpoints</strong><br><code>packages/transformer/src/pilot-execution.test.ts</code></li><li><strong>Multi-node worker</strong><br><code>apps/worker/src/transformer-multinode-service.test.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>Blueprint planner and approving reviewer must be independent authorized principals.</li><li>Planning cannot widen paths, recipe scope, budgets, or source authority.</li><li>Stale or mismatched source evidence fails closed.</li><li>Preview access does not grant repository mutation or delivery authority.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>Repository execution and staged pull request campaigns are not customer ready</li><li>No dedicated Regauge deployment is claimed live.</li><li>Adaptive model planning and legacy extraction use separate gates and are not implied by the planning preview.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="repository-connections.html">Repository connections</a></li><li><a href="draft-delivery.html">Draft delivery</a></li><li><a href="deployment-operations.html">Deployment and operations</a></li><li><a href="learning-system.html">Learning system</a></li></ul></section>
+    <p class="download"><a href="regauge.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>
