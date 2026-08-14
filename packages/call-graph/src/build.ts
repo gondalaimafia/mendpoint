@@ -19,6 +19,7 @@ import type {
   CallGraph,
   CallResolution,
   FunctionNode,
+  SkippedDirectory,
   TypeHierarchy,
 } from "./types.js";
 
@@ -27,6 +28,59 @@ function emptyRecord<T>(): Record<string, T> {
 }
 
 const CODE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py"]);
+
+/** Languages the call-graph front-end can extract functions for. */
+const SUPPORTED_LANGUAGES = ["typescript", "javascript", "python"] as const;
+
+/**
+ * Extensions this front-end recognizes as code but has no extractor for. The
+ * codebase-index front-end parses Go/Java/Kotlin/Ruby; this one only branches on
+ * Python vs TS/JS. Rather than adding these to CODE_EXTS (which would feed them
+ * through the TS/JS heuristic and emit garbage nodes), we record the files as
+ * unanalyzed so callers can tell "no edges" from "language not in call graph".
+ */
+const UNSUPPORTED_CODE_EXTS = new Map<string, string>([
+  [".go", "go"],
+  [".java", "java"],
+  [".kt", "kotlin"],
+  [".rb", "ruby"],
+]);
+
+/**
+ * Directory names that are unambiguously dependency, build-cache, or tooling
+ * output — never first-party source we want in the call graph. Marker-based, not
+ * blind: deliberately excludes vendor/build/target/out/bin/obj, which hold
+ * committed source in real repos (Go vendoring is tracked; the eval suite tracks
+ * a file under vendor/).
+ */
+const SKIP_DIR_NAMES = new Set([
+  "node_modules",
+  ".git",
+  ".venv",
+  "site-packages",
+  "__pycache__",
+  ".tox",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".gradle",
+  ".next",
+  "dist",
+  "coverage",
+  ".turbo",
+]);
+
+/** Custom-named virtualenvs: pruned only when a pyvenv.cfg marker is present. */
+const VENV_MARKER_DIR_NAMES = new Set(["venv", "env"]);
+
+type WalkResult = {
+  files: string[];
+  skipped: SkippedDirectory[];
+  unsupported: Array<{ path: string; language: string }>;
+};
+
+function relPosix(repoRoot: string, p: string): string {
+  return relative(repoRoot, p).replace(/\\/g, "/");
+}
 
 type Lang = FunctionNode["language"];
 
@@ -51,18 +105,31 @@ type RawCall = {
   directHint?: string;
 };
 
-function walk(dir: string, out: string[] = []): string[] {
+function walk(repoRoot: string, dir: string, acc: WalkResult): WalkResult {
   for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name === ".git" || name === "dist" || name === ".next") continue;
     const p = join(dir, name);
     const st = statSync(p);
-    if (st.isDirectory()) walk(p, out);
-    else {
+    if (st.isDirectory()) {
+      if (SKIP_DIR_NAMES.has(name)) {
+        acc.skipped.push({ path: relPosix(repoRoot, p), reason: "dependency-directory" });
+        continue;
+      }
+      if (VENV_MARKER_DIR_NAMES.has(name) && existsSync(join(p, "pyvenv.cfg"))) {
+        acc.skipped.push({ path: relPosix(repoRoot, p), reason: "virtualenv-marker" });
+        continue;
+      }
+      walk(repoRoot, p, acc);
+    } else {
       const ext = name.includes(".") ? `.${name.split(".").pop()}` : "";
-      if (CODE_EXTS.has(ext)) out.push(p);
+      if (CODE_EXTS.has(ext)) {
+        acc.files.push(p);
+      } else {
+        const lang = UNSUPPORTED_CODE_EXTS.get(ext);
+        if (lang) acc.unsupported.push({ path: relPosix(repoRoot, p), language: lang });
+      }
     }
   }
-  return out;
+  return acc;
 }
 
 function langOf(file: string): Lang {
@@ -403,7 +470,8 @@ export function buildCallGraph(
   opts: BuildCallGraphOptions = {},
 ): CallGraph {
   const algorithm = opts.algorithm ?? "hybrid";
-  const files = walk(repoRoot);
+  const walkResult = walk(repoRoot, repoRoot, { files: [], skipped: [], unsupported: [] });
+  const files = walkResult.files;
   const rawFns: RawFn[] = [];
   const allInstantiated: string[] = [];
   const parentsOf = emptyRecord<string[]>();
@@ -521,6 +589,11 @@ export function buildCallGraph(
       edgeCount: edges.length,
       directEdges,
       approxEdges,
+    },
+    diagnostics: {
+      skippedDirectories: walkResult.skipped,
+      supportedLanguages: [...SUPPORTED_LANGUAGES],
+      unsupportedLanguageFiles: walkResult.unsupported,
     },
   };
 }

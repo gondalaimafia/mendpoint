@@ -12,12 +12,14 @@ export type {
   CallEdge,
   CallEdgeConfidence,
   CallGraph,
+  CallGraphDiagnostics,
   CallResolution,
   FunctionNode,
   ImpactSubgraph,
   IncrementalStats,
   IncrementalStrategy,
   ReachabilityHit,
+  SkippedDirectory,
   TypeHierarchy,
 } from "./types.js";
 

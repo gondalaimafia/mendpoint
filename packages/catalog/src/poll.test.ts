@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   contentHash,
+  DEFAULT_FEED_MAX_BYTES,
   extractVersionLabel,
   fetchOpenApiDocument,
   listCatalogFeeds,
@@ -155,7 +156,86 @@ describe("poll", () => {
       },
     );
     expect(response.ok).toBe(false);
-    expect(response.error).toContain("exceeds 32 bytes");
+    // Actionable message: names the provider, the limit, and the observed size.
+    expect(response.error).toContain("feed.example");
+    expect(response.error).toContain("exceeds the 32-byte limit");
+    expect(response.error).toContain("64");
+  });
+
+  it("names the provider, size, and limit when the declared length is over the cap", async () => {
+    const response = await fetchOpenApiDocument(
+      "https://feed.example/spec.json",
+      {
+        production: true,
+        maxBytes: 32,
+        provider: "Stripe",
+        resolveHostname: async () => ["203.0.113.10"],
+        fetchImpl: async () =>
+          new Response("x".repeat(64), {
+            status: 200,
+            headers: { "Content-Length": "64" },
+          }),
+      },
+    );
+    expect(response.ok).toBe(false);
+    expect(response.error).toBe(
+      "OpenAPI feed for Stripe is 64 bytes, over the 32-byte limit",
+    );
+  });
+
+  it("accepts a spec at Stripe's real published size under the default cap", async () => {
+    // Real Stripe spec3.json is 8,171,593 bytes (~7.79 MiB): under the new 32 MiB
+    // default but well over the old 5 MiB cap that used to reject it.
+    const filler = "x".repeat(8_171_593);
+    const body = JSON.stringify({
+      openapi: "3.1.0",
+      info: { title: "Stripe", version: "2024-06-20", note: filler },
+      paths: {},
+    });
+    const size = Buffer.byteLength(body, "utf8");
+    expect(size).toBeGreaterThan(5 * 1024 * 1024); // over the retired 5 MiB cap
+    expect(size).toBeLessThan(DEFAULT_FEED_MAX_BYTES); // under the new default
+    const response = await fetchOpenApiDocument(
+      "https://feed.example/spec.json",
+      {
+        production: true,
+        provider: "Stripe",
+        resolveHostname: async () => ["203.0.113.10"],
+        fetchImpl: async () =>
+          new Response(body, {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      },
+    );
+    expect(response.ok).toBe(true);
+    expect(response.versionLabel).toBe("2024-06-20");
+  });
+
+  it("still refuses a clearly abusive body far beyond the default cap", async () => {
+    const abusive = 40 * 1024 * 1024; // 40 MiB, over the 32 MiB default
+    const response = await fetchOpenApiDocument(
+      "https://feed.example/spec.json",
+      {
+        production: true,
+        provider: "Hostile",
+        resolveHostname: async () => ["203.0.113.10"],
+        fetchImpl: async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(abusive));
+                controller.close();
+              },
+            }),
+          ),
+      },
+    );
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain("Hostile");
+    expect(response.error).toContain(
+      `exceeds the ${DEFAULT_FEED_MAX_BYTES}-byte limit`,
+    );
   });
 
   it("aborts remote reads that exceed the timeout", async () => {

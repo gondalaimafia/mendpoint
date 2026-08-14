@@ -96,6 +96,31 @@ export type IncrementalStats = {
 };
 
 
+export type SkippedDirectory = {
+  /** Repo-relative POSIX path of the pruned directory. */
+  path: string;
+  /**
+   * Why traversal stopped here:
+   * - `dependency-directory`: an unambiguous dependency/cache/tooling-output dir
+   * - `virtualenv-marker`: a custom-named virtualenv confirmed by a pyvenv.cfg
+   */
+  reason: "dependency-directory" | "virtualenv-marker";
+};
+
+/** Auditable record of what the call-graph front-end pruned or could not analyze. */
+export type CallGraphDiagnostics = {
+  /** Directories pruned from traversal (dependency/cache/virtualenv trees). */
+  skippedDirectories: SkippedDirectory[];
+  /** Languages this front-end can extract functions for. */
+  supportedLanguages: string[];
+  /**
+   * Source files seen during traversal whose language has no call-graph
+   * front-end, so they contribute zero nodes/edges. Lets callers distinguish
+   * "no edges found" from "this language is not in the call graph".
+   */
+  unsupportedLanguageFiles: Array<{ path: string; language: string }>;
+};
+
 export type CallGraph = {
   repoRoot: string;
   builtAt: string;
@@ -115,6 +140,11 @@ export type CallGraph = {
     directEdges: number;
     approxEdges: number;
   };
+  /**
+   * Traversal diagnostics: pruned directories and files skipped for lack of a
+   * language front-end. Present on graphs produced by a full {@link buildCallGraph}.
+   */
+  diagnostics?: CallGraphDiagnostics;
   /** Present when graph was produced by incremental update */
   lastIncremental?: IncrementalStats;
 };
