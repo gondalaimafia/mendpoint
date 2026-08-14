@@ -46,6 +46,8 @@ import type {
   AgentExternalModelReservation,
   AgentExternalModelSettlement,
   AgentModelBudget,
+  AgentMissionPlan,
+  AgentMissionPlanRevision,
   AgentPlannerInput,
   AgentRunResult,
   AgentSourceContextBudget,
@@ -1794,6 +1796,320 @@ function stableSerialize(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function codeUnitCompare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function missionPlanCanonical(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => missionPlanCanonical(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => codeUnitCompare(left, right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${missionPlanCanonical(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function plannerFeedbackDigest(input: AgentPlannerInput): string | null {
+  const failedVerifier = [...input.recentSteps].reverse().find((step) =>
+    step.tool === "run_command" && !step.ok
+  );
+  if (failedVerifier) {
+    return evidenceDigest(missionPlanCanonical({
+      step: failedVerifier.step,
+      summary: failedVerifier.summary,
+      error: failedVerifier.error ?? null,
+      evidence: failedVerifier.evidence ?? null,
+    }));
+  }
+  return input.errorLog ? evidenceDigest(input.errorLog) : null;
+}
+
+function missionPlanEvidence(call: ToolCall): readonly AgentExecutionIntentEvidence[] {
+  const refs = call.intent?.evidenceRefs ?? [];
+  const unique = new Map<string, AgentExecutionIntentEvidence>();
+  for (const ref of refs) {
+    if (!ref.path || ref.path.length > 500 || !EVIDENCE_DIGEST_PATTERN.test(ref.digest)) {
+      throw new Error("warden_runtime_mission_plan_invalid");
+    }
+    unique.set(`${ref.path}\0${ref.digest}`, Object.freeze({ path: ref.path, digest: ref.digest }));
+  }
+  if (unique.size > 40) throw new Error("warden_runtime_mission_plan_invalid");
+  return Object.freeze([...unique.values()].sort((left, right) =>
+    codeUnitCompare(left.path, right.path) || codeUnitCompare(left.digest, right.digest)
+  ));
+}
+
+function missionPlanFromPrivateState(privateState: WardenRuntimeJson): AgentMissionPlan | null {
+  if (!privateState || Array.isArray(privateState) || typeof privateState !== "object") return null;
+  const raw = (privateState as Readonly<Record<string, WardenRuntimeJson>>).missionPlan;
+  if (raw === undefined) return null;
+  if (!raw || Array.isArray(raw) || typeof raw !== "object") {
+    throw new Error("warden_runtime_mission_plan_invalid");
+  }
+  const record = raw as Readonly<Record<string, WardenRuntimeJson>>;
+  if (Object.keys(record).sort().join(",") !==
+      "activeRevision,blockerReason,goalDigest,outcome,revisions,schemaVersion" ||
+      record.schemaVersion !== 1 || !EVIDENCE_DIGEST_PATTERN.test(String(record.goalDigest)) ||
+      !Number.isSafeInteger(record.activeRevision) || (record.activeRevision as number) < 1 ||
+      !["in_progress", "verified", "failed"].includes(String(record.outcome)) ||
+      (record.blockerReason !== null && (typeof record.blockerReason !== "string" ||
+        record.blockerReason.length < 1 || record.blockerReason.length > 200)) ||
+      !Array.isArray(record.revisions) || record.revisions.length < 1 ||
+      record.revisions.length > MAX_WARDEN_STEPS) {
+    throw new Error("warden_runtime_mission_plan_invalid");
+  }
+  const revisions: AgentMissionPlanRevision[] = record.revisions.map((rawRevision, index) => {
+    if (!rawRevision || Array.isArray(rawRevision) || typeof rawRevision !== "object") {
+      throw new Error("warden_runtime_mission_plan_invalid");
+    }
+    const revision = rawRevision as Readonly<Record<string, WardenRuntimeJson>>;
+    if (Object.keys(revision).sort().join(",") !==
+        "acceptanceChecks,action,confidence,evidenceRefs,hypothesis,parentRevision,plannerEffectId,plannerRequestDigest,revision,risk,verifierFeedbackDigest" ||
+        revision.revision !== index + 1 ||
+        revision.parentRevision !== (index === 0 ? null : index) ||
+        !EVIDENCE_DIGEST_PATTERN.test(String(revision.plannerEffectId)) ||
+        !EVIDENCE_DIGEST_PATTERN.test(String(revision.plannerRequestDigest)) ||
+        typeof revision.hypothesis !== "string" || revision.hypothesis.length < 1 ||
+        revision.hypothesis.length > 1_000 ||
+        (revision.verifierFeedbackDigest !== null &&
+          !EVIDENCE_DIGEST_PATTERN.test(String(revision.verifierFeedbackDigest))) ||
+        (revision.confidence !== null && (typeof revision.confidence !== "number" ||
+          !Number.isFinite(revision.confidence) || revision.confidence < 0 ||
+          revision.confidence > 1)) ||
+        (revision.risk !== null && !EXECUTION_INTENT_RISKS.has(String(revision.risk))) ||
+        !Array.isArray(revision.evidenceRefs) || revision.evidenceRefs.length > 40 ||
+        !revision.action || Array.isArray(revision.action) || typeof revision.action !== "object" ||
+        !revision.acceptanceChecks || Array.isArray(revision.acceptanceChecks) ||
+        typeof revision.acceptanceChecks !== "object") {
+      throw new Error("warden_runtime_mission_plan_invalid");
+    }
+    const evidenceRefs = revision.evidenceRefs.map((rawRef) => {
+      if (!rawRef || Array.isArray(rawRef) || typeof rawRef !== "object") {
+        throw new Error("warden_runtime_mission_plan_invalid");
+      }
+      const ref = rawRef as Readonly<Record<string, WardenRuntimeJson>>;
+      if (Object.keys(ref).sort().join(",") !== "digest,path" ||
+          typeof ref.path !== "string" || ref.path.length < 1 || ref.path.length > 500 ||
+          !EVIDENCE_DIGEST_PATTERN.test(String(ref.digest))) {
+        throw new Error("warden_runtime_mission_plan_invalid");
+      }
+      return Object.freeze({ path: ref.path, digest: String(ref.digest) });
+    });
+    const normalizedEvidenceRefs = [...evidenceRefs].sort((left, right) =>
+      codeUnitCompare(left.path, right.path) || codeUnitCompare(left.digest, right.digest)
+    );
+    if (new Set(evidenceRefs.map((ref) => `${ref.path}\0${ref.digest}`)).size !==
+        evidenceRefs.length || missionPlanCanonical(evidenceRefs) !==
+        missionPlanCanonical(normalizedEvidenceRefs)) {
+      throw new Error("warden_runtime_mission_plan_invalid");
+    }
+    const action = revision.action as Readonly<Record<string, WardenRuntimeJson>>;
+    const acceptance = revision.acceptanceChecks as Readonly<Record<string, WardenRuntimeJson>>;
+    if (Object.keys(acceptance).sort().join(",") !==
+        "expectedObservation,postcondition,precondition,stopCondition" ||
+        [acceptance.precondition, acceptance.expectedObservation, acceptance.postcondition,
+          acceptance.stopCondition].some((value) => typeof value !== "string" ||
+            value.length < 1 || value.length > 1_000)) {
+      throw new Error("warden_runtime_mission_plan_invalid");
+    }
+    const actionKeys = Object.keys(action).sort().join(",");
+    if (!["callDigest,status,targetPath,tool", "callDigest,resultDigest,status,targetPath,tool"]
+        .includes(actionKeys) ||
+        !["list_dir", "read_file", "search", "write_file", "replace_in_file",
+          "run_command", "http_probe", "finish"].includes(String(action.tool)) ||
+        (action.targetPath !== null && (typeof action.targetPath !== "string" ||
+          action.targetPath.length > 500)) ||
+        !EVIDENCE_DIGEST_PATTERN.test(String(action.callDigest)) ||
+        !["planned", "succeeded", "failed"].includes(String(action.status)) ||
+        (action.resultDigest !== undefined &&
+          !EVIDENCE_DIGEST_PATTERN.test(String(action.resultDigest)))) {
+      throw new Error("warden_runtime_mission_plan_invalid");
+    }
+    return Object.freeze({
+      revision: index + 1,
+      parentRevision: index === 0 ? null : index,
+      plannerEffectId: String(revision.plannerEffectId),
+      plannerRequestDigest: String(revision.plannerRequestDigest),
+      hypothesis: revision.hypothesis,
+      evidenceRefs: Object.freeze(evidenceRefs),
+      verifierFeedbackDigest: revision.verifierFeedbackDigest === null
+        ? null
+        : String(revision.verifierFeedbackDigest),
+      confidence: revision.confidence === null ? null : revision.confidence as number,
+      risk: revision.risk === null
+        ? null
+        : revision.risk as AgentMissionPlanRevision["risk"],
+      acceptanceChecks: Object.freeze({
+        precondition: String(acceptance.precondition),
+        expectedObservation: String(acceptance.expectedObservation),
+        postcondition: String(acceptance.postcondition),
+        stopCondition: String(acceptance.stopCondition),
+      }),
+      action: Object.freeze({
+        tool: action.tool as ToolName,
+        targetPath: action.targetPath === null ? null : String(action.targetPath),
+        callDigest: String(action.callDigest),
+        status: action.status as "planned" | "succeeded" | "failed",
+        ...(action.resultDigest === undefined ? {} : { resultDigest: String(action.resultDigest) }),
+      }),
+    });
+  });
+  if (record.activeRevision !== revisions.length) {
+    throw new Error("warden_runtime_mission_plan_invalid");
+  }
+  if (new Set(revisions.map((revision) => revision.plannerEffectId)).size !== revisions.length ||
+      (record.outcome !== "in_progress" &&
+        revisions.at(-1)?.action.resultDigest === undefined)) {
+    throw new Error("warden_runtime_mission_plan_invalid");
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    goalDigest: String(record.goalDigest),
+    activeRevision: revisions.length,
+    outcome: record.outcome as AgentMissionPlan["outcome"],
+    blockerReason: record.blockerReason === null ? null : String(record.blockerReason),
+    revisions: Object.freeze(revisions),
+  });
+}
+
+function appendMissionPlanRevision(
+  privateState: WardenRuntimeJson,
+  input: AgentPlannerInput,
+  call: ToolCall,
+  effect: Readonly<{ effectId: string; requestDigest: string }>,
+): WardenRuntimeJson {
+  const current = missionPlanFromPrivateState(privateState);
+  const revision = (current?.revisions.length ?? 0) + 1;
+  const rawHypothesis = call.intent?.hypothesis ?? call.thought ??
+    `Execute the next bounded ${call.tool} action.`;
+  const hypothesis = redactUntrustedText(rawHypothesis, 1_000)?.trim();
+  if (!hypothesis) throw new Error("warden_runtime_mission_plan_invalid");
+  const targetPath = call.intent?.targetPath ??
+    (typeof call.args.path === "string" ? call.args.path : null);
+  const acceptanceChecks = call.intent
+    ? Object.freeze({
+        precondition: redactUntrustedText(call.intent.precondition, 1_000)?.trim() ?? "",
+        expectedObservation: redactUntrustedText(
+          call.intent.expectedObservation,
+          1_000,
+        )?.trim() ?? "",
+        postcondition: redactUntrustedText(call.intent.postcondition, 1_000)?.trim() ?? "",
+        stopCondition: redactUntrustedText(call.intent.stopCondition, 1_000)?.trim() ?? "",
+      })
+    : Object.freeze({
+        precondition: "The runtime lease and exact planner request remain current.",
+        expectedObservation: `The bounded ${call.tool} action returns authenticated evidence.`,
+        postcondition: "The result is checkpointed before the mission advances.",
+        stopCondition: "Stop if authority changes or the action fails.",
+      });
+  if (Object.values(acceptanceChecks).some((value) => !value)) {
+    throw new Error("warden_runtime_mission_plan_invalid");
+  }
+  const next: AgentMissionPlan = Object.freeze({
+    schemaVersion: 1,
+    goalDigest: evidenceDigest(input.goal),
+    activeRevision: revision,
+    outcome: "in_progress",
+    blockerReason: null,
+    revisions: Object.freeze([
+      ...(current?.revisions ?? []),
+      Object.freeze({
+        revision,
+        parentRevision: revision === 1 ? null : revision - 1,
+        plannerEffectId: effect.effectId,
+        plannerRequestDigest: effect.requestDigest,
+        hypothesis,
+        evidenceRefs: missionPlanEvidence(call),
+        verifierFeedbackDigest: plannerFeedbackDigest(input),
+        confidence: call.intent?.confidence ?? null,
+        risk: call.intent?.risk ?? null,
+        acceptanceChecks,
+        action: Object.freeze({
+          tool: call.tool,
+          targetPath,
+          callDigest: evidenceDigest(missionPlanCanonical(call)),
+          status: "planned" as const,
+        }),
+      }),
+    ]),
+  });
+  if (current && current.goalDigest !== next.goalDigest) {
+    throw new Error("warden_runtime_mission_plan_invalid");
+  }
+  return runtimeJson({
+    ...(privateState as Readonly<Record<string, WardenRuntimeJson>>),
+    missionPlan: next,
+  });
+}
+
+function recordMissionPlanAction(
+  privateState: WardenRuntimeJson,
+  modelEffectId: string | undefined,
+  category: "tool" | "verifier",
+  result: ToolResult,
+): WardenRuntimeJson {
+  const current = missionPlanFromPrivateState(privateState);
+  if (!current) return privateState;
+  const targetIndex = modelEffectId
+    ? current.revisions.findIndex((revision) => revision.plannerEffectId === modelEffectId)
+    : -1;
+  if (modelEffectId && targetIndex < 0) {
+    throw new Error("warden_runtime_mission_plan_authority_mismatch");
+  }
+  if (targetIndex < 0 && category !== "verifier") return privateState;
+  const revisions = current.revisions.map((revision, index) => targetIndex >= 0 &&
+      index === targetIndex
+    ? Object.freeze({
+        ...revision,
+        action: Object.freeze({
+          ...revision.action,
+          status: result.ok ? "succeeded" as const : "failed" as const,
+          resultDigest: evidenceDigest(missionPlanCanonical(result)),
+        }),
+      })
+    : revision);
+  const outcome = category === "verifier"
+    ? result.ok ? "verified" as const : "failed" as const
+    : current.outcome;
+  const blockerReason = result.ok
+    ? null
+    : redactUntrustedText(result.error ?? result.summary, 200)?.trim() || "action_failed";
+  return runtimeJson({
+    ...(privateState as Readonly<Record<string, WardenRuntimeJson>>),
+    missionPlan: { ...current, outcome, blockerReason, revisions },
+  });
+}
+
+function assertMissionPlanAuthorizesMutation(
+  privateState: WardenRuntimeJson,
+  modelEffectId: string | undefined,
+  modelPlannedCall: WardenRuntimeJson | undefined,
+  call: ToolCall,
+  replayRequestExists: boolean,
+): void {
+  if (!MUTATION_TOOLS.has(call.tool)) return;
+  if (!modelEffectId || modelPlannedCall === undefined) {
+    throw new Error("warden_runtime_mission_plan_authority_missing");
+  }
+  const plan = missionPlanFromPrivateState(privateState);
+  const revision = plan?.revisions.find((candidate) =>
+    candidate.plannerEffectId === modelEffectId
+  );
+  if (!plan || !revision || revision.action.tool !== call.tool ||
+      revision.action.targetPath !== call.intent?.targetPath ||
+      revision.action.callDigest !== evidenceDigest(missionPlanCanonical(modelPlannedCall)) ||
+      missionPlanCanonical(revision.evidenceRefs) !==
+        missionPlanCanonical(missionPlanEvidence(call)) ||
+      (revision.action.status === "planned" && revision.revision !== plan.activeRevision) ||
+      (revision.action.status !== "planned" && !replayRequestExists)) {
+    throw new Error("warden_runtime_mission_plan_authority_mismatch");
+  }
+}
+
 function resultFingerprint(result: ToolResult): string {
   return stableSerialize({
     ok: result.ok,
@@ -2669,6 +2985,19 @@ function formatReport(
         `${s.step}. *${redactUntrustedText(s.thought, 500) ?? ""}* → \`${s.call.tool}\` ${s.result.ok ? "ok" : "fail"} — ${redactUntrustedText(s.result.summary, 500) ?? ""}`,
     ),
     "",
+    "#### Mission plan",
+    ...(r.missionPlan
+      ? [
+          `- Outcome: ${r.missionPlan.outcome}; active revision: ${r.missionPlan.activeRevision}`,
+          ...r.missionPlan.revisions.slice(-8).map((revision) => {
+            const citations = revision.evidenceRefs.length
+              ? revision.evidenceRefs.map((ref) => `\`${ref.path}\` (${ref.digest.slice(0, 15)}...)`).join(", ")
+              : "investigation step, no mutation authority";
+            return `- Revision ${revision.revision}: ${revision.hypothesis} → \`${revision.action.tool}\` ${revision.action.status}; evidence: ${citations}`;
+          }),
+        ]
+      : ["- No durable model plan was used for this run."]),
+    "",
     "#### Capability result",
     ...(diagnosed.length
       ? diagnosed.slice(0, 8).map((mode) =>
@@ -2873,10 +3202,15 @@ async function runtimeSuggestTool(
       },
     },
     validateResult: validateRuntimeModelPlan,
-    apply: (state, value) => ({
-      ...state,
-      modelCalls: [...state.modelCalls, value.accounting],
-    }),
+    apply: (state, value, effect) => {
+      const call = validatedToolCall(value.call);
+      if (!call) throw new Error("warden_runtime_mission_plan_invalid");
+      return {
+        ...state,
+        modelCalls: [...state.modelCalls, value.accounting],
+        privateState: appendMissionPlanRevision(state.privateState, preparedInput, call, effect),
+      };
+    },
   });
   const value = validateRuntimeModelPlan(resolved.value);
   if (resolved.replayed) {
@@ -3055,6 +3389,15 @@ async function runtimeExecuteTool(
       stableSerialize(requestRecord.modelPlannedCall) !== stableSerialize(modelPlannedCall ?? null)) {
     throw new Error("warden_runtime_tool_request_invalid");
   }
+  if (plannerSource === "model") {
+    assertMissionPlanAuthorizesMutation(
+      runtime.execution.state().privateState,
+      modelEffectId,
+      modelPlannedCall,
+      call,
+      stored !== null,
+    );
+  }
   const plannedMutation = requestRecord.mutation === null
     ? null
     : requestRecord.mutation as unknown as RuntimeMutationMaterial;
@@ -3165,6 +3508,12 @@ async function runtimeExecuteTool(
         blobs,
         rollbackPreimages,
         sourceCounters,
+        privateState: recordMissionPlanAction(
+          state.privateState,
+          modelEffectId,
+          category,
+          result,
+        ),
         events: [...state.events, runtimeEvent],
       };
     },
@@ -3330,6 +3679,16 @@ async function runWardenCore(
       if (rollback.failedFiles.length) stoppedReason = "rollback_failed";
     }
     const safeVerifyOutput = redactUntrustedText(verifyOutput, 8_000);
+    const storedMissionPlan = runtime
+      ? missionPlanFromPrivateState(runtime.execution.state().privateState)
+      : null;
+    const missionPlan = storedMissionPlan && !ok && storedMissionPlan.outcome === "in_progress"
+      ? Object.freeze({
+          ...storedMissionPlan,
+          outcome: "failed" as const,
+          blockerReason: (redactUntrustedText(stoppedReason, 200) ?? "mission_failed").slice(0, 200),
+        })
+      : storedMissionPlan;
     const safeSteps = steps.map((step) => ({
       step: step.step,
       thought: redactUntrustedText(step.thought, 500) ?? "",
@@ -3388,6 +3747,7 @@ async function runWardenCore(
             .map(([path, value]) => ({ path, digest: value.digest })),
         },
       } satisfies AgentExecutionMetrics,
+      missionPlan,
     };
     return { ...base, reportMarkdown: formatReport(base, diagnosed) };
   };

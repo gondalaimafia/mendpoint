@@ -69,6 +69,42 @@ export type AgentStep = {
   plannerSource?: "model" | "heuristic" | "system";
 };
 
+export type AgentMissionPlanActionStatus = "planned" | "succeeded" | "failed";
+
+export type AgentMissionPlanRevision = Readonly<{
+  revision: number;
+  parentRevision: number | null;
+  plannerEffectId: string;
+  plannerRequestDigest: string;
+  hypothesis: string;
+  evidenceRefs: readonly AgentExecutionIntentEvidence[];
+  verifierFeedbackDigest: string | null;
+  confidence: number | null;
+  risk: AgentExecutionIntentRisk | null;
+  acceptanceChecks: Readonly<{
+    precondition: string;
+    expectedObservation: string;
+    postcondition: string;
+    stopCondition: string;
+  }>;
+  action: Readonly<{
+    tool: ToolName;
+    targetPath: string | null;
+    callDigest: string;
+    status: AgentMissionPlanActionStatus;
+    resultDigest?: string;
+  }>;
+}>;
+
+export type AgentMissionPlan = Readonly<{
+  schemaVersion: 1;
+  goalDigest: string;
+  activeRevision: number;
+  outcome: "in_progress" | "verified" | "failed";
+  blockerReason: string | null;
+  revisions: readonly AgentMissionPlanRevision[];
+}>;
+
 export type AgentPlannerObservation = Readonly<{
   step: number;
   tool: ToolName;
@@ -298,4 +334,6 @@ export type AgentRunResult = {
   reportMarkdown: string;
   stoppedReason: string;
   metrics: AgentExecutionMetrics;
+  /** Authenticated model plan lineage when the durable runtime is active. */
+  missionPlan: AgentMissionPlan | null;
 };

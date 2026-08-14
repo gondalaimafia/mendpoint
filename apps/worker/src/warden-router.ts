@@ -655,6 +655,7 @@ export function synthesizeWardenRun(
     rollback: { performed: false, restoredFiles: [], failedFiles: [] },
     reportMarkdown: attempt.agent?.reportMarkdown ?? "",
     stoppedReason,
+    missionPlan: attempt.agent?.missionPlan ?? null,
     metrics: {
       durationMs: 0,
       toolCalls: attempt.agent?.toolCalls ?? 0,

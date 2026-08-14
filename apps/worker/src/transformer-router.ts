@@ -381,6 +381,7 @@ export function synthesizeTransformerRun(
     },
     reportMarkdown: result.summary,
     stoppedReason,
+    missionPlan: null,
     metrics: {
       durationMs: 0,
       toolCalls: 0,

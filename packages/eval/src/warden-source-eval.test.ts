@@ -53,6 +53,7 @@ describe("Warden source grounded simulated eval", () => {
       "worker.source_binding",
       "context.replayable_digests",
       "model.policy_bound",
+      "planner.durable_mission_lineage",
       "artifacts.tenant_scoped",
     ]));
     expect(result.observation.details).toMatchObject({

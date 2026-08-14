@@ -78,6 +78,7 @@ const PASSED_RUN: AgentRunResult = {
   rollback: { performed: false, restoredFiles: [], failedFiles: [] },
   reportMarkdown: "verified",
   stoppedReason: "verify_passed",
+  missionPlan: null,
   metrics: {
     durationMs: 1,
     toolCalls: 1,
@@ -158,6 +159,7 @@ function succeededAttempt(usage: AttemptUsage): WardenAttemptResult {
       modelSuccessfulCalls: usage.measured ? 2 : 0,
       groundedMutations: 1,
       blockedMutations: 0,
+      missionPlan: null,
       sourceContext: {
         observedFiles: [],
         observedDirectories: [],
