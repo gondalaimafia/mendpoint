@@ -12,6 +12,7 @@ import {
   pauseWardenCiCycle,
   recordWardenCiObservation,
   settleWardenCiRepairWithoutCandidate,
+  wakeWardenCiReviewObservation,
 } from "./warden-ci-reentry.js";
 
 const paths: string[] = [];
@@ -60,6 +61,30 @@ const cycleInput = Object.freeze({
 });
 
 describe("Warden CI reentry authority", () => {
+  it("upgrades an existing cycle table to the operator-pausable awaiting-review state", () => {
+    const db = database();
+    const cycle = enqueueWardenCiCycle(db, cycleInput);
+    const schema = db.raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fettler_ci_cycles'")
+      .get() as { sql: string };
+    const columns = (db.raw.prepare("PRAGMA table_info(fettler_ci_cycles)").all() as Array<{ name: string }>)
+      .map((column) => column.name).join(", ");
+    db.raw.exec("DROP INDEX fettler_ci_cycles_tenant_status_idx");
+    db.raw.exec(schema.sql.replace("CREATE TABLE fettler_ci_cycles", "CREATE TABLE fettler_ci_cycles_oldcheck")
+      .replace(", 'awaiting_review'", ""));
+    db.raw.exec(`INSERT INTO fettler_ci_cycles_oldcheck (${columns}) SELECT ${columns} FROM fettler_ci_cycles;
+      DROP TABLE fettler_ci_cycles;
+      ALTER TABLE fettler_ci_cycles_oldcheck RENAME TO fettler_ci_cycles;`);
+    const path = paths.at(-1)!;
+    db.raw.close();
+    databases.splice(databases.indexOf(db), 1);
+    const reopened = createDb(path);
+    databases.push(reopened);
+    recordWardenCiObservation(reopened, { tenantId: "tenant-a", cycleId: cycle.id, headSha: sha("d"),
+      verdict: "success", observationDigest: digest("e"), evidenceArtifactId: "artifact-success-migration",
+      evidenceDigest: digest("f"), observedAt: "2026-08-13T12:02:00.000Z" });
+    expect(getWardenCiCycle(reopened, "tenant-a", cycle.id)?.status).toBe("awaiting_review");
+  });
+
   it("creates one deterministic observation job bound to the delivered draft", () => {
     const db = database();
     const first = enqueueWardenCiCycle(db, cycleInput);
@@ -210,5 +235,73 @@ describe("Warden CI reentry authority", () => {
     expect(failed).toMatchObject({
       status: "paused", pausedBy: "warden-ci-system", pauseReason: "github_observation_failed",
     });
+  });
+
+  it("transactionally wakes one exact succeeded draft cycle for authoritative review reobservation", () => {
+    const db = database();
+    const cycle = enqueueWardenCiCycle(db, cycleInput);
+    recordWardenCiObservation(db, {
+      tenantId: "tenant-a", cycleId: cycle.id, headSha: sha("d"), verdict: "success",
+      observationDigest: digest("e"), evidenceArtifactId: "artifact-success-a",
+      evidenceDigest: digest("f"), observedAt: "2026-08-13T12:02:00.000Z",
+    });
+    expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("awaiting_review");
+
+    const woken = wakeWardenCiReviewObservation(db, {
+      tenantId: "tenant-a", remoteRepositoryId: 101, installationId: 202,
+      pullRequestNumber: 17, headSha: sha("d"), wakeId: "github-delivery-review-1",
+      observedAt: "2026-08-13T12:03:00.000Z",
+    });
+    expect(woken).toMatchObject({ status: "woken", cycle: { id: cycle.id, status: "observation_pending" } });
+    expect(woken.cycle?.observationJobId).not.toBe(cycle.observationJobId);
+    expect(listJobs(db, 20, "tenant-a").filter((job) => job.type === "warden.candidate.observe"))
+      .toHaveLength(2);
+
+    const replay = wakeWardenCiReviewObservation(db, {
+      tenantId: "tenant-a", remoteRepositoryId: 101, installationId: 202,
+      pullRequestNumber: 17, headSha: sha("d"), wakeId: "github-delivery-review-1",
+      observedAt: "2026-08-13T12:03:00.000Z",
+    });
+    expect(replay).toMatchObject({ status: "already_active", cycle: { observationJobId: woken.cycle?.observationJobId } });
+    expect(listJobs(db, 20, "tenant-a").filter((job) => job.type === "warden.candidate.observe"))
+      .toHaveLength(2);
+  });
+
+  it("does not wake a stale, cross-tenant, or identity-mismatched review event", () => {
+    const db = database();
+    const cycle = enqueueWardenCiCycle(db, cycleInput);
+    recordWardenCiObservation(db, {
+      tenantId: "tenant-a", cycleId: cycle.id, headSha: sha("d"), verdict: "success",
+      observationDigest: digest("e"), evidenceArtifactId: "artifact-success-a",
+      evidenceDigest: digest("f"), observedAt: "2026-08-13T12:02:00.000Z",
+    });
+    for (const mismatch of [
+      { tenantId: "tenant-b" },
+      { remoteRepositoryId: 102 },
+      { installationId: 203 },
+      { pullRequestNumber: 18 },
+      { headSha: sha("c") },
+    ]) {
+      expect(wakeWardenCiReviewObservation(db, {
+        tenantId: "tenant-a", remoteRepositoryId: 101, installationId: 202,
+        pullRequestNumber: 17, headSha: sha("d"), wakeId: `github-delivery-${Object.keys(mismatch)[0]}`,
+        observedAt: "2026-08-13T12:03:00.000Z", ...mismatch,
+      })).toEqual({ status: "not_found", cycle: null });
+    }
+    expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("awaiting_review");
+  });
+
+  it("allows an operator to pause a cycle while it awaits GitHub review", () => {
+    const db = database();
+    const cycle = enqueueWardenCiCycle(db, cycleInput);
+    recordWardenCiObservation(db, {
+      tenantId: "tenant-a", cycleId: cycle.id, headSha: sha("d"), verdict: "success",
+      observationDigest: digest("e"), evidenceArtifactId: "artifact-success-a",
+      evidenceDigest: digest("f"), observedAt: "2026-08-13T12:02:00.000Z",
+    });
+    expect(pauseWardenCiCycle(db, {
+      tenantId: "tenant-a", cycleId: cycle.id, actorPrincipalId: "principal-a",
+      reason: "operator pause", observedAt: "2026-08-13T12:03:00.000Z",
+    })).toMatchObject({ status: "paused", pauseReason: "operator pause" });
   });
 });

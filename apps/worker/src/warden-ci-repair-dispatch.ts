@@ -69,6 +69,38 @@ function parseOriginalPayload(value: string): Readonly<Record<string, unknown> &
   return Object.freeze({ ...(parsed as Record<string, unknown>), consumerId: String((parsed as Record<string, unknown>).consumerId) });
 }
 
+function evidenceAuthority(bytes: Uint8Array): Readonly<{
+  trigger: "ci_failure" | "review_feedback";
+  reviewFeedbackDigest: string | null;
+}> {
+  let parsed: unknown;
+  try { parsed = JSON.parse(Buffer.from(bytes).toString("utf8")); }
+  catch { throw new Error("warden_ci_evidence_invalid"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("warden_ci_evidence_invalid");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record.trigger === undefined || record.trigger === "ci_failure") {
+    return Object.freeze({ trigger: "ci_failure" as const, reviewFeedbackDigest: null });
+  }
+  if (record.trigger !== "review_feedback" || !record.reviewFeedback ||
+      typeof record.reviewFeedback !== "object" || Array.isArray(record.reviewFeedback)) {
+    throw new Error("warden_ci_evidence_invalid");
+  }
+  const feedback = record.reviewFeedback as Record<string, unknown>;
+  if (feedback.verdict !== "changes_requested" || !Array.isArray(feedback.changeRequests) ||
+      !Array.isArray(feedback.comments) || feedback.changeRequests.length + feedback.comments.length < 1 ||
+      feedback.changeRequests.length + feedback.comments.length > 50) {
+    throw new Error("warden_ci_evidence_invalid");
+  }
+  if (typeof record.reviewFeedbackDigest !== "string" ||
+      !/^sha256:[a-f0-9]{64}$/.test(record.reviewFeedbackDigest)) {
+    throw new Error("warden_ci_evidence_invalid");
+  }
+  return Object.freeze({ trigger: "review_feedback" as const,
+    reviewFeedbackDigest: record.reviewFeedbackDigest });
+}
+
 export async function runWardenCiRepairDispatch(input: WardenCiRepairDispatchInput) {
   if (input.job.type !== JOB_TYPE || input.job.status !== "running" || !input.job.lease_owner ||
       input.job.lease_generation < 1) throw new Error("warden_ci_repair_job_invalid");
@@ -113,6 +145,8 @@ export async function runWardenCiRepairDispatch(input: WardenCiRepairDispatchInp
       `sha256:${createHash("sha256").update(evidence).digest("hex")}` !== observation.evidenceDigest) {
     throw new Error("warden_ci_evidence_digest_mismatch");
   }
+  const evidenceAuthorityValue = evidenceAuthority(evidence);
+  const trigger = evidenceAuthorityValue.trigger;
   const materialized = await input.materializeHead({ tenantId: cycle.tenantId, repositoryId: cycle.repositoryId,
     remoteRepositoryId: cycle.remoteRepositoryId, installationId: cycle.installationId, headSha: cycle.currentHeadSha });
   if (materialized.repositoryId !== cycle.repositoryId || materialized.revision !== cycle.currentHeadSha ||
@@ -126,9 +160,12 @@ export async function runWardenCiRepairDispatch(input: WardenCiRepairDispatchInp
   const ciFailure = Object.freeze({ cycleId: cycle.id, deliveryId: cycle.deliveryId,
     pullRequestNumber: cycle.pullRequestNumber, failedHeadSha: cycle.currentHeadSha,
     observationDigest: observation.observationDigest, evidenceArtifactId: observation.evidenceArtifactId,
-    evidenceDigest: observation.evidenceDigest });
+    evidenceDigest: observation.evidenceDigest, trigger,
+    reviewFeedbackDigest: evidenceAuthorityValue.reviewFeedbackDigest });
   const agentPayload = Object.freeze({
-    goal: `Repair the required CI failures on draft pull request ${cycle.pullRequestNumber} at exact head ${cycle.currentHeadSha}.`,
+    goal: trigger === "review_feedback"
+      ? `Address the authoritative review feedback on draft pull request ${cycle.pullRequestNumber} at exact head ${cycle.currentHeadSha}.`
+      : `Repair the required CI failures on draft pull request ${cycle.pullRequestNumber} at exact head ${cycle.currentHeadSha}.`,
     consumerId: originalPayload.consumerId,
     errorLog: Buffer.from(evidence).toString("utf8"),
     maxSteps: Math.min(100, Math.max(1, callsPerCycle * 4)),

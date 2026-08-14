@@ -10,7 +10,9 @@ import {
   type AppDb,
   type JobRow,
 } from "@mendpoint/db";
-import type { ExactDraftUpdateInput, ExactDraftUpdateReconciliation, ExactDraftUpdateResult } from "@mendpoint/github";
+import type { ExactDraftObservation, ExactDraftObservationInput, ExactDraftUpdateInput,
+  ExactDraftUpdateReconciliation, ExactDraftUpdateResult } from "@mendpoint/github";
+import { wardenReviewFeedbackDigest } from "./warden-candidate-observation.js";
 
 const JOB_TYPE = "warden.candidate.update";
 
@@ -19,6 +21,7 @@ export type WardenCandidateUpdateInput = Readonly<{
   job: JobRow;
   updateExactDraft: (input: ExactDraftUpdateInput) => Promise<ExactDraftUpdateResult>;
   reconcileExactDraftUpdate: (input: ExactDraftUpdateInput) => Promise<ExactDraftUpdateReconciliation>;
+  observeExactDraft?: (input: ExactDraftObservationInput) => Promise<ExactDraftObservation>;
   readApprovalArtifact: (input: Readonly<{ tenantId: string; path: string; sha256: string }>) => Record<string, unknown>;
   resolveRepository: (input: Readonly<{ tenantId: string; repositoryId: string; installationId: number;
     remoteRepositoryId: number }>) => Readonly<{ owner: string; repo: string }> |
@@ -75,8 +78,8 @@ function assertArtifact(artifact: Record<string, unknown>, input: Readonly<{
   }
 }
 
-function intentDigest(intent: ExactDraftUpdateInput): string {
-  return `sha256:${createHash("sha256").update(JSON.stringify(intent), "utf8").digest("hex")}`;
+function intentDigest(intent: ExactDraftUpdateInput, feedbackDigest: string | null): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify({ intent, feedbackDigest }), "utf8").digest("hex")}`;
 }
 
 export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput) {
@@ -122,7 +125,20 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
       fence?.status !== "running" || fence.lease_owner !== input.job.lease_owner ||
       fence.lease_generation !== input.job.lease_generation || typeof fence.lease_expires_at !== "string" ||
       fence.lease_expires_at <= dispatchAt) throw new Error("warden_ci_update_not_authorized");
-  const digest = intentDigest(intent);
+  const digest = intentDigest(intent, update.expectedFeedbackDigest);
+  const assertCurrentFeedback = async () => {
+    if (!update.expectedFeedbackDigest) return;
+    if (!input.observeExactDraft) throw new Error("warden_ci_review_observer_required");
+    const observed = await input.observeExactDraft({ owner: repository.owner, repo: repository.repo,
+      pullRequestNumber: cycle.pullRequestNumber, expectedBaseBranch: cycle.baseBranch,
+      expectedBaseSha: cycle.baseRevision, expectedHeadBranch: cycle.branchName,
+      expectedHeadSha: cycle.currentHeadSha, expectedRepositoryId: cycle.remoteRepositoryId,
+      requireExactDraft: true, includeCommitStatuses: false });
+    if (observed.state !== "draft" || observed.headRevision !== cycle.currentHeadSha ||
+        wardenReviewFeedbackDigest(observed) !== update.expectedFeedbackDigest) {
+      throw new Error("warden_ci_review_feedback_drift");
+    }
+  };
   let remote: ExactDraftUpdateResult;
   if (reconciliationRequired) {
     if (update.status === "intent_bound") {
@@ -134,6 +150,7 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
     if (reconciliation.status === "applied") {
       remote = reconciliation.result;
     } else {
+      await assertCurrentFeedback();
       bindWardenCiUpdateIntent(input.db, { tenantId: cycle.tenantId, updateId: update.id,
         intentDigest: digest, workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation,
         observedAt: dispatchAt });
@@ -145,6 +162,7 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
       }
     }
   } else {
+    await assertCurrentFeedback();
     bindWardenCiUpdateIntent(input.db, { tenantId: cycle.tenantId, updateId: update.id,
       intentDigest: digest, workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation,
       observedAt: dispatchAt });

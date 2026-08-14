@@ -81,6 +81,7 @@ const WARDEN_REVIEW_ERRORS = [
     "warden_ci_update_not_authorized",
     "warden_ci_update_conflict",
     "warden_ci_repair_rebind_not_authorized",
+    "warden_ci_budget_exhausted",
     "warden_ci_mutation_in_flight",
   ].map((internalCode) => ({ internalCode, status: 409 as const })),
   { internalCode: "warden_candidate_expired", status: 410 },
@@ -132,7 +133,16 @@ function ciRepairAuthority(db: AppDb, tenantId: string, runId: string, result: R
     candidate.observationDigest === cycle.currentObservationDigest);
   if (!observation || failure.evidenceArtifactId !== observation.evidenceArtifactId ||
       failure.evidenceDigest !== observation.evidenceDigest) throw new Error("warden_ci_update_not_authorized");
-  return Object.freeze({ cycle, observation });
+  const trigger = failure.trigger === undefined ? "ci_failure" : failure.trigger;
+  const reviewFeedbackDigest: string | null = typeof failure.reviewFeedbackDigest === "string"
+    ? failure.reviewFeedbackDigest : null;
+  if ((trigger !== "ci_failure" && trigger !== "review_feedback") ||
+      (trigger === "review_feedback" && (typeof reviewFeedbackDigest !== "string" ||
+        !/^sha256:[a-f0-9]{64}$/.test(reviewFeedbackDigest))) ||
+      (trigger === "ci_failure" && failure.reviewFeedbackDigest !== undefined && failure.reviewFeedbackDigest !== null)) {
+    throw new Error("warden_ci_update_not_authorized");
+  }
+  return Object.freeze({ cycle, observation, trigger, reviewFeedbackDigest });
 }
 
 export function registerWardenCandidateReviewRoutes(
@@ -293,6 +303,7 @@ export function registerWardenCandidateReviewRoutes(
         if (ciAuthority) {
           const update = enqueueWardenCiUpdate(db, { tenantId, cycleId: ciAuthority.cycle.id,
             repairRunId: run.id, expectedHeadSha: ciAuthority.cycle.currentHeadSha,
+            expectedFeedbackDigest: ciAuthority.reviewFeedbackDigest,
             sealedPath: seal!.path, sealedSha256: seal!.sha256, reviewerPrincipalId: principal.id,
             rationale: body.rationale, observedAt: reviewedAt });
           response = { ...response, update };

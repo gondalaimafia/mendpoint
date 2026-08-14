@@ -21,7 +21,9 @@ const opened: Array<{ db: AppDb; root: string }> = [];
 const sha = (value: string) => value.repeat(40);
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
-function fixture() {
+function fixture(evidenceDocument: Readonly<Record<string, unknown>> = {
+  failures: [{ name: "unit", text: "expected 1 received 2" }],
+}) {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-warden-ci-repair-"));
   const db = createDb(join(root, "worker.sqlite"));
   opened.push({ db, root });
@@ -46,7 +48,7 @@ function fixture() {
     repositoryId: "repo-a", remoteRepositoryId: 101, installationId: 202,
     requiredChecks: ["check:77:unit"], allowedChangedPaths: ["src/a.ts"], maxCycles: 2,
     maxModelCalls: 4, maximumCostUsd: 2, observedAt: "2026-08-13T12:01:00.000Z" });
-  const evidence = Buffer.from(JSON.stringify({ failures: [{ name: "unit", text: "expected 1 received 2" }] }));
+  const evidence = Buffer.from(JSON.stringify(evidenceDocument));
   const evidenceDigest = digest(evidence);
   recordWardenCiObservation(db, { tenantId: "tenant-a", cycleId: cycle.id, headSha: sha("d"),
     verdict: "failure", observationDigest: evidenceDigest, evidenceArtifactId: "artifact-failure-a",
@@ -98,6 +100,32 @@ describe("Warden CI repair dispatch", () => {
       readEvidence: async () => Buffer.from("different"),
       now: () => "2026-08-13T12:03:00.000Z" })).rejects.toThrow("warden_ci_evidence_digest_mismatch");
     expect(getWardenCiCycle(db, "tenant-a", cycle.id)).toMatchObject({ status: "checks_failed", usedCycles: 0 });
+  });
+
+  it("preserves review-feedback authority while reusing the standard bounded repair run", async () => {
+    const { db, cycle, evidence, job, root } = fixture({
+      schemaVersion: "2026-08-13.warden-ci-observation.v1",
+      trigger: "review_feedback",
+      reviewFeedbackDigest: `sha256:${"9".repeat(64)}`,
+      reviewFeedback: {
+        verdict: "changes_requested",
+        changeRequests: [{ id: "7", reviewer: "reviewer", body: "Handle the nil response." }],
+        comments: [{ id: "comment-1", path: "src/a.ts", body: "Keep this mapping stable." }],
+      },
+    });
+
+    await runWardenCiRepairDispatch({ db, job,
+      materializeHead: async () => ({ repositoryId: "repo-a", snapshotId: "snapshot-repair-a",
+        revision: sha("d"), manifestSha256: "e".repeat(64), root }),
+      readEvidence: async () => evidence, now: () => "2026-08-13T12:03:00.000Z" });
+
+    const repairJob = listJobs(db, 50, "tenant-a").find((candidate) => candidate.type === "agent.run" &&
+      candidate.id !== "initial-agent-job")!;
+    expect(JSON.parse(repairJob.payload_json)).toMatchObject({
+      goal: expect.stringContaining("Address the authoritative review feedback"),
+      allowedChangedPaths: ["src/a.ts"],
+      ciFailure: { cycleId: cycle.id, trigger: "review_feedback", reviewFeedbackDigest: `sha256:${"9".repeat(64)}` },
+    });
   });
 
   it("durably exhausts the cycle and completes the dispatch job without creating another agent run", async () => {

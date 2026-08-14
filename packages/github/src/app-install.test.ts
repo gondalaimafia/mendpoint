@@ -51,6 +51,10 @@ describe("github app install", () => {
     expect(cfg.installEnabled).toBe(true);
     expect(cfg.setupCallbackPath).toBe("/github/setup");
     expect(cfg.permissions.checks).toBe("read");
+    expect(cfg.events).toEqual(expect.arrayContaining([
+      "pull_request_review",
+      "pull_request_review_comment",
+    ]));
     const url = buildInstallUrl({ state: "state", env });
     expect(url).toEqual({
       url: "https://github.com/apps/mendpoint-preview/installations/new?state=state",

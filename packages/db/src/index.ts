@@ -1324,7 +1324,7 @@ CREATE TABLE IF NOT EXISTS fettler_ci_cycles (
   observation_job_id TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL CHECK (
     status IN ('observation_pending', 'checks_running', 'checks_failed', 'repair_pending',
-      'candidate_ready', 'update_pending', 'succeeded', 'paused', 'exhausted')
+      'candidate_ready', 'update_pending', 'awaiting_review', 'succeeded', 'paused', 'exhausted')
   ),
   repository_id TEXT NOT NULL,
   remote_repository_id INTEGER NOT NULL,
@@ -1375,6 +1375,7 @@ CREATE TABLE IF NOT EXISTS fettler_ci_updates (
   job_id TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL CHECK (status IN ('pending', 'intent_bound', 'uncertain', 'delivered', 'failed')),
   expected_head_sha TEXT NOT NULL,
+  expected_feedback_digest TEXT,
   sealed_path TEXT NOT NULL,
   sealed_sha256 TEXT NOT NULL,
   reviewer_principal_id TEXT NOT NULL,
@@ -1428,8 +1429,69 @@ export function createDb(urlOrPath?: string): AppDb {
   migrateAuditIntegrity({ raw });
   migrateArtifactContent({ raw });
   migrateWardenTransformerTableNames({ raw });
+  migrateWardenCiAwaitingReview({ raw });
   installTrustImmutability({ raw });
   return { raw };
+}
+
+function migrateWardenCiAwaitingReview(db: AppDb): void {
+  const row = db.raw.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fettler_ci_cycles'",
+  ).get() as { sql?: string } | undefined;
+  if (!row?.sql || row.sql.includes("'awaiting_review'")) return;
+  const columns = [
+    "id", "tenant_id", "delivery_id", "observation_job_id", "status", "repository_id",
+    "remote_repository_id", "installation_id", "pull_request_number", "base_branch", "branch_name",
+    "base_revision", "current_head_sha", "required_checks_json", "allowed_changed_paths_json",
+    "max_cycles", "used_cycles", "max_model_calls", "maximum_cost_usd", "current_observation_digest",
+    "repair_run_id", "repair_job_id", "paused_by", "pause_reason", "created_at", "updated_at",
+  ].join(", ");
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    db.raw.exec(`
+      CREATE TABLE fettler_ci_cycles_next (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        delivery_id TEXT NOT NULL,
+        observation_job_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (
+          status IN ('observation_pending', 'checks_running', 'checks_failed', 'repair_pending',
+            'candidate_ready', 'update_pending', 'awaiting_review', 'succeeded', 'paused', 'exhausted')
+        ),
+        repository_id TEXT NOT NULL,
+        remote_repository_id INTEGER NOT NULL,
+        installation_id INTEGER NOT NULL,
+        pull_request_number INTEGER NOT NULL,
+        base_branch TEXT NOT NULL,
+        branch_name TEXT NOT NULL,
+        base_revision TEXT NOT NULL,
+        current_head_sha TEXT NOT NULL,
+        required_checks_json TEXT NOT NULL,
+        allowed_changed_paths_json TEXT NOT NULL,
+        max_cycles INTEGER NOT NULL,
+        used_cycles INTEGER NOT NULL DEFAULT 0,
+        max_model_calls INTEGER NOT NULL,
+        maximum_cost_usd REAL NOT NULL,
+        current_observation_digest TEXT,
+        repair_run_id TEXT,
+        repair_job_id TEXT,
+        paused_by TEXT,
+        pause_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (tenant_id, delivery_id)
+      );
+      INSERT INTO fettler_ci_cycles_next (${columns}) SELECT ${columns} FROM fettler_ci_cycles;
+      DROP TABLE fettler_ci_cycles;
+      ALTER TABLE fettler_ci_cycles_next RENAME TO fettler_ci_cycles;
+      CREATE INDEX fettler_ci_cycles_tenant_status_idx
+        ON fettler_ci_cycles(tenant_id, status, updated_at);
+    `);
+    db.raw.exec("COMMIT");
+  } catch (error) {
+    if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 /**
@@ -1472,6 +1534,7 @@ function migrateWardenTransformerTableNames(db: AppDb): void {
       sql: "TEXT NOT NULL DEFAULT 'manual'",
     },
     { table: "warden_campaign_targets", name: "enrolled_installation_id", sql: "TEXT" },
+    { table: "warden_ci_updates", name: "expected_feedback_digest", sql: "TEXT" },
     {
       table: "transformer_adaptive_candidates",
       name: "base_branch",
@@ -1850,6 +1913,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "github_installations", name: "account_id", sql: "TEXT" },
     { table: "github_installations", name: "suspended_at", sql: "TEXT" },
     { table: "github_installations", name: "deleted_at", sql: "TEXT" },
+    { table: "fettler_ci_updates", name: "expected_feedback_digest", sql: "TEXT" },
     {
       table: "fettler_campaign_targets",
       name: "enrollment_source",
@@ -3234,6 +3298,7 @@ export {
   enqueueWardenCiCycle,
   getWardenCiCycle,
   listWardenCiObservations,
+  wakeWardenCiReviewObservation,
   recordWardenCiObservation,
   beginWardenCiRepair,
   exhaustWardenCiCycle,
@@ -3251,6 +3316,7 @@ export {
   type WardenCiObservation,
   type WardenCiUpdate,
   type WardenCiCycleStatus,
+  type WardenCiReviewWakeResult,
 } from "./warden-ci-reentry.js";
 
 export type {
