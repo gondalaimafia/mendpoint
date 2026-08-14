@@ -2,6 +2,7 @@ import {
   authorizeTransformerWorkerAction,
   type TransformerGateDecision,
 } from "@mendpoint/ops";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 
 export type TransformerWorkerAuthorizationInput = Readonly<{
   tenantId: string;
@@ -14,7 +15,7 @@ export type TransformerWorkerAuthorizationInput = Readonly<{
  */
 export function assertTransformerWorkerActionAuthorized(
   input: TransformerWorkerAuthorizationInput,
-  rawConfig = process.env.MENDPOINT_TRANSFORMER_GATE,
+  rawConfig = resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
 ): TransformerGateDecision {
   const decision = authorizeTransformerWorkerAction(input, rawConfig);
   if (!decision.allowed) {

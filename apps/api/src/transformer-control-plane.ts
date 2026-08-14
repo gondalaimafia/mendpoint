@@ -17,13 +17,14 @@ import {
   type TransformerGateBoundary,
   type TransformerGateDecision,
 } from "@mendpoint/ops";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 import type { ApiEnv } from "./auth.js";
 import {
   mappedErrorResponse,
   type PublicErrorRule,
 } from "./error-boundary.js";
 
-const DB_ENV = "MENDPOINT_TRANSFORMER_CONTROL_PLANE_DB";
+const DB_ENV = "MENDPOINT_REGAUGE_CONTROL_PLANE_DB";
 const SECRET_KEY = /(?:secret|token|password|credential|private.?key|api.?key)/i;
 const PATH_KEY = /(?:path|directory|workspace|checkout)/i;
 const WINDOWS_PATH = /^(?:[a-z]:[\\/]|\\\\)/i;
@@ -217,7 +218,7 @@ export function transformerControlPlanePath(
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
 ): string {
-  const override = env[DB_ENV]?.trim();
+  const override = resolveRenamedEnv(env, DB_ENV)?.trim();
   if (override) return resolve(override);
   const dataDir = env.MENDPOINT_DATA_DIR?.trim();
   return join(dataDir ? resolve(dataDir) : join(cwd, "data"), "transformer-control-plane.sqlite");
@@ -766,10 +767,10 @@ export function registerTransformerControlPlaneRoutes(
     return assessTransformerGate(
       {
         tenantId: principal.tenantId,
-        environment: gateRuntime.environment ?? process.env.MENDPOINT_TRANSFORMER_ENVIRONMENT ?? "",
+        environment: gateRuntime.environment ?? resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_ENVIRONMENT") ?? "",
         boundary,
       },
-      gateRuntime.rawConfig ?? process.env.MENDPOINT_TRANSFORMER_GATE,
+      gateRuntime.rawConfig ?? resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
     );
   };
   const requireGate = (c: Context<ApiEnv>): Response | undefined => {

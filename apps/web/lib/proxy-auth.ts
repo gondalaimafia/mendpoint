@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 
 export const WEB_SESSION_COOKIE = "mendpoint_web_session";
 export const WEB_SESSION_VERSION = 3 as const;
@@ -334,7 +335,7 @@ export function selfServeSignupEnabled(): boolean {
 
 /** Self-serve Warden scan trigger is off unless MENDPOINT_SELF_SERVE_WARDEN=1 (default preview safe). */
 export function selfServeWardenEnabled(): boolean {
-  return process.env.MENDPOINT_SELF_SERVE_WARDEN === "1";
+  return resolveRenamedEnv(process.env, "MENDPOINT_SELF_SERVE_FETTLER") === "1";
 }
 
 /** Self-serve repository connect is off unless MENDPOINT_SELF_SERVE_CONNECT=1 (default preview safe). */

@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { resolve } from "node:path";
 import { createAppDelivery, loadAppCredentials } from "@mendpoint/github";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 import {
   createFilesystemTransformerArtifactBackend,
   createS3CompatibleTransformerArtifactBackend,
@@ -14,27 +15,27 @@ import {
 export type RunningTransformerService = Readonly<{ close(): Promise<void>; readinessUrl: string }>;
 
 export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.env): Promise<RunningTransformerService> {
-  if (env.MENDPOINT_TRANSFORMER_MULTINODE_ENABLED !== "1") throw new Error("transformer_multinode_service_disabled");
-  const workerId = required(env.MENDPOINT_TRANSFORMER_WORKER_ID, "transformer_multinode_worker_id_required");
-  const tenantId = required(env.MENDPOINT_TRANSFORMER_TENANT_ID, "transformer_multinode_tenant_required");
-  const campaignId = required(env.MENDPOINT_TRANSFORMER_CAMPAIGN_ID, "transformer_multinode_campaign_required");
-  const dataRoot = resolve(required(env.MENDPOINT_TRANSFORMER_PRIVATE_DATA_ROOT, "transformer_multinode_data_root_required"));
-  const encryptionKey = decodeKey(required(env.MENDPOINT_TRANSFORMER_CHECKPOINT_KEY, "transformer_multinode_checkpoint_key_required"));
-  const intervalMs = integer(env.MENDPOINT_TRANSFORMER_INTERVAL_MS ?? "5000", 100, 60_000, "transformer_multinode_interval_invalid");
-  const readinessPort = integer(env.MENDPOINT_TRANSFORMER_READINESS_PORT ?? "9465", 1, 65_535, "transformer_multinode_readiness_port_invalid");
-  const readinessHost = readinessAddress(env.MENDPOINT_TRANSFORMER_READINESS_HOST ?? "127.0.0.1");
+  if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_MULTINODE_ENABLED") !== "1") throw new Error("transformer_multinode_service_disabled");
+  const workerId = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_WORKER_ID"), "transformer_multinode_worker_id_required");
+  const tenantId = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_TENANT_ID"), "transformer_multinode_tenant_required");
+  const campaignId = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_CAMPAIGN_ID"), "transformer_multinode_campaign_required");
+  const dataRoot = resolve(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_PRIVATE_DATA_ROOT"), "transformer_multinode_data_root_required"));
+  const encryptionKey = decodeKey(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_CHECKPOINT_KEY"), "transformer_multinode_checkpoint_key_required"));
+  const intervalMs = integer(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_INTERVAL_MS") ?? "5000", 100, 60_000, "transformer_multinode_interval_invalid");
+  const readinessPort = integer(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_READINESS_PORT") ?? "9465", 1, 65_535, "transformer_multinode_readiness_port_invalid");
+  const readinessHost = readinessAddress(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_READINESS_HOST") ?? "127.0.0.1");
   const transport = createFetchTransformerMultinodeTransport({
-    baseUrl: required(env.MENDPOINT_TRANSFORMER_COORDINATOR_URL, "transformer_multinode_coordinator_url_required"),
-    authToken: required(env.MENDPOINT_TRANSFORMER_COORDINATOR_TOKEN, "transformer_multinode_coordinator_token_required"),
+    baseUrl: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_URL"), "transformer_multinode_coordinator_url_required"),
+    authToken: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_TOKEN"), "transformer_multinode_coordinator_token_required"),
     workerId,
-    timeoutMs: integer(env.MENDPOINT_TRANSFORMER_COORDINATOR_TIMEOUT_MS ?? "30000", 1, 120_000, "transformer_multinode_timeout_invalid"),
-    maxResponseBytes: integer(env.MENDPOINT_TRANSFORMER_MAX_RESPONSE_BYTES ?? String(64 * 1024 * 1024), 1_024, 128 * 1024 * 1024, "transformer_multinode_response_limit_invalid"),
+    timeoutMs: integer(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_TIMEOUT_MS") ?? "30000", 1, 120_000, "transformer_multinode_timeout_invalid"),
+    maxResponseBytes: integer(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_MAX_RESPONSE_BYTES") ?? String(64 * 1024 * 1024), 1_024, 128 * 1024 * 1024, "transformer_multinode_response_limit_invalid"),
   });
-  const artifactMode = required(env.MENDPOINT_TRANSFORMER_ARTIFACT_BACKEND, "transformer_multinode_artifact_backend_required");
+  const artifactMode = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ARTIFACT_BACKEND"), "transformer_multinode_artifact_backend_required");
   const backend = artifactMode === "filesystem"
-    ? createFilesystemTransformerArtifactBackend({ root: resolve(required(env.MENDPOINT_TRANSFORMER_SHARED_ARTIFACT_ROOT, "transformer_multinode_artifact_root_required")), maxStoredBytes: 64 * 1024 * 1024 })
+    ? createFilesystemTransformerArtifactBackend({ root: resolve(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_SHARED_ARTIFACT_ROOT"), "transformer_multinode_artifact_root_required")), maxStoredBytes: 64 * 1024 * 1024 })
     : artifactMode === "s3"
-      ? createS3CompatibleTransformerArtifactBackend({ bucket: required(env.MENDPOINT_TRANSFORMER_S3_BUCKET, "transformer_multinode_s3_bucket_required"), keyPrefix: required(env.MENDPOINT_TRANSFORMER_S3_PREFIX, "transformer_multinode_s3_prefix_required"), maxStoredBytes: 64 * 1024 * 1024 }, createSigV4S3ArtifactTransport({ endpoint: required(env.MENDPOINT_TRANSFORMER_S3_ENDPOINT, "transformer_multinode_s3_endpoint_required"), region: required(env.MENDPOINT_TRANSFORMER_S3_REGION, "transformer_multinode_s3_region_required"), accessKeyId: required(env.MENDPOINT_TRANSFORMER_S3_ACCESS_KEY_ID, "transformer_multinode_s3_access_key_required"), secretAccessKey: required(env.MENDPOINT_TRANSFORMER_S3_SECRET_ACCESS_KEY, "transformer_multinode_s3_secret_required"), ...(env.MENDPOINT_TRANSFORMER_S3_SESSION_TOKEN?.trim() ? { sessionToken: env.MENDPOINT_TRANSFORMER_S3_SESSION_TOKEN.trim() } : {}), timeoutMs: 30_000 }))
+      ? createS3CompatibleTransformerArtifactBackend({ bucket: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_BUCKET"), "transformer_multinode_s3_bucket_required"), keyPrefix: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_PREFIX"), "transformer_multinode_s3_prefix_required"), maxStoredBytes: 64 * 1024 * 1024 }, createSigV4S3ArtifactTransport({ endpoint: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_ENDPOINT"), "transformer_multinode_s3_endpoint_required"), region: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_REGION"), "transformer_multinode_s3_region_required"), accessKeyId: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID"), "transformer_multinode_s3_access_key_required"), secretAccessKey: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY"), "transformer_multinode_s3_secret_required"), ...(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_SESSION_TOKEN")?.trim() ? { sessionToken: resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_SESSION_TOKEN")!.trim() } : {}), timeoutMs: 30_000 }))
       : (() => { throw new Error("transformer_multinode_artifact_backend_invalid"); })();
   if (env.GITHUB_MODE !== "real") throw new Error("transformer_multinode_github_real_required");
   const appCredentials = loadAppCredentials(env);
@@ -45,15 +46,15 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
     workerId,
     tenantId,
     campaignId,
-    environment: required(env.MENDPOINT_TRANSFORMER_ENVIRONMENT, "transformer_multinode_environment_required"),
+    environment: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ENVIRONMENT"), "transformer_multinode_environment_required"),
     evidenceRoot: resolve(dataRoot, "evidence"),
     candidateRoot: resolve(dataRoot, "candidates"),
-    leaseDurationMs: integer(env.MENDPOINT_TRANSFORMER_LEASE_MS ?? "900000", 1_000, 3_600_000, "transformer_multinode_lease_invalid"),
-    executorDigest: required(env.MENDPOINT_TRANSFORMER_EXECUTOR_DIGEST, "transformer_multinode_executor_digest_required"),
+    leaseDurationMs: integer(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_LEASE_MS") ?? "900000", 1_000, 3_600_000, "transformer_multinode_lease_invalid"),
+    executorDigest: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_EXECUTOR_DIGEST"), "transformer_multinode_executor_digest_required"),
     encryptionKey,
-    operationSecret: decodeKey(required(env.MENDPOINT_TRANSFORMER_OPERATION_SECRET, "transformer_multinode_operation_secret_required")),
-    evidenceRefs: evidenceRefs(required(env.MENDPOINT_TRANSFORMER_EVIDENCE_REFS, "transformer_multinode_evidence_refs_required")),
-    gateConfig: required(env.MENDPOINT_TRANSFORMER_GATE, "transformer_multinode_gate_required"),
+    operationSecret: decodeKey(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_OPERATION_SECRET"), "transformer_multinode_operation_secret_required")),
+    evidenceRefs: evidenceRefs(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_EVIDENCE_REFS"), "transformer_multinode_evidence_refs_required")),
+    gateConfig: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_GATE"), "transformer_multinode_gate_required"),
     deliverDraft: (intent, target) => createAppDelivery(
       target.installationId,
       appCredentials,

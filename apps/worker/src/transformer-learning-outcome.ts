@@ -1,4 +1,5 @@
 import { redactSourceForModel } from "@mendpoint/agent";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 import type { TransformerAdaptiveCandidateRecord } from "@mendpoint/db";
 import type {
   AdaptiveCandidateArtifact,
@@ -307,5 +308,5 @@ export function parseLearningPrecedent(
 
 /** The learning loop is default-off; only an explicit "1" enables it. */
 export function learningLoopEnabled(env: NodeJS.ProcessEnv): boolean {
-  return env.MENDPOINT_TRANSFORMER_LEARNING_ENABLED === "1";
+  return resolveRenamedEnv(env, "MENDPOINT_REGAUGE_LEARNING_ENABLED") === "1";
 }

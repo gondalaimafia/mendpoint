@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { can } from "@mendpoint/platform";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 import type { ApiEnv } from "./auth.js";
 import { TransformerMissionService, type TransformerMissionPlanInput } from "./transformer-missions.js";
 
@@ -89,7 +90,7 @@ export function createTransformerMissionRoutes(options: Readonly<{
 }>) {
   const routes = new Hono<ApiEnv>();
   const now = options.now ?? (() => new Date().toISOString());
-  const environment = options.environment ?? process.env.MENDPOINT_TRANSFORMER_ENVIRONMENT ?? "";
+  const environment = options.environment ?? resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_ENVIRONMENT") ?? "";
 
   routes.post("/", async (c) => {
     try {

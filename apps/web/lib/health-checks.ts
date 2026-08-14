@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { assessFeedFreshness } from "@mendpoint/shared";
+import { assessFeedFreshness, resolveRenamedEnv } from "@mendpoint/shared";
 
 type TransformerHeartbeat = {
   enabled?: boolean;
@@ -86,7 +86,7 @@ export async function workerCheck(operational = true): Promise<{
       ageMs <= maxAgeMs;
     const transformer = heartbeat.transformer;
     const transformerMaxAgeMs = Number(
-      process.env.MENDPOINT_TRANSFORMER_HEARTBEAT_MAX_AGE_MS ?? 20 * 60_000,
+      resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_HEARTBEAT_MAX_AGE_MS") ?? 20 * 60_000,
     );
     const lastRunAt = Date.parse(transformer?.lastRunAt ?? "");
     const lastSuccessAt = Date.parse(transformer?.lastSuccessAt ?? "");

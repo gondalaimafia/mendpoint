@@ -2,6 +2,7 @@ import {
   authorizeTransformerDelivery,
   type TransformerGateDecision,
 } from "@mendpoint/ops";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 
 export type TransformerDeliveryAuthorizationInput = Readonly<{
   tenantId: string;
@@ -16,7 +17,7 @@ export type TransformerDeliveryAuthorizationInput = Readonly<{
  */
 export function assertTransformerDeliveryAuthorized(
   input: TransformerDeliveryAuthorizationInput,
-  rawConfig = process.env.MENDPOINT_TRANSFORMER_GATE,
+  rawConfig = resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
 ): TransformerGateDecision {
   const decision = authorizeTransformerDelivery(input, rawConfig);
   if (!decision.allowed) {

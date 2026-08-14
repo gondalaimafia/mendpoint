@@ -1,4 +1,5 @@
 import { parseTransformerGateConfig } from "@mendpoint/ops";
+import { resolveEitherRenamedEnv, resolveRenamedEnv } from "@mendpoint/shared";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const API_KEY = /^me_[A-Za-z0-9_-]{32,}$/;
@@ -22,18 +23,18 @@ export function validateTransformerProductionProfile(
   exact(env.MENDPOINT_DEPLOYMENT_CLASS, "customer", "transformer_production_deployment_class_required");
   exact(env.API_AUTH, "required", "transformer_production_api_auth_required");
   exact(env.GITHUB_MODE, "real", "transformer_production_github_real_required");
-  exact(env.MENDPOINT_TRANSFORMER_ENABLED, "1", "transformer_production_activation_required");
-  exact(env.MENDPOINT_TRANSFORMER_MULTINODE_COORDINATOR_ENABLED, "1", "transformer_production_coordinator_required");
-  exact(env.MENDPOINT_TRANSFORMER_MULTINODE_ENABLED, "1", "transformer_production_worker_required");
-  exact(env.MENDPOINT_TRANSFORMER_ARTIFACT_BACKEND, "s3", "transformer_production_s3_required");
+  exact(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ENABLED"), "1", "transformer_production_activation_required");
+  exact(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED"), "1", "transformer_production_coordinator_required");
+  exact(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_MULTINODE_ENABLED"), "1", "transformer_production_worker_required");
+  exact(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ARTIFACT_BACKEND"), "s3", "transformer_production_s3_required");
   exact(env.MENDPOINT_PILOT_SEED ?? "0", "0", "transformer_production_seed_forbidden");
   exact(env.MENDPOINT_FEED_POLLING_ENABLED ?? "0", "0", "transformer_production_feed_forbidden");
 
-  const tenantId = identifier(env.MENDPOINT_TRANSFORMER_TENANT_ID, "transformer_production_tenant_required");
-  const campaignId = identifier(env.MENDPOINT_TRANSFORMER_CAMPAIGN_ID, "transformer_production_campaign_required");
-  const environment = identifier(env.MENDPOINT_TRANSFORMER_ENVIRONMENT, "transformer_production_environment_required");
+  const tenantId = identifier(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_TENANT_ID"), "transformer_production_tenant_required");
+  const campaignId = identifier(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_CAMPAIGN_ID"), "transformer_production_campaign_required");
+  const environment = identifier(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ENVIRONMENT"), "transformer_production_environment_required");
   if (environment !== "production") throw new Error("transformer_production_environment_invalid");
-  const gate = parseTransformerGateConfig(required(env.MENDPOINT_TRANSFORMER_GATE, "transformer_production_gate_required"));
+  const gate = parseTransformerGateConfig(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_GATE"), "transformer_production_gate_required"));
   const grant = gate.grants.find((candidate) => candidate.tenantId === tenantId && candidate.environment === environment);
   if (!grant || !["api_control_plane", "worker_action", "delivery"].every((boundary) => grant.boundaries.includes(boundary as never))) {
     throw new Error("transformer_production_gate_scope_invalid");
@@ -43,33 +44,33 @@ export function validateTransformerProductionProfile(
   }
   if (!grant.productionDeliveryApprovalRefs.length) throw new Error("transformer_production_delivery_approval_required");
 
-  const token = required(env.MENDPOINT_TRANSFORMER_COORDINATOR_TOKEN, "transformer_production_worker_token_required");
+  const token = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_TOKEN"), "transformer_production_worker_token_required");
   if (!API_KEY.test(token)) throw new Error("transformer_production_worker_token_invalid");
-  const coordinatorUrl = required(env.MENDPOINT_TRANSFORMER_COORDINATOR_URL, "transformer_production_coordinator_url_required");
+  const coordinatorUrl = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_URL"), "transformer_production_coordinator_url_required");
   let parsedUrl: URL;
   try { parsedUrl = new URL(coordinatorUrl); } catch { throw new Error("transformer_production_coordinator_url_invalid"); }
   if (parsedUrl.protocol !== "https:" || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
     throw new Error("transformer_production_coordinator_url_invalid");
   }
 
-  key(env.MENDPOINT_TRANSFORMER_CHECKPOINT_KEY, "transformer_production_checkpoint_key_required");
-  key(env.MENDPOINT_TRANSFORMER_OPERATION_SECRET, "transformer_production_operation_secret_required");
+  key(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_CHECKPOINT_KEY"), "transformer_production_checkpoint_key_required");
+  key(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_OPERATION_SECRET"), "transformer_production_operation_secret_required");
   for (const name of [
     "MENDPOINT_TRANSFORMER_S3_REGION", "MENDPOINT_TRANSFORMER_S3_ACCESS_KEY_ID",
     "MENDPOINT_TRANSFORMER_S3_SECRET_ACCESS_KEY",
     "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "GITHUB_WEBHOOK_SECRET",
     "GITHUB_APP_ACCOUNT_TENANT_BINDINGS",
-  ] as const) required(env[name], `transformer_production_${name.toLowerCase()}_required`);
-  secureUrl(env.MENDPOINT_TRANSFORMER_S3_ENDPOINT, "transformer_production_s3_endpoint_invalid");
-  const bucket = required(env.MENDPOINT_TRANSFORMER_S3_BUCKET, "transformer_production_s3_bucket_required");
+  ] as const) required(resolveEitherRenamedEnv(env, name), `transformer_production_${name.toLowerCase()}_required`);
+  secureUrl(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_ENDPOINT"), "transformer_production_s3_endpoint_invalid");
+  const bucket = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_BUCKET"), "transformer_production_s3_bucket_required");
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) throw new Error("transformer_production_s3_bucket_invalid");
-  if (required(env.MENDPOINT_TRANSFORMER_S3_PREFIX, "transformer_production_s3_prefix_required") !== `transformer/${tenantId}/${campaignId}`) {
+  if (required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_PREFIX"), "transformer_production_s3_prefix_required") !== `transformer/${tenantId}/${campaignId}`) {
     throw new Error("transformer_production_s3_prefix_invalid");
   }
-  if (!/^sha256:[a-f0-9]{64}$/.test(required(env.MENDPOINT_TRANSFORMER_EXECUTOR_DIGEST, "transformer_production_executor_digest_required"))) {
+  if (!/^sha256:[a-f0-9]{64}$/.test(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_EXECUTOR_DIGEST"), "transformer_production_executor_digest_required"))) {
     throw new Error("transformer_production_executor_digest_invalid");
   }
-  const evidenceRefs = required(env.MENDPOINT_TRANSFORMER_EVIDENCE_REFS, "transformer_production_evidence_refs_required").split(",").map((value) => value.trim()).filter(Boolean);
+  const evidenceRefs = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_EVIDENCE_REFS"), "transformer_production_evidence_refs_required").split(",").map((value) => value.trim()).filter(Boolean);
   if (!evidenceRefs.length || new Set(evidenceRefs).size !== evidenceRefs.length) throw new Error("transformer_production_evidence_refs_invalid");
 
   if (role === "coordinator") {
@@ -77,7 +78,7 @@ export function validateTransformerProductionProfile(
     const dataDir = required(env.MENDPOINT_DATA_DIR, "transformer_production_data_dir_required").replaceAll("\\", "/");
     if (dataDir !== "/data/db" && !dataDir.startsWith("/data/db/")) throw new Error("transformer_production_data_dir_invalid");
   } else {
-    exact(env.MENDPOINT_TRANSFORMER_READINESS_HOST, "0.0.0.0", "transformer_production_readiness_host_invalid");
+    exact(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_READINESS_HOST"), "0.0.0.0", "transformer_production_readiness_host_invalid");
   }
 
   return Object.freeze({ role, tenantId, campaignId, environment });

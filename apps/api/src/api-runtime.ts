@@ -1,4 +1,5 @@
 import { createDb } from "@mendpoint/db";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 import { TransformerCampaignService } from "./transformer-control-plane.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
 import { createChangeSourceRoutes } from "./change-sources.js";
@@ -41,7 +42,7 @@ export function initializeApiRuntime(
         GOOGLEAPIS_V25_TO_V26_RECIPE,
         REACT_DOM_17_TO_18_RECIPE,
       ],
-      env.MENDPOINT_TRANSFORMER_ENVIRONMENT ?? "",
+      resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ENVIRONMENT") ?? "",
     );
     return {
       db,
@@ -49,7 +50,7 @@ export function initializeApiRuntime(
       transformerExecutions,
       transformerMissionRoutes: createTransformerMissionRoutes({
         service: transformerMissions,
-        environment: env.MENDPOINT_TRANSFORMER_ENVIRONMENT,
+        environment: resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ENVIRONMENT"),
       }),
       changeSourceRoutes: createChangeSourceRoutes(),
       billingRoutes: createBillingEconomicsRoutes({ db }),
