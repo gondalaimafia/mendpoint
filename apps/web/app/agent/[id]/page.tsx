@@ -1,6 +1,8 @@
 import Link from "next/link";
+import type { CandidateReviewEvidence } from "@mendpoint/shared";
 import { apiGet } from "../../../lib/api";
 import { CandidateReview } from "./candidate-review";
+import { CandidateReviewEvidencePanel } from "./candidate-review-evidence";
 
 export const dynamic = "force-dynamic";
 
@@ -26,26 +28,7 @@ type Run = {
 type Candidate = {
   changedPaths: string[];
   expiresAt: string | null;
-  reviewEvidence?: {
-    schemaVersion: 1;
-    summary: string;
-    verification: {
-      summary: string;
-      commands: Array<{ command: string; ok: true; exitCode: 0; outputSha256: string }>;
-    };
-    edits: Array<{
-      path: string;
-      rationale: string | null;
-      category: string | null;
-      risk: "low" | "medium" | "high" | null;
-      confidence: number | null;
-      assessmentSource: "planner" | "verifier" | "unavailable";
-      verification: {
-        summary: string;
-        commandOutputSha256: string[];
-      };
-    }>;
-  };
+  reviewEvidence?: CandidateReviewEvidence;
   files: Array<{
     path: string;
     before: string | null;
@@ -75,7 +58,6 @@ export default async function WardenCandidatePage({ params }: { params: Promise<
   const delivery = candidate?.delivery ?? run.delivery ?? null;
   const review = run.result?.review ?? null;
   const lineage = run.result?.lineage;
-  const editEvidence = new Map(candidate?.reviewEvidence?.edits.map((edit) => [edit.path, edit]) ?? []);
 
   return (
     <div className="page">
@@ -91,6 +73,7 @@ export default async function WardenCandidatePage({ params }: { params: Promise<
           <p className="muted">Review before {new Date(candidate.expiresAt).toLocaleString()}.</p>
         )}
         {candidateError && <p className="error">Candidate files are unavailable: {candidateError}</p>}
+        {candidate?.reviewEvidence && <CandidateReviewEvidencePanel evidence={candidate.reviewEvidence} />}
         {review && (
           <div className="card stack">
             <strong>Human review</strong>
@@ -112,23 +95,6 @@ export default async function WardenCandidatePage({ params }: { params: Promise<
         {candidate?.files.map((file) => (
           <article key={file.path} className="stack">
             <h2>{file.path}</h2>
-            {editEvidence.get(file.path) && (
-              <div className="card stack">
-                <strong>Review evidence for this file</strong>
-                <p>{editEvidence.get(file.path)!.rationale ?? "A per file rationale was not measured by this planner run."}</p>
-                <p className="muted">
-                  Category: {editEvidence.get(file.path)!.category?.replaceAll("_", " ") ?? "not measured"}.
-                  Risk: {editEvidence.get(file.path)!.risk ?? "not measured"}.
-                  Confidence: {editEvidence.get(file.path)!.confidence === null
-                    ? "not measured"
-                    : `${Math.round(editEvidence.get(file.path)!.confidence! * 100)} percent`}.
-                </p>
-                <p>{editEvidence.get(file.path)!.verification.summary}</p>
-                {candidate.reviewEvidence!.verification.commands.map((command) => (
-                  <code key={`${file.path}:${command.command}`}>{command.command}</code>
-                ))}
-              </div>
-            )}
             <div className="grid two">
               <div>
                 <h3>Before</h3>
