@@ -11,7 +11,10 @@ import {
   createFetchTransformerMultinodeTransport,
   createTransformerMultinodeService,
 } from "./transformer-multinode-service.js";
-import { resolveTransformerWorkerId } from "./transformer-production-profile.js";
+import {
+  resolveTransformerS3Config,
+  resolveTransformerWorkerId,
+} from "./transformer-production-profile.js";
 
 export type RunningTransformerService = Readonly<{ close(): Promise<void>; readinessUrl: string }>;
 
@@ -33,10 +36,11 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
     maxResponseBytes: integer(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_MAX_RESPONSE_BYTES") ?? String(64 * 1024 * 1024), 1_024, 128 * 1024 * 1024, "transformer_multinode_response_limit_invalid"),
   });
   const artifactMode = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ARTIFACT_BACKEND"), "transformer_multinode_artifact_backend_required");
+  const s3 = resolveTransformerS3Config(env);
   const backend = artifactMode === "filesystem"
     ? createFilesystemTransformerArtifactBackend({ root: resolve(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_SHARED_ARTIFACT_ROOT"), "transformer_multinode_artifact_root_required")), maxStoredBytes: 64 * 1024 * 1024 })
     : artifactMode === "s3"
-      ? createS3CompatibleTransformerArtifactBackend({ bucket: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_BUCKET"), "transformer_multinode_s3_bucket_required"), keyPrefix: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_PREFIX"), "transformer_multinode_s3_prefix_required"), maxStoredBytes: 64 * 1024 * 1024 }, createSigV4S3ArtifactTransport({ endpoint: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_ENDPOINT"), "transformer_multinode_s3_endpoint_required"), region: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_REGION"), "transformer_multinode_s3_region_required"), accessKeyId: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID"), "transformer_multinode_s3_access_key_required"), secretAccessKey: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY"), "transformer_multinode_s3_secret_required"), ...(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_SESSION_TOKEN")?.trim() ? { sessionToken: resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_SESSION_TOKEN")!.trim() } : {}), timeoutMs: 30_000 }))
+      ? createS3CompatibleTransformerArtifactBackend({ bucket: required(s3.bucket, "transformer_multinode_s3_bucket_required"), keyPrefix: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_PREFIX"), "transformer_multinode_s3_prefix_required"), maxStoredBytes: 64 * 1024 * 1024 }, createSigV4S3ArtifactTransport({ endpoint: required(s3.endpoint, "transformer_multinode_s3_endpoint_required"), region: required(s3.region, "transformer_multinode_s3_region_required"), accessKeyId: required(s3.accessKeyId, "transformer_multinode_s3_access_key_required"), secretAccessKey: required(s3.secretAccessKey, "transformer_multinode_s3_secret_required"), ...(s3.sessionToken?.trim() ? { sessionToken: s3.sessionToken.trim() } : {}), timeoutMs: 30_000 }))
       : (() => { throw new Error("transformer_multinode_artifact_backend_invalid"); })();
   if (env.GITHUB_MODE !== "real") throw new Error("transformer_multinode_github_real_required");
   const appCredentials = loadAppCredentials(env);
