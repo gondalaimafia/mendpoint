@@ -71,6 +71,18 @@ describe("website upload documentation bundle", () => {
     );
   });
 
+  it("accepts the ownership sentinel after Git checks it out with Windows line endings", async () => {
+    const output = await mkdtemp(join(tmpdir(), "mendpoint-public-docs-"));
+    await writePublicDocsBundle(false, output);
+    await writeFile(
+      join(output, ".mendpoint-public-docs-owner"),
+      "Mendpoint public documentation bundle\r\n",
+      "utf8",
+    );
+
+    await expect(writePublicDocsBundle(true, output)).resolves.toBeUndefined();
+  });
+
   it("refuses to take ownership of a non-empty output directory", async () => {
     const output = await mkdtemp(join(tmpdir(), "mendpoint-public-docs-"));
     const unrelated = join(output, "unrelated.txt");

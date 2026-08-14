@@ -12,7 +12,8 @@ import {
 
 const OUTPUT = resolve(process.cwd(), "docs", "website-upload");
 const OUTPUT_OWNER = ".mendpoint-public-docs-owner";
-const OUTPUT_OWNER_CONTENT = "Mendpoint public documentation bundle\n";
+const OUTPUT_OWNER_TOKEN = "Mendpoint public documentation bundle";
+const OUTPUT_OWNER_CONTENT = `${OUTPUT_OWNER_TOKEN}\n`;
 
 export function buildPublicDocsBundle(): ReadonlyMap<string, string> {
   const files = new Map<string, string>();
@@ -75,7 +76,7 @@ async function requireOutputOwnership(
   if (owner) {
     if (!owner.isFile()) throw new Error(`public_docs_bundle_owner_invalid:${output}`);
     const content = await readFile(outputPath(output, OUTPUT_OWNER), "utf8");
-    if (content !== OUTPUT_OWNER_CONTENT) {
+    if (![OUTPUT_OWNER_TOKEN, `${OUTPUT_OWNER_TOKEN}\n`, `${OUTPUT_OWNER_TOKEN}\r\n`].includes(content)) {
       throw new Error(`public_docs_bundle_owner_invalid:${output}`);
     }
     return;
