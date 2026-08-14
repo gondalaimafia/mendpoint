@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 
 export type RecipeReference = Readonly<{
   id: string;
@@ -2822,6 +2823,56 @@ const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   ],
 ]);
 
+// Runtime recipe registry: factory-produced recipes authored at runtime via
+// `authorFactoryRecipe`. Kept strictly separate from the static, signed
+// RECIPE_REGISTRY above so that shipped recipes and their signed digests are
+// never influenced by runtime authoring, and so the static set is always
+// consulted first. Entries are keyed by tenant scope; recipes authored for one
+// tenant are not resolvable by another (or by the untenanted global scope).
+const RUNTIME_RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>();
+
+// Bounds. A single spec may name at most MAX_RECIPE_SPEC_PATHS paths (consumer
+// paths plus declaration paths combined) so a caller cannot author an unbounded
+// blast radius; the runtime registry holds at most MAX_RUNTIME_RECIPES recipes
+// across all tenants so a caller cannot exhaust process memory.
+const MAX_RECIPE_SPEC_PATHS = 200;
+const MAX_RUNTIME_RECIPES = 1000;
+
+// Tenant identifiers permitted on the authoring/resolution entry points. Matches
+// the conservative shape used by other tenant-keyed surfaces in the repo.
+const RECIPE_TENANT_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+
+export type RecipeResolutionOptions = Readonly<{ tenantId?: string }>;
+
+/**
+ * Normalize the tenant scope for the runtime registry. `undefined` is the
+ * untenanted global scope (empty string); any provided tenantId is validated and
+ * used verbatim. Distinct from the static registry, which is global to all
+ * callers.
+ */
+function runtimeScope(tenantId: string | undefined): string {
+  if (tenantId === undefined) return "";
+  if (typeof tenantId !== "string" || !RECIPE_TENANT_ID.test(tenantId)) {
+    throw new Error("recipe_tenant_id_invalid");
+  }
+  return tenantId;
+}
+
+// Length-prefix the scope so the scope/id boundary is unambiguous regardless of
+// the characters either side of it.
+function runtimeRegistryKey(scope: string, id: string, version: number): string {
+  return `${scope.length}:${scope} ${id}@${version}`;
+}
+
+/**
+ * Runtime recipe authoring is default-off. The flag is read through the shared
+ * dual-read helper (current name preferred, legacy name as fallback) exactly like
+ * the other Regauge feature flags in this repo.
+ */
+function recipeAuthoringEnabled(): boolean {
+  return resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_RECIPE_AUTHORING_ENABLED") === "1";
+}
+
 export const NODE_RUNTIME_18_TO_20_RECIPE = NODE_RUNTIME_18_TO_20_V2;
 
 export function validateRecipe(recipe: MigrationRecipeContract): void {
@@ -2849,16 +2900,170 @@ export function validateRecipe(recipe: MigrationRecipeContract): void {
   if (definitionDigest(definition) !== recipe.digest) throw new Error("recipe_digest_mismatch");
 }
 
-export function getRecipe(id: string, version: number): MigrationRecipeContract {
+export function getRecipe(
+  id: string,
+  version: number,
+  options?: RecipeResolutionOptions,
+): MigrationRecipeContract {
   if (!Number.isSafeInteger(version) || version < 1) throw new Error("recipe_version_invalid");
-  const recipe = RECIPE_REGISTRY.get(`${id}@${version}`);
-  if (!recipe) throw new Error(`recipe_not_found:${id}@${version}`);
+  // Static, signed recipes are always consulted first and are global to every
+  // caller, so existing behaviour and signed digests are unchanged.
+  const staticRecipe = RECIPE_REGISTRY.get(`${id}@${version}`);
+  if (staticRecipe) return staticRecipe;
+  const scope = runtimeScope(options?.tenantId);
+  const runtimeRecipe = RUNTIME_RECIPE_REGISTRY.get(runtimeRegistryKey(scope, id, version));
+  if (!runtimeRecipe) throw new Error(`recipe_not_found:${id}@${version}`);
+  return runtimeRecipe;
+}
+
+export function resolveRecipe(
+  reference: RecipeReference,
+  options?: RecipeResolutionOptions,
+): MigrationRecipeContract {
+  const recipe = getRecipe(reference.id, reference.version, options);
+  if (reference.digest !== recipe.digest) throw new Error("recipe_digest_mismatch");
   return recipe;
 }
 
-export function resolveRecipe(reference: RecipeReference): MigrationRecipeContract {
-  const recipe = getRecipe(reference.id, reference.version);
-  if (reference.digest !== recipe.digest) throw new Error("recipe_digest_mismatch");
+export type RecipeFactoryName = "internal_api_rename" | "internal_api_type_rename";
+
+const RECIPE_FACTORY_NAMES: ReadonlySet<string> = new Set<RecipeFactoryName>([
+  "internal_api_rename",
+  "internal_api_type_rename",
+]);
+
+const INTERNAL_API_RENAME_SPEC_REQUIRED_KEYS = [
+  "recipeId",
+  "version",
+  "title",
+  "source",
+  "target",
+  "module",
+  "from",
+  "to",
+  "paths",
+] as const;
+
+const INTERNAL_API_RENAME_SPEC_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  ...INTERNAL_API_RENAME_SPEC_REQUIRED_KEYS,
+  "declarationPaths",
+]);
+
+function requireStringField(
+  record: Record<string, unknown>,
+  field: string,
+): string {
+  const value = record[field];
+  if (value === undefined) throw new Error(`recipe_params_missing:${field}`);
+  if (typeof value !== "string") throw new Error(`recipe_params_invalid:${field}`);
+  return value;
+}
+
+function requireStringArrayField(
+  record: Record<string, unknown>,
+  field: string,
+  required: boolean,
+): readonly string[] | undefined {
+  const value = record[field];
+  if (value === undefined) {
+    if (required) throw new Error(`recipe_params_missing:${field}`);
+    return undefined;
+  }
+  if (!Array.isArray(value)) throw new Error(`recipe_params_invalid:${field}`);
+  for (const item of value) {
+    if (typeof item !== "string") throw new Error(`recipe_params_invalid:${field}`);
+  }
+  return value as readonly string[];
+}
+
+/**
+ * Strictly validate untyped `params` into an InternalApiRenameSpec: reject
+ * unknown keys, wrong types, and missing required fields, and enforce the path
+ * cap before any factory runs or anything is registered. Value-level invariants
+ * (identifier shape, module shape, declaration completeness) remain the factory's
+ * responsibility.
+ */
+function parseInternalApiRenameSpec(params: unknown): InternalApiRenameSpec {
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    throw new Error("recipe_params_invalid");
+  }
+  const record = params as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!INTERNAL_API_RENAME_SPEC_KNOWN_KEYS.has(key)) {
+      throw new Error(`recipe_params_unknown_key:${key}`);
+    }
+  }
+  const version = record.version;
+  if (version === undefined) throw new Error("recipe_params_missing:version");
+  if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+    throw new Error("recipe_params_invalid:version");
+  }
+  const paths = requireStringArrayField(record, "paths", true)!;
+  const declarationPaths = requireStringArrayField(record, "declarationPaths", false);
+  const totalPaths = paths.length + (declarationPaths?.length ?? 0);
+  if (paths.length > MAX_RECIPE_SPEC_PATHS || totalPaths > MAX_RECIPE_SPEC_PATHS) {
+    throw new Error("recipe_params_paths_over_cap");
+  }
+  const spec: InternalApiRenameSpec = {
+    recipeId: requireStringField(record, "recipeId"),
+    version,
+    title: requireStringField(record, "title"),
+    source: requireStringField(record, "source"),
+    target: requireStringField(record, "target"),
+    module: requireStringField(record, "module"),
+    from: requireStringField(record, "from"),
+    to: requireStringField(record, "to"),
+    paths,
+    ...(declarationPaths !== undefined ? { declarationPaths } : {}),
+  };
+  return spec;
+}
+
+export type AuthorFactoryRecipeOptions = Readonly<{ tenantId?: string }>;
+
+/**
+ * Factory-only authoring entry point. A caller supplies DATA (`params`) for one
+ * of a fixed set of built-in factories; our code validates the data, runs the
+ * factory to produce the recipe AND its verification commands from a fixed
+ * template, and registers the result in the tenant-scoped runtime registry.
+ *
+ * There is deliberately no path to register an arbitrary contract: only the two
+ * named factories are reachable, and both generate their verification commands
+ * from our template, so factory output stays inside the existing trust boundary.
+ * Default-off: with the flag disabled this refuses with `recipe_authoring_disabled`
+ * and nothing is registered, so resolution behaviour is byte-identical to today.
+ */
+export function authorFactoryRecipe(
+  factory: RecipeFactoryName,
+  params: unknown,
+  options?: AuthorFactoryRecipeOptions,
+): MigrationRecipeContract {
+  if (!recipeAuthoringEnabled()) throw new Error("recipe_authoring_disabled");
+  if (typeof factory !== "string" || !RECIPE_FACTORY_NAMES.has(factory)) {
+    throw new Error("recipe_factory_unknown");
+  }
+  const scope = runtimeScope(options?.tenantId);
+  const spec = parseInternalApiRenameSpec(params);
+  const recipe =
+    factory === "internal_api_rename"
+      ? createInternalApiRenameRecipe(spec)
+      : createInternalApiTypeRenameRecipe(spec);
+  // A runtime recipe may never shadow a shipped one.
+  if (RECIPE_REGISTRY.has(`${recipe.id}@${recipe.version}`)) {
+    throw new Error("recipe_authoring_conflict");
+  }
+  const key = runtimeRegistryKey(scope, recipe.id, recipe.version);
+  const existing = RUNTIME_RECIPE_REGISTRY.get(key);
+  if (existing) {
+    // Re-authoring an identical spec for the same tenant is idempotent; a
+    // conflicting spec at the same id@version is rejected.
+    if (existing.digest !== recipe.digest) throw new Error("recipe_authoring_conflict");
+    return existing;
+  }
+  if (RUNTIME_RECIPE_REGISTRY.size >= MAX_RUNTIME_RECIPES) {
+    throw new Error("recipe_authoring_capacity_exceeded");
+  }
+  RUNTIME_RECIPE_REGISTRY.set(key, recipe);
   return recipe;
 }
 
@@ -3169,8 +3374,9 @@ function preconditionState(
 function analyzeRecipeUncached(
   reference: RecipeReference,
   input: RecipeFiles,
+  options?: RecipeResolutionOptions,
 ): RecipeAnalysis {
-  const recipe = resolveRecipe(reference);
+  const recipe = resolveRecipe(reference, options);
   const files = normalizeFiles(input);
   const sourceDigest = recipeFilesDigest(files);
   const states = recipe.preconditions.map((precondition) => ({
@@ -3208,8 +3414,9 @@ function analyzeRecipeUncached(
 export function analyzeRecipe(
   reference: RecipeReference,
   input: RecipeFiles,
+  options?: RecipeResolutionOptions,
 ): RecipeAnalysis {
-  return analyzeRecipeUncached(reference, input);
+  return analyzeRecipeUncached(reference, input, options);
 }
 
 type CachedRecipeAnalysis = Omit<RecipeAnalysis, "cacheHit">;
@@ -3355,8 +3562,9 @@ function applyRecipeWithAnalysis(
   reference: RecipeReference,
   input: RecipeFiles,
   analysis: RecipeAnalysis,
+  options?: RecipeResolutionOptions,
 ): RecipeApplication {
-  const recipe = resolveRecipe(reference);
+  const recipe = resolveRecipe(reference, options);
   const original = normalizeFiles(input);
   if (
     analysis.recipe.id !== reference.id ||
@@ -3404,16 +3612,26 @@ function applyRecipeWithAnalysis(
   });
 }
 
-export function applyRecipe(reference: RecipeReference, input: RecipeFiles): RecipeApplication {
-  return applyRecipeWithAnalysis(reference, input, analyzeRecipeUncached(reference, input));
+export function applyRecipe(
+  reference: RecipeReference,
+  input: RecipeFiles,
+  options?: RecipeResolutionOptions,
+): RecipeApplication {
+  return applyRecipeWithAnalysis(
+    reference,
+    input,
+    analyzeRecipeUncached(reference, input, options),
+    options,
+  );
 }
 
 export function applyInverseOperations(
   reference: RecipeReference,
   input: RecipeFiles,
   operations: readonly RecipeOperation[],
+  options?: RecipeResolutionOptions,
 ): RecipeFiles {
-  const recipe = resolveRecipe(reference);
+  const recipe = resolveRecipe(reference, options);
   const output = normalizeFiles(input);
   for (const operation of [...operations].reverse()) {
     assertRecipePathAllowed(recipe, operation.path);
