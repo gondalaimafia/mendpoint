@@ -610,9 +610,13 @@ type WardenVerificationPolicy = Readonly<{
 }>;
 
 const WARDEN_ATTEMPT_LIMITS = Object.freeze({
-  maxSourceFiles: 20_000,
+  // Defaults chosen so a large monorepo (tens of thousands of tracked files)
+  // passes once excluded directories are skipped. maxSourceBytes stays inside
+  // the default candidate storage quota (2 GiB) after the per-attempt
+  // reservation below (maxSourceBytes + maxEvidenceBytes).
+  maxSourceFiles: 100_000,
   maxSourceFileBytes: 32 * 1024 * 1024,
-  maxSourceBytes: 512 * 1024 * 1024,
+  maxSourceBytes: 768 * 1024 * 1024,
   maxTreeDepth: 64,
   ...WARDEN_CANDIDATE_REVIEW_LIMITS,
   maxEvidenceBytes: 512 * 1024,

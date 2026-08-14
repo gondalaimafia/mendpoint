@@ -93,6 +93,7 @@ const DEFAULT_SOURCE_CONTEXT_BUDGET: AgentSourceContextBudget = Object.freeze({
   maxPromptEvidenceBytes: 16 * 1024,
   maxChangedFiles: 20,
   maxChangedBytes: 1024 * 1024,
+  maxSearchDepth: 64,
 });
 const TOOL_NAMES = new Set<ToolName>([
   "list_dir",
@@ -2278,7 +2279,7 @@ function sourceContextBudget(task: AgentTask): AgentSourceContextBudget {
       value.maxSearchFiles,
       DEFAULT_SOURCE_CONTEXT_BUDGET.maxSearchFiles,
       1,
-      10_000,
+      100_000,
     ),
     maxSearchBytes: boundedInteger(
       value.maxSearchBytes,
@@ -2309,6 +2310,12 @@ function sourceContextBudget(task: AgentTask): AgentSourceContextBudget {
       DEFAULT_SOURCE_CONTEXT_BUDGET.maxChangedBytes,
       1_024,
       10 * 1024 * 1024,
+    ),
+    maxSearchDepth: boundedInteger(
+      value.maxSearchDepth,
+      DEFAULT_SOURCE_CONTEXT_BUDGET.maxSearchDepth ?? 64,
+      1,
+      128,
     ),
   };
 }

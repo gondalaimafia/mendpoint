@@ -19,10 +19,12 @@ import { ABSENT_FILE_EVIDENCE_DIGEST } from "./agent.js";
 import type { WardenCheckpointJournal, WardenCheckpointJournalRecord } from "./checkpoint.js";
 import {
   runWardenAttempt,
+  scanTree,
   wardenNpmFallbackEnvironment,
   type WardenAttemptInput,
   type WardenAttemptLimits,
 } from "./attempt-engine.js";
+import { EXCLUDED_DIRECTORIES } from "./policies.js";
 
 const REVISION = "a".repeat(40);
 const POLICY_DIGEST = `sha256:${"c".repeat(64)}`;
@@ -106,6 +108,8 @@ function snapshotManifest(root: string): string {
       const absolute = join(directory, name);
       const path = prefix ? `${prefix}/${name}` : name;
       const info = lstatSync(absolute);
+      // Mirror scanTree: symbolic links are never followed or hashed.
+      if (info.isSymbolicLink()) continue;
       if (info.isDirectory()) {
         visit(absolute, path);
         continue;
@@ -889,7 +893,7 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
     expect(readdirSync(value.candidateRoot)).toEqual([]);
   });
 
-  it("blocks a symbolic link anywhere in the immutable source tree", async () => {
+  it("refuses a symbolic link whose target escapes the immutable source root", async () => {
     const value = fixture("symlink");
     const external = join(value.base, "external.js");
     writeFileSync(external, "export const outside = true;\n", "utf8");
@@ -1167,4 +1171,205 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
     });
   });
 
+  it("continues an attempt when the immutable source contains an in-tree symbolic link", async () => {
+    const value = fixture("symlink-in-tree");
+    try {
+      symlinkSync(
+        join(value.sourceRoot, "client.js"),
+        join(value.sourceRoot, "client-link.js"),
+        "file",
+      );
+    } catch (error) {
+      if (["EPERM", "EACCES", "UNKNOWN"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        return;
+      }
+      throw error;
+    }
+
+    const result = await runWardenAttempt(input(value));
+
+    expect(result.status).toBe("succeeded");
+    expect(result.changedPaths).toEqual(["client.js"]);
+  });
+
+});
+
+describe("Warden source tree scanner", () => {
+  function scanLimits(overrides: Partial<WardenAttemptLimits> = {}): WardenAttemptLimits {
+    return { ...LIMITS, ...overrides };
+  }
+
+  // A candidate scan (the private workspace after verifiers install deps and
+  // emit build output) with nothing tracked to preserve.
+  const candidateExclusion = {
+    excludeGenerated: EXCLUDED_DIRECTORIES,
+    keepDirectories: new Set<string>(),
+  } as const;
+
+  it("candidate scan omits generated directories without tripping the cap", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-scan-exclusions-"));
+    roots.push(root);
+    writeTree(root, {
+      "README.md": "# repo\n",
+      "src/index.ts": "export const a = 1;\n",
+      "src/util.ts": "export const b = 2;\n",
+    });
+    // A dependency tree far larger than the file cap: excluded, it must be
+    // neither read nor counted.
+    for (let index = 0; index < 500; index += 1) {
+      const target = join(root, "node_modules", "dep", `file-${index}.js`);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, "module.exports = {};\n");
+    }
+    for (const excluded of ["dist", ".git", "coverage", ".turbo", ".next"]) {
+      mkdirSync(join(root, excluded), { recursive: true });
+      writeFileSync(join(root, excluded, "artifact.js"), "x".repeat(1_024));
+    }
+
+    const manifest = scanTree(
+      root,
+      scanLimits({ maxSourceFiles: 40 }),
+      "warden_attempt_candidate_symlink",
+      candidateExclusion,
+    );
+
+    expect(manifest.entries.map((entry) => entry.path)).toEqual([
+      "README.md",
+      "src/index.ts",
+      "src/util.ts",
+    ]);
+    expect(
+      manifest.entries.some((entry) =>
+        ["node_modules", "dist", ".git", "coverage", ".turbo", ".next"].some((name) =>
+          entry.path.split("/").includes(name),
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("source scan is faithful and does not exclude any directory", () => {
+    // The immutable source digest must match the stored snapshot manifest, which
+    // covers every tracked file. A committed vendor/ or node_modules/ therefore
+    // has to appear in a source scan (no exclusion argument).
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-scan-source-faithful-"));
+    roots.push(root);
+    writeTree(root, {
+      "src/index.ts": "export const a = 1;\n",
+      "vendor/provider.json": "{}\n",
+      "node_modules/dep/index.js": "module.exports = {};\n",
+    });
+
+    const manifest = scanTree(root, scanLimits(), "warden_attempt_source_symlink");
+
+    expect(manifest.entries.map((entry) => entry.path)).toEqual([
+      "node_modules/dep/index.js",
+      "src/index.ts",
+      "vendor/provider.json",
+    ]);
+  });
+
+  it("candidate scan keeps a tracked directory but still drops a generated one", () => {
+    // vendor/ is committed source (in keepDirectories); node_modules is a
+    // verifier-installed artifact that must be skipped.
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-scan-tracked-keep-"));
+    roots.push(root);
+    writeTree(root, {
+      "src/index.ts": "export const a = 1;\n",
+      "vendor/provider.json": "{}\n",
+    });
+    for (let index = 0; index < 50; index += 1) {
+      const target = join(root, "node_modules", "dep", `file-${index}.js`);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, "module.exports = {};\n");
+    }
+
+    const manifest = scanTree(root, scanLimits(), "warden_attempt_candidate_symlink", {
+      excludeGenerated: EXCLUDED_DIRECTORIES,
+      keepDirectories: new Set(["vendor"]),
+    });
+
+    expect(manifest.entries.map((entry) => entry.path)).toEqual([
+      "src/index.ts",
+      "vendor/provider.json",
+    ]);
+  });
+
+  it("skips and records a symbolic link that stays inside the repo root", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-scan-symlink-in-"));
+    roots.push(root);
+    writeTree(root, { "a.ts": "export const a = 1;\n", "b.ts": "export const b = 2;\n" });
+    try {
+      symlinkSync(join(root, "a.ts"), join(root, "link.ts"), "file");
+    } catch (error) {
+      if (["EPERM", "EACCES", "UNKNOWN"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        return;
+      }
+      throw error;
+    }
+
+    const manifest = scanTree(root, scanLimits(), "warden_attempt_source_symlink");
+
+    expect(manifest.entries.map((entry) => entry.path)).toEqual(["a.ts", "b.ts"]);
+    expect(manifest.symlinks).toEqual(["link.ts"]);
+  });
+
+  it("refuses a symbolic link whose target escapes the repo root", () => {
+    const base = mkdtempSync(join(tmpdir(), "mendpoint-scan-symlink-escape-"));
+    roots.push(base);
+    const root = join(base, "source");
+    writeTree(root, { "a.ts": "export const a = 1;\n" });
+    const outside = join(base, "outside.ts");
+    writeFileSync(outside, "export const secret = true;\n");
+    try {
+      symlinkSync(outside, join(root, "escape.ts"), "file");
+    } catch (error) {
+      if (["EPERM", "EACCES", "UNKNOWN"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        return;
+      }
+      throw error;
+    }
+
+    expect(() => scanTree(root, scanLimits(), "warden_attempt_source_symlink")).toThrowError(
+      /escapes its bound root/,
+    );
+  });
+
+  it("honours a lowered file cap and lets a large synthetic tree through under raised limits", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-scan-caps-"));
+    roots.push(root);
+    const sourceDir = join(root, "src");
+    mkdirSync(sourceDir, { recursive: true });
+    const sourceCount = 5_000;
+    for (let index = 0; index < sourceCount; index += 1) {
+      writeFileSync(
+        join(sourceDir, `mod-${String(index).padStart(5, "0")}.ts`),
+        `export const n${index} = ${index};\n`,
+      );
+    }
+    // A dependency tree that would blow any cap if it were not excluded.
+    const depDir = join(root, "node_modules", "dep");
+    mkdirSync(depDir, { recursive: true });
+    for (let index = 0; index < 2_000; index += 1) {
+      writeFileSync(join(depDir, `d-${index}.js`), "module.exports = {};\n");
+    }
+
+    // Lowered cap: the tracked tree alone exceeds a tiny ceiling.
+    expect(() =>
+      scanTree(root, scanLimits({ maxSourceFiles: 2 }), "warden_attempt_candidate_symlink", candidateExclusion),
+    ).toThrowError(/attempt limit/);
+
+    // Raised ceiling: the same large tree scans cleanly and excludes the deps.
+    const manifest = scanTree(
+      root,
+      scanLimits({
+        maxSourceFiles: 100_000,
+        maxSourceBytes: 768 * 1024 * 1024,
+        maxTreeDepth: 64,
+      }),
+      "warden_attempt_candidate_symlink",
+      candidateExclusion,
+    );
+    expect(manifest.entries).toHaveLength(sourceCount);
+    expect(manifest.entries.every((entry) => entry.path.startsWith("src/"))).toBe(true);
+  }, 30_000);
 });

@@ -1,5 +1,27 @@
 /** Safety rails for the API bug agent. */
 
+/**
+ * Directories that every tree walker skips. These are build outputs, package
+ * caches, and VCS metadata that are never source and, on a real customer repo,
+ * dwarf the tracked tree (an installed `node_modules` alone can be hundreds of
+ * thousands of files). Kept as one shared constant so the source scanner, the
+ * search walker, and the directory lister cannot drift apart. Mirrors and
+ * extends `IGNORED_DIRECTORIES` in `@mendpoint/codebase-index`.
+ */
+export const EXCLUDED_DIRECTORIES: ReadonlySet<string> = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  ".next",
+  "build",
+  "out",
+  "target",
+  "vendor",
+  "coverage",
+  ".turbo",
+  ".venv",
+]);
+
 export const DEFAULT_NEVER_TOUCH = [
   ".env",
   ".env.local",

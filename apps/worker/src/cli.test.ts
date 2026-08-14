@@ -2340,7 +2340,7 @@ describe("worker runtime", () => {
       leaseMs: 30_000,
       wardenEnv: {
         MENDPOINT_DATA_DIR: fixture.dataRoot,
-        MENDPOINT_WARDEN_CANDIDATE_QUOTA_BYTES: String(512 * 1024 * 1024),
+        MENDPOINT_WARDEN_CANDIDATE_QUOTA_BYTES: String(768 * 1024 * 1024),
       },
     });
     expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
@@ -2543,7 +2543,7 @@ describe("worker runtime", () => {
     // Quota leaves only 1024 bytes of headroom above the reserved attempt bytes. The
     // 4096 byte approval record would exceed quota if it were counted; the run only
     // succeeds because approvals bytes are excluded from the storage measurement.
-    const quotaBytes = 512 * 1024 * 1024 + 512 * 1024 + 1024;
+    const quotaBytes = 768 * 1024 * 1024 + 512 * 1024 + 1024;
     const result = await processJobsOnce(fixture.db, {
       tenantId: "tenant_test",
       workerId: "worker-approvals-quota",

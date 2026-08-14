@@ -141,6 +141,8 @@ describe("Warden investigative tools", () => {
     expect(result.data).toEqual({
       scopePath: "src/payments",
       hits: [{ path: "src/payments/client.ts", line: 1, text: "export const duplicateSymbol = 1;" }],
+      truncated: false,
+      truncationReason: null,
     });
   });
 
@@ -185,5 +187,48 @@ describe("Warden investigative tools", () => {
       tool: "search",
       args: { query: "secret", scopePath: "../" },
     })).toMatchObject({ ok: false, error: "policy" });
+  });
+
+  it("returns search hits in a deterministic sorted order across repeated runs", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "mendpoint-warden-search-order-"));
+    dirs.push(repoRoot);
+    // Written in a non-sorted order and across a nested directory so an
+    // unsorted readdir would surface them in filesystem order.
+    writeFileSync(join(repoRoot, "zeta.ts"), "export const TARGET = 1;\n");
+    writeFileSync(join(repoRoot, "alpha.ts"), "export const TARGET = 2;\n");
+    mkdirSync(join(repoRoot, "mid"), { recursive: true });
+    writeFileSync(join(repoRoot, "mid", "beta.ts"), "export const TARGET = 3;\n");
+    writeFileSync(join(repoRoot, "gamma.ts"), "export const TARGET = 4;\n");
+
+    const run = () => {
+      const result = executeTool(context(repoRoot), {
+        tool: "search",
+        args: { query: "TARGET" },
+      });
+      return (result.data as { hits: Array<{ path: string }> }).hits.map((hit) => hit.path);
+    };
+
+    const expected = ["alpha.ts", "gamma.ts", "mid/beta.ts", "zeta.ts"];
+    expect(run()).toEqual(expected);
+    expect(run()).toEqual(expected);
+  });
+
+  it("marks a truncated search result so a partial search cannot read as complete", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "mendpoint-warden-search-truncate-"));
+    dirs.push(repoRoot);
+    for (let index = 0; index < 5; index += 1) {
+      writeFileSync(join(repoRoot, `file-${index}.ts`), "export const TARGET = 1;\n");
+    }
+    const base = sourceState();
+    const state = { ...base, budget: { ...base.budget, maxSearchHits: 2 } };
+    const ctx = { ...context(repoRoot), sourceContext: state };
+
+    const result = executeTool(ctx, { tool: "search", args: { query: "TARGET" } });
+
+    expect(result.ok).toBe(true);
+    expect((result.data as { truncated: boolean }).truncated).toBe(true);
+    expect((result.data as { truncationReason: string }).truncationReason).toMatch(/hit limit/);
+    expect(result.summary).toMatch(/truncated/);
+    expect(state.truncatedObservations).toBe(1);
   });
 });
