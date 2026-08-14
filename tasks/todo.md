@@ -1855,3 +1855,14 @@ Hosted preflight review: workflow run `31824565761` passed on exact revision `24
 Acceptance: the protected activation workflow can provision private checkpoint storage inside Fly and the Regauge runtime accepts Fly's standard Tigris secret names. Conflicting custom and standard aliases fail closed. No S3 credential is copied through GitHub, printed, or stored outside Fly.
 
 Review: official Fly documentation and the installed CLI confirm `fly storage create --app ... --org ... --yes` provisions private Tigris object storage and injects `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, `BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` directly into the app. The runtime now resolves those standard variables through one immutable configuration shared by production validation and execution; any conflicting custom alias fails closed. Full Worker tests pass 285 of 285, the workflow suite passes 3 of 3, Worker typecheck and the 50-page production build pass, every Actions dependency is pinned, the production dependency audit reports zero vulnerabilities, Fly configuration validation passes, and diff integrity is clean.
+
+### Catalog feed poll release hotfix: 2026-08-14
+
+- [x] Reproduce the merged main failure under a fixed clock.
+- [x] Make latest feed outcome selection deterministic when multiple polls share one timestamp.
+- [x] Run the focused catalog test, the full Catalog suite, Catalog typecheck, and repository diff integrity.
+- [ ] Merge through protected checks and prove the exact main revision deploys healthy before resuming Regauge preflight.
+
+Acceptance: two feed polls written at the same clock instant select the newest inserted outcome deterministically, dispatch a queued pipeline once, and leave the second poll unchanged. Main CI and its production health gate return green.
+
+Review: main run `31826317708` exposed one Catalog failure after the Regauge storage merge: two successful feed polls with an identical `polled_at` timestamp were ordered nondeterministically, so the older hash could be selected and the second pipeline poll returned `new_version`. A fixed-clock regression reproduced the failure. Feed history now orders equal timestamps by newest SQLite row ID. The focused test passes 8 of 8, full Catalog passes 45 of 45, full DB passes 213 of 213, both workspace typechecks pass, and diff integrity is clean.

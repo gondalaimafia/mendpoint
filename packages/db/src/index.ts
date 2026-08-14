@@ -3925,7 +3925,9 @@ export function latestFeedPollForSlug(db: AppDb, slug: string): FeedPollRow | un
             evidence.observed_at AS validation_observed_at
      FROM feed_polls poll
      LEFT JOIN feed_validation_evidence evidence ON evidence.poll_id = poll.id
-     WHERE poll.provider_slug = ? ORDER BY poll.polled_at DESC LIMIT 1`,
+     WHERE poll.provider_slug = ?
+     ORDER BY poll.polled_at DESC, poll.rowid DESC
+     LIMIT 1`,
     [slug],
   );
 }
@@ -3936,7 +3938,8 @@ export function latestSuccessfulHash(db: AppDb, slug: string): string | undefine
     `SELECT * FROM feed_polls
      WHERE provider_slug = ? AND content_hash IS NOT NULL
        AND status IN ('unchanged', 'new_version', 'pipeline_ran', 'pipeline_enqueued')
-     ORDER BY polled_at DESC LIMIT 1`,
+     ORDER BY polled_at DESC, rowid DESC
+     LIMIT 1`,
     [slug],
   );
   return row?.content_hash ?? undefined;

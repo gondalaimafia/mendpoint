@@ -17,6 +17,7 @@ const dirs: string[] = [];
 const dbs: Array<{ raw: { close?: () => void } }> = [];
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   while (dbs.length) {
     try {
@@ -217,6 +218,8 @@ describe("run-poll", () => {
   });
 
   it("records queued pipeline dispatch once for an unchanged feed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-14T17:57:05.000Z"));
     const dir = mkdtempSync(join(tmpdir(), "poll-queued-"));
     dirs.push(dir);
     const db = createDb(join(dir, "p.sqlite"));
