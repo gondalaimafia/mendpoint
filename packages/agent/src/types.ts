@@ -159,6 +159,13 @@ export type AgentSourceContextBudget = Readonly<{
   maxPromptEvidenceBytes: number;
   maxChangedFiles: number;
   maxChangedBytes: number;
+  /**
+   * Maximum directory recursion depth for the search and list walkers. Optional
+   * for backward compatibility; walkers fall back to a safe default when unset.
+   * Driven from the attempt tree-depth limit so raising the file ceiling also
+   * raises search coverage instead of silently truncating deep trees.
+   */
+  maxSearchDepth?: number;
 }>;
 
 export type AgentModelSourcePolicy = Readonly<{

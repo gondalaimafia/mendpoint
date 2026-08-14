@@ -17,8 +17,18 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { runVerificationCommand } from "@mendpoint/repair";
-import { commandBlocked, isCodeExt, pathBlocked, DEFAULT_NEVER_TOUCH } from "./policies.js";
+import {
+  commandBlocked,
+  isCodeExt,
+  pathBlocked,
+  DEFAULT_NEVER_TOUCH,
+  EXCLUDED_DIRECTORIES,
+} from "./policies.js";
 import type { AgentSourceContextBudget, ToolCall, ToolResult } from "./types.js";
+
+/** Fallback walker ceilings used only when no source-context budget is bound. */
+const DEFAULT_MAX_SEARCH_FILES = 2_000;
+const DEFAULT_MAX_SEARCH_DEPTH = 64;
 
 export type ToolSourceContextState = {
   requireObservation: boolean;
@@ -173,17 +183,20 @@ function walk(
   root: string,
   out: string[] = [],
   depth = 0,
-  maxFiles = 2_000,
+  maxFiles = DEFAULT_MAX_SEARCH_FILES,
+  maxDepth = DEFAULT_MAX_SEARCH_DEPTH,
 ): string[] {
-  if (depth > 8 || out.length >= maxFiles) return out;
+  if (depth > maxDepth || out.length >= maxFiles) return out;
   let entries: string[];
   try {
-    entries = readdirSync(dir);
+    // Sorted so the same commit yields the same traversal (and the same
+    // truncation boundary) on every run and every machine.
+    entries = readdirSync(dir).sort();
   } catch {
     return out;
   }
   for (const name of entries) {
-    if (name === "node_modules" || name === ".git" || name === "dist" || name === ".next") {
+    if (EXCLUDED_DIRECTORIES.has(name)) {
       continue;
     }
     const abs = join(dir, name);
@@ -196,7 +209,7 @@ function walk(
       continue;
     }
     const rel = relative(root, abs).replace(/\\/g, "/");
-    if (st.isDirectory()) walk(abs, root, out, depth + 1, maxFiles);
+    if (st.isDirectory()) walk(abs, root, out, depth + 1, maxFiles, maxDepth);
     else if (isCodeExt(name) && out.length < maxFiles) out.push(rel);
   }
   return out;
@@ -207,12 +220,13 @@ function walkPage(
   root: string,
   offset: number,
   maxFiles: number,
+  maxDepth = DEFAULT_MAX_SEARCH_DEPTH,
 ): { files: string[]; nextOffset: number | null; totalFiles: number | null; truncated: boolean } {
   const collected: string[] = [];
   let codeFilesSeen = 0;
   let hasMore = false;
   const visit = (directory: string, depth: number): boolean => {
-    if (depth > 32) return false;
+    if (depth > maxDepth) return false;
     let entries: string[];
     try {
       entries = readdirSync(directory).sort();
@@ -220,7 +234,7 @@ function walkPage(
       return false;
     }
     for (const name of entries) {
-      if (name === "node_modules" || name === ".git" || name === "dist" || name === ".next") {
+      if (EXCLUDED_DIRECTORIES.has(name)) {
         continue;
       }
       const absolute = join(directory, name);
@@ -455,7 +469,8 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         const maxFiles = Number.isFinite(requestedMaxFiles)
           ? Math.max(1, Math.min(Math.floor(requestedMaxFiles), 200))
           : 200;
-        const page = walkPage(abs, ctx.repoRoot, offset, maxFiles);
+        const maxDepth = ctx.sourceContext?.budget.maxSearchDepth ?? DEFAULT_MAX_SEARCH_DEPTH;
+        const page = walkPage(abs, ctx.repoRoot, offset, maxFiles, maxDepth);
         return {
           ok: true,
           tool,
@@ -553,20 +568,26 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
           return { ok: false, tool, summary: "search scope not found", error: "ENOENT" };
         }
         const state = ctx.sourceContext;
-        const maxFiles = state?.budget.maxSearchFiles ?? 2_000;
+        const maxFiles = state?.budget.maxSearchFiles ?? DEFAULT_MAX_SEARCH_FILES;
         const maxBytes = state?.budget.maxSearchBytes ?? 8 * 1024 * 1024;
         const maxHits = state?.budget.maxSearchHits ?? 40;
-        const files = walk(scopeRoot, ctx.repoRoot, [], 0, maxFiles);
+        const maxDepth = state?.budget.maxSearchDepth ?? DEFAULT_MAX_SEARCH_DEPTH;
+        const files = walk(scopeRoot, ctx.repoRoot, [], 0, maxFiles, maxDepth);
         const hits: Array<{ path: string; line: number; text: string }> = [];
         const re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
         let scannedBytes = 0;
+        let byteBudgetExhausted = false;
         for (const f of files) {
           if (pathBlocked(f, never)) continue;
           let text: string;
           try {
             const stat = statSync(join(ctx.repoRoot, f));
             if (!stat.isFile() || stat.size > (state?.budget.maxFileBytes ?? 1024 * 1024)) continue;
-            if (scannedBytes + stat.size > maxBytes) break;
+            if (scannedBytes + stat.size > maxBytes) {
+              // Files remain but the byte budget cannot admit the next one.
+              byteBudgetExhausted = true;
+              break;
+            }
             const value = readFileSync(join(ctx.repoRoot, f));
             scannedBytes += value.byteLength;
             text = value.toString("utf8");
@@ -580,18 +601,31 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
             }
           });
         }
+        const truncatedByFiles = files.length >= maxFiles;
+        const truncatedByBytes = byteBudgetExhausted || scannedBytes >= maxBytes;
+        const truncatedByHits = hits.length >= maxHits;
+        const truncated = truncatedByFiles || truncatedByBytes || truncatedByHits;
+        const truncationReason = truncated
+          ? [
+              truncatedByHits ? "hit limit reached" : null,
+              truncatedByFiles ? "file scan limit reached" : null,
+              truncatedByBytes ? "byte scan budget exhausted" : null,
+            ].filter(Boolean).join("; ")
+          : null;
         if (state) {
           state.searches.add(`${scopePath}:${query}`);
           state.searchBytes += scannedBytes;
-          if (files.length >= maxFiles || scannedBytes >= maxBytes || hits.length >= maxHits) {
-            state.truncatedObservations++;
-          }
+          if (truncated) state.truncatedObservations++;
         }
         return {
           ok: true,
           tool,
-          summary: `${hits.length} hits for ${JSON.stringify(query)} under ${scopePath}`,
-          data: { scopePath, hits },
+          // Truncation is surfaced in the summary the planner reads so a partial
+          // search can never be mistaken for exhaustive coverage of the symbol.
+          summary: truncated
+            ? `${hits.length} hits for ${JSON.stringify(query)} under ${scopePath} (results truncated: ${truncationReason}; coverage is incomplete, do not treat as exhaustive)`
+            : `${hits.length} hits for ${JSON.stringify(query)} under ${scopePath}`,
+          data: { scopePath, hits, truncated, truncationReason },
         };
       }
 

@@ -33,7 +33,7 @@ import {
   runWarden,
   runWardenWithRuntime,
 } from "./agent.js";
-import { verificationControlPath } from "./policies.js";
+import { EXCLUDED_DIRECTORIES, verificationControlPath } from "./policies.js";
 import type {
   AgentExecutionMetrics,
   AgentMissionPlan,
@@ -178,6 +178,12 @@ type TreeManifest = Readonly<{
   entries: readonly ManifestEntry[];
   digest: string;
   totalBytes: number;
+  /**
+   * Repo-relative paths of symbolic links that were skipped (never followed and
+   * never hashed) during the walk. Recorded for observability; deliberately not
+   * part of `digest`, which covers file content only.
+   */
+  symlinks: readonly string[];
 }>;
 
 type VerificationRecord = Readonly<{
@@ -198,9 +204,12 @@ class AttemptError extends Error {
 }
 
 const HARD_LIMITS = Object.freeze({
-  maxSourceFiles: 20_000,
+  // Ceilings, not defaults. Once excluded directories (node_modules, dist, build
+  // outputs, VCS metadata) are skipped, the tracked tree of even a large
+  // monorepo fits well under these. See scanTree and EXCLUDED_DIRECTORIES.
+  maxSourceFiles: 200_000,
   maxSourceFileBytes: 32 * 1024 * 1024,
-  maxSourceBytes: 512 * 1024 * 1024,
+  maxSourceBytes: 2 * 1024 * 1024 * 1024,
   maxTreeDepth: 64,
   maxChangedFiles: 1_000,
   maxChangedFileBytes: 32 * 1024 * 1024,
@@ -433,8 +442,47 @@ function snapshotManifestSha256(
   }));
 }
 
-function scanTree(root: string, limits: WardenAttemptLimits, symlinkCode: string): TreeManifest {
+/**
+ * Options that bound directory exclusion for a scan.
+ *
+ * The immutable source is scanned faithfully (no exclusion) so its digest keeps
+ * matching the stored snapshot manifest, which is computed over every tracked
+ * file (Go-style `vendor/`, committed `dist/`, and so on are legitimate source).
+ *
+ * The private candidate workspace is where verifiers install dependencies and
+ * emit build outputs (`node_modules`, `dist`, `coverage`, ...). Those are not
+ * source and must not read as candidate mutations or blow the file/byte cap, so
+ * candidate scans exclude the well-known generated directory names -- but only
+ * where the same path was NOT copied from the tracked source (`keepDirectories`
+ * carries the tracked directory prefixes, so a committed `vendor/` survives).
+ */
+type ScanExclusion = Readonly<{
+  excludeGenerated: ReadonlySet<string>;
+  keepDirectories: ReadonlySet<string>;
+}>;
+
+/** Every ancestor directory prefix that contains at least one tracked file. */
+function trackedDirectories(manifest: TreeManifest): ReadonlySet<string> {
+  const directories = new Set<string>();
+  for (const entry of manifest.entries) {
+    const segments = entry.path.split("/");
+    let prefix = "";
+    for (let index = 0; index < segments.length - 1; index += 1) {
+      prefix = prefix ? `${prefix}/${segments[index]}` : segments[index]!;
+      directories.add(prefix);
+    }
+  }
+  return directories;
+}
+
+export function scanTree(
+  root: string,
+  limits: WardenAttemptLimits,
+  symlinkCode: string,
+  exclusion?: ScanExclusion,
+): TreeManifest {
   const entries: ManifestEntry[] = [];
+  const symlinks: string[] = [];
   let totalBytes = 0;
 
   const visit = (directory: string, relativeDirectory: string, depth: number): void => {
@@ -446,14 +494,44 @@ function scanTree(root: string, limits: WardenAttemptLimits, symlinkCode: string
       const path = relativeDirectory ? `${relativeDirectory}/${item.name}` : item.name;
       const info = lstatSync(absolute);
       if (info.isSymbolicLink() || item.isSymbolicLink()) {
-        fail(symlinkCode, `Symbolic link blocked at ${path}.`);
+        // A symlink is never followed and never hashed. If it resolves outside
+        // the bound root it is a traversal escape and still refuses the run;
+        // otherwise it is skipped and recorded so tooling that legitimately
+        // uses in-tree links (pnpm/yarn workspaces, generated links) does not
+        // abort a whole attempt. An unresolvable (broken) link points to no
+        // content and is safe to skip.
+        let realTarget: string | null = null;
+        try {
+          realTarget = realpathSync(absolute);
+        } catch {
+          realTarget = null;
+        }
+        if (realTarget !== null && !isWithin(root, realTarget)) {
+          fail(symlinkCode, `Symbolic link escapes its bound root: ${path}.`);
+        }
+        symlinks.push(path);
+        continue;
+      }
+      if (info.isDirectory()) {
+        // Skip a well-known generated directory (a verifier-installed
+        // node_modules, a fresh dist/coverage/build) so it neither blows the
+        // file and byte ceilings nor reads as a candidate mutation. Only skip
+        // where the tracked source did not itself carry this directory, so a
+        // committed vendor/ or dist/ is never dropped.
+        if (
+          exclusion?.excludeGenerated.has(item.name) &&
+          !exclusion.keepDirectories.has(path)
+        ) {
+          continue;
+        }
+        if (!isWithin(root, realpathSync(absolute))) {
+          fail("warden_attempt_source_escape", `Path escapes its bound root: ${path}.`);
+        }
+        visit(absolute, path, depth + 1);
+        continue;
       }
       if (!isWithin(root, realpathSync(absolute))) {
         fail("warden_attempt_source_escape", `Path escapes its bound root: ${path}.`);
-      }
-      if (info.isDirectory()) {
-        visit(absolute, path, depth + 1);
-        continue;
       }
       if (!info.isFile()) {
         fail("warden_attempt_source_special_file", `Special file blocked at ${path}.`);
@@ -481,16 +559,29 @@ function scanTree(root: string, limits: WardenAttemptLimits, symlinkCode: string
 
   visit(root, "", 0);
   entries.sort((left, right) => left.path.localeCompare(right.path));
+  symlinks.sort((left, right) => left.localeCompare(right));
   const frozenEntries = Object.freeze(entries);
   return Object.freeze({
     entries: frozenEntries,
     digest: sha256(canonicalJson(frozenEntries)),
     totalBytes,
+    symlinks: Object.freeze(symlinks),
   });
 }
 
-function copyManifest(sourceRoot: string, workspace: string, manifest: TreeManifest): void {
+/**
+ * Copies the bound source manifest into the private workspace and returns the
+ * manifest of what actually landed on disk. Each file is read back after the
+ * write and re-hashed, so this preserves the same "the copy matches the source"
+ * integrity guarantee the earlier separate `scanTree(workspace)` pass gave,
+ * while removing one full independent tree walk per attempt. The returned digest
+ * is computed identically to `scanTree`, so the caller can still assert it
+ * equals the source digest.
+ */
+function copyManifest(sourceRoot: string, workspace: string, manifest: TreeManifest): TreeManifest {
   chmodSync(workspace, 0o700);
+  const entries: ManifestEntry[] = [];
+  let totalBytes = 0;
   for (const entry of manifest.entries) {
     const source = join(sourceRoot, ...entry.path.split("/"));
     const target = join(workspace, ...entry.path.split("/"));
@@ -502,7 +593,27 @@ function copyManifest(sourceRoot: string, workspace: string, manifest: TreeManif
     }
     writeFileSync(target, content, { flag: "wx", mode: entry.executable ? 0o700 : 0o600 });
     chmodSync(target, entry.executable ? 0o700 : 0o600);
+    const written = readFileSync(target);
+    const writtenDigest = sha256(written);
+    if (written.byteLength !== entry.size || writtenDigest !== entry.sha256) {
+      fail("warden_attempt_copy_mismatch", `Candidate copy does not match the bound source tree: ${entry.path}.`);
+    }
+    totalBytes += written.byteLength;
+    entries.push(Object.freeze({
+      path: entry.path,
+      size: written.byteLength,
+      sha256: writtenDigest,
+      executable: entry.executable,
+    }));
   }
+  entries.sort((left, right) => left.path.localeCompare(right.path));
+  const frozenEntries = Object.freeze(entries);
+  return Object.freeze({
+    entries: frozenEntries,
+    digest: sha256(canonicalJson(frozenEntries)),
+    totalBytes,
+    symlinks: Object.freeze([] as string[]),
+  });
 }
 
 async function verify(
@@ -591,6 +702,7 @@ function sourceBudget(input: WardenAttemptInput): NonNullable<AgentTask["sourceC
     maxPromptEvidenceBytes: input.limits.maxEvidenceBytes,
     maxChangedFiles: input.limits.maxChangedFiles,
     maxChangedBytes: input.limits.maxChangedBytes,
+    maxSearchDepth: input.limits.maxTreeDepth,
   };
 }
 
@@ -810,10 +922,16 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       );
     }
     sourceDigest = sourceManifest.digest;
+    // The candidate workspace is where verifiers install dependencies and emit
+    // build outputs. Candidate scans skip those generated directories, but never
+    // a directory that the tracked source itself carried.
+    const candidateExclusion: ScanExclusion = {
+      excludeGenerated: EXCLUDED_DIRECTORIES,
+      keepDirectories: trackedDirectories(sourceManifest),
+    };
     workspace = mkdtempSync(join(validated.candidateRoot, `${input.scope.attemptId}-`));
     chmodSync(workspace, 0o700);
-    copyManifest(validated.sourceRoot, workspace, sourceManifest);
-    const copiedManifest = scanTree(workspace, input.limits, "warden_attempt_candidate_symlink");
+    const copiedManifest = copyManifest(validated.sourceRoot, workspace, sourceManifest);
     if (copiedManifest.digest !== sourceManifest.digest) {
       fail("warden_attempt_copy_mismatch", "Candidate copy does not match the bound source tree.");
     }
@@ -869,7 +987,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
     if (!baselineSecurity.ok) {
       fail("warden_attempt_baseline_security_failed", "A security verifier fails before repair.");
     }
-    const baselineManifest = scanTree(workspace, input.limits, "warden_attempt_candidate_symlink");
+    const baselineManifest = scanTree(workspace, input.limits, "warden_attempt_candidate_symlink", candidateExclusion);
     if (baselineManifest.digest !== sourceManifest.digest) {
       fail("warden_attempt_verifier_mutated_candidate", "A baseline verifier changed the private candidate.");
     }
@@ -995,6 +1113,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       workspace,
       input.limits,
       "warden_attempt_candidate_symlink",
+      candidateExclusion,
     );
     for (const path of agent.filesChanged) {
       const expected = [...agent.steps].reverse().find((step) =>
@@ -1039,7 +1158,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       fail("warden_attempt_security_failed", "The repaired candidate fails a security verifier.");
     }
 
-    const candidateManifest = scanTree(workspace, input.limits, "warden_attempt_candidate_symlink");
+    const candidateManifest = scanTree(workspace, input.limits, "warden_attempt_candidate_symlink", candidateExclusion);
     if (candidateManifest.digest !== agentCandidateManifest.digest) {
       fail("warden_attempt_verifier_mutated_candidate", "An independent verifier changed the candidate.");
     }
