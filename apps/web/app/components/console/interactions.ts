@@ -22,7 +22,7 @@ export const SETTINGS_SAVED_TOAST: ToastPayload = {
 
 export const ANALYZE_TOAST: ToastPayload = {
   title: "Analysis started",
-  description: "Gauge is re-scanning the latest spec diff",
+  description: "Fettler is re-scanning the latest spec diff",
 };
 
 /** Confirm handler for the "Open all PRs" alert dialog. */

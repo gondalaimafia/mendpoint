@@ -30,7 +30,7 @@ type NavGroup = {
 
 const NAV: NavGroup[] = [
   {
-    title: "Gauge",
+    title: "Fettler",
     tone: "warden",
     items: [
       { id: "changes", label: "Breaking changes", icon: ShieldAlertIcon, meta: 6 },

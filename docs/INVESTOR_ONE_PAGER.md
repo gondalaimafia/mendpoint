@@ -14,7 +14,7 @@ Modern software is a mesh of **external APIs**. Breaking changes, silent field r
 
 **Mendpoint** is an applied AI company for **legacy and integration code migration**—Cognition-style (reasoning + agentic systems + FDE delivery), focused on one underserved job: **keeping codebases correct as the APIs they depend on keep changing**.
 
-**Gauge** is the first product: an API integration teammate that turns structured API change into **impact analysis → reviewable PRs → optional agentic repair**, with human review by default.
+**Fettler — the first AI API Engineer** is the first product: an API integration teammate that turns structured API change into **impact analysis → reviewable PRs → optional agentic repair**, with human review by default. Its companion, **Regauge — the first AI Legacy Engineer**, extends the same graph-engineered approach to legacy and multi-repo migration campaigns.
 
 ## What we have shipped (evidence, not pitch)
 
@@ -46,7 +46,7 @@ change intel → index → candidates → expand (fan-out) → confirm → gener
 - Domain graphs: call-graph, e-graph, product/API impact explorer (`/graph`)
 - API: `GET /graph/agent` (inspectable control flow)
 
-### 3. Gauge — API debug agent (on-demand)
+### 3. Fettler — API debug agent (on-demand)
 
 - Goal-driven tool loop: search / read / edit / run verify / optional HTTP probe  
 - Trained failure modes: protocol, serialization, semantic, network, cascading errors, webhooks, rate limits  
@@ -78,7 +78,7 @@ change intel → index → candidates → expand (fan-out) → confirm → gener
 ### 6. Open source & IP posture
 
 - Full monorepo public (MIT) — reproducible demos for diligence  
-- 20+ workspace packages; phases A–F + gap-closure + repair + Gauge + orchestrator  
+- 20+ workspace packages; phases A–F + gap-closure + repair + Fettler + orchestrator  
 - Customer code not used to train foundation models without opt-in (product policy)
 
 ---
@@ -88,7 +88,7 @@ change intel → index → candidates → expand (fan-out) → confirm → gener
 **Input:** OpenAPI versions, SDK signals, optional changelog text  
 **Core:** Graph-leaned impact (index → candidates → expand → confirm)  
 **Output:** Reviewable PR + findings + risk/severity  
-**Agents:** Pipeline graph nodes + Gauge/repair verify loops  
+**Agents:** Pipeline graph nodes + Fettler/repair verify loops  
 **Trust:** Human review gate · path denylist · audit · no auto-merge default  
 
 ---
@@ -127,7 +127,7 @@ change intel → index → candidates → expand (fan-out) → confirm → gener
 
 ## Ask / contact
 
-**Product:** Gauge on Mendpoint  
+**Product:** Fettler on Mendpoint  
 **Artifact for diligence:** Clone the repo, run `npm install && npm test && npm run demo && npm run eval:warden`  
 **Claims policy:** We sell only what the monorepo can show — see `docs/WARDEN_CLAIMS.md`
 

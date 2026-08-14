@@ -11,7 +11,7 @@ checked register is `PRODUCT_REQUIREMENTS.json`; its validator is
 
 ## Release tiers
 
-### Gauge pilot
+### Fettler pilot
 
 GitHub is the only required source control system. A private canary must move
 from an attributable tenant connection and exact commit snapshot to a verified
@@ -20,11 +20,11 @@ baseline and post edit verification, an identified reviewer, rollback, and a
 complete event history. Single node self hosted deployment is supported for the
 pilot. Fixture evidence does not count as customer proof.
 
-### Gauge GA
+### Fettler GA
 
 Adds reliable multi provider monitoring, durable campaigns, measured accuracy
 and abstention, production availability and recovery objectives, repeatable
-onboarding, and two external outcome cohorts. GitLab is a Gauge GA requirement
+onboarding, and two external outcome cohorts. GitLab is a Fettler GA requirement
 unless a signed design partner makes it a pilot dependency.
 
 ### Regauge pilot
@@ -49,11 +49,11 @@ pass.
 Adds supported VPC deployment, private connectivity, SSO, SCIM, customer
 managed keys, residency, horizontal reliability, enterprise disaster recovery,
 customer log export, compliance evidence, and security review support. VPC is
-not a Gauge pilot or GA claim.
+not a Fettler pilot or GA claim.
 
 ## Scope decisions
 
-1. GitHub is the Gauge pilot source control system. GitLab belongs to Gauge
+1. GitHub is the Fettler pilot source control system. GitLab belongs to Fettler
    GA unless a signed pilot contract requires it sooner.
 2. Regauge pilot and Regauge GA are independent release gates. A
    validated planner is not an executable campaign.
@@ -89,9 +89,9 @@ new event and never rewrite prior evidence.
 
 | Metric | Start | End | Denominator and exclusions | Window and attribution |
 |---|---|---|---|---|
-| Gauge change to first verified pull request | Earliest accepted trusted source observation | First delivered draft pull request with passing post edit verification | One value per change and tenant cohort. Exclude rejected and duplicate sources. | Event time, reported daily and by 30 day cohort. |
-| Gauge impact precision | Reviewed confirmed impact | Reviewed proposed impact | Confirmed divided by all reviewed findings. Exclude unresolved findings. | By provider, change class, language, repository size, and 30 day cohort. |
-| Gauge impact recall | Reviewed confirmed affected sites found | All reviewed known affected sites | Found confirmed sites divided by the reviewed gold set. | Same cohort dimensions as precision. |
+| Fettler change to first verified pull request | Earliest accepted trusted source observation | First delivered draft pull request with passing post edit verification | One value per change and tenant cohort. Exclude rejected and duplicate sources. | Event time, reported daily and by 30 day cohort. |
+| Fettler impact precision | Reviewed confirmed impact | Reviewed proposed impact | Confirmed divided by all reviewed findings. Exclude unresolved findings. | By provider, change class, language, repository size, and 30 day cohort. |
+| Fettler impact recall | Reviewed confirmed affected sites found | All reviewed known affected sites | Found confirmed sites divided by the reviewed gold set. | Same cohort dimensions as precision. |
 | Pull request acceptance | Approved or merged delivered pull requests | Reviewed delivered pull requests | Exclude unresolved review. Closed without review is not automatically a false positive. | 30 and 90 day cohorts by provider and recipe. |
 | Reviewer edit delta | Delivered candidate | Accepted patch | Semantic changed operations divided by delivered operations. Text formatting only changes are excluded. | Per pull request and aggregated by recipe and route. |
 | Regression rate | Accepted Mendpoint change | Introduced CI failure, rollback, or attributed incident | Accepted changes with a regression divided by accepted changes. | 30 days after merge, with explicit attribution evidence. |
@@ -169,8 +169,8 @@ allowed before these controls and the data sufficiency gate pass.
 ## Open product decisions
 
 1. Which signed design partner, repository cohort, and supported payments
-   change will satisfy the Gauge external proof gate.
-2. Whether GitLab remains Gauge GA or moves earlier under a signed customer
+   change will satisfy the Fettler external proof gate.
+2. Whether GitLab remains Fettler GA or moves earlier under a signed customer
    dependency.
 3. Which two to five repositories and source to target range define the first
    Regauge migration class.

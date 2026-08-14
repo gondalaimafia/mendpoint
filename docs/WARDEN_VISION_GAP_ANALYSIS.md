@@ -1,6 +1,6 @@
-# Gauge vision gap analysis
+# Fettler vision gap analysis
 
-**Source vision:** Mendpoint “Introducing Gauge” product narrative (Cognition/Devin-style launch structure).  
+**Source vision:** Mendpoint “Introducing Fettler” product narrative (Cognition/Devin-style launch structure).  
 **Source of truth:** monorepo at `C:\Users\Talal\dev\mendpoint` (OSS: `gondalaimafia/mendpoint`, as of gap review).  
 **Date:** 2026-07-22  
 
@@ -10,7 +10,7 @@
 
 ## Executive summary
 
-The intro sells **Gauge** as a continuously watching, long-horizon integration engineer that:
+The intro sells **Fettler** as a continuously watching, long-horizon integration engineer that:
 
 1. monitors vendor signals (changelogs, specs, deprecations),
 2. finds impact across multi-service codebases,
@@ -19,7 +19,7 @@ The intro sells **Gauge** as a continuously watching, long-horizon integration e
 5. learns from feedback,
 6. beats general agents on an API-scoped SWE-bench-like benchmark.
 
-**What the repo actually is today:** a strong **Mendpoint platform scaffold** (change → graph impact → migration PR → policy → optional repair) **plus** a **Gauge agent** that is a **bounded, goal-driven API debug tool-loop** with a rich failure-mode catalog — mostly on **local paths/fixtures**, not a continuous multi-tenant cloud teammate.
+**What the repo actually is today:** a strong **Mendpoint platform scaffold** (change → graph impact → migration PR → policy → optional repair) **plus** a **Fettler agent** that is a **bounded, goal-driven API debug tool-loop** with a rich failure-mode catalog — mostly on **local paths/fixtures**, not a continuous multi-tenant cloud teammate.
 
 | Layer | Vision claim | Maturity | Verdict |
 |-------|--------------|----------|---------|
@@ -28,8 +28,8 @@ The intro sells **Gauge** as a continuously watching, long-horizon integration e
 | Graph impact / multi-file | Trace change across sprawling monorepo | 3–4 | Hybrid call-graph + impact pipeline real on fixtures |
 | Migration PRs | Open PRs before deprecation window | 3 | Mock + real Octokit path; not continuous production fleet |
 | Feature adoption / savings | “Cheaper batch endpoint + $ estimate” | 2 | `adopt` mode + example fixture; no cost model |
-| Autonomous bug find | Silent drift, repro, fix unprompted | 2 | Gauge needs goal/error/verify; not background hunter |
-| Self-correct on CI | Patch fails tests → iterate | 2–3 | Repair loop + Gauge verify; limited CI integration |
+| Autonomous bug find | Silent drift, repro, fix unprompted | 2 | Fettler needs goal/error/verify; not background hunter |
+| Self-correct on CI | Patch fails tests → iterate | 2–3 | Repair loop + Fettler verify; limited CI integration |
 | Learning history | Full API evolution + accepted fix patterns | 2 | Suppressed patterns from closed PRs; no multi-vendor longitudinal store |
 | Sandbox + VCS | Shell/editor/tests in sandboxed compute | 2–3 | Local sandbox tools; no cloud isolation fleet |
 | SWE-bench-style eval | Real issues, unassisted, published | 2 | Design-partner fixture eval; not public API-SWE-bench |
@@ -38,19 +38,19 @@ The intro sells **Gauge** as a continuously watching, long-horizon integration e
 | Enterprise / FDE ops | Waitlist, design partners, capacity | 1 | Product/ops outside monorepo |
 
 **Overall readiness to ship the intro as-is:** **not claim-safe**.  
-**Overall readiness as design-partner narrative with caveats:** **plausible** if language is tightened to “scaffolded platform + Gauge agent on partner repos” rather than continuous unprompted production teammate.
+**Overall readiness as design-partner narrative with caveats:** **plausible** if language is tightened to “scaffolded platform + Fettler agent on partner repos” rather than continuous unprompted production teammate.
 
 ---
 
-## 1. Product framing: who is “Gauge”?
+## 1. Product framing: who is “Fettler”?
 
 | Vision | Codebase reality | Gap |
 |--------|------------------|-----|
-| Gauge is *the* product teammate | **Mendpoint** = monorepo/platform; **Gauge** = `@mendpoint/agent` (`runWarden`) + UI `/agent` | Split identity: pipeline/PR path is not branded as Gauge end-to-end |
-| Same category as Devin (long-horizon) | Gauge default **max ~20–24 steps**, heuristic + optional LLM tool suggest | Not thousands of decisions; no persistent multi-hour sessions |
-| Watches *or* independently fixes | Pipeline = reactive on version/change; Gauge = on-demand run | No unified “always on Gauge” daemon per customer |
+| Fettler is *the* product teammate | **Mendpoint** = monorepo/platform; **Fettler** = `@mendpoint/agent` (`runWarden`) + UI `/agent` | Split identity: pipeline/PR path is not branded as Fettler end-to-end |
+| Same category as Devin (long-horizon) | Fettler default **max ~20–24 steps**, heuristic + optional LLM tool suggest | Not thousands of decisions; no persistent multi-hour sessions |
+| Watches *or* independently fixes | Pipeline = reactive on version/change; Fettler = on-demand run | No unified “always on Fettler” daemon per customer |
 
-**Gap (P0 narrative):** Unify product language so **pipeline + repair + agent** are one **Gauge** experience (or explicitly “Mendpoint platform / Gauge agent” and don’t claim they are one loop).
+**Gap (P0 narrative):** Unify product language so **pipeline + repair + agent** are one **Fettler** experience (or explicitly “Mendpoint platform / Fettler agent” and don’t claim they are one loop).
 
 ---
 
@@ -82,10 +82,10 @@ The intro sells **Gauge** as a continuously watching, long-horizon integration e
 | Piece | Status | Evidence |
 |-------|--------|----------|
 | Silent field type change → bug | **2** | OpenAPI type/rename surfaces if in versioned specs; not runtime traffic drift |
-| Reproduce bug | **2** | Gauge runs `verifyCommand` if provided; does not invent repros |
-| Fix without being asked | **1** | Gauge requires **goal** (+ path); no unsolicited bug hunting job |
+| Reproduce bug | **2** | Fettler runs `verifyCommand` if provided; does not invent repros |
+| Fix without being asked | **1** | Fettler requires **goal** (+ path); no unsolicited bug hunting job |
 
-**Gap:** Runtime/contract shadow testing, anomaly detection, unsolicited issue → Gauge sessions.
+**Gap:** Runtime/contract shadow testing, anomaly detection, unsolicited issue → Fettler sessions.
 
 ### 2.4 Trace one API change across multi-service monorepo → coordinated PRs
 
@@ -122,10 +122,10 @@ The intro sells **Gauge** as a continuously watching, long-horizon integration e
 | Piece | Status | Evidence |
 |-------|--------|----------|
 | Agentic repair | **3** | `@mendpoint/repair` diagnose→plan→apply→verify |
-| Gauge verify loop | **3** | Tool loop until verify passes |
-| Full CI (GitHub Checks) close the loop | **2** | CI comment/check helpers; not full “fail → re-run Gauge on PR” product |
+| Fettler verify loop | **3** | Tool loop until verify passes |
+| Full CI (GitHub Checks) close the loop | **2** | CI comment/check helpers; not full “fail → re-run Fettler on PR” product |
 
-**Gap:** PR-scoped CI failure → automatic Gauge re-attempt with budget.
+**Gap:** PR-scoped CI failure → automatic Fettler re-attempt with budget.
 
 ### 2.8 Tools of a senior integration engineer
 
@@ -134,17 +134,17 @@ The intro sells **Gauge** as a continuously watching, long-horizon integration e
 | Shell | Yes | `run_command` with denylist |
 | Editor | Yes | read/search/replace/write sandboxed to repo root |
 | Test runner | Yes | via shell + verify command |
-| API-spec diffing | Yes | change-intel OpenAPI (pipeline); **not inside Gauge tool loop as first-class tool** |
+| API-spec diffing | Yes | change-intel OpenAPI (pipeline); **not inside Fettler tool loop as first-class tool** |
 | Sandboxed compute | Cloud isolation | **Local process**; no Firecracker/gVisor fleet |
 | Connected VCS | Continuous | Mock + App; not always-on |
 
-**Gap:** Spec-diff tool inside Gauge; true sandbox; VCS-native session UX.
+**Gap:** Spec-diff tool inside Fettler; true sandbox; VCS-native session UX.
 
 ### 2.9 Collaborate with engineers (report, why, feedback)
 
 | Piece | Status | Evidence |
 |-------|--------|----------|
-| Report what/why/changed | **3** | PR body + Gauge markdown report + audit |
+| Report what/why/changed | **3** | PR body + Fettler markdown report + audit |
 | Accept feedback before merge | **3** | PR feedback API, suppressed patterns learning |
 | Conversational adjust fix | **1–2** | No chat-revise-PR loop; re-run with new goal |
 
@@ -154,13 +154,13 @@ The intro sells **Gauge** as a continuously watching, long-horizon integration e
 
 ## 3. Performance / benchmark claims
 
-Vision: SWE-bench-style **API regression** corpus; Gauge resolves meaningful share **unassisted**; ahead of general agents; **publish technical report**.
+Vision: SWE-bench-style **API regression** corpus; Fettler resolves meaningful share **unassisted**; ahead of general agents; **publish technical report**.
 
 | Claim element | Reality | Score |
 |---------------|---------|-------|
 | API-scoped benchmark | Design-partner cases in `@mendpoint/eval` (fixtures) | 2 |
 | Real GitHub issues / production incidents corpus | Not in repo | 1 |
-| Unassisted (no file hints) | Harness has expected sites for scoring impact; Gauge fixture is guided by goal text | 2 |
+| Unassisted (no file hints) | Harness has expected sites for scoring impact; Fettler fixture is guided by goal text | 2 |
 | Head-to-head vs general agents | Not implemented | 0 |
 | Published methodology | Planned language only | 0 |
 
@@ -222,16 +222,16 @@ Learn accepted patterns             suppressed_patterns (thin)
 Unprompted drift bugs               MISSING (Warden is on-demand)
 ```
 
-**Naming gap:** Intro uses **Gauge** for the whole loop; code still says **pipeline / repair / agent**. Product should either rebrand the loop as Gauge or rewrite intro to three products under Mendpoint.
+**Naming gap:** Intro uses **Fettler** for the whole loop; code still says **pipeline / repair / agent**. Product should either rebrand the loop as Fettler or rewrite intro to three products under Mendpoint.
 
 ---
 
 ## 7. Priority gap-closure program (recommended)
 
-### P0 — Claim safety (before public “Introducing Gauge”)
+### P0 — Claim safety (before public “Introducing Fettler”)
 
 1. **Rewrite performance section** until `warden-bench` exists; ship internal numbers only.  
-2. **Unify brand:** UI + PR footers + docs: “Opened by Gauge” for pipeline + agent.  
+2. **Unify brand:** UI + PR footers + docs: “Opened by Fettler” for pipeline + agent.  
 3. **Explicit non-claims:** no unprompted production hunting; no full RSS; no $ savings yet.  
 4. **One design-partner path:** App install → monitor → feed poll → PR on *their* repo, end-to-end recorded.
 
@@ -241,7 +241,7 @@ Unprompted drift bugs               MISSING (Warden is on-demand)
 |------|--------|
 | Breaking before prod | Changelog/release notes → surfaces + deprecation deadline field |
 | New feature + savings | Adopt scoring + simple cost heuristic in PR |
-| Silent drift | Contract test / response schema probe job → Gauge session |
+| Silent drift | Contract test / response schema probe job → Fettler session |
 | Multi-service coordinated PRs | Service ownership map + multi-PR grouping |
 | Continuous changelog | RSS/GitHub Releases poller + relevance classifier |
 | Real repo fixes | Partner eval pack (5–10 real issues) with redacted logs |
@@ -249,7 +249,7 @@ Unprompted drift bugs               MISSING (Warden is on-demand)
 ### P2 — Teammate depth
 
 - PR conversation “revise”  
-- CI fail → auto Gauge re-run (budgeted)  
+- CI fail → auto Fettler re-run (budgeted)  
 - Longitudinal API history UI  
 - Cloud sandbox workers  
 
@@ -269,7 +269,7 @@ Unprompted drift bugs               MISSING (Warden is on-demand)
 | “recalls the full history of how a given API has evolved” | “uses versioned OpenAPI diffs and local change history for tracked providers” |
 | “monitors changelog RSS indefinitely” | “polls OpenAPI feeds and SDK version signals; changelog monitoring on roadmap” |
 | “opens a PR with quantified savings” | “can open optional adoption PRs for new capabilities (cost estimates planned)” |
-| “without being asked” | “when a change is detected or a Gauge run is requested” |
+| “without being asked” | “when a change is detected or a Fettler run is requested” |
 | “meaningfully ahead of general-purpose agents on … benchmark” | “internal fixture eval for API migrations; public API-bench forthcoming” |
 | “auto-merge … per risk tier” | “defaults to human review; optional low-risk auto-merge policy (experimental)” |
 
@@ -284,7 +284,7 @@ Unprompted drift bugs               MISSING (Warden is on-demand)
 | Graph impact | 3.5 |
 | Migration PR delivery | 3 |
 | Feature adoption | 2 |
-| Gauge debug agent (API bugs) | 3.5 |
+| Fettler debug agent (API bugs) | 3.5 |
 | Self-heal / CI loop | 2.5 |
 | Learning / data moat | 2 |
 | Sandbox cloud | 1.5 |
@@ -299,8 +299,8 @@ Unprompted drift bugs               MISSING (Warden is on-demand)
 ## 10. Bottom line
 
 - **Do not** publish the Cognition-style intro **unedited** — several claims (RSS forever, unprompted silent-drift hunting, SWE-bench leadership, $ savings, full API history moat) **over-claim** the monorepo.  
-- **Do** position honestly: *Mendpoint is building Gauge — a graph-leaned, human-reviewed integration teammate. Today: OpenAPI-driven impact → PR, plus on-demand Gauge agent trained on API communication failures. Design partners next for continuous multi-repo watch.*  
-- **Closest-to-true differentiators already in code:** hybrid **graph** impact, **never auto-merge** policy, multi-language fixtures, **Gauge** failure-mode training, GitHub App path, adopt vs migrate modes.  
+- **Do** position honestly: *Mendpoint is building Fettler — a graph-leaned, human-reviewed integration teammate. Today: OpenAPI-driven impact → PR, plus on-demand Fettler agent trained on API communication failures. Design partners next for continuous multi-repo watch.*  
+- **Closest-to-true differentiators already in code:** hybrid **graph** impact, **never auto-merge** policy, multi-language fixtures, **Fettler** failure-mode training, GitHub App path, adopt vs migrate modes.  
 - **Largest gaps vs the intro:** continuous changelog intelligence, unsolicited autonomy, multi-service PR coordination, published eval, cloud sandbox + data moat, GTM waitlist.
 
 ---
@@ -311,6 +311,6 @@ Unprompted drift bugs               MISSING (Warden is on-demand)
 - `docs/superpowers/plans/2026-07-22-warden-p0-p1.md` — P0/P1 plan
 - `docs/GAP_ANALYSIS.md` — earlier platform gap vs provider-agent vision  
 - `docs/WARDEN_TRAINING.md` — API communication failure training  
-- `docs/API_BUG_AGENT.md` — Gauge agent loop  
+- `docs/API_BUG_AGENT.md` — Fettler agent loop  
 - `docs/AGENTIC_REPAIR.md` — batch repair  
 - `docs/ARCHITECTURE.md` — system design  

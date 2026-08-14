@@ -2636,7 +2636,7 @@ async function processJobsOnceUnfenced(
               job.id,
               fence,
               {
-                message: `Gauge failed: ${warden.stoppedReason}`,
+                message: `Fettler failed: ${warden.stoppedReason}`,
                 errorCode: "warden_needs_human",
                 retryable: false,
               },

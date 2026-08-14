@@ -1,10 +1,10 @@
-# Gauge — API debug agent
+# Fettler — API debug agent
 
-**Gauge** is Mendpoint’s source grounded API repair agent. It inspects an exact repository snapshot, prepares a private candidate, and reruns an approved verification profile until the API-related bug is fixed or the attempt budget is exhausted.
+**Fettler — the first AI API Engineer** is Mendpoint’s source grounded API repair agent. It inspects an exact repository snapshot, prepares a private candidate, and reruns an approved verification profile until the API-related bug is fixed or the attempt budget is exhausted.
 
 This is **not** a general “fix any software bug” agent. It is trained on **API communication failures**:
 
-| Area | Examples Gauge targets |
+| Area | Examples Fettler targets |
 |------|-------------------------|
 | Protocol / contract | Paths, Content-Type, Accept, version headers, GraphQL vs REST shape |
 | Serialization | Field renames, pagination keys, enum/date/null semantics |
@@ -140,12 +140,12 @@ excluded rather than partially disclosed.
 
 ## vs `@mendpoint/repair`
 
-| | Repair | **Gauge** |
+| | Repair | **Fettler** |
 |--|--------|----------------|
 | Style | Batch diagnose → plan → apply | Source grounded multi-step tool loop |
 | Scope | Migration leftovers + CI log | Broader API client bugs |
 | Exploration | Limited tree scan | Active search/read/edit |
 
-Use **repair** after migration PRs. Use **Gauge** for open-ended “this API integration is broken” tickets.
+Use **repair** after migration PRs. Use **Fettler** for open-ended “this API integration is broken” tickets.
 
 Package entry: `runWarden` (alias `runApiBugAgent`) from `@mendpoint/agent`.

@@ -1,7 +1,7 @@
-# Gauge / Mendpoint — Production GA 1.0
+# Fettler / Mendpoint — Production GA 1.0
 
 **Status:** General Availability (self-hosted + API-key multi-tenant control plane)  
-**Version:** `1.0.0` · channel `ga` · product **Gauge** on platform **Mendpoint**  
+**Version:** `1.0.0` · channel `ga` · product **Fettler** on platform **Mendpoint**  
 **Date:** 2026-07-27
 
 This document is the **production GA story**: what is in, what is out, how to run it, and what you may claim.
@@ -10,7 +10,7 @@ This document is the **production GA story**: what is in, what is out, how to ru
 
 ## One-liner (GA)
 
-**Gauge** opens **reviewable migration PRs** when APIs change: OpenAPI-aware impact analysis on connected codebases, graph-backed blast radius, contract gates, and an on-demand debug loop — **never auto-merges by default**.
+**Fettler** opens **reviewable migration PRs** when APIs change: OpenAPI-aware impact analysis on connected codebases, graph-backed blast radius, contract gates, and an on-demand debug loop — **never auto-merges by default**.
 
 ---
 
@@ -25,7 +25,7 @@ This document is the **production GA story**: what is in, what is out, how to ru
 | Consumer registry | API `/registry/...` |
 | Spec-first plans | `/warden/plans/from-spec` |
 | Contract gates + API design critic | `@mendpoint/contract` |
-| Gauge debug agent loop | `@mendpoint/agent` |
+| Fettler debug agent loop | `@mendpoint/agent` |
 | Feed poll (OpenAPI / SDK signals) | worker + catalog |
 | Audit log + product metrics | SQLite control plane |
 | API key auth (required in production) | `API_AUTH=required` |
@@ -124,7 +124,7 @@ npm run build -w @mendpoint/web && npm run start -w @mendpoint/web
 1. Problem: API breaks → consumers break silently  
 2. `npm run demo` → PR with evidence  
 3. Registry / graph blast radius  
-4. Optional Gauge agent on fixture  
+4. Optional Fettler agent on fixture  
 5. Open `/status` → **GA 1.0 operational**  
 6. Ask: design partners / self-host pilots — **not** “finish Firecracker”
 
@@ -134,4 +134,4 @@ npm run build -w @mendpoint/web && npm run start -w @mendpoint/web
 
 See `docs/WARDEN_CLAIMS.md`. Preferred public line:
 
-> Gauge is generally available for self-hosted and API-key multi-tenant control planes: review-first migration PRs from OpenAPI changes, graph-backed impact, and an on-demand API debug loop. Continuous multi-repo “unprompted” hunting and public leaderboard benchmarks remain design-partner track.
+> Fettler is generally available for self-hosted and API-key multi-tenant control planes: review-first migration PRs from OpenAPI changes, graph-backed impact, and an on-demand API debug loop. Continuous multi-repo “unprompted” hunting and public leaderboard benchmarks remain design-partner track.

@@ -6,7 +6,7 @@
 
 We do **not** run one overloaded agent that discovers, patches, and self-reviews in a single muddy context.  
 
-- **Loop engineering** = how each node works (Gauge, repair, confirm).  
+- **Loop engineering** = how each node works (Fettler, repair, confirm).  
 - **Graph engineering** = how the product is wired (change intel → fan-out expand → confirm → generate → verify → human review).  
 
 Domain **code/API graphs** (call-graph, e-graph, product graph) and the **agent orchestration graph** (`@mendpoint/orchestrator`) are both first-class.

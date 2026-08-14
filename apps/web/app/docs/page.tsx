@@ -5,7 +5,7 @@ import { PublicFooter } from "../public-footer";
 
 export const metadata: Metadata = {
   title: "Supported scope",
-  description: "Current Gauge pilot inputs, repository boundary, verification, and product status.",
+  description: "Current Fettler pilot inputs, repository boundary, verification, and product status.",
   alternates: { canonical: "/docs" },
 };
 
@@ -20,7 +20,7 @@ export default function DocumentationPage() {
     <div className="public-page public-document">
       <header>
         <p className="public-kicker">Documentation</p>
-        <h1>Supported Gauge pilot scope</h1>
+        <h1>Supported Fettler pilot scope</h1>
         <p className="public-lead">{wording("CLM-002")}</p>
       </header>
 
@@ -50,7 +50,7 @@ export default function DocumentationPage() {
           <li>Coverage varies by language, change class, repository size, and verification profile.</li>
           <li>Static analysis may not see runtime generated behavior.</li>
           <li>Ambiguous work reports confidence and can abstain.</li>
-          <li>Gauge does not merge pull requests.</li>
+          <li>Fettler does not merge pull requests.</li>
           <li>Regauge is an experimental planning preview.</li>
           <li>GitLab delivery, SSO, SAML, and standard public billing remain roadmap work.</li>
         </ul>

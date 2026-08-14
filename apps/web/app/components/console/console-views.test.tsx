@@ -105,7 +105,7 @@ describe("DS4 console — one indigo CTA per screen", () => {
 describe("DS3 console views — content fidelity", () => {
   it("renders the Warden overview: eyebrow, version, stats, and severities", () => {
     const html = renderToStaticMarkup(<ChangesView data={SAMPLE_CHANGES_DATA} />);
-    expect(html).toContain("GAUGE");
+    expect(html).toContain("FETTLER");
     expect(html).toContain("payments-api");
     expect(html).toContain("v2.9.4");
     expect(html).toContain("POST /v1/charges");
@@ -148,7 +148,7 @@ describe("DS3 console views — content fidelity", () => {
 describe("DS console views — honest empty states", () => {
   it("renders a Warden empty state when no change is available", () => {
     const html = renderToStaticMarkup(<ChangesView data={null} />);
-    expect(html).toContain("GAUGE");
+    expect(html).toContain("FETTLER");
     expect(html).toContain("No structural change is staged yet");
     expect(countGlow(html)).toBe(0);
   });

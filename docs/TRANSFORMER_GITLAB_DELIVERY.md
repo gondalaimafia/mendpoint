@@ -59,7 +59,7 @@ the worker constructs the delivery for a `transformer.adaptive.deliver` job
   default and the real HTTP client only when `GITLAB_MODE=real` and
   `GITLAB_TOKEN` are set.
 
-The Gauge candidate delivery path routes through the same selector; see
+The Fettler candidate delivery path routes through the same selector; see
 [`WARDEN_GITLAB_DELIVERY.md`](./WARDEN_GITLAB_DELIVERY.md).
 
 ## Configuration

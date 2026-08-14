@@ -2841,7 +2841,7 @@ app.post("/agent/runs", async (c) => {
       if (existing) {
         if (existing.type !== "agent.run" || existing.payload_json !== payloadJson) {
           db.raw.exec("ROLLBACK");
-          return c.json({ error: "idempotency key was already used for a different Gauge run" }, 409);
+          return c.json({ error: "idempotency key was already used for a different Fettler run" }, 409);
         }
         db.raw.exec("COMMIT");
         return c.json(
@@ -2851,7 +2851,7 @@ app.post("/agent/runs", async (c) => {
             status: existing.status,
             product: "warden",
             replayed: true,
-            message: "The existing Gauge run was returned",
+            message: "The existing Fettler run was returned",
           },
           202,
         );

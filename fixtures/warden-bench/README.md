@@ -1,6 +1,6 @@
 # warden-bench (internal only)
 
-Synthetic API-debug cases for **Gauge** (`@mendpoint/agent`).  
+Synthetic API-debug cases for **Fettler** (`@mendpoint/agent`).  
 **Not a public leaderboard.** Do not use scores in marketing or sales claims.
 
 ## Layout

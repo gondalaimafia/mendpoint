@@ -1,5 +1,5 @@
 /**
- * Demo: Gauge (API debug agent) on fixtures/agent-bugs/broken-charges
+ * Demo: Fettler (API debug agent) on fixtures/agent-bugs/broken-charges
  *
  *   npm run agent:demo
  */

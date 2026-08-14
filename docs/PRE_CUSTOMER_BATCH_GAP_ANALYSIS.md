@@ -2,7 +2,7 @@
 
 **Source vision:** “Build everything with zero design-partner dependency” — change ingestion, scanning, patch engine, internal benchmark, core product surfaces, human-review gating — so the first partner conversation starts against a **working product**, not a pitch deck.
 
-**Source of truth:** monorepo `C:\Users\Talal\dev\mendpoint` (Gauge / Mendpoint).  
+**Source of truth:** monorepo `C:\Users\Talal\dev\mendpoint` (Fettler / Mendpoint).  
 **Related:** `docs/WARDEN_VISION_GAP_ANALYSIS.md`, `docs/WARDEN_CLAIMS.md`, `docs/superpowers/plans/2026-07-22-warden-p0-p1.md`.
 
 **How to read scores:** 0 = absent · 1 = stub · 2 = toy/fixture · 3 = working MVP · 4 = partner-ready · 5 = batch-complete as written.
@@ -105,17 +105,17 @@ Change + call site → **code fix** → **run existing test suite** → **plain-
 | Patch / multi-file edits from impact | **3** | `@mendpoint/generation` |
 | Risk on change/PR | **3–4** | structural risk + severity tiers |
 | Plain-language PR body | **3** | generation + brand packs |
-| Run tests / verify loop | **3** | Gauge `verifyCommand`; repair loop; CI comment helpers |
+| Run tests / verify loop | **3** | Fettler `verifyCommand`; repair loop; CI comment helpers |
 | Always “customer’s existing suite” first-class | **2** | Needs configured verify/CI; not auto-discovered `npm test`/`pytest` everywhere |
 | Adopt / new capability patches | **2–3** | adopt mode + examples |
-| Gauge API-debug patches | **3.5** | trained failure modes, tool loop |
+| Fettler API-debug patches | **3.5** | trained failure modes, tool loop |
 
 **Score: 3**
 
 ### Gaps
 
 1. **Auto-detect verify command** from package.json / pytest / go test.  
-2. Single pipeline flag: `patch → test → PR` with fail → repair/Gauge retry (budgeted).  
+2. Single pipeline flag: `patch → test → PR` with fail → repair/Fettler retry (budgeted).  
 3. Measure resolve rate on internal benchmark (depends on §4).
 
 ---
@@ -133,7 +133,7 @@ Proprietary **SWE-bench-style** corpus from **public GitHub issues / incidents**
 | Design-partner fixture eval | **3** | `@mendpoint/eval` ≥70% overall on partner corpus |
 | Language harnesses (recall bars) | **3–4** | phase-a TS/Python/Go/Java/Ruby |
 | Public GitHub-issue derived cases | **1** | Not a real-issue corpus in-repo |
-| Resolve rate (end-to-end unassisted) | **1–2** | Gauge fixture tests; no published suite of 20–50 issues |
+| Resolve rate (end-to-end unassisted) | **1–2** | Fettler fixture tests; no published suite of 20–50 issues |
 | False-positive rate for impact | **1–2** | Confidence tiers exist; no formal FP metric on held-out set |
 | Head-to-head vs general agents | **0** | Absent |
 
@@ -145,7 +145,7 @@ Proprietary **SWE-bench-style** corpus from **public GitHub issues / incidents**
 2. Metrics: resolve@1, files-touched precision, FP rate for candidate discovery.  
 3. Keep results **internal** until methodology review (`WARDEN_CLAIMS.md`).
 
-This is the **largest batch gap** relative to “working, benchmarked version of Gauge.”
+This is the **largest batch gap** relative to “working, benchmarked version of Fettler.”
 
 ---
 
@@ -195,7 +195,7 @@ Default HITL for every PR; **no auto-merge at this stage**; mature dependency-bo
 |------------|--------|----------|
 | `autoMergeLowRisk: false` default | **5** | `@mendpoint/policy` |
 | Never-touch paths / auth dual-review labels | **4** | policy engine |
-| PR copy / footers “human review” | **3–4** | branding / Gauge footers (P0.2 in progress) |
+| PR copy / footers “human review” | **3–4** | branding / Fettler footers (P0.2 in progress) |
 | Auto-merge code path exists but opt-in | **3** | flag present; not productized — consistent with “no auto-merge at this stage” if left off |
 
 **Score: 4.5** — **batch requirement met.**
@@ -228,7 +228,7 @@ No conflict: exclusions remain valid; do not block batch completion on them.
 |-----------|--------------------|--------------------|---------------------|----------------------------------|
 | Change-ingestion | Public vendor docs | Manual spec-diff accuracy | **2.5** | Acme/fixture OpenAPI poll; limited live flagships |
 | Codebase scanning | Public GitHub | Scan accuracy on fixtures | **3.5** | Owned fixtures + harness bars |
-| Patch generation | Public GitHub | Benchmark resolve rate | **3** | Demo/examples/Gauge tests; resolve rate informal |
+| Patch generation | Public GitHub | Benchmark resolve rate | **3** | Demo/examples/Fettler tests; resolve rate informal |
 | Internal benchmark | Public GH history | Self-contained | **2** | Partner eval ≥70%; not issue-corpus bench |
 | Exposure / Slack / Checks / risk tier | None | Dogfood | **2** | Risk tier + Checks-ish + dashboards; no Slack |
 | Human-review gating | None | Built-in | **4.5** | Policy tests + defaults |
@@ -247,7 +247,7 @@ No conflict: exclusions remain valid; do not block batch completion on them.
 | Pitch deck only | **No** — real software exists |
 
 **Recommended external phrasing:**  
-*“We have a working Gauge loop on fixtures and a real GitHub path; pre-customer batch completion means finishing flagship feeds, internal issue-bench, exposure/Slack surfaces, then design partners.”*
+*“We have a working Fettler loop on fixtures and a real GitHub path; pre-customer batch completion means finishing flagship feeds, internal issue-bench, exposure/Slack surfaces, then design partners.”*
 
 ---
 
@@ -297,7 +297,7 @@ Maps to remaining batch work **without** requiring a design partner.
 - The original idea — **front-load zero-dependency engineering** — matches how this monorepo was built.  
 - You are **past pitch-deck** and **into working MVP** for the core loop (scan → impact → patch → PR → human review).  
 - You are **not yet “batch complete”** on: multi-source change ingestion for 5–8 live flagships, SWE-bench-style internal benchmark, Slack, and a crisp exposure-report product.  
-- Completing **Batch-A + Batch-B** above is the honest definition of “first design-partner conversation against a working, benchmarked Gauge.”  
+- Completing **Batch-A + Batch-B** above is the honest definition of “first design-partner conversation against a working, benchmarked Fettler.”  
 - The concurrent P0/P1 plan (`2026-07-22-warden-p0-p1.md`) overlaps heavily with Batch-B/C (changelog, bench, demos); use this document as the **batch gate**, that plan as the **task breakdown**.
 
 ---

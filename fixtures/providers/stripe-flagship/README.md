@@ -1,6 +1,6 @@
 # Stripe flagship fixture
 
-Synthetic flagship fixture for offline Gauge demos (not vendor-official).
+Synthetic flagship fixture for offline Fettler demos (not vendor-official).
 
 ## Breaking change (v1 → v2)
 

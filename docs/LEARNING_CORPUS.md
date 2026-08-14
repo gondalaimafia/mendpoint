@@ -156,7 +156,7 @@ consent/eligibility count), and distributions `byDecision`, `byOverallRisk`, and
    candidate row, threaded into the approved-outcome document, and emitted by the
    exporter as `labels.family` / `labels.provider` / `labels.framework`. Values are
    `sdk` / `framework` / `runtime` / `internal_api` (and `warden-provider` reserved
-   for the Gauge path). Where the classification is genuinely undeterminable (a
+   for the Fettler path). Where the classification is genuinely undeterminable (a
    purely adaptive candidate with no bound recipe) each label is stored and emitted
    as `null` — never fabricated — and a pre-labeling (legacy) candidate exports the
    same all-`null` labels it did before, so its corpus bytes are unchanged. The

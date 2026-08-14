@@ -81,7 +81,7 @@ describe("Warden run input", () => {
       .toEqual({ ok: false, error: "maxSteps must be an integer from 1 to 100" });
     expect(parseWardenRunInput(valid({ dryRun: true }))).toEqual({
       ok: false,
-      error: "dryRun is not supported for snapshot bound Gauge runs",
+      error: "dryRun is not supported for snapshot bound Fettler runs",
     });
   });
 
