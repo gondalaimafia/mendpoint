@@ -62,6 +62,19 @@ export type RecipePrecondition =
       path: string;
       from: string;
       to: string;
+    }>
+  | Readonly<{
+      kind: "internal_api_type_rename_source";
+      path: string;
+      module: string;
+      from: string;
+      to: string;
+    }>
+  | Readonly<{
+      kind: "internal_api_type_rename_declaration";
+      path: string;
+      from: string;
+      to: string;
     }>;
 
 export type RecipeTransform =
@@ -119,6 +132,19 @@ export type RecipeTransform =
     }>
   | Readonly<{
       kind: "internal_api_rename_declaration";
+      path: string;
+      from: string;
+      to: string;
+    }>
+  | Readonly<{
+      kind: "internal_api_type_rename";
+      path: string;
+      module: string;
+      from: string;
+      to: string;
+    }>
+  | Readonly<{
+      kind: "internal_api_type_rename_declaration";
       path: string;
       from: string;
       to: string;
@@ -1439,6 +1465,24 @@ const INTERNAL_API_DECL_KEYWORDS = new Set([
   "async",
   "static",
 ]);
+// Keywords that, immediately before a bare `name`, mark it as a value expression
+// (Gap 3). A binding is never introduced right after one of these, so a `name`
+// here is provably a use of the resolved binding and safe to rename.
+const INTERNAL_API_VALUE_KEYWORDS = new Set([
+  "return",
+  "typeof",
+  "instanceof",
+  "void",
+  "delete",
+  "await",
+  "yield",
+  "new",
+  "in",
+  "of",
+  "case",
+  "throw",
+  "default",
+]);
 const INTERNAL_API_REGEX_PRECEDER_CHARS = "(,=:[!&|?{};+-*%<>~^";
 
 // Single-pass scanner returning every identifier that appears in code position.
@@ -1611,6 +1655,60 @@ function internalApiImportSpans(content: string, module: string): InternalApiImp
   return spans;
 }
 
+// Namespace-import bindings for `module` (Gap 5). A namespace import
+// (`import * as ns from "module"`) or a whole-module CommonJS require
+// (`const ns = require("module")`) binds an object whose members are the
+// module's exports, so `ns.<name>` provably resolves to that module's export.
+// Named-destructuring requires (`const { x } = require(...)`) are handled by the
+// import-span logic instead and are not namespace bindings.
+function internalApiNamespaceBindings(content: string, module: string): Set<string> {
+  const escaped = escapeRegExp(module);
+  const names = new Set<string>();
+  const patterns = [
+    new RegExp(`import\\s*\\*\\s*as\\s+([A-Za-z0-9_$]+)\\s+from\\s*["']${escaped}["']`, "g"),
+    new RegExp(
+      `(?:const|let|var)\\s+([A-Za-z0-9_$]+)\\s*=\\s*require\\(\\s*["']${escaped}["']\\s*\\)`,
+      "g",
+    ),
+  ];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(content))) names.add(match[1]!);
+  }
+  return names;
+}
+
+// Member tokens `receiver.<name>` where `receiver` is one of `namespaceBindings`.
+// These are the only `.<name>` member accesses the rename touches; every other
+// member access (on an unrelated object) stays untouched.
+function internalApiNamespaceMemberTokens(
+  content: string,
+  tokens: readonly CodeIdent[],
+  name: string,
+  namespaceBindings: ReadonlySet<string>,
+): CodeIdent[] {
+  if (namespaceBindings.size === 0) return [];
+  const hits: CodeIdent[] = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token.name !== name) continue;
+    let back = token.start - 1;
+    while (back >= 0 && /\s/.test(content[back]!)) back--;
+    if (back < 0 || content[back] !== ".") continue;
+    if (back - 1 >= 0 && content[back - 1] === ".") continue; // spread / optional
+    const receiver = tokens[index - 1];
+    if (
+      receiver &&
+      receiver.end <= back &&
+      content.slice(receiver.end, back).trim() === "" &&
+      namespaceBindings.has(receiver.name)
+    ) {
+      hits.push(token);
+    }
+  }
+  return hits;
+}
+
 type InternalApiBindingStatus =
   | Readonly<{ status: "none" }>
   | Readonly<{ status: "aliased" }>
@@ -1644,38 +1742,69 @@ function internalApiBindingStatus(
   return { status: "none" };
 }
 
-// Classify a single non-import occurrence of the binding identifier as a member
-// access on another object (ignore), a clean call site (rename), or anything
-// else (abstain).
+// Classify a single non-import occurrence of the binding identifier. `member` is
+// a member access on another object (ignore), `call` is a clean call site
+// (rename), `value` is a provably-safe non-call value reference (rename, Gap 3),
+// and `other` is anything ambiguous (abstain). The `value` cases are limited to
+// three bracket-independent contexts that can never be a binding introduction,
+// an object property key, or a shadowing declaration: an assignment/initializer
+// right-hand side (`= name`), a value expression after a value keyword
+// (`return name`, `export default name`, ...), and a member-root read on the
+// binding itself (`name.bind(...)`). Every other non-call form (call arguments,
+// spreads, object keys/shorthand, destructuring, type positions) stays `other`
+// so the completeness invariant abstains rather than risk an unsafe edit.
 function internalApiReferenceKind(
   content: string,
   tokens: readonly CodeIdent[],
   index: number,
-): "member" | "call" | "other" {
+): "member" | "call" | "value" | "other" {
   const token = tokens[index]!;
   let back = token.start - 1;
   while (back >= 0 && /\s/.test(content[back]!)) back--;
   const prevChar = back >= 0 ? content[back]! : "";
   if (prevChar === ".") {
+    // A single leading `.` is a member access; `..`/`...` (spread) is out of the
+    // safe value subset and abstains.
     return back - 1 >= 0 && content[back - 1] === "." ? "other" : "member";
   }
   let forward = token.end;
   while (forward < content.length && /\s/.test(content[forward]!)) forward++;
-  if (content[forward] !== "(") return "other";
+  const nextChar = forward < content.length ? content[forward]! : "";
+  if (nextChar === "(") {
+    const previous = tokens[index - 1];
+    if (
+      previous &&
+      /^\s*$/.test(content.slice(previous.end, token.start)) &&
+      INTERNAL_API_DECL_KEYWORDS.has(previous.name)
+    ) {
+      return "other";
+    }
+    const scan = scanReactCallArgs(content, forward);
+    if (!scan) return "other";
+    let after = scan.end + 1;
+    while (after < content.length && /\s/.test(content[after]!)) after++;
+    if (content[after] === "{") return "other";
+    return "call";
+  }
+  // Gap 3, context (c): member-root read on the binding (`name.field`,
+  // `name.bind(this)`). The binding is read as a value, then a member accessed;
+  // this is never a declaration or an object key.
+  if (nextChar === ".") return "value";
+  // Gap 3, context (a): assignment/initializer/comparison right-hand side
+  // (`const handler = name`, `x = name`, `a === name`). `=>` and comparison
+  // operators end on `>`/`<`, so a nearest-non-space `=` is only a real `=`.
+  if (prevChar === "=") return "value";
+  // Gap 3, context (b): value expression after a value keyword
+  // (`return name`, `export default name`, `await name`, `case name`).
   const previous = tokens[index - 1];
   if (
     previous &&
-    /^\s*$/.test(content.slice(previous.end, token.start)) &&
-    INTERNAL_API_DECL_KEYWORDS.has(previous.name)
+    content.slice(previous.end, token.start).trim() === "" &&
+    INTERNAL_API_VALUE_KEYWORDS.has(previous.name)
   ) {
-    return "other";
+    return "value";
   }
-  const scan = scanReactCallArgs(content, forward);
-  if (!scan) return "other";
-  let after = scan.end + 1;
-  while (after < content.length && /\s/.test(content[after]!)) after++;
-  if (content[after] === "{") return "other";
-  return "call";
+  return "other";
 }
 
 function applyInternalApiRanges(
@@ -1706,13 +1835,18 @@ function planInternalApiRename(
   const tokens = scanCodeIdentifiers(content);
   const fromStatus = internalApiBindingStatus(content, module, from);
   const toStatus = internalApiBindingStatus(content, module, to);
+  const namespaceBindings = internalApiNamespaceBindings(content, module);
+  // Namespace-member accesses of the target module (Gap 5): `ns.from` / `ns.to`.
+  const namespaceFromMembers = internalApiNamespaceMemberTokens(content, tokens, from, namespaceBindings);
+  const namespaceToMembers = internalApiNamespaceMemberTokens(content, tokens, to, namespaceBindings);
+  const namespaceMemberSet = new Set(namespaceFromMembers);
   const nonMemberFrom = tokens.filter(
     (token, index) =>
       token.name === from && internalApiReferenceKind(content, tokens, index) !== "member",
   );
 
   if (toStatus.status === "ok" && fromStatus.status === "none") {
-    return nonMemberFrom.length === 0
+    return nonMemberFrom.length === 0 && namespaceFromMembers.length === 0
       ? { state: "target" }
       : { state: "unsupported", reason: "recipe_internal_api_partial_migration" };
   }
@@ -1723,25 +1857,48 @@ function planInternalApiRename(
     return { state: "unsupported", reason: "recipe_internal_api_multiple_imports" };
   }
   if (fromStatus.status === "none") {
-    return nonMemberFrom.length === 0
-      ? { state: "neutral" }
-      : { state: "unsupported", reason: "recipe_internal_api_binding_unresolved" };
+    // No named import of `from`. A namespace consumer (`ns.from`) is handled here
+    // (Gap 5); anything else non-member is an unresolved reference.
+    if (namespaceFromMembers.length === 0) {
+      return nonMemberFrom.length === 0
+        ? { state: "neutral" }
+        : { state: "unsupported", reason: "recipe_internal_api_binding_unresolved" };
+    }
+    if (nonMemberFrom.length > 0) {
+      return { state: "unsupported", reason: "recipe_internal_api_binding_unresolved" };
+    }
+    if (namespaceToMembers.length > 0) {
+      return { state: "unsupported", reason: "recipe_internal_api_target_conflict" };
+    }
+    const nsRanges = namespaceFromMembers.map(
+      (token) => [token.start, token.end] as const,
+    );
+    const transformed = applyInternalApiRanges(content, to, nsRanges);
+    if (internalApiNamespaceMemberTokens(transformed, scanCodeIdentifiers(transformed), from, namespaceBindings).length !== 0) {
+      return { state: "unsupported", reason: "recipe_internal_api_residual_import" };
+    }
+    return { state: "source", ranges: nsRanges };
   }
   const specToken = tokens.find(
     (token) =>
       token.name === from && token.start >= fromStatus.braceStart && token.end <= fromStatus.braceEnd,
   );
   if (!specToken) return { state: "unsupported", reason: "recipe_internal_api_import_unresolved" };
-  if (tokens.some((token) => token.name === to)) {
+  if (tokens.some((token) => token.name === to && !namespaceToMembers.includes(token))) {
     return { state: "unsupported", reason: "recipe_internal_api_target_conflict" };
   }
   const ranges: Array<readonly [number, number]> = [[specToken.start, specToken.end]];
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (token.name !== from || token === specToken) continue;
+    if (namespaceMemberSet.has(token)) {
+      // A `ns.from` member alongside a named import: rename the member too.
+      ranges.push([token.start, token.end]);
+      continue;
+    }
     const kind = internalApiReferenceKind(content, tokens, index);
     if (kind === "member") continue;
-    if (kind === "call") {
+    if (kind === "call" || kind === "value") {
       ranges.push([token.start, token.end]);
       continue;
     }
@@ -1899,7 +2056,7 @@ function planInternalApiDeclarationRename(
     }
     const kind = internalApiReferenceKind(content, tokens, index);
     if (kind === "member") continue;
-    if (kind === "call") {
+    if (kind === "call" || kind === "value") {
       ranges.push([token.start, token.end]);
       continue;
     }
@@ -1927,6 +2084,299 @@ function classifyInternalApiDeclarationRename(
 
 function rewriteInternalApiDeclarationRename(content: string, from: string, to: string): string {
   const plan = planInternalApiDeclarationRename(content, from, to);
+  if (plan.state !== "source" || !plan.ranges) return content;
+  return applyInternalApiRanges(content, to, plan.ranges);
+}
+
+// ---------------------------------------------------------------------------
+// Type and interface rename (Gap 4).
+//
+// A type-only name (`interface X`, `type X = ...`) lives in the TypeScript type
+// namespace, disjoint from the value namespace, so it is renamed as its own spec
+// shape rather than by overloading the value rename. A pure type name can only
+// appear in type positions (annotations, generic arguments, `extends`/
+// `implements`/`satisfies`, type imports/exports), never as a runtime value, so
+// the rename covers every non-member occurrence of the name whose next
+// significant character is not `:` (which would make it a property/member key,
+// not a type reference). Any occurrence that is a value use (a call site or a
+// value reference per `internalApiReferenceKind`) proves the name is not a pure
+// type in this file (a value/type collision or a shadow), so the whole spec
+// abstains rather than emit an unsafe edit.
+//
+// Consumer surface (`internal_api_type_rename`, needs the module): the type must
+// be imported from the exact `module` (`import type { X } from "module"`,
+// `import { X }`, or `import { type X }`); a same-named type from a different
+// module abstains. Declaration surface (`internal_api_type_rename_declaration`):
+// the producing module that owns `interface X`/`type X`, or a barrel that
+// re-exports it with `export type { X } from "./y.js"`.
+//
+// Out-of-scope (abstains, so the whole spec abstains rather than a partial edit):
+//   - `recipe_internal_api_type_value_reference`: the name is used as a value
+//     (call site or value reference) — it is not a pure type here.
+//   - `recipe_internal_api_type_value_collision`: the name is also declared as a
+//     value (`const`/`let`/`var`/`function`/`class`/`enum`/`namespace`).
+//   - `recipe_internal_api_type_shadowed`: the name is (re)declared as a type
+//     parameter (`function f<X>()`, `interface I<X>`, `type T<X>`, `class C<X>`).
+//   - `recipe_internal_api_type_target_conflict`: the target name already appears
+//     as a code identifier.
+//   - `recipe_internal_api_type_binding_unresolved` / `_aliased_import` /
+//     `_multiple_imports` / `_import_unresolved`: the consumer import binding is a
+//     same-name-different-module reference, aliased, duplicated, or unresolvable.
+//   - `recipe_internal_api_type_declaration_unresolved`: the designated
+//     declaration path exposes no rewritable `interface`/`type` declaration.
+//   - `recipe_internal_api_type_residual`: a `from` type reference would survive.
+// ---------------------------------------------------------------------------
+
+// Import brace spans for `module`, allowing an optional `type` modifier
+// (`import type { ... } from "module"`) that the value-side span matcher omits.
+function internalApiTypeImportSpans(content: string, module: string): InternalApiImportSpan[] {
+  const escaped = escapeRegExp(module);
+  const spans: InternalApiImportSpan[] = [];
+  const patterns = [
+    new RegExp(`import\\s+(?:type\\s+)?\\{([^}]*)\\}\\s*from\\s*["']${escaped}["']`, "g"),
+    new RegExp(`(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*require\\(\\s*["']${escaped}["']\\s*\\)`, "g"),
+  ];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(content))) {
+      const open = content.indexOf("{", match.index);
+      if (open < 0) continue;
+      const close = content.indexOf("}", open);
+      if (close < 0) continue;
+      spans.push({ specifiers: match[1]!, braceStart: open + 1, braceEnd: close });
+    }
+  }
+  return spans;
+}
+
+// Binding status of a type imported from `module`, tolerating an inline `type`
+// modifier on the specifier (`import { type X }`).
+function internalApiTypeBindingStatus(
+  content: string,
+  module: string,
+  name: string,
+): InternalApiBindingStatus {
+  const hits: Array<{ braceStart: number; braceEnd: number }> = [];
+  let aliased = false;
+  for (const span of internalApiTypeImportSpans(content, module)) {
+    for (const raw of span.specifiers.split(",")) {
+      const specifier = raw.trim().replace(/^type\s+/, "");
+      if (!specifier) continue;
+      const alias = /^([A-Za-z0-9_$]+)\s+as\s+([A-Za-z0-9_$]+)$/.exec(specifier);
+      if (alias) {
+        if (alias[1] === name) aliased = true;
+        continue;
+      }
+      if (specifier === name) hits.push({ braceStart: span.braceStart, braceEnd: span.braceEnd });
+    }
+  }
+  if (hits.length === 1) {
+    return { status: "ok", braceStart: hits[0]!.braceStart, braceEnd: hits[0]!.braceEnd };
+  }
+  if (hits.length > 1) return { status: "multiple" };
+  if (aliased) return { status: "aliased" };
+  return { status: "none" };
+}
+
+const INTERNAL_API_VALUE_DECL = (name: string): RegExp =>
+  new RegExp(`\\b(?:const|let|var|function|class|enum|namespace)\\s+${escapeRegExp(name)}\\b`);
+
+// Best-effort detection of `name` used as a type-parameter declaration, e.g.
+// `function f<name>()`, `interface I<name>`, `type T<name> =`, `class C<name>`.
+// Generic *uses* (`Map<name>`) are not matched because they are not preceded by
+// a declaration keyword and name.
+function internalApiTypeParamShadow(content: string, name: string): boolean {
+  const n = escapeRegExp(name);
+  return new RegExp(
+    `\\b(?:function|interface|type|class)\\s+[A-Za-z0-9_$]*\\s*<[^<>]*\\b${n}\\b[^<>]*>`,
+  ).test(content);
+}
+
+// Type declaration / re-export sites of `name`: `interface name`, `type name`,
+// and bare specifiers inside an `export type { ... }` (or `export { ... }`) list.
+function internalApiTypeDeclarationSites(
+  content: string,
+  tokens: readonly CodeIdent[],
+  name: string,
+): InternalApiDeclarationSites {
+  const starts = new Set<number>();
+  let aliased = false;
+  const tokenStarts = new Map(tokens.map((token) => [token.start, token] as const));
+  const localPattern = new RegExp(
+    `\\b(?:export\\s+)?(?:interface|type)\\s+(${escapeRegExp(name)})\\b`,
+    "g",
+  );
+  let match: RegExpExecArray | null;
+  while ((match = localPattern.exec(content))) {
+    const nameStart = match.index + match[0].length - match[1]!.length;
+    const token = tokenStarts.get(nameStart);
+    if (token && token.name === name) starts.add(nameStart);
+  }
+  const braces = internalApiExportListBraces(content);
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token.name !== name) continue;
+    if (!braces.some(([open, close]) => token.start >= open && token.end <= close)) continue;
+    const previous = tokens[index - 1];
+    const next = tokens[index + 1];
+    const previousIsAs =
+      previous?.name === "as" && content.slice(previous.end, token.start).trim() === "";
+    const nextIsAs = next?.name === "as" && content.slice(token.end, next.start).trim() === "";
+    if (previousIsAs || nextIsAs) {
+      aliased = true;
+      continue;
+    }
+    starts.add(token.start);
+  }
+  return { starts, aliased };
+}
+
+// Compute rename ranges for every type-position occurrence of `name`: skip
+// member accesses (`obj.name`) and property/member keys (`name:`), rename the
+// rest, and abstain (return the reason) if any occurrence is a value use.
+function internalApiTypeRenameRanges(
+  content: string,
+  tokens: readonly CodeIdent[],
+  name: string,
+): { ranges: Array<readonly [number, number]> } | { reason: string } {
+  const ranges: Array<readonly [number, number]> = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token.name !== name) continue;
+    const kind = internalApiReferenceKind(content, tokens, index);
+    if (kind === "member") continue;
+    if (kind === "call" || kind === "value") {
+      return { reason: "recipe_internal_api_type_value_reference" };
+    }
+    let forward = token.end;
+    while (forward < content.length && /\s/.test(content[forward]!)) forward++;
+    if (content[forward] === ":") continue; // property/member key, not a type reference
+    ranges.push([token.start, token.end]);
+  }
+  return { ranges };
+}
+
+function planInternalApiTypeConsumerRename(
+  content: string,
+  module: string,
+  from: string,
+  to: string,
+): InternalApiPlan {
+  if (!new RegExp(`["']${escapeRegExp(module)}["']`).test(content)) return { state: "neutral" };
+  const tokens = scanCodeIdentifiers(content);
+  const fromStatus = internalApiTypeBindingStatus(content, module, from);
+  const toStatus = internalApiTypeBindingStatus(content, module, to);
+  const fromTokens = tokens.filter((token) => token.name === from);
+
+  if (toStatus.status === "ok" && fromStatus.status === "none") {
+    return fromTokens.length === 0
+      ? { state: "target" }
+      : { state: "unsupported", reason: "recipe_internal_api_type_partial_migration" };
+  }
+  if (fromStatus.status === "aliased") {
+    return { state: "unsupported", reason: "recipe_internal_api_type_aliased_import" };
+  }
+  if (fromStatus.status === "multiple") {
+    return { state: "unsupported", reason: "recipe_internal_api_type_multiple_imports" };
+  }
+  if (fromStatus.status === "none") {
+    return fromTokens.length === 0
+      ? { state: "neutral" }
+      : { state: "unsupported", reason: "recipe_internal_api_type_binding_unresolved" };
+  }
+  if (INTERNAL_API_VALUE_DECL(from).test(content)) {
+    return { state: "unsupported", reason: "recipe_internal_api_type_value_collision" };
+  }
+  if (internalApiTypeParamShadow(content, from)) {
+    return { state: "unsupported", reason: "recipe_internal_api_type_shadowed" };
+  }
+  if (tokens.some((token) => token.name === to)) {
+    return { state: "unsupported", reason: "recipe_internal_api_type_target_conflict" };
+  }
+  const computed = internalApiTypeRenameRanges(content, tokens, from);
+  if ("reason" in computed) return { state: "unsupported", reason: computed.reason };
+  if (computed.ranges.length === 0) {
+    return { state: "unsupported", reason: "recipe_internal_api_type_import_unresolved" };
+  }
+  const transformed = applyInternalApiRanges(content, to, computed.ranges);
+  if (internalApiTypeBindingStatus(transformed, module, from).status !== "none") {
+    return { state: "unsupported", reason: "recipe_internal_api_type_residual" };
+  }
+  return { state: "source", ranges: computed.ranges };
+}
+
+function planInternalApiTypeDeclarationRename(
+  content: string,
+  from: string,
+  to: string,
+): InternalApiPlan {
+  const tokens = scanCodeIdentifiers(content);
+  const fromSites = internalApiTypeDeclarationSites(content, tokens, from);
+  const toSites = internalApiTypeDeclarationSites(content, tokens, to);
+  const fromTokens = tokens.filter((token) => token.name === from);
+  const toTokens = tokens.filter((token) => token.name === to);
+
+  if (fromSites.aliased || toSites.aliased) {
+    return { state: "unsupported", reason: "recipe_internal_api_type_declaration_aliased_export" };
+  }
+  if (fromSites.starts.size === 0) {
+    if (toSites.starts.size > 0 && fromTokens.length === 0) return { state: "target" };
+    return { state: "unsupported", reason: "recipe_internal_api_type_declaration_unresolved" };
+  }
+  if (INTERNAL_API_VALUE_DECL(from).test(content)) {
+    return { state: "unsupported", reason: "recipe_internal_api_type_value_collision" };
+  }
+  if (internalApiTypeParamShadow(content, from)) {
+    return { state: "unsupported", reason: "recipe_internal_api_type_shadowed" };
+  }
+  if (toTokens.length > 0) {
+    return { state: "unsupported", reason: "recipe_internal_api_type_declaration_target_conflict" };
+  }
+  const computed = internalApiTypeRenameRanges(content, tokens, from);
+  if ("reason" in computed) return { state: "unsupported", reason: computed.reason };
+  if (computed.ranges.length === 0) {
+    return { state: "unsupported", reason: "recipe_internal_api_type_declaration_unresolved" };
+  }
+  const transformed = applyInternalApiRanges(content, to, computed.ranges);
+  const residual = internalApiTypeDeclarationSites(transformed, scanCodeIdentifiers(transformed), from);
+  if (residual.starts.size !== 0) {
+    return { state: "unsupported", reason: "recipe_internal_api_type_declaration_residual" };
+  }
+  return { state: "source", ranges: computed.ranges };
+}
+
+function classifyInternalApiTypeConsumerRename(
+  content: string,
+  module: string,
+  from: string,
+  to: string,
+): PreconditionState {
+  const plan = planInternalApiTypeConsumerRename(content, module, from, to);
+  return plan.reason ? { state: plan.state, reason: plan.reason } : { state: plan.state };
+}
+
+function classifyInternalApiTypeDeclarationRename(
+  content: string,
+  from: string,
+  to: string,
+): PreconditionState {
+  const plan = planInternalApiTypeDeclarationRename(content, from, to);
+  return plan.reason ? { state: plan.state, reason: plan.reason } : { state: plan.state };
+}
+
+function rewriteInternalApiTypeConsumerRename(
+  content: string,
+  module: string,
+  from: string,
+  to: string,
+): string {
+  const plan = planInternalApiTypeConsumerRename(content, module, from, to);
+  if (plan.state !== "source" || !plan.ranges) return content;
+  return applyInternalApiRanges(content, to, plan.ranges);
+}
+
+function rewriteInternalApiTypeDeclarationRename(content: string, from: string, to: string): string {
+  const plan = planInternalApiTypeDeclarationRename(content, from, to);
   if (plan.state !== "source" || !plan.ranges) return content;
   return applyInternalApiRanges(content, to, plan.ranges);
 }
@@ -2072,6 +2522,134 @@ export function createInternalApiRenameRecipe(spec: InternalApiRenameSpec): Migr
   });
 }
 
+// Whole-word identifier presence/absence verifier for type renames (there are no
+// call sites to key on). `.name` member access and `name:` keys are excluded so a
+// coincidental unrelated key does not trip the check.
+function internalApiTypeVerifierScript(
+  paths: readonly string[],
+  identifier: string,
+  present: boolean,
+  missingFailure: string,
+  presentFailure: string,
+): string {
+  const pathList = paths.map((path) => `'${path}'`).join(",");
+  const wordRegex = `new RegExp('(?<![\\\\w$.])${identifier}(?![\\\\w$])(?!\\\\s*:)')`;
+  const body = present
+    ? `let seen=0;for(const p of paths){if(!fs.existsSync(p))continue;const s=fs.readFileSync(p,'utf8');if(word.test(s))seen++;}if(seen===0)fail('${missingFailure}');`
+    : `let checked=0;for(const p of paths){if(!fs.existsSync(p))continue;checked++;const s=fs.readFileSync(p,'utf8');if(word.test(s))fail('${presentFailure}:'+p);}if(checked===0)fail('${missingFailure}');`;
+  return (
+    "const fs=require('node:fs');" +
+    "const fail=(m)=>{throw new Error(m)};" +
+    `const paths=[${pathList}];` +
+    `const word=${wordRegex};` +
+    body
+  );
+}
+
+export function createInternalApiTypeRenameRecipe(
+  spec: InternalApiRenameSpec,
+): MigrationRecipeContract {
+  if (!INTERNAL_API_IDENTIFIER.test(spec.from) || !INTERNAL_API_IDENTIFIER.test(spec.to)) {
+    throw new Error("recipe_internal_api_identifier_invalid");
+  }
+  if (spec.from === spec.to) throw new Error("recipe_internal_api_noop");
+  if (!spec.module || /["'\\]/.test(spec.module)) throw new Error("recipe_internal_api_module_invalid");
+  const consumerPaths = [...spec.paths].sort();
+  if (!consumerPaths.length) throw new Error("recipe_internal_api_paths_required");
+  const declarationPaths = [...(spec.declarationPaths ?? [])].sort();
+  const consumerSet = new Set(consumerPaths);
+  for (const path of declarationPaths) {
+    if (consumerSet.has(path)) throw new Error("recipe_internal_api_declaration_path_conflict");
+  }
+  // Completeness: a relative `module` names an in-repo producer, so the type
+  // declaration (and any barrels) must travel with the consumer edits.
+  const relativeModule = spec.module.startsWith("./") || spec.module.startsWith("../");
+  if (relativeModule && declarationPaths.length === 0) {
+    throw new Error("recipe_internal_api_declaration_required");
+  }
+  const allowedPaths = [...consumerPaths, ...declarationPaths].sort();
+  const preconditions = [
+    ...consumerPaths.map(
+      (path) =>
+        ({
+          kind: "internal_api_type_rename_source",
+          path,
+          module: spec.module,
+          from: spec.from,
+          to: spec.to,
+        }) as const,
+    ),
+    ...declarationPaths.map(
+      (path) =>
+        ({
+          kind: "internal_api_type_rename_declaration",
+          path,
+          from: spec.from,
+          to: spec.to,
+        }) as const,
+    ),
+  ];
+  const transforms = [
+    ...consumerPaths.map(
+      (path) =>
+        ({
+          kind: "internal_api_type_rename",
+          path,
+          module: spec.module,
+          from: spec.from,
+          to: spec.to,
+        }) as const,
+    ),
+    ...declarationPaths.map(
+      (path) =>
+        ({
+          kind: "internal_api_type_rename_declaration",
+          path,
+          from: spec.from,
+          to: spec.to,
+        }) as const,
+    ),
+  ];
+  return createRecipe({
+    id: spec.recipeId,
+    version: spec.version,
+    title: spec.title,
+    source: spec.source,
+    target: spec.target,
+    allowedPaths,
+    preconditions,
+    transforms,
+    verificationCommands: [
+      {
+        id: "internal-api-type-old-surface-absent",
+        command: `node -e "${internalApiTypeVerifierScript(
+          allowedPaths,
+          spec.from,
+          false,
+          "internal_api_type_source_missing",
+          "internal_api_type_old_present",
+        )}"`,
+        successCriteria: `Migrated sources contain no ${spec.from} type references`,
+      },
+      {
+        id: "internal-api-type-new-surface-present",
+        command: `node -e "${internalApiTypeVerifierScript(
+          allowedPaths,
+          spec.to,
+          true,
+          "internal_api_type_new_missing",
+          "internal_api_type_new_present",
+        )}"`,
+        successCriteria: `Migrated sources reference ${spec.to} in at least one file`,
+      },
+    ],
+    rollback: {
+      strategy: "inverse_operations",
+      requireCurrentDigest: true,
+    },
+  });
+}
+
 // Worked example: an internal user-service refactor that renamed the exported
 // binding `getUser` to `fetchUser` in the internal package `@acme/user-service`.
 // This instantiates the factory with a concrete spec; the spec is folded into
@@ -2150,6 +2728,41 @@ const INTERNAL_API_WARDEN_REVIEWER_RENAME_V1 = createInternalApiRenameRecipe({
   declarationPaths: ["apps/api/src/warden-review-auth.ts"],
 });
 
+// Worked example (Gap 4): an in-repo interface rename. `OrderRecord` is declared
+// in `./order-types.js` and referenced only in type positions by two consumers.
+// The declaration path rewrites the `interface` declaration; the consumers rewrite
+// their `import type` specifier and every type-position reference.
+const INTERNAL_API_ORDER_TYPE_RENAME_V1 = createInternalApiTypeRenameRecipe({
+  recipeId: "internal-api-order-record-to-order-row",
+  version: 1,
+  title: "Internal API type refactor: OrderRecord to OrderRow",
+  source: "types-OrderRecord",
+  target: "types-OrderRow",
+  module: "./order-types.js",
+  from: "OrderRecord",
+  to: "OrderRow",
+  paths: ["src/order-service.ts", "src/order-view.ts"],
+  declarationPaths: ["src/order-types.ts"],
+});
+
+// Dogfood proof (Gap 4): renaming this repository's own `HumanReviewDecision`
+// type to `HumanReviewVerdict`. The producing module `apps/api/src/reviews.ts`
+// owns the `export type` declaration; `apps/api/src/review-routes.ts` imports it
+// (inline `type` specifier) and uses it only in type positions (`as` assertions).
+// See `scripts/rename-dogfood-proof.ts`.
+const INTERNAL_API_REVIEW_DECISION_TYPE_RENAME_V1 = createInternalApiTypeRenameRecipe({
+  recipeId: "internal-api-review-decision-type-rename",
+  version: 1,
+  title: "Internal API type refactor: HumanReviewDecision to HumanReviewVerdict",
+  source: "reviews-HumanReviewDecision",
+  target: "reviews-HumanReviewVerdict",
+  module: "./reviews.js",
+  from: "HumanReviewDecision",
+  to: "HumanReviewVerdict",
+  paths: ["apps/api/src/review-routes.ts"],
+  declarationPaths: ["apps/api/src/reviews.ts"],
+});
+
 const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${NODE_RUNTIME_18_TO_20_V1.id}@${NODE_RUNTIME_18_TO_20_V1.version}`,
@@ -2198,6 +2811,14 @@ const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${INTERNAL_API_WARDEN_REVIEWER_RENAME_V1.id}@${INTERNAL_API_WARDEN_REVIEWER_RENAME_V1.version}`,
     INTERNAL_API_WARDEN_REVIEWER_RENAME_V1,
+  ],
+  [
+    `${INTERNAL_API_ORDER_TYPE_RENAME_V1.id}@${INTERNAL_API_ORDER_TYPE_RENAME_V1.version}`,
+    INTERNAL_API_ORDER_TYPE_RENAME_V1,
+  ],
+  [
+    `${INTERNAL_API_REVIEW_DECISION_TYPE_RENAME_V1.id}@${INTERNAL_API_REVIEW_DECISION_TYPE_RENAME_V1.version}`,
+    INTERNAL_API_REVIEW_DECISION_TYPE_RENAME_V1,
   ],
 ]);
 
@@ -2300,7 +2921,12 @@ export function classifyRecipeContract(recipe: MigrationRecipeContract): RecipeC
   if (kinds.has("node_version_set") || kinds.has("docker_node_major_set")) {
     return Object.freeze({ family: "runtime", provider: "node", framework: null });
   }
-  if (kinds.has("internal_api_rename") || kinds.has("internal_api_rename_declaration")) {
+  if (
+    kinds.has("internal_api_rename") ||
+    kinds.has("internal_api_rename_declaration") ||
+    kinds.has("internal_api_type_rename") ||
+    kinds.has("internal_api_type_rename_declaration")
+  ) {
     // Internal API renames are per-customer; there is no canonical provider slug
     // or framework to attach, so those stay null while the family is determinable.
     return Object.freeze({ family: "internal_api", provider: null, framework: null });
@@ -2400,6 +3026,12 @@ function preconditionFailure(precondition: RecipePrecondition): string {
   if (precondition.kind === "internal_api_rename_declaration") {
     return `recipe_precondition_failed:${precondition.path}:internal_api_declaration`;
   }
+  if (precondition.kind === "internal_api_type_rename_source") {
+    return `recipe_precondition_failed:${precondition.path}:internal_api_type_rename`;
+  }
+  if (precondition.kind === "internal_api_type_rename_declaration") {
+    return `recipe_precondition_failed:${precondition.path}:internal_api_type_declaration`;
+  }
   return `recipe_precondition_failed:${precondition.path}:node_major`;
 }
 
@@ -2462,6 +3094,21 @@ function preconditionState(
     const content = files[precondition.path];
     if (content === undefined) return { state: "neutral" };
     return classifyInternalApiDeclarationRename(content, precondition.from, precondition.to);
+  }
+  if (precondition.kind === "internal_api_type_rename_source") {
+    const content = files[precondition.path];
+    if (content === undefined) return { state: "neutral" };
+    return classifyInternalApiTypeConsumerRename(
+      content,
+      precondition.module,
+      precondition.from,
+      precondition.to,
+    );
+  }
+  if (precondition.kind === "internal_api_type_rename_declaration") {
+    const content = files[precondition.path];
+    if (content === undefined) return { state: "neutral" };
+    return classifyInternalApiTypeDeclarationRename(content, precondition.from, precondition.to);
   }
   if (precondition.kind === "json_string_in") {
     let value: unknown;
@@ -2682,8 +3329,21 @@ function applyTransform(transform: RecipeTransform, files: Record<string, string
       transform.from,
       transform.to,
     );
-  } else {
+  } else if (transform.kind === "internal_api_rename_declaration") {
     files[transform.path] = rewriteInternalApiDeclarationRename(
+      before!,
+      transform.from,
+      transform.to,
+    );
+  } else if (transform.kind === "internal_api_type_rename") {
+    files[transform.path] = rewriteInternalApiTypeConsumerRename(
+      before!,
+      transform.module,
+      transform.from,
+      transform.to,
+    );
+  } else {
+    files[transform.path] = rewriteInternalApiTypeDeclarationRename(
       before!,
       transform.from,
       transform.to,

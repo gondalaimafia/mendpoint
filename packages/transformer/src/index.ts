@@ -123,6 +123,7 @@ export {
   classifyRecipeContract,
   classifyRecipeReference,
   createInternalApiRenameRecipe,
+  createInternalApiTypeRenameRecipe,
   getRecipe,
   normalizeRecipeFileModes,
   recipeFilesDigest,

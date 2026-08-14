@@ -7,6 +7,7 @@ import {
   applyInverseOperations,
   applyRecipe,
   createInternalApiRenameRecipe,
+  createInternalApiTypeRenameRecipe,
   getRecipe,
   recipeFilesDigest,
   recipeReference,
@@ -146,8 +147,17 @@ describe("internal-api-acme-user-getuser-to-fetchuser recipe", () => {
     expect(analysis.reasons).toContain("recipe_internal_api_aliased_import");
   });
 
-  it("abstains on a non-call reference to the binding", () => {
+  it("renames a safe non-call value reference to the binding (Gap 3)", () => {
     const source = [IMPORT, "export const handler = getUser;", ""].join("\n");
+    const output = applyRecipe(reference, { "src/profile.ts": source });
+    const migrated = output.files["src/profile.ts"]!;
+    expect(migrated).toContain('import { fetchUser } from "@acme/user-service";');
+    expect(migrated).toContain("export const handler = fetchUser;");
+    expect(migrated).not.toMatch(/\bgetUser\b/);
+  });
+
+  it("abstains on an ambiguous call-argument value reference (Gap 3 refusal)", () => {
+    const source = [IMPORT, "export const wired = [1, 2].map(getUser);", ""].join("\n");
     const analysis = analyzeRecipe(reference, { "src/profile.ts": source });
     expect(analysis.status).toBe("unsupported");
     expect(analysis.reasons).toContain("recipe_internal_api_unsupported_reference");
@@ -380,12 +390,27 @@ describe("internal-api declaring-module rename (Gap 1)", () => {
     expect(analysis.reasons).toContain("recipe_internal_api_declaration_aliased_export");
   });
 
-  it("abstains on a non-call value reference to the exported binding", () => {
+  it("renames a safe non-call value reference to the exported binding (Gap 3)", () => {
     const source = [
       "export function placeOrder(id: string): string {",
       "  return id;",
       "}",
       "export const handler = placeOrder;",
+      "",
+    ].join("\n");
+    const output = applyRecipe(ORDERS_REF, { "src/orders.ts": source });
+    const migrated = output.files["src/orders.ts"]!;
+    expect(migrated).toContain("export function submitOrder(id: string): string");
+    expect(migrated).toContain("export const handler = submitOrder;");
+    expect(migrated).not.toMatch(/\bplaceOrder\b/);
+  });
+
+  it("abstains on an ambiguous call-argument reference to the exported binding (Gap 3 refusal)", () => {
+    const source = [
+      "export function placeOrder(id: string): string {",
+      "  return id;",
+      "}",
+      "export const wired = [id].map(placeOrder);",
       "",
     ].join("\n");
     const analysis = analyzeRecipe(ORDERS_REF, { "src/orders.ts": source });
@@ -509,5 +534,260 @@ describe("internal-api declaration-path construction guards", () => {
         paths: ["src/profile.ts"],
       }),
     ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Non-call value references (Gap 3).
+// ---------------------------------------------------------------------------
+
+describe("internal-api value references (Gap 3)", () => {
+  it("renames a member-root read on the binding (X.bind)", () => {
+    const source = [
+      IMPORT,
+      "export const bound = getUser.bind(globalThis);",
+      "",
+    ].join("\n");
+    const output = applyRecipe(reference, { "src/profile.ts": source });
+    const migrated = output.files["src/profile.ts"]!;
+    expect(migrated).toContain('import { fetchUser } from "@acme/user-service";');
+    expect(migrated).toContain("export const bound = fetchUser.bind(globalThis);");
+    expect(migrated).not.toMatch(/\bgetUser\b/);
+  });
+
+  it("renames a default export and a return-position value reference", () => {
+    const source = [
+      IMPORT,
+      "export function pick(flag) { if (flag) return getUser; return null; }",
+      "export default getUser;",
+      "",
+    ].join("\n");
+    const output = applyRecipe(reference, { "src/profile.ts": source });
+    const migrated = output.files["src/profile.ts"]!;
+    expect(migrated).toContain("return fetchUser;");
+    expect(migrated).toContain("export default fetchUser;");
+    expect(migrated).not.toMatch(/\bgetUser\b/);
+  });
+
+  it("abstains when a local parameter shadows the imported binding", () => {
+    const source = [
+      IMPORT,
+      "export function run(getUser: () => number) { return getUser(); }",
+      "",
+    ].join("\n");
+    const analysis = analyzeRecipe(reference, { "src/profile.ts": source });
+    expect(analysis.status).toBe("unsupported");
+    expect(analysis.reasons).toContain("recipe_internal_api_unsupported_reference");
+  });
+
+  it("restores a value-reference edit byte-identical via inverse operations", () => {
+    const before = { "src/profile.ts": [IMPORT, "export const handler = getUser;", ""].join("\n") };
+    const output = applyRecipe(reference, before);
+    const restored = applyInverseOperations(reference, output.files, output.operations);
+    expect(recipeFilesDigest(restored)).toBe(output.inputDigest);
+    expect(restored).toEqual(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Namespace member expressions (Gap 5).
+// ---------------------------------------------------------------------------
+
+describe("internal-api namespace member expressions (Gap 5)", () => {
+  it("renames ns.X where ns is the namespace import of the target module", () => {
+    const source = [
+      'import * as api from "@acme/user-service";',
+      "export function run(id) { return api.getUser(id); }",
+      "",
+    ].join("\n");
+    const output = applyRecipe(reference, { "src/profile.ts": source });
+    const migrated = output.files["src/profile.ts"]!;
+    expect(migrated).toContain('import * as api from "@acme/user-service";');
+    expect(migrated).toContain("return api.fetchUser(id);");
+    expect(migrated).not.toMatch(/\bgetUser\b/);
+  });
+
+  it("leaves a same-named member on an unrelated object untouched", () => {
+    const source = [
+      'import * as api from "@acme/user-service";',
+      "const db = makeDb();",
+      "export function run(id) {",
+      "  const a = api.getUser(id);",
+      "  const b = db.getUser(id);",
+      "  return [a, b];",
+      "}",
+      "",
+    ].join("\n");
+    const output = applyRecipe(reference, { "src/profile.ts": source });
+    const migrated = output.files["src/profile.ts"]!;
+    expect(migrated).toContain("const a = api.fetchUser(id);");
+    // The member access on the unrelated `db` object is left intact.
+    expect(migrated).toContain("const b = db.getUser(id);");
+  });
+
+  it("restores a namespace-member edit byte-identical via inverse operations", () => {
+    const before = {
+      "src/profile.ts": [
+        'import * as api from "@acme/user-service";',
+        "export const wired = api.getUser;",
+        "",
+      ].join("\n"),
+    };
+    const output = applyRecipe(reference, before);
+    const restored = applyInverseOperations(reference, output.files, output.operations);
+    expect(recipeFilesDigest(restored)).toBe(output.inputDigest);
+    expect(restored).toEqual(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Type and interface renames (Gap 4).
+// ---------------------------------------------------------------------------
+
+const ORDER_TYPE_REF = recipeReference(getRecipe("internal-api-order-record-to-order-row", 1));
+
+describe("internal-api type rename (Gap 4)", () => {
+  const producer = [
+    "export interface OrderRecord {",
+    "  id: string;",
+    "  total: number;",
+    "}",
+    "",
+  ].join("\n");
+  const service = [
+    'import type { OrderRecord } from "./order-types.js";',
+    "export function total(order: OrderRecord): number {",
+    "  return order.total;",
+    "}",
+    "export const build = (id: string): OrderRecord => ({ id, total: 0 });",
+    "",
+  ].join("\n");
+  const view = [
+    'import type { OrderRecord } from "./order-types.js";',
+    "export function render(order: OrderRecord): string {",
+    "  return order.id;",
+    "}",
+    "",
+  ].join("\n");
+  const files = (): RecipeFiles => ({
+    "src/order-types.ts": producer,
+    "src/order-service.ts": service,
+    "src/order-view.ts": view,
+  });
+
+  it("rewrites the interface declaration, type imports, and type-position references", () => {
+    const analysis = analyzeRecipe(ORDER_TYPE_REF, files());
+    expect(analysis.status).toBe("applicable");
+    expect([...analysis.matchedPaths]).toEqual([
+      "src/order-service.ts",
+      "src/order-types.ts",
+      "src/order-view.ts",
+    ]);
+    expect(analysis.reasons).toEqual([]);
+
+    const output = applyRecipe(ORDER_TYPE_REF, files());
+    expect(output.files["src/order-types.ts"]).toContain("export interface OrderRow {");
+    expect(output.files["src/order-service.ts"]).toContain(
+      'import type { OrderRow } from "./order-types.js";',
+    );
+    expect(output.files["src/order-service.ts"]).toContain("order: OrderRow");
+    expect(output.files["src/order-service.ts"]).toContain("(id: string): OrderRow =>");
+    expect(output.files["src/order-view.ts"]).toContain("order: OrderRow");
+    for (const path of Object.keys(files())) {
+      expect(output.files[path]).not.toMatch(/\bOrderRecord\b/);
+    }
+  });
+
+  it("is idempotent and reports already_applied once renamed", () => {
+    const output = applyRecipe(ORDER_TYPE_REF, files());
+    const reanalysis = analyzeRecipe(ORDER_TYPE_REF, output.files);
+    expect(reanalysis.status).toBe("already_applied");
+    expect(() => applyRecipe(ORDER_TYPE_REF, output.files)).toThrow("recipe_already_applied");
+  });
+
+  it("restores every type edit byte-identical via inverse operations", () => {
+    const before = files();
+    const output = applyRecipe(ORDER_TYPE_REF, before);
+    const restored = applyInverseOperations(ORDER_TYPE_REF, output.files, output.operations);
+    expect(recipeFilesDigest(restored)).toBe(output.inputDigest);
+    expect(restored).toEqual(before);
+  });
+
+  it("abstains when the declaration is unresolvable (completeness invariant)", () => {
+    const broken = { ...files(), "src/order-types.ts": "export interface SomethingElse { id: string; }\n" };
+    const analysis = analyzeRecipe(ORDER_TYPE_REF, broken);
+    expect(analysis.status).toBe("unsupported");
+    expect(analysis.matchedPaths).toEqual([]);
+    expect(analysis.reasons).toContain("recipe_internal_api_type_declaration_unresolved");
+  });
+
+  it("abstains on a same-named type imported from a different module (false-positive trap)", () => {
+    // References the recipe module (for a different symbol) but binds OrderRecord
+    // from a different module, so the binding cannot be resolved to this rename.
+    const wrongModule = [
+      'import type { OrderTotal } from "./order-types.js";',
+      'import type { OrderRecord } from "./other-types.js";',
+      "export function total(order: OrderRecord): OrderTotal {",
+      "  return { total: order.total };",
+      "}",
+      "",
+    ].join("\n");
+    const analysis = analyzeRecipe(ORDER_TYPE_REF, { ...files(), "src/order-service.ts": wrongModule });
+    expect(analysis.status).toBe("unsupported");
+    expect(analysis.reasons).toContain("recipe_internal_api_type_binding_unresolved");
+  });
+
+  it("abstains when the type name is also declared as a value (collision/shadow)", () => {
+    const collision = [
+      "export interface OrderRecord { id: string; total: number; }",
+      "export const OrderRecord = { id: '', total: 0 };",
+      "",
+    ].join("\n");
+    const analysis = analyzeRecipe(ORDER_TYPE_REF, { ...files(), "src/order-types.ts": collision });
+    expect(analysis.status).toBe("unsupported");
+    expect(analysis.reasons).toContain("recipe_internal_api_type_value_collision");
+  });
+
+  it("abstains when the type name is used as a value reference", () => {
+    const asValue = [
+      'import type { OrderRecord } from "./order-types.js";',
+      "export const marker = OrderRecord;",
+      "",
+    ].join("\n");
+    const analysis = analyzeRecipe(ORDER_TYPE_REF, { ...files(), "src/order-service.ts": asValue });
+    expect(analysis.status).toBe("unsupported");
+    expect(analysis.reasons).toContain("recipe_internal_api_type_value_reference");
+  });
+
+  it("leaves a same-named member access on an unrelated object untouched", () => {
+    const withMember = [
+      'import type { OrderRecord } from "./order-types.js";',
+      "export function total(order: OrderRecord): number {",
+      "  return schema.OrderRecord ? order.total : 0;",
+      "}",
+      "",
+    ].join("\n");
+    const output = applyRecipe(ORDER_TYPE_REF, { ...files(), "src/order-service.ts": withMember });
+    const migrated = output.files["src/order-service.ts"]!;
+    expect(migrated).toContain("order: OrderRow");
+    expect(migrated).toContain("schema.OrderRecord");
+  });
+
+  it("is a spec-driven factory with an independent digest and validates", () => {
+    const other = createInternalApiTypeRenameRecipe({
+      recipeId: "internal-api-type-widget-to-gadget",
+      version: 1,
+      title: "Internal API type refactor: Widget to Gadget",
+      source: "types-Widget",
+      target: "types-Gadget",
+      module: "@acme/widgets",
+      from: "Widget",
+      to: "Gadget",
+      paths: ["src/use-widget.ts"],
+    });
+    expect(() => validateRecipe(other)).not.toThrow();
+    expect(other.digest).not.toBe(getRecipe("internal-api-order-record-to-order-row", 1).digest);
+    expect(other.preconditions[0]!.kind).toBe("internal_api_type_rename_source");
+    expect(other.transforms[0]!.kind).toBe("internal_api_type_rename");
   });
 });
