@@ -234,7 +234,10 @@ async function scanReviewTree(root: string, capturePaths: ReadonlySet<string>): 
   });
 }
 
-function readArtifact(root: string, value: unknown): Record<string, unknown> {
+function readArtifact(root: string, value: unknown): Readonly<{
+  value: Record<string, unknown>;
+  sha256: string;
+}> {
   if (typeof value !== "string") throw new Error("warden_candidate_artifact_missing");
   const path = resolve(value);
   if (!isStrictlyWithin(root, path)) throw new Error("warden_candidate_artifact_escape");
@@ -248,9 +251,13 @@ function readArtifact(root: string, value: unknown): Record<string, unknown> {
     throw new Error("warden_candidate_artifact_escape");
   }
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    const bytes = readFileSync(path);
+    const parsed = JSON.parse(bytes.toString("utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
-    return parsed as Record<string, unknown>;
+    return Object.freeze({
+      value: parsed as Record<string, unknown>,
+      sha256: prefixedDigest(bytes),
+    });
   } catch {
     throw new Error("warden_candidate_artifact_invalid");
   }
@@ -327,8 +334,10 @@ export async function validateWardenCandidateForReview(
     new Set(changedPaths).size !== changedPaths.length) {
     throw new Error("warden_candidate_changed_paths_invalid");
   }
-  const manifest = readArtifact(candidateRoot, artifacts.candidateManifest);
-  const evidence = readArtifact(evidenceRoot, artifacts.evidence);
+  const manifestArtifact = readArtifact(candidateRoot, artifacts.candidateManifest);
+  const evidenceArtifact = readArtifact(evidenceRoot, artifacts.evidence);
+  const manifest = manifestArtifact.value;
+  const evidence = evidenceArtifact.value;
   const manifestSource = manifest.source && typeof manifest.source === "object"
     ? manifest.source as Record<string, unknown>
     : null;
@@ -348,6 +357,13 @@ export async function validateWardenCandidateForReview(
     : [];
   const parsedReviewEvidence = CandidateReviewEvidenceSchema.safeParse(evidence.review);
   if (!parsedReviewEvidence.success) throw new Error("warden_candidate_integrity_failed");
+  const storedManifestDigest = artifacts.candidateManifestSha256;
+  const storedEvidenceDigest = artifacts.evidenceSha256;
+  const exactArtifactDigests =
+    typeof storedManifestDigest === "string" &&
+    storedManifestDigest === manifestArtifact.sha256 &&
+    typeof storedEvidenceDigest === "string" &&
+    storedEvidenceDigest === evidenceArtifact.sha256;
   const reviewPaths = parsedReviewEvidence.data.edits.map((edit) => safeRelativePath(edit.path));
   const expectedCandidateEntries = Array.isArray(manifestCandidate?.entries)
     ? manifestCandidate.entries
@@ -364,7 +380,8 @@ export async function validateWardenCandidateForReview(
     JSON.stringify(artifactChangedPaths) === JSON.stringify(changedPaths) &&
     JSON.stringify(evidenceChangedPaths) === JSON.stringify(changedPaths) &&
     new Set(reviewPaths).size === reviewPaths.length &&
-    JSON.stringify(reviewPaths) === JSON.stringify(changedPaths);
+    JSON.stringify(reviewPaths) === JSON.stringify(changedPaths) &&
+    (parsedReviewEvidence.data.schemaVersion === 1 || exactArtifactDigests);
   if (!valid) throw new Error("warden_candidate_integrity_failed");
   return Object.freeze({
     result,
@@ -546,7 +563,7 @@ export async function sealWardenCandidateApproval(
     });
   });
   const artifact = {
-    schemaVersion: 3,
+    schemaVersion: validated.reviewEvidence.schemaVersion === 2 ? 4 : 3,
     tenantId: input.tenantId,
     repositoryId: source.repositoryId,
     snapshotId: source.snapshotId,

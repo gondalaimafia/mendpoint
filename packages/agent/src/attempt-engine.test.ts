@@ -771,13 +771,17 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
     if (result.status === "rejected") throw new Error(`${result.code}: ${result.summary}`);
     expect(result.status).toBe("succeeded");
     expect(result.changedPaths).toEqual(["client.js"]);
+    expect(result.artifacts).toMatchObject({
+      candidateManifestSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      evidenceSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    });
     expect(result.artifacts.candidateWorkspace.startsWith(value.candidateRoot)).toBe(true);
     expect(readFileSync(join(result.artifacts.candidateWorkspace, "client.js"), "utf8"))
       .toContain("/v1/charges");
     expect(readFileSync(join(value.sourceRoot, "client.js"), "utf8")).toBe(sourceBefore);
     const evidence = JSON.parse(readFileSync(result.artifacts.evidence, "utf8")) as { review: unknown };
     expect(evidence.review).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       verification: {
         commands: [
           { command: "node check.mjs", ok: true, exitCode: 0 },
@@ -787,8 +791,17 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
       },
       edits: [{
         path: "client.js",
-        rationale: "The duplicated s in the observed charge path causes the target failure.",
-        category: "path",
+        hypothesis: "The duplicated s in the observed charge path causes the target failure.",
+        targetSymbol: "path",
+        sourceEvidence: [{
+          path: "client.js",
+          digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        }],
+        precondition: "The observed client still contains /v1/chargess.",
+        expectedObservation: "The exact observed path literal can be replaced once.",
+        postcondition: "The candidate uses /v1/charges and all configured checks pass.",
+        rollback: "Restore the exact observed client.js bytes.",
+        stopCondition: "Stop if the target digest changes or any verifier fails.",
         risk: "high",
         confidence: 0.94,
         assessmentSource: "planner",
@@ -1166,10 +1179,11 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
         review: { edits: Array<Record<string, unknown>> };
       };
       expect(evidence.review.edits[0]).toMatchObject({
-        category: "heuristic:repository_mutation",
         risk: "high",
-        confidence: null,
-        assessmentSource: "unavailable",
+        confidence: 0,
+        assessmentSource: "heuristic",
+        sourceEvidence: [{ path: "client.js", digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) }],
+        rollback: "Restore the observed bytes for client.js.",
       });
     }
   });

@@ -89,7 +89,7 @@ function fixture() {
       }],
     },
   }));
-  const resultJson = JSON.stringify({
+  const result = {
     source: { repositoryId: "repo-1", snapshotId: "snapshot-1", revision: "a".repeat(40) },
     changedPaths: ["client.js"],
     artifacts: {
@@ -98,10 +98,13 @@ function fixture() {
       evidence,
       sourceDigest,
       candidateDigest,
+      candidateManifestSha256: undefined as string | undefined,
+      evidenceSha256: undefined as string | undefined,
     },
     retention: { expiresAt: "2035-08-12T00:00:00.000Z" },
-  });
-  return { root, source, candidate, manifest, evidence, resultJson };
+  };
+  const resultJson = JSON.stringify(result);
+  return { root, source, candidate, manifest, evidence, result, resultJson };
 }
 
 describe("Warden candidate API", () => {
@@ -262,6 +265,81 @@ describe("Warden candidate API", () => {
 });
 
 describe("Warden approval sealing", () => {
+  it("seals complete version two edit authority as a version four approval artifact", async () => {
+    const value = fixture();
+    const evidence = JSON.parse(readFileSync(value.evidence, "utf8")) as Record<string, unknown>;
+    const review = evidence.review as Record<string, unknown>;
+    const edit = (review.edits as Array<Record<string, unknown>>)[0]!;
+    review.schemaVersion = 2;
+    delete edit.rationale;
+    delete edit.category;
+    Object.assign(edit, {
+      hypothesis: "The observed legacy endpoint causes the failing request.",
+      targetSymbol: "path",
+      sourceEvidence: [{ path: "client.js", digest: `sha256:${"b".repeat(64)}` }],
+      precondition: "The exact legacy endpoint is still present.",
+      expectedObservation: "The endpoint changes exactly once.",
+      postcondition: "The approved request and regression checks pass.",
+      rollback: "Restore the exact observed source bytes.",
+      stopCondition: "Stop if the source evidence digest changes.",
+    });
+    writeFileSync(value.evidence, JSON.stringify(evidence));
+    value.result.artifacts.candidateManifestSha256 = `sha256:${createHash("sha256")
+      .update(readFileSync(value.manifest)).digest("hex")}`;
+    value.result.artifacts.evidenceSha256 = `sha256:${createHash("sha256")
+      .update(readFileSync(value.evidence)).digest("hex")}`;
+    const sealed = await sealWardenCandidateApproval({
+      ...REVIEW_BINDING,
+      tenantId: "tenant-a",
+      repoPath: value.source,
+      status: "candidate_ready",
+      resultJson: JSON.stringify(value.result),
+      env: { MENDPOINT_DATA_DIR: join(value.root, "data") },
+    });
+    expect(readWardenApprovalArtifact({
+      tenantId: "tenant-a", path: sealed.path, sha256: sealed.sha256,
+      env: { MENDPOINT_DATA_DIR: join(value.root, "data") },
+    })).toMatchObject({ schemaVersion: 4, reviewEvidence: { schemaVersion: 2 } });
+  });
+
+  it("rejects rewritten version two edit authority even when its JSON remains valid", async () => {
+    const value = fixture();
+    const evidence = JSON.parse(readFileSync(value.evidence, "utf8")) as Record<string, unknown>;
+    const review = evidence.review as Record<string, unknown>;
+    const edit = (review.edits as Array<Record<string, unknown>>)[0]!;
+    review.schemaVersion = 2;
+    delete edit.rationale;
+    delete edit.category;
+    Object.assign(edit, {
+      hypothesis: "The observed legacy endpoint causes the failing request.",
+      targetSymbol: "path",
+      sourceEvidence: [{ path: "client.js", digest: `sha256:${"b".repeat(64)}` }],
+      precondition: "The exact legacy endpoint is still present.",
+      expectedObservation: "The endpoint changes exactly once.",
+      postcondition: "The approved request and regression checks pass.",
+      rollback: "Restore the exact observed source bytes.",
+      stopCondition: "Stop if the source evidence digest changes.",
+    });
+    writeFileSync(value.evidence, JSON.stringify(evidence));
+    value.result.artifacts.candidateManifestSha256 = `sha256:${createHash("sha256")
+      .update(readFileSync(value.manifest)).digest("hex")}`;
+    value.result.artifacts.evidenceSha256 = `sha256:${createHash("sha256")
+      .update(readFileSync(value.evidence)).digest("hex")}`;
+    const resultJson = JSON.stringify(value.result);
+
+    edit.rollback = "Run an unrelated command instead.";
+    writeFileSync(value.evidence, JSON.stringify(evidence));
+
+    await expect(sealWardenCandidateApproval({
+      ...REVIEW_BINDING,
+      tenantId: "tenant-a",
+      repoPath: value.source,
+      status: "candidate_ready",
+      resultJson,
+      env: { MENDPOINT_DATA_DIR: join(value.root, "data") },
+    })).rejects.toThrow("warden_candidate_integrity_failed");
+  });
+
   it("seals an immutable approval artifact that survives workspace mutation", async () => {
     const value = fixture();
     const dataDir = join(value.root, "data");
@@ -423,6 +501,29 @@ describe("Warden approval sealing", () => {
       tenantId: "tenant-a",
       path: sealed.path,
       sha256: tamperedSha256,
+      env: { MENDPOINT_DATA_DIR: dataDir },
+    })).toThrow("warden_candidate_approval_invalid");
+  });
+
+  it("rejects an approval schema that is paired with the wrong review evidence version", async () => {
+    const value = fixture();
+    const dataDir = join(value.root, "data");
+    const sealed = await sealWardenCandidateApproval({
+      ...REVIEW_BINDING,
+      tenantId: "tenant-a",
+      repoPath: value.source,
+      status: "candidate_ready",
+      resultJson: value.resultJson,
+      env: { MENDPOINT_DATA_DIR: dataDir },
+    });
+    const artifact = JSON.parse(readFileSync(sealed.path, "utf8")) as Record<string, unknown>;
+    artifact.schemaVersion = 4;
+    const bytes = JSON.stringify(artifact);
+    writeFileSync(sealed.path, bytes);
+    expect(() => readWardenApprovalArtifact({
+      tenantId: "tenant-a",
+      path: sealed.path,
+      sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
       env: { MENDPOINT_DATA_DIR: dataDir },
     })).toThrow("warden_candidate_approval_invalid");
   });

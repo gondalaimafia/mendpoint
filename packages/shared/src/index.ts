@@ -221,7 +221,7 @@ export const ReviewedChangeEvidenceSchema = z.object({
 });
 export type ReviewedChangeEvidence = z.infer<typeof ReviewedChangeEvidenceSchema>;
 
-export const CandidateReviewEvidenceSchema = z.object({
+const CandidateReviewEvidenceV1Schema = z.object({
   schemaVersion: z.literal(1),
   summary: z.string().min(1).max(1_000),
   verification: z.object({
@@ -230,6 +230,45 @@ export const CandidateReviewEvidenceSchema = z.object({
   }),
   edits: z.array(ReviewedChangeEvidenceSchema).min(1).max(40),
 });
+
+export const ReviewedPreciseChangeEvidenceSchema = z.object({
+  path: z.string().min(1).max(1_000),
+  hypothesis: z.string().min(1).max(500),
+  targetSymbol: z.string().min(1).max(500).nullable(),
+  sourceEvidence: z.array(z.object({
+    path: z.string().min(1).max(1_000),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  })).min(1).max(40),
+  precondition: z.string().min(1).max(1_000),
+  expectedObservation: z.string().min(1).max(1_000),
+  postcondition: z.string().min(1).max(1_000),
+  rollback: z.string().min(1).max(1_000),
+  stopCondition: z.string().min(1).max(1_000),
+  risk: z.enum(["low", "medium", "high"]),
+  confidence: z.number().min(0).max(1),
+  assessmentSource: z.enum(["planner", "heuristic"]),
+  verification: z.object({
+    summary: z.string().min(1).max(500),
+    commandOutputSha256: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)).min(1).max(20),
+  }),
+});
+export type ReviewedPreciseChangeEvidence = z.infer<typeof ReviewedPreciseChangeEvidenceSchema>;
+
+export const CandidateReviewEvidenceV2Schema = z.object({
+  schemaVersion: z.literal(2),
+  summary: z.string().min(1).max(1_000),
+  verification: z.object({
+    summary: z.string().min(1).max(500),
+    commands: z.array(ReviewedVerificationCommandSchema).min(1).max(20),
+  }),
+  edits: z.array(ReviewedPreciseChangeEvidenceSchema).min(1).max(40),
+});
+export type CandidateReviewEvidenceV2 = z.infer<typeof CandidateReviewEvidenceV2Schema>;
+
+export const CandidateReviewEvidenceSchema = z.discriminatedUnion("schemaVersion", [
+  CandidateReviewEvidenceV1Schema,
+  CandidateReviewEvidenceV2Schema,
+]);
 export type CandidateReviewEvidence = z.infer<typeof CandidateReviewEvidenceSchema>;
 
 /** Maximum response body the authenticated web bridge will accept from the API. */
