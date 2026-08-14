@@ -4,6 +4,7 @@ import {
   createFlyMachinesSandbox,
   createMockFlyClient,
   resolveFlyClient,
+  resolveFlySandboxToken,
   type MockFlyClient,
 } from "./fly-sandbox.js";
 import {
@@ -279,5 +280,73 @@ describe("fly client credential gating", () => {
     const injected = createMockFlyClient();
     const client = resolveFlyClient({ flyClient: injected }, "mendpoint-sandbox");
     expect(client).toBe(injected);
+  });
+});
+
+describe("resolveFlySandboxToken (deployed credential shape)", () => {
+  // Sentinel strings only — never a real token value.
+  it("resolves MENDPOINT_SANDBOX_FLY_TOKEN alone (the production shape)", () => {
+    expect(
+      resolveFlySandboxToken({ MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-sentinel" } as NodeJS.ProcessEnv),
+    ).toBe("scoped-sentinel");
+  });
+
+  it("resolves FLY_API_TOKEN alone (backwards compatible)", () => {
+    expect(
+      resolveFlySandboxToken({ FLY_API_TOKEN: "generic-sentinel" } as NodeJS.ProcessEnv),
+    ).toBe("generic-sentinel");
+  });
+
+  it("prefers the sandbox-scoped token when both are set", () => {
+    expect(
+      resolveFlySandboxToken({
+        MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-sentinel",
+        FLY_API_TOKEN: "generic-sentinel",
+      } as NodeJS.ProcessEnv),
+    ).toBe("scoped-sentinel");
+  });
+
+  it("treats whitespace-only values as unset", () => {
+    expect(
+      resolveFlySandboxToken({
+        MENDPOINT_SANDBOX_FLY_TOKEN: "   ",
+        FLY_API_TOKEN: "  \t ",
+      } as NodeJS.ProcessEnv),
+    ).toBeUndefined();
+  });
+
+  it("falls back past a whitespace-only scoped token to a real generic token", () => {
+    expect(
+      resolveFlySandboxToken({
+        MENDPOINT_SANDBOX_FLY_TOKEN: "   ",
+        FLY_API_TOKEN: "generic-sentinel",
+      } as NodeJS.ProcessEnv),
+    ).toBe("generic-sentinel");
+  });
+});
+
+describe("fly_machines fail-closed on missing credential", () => {
+  it("fails closed when fly_machines is selected but no Fly token resolves (no host/mock fallback)", async () => {
+    vi.stubEnv("MENDPOINT_SANDBOX_KIND", "fly_machines");
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_APP", "mendpoint-sandbox");
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_TOKEN", undefined);
+    vi.stubEnv("FLY_API_TOKEN", undefined);
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_MODE", undefined);
+    // No injected flyClient — the real credential-resolution path decides.
+    const sbx = createSandbox({ tenantId: "t1" });
+    try {
+      expect(sbx.kind).toBe("fly_machines");
+      const result = await sbx.runIsolated!("echo pwned");
+
+      // Must FAIL rather than silently returning the mock's fake success.
+      expect(result.ok).toBe(false);
+      expect(result.exitCode).toBe(-1);
+      expect(result.stderr).toMatch(/token/i);
+      expect(result.stderr).toMatch(/refusing host fallback/i);
+      // Did NOT execute: no command output (mock success would have leaked here).
+      expect(result.stdout).toBe("");
+    } finally {
+      sbx.dispose();
+    }
   });
 });

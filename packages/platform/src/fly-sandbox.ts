@@ -209,8 +209,21 @@ function resolveApp(opts: CreateSandboxOpts): string | undefined {
 }
 
 /**
+ * Resolve the Fly credential for sandbox Machines.
+ * Prefers the sandbox-scoped token (narrower blast radius) over the generic
+ * account token. Returns undefined when neither is set so callers can fail
+ * closed rather than silently degrading to host execution.
+ */
+export function resolveFlySandboxToken(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const scoped = env.MENDPOINT_SANDBOX_FLY_TOKEN?.trim();
+  if (scoped) return scoped;
+  const generic = env.FLY_API_TOKEN?.trim();
+  return generic ? generic : undefined;
+}
+
+/**
  * Pick the Fly client. Injected client wins (tests / explicit dry-run). Otherwise
- * live only when FLY_API_TOKEN + a target app are present and mock mode is not
+ * live only when a sandbox token + a target app are present and mock mode is not
  * forced; else a deterministic in-memory mock (no network).
  */
 export function resolveFlyClient(
@@ -218,7 +231,7 @@ export function resolveFlyClient(
   app: string | undefined,
 ): FlyMachineClient {
   if (opts.flyClient) return opts.flyClient;
-  const token = process.env.FLY_API_TOKEN;
+  const token = resolveFlySandboxToken(process.env);
   const mode = process.env.MENDPOINT_SANDBOX_FLY_MODE;
   if (mode === "mock" || !token || !app) {
     return createMockFlyClient();
@@ -233,6 +246,14 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
   const flyOpts = opts.fly ?? {};
   const app = resolveApp(opts);
   const client = resolveFlyClient(opts, app);
+  // Fail-closed guard: fly_machines was explicitly selected, but the mock client
+  // was chosen only because no Fly token resolved (no injected client and mock
+  // mode not explicitly forced). Refuse to run rather than silently degrade to
+  // the no-op mock / host path.
+  const isolationUnavailable =
+    !opts.flyClient &&
+    process.env.MENDPOINT_SANDBOX_FLY_MODE !== "mock" &&
+    resolveFlySandboxToken(process.env) === undefined;
   const region =
     flyOpts.region ?? process.env.MENDPOINT_SANDBOX_FLY_REGION ?? FLY_SANDBOX_DEFAULTS.region;
   const image =
@@ -269,6 +290,18 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
         stdout: "",
         stderr:
           "fly_machines: MENDPOINT_SANDBOX_FLY_APP is not configured; refusing host fallback",
+        exitCode: -1,
+      };
+    }
+
+    if (isolationUnavailable) {
+      // fail-closed: no sandbox Fly token resolved, so the mock client would only
+      // fake success. Refuse rather than silently skip real isolation.
+      return {
+        ok: false,
+        stdout: "",
+        stderr:
+          "fly_machines: no sandbox Fly token resolved; set MENDPOINT_SANDBOX_FLY_TOKEN; refusing host fallback",
         exitCode: -1,
       };
     }
