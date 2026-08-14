@@ -962,4 +962,94 @@ describe("web credential proxy", () => {
     await vi.advanceTimersByTimeAsync(12_000);
     expect((await responsePromise).status).toBe(504);
   });
+
+  it("permits the Regauge canonical read paths alongside the legacy Transformer aliases", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn(async () => Response.json({ ok: true }));
+    vi.stubGlobal("fetch", upstream);
+
+    const cases: Array<string[]> = [
+      ["regauge", "gate"],
+      ["transformer", "gate"],
+      ["regauge", "adaptive-candidates"],
+      ["transformer", "adaptive-candidates"],
+      ["regauge", "control-plane", "campaigns", "campaign-a"],
+      ["transformer", "control-plane", "campaigns", "campaign-a"],
+    ];
+    for (const segments of cases) {
+      const response = await GET(
+        new NextRequest(`https://console.example/api/${segments.join("/")}`, {
+          headers: { Cookie: cookie },
+        }),
+        { params: Promise.resolve({ path: segments }) },
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(upstream).toHaveBeenCalledTimes(cases.length);
+  });
+
+  it("forwards the Fettler pilot canonical path with OIDC company identity", async () => {
+    process.env.MENDPOINT_WEB_ACCESS_TOKEN = "web-secret";
+    process.env.MENDPOINT_WEB_ALLOWED_ORIGINS = "https://console.example";
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const oidcAccessToken = "oidc-access-token-for-fettler-owner";
+    const oidcSession = await createOidcWebSession({
+      accessToken: oidcAccessToken,
+      sessionSecret: "web-secret",
+      now: new Date(),
+    });
+    const upstream = vi.fn(async (url: URL) => {
+      expect(url.toString()).toBe("http://api.internal:3001/fettler/pilot");
+      return Response.json({ jobId: "job-a", status: "pending", replayed: false }, { status: 202 });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await POST(
+      new NextRequest("https://console.example/api/fettler/pilot", {
+        method: "POST",
+        headers: {
+          Cookie: `mendpoint_web_session=${oidcSession}`,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "fettler-pilot-browser-1",
+        },
+        body: JSON.stringify({ providerSlug: "stripe", consumerId: "consumer-a" }),
+      }),
+      { params: Promise.resolve({ path: ["fettler", "pilot"] }) },
+    );
+
+    expect(response.status).toBe(202);
+    expect(upstream).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the Fettler pilot canonical path behind company identity for preview sessions", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await POST(
+      new NextRequest("https://console.example/api/fettler/pilot", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "fettler-pilot-preview-1",
+        },
+        body: JSON.stringify({ providerSlug: "stripe", consumerId: "consumer-a" }),
+      }),
+      { params: Promise.resolve({ path: ["fettler", "pilot"] }) },
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "company_identity_required" });
+    expect(upstream).not.toHaveBeenCalled();
+  });
 });

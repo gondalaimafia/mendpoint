@@ -32,7 +32,7 @@ export function AdaptiveCandidateInbox() {
     setError(null);
     try {
       const response = await fetch(
-        `${API_URL}/transformer/adaptive-candidates?historyLimit=${HISTORY_PAGE_SIZE}`,
+        `${API_URL}/regauge/adaptive-candidates?historyLimit=${HISTORY_PAGE_SIZE}`,
         {
         cache: "no-store",
         signal,
@@ -61,7 +61,7 @@ export function AdaptiveCandidateInbox() {
         historyLimit: String(HISTORY_PAGE_SIZE),
         historyCursor: nextHistoryCursor,
       });
-      const response = await fetch(`${API_URL}/transformer/adaptive-candidates?${query}`, {
+      const response = await fetch(`${API_URL}/regauge/adaptive-candidates?${query}`, {
         cache: "no-store",
       });
       const body = await responseJson<AdaptiveCandidateInboxPage>(response);

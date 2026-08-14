@@ -16,12 +16,12 @@ type WardenRequestInput = Readonly<{
 }>;
 
 export function buildWardenRequest(input: WardenRequestInput): Readonly<{
-  endpoint: "/warden/pilot" | "/agent/runs";
+  endpoint: "/fettler/pilot" | "/agent/runs";
   body: Record<string, unknown>;
 }> {
   if (input.customerMode) {
     return {
-      endpoint: "/warden/pilot",
+      endpoint: "/fettler/pilot",
       body: {
         providerSlug: input.providerSlug,
         consumerId: input.consumerId,

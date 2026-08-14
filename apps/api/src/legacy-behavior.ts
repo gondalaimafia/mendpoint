@@ -718,7 +718,8 @@ export function registerLegacyBehaviorRoutes(
   const enabled = options.enabled === true;
   const now = options.now ?? (() => new Date().toISOString());
 
-  app.post("/transformer/legacy-behavior/extractions", async (c) => {
+  const mount = (base: string): void => {
+  app.post(`${base}/legacy-behavior/extractions`, async (c) => {
     const principal = c.get("principal");
     const tenantId = principal?.tenantId;
     const trustPrincipalId = c.get("trustPrincipalId");
@@ -753,7 +754,7 @@ export function registerLegacyBehaviorRoutes(
     }
   });
 
-  app.get("/transformer/legacy-behavior/extractions/:id", (c) => {
+  app.get(`${base}/legacy-behavior/extractions/:id`, (c) => {
     const principal = c.get("principal");
     const tenantId = principal?.tenantId;
     if (!tenantId || !c.get("trustPrincipalId")) return c.json({ error: "unauthorized" }, 401);
@@ -768,4 +769,9 @@ export function registerLegacyBehaviorRoutes(
       return c.json({ error: "legacy_behavior_retrieval_failed" }, 500);
     }
   });
+  };
+  // Canonical (Regauge) paths plus the legacy /transformer aliases (kept forever
+  // for external/legacy callers). Both register the same handlers.
+  mount("/regauge");
+  mount("/transformer");
 }
