@@ -1971,8 +1971,20 @@ Review: current main is `a880aad0974ef40e523a28130dc8bf4604639be4`. The protecte
 - [x] Bind new review evidence and candidate manifests to persisted SHA 256 digests before human approval.
 - [x] Seal version two evidence only inside a version four approval artifact and render its full authority in the draft pull request.
 - [x] Run focused adversarial tests, every workspace test, every workspace typecheck, the production build, GA gates, dependency audit, and diff integrity.
-- [ ] Commit, push, merge through protected checks, and verify the exact deployed revision.
+- [x] Commit, push, merge through protected checks, and verify the exact deployed revision.
 
 Acceptance: every newly generated Fettler candidate exposes enough authenticated evidence for a reviewer to understand exactly why each file changed, what source observation authorized it, which condition must remain true, what outcome was expected, how to roll it back, when execution should stop, and which independent verifier outputs passed. Rewriting a valid-looking evidence artifact after execution must fail before approval. Existing version one candidates remain reviewable and deliverable.
 
 Review: red tests first failed at all four intended boundaries because only review evidence version one and approval artifact version three existed. The implementation now emits version two precise edit evidence, stores one immutable digest snapshot for both terminal checkpointing and the durable run result, requires exact manifest and evidence bytes for every new candidate review, and seals version two only as approval artifact version four. The delivery worker renders every source-bound field while retaining the legacy body for existing approvals. A focused tampering regression proves valid JSON with a changed rollback instruction is rejected. All repository tests pass, all workspace typechecks pass, the 50-page production build passes, GA/spec/claims/names/action-pin gates pass, the production dependency audit reports zero vulnerabilities, and diff integrity is clean.
+
+## Fettler precise evidence review UI: 2026-08-14
+
+- [x] Add red rendering tests for authenticated review evidence versions one and two.
+- [x] Render every version two source, condition, risk, confidence, and verifier field before the human decision controls.
+- [x] Preserve the version one candidate review experience for already-created candidates.
+- [x] Run focused and full Web tests, Web typecheck, the production build, release gates, dependency audit, and diff integrity.
+- [ ] Commit, push, merge through protected checks, and verify the exact deployed revision and review page in a browser.
+
+Acceptance: before a reviewer can approve, regenerate, or reject a newly generated Fettler candidate, the page displays the exact authenticated hypothesis, target symbol, source paths and digests, precondition, expected observation, postcondition, rollback, stop condition, risk, confidence, assessment source, and verifier evidence returned by the candidate API. Existing version one candidates remain readable.
+
+Review: the existing candidate page was statically limited to review evidence version one and omitted the newly authenticated precise edit fields. The new typed panel renders both versions, with every version two source and condition visible ahead of file diffs and the human decision controls. React performs all text escaping, arrays remain bounded by the authoritative shared schema, and no second evidence source was introduced. The focused test first failed because the panel did not exist. The final focused tests pass 4 of 4, full Web passes 166 of 166, all workspace typechecks pass, the 50-page production build passes, GA/spec/claims/names/action-pin gates pass, the production dependency audit reports zero vulnerabilities, and diff integrity is clean. The full repository suite had one Windows temporary-directory rename race while tests and typechecks ran concurrently; the complete Ops suite then passed 94 of 94 in isolation.
