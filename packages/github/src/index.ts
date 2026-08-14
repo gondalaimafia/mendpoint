@@ -662,6 +662,7 @@ export {
   mockInstallationRepositories,
   type AppCredentials,
   type InstallationToken,
+  type TokenFetcher,
   type InstallationRepository,
   type InstallationRepositoryLister,
   type MockInstallationRepositoryInput,

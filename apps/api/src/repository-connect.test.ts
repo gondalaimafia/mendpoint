@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -10,8 +11,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { afterEach, describe, expect, it } from "vitest";
-import { createDb, type AppDb } from "@mendpoint/db";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDb, upsertGitHubInstallation, type AppDb } from "@mendpoint/db";
+import type { TokenFetcher } from "@mendpoint/github";
 import type { ApiEnv } from "./auth.js";
 import { resolveRepoKey } from "./repo-path.js";
 import {
@@ -19,6 +21,7 @@ import {
   createSelfServeConnectRoutes,
   mockFixtureClone,
   selfServeConnectEnabled,
+  type RepositoryCheckoutCloner,
 } from "./repository-connect.js";
 
 const roots: string[] = [];
@@ -27,6 +30,14 @@ const previousReposDir = process.env.MENDPOINT_REPOS_DIR;
 const previousNodeEnv = process.env.NODE_ENV;
 const previousFlag = process.env.MENDPOINT_SELF_SERVE_CONNECT;
 const previousMode = process.env.GITHUB_MODE;
+const previousAppId = process.env.GITHUB_APP_ID;
+const previousAppKey = process.env.GITHUB_APP_PRIVATE_KEY;
+const previousBindings = process.env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS;
+
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
 
 function makeTreeWritable(root: string): void {
   let stat: ReturnType<typeof lstatSync>;
@@ -61,10 +72,13 @@ function git(root: string, ...args: string[]): string {
 
 afterEach(() => {
   while (dbs.length) dbs.pop()?.raw.close();
-  process.env.MENDPOINT_REPOS_DIR = previousReposDir;
-  process.env.NODE_ENV = previousNodeEnv;
-  process.env.MENDPOINT_SELF_SERVE_CONNECT = previousFlag;
-  process.env.GITHUB_MODE = previousMode;
+  restoreEnv("MENDPOINT_REPOS_DIR", previousReposDir);
+  restoreEnv("NODE_ENV", previousNodeEnv);
+  restoreEnv("MENDPOINT_SELF_SERVE_CONNECT", previousFlag);
+  restoreEnv("GITHUB_MODE", previousMode);
+  restoreEnv("GITHUB_APP_ID", previousAppId);
+  restoreEnv("GITHUB_APP_PRIVATE_KEY", previousAppKey);
+  restoreEnv("GITHUB_APP_ACCOUNT_TENANT_BINDINGS", previousBindings);
   while (roots.length) {
     const root = roots.pop();
     if (root) {
@@ -204,6 +218,163 @@ describe("self-serve connect route", () => {
     expect(payload.connection.provider).toBe("local_git");
     expect(payload.repository.status).toBe("pending");
     expect(existsSync(join(root, "shop-app", ".git"))).toBe(true);
+  });
+
+  // Configures the ambient environment for real GitHub App mode. process.env is
+  // the single source of truth here because registerConnectedRepository resolves
+  // the checkout path from process.env, exactly as the deployed app does.
+  function setRealEnv(root: string, bindings: string): void {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    process.env.NODE_ENV = "production";
+    process.env.MENDPOINT_REPOS_DIR = root;
+    process.env.MENDPOINT_SELF_SERVE_CONNECT = "1";
+    process.env.GITHUB_MODE = "real";
+    process.env.GITHUB_APP_ID = "123";
+    process.env.GITHUB_APP_PRIVATE_KEY = privateKey
+      .export({ type: "pkcs8", format: "pem" })
+      .toString();
+    process.env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS = bindings;
+  }
+
+  function seedInstallation(
+    db: AppDb,
+    opts: {
+      installationId: string;
+      accountId: string;
+      tenantId: string;
+      owner: string;
+      name: string;
+      repoId: number;
+    },
+  ): void {
+    upsertGitHubInstallation(db, {
+      id: `inst-${opts.installationId}`,
+      installationId: opts.installationId,
+      accountId: opts.accountId,
+      accountLogin: opts.owner,
+      tenantId: opts.tenantId,
+      permissions: {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+        checks: "read",
+      },
+      repositories: [{ id: opts.repoId, owner: opts.owner, name: opts.name }],
+      repositorySelection: "selected",
+      createdAt: "2026-08-06T00:00:00.000Z",
+      updatedAt: "2026-08-06T00:00:00.000Z",
+    });
+  }
+
+  function recordingFetchToken(): {
+    fetchToken: TokenFetcher;
+    calls: Array<{ installationId: number; repositoryIds?: number[] }>;
+  } {
+    const calls: Array<{ installationId: number; repositoryIds?: number[] }> = [];
+    const fetchToken: TokenFetcher = async (installationId, _jwt, repositoryIds) => {
+      calls.push({ installationId, repositoryIds });
+      return {
+        token: "ghs_test_token",
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        installationId,
+        repositories: [],
+      };
+    };
+    return { fetchToken, calls };
+  }
+
+  describe("real mode (GitHub App token scoping)", () => {
+    it("rejects a caller supplying another tenant's installation id, minting no token", async () => {
+      const root = reposRoot();
+      // tenant-a owns installation 555 for acme/shop-app; tenant-b owns 999.
+      setRealEnv(root, '{"7123456":"tenant-a","8888888":"tenant-b"}');
+      const db = createDb(join(root, "connect.sqlite"));
+      dbs.push(db);
+      seedInstallation(db, {
+        installationId: "555",
+        accountId: "7123456",
+        tenantId: "tenant-a",
+        owner: "acme",
+        name: "shop-app",
+        repoId: 456,
+      });
+      seedInstallation(db, {
+        installationId: "999",
+        accountId: "8888888",
+        tenantId: "tenant-b",
+        owner: "acme",
+        name: "secret",
+        repoId: 777,
+      });
+      const { fetchToken, calls } = recordingFetchToken();
+      const cloner = vi.fn<RepositoryCheckoutCloner>();
+      const app = appWith({ db, enabled: true, fetchToken, cloner });
+      // Caller (tenant-a) references tenant-b's installation id in the body.
+      const res = await post(app, {
+        repoKey: "shop-app",
+        owner: "acme",
+        name: "shop-app",
+        installationId: "999",
+      });
+      expect(res.status).toBe(422);
+      expect(await res.json()).toEqual({ error: "connect_installation_not_authorized" });
+      // No token minted and nothing cloned into any tenant path.
+      expect(calls).toHaveLength(0);
+      expect(cloner).not.toHaveBeenCalled();
+    });
+
+    it("succeeds with a valid binding and scopes the token to the requested repo", async () => {
+      const root = reposRoot();
+      setRealEnv(root, '{"7123456":"tenant-a"}');
+      const db = createDb(join(root, "connect.sqlite"));
+      dbs.push(db);
+      seedInstallation(db, {
+        installationId: "555",
+        accountId: "7123456",
+        tenantId: "tenant-a",
+        owner: "acme",
+        name: "shop-app",
+        repoId: 456,
+      });
+      const { fetchToken, calls } = recordingFetchToken();
+      // Real cloner would network-clone; substitute one that exercises the token
+      // provider (triggering the scoped mint) then writes a mock fixture.
+      const cloner: RepositoryCheckoutCloner = async (request) => {
+        await request.tokenProvider?.();
+        await mockFixtureClone(request);
+      };
+      const app = appWith({ db, enabled: true, fetchToken, cloner });
+      const res = await post(app, { repoKey: "shop-app", owner: "acme", name: "shop-app" });
+      expect(res.status).toBe(201);
+      // The minted token request is scoped to exactly the requested repository.
+      expect(calls).toEqual([{ installationId: 555, repositoryIds: [456] }]);
+      expect(existsSync(join(root, "tenant-a", "shop-app", ".git"))).toBe(true);
+    });
+
+    it("rejects a missing binding with the same error shape (no enumeration signal)", async () => {
+      const root = reposRoot();
+      // Installation exists and is authorized, but tenant-a has no account binding.
+      setRealEnv(root, '{"8888888":"tenant-b"}');
+      const db = createDb(join(root, "connect.sqlite"));
+      dbs.push(db);
+      seedInstallation(db, {
+        installationId: "555",
+        accountId: "7123456",
+        tenantId: "tenant-a",
+        owner: "acme",
+        name: "shop-app",
+        repoId: 456,
+      });
+      const { fetchToken, calls } = recordingFetchToken();
+      const cloner = vi.fn<RepositoryCheckoutCloner>();
+      const app = appWith({ db, enabled: true, fetchToken, cloner });
+      const res = await post(app, { repoKey: "shop-app", owner: "acme", name: "shop-app" });
+      expect(res.status).toBe(422);
+      // Identical to the wrong-tenant rejection: caller cannot tell them apart.
+      expect(await res.json()).toEqual({ error: "connect_installation_not_authorized" });
+      expect(calls).toHaveLength(0);
+      expect(cloner).not.toHaveBeenCalled();
+    });
   });
 });
 
