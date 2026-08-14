@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -122,10 +122,34 @@ function environment() {
   };
 }
 
+function makeFixtureTreeWritable(root: string): void {
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (stat.isSymbolicLink()) return;
+  if (!stat.isDirectory()) {
+    chmodSync(root, 0o644);
+    return;
+  }
+  chmodSync(root, 0o755);
+  for (const entry of readdirSync(root)) {
+    makeFixtureTreeWritable(join(root, entry));
+  }
+}
+
+function removeFixtureRoot(root: string): void {
+  makeFixtureTreeWritable(root);
+  rmSync(root, { recursive: true, force: true });
+}
+
 afterEach(() => {
   while (services.length) services.pop()!.close();
   while (dbs.length) dbs.pop()!.raw.close();
-  while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
+  while (roots.length) removeFixtureRoot(roots.pop()!);
   process.env.MENDPOINT_REPOS_DIR = previousReposDir;
   process.env.NODE_ENV = previousNodeEnv;
 });
