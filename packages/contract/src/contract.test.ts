@@ -134,4 +134,34 @@ describe("pr gates", () => {
       ]),
     );
   });
+
+  it("labels a caller-supplied security gate as attested, not verified", () => {
+    const r = evaluatePrGates({
+      oldSpec: { openapi: "3.0.0", paths: {} },
+      newSpec: { openapi: "3.0.0", paths: {} },
+      contractCases: [
+        { id: "a", name: "a", requiredKeys: ["x"], responseBody: { x: 1 } },
+      ],
+      securityScanAttested: true,
+    });
+
+    const sec = r.gates.find((g) => g.id === "security-scan");
+    expect(sec?.ok).toBe(true);
+    // Provenance is explicit in the type: the security gate is never "verified".
+    expect(sec?.verified).toBe(false);
+    expect(sec?.detail).toMatch(/attested/i);
+    expect(sec?.detail).not.toMatch(/scan passed/i);
+    // Structural gates remain verified.
+    expect(r.gates.find((g) => g.id === "contract-suite")?.verified).toBe(true);
+    // The rendered PR evidence warns a reviewer the pass is unverified.
+    expect(r.reportMarkdown).toMatch(/attested, not verified/i);
+  });
+
+  it("still accepts the legacy securityScanOk alias and stays fail-closed", () => {
+    const attested = evaluatePrGates({ securityScanOk: true });
+    expect(attested.gates.find((g) => g.id === "security-scan")?.ok).toBe(true);
+
+    const missing = evaluatePrGates({ securityScanOk: false });
+    expect(missing.gates.find((g) => g.id === "security-scan")?.ok).toBe(false);
+  });
 });

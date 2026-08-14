@@ -10,6 +10,22 @@ import type {
 import { migrateFromFixHint } from "@mendpoint/egraph";
 import { WARDEN_PR_FOOTER } from "@mendpoint/branding";
 
+/** GitHub rejects pull-request bodies longer than this many characters. */
+const MAX_PR_BODY_CHARS = 65_536;
+/** Cap on how many edit-site paths we enumerate before summarising the rest. */
+const MAX_LISTED_FILES = 200;
+
+/**
+ * Final safety net: even after per-list caps, truncate the assembled body to
+ * GitHub's hard limit and state, in words, that it was shortened — a silently
+ * clipped body is worse than an explicit notice.
+ */
+function capBody(body: string): string {
+  if (body.length <= MAX_PR_BODY_CHARS) return body;
+  const notice = `\n\n_This PR body was truncated to stay under GitHub's ${MAX_PR_BODY_CHARS.toLocaleString("en-US")}-character limit; some detail above was omitted._`;
+  return body.slice(0, MAX_PR_BODY_CHARS - notice.length) + notice;
+}
+
 
 export type GenerateInput = {
   providerName: string;
@@ -122,15 +138,166 @@ function escapeReg(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function unifiedDiff(path: string, original: string, updated: string): string {
+type DiffOp = { type: "eq" | "del" | "ins"; line: string };
+
+/**
+ * Myers O(ND) shortest-edit-script trace. Fast when the edit distance is small
+ * (the common case: a handful of renamed lines inside a large file), so a
+ * one-token change in a 2,000-line file explores only a few diagonals.
+ */
+function shortestEditTrace(a: string[], b: string[]): Map<number, number>[] {
+  const n = a.length;
+  const m = b.length;
+  const max = n + m;
+  const v = new Map<number, number>();
+  v.set(1, 0);
+  const trace: Map<number, number>[] = [];
+  for (let d = 0; d <= max; d++) {
+    trace.push(new Map(v));
+    for (let k = -d; k <= d; k += 2) {
+      let x: number;
+      if (k === -d || (k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1))) {
+        x = v.get(k + 1) ?? 0;
+      } else {
+        x = (v.get(k - 1) ?? 0) + 1;
+      }
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) {
+        x += 1;
+        y += 1;
+      }
+      v.set(k, x);
+      if (x >= n && y >= m) return trace;
+    }
+  }
+  return trace;
+}
+
+/** Backtrack the Myers trace into an ordered edit script over lines. */
+function diffLines(a: string[], b: string[]): DiffOp[] {
+  const trace = shortestEditTrace(a, b);
+  const ops: DiffOp[] = [];
+  let x = a.length;
+  let y = b.length;
+  for (let d = trace.length - 1; d >= 0; d--) {
+    const v = trace[d]!;
+    const k = x - y;
+    let prevK: number;
+    if (k === -d || (k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1))) {
+      prevK = k + 1;
+    } else {
+      prevK = k - 1;
+    }
+    const prevX = v.get(prevK) ?? 0;
+    const prevY = prevX - prevK;
+    while (x > prevX && y > prevY) {
+      ops.push({ type: "eq", line: a[x - 1]! });
+      x -= 1;
+      y -= 1;
+    }
+    if (d > 0) {
+      if (x === prevX) {
+        ops.push({ type: "ins", line: b[y - 1]! });
+      } else {
+        ops.push({ type: "del", line: a[x - 1]! });
+      }
+      x = prevX;
+      y = prevY;
+    }
+  }
+  ops.reverse();
+  return ops;
+}
+
+const DIFF_CONTEXT = 3;
+
+type PositionedOp = DiffOp & { aIdx: number; bIdx: number };
+
+/**
+ * Emit a valid unified diff with correctly-numbered `@@` hunk headers and
+ * `DIFF_CONTEXT` lines of surrounding context. Changes closer than 2×context
+ * apart are merged into a single hunk (standard behaviour), so the output is
+ * what `git apply` accepts — not a full-file rewrite.
+ */
+export function unifiedDiff(path: string, original: string, updated: string): string {
   if (original === updated) return "";
   const a = original.split(/\r?\n/);
   const b = updated.split(/\r?\n/);
-  const lines = [`--- a/${path}`, `+++ b/${path}`, `@@ -1,${a.length} +1,${b.length} @@`];
-  // Simple full-file hunk for MVP clarity
-  for (const line of a) lines.push(`-${line}`);
-  for (const line of b) lines.push(`+${line}`);
-  return lines.join("\n");
+  const ops = diffLines(a, b);
+
+  // Annotate each op with its 0-based line index in a and/or b.
+  const positioned: PositionedOp[] = [];
+  let ai = 0;
+  let bi = 0;
+  for (const op of ops) {
+    if (op.type === "eq") {
+      positioned.push({ ...op, aIdx: ai, bIdx: bi });
+      ai += 1;
+      bi += 1;
+    } else if (op.type === "del") {
+      positioned.push({ ...op, aIdx: ai, bIdx: -1 });
+      ai += 1;
+    } else {
+      positioned.push({ ...op, aIdx: -1, bIdx: bi });
+      bi += 1;
+    }
+  }
+
+  const changed = positioned
+    .map((op, idx) => (op.type === "eq" ? -1 : idx))
+    .filter((idx) => idx >= 0);
+  if (!changed.length) return "";
+
+  // Group changed ops into hunks, merging runs within 2×context of each other.
+  const groups: Array<[number, number]> = [];
+  let start = changed[0]!;
+  let end = changed[0]!;
+  for (let i = 1; i < changed.length; i++) {
+    const c = changed[i]!;
+    if (c - end - 1 > DIFF_CONTEXT * 2) {
+      groups.push([start, end]);
+      start = c;
+    }
+    end = c;
+  }
+  groups.push([start, end]);
+
+  const out = [`--- a/${path}`, `+++ b/${path}`];
+  for (const [gStart, gEnd] of groups) {
+    const hunkStart = Math.max(0, gStart - DIFF_CONTEXT);
+    const hunkEnd = Math.min(positioned.length - 1, gEnd + DIFF_CONTEXT);
+    const slice = positioned.slice(hunkStart, hunkEnd + 1);
+
+    let aLines = 0;
+    let bLines = 0;
+    let aStart = 0;
+    let bStart = 0;
+    const body: string[] = [];
+    for (const op of slice) {
+      if (op.type === "eq") {
+        if (aLines === 0) aStart = op.aIdx + 1;
+        if (bLines === 0) bStart = op.bIdx + 1;
+        aLines += 1;
+        bLines += 1;
+        body.push(` ${op.line}`);
+      } else if (op.type === "del") {
+        if (aLines === 0) aStart = op.aIdx + 1;
+        aLines += 1;
+        body.push(`-${op.line}`);
+      } else {
+        if (bLines === 0) bStart = op.bIdx + 1;
+        bLines += 1;
+        body.push(`+${op.line}`);
+      }
+    }
+    // A hunk with zero lines on a side anchors at the preceding line (count 0).
+    if (aLines === 0) aStart = hunkStart > 0 ? (positioned[hunkStart - 1]?.aIdx ?? -1) + 1 : 0;
+    if (bLines === 0) bStart = hunkStart > 0 ? (positioned[hunkStart - 1]?.bIdx ?? -1) + 1 : 0;
+
+    out.push(`@@ -${aStart},${aLines} +${bStart},${bLines} @@`);
+    out.push(...body);
+  }
+  return out.join("\n");
 }
 
 export function generateMigration(input: GenerateInput): MigrationDraft {
@@ -209,7 +376,7 @@ export function generateMigration(input: GenerateInput): MigrationDraft {
     }
   }
 
-  const body = [
+  const fullBody = [
     `## ${providerName} API ${mode === "adopt" ? "feature adoption" : "migration"}`,
     "",
     `**Risk:** \`${risk}\`  `,
@@ -242,7 +409,16 @@ export function generateMigration(input: GenerateInput): MigrationDraft {
     docsUrl,
     "",
     "### Confirmed edit sites",
-    ...(files.length ? files.map((f) => `- \`${f}\``) : ["- _(no high-confidence call sites)_"]),
+    ...(files.length
+      ? [
+          ...files.slice(0, MAX_LISTED_FILES).map((f) => `- \`${f}\``),
+          ...(files.length > MAX_LISTED_FILES
+            ? [
+                `- _…and **${files.length - MAX_LISTED_FILES}** more file(s) omitted to keep this PR body under GitHub's ${MAX_PR_BODY_CHARS.toLocaleString("en-US")}-character limit._`,
+              ]
+            : []),
+        ]
+      : ["- _(no high-confidence call sites)_"]),
     "",
     "### Evidence",
     ...findings.slice(0, 20).map(
@@ -274,6 +450,7 @@ export function generateMigration(input: GenerateInput): MigrationDraft {
     .filter((x) => x !== "")
     .join("\n");
 
+  const body = capBody(fullBody);
 
   return {
     title,
