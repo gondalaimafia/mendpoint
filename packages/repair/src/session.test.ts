@@ -5,10 +5,12 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  copyFileSync,
+  chmodSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runRepairSession } from "./session.js";
 import { diagnoseFailureLog } from "./diagnose.js";
@@ -356,6 +358,118 @@ describe("repair session", () => {
       } else {
         process.env.MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION = priorOverride;
       }
+      if (priorVerifierHashes === undefined) {
+        delete process.env.MENDPOINT_APPROVED_VERIFIER_SHA256S;
+      } else {
+        process.env.MENDPOINT_APPROVED_VERIFIER_SHA256S = priorVerifierHashes;
+      }
+    }
+  });
+
+  it("verifies a customer repo via an operator-approved command in production without leaking secrets", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-operator-approve-"));
+    const bin = mkdtempSync(join(tmpdir(), "mendpoint-repair-bin-"));
+    dirs.push(dir, bin);
+    // A spawnable toolchain executable so this exercises a genuine ok:true on
+    // every OS: a copy of node named `go`. (npm's .cmd shim is not
+    // execFile-spawnable on Windows Node 24; the gate/scrub/exec logic under
+    // test is the real product code either way.) `go test ./...` makes node run
+    // the customer repo's ./test script, which fails loudly if a host secret
+    // reaches it, then exits 0.
+    const goExe = join(bin, process.platform === "win32" ? "go.exe" : "go");
+    copyFileSync(process.execPath, goExe);
+    chmodSync(goExe, 0o755);
+    writeFileSync(
+      join(dir, "test"),
+      `if (process.env.MENDPOINT_TEST_HOST_SECRET) { console.error("LEAKED_SECRET"); process.exit(3); }\n` +
+        `console.log("customer suite passed"); process.exit(0);\n`,
+      "utf8",
+    );
+    // A real customer repo we did not write: no shipped verifier to hash.
+    expect(existsSync(join(dir, "check.mjs"))).toBe(false);
+
+    const priorNodeEnv = process.env.NODE_ENV;
+    const priorOverride = process.env.MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION;
+    const priorVerifierHashes = process.env.MENDPOINT_APPROVED_VERIFIER_SHA256S;
+    const priorSecret = process.env.MENDPOINT_TEST_HOST_SECRET;
+    const priorPath = process.env.PATH;
+    const priorPathCased = process.env.Path;
+    process.env.NODE_ENV = "production";
+    process.env.MENDPOINT_TEST_HOST_SECRET = "sk-do-not-leak-1234567890";
+    delete process.env.MENDPOINT_APPROVED_VERIFIER_SHA256S;
+    try {
+      // Unapproved: fails closed with a clear code, and the message names the
+      // real override rather than promising one that does not exist.
+      delete process.env.MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION;
+      const refused = await runVerificationCommand("go test ./...", dir);
+      expect(refused.ok).toBe(false);
+      expect(refused.exitCode).toBe(126);
+      expect(refused.error).toContain("MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION");
+      expect(refused.error).not.toContain(
+        "requires the read-only node-check profile or an explicit operator override",
+      );
+
+      // Approved: the exact command clears the production gate and runs to a real
+      // pass. The child ran with the scrubbed env, so the host secret never
+      // reached it (otherwise the customer script exits 3).
+      process.env.MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION = "go test ./...";
+      process.env.PATH = bin + delimiter + (process.env.PATH ?? "");
+      process.env.Path = process.env.PATH;
+      const approved = await runVerificationCommand("go test ./...", dir);
+      expect(approved.ok).toBe(true);
+      expect(approved.exitCode).toBe(0);
+      expect(approved.stdout).toContain("customer suite passed");
+    } finally {
+      if (priorNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = priorNodeEnv;
+      if (priorOverride === undefined) {
+        delete process.env.MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION;
+      } else {
+        process.env.MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION = priorOverride;
+      }
+      if (priorVerifierHashes === undefined) {
+        delete process.env.MENDPOINT_APPROVED_VERIFIER_SHA256S;
+      } else {
+        process.env.MENDPOINT_APPROVED_VERIFIER_SHA256S = priorVerifierHashes;
+      }
+      if (priorSecret === undefined) delete process.env.MENDPOINT_TEST_HOST_SECRET;
+      else process.env.MENDPOINT_TEST_HOST_SECRET = priorSecret;
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+      if (priorPathCased === undefined) delete process.env.Path;
+      else process.env.Path = priorPathCased;
+    }
+  });
+
+  it("keeps the Node filesystem sandbox on the node-check profile in production", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-sandbox-"));
+    dirs.push(dir);
+    // A sibling file under tmpdir but OUTSIDE repoRoot: readable only if the
+    // --allow-fs-read=<repoRoot> flag is NOT applied.
+    const outside = join(tmpdir(), `mendpoint-outside-${Date.now()}.txt`);
+    dirs.push(outside);
+    writeFileSync(outside, "outside-secret", "utf8");
+    const verifierSource =
+      `import { readFileSync } from "node:fs";\n` +
+      `try { readFileSync(${JSON.stringify(outside)}, "utf8"); process.exit(0); }\n` +
+      `catch (error) { console.error(error.code); process.exit(7); }\n`;
+    writeFileSync(join(dir, "check.mjs"), verifierSource, "utf8");
+
+    const priorNodeEnv = process.env.NODE_ENV;
+    const priorVerifierHashes = process.env.MENDPOINT_APPROVED_VERIFIER_SHA256S;
+    process.env.NODE_ENV = "production";
+    process.env.MENDPOINT_APPROVED_VERIFIER_SHA256S = createHash("sha256")
+      .update(verifierSource)
+      .digest("hex");
+    try {
+      const result = await runVerificationCommand("node check.mjs", dir);
+      // Sandbox flags applied: the read outside repoRoot is denied.
+      expect(result.ok).toBe(false);
+      expect(result.exitCode).toBe(7);
+      expect(result.stderr).toContain("ERR_ACCESS_DENIED");
+    } finally {
+      if (priorNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = priorNodeEnv;
       if (priorVerifierHashes === undefined) {
         delete process.env.MENDPOINT_APPROVED_VERIFIER_SHA256S;
       } else {

@@ -10,14 +10,31 @@ documented rather than implicit.
 - **Command parsing fails closed.** `parseVerificationCommand` rejects shell
   metacharacters and arbitrary executables; only a fixed allowlist of profiles
   (`npm test`, `npm run typecheck`, `node check.mjs`, `pytest`, etc.) is accepted.
-- **Production restricts to a read-only verifier.** In production only the
-  `node-check` profile runs, its file content must match an approved SHA-256
-  hash, and it executes under the Node permission model
-  (`--permission` / `--allow-fs-read=<repoRoot>` / `--allow-fs-write=<tmpdir>`).
+- **Production fails closed on unapproved commands.** In production a parsed
+  command runs only if it clears one of two operator-controlled gates; anything
+  else is refused with exit code `126`.
+  - **`node-check` — approved by content hash.** The `node-check` profile runs a
+    verifier file directly under our Node runtime, so its file content must match
+    a SHA-256 hash listed in `MENDPOINT_APPROVED_VERIFIER_SHA256S`, and it
+    executes under the Node permission model (`--permission` /
+    `--allow-fs-read=<repoRoot>` / `--allow-fs-write=<tmpdir>`).
+  - **Every other profile — approved by exact command (operator override).**
+    A customer's own test command (`npm test`, `npm run typecheck`, `pytest`,
+    ...) cannot be hashed to a single file, so an operator approves the exact
+    command by listing it in `MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION`
+    (comma- or newline-separated). This is the deliberate, auditable escape
+    hatch: it lets a repository we did not write be verified without opening any
+    automatic path — an unlisted command still refuses. These commands run with
+    the scrubbed environment below but *outside* the Node filesystem permission
+    model (npm/pytest/etc. cannot accept those flags), so their filesystem and
+    egress containment is carried by the sandbox backend (see the residual-risk
+    section). The env-var name reflects exactly that: an operator is explicitly
+    allowing verification to run without the in-process Node sandbox.
 - **Environment is scrubbed.** In production the child receives only a minimal
   env allowlist (`PATH`, `SystemRoot`, `COMSPEC`, temp dirs, ...) rather than the
   host `process.env`, so host secrets (tokens, DB URLs, provider keys) are not
-  forwarded. The local sandbox in `packages/platform/src/sandbox.ts` applies the
+  forwarded — for *every* production profile, including operator-approved
+  commands. The local sandbox in `packages/platform/src/sandbox.ts` applies the
   same scrub to every command it runs.
 
 ## Residual risk: no network isolation (egress)
