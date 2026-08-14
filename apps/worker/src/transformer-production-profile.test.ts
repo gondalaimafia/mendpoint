@@ -1,13 +1,42 @@
 import { describe, expect, it } from "vitest";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
-import { validateTransformerProductionProfile } from "./transformer-production-profile.js";
+import {
+  resolveTransformerWorkerId,
+  validateTransformerProductionProfile,
+} from "./transformer-production-profile.js";
 
 const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: ["approval:pilot"] }] });
 
 describe("Transformer production profile", () => {
   it("accepts the exact coordinator and worker production boundaries", () => {
     expect(validateTransformerProductionProfile(environment(), "coordinator")).toEqual({ role: "coordinator", tenantId: "tenant-a", campaignId: "campaign-a", environment: "production" });
-    expect(validateTransformerProductionProfile(environment(), "worker")).toEqual({ role: "worker", tenantId: "tenant-a", campaignId: "campaign-a", environment: "production" });
+    expect(validateTransformerProductionProfile(environment(), "worker")).toEqual({
+      role: "worker",
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      environment: "production",
+      workerId: "fly-abcd1234abcd12",
+    });
+  });
+
+  it("derives production worker identity from the Fly machine and rejects app-wide overrides", () => {
+    expect(resolveTransformerWorkerId(environment())).toBe("fly-abcd1234abcd12");
+    expect(resolveTransformerWorkerId({
+      ...environment(),
+      FLY_MACHINE_ID: "abcd1234abcd13",
+    })).toBe("fly-abcd1234abcd13");
+    expect(() => resolveTransformerWorkerId({
+      ...environment(),
+      MENDPOINT_REGAUGE_WORKER_ID: "shared-worker",
+    })).toThrow("transformer_production_worker_id_override_forbidden");
+    expect(() => resolveTransformerWorkerId({
+      ...environment(),
+      MENDPOINT_TRANSFORMER_WORKER_ID: "shared-worker",
+    })).toThrow("transformer_production_worker_id_override_forbidden");
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      FLY_MACHINE_ID: undefined,
+    }, "worker")).toThrow("transformer_production_fly_machine_id_required");
   });
 
   it.each([
@@ -42,5 +71,6 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_TRANSFORMER_EXECUTOR_DIGEST: `sha256:${"e".repeat(64)}`, MENDPOINT_TRANSFORMER_EVIDENCE_REFS: "evidence:pilot",
     MENDPOINT_TRANSFORMER_READINESS_HOST: "0.0.0.0", MENDPOINT_DATA_DIR: "/data/db", GITHUB_APP_ID: "42", GITHUB_APP_PRIVATE_KEY: "private",
     GITHUB_WEBHOOK_SECRET: "webhook", GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant-a"}',
+    FLY_MACHINE_ID: "abcd1234abcd12",
   };
 }
