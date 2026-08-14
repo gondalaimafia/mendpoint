@@ -3,6 +3,11 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import {
+  configuredSandboxKind,
+  runVerificationInSandbox,
+  type VerificationSandboxOptions,
+} from "./verify-sandbox.js";
 
 export type VerificationInvocation = {
   executable: string;
@@ -239,6 +244,7 @@ export async function runVerificationCommand(
   repoRoot: string,
   timeoutMs = 120_000,
   signal?: AbortSignal,
+  sandbox?: VerificationSandboxOptions,
 ): Promise<VerificationExecution> {
   const invocation = parseVerificationCommand(command, repoRoot);
   if (!invocation) {
@@ -285,6 +291,21 @@ export async function runVerificationCommand(
           `or use the node-check profile with an approved hash in ${APPROVED_HASHES_ENV}.`,
       };
     }
+  }
+  // Containment layer: when a real sandbox backend is configured, run the
+  // (already approved) command inside a per-run isolated Machine instead of the
+  // worker container. This is fail-closed — if isolation cannot be established
+  // the run FAILS here and never reaches the host execFile path below. With no
+  // sandbox configured (`configuredSandboxKind() === "local"`) this is skipped
+  // and behaviour is byte-identical to the host path. The production approval
+  // gates above still apply; the sandbox is an additional layer, not a bypass.
+  if (configuredSandboxKind() === "fly_machines") {
+    return runVerificationInSandbox({
+      command: normalizeVerificationCommand(command),
+      repoRoot,
+      timeoutMs: boundedTimeout,
+      options: sandbox,
+    });
   }
   // SECURITY — RESIDUAL RISK: verification runs WITHOUT network isolation.
   // The Node permission model below (--permission / --allow-fs-read /
