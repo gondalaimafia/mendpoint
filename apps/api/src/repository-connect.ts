@@ -20,9 +20,12 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AppDb } from "@mendpoint/db";
+import { findAuthorizedGitHubInstallationForRepository } from "@mendpoint/db";
 import {
   InstallationTokenCache,
   loadAppCredentials,
+  resolveGitHubTenantAccountBinding,
+  type TokenFetcher,
 } from "@mendpoint/github";
 import { Hono, type Context } from "hono";
 import type { ApiEnv } from "./auth.js";
@@ -262,6 +265,8 @@ export type SelfServeConnectRoutesOptions = Readonly<{
   cloner?: RepositoryCheckoutCloner;
   /** Test injection for the real-mode token accessor. */
   tokenProvider?: () => Promise<string>;
+  /** Test injection for the real-mode installation token fetcher. */
+  fetchToken?: TokenFetcher;
 }>;
 
 function replyError(c: Context<ApiEnv>, error: unknown): Response {
@@ -288,15 +293,83 @@ function replyError(c: Context<ApiEnv>, error: unknown): Response {
   throw error;
 }
 
+/** Repository id for owner/repo from an installation's stored repositories_json. */
+function installationRepositoryId(
+  repositoriesJson: string | null,
+  owner: string,
+  repo: string,
+): number | undefined {
+  try {
+    const repositories = JSON.parse(repositoriesJson ?? "null") as unknown;
+    if (!Array.isArray(repositories)) return undefined;
+    const match = repositories.find((candidate) => {
+      if (!candidate || typeof candidate !== "object") return false;
+      const value = candidate as Record<string, unknown>;
+      return (
+        typeof value.owner === "string" &&
+        typeof value.name === "string" &&
+        value.owner.toLowerCase() === owner.toLowerCase() &&
+        value.name.toLowerCase() === repo.toLowerCase()
+      );
+    }) as Record<string, unknown> | undefined;
+    return Number.isSafeInteger(match?.id) && Number(match!.id) > 0
+      ? Number(match!.id)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Real-mode installation token accessor.
+ *
+ * The installation is resolved from the CALLER'S OWN TENANT (never from the
+ * request body) via the same authorization path the worker uses, and the minted
+ * token is scoped to EXACTLY the requested repository so it can never read the
+ * rest of the installation. Any failure to bind the requested owner/repo to the
+ * caller's tenant refuses with a single, non-enumerable error so the caller
+ * cannot tell whether an installation exists.
+ */
 function realTokenProvider(
+  db: AppDb,
   env: NodeJS.ProcessEnv,
-  installationId: unknown,
+  tenantId: string,
+  owner: string,
+  name: string,
+  requestedInstallationId: unknown,
+  fetchToken?: TokenFetcher,
 ): () => Promise<string> {
   const credentials = loadAppCredentials(env);
   if (!credentials) throw new Error("github_app_credentials_missing");
-  const id = Number(installationId);
-  if (!Number.isSafeInteger(id) || id < 1) throw new Error("connect_installation_id_invalid");
-  const cache = new InstallationTokenCache(credentials, id);
+  // Tenant-scoped by construction: listGitHubInstallations filters by tenant, so
+  // a body-supplied installation id can never select another tenant's install.
+  const installation = findAuthorizedGitHubInstallationForRepository(db, tenantId, owner, name);
+  const expectedAccountId = resolveGitHubTenantAccountBinding(tenantId, env);
+  const installationId = installation ? Number(installation.installation_id) : Number.NaN;
+  const repositoryId = installation
+    ? installationRepositoryId(installation.repositories_json, owner, name)
+    : undefined;
+  if (
+    !installation ||
+    !installation.account_id ||
+    !expectedAccountId ||
+    installation.account_id !== expectedAccountId ||
+    !Number.isSafeInteger(installationId) ||
+    installationId < 1 ||
+    !repositoryId ||
+    // If the caller still supplies an installation id, it is only ever verified
+    // against the tenant-resolved one; it never selects the installation.
+    (requestedInstallationId !== undefined && Number(requestedInstallationId) !== installationId)
+  ) {
+    throw new Error("connect_installation_not_authorized");
+  }
+  const cache = new InstallationTokenCache(
+    credentials,
+    installationId,
+    fetchToken,
+    undefined,
+    [repositoryId],
+  );
   return () => cache.get();
 }
 
@@ -332,7 +405,15 @@ export function createSelfServeConnectRoutes(
       const repoKey = typeof body.repoKey === "string" ? body.repoKey : "";
       let tokenProvider = options.tokenProvider;
       if (!tokenProvider && provider !== "local_git" && githubMode(env) === "real") {
-        tokenProvider = realTokenProvider(env, body.installationId);
+        tokenProvider = realTokenProvider(
+          options.db,
+          env,
+          principal.tenantId,
+          requirePart("connect_owner", body.owner),
+          requirePart("connect_name", body.name),
+          body.installationId,
+          options.fetchToken,
+        );
       }
       const checkout = await connectRepositoryCheckout(
         {
