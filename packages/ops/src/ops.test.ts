@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   RELEASE,
+  resolveReleaseRevision,
   validateApiEnv,
   rateLimit,
   clearRateLimits,
@@ -51,6 +52,16 @@ describe("ops GA", () => {
     expect(RELEASE.channel).toBe("ga");
     expect(releaseBanner()).toBe("Mendpoint / Fettler 1.0.0 (ga)");
     expect(RELEASE.gaFeatures.length).toBeGreaterThan(5);
+  });
+
+  it("accepts only an immutable deployed source revision", () => {
+    expect(resolveReleaseRevision({ MENDPOINT_RELEASE_REVISION: "a".repeat(40) }))
+      .toBe("a".repeat(40));
+    expect(resolveReleaseRevision({ MENDPOINT_RELEASE_REVISION: "b".repeat(64) }))
+      .toBe("b".repeat(64));
+    expect(resolveReleaseRevision({})).toBeNull();
+    expect(() => resolveReleaseRevision({ MENDPOINT_RELEASE_REVISION: "main" }))
+      .toThrow("release_revision_invalid");
   });
 
   it("production requires API_AUTH", () => {

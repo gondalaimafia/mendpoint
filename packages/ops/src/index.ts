@@ -1,4 +1,9 @@
-export { RELEASE, releaseBanner, type ReleaseInfo } from "./release.js";
+export {
+  RELEASE,
+  releaseBanner,
+  resolveReleaseRevision,
+  type ReleaseInfo,
+} from "./release.js";
 export {
   nodeEnv,
   isProduction,

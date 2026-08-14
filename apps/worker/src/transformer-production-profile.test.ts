@@ -39,6 +39,17 @@ describe("Transformer production profile", () => {
     }, "worker")).toThrow("transformer_production_fly_machine_id_required");
   });
 
+  it("requires the immutable source revision that the public version probe reports", () => {
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_RELEASE_REVISION: undefined,
+    }, "coordinator")).toThrow("transformer_production_release_revision_required");
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_RELEASE_REVISION: "main",
+    }, "worker")).toThrow("transformer_production_release_revision_invalid");
+  });
+
   it.each([
     ["MENDPOINT_TRANSFORMER_ENABLED", "0", "transformer_production_activation_required"],
     ["MENDPOINT_TRANSFORMER_ARTIFACT_BACKEND", "filesystem", "transformer_production_s3_required"],
@@ -72,5 +83,6 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_TRANSFORMER_READINESS_HOST: "0.0.0.0", MENDPOINT_DATA_DIR: "/data/db", GITHUB_APP_ID: "42", GITHUB_APP_PRIVATE_KEY: "private",
     GITHUB_WEBHOOK_SECRET: "webhook", GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant-a"}',
     FLY_MACHINE_ID: "abcd1234abcd12",
+    MENDPOINT_RELEASE_REVISION: "a".repeat(40),
   };
 }
