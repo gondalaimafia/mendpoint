@@ -34,7 +34,12 @@ import {
   runWardenWithRuntime,
 } from "./agent.js";
 import { verificationControlPath } from "./policies.js";
-import type { AgentExecutionMetrics, AgentRunResult, AgentTask } from "./types.js";
+import type {
+  AgentExecutionMetrics,
+  AgentMissionPlan,
+  AgentRunResult,
+  AgentTask,
+} from "./types.js";
 import {
   openWardenRuntimeExecution,
   type WardenRuntimeExecution,
@@ -111,6 +116,7 @@ export type WardenAttemptAgentSummary = Readonly<{
   groundedMutations: number;
   blockedMutations: number;
   sourceContext: AgentExecutionMetrics["sourceContext"];
+  missionPlan: AgentMissionPlan | null;
   modelSource: Readonly<{
     authorized: boolean;
     policyDigest: string | null;
@@ -715,6 +721,7 @@ function agentEvidence(
     groundedMutations: agent.metrics.sourceContext.groundedMutations,
     blockedMutations: agent.metrics.sourceContext.blockedMutations,
     sourceContext: agent.metrics.sourceContext,
+    missionPlan: agent.missionPlan,
     modelSource: Object.freeze({
       authorized: Boolean(task.allowModelSource && policy?.approved),
       policyDigest: policy?.policyDigest ?? null,

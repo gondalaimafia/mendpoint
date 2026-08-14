@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentPlanner, AgentTask } from "./types.js";
+import { ABSENT_FILE_EVIDENCE_DIGEST } from "./agent.js";
 import type { WardenCheckpointJournal, WardenCheckpointJournalRecord } from "./checkpoint.js";
 import {
   runWardenAttempt,
@@ -297,6 +298,253 @@ function input(
 }
 
 describe("Warden attempt engine", { timeout: 15_000 }, () => {
+  it("persists an evidence grounded mission plan and revises it after verifier feedback", async () => {
+    const value = fixture(
+      "runtime-mission-plan",
+      "export const path = '/v1/chargess';\nexport const method = 'GETT';\n",
+    );
+    writeFileSync(join(value.sourceRoot, "check.mjs"), [
+      "import { method, path } from './client.js';",
+      "if (path !== '/v1/charges' || method !== 'GET') process.exit(1);",
+      "",
+    ].join("\n"), "utf8");
+    const journal = checkpointJournal();
+    const plannedInputs: Parameters<AgentPlanner>[0][] = [];
+    const missionPlanner: AgentPlanner = async (plannerInput) => {
+      plannedInputs.push(plannerInput);
+      const recent = plannerInput.recentSteps;
+      const replacements = recent.filter((step) => step.tool === "replace_in_file");
+      const current = plannerInput.observedEvidenceDigests?.find((entry) =>
+        entry.path === "client.js"
+      );
+      const reads = recent.filter((step) => step.tool === "read_file");
+      if (reads.length === 0) {
+        return {
+          call: {
+            tool: "read_file",
+            args: { path: "client.js" },
+            thought: "Inspect the exact failing client before planning a repair",
+          },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      if (reads.length === 1) {
+        return {
+          call: {
+            tool: "read_file",
+            args: { path: "check.mjs" },
+            thought: "Inspect the exact target verifier before editing",
+          },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      if (replacements.length === 0) {
+        if (!current) throw new Error("missing evidence for the path correction");
+        return {
+          call: {
+            tool: "replace_in_file",
+            args: { path: "client.js", from: "chargess", to: "charges" },
+            thought: "Correct the observed endpoint typo",
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "The observed duplicated s causes the endpoint failure.",
+              targetPath: "client.js",
+              targetSymbol: "path",
+              targetDigest: current.digest,
+              evidenceRefs: [{ ...current }],
+              precondition: "The exact observed endpoint typo is still present.",
+              expectedObservation: "The endpoint literal changes exactly once.",
+              postcondition: "The endpoint is correct and the verifier advances.",
+              rollback: "Restore the exact observed client bytes.",
+              confidence: 0.96,
+              risk: "low",
+              stopCondition: "Stop if the source digest changes.",
+            },
+          },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      const verifierRuns = recent.filter((step) => step.tool === "run_command");
+      if (replacements.length === 1 && verifierRuns.length < 2) {
+        return {
+          call: {
+            tool: "run_command",
+            args: { command: plannerInput.verifyCommand },
+            thought: "Test the first hypothesis against the target verifier",
+          },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      if (replacements.length === 1) {
+        if (!current) throw new Error("missing evidence for the method correction");
+        return {
+          call: {
+            tool: "replace_in_file",
+            args: { path: "client.js", from: "GETT", to: "GET" },
+            thought: "Revise the plan from the remaining verifier failure",
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "The endpoint fix was insufficient because the observed method is invalid.",
+              targetPath: "client.js",
+              targetSymbol: "method",
+              targetDigest: current.digest,
+              evidenceRefs: [{ ...current }],
+              precondition: "The candidate still contains the exact invalid method literal.",
+              expectedObservation: "The method literal changes exactly once.",
+              postcondition: "The corrected endpoint and method pass the verifier.",
+              rollback: "Restore the exact post-endpoint-repair client bytes.",
+              confidence: 0.93,
+              risk: "low",
+              stopCondition: "Stop if the candidate digest changes.",
+            },
+          },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      return {
+        call: {
+          tool: "run_command",
+          args: { command: plannerInput.verifyCommand },
+          thought: "Verify the revised repair plan",
+        },
+        usage: PER_CALL_USAGE,
+      };
+    };
+    const plannedTask = task(missionPlanner);
+    const result = await runWardenAttempt(input(value, {
+      task: {
+        ...plannedTask,
+        goal: "Repair the endpoint and HTTP method using exact repository evidence.",
+        errorLog: "The target verifier reports an endpoint or method mismatch.",
+        maxSteps: 12,
+      },
+      runtime: {
+        jobId: "job-runtime-mission-plan",
+        journal,
+        key: Buffer.alloc(32, 13),
+        writerLeaseGeneration: 1,
+        executorDigest: `sha256:${"e".repeat(64)}`,
+      },
+    }));
+
+    if (result.status === "rejected") throw new Error(`${result.code}: ${result.summary}`);
+    expect(plannedInputs.length).toBe(6);
+    expect(result.agent.missionPlan).toMatchObject({
+      schemaVersion: 1,
+      activeRevision: 6,
+      outcome: "verified",
+      blockerReason: null,
+      revisions: [
+        { revision: 1, parentRevision: null, action: { tool: "read_file" } },
+        { revision: 2, parentRevision: 1, action: { tool: "read_file" } },
+        {
+          revision: 3,
+          parentRevision: 2,
+          hypothesis: "The observed duplicated s causes the endpoint failure.",
+          confidence: 0.96,
+          risk: "high",
+          acceptanceChecks: {
+            precondition: "The exact observed endpoint typo is still present.",
+            postcondition: "The endpoint is correct and the verifier advances.",
+          },
+          action: { tool: "replace_in_file", targetPath: "client.js", status: "succeeded" },
+          evidenceRefs: [expect.objectContaining({ path: "client.js" })],
+        },
+        { revision: 4, parentRevision: 3, action: { tool: "run_command", status: "failed" } },
+        {
+          revision: 5,
+          parentRevision: 4,
+          hypothesis: "The endpoint fix was insufficient because the observed method is invalid.",
+          action: { tool: "replace_in_file", targetPath: "client.js", status: "succeeded" },
+        },
+        { revision: 6, parentRevision: 5, action: { tool: "run_command", status: "succeeded" } },
+      ],
+    });
+    const revisions = result.agent.missionPlan!.revisions;
+    expect(revisions.every((revision) => /^sha256:[a-f0-9]{64}$/.test(revision.plannerEffectId)))
+      .toBe(true);
+    expect(revisions[4].verifierFeedbackDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(revisions[4].verifierFeedbackDigest).not.toBe(revisions[2].verifierFeedbackDigest);
+    expect(result.agent.reportMarkdown).toContain("#### Mission plan");
+    expect(result.agent.reportMarkdown).toContain("Revision 5: The endpoint fix was insufficient");
+    expect(() => {
+      (result.agent.missionPlan as { activeRevision: number }).activeRevision = 99;
+    }).toThrow();
+    const evidence = JSON.parse(readFileSync(result.artifacts.evidence, "utf8")) as {
+      agent: { missionPlan: unknown };
+    };
+    expect(evidence.agent.missionPlan).toEqual(result.agent.missionPlan);
+  }, 30_000);
+
+  it("records the blocker and refuses a planned mutation with stale evidence", async () => {
+    const value = fixture("runtime-mission-plan-stale");
+    const before = readFileSync(join(value.sourceRoot, "client.js"), "utf8");
+    const stalePlanner: AgentPlanner = async (plannerInput) => {
+      if (!plannerInput.recentSteps.some((step) => step.tool === "list_dir")) {
+        return {
+          call: { tool: "list_dir", args: { path: "." }, thought: "Inspect the repository root" },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      return {
+        call: {
+          tool: "write_file",
+          args: { path: "helper.js", content: "export const value = 42;\n" },
+          thought: "Attempt a stale evidence mutation",
+          intent: {
+            schemaVersion: 1,
+            hypothesis: "helper.js is absent and may be created only from current evidence.",
+            targetPath: "helper.js",
+            targetSymbol: "value",
+            targetDigest: ABSENT_FILE_EVIDENCE_DIGEST,
+            evidenceRefs: [
+              { path: "helper.js", digest: ABSENT_FILE_EVIDENCE_DIGEST },
+              { path: "forged.js", digest: `sha256:${"0".repeat(64)}` },
+            ],
+            precondition: "The observed repository has no helper.js.",
+            expectedObservation: "Every evidence reference matches the repository.",
+            postcondition: "helper.js exports value.",
+            rollback: "Remove helper.js.",
+            confidence: 0.7,
+            risk: "low",
+            stopCondition: "Stop on stale evidence.",
+          },
+        },
+        usage: PER_CALL_USAGE,
+      };
+    };
+    const staleTask = task(stalePlanner);
+    const result = await runWardenAttempt(input(value, {
+      task: staleTask,
+      runtime: {
+        jobId: "job-runtime-mission-plan-stale",
+        journal: checkpointJournal(),
+        key: Buffer.alloc(32, 14),
+        writerLeaseGeneration: 1,
+        executorDigest: `sha256:${"e".repeat(64)}`,
+      },
+    }));
+
+    expect(result).toMatchObject({
+      status: "rejected",
+      code: "warden_attempt_agent_failed",
+      agent: {
+        stoppedReason: "mutation_intent_evidence_stale",
+        missionPlan: {
+          outcome: "failed",
+          blockerReason: "mutation_intent_evidence_stale",
+          activeRevision: 2,
+          revisions: [
+            { revision: 1, action: { tool: "list_dir", status: "succeeded" } },
+            { revision: 2, action: { tool: "write_file", status: "planned" } },
+          ],
+        },
+      },
+    });
+    expect(readFileSync(join(value.sourceRoot, "client.js"), "utf8")).toBe(before);
+    expect(() => readFileSync(join(value.sourceRoot, "helper.js"), "utf8")).toThrow();
+  }, 30_000);
+
   it("replays a paid planner receipt after rebuilding the candidate on takeover", async () => {
     const value = fixture("runtime-planner-replay");
     writeFileSync(join(value.sourceRoot, "check.mjs"), [
@@ -362,6 +610,11 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
     });
 
     expect(second).toMatchObject({ status: "rejected", code: "warden_attempt_agent_failed" });
+    expect(second.agent?.missionPlan).toMatchObject({
+      schemaVersion: 1,
+      activeRevision: 1,
+      revisions: [{ revision: 1, parentRevision: null, action: { tool: "finish" } }],
+    });
     expect(plannerCalls).toBe(1);
     expect(reservations).toBe(1);
     expect(settlements).toBe(1);

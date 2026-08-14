@@ -1704,3 +1704,31 @@ Objective: extend a human-approved Warden draft delivery into a durable, bounded
 Acceptance: after a human approves and delivers a Warden draft, an exact failed CI head can trigger only one bounded repair mission. A replacement worker can reconstruct the branch, produce and verify a scoped patch, update that same draft branch exactly once, and observe the rerun. Success, human pause, stale authority, policy exhaustion, and uncertain external outcomes all stop fail-closed. No code path merges or deploys.
 
 Review before publication: Warden now observes only configured GitHub check-run identities on an exact open draft head, stores bounded redacted failure evidence, and opens one durable tenant-scoped CI cycle. A repair uses a fresh immutable snapshot, inherits the original path, model, verification, and cumulative budget authorities, and requires a new human-approved candidate before updating the same draft branch. The update protocol persists a lease-fenced one-use intent, reconciles response loss read-only, compares every tracked leaf and every approved blob byte-for-byte, and cannot mutate after pause or stale authority. Reject, regenerate, expiry, polling exhaustion, and terminal worker errors settle the cycle instead of stranding it. The feature has no merge or deploy capability. Full affected suites passed GitHub 115 of 115, DB 202 of 202, API 338 of 338, and Worker 276 of 276; all affected typechecks passed. `scripts/verify.sh` passed all workspace typechecks, the complete repository tests, production build, GA/spec/claim/action checks, and diff integrity in 245 seconds. `npm audit --omit=dev` found zero vulnerabilities. Independent strict review approved the final reconciliation and control protocol with no remaining P0 or P1. Protected publication and live production verification remain pending.
+
+## Warden durable mission planning and verifier replanning: 2026-08-13
+
+Objective: make Warden plan and execute multi-step repository repairs as an explicit, durable mission rather than a sequence of isolated tool calls. Every hypothesis and planned action must be grounded in observed repository evidence, survive worker takeover, and be revised from authenticated verifier feedback without resetting cumulative authority or spend.
+
+### Capability contract
+
+- [x] Define a bounded structured mission-plan schema with ordered steps, evidence-linked hypotheses, acceptance checks, confidence, risk, and revision lineage.
+- [x] Persist the exact active plan and revision cursor in the authenticated Warden runtime checkpoint and restore it before any new model or tool effect.
+- [x] Require every mutating model call to reference an active plan step and exact observed evidence; abstain when grounding is missing or stale.
+- [x] Feed authenticated verifier failures into a new plan revision while retaining completed steps, prior evidence, accounting, and causal history.
+- [x] Project the plan, revisions, completed steps, and blocker reason into review evidence without exposing secrets or raw prompts.
+
+### Red-first evaluation
+
+- [x] Observe a failing multi-step repository task that requires diagnosis, two source observations, one scoped mutation, and verifier-driven replanning.
+- [x] Observe a crash after plan persistence and prove the replacement worker reuses the exact plan without another planning charge.
+- [x] Observe stale evidence, unsupported mutation, repeated failure fingerprint, exhausted revision budget, and conflicting verifier feedback fail closed through the mission authority and existing Warden stop controls.
+
+### Verification and release
+
+- [x] Run focused Agent runtime, attempt-engine, evidence, Worker join, and held-out long-horizon evals.
+- [x] Run full affected suites, typechecks, production build, repository verification, dependency audit, and diff integrity.
+- [ ] Ship through protected checks and verify exact production health before claiming the capability live.
+
+Acceptance: on a supported multi-step repository repair, Warden produces and persists an evidence-grounded plan, executes only its authorized current step, revises the plan from exact verifier feedback, survives process loss without repeating completed planning or tool work, and returns a reviewable candidate whose evidence explains the plan, revisions, actions, checks, spend, and any blocker. Unsupported or ungrounded work abstains.
+
+Review before publication: Warden now stores a bounded authenticated mission plan alongside the paid planner receipt, including exact effect and request digests, evidence-linked hypotheses, confidence, risk, acceptance checks, revision lineage, and action results. Mutations must match the active plan effect, original model call digest, target, and current repository evidence. Failed verifier results produce a causally linked revision without resetting earlier steps or accounting, and takeover replays the paid plan receipt instead of planning again. The attempt evidence and customer report expose the redacted plan lineage and blocker without raw prompts. Full Agent 335 of 335, Worker 276 of 276, and Eval 108 of 108 passed. `scripts/verify.sh` passed every workspace typecheck, the complete repository tests, production build, GA/spec/claim/action checks, and diff integrity in 243 seconds. `npm audit --omit=dev` found zero vulnerabilities. Protected publication and live production verification remain pending.

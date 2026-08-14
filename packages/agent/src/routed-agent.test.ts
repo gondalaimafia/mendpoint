@@ -20,6 +20,7 @@ const passedRun: AgentRunResult = {
   rollback: { performed: false, restoredFiles: [], failedFiles: [] },
   reportMarkdown: "verified",
   stoppedReason: "verify_passed",
+  missionPlan: null,
   metrics: {
     durationMs: 1,
     toolCalls: 1,
