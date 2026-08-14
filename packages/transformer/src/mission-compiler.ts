@@ -71,6 +71,14 @@ function identifier(value: unknown, code: string): string {
   return result;
 }
 
+function reviewerIdentifier(value: unknown): string {
+  const result = text(value, "transformer_mission_reviewer_invalid", 500);
+  if (!ID.test(result) && !/^human:[^\x00-\x20\x7f]{1,480}$/.test(result)) {
+    throw new Error("transformer_mission_reviewer_invalid");
+  }
+  return result;
+}
+
 function timestamp(value: unknown, code: string): string {
   const result = text(value, code, 100);
   if (!Number.isFinite(Date.parse(result)) || new Date(result).toISOString() !== result) {
@@ -127,7 +135,7 @@ export function compileApprovedTransformerMission(
   const reviewerIds = new Set<string>();
   const approvalEvidence: string[] = [];
   for (const approval of input.approvals) {
-    const reviewerId = identifier(approval.reviewerId, "transformer_mission_reviewer_invalid");
+    const reviewerId = reviewerIdentifier(approval.reviewerId);
     if (reviewerIds.has(reviewerId)) throw new Error("transformer_mission_approval_duplicate");
     reviewerIds.add(reviewerId);
     if (reviewerId === blueprint.review.plannerActorId || !blueprint.review.reviewerIds.includes(reviewerId)) {

@@ -130,8 +130,8 @@ describe("production Transformer mission authority", () => {
       revision: "a".repeat(40),
       files: value.files,
       fileEvidence: [
-        expect.objectContaining({ path: "Dockerfile", ownerIds: ["@platform"] }),
-        expect.objectContaining({ path: "package.json", ownerIds: ["@platform"] }),
+        expect.objectContaining({ path: "Dockerfile", ownerIds: ["github:platform"] }),
+        expect.objectContaining({ path: "package.json", ownerIds: ["github:platform"] }),
       ],
     });
     expect(repository.execution.snapshot).toMatchObject({ snapshotId: "snapshot-a", repositoryId: "repo-a" });
@@ -160,8 +160,8 @@ describe("production Transformer mission authority", () => {
     });
     expect(organization.organization.digest).toBe(organization.constraints.digest);
     expect(organization.constraints.rules).toEqual(expect.arrayContaining([
-      expect.objectContaining({ repositoryId: "repo-a", pathPattern: "Dockerfile", ownerIds: ["@platform"] }),
-      expect.objectContaining({ repositoryId: "repo-a", pathPattern: "package.json", ownerIds: ["@platform"] }),
+      expect.objectContaining({ repositoryId: "repo-a", pathPattern: "Dockerfile", ownerIds: ["github:platform"] }),
+      expect.objectContaining({ repositoryId: "repo-a", pathPattern: "package.json", ownerIds: ["github:platform"] }),
     ]));
   });
 

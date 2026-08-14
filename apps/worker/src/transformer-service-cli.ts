@@ -85,7 +85,10 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
     readiness.listen(readinessPort, readinessHost, () => { readiness.off("error", reject); resolveReady(); });
   });
   const probe = async () => {
-    await transport.request({ path: "/v1/regauge/attempt-coordinator/readyz", body: { tenantId } });
+    await transport.request({
+      path: "/v1/regauge/attempt-coordinator/readyz",
+      body: { tenantId, campaignId },
+    });
     const sentinelKey = `readiness/${tenantId}/${workerId}`;
     const sentinel = new TextEncoder().encode(`transformer-readiness:${tenantId}:${workerId}`);
     await backend.createOnly(sentinelKey, sentinel);

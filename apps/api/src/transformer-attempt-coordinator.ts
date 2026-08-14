@@ -54,7 +54,19 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
   app.use("*", async (c, next) => options.enabled === true ? next() : c.json({ error: "not_found" }, 404));
   app.post("/readyz", (c) => handled(c, async () => {
     requireWorker(c);
-    return c.json({ result: { ready: true }, serverTime: serverTime(now) });
+    const input = await request(c);
+    assertTenant(c, input);
+    if (typeof input.campaignId !== "string" || !input.campaignId) {
+      throw new Error("coordinator_request_invalid");
+    }
+    const campaign = options.store.getCampaign(String(input.tenantId), input.campaignId);
+    if (!campaign) {
+      throw new Error("coordinator_campaign_not_ready");
+    }
+    return c.json({
+      result: { ready: true, campaignId: campaign.campaignId, state: campaign.state },
+      serverTime: serverTime(now),
+    });
   }));
   app.post("/operations/:operation", async (c) => handled(c, async () => {
     requireWorker(c);
@@ -237,6 +249,7 @@ async function handled(c: Context<ApiEnv>, operation: () => Promise<Response>): 
     if (code === "coordinator_scope_denied") return c.json({ error: code }, 403);
     if (code === "coordinator_not_found") return c.json({ error: code }, 404);
     if (code === "coordinator_request_invalid") return c.json({ error: code }, 400);
+    if (code === "coordinator_campaign_not_ready") return c.json({ error: code }, 503);
     if (code.includes("fence") || code.includes("lease") || code.includes("conflict") || code.includes("idempotency")) return c.json({ error: "coordinator_conflict" }, 409);
     return c.json({ error: "coordinator_unavailable" }, 503);
   }

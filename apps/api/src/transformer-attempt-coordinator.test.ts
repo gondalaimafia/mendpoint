@@ -34,6 +34,32 @@ describe("real Transformer multi-node coordinator", () => {
     })).toThrow("transformer_gate_config_missing");
   });
 
+  it("does not report worker readiness before the exact campaign exists", async () => {
+    const service = new TransformerPilotExecutionService(":memory:", { rawGateConfig: gate, environment: "test" });
+    services.push(service);
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true,
+      store: service.store,
+      gateConfig: gate,
+      loadExactSource: () => { throw new Error("must_not_load"); },
+    }));
+
+    const response = await app.request("/v1/regauge/attempt-coordinator/readyz", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenantId: "tenant-a", campaignId: "campaign-missing" }),
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "coordinator_campaign_not_ready" });
+  });
+
   it("runs the actual recipe and verifier through authenticated remote coordinator and exact fenced source", async () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-real-multinode-")); roots.push(root);
     let coordinatorNow = new Date().toISOString();
@@ -54,6 +80,12 @@ describe("real Transformer multi-node coordinator", () => {
       loadExactSource: () => ({ repositoryId: "repo-a", revision: revision("a"), digest: snapshotDigest, files, fileModes: { "package.json": "100644" } }),
       resolveDraftRepository: () => ({ owner: "acme", repo: "repo-a", baseBranch: "main", installationId: 42, remoteRepositoryId: 84 }),
     }));
+    const readyResponse = await app.request("/v1/regauge/attempt-coordinator/readyz", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-test-tenant": "tenant-a" },
+      body: JSON.stringify({ tenantId: "tenant-a", campaignId: "campaign-a" }),
+    });
+    expect(readyResponse.status).toBe(200);
     let loseCompletionResponse = true;
     let loseDraftCompletionResponse = true;
     const transport: TransformerMultinodeTransport = { request: async ({ path, body }) => {

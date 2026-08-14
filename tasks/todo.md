@@ -1866,3 +1866,21 @@ Review: official Fly documentation and the installed CLI confirm `fly storage cr
 Acceptance: two feed polls written at the same clock instant select the newest inserted outcome deterministically, dispatch a queued pipeline once, and leave the second poll unchanged. Main CI and its production health gate return green.
 
 Review: main run `31826317708` exposed one Catalog failure after the Regauge storage merge: two successful feed polls with an identical `polled_at` timestamp were ordered nondeterministically, so the older hash could be selected and the second pipeline poll returned `new_version`. A fixed-clock regression reproduced the failure. Feed history now orders equal timestamps by newest SQLite row ID. The focused test passes 8 of 8, full Catalog passes 45 of 45, full DB passes 213 of 213, both workspace typechecks pass, and diff integrity is clean.
+
+### Regauge production campaign bootstrap: 2026-08-14
+
+Objective: make a new dedicated Regauge coordinator capable of establishing one exact, independently reviewed, draft-only canary campaign before any worker is activated. A configured campaign identifier on an empty volume is not campaign authority.
+
+- [x] Define red tests for a coordinator-local bootstrap contract that binds the tenant, GitHub App installation, private repository, exact snapshot, planner, independent reviewer, recipe, gate, and production approval evidence.
+- [x] Compose existing repository materialization, mission planning, blueprint review, and execution launch authorities without a seed or mock fallback.
+- [x] Make exact replay idempotent and reject changed repository, revision, reviewer, objective, recipe, gate, or campaign bindings.
+- [x] Integrate bootstrap after coordinator provisioning and before worker scaling in the protected Regauge workflow.
+- [x] Prove a fresh volume cannot report worker-ready until the exact campaign exists and is executable.
+- [x] Run focused and full tests, typechecks, production build, workflow validation, dependency audit, and diff integrity.
+- [ ] Merge and deploy through protected CI before resuming the dedicated Fly activation.
+
+Acceptance: a fresh dedicated coordinator can use an approved GitHub App installation to materialize the exact private canary revision, persist immutable snapshot and policy evidence, require an independent human blueprint approval, launch exactly one bounded production campaign, and return an authenticated bootstrap receipt. Replays return the same receipt. Drift or missing approval fails before the worker is scaled above zero.
+
+Review: the bootstrap now runs before worker credential creation and API startup, materializes only the protected branch at commit `1f6b21665d68541c9f3c9dda81642485a66a6baa`, selects the single Node 20 to Node 22 recipe, normalizes CODEOWNERS identities, requires a distinct human reviewer, launches one execution campaign, and records a hash chained receipt. Receipt replay revalidates both control-plane and execution authority, so a surviving receipt cannot hide a deleted or drifted campaign database. Coordinator and worker readiness are bound to the exact tenant and campaign; a fresh volume returns 503 until bootstrap succeeds, while a later paused campaign remains observable for safe reconciliation. Revision mismatch now stops before GitHub tree content is read.
+
+Verification: every workspace test passes, all workspace typechecks pass, the 50-page production build passes, GA/spec/claims/names/action-pin gates pass, the generated docs bundle is current, production dependency audit reports zero vulnerabilities, Fly configuration validates, and diff integrity is clean. The protected environment contains the authorized local model values plus the exact nonsecret canary repository revision and reviewer identity. Production activation is still withheld because the GitHub App installation ID, App ID, private key, and webhook secret are absent, and the durable delivery gate write was rejected as broader than the one-draft authorization. No deployment or SCM mutation was attempted.

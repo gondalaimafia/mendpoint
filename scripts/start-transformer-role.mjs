@@ -8,10 +8,19 @@ const { validateTransformerProductionProfile } = await import("../apps/worker/sr
 const profile = validateTransformerProductionProfile(process.env, role);
 
 if (role === "coordinator") {
-  const [{ createDb }, { ensureTransformerWorkerCredential }] = await Promise.all([
+  const [
+    { createDb },
+    { ensureTransformerWorkerCredential },
+    { runRegaugeProductionBootstrapFromEnvironment },
+  ] = await Promise.all([
     import("@mendpoint/db"),
     import("../apps/api/src/transformer-worker-bootstrap.ts"),
+    import("../apps/api/src/regauge-production-bootstrap-runtime.ts"),
   ]);
+  const bootstrap = await runRegaugeProductionBootstrapFromEnvironment(process.env);
+  if (bootstrap.tenantId !== profile.tenantId || bootstrap.campaignId !== profile.campaignId) {
+    throw new Error("regauge_production_bootstrap_scope_mismatch");
+  }
   const db = createDb();
   try {
     ensureTransformerWorkerCredential(db, {

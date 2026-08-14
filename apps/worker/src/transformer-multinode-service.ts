@@ -148,7 +148,10 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
       if (running) throw new Error("transformer_multinode_run_in_progress");
       running = true;
       try {
-        await remote("/v1/regauge/attempt-coordinator/readyz", { tenantId: config.tenantId });
+        await remote("/v1/regauge/attempt-coordinator/readyz", {
+          tenantId: config.tenantId,
+          campaignId: config.campaignId,
+        });
         const result = await runTransformerAttempt({
           scope: { tenantId: config.tenantId, campaignId: config.campaignId, environment: config.environment },
           ...(config.gateConfig === undefined ? {} : { gateConfig: config.gateConfig }),
@@ -174,7 +177,10 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
       if (running) throw new Error("transformer_multinode_run_in_progress");
       running = true;
       try {
-        await remote("/v1/regauge/attempt-coordinator/readyz", { tenantId: config.tenantId });
+        await remote("/v1/regauge/attempt-coordinator/readyz", {
+          tenantId: config.tenantId,
+          campaignId: config.campaignId,
+        });
         const deliveryLeaseToken = stable("draft-delivery-token");
         const claimIdempotencyKey = `${config.workerId}-draft-claim-${stable(
           `draft-claim:${serviceInstanceId}:${deliveryClaimOrdinal}`,
@@ -364,7 +370,10 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
       if (running) throw new Error("transformer_multinode_run_in_progress");
       running = true;
       try {
-        await remote("/v1/regauge/attempt-coordinator/readyz", { tenantId: config.tenantId });
+        await remote("/v1/regauge/attempt-coordinator/readyz", {
+          tenantId: config.tenantId,
+          campaignId: config.campaignId,
+        });
         const entries = await remote(
           "/v1/regauge/attempt-coordinator/draft-observations",
           { tenantId: config.tenantId, campaignId: config.campaignId },

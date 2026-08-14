@@ -71,6 +71,17 @@ describe("Transformer production profile", () => {
     }, "worker")).toThrow("transformer_production_release_revision_invalid");
   });
 
+  it("requires the coordinator to run the exact production campaign bootstrap", () => {
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_REGAUGE_BOOTSTRAP_ENABLED: undefined,
+    }, "coordinator")).toThrow("transformer_production_bootstrap_required");
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_REGAUGE_BOOTSTRAP_ENABLED: "0",
+    }, "coordinator")).toThrow("transformer_production_bootstrap_required");
+  });
+
   it.each([
     ["MENDPOINT_TRANSFORMER_ENABLED", "0", "transformer_production_activation_required"],
     ["MENDPOINT_TRANSFORMER_ARTIFACT_BACKEND", "filesystem", "transformer_production_s3_required"],
@@ -105,5 +116,6 @@ function environment(): NodeJS.ProcessEnv {
     GITHUB_WEBHOOK_SECRET: "webhook", GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant-a"}',
     FLY_MACHINE_ID: "abcd1234abcd12",
     MENDPOINT_RELEASE_REVISION: "a".repeat(40),
+    MENDPOINT_REGAUGE_BOOTSTRAP_ENABLED: "1",
   };
 }
