@@ -45,6 +45,7 @@ import {
 const PROVIDERS = new Set(["github", "gitlab", "local_git"] as const);
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,99}$/;
 const REPOSITORY_PART = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const REVISION = /^[a-f0-9]{40}$/;
 
 type ConnectionProvider = "github" | "gitlab" | "local_git";
 
@@ -225,6 +226,7 @@ export async function materializeConnectedRepository(
     repositoryId: string;
     consumerRepoId?: string;
     sparsePaths?: string[];
+    expectedRevision?: string;
   },
   dependencies?: RepositoryConnectionDependencies,
 ) {
@@ -279,8 +281,16 @@ export async function materializeConnectedRepository(
   let probe;
   let resolved;
   try {
-    probe = await source.probe();
     resolved = await source.resolveRef(repository.selected_branch);
+    if (input.expectedRevision !== undefined) {
+      if (!REVISION.test(input.expectedRevision)) {
+        throw new Error("connected_repository_expected_revision_invalid");
+      }
+      if (resolved.sha !== input.expectedRevision) {
+        throw new Error("connected_repository_revision_mismatch");
+      }
+    }
+    probe = await source.probe();
   } catch (error) {
     if (connection.provider === "github") {
       recordGitHubHealthFailure(db, connection, input.tenantId, sourceErrorCode(error));

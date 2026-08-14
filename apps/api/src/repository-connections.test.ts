@@ -396,6 +396,23 @@ describe("repository connection service", () => {
     }, runtime.dependencies)).rejects.toThrow("connected_repository_tenant_mismatch");
   });
 
+  it("rejects a GitHub branch head that differs from the approved revision before materialization", async () => {
+    const { db } = fixture();
+    const { repository } = registerGitHub(db);
+    const transport = new FakeGitHubTransport();
+    const runtime = githubRuntime({ transport });
+
+    await expect(materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+      expectedRevision: "9".repeat(40),
+    }, runtime.dependencies)).rejects.toThrow("connected_repository_revision_mismatch");
+
+    expect(listRepositorySnapshots(db, "tenant-a", repository.id)).toHaveLength(0);
+    expect(scmOverview(db, "tenant-a").repositories[0]).toMatchObject({ status: "pending" });
+    expect(transport.requests.some((request) => request.path.includes("/git/trees/"))).toBe(false);
+  });
+
   it("does not reuse identical content materialized from a different selected branch", async () => {
     const { db, repositoryPath } = fixture();
     git(repositoryPath, "branch", "release");

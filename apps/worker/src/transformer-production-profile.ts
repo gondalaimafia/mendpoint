@@ -153,6 +153,7 @@ export function validateTransformerProductionProfile(
   if (!evidenceRefs.length || new Set(evidenceRefs).size !== evidenceRefs.length) throw new Error("transformer_production_evidence_refs_invalid");
 
   if (role === "coordinator") {
+    exact(env.MENDPOINT_REGAUGE_BOOTSTRAP_ENABLED, "1", "transformer_production_bootstrap_required");
     exact(env.API_HOST, "0.0.0.0", "transformer_production_api_host_invalid");
     const dataDir = required(env.MENDPOINT_DATA_DIR, "transformer_production_data_dir_required").replaceAll("\\", "/");
     if (dataDir !== "/data/db" && !dataDir.startsWith("/data/db/")) throw new Error("transformer_production_data_dir_invalid");

@@ -67,4 +67,35 @@ describe("Regauge production workflow", () => {
     expect(source).not.toContain("secrets.MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID");
     expect(source).not.toContain("secrets.MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY");
   });
+
+  it("binds deployment to the exact approved repository revision and independent reviewer", () => {
+    const source = readFileSync(".github/workflows/regauge-production.yml", "utf8");
+    const workflow = parse(source) as Record<string, any>;
+    const env = workflow.jobs.deploy.env;
+    expect(env).toMatchObject({
+      MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID: "${{ vars.REGAUGE_CANARY_REPOSITORY_ID }}",
+      MENDPOINT_REGAUGE_CANARY_DEFAULT_BRANCH: "${{ vars.REGAUGE_CANARY_DEFAULT_BRANCH }}",
+      MENDPOINT_REGAUGE_CANARY_BRANCH: "${{ vars.REGAUGE_CANARY_BRANCH }}",
+      MENDPOINT_REGAUGE_CANARY_REVISION: "${{ vars.REGAUGE_CANARY_REVISION }}",
+      MENDPOINT_REGAUGE_GITHUB_INSTALLATION_ID: "${{ vars.REGAUGE_GITHUB_INSTALLATION_ID }}",
+      MENDPOINT_REGAUGE_REVIEWER_ISSUER: "${{ vars.REGAUGE_REVIEWER_ISSUER }}",
+      MENDPOINT_REGAUGE_REVIEWER_SUBJECT: "${{ vars.REGAUGE_REVIEWER_SUBJECT }}",
+      MENDPOINT_REGAUGE_REVIEWER_DISPLAY_NAME: "${{ vars.REGAUGE_REVIEWER_DISPLAY_NAME }}",
+      MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF: "${{ secrets.MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF }}",
+    });
+    const stage = workflow.jobs.deploy.steps.find(
+      (step: Record<string, unknown>) => step.name === "Stage production secrets",
+    ).run as string;
+    for (const name of [
+      "MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID",
+      "MENDPOINT_REGAUGE_CANARY_DEFAULT_BRANCH",
+      "MENDPOINT_REGAUGE_CANARY_BRANCH",
+      "MENDPOINT_REGAUGE_CANARY_REVISION",
+      "MENDPOINT_REGAUGE_GITHUB_INSTALLATION_ID",
+      "MENDPOINT_REGAUGE_REVIEWER_ISSUER",
+      "MENDPOINT_REGAUGE_REVIEWER_SUBJECT",
+      "MENDPOINT_REGAUGE_REVIEWER_DISPLAY_NAME",
+      "MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF",
+    ]) expect(stage).toContain(`${name}=\"$${name}\"`);
+  });
 });

@@ -173,7 +173,9 @@ function ownersForPath(documents: readonly CodeownersDocument[], path: string): 
       if (!trimmed || trimmed.startsWith("#")) continue;
       const [pattern, ...candidates] = trimmed.split(/\s+/);
       if (pattern && candidates.length && matchesCodeowners(pattern, path)) {
-        owners = candidates.filter((owner) => /^@[A-Za-z0-9][A-Za-z0-9_./-]{0,199}$/.test(owner));
+        owners = candidates
+          .filter((owner) => /^@[A-Za-z0-9][A-Za-z0-9_./-]{0,199}$/.test(owner))
+          .map((owner) => `github:${owner.slice(1).replaceAll("/", ":")}`);
       }
     }
   }
