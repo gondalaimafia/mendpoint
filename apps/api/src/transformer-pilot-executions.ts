@@ -49,7 +49,7 @@ const TRANSFORMER_PILOT_ERRORS: readonly PublicErrorRule[] = [
   {
     internalCode: "transformer_worker_principal_denied",
     status: 403,
-    publicMessage: "Transformer worker principal required",
+    publicMessage: "Regauge worker principal required",
   },
   ...publicRules(
     404,
@@ -165,7 +165,7 @@ const TRANSFORMER_PILOT_DETAIL_CODES = new Set([
 const TRANSFORMER_PILOT_DOMAIN_ERRORS: readonly PublicErrorRule[] = [
   ...publicRules(
     403,
-    "Transformer authorization denied",
+    "Regauge authorization denied",
     "transformer_pilot_gate_denied",
     "transformer_pilot_delivery_denied",
   ),

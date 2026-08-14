@@ -325,7 +325,7 @@ export function AdaptiveCandidateReview({ candidateId }: { candidateId: string }
   if (loadError || !candidate) {
     return (
       <div className="workspace-page transformer-workspace">
-        <p><Link href="/transformer">Back to Transformer</Link></p>
+        <p><Link href="/transformer">Back to Regauge</Link></p>
         <section className="surface transformer-review-problem" role="alert">
           <p className="eyebrow">Candidate unavailable</p>
           <h1>The review could not be opened</h1>
@@ -347,7 +347,7 @@ export function AdaptiveCandidateReview({ candidateId }: { candidateId: string }
     <div className="workspace-page transformer-workspace transformer-review-page">
       <header className="command-header transformer-review-header">
         <div>
-          <p className="muted small"><Link href="/transformer">Back to Transformer</Link></p>
+          <p className="muted small"><Link href="/transformer">Back to Regauge</Link></p>
           <p className="eyebrow">Adaptive candidate review</p>
           <h1>Inspect every proposed file</h1>
           <p className="lead">

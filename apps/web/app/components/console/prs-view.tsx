@@ -25,7 +25,7 @@ export function PrsView({ prs }: { prs: PullRequest[] }) {
   return (
     <div className="ds-view">
       <header className="ds-view__header ds-view__header--stack">
-        <SectionLabel tone="muted">TRANSFORMER</SectionLabel>
+        <SectionLabel tone="muted">REGAUGE</SectionLabel>
         <h1 className="ds-view__title">Pull requests</h1>
       </header>
 

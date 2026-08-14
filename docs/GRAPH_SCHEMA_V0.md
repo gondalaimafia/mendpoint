@@ -8,7 +8,7 @@
 See full node/edge families, Cypher shapes, indexes, evolution rules, and non-goals in **schema/v0.md**.
 
 Quick spines:
-- **Warden:** Service → Endpoint → Field → Consumer (+ CONSUMES / BREAKS / OUTCOME_*)
-- **Transformer:** Campaign → MigrationUnit → BSGNode → Symbol (+ DEPENDS_ON / REALIZED_BY)
+- **Fettler:** Service → Endpoint → Field → Consumer (+ CONSUMES / BREAKS / OUTCOME_*)
+- **Regauge:** Campaign → MigrationUnit → BSGNode → Symbol (+ DEPENDS_ON / REALIZED_BY)
 
 Kùzu DDL: `KUZU_DDL_V0` export from `@mendpoint/graph-learn`.

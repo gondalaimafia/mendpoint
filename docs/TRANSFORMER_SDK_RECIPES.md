@@ -1,6 +1,6 @@
-# Transformer SDK migration recipes
+# Regauge SDK migration recipes
 
-Transformer executes SDK and runtime migrations as content-addressed, signed
+Regauge executes SDK and runtime migrations as content-addressed, signed
 provider-recipe artifacts. Each artifact binds to a deterministic executable
 recipe that produces `replace_file` operations over an allowlisted set of paths,
 runs objective verification, and can be rolled back by inverse operations. This
@@ -8,7 +8,7 @@ page states exactly what the shipped SDK recipes support and where they abstain.
 
 Nothing here changes the enablement gate. The gate
 (`MENDPOINT_TRANSFORMER_GATE`) defaults to DENIED and the customer-warden
-profile keeps Transformer off, so these recipes are unreachable in a default
+profile keeps Regauge off, so these recipes are unreachable in a default
 deployment.
 
 Framework-upgrade recipes are documented separately in

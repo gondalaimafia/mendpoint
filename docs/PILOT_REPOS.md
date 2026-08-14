@@ -4,10 +4,10 @@ Internal dogfood uses **in-repo fixtures** until external pilots are attached.
 
 | Agent | Pilot | Path | Notes |
 |-------|-------|------|--------|
-| **Warden** | Acme payments + shop-app | `fixtures/providers/acme-payments`, `fixtures/consumers/shop-app` | OpenAPI v1→v2, impact PRs |
-| **Warden** | Flagship offline packs | `fixtures/providers/*-flagship` | Stripe/OpenAI/Twilio/AWS/Plaid shapes |
-| **Warden** | API debug | `fixtures/warden-bench/*`, `fixtures/agent-bugs/broken-charges` | Contract/agent loops |
-| **Transformer** | Campaign scaffold | synthetic via `POST /transformer/campaigns` | BSG/DAG multi-repo plan |
+| **Fettler** | Acme payments + shop-app | `fixtures/providers/acme-payments`, `fixtures/consumers/shop-app` | OpenAPI v1→v2, impact PRs |
+| **Fettler** | Flagship offline packs | `fixtures/providers/*-flagship` | Stripe/OpenAI/Twilio/AWS/Plaid shapes |
+| **Fettler** | API debug | `fixtures/warden-bench/*`, `fixtures/agent-bugs/broken-charges` | Contract/agent loops |
+| **Regauge** | Campaign scaffold | synthetic via `POST /transformer/campaigns` | BSG/DAG multi-repo plan |
 
 ### Baseline metrics (capture on first dogfood)
 

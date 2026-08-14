@@ -109,7 +109,7 @@ export function PrDetailView({ pr }: { pr: PrDetailData }) {
             <div className="section-label section-label--muted">AUTHORED BY</div>
             <div className="ds-author">
               <WandSparklesIcon size={16} className="ds-author__icon" />
-              <span>Transformer</span>
+              <span>Regauge</span>
             </div>
             <p className="ds-author__note">
               Draft by default. Merging is always a human action.

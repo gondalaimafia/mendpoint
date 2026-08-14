@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { AdaptiveCandidateReview } from "./candidate-review";
 
 export const metadata: Metadata = {
-  title: "Transformer adaptive candidate review",
-  description: "Review the exact sealed files for a Transformer adaptive candidate.",
+  title: "Regauge adaptive candidate review",
+  description: "Review the exact sealed files for a Regauge adaptive candidate.",
 };
 
 export default async function TransformerAdaptiveCandidatePage({

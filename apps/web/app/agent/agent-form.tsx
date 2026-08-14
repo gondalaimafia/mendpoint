@@ -103,15 +103,15 @@ export function AgentForm({
         const requestId = res.headers.get("x-request-id");
         throw new Error(
           requestId
-            ? `Warden could not start this request. Reference ${requestId}`
-            : "Warden could not start this request. Check system status and try again.",
+            ? `Fettler could not start this request. Reference ${requestId}`
+            : "Fettler could not start this request. Check system status and try again.",
         );
       }
       idempotency.current = null;
       if (res.status === 202 || data.status === "queued") {
         setOut(
           customerMode
-            ? `QUEUED · job ${String(data.jobId)}\nWarden will derive the bounded migration scope from approved evidence`
+            ? `QUEUED · job ${String(data.jobId)}\nFettler will derive the bounded migration scope from approved evidence`
             : `QUEUED · session ${String(data.sessionId)} · job ${String(data.jobId)}\nThe recovery worker will process this job`,
         );
         const job = await waitForJob(API_URL, String(data.jobId));
@@ -136,7 +136,7 @@ export function AgentForm({
 
   return (
     <section className="card" aria-busy={busy}>
-      <h2>{customerMode ? "New bounded pilot" : "New Warden run"}</h2>
+      <h2>{customerMode ? "New bounded pilot" : "New Fettler run"}</h2>
       <form
         className="stack"
         onSubmit={(event) => {
@@ -147,7 +147,7 @@ export function AgentForm({
         {customerMode && (
           <>
             <p className="muted small">
-              Warden derives repository scope, verification, model policy, budget, and delivery authority from approved tenant evidence.
+              Fettler derives repository scope, verification, model policy, budget, and delivery authority from approved tenant evidence.
             </p>
             <label>
               Approved provider
@@ -197,7 +197,7 @@ export function AgentForm({
               />
             </label>
             <label>
-              Files Warden may change
+              Files Fettler may change
               <textarea
                 className="input"
                 rows={2}
@@ -229,10 +229,10 @@ export function AgentForm({
           }
         >
           {busy
-            ? "Warden running…"
+            ? "Fettler running…"
             : customerMode
               ? "Start bounded pilot"
-              : "Run Warden"}
+              : "Run Fettler"}
         </button>
         {err && <p className="error" role="alert">{err}</p>}
         {out && <pre className="code-block" role="status" aria-live="polite">{out}</pre>}

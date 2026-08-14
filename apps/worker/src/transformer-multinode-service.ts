@@ -280,11 +280,11 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
           baseBranch: target.baseBranch,
           expectedBaseSha: claim.snapshot.revision,
           branch,
-          commitMessage: `Transformer: ${title}`,
+          commitMessage: `Regauge: ${title}`,
           commitDate: claim.authorizedAt,
           title: `Draft: ${title}`,
           body: [
-            "Automated Transformer migration draft.",
+            "Automated Regauge migration draft.",
             "",
             `Candidate digest: ${claim.candidateDigest}`,
             `Checkpoint: ${claim.checkpointHead.stateDigest}`,

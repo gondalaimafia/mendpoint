@@ -51,7 +51,7 @@ export default function PublicHomePage() {
       />
       <section className="public-hero" aria-labelledby="public-hero-title">
         <div className="preview-pill">{preview.wording}</div>
-        <p className="public-kicker">Warden for API change operations</p>
+        <p className="public-kicker">Fettler — the first AI API Engineer</p>
         <h1 id="public-hero-title">{promise.wording}</h1>
         <p className="public-lead">
           Start with a submitted API change. Review the affected code evidence, proposed patch,
@@ -66,7 +66,7 @@ export default function PublicHomePage() {
 
       <section className="public-section" aria-labelledby="workflow-title">
         <div className="public-section-heading">
-          <p className="public-kicker">Current Warden workflow</p>
+          <p className="public-kicker">Current Fettler workflow</p>
           <h2 id="workflow-title">Evidence before repository delivery</h2>
         </div>
         <div className="public-grid four">
@@ -109,12 +109,13 @@ export default function PublicHomePage() {
         <div className="public-grid three">
           <article className="public-card featured">
             <span className="state-pill active">Private preview</span>
-            <h3>Warden</h3>
+            <h3>Fettler</h3>
             <p>{promise.wording}</p>
           </article>
           <article className="public-card">
             <span className="state-pill neutral">Experimental</span>
-            <h3>Transformer</h3>
+            <h3>Regauge</h3>
+            <p className="public-kicker">Regauge — the first AI Legacy Engineer</p>
             <p>{transformer.wording}</p>
           </article>
           <article className="public-card">

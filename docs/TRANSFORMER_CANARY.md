@@ -1,9 +1,9 @@
-# Transformer end-to-end canary (Stage T4c)
+# Regauge end-to-end canary (Stage T4c)
 
-The Transformer canary is a single, deterministic pass or fail proof that the
-whole Transformer pipeline composes end-to-end, from published-catalog
+The Regauge canary is a single, deterministic pass or fail proof that the
+whole Regauge pipeline composes end-to-end, from published-catalog
 resolution through a delivered draft pull request, for the recipe families. It
-is the prove-then-enable gate for T5: T5 flips the production Transformer gate
+is the prove-then-enable gate for T5: T5 flips the production Regauge gate
 only after this canary is green.
 
 - Module: `packages/eval/src/transformer-canary.ts`
@@ -128,6 +128,6 @@ counts, and it lands gated-off for production.
 - It is **not** a real customer repository or a real SCM. Delivery goes through
   the mock GitHub and GitLab adapters, never the network.
 - It does **not** enable production. `MENDPOINT_TRANSFORMER_GATE` stays denied by
-  default and the customer-warden profile stays Transformer-off; the canary
+  default and the customer-warden profile stays Regauge-off; the canary
   never flips them. T5 is the step that flips the gate, and only after this
   canary is green.

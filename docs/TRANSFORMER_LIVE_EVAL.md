@@ -1,6 +1,6 @@
-# Transformer live model eval lane
+# Regauge live model eval lane
 
-This document describes the opt-in `live_model` evidence lane for Transformer:
+This document describes the opt-in `live_model` evidence lane for Regauge:
 a real Muse-tier model trial that drives the production adaptive planner over a
 compiled synthetic fixture and records machine verified provenance. The lane is
 gated so it runs only on explicit opt-in with real credentials. It never runs in
@@ -14,7 +14,7 @@ The implementation is `packages/eval/src/transformer-live-eval.ts`
 ## What it proves
 
 Each trial runs the real adaptive planner adapter
-(`resolveTransformerAdaptivePlannerAdapter`) through the Transformer router and
+(`resolveTransformerAdaptivePlannerAdapter`) through the Regauge router and
 asks the live model to repair one deterministic recipe fixture: change only
 `engines.node` in a synthetic `package.json` from Node 18 to `>=20 <21` while
 preserving every other field exactly. The synthetic fixture is the only source
@@ -62,7 +62,7 @@ tenant it throws `transformer_live_eval_configuration_required`.
 
 ### Gate 2: production adaptive planner policy for that tenant
 
-These are the same production adapter variables Transformer uses in production.
+These are the same production adapter variables Regauge uses in production.
 The lane does not weaken or bypass them; it satisfies the real policy for the
 eval tenant.
 
@@ -111,7 +111,7 @@ repetitions. The runner enforces a minimum pass rate and consistency rate
   network call. The opt-out tests assert the runner refuses before any provider
   call.
 - The production gate `MENDPOINT_TRANSFORMER_GATE` default stays denied and the
-  customer-warden profile stays Transformer-off. This lane does not change any
+  customer-warden profile stays Regauge-off. This lane does not change any
   production default.
 
 ## Limitations

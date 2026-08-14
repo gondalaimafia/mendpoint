@@ -2,7 +2,7 @@
 
 > From `docs/PRE_CUSTOMER_BATCH_GAP_ANALYSIS.md`. Zero design-partner dependency.
 
-**Goal:** Close the pre-customer batch so Warden is demoable, claim-safe, benchmarked internally, and shippable.
+**Goal:** Close the pre-customer batch so Fettler is demoable, claim-safe, benchmarked internally, and shippable.
 
 **Architecture:** Extend existing monorepo packages; no new cloud deps.
 
@@ -15,7 +15,7 @@
 | A1 | Auto-merge hard-off (`ALLOW_AUTO_MERGE`) | `policy` |
 | A2 | Exposure report v0 (JSON/MD) | `db` metrics + API + optional package |
 | A3 | Flagship OpenAPI fixture pack (5 vendors) | `fixtures/providers/*` |
-| A4 | GitHub Checks comment polish (Warden) | `github/checks.ts` |
+| A4 | GitHub Checks comment polish (Fettler) | `github/checks.ts` |
 | B1 | Changelog deprecation parser | `catalog/changelog-parse.ts` |
 | B2 | warden-bench v0 (≥5 cases) | `fixtures/warden-bench` + `eval` |
 | B3 | Slack webhook notify | `packages/notify` or `shared` + API |

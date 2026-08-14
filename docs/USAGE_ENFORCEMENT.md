@@ -107,7 +107,7 @@ outstanding (the safe, conservative direction - it never under-counts), and
 ## Flag: `MENDPOINT_USAGE_ENFORCEMENT` (default OFF)
 
 Enforcement is behind a default-OFF flag, same prove-then-enable discipline used for
-no-egress and Transformer.
+no-egress and Regauge.
 
 - **Off** (unset or `0`): the run path is byte-for-byte identical to before. No reserve,
   no settle, no release, no 402. Runs carry no reservation id, so the worker's

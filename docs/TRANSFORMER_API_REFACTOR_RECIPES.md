@@ -1,6 +1,6 @@
-# Transformer internal / custom API-refactor recipes
+# Regauge internal / custom API-refactor recipes
 
-The internal API-refactor family is the fourth Transformer family, alongside the
+The internal API-refactor family is the fourth Regauge family, alongside the
 SDK (`docs/TRANSFORMER_SDK_RECIPES.md`), framework
 (`docs/TRANSFORMER_FRAMEWORK_RECIPES.md`), and runtime
 (`docs/TRANSFORMER_RUNTIME_RECIPES.md`) families. It shares the same catalog
@@ -19,7 +19,7 @@ rather than editing customer code it cannot prove is the exact target.
 
 Nothing here changes the enablement gate. The gate
 (`MENDPOINT_TRANSFORMER_GATE`) defaults to DENIED and the customer-warden
-profile keeps Transformer off, so these recipes are unreachable in a default
+profile keeps Regauge off, so these recipes are unreachable in a default
 deployment. Every migration is delivered as a human-reviewed draft PR with no
 auto-merge.
 

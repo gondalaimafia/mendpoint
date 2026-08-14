@@ -290,7 +290,7 @@ export function TransformerWorkspace() {
     <div className="workspace-page transformer-workspace">
       <header className="command-header">
         <div>
-          <p className="eyebrow">Transformer experimental</p>
+          <p className="eyebrow">Regauge experimental</p>
           <h1>Plan and govern a migration campaign</h1>
           <p className="lead">
             Turn an objective into a reviewable dependency plan, track evidence and outcomes, and keep every execution decision with an operator.
