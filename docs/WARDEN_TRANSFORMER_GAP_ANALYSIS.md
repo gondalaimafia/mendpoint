@@ -1,7 +1,7 @@
-# Warden × Transformer capabilities — gap analysis
+# Gauge × Regauge capabilities — gap analysis
 
-**Source:** Warden × Transformer Capabilities Matrix (Devin-class autonomy in two niches)  
-**Codebase:** `mendpoint` monorepo · product **Warden** today · **Transformer** not productized  
+**Source:** Gauge × Regauge Capabilities Matrix (Devin-class autonomy in two niches)  
+**Codebase:** `mendpoint` monorepo · product **Gauge** today · **Regauge** not productized  
 **Date:** 2026-07-23  
 
 Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
@@ -12,8 +12,8 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 
 | Product | Role in matrix | Maturity | Verdict |
 |---------|----------------|----------|---------|
-| **Warden** (API engineer) | Spec-first design/build/evolve/test/secure/operate APIs + consumer impact | **~3.4 / 5** post-matrix-build (consumer PR + plans/gates/registry/critic; sandbox local-only) | Spec plan, contract gates, critic, registry wired; VM/in-cluster still stub |
-| **Transformer** (legacy migration) | COBOL/VB6/.NET-Fx/Py2/monolith → modern; BSG + DAG campaigns | **~1.5 / 5** | BSG/DAG/campaign + multi-repo router + output diff; no COBOL/mainframe engines |
+| **Gauge** (API engineer) | Spec-first design/build/evolve/test/secure/operate APIs + consumer impact | **~3.4 / 5** post-matrix-build (consumer PR + plans/gates/registry/critic; sandbox local-only) | Spec plan, contract gates, critic, registry wired; VM/in-cluster still stub |
+| **Regauge** (legacy migration) | COBOL/VB6/.NET-Fx/Py2/monolith → modern; BSG + DAG campaigns | **~1.5 / 5** | BSG/DAG/campaign + multi-repo router + output diff; no COBOL/mainframe engines |
 | **Shared platform** | Planner/executor, sandbox VM, 4-layer memory, knowledge store, multi-SCM | **~3.0 / 5** | Plan harness, local sandbox, 4-layer memory, knowledge seed, canary hooks; no real multi-SCM |
 
 **Strategic fit:** Monorepo now includes **Dimension 6 graph learning substrate** (`@mendpoint/graph-learn`): durable KG, graph-RAG, PR outcome labels. Registry/multi-repo become graph queries. GNN deferred to v1.5. See `docs/GRAPH_LEARNING.md`.
@@ -24,9 +24,9 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 
 ### D1 — Task planning
 
-| Requirement | Warden score | Transformer score | Reality today |
+| Requirement | Gauge score | Regauge score | Reality today |
 |-------------|--------------|-------------------|---------------|
-| Planner/executor + JSON plan + success criteria | 2 | 0 | Orchestrator graph + Warden heuristic steps; **no durable JSON plan-of-record** |
+| Planner/executor + JSON plan + success criteria | 2 | 0 | Orchestrator graph + Gauge heuristic steps; **no durable JSON plan-of-record** |
 | Plan = **OpenAPI/Proto spec diff** | 3 | — | `change-intel` surfaces map to diffs; not first-class **versioned plan object** driving every step |
 | Plan = **BSG** (behavioral spec graph) | — | 0 | Not started |
 | Horizon: multi-release / multi-week | 1 | 0 | Single pipeline run; no service/campaign object |
@@ -37,9 +37,9 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 
 ### D2 — Code execution
 
-| Requirement | Warden | Transformer | Reality |
+| Requirement | Gauge | Regauge | Reality |
 |-------------|--------|-------------|---------|
-| Ephemeral VM sandbox | 1 | 0 | Local process sandbox (Warden tools); no VM/DB/in-cluster |
+| Ephemeral VM sandbox | 1 | 0 | Local process sandbox (Gauge tools); no VM/DB/in-cluster |
 | Live-service sandbox (DB, mocks, curl own API) | 0 | — | Missing |
 | Multi-runtime matrix (JVM/.NET/COBOL) | — | 0 | Language *analysis* harnesses only |
 | Contract-conformance (fuzz, authz, oas-diff) | 1 | — | Policy + path checks; no contract test runtime |
@@ -49,22 +49,22 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 
 ### D3 — Environment
 
-| Requirement | Warden | Transformer | Reality |
+| Requirement | Gauge | Regauge | Reality |
 |-------------|--------|-------------|---------|
 | Terminal parity | 2 | 2 | `run_command` with denylist |
 | LSP / tree-sitter | 1 | 0 | Heuristic index “tree-sitter-ready” |
 | Spectral / oas-diff / Buf | 1 | — | OpenAPI diff only |
 | Postman/Bruno/gateway/auth adapters | 0 | — | Missing |
 | Mainframe connectors | — | 0 | Missing |
-| CI gates (spec lint, contract, security, SLO) | 2 | 0 | Warden CI comment; policy; no full gate suite |
+| CI gates (spec lint, contract, security, SLO) | 2 | 0 | Gauge CI comment; policy; no full gate suite |
 | PR-per-DAG-node | — | 0 | One PR per consumer/change |
 
 ### D4 — Error recovery
 
-| Requirement | Warden | Transformer | Reality |
+| Requirement | Gauge | Regauge | Reality |
 |-------------|--------|-------------|---------|
-| Deterministic tool errors | 3 | 1 | Warden/repair verify loops |
-| Contract-violation structured diffs | 1 | — | Partial in Warden knowledge modes |
+| Deterministic tool errors | 3 | 1 | Gauge/repair verify loops |
+| Contract-violation structured diffs | 1 | — | Partial in Gauge knowledge modes |
 | Differential-trace diffs | — | 0 | Missing |
 | Read-only API design critic | 0 | — | Missing |
 | BSG fidelity critic | — | 0 | Missing |
@@ -73,7 +73,7 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 
 ### D5 — Cross-repo context
 
-| Requirement | Warden | Transformer | Reality |
+| Requirement | Gauge | Regauge | Reality |
 |-------------|--------|-------------|---------|
 | 4-layer memory | 0 | 0 | Single-run context |
 | Consumer registry (who calls what) | 2.5 | — | consumers + monitored_apis + findings; not endpoint-level registry query product |
@@ -83,7 +83,7 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 
 ---
 
-## Warden P0 roadmap vs repo
+## Gauge P0 roadmap vs repo
 
 | # | P0 item | Score | Build now? |
 |---|---------|-------|------------|
@@ -94,7 +94,7 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 | 5 | API reviewer critic | 0 | **Yes** — heuristic design scorer |
 | 6 | Consumer registry | 2.5 | **Yes** — query “who uses this surface/provider” |
 
-## Transformer P0 vs repo
+## Regauge P0 vs repo
 
 | # | P0 item | Score | Build now? |
 |---|---------|-------|------------|
@@ -107,7 +107,7 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 | Planner/executor harness + JSON plan | 2 | **Yes** — extend orchestrator |
 | Ephemeral sandbox VM | 0 | Interface stub |
 | Four-layer memory | 0 | Minimal types + pruning helper |
-| Deterministic recovery loop | 3 | Exists (Warden/repair) |
+| Deterministic recovery loop | 3 | Exists (Gauge/repair) |
 | Knowledge store | 1 | Style-guide seed file + retrieval stub |
 | PR/CI adapters | 3 | GitHub only |
 
@@ -121,7 +121,7 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 4. Contract suite + PR gates  
 5. API reviewer critic  
 6. Consumer registry API  
-7. Transformer package scaffold (BSG/DAG/campaign)  
+7. Regauge package scaffold (BSG/DAG/campaign)  
 8. Wire API routes + tests  
 
 **Explicitly deferred:** real VMs, COBOL/mainframe, Proto/Buf full, canary deploy, multi-SCM, months-long campaigns.
@@ -130,7 +130,7 @@ Scores: 0 absent · 1 stub · 2 toy · 3 MVP · 4 partner-ready · 5 GA
 
 ## Bottom line
 
-- **Warden today** ≈ “API change intelligence → **consumer** code PRs + debug agent.”  
-- **Matrix Warden** ≈ “full API engineer with **spec as law** + **contract runtime** + **consumer blast radius**.”  
+- **Gauge today** ≈ “API change intelligence → **consumer** code PRs + debug agent.”  
+- **Matrix Gauge** ≈ “full API engineer with **spec as law** + **contract runtime** + **consumer blast radius**.”  
 - Closing the matrix means **productizing the spec as plan-of-record and executable contracts**, not rewriting the graph impact core.  
-- **Transformer** is a **second product line** — share platform harness; do not conflate with Warden v1.
+- **Regauge** is a **second product line** — share platform harness; do not conflate with Gauge v1.

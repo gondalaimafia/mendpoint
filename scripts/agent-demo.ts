@@ -1,5 +1,5 @@
 /**
- * Demo: Warden (API debug agent) on fixtures/agent-bugs/broken-charges
+ * Demo: Gauge (API debug agent) on fixtures/agent-bugs/broken-charges
  *
  *   npm run agent:demo
  */

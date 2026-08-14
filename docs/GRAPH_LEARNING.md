@@ -1,6 +1,6 @@
 # Dimension 6 — Graph Learning (platform substrate)
 
-**Doctrine:** Graph learning is both a **sixth agentic dimension** and the **substrate** under Warden and Transformer. It turns smart-per-run systems into **smarter-per-campaign** systems that compound across PRs and customers.
+**Doctrine:** Graph learning is both a **sixth agentic dimension** and the **substrate** under Gauge and Regauge. It turns smart-per-run systems into **smarter-per-campaign** systems that compound across PRs and customers.
 
 Grounding: RANGER, [GitLab Knowledge Graph](https://docs.gitlab.com/user/gitlab_duo/knowledge_graph/), [CodexGraph](https://arxiv.org/abs/2408.03910), AST-derived graph-RAG ([arXiv 2601.09842](https://arxiv.org/abs/2601.09842)), GitTemporalAI temporal KGs.
 
@@ -22,13 +22,13 @@ Grounding: RANGER, [GitLab Knowledge Graph](https://docs.gitlab.com/user/gitlab_
 
 ## Graph objects
 
-### API Graph (Warden)
+### API Graph (Gauge)
 
 | Nodes | Edges |
 |-------|--------|
 | service, endpoint, schema, field, auth_scope, consumer, error_type, slo, change, pr | calls, depends_on, deprecated_by, breaks, secures, versions_of, monitors, impacts, outcome_* |
 
-### Code Graph + BSG (Transformer)
+### Code Graph + BSG (Regauge)
 
 | Nodes | Edges |
 |-------|--------|

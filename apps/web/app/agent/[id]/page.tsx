@@ -80,8 +80,8 @@ export default async function WardenCandidatePage({ params }: { params: Promise<
   return (
     <div className="page">
       <div className="page-header">
-        <Link href="/agent">Back to Warden</Link>
-        <h1>Warden candidate</h1>
+        <Link href="/agent">Back to Gauge</Link>
+        <h1>Gauge candidate</h1>
         <p className="muted">{run.goal}</p>
       </div>
       <section className="card stack">

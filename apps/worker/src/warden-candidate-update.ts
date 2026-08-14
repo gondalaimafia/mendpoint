@@ -110,7 +110,7 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
   const intent = Object.freeze({ owner: repository.owner, repo: repository.repo,
     expectedRepositoryId: cycle.remoteRepositoryId, pullRequestNumber: cycle.pullRequestNumber,
     baseBranch: cycle.baseBranch, branch: cycle.branchName, expectedHeadSha: cycle.currentHeadSha,
-    commitMessage: `Apply approved Warden CI repair ${update.repairRunId}`,
+    commitMessage: `Apply approved Gauge CI repair ${update.repairRunId}`,
     commitDate: update.requestedAt, files: files(artifact) }) satisfies ExactDraftUpdateInput;
   const now = input.now ?? (() => new Date().toISOString());
   const dispatchAt = now();

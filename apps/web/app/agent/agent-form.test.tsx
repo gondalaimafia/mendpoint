@@ -27,7 +27,7 @@ describe("Warden intake form", () => {
     expect(html).toContain("Approved provider");
     expect(html).toContain("Canary repository");
     expect(html).toContain("Start bounded pilot");
-    expect(html).not.toContain("Files Warden may change");
+    expect(html).not.toContain("Files Gauge may change");
     expect(html).not.toContain("Error log");
     expect(html).not.toContain("Goal");
   });

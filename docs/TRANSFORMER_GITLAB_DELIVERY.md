@@ -1,6 +1,6 @@
-# Transformer GitLab delivery (Stage T4a)
+# Regauge GitLab delivery (Stage T4a)
 
-Transformer delivers an approved adaptive candidate as an exact draft: a source
+Regauge delivers an approved adaptive candidate as an exact draft: a source
 branch, one deterministic commit of the exact sealed files, and a draft change
 that a human reviews and merges. Stage T4a lets that same approved candidate be
 delivered to a **GitLab** project as a draft merge request, as an alternative to
@@ -59,21 +59,21 @@ the worker constructs the delivery for a `transformer.adaptive.deliver` job
   default and the real HTTP client only when `GITLAB_MODE=real` and
   `GITLAB_TOKEN` are set.
 
-The Warden candidate delivery path routes through the same selector; see
+The Gauge candidate delivery path routes through the same selector; see
 [`WARDEN_GITLAB_DELIVERY.md`](./WARDEN_GITLAB_DELIVERY.md).
 
 ## Configuration
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `SCM_PROVIDER` | `gitlab` routes Transformer approved-candidate delivery to GitLab; unset or `github` keeps GitHub. | `github` |
+| `SCM_PROVIDER` | `gitlab` routes Regauge approved-candidate delivery to GitLab; unset or `github` keeps GitHub. | `github` |
 | `GITLAB_MODE` | `real` selects the HTTP client; anything else uses the mock. | `mock` |
 | `GITLAB_TOKEN` | Project, group, or personal access token, required for `real`. | none |
 | `GITLAB_API_URL` | REST v4 base URL, for self-managed GitLab. | `https://gitlab.com/api/v4` |
 
 This stage lands gated off. `MENDPOINT_TRANSFORMER_GATE` stays denied by default
-and the customer-warden profile keeps Transformer off, so no candidate is
-delivered anywhere until Transformer is explicitly enabled.
+and the customer-warden profile keeps Regauge off, so no candidate is
+delivered anywhere until Regauge is explicitly enabled.
 
 ## What this is not
 
@@ -89,7 +89,7 @@ delivered anywhere until Transformer is explicitly enabled.
 
 ## Summary for marketing
 
-Transformer can deliver an approved candidate as a **token-authenticated draft
+Regauge can deliver an approved candidate as a **token-authenticated draft
 merge request** to a GitLab project on gitlab.com or a self-managed instance,
 selected with `SCM_PROVIDER=gitlab`, with the same human-review-first,
 no-auto-merge guarantees as the GitHub draft pull request. State it as "GitLab

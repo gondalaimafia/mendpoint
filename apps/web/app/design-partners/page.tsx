@@ -6,7 +6,7 @@ import { PublicFooter } from "../public-footer";
 export const metadata: Metadata = {
   title: "Design partner application",
   alternates: { canonical: "/design-partners" },
-  description: "Apply to validate one scoped Warden migration workflow on an approved GitHub repository.",
+  description: "Apply to validate one scoped Gauge migration workflow on an approved GitHub repository.",
 };
 
 export default function DesignPartnerPage() {

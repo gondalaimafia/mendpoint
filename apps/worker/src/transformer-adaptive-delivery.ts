@@ -239,11 +239,11 @@ function buildDeliveryIntent(
   ) {
     throw new Error("transformer_adaptive_delivery_review_evidence_missing");
   }
-  const title = `Apply approved Transformer candidate ${candidate.id}`;
+  const title = `Apply approved Regauge candidate ${candidate.id}`;
   const changedPaths = [...candidate.changedPaths].sort((left, right) => left.localeCompare(right));
   const triggeringCheck = candidate.failingCommandId ?? "No failing command was recorded";
   const body = [
-    "This draft contains the exact sealed files approved for a Transformer adaptive candidate.",
+    "This draft contains the exact sealed files approved for a Regauge adaptive candidate.",
     "",
     "## Rationale",
     "",
@@ -306,7 +306,7 @@ function intentDigest(intent: ExactDraftDeliveryInput): string {
 
 function classifyFailure(error: unknown): FailureClassification {
   const rawMessage = error instanceof Error ? error.message : String(error);
-  const message = (rawMessage.trim() || "Transformer adaptive delivery failed").slice(0, 2_000);
+  const message = (rawMessage.trim() || "Regauge adaptive delivery failed").slice(0, 2_000);
   const status = (error as { status?: unknown } | null)?.status;
   const code = (error as { code?: unknown } | null)?.code;
   const remoteSideEffectUncertain =

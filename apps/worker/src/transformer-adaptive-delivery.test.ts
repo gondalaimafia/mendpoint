@@ -301,7 +301,7 @@ describe("Transformer adaptive draft delivery worker", () => {
     expect(deliveredInput?.branch).toMatch(/^mendpoint\/transformer-[a-f0-9]{24}$/);
     const deliveredCandidate = getAdaptiveCandidate(value.db, TENANT_ID, value.candidateId)!;
     expect(deliveredInput?.body).toBe([
-      "This draft contains the exact sealed files approved for a Transformer adaptive candidate.",
+      "This draft contains the exact sealed files approved for a Regauge adaptive candidate.",
       "",
       "## Rationale",
       "",

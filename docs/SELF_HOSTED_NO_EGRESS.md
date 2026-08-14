@@ -32,7 +32,7 @@ A public host such as `api.meta.ai` is rejected.
   endpoint is rejected before any call is made.
 - The check runs at two points, so a misconfiguration fails fast rather than at
   first agent run:
-  - Boot validation (`validateApiEnv`, and the customer Warden profile
+  - Boot validation (`validateApiEnv`, and the customer Gauge profile
     validator) rejects a `local_only` deployment whose `LLM_AGENT_URL` resolves
     to a public host, or an invalid `MENDPOINT_MODEL_EGRESS` value.
   - Resolve time (`resolveAgentModelEndpoint`) throws

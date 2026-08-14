@@ -778,7 +778,7 @@ export function registerTransformerControlPlaneRoutes(
     return c.json(
       {
         error: "transformer_experimental_gate_denied",
-        message: "Transformer is unavailable for this tenant and environment",
+        message: "Regauge is unavailable for this tenant and environment",
         gate: decision,
       },
       403,

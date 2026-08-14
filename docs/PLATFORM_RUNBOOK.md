@@ -105,4 +105,4 @@ Query: `{ "op": "outcomes_for_pattern", "pattern": "amount" }`
 
 ## Out of platform scope
 
-GNN training, Neo4j, multi-tenant RBAC, browser tool, full Warden/Transformer product logic.
+GNN training, Neo4j, multi-tenant RBAC, browser tool, full Gauge/Regauge product logic.

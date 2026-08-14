@@ -1,6 +1,6 @@
 # Design-partner path (FDE)
 
-Zero-dependency onboarding checklist for a design partner trial of **Mendpoint / Warden**.  
+Zero-dependency onboarding checklist for a design partner trial of **Mendpoint / Gauge**.  
 Claim-safe language: [`WARDEN_CLAIMS.md`](./WARDEN_CLAIMS.md).
 
 ---
@@ -50,7 +50,7 @@ npm run phase-a
 
 Policy: **never auto-merge by default**. Human review always.
 
-### 6. Optional Warden (on-demand API debug)
+### 6. Optional Gauge (on-demand API debug)
 
 ```bash
 npm run agent:demo       # fixture path-typo + field rename
@@ -65,7 +65,7 @@ npm run dev:api          # :3001
 npm run dev:web          # :3000  · /agent
 ```
 
-Warden accepts a natural-language goal + optional `verifyCommand`. If verify is omitted, `discoverVerifyCommand(repoRoot)` can infer `npm test`, `node check.mjs`, `pytest`, or `go test ./...`.
+Gauge accepts a natural-language goal + optional `verifyCommand`. If verify is omitted, `discoverVerifyCommand(repoRoot)` can infer `npm test`, `node check.mjs`, `pytest`, or `go test ./...`.
 
 ---
 
@@ -75,7 +75,7 @@ Warden accepts a natural-language goal + optional `verifyCommand`. If verify is 
 |-------|---------|
 | Unit / workspace tests | `npm test` |
 | Design-partner impact recall | `npm run eval:partners` |
-| Warden fixture bench | `npm run eval:warden` |
+| Gauge fixture bench | `npm run eval:warden` |
 | Language harnesses | `npm run phase-a:harness`, `phase-c:python`, … |
 
 ---
@@ -84,7 +84,7 @@ Warden accepts a natural-language goal + optional `verifyCommand`. If verify is 
 
 1. **Breaking before prod** — `npm run demo`  
 2. **Vendor examples** — `npm run examples`  
-3. **Warden on a ticket-style goal** — `npm run agent:demo` or `/agent`  
+3. **Gauge on a ticket-style goal** — `npm run agent:demo` or `/agent`  
 4. **Reviewable PR** — mock or real; no auto-merge  
 
 Avoid claiming continuous changelog-RSS forever, unprompted silent-drift hunting, audited $ savings, or published bench leadership. See [`WARDEN_CLAIMS.md`](./WARDEN_CLAIMS.md).

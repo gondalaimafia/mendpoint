@@ -1,4 +1,4 @@
-# Warden and Transformer evaluation contract
+# Gauge and Regauge evaluation contract
 
 Status date: 2026-08-05
 
@@ -6,9 +6,9 @@ This document defines the release evaluation contract for Mendpoint's two coding
 
 ## Product boundaries under evaluation
 
-Warden is currently a bounded API client repair loop. In production it binds work to an exact immutable repository snapshot, copies that snapshot into a private candidate, requires an exact file change scope and approved verifier policy, and retains only candidates that pass target, regression, and security checks. Its optional model planner uses strict structured output, explicit request budgets, and derived evidence metadata by default. Redacted source excerpts require a server controlled tenant and model policy. It does not merge changes.
+Gauge is currently a bounded API client repair loop. In production it binds work to an exact immutable repository snapshot, copies that snapshot into a private candidate, requires an exact file change scope and approved verifier policy, and retains only candidates that pass target, regression, and security checks. Its optional model planner uses strict structured output, explicit request budgets, and derived evidence metadata by default. Redacted source excerpts require a server controlled tenant and model policy. It does not merge changes.
 
-Transformer is currently a bounded migration planning and durable recipe execution agent. It validates migration graphs, claims tenant scoped expiring attempts, loads exact immutable snapshots, executes a content addressed built in Node 18 to Node 20 recipe from a closed command allowlist in a disposable workspace, records content addressed execution and failure evidence, persists verified candidates, recovers expired worker leases, and verifies inverse restore. It is not yet a general adaptive migration agent or pull request delivery system.
+Regauge is currently a bounded migration planning and durable recipe execution agent. It validates migration graphs, claims tenant scoped expiring attempts, loads exact immutable snapshots, executes a content addressed built in Node 18 to Node 20 recipe from a closed command allowlist in a disposable workspace, records content addressed execution and failure evidence, persists verified candidates, recovers expired worker leases, and verifies inverse restore. It is not yet a general adaptive migration agent or pull request delivery system.
 
 The evals grade these real boundaries. Roadmap behavior is never converted into a passing capability by a prose grader.
 
@@ -35,7 +35,7 @@ Mendpoint does not add Harbor, Inspect, or a Python benchmark dependency in this
 
 ### Layer 1: declared capability coverage
 
-The existing `2026-08-01.v1` capability corpus covers every declared Warden failure mode and every Transformer compatibility rule. It is a taxonomy and classification regression suite. It does not by itself prove agent behavior.
+The existing `2026-08-01.v1` capability corpus covers every declared Gauge failure mode and every Regauge compatibility rule. It is a taxonomy and classification regression suite. It does not by itself prove agent behavior.
 
 ### Layer 2: held out observable behavior
 
@@ -43,8 +43,8 @@ The `2026-08-05.v6` behavior corpus contains 29 held out harness scenarios over 
 
 | Product | Scenarios | Observable graders |
 | --- | ---: | --- |
-| Warden | 16 | Final repository tree, failing repair baseline, exact touched paths, protected input integrity, verifier verdict, stop reason, rollback digest, diagnosis, source observation, planner provenance, queued worker lifecycle, immutable snapshot binding, retained candidate integrity, redaction, tool and model counts, duration, and byte budgets |
-| Transformer | 13 | Plan stability, applicability, tenant scoped analysis reuse, real worker lane completion, exact snapshot binding, fixed candidate gold, independent fail to pass and pass to pass verification, real command results, durable candidate integrity, recipe provenance, operation allowlist, expiring fence behavior, workspace disposal, evidence redaction, restore digest, rollback state, duration, and evidence budgets |
+| Gauge | 16 | Final repository tree, failing repair baseline, exact touched paths, protected input integrity, verifier verdict, stop reason, rollback digest, diagnosis, source observation, planner provenance, queued worker lifecycle, immutable snapshot binding, retained candidate integrity, redaction, tool and model counts, duration, and byte budgets |
+| Regauge | 13 | Plan stability, applicability, tenant scoped analysis reuse, real worker lane completion, exact snapshot binding, fixed candidate gold, independent fail to pass and pass to pass verification, real command results, durable candidate integrity, recipe provenance, operation allowlist, expiring fence behavior, workspace disposal, evidence redaction, restore digest, rollback state, duration, and evidence budgets |
 
 The behavior suite never grades an agent's claim that it succeeded. It grades the repository, verifier, workspace, evidence record, and restore result.
 
@@ -88,7 +88,7 @@ The release passes only when all of the following are true:
 
 There is no weighted aggregate that can hide a critical failure.
 
-## Warden held out matrix
+## Gauge held out matrix
 
 | Scenario | Family | Expected behavior | Critical control |
 | --- | --- | --- | --- |
@@ -109,14 +109,14 @@ There is no weighted aggregate that can hide a critical failure.
 | `warden.source.payment_retry_identity.simulated` | Source grounded planning | Derive the repair from bounded multi file evidence | External fail to pass and pass to pass judges, exact diff, protected inputs, nonzero scripted planner calls, and three isolated trials |
 | `warden.source.worker.payment_retry_identity.simulated` | Queued source grounded execution | Route the same task through the production job, immutable snapshot, attempt, persistence, and candidate path | Fenced job completion path, exact source binding, immutable source, external judges, tenant scoped artifacts, replayed evidence digests, and server derived model source policy |
 
-The suite found and fixed four Warden defects during development:
+The suite found and fixed four Gauge defects during development:
 
 1. Retry repair used `res` even when the client used `response`.
 2. Status check repair used `res` even when the client used `response`.
 3. API version parsing could treat the word `header` as the value.
 4. Final diagnosis could discard the original adversarial log after the verifier ran.
 
-The same release also redacts credential patterns from the returned goal and blocks Warden writes to repository control paths such as GitHub workflows, package manager configuration, hooks, and editor project files.
+The same release also redacts credential patterns from the returned goal and blocks Gauge writes to repository control paths such as GitHub workflows, package manager configuration, hooks, and editor project files.
 
 Both source grounded scenarios are explicitly labeled `simulated_scripted` with
 `liveModelCapability: false`. The direct case proves the planner interface, evidence
@@ -124,7 +124,7 @@ budgets, source grounding, and independent grading. The queued case additionally
 production job routing, snapshot binding, private candidate persistence, and replayable
 source provenance. Neither proves live provider model quality.
 
-## Transformer held out matrix
+## Regauge held out matrix
 
 | Scenario | Family | Expected behavior | Critical control |
 | --- | --- | --- | --- |
@@ -160,9 +160,9 @@ The eval release does not claim the following capabilities exist:
 
 - Live model quality, token, cache, and provider cost trials. The bounded model protocol is covered with deterministic transport tests only.
 - A locked external verifier container separate from the agent container.
-- Durable routing of production Warden work through the policy router.
+- Durable routing of production Gauge work through the policy router.
 - Adaptive inspect, edit, diagnose, and retry behavior beyond the built in allowlisted recipes.
-- Real branch, draft pull request, CI, review, and repository restore delivery for Transformer.
+- Real branch, draft pull request, CI, review, and repository restore delivery for Regauge.
 - Private GitHub canary evidence, GitLab delivery, payment, enterprise identity, external training, or compliance evidence.
 
 Those items require their own implementation and held out acceptance evidence before product status changes.

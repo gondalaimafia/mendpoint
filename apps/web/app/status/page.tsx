@@ -81,7 +81,7 @@ export default async function StatusPage() {
     <div>
       <h1>System status</h1>
       <p className="lead">
-        Design partner health for Mendpoint and Warden. Process liveness and
+        Design partner health for Mendpoint and Gauge. Process liveness and
         recovery state are reported separately so failed work stays visible
         without taking the console offline.
       </p>
@@ -101,7 +101,7 @@ export default async function StatusPage() {
               </p>
               <p className="muted small">
                 {s.release?.banner ??
-                  `${s.release?.product ?? "Warden"} ${s.release?.version ?? ""}`}
+                  `${s.release?.product ?? "Gauge"} ${s.release?.version ?? ""}`}
               </p>
             </div>
             <div className="card">

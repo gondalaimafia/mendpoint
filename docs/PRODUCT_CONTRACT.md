@@ -11,7 +11,7 @@ checked register is `PRODUCT_REQUIREMENTS.json`; its validator is
 
 ## Release tiers
 
-### Warden pilot
+### Gauge pilot
 
 GitHub is the only required source control system. A private canary must move
 from an attributable tenant connection and exact commit snapshot to a verified
@@ -20,14 +20,14 @@ baseline and post edit verification, an identified reviewer, rollback, and a
 complete event history. Single node self hosted deployment is supported for the
 pilot. Fixture evidence does not count as customer proof.
 
-### Warden GA
+### Gauge GA
 
 Adds reliable multi provider monitoring, durable campaigns, measured accuracy
 and abstention, production availability and recovery objectives, repeatable
-onboarding, and two external outcome cohorts. GitLab is a Warden GA requirement
+onboarding, and two external outcome cohorts. GitLab is a Gauge GA requirement
 unless a signed design partner makes it a pilot dependency.
 
-### Transformer pilot
+### Regauge pilot
 
 Supports one declared migration class across two to five repositories. An
 objective produces a durable reviewed blueprint and nonempty behavioral
@@ -35,7 +35,7 @@ specification graph before execution. At least three repositories receive
 distinct verified draft pull requests in dependency order. Crash, CI failure,
 branch drift, partial merge, restart, and rollback drills must pass.
 
-### Transformer GA
+### Regauge GA
 
 Adds multiple executable recipe families, organization scale campaign control,
 shared model routing, governed outcome data, measured migration quality,
@@ -49,13 +49,13 @@ pass.
 Adds supported VPC deployment, private connectivity, SSO, SCIM, customer
 managed keys, residency, horizontal reliability, enterprise disaster recovery,
 customer log export, compliance evidence, and security review support. VPC is
-not a Warden pilot or GA claim.
+not a Gauge pilot or GA claim.
 
 ## Scope decisions
 
-1. GitHub is the Warden pilot source control system. GitLab belongs to Warden
+1. GitHub is the Gauge pilot source control system. GitLab belongs to Gauge
    GA unless a signed pilot contract requires it sooner.
-2. Transformer pilot and Transformer GA are independent release gates. A
+2. Regauge pilot and Regauge GA are independent release gates. A
    validated planner is not an executable campaign.
 3. Routing contracts and telemetry may ship before model adapters. Training on
    customer data may not start until the Gate 8 data prerequisites pass.
@@ -89,16 +89,16 @@ new event and never rewrite prior evidence.
 
 | Metric | Start | End | Denominator and exclusions | Window and attribution |
 |---|---|---|---|---|
-| Warden change to first verified pull request | Earliest accepted trusted source observation | First delivered draft pull request with passing post edit verification | One value per change and tenant cohort. Exclude rejected and duplicate sources. | Event time, reported daily and by 30 day cohort. |
-| Warden impact precision | Reviewed confirmed impact | Reviewed proposed impact | Confirmed divided by all reviewed findings. Exclude unresolved findings. | By provider, change class, language, repository size, and 30 day cohort. |
-| Warden impact recall | Reviewed confirmed affected sites found | All reviewed known affected sites | Found confirmed sites divided by the reviewed gold set. | Same cohort dimensions as precision. |
+| Gauge change to first verified pull request | Earliest accepted trusted source observation | First delivered draft pull request with passing post edit verification | One value per change and tenant cohort. Exclude rejected and duplicate sources. | Event time, reported daily and by 30 day cohort. |
+| Gauge impact precision | Reviewed confirmed impact | Reviewed proposed impact | Confirmed divided by all reviewed findings. Exclude unresolved findings. | By provider, change class, language, repository size, and 30 day cohort. |
+| Gauge impact recall | Reviewed confirmed affected sites found | All reviewed known affected sites | Found confirmed sites divided by the reviewed gold set. | Same cohort dimensions as precision. |
 | Pull request acceptance | Approved or merged delivered pull requests | Reviewed delivered pull requests | Exclude unresolved review. Closed without review is not automatically a false positive. | 30 and 90 day cohorts by provider and recipe. |
 | Reviewer edit delta | Delivered candidate | Accepted patch | Semantic changed operations divided by delivered operations. Text formatting only changes are excluded. | Per pull request and aggregated by recipe and route. |
 | Regression rate | Accepted Mendpoint change | Introduced CI failure, rollback, or attributed incident | Accepted changes with a regression divided by accepted changes. | 30 days after merge, with explicit attribution evidence. |
 | Hours saved | Agreed manual baseline | Observed review and exception time | Baseline minus observed time. Never infer a baseline without customer agreement. | Per pilot and campaign. |
-| Transformer campaign completion | Approved units | Units satisfying terminal success policy | Successful approved units divided by all approved units. Cancelled scope changes are reported separately. | Per campaign and migration class. |
-| Transformer batch acceptance | Approved or merged pull requests | Reviewed pull requests | Exclude unresolved reviews. | Per wave, recipe, and 30 day cohort. |
-| Time to first accepted Transformer pull request | Blueprint approval | First campaign pull request approved or merged | One value per campaign. | Event time. |
+| Regauge campaign completion | Approved units | Units satisfying terminal success policy | Successful approved units divided by all approved units. Cancelled scope changes are reported separately. | Per campaign and migration class. |
+| Regauge batch acceptance | Approved or merged pull requests | Reviewed pull requests | Exclude unresolved reviews. | Per wave, recipe, and 30 day cohort. |
+| Time to first accepted Regauge pull request | Blueprint approval | First campaign pull request approved or merged | One value per campaign. | Event time. |
 | Recovery effectiveness | Recorded interruption | Resumed progress without duplicate mutation | Successful recoveries divided by injected and observed recoverable interruptions. | Per release and rolling 30 days. |
 | Router verified quality | Routed task start | Passing verification plus accepted human outcome | Accepted verified outcomes divided by completed routed tasks. Infrastructure failures are separate. | By task class, route, executor, model, and price version. |
 | Router accepted output cost | First route attempt | Accepted verified outcome | All actual attempts, retries, and fallbacks divided by accepted outcomes. | By route and 30 day cohort. |
@@ -169,11 +169,11 @@ allowed before these controls and the data sufficiency gate pass.
 ## Open product decisions
 
 1. Which signed design partner, repository cohort, and supported payments
-   change will satisfy the Warden external proof gate.
-2. Whether GitLab remains Warden GA or moves earlier under a signed customer
+   change will satisfy the Gauge external proof gate.
+2. Whether GitLab remains Gauge GA or moves earlier under a signed customer
    dependency.
 3. Which two to five repositories and source to target range define the first
-   Transformer migration class.
+   Regauge migration class.
 4. Which payment processor or invoice export path, tax policy, and finance
    owner will make MCU settlements billable.
 5. Which identity provider tenant will prove OIDC, SAML, and SCIM acceptance.

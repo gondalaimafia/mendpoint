@@ -1,6 +1,6 @@
 # Graph engineering — Mendpoint’s go-to agentic approach
 
-**Canonical doctrine.** Absorbed from [Graph Engineering vs Loop Engineering](https://www.aibuilderclub.com/blog/graph-engineering-vs-loop-engineering) (AI Builder Club) and applied to Warden / Mendpoint.
+**Canonical doctrine.** Absorbed from [Graph Engineering vs Loop Engineering](https://www.aibuilderclub.com/blog/graph-engineering-vs-loop-engineering) (AI Builder Club) and applied to Gauge / Mendpoint.
 
 > Graph engineering isn’t the death of loop engineering — it’s what you reach for when one loop isn’t enough, and **every node in the graph is still a loop**.
 
@@ -14,11 +14,11 @@
 | Shape | discover → plan → execute → **verify** → repeat | Directed graph: specialized nodes, routing edges |
 | You design | Cycle + stop condition | **Topology + routing** |
 | Fails when | Verifier is weak | Topology wrong, or state leaks between nodes |
-| Mendpoint examples | Warden tool loop; repair session loop | Change → impact fan-out → generate → verify → review **org chart** |
+| Mendpoint examples | Gauge tool loop; repair session loop | Change → impact fan-out → generate → verify → review **org chart** |
 
 **One-line test:** if you can name specialized roles and draw arrows between them, you have a graph. If it’s one job that repeats until right, keep a loop.
 
-**We default to graphs for product work.** Single-agent loops are valid *nodes* (Warden, repair). They are not the whole system.
+**We default to graphs for product work.** Single-agent loops are valid *nodes* (Gauge, repair). They are not the whole system.
 
 ---
 
@@ -26,7 +26,7 @@
 
 From the same framing (Prompt → Context → Harness → Loop → **Graph**):
 
-1. **Prompt** — per-node system/user instructions (Warden playbook, LLM confirm)  
+1. **Prompt** — per-node system/user instructions (Gauge playbook, LLM confirm)  
 2. **Context** — clean inputs per node (impact slice ≠ raw HTML dump; OpenAPI surfaces ≠ whole repo)  
 3. **Harness** — tools, sandbox, policy denylist, never auto-merge  
 4. **Loop** — each node’s discover/plan/act/verify until stop  
@@ -53,7 +53,7 @@ Both are required. Domain graphs make impact **true**. Orchestration graphs make
 
 ---
 
-## Go-to topology (Warden product graph)
+## Go-to topology (Gauge product graph)
 
 ```text
                     ┌──────────────┐
@@ -98,7 +98,7 @@ Both are required. Domain graphs make impact **true**. Orchestration graphs make
 | `expand` | graph hops | candidate + call graph |
 | `confirm` | static/LLM | **slice only**, not whole repo |
 | `generate` | deterministic edits | findings + files |
-| `verify` | **Warden / repair loop** | goal + verify command + repo |
+| `verify` | **Gauge / repair loop** | goal + verify command + repo |
 | `review_gate` | policy | draft + labels; human |
 
 **Genuinely new vs one overloaded agent:** parallel expand over candidates (fan-out), confirm never sees raw full-repo soup, verify is a **fresh loop** (not self-rubber-stamp inside generate), control flow is a diagram (orchestrator), not a mystery transcript.
@@ -109,7 +109,7 @@ Both are required. Domain graphs make impact **true**. Orchestration graphs make
 
 | Stay **loop-only** | Promote to **graph** |
 |--------------------|----------------------|
-| One specialty (e.g. Warden fix given goal) | Distinct specialties (intel vs scan vs patch vs review) |
+| One specialty (e.g. Gauge fix given goal) | Distinct specialties (intel vs scan vs patch vs review) |
 | Sequential is fine | Need fan-out (many call sites / many consumers) |
 | Implicit routing OK | Need auditable “if verify fail → repair” edges |
 | Single model/tools | Different tools per stage |

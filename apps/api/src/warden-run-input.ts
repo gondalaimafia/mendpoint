@@ -104,7 +104,7 @@ export function parseWardenRunInput(body: unknown): WardenRunInputResult {
     return { ok: false, error: "maxSteps must be an integer from 1 to 100" };
   }
   if (input.dryRun === true) {
-    return { ok: false, error: "dryRun is not supported for snapshot bound Warden runs" };
+    return { ok: false, error: "dryRun is not supported for snapshot bound Gauge runs" };
   }
   try {
     return {

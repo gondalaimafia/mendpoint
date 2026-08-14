@@ -34,7 +34,7 @@ export default async function AgentPage() {
   if (consumersResult.status === "fulfilled") consumers = consumersResult.value;
   if (providersResult.status === "fulfilled") providers = providersResult.value;
   error = [
-    runsResult.status === "rejected" ? "Warden runs are temporarily unavailable" : null,
+    runsResult.status === "rejected" ? "Gauge runs are temporarily unavailable" : null,
     consumersResult.status === "rejected" ? "Connected repositories are temporarily unavailable" : null,
     providersResult.status === "rejected" ? "Approved providers are temporarily unavailable" : null,
   ].filter(Boolean).join(". ") || null;
@@ -44,10 +44,10 @@ export default async function AgentPage() {
   return (
     <div className="page">
       <div className="page-header">
-        <h1>Warden</h1>
+        <h1>Gauge</h1>
         <p className="muted">
           Mendpoint&apos;s API repair agent for wrong paths, field renames, auth headers, and
-          pagination. Warden works on a private candidate, reruns approved checks, and always
+          pagination. Gauge works on a private candidate, reruns approved checks, and always
           requires review.
         </p>
       </div>
@@ -74,7 +74,7 @@ export default async function AgentPage() {
         <h2>Recent runs</h2>
         {!runs.length && <p className="muted">No agent runs yet.</p>}
         <table className="table">
-          <caption className="sr-only">Recent Warden runs</caption>
+          <caption className="sr-only">Recent Gauge runs</caption>
           <thead>
             <tr>
               <th>When</th>

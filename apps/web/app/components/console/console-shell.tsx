@@ -105,7 +105,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
         title="Open 42 pull requests?"
-        description="Each PR targets the default branch and opens as a draft. Transformer runs the test suite before anything is pushed."
+        description="Each PR targets the default branch and opens as a draft. Regauge runs the test suite before anything is pushed."
         cancelLabel="Cancel"
         confirmLabel="Open PRs"
         onConfirm={confirmOpenAllPrs}

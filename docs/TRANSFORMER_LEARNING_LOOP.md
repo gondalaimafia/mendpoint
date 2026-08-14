@@ -1,4 +1,4 @@
-# Transformer Learning Loop
+# Regauge Learning Loop
 
 Stage T3 wires the previously inert learning tables and API to a real producer
 and consumer. It turns human-approved adaptive outcomes into governed, consented,
@@ -20,7 +20,7 @@ other than `1` is off. When off:
 This flag composes with, and never replaces, the existing gates:
 
 - `MENDPOINT_TRANSFORMER_GATE` stays DENIED by default and still governs whether
-  Transformer runs at all.
+  Regauge runs at all.
 - `MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED` still gates the
   model-sourced planner. Precedent is only ever surfaced into that planner, so it
   additionally requires that gate to be on.

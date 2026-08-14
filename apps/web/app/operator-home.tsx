@@ -30,7 +30,7 @@ type Job = {
 };
 
 function jobLabel(type: string): string {
-  if (type === "agent.run") return "Warden investigation";
+  if (type === "agent.run") return "Gauge investigation";
   if (type === "repair.run") return "Verified repair";
   if (type === "pipeline.fanout") return "Change analysis";
   return type.replaceAll(".", " ");
