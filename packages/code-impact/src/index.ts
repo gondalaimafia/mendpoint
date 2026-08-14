@@ -7,6 +7,7 @@ import {
   buildIndex,
   buildIndexIncremental,
   type CodebaseIndex,
+  type SdkDetectionContext,
   writeIndex,
   defaultIndexPath,
 } from "@mendpoint/codebase-index";
@@ -44,6 +45,76 @@ export type AnalyzeOptions = {
   surfaces?: ImpactableSurface[];
   sdkHints?: string[];
 };
+
+/**
+ * Derive provider-driven SDK-detection signals from the change under analysis.
+ *
+ * The surfaces already encode the provider being analysed: `canonicalId` leads
+ * with the provider slug, `path` carries the resource names, and `searchTokens`
+ * carry spec-derived field / method tokens. We turn those into receiver names,
+ * dotted method paths, method leaves, field names, and import hints so the
+ * indexer recognises SDK calls for any provider — including ones we have never
+ * seen — instead of only the fixtures baked into the old regex.
+ */
+export function sdkContextFromSurfaces(
+  surfaces: ImpactableSurface[],
+  extraHints: string[] = [],
+): SdkDetectionContext {
+  const receivers = new Set<string>();
+  const methodPaths = new Set<string>();
+  const methods = new Set<string>();
+  const fields = new Set<string>();
+  const importHints = new Set<string>();
+
+  const addSlug = (slug: string) => {
+    const s = slug.trim();
+    if (!s) return;
+    importHints.add(s.toLowerCase());
+    for (const part of s.split(/[^A-Za-z0-9]+/)) {
+      if (part.length >= 3) {
+        receivers.add(part.toLowerCase());
+        importHints.add(part.toLowerCase());
+      }
+    }
+  };
+
+  const addToken = (raw: string) => {
+    const tok = raw?.trim();
+    if (!tok || tok.includes("/")) return; // path tokens handled via `path`
+    if (tok.includes(".")) {
+      methodPaths.add(tok.toLowerCase());
+      const parts = tok.toLowerCase().split(".");
+      if (parts[0]) receivers.add(parts[0]);
+      const leaf = parts[parts.length - 1];
+      if (leaf) methods.add(leaf);
+    } else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(tok)) {
+      fields.add(tok.toLowerCase());
+    }
+  };
+
+  for (const s of surfaces) {
+    const slug = s.canonicalId.split(".")[0];
+    if (slug) addSlug(slug);
+    if (s.path) {
+      const segs = s.path.split("/").filter((p) => p && !p.startsWith("{"));
+      const last = segs[segs.length - 1];
+      if (last && /^[A-Za-z0-9_]+$/.test(last)) receivers.add(last.toLowerCase());
+    }
+    for (const f of [s.field, s.fromField, s.toField]) {
+      if (f) fields.add(f.toLowerCase());
+    }
+    for (const t of s.searchTokens) addToken(t);
+  }
+  for (const h of extraHints) addToken(h);
+
+  return {
+    receivers: [...receivers],
+    methodPaths: [...methodPaths],
+    methods: [...methods],
+    fields: [...fields],
+    importHints: [...importHints],
+  };
+}
 
 function surfacesFromDiff(
   change: StructuralDiff,
@@ -193,7 +264,11 @@ export async function analyzeImpact(
   surfaces: ImpactableSurface[],
   options: AnalyzeOptions = {},
 ): Promise<ImpactReport> {
-  const index = options.index ?? buildIndexIncremental(repoRoot, null);
+  const index =
+    options.index ??
+    buildIndexIncremental(repoRoot, null, {
+      sdkContext: sdkContextFromSurfaces(surfaces, options.sdkHints),
+    });
   if (options.persistIndex) {
     writeIndex(index, defaultIndexPath(repoRoot));
   }
@@ -214,7 +289,9 @@ export function analyzeRepo(
   options: AnalyzeOptions = {},
 ): ImpactFinding[] {
   const surfaces = options.surfaces ?? surfacesFromDiff(change, options.sdkHints);
-  const index = options.index ?? buildIndex(repoRoot);
+  const index =
+    options.index ??
+    buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces(surfaces, options.sdkHints) });
   const candidates = discoverCandidates(index, surfaces);
   const expanded = expandContexts(index, candidates);
   const confirmed = staticConfirmAll(expanded, surfaces);

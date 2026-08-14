@@ -5,6 +5,13 @@
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
+import {
+  classifyCallee,
+  classifyField,
+  resolveSdkContext,
+  type SdkDetection,
+  type SdkMatchSets,
+} from "./sdk-detect.js";
 
 export type TsExtractedFunction = {
   name: string;
@@ -20,6 +27,13 @@ export type TsApiUsage = {
   kind: "sdk_call" | "http_path" | "import" | "field_token";
   value: string;
   functionName?: string;
+  detection?: SdkDetection;
+};
+
+/** Resolved provider surface + import-resolved receivers for the file. */
+export type TsSdkContext = {
+  sets: SdkMatchSets;
+  fileReceivers: ReadonlySet<string>;
 };
 
 let tsMod: typeof import("typescript") | null | undefined;
@@ -53,10 +67,13 @@ export function extractWithTypescript(
   absPath: string,
   ts: typeof import("typescript"),
   sourceText?: string,
+  sdkContext?: TsSdkContext,
 ): { functions: TsExtractedFunction[]; usages: TsApiUsage[]; imports: string[] } {
   const text = sourceText ?? readFileSync(absPath, "utf8");
   const rel = relative(repoRoot, absPath).replace(/\\/g, "/");
   const sf = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const sets = sdkContext?.sets ?? resolveSdkContext();
+  const fileReceivers = sdkContext?.fileReceivers ?? new Set<string>();
 
   const functions: TsExtractedFunction[] = [];
   const usages: TsApiUsage[] = [];
@@ -77,13 +94,15 @@ export function extractWithTypescript(
       }
       if (callee) {
         const line = lineOf(node.getStart(sf));
-        if (/\.|charges|customers|create|list|fetch|getObject/i.test(callee)) {
+        const detection = classifyCallee(callee, sets, fileReceivers);
+        if (detection) {
           usages.push({
             filePath: rel,
             line,
             kind: "sdk_call",
             value: callee,
             functionName: fnStack[fnStack.length - 1],
+            detection,
           });
         }
       }
@@ -112,13 +131,15 @@ export function extractWithTypescript(
 
     if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name)) {
       const n = node.name.text;
-      if (/amount|token|cursor|idempotency|starting_after|max_tokens/i.test(n)) {
+      const detection = classifyField(n, sets);
+      if (detection) {
         usages.push({
           filePath: rel,
           line: lineOf(node.getStart(sf)),
           kind: "field_token",
           value: n,
           functionName: fnStack[fnStack.length - 1],
+          detection,
         });
       }
     }

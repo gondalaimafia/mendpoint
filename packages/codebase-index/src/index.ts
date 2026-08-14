@@ -20,6 +20,16 @@ import {
   isTypescriptFile,
   loadTypescriptSync,
 } from "./ts-frontend.js";
+import {
+  classifyMemberChain,
+  providerBindingsForFile,
+  resolveSdkContext,
+  type SdkDetection,
+  type SdkDetectionContext,
+  type SdkMatchSets,
+} from "./sdk-detect.js";
+
+export type { SdkDetection, SdkDetectionContext } from "./sdk-detect.js";
 
 const CODE_EXTS = new Set([
   ".ts",
@@ -50,6 +60,12 @@ export type ApiUsageRecord = {
   kind: "sdk_call" | "http_path" | "import" | "config" | "graphql" | "field_token";
   value: string;
   functionName?: string;
+  /**
+   * For `sdk_call` / `field_token` usages: whether the match was against a known
+   * provider surface or the provider-agnostic fallback heuristic. Absent for
+   * kinds that carry no such distinction.
+   */
+  detection?: SdkDetection;
 };
 
 export type FileRecord = {
@@ -59,6 +75,14 @@ export type FileRecord = {
   imports: string[];
   contentHash: string;
   lineCount: number;
+};
+
+/** A directory pruned during discovery, recorded so the skip is auditable. */
+export type SkippedDirectory = {
+  /** Repo-relative path of the skipped directory. */
+  path: string;
+  /** Why it was skipped, e.g. `ignored_name:node_modules` or `python_virtualenv:pyvenv.cfg`. */
+  reason: string;
 };
 
 export type CodebaseIndex = {
@@ -77,6 +101,8 @@ export type CodebaseIndex = {
    * Prefer this over callersOf/calleesOf for expansion.
    */
   callGraph: CallGraph;
+  /** Directories pruned during discovery (dependency trees, caches, virtualenvs). */
+  skippedDirectories: SkippedDirectory[];
 };
 
 export type CodebaseIndexLimits = Readonly<{
@@ -89,6 +115,12 @@ export type CodebaseIndexLimits = Readonly<{
 export type CodebaseIndexOptions = Readonly<{
   callGraph?: CallGraph;
   limits?: Partial<CodebaseIndexLimits>;
+  /**
+   * Provider surface signals that drive SDK-call / field detection. When absent,
+   * detection uses the provider-agnostic fallback and marks results as
+   * `general_heuristic` (lower confidence) rather than returning nothing.
+   */
+  sdkContext?: SdkDetectionContext;
 }>;
 
 export type CodebaseIndexSafetyCode =
@@ -136,7 +168,49 @@ type DiscoveredFile = {
 
 type DiscoveryUsage = { files: number; totalBytes: number };
 
-const IGNORED_DIRECTORIES = new Set(["node_modules", ".git", "dist", ".next"]);
+/**
+ * Directories that are unambiguously VCS metadata, dependency trees, or
+ * generated caches across ecosystems — never hand-written source. Safe to skip
+ * by name. Deliberately excludes the ambiguous `vendor` / `build` / `target` /
+ * `out` / `bin` / `obj`: those are frequently *tracked* source (committed Go
+ * vendoring, generated-but-checked-in code), so excluding them by name alone
+ * would drop real files. `dist` / `.next` are retained from the original list.
+ */
+const IGNORED_DIRECTORIES = new Set([
+  "node_modules",
+  ".git",
+  ".hg",
+  ".svn",
+  "dist",
+  ".next",
+  ".turbo",
+  ".venv",
+  "__pycache__",
+  ".tox",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  "site-packages",
+  ".gradle",
+]);
+
+/**
+ * Detect a dependency/generated directory that we should NOT walk, preferring a
+ * structural marker over a bare name so we never drop tracked source that merely
+ * happens to be named `venv` / `env`. Returns the reason for the skip, or null.
+ */
+function ignoredDirectoryReason(name: string, absPath: string): string | null {
+  if (IGNORED_DIRECTORIES.has(name)) return `ignored_name:${name}`;
+  // Python virtualenv marker — catches venv / env / any custom-named env dir
+  // without excluding a source module that merely shares the name.
+  if (
+    (name === "venv" || name === "env" || name.startsWith(".venv")) &&
+    existsSync(join(absPath, "pyvenv.cfg"))
+  ) {
+    return "python_virtualenv:pyvenv.cfg";
+  }
+  return null;
+}
 
 function normalizedLimits(input?: Partial<CodebaseIndexLimits>): CodebaseIndexLimits {
   const limits = { ...DEFAULT_CODEBASE_INDEX_LIMITS, ...input };
@@ -228,12 +302,25 @@ function walk(
   dir: string,
   limits: CodebaseIndexLimits,
   usage: DiscoveryUsage,
+  skipped: SkippedDirectory[],
   depth = 0,
   out: DiscoveredFile[] = [],
 ): DiscoveredFile[] {
   for (const name of readdirSync(dir).sort()) {
-    if (IGNORED_DIRECTORIES.has(name)) continue;
     const p = join(dir, name);
+    const skipReason = ignoredDirectoryReason(name, p);
+    if (skipReason) {
+      // Record the skip so a pruned dependency/cache tree is auditable, never a
+      // silent truncation. Only record directories that actually exist as such.
+      try {
+        if (lstatSync(p).isDirectory()) {
+          skipped.push({ path: relativePath(repoRoot, p), reason: skipReason });
+        }
+      } catch {
+        /* vanished during walk — nothing to record */
+      }
+      continue;
+    }
     const st = lstatSync(p);
     if (st.isSymbolicLink()) {
       fail("codebase_index_symlink_not_allowed", repoRoot, p);
@@ -243,7 +330,7 @@ function walk(
       if (nextDepth > limits.maxTraversalDepth) {
         fail("codebase_index_traversal_depth_limit", repoRoot, p, limits.maxTraversalDepth, nextDepth);
       }
-      walk(repoRoot, p, limits, usage, nextDepth, out);
+      walk(repoRoot, p, limits, usage, skipped, nextDepth, out);
     } else if (st.isFile()) {
       const ext = name.includes(".") ? `.${name.split(".").pop()}` : "";
       if (CODE_EXTS.has(ext)) {
@@ -258,7 +345,7 @@ function walk(
 function discoverFiles(
   repoRoot: string,
   limits: CodebaseIndexLimits,
-): { files: DiscoveredFile[]; usage: DiscoveryUsage } {
+): { files: DiscoveredFile[]; usage: DiscoveryUsage; skipped: SkippedDirectory[] } {
   const rootStat = lstatSync(repoRoot);
   if (rootStat.isSymbolicLink()) {
     fail("codebase_index_symlink_not_allowed", repoRoot, repoRoot);
@@ -267,14 +354,15 @@ function discoverFiles(
     fail("codebase_index_file_changed_during_index", repoRoot, repoRoot);
   }
   const usage: DiscoveryUsage = { files: 0, totalBytes: 0 };
-  const files = walk(repoRoot, repoRoot, limits, usage);
+  const skipped: SkippedDirectory[] = [];
+  const files = walk(repoRoot, repoRoot, limits, usage, skipped);
   for (const manifest of ["package.json", "requirements.txt", "go.mod", "Gemfile"]) {
     const path = join(repoRoot, manifest);
     if (!existsSync(path)) continue;
     const size = assertRegularFile(repoRoot, path, undefined, limits);
     accountFile(repoRoot, path, size, limits, usage);
   }
-  return { files, usage };
+  return { files, usage, skipped };
 }
 
 function langOf(file: string): FileRecord["language"] {
@@ -469,10 +557,21 @@ function extractCallees(body: string, selfName: string): string[] {
   return [...names];
 }
 
+/**
+ * Env-var / config token detection. Provider-agnostic by construction: matches
+ * SCREAMING_SNAKE identifiers with a config-ish suffix (URL/KEY/BASE/SECRET/…).
+ * This replaces the fixture-specific `ACME_BASE` / `STRIPE_` literals that used
+ * to ship in production while still catching them structurally.
+ */
+const CONFIG_TOKEN_RE =
+  /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:URL|KEY|BASE|SECRET|TOKEN|ENDPOINT|HOST|REGION)\b|\b(?:BASE_URL|API_URL|API_KEY)\b/;
+
 function extractApiUsages(
   rel: string,
   text: string,
   fns: FnSpan[],
+  sdkSets: SdkMatchSets,
+  fileReceivers: ReadonlySet<string>,
 ): ApiUsageRecord[] {
   const lines = text.split(/\r?\n/);
   const out: ApiUsageRecord[] = [];
@@ -504,20 +603,26 @@ function extractApiUsages(
       });
     }
 
-    // SDK-ish patterns
-    for (const m of line.matchAll(
-      /\b((?:client|acme|stripe|api|sdk)\.[\w.]+|(?:charges|customers|paymentIntents)\.[\w]+)\b/g,
-    )) {
+    // SDK-ish patterns: member-access chains, classified against the provider
+    // surface. A provider-matched chain is recorded even without a trailing call
+    // (it may be passed around); a general-heuristic chain requires a call `(` to
+    // suppress plain property reads (`res.ok`, `err.message`).
+    for (const m of line.matchAll(/([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\s*(\()?/g)) {
+      const chain = m[1]!;
+      const detection = classifyMemberChain(chain, sdkSets, fileReceivers);
+      if (!detection) continue;
+      if (detection === "general_heuristic" && !m[2]) continue;
       out.push({
         filePath: rel,
         line: lineNo,
         kind: "sdk_call",
-        value: m[1]!,
+        value: chain,
         functionName: fnAt(lineNo),
+        detection,
       });
     }
     // config / base URL
-    if (/BASE_URL|API_URL|API_KEY|ACME_BASE|STRIPE_/i.test(line)) {
+    if (CONFIG_TOKEN_RE.test(line)) {
       out.push({
         filePath: rel,
         line: lineNo,
@@ -547,7 +652,7 @@ export function buildIndex(
 ): CodebaseIndex {
   const limits = normalizedLimits(opts.limits);
   const discovery = discoverFiles(repoRoot, limits);
-  return buildIndexFromDiscovered(repoRoot, opts, limits, discovery.files);
+  return buildIndexFromDiscovered(repoRoot, opts, limits, discovery.files, discovery.skipped);
 }
 
 function buildIndexFromDiscovered(
@@ -555,6 +660,7 @@ function buildIndexFromDiscovered(
   opts: CodebaseIndexOptions,
   limits: CodebaseIndexLimits,
   discoveredFiles: DiscoveredFile[],
+  skippedDirectories: SkippedDirectory[] = [],
 ): CodebaseIndex {
   const files: FileRecord[] = [];
   const functions: IndexedFunction[] = [];
@@ -566,6 +672,7 @@ function buildIndexFromDiscovered(
 
 
   const tsApi = loadTypescriptSync();
+  const sdkSets = resolveSdkContext(opts.sdkContext);
 
   for (const discovered of discoveredFiles) {
     const abs = discovered.abs;
@@ -574,11 +681,17 @@ function buildIndexFromDiscovered(
     const language = langOf(rel);
     let imports = extractImports(text, language);
     let fns = extractFunctions(text, language);
+    // Import resolution: binding names bound to the provider's package are
+    // trusted as receivers for this file (a stronger signal than a name guess).
+    const fileReceivers = providerBindingsForFile(text, language, sdkSets.importHints);
 
     // Phase B: prefer TypeScript compiler API for .ts/.tsx/.js when available
     if (tsApi && isTypescriptFile(rel)) {
       try {
-        const richer = extractWithTypescript(repoRoot, abs, tsApi, text);
+        const richer = extractWithTypescript(repoRoot, abs, tsApi, text, {
+          sets: sdkSets,
+          fileReceivers,
+        });
         if (richer.imports.length) imports = [...new Set([...imports, ...richer.imports])];
         if (richer.functions.length) {
           // merge compiler functions with heuristic spans
@@ -600,6 +713,7 @@ function buildIndexFromDiscovered(
             kind: u.kind === "field_token" ? "config" : u.kind,
             value: u.value,
             functionName: u.functionName,
+            detection: u.detection,
           });
         }
         for (const rf of richer.functions) {
@@ -645,7 +759,7 @@ function buildIndexFromDiscovered(
       }
     }
 
-    apiUsages.push(...extractApiUsages(rel, text, fns));
+    apiUsages.push(...extractApiUsages(rel, text, fns, sdkSets, fileReceivers));
   }
 
 
@@ -688,6 +802,7 @@ function buildIndexFromDiscovered(
     apiUsages,
     packageImports: [...packageImports],
     callGraph,
+    skippedDirectories,
   };
 }
 
@@ -748,6 +863,7 @@ export function buildIndexIncremental(
     { ...opts, callGraph },
     limits,
     discovery.files,
+    discovery.skipped,
   );
 }
 
