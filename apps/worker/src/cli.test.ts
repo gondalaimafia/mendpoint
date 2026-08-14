@@ -219,12 +219,23 @@ function setupWardenSnapshotJob(options: {
   checkBody: string;
   snapshotExpiresAt: string;
   useLlm?: boolean;
+  sourceBody?: string;
+  mode?: "repair" | "feature";
+  goal?: string;
 }) {
-  const { parent, checkBody, snapshotExpiresAt, useLlm = false } = options;
+  const {
+    parent,
+    checkBody,
+    snapshotExpiresAt,
+    useLlm = false,
+    sourceBody = "export const path = '/v1/chargess';\n",
+    mode,
+    goal = "Fix the API path typo from chargess to charges.",
+  } = options;
   const snapshotRoot = join(parent, "repositories", "tenant_test", "snapshot-a");
   const dataRoot = join(parent, "data");
   mkdirSync(snapshotRoot, { recursive: true });
-  writeFileSync(join(snapshotRoot, "client.js"), "export const path = '/v1/chargess';\n");
+  writeFileSync(join(snapshotRoot, "client.js"), sourceBody);
   writeFileSync(join(snapshotRoot, "check.mjs"), checkBody);
   const sourceBefore = readFileSync(join(snapshotRoot, "client.js"), "utf8");
   const manifestSha256 = snapshotManifest(snapshotRoot);
@@ -303,12 +314,13 @@ function setupWardenSnapshotJob(options: {
     payload: {
       sessionId: "session-warden-snapshot",
       consumerId: "consumer-warden-snapshot",
-      goal: "Fix the API path typo from chargess to charges.",
+      goal,
       errorLog: "HTTP 404 /v1/chargess",
       verifyCommand: "node check.mjs",
       allowedChangedPaths: ["client.js"],
       maxSteps: 20,
       useLlm,
+      ...(mode ? { mode } : {}),
     },
   });
   return {
@@ -1328,6 +1340,104 @@ describe("worker runtime", () => {
     expect(existsSync(persisted.artifacts.evidence)).toBe(true);
     db.raw.close();
   });
+
+  it("runs an explicit feature task from a green immutable snapshot and persists its mode", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-worker-warden-feature-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      useLlm: true,
+      sourceBody: "export const path = '/v1/charges';\nconst clientLabel = 'legacy';\n",
+      mode: "feature",
+      goal: "Add a bounded client label constant.",
+    });
+    const planner: AgentPlanner = async (input) => {
+      const tools = input.recentSteps.map((step) => step.tool);
+      if (!tools.includes("read_file")) {
+        return {
+          call: { tool: "read_file", args: { path: "client.js" } },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      if (!tools.includes("replace_in_file")) {
+        const target = input.observedEvidenceDigests?.find((entry) => entry.path === "client.js");
+        if (!target) throw new Error("client.js evidence missing before feature mutation");
+        return {
+          call: {
+            tool: "replace_in_file",
+            args: {
+              path: "client.js",
+              from: "const clientLabel = 'legacy';",
+              to: "const clientLabel = 'payments';",
+            },
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "The requested client label differs from the observed value.",
+              targetPath: target.path,
+              targetSymbol: "clientLabel",
+              targetDigest: target.digest,
+              evidenceRefs: [{ path: target.path, digest: target.digest }],
+              precondition: "The observed client label is legacy.",
+              expectedObservation: "The exact client label changes once.",
+              postcondition: "The client label is payments and all approved checks remain green.",
+              rollback: "Restore the exact observed client.js bytes.",
+              confidence: 0.96,
+              risk: "low",
+              stopCondition: "Stop if the source digest changes or verification fails.",
+              assessmentSource: "planner",
+            },
+          },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      return {
+        call: { tool: "run_command", args: { command: "node check.mjs" } },
+        usage: PER_CALL_USAGE,
+      };
+    };
+
+    const result = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-feature",
+      leaseMs: 30_000,
+      wardenPlanner: planner,
+      wardenEnv: {
+        MENDPOINT_DATA_DIR: fixture.dataRoot,
+        MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
+        MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_test",
+        MENDPOINT_WARDEN_MODEL_PROVIDER: "openai-compatible",
+        MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
+        MENDPOINT_WARDEN_MODEL_REGION: "us-central",
+        MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+        MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS:
+          JSON.stringify({ tenant_test: { "tenant_test/fixture": "internal" } }),
+        MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
+        MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
+        LLM_AGENT_MODEL: "model-a",
+        LLM_AGENT_URL: "https://models.example/v1",
+      },
+    });
+
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    const run = getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test");
+    expect(run).toMatchObject({ status: "candidate_ready", ok: 1 });
+    const persisted = JSON.parse(run!.result_json!) as {
+      taskMode?: string;
+      artifacts: { candidateWorkspace: string; evidence: string };
+    };
+    expect(persisted.taskMode).toBe("feature");
+    expect(readFileSync(join(persisted.artifacts.candidateWorkspace, "client.js"), "utf8"))
+      .toContain("const clientLabel = 'payments';");
+    expect(JSON.parse(readFileSync(persisted.artifacts.evidence, "utf8"))).toMatchObject({
+      taskMode: "feature",
+      baseline: { target: { ok: true } },
+    });
+    expect(readFileSync(join(fixture.snapshotRoot, "client.js"), "utf8"))
+      .toBe(fixture.sourceBefore);
+    fixture.db.raw.close();
+  }, 30_000);
 
   it("expires and removes retained Warden artifacts when no jobs are queued", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-worker-warden-maintenance-"));

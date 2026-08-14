@@ -51,6 +51,7 @@ describe("Warden intake form", () => {
       customerMode: false,
       providerSlug: "",
       consumerId: "consumer-a",
+      mode: "feature",
       goal: "Fix the API path",
       allowedPaths: "src/client.ts\nsrc/types.ts",
       errorLog: "404",
@@ -58,10 +59,10 @@ describe("Warden intake form", () => {
     expect(request).toEqual({
       endpoint: "/agent/runs",
       body: {
+        mode: "feature",
         goal: "Fix the API path",
         consumerId: "consumer-a",
         allowedChangedPaths: ["src/client.ts", "src/types.ts"],
-        errorLog: "404",
         maxSteps: 20,
         async: true,
       },

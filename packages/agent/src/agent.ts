@@ -2324,6 +2324,7 @@ export function createWardenRuntimeModelAuthorityDigest(task: AgentTask): string
   const maxSteps = clampMaxSteps(task.maxSteps);
   return `sha256:${createHash("sha256").update(stableSerialize({
     tenantId: task.tenantId ?? null,
+    ...(task.taskMode === "feature" ? { taskMode: "feature" } : {}),
     goal: task.goal,
     errorLog: task.errorLog ?? null,
     verifyCommand: task.verifyCommand ?? null,
@@ -2447,6 +2448,7 @@ function plannerInput(
   const diagnosed = classifyFailures(task.goal, task.errorLog);
   return Object.freeze({
     schemaVersion: 1 as const,
+    taskMode: task.taskMode ?? "repair",
     goal: redactUntrustedText(task.goal, 4_000) ?? "",
     ...(task.errorLog ? { errorLog: redactUntrustedText(task.errorLog, 2_000) } : {}),
     verifyCommand: task.verifyCommand ?? "",
@@ -3722,6 +3724,11 @@ async function runWardenCore(
 
   let diagnosed = classifyFailures(task.goal, task.errorLog);
 
+  if ((task.taskMode ?? "repair") === "feature" && !task.useLlm && !task.planner) {
+    stoppedReason = "feature_model_required";
+    return finalize(diagnosed);
+  }
+
   if (!verifyCommand) {
     stoppedReason = "verifier_missing";
     return finalize(diagnosed);
@@ -3812,16 +3819,19 @@ async function runWardenCore(
       seed.error ?? String((seed.data as { stdout?: string })?.stdout ?? seed.summary);
     verifier.status = seed.ok ? "passed" : "failed";
     verifier.output = verifyOutput;
-    if (seed.ok) {
+    if (!seed.ok && (task.taskMode ?? "repair") === "feature") {
+      stoppedReason = "feature_baseline_failed";
+      return finalize(diagnosed);
+    }
+    if (seed.ok && (task.taskMode ?? "repair") === "repair") {
       ok = true;
       stoppedReason = "already_passing";
       return finalize(diagnosed);
     }
-    hState.errorLog = [
-      task.errorLog,
-      seed.error,
-      JSON.stringify(seed.data),
-    ].filter(Boolean).join("\n");
+    hState.errorLog = seed.ok
+      ? [task.errorLog, "The approved feature baseline is green; implement the requested goal without widening scope."]
+        .filter(Boolean).join("\n")
+      : [task.errorLog, seed.error, JSON.stringify(seed.data)].filter(Boolean).join("\n");
     diagnosed = classifyFailures(task.goal, hState.errorLog);
     hState.diagnosedModes = diagnosed.map((m) => m.id);
   }

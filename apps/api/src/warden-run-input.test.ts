@@ -31,6 +31,26 @@ describe("Warden run input", () => {
     }
   });
 
+  it("requires an explicit supported mode for feature work and defaults compatibility to repair", () => {
+    expect(parseWardenRunInput(valid({ mode: "feature" }))).toMatchObject({
+      ok: true,
+      value: { mode: "feature" },
+    });
+    expect(parseWardenRunInput(valid())).toMatchObject({
+      ok: true,
+      value: { mode: "repair" },
+    });
+    expect(parseWardenRunInput(valid({ mode: "inspect" }))).toEqual({
+      ok: false,
+      error: "mode must be repair or feature",
+    });
+    expect(parseWardenRunInput(valid({ mode: "feature", errorLog: "stale repair failure" })))
+      .toEqual({
+        ok: false,
+        error: "errorLog is only supported for repair mode",
+      });
+  });
+
   it.each([
     [[], "allowedChangedPaths"],
     [["../secret.ts"], "allowedChangedPaths"],

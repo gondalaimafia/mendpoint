@@ -2845,7 +2845,7 @@ registerLegacyBehaviorRoutes(app, db, {
 
 /**
  * Run Warden — Mendpoint API debug agent (tool loop).
- * Body: { goal, consumerId, allowedChangedPaths, verifyCommand?, errorLog?, maxSteps?, useLlm? }
+ * Body: { mode?, goal, consumerId, allowedChangedPaths, verifyCommand?, errorLog?, maxSteps?, useLlm? }
  * Every run is queued so the worker can enforce the snapshot and lease boundaries.
  */
 app.post("/agent/runs", async (c) => {
@@ -2870,6 +2870,7 @@ app.post("/agent/runs", async (c) => {
     const jobId = `warden-job-${identity.slice(0, 32)}`;
     const sessionId = `warden-run-${identity.slice(32)}`;
     const payload = {
+      mode: body.mode,
       goal: body.goal,
       consumerId: consumer.id,
       allowedChangedPaths: body.allowedChangedPaths,
@@ -2924,6 +2925,7 @@ app.post("/agent/runs", async (c) => {
         reportMd: null,
         resultJson: JSON.stringify({
           jobId,
+          taskMode: body.mode,
           ingressRedactions: body.ingressRedactions,
         }),
         createdAt,
@@ -2937,6 +2939,7 @@ app.post("/agent/runs", async (c) => {
         metadata: {
           jobId,
           product: "warden",
+          taskMode: body.mode,
           idempotencyFingerprint: identity.slice(0, 12),
         },
       });

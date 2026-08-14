@@ -31,6 +31,7 @@ describe("Warden source grounded simulated eval", () => {
     const planner = createWardenSourceEvalPlanner({ calls: 0, inputs: [] });
     const input: AgentPlannerInput = {
       schemaVersion: 1,
+      taskMode: "repair",
       goal: "Repair the provider regression",
       verifyCommand: "node check.mjs",
       diagnosedModes: [],

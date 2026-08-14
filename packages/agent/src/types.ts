@@ -117,6 +117,7 @@ export type AgentPlannerObservation = Readonly<{
 
 export type AgentPlannerInput = Readonly<{
   schemaVersion: 1;
+  taskMode: AgentTaskMode;
   goal: string;
   errorLog?: string;
   verifyCommand: string;
@@ -130,6 +131,8 @@ export type AgentPlannerInput = Readonly<{
   /** Current bounded candidate-state digests available for execution intent citation. */
   observedEvidenceDigests?: readonly AgentExecutionIntentEvidence[];
 }>;
+
+export type AgentTaskMode = "repair" | "feature";
 
 export type AgentPlannerUsage = Readonly<{
   promptTokens?: number;
@@ -213,6 +216,8 @@ export type AgentExternalModelAccounting = Readonly<{
 export type AgentTask = {
   /** Natural language bug report / goal */
   goal: string;
+  /** Explicit execution contract. Missing remains repair for compatibility. */
+  taskMode?: AgentTaskMode;
   /** Tenant binding required for any externally transmitted source context. */
   tenantId?: string;
   /** Working directory (repo or subfolder) */
