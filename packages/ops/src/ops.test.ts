@@ -12,6 +12,7 @@ import {
   featureMatrix,
   liveness,
   readiness,
+  releaseBanner,
 } from "./index.js";
 
 const CUSTOMER_BACKUP_ENV = {
@@ -45,8 +46,10 @@ describe("ops GA", () => {
   });
 
   it("release is GA 1.0.0", () => {
+    expect(RELEASE.product).toBe("Fettler");
     expect(RELEASE.version).toBe("1.0.0");
     expect(RELEASE.channel).toBe("ga");
+    expect(releaseBanner()).toBe("Mendpoint / Fettler 1.0.0 (ga)");
     expect(RELEASE.gaFeatures.length).toBeGreaterThan(5);
   });
 

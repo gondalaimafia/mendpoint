@@ -1,6 +1,7 @@
 /**
  * Build a repair plan from observations (deterministic first, optional LLM later).
  */
+import { fetchBoundedText } from "@mendpoint/shared";
 import type { FailureObservation, RepairAction, RepairPlan } from "./types.js";
 
 export function planRepairs(
@@ -132,6 +133,31 @@ export async function planRepairsWithLlm(
   const url = base.endsWith("/v1")
     ? `${base}/chat/completions`
     : `${base}/v1/chat/completions`;
+  let target: URL;
+  try {
+    target = new URL(url);
+  } catch {
+    return null;
+  }
+  const loopback =
+    target.hostname === "localhost" ||
+    target.hostname === "127.0.0.1" ||
+    target.hostname === "::1" ||
+    target.hostname === "[::1]";
+  if (
+    (target.protocol !== "https:" && !(target.protocol === "http:" && loopback)) ||
+    target.username ||
+    target.password
+  ) {
+    return null;
+  }
+  const configuredTimeout = Number(process.env.LLM_REPAIR_TIMEOUT_MS ?? 30_000);
+  const timeoutMs =
+    Number.isSafeInteger(configuredTimeout) &&
+    configuredTimeout >= 1 &&
+    configuredTimeout <= 120_000
+      ? configuredTimeout
+      : 30_000;
 
   const system = `You are Mendpoint repair agent. Propose JSON only:
 {"actions":[{"type":"replace_in_file","filePath":"...","from":"...","to":"...","global":true,"reason":"..."}]}
@@ -146,23 +172,30 @@ Only edit provided slices. Never invent secrets. Max 8 actions.`;
   });
 
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+    const { response: res, text: responseText } = await fetchBoundedText(
+      target,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: opts.model ?? process.env.LLM_REPAIR_MODEL ?? "gpt-4o-mini",
+          temperature: 0.1,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+        }),
       },
-      body: JSON.stringify({
-        model: opts.model ?? process.env.LLM_REPAIR_MODEL ?? "gpt-4o-mini",
-        temperature: 0.1,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      }),
-    });
+      {
+        timeoutMs,
+        maxResponseBytes: 128 * 1_024,
+      },
+    );
     if (!res.ok) return null;
-    const data = (await res.json()) as {
+    const data = JSON.parse(responseText) as {
       choices?: Array<{ message?: { content?: string } }>;
     };
     const text = data.choices?.[0]?.message?.content ?? "";

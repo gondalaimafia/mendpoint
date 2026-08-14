@@ -3,6 +3,7 @@ import { notifySlack, notifyWardenEvent } from "./index.js";
 
 afterEach(() => {
   delete process.env.SLACK_WEBHOOK_URL;
+  delete process.env.MENDPOINT_NOTIFY_TIMEOUT_MS;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -28,7 +29,27 @@ describe("notifySlack", () => {
     expect(url).toBe("https://hooks.slack.test/services/T/B/X");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body as string)).toEqual({ text: "pipeline done" });
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.redirect).toBe("error");
   });
+
+  it("fails closed on transport rejection and noncooperative timeout", async () => {
+    process.env.SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/T/B/X";
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValueOnce(new Error("network down")));
+    await expect(notifySlack({ text: "pipeline done" })).resolves.toEqual({
+      ok: false,
+      status: 0,
+    });
+
+    process.env.MENDPOINT_NOTIFY_TIMEOUT_MS = "10";
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    const started = Date.now();
+    await expect(notifySlack({ text: "pipeline done" })).resolves.toEqual({
+      ok: false,
+      status: 0,
+    });
+    expect(Date.now() - started).toBeLessThan(250);
+  }, 1_000);
 });
 
 describe("notifyWardenEvent", () => {

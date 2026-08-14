@@ -152,13 +152,10 @@ import {
   type ContractCase,
 } from "@mendpoint/contract";
 import {
-  createSandbox,
-  sandboxManifest,
   seedMemoryForAgent,
   createMemory,
   memoryForPlanner,
   evaluateCanary,
-  RUNTIME_MATRIX,
   createVmSandbox,
   vmStatusReport,
   startLiveSandbox,
@@ -261,6 +258,7 @@ import {
 } from "@mendpoint/ops";
 import {
   requestIdMiddleware,
+  requestBodyLimitMiddleware,
   securityHeadersMiddleware,
   rateLimitMiddleware,
   tenantQuotaMiddleware,
@@ -295,6 +293,7 @@ import { createWardenCampaignEnrollmentRoutes } from "./warden-campaign-enrollme
 import { createOutcomeMetricsRoutes } from "./outcome-metrics-routes.js";
 import { createDiagnosticsRoutes } from "./diagnostics-routes.js";
 import { createDashboardRoutes } from "./dashboard-routes.js";
+import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
 import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
@@ -680,6 +679,7 @@ function tenantConsumerRepo(consumerId: string, tenantId: string) {
 }
 
 app.use("*", requestIdMiddleware());
+app.use("*", requestBodyLimitMiddleware());
 app.use("*", securityHeadersMiddleware());
 
 app.use(
@@ -843,6 +843,7 @@ app.route("/warden/campaigns", wardenCampaignEnrollmentRoutes);
 app.route("/metrics/outcomes", createOutcomeMetricsRoutes({ db }));
 app.route("/diagnostics", createDiagnosticsRoutes({ db }));
 app.route("/metrics/dashboard", createDashboardRoutes({ db }));
+app.route("/platform/sandbox", createPlatformSandboxRoutes());
 
 // Persist alerts under data/
 try {
@@ -1098,23 +1099,6 @@ app.get("/registry/changes/:id/consumers", (c) => {
       requestTenantId(c),
     ),
   });
-});
-
-/** Local sandbox (live-service interface; local workdir today) */
-app.post("/platform/sandbox", async (c) => {
-  const body = await c.req.json().catch(() => ({})) as {
-    files?: Record<string, string>;
-    serviceBaseUrl?: string;
-  };
-  const sbx = createSandbox({
-    files: body.files,
-    serviceBaseUrl: body.serviceBaseUrl,
-    mocks: [{ name: "upstream-stub" }],
-  });
-  const manifest = sandboxManifest(sbx);
-  // Dispose immediately after manifest for API safety; real sessions would keep handle
-  sbx.dispose();
-  return c.json({ ...manifest, disposed: true, runtimes: RUNTIME_MATRIX });
 });
 
 /** Seeded memory / style guide for planner prompts */

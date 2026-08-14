@@ -12,6 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve } from "node:path";
+import { fetchBoundedText } from "@mendpoint/shared";
 import type { SecretMaterial } from "./credentials.js";
 
 export type RepositorySourcePolicy = {
@@ -172,21 +173,75 @@ export interface GitHubRepositoryTransport {
 
 export class FetchGitHubRepositoryTransport implements GitHubRepositoryTransport {
   readonly provenance = "live" as const;
+  readonly #baseUrl: string;
+  readonly #timeoutMs: number;
+  readonly #maxResponseBytes: number;
+  readonly #fetchImpl: typeof fetch;
 
-  constructor(private readonly baseUrl = "https://api.github.com") {}
+  constructor(
+    baseUrl = "https://api.github.com",
+    options: Readonly<{
+      timeoutMs?: number;
+      maxResponseBytes?: number;
+      fetchImpl?: typeof fetch;
+    }> = {},
+  ) {
+    const parsed = new URL(baseUrl);
+    const loopback =
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "::1" ||
+      parsed.hostname === "[::1]";
+    if (
+      (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) ||
+      parsed.username ||
+      parsed.password
+    ) {
+      throw new Error("github_repository_transport_url_invalid");
+    }
+    const timeoutMs = options.timeoutMs ?? 30_000;
+    const maxResponseBytes = options.maxResponseBytes ?? 48 * 1_024 * 1_024;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
+      throw new Error("github_repository_transport_timeout_invalid");
+    }
+    if (
+      !Number.isSafeInteger(maxResponseBytes) ||
+      maxResponseBytes < 1 ||
+      maxResponseBytes > 64 * 1_024 * 1_024
+    ) {
+      throw new Error("github_repository_transport_response_limit_invalid");
+    }
+    this.#baseUrl = parsed.toString();
+    this.#timeoutMs = timeoutMs;
+    this.#maxResponseBytes = maxResponseBytes;
+    this.#fetchImpl = options.fetchImpl ?? fetch;
+  }
 
   async request(input: GitHubTransportRequest): Promise<GitHubTransportResponse> {
-    const response = await fetch(new URL(input.path, this.baseUrl), {
-      method: input.method,
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${input.credential.reveal()}`,
-        "User-Agent": "mendpoint-repository-source",
-        "X-GitHub-Api-Version": "2022-11-28",
+    const { response, text } = await fetchBoundedText(
+      new URL(input.path, this.#baseUrl),
+      {
+        method: input.method,
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${input.credential.reveal()}`,
+          "User-Agent": "mendpoint-repository-source",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        redirect: "error",
       },
-      redirect: "error",
-    });
-    const body = await response.json().catch(() => null);
+      {
+        timeoutMs: this.#timeoutMs,
+        maxResponseBytes: this.#maxResponseBytes,
+        fetchImpl: this.#fetchImpl,
+      },
+    );
+    let body: unknown = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
     return { status: response.status, body };
   }
 }

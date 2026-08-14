@@ -1763,3 +1763,40 @@ Objective: close the confirmed Fettler and Regauge rename defects on current mai
 Review: the merge-ready branch contains the rollback-tolerant database prerequisite, per-machine Regauge worker identity, public Fettler and Regauge naming with exact compatibility exceptions, 13 component documentation guides with a deterministic 29-file upload bundle, and the reviewed offline Fettler investor reel. The complete repository tests, all 31 workspace typechecks, production build, docs drift check, GA gates, public claims, product contract, action pinning, dependency audit, and diff integrity pass on current `origin/main`. Strict review found no remaining P0 or P1 in the database, naming, docs, or worker identity boundaries. The older compiler UI overlay, partial Fettler runtime-resume experiments, superseded Regauge coordinator prototype, and stale rename dogfood report remain isolated in their original worktrees; none were deleted or merged.
 
 Release note: this is database Release A. It makes the current schema tolerant of compatible legacy tables and is the rollback prerequisite for any future dual-namespace bridge. Do not combine a Release B dual-table bridge with this deployment. The dedicated Regauge Fly app still requires a valid Fly session and a live secret audit before activation evidence can be claimed; source code intentionally rejects app-wide worker identity secrets in the production pilot.
+
+## Comprehensive repository audit and end to end hardening: 2026-08-14
+
+Objective: review the complete repository against the enterprise ready Fettler and Regauge goal, exercise every established component and joined workflow, fix confirmed defects with regression coverage, and distinguish source correctness from production activation evidence.
+
+### Baseline and inventory
+
+- [x] Inventory every workspace, application, package, command, route, persistence boundary, external integration, test suite, and generated artifact.
+- [x] Classify tracked source, tests, generated output, third party dependencies, and quarantined or dormant code.
+- [x] Scan for unfinished markers, skipped or focused tests, unsafe compatibility fallbacks, stale claims, hardcoded credentials, and unbounded external effects.
+
+### Verification matrix
+
+- [x] Run every workspace test suite and typecheck.
+- [x] Run production builds, repository verification, GA, claims, names, documentation, dependency, and action pinning gates.
+- [x] Run API startup and health checks, Playwright deployment journeys, container builds and startup checks where the environment permits them.
+- [x] Exercise component joins for ingestion, graph impact, repository access, Fettler execution and delivery, Regauge planning and execution, verification, attestations, routing, billing, recovery, and multi worker fencing.
+
+### Review and repair
+
+- [x] Review tenant isolation, authentication, authorization, input validation, secret handling, SQL boundaries, artifact integrity, lease fencing, idempotency, response loss reconciliation, and external side effect controls.
+- [x] Review runtime cost, latency, memory, pagination, filesystem, subprocess, and model context bounds for production hot paths.
+- [x] Add red regressions for every confirmed defect, implement the smallest durable fix, and rerun affected full suites.
+
+### Final evidence
+
+- [x] Rerun the complete repository matrix after the final patch.
+- [x] Verify the deployed public and health surfaces independently from configuration intent.
+- [x] Record exact pass counts, remaining external blockers, optimization outcomes, release disposition, and rollback constraints.
+
+Acceptance: no known P0 or P1 source defect remains in supported product paths; every established automated component and joined end to end workflow passes after the final patch; security, durability, and least privilege boundaries have explicit evidence; unsupported or externally blocked production capabilities are reported rather than inferred.
+
+Review: audited the current 34 workspace repository after rebasing onto `origin/main` `1bc0671`. The exact final patch passes every workspace test in 199.1 seconds, all 31 workspace typechecks, the production Next build with 50 pages, GA/spec/claims/names/actions/docs gates, and a zero vulnerability production dependency audit. Held out evidence passes 126 agent trials, Fettler capability 55 of 55, Regauge capability 47 of 47, Fettler bench 5 of 5, and four deterministic Regauge canary families. Local API startup returned ready with encrypted application storage and the corrected Fettler release identity. Local production browser checks passed six public routes at desktop and mobile sizes with zero console errors, zero overflow, and no visible legacy product names.
+
+Confirmed defects fixed: the API now rejects oversized bodies globally and validates the local sandbox request schema, paths, URLs, file count, and byte budgets before allocating a workspace. A shared hard timeout and streaming response cap now protects Fettler model calls, Regauge adaptive planning, model based repair and impact confirmation, GitHub repository reads, and Slack or paging notifications, including providers that ignore abort signals or stall after response headers. The startup probe found and fixed the final public release metadata label from Warden to Fettler, and the product naming gate now covers that surface.
+
+External limits: Docker is not installed in this Windows environment, so container image startup and the checked in containerized deployment journey must be proven by protected hosted CI. Live model evaluation remains 0 of 0 and the Regauge canary uses mock SCM. A safe performance or soak target was not supplied, so the destructive load runner was not aimed at production. Direct live probes returned 200 for the current Mendpoint liveness and health endpoints, but the combined worker reports Regauge disabled and inactive, while the dedicated Regauge pilot hostname does not resolve. Production activation is therefore not proven despite any configuration intent. The product contract remains 41 verified, 40 partial, 2 scaffolded, and 1 externally blocked; those declared roadmap gaps are not reclassified as shipped functionality.

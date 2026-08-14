@@ -2,7 +2,7 @@
  * Production GA release metadata — single source for version / channel.
  */
 export const RELEASE = {
-  product: "Warden",
+  product: "Fettler",
   platform: "Mendpoint",
   /** Semver of the GA surface */
   version: "1.0.0",

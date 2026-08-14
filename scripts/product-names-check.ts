@@ -159,6 +159,7 @@ export const PRODUCT_NAME_PUBLIC_SURFACES = Object.freeze([
   { path: "packages/branding/src/packs.ts", mode: "typescript-all" },
   { path: "packages/github/src/checks.ts", mode: "typescript-all" },
   { path: "packages/notify/src/index.ts", mode: "typescript-all" },
+  { path: "packages/ops/src/release.ts", mode: "typescript-properties", properties: ["product"] },
   { path: "packages/pipeline/src/warden-pr-package.ts", mode: "typescript-all" },
   { path: "packages/pipeline/src/index.ts", mode: "typescript-properties", properties: ["displayName"] },
   { path: "packages/platform/src/knowledge.ts", mode: "typescript-properties", properties: ["title"] },

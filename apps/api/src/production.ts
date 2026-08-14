@@ -2,6 +2,7 @@
  * Production middleware: security headers, rate limit, request id.
  */
 import type { Context, Next } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import {
   rateLimit,
   rateLimitKeyFromRequest,
@@ -12,6 +13,21 @@ import {
   initializeWithMutationLease,
 } from "@mendpoint/ops";
 import type { ApiEnv } from "./auth.js";
+
+const DEFAULT_REQUEST_BODY_BYTES = 16 * 1_024 * 1_024;
+
+export function requestBodyLimitMiddleware(
+  options: Readonly<{ maxBytes?: number }> = {},
+) {
+  const maxSize = options.maxBytes ?? DEFAULT_REQUEST_BODY_BYTES;
+  if (!Number.isSafeInteger(maxSize) || maxSize < 1) {
+    throw new Error("request_body_limit_invalid");
+  }
+  return bodyLimit({
+    maxSize,
+    onError: (c) => c.json({ error: "request_payload_too_large" }, 413),
+  });
+}
 
 export function initializeApiDurableState<T>(
   initialize: () => T,
