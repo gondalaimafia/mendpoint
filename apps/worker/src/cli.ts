@@ -1057,7 +1057,7 @@ function expireWardenAgentRuns(
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
       result = parsed as Record<string, unknown>;
     } catch {
-      console.error(`  Warden candidate row is malformed run=${row.id}`);
+      console.error(`  Fettler candidate row is malformed run=${row.id}`);
       const corruptAt = observedAt;
       db.raw.prepare(
         `UPDATE agent_runs SET status = 'candidate_corrupt', result_json = ?, finished_at = ?
@@ -1142,7 +1142,7 @@ function expireWardenAgentRuns(
         `UPDATE agent_runs SET result_json = ? WHERE id = ? AND tenant_id = ? AND status = ?`,
       ).run(JSON.stringify(pendingResult), row.id, tenantId, status);
       cleanupPending++;
-      console.error(`  Warden candidate cleanup deferred run=${row.id} error=${message}`);
+      console.error(`  Fettler candidate cleanup deferred run=${row.id} error=${message}`);
     }
   }
   return Object.freeze({ expired, cleaned, cleanupPending });
@@ -1206,7 +1206,7 @@ export function maintainWardenArtifactsOnce(
     } catch (error) {
       total.cleanupPending++;
       console.error(
-        `  Warden maintenance deferred tenant=${row.tenant_id} error=${
+        `  Fettler maintenance deferred tenant=${row.tenant_id} error=${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -1270,7 +1270,7 @@ export function maintainTransformerAdaptiveArtifactsOnce(
           } catch (error) {
             total.cleanupPending++;
             console.error(
-              `  Transformer adaptive cleanup deferred candidate=${record.id} error=${
+              `  Regauge adaptive cleanup deferred candidate=${record.id} error=${
                 error instanceof Error ? error.message : String(error)
               }`,
             );
@@ -1281,7 +1281,7 @@ export function maintainTransformerAdaptiveArtifactsOnce(
     } catch (error) {
       total.cleanupPending++;
       console.error(
-        `  Transformer adaptive maintenance deferred tenant=${tenantId} error=${
+        `  Regauge adaptive maintenance deferred tenant=${tenantId} error=${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -1562,7 +1562,7 @@ export function validateWorkerProductionEnv(
       errors.push("Customer worker requires MENDPOINT_PILOT_SEED=0");
     }
     if (resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED") !== "1") {
-      errors.push("Customer worker requires Warden model source execution");
+      errors.push("Customer worker requires Fettler model source execution");
     }
     const fenceRoot = env.MENDPOINT_BACKUP_FENCE_ROOT?.trim();
     if (!fenceRoot || !isAbsolute(fenceRoot)) {
@@ -1703,7 +1703,7 @@ export function validateWorkerProductionEnv(
       );
       if (customerTenantIds.some((tenantId) => !approvedTenants.has(tenantId))) {
         errors.push(
-          "Every customer GitHub account tenant must be approved for Warden model source execution",
+          "Every customer GitHub account tenant must be approved for Fettler model source execution",
         );
       }
       try {
@@ -1723,27 +1723,27 @@ export function validateWorkerProductionEnv(
   if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED") === "1") {
     if (!(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_TENANTS") ?? "").trim()) {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS is required when Transformer adaptive model source is enabled",
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS is required when Regauge adaptive model source is enabled",
       );
     }
     if (!resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER")?.trim()) {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER is required when Transformer adaptive model source is enabled",
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER is required when Regauge adaptive model source is enabled",
       );
     }
     if (!resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT")?.trim()) {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT is required when Transformer adaptive model source is enabled",
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT is required when Regauge adaptive model source is enabled",
       );
     }
     if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED") !== "1") {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED must be 1 when Transformer adaptive model source is enabled",
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED must be 1 when Regauge adaptive model source is enabled",
       );
     }
     if (!resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION")?.trim()) {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION is required when Transformer adaptive model source is enabled",
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION is required when Regauge adaptive model source is enabled",
       );
     }
     if (
@@ -1752,20 +1752,20 @@ export function validateWorkerProductionEnv(
       )
     ) {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_MAX_DATA_CLASSIFICATION must be public, internal, confidential, or restricted when Transformer adaptive model source is enabled",
+        "MENDPOINT_TRANSFORMER_ADAPTIVE_MAX_DATA_CLASSIFICATION must be public, internal, confidential, or restricted when Regauge adaptive model source is enabled",
       );
     }
     if (!env.LLM_AGENT_MODEL?.trim()) {
-      errors.push("LLM_AGENT_MODEL is required when Transformer adaptive model source is enabled");
+      errors.push("LLM_AGENT_MODEL is required when Regauge adaptive model source is enabled");
     }
     if (!(env.LLM_AGENT_URL?.trim() || env.OPENAI_BASE_URL?.trim())) {
       errors.push(
-        "LLM_AGENT_URL or OPENAI_BASE_URL is required when Transformer adaptive model source is enabled",
+        "LLM_AGENT_URL or OPENAI_BASE_URL is required when Regauge adaptive model source is enabled",
       );
     }
     if (!(env.OPENAI_API_KEY?.trim() || env.XAI_API_KEY?.trim())) {
       errors.push(
-        "OPENAI_API_KEY or XAI_API_KEY is required when Transformer adaptive model source is enabled",
+        "OPENAI_API_KEY or XAI_API_KEY is required when Regauge adaptive model source is enabled",
       );
     }
   }
@@ -2261,7 +2261,7 @@ export function transformerAdaptiveGitHubDelivery(
 }
 
 /**
- * GitLab exact-draft delivery for Transformer's approved candidate: the same
+ * GitLab exact-draft delivery for Regauge's approved candidate: the same
  * sealed intent is delivered as a GitLab draft merge request via the Wave B
  * GitLabDelivery (mock by default; real HTTP over GITLAB_TOKEN when
  * GITLAB_MODE=real). This is token-authenticated draft-MR delivery, not an
@@ -2283,7 +2283,7 @@ export function transformerAdaptiveGitLabDelivery(env: NodeJS.ProcessEnv): GitHu
 
 /**
  * Select the exact-draft delivery provider for an approved candidate. Both the
- * Warden candidate delivery and the Transformer adaptive delivery construction
+ * Fettler candidate delivery and the Regauge adaptive delivery construction
  * sites route through this selector. SCM_PROVIDER=gitlab routes to the GitLab
  * draft-MR path; anything else (unset or "github") returns the GitHub App / PAT
  * delivery unchanged, so a default deployment is byte-identical.
@@ -2337,14 +2337,14 @@ async function processJobsOnceUnfenced(
       maintainWardenArtifactsOnce(db, workerEnv);
     } catch (error) {
       console.error(
-        `  Warden maintenance unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        `  Fettler maintenance unavailable: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
     try {
       maintainTransformerAdaptiveArtifactsOnce(db, workerEnv);
     } catch (error) {
       console.error(
-        `  Transformer adaptive maintenance unavailable: ${
+        `  Regauge adaptive maintenance unavailable: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -2471,7 +2471,7 @@ async function processJobsOnceUnfenced(
         ));
         const repositoriesRoot = workerEnv.MENDPOINT_REPOS_DIR;
         if (!repositoriesRoot || !isAbsolute(repositoriesRoot)) {
-          throw new Error("MENDPOINT_REPOS_DIR is required for Warden CI repair");
+          throw new Error("MENDPOINT_REPOS_DIR is required for Fettler CI repair");
         }
         await runWardenCiRepairDispatch({ db, job,
           readEvidence: ({ tenantId, artifactId, expectedDigest }) =>
@@ -2741,7 +2741,7 @@ async function processJobsOnceUnfenced(
         )).toISOString();
         // Durable, policy-routed production execution. The shared router is the
         // dispatcher: it decides (execute vs mandatory human handoff), the
-        // Warden attempt is the registered executor, and every decision +
+        // Fettler attempt is the registered executor, and every decision +
         // outcome is persisted to the durable routing ledger with breaker
         // feedback. Safety persistence is fail-closed before unsafe dispatch.
         // All existing guarantees (lease fencing, snapshot expiry,
@@ -2946,7 +2946,7 @@ async function processJobsOnceUnfenced(
           result.failed++;
           if (!failure.applied) console.error(`  stale lease ignored job=${job.id}`);
           console.log(
-            `  Warden routing requires human review session=${sessionId} reason=${handoffReason}`,
+            `  Fettler routing requires human review session=${sessionId} reason=${handoffReason}`,
           );
           continue;
         }
@@ -3052,7 +3052,7 @@ async function processJobsOnceUnfenced(
           throw error;
         }
         result.succeeded++;
-        console.log(`  Warden ${attempt.status === "succeeded" ? "candidate ready" : "no action"} session=${sessionId}`);
+        console.log(`  Fettler ${attempt.status === "succeeded" ? "candidate ready" : "no action"} session=${sessionId}`);
         continue;
       }
 

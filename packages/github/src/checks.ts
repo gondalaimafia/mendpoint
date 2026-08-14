@@ -20,12 +20,12 @@ export type CiCheckInput = {
   risk?: string;
   findings?: number;
   policyNotes?: string[];
-  /** Product name in header; defaults to Warden */
+  /** Product name in header; defaults to Fettler */
   product?: string;
 };
 
 export function formatCiCheckComment(input: CiCheckInput): string {
-  const product = input.product ?? "Warden";
+  const product = input.product ?? "Fettler";
   const lines = [
     `### ${product} CI check (Mendpoint)`,
     "",

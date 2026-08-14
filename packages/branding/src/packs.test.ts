@@ -25,29 +25,29 @@ describe("brand packs", () => {
     expect(out.labels).toContain("mendpoint");
   });
 
-  it("includes Warden or Mendpoint in applied footer", () => {
+  it("includes Fettler and Mendpoint in applied footer", () => {
     const pack = getBrandPackForProvider("acme-payments")!;
     const out = applyBrandPack(pack, {
       title: "Rename amount_cents",
       body: "## Migration\n\nDo the thing.",
     });
-    expect(out.body).toMatch(/Warden|Mendpoint/);
-    expect(out.body).toMatch(/Warden/);
+    expect(out.body).toContain("Fettler");
+    expect(out.body).toContain("Mendpoint");
   });
 
   it("exports neutral WARDEN_PR_FOOTER", () => {
-    expect(WARDEN_PR_FOOTER).toContain("Warden");
+    expect(WARDEN_PR_FOOTER).toContain("Fettler");
     expect(WARDEN_PR_FOOTER).toContain("Mendpoint");
     expect(WARDEN_PR_FOOTER).toMatch(/never auto-merged/i);
   });
 
-  it("ensureWardenFooter adds full footer when missing", () => {
+  it("ensureWardenFooter adds a Fettler footer when missing", () => {
     const out = ensureWardenFooter("## Migration\n\nPlain body.");
-    expect(out).toContain("Warden");
+    expect(out).toContain("Fettler");
     expect(out).toContain("Mendpoint");
   });
 
-  it("ensureWardenFooter is idempotent when Warden present", () => {
+  it("ensureWardenFooter is idempotent when Fettler is present", () => {
     const once = ensureWardenFooter("## Body\n\n" + WARDEN_PR_FOOTER);
     const twice = ensureWardenFooter(once);
     expect(twice).toBe(once);

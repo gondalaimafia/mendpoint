@@ -83,7 +83,7 @@ async function main() {
   console.log(dog.markdown);
   console.log("  report=", dog.reportPath);
 
-  console.log("\n7) Planner context (Warden, with historical patterns if any):");
+  console.log("\n7) Planner context (Fettler, with historical patterns if any):");
   console.log(platform.plannerContext("warden").slice(0, 400) + "...\n");
 
   console.log("\n8) Outstanding closure checks:");

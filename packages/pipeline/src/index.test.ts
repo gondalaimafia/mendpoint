@@ -450,7 +450,7 @@ describe("pipeline", () => {
       readFileSync(join(ghRoot, "org", "shop", "pulls", "1.json"), "utf8"),
     ) as { draft: boolean; body: string };
     expect(delivered.draft).toBe(true);
-    expect(delivered.body).toContain("### Structured Warden draft package");
+    expect(delivered.body).toContain("### Structured Fettler draft package");
     expect(delivered.body).toContain("#### Exact files");
     expect(delivered.body).toContain("#### Verification results");
     expect(delivered.body).toContain("Automatic merge: disabled");

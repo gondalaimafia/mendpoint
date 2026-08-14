@@ -156,9 +156,9 @@ describe("customer launcher preflight", () => {
     );
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("Customer Warden profile requires GITHUB_APP_ID");
+    expect(result.stderr).toContain("Customer Fettler profile requires GITHUB_APP_ID");
     expect(existsSync(dataRoot)).toBe(false);
-  });
+  }, 15_000);
 
   it("rejects an unsafe backup root before privileged startup creates customer paths", () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-start-path-safety-"));

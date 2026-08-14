@@ -17,9 +17,9 @@ const GROUPS = [
   {
     label: "Automation",
     links: [
-      { href: "/agent", label: "Fettler runs", glyph: "W" },
+      { href: "/agent", label: "Fettler runs", glyph: "F" },
       { href: "/repair", label: "Verified repair", glyph: "V" },
-      { href: "/transformer", label: "Regauge", glyph: "T" },
+      { href: "/transformer", label: "Regauge", glyph: "R" },
       { href: "/feeds", label: "Change feeds", glyph: "F" },
     ],
   },
@@ -56,7 +56,7 @@ export function Nav() {
     "/service-status",
     "/terms",
   ];
-  if (publicPaths.includes(pathname)) {
+  if (publicPaths.includes(pathname) || pathname.startsWith("/docs/")) {
     return (
       <header className="public-nav">
         <Link href="/" className="brand" aria-label="Mendpoint home" prefetch={false}>

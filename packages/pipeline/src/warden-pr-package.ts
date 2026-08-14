@@ -31,7 +31,7 @@ export function createWardenDraftPrPackage(
   return Object.freeze({
     package: packageRecord,
     markdown: [
-      "### Structured Warden draft package",
+      "### Structured Fettler draft package",
       "",
       "#### Summary",
       packageRecord.summary,

@@ -1,5 +1,5 @@
 /**
- * Optional Slack notifications for Warden / Mendpoint events.
+ * Optional Slack notifications for Fettler / Mendpoint events.
  * No-ops (skipped: true) when SLACK_WEBHOOK_URL is unset.
  */
 
@@ -43,7 +43,7 @@ export type WardenEvent =
 const EVENT_LABEL: Record<WardenEvent, string> = {
   pr_opened: "PR opened",
   change_detected: "Change detected",
-  warden_finished: "Warden finished",
+  warden_finished: "Fettler finished",
   capability_adoption_opportunity: "Capability adoption opportunity",
 };
 
@@ -53,7 +53,7 @@ export async function notifyWardenEvent(
 ): Promise<NotifySlackResult> {
   const label = EVENT_LABEL[event] ?? event;
   return notifySlack({
-    text: `*Warden* — ${label}: ${detail}`,
+    text: `*Fettler* — ${label}: ${detail}`,
   });
 }
 
@@ -89,7 +89,7 @@ export async function notifyCapabilityAdoptionOpportunity(
     ? alert.adoptingConsumers.join(", ")
     : "none";
   const text = [
-    `*Warden* — ${EVENT_LABEL.capability_adoption_opportunity}: ${alert.provider} ${alert.capability}`,
+    `*Fettler* — ${EVENT_LABEL.capability_adoption_opportunity}: ${alert.provider} ${alert.capability}`,
     `Not yet adopted by ${alert.nonAdoptingConsumers.length} consumer(s): ${nonAdopting}`,
     `Already using it: ${adopting}`,
     `Suggested: ${alert.suggestedAction}`,

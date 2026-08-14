@@ -43,8 +43,8 @@ function customerRuntime(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return env;
 }
 
-describe("Warden-only customer Fly profile", () => {
-  it("declares a single-node Warden-only production topology without embedding secrets", () => {
+describe("Fettler-only customer Fly profile", () => {
+  it("declares a single-node Fettler-only production topology without embedding secrets", () => {
     const manifest = readFileSync(manifestPath, "utf8");
     const dockerfile = readFileSync(resolve(import.meta.dirname, "../Dockerfile"), "utf8");
 
@@ -101,27 +101,27 @@ describe("Warden-only customer Fly profile", () => {
       const env = customerRuntime();
       delete env[name];
       expect(validateCustomerWardenRuntime(env)).toContain(
-        `Customer Warden profile requires ${name}`,
+        `Customer Fettler profile requires ${name}`,
       );
     }
     for (const name of CUSTOMER_WARDEN_RCLONE_REQUIRED_SECRETS) {
       const env = customerRuntime();
       delete env[name];
       expect(validateCustomerWardenRuntime(env)).toContain(
-        `Customer Warden profile requires ${name}`,
+        `Customer Fettler profile requires ${name}`,
       );
     }
     for (const name of CUSTOMER_WARDEN_RCLONE_REQUIRED_SETTINGS) {
       const env = customerRuntime();
       delete env[name];
       expect(validateCustomerWardenRuntime(env)).toContain(
-        `Customer Warden profile requires ${name}`,
+        `Customer Fettler profile requires ${name}`,
       );
     }
     expect(validateCustomerWardenRuntime(customerRuntime({
       MENDPOINT_BACKUP_OBJECT_PREFIX: "../escape",
     }))).toContain(
-      "Customer Warden profile has invalid object store settings: customer_backup_object_prefix_invalid",
+      "Customer Fettler profile has invalid object store settings: customer_backup_object_prefix_invalid",
     );
     expect(validateCustomerWardenRuntime(customerRuntime({
       MENDPOINT_BACKUP_OPERATION_TIMEOUT_MS: "120000",
@@ -129,7 +129,7 @@ describe("Warden-only customer Fly profile", () => {
     expect(validateCustomerWardenRuntime(customerRuntime({
       MENDPOINT_BACKUP_OPERATION_TIMEOUT_MS: "59999",
     }))).toContain(
-      "Customer Warden profile has invalid object store settings: customer_backup_operation_timeout_invalid",
+      "Customer Fettler profile has invalid object store settings: customer_backup_operation_timeout_invalid",
     );
   });
 
@@ -167,30 +167,30 @@ describe("Warden-only customer Fly profile", () => {
     expect(backup.MENDPOINT_BACKUP_KEY).toBeUndefined();
   });
 
-  it("fails closed when Transformer authority or a multi-node topology is requested", () => {
+  it("fails closed when Regauge authority or a multi-node topology is requested", () => {
     expect(validateCustomerWardenRuntime(customerRuntime())).toEqual([]);
     expect(validateCustomerWardenRuntime(customerRuntime({
       MENDPOINT_TRANSFORMER_ENABLED: "1",
-    }))).toContain("Customer Warden profile requires MENDPOINT_TRANSFORMER_ENABLED=0");
+    }))).toContain("Customer Fettler profile requires MENDPOINT_TRANSFORMER_ENABLED=0");
     expect(validateCustomerWardenRuntime(customerRuntime({
       MENDPOINT_TRANSFORMER_GATE: '{"tenant_default":true}',
-    }))).toContain("Customer Warden profile forbids MENDPOINT_TRANSFORMER_GATE");
+    }))).toContain("Customer Fettler profile forbids MENDPOINT_TRANSFORMER_GATE");
     expect(validateCustomerWardenRuntime(customerRuntime({
       MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED: "1",
     }))).toContain(
-      "Customer Warden profile forbids MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED=1",
+      "Customer Fettler profile forbids MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED=1",
     );
     expect(validateCustomerWardenRuntime(customerRuntime({
       MENDPOINT_CUSTOMER_MAX_MACHINES: "2",
-    }))).toContain("Customer Warden profile is bounded to exactly one machine");
+    }))).toContain("Customer Fettler profile is bounded to exactly one machine");
     expect(validateCustomerWardenRuntime(customerRuntime({
       FLY_MACHINE_ID: "machine-unapproved",
       MENDPOINT_ALLOWED_MACHINE_ID: "machine-approved",
-    }))).toContain("Customer Warden profile is bound to its approved Fly machine");
+    }))).toContain("Customer Fettler profile is bound to its approved Fly machine");
     expect(validateCustomerWardenRuntime(customerRuntime({
       MENDPOINT_BACKUP_TRANSPORT: "local_directory",
     }))).toContain(
-      "Customer Warden profile requires MENDPOINT_BACKUP_TRANSPORT=rclone_s3 or pre_mounted",
+      "Customer Fettler profile requires MENDPOINT_BACKUP_TRANSPORT=rclone_s3 or pre_mounted",
     );
   });
 
@@ -199,7 +199,7 @@ describe("Warden-only customer Fly profile", () => {
       MENDPOINT_MODEL_EGRESS: "local_only",
       LLM_AGENT_URL: "https://api.meta.ai/v1",
     }))).toContain(
-      "Customer Warden profile requires a private, loopback, link-local, or allowlisted model endpoint when MENDPOINT_MODEL_EGRESS=local_only",
+      "Customer Fettler profile requires a private, loopback, link-local, or allowlisted model endpoint when MENDPOINT_MODEL_EGRESS=local_only",
     );
     expect(validateCustomerWardenRuntime(customerRuntime({
       MENDPOINT_MODEL_EGRESS: "local_only",
@@ -209,7 +209,7 @@ describe("Warden-only customer Fly profile", () => {
       MENDPOINT_MODEL_EGRESS: "on",
       LLM_AGENT_URL: "http://127.0.0.1:11434/v1",
     }))).toContain(
-      "Customer Warden profile requires MENDPOINT_MODEL_EGRESS=local_only or external_allowed",
+      "Customer Fettler profile requires MENDPOINT_MODEL_EGRESS=local_only or external_allowed",
     );
   });
 });

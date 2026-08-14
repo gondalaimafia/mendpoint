@@ -16,7 +16,7 @@ export type KnowledgeDoc = {
 
 export const DEFAULT_API_STYLE_GUIDE: KnowledgeDoc = {
   id: "api-style-guide-v1",
-  title: "Mendpoint / Warden API style guide",
+  title: "Mendpoint / Fettler API style guide",
   tags: ["warden", "style-guide", "api"],
   body: [
     "Version APIs via /vN/ path or documented version header.",

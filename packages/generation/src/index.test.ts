@@ -31,7 +31,7 @@ describe("generation", () => {
     expect(payments?.updated).toContain("amount:");
     expect(payments?.updated).not.toContain("amount_cents");
     expect(draft.body).toContain("never commits to protected branches");
-    expect(draft.body).toMatch(/Warden/);
+    expect(draft.body).toMatch(/Fettler/);
     expect(draft.body).toMatch(/Mendpoint/);
     expect(draft.risk).toBe("breaking");
   });
