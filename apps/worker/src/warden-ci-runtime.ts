@@ -11,6 +11,7 @@ import {
   resolveGitHubTenantAccountBinding,
 } from "@mendpoint/github";
 import { createGitHubRepositorySource, SecretMaterial, type RepositorySource } from "@mendpoint/platform";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 
 const REPOSITORY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const CHECK_IDENTITY = /^check:[1-9][0-9]{0,19}:[A-Za-z0-9][A-Za-z0-9 ._\/-]{0,199}$/;
@@ -26,12 +27,12 @@ export function wardenCiConfigForRepository(
   env: Readonly<Record<string, string | undefined>>,
   repositoryId: string,
 ): WardenCiRepositoryConfig | undefined {
-  const flag = env.MENDPOINT_WARDEN_CI_REENTRY_ENABLED?.trim() ?? "0";
+  const flag = resolveRenamedEnv(env, "MENDPOINT_FETTLER_CI_REENTRY_ENABLED")?.trim() ?? "0";
   if (flag === "0") return undefined;
   if (flag !== "1") throw new Error("warden_ci_reentry_flag_invalid");
   if (!REPOSITORY_ID.test(repositoryId)) throw new Error("warden_ci_repository_id_invalid");
   let parsed: unknown;
-  try { parsed = JSON.parse(env.MENDPOINT_WARDEN_CI_REENTRY_CONFIG_JSON ?? ""); }
+  try { parsed = JSON.parse(resolveRenamedEnv(env, "MENDPOINT_FETTLER_CI_REENTRY_CONFIG_JSON") ?? ""); }
   catch { throw new Error("warden_ci_reentry_config_invalid"); }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("warden_ci_reentry_config_invalid");

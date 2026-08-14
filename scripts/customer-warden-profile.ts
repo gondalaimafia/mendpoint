@@ -131,7 +131,7 @@ export function validateCustomerWardenRuntime(
 ): string[] {
   const errors: string[] = [];
   for (const [name, expected] of Object.entries(REQUIRED_SETTINGS)) {
-    if (env[name]?.trim() !== expected) {
+    if (resolveEitherRenamedEnv(env, name)?.trim() !== expected) {
       errors.push(`Customer Warden profile requires ${name}=${expected}`);
     }
   }
@@ -141,16 +141,16 @@ export function validateCustomerWardenRuntime(
   if (env.FLY_MACHINE_ID?.trim() !== env.MENDPOINT_ALLOWED_MACHINE_ID?.trim()) {
     errors.push("Customer Warden profile is bound to its approved Fly machine");
   }
-  if (env.MENDPOINT_TRANSFORMER_GATE?.trim()) {
+  if (resolveEitherRenamedEnv(env, "MENDPOINT_TRANSFORMER_GATE")?.trim()) {
     errors.push("Customer Warden profile forbids MENDPOINT_TRANSFORMER_GATE");
   }
-  if (env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED?.trim() === "1") {
+  if (resolveEitherRenamedEnv(env, "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED")?.trim() === "1") {
     errors.push(
       "Customer Warden profile forbids MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED=1",
     );
   }
   for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) {
-    if (!env[name]?.trim()) errors.push(`Customer Warden profile requires ${name}`);
+    if (!resolveEitherRenamedEnv(env, name)?.trim()) errors.push(`Customer Warden profile requires ${name}`);
   }
   const transport = env.MENDPOINT_BACKUP_TRANSPORT?.trim();
   if (transport !== "rclone_s3" && transport !== "pre_mounted") {
@@ -201,4 +201,4 @@ export function validateCustomerWardenRuntime(
   return errors;
 }
 import { loadCustomerObjectStoreConfig } from "./customer-object-store.js";
-import { assessModelEgress } from "@mendpoint/shared";
+import { assessModelEgress, resolveEitherRenamedEnv } from "@mendpoint/shared";

@@ -28,6 +28,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 
 export const DISASTER_RECOVERY_POLICY_SCHEMA_VERSION = 1 as const;
 export const BACKUP_MANIFEST_SCHEMA_VERSION = 3 as const;
@@ -1106,11 +1107,11 @@ export function customerBackupInputFromEnv(
       "customer_backup_change_sources_path",
     ),
     transformerControlPlane: requiredText(
-      env.MENDPOINT_BACKUP_TRANSFORMER_CONTROL_PLANE_PATH ?? "",
+      resolveRenamedEnv(env, "MENDPOINT_BACKUP_REGAUGE_CONTROL_PLANE_PATH") ?? "",
       "customer_backup_transformer_control_plane_path",
     ),
     transformerPilot: requiredText(
-      env.MENDPOINT_BACKUP_TRANSFORMER_PILOT_PATH ?? "",
+      resolveRenamedEnv(env, "MENDPOINT_BACKUP_REGAUGE_PILOT_PATH") ?? "",
       "customer_backup_transformer_pilot_path",
     ),
     artifacts: requiredText(
@@ -1148,8 +1149,8 @@ export function customerBackupInputFromEnv(
     throw new Error("customer_backup_artifacts_runtime_path_mismatch");
   }
   for (const [name, configured] of [
-    ["transformer_evidence", env.MENDPOINT_TRANSFORMER_EVIDENCE_ROOT],
-    ["transformer_candidates", env.MENDPOINT_TRANSFORMER_CANDIDATE_ROOT],
+    ["transformer_evidence", resolveRenamedEnv(env, "MENDPOINT_REGAUGE_EVIDENCE_ROOT")],
+    ["transformer_candidates", resolveRenamedEnv(env, "MENDPOINT_REGAUGE_CANDIDATE_ROOT")],
   ] as const) {
     if (configured?.trim()) {
       const expected = resolve(runtimeDataRoot, name.replaceAll("_", "-"));

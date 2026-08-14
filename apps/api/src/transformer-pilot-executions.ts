@@ -15,13 +15,14 @@ import {
   type TransformerGateBoundary,
   type TransformerGateDecision,
 } from "@mendpoint/ops";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 import type { ApiEnv } from "./auth.js";
 import {
   mappedErrorResponse,
   type PublicErrorRule,
 } from "./error-boundary.js";
 
-const DB_ENV = "MENDPOINT_TRANSFORMER_PILOT_DB";
+const DB_ENV = "MENDPOINT_REGAUGE_PILOT_DB";
 const CONTROL_ACTIONS = new Set([
   "pause",
   "resume",
@@ -196,7 +197,7 @@ export function transformerPilotExecutionPath(
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
 ): string {
-  const override = env[DB_ENV]?.trim();
+  const override = resolveRenamedEnv(env, DB_ENV)?.trim();
   if (override) return resolve(override);
   const dataDir = env.MENDPOINT_DATA_DIR?.trim();
   return join(dataDir ? resolve(dataDir) : join(cwd, "data"), "transformer-pilot.sqlite");
@@ -336,8 +337,8 @@ export class TransformerPilotExecutionService {
   ) {
     this.store = new TransformerPilotExecutionStore(path);
     this.runtime = {
-      environment: runtime.environment ?? process.env.MENDPOINT_TRANSFORMER_ENVIRONMENT ?? "",
-      rawGateConfig: runtime.rawGateConfig ?? process.env.MENDPOINT_TRANSFORMER_GATE,
+      environment: runtime.environment ?? resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_ENVIRONMENT") ?? "",
+      rawGateConfig: runtime.rawGateConfig ?? resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
       now: runtime.now ?? (() => new Date().toISOString()),
     };
   }

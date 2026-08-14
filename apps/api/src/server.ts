@@ -212,7 +212,7 @@ import {
   resolveCiHarnessEvidence,
   type CiHarnessEvidence,
 } from "./ci-check.js";
-import { FeedbackOutcomeSchema, newId, nowIso } from "@mendpoint/shared";
+import { FeedbackOutcomeSchema, newId, nowIso, resolveRenamedEnv } from "@mendpoint/shared";
 import { notifyWardenEvent } from "@mendpoint/notify";
 import {
   parseWardenRunInput,
@@ -804,9 +804,9 @@ registerTransformerPilotExecutionRoutes(app, transformerExecutions);
 app.route("/regauge/missions", transformerMissionRoutes);
 app.route("/transformer/missions", transformerMissionRoutes);
 const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorRoutes({
-  enabled: process.env.MENDPOINT_TRANSFORMER_MULTINODE_COORDINATOR_ENABLED === "1",
+  enabled: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED") === "1",
   store: transformerExecutions.store,
-  gateConfig: process.env.MENDPOINT_TRANSFORMER_GATE,
+  gateConfig: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
   loadExactSource: (lease, observedAt) => loadTransformerRecipeSnapshot(db, lease, observedAt),
   resolveDraftRepository: createTransformerDraftRepositoryAuthority(db, process.env),
 });

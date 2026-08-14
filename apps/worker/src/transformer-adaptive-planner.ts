@@ -15,6 +15,7 @@ import {
   resolveAgentModelEndpoint,
   type LiveModelPrice,
 } from "@mendpoint/agent";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 import type {
   AdaptiveRepairPlan,
   AdaptiveRepairPlanner,
@@ -341,16 +342,16 @@ function policyForTenant(
   tenantId: string,
   env: NodeJS.ProcessEnv,
 ): { policy: TransformerAdaptiveModelSourcePolicy; apiKey: string } | undefined {
-  if (env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED !== "1") return undefined;
+  if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED") !== "1") return undefined;
   const tenants = [...new Set(
-    (env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS ?? "")
+    (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_TENANTS") ?? "")
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean),
   )];
   if (tenants.length > 500 || !tenants.includes(tenantId)) return undefined;
   const provider = requiredConfiguredValue(
-    env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER,
+    resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER"),
     "transformer_adaptive_model_policy_incomplete",
   );
   const model = requiredConfiguredValue(
@@ -358,17 +359,17 @@ function policyForTenant(
     "transformer_adaptive_model_policy_incomplete",
   );
   const deployment = requiredConfiguredValue(
-    env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT,
+    resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT"),
     "transformer_adaptive_model_policy_incomplete",
   );
-  if (env.MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED !== "1") {
+  if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED") !== "1") {
     throw new Error("transformer_adaptive_model_policy_incomplete");
   }
   const executionRegion = requiredConfiguredValue(
-    env.MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION,
+    resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION"),
     "transformer_adaptive_model_policy_incomplete",
   );
-  const classification = env.MENDPOINT_TRANSFORMER_ADAPTIVE_MAX_DATA_CLASSIFICATION?.trim();
+  const classification = resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION")?.trim();
   if (!classification || !DATA_CLASSIFICATIONS.has(classification)) {
     throw new Error("transformer_adaptive_model_classification_invalid");
   }

@@ -9,6 +9,14 @@ export {
   type ExplainErrorInput,
 } from "./error-guidance.js";
 
+export {
+  RENAMED_ENV,
+  readRenamedEnv,
+  resolveRenamedEnv,
+  resolveEitherRenamedEnv,
+  type RenamedEnvName,
+} from "./renamed-env.js";
+
 /**
  * Model egress boundary policy.
  *

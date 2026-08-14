@@ -19,6 +19,7 @@ import {
   type TransformerPilotExecutionStore,
 } from "@mendpoint/transformer";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 import {
   discardTransformerAdaptiveModelEvidence,
   persistTransformerAdaptiveModelEvidence,
@@ -937,7 +938,7 @@ export function transformerPilotWorkerPath(
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
 ): string {
-  const override = env.MENDPOINT_TRANSFORMER_PILOT_DB?.trim();
+  const override = resolveRenamedEnv(env, "MENDPOINT_REGAUGE_PILOT_DB")?.trim();
   if (override) return resolve(override);
   const dataRoot = env.MENDPOINT_DATA_DIR?.trim();
   return join(dataRoot ? resolve(dataRoot) : join(cwd, "data"), "transformer-pilot.sqlite");

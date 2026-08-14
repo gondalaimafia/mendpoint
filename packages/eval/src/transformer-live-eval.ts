@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { createDb, getRoutingLedgerForJob } from "@mendpoint/db";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 import type {
   AdaptiveExternalModelAccounting,
   AdaptiveExternalModelReservation,
@@ -116,7 +117,7 @@ function rate(value: string | undefined, fallback: number, code: string): number
 }
 
 function budget(env: NodeJS.ProcessEnv): number {
-  const configured = env.MENDPOINT_TRANSFORMER_LIVE_EVAL_MAX_USD;
+  const configured = resolveRenamedEnv(env, "MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD");
   if (configured !== undefined && !configured.trim()) {
     throw new Error("transformer_live_eval_budget_invalid");
   }
@@ -310,7 +311,7 @@ async function runTrial(
   options: RunTransformerLiveEvalOptions,
   budgetLedger: EvalBudgetLedger,
 ): Promise<TransformerLiveEvalTrial> {
-  const tenantId = env.MENDPOINT_TRANSFORMER_LIVE_EVAL_TENANT!.trim();
+  const tenantId = resolveRenamedEnv(env, "MENDPOINT_REGAUGE_LIVE_EVAL_TENANT")!.trim();
   const accounting = new EvalAccounting(trial, budgetLedger);
   const adapter = resolveTransformerAdaptivePlannerAdapter(tenantId, env, {
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
@@ -449,22 +450,22 @@ export async function runTransformerLiveEval(
   options: RunTransformerLiveEvalOptions = {},
 ): Promise<TransformerLiveEvalReport> {
   const env = options.env ?? process.env;
-  if (env.MENDPOINT_EVAL_LIVE_TRANSFORMER !== "1") {
+  if (resolveRenamedEnv(env, "MENDPOINT_EVAL_LIVE_REGAUGE") !== "1") {
     throw new Error("transformer_live_eval_opt_in_required");
   }
-  if (!env.MENDPOINT_TRANSFORMER_LIVE_EVAL_TENANT?.trim()) {
+  if (!resolveRenamedEnv(env, "MENDPOINT_REGAUGE_LIVE_EVAL_TENANT")?.trim()) {
     throw new Error("transformer_live_eval_configuration_required");
   }
   const count = repetitions(options.repetitions);
   const maximumBudget = budget(env);
   if (maximumBudget === 0) throw new Error("transformer_live_eval_budget_exceeded");
   const minimumPassRate = rate(
-    env.MENDPOINT_TRANSFORMER_LIVE_MIN_PASS_RATE,
+    resolveRenamedEnv(env, "MENDPOINT_REGAUGE_LIVE_MIN_PASS_RATE"),
     DEFAULT_TRANSFORMER_LIVE_MIN_PASS_RATE,
     "transformer_live_eval_pass_threshold_invalid",
   );
   const minimumConsistencyRate = rate(
-    env.MENDPOINT_TRANSFORMER_LIVE_MIN_CONSISTENCY,
+    resolveRenamedEnv(env, "MENDPOINT_REGAUGE_LIVE_MIN_CONSISTENCY"),
     DEFAULT_TRANSFORMER_LIVE_MIN_CONSISTENCY,
     "transformer_live_eval_consistency_threshold_invalid",
   );

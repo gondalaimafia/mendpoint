@@ -1,3 +1,5 @@
+import { resolveRenamedEnv } from "@mendpoint/shared";
+
 export const TRANSFORMER_GATE_SCHEMA_VERSION = "2026-08-02.v1" as const;
 
 export const TRANSFORMER_GATE_BOUNDARIES = [
@@ -137,7 +139,7 @@ function denied(input: TransformerGateInput, reasons: string[]): TransformerGate
 
 export function assessTransformerGate(
   input: TransformerGateInput,
-  rawConfig = process.env.MENDPOINT_TRANSFORMER_GATE,
+  rawConfig = resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
 ): TransformerGateDecision {
   const reasons: string[] = [];
   if (!IDENTIFIER.test(input.tenantId)) reasons.push("tenant_invalid");

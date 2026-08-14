@@ -17,7 +17,7 @@ import {
   listTenantMonitoredProviders,
   type AppDb,
 } from "@mendpoint/db";
-import { nowIso } from "@mendpoint/shared";
+import { nowIso, resolveRenamedEnv } from "@mendpoint/shared";
 import { createHash } from "node:crypto";
 import { Hono, type Context } from "hono";
 import type { ApiEnv } from "./auth.js";
@@ -26,7 +26,7 @@ import type { ApiEnv } from "./auth.js";
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 
 export function selfServeWardenEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.MENDPOINT_SELF_SERVE_WARDEN === "1";
+  return resolveRenamedEnv(env, "MENDPOINT_SELF_SERVE_FETTLER") === "1";
 }
 
 export type SelfServeScanRoutesOptions = Readonly<{

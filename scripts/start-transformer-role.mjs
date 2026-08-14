@@ -1,4 +1,5 @@
 import process from "node:process";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 
 const role = process.argv[2];
 if (role !== "coordinator" && role !== "worker") throw new Error("transformer_production_role_invalid");
@@ -15,7 +16,7 @@ if (role === "coordinator") {
   try {
     ensureTransformerWorkerCredential(db, {
       tenantId: profile.tenantId,
-      token: process.env.MENDPOINT_TRANSFORMER_COORDINATOR_TOKEN,
+      token: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_COORDINATOR_TOKEN"),
       createdAt: new Date().toISOString(),
     });
   } finally { db.raw.close(); }

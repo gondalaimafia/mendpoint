@@ -68,7 +68,7 @@ import {
   probeKnownSdks,
   runFeedSchedules,
 } from "@mendpoint/catalog";
-import { assessFeedFreshness, nowIso } from "@mendpoint/shared";
+import { assessFeedFreshness, nowIso, resolveRenamedEnv } from "@mendpoint/shared";
 import {
   createAppDelivery,
   createGitLabDelivery,
@@ -650,24 +650,24 @@ export function resolveWardenModelSourcePolicy(
   useLlm: boolean,
   env: NodeJS.ProcessEnv = process.env,
 ): WardenApprovedModelSourcePolicy | undefined {
-  if (!useLlm || env.MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED !== "1") return undefined;
+  if (!useLlm || resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED") !== "1") return undefined;
   const tenants = new Set(
-    (env.MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS ?? "")
+    (resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_TENANTS") ?? "")
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean),
   );
   if (!tenants.has(tenantId)) return undefined;
-  const provider = env.MENDPOINT_WARDEN_MODEL_PROVIDER?.trim() ?? "";
+  const provider = resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_PROVIDER")?.trim() ?? "";
   const model = env.LLM_AGENT_MODEL?.trim() ?? "";
   const endpoint = resolveAgentModelEndpoint(env);
-  const region = env.MENDPOINT_WARDEN_MODEL_REGION?.trim() ?? "";
+  const region = resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_REGION")?.trim() ?? "";
   const maximumDataClassification =
-    env.MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION?.trim() ?? "";
-  const externalProcessing = env.MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED?.trim() ?? "";
-  const estimatedCostText = env.MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD?.trim() ?? "";
+    resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_MAXIMUM_DATA_CLASSIFICATION")?.trim() ?? "";
+  const externalProcessing = resolveRenamedEnv(env, "MENDPOINT_FETTLER_EXTERNAL_PROCESSING_ALLOWED")?.trim() ?? "";
+  const estimatedCostText = resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_ESTIMATED_COST_USD")?.trim() ?? "";
   const estimatedCostUsd = Number(estimatedCostText);
-  const maximumCallCostText = env.MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD?.trim() ?? "";
+  const maximumCallCostText = resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_MAXIMUM_CALL_COST_USD")?.trim() ?? "";
   const maximumCallCostUsd = Number(maximumCallCostText);
   if (
     !provider ||
@@ -838,14 +838,14 @@ function sweepWardenTenantStorage(
   evidenceRoot?: string,
 ): { retainedBytes: number; expiresAt: string } {
   const ttlMs = wardenStorageNumber(
-    env.MENDPOINT_WARDEN_CANDIDATE_TTL_MS,
+    resolveRenamedEnv(env, "MENDPOINT_FETTLER_CANDIDATE_TTL_MS"),
     7 * 24 * 60 * 60 * 1000,
     60 * 60 * 1000,
     30 * 24 * 60 * 60 * 1000,
     "warden_candidate_ttl",
   );
   const quotaBytes = wardenStorageNumber(
-    env.MENDPOINT_WARDEN_CANDIDATE_QUOTA_BYTES,
+    resolveRenamedEnv(env, "MENDPOINT_FETTLER_CANDIDATE_QUOTA_BYTES"),
     2 * 1024 * 1024 * 1024,
     512 * 1024 * 1024,
     10 * 1024 * 1024 * 1024,
@@ -896,7 +896,7 @@ function reconcileWardenOrphans(
   observedAt: string,
 ): number {
   const graceMs = wardenStorageNumber(
-    env.MENDPOINT_WARDEN_ORPHAN_GRACE_MS,
+    resolveRenamedEnv(env, "MENDPOINT_FETTLER_ORPHAN_GRACE_MS"),
     60 * 60 * 1000,
     60_000,
     24 * 60 * 60 * 1000,
@@ -1561,7 +1561,7 @@ export function validateWorkerProductionEnv(
     if (env.MENDPOINT_PILOT_SEED !== "0") {
       errors.push("Customer worker requires MENDPOINT_PILOT_SEED=0");
     }
-    if (env.MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED !== "1") {
+    if (resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED") !== "1") {
       errors.push("Customer worker requires Warden model source execution");
     }
     const fenceRoot = env.MENDPOINT_BACKUP_FENCE_ROOT?.trim();
@@ -1635,11 +1635,11 @@ export function validateWorkerProductionEnv(
   if (!reposDir || !isAbsolute(reposDir) || !existsSync(reposDir)) {
     errors.push("MENDPOINT_REPOS_DIR must be an existing absolute directory");
   }
-  if (env.MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED === "1") {
-    if (!(env.MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS ?? "").trim()) {
+  if (resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED") === "1") {
+    if (!(resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_TENANTS") ?? "").trim()) {
       errors.push("MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS is required when model source is enabled");
     }
-    if (!env.MENDPOINT_WARDEN_MODEL_PROVIDER?.trim()) {
+    if (!resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_PROVIDER")?.trim()) {
       errors.push("MENDPOINT_WARDEN_MODEL_PROVIDER is required when model source is enabled");
     }
     if (!env.LLM_AGENT_MODEL?.trim()) {
@@ -1651,25 +1651,25 @@ export function validateWorkerProductionEnv(
     if (!(env.OPENAI_API_KEY?.trim() || env.XAI_API_KEY?.trim())) {
       errors.push("OPENAI_API_KEY or XAI_API_KEY is required when model source is enabled");
     }
-    if (!["0", "1"].includes(env.MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED?.trim() ?? "")) {
+    if (!["0", "1"].includes(resolveRenamedEnv(env, "MENDPOINT_FETTLER_EXTERNAL_PROCESSING_ALLOWED")?.trim() ?? "")) {
       errors.push(
         "MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED must explicitly be 0 or 1 when model source is enabled",
       );
     }
     if (
       profile === "customer" &&
-      env.MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED?.trim() !== "1"
+      resolveRenamedEnv(env, "MENDPOINT_FETTLER_EXTERNAL_PROCESSING_ALLOWED")?.trim() !== "1"
     ) {
       errors.push(
         "Customer worker requires external model processing to be explicitly allowed",
       );
     }
-    if (!env.MENDPOINT_WARDEN_MODEL_REGION?.trim()) {
+    if (!resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_REGION")?.trim()) {
       errors.push("MENDPOINT_WARDEN_MODEL_REGION is required when model source is enabled");
     }
     if (
       !(["public", "internal", "confidential", "restricted"] as const).includes(
-        env.MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION?.trim() as
+        resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_MAXIMUM_DATA_CLASSIFICATION")?.trim() as
           | "public"
           | "internal"
           | "confidential"
@@ -1680,14 +1680,14 @@ export function validateWorkerProductionEnv(
         "MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION must be public, internal, confidential, or restricted when model source is enabled",
       );
     }
-    const estimatedCostText = env.MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD?.trim() ?? "";
+    const estimatedCostText = resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_ESTIMATED_COST_USD")?.trim() ?? "";
     const estimatedCostUsd = Number(estimatedCostText);
     if (!estimatedCostText || !Number.isFinite(estimatedCostUsd) || estimatedCostUsd < 0) {
       errors.push(
         "MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD must be a non-negative number when model source is enabled",
       );
     }
-    const maximumCallCostText = env.MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD?.trim() ?? "";
+    const maximumCallCostText = resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_MAXIMUM_CALL_COST_USD")?.trim() ?? "";
     const maximumCallCostUsd = Number(maximumCallCostText);
     if (!maximumCallCostText || !Number.isFinite(maximumCallCostUsd) || maximumCallCostUsd <= 0) {
       errors.push(
@@ -1696,7 +1696,7 @@ export function validateWorkerProductionEnv(
     }
     if (profile === "customer") {
       const approvedTenants = new Set(
-        (env.MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS ?? "")
+        (resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_TENANTS") ?? "")
           .split(",")
           .map((value) => value.trim())
           .filter(Boolean),
@@ -1708,7 +1708,7 @@ export function validateWorkerProductionEnv(
       }
       try {
         const classifications = parseWardenRepositoryClassifications(
-          env.MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS,
+          resolveRenamedEnv(env, "MENDPOINT_FETTLER_REPOSITORY_CLASSIFICATIONS"),
         );
         if (customerTenantIds.some((tenantId) => !classifications[tenantId])) {
           throw new Error("missing");
@@ -1720,35 +1720,35 @@ export function validateWorkerProductionEnv(
       }
     }
   }
-  if (env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED === "1") {
-    if (!(env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS ?? "").trim()) {
+  if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED") === "1") {
+    if (!(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_TENANTS") ?? "").trim()) {
       errors.push(
         "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS is required when Transformer adaptive model source is enabled",
       );
     }
-    if (!env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER?.trim()) {
+    if (!resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER")?.trim()) {
       errors.push(
         "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER is required when Transformer adaptive model source is enabled",
       );
     }
-    if (!env.MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT?.trim()) {
+    if (!resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT")?.trim()) {
       errors.push(
         "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT is required when Transformer adaptive model source is enabled",
       );
     }
-    if (env.MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED !== "1") {
+    if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED") !== "1") {
       errors.push(
         "MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED must be 1 when Transformer adaptive model source is enabled",
       );
     }
-    if (!env.MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION?.trim()) {
+    if (!resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION")?.trim()) {
       errors.push(
         "MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION is required when Transformer adaptive model source is enabled",
       );
     }
     if (
       !["public", "internal", "confidential", "restricted"].includes(
-        env.MENDPOINT_TRANSFORMER_ADAPTIVE_MAX_DATA_CLASSIFICATION?.trim() ?? "",
+        resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION")?.trim() ?? "",
       )
     ) {
       errors.push(
@@ -1822,7 +1822,7 @@ export function resolveWardenRepositoryClassification(
   env: NodeJS.ProcessEnv = process.env,
 ): WardenRepositoryClassification {
   const parsed = parseWardenRepositoryClassifications(
-    env.MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS,
+    resolveRenamedEnv(env, "MENDPOINT_FETTLER_REPOSITORY_CLASSIFICATIONS"),
   );
   const tenantMap = parsed[tenantId];
   if (!tenantMap) {
@@ -2062,7 +2062,7 @@ function wardenCiConfigForDeliveryJob(
   job: Readonly<{ tenant_id: string; payload_json: string }>,
   env: NodeJS.ProcessEnv,
 ): WardenCiRepositoryConfig | undefined {
-  if (env.MENDPOINT_WARDEN_CI_REENTRY_ENABLED !== "1") {
+  if (resolveRenamedEnv(env, "MENDPOINT_FETTLER_CI_REENTRY_ENABLED") !== "1") {
     return wardenCiConfigForRepository(env, "disabled");
   }
   let payload: unknown;
@@ -3401,7 +3401,7 @@ async function runService(intervalMs: number) {
     retried: 0,
   };
   let transformer: TransformerPilotLaneHeartbeat = {
-    enabled: Boolean(process.env.MENDPOINT_TRANSFORMER_GATE?.trim()),
+    enabled: Boolean(resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE")?.trim()),
     active: false,
     expired: 0,
     attempted: 0,
@@ -3585,17 +3585,17 @@ async function runService(intervalMs: number) {
         const result = await runTransformerPilotLaneOnce({
           db: transformerDb,
           store: transformerStore,
-          gateConfig: process.env.MENDPOINT_TRANSFORMER_GATE,
+          gateConfig: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
           tenantId: configuredTenantId,
           workerId: WORKER_ID,
-          evidenceRoot: process.env.MENDPOINT_TRANSFORMER_EVIDENCE_ROOT ??
+          evidenceRoot: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_EVIDENCE_ROOT") ??
             join(dataRoot, "transformer-evidence"),
-          candidateRoot: process.env.MENDPOINT_TRANSFORMER_CANDIDATE_ROOT ??
+          candidateRoot: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_CANDIDATE_ROOT") ??
             join(dataRoot, "transformer-candidates"),
-          tempRoot: process.env.MENDPOINT_TRANSFORMER_TEMP_ROOT ??
+          tempRoot: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_TEMP_ROOT") ??
             join(dataRoot, "transformer-workspaces"),
           leaseDurationMs: Number(
-            process.env.MENDPOINT_TRANSFORMER_LEASE_MS ?? 15 * 60_000,
+            resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_LEASE_MS") ?? 15 * 60_000,
           ),
           shouldContinue: () => !shutdown.signal.aborted,
           adaptiveCandidateDataRoot: dataRoot,

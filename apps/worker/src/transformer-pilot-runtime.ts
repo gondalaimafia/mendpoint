@@ -3,6 +3,7 @@ import type {
   TransformerPilotCampaign,
   TransformerAttemptLease,
 } from "@mendpoint/transformer";
+import { resolveRenamedEnv } from "@mendpoint/shared";
 import { assertTransformerWorkerActionAuthorized } from "./transformer-authorization.js";
 
 type ClaimInput = Parameters<TransformerPilotExecutionStore["claimNextAttempt"]>[0];
@@ -26,7 +27,7 @@ export function admitTransformerPilotAttempt(
   port: TransformerPilotWorkerPort,
   scope: TransformerPilotWorkerScope,
   input: Omit<ClaimInput, "gateConfig">,
-  rawGateConfig = process.env.MENDPOINT_TRANSFORMER_GATE,
+  rawGateConfig = resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
 ): TransformerAttemptLease | null {
   if (scope.tenantId !== input.tenantId) throw new Error("transformer_worker_tenant_mismatch");
   assertTransformerWorkerActionAuthorized(scope, rawGateConfig);
@@ -41,7 +42,7 @@ export function observeTransformerPilotWave(
   port: TransformerPilotWorkerPort,
   scope: TransformerPilotWorkerScope,
   input: Omit<ObservationInput, "gateConfig">,
-  rawGateConfig = process.env.MENDPOINT_TRANSFORMER_GATE,
+  rawGateConfig = resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
 ): TransformerPilotCampaign {
   if (scope.tenantId !== input.tenantId) throw new Error("transformer_worker_tenant_mismatch");
   assertTransformerWorkerActionAuthorized(scope, rawGateConfig);
