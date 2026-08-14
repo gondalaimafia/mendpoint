@@ -6,6 +6,14 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      phase:
+        description: Run read only Fly authority discovery or the protected activation
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - activate
       confirmation:
         description: Type REGAUGE_DRAFT_ONLY to authorize one draft only pilot
         required: true
@@ -22,7 +30,46 @@ on:
         type: string
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        with:
+          version: "0.4.79"
+      - name: Prove Fly authority without mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/regauge-production/preflight
+          test -n "$FLY_API_TOKEN"
+          flyctl auth whoami >/dev/null
+          flyctl orgs list --json \
+            | tee test-results/regauge-production/preflight/fly-orgs.json
+          if flyctl status --app mendpoint-transformer-pilot --json \
+            >test-results/regauge-production/preflight/fly-status-raw.json 2>/dev/null; then
+            jq '{exists: true, status: .}' \
+              test-results/regauge-production/preflight/fly-status-raw.json \
+              >test-results/regauge-production/preflight/dedicated-app.json
+          else
+            jq -n '{exists: false}' \
+              >test-results/regauge-production/preflight/dedicated-app.json
+          fi
+          rm -f test-results/regauge-production/preflight/fly-status-raw.json
+      - name: Upload read only Fly preflight evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: regauge-fly-preflight-${{ github.sha }}
+          path: test-results/regauge-production/preflight/
+          if-no-files-found: error
+          retention-days: 90
+
   deploy:
+    needs: preflight
+    if: ${{ inputs.phase == 'activate' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: regauge-production
