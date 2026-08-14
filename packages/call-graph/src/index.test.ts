@@ -137,3 +137,147 @@ export function __proto__() { return hasOwnProperty(); }
     }
   });
 });
+
+function mkRoot(tag: string): string {
+  const root = join(
+    tmpdir(),
+    `cg-${tag}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  dirs.push(root);
+  mkdirSync(root, { recursive: true });
+  return root;
+}
+
+describe("call-graph traversal pruning", () => {
+  it("skips .venv/site-packages/__pycache__ and indexes only first-party sources", () => {
+    const root = mkRoot("venv");
+    mkdirSync(join(root, "app"), { recursive: true });
+    writeFileSync(
+      join(root, "app", "main.py"),
+      `def handler():\n    return compute()\n\ndef compute():\n    return 1\n`,
+      "utf8",
+    );
+    // Dependency tree that must NOT be ingested.
+    mkdirSync(join(root, ".venv", "lib", "site-packages", "thirdparty"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, ".venv", "lib", "site-packages", "thirdparty", "vendored.py"),
+      `def vendored_a():\n    return vendored_b()\n\ndef vendored_b():\n    return 2\n`,
+      "utf8",
+    );
+    // Cache dir under first-party source.
+    mkdirSync(join(root, "app", "__pycache__"), { recursive: true });
+    writeFileSync(
+      join(root, "app", "__pycache__", "main.cpython-311.py"),
+      `def cached():\n    return 3\n`,
+      "utf8",
+    );
+
+    const g = buildCallGraph(root);
+    const files = [...new Set(Object.values(g.nodes).map((n) => n.filePath))];
+    // Node count matches the real first-party file: exactly handler + compute.
+    expect(files).toEqual(["app/main.py"]);
+    expect(g.stats.nodeCount).toBe(2);
+    expect(
+      Object.values(g.nodes).some(
+        (n) => n.filePath.includes(".venv") || n.filePath.includes("site-packages"),
+      ),
+    ).toBe(false);
+    // Pruning is auditable.
+    const skips = g.diagnostics?.skippedDirectories ?? [];
+    expect(
+      skips.some((s) => s.path === ".venv" && s.reason === "dependency-directory"),
+    ).toBe(true);
+    expect(skips.some((s) => s.path === "app/__pycache__")).toBe(true);
+  });
+
+  it("keeps tracked vendor/ and build/ directories in the call graph", () => {
+    const root = mkRoot("vendor");
+    mkdirSync(join(root, "vendor", "github.com", "pkg"), { recursive: true });
+    writeFileSync(
+      join(root, "vendor", "github.com", "pkg", "lib.py"),
+      `def vendored_helper():\n    return 7\n`,
+      "utf8",
+    );
+    mkdirSync(join(root, "build"), { recursive: true });
+    writeFileSync(
+      join(root, "build", "generated.py"),
+      `def generated_fn():\n    return 8\n`,
+      "utf8",
+    );
+
+    const g = buildCallGraph(root);
+    const files = new Set(Object.values(g.nodes).map((n) => n.filePath));
+    expect(files.has("vendor/github.com/pkg/lib.py")).toBe(true);
+    expect(files.has("build/generated.py")).toBe(true);
+    const skips = g.diagnostics?.skippedDirectories ?? [];
+    expect(
+      skips.some((s) => s.path.startsWith("vendor") || s.path.startsWith("build")),
+    ).toBe(false);
+  });
+
+  it("skips a custom-named venv only when a pyvenv.cfg marker is present", () => {
+    const root = mkRoot("custom-venv");
+    // venv WITH marker -> pruned.
+    mkdirSync(join(root, "venv"), { recursive: true });
+    writeFileSync(join(root, "venv", "pyvenv.cfg"), "home = /usr\n", "utf8");
+    writeFileSync(
+      join(root, "venv", "installed.py"),
+      `def installed_pkg_fn():\n    return 1\n`,
+      "utf8",
+    );
+    // env WITHOUT marker -> kept (legitimate source dir that happens to be named env).
+    mkdirSync(join(root, "env"), { recursive: true });
+    writeFileSync(
+      join(root, "env", "config.py"),
+      `def env_config():\n    return 2\n`,
+      "utf8",
+    );
+
+    const g = buildCallGraph(root);
+    const files = new Set(Object.values(g.nodes).map((n) => n.filePath));
+    expect(files.has("venv/installed.py")).toBe(false);
+    expect(files.has("env/config.py")).toBe(true);
+    const skips = g.diagnostics?.skippedDirectories ?? [];
+    expect(
+      skips.some((s) => s.path === "venv" && s.reason === "virtualenv-marker"),
+    ).toBe(true);
+    expect(skips.some((s) => s.path === "env")).toBe(false);
+  });
+
+  it("records unsupported-language files instead of silently indexing them", () => {
+    const root = mkRoot("langs");
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(
+      join(root, "src", "app.ts"),
+      `export function main() { return 1; }\n`,
+      "utf8",
+    );
+    writeFileSync(
+      join(root, "src", "service.go"),
+      `package main\nfunc Handler() int { return 1 }\n`,
+      "utf8",
+    );
+    writeFileSync(
+      join(root, "src", "Api.java"),
+      `class Api { int run() { return 1; } }\n`,
+      "utf8",
+    );
+
+    const g = buildCallGraph(root);
+    expect(
+      Object.values(g.nodes).some(
+        (n) => n.filePath.endsWith(".go") || n.filePath.endsWith(".java"),
+      ),
+    ).toBe(false);
+    const unsupported = g.diagnostics?.unsupportedLanguageFiles ?? [];
+    expect(unsupported).toContainEqual({ path: "src/service.go", language: "go" });
+    expect(unsupported).toContainEqual({ path: "src/Api.java", language: "java" });
+    expect(g.diagnostics?.supportedLanguages).toEqual([
+      "typescript",
+      "javascript",
+      "python",
+    ]);
+  });
+});

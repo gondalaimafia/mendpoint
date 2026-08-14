@@ -132,7 +132,23 @@ export type FetchOpenApiOptions = {
   production?: boolean;
   fetchImpl?: typeof fetch;
   resolveHostname?: HostResolver;
+  /** Human-readable provider/feed label, surfaced in size-limit errors. */
+  provider?: string;
 };
+
+/**
+ * Default ceiling for a fetched OpenAPI feed body.
+ *
+ * Real published specs already exceed the old 5 MiB cap: Stripe's spec3.json is
+ * ~8.17 MB and GitHub's REST description is larger still. 32 MiB gives ~4x
+ * headroom over Stripe while still hard-stopping runaway or hostile responses.
+ * Measured cost of parsing the 8.17 MB Stripe spec: ~27 ms, ~7.7 MB of parsed
+ * object-graph heap, plus the retained body string (~8 MB) — a peak on the order
+ * of ~25-30 MB. Scaling roughly linearly, a full 32 MiB payload costs ~100-130 MB
+ * peak, which a single-flight poller can absorb; anything past that is rejected
+ * before the body is buffered.
+ */
+export const DEFAULT_FEED_MAX_BYTES = 32 * 1024 * 1024;
 
 const remoteBlockList = new BlockList();
 for (const [network, prefix] of [
@@ -205,11 +221,15 @@ async function boundedResponseText(
   response: Response,
   maxBytes: number,
   controller: AbortController,
+  provider: string,
 ): Promise<string> {
+  // Reject early on the declared size, before buffering any of the body.
   const declared = Number(response.headers.get("content-length") ?? 0);
   if (Number.isFinite(declared) && declared > maxBytes) {
     controller.abort();
-    throw new Error(`feed response exceeds ${maxBytes} bytes`);
+    throw new Error(
+      `OpenAPI feed for ${provider} is ${declared} bytes, over the ${maxBytes}-byte limit`,
+    );
   }
   if (!response.body) return "";
 
@@ -224,7 +244,10 @@ async function boundedResponseText(
       if (size > maxBytes) {
         controller.abort();
         await reader.cancel().catch(() => undefined);
-        throw new Error(`feed response exceeds ${maxBytes} bytes`);
+        throw new Error(
+          `OpenAPI feed for ${provider} exceeds the ${maxBytes}-byte limit ` +
+            `(read ${size}+ bytes before aborting)`,
+        );
       }
       chunks.push(next.value);
     }
@@ -260,7 +283,7 @@ export async function fetchOpenApiDocument(
 
     const fetchImpl = opts?.fetchImpl ?? fetch;
     const resolveHostname = opts?.resolveHostname ?? defaultResolveHostname;
-    const maxBytes = opts?.maxBytes ?? 5 * 1024 * 1024;
+    const maxBytes = opts?.maxBytes ?? DEFAULT_FEED_MAX_BYTES;
     let current = new URL(resolved);
     for (let redirects = 0; redirects <= 5; redirects++) {
       if (production) {
@@ -299,7 +322,8 @@ export async function fetchOpenApiDocument(
           current = new URL(location, current);
           continue;
         }
-        const body = await boundedResponseText(res, maxBytes, ctrl);
+        const providerLabel = opts?.provider ?? current.hostname;
+        const body = await boundedResponseText(res, maxBytes, ctrl, providerLabel);
         if (!res.ok) {
           return {
             ok: false,

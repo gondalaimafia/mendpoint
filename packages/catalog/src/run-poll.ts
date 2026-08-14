@@ -266,7 +266,7 @@ async function pollOneFeedUnlocked(
 
   const load = opts.sourceDocumentLoader
     ? () => opts.sourceDocumentLoader!(url, root)
-    : () => fetchOpenApiDocument(url, { monorepoRoot: root });
+    : () => fetchOpenApiDocument(url, { monorepoRoot: root, provider: feed.name });
   let sourceFetch = opts.sourceFetches?.get(url);
   if (!sourceFetch) {
     sourceFetch = load();
