@@ -120,6 +120,7 @@ export {
   applyInverseOperations,
   applyRecipe,
   assertRecipePathAllowed,
+  authorFactoryRecipe,
   classifyRecipeContract,
   classifyRecipeReference,
   createInternalApiRenameRecipe,
@@ -130,7 +131,10 @@ export {
   recipeReference,
   resolveRecipe,
   validateRecipe,
+  type AuthorFactoryRecipeOptions,
   type InternalApiRenameSpec,
+  type RecipeFactoryName,
+  type RecipeResolutionOptions,
 } from "./recipe.js";
 
 export {
