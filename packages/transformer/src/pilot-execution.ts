@@ -1853,7 +1853,27 @@ export class TransformerPilotExecutionStore {
       evidenceRefs: requireEvidence(input.evidenceRefs),
     });
     return this.mutate(input, "routing.attempt_bound", record, (state) => {
-      if (state.state !== "running" || state.units.some((unit) => unit.state === "running")) {
+      // Mirror claimNextAttempt's expiry-aware guard (defect 2): a unit left
+      // "running" with an expired lease is stranded (nothing renews or expires
+      // it in the Transformer image), so blocking on it forever would strand the
+      // campaign. Block only on a *live* running attempt. Unlike claimNextAttempt
+      // this path never re-leases or executes -- it only attaches routing-
+      // settlement metadata to a pending/failed-eligible unit (attemptEligible
+      // never selects a running unit), so there is no lease to reissue and no
+      // returning worker to fence. The single-live-attempt invariant and the
+      // anti-double-execution fence both live in claimNextAttempt/
+      // assertAttemptFence, which stay unchanged, so relaxing the guard here
+      // cannot introduce a double-execution path.
+      const observedAtMs = Date.parse(input.observedAt);
+      const leaseExpired = (unit: TransformerPilotUnit): boolean => {
+        if (unit.state !== "running") return false;
+        const expiresAt = Date.parse(unit.leaseExpiresAt ?? "");
+        return Number.isFinite(expiresAt) && observedAtMs >= expiresAt;
+      };
+      if (
+        state.state !== "running" ||
+        state.units.some((unit) => unit.state === "running" && !leaseExpired(unit))
+      ) {
         throw new Error("transformer_pilot_routing_attempt_not_bindable");
       }
       const eligible = state.units

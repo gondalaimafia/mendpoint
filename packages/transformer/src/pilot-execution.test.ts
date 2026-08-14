@@ -2577,6 +2577,50 @@ describe("Transformer pilot execution coordinator", () => {
     store.close();
   });
 
+  it("does not let a stranded expired-lease unit block bindRoutingAttempt (defect 2)", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([
+      unit("unit-a", "repo-a", "a", "c"),
+      unit("unit-b", "repo-b", "b", "d"),
+    ]));
+    // Claim unit-a at 08:01:00 with a 60s lease -> expires at 08:02:00, then the
+    // worker is preempted and the unit is left "running" with an expired lease.
+    const first = store.claimNextAttempt({
+      ...mutation(1, "claim-strand"),
+      leaseToken: "lease-token-strand-0000000000001",
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    })!;
+    expect(first.unitId).toBe("unit-a");
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units.find((entry) => entry.id === "unit-a")!.state)
+      .toBe("running");
+    // At 08:05:00 (past unit-a's expiry) binding must still succeed: the stranded
+    // unit no longer blocks, so routing binds to the eligible pending unit-b.
+    const bound = store.bindRoutingAttempt(routingBinding("bind-after-strand", { observedAt: time(5) }));
+    expect(bound.units.find((entry) => entry.id === "unit-b")!.routingSettlement)
+      .toMatchObject({ runId: "run-routing-a", envelopeId: "route-routing-a" });
+    store.close();
+  });
+
+  it("keeps a live-lease running unit blocking bindRoutingAttempt (defect 2)", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([
+      unit("unit-a", "repo-a", "a", "c"),
+      unit("unit-b", "repo-b", "b", "d"),
+    ]));
+    // Claim unit-a with a long (live) lease that has not expired at bind time.
+    store.claimNextAttempt({
+      ...mutation(1, "claim-live-bind"),
+      leaseToken: "lease-token-live-bind-000000001",
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    });
+    // A live running attempt must still block binding a new route.
+    expect(() => store.bindRoutingAttempt(routingBinding("bind-blocked-live", { observedAt: time(5) })))
+      .toThrow("transformer_pilot_routing_attempt_not_bindable");
+    store.close();
+  });
+
   it("does not reclaim a unit whose lease is still live (defect 2)", () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
