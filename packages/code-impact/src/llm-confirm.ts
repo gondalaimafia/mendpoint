@@ -6,11 +6,12 @@
  * - Supports OpenAI-compatible APIs: OPENAI_API_KEY, XAI_API_KEY (+ base URLs).
  * - Offline: LLM_CONFIRM_MODE=heuristic applies deterministic rules (CI / no keys).
  */
-import type {
-  Confidence,
-  ConfirmedImpact,
-  ExpandedContext,
-  ImpactableSurface,
+import {
+  fetchBoundedText,
+  type Confidence,
+  type ConfirmedImpact,
+  type ExpandedContext,
+  type ImpactableSurface,
 } from "@mendpoint/shared";
 
 export type LlmConfirmDecision = {
@@ -165,27 +166,55 @@ async function callOpenAiCompatible(
     process.env.LLM_CONFIRM_MODEL ??
     (xai ? "grok-3-mini" : "gpt-4o-mini");
 
-  const res = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
+  const endpoint = new URL(`${base.replace(/\/$/, "")}/chat/completions`);
+  const loopback =
+    endpoint.hostname === "localhost" ||
+    endpoint.hostname === "127.0.0.1" ||
+    endpoint.hostname === "::1" ||
+    endpoint.hostname === "[::1]";
+  if (
+    (endpoint.protocol !== "https:" &&
+      !(endpoint.protocol === "http:" && loopback)) ||
+    endpoint.username ||
+    endpoint.password
+  ) {
+    throw new Error("llm_confirm_endpoint_invalid");
+  }
+  const configuredTimeout = Number(process.env.LLM_CONFIRM_TIMEOUT_MS ?? 30_000);
+  const timeoutMs =
+    Number.isSafeInteger(configuredTimeout) &&
+    configuredTimeout >= 1 &&
+    configuredTimeout <= 120_000
+      ? configuredTimeout
+      : 30_000;
+
+  const { response: res, text } = await fetchBoundedText(
+    endpoint,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        max_tokens: 300,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+      }),
     },
-    body: JSON.stringify({
-      model,
-      temperature: 0,
-      max_tokens: 300,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-    }),
-  });
+    {
+      timeoutMs,
+      maxResponseBytes: 64 * 1_024,
+    },
+  );
   if (!res.ok) {
-    const text = await res.text();
     throw new Error(`LLM confirm HTTP ${res.status}: ${text.slice(0, 200)}`);
   }
-  const json = (await res.json()) as {
+  const json = JSON.parse(text) as {
     choices?: Array<{ message?: { content?: string } }>;
   };
   return json.choices?.[0]?.message?.content ?? "";

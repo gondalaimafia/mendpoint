@@ -8,6 +8,7 @@
  * Fail-open: a transport error or non-2xx response is caught and logged, never
  * thrown, so a paging failure can never break a request or job.
  */
+import { postJson } from "./post-json.js";
 
 export type PagingEventType =
   | "readiness_fail"
@@ -106,11 +107,7 @@ async function post(
   body: Record<string, unknown>,
 ): Promise<PagingDelivery> {
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const res = await postJson(url, body);
     if (!res.ok) {
       console.error(`paging_${sink}_rejected: status ${res.status}`);
     }

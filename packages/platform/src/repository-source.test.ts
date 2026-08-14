@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createLocalGitRepositorySource,
+  FetchGitHubRepositoryTransport,
   validateRepositoryRelativePath,
 } from "./repository-source.js";
 
@@ -45,12 +46,43 @@ function commit(root: string, message = "fixture"): string {
 }
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(
     temporaryDirectories.splice(0).map(async (directory) => {
       await makeWritable(directory);
       await rm(directory, { recursive: true, force: true });
     }),
   );
+});
+
+describe("GitHub repository transport", () => {
+  const input = {
+    installationId: "installation-a",
+    method: "GET" as const,
+    path: "/repos/acme/api",
+    credential: { reveal: () => "test-token" } as never,
+  };
+
+  it("settles a noncooperative request at its hard timeout", async () => {
+    const transport = new FetchGitHubRepositoryTransport("https://api.github.test", {
+      timeoutMs: 10,
+      fetchImpl: () => new Promise<Response>(() => undefined),
+    });
+    const started = Date.now();
+    await expect(transport.request(input)).rejects.toThrow("bounded_http_timeout");
+    expect(Date.now() - started).toBeLessThan(250);
+  });
+
+  it("rejects a response above the configured byte limit", async () => {
+    const transport = new FetchGitHubRepositoryTransport("https://api.github.test", {
+      timeoutMs: 1_000,
+      maxResponseBytes: 32,
+      fetchImpl: async () => new Response(JSON.stringify({ value: "x".repeat(64) })),
+    });
+    await expect(transport.request(input)).rejects.toThrow(
+      "bounded_http_response_too_large",
+    );
+  });
 });
 
 describe("local Git repository source", () => {

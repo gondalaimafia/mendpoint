@@ -17,6 +17,12 @@ export {
   type RenamedEnvName,
 } from "./renamed-env.js";
 
+export {
+  fetchBoundedText,
+  type BoundedHttpOptions,
+  type BoundedHttpResult,
+} from "./bounded-http.js";
+
 /**
  * Model egress boundary policy.
  *

@@ -473,6 +473,26 @@ describe("Transformer adaptive model planner", () => {
     expect(providerSignal === undefined || providerSignal.aborted).toBe(true);
   });
 
+  it("settles a timed out reservation when the provider ignores cancellation", async () => {
+    const accounting = accountingOptions();
+    const adapter = resolveTransformerAdaptivePlannerAdapter("tenant-a", enabledEnv(), {
+      fetchImpl: () => new Promise<Response>(() => undefined),
+      requestTimeoutMs: 100,
+      priceTable: PRICE_TABLE,
+    })!;
+    const started = Date.now();
+
+    await expect(adapter.planner(INPUT, accounting.options)).rejects.toThrow(
+      "transformer_adaptive_model_timeout",
+    );
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(accounting.settlements).toHaveLength(1);
+    expect(accounting.settlements[0]).toEqual(expect.objectContaining({
+      status: "failed",
+      errorCode: "transformer_adaptive_model_timeout",
+    }));
+  }, 1_000);
+
   it("persists a content-addressed model evidence record with exact provenance", async () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-transformer-model-evidence-"));
     try {

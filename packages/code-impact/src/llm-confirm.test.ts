@@ -1,10 +1,15 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, afterEach, vi } from "vitest";
 import {
   createBudget,
   heuristicConfirm,
+  llmConfirmLive,
   resolveLlmConfirmMode,
 } from "./llm-confirm.js";
-import type { ExpandedContext, ImpactableSurface } from "@mendpoint/shared";
+import type {
+  ConfirmedImpact,
+  ExpandedContext,
+  ImpactableSurface,
+} from "@mendpoint/shared";
 
 const surfaces: ImpactableSurface[] = [
   {
@@ -47,6 +52,7 @@ describe("llm confirm", () => {
   const env = { ...process.env };
   afterEach(() => {
     process.env = { ...env };
+    vi.unstubAllGlobals();
   });
 
   it("resolveLlmConfirmMode defaults off without keys", () => {
@@ -80,4 +86,43 @@ describe("llm confirm", () => {
     b.used++;
     expect(b.used).toBe(1);
   });
+
+  it("fails closed when a provider response exceeds the model evidence limit", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    const staticResult: ConfirmedImpact = {
+      filePath: "src/a.ts",
+      lineStart: 1,
+      lineEnd: 1,
+      symbol: "amount_cents",
+      confidence: "medium",
+      evidence: "amount_cents",
+      impactType: "field_access",
+      surfaceIds: ["s1"],
+      relatedOps: ["request_field_renamed"],
+      confirmationPath: "static",
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        affected: false,
+        confidence: "low",
+        rationale: "not affected",
+      }) } }],
+      padding: "x".repeat(70_000),
+    }))));
+
+    const result = await llmConfirmLive(ctx({}), surfaces, staticResult, createBudget(1));
+    expect(result).toEqual(staticResult);
+  });
+
+  it("settles a noncooperative provider call at the configured timeout", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.LLM_CONFIRM_TIMEOUT_MS = "10";
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    const started = Date.now();
+
+    await expect(
+      llmConfirmLive(ctx({}), surfaces, null, createBudget(1)),
+    ).resolves.toBeNull();
+    expect(Date.now() - started).toBeLessThan(250);
+  }, 1_000);
 });

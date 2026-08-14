@@ -3425,12 +3425,7 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
     const priorKey = process.env.OPENAI_API_KEY;
     process.env.LLM_AGENT_URL = "https://models.example/v1";
     process.env.OPENAI_API_KEY = "test-key";
-    vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) =>
-      new Promise<Response>((_resolve, reject) => {
-        const signal = init?.signal;
-        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-      }),
-    ));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
     try {
       const result = await runWarden({
         goal: "inspect the API client",
@@ -3446,6 +3441,41 @@ if (/\\bmax_tokens\\b/.test(source)) process.exit(1);
       expect(result.stoppedReason).toBe("model_request_timeout");
       expect(result.metrics.model).toMatchObject({ calls: 1, timeouts: 1, failedCalls: 1 });
       expect(result.rollback.performed).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+    }
+  });
+
+  it("times out when model headers arrive but the response body stalls", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-model-body-timeout-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const client = true;\n");
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1);\n");
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => undefined) }),
+    )));
+    try {
+      const result = await runWarden({
+        goal: "inspect the API client",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "unknown failure",
+        useLlm: true,
+        ...TEST_MODEL_SOURCE,
+        maxSteps: 12,
+        modelBudget: { requestTimeoutMs: 10 },
+      });
+
+      expect(result.stoppedReason).toBe("model_request_timeout");
+      expect(result.metrics.model).toMatchObject({ calls: 1, timeouts: 1, failedCalls: 1 });
     } finally {
       vi.unstubAllGlobals();
       if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;

@@ -2,6 +2,7 @@
  * Optional Slack notifications for Fettler / Mendpoint events.
  * No-ops (skipped: true) when SLACK_WEBHOOK_URL is unset.
  */
+import { postJson } from "./post-json.js";
 
 export type NotifySlackInput = {
   text: string;
@@ -25,13 +26,12 @@ export async function notifySlack(
     body.blocks = input.blocks;
   }
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  return { ok: res.ok, status: res.status };
+  try {
+    const response = await postJson(url, body);
+    return { ok: response.ok, status: response.status };
+  } catch {
+    return { ok: false, status: 0 };
+  }
 }
 
 export type WardenEvent =

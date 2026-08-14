@@ -216,9 +216,7 @@ describe("repair session", () => {
         slices.push(prompt.slices[0]?.content ?? "");
         const from = call++ === 0 ? "old" : "next";
         const to = from === "old" ? "next" : "done";
-        return {
-          ok: true,
-          json: async () => ({
+        return new Response(JSON.stringify({
             choices: [
               {
                 message: {
@@ -237,8 +235,10 @@ describe("repair session", () => {
                 },
               },
             ],
-          }),
-        } as Response;
+          }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
       }),
     );
     const priorRepairUrl = process.env.LLM_REPAIR_URL;

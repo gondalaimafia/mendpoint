@@ -15,7 +15,7 @@ import {
   resolveAgentModelEndpoint,
   type LiveModelPrice,
 } from "@mendpoint/agent";
-import { resolveRenamedEnv } from "@mendpoint/shared";
+import { fetchBoundedText, resolveRenamedEnv } from "@mendpoint/shared";
 import type {
   AdaptiveRepairPlan,
   AdaptiveRepairPlanner,
@@ -496,30 +496,6 @@ function parsePlan(value: unknown, input: AdaptiveRepairPlannerInput): AdaptiveR
   });
 }
 
-async function readBoundedResponse(response: Response, maxBytes: number): Promise<string> {
-  const reader = response.body?.getReader();
-  if (!reader) {
-    const text = await response.text();
-    if (Buffer.byteLength(text, "utf8") > maxBytes) {
-      throw new Error("transformer_adaptive_model_response_too_large");
-    }
-    return text;
-  }
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const next = await reader.read();
-    if (next.done) break;
-    total += next.value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new Error("transformer_adaptive_model_response_too_large");
-    }
-    chunks.push(next.value);
-  }
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
-}
-
 function parseResponse(
   text: string,
   input: AdaptiveRepairPlannerInput,
@@ -654,18 +630,9 @@ export function resolveTransformerAdaptivePlannerAdapter(
       maximumCostUsd: costUpperBoundUsd,
     }));
 
-    const controller = new AbortController();
-    let timedOut = false;
     let settled = false;
     let headerRequestId: string | null = null;
-    const forwardCancellation = () => controller.abort(plannerOptions.signal?.reason);
-    plannerOptions.signal?.addEventListener("abort", forwardCancellation, { once: true });
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort("transformer_adaptive_model_timeout");
-    }, requestTimeoutMs);
     if (plannerOptions.signal?.aborted) {
-      controller.abort(plannerOptions.signal.reason);
       await accounting.settle(Object.freeze({
         reservationId,
         status: "failed",
@@ -673,26 +640,32 @@ export function resolveTransformerAdaptivePlannerAdapter(
         errorCode: "transformer_adaptive_model_cancelled",
       }));
       settled = true;
-      clearTimeout(timeout);
-      plannerOptions.signal.removeEventListener("abort", forwardCancellation);
       throw new Error("transformer_adaptive_model_cancelled");
     }
     try {
-      const response = await fetchImpl(policy.endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+      const { response, text } = await fetchBoundedText(
+        policy.endpoint,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body,
         },
-        body,
-        signal: controller.signal,
-      });
+        {
+          timeoutMs: requestTimeoutMs,
+          maxResponseBytes,
+          signal: plannerOptions.signal,
+          fetchImpl: (url, init) => fetchImpl(String(url), init ?? {}),
+        },
+      );
       headerRequestId = response.headers.get("x-request-id");
       if (!response.ok) {
         throw new Error(`transformer_adaptive_model_http_${response.status}`);
       }
       const parsed = parseResponse(
-        await readBoundedResponse(response, maxResponseBytes),
+        text,
         requestInput,
         policy,
       );
@@ -770,10 +743,19 @@ export function resolveTransformerAdaptivePlannerAdapter(
         }),
       });
     } catch (error) {
+      const mappedError = error instanceof Error && error.message === "bounded_http_timeout"
+        ? new Error("transformer_adaptive_model_timeout")
+        : error instanceof Error && error.message === "bounded_http_aborted"
+          ? new Error("transformer_adaptive_model_cancelled")
+          : error instanceof Error && error.message === "bounded_http_response_too_large"
+            ? new Error("transformer_adaptive_model_response_too_large")
+            : error instanceof Error && error.message === "bounded_http_response_encoding_invalid"
+              ? new Error("transformer_adaptive_model_response_invalid")
+              : error;
       if (!settled) {
-        const code = error instanceof Error &&
-          /^transformer_adaptive_model_[a-z0-9_]+$/.test(error.message)
-          ? error.message
+        const code = mappedError instanceof Error &&
+          /^transformer_adaptive_model_[a-z0-9_]+$/.test(mappedError.message)
+          ? mappedError.message
           : "transformer_adaptive_model_request_failed";
         await accounting.settle(Object.freeze({
           reservationId,
@@ -783,23 +765,13 @@ export function resolveTransformerAdaptivePlannerAdapter(
         }));
         settled = true;
       }
-      if (controller.signal.aborted) {
-        throw new Error(
-          timedOut
-            ? "transformer_adaptive_model_timeout"
-            : "transformer_adaptive_model_cancelled",
-        );
-      }
       if (
-        error instanceof Error &&
-        /^transformer_adaptive_model_[a-z0-9_]+$/.test(error.message)
+        mappedError instanceof Error &&
+        /^transformer_adaptive_model_[a-z0-9_]+$/.test(mappedError.message)
       ) {
-        throw error;
+        throw mappedError;
       }
       throw new Error("transformer_adaptive_model_request_failed");
-    } finally {
-      clearTimeout(timeout);
-      plannerOptions.signal?.removeEventListener("abort", forwardCancellation);
     }
   };
 

@@ -14,6 +14,7 @@ import { clearRateLimits } from "@mendpoint/ops";
 import { createDb } from "@mendpoint/db";
 import {
   mutationAdmissionMiddleware,
+  requestBodyLimitMiddleware,
   rateLimitMiddleware,
 } from "./production.js";
 import { initializeApiRuntime } from "./api-runtime.js";
@@ -44,6 +45,35 @@ function limitedApp() {
 }
 
 describe("production rate limit identity", () => {
+  it("rejects declared and streamed request bodies above the API ceiling", async () => {
+    const app = new Hono<ApiEnv>();
+    app.use("*", requestBodyLimitMiddleware({ maxBytes: 32 }));
+    app.post("/private", async (c) => c.json({ body: await c.req.text() }));
+
+    const declared = await app.request("/private", {
+      method: "POST",
+      headers: { "content-length": "33" },
+      body: "x",
+    });
+    expect(declared.status).toBe(413);
+    expect(await declared.json()).toEqual({ error: "request_payload_too_large" });
+
+    const streamed = new Request("http://localhost/private", {
+      method: "POST",
+      headers: { "transfer-encoding": "chunked" },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("x".repeat(33)));
+          controller.close();
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+    const streamedResponse = await app.request(streamed);
+    expect(streamedResponse.status).toBe(413);
+    expect(await streamedResponse.json()).toEqual({ error: "request_payload_too_large" });
+  });
+
   it("does not construct standalone API stores while a customer backup is exclusive", () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-api-startup-fence-"));
     temporaryRoots.push(root);

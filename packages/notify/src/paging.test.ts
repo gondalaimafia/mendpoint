@@ -14,6 +14,7 @@ afterEach(() => {
   delete process.env.PAGING_WEBHOOK_URL;
   delete process.env.PAGERDUTY_ROUTING_KEY;
   delete process.env.PAGING_DEDUPE_WINDOW_MS;
+  delete process.env.MENDPOINT_NOTIFY_TIMEOUT_MS;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -42,6 +43,8 @@ describe("notifyPaging", () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("https://events.pagerduty.com/v2/enqueue");
     expect(init.method).toBe("POST");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.redirect).toBe("error");
     const body = JSON.parse(init.body as string);
     expect(body).toMatchObject({
       routing_key: "R0UT1NGKEY",
