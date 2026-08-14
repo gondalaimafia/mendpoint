@@ -49,4 +49,22 @@ describe("Regauge production workflow", () => {
     expect(source).toContain("regauge-fly-preflight-${{ github.sha }}");
     expect(preflightRun).not.toMatch(/flyctl (?:apps create|deploy|scale|secrets set|volumes create)/);
   });
+
+  it("provisions private Tigris storage directly on the dedicated app", () => {
+    const source = readFileSync(".github/workflows/regauge-production.yml", "utf8");
+    const workflow = parse(source) as Record<string, any>;
+    const deploy = workflow.jobs.deploy;
+    const storage = deploy.steps.find(
+      (step: Record<string, unknown>) => step.name === "Provision private checkpoint storage",
+    );
+    expect(storage).toBeDefined();
+    expect(storage.run).toContain("flyctl storage status --app mendpoint-transformer-pilot");
+    expect(storage.run).toContain("flyctl storage create");
+    expect(storage.run).toContain("--app mendpoint-transformer-pilot");
+    expect(storage.run).toContain("--org \"$FLY_ORG\"");
+    expect(storage.run).toContain("--yes");
+    expect(storage.run).not.toContain("--public");
+    expect(source).not.toContain("secrets.MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID");
+    expect(source).not.toContain("secrets.MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY");
+  });
 });

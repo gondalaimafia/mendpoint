@@ -17,6 +17,50 @@ export type TransformerProductionProfile =
   | (TransformerProductionProfileBase & Readonly<{ role: "coordinator" }>)
   | (TransformerProductionProfileBase & Readonly<{ role: "worker"; workerId: string }>);
 
+export type TransformerS3Config = Readonly<{
+  endpoint: string | undefined;
+  region: string | undefined;
+  bucket: string | undefined;
+  accessKeyId: string | undefined;
+  secretAccessKey: string | undefined;
+  sessionToken: string | undefined;
+}>;
+
+export function resolveTransformerS3Config(env: NodeJS.ProcessEnv): TransformerS3Config {
+  return Object.freeze({
+    endpoint: resolveStorageAlias(
+      resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_ENDPOINT"),
+      env.AWS_ENDPOINT_URL_S3,
+      "transformer_production_s3_endpoint_conflict",
+    ),
+    region: resolveStorageAlias(
+      resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_REGION"),
+      env.AWS_REGION ?? env.AWS_DEFAULT_REGION,
+      "transformer_production_s3_region_conflict",
+    ),
+    bucket: resolveStorageAlias(
+      resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_BUCKET"),
+      env.BUCKET_NAME,
+      "transformer_production_s3_bucket_conflict",
+    ),
+    accessKeyId: resolveStorageAlias(
+      resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID"),
+      env.AWS_ACCESS_KEY_ID,
+      "transformer_production_s3_access_key_conflict",
+    ),
+    secretAccessKey: resolveStorageAlias(
+      resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY"),
+      env.AWS_SECRET_ACCESS_KEY,
+      "transformer_production_s3_secret_key_conflict",
+    ),
+    sessionToken: resolveStorageAlias(
+      resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_SESSION_TOKEN"),
+      env.AWS_SESSION_TOKEN,
+      "transformer_production_s3_session_token_conflict",
+    ),
+  });
+}
+
 export function resolveTransformerWorkerId(env: NodeJS.ProcessEnv): string {
   if (env.MENDPOINT_DEPLOYMENT_PROFILE === "transformer_pilot") {
     exact(env.NODE_ENV, "production", "transformer_production_node_env_required");
@@ -89,13 +133,15 @@ export function validateTransformerProductionProfile(
   key(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_CHECKPOINT_KEY"), "transformer_production_checkpoint_key_required");
   key(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_OPERATION_SECRET"), "transformer_production_operation_secret_required");
   for (const name of [
-    "MENDPOINT_TRANSFORMER_S3_REGION", "MENDPOINT_TRANSFORMER_S3_ACCESS_KEY_ID",
-    "MENDPOINT_TRANSFORMER_S3_SECRET_ACCESS_KEY",
     "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "GITHUB_WEBHOOK_SECRET",
     "GITHUB_APP_ACCOUNT_TENANT_BINDINGS",
   ] as const) required(resolveEitherRenamedEnv(env, name), `transformer_production_${name.toLowerCase()}_required`);
-  secureUrl(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_ENDPOINT"), "transformer_production_s3_endpoint_invalid");
-  const bucket = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_BUCKET"), "transformer_production_s3_bucket_required");
+  const s3 = resolveTransformerS3Config(env);
+  secureUrl(s3.endpoint, "transformer_production_s3_endpoint_invalid");
+  required(s3.region, "transformer_production_s3_region_required");
+  required(s3.accessKeyId, "transformer_production_s3_access_key_required");
+  required(s3.secretAccessKey, "transformer_production_s3_secret_key_required");
+  const bucket = required(s3.bucket, "transformer_production_s3_bucket_required");
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) throw new Error("transformer_production_s3_bucket_invalid");
   if (required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_PREFIX"), "transformer_production_s3_prefix_required") !== `transformer/${tenantId}/${campaignId}`) {
     throw new Error("transformer_production_s3_prefix_invalid");
@@ -130,3 +176,9 @@ function required(value: string | undefined, code: string): string { if (!value?
 function identifier(value: string | undefined, code: string): string { const result = required(value, code); if (!ID.test(result)) throw new Error(code); return result; }
 function key(value: string | undefined, code: string): void { const encoded = required(value, code); const bytes = Buffer.from(encoded, "base64"); if (bytes.byteLength !== 32 || bytes.toString("base64") !== encoded) throw new Error(code); }
 function secureUrl(value: string | undefined, code: string): void { let parsed: URL; try { parsed = new URL(required(value, code)); } catch { throw new Error(code); } if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error(code); }
+function resolveStorageAlias(custom: string | undefined, standard: string | undefined, code: string): string | undefined {
+  const customValue = custom?.trim();
+  const standardValue = standard?.trim();
+  if (customValue && standardValue && customValue !== standardValue) throw new Error(code);
+  return customValue || standardValue || custom || standard;
+}

@@ -39,6 +39,27 @@ describe("Transformer production profile", () => {
     }, "worker")).toThrow("transformer_production_fly_machine_id_required");
   });
 
+  it("accepts Fly Tigris standard storage variables and rejects ambiguous aliases", () => {
+    const tigris = environment();
+    delete tigris.MENDPOINT_TRANSFORMER_S3_ENDPOINT;
+    delete tigris.MENDPOINT_TRANSFORMER_S3_REGION;
+    delete tigris.MENDPOINT_TRANSFORMER_S3_BUCKET;
+    delete tigris.MENDPOINT_TRANSFORMER_S3_ACCESS_KEY_ID;
+    delete tigris.MENDPOINT_TRANSFORMER_S3_SECRET_ACCESS_KEY;
+    Object.assign(tigris, {
+      AWS_ENDPOINT_URL_S3: "https://fly.storage.tigris.dev",
+      AWS_REGION: "auto",
+      BUCKET_NAME: "mendpoint-regauge-pilot",
+      AWS_ACCESS_KEY_ID: "tigris-access",
+      AWS_SECRET_ACCESS_KEY: "tigris-secret",
+    });
+    expect(validateTransformerProductionProfile(tigris, "worker").role).toBe("worker");
+    expect(() => validateTransformerProductionProfile({
+      ...tigris,
+      MENDPOINT_REGAUGE_S3_BUCKET: "different-bucket",
+    }, "worker")).toThrow("transformer_production_s3_bucket_conflict");
+  });
+
   it("requires the immutable source revision that the public version probe reports", () => {
     expect(() => validateTransformerProductionProfile({
       ...environment(),

@@ -1837,7 +1837,21 @@ Verification checkpoint: focused Regauge production proof tests pass 60 of 60. E
 - [x] Create a protected `regauge-production` environment restricted to protected branches and explicit owner approval.
 - [x] Bind the environment's non-secret policy to the existing private canary repository and bounded live-model limits.
 - [x] Add a default read-only workflow phase that proves the repository Fly token, enumerates authorized organizations, records whether the dedicated app exists, and retains the result without creating or changing infrastructure.
-- [ ] Run the hosted preflight, select the exact Fly organization from retained evidence, and configure only the missing production authorities.
+- [x] Run the hosted preflight, select the exact Fly organization from retained evidence, and configure only the missing production authorities.
 - [ ] Activate one coordinator and one worker, complete the real draft-only canary and readiness soak, then update requirement states from retained evidence.
 
 Review: pull request 117 merged as `c8516be2a5d346766a24c4d866d24863f3086715`. Main run `31822603567` passed unit tests, agent evals, GA checks, dependency audit, typecheck, production build, API startup, every container build including Regauge, container startup, the production journey with crash recovery, Fly deployment, and workflow health verification. Independent live probes returned 200 from `/livez` and `/healthz`; the combined customer worker remains intentionally Regauge-disabled because the dedicated profile has not been activated. The protected environment and private canary metadata now exist. Local model credentials were not copied to GitHub without separate explicit authorization, and the dedicated infrastructure, GitHub App, storage, tenant, campaign, and approval secrets remain unset.
+
+Hosted preflight review: workflow run `31824565761` passed on exact revision `24751eb0a1a48616276eb3aa35a7010d08dc24df`. Retained evidence proves the repository Fly token is valid, the authorized organization slug is `personal`, and `mendpoint-transformer-pilot` does not exist. The protected environment is restricted to protected branches and the current repository owner is a required reviewer. The private canary repository and bounded live model policy variables are configured. Three newly generated Regauge-only cryptographic authorities are protected; existing local model credentials were not copied without explicit authorization.
+
+### Regauge managed checkpoint storage: 2026-08-14
+
+- [x] Add red regressions for Fly Tigris standard environment variables, alias conflicts, private bucket provisioning, and removal of externally copied storage credentials.
+- [x] Resolve one canonical S3 configuration for both production validation and the worker runtime.
+- [x] Provision or adopt exactly one private Tigris bucket on the dedicated Fly app without logging credentials or making the bucket public.
+- [x] Run focused tests, affected workspace tests and typechecks, workflow validation, dependency audit, and diff integrity.
+- [ ] Merge through protected checks and rerun the read only Fly preflight before any activation mutation.
+
+Acceptance: the protected activation workflow can provision private checkpoint storage inside Fly and the Regauge runtime accepts Fly's standard Tigris secret names. Conflicting custom and standard aliases fail closed. No S3 credential is copied through GitHub, printed, or stored outside Fly.
+
+Review: official Fly documentation and the installed CLI confirm `fly storage create --app ... --org ... --yes` provisions private Tigris object storage and injects `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, `BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` directly into the app. The runtime now resolves those standard variables through one immutable configuration shared by production validation and execution; any conflicting custom alias fails closed. Full Worker tests pass 285 of 285, the workflow suite passes 3 of 3, Worker typecheck and the 50-page production build pass, every Actions dependency is pinned, the production dependency audit reports zero vulnerabilities, Fly configuration validation passes, and diff integrity is clean.
