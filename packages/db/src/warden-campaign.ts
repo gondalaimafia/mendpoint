@@ -145,7 +145,7 @@ export function createWardenCampaign(db: AppDb, input: {
   }
   db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const existing = one<CampaignRow>(db, `SELECT * FROM warden_campaigns WHERE id = ?`, [input.id]);
+    const existing = one<CampaignRow>(db, `SELECT * FROM fettler_campaigns WHERE id = ?`, [input.id]);
     if (existing) {
       const value = campaign(existing);
       if (value.tenantId !== input.tenantId || value.name !== name || value.ownerPrincipalId !== input.ownerPrincipalId ||
@@ -154,13 +154,13 @@ export function createWardenCampaign(db: AppDb, input: {
       }
       db.raw.exec("COMMIT"); return value;
     }
-    db.raw.prepare(`INSERT INTO warden_campaigns
+    db.raw.prepare(`INSERT INTO fettler_campaigns
       (id, tenant_id, name, status, owner_principal_id, concurrency_limit, completion_policy, revision, created_at, updated_at)
       VALUES (?, ?, ?, 'draft', ?, ?, ?, 1, ?, ?)`).run(input.id, input.tenantId, name,
         input.ownerPrincipalId, input.concurrencyLimit, input.completionPolicy, input.createdAt, input.createdAt);
     event(db, { ...input, campaignId: input.id, actorPrincipalId: input.ownerPrincipalId,
       eventType: "warden.campaign.created", payload: { revision: 1, status: "draft" } });
-    const value = campaign(one<CampaignRow>(db, `SELECT * FROM warden_campaigns WHERE id = ?`, [input.id])!);
+    const value = campaign(one<CampaignRow>(db, `SELECT * FROM fettler_campaigns WHERE id = ?`, [input.id])!);
     db.raw.exec("COMMIT"); return value;
   } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
 }
@@ -174,7 +174,7 @@ export function addWardenCampaignTarget(db: AppDb, input: {
   assertPrincipal(db, input.tenantId, input.ownerPrincipalId);
   const enrollmentSource: WardenEnrollmentSource = input.enrollmentSource ?? "manual";
   const enrolledInstallationId = input.enrolledInstallationId ?? null;
-  const parent = one<CampaignRow>(db, `SELECT * FROM warden_campaigns WHERE id = ? AND tenant_id = ?`, [input.campaignId, input.tenantId]);
+  const parent = one<CampaignRow>(db, `SELECT * FROM fettler_campaigns WHERE id = ? AND tenant_id = ?`, [input.campaignId, input.tenantId]);
   if (!parent || parent.status !== "draft") throw new Error("warden_campaign_not_draft");
   const repo = one<{ snapshot_id: string }>(db, `SELECT rs.id AS snapshot_id FROM connected_repositories cr
     JOIN repository_snapshots rs ON rs.repository_id = cr.id AND rs.tenant_id = cr.tenant_id
@@ -183,14 +183,14 @@ export function addWardenCampaignTarget(db: AppDb, input: {
   const dependencies = [...new Set(input.dependsOn ?? [])].sort();
   if (dependencies.includes(input.id)) throw new Error("warden_dependency_cycle");
   for (const dependency of dependencies) {
-    if (!one(db, `SELECT id FROM warden_campaign_targets WHERE id = ? AND campaign_id = ? AND tenant_id = ?`,
+    if (!one(db, `SELECT id FROM fettler_campaign_targets WHERE id = ? AND campaign_id = ? AND tenant_id = ?`,
       [dependency, input.campaignId, input.tenantId])) throw new Error("warden_dependency_missing");
   }
   const maxAttempts = input.maxAttempts ?? 3;
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 20) throw new Error("warden_max_attempts_invalid");
   db.raw.exec("BEGIN IMMEDIATE");
   try {
-    db.raw.prepare(`INSERT INTO warden_campaign_targets
+    db.raw.prepare(`INSERT INTO fettler_campaign_targets
       (id, tenant_id, campaign_id, repository_id, snapshot_id, owner_principal_id, stage, depends_on_json,
        attempt_count, max_attempts, enrollment_source, enrolled_installation_id, revision, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, 1, ?, ?)`).run(input.id, input.tenantId,
@@ -200,7 +200,7 @@ export function addWardenCampaignTarget(db: AppDb, input: {
     event(db, { ...input, actorPrincipalId: input.ownerPrincipalId, eventType: "warden.target.added",
       payload: { targetId: input.id, dependencies, revision: 1,
         enrollmentSource, enrolledInstallationId } });
-    const value = target(one<TargetRow>(db, `SELECT * FROM warden_campaign_targets WHERE id = ?`, [input.id])!);
+    const value = target(one<TargetRow>(db, `SELECT * FROM fettler_campaign_targets WHERE id = ?`, [input.id])!);
     db.raw.exec("COMMIT"); return value;
   } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
 }
@@ -216,24 +216,24 @@ export function transitionWardenCampaign(db: AppDb, input: { tenantId: string; c
   assertPrincipal(db, input.tenantId, input.actorPrincipalId);
   db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const current = one<CampaignRow>(db, `SELECT * FROM warden_campaigns WHERE id = ? AND tenant_id = ?`, [input.campaignId, input.tenantId]);
+    const current = one<CampaignRow>(db, `SELECT * FROM fettler_campaigns WHERE id = ? AND tenant_id = ?`, [input.campaignId, input.tenantId]);
     if (!current) throw new Error("warden_campaign_not_found");
     if (current.revision !== input.expectedRevision) throw new Error("warden_revision_conflict");
     if (!campaignTransitions[current.status].includes(input.to)) throw new Error("warden_transition_invalid");
-    const changed = db.raw.prepare(`UPDATE warden_campaigns SET status = ?, revision = revision + 1, updated_at = ?
+    const changed = db.raw.prepare(`UPDATE fettler_campaigns SET status = ?, revision = revision + 1, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND revision = ?`).run(input.to, input.createdAt, input.campaignId, input.tenantId, input.expectedRevision);
     if (Number(changed.changes) !== 1) throw new Error("warden_revision_conflict");
     event(db, { ...input, eventType: "warden.campaign.transitioned",
       payload: { from: current.status, to: input.to, previousRevision: current.revision, revision: current.revision + 1 } });
-    const value = campaign(one<CampaignRow>(db, `SELECT * FROM warden_campaigns WHERE id = ?`, [input.campaignId])!);
+    const value = campaign(one<CampaignRow>(db, `SELECT * FROM fettler_campaigns WHERE id = ?`, [input.campaignId])!);
     db.raw.exec("COMMIT"); return value;
   } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
 }
 
 export function claimReadyWardenTargets(db: AppDb, tenantId: string, campaignId: string): WardenCampaignTarget[] {
-  const parent = one<CampaignRow>(db, `SELECT * FROM warden_campaigns WHERE id = ? AND tenant_id = ?`, [campaignId, tenantId]);
+  const parent = one<CampaignRow>(db, `SELECT * FROM fettler_campaigns WHERE id = ? AND tenant_id = ?`, [campaignId, tenantId]);
   if (!parent || parent.status !== "running") return [];
-  const targets = all<TargetRow>(db, `SELECT * FROM warden_campaign_targets WHERE tenant_id = ? AND campaign_id = ? ORDER BY created_at, id`, [tenantId, campaignId]).map(target);
+  const targets = all<TargetRow>(db, `SELECT * FROM fettler_campaign_targets WHERE tenant_id = ? AND campaign_id = ? ORDER BY created_at, id`, [tenantId, campaignId]).map(target);
   const completed = new Set(targets.filter((item) => item.stage === "completed").map((item) => item.id));
   const active = targets.filter((item) => ["analyzing", "editing", "verifying", "review", "delivering"].includes(item.stage)).length;
   return targets.filter((item) => item.stage === "queued" && item.attemptCount < item.maxAttempts &&
@@ -256,13 +256,13 @@ export function transitionWardenTarget(db: AppDb, input: { tenantId: string; cam
   if (input.to === "review" && !input.packageArtifactId) throw new Error("warden_pr_package_required");
   db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const current = one<TargetRow>(db, `SELECT * FROM warden_campaign_targets WHERE id = ? AND tenant_id = ? AND campaign_id = ?`,
+    const current = one<TargetRow>(db, `SELECT * FROM fettler_campaign_targets WHERE id = ? AND tenant_id = ? AND campaign_id = ?`,
       [input.targetId, input.tenantId, input.campaignId]);
     if (!current) throw new Error("warden_target_not_found");
     if (current.revision !== input.expectedRevision || current.stage !== input.from) throw new Error("warden_revision_conflict");
     const attempts = input.from === "queued" && input.to === "analyzing" ? current.attempt_count + 1 : current.attempt_count;
     if (attempts > current.max_attempts) throw new Error("warden_attempts_exhausted");
-    const changed = db.raw.prepare(`UPDATE warden_campaign_targets SET stage = ?, package_artifact_id = COALESCE(?, package_artifact_id),
+    const changed = db.raw.prepare(`UPDATE fettler_campaign_targets SET stage = ?, package_artifact_id = COALESCE(?, package_artifact_id),
       exception_code = ?, attempt_count = ?, revision = revision + 1, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND campaign_id = ? AND revision = ? AND stage = ?`).run(input.to,
         input.packageArtifactId ?? null, input.exceptionCode ?? null, attempts, input.createdAt, input.targetId,
@@ -271,13 +271,13 @@ export function transitionWardenTarget(db: AppDb, input: { tenantId: string; cam
     event(db, { ...input, eventType: "warden.target.transitioned", payload: { targetId: input.targetId,
       from: input.from, to: input.to, previousRevision: current.revision, revision: current.revision + 1,
       packageArtifactId: input.packageArtifactId ?? null, exceptionCode: input.exceptionCode ?? null } });
-    const value = target(one<TargetRow>(db, `SELECT * FROM warden_campaign_targets WHERE id = ?`, [input.targetId])!);
+    const value = target(one<TargetRow>(db, `SELECT * FROM fettler_campaign_targets WHERE id = ?`, [input.targetId])!);
     db.raw.exec("COMMIT"); return value;
   } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
 }
 
 export function listWardenCampaignTargets(db: AppDb, tenantId: string, campaignId: string) {
-  return all<TargetRow>(db, `SELECT * FROM warden_campaign_targets WHERE tenant_id = ? AND campaign_id = ? ORDER BY created_at, id`, [tenantId, campaignId]).map(target);
+  return all<TargetRow>(db, `SELECT * FROM fettler_campaign_targets WHERE tenant_id = ? AND campaign_id = ? ORDER BY created_at, id`, [tenantId, campaignId]).map(target);
 }
 
 // A repository the installation can reach, surfaced by the org crawler. `remoteId`
@@ -341,7 +341,7 @@ export function autoEnrollWardenCampaignOrg(db: AppDb, input: {
   const installationId = required("warden_org_installation_id", input.installationId);
   if (!/^[1-9][0-9]{0,19}$/.test(installationId)) throw new Error("warden_org_installation_id_invalid");
   assertPrincipal(db, input.tenantId, input.ownerPrincipalId);
-  const campaign = one<CampaignRow>(db, `SELECT * FROM warden_campaigns WHERE id = ? AND tenant_id = ?`, [campaignId, input.tenantId]);
+  const campaign = one<CampaignRow>(db, `SELECT * FROM fettler_campaigns WHERE id = ? AND tenant_id = ?`, [campaignId, input.tenantId]);
   if (!campaign) throw new Error("warden_campaign_not_found");
   if (campaign.status !== "draft") throw new Error("warden_campaign_not_draft");
   const provider = one<{ id: string }>(db, `SELECT id FROM providers WHERE slug = ?`, [providerSlug]);
@@ -378,7 +378,7 @@ export function autoEnrollWardenCampaignOrg(db: AppDb, input: {
     // Idempotency reflects stored state, not current eligibility: an already
     // enrolled repository is skipped regardless of provider/snapshot signal.
     const existing = one<{ id: string }>(db,
-      `SELECT id FROM warden_campaign_targets WHERE tenant_id = ? AND campaign_id = ? AND repository_id = ?`,
+      `SELECT id FROM fettler_campaign_targets WHERE tenant_id = ? AND campaign_id = ? AND repository_id = ?`,
       [input.tenantId, campaignId, repository.id]);
     if (existing) { skip("already_enrolled"); continue; }
     const consumes = one<{ ok: number }>(db,
@@ -432,7 +432,7 @@ function rolloutDecision(row: RolloutDecisionRow): WardenRolloutDecision {
 
 export function getWardenRolloutDecision(db: AppDb, tenantId: string, id: string): WardenRolloutDecision | undefined {
   const row = one<RolloutDecisionRow>(db,
-    `SELECT * FROM warden_rollout_decisions WHERE id = ? AND tenant_id = ?`, [id, tenantId]);
+    `SELECT * FROM fettler_rollout_decisions WHERE id = ? AND tenant_id = ?`, [id, tenantId]);
   return row ? rolloutDecision(row) : undefined;
 }
 
@@ -465,7 +465,7 @@ export function planWardenRollout(db: AppDb, input: {
     stop.pauseFailureRate >= stop.abortFailureRate || typeof stop.abortOnCriticalFailure !== "boolean") {
     throw new Error("warden_stop_conditions_invalid");
   }
-  const parent = one<CampaignRow>(db, `SELECT * FROM warden_campaigns WHERE id = ? AND tenant_id = ?`,
+  const parent = one<CampaignRow>(db, `SELECT * FROM fettler_campaigns WHERE id = ? AND tenant_id = ?`,
     [input.campaignId, input.tenantId]);
   if (!parent) throw new Error("warden_campaign_not_found");
   if (parent.status !== "draft") throw new Error("warden_campaign_not_draft");
@@ -555,14 +555,14 @@ export function planWardenRollout(db: AppDb, input: {
   const decisionSha256 = createHash("sha256").update(decisionJson, "utf8").digest("hex");
   db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const existing = one<RolloutDecisionRow>(db, `SELECT * FROM warden_rollout_decisions WHERE id = ?`, [input.id]);
+    const existing = one<RolloutDecisionRow>(db, `SELECT * FROM fettler_rollout_decisions WHERE id = ?`, [input.id]);
     if (existing) {
       if (existing.tenant_id !== input.tenantId || existing.decision_sha256 !== decisionSha256) {
         throw new Error("warden_rollout_decision_id_conflict");
       }
       const value = rolloutDecision(existing); db.raw.exec("COMMIT"); return value;
     }
-    db.raw.prepare(`INSERT INTO warden_rollout_decisions
+    db.raw.prepare(`INSERT INTO fettler_rollout_decisions
       (id, tenant_id, campaign_id, campaign_revision, canary_target_id, max_cohort_size,
        decision_json, decision_sha256, created_by_principal_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(input.id, input.tenantId, input.campaignId,
@@ -572,7 +572,7 @@ export function planWardenRollout(db: AppDb, input: {
       decisionSha256, campaignRevision: parent.revision, canaryTargetId: canary.id,
       cohortCount: cohorts.length, maxCohortSize: input.maxCohortSize, requiresHumanApproval: true } });
     const value = rolloutDecision(one<RolloutDecisionRow>(db,
-      `SELECT * FROM warden_rollout_decisions WHERE id = ?`, [input.id])!);
+      `SELECT * FROM fettler_rollout_decisions WHERE id = ?`, [input.id])!);
     db.raw.exec("COMMIT"); return value;
   } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
 }

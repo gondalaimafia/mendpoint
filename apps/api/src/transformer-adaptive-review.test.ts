@@ -1072,7 +1072,7 @@ describe("transformer adaptive candidate review routes", () => {
       body: reviewBody("approve"),
     });
     db.raw.prepare(
-      `UPDATE transformer_adaptive_candidates
+      `UPDATE regauge_adaptive_candidates
        SET created_at = '2026-08-01T00:00:00.000Z', updated_at = '2026-08-01T00:00:00.000Z'
        WHERE id IN (?, ?)`,
     ).run(pending.id, approved.id);
@@ -1099,7 +1099,7 @@ describe("transformer adaptive candidate review routes", () => {
         now: observedAt,
       });
       db.raw.prepare(
-        `UPDATE transformer_adaptive_candidates
+        `UPDATE regauge_adaptive_candidates
          SET status = 'rejected', review_decision = 'reject',
              reviewer_principal_id = 'human:reviewer@a.com', reviewed_at = ?, updated_at = ?
          WHERE id = ? AND tenant_id = 'tenant-a'`,
@@ -1211,12 +1211,12 @@ describe("transformer adaptive candidate review routes", () => {
       body: reviewBody("approve"),
     });
     db.raw.prepare(
-      `UPDATE transformer_adaptive_candidates
+      `UPDATE regauge_adaptive_candidates
        SET status = 'promoted', promoted_at = ?, updated_at = ?
        WHERE id = ? AND tenant_id = ?`,
     ).run(NOW, NOW, seeded.id, "tenant-a");
     db.raw.prepare(
-      `UPDATE transformer_adaptive_deliveries
+      `UPDATE regauge_adaptive_deliveries
        SET status = 'delivered', branch_name = ?, base_revision = ?, commit_sha = ?,
            draft_pr = 1, draft_pr_number = 42, draft_pr_url = ?, delivered_at = ?, updated_at = ?
        WHERE candidate_id = ? AND tenant_id = ?`,
@@ -1254,7 +1254,7 @@ describe("transformer adaptive candidate review routes", () => {
     const { app, db } = fixture();
     const seeded = seedCandidate(db, "tenant-a");
     db.raw.prepare(
-      `UPDATE transformer_adaptive_candidates
+      `UPDATE regauge_adaptive_candidates
        SET status = 'promoted', review_decision = 'approve',
            reviewer_principal_id = 'human:reviewer@a.com', reviewed_at = ?,
            promoted_at = ?, expires_at = '2026-01-01T00:00:00.000Z', updated_at = ?
@@ -1287,7 +1287,7 @@ describe("transformer adaptive candidate review routes", () => {
       expiresAt: "2099-01-01T00:00:00.000Z",
     });
     db.raw.prepare(
-      `UPDATE transformer_adaptive_candidates
+      `UPDATE regauge_adaptive_candidates
        SET status = 'promoted', review_decision = 'approve',
            reviewer_principal_id = 'human:reviewer@a.com', reviewed_at = ?,
            promoted_at = ?, updated_at = ?
@@ -1320,7 +1320,7 @@ describe("transformer adaptive candidate review routes", () => {
       body: reviewBody("approve"),
     });
     db.raw.prepare(
-      `UPDATE transformer_adaptive_candidates
+      `UPDATE regauge_adaptive_candidates
        SET status = 'promoted', promoted_at = ?, updated_at = ?
        WHERE id = ? AND tenant_id = ?`,
     ).run(NOW, NOW, seeded.id, "tenant-a");
@@ -1360,7 +1360,7 @@ describe("transformer adaptive candidate review routes", () => {
     const { app, db } = fixture();
     const seeded = seedCandidate(db, "tenant-a");
     db.raw
-      .prepare("UPDATE transformer_adaptive_candidates SET failing_command_id = ? WHERE id = ?")
+      .prepare("UPDATE regauge_adaptive_candidates SET failing_command_id = ? WHERE id = ?")
       .run("verify:different", seeded.id);
     const res = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
       method: "POST",

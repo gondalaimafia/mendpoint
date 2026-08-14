@@ -1943,7 +1943,7 @@ describe("worker runtime", () => {
         retention: { expiresAt: "2020-01-01T00:00:00.000Z" },
       }),
     });
-    db.raw.prepare(`INSERT INTO warden_ci_cycles
+    db.raw.prepare(`INSERT INTO fettler_ci_cycles
       (id, tenant_id, delivery_id, observation_job_id, status, repository_id, remote_repository_id,
        installation_id, pull_request_number, base_branch, branch_name, base_revision, current_head_sha,
        required_checks_json, allowed_changed_paths_json, max_cycles, used_cycles, max_model_calls,
@@ -1997,7 +1997,7 @@ describe("worker runtime", () => {
       }),
     });
     db.raw.prepare(
-      `INSERT INTO warden_candidate_deliveries
+      `INSERT INTO fettler_candidate_deliveries
        (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
         expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
         requested_at, updated_at)
@@ -2019,7 +2019,7 @@ describe("worker runtime", () => {
     expect(existsSync(approval)).toBe(true);
 
     db.raw.prepare(
-      `UPDATE warden_candidate_deliveries
+      `UPDATE fettler_candidate_deliveries
        SET status = 'delivery_failed', failed_at = ?, updated_at = ?
        WHERE id = 'delivery-retained' AND tenant_id = ?`,
     ).run("2026-08-06T12:00:01.000Z", "2026-08-06T12:00:01.000Z", tenant);
@@ -2368,7 +2368,7 @@ describe("worker runtime", () => {
       .run(JSON.stringify({ ...payload, ciFailure: { cycleId: "cycle-ci-no-action", deliveryId: "delivery-ci",
         pullRequestNumber: 17, failedHeadSha: "d".repeat(40), observationDigest,
         evidenceArtifactId: "artifact-ci", evidenceDigest: `sha256:${"f".repeat(64)}` } }), job.id);
-    fixture.db.raw.prepare(`INSERT INTO warden_ci_cycles
+    fixture.db.raw.prepare(`INSERT INTO fettler_ci_cycles
       (id, tenant_id, delivery_id, observation_job_id, status, repository_id, remote_repository_id,
        installation_id, pull_request_number, base_branch, branch_name, base_revision, current_head_sha,
        required_checks_json, allowed_changed_paths_json, max_cycles, used_cycles, max_model_calls,

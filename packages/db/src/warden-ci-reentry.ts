@@ -125,14 +125,14 @@ function update(row: UpdateRow): WardenCiUpdate {
 }
 
 export function getWardenCiCycle(db: AppDb, tenantId: string, cycleId: string): WardenCiCycle | undefined {
-  const row = db.raw.prepare("SELECT * FROM warden_ci_cycles WHERE id = ? AND tenant_id = ?")
+  const row = db.raw.prepare("SELECT * FROM fettler_ci_cycles WHERE id = ? AND tenant_id = ?")
     .get(cycleId, tenantId) as CycleRow | undefined;
   return row ? cycle(row) : undefined;
 }
 
 export function listWardenCiObservations(db: AppDb, tenantId: string, cycleId: string): readonly WardenCiObservation[] {
   return Object.freeze((db.raw.prepare(
-    "SELECT * FROM warden_ci_observations WHERE tenant_id = ? AND cycle_id = ? ORDER BY observed_at, id",
+    "SELECT * FROM fettler_ci_observations WHERE tenant_id = ? AND cycle_id = ? ORDER BY observed_at, id",
   ).all(tenantId, cycleId) as ObservationRow[]).map(observation));
 }
 
@@ -153,7 +153,7 @@ export function enqueueWardenCiCycle(db: AppDb, input: Readonly<{
   if (maxModelCalls < maxCycles) throw new Error("warden_ci_budget_invalid");
   if (!Number.isFinite(input.maximumCostUsd) || input.maximumCostUsd <= 0 || input.maximumCostUsd > 1_000) throw new Error("warden_ci_budget_invalid");
   const observedAt = timestamp(input.observedAt);
-  const delivery = db.raw.prepare("SELECT * FROM warden_candidate_deliveries WHERE id = ? AND tenant_id = ?")
+  const delivery = db.raw.prepare("SELECT * FROM fettler_candidate_deliveries WHERE id = ? AND tenant_id = ?")
     .get(deliveryId, tenantId) as Record<string, unknown> | undefined;
   if (!delivery || delivery.status !== "delivered" || delivery.repository_id !== repositoryId ||
       typeof delivery.branch_name !== "string" || !BRANCH.test(delivery.branch_name) ||
@@ -178,7 +178,7 @@ export function enqueueWardenCiCycle(db: AppDb, input: Readonly<{
       (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at, available_at, lease_generation)
       VALUES (?, ?, 'warden.candidate.observe', ?, 'pending', 0, 100, ?, ?, 0)`)
       .run(jobId, tenantId, JSON.stringify({ cycleId, deliveryId }), observedAt, observedAt);
-    db.raw.prepare(`INSERT INTO warden_ci_cycles
+    db.raw.prepare(`INSERT INTO fettler_ci_cycles
       (id, tenant_id, delivery_id, observation_job_id, status, repository_id, remote_repository_id,
        installation_id, pull_request_number, base_branch, branch_name, base_revision, current_head_sha,
        required_checks_json, allowed_changed_paths_json, max_cycles, used_cycles, max_model_calls,
@@ -212,7 +212,7 @@ export function recordWardenCiObservation(db: AppDb, input: Readonly<{
   const evidenceDigest = digest(input.evidenceDigest, "warden_ci_evidence_invalid");
   const observedAt = timestamp(input.observedAt);
   const observationId = stableId("wardenciobservation", current.tenantId, cycleId, headSha, observationDigest);
-  const prior = db.raw.prepare("SELECT * FROM warden_ci_observations WHERE id = ? AND tenant_id = ?")
+  const prior = db.raw.prepare("SELECT * FROM fettler_ci_observations WHERE id = ? AND tenant_id = ?")
     .get(observationId, current.tenantId) as ObservationRow | undefined;
   if (prior) {
     const mapped = observation(prior);
@@ -224,7 +224,7 @@ export function recordWardenCiObservation(db: AppDb, input: Readonly<{
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
-    db.raw.prepare(`INSERT INTO warden_ci_observations
+    db.raw.prepare(`INSERT INTO fettler_ci_observations
       (id, tenant_id, cycle_id, head_sha, verdict, observation_digest, evidence_artifact_id, evidence_digest, observed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(observationId, current.tenantId, cycleId, headSha, input.verdict, observationDigest,
@@ -238,7 +238,7 @@ export function recordWardenCiObservation(db: AppDb, input: Readonly<{
         .run(repairDispatchJobId, current.tenantId,
           JSON.stringify({ cycleId, observationId, observationDigest }), observedAt, observedAt);
     }
-    db.raw.prepare(`UPDATE warden_ci_cycles SET status = ?, current_observation_digest = ?, updated_at = ?
+    db.raw.prepare(`UPDATE fettler_ci_cycles SET status = ?, current_observation_digest = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND current_head_sha = ?`)
       .run(nextStatus, observationDigest, observedAt, cycleId, current.tenantId, headSha);
     if (owns) db.raw.exec("COMMIT");
@@ -246,7 +246,7 @@ export function recordWardenCiObservation(db: AppDb, input: Readonly<{
     if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
     throw error;
   }
-  return observation(db.raw.prepare("SELECT * FROM warden_ci_observations WHERE id = ?").get(observationId) as ObservationRow);
+  return observation(db.raw.prepare("SELECT * FROM fettler_ci_observations WHERE id = ?").get(observationId) as ObservationRow);
 }
 
 export function beginWardenCiRepair(db: AppDb, input: Readonly<{
@@ -269,7 +269,7 @@ export function beginWardenCiRepair(db: AppDb, input: Readonly<{
   }
   const repairRunId = id(input.repairRunId, "warden_ci_repair_run_invalid");
   const repairJobId = id(input.repairJobId, "warden_ci_repair_job_invalid");
-  db.raw.prepare(`UPDATE warden_ci_cycles SET status = 'repair_pending', used_cycles = used_cycles + 1,
+  db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'repair_pending', used_cycles = used_cycles + 1,
     repair_run_id = ?, repair_job_id = ?, updated_at = ?
     WHERE id = ? AND tenant_id = ? AND status = 'checks_failed' AND used_cycles < max_cycles`)
     .run(repairRunId, repairJobId, timestamp(input.observedAt), current.id, current.tenantId);
@@ -286,7 +286,7 @@ export function exhaustWardenCiCycle(db: AppDb, input: Readonly<{
       current.currentObservationDigest !== digest(input.observationDigest, "warden_ci_observation_digest_invalid")) {
     throw new Error("warden_ci_exhaustion_not_authorized");
   }
-  const changed = db.raw.prepare(`UPDATE warden_ci_cycles SET status = 'exhausted', updated_at = ?
+  const changed = db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'exhausted', updated_at = ?
     WHERE id = ? AND tenant_id = ? AND status = 'checks_failed' AND used_cycles >= max_cycles
       AND current_observation_digest = ?`)
     .run(timestamp(input.observedAt), current.id, current.tenantId, current.currentObservationDigest);
@@ -306,18 +306,18 @@ export function pauseWardenCiCycle(db: AppDb, input: Readonly<{
     const current = getWardenCiCycle(db, input.tenantId, input.cycleId);
     if (!current) throw new Error("warden_ci_cycle_not_found");
     if (current.status === "succeeded") throw new Error("warden_ci_cycle_terminal");
-    const mutation = db.raw.prepare(`SELECT 1 AS active FROM warden_ci_updates update_row
+    const mutation = db.raw.prepare(`SELECT 1 AS active FROM fettler_ci_updates update_row
       JOIN jobs job ON job.id = update_row.job_id AND job.tenant_id = update_row.tenant_id
       WHERE update_row.tenant_id = ? AND update_row.cycle_id = ? AND update_row.status = 'intent_bound'
         AND job.status = 'running' AND job.lease_expires_at > ? LIMIT 1`)
       .get(current.tenantId, current.id, observedAt) as { active: number } | undefined;
     if (mutation) throw new Error("warden_ci_mutation_in_flight");
-    db.raw.prepare(`UPDATE warden_ci_updates SET status = 'uncertain', updated_at = ?
+    db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'uncertain', updated_at = ?
       WHERE tenant_id = ? AND cycle_id = ? AND status = 'intent_bound'`)
       .run(observedAt, current.tenantId, current.id);
-    const changed = db.raw.prepare(`UPDATE warden_ci_cycles SET status = 'paused', paused_by = ?, pause_reason = ?, updated_at = ?
+    const changed = db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'paused', paused_by = ?, pause_reason = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND status <> 'succeeded'
-        AND NOT EXISTS (SELECT 1 FROM warden_ci_updates update_row
+        AND NOT EXISTS (SELECT 1 FROM fettler_ci_updates update_row
           JOIN jobs job ON job.id = update_row.job_id AND job.tenant_id = update_row.tenant_id
           WHERE update_row.tenant_id = ? AND update_row.cycle_id = ? AND update_row.status = 'intent_bound'
             AND job.status = 'running' AND job.lease_expires_at > ?)`)
@@ -340,7 +340,7 @@ export function rebindWardenCiRepair(db: AppDb, input: Readonly<{
       current.repairRunId !== id(input.currentRepairRunId, "warden_ci_repair_run_invalid")) {
     throw new Error("warden_ci_repair_rebind_not_authorized");
   }
-  const changed = db.raw.prepare(`UPDATE warden_ci_cycles SET repair_run_id = ?, repair_job_id = ?, updated_at = ?
+  const changed = db.raw.prepare(`UPDATE fettler_ci_cycles SET repair_run_id = ?, repair_job_id = ?, updated_at = ?
     WHERE id = ? AND tenant_id = ? AND status = 'repair_pending' AND repair_run_id = ?`)
     .run(id(input.nextRepairRunId, "warden_ci_repair_run_invalid"),
       id(input.nextRepairJobId, "warden_ci_repair_job_invalid"), timestamp(input.observedAt),
@@ -361,7 +361,7 @@ export function settleWardenCiRepairWithoutCandidate(db: AppDb, input: Readonly<
   if (current.status !== "repair_pending" || current.repairRunId !== repairRunId) {
     throw new Error("warden_ci_repair_settlement_not_authorized");
   }
-  const changed = db.raw.prepare(`UPDATE warden_ci_cycles SET status = 'paused', paused_by = 'warden-ci-system',
+  const changed = db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'paused', paused_by = 'warden-ci-system',
     pause_reason = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND status = 'repair_pending'
       AND repair_run_id = ?`)
     .run(reason, timestamp(input.observedAt), current.id, current.tenantId, repairRunId);
@@ -375,7 +375,7 @@ export function failWardenCiOperation(db: AppDb, input: Readonly<{
   const current = getWardenCiCycle(db, input.tenantId, input.cycleId);
   if (!current) throw new Error("warden_ci_cycle_not_found");
   const jobId = id(input.jobId, "warden_ci_operation_job_invalid");
-  const updateRow = db.raw.prepare(`SELECT id FROM warden_ci_updates
+  const updateRow = db.raw.prepare(`SELECT id FROM fettler_ci_updates
     WHERE tenant_id = ? AND cycle_id = ? AND job_id = ? LIMIT 1`)
     .get(current.tenantId, current.id, jobId) as { id: string } | undefined;
   const operationJob = db.raw.prepare(`SELECT 1 AS active FROM jobs WHERE id = ? AND tenant_id = ?
@@ -388,11 +388,11 @@ export function failWardenCiOperation(db: AppDb, input: Readonly<{
   }
   const reason = text(input.reason, "warden_ci_pause_reason_invalid", 2_000);
   const observedAt = timestamp(input.observedAt);
-  db.raw.prepare(`UPDATE warden_ci_cycles SET status = 'paused', paused_by = 'warden-ci-system',
+  db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'paused', paused_by = 'warden-ci-system',
     pause_reason = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND status NOT IN ('succeeded','exhausted')`)
     .run(reason, observedAt, current.id, current.tenantId);
   if (updateRow) {
-    db.raw.prepare(`UPDATE warden_ci_updates SET status = 'failed', updated_at = ?
+    db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'failed', updated_at = ?
       WHERE id = ? AND tenant_id = ? AND status = 'pending'`)
       .run(observedAt, updateRow.id, current.tenantId);
   }
@@ -400,13 +400,13 @@ export function failWardenCiOperation(db: AppDb, input: Readonly<{
 }
 
 export function getWardenCiUpdate(db: AppDb, tenantId: string, updateId: string): WardenCiUpdate | undefined {
-  const row = db.raw.prepare("SELECT * FROM warden_ci_updates WHERE id = ? AND tenant_id = ?")
+  const row = db.raw.prepare("SELECT * FROM fettler_ci_updates WHERE id = ? AND tenant_id = ?")
     .get(updateId, tenantId) as UpdateRow | undefined;
   return row ? update(row) : undefined;
 }
 
 export function getWardenCiUpdateByRun(db: AppDb, tenantId: string, runId: string): WardenCiUpdate | undefined {
-  const row = db.raw.prepare("SELECT * FROM warden_ci_updates WHERE repair_run_id = ? AND tenant_id = ?")
+  const row = db.raw.prepare("SELECT * FROM fettler_ci_updates WHERE repair_run_id = ? AND tenant_id = ?")
     .get(runId, tenantId) as UpdateRow | undefined;
   return row ? update(row) : undefined;
 }
@@ -444,13 +444,13 @@ export function enqueueWardenCiUpdate(db: AppDb, input: Readonly<{
       (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at, available_at, lease_generation)
       VALUES (?, ?, 'warden.candidate.update', ?, 'pending', 0, 20, ?, ?, 0)`)
       .run(jobId, cycle.tenantId, JSON.stringify({ cycleId, updateId }), observedAt, observedAt);
-    db.raw.prepare(`INSERT INTO warden_ci_updates
+    db.raw.prepare(`INSERT INTO fettler_ci_updates
       (id, tenant_id, cycle_id, repair_run_id, job_id, status, expected_head_sha, sealed_path,
        sealed_sha256, reviewer_principal_id, rationale, requested_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`)
       .run(updateId, cycle.tenantId, cycleId, repairRunId, jobId, expectedHeadSha, sealedPath,
         sealedSha256, reviewerPrincipalId, rationale, observedAt, observedAt);
-    const changed = db.raw.prepare(`UPDATE warden_ci_cycles SET status = 'update_pending', updated_at = ?
+    const changed = db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'update_pending', updated_at = ?
       WHERE id = ? AND tenant_id = ? AND status = 'repair_pending' AND repair_run_id = ? AND current_head_sha = ?`)
       .run(observedAt, cycleId, cycle.tenantId, repairRunId, expectedHeadSha);
     if (Number(changed.changes) !== 1) throw new Error("warden_ci_update_not_authorized");
@@ -480,10 +480,10 @@ export function bindWardenCiUpdateIntent(db: AppDb, input: Readonly<{
       if (owns) db.raw.exec("COMMIT");
       return current;
     }
-    const changed = db.raw.prepare(`UPDATE warden_ci_updates SET status = 'intent_bound', intent_digest = ?, updated_at = ?
+    const changed = db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'intent_bound', intent_digest = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND status IN ('pending','uncertain')
         AND (intent_digest IS NULL OR intent_digest = ?)
-        AND EXISTS (SELECT 1 FROM warden_ci_cycles cycle WHERE cycle.id = cycle_id
+        AND EXISTS (SELECT 1 FROM fettler_ci_cycles cycle WHERE cycle.id = cycle_id
           AND cycle.tenant_id = tenant_id AND cycle.status = 'update_pending'
           AND cycle.current_head_sha = expected_head_sha)
         AND EXISTS (SELECT 1 FROM jobs job WHERE job.id = job_id AND job.tenant_id = tenant_id
@@ -504,7 +504,7 @@ export function markWardenCiUpdateUncertain(db: AppDb, input: Readonly<{
   tenantId: string; updateId: string; intentDigest: string; observedAt: string;
 }>): WardenCiUpdate {
   const intentDigest = digest(input.intentDigest, "warden_ci_update_intent_invalid");
-  const changed = db.raw.prepare(`UPDATE warden_ci_updates SET status = 'uncertain', updated_at = ?
+  const changed = db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'uncertain', updated_at = ?
     WHERE id = ? AND tenant_id = ? AND status = 'intent_bound' AND intent_digest = ?`)
     .run(timestamp(input.observedAt), input.updateId, input.tenantId, intentDigest);
   if (Number(changed.changes) !== 1) throw new Error("warden_ci_update_uncertain_not_authorized");
@@ -539,17 +539,17 @@ export function completeWardenCiUpdate(db: AppDb, input: Readonly<{
       VALUES (?, ?, 'warden.candidate.observe', ?, 'pending', 0, 100, ?, ?, 0)`)
       .run(nextObservationJobId, cycle.tenantId, JSON.stringify({ cycleId: cycle.id, deliveryId: cycle.deliveryId }),
         observedAt, observedAt);
-    const completed = db.raw.prepare(`UPDATE warden_ci_updates SET status = 'delivered', commit_sha = ?, delivered_at = ?, updated_at = ?
+    const completed = db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'delivered', commit_sha = ?, delivered_at = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND status IN ('intent_bound','uncertain')`)
       .run(commitSha, observedAt, observedAt, current.id, current.tenantId);
     if (Number(completed.changes) !== 1) throw new Error("warden_ci_update_not_authorized");
-    const advanced = cycle.status === "paused" ? { changes: 1 } : db.raw.prepare(`UPDATE warden_ci_cycles SET status = 'observation_pending',
+    const advanced = cycle.status === "paused" ? { changes: 1 } : db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'observation_pending',
       observation_job_id = ?, current_head_sha = ?, current_observation_digest = NULL,
       repair_run_id = NULL, repair_job_id = NULL, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND status = 'update_pending' AND current_head_sha = ?`)
       .run(nextObservationJobId, commitSha, observedAt, cycle.id, cycle.tenantId, expectedHeadSha);
     if (cycle.status === "paused") {
-      const reconciled = db.raw.prepare(`UPDATE warden_ci_cycles SET current_head_sha = ?, updated_at = ?
+      const reconciled = db.raw.prepare(`UPDATE fettler_ci_cycles SET current_head_sha = ?, updated_at = ?
         WHERE id = ? AND tenant_id = ? AND status = 'paused' AND current_head_sha = ?`)
         .run(commitSha, observedAt, cycle.id, cycle.tenantId, expectedHeadSha);
       if (Number(reconciled.changes) !== 1) throw new Error("warden_ci_update_not_authorized");

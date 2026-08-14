@@ -23,7 +23,7 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-warden-observe-"));
   const db = createDb(join(root, "worker.sqlite"));
   opened.push({ db, root });
-  db.raw.prepare(`INSERT INTO warden_candidate_deliveries
+  db.raw.prepare(`INSERT INTO fettler_candidate_deliveries
     (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
      expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
      intent_digest, branch_name, base_revision, commit_sha, draft_pr, draft_pr_number,

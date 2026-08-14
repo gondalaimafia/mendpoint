@@ -151,7 +151,7 @@ describe("Warden exact candidate draft delivery", () => {
     expect(getJob(db, job.id, "tenant-a")?.status).toBe("done");
     expect(getWardenCandidateDeliveryByRun(db, "tenant-a", "warden-run-1")?.draftPrUrl)
       .toBe("https://github.com/acme/sdk/pull/17");
-    const cycle = db.raw.prepare("SELECT id FROM warden_ci_cycles WHERE tenant_id = 'tenant-a'").get() as { id: string };
+    const cycle = db.raw.prepare("SELECT id FROM fettler_ci_cycles WHERE tenant_id = 'tenant-a'").get() as { id: string };
     expect(getWardenCiCycle(db, "tenant-a", cycle.id)).toMatchObject({
       status: "observation_pending",
       currentHeadSha: "b".repeat(40),

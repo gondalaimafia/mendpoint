@@ -22,7 +22,7 @@ function fixture() {
   paths.push(path);
   const db = createDb(path);
   databases.push(db);
-  db.raw.prepare(`INSERT INTO warden_ci_cycles
+  db.raw.prepare(`INSERT INTO fettler_ci_cycles
     (id, tenant_id, delivery_id, observation_job_id, status, repository_id, remote_repository_id,
      installation_id, pull_request_number, base_branch, branch_name, base_revision, current_head_sha,
      required_checks_json, allowed_changed_paths_json, max_cycles, used_cycles, max_model_calls,
@@ -79,7 +79,7 @@ describe("Warden CI exact draft update authority", () => {
 
   it("rejects update approval after a human pause", () => {
     const db = fixture();
-    db.raw.prepare("UPDATE warden_ci_cycles SET status = 'paused' WHERE id = 'cycle-a'").run();
+    db.raw.prepare("UPDATE fettler_ci_cycles SET status = 'paused' WHERE id = 'cycle-a'").run();
     expect(() => enqueueWardenCiUpdate(db, { tenantId: "tenant-a", cycleId: "cycle-a",
       repairRunId: "repair-run-a", expectedHeadSha: sha("d"), sealedPath: "sealed/approval.json",
       sealedSha256: digest("f"), reviewerPrincipalId: "principal-a", rationale: "Approve CI repair",

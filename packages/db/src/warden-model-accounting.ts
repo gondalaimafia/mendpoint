@@ -155,7 +155,7 @@ function getRow(
   reservationId: string,
 ): WardenModelReservationRow | undefined {
   return db.raw.prepare(
-    "SELECT * FROM warden_model_reservations WHERE tenant_id = ? AND id = ?",
+    "SELECT * FROM fettler_model_reservations WHERE tenant_id = ? AND id = ?",
   ).get(tenantId, reservationId) as WardenModelReservationRow | undefined;
 }
 
@@ -244,7 +244,7 @@ export function reserveWardenModelCall(
       return existing;
     }
     const duplicateCall = db.raw.prepare(
-      `SELECT id FROM warden_model_reservations
+      `SELECT id FROM fettler_model_reservations
        WHERE tenant_id = ? AND job_id = ? AND lease_generation = ? AND call_index = ?`,
     ).get(input.tenantId, input.jobId, input.leaseGeneration, input.callIndex) as
       | { id: string }
@@ -254,14 +254,14 @@ export function reserveWardenModelCall(
       `SELECT COALESCE(SUM(
          CASE WHEN status = 'active' THEN maximum_cost_usd ELSE charged_cost_usd END
        ), 0) AS committed
-       FROM warden_model_reservations
+       FROM fettler_model_reservations
        WHERE tenant_id = ? AND job_id = ?`,
     ).get(input.tenantId, input.jobId) as { committed: number };
     if (totals.committed + input.maximumCostUsd > input.jobBudgetUsd + 1e-12) {
       throw new Error("warden_model_budget_exhausted");
     }
     db.raw.prepare(
-      `INSERT INTO warden_model_reservations
+      `INSERT INTO fettler_model_reservations
        (id, tenant_id, job_id, run_id, worker_id, lease_generation, call_index,
         request_digest, reservation_digest, provider, configured_model, endpoint_host,
         status, maximum_input_tokens, maximum_output_tokens, maximum_total_tokens,
@@ -340,7 +340,7 @@ export function settleWardenModelCall(
     const chargedTotal = exact ? input.totalTokens! : reservation.maximum_total_tokens;
     const chargedCost = exact ? input.costUsd! : reservation.maximum_cost_usd;
     const updated = db.raw.prepare(
-      `UPDATE warden_model_reservations
+      `UPDATE fettler_model_reservations
        SET settlement_digest = ?, actual_model = ?, body_request_id = ?, header_request_id = ?,
            status = ?, reported_input_tokens = ?, reported_output_tokens = ?,
            reported_total_tokens = ?, reported_cost_usd = ?, charged_input_tokens = ?,
@@ -384,7 +384,7 @@ export function settleExpiredWardenModelReservations(
   if (tenantId) requireId(tenantId, "warden_model_tenant_invalid");
   const settlementDigest = digest({ status: "unknown", errorCode: "warden_model_lease_expired" });
   const updated = db.raw.prepare(
-    `UPDATE warden_model_reservations
+    `UPDATE fettler_model_reservations
      SET status = 'unknown', settlement_digest = ?,
          charged_input_tokens = maximum_input_tokens,
          charged_output_tokens = maximum_output_tokens,
@@ -395,11 +395,11 @@ export function settleExpiredWardenModelReservations(
        AND ${tenantId ? "tenant_id = ? AND" : ""}
        EXISTS (
          SELECT 1 FROM jobs
-         WHERE jobs.id = warden_model_reservations.job_id
-           AND jobs.tenant_id = warden_model_reservations.tenant_id
+         WHERE jobs.id = fettler_model_reservations.job_id
+           AND jobs.tenant_id = fettler_model_reservations.tenant_id
            AND jobs.status = 'running'
-           AND jobs.lease_owner = warden_model_reservations.worker_id
-           AND jobs.lease_generation = warden_model_reservations.lease_generation
+           AND jobs.lease_owner = fettler_model_reservations.worker_id
+           AND jobs.lease_generation = fettler_model_reservations.lease_generation
            AND jobs.lease_expires_at IS NOT NULL
            AND jobs.lease_expires_at <= ?
        )`,
@@ -431,7 +431,7 @@ export function settleActiveWardenModelReservationsForFence(
   });
   return transaction(db, () => {
     const updated = db.raw.prepare(
-      `UPDATE warden_model_reservations
+      `UPDATE fettler_model_reservations
        SET status = 'unknown', settlement_digest = ?,
            charged_input_tokens = maximum_input_tokens,
            charged_output_tokens = maximum_output_tokens,
@@ -442,11 +442,11 @@ export function settleActiveWardenModelReservationsForFence(
          AND job_id = ? AND worker_id = ? AND lease_generation = ?
          AND EXISTS (
            SELECT 1 FROM jobs
-           WHERE jobs.id = warden_model_reservations.job_id
-             AND jobs.tenant_id = warden_model_reservations.tenant_id
+           WHERE jobs.id = fettler_model_reservations.job_id
+             AND jobs.tenant_id = fettler_model_reservations.tenant_id
              AND jobs.status = 'running'
-             AND jobs.lease_owner = warden_model_reservations.worker_id
-             AND jobs.lease_generation = warden_model_reservations.lease_generation
+             AND jobs.lease_owner = fettler_model_reservations.worker_id
+             AND jobs.lease_generation = fettler_model_reservations.lease_generation
              AND jobs.lease_expires_at IS NOT NULL
              AND jobs.lease_expires_at > ?
          )`,
@@ -471,7 +471,7 @@ export function countActiveWardenModelReservations(
   leaseGeneration: number,
 ): number {
   const row = db.raw.prepare(
-    `SELECT COUNT(*) AS count FROM warden_model_reservations
+    `SELECT COUNT(*) AS count FROM fettler_model_reservations
      WHERE tenant_id = ? AND job_id = ? AND worker_id = ?
        AND lease_generation = ? AND status = 'active'`,
   ).get(tenantId, jobId, workerId, leaseGeneration) as { count: number };

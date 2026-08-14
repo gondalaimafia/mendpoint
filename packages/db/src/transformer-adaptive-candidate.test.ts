@@ -136,10 +136,10 @@ describe("transformer adaptive candidate store", () => {
     const seed = createDb(path);
     dbs.push(seed);
     for (const column of ["family", "provider", "framework"]) {
-      seed.raw.exec(`ALTER TABLE transformer_adaptive_candidates DROP COLUMN ${column}`);
+      seed.raw.exec(`ALTER TABLE regauge_adaptive_candidates DROP COLUMN ${column}`);
     }
     const preColumns = (
-      seed.raw.prepare("PRAGMA table_info(transformer_adaptive_candidates)").all() as Array<{
+      seed.raw.prepare("PRAGMA table_info(regauge_adaptive_candidates)").all() as Array<{
         name: string;
       }>
     ).map((c) => c.name);
@@ -149,7 +149,7 @@ describe("transformer adaptive candidate store", () => {
 
     // Insert a legacy row against the pre-change shape (no label columns exist yet).
     seed.raw.exec(
-      `INSERT INTO transformer_adaptive_candidates
+      `INSERT INTO regauge_adaptive_candidates
         (id, tenant_id, campaign_id, unit_id, attempt_id, repository_id, snapshot_id,
          base_branch, expected_base_revision, kind, status, review_tier,
          diverged_from_digest, candidate_digest, failing_command_id,
@@ -169,7 +169,7 @@ describe("transformer adaptive candidate store", () => {
     const upgraded = createDb(path);
     dbs.push(upgraded);
     const postColumns = (
-      upgraded.raw.prepare("PRAGMA table_info(transformer_adaptive_candidates)").all() as Array<{
+      upgraded.raw.prepare("PRAGMA table_info(regauge_adaptive_candidates)").all() as Array<{
         name: string;
       }>
     ).map((c) => c.name);

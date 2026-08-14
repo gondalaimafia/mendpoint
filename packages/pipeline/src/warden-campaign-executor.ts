@@ -277,7 +277,7 @@ function artifactReference(row: {
 
 function campaignStatus(db: AppDb, tenantId: string, campaignId: string): string {
   const row = db.raw.prepare(
-    "SELECT status FROM warden_campaigns WHERE id = ? AND tenant_id = ?",
+    "SELECT status FROM fettler_campaigns WHERE id = ? AND tenant_id = ?",
   ).get(campaignId, tenantId) as CampaignRow | undefined;
   if (!row) throw new WardenCampaignExecutionError("warden_campaign_not_found", false);
   return row.status;

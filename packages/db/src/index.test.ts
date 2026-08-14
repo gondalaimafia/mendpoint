@@ -2290,9 +2290,9 @@ describe("db", () => {
       "routing_executor_health",
       "routing_outcome_applications",
       "repository_snapshot_files",
-      "warden_ci_cycles",
-      "warden_ci_observations",
-      "warden_ci_updates",
+      "fettler_ci_cycles",
+      "fettler_ci_observations",
+      "fettler_ci_updates",
     ]) {
       expect(columnsOf(migrated, table)).toEqual(columnsOf(fresh, table));
       expect(indexesOf(migrated, table)).toEqual(indexesOf(fresh, table));
@@ -2362,7 +2362,7 @@ describe("db", () => {
         .map((i) => i.name)
         .sort();
 
-    const table = "transformer_adaptive_candidates";
+    const table = "regauge_adaptive_candidates";
     expect(columnsOf(migrated, table)).toEqual(columnsOf(fresh, table));
     expect(indexesOf(migrated, table)).toEqual(indexesOf(fresh, table));
     expect(columnsOf(migrated, table)).toContain("candidate_digest");
@@ -2413,7 +2413,7 @@ describe("db", () => {
               '${"a".repeat(40)}', '${"b".repeat(64)}', 'C:/snapshot-upgrade',
               'reject', 'reject', '[]', '2026-08-06T00:00:00.000Z',
               '2026-09-06T00:00:00.000Z');
-      INSERT INTO transformer_adaptive_candidates
+      INSERT INTO regauge_adaptive_candidates
         (id, tenant_id, campaign_id, unit_id, attempt_id, repository_id, snapshot_id,
          base_branch, expected_base_revision, kind, status, diverged_from_digest,
          candidate_digest, failing_command_id, sealed_path, sealed_sha256,
@@ -2427,7 +2427,7 @@ describe("db", () => {
               'approve', '2026-08-06T00:01:00.000Z', NULL,
               '2026-09-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z',
               '2026-08-06T00:01:00.000Z');
-      INSERT INTO transformer_adaptive_deliveries
+      INSERT INTO regauge_adaptive_deliveries
         (id, tenant_id, candidate_id, job_id, status, repository_id, snapshot_id,
          base_branch, expected_base_revision, requester_principal_id, requested_at, updated_at)
       VALUES ('delivery-upgrade', 'tenant-upgrade', 'candidate-upgrade', 'job-upgrade',
@@ -2439,18 +2439,18 @@ describe("db", () => {
 
     const legacy = new DatabaseSync(path);
     legacy.exec(`
-      ALTER TABLE transformer_adaptive_deliveries DROP COLUMN base_branch;
-      ALTER TABLE transformer_adaptive_candidates DROP COLUMN base_branch;
+      ALTER TABLE regauge_adaptive_deliveries DROP COLUMN base_branch;
+      ALTER TABLE regauge_adaptive_candidates DROP COLUMN base_branch;
     `);
     legacy.close();
 
     const migrated = createDb(path);
     dbs.push(migrated);
     expect(migrated.raw.prepare(
-      "SELECT base_branch FROM transformer_adaptive_candidates WHERE id = 'candidate-upgrade'",
+      "SELECT base_branch FROM regauge_adaptive_candidates WHERE id = 'candidate-upgrade'",
     ).get()).toEqual({ base_branch: "release" });
     expect(migrated.raw.prepare(
-      "SELECT base_branch FROM transformer_adaptive_deliveries WHERE id = 'delivery-upgrade'",
+      "SELECT base_branch FROM regauge_adaptive_deliveries WHERE id = 'delivery-upgrade'",
     ).get()).toEqual({ base_branch: "release" });
   });
 
