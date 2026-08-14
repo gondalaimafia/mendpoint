@@ -53,6 +53,8 @@
     "claims:check": "tsx scripts/public-claims-check.ts",
     "actions:check": "vitest run scripts/github-actions-pins-check.test.ts && tsx scripts/github-actions-pins-check.ts",
     "ga:check": "npm run spec:check && npm run claims:check && npm run actions:check && tsx scripts/ga-check.ts",
+    "sandbox:image": "node scripts/build-sandbox-image.mjs",
+    "sandbox:image:push": "node scripts/build-sandbox-image.mjs --push",
     "auth:bootstrap": "tsx scripts/bootstrap-key.ts",
     "start:api": "npm run start -w @mendpoint/api"
   },
