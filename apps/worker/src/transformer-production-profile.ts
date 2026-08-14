@@ -4,6 +4,7 @@ import { resolveEitherRenamedEnv, resolveRenamedEnv } from "@mendpoint/shared";
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const API_KEY = /^me_[A-Za-z0-9_-]{32,}$/;
 const FLY_MACHINE_ID = /^[a-f0-9]{14,32}$/;
+const NUMERIC_ID = /^[1-9][0-9]{0,19}$/;
 
 export type TransformerProductionRole = "coordinator" | "worker";
 
@@ -99,8 +100,11 @@ export function validateTransformerProductionProfile(
   if (!env.MENDPOINT_RELEASE_REVISION?.trim()) {
     throw new Error("transformer_production_release_revision_required");
   }
+  let releaseRevision: string;
   try {
-    resolveReleaseRevision(env);
+    const resolvedRevision = resolveReleaseRevision(env);
+    if (!resolvedRevision) throw new Error("release_revision_missing");
+    releaseRevision = resolvedRevision;
   } catch {
     throw new Error("transformer_production_release_revision_invalid");
   }
@@ -120,6 +124,51 @@ export function validateTransformerProductionProfile(
     throw new Error("transformer_production_gate_scope_invalid");
   }
   if (!grant.productionDeliveryApprovalRefs.length) throw new Error("transformer_production_delivery_approval_required");
+  const repositoryId = required(
+    env.MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID,
+    "transformer_production_canary_repository_id_required",
+  );
+  if (!NUMERIC_ID.test(repositoryId)) {
+    throw new Error("transformer_production_canary_repository_id_invalid");
+  }
+  const productionApprovalRef = required(
+    env.MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF,
+    "transformer_production_delivery_approval_required",
+  );
+  const expectedApprovalPrefix = [
+    "approval:regauge",
+    tenantId,
+    campaignId,
+    "repository",
+    repositoryId,
+    "revision",
+    releaseRevision,
+    "draft:1:run",
+  ].join(":");
+  const approvalSuffix = productionApprovalRef.slice(expectedApprovalPrefix.length);
+  if (
+    !productionApprovalRef.startsWith(expectedApprovalPrefix) ||
+    !/^:[1-9][0-9]*:attempt:[1-9][0-9]*$/.test(approvalSuffix) ||
+    !grant.productionDeliveryApprovalRefs.includes(productionApprovalRef)
+  ) {
+    throw new Error("transformer_production_delivery_approval_scope_invalid");
+  }
+  const activationExpiry = required(
+    env.MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT,
+    "transformer_production_activation_expiry_required",
+  );
+  const activationExpiresAt = Date.parse(activationExpiry);
+  const now = Date.now();
+  if (
+    !Number.isFinite(activationExpiresAt) ||
+    new Date(activationExpiresAt).toISOString() !== activationExpiry ||
+    activationExpiresAt > now + 90 * 60_000
+  ) {
+    throw new Error("transformer_production_activation_expiry_invalid");
+  }
+  if (role === "worker" && activationExpiresAt <= now) {
+    throw new Error("transformer_production_activation_expired");
+  }
 
   const token = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_TOKEN"), "transformer_production_worker_token_required");
   if (!API_KEY.test(token)) throw new Error("transformer_production_worker_token_invalid");
@@ -151,6 +200,9 @@ export function validateTransformerProductionProfile(
   }
   const evidenceRefs = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_EVIDENCE_REFS"), "transformer_production_evidence_refs_required").split(",").map((value) => value.trim()).filter(Boolean);
   if (!evidenceRefs.length || new Set(evidenceRefs).size !== evidenceRefs.length) throw new Error("transformer_production_evidence_refs_invalid");
+  if (!evidenceRefs.includes(productionApprovalRef)) {
+    throw new Error("transformer_production_delivery_approval_scope_invalid");
+  }
 
   if (role === "coordinator") {
     exact(env.MENDPOINT_REGAUGE_BOOTSTRAP_ENABLED, "1", "transformer_production_bootstrap_required");

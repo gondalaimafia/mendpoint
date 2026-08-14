@@ -38,6 +38,17 @@ describe("Transformer service CLI", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("rejects an expired activation before any network or artifact work", async () => {
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const root = mkdtempSync(join(tmpdir(), "transformer-expired-")); roots.push(root);
+    const port = await freePort();
+    await expect(runTransformerServiceCli({
+      ...environment(root, port),
+      MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() - 1_000).toISOString(),
+    })).rejects.toThrow("transformer_multinode_activation_expired");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("reports 503 after a failed authenticated probe and 200 only after coordinator and artifact probes succeed", async () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-cli-")); roots.push(root);
     const port = await freePort();

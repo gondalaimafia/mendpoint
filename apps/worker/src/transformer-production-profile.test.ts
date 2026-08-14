@@ -5,7 +5,8 @@ import {
   validateTransformerProductionProfile,
 } from "./transformer-production-profile.js";
 
-const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: ["approval:pilot"] }] });
+const approval = `approval:regauge:tenant-a:campaign-a:repository:123456:revision:${"a".repeat(40)}:draft:1:run:98765:attempt:1`;
+const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [approval] }] });
 
 describe("Transformer production profile", () => {
   it("accepts the exact coordinator and worker production boundaries", () => {
@@ -97,6 +98,47 @@ describe("Transformer production profile", () => {
     const wrongGate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["ui"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [] }] });
     expect(() => validateTransformerProductionProfile({ ...environment(), MENDPOINT_TRANSFORMER_GATE: wrongGate }, "worker")).toThrow("transformer_production_gate_scope_invalid");
   });
+
+  it("requires a single-run draft approval bound to campaign, repository, and release", () => {
+    for (const value of [
+      "approval:pilot",
+      approval.replace("campaign-a", "campaign-b"),
+      approval.replace("repository:123456", "repository:654321"),
+      approval.replace(`revision:${"a".repeat(40)}`, `revision:${"b".repeat(40)}`),
+      approval.replace("draft:1", "draft:2"),
+    ]) {
+      const changedGate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [value] }] });
+      expect(() => validateTransformerProductionProfile({
+        ...environment(),
+        MENDPOINT_TRANSFORMER_GATE: changedGate,
+        MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF: value,
+        MENDPOINT_TRANSFORMER_EVIDENCE_REFS: `${value},evidence:pilot`,
+      }, "worker")).toThrow("transformer_production_delivery_approval_scope_invalid");
+    }
+  });
+
+  it("requires a canonical activation expiry within the protected run window", () => {
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: undefined,
+    }, "worker")).toThrow("transformer_production_activation_expiry_required");
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: "tomorrow",
+    }, "worker")).toThrow("transformer_production_activation_expiry_invalid");
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() - 1_000).toISOString(),
+    }, "worker")).toThrow("transformer_production_activation_expired");
+    expect(validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() - 1_000).toISOString(),
+    }, "coordinator").role).toBe("coordinator");
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() + 91 * 60_000).toISOString(),
+    }, "worker")).toThrow("transformer_production_activation_expiry_invalid");
+  });
 });
 
 function environment(): NodeJS.ProcessEnv {
@@ -111,11 +153,14 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_TRANSFORMER_CHECKPOINT_KEY: Buffer.alloc(32, 1).toString("base64"), MENDPOINT_TRANSFORMER_OPERATION_SECRET: Buffer.alloc(32, 2).toString("base64"),
     MENDPOINT_TRANSFORMER_S3_ENDPOINT: "https://s3.example.com", MENDPOINT_TRANSFORMER_S3_REGION: "auto", MENDPOINT_TRANSFORMER_S3_BUCKET: "pilot",
     MENDPOINT_TRANSFORMER_S3_PREFIX: "transformer/tenant-a/campaign-a", MENDPOINT_TRANSFORMER_S3_ACCESS_KEY_ID: "access", MENDPOINT_TRANSFORMER_S3_SECRET_ACCESS_KEY: "secret",
-    MENDPOINT_TRANSFORMER_EXECUTOR_DIGEST: `sha256:${"e".repeat(64)}`, MENDPOINT_TRANSFORMER_EVIDENCE_REFS: "evidence:pilot",
+    MENDPOINT_TRANSFORMER_EXECUTOR_DIGEST: `sha256:${"e".repeat(64)}`, MENDPOINT_TRANSFORMER_EVIDENCE_REFS: `${approval},evidence:pilot`,
     MENDPOINT_TRANSFORMER_READINESS_HOST: "0.0.0.0", MENDPOINT_DATA_DIR: "/data/db", GITHUB_APP_ID: "42", GITHUB_APP_PRIVATE_KEY: "private",
     GITHUB_WEBHOOK_SECRET: "webhook", GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant-a"}',
     FLY_MACHINE_ID: "abcd1234abcd12",
     MENDPOINT_RELEASE_REVISION: "a".repeat(40),
     MENDPOINT_REGAUGE_BOOTSTRAP_ENABLED: "1",
+    MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID: "123456",
+    MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF: approval,
+    MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() + 60 * 60_000).toISOString(),
   };
 }
