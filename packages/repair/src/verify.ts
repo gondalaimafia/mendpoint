@@ -32,6 +32,53 @@ export type VerificationExecution = {
 const SIMPLE_TOKEN = /^[A-Za-z0-9_./:@+-]+$/;
 const NODE_CHECK = /^check\.(?:mjs|cjs|js)$/;
 
+/** Operator-curated list of exact verification commands approved for production. */
+const APPROVED_COMMANDS_ENV = "MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION";
+/** Operator-curated list of SHA-256 hashes of node-check verifier files. */
+const APPROVED_HASHES_ENV = "MENDPOINT_APPROVED_VERIFIER_SHA256S";
+
+function normalizeVerificationCommand(command: string): string {
+  return command.trim().replace(/\s+/g, " ");
+}
+
+function approvedVerifierHashes(): Set<string> {
+  return new Set(
+    (process.env[APPROVED_HASHES_ENV] ?? "")
+      .split(",")
+      .map((hash) => hash.trim().toLowerCase())
+      .filter((hash) => /^[a-f0-9]{64}$/.test(hash)),
+  );
+}
+
+/**
+ * Operator override — the explicit, auditable allowlist of exact verification
+ * commands an operator has approved to run in production against repositories we
+ * did not write. Entries are exact commands, comma- or newline-separated, each
+ * normalized the same way as {@link parseVerificationCommand} (trimmed, internal
+ * whitespace collapsed) — for example `npm test`, `npm run typecheck`, or
+ * `pytest`. Unset or empty means nothing is approved, so the production path
+ * fails closed.
+ *
+ * The `node-check` profile is deliberately NOT approvable here: it executes a
+ * verifier file directly under our Node runtime, so it is gated by content hash
+ * ({@link APPROVED_HASHES_ENV}) instead. Approving `node check.mjs` by command
+ * string alone would run arbitrary customer JavaScript without a reviewed hash.
+ *
+ * Approved commands still receive the scrubbed child environment (see the `env`
+ * block below), so host secrets never reach them. They do run outside the Node
+ * filesystem permission model that `node-check` gets, because npm/pytest/etc.
+ * cannot accept those flags; that residual (filesystem/egress) risk is carried
+ * by the sandbox backend and documented in docs/SANDBOX_VERIFIER.md.
+ */
+function approvedOperatorCommands(): Set<string> {
+  return new Set(
+    (process.env[APPROVED_COMMANDS_ENV] ?? "")
+      .split(/[,\n]/)
+      .map((command) => normalizeVerificationCommand(command))
+      .filter((command) => command.length > 0),
+  );
+}
+
 export function discoverVerificationCommands(repoRoot: string): string[] {
   for (const file of ["check.mjs", "check.cjs", "check.js"]) {
     if (existsSync(join(repoRoot, file))) return [`node ${file}`];
@@ -205,37 +252,37 @@ export async function runVerificationCommand(
   }
   const boundedTimeout = Math.max(1_000, Math.min(timeoutMs, 300_000));
   const production = process.env.NODE_ENV === "production";
-  if (
-    production &&
-    invocation.profile !== "node-check"
-  ) {
-    return {
-      ok: false,
-      stdout: "",
-      stderr: "",
-      exitCode: 126,
-      error:
-        "Production verification requires the read-only node-check profile or an explicit operator override",
-    };
-  }
-  if (production && invocation.profile === "node-check") {
-    const verifierPath = realpathSync(resolve(repoRoot, invocation.args[0]!));
-    const verifierHash = createHash("sha256")
-      .update(readFileSync(verifierPath))
-      .digest("hex");
-    const approvedHashes = new Set(
-      (process.env.MENDPOINT_APPROVED_VERIFIER_SHA256S ?? "")
-        .split(",")
-        .map((hash) => hash.trim().toLowerCase())
-        .filter((hash) => /^[a-f0-9]{64}$/.test(hash)),
-    );
-    if (!approvedHashes.has(verifierHash)) {
+  if (production) {
+    if (invocation.profile === "node-check") {
+      // node-check runs a verifier file directly under our Node runtime, so its
+      // content must match an operator-approved SHA-256 hash. Register a hash by
+      // adding it to MENDPOINT_APPROVED_VERIFIER_SHA256S.
+      const verifierPath = realpathSync(resolve(repoRoot, invocation.args[0]!));
+      const verifierHash = createHash("sha256")
+        .update(readFileSync(verifierPath))
+        .digest("hex");
+      if (!approvedVerifierHashes().has(verifierHash)) {
+        return {
+          ok: false,
+          stdout: "",
+          stderr: "",
+          exitCode: 126,
+          error: "Production node-check verifier content is not approved",
+        };
+      }
+    } else if (!approvedOperatorCommands().has(normalizeVerificationCommand(command))) {
+      // Every other profile invokes a customer toolchain we cannot hash. An
+      // operator must approve the exact command deliberately; unlisted commands
+      // fail closed.
       return {
         ok: false,
         stdout: "",
         stderr: "",
         exitCode: 126,
-        error: "Production node-check verifier content is not approved",
+        error:
+          `Production verification refused: "${normalizeVerificationCommand(command)}" is not an ` +
+          `approved verifier. An operator must add this exact command to ${APPROVED_COMMANDS_ENV}, ` +
+          `or use the node-check profile with an approved hash in ${APPROVED_HASHES_ENV}.`,
       };
     }
   }
@@ -276,6 +323,12 @@ export async function runVerificationCommand(
           .filter((entry): entry is [string, string] => Boolean(entry[1])),
       )
     : process.env;
+  // NOTE: some spawn failures (e.g. Node's refusal to execFile a .cmd shim on
+  // Windows) throw synchronously from execFile rather than surfacing through the
+  // callback. That synchronous throw is a deliberate contract: callers such as
+  // packages/agent's attempt-engine catch EINVAL to apply a platform-specific
+  // npm fallback. Do NOT wrap this in try/catch — swallowing the throw would
+  // silently disable that fallback.
   return await new Promise<VerificationExecution>((resolveExecution) => {
     execFile(invocation.executable, args, {
       cwd: repoRoot,
