@@ -29,6 +29,67 @@ function escapeReg(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Whole-segment matching for dotted identifiers / paths. A token matches a value
+ * only when one's segment sequence is a contiguous run of *whole* segments in the
+ * other — so `balance` matches `client.balance.retrieve` and a bare `balance`,
+ * but never `unbalanced`, `rebalance`, or `balanceSheet`, and a short value like
+ * `bal` never matches the longer token `balance`.
+ */
+function containsRun(haystack: string[], needle: string[]): boolean {
+  if (!needle.length || needle.length > haystack.length) return false;
+  for (let i = 0; i + needle.length <= haystack.length; i++) {
+    let ok = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
+function dottedSegments(s: string): string[] {
+  return s.toLowerCase().split(".").filter(Boolean);
+}
+
+function tokenMatchesUsage(token: string, value: string): boolean {
+  const t = dottedSegments(token);
+  const v = dottedSegments(value);
+  if (!t.length || !v.length) return false;
+  return containsRun(v, t) || containsRun(t, v);
+}
+
+function pathSegments(s: string): string[] {
+  return s
+    .replace(/\{[^}]+\}/g, "")
+    .split("/")
+    .filter(Boolean)
+    .map((x) => x.toLowerCase());
+}
+
+function pathMatchesUsage(hint: string, value: string): boolean {
+  const h = pathSegments(hint);
+  const v = pathSegments(value);
+  if (!h.length || !v.length) return false;
+  return containsRun(v, h) || containsRun(h, v);
+}
+
+/**
+ * Whether a path hint appears in a free-text source line at a segment boundary.
+ * The trailing lookahead stops `/v1/balance` from matching `/v1/balances`.
+ */
+function pathInLine(line: string, hint: string): boolean {
+  const variants = new Set([hint, hint.replace(/\{[^}]+\}/g, "")]);
+  for (const h of variants) {
+    if (!h || h.length < 4) continue;
+    if (new RegExp(`${escapeReg(h)}(?![A-Za-z0-9_])`).test(line)) return true;
+  }
+  return false;
+}
+
 type Acc = Map<string, CandidateSite>;
 
 function keyOf(file: string, line: number, symbol: string) {
@@ -75,12 +136,16 @@ export function discoverCandidates(
   const acc: Acc = new Map();
   const breaking = surfaces.some((s) => s.severity === "breaking");
 
-  // 1) SDK graph — apiUsages kind sdk_call
+  // 1) SDK graph — apiUsages kind sdk_call. A call matched against the known
+  //    provider surface is a high-signal `sdk_graph` hit; one recognised only by
+  //    the provider-agnostic fallback heuristic is downgraded to a low-confidence
+  //    `string_heuristic` hit so a guess is never labelled like a real match.
   for (const surface of surfaces) {
     for (const token of surface.searchTokens) {
       for (const u of index.apiUsages) {
         if (u.kind !== "sdk_call") continue;
-        if (!u.value.includes(token) && !token.includes(u.value)) continue;
+        if (!tokenMatchesUsage(token, u.value)) continue;
+        const heuristic = u.detection === "general_heuristic";
         add(acc, {
           filePath: u.filePath,
           lineStart: u.line,
@@ -88,9 +153,11 @@ export function discoverCandidates(
           symbol: u.value,
           functionName: u.functionName,
           evidence: u.value,
-          source: "sdk_graph",
+          source: heuristic ? "string_heuristic" : "sdk_graph",
           surfaceId: surface.id,
-          confidence: confFromSource("sdk_graph", surface.severity === "breaking"),
+          confidence: heuristic
+            ? "low"
+            : confFromSource("sdk_graph", surface.severity === "breaking"),
         });
       }
     }
@@ -107,7 +174,7 @@ export function discoverCandidates(
     for (const u of index.apiUsages) {
       if (u.kind === "http_path") {
         for (const hint of pathHints) {
-          if (u.value.includes(hint) || hint.includes(u.value.split("{")[0] ?? "")) {
+          if (pathMatchesUsage(hint, u.value)) {
             add(acc, {
               filePath: u.filePath,
               lineStart: u.line,
@@ -144,11 +211,13 @@ export function discoverCandidates(
         const lineNo = idx + 1;
         for (const field of fieldHints) {
           if (!new RegExp(`\\b${escapeReg(field)}\\b`).test(line)) continue;
-          // Prefer files that already touch API surfaces for precision
+          // Promote to syntactic only on real provider-surface evidence: the file
+          // already touches API surfaces, or the line references this surface's
+          // actual path. The mere presence of "api"/"http"/"charge" is not
+          // evidence and no longer promotes confidence.
+          const onSurfacePath = pathHints.some((h) => pathInLine(line, h));
           const source: CandidateSource =
-            apiFiles.has(file.path) || /fetch|http|api|charge|amount/i.test(line)
-              ? "syntactic"
-              : "string_heuristic";
+            apiFiles.has(file.path) || onSurfacePath ? "syntactic" : "string_heuristic";
           add(acc, {
             filePath: file.path,
             lineStart: lineNo,
@@ -165,7 +234,7 @@ export function discoverCandidates(
         }
         for (const hint of pathHints) {
           if (!hint || hint.length < 4) continue;
-          if (!line.includes(hint) && !line.includes(hint.replace(/\{[^}]+\}/g, ""))) continue;
+          if (!pathInLine(line, hint)) continue;
           if (!line.includes("/v") && !line.includes("http")) continue;
           add(acc, {
             filePath: file.path,
