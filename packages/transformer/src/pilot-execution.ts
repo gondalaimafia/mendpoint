@@ -1955,17 +1955,49 @@ export class TransformerPilotExecutionStore {
       if (!gate.allowed) {
         throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
       }
-      if (state.state !== "running" || state.units.some((unit) => unit.state === "running")) {
+      // A machine preempted mid-attempt leaves its unit "running" with a lease
+      // that is never renewed. Nothing in the Transformer deployment expires that
+      // lease (expireAttempt's only caller runs in the run-service daemon, which
+      // the Transformer image does not start), so an expired lease would strand
+      // the whole campaign forever. Treat an expired lease as not-running here:
+      // block only on a live attempt, and prefer reclaiming the stranded unit
+      // over starting new work so at most one attempt runs at a time. Re-leasing
+      // bumps the unit's leaseGeneration and lease token, so a returning
+      // preempted worker fails assertAttemptFence (transformer_pilot_fence_stale)
+      // and cannot double-execute.
+      const observedAtMs = Date.parse(observedAt);
+      const leaseExpired = (unit: TransformerPilotUnit): boolean => {
+        if (unit.state !== "running") return false;
+        const expiresAt = Date.parse(unit.leaseExpiresAt ?? "");
+        return Number.isFinite(expiresAt) && observedAtMs >= expiresAt;
+      };
+      if (
+        state.state !== "running" ||
+        state.units.some((unit) => unit.state === "running" && !leaseExpired(unit))
+      ) {
         this.db.exec("COMMIT");
         return null;
       }
-      const eligible = state.units
-        .filter((unit) => attemptEligible(state, unit))
+      const reclaimable = state.units.filter(
+        (unit) =>
+          leaseExpired(unit) &&
+          unit.dependsOn.every((dependency) => unitById(state, dependency).state === "merged"),
+      );
+      const eligible = (reclaimable.length
+        ? reclaimable
+        : state.units.filter((unit) => attemptEligible(state, unit)))
         .sort((left, right) => left.wave - right.wave || compareCodeUnits(left.id, right.id))[0];
       if (!eligible) {
         this.db.exec("COMMIT");
         return null;
       }
+      // Reclaiming a preempted attempt: conservatively settle its still-active
+      // model reservations before re-leasing so the abandoned attempt's spend is
+      // charged to the campaign budget (mirrors expireAttempt) ahead of the
+      // attempt-budget check below.
+      const claimBase = eligible.state === "running"
+        ? conservativelySettleActiveModelReservations(state, eligible, observedAt)
+        : eligible;
       const budget = requireAdaptiveBudget(state);
       assertBudgetAvailableForAttempt(budget, state);
       state.adaptiveBudget = {
@@ -1976,21 +2008,21 @@ export class TransformerPilotExecutionStore {
         },
       };
       const updated: TransformerPilotUnit = {
-        ...eligible,
+        ...claimBase,
         state: "running",
-        attemptNumber: eligible.attemptNumber + 1,
-        leaseGeneration: eligible.leaseGeneration + 1,
+        attemptNumber: claimBase.attemptNumber + 1,
+        leaseGeneration: claimBase.leaseGeneration + 1,
         leaseTokenDigest: tokenDigest,
         leaseExpiresAt,
         retryAuthorized: false,
         startedAt: observedAt,
         adaptiveAccounting: emptyAdaptiveAccounting(),
-        ...(eligible.routingSettlement
+        ...(claimBase.routingSettlement
           ? {
               routingSettlement: Object.freeze({
-                ...eligible.routingSettlement,
-                attemptNumber: eligible.attemptNumber + 1,
-                leaseGeneration: eligible.leaseGeneration + 1,
+                ...claimBase.routingSettlement,
+                attemptNumber: claimBase.attemptNumber + 1,
+                leaseGeneration: claimBase.leaseGeneration + 1,
                 leaseTokenDigest: tokenDigest,
               }),
             }

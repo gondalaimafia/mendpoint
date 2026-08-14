@@ -2523,4 +2523,79 @@ describe("Transformer pilot execution coordinator", () => {
     });
     store.close();
   });
+
+  it("reclaims a preempted attempt whose lease expired, without the sweeper daemon (defect 2)", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    // Claim at 08:01:00 with a 60s lease -> expires at 08:02:00.
+    const first = store.claimNextAttempt({
+      ...mutation(1, "claim-preempted"),
+      leaseToken: "lease-token-preempted-000000001",
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    })!;
+    expect(first.unitId).toBe("unit-a");
+    expect(first.leaseGeneration).toBe(1);
+    // The machine is preempted mid-attempt: the unit stays "running" with an
+    // expired lease, and no expireAttempt/sweeper ever runs in this deployment.
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.state).toBe("running");
+
+    // A later claim (08:05:00, after expiry) automatically reclaims the stranded
+    // unit and hands out a fresh lease so the campaign proceeds.
+    const reclaimed = store.claimNextAttempt({
+      ...mutation(5, "claim-reclaim"),
+      leaseToken: "lease-token-reclaim-0000000000001",
+      leaseDurationMs: 60_000,
+      gateConfig: gateConfig(),
+    });
+    expect(reclaimed).not.toBeNull();
+    expect(reclaimed!.unitId).toBe("unit-a");
+    expect(reclaimed!.leaseGeneration).toBe(first.leaseGeneration + 1);
+    expect(reclaimed!.attemptNumber).toBe(first.attemptNumber + 1);
+    // Exactly one attempt runs at a time.
+    expect(
+      store.getCampaign("tenant-a", "campaign-a")!.units.filter((entry) => entry.state === "running"),
+    ).toHaveLength(1);
+
+    // The preempted worker returning with its stale lease cannot double-execute:
+    // the reclaim bumped leaseGeneration, so the fence rejects the late settle.
+    const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    expect(() => store.completeAttempt({
+      ...mutation(6, "complete-stale"),
+      unitId: "unit-a",
+      leaseGeneration: first.leaseGeneration,
+      leaseToken: "lease-token-preempted-000000001",
+      sourceRevision: candidate.snapshot.revision,
+      sourceDigest: candidate.snapshot.digest,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      verificationPassed: true,
+      actualCostUsd: 0.25,
+      accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
+      gateConfig: gateConfig(),
+    })).toThrow("transformer_pilot_fence_stale");
+    store.close();
+  });
+
+  it("does not reclaim a unit whose lease is still live (defect 2)", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const first = store.claimNextAttempt({
+      ...mutation(1, "claim-live"),
+      leaseToken: "lease-token-live-00000000000001",
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    expect(first.leaseGeneration).toBe(1);
+    // A second claim while the lease is still valid must not hand out the unit
+    // again -- reclaiming a live lease would double-execute the attempt.
+    expect(store.claimNextAttempt({
+      ...mutation(2, "claim-live-again"),
+      leaseToken: "lease-token-live-00000000000002",
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })).toBeNull();
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.leaseGeneration).toBe(1);
+    store.close();
+  });
 });

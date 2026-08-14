@@ -7,6 +7,7 @@ import {
   createDb,
   enqueueJob,
   failJob,
+  retryJob,
   type AppDb,
 } from "@mendpoint/db";
 import { createWardenCheckpointJobJournal } from "./warden-checkpoint-journal.js";
@@ -269,6 +270,109 @@ describe("Warden checkpoint job journal", () => {
       activeWriterLeaseGeneration: 2,
     });
     await expect(oldJournal.read(binding)).rejects.toThrow("warden_checkpoint_job_stale");
+  });
+
+  it("resumes the checkpoint after a dead-letter is retried (defect 3)", async () => {
+    const value = fixture();
+    const original = createWardenCheckpointJobJournal({
+      db: value.db,
+      tenantId: binding.tenantId,
+      jobId: value.jobId,
+      workerId: value.workerId,
+      leaseGeneration: value.leaseGeneration,
+      now: () => NOW,
+    });
+    expect(await original.compareAndSwap({
+      binding,
+      expectedPayloadDigest: null,
+      expectedActiveWriterLeaseGeneration: 1,
+      nextEnvelope,
+      nextSealedRuntimeState,
+    })).toBe(true);
+
+    // Force a permanent dead-letter, then recover through the sole retry endpoint.
+    expect(failJob(value.db, value.jobId, "model_rate_limited", "2026-08-12T12:00:10.000Z", {
+      workerId: value.workerId,
+      leaseGeneration: value.leaseGeneration,
+      errorCode: "warden_model_transient_error",
+      retryable: false,
+    }).applied).toBe(true);
+    expect(retryJob(value.db, value.jobId, {
+      tenantId: binding.tenantId,
+      now: "2026-08-12T12:00:11.000Z",
+    })).toBe(true);
+
+    // A re-claim bumps the lease generation and the resumed head is intact, so the
+    // run continues from the checkpoint instead of restarting from zero.
+    const successorJob = claimNextJob(value.db, ["agent.run"], {
+      tenantId: binding.tenantId,
+      workerId: "worker-b",
+      leaseMs: 60_000,
+      now: "2026-08-12T12:00:12.000Z",
+    });
+    expect(successorJob?.lease_generation).toBe(2);
+    const successor = createWardenCheckpointJobJournal({
+      db: value.db,
+      tenantId: binding.tenantId,
+      jobId: value.jobId,
+      workerId: "worker-b",
+      leaseGeneration: 2,
+      now: () => "2026-08-12T12:00:12.000Z",
+    });
+    expect(await successor.read(binding)).toEqual({
+      envelope: nextEnvelope,
+      sealedRuntimeState: nextSealedRuntimeState,
+      activeWriterLeaseGeneration: 2,
+    });
+  });
+
+  it("still discards the checkpoint when retry is explicitly destructive (defect 3)", async () => {
+    const value = fixture();
+    const original = createWardenCheckpointJobJournal({
+      db: value.db,
+      tenantId: binding.tenantId,
+      jobId: value.jobId,
+      workerId: value.workerId,
+      leaseGeneration: value.leaseGeneration,
+      now: () => NOW,
+    });
+    expect(await original.compareAndSwap({
+      binding,
+      expectedPayloadDigest: null,
+      expectedActiveWriterLeaseGeneration: 1,
+      nextEnvelope,
+      nextSealedRuntimeState,
+    })).toBe(true);
+    expect(failJob(value.db, value.jobId, "worker_crash", "2026-08-12T12:00:10.000Z", {
+      workerId: value.workerId,
+      leaseGeneration: value.leaseGeneration,
+      errorCode: "warden_needs_human",
+      retryable: false,
+    }).applied).toBe(true);
+    expect(retryJob(value.db, value.jobId, {
+      tenantId: binding.tenantId,
+      now: "2026-08-12T12:00:11.000Z",
+      discardCheckpoint: true,
+    })).toBe(true);
+    const successorJob = claimNextJob(value.db, ["agent.run"], {
+      tenantId: binding.tenantId,
+      workerId: "worker-b",
+      leaseMs: 60_000,
+      now: "2026-08-12T12:00:12.000Z",
+    });
+    const successor = createWardenCheckpointJobJournal({
+      db: value.db,
+      tenantId: binding.tenantId,
+      jobId: value.jobId,
+      workerId: "worker-b",
+      leaseGeneration: successorJob!.lease_generation,
+      now: () => "2026-08-12T12:00:12.000Z",
+    });
+    expect(await successor.read(binding)).toEqual({
+      envelope: null,
+      sealedRuntimeState: null,
+      activeWriterLeaseGeneration: 2,
+    });
   });
 
   it("rejects foreign bindings and malformed stored heads", async () => {

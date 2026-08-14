@@ -1385,6 +1385,61 @@ describe("db", () => {
     ).toBeUndefined();
   });
 
+  it("preserves the resumable checkpoint on retry and discards it only when asked (defect 3)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-retry-checkpoint-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    // The Warden checkpoint journal stores its head in jobs.result_json while the
+    // job runs; the head survives a dead-letter (failJob does not clear it).
+    const checkpoint = JSON.stringify({ kind: "warden_checkpoint_head", generation: 3 });
+    const seedDeadLetter = (id: string) => {
+      enqueueJob(db, {
+        id,
+        tenantId: "tenant-a",
+        type: "agent.run",
+        payload: {},
+        maxAttempts: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const claimed = claimNextJob(db, ["agent.run"], {
+        tenantId: "tenant-a",
+        workerId: "worker-a",
+        now: "2026-01-01T00:00:00.000Z",
+      })!;
+      db.raw.prepare("UPDATE jobs SET result_json = ? WHERE id = ?").run(checkpoint, id);
+      failJob(db, id, "preempted", "2026-01-01T00:00:01.000Z", {
+        workerId: "worker-a",
+        leaseGeneration: claimed.lease_generation,
+        errorCode: "warden_needs_human",
+        retryable: false,
+      });
+      expect(getJob(db, id)).toMatchObject({ status: "dead_letter", result_json: checkpoint });
+    };
+
+    // Default retry keeps the checkpoint so the re-run resumes rather than restarting.
+    seedDeadLetter("job-resume");
+    expect(
+      retryJob(db, "job-resume", { tenantId: "tenant-a", now: "2026-01-01T00:01:00.000Z" }),
+    ).toBe(true);
+    expect(getJob(db, "job-resume")).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      result_json: checkpoint,
+    });
+
+    // The destructive path is explicit and opt-in.
+    seedDeadLetter("job-reset");
+    expect(
+      retryJob(db, "job-reset", {
+        tenantId: "tenant-a",
+        now: "2026-01-01T00:01:00.000Z",
+        discardCheckpoint: true,
+      }),
+    ).toBe(true);
+    expect(getJob(db, "job-reset")).toMatchObject({ status: "pending", result_json: null });
+  });
+
   it("acknowledges a permanent dead letter without losing its failure evidence", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-acknowledge-"));
     dirs.push(dir);
