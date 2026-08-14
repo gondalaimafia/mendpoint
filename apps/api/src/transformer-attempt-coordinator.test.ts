@@ -89,7 +89,11 @@ describe("real Transformer multi-node coordinator", () => {
         approvals: 0,
         approvalRevision: null,
         conversationsResolved: true,
-        evidenceRefs: ["github:check-run:9:completed:failure"],
+        failures: [{ kind: "check_run" as const, id: "9", publisherId: 77, name: "unit", state: "failure" as const,
+          title: "failed", summary: null, text: null, detailsUrl: null }],
+        checkIdentities: ["check:77:unit"],
+        checkResults: [{ identity: "check:77:unit", state: "failure" as const }],
+        evidenceRefs: ["github:check-run:77:9:completed:failure"],
       };
     } };
     const runner = createTransformerMultinodeService(runnerConfig, transport, artifactBackend);

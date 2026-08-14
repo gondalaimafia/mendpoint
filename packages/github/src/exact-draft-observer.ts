@@ -11,6 +11,26 @@ export type ExactDraftObservationInput = Readonly<{
   expectedBaseSha: string;
   expectedHeadBranch: string;
   expectedHeadSha: string;
+  expectedRepositoryId?: number;
+  requireExactDraft?: boolean;
+  includeCommitStatuses?: boolean;
+}>;
+
+export type ExactDraftFailure = Readonly<{
+  kind: "check_run" | "commit_status";
+  id: string;
+  publisherId: number | null;
+  name: string;
+  state: "failure";
+  title: string | null;
+  summary: string | null;
+  text: string | null;
+  detailsUrl: string | null;
+}>;
+
+export type ExactDraftCheckResult = Readonly<{
+  identity: string;
+  state: "success" | "failure" | "running";
 }>;
 
 export type ExactDraftObservation = Readonly<{
@@ -22,14 +42,41 @@ export type ExactDraftObservation = Readonly<{
   approvals: number;
   approvalRevision: string | null;
   conversationsResolved: boolean;
+  failures: readonly ExactDraftFailure[];
+  checkIdentities: readonly string[];
+  checkResults: readonly ExactDraftCheckResult[];
   evidenceRefs: readonly string[];
 }>;
+
+const MAX_FAILURES = 20;
+const MAX_FAILURE_TEXT = 2_000;
+
+function bounded(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const clean = value.replace(/[\0\r]/g, " ").trim();
+  return clean ? clean.slice(0, MAX_FAILURE_TEXT) : null;
+}
+
+function detailsUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password) return null;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
 
 function validate(input: ExactDraftObservationInput): void {
   if (!IDENTITY.test(input.owner) || !IDENTITY.test(input.repo) ||
       !Number.isSafeInteger(input.pullRequestNumber) || input.pullRequestNumber < 1 ||
       !input.expectedBaseBranch || !input.expectedHeadBranch ||
-      !SHA.test(input.expectedBaseSha) || !SHA.test(input.expectedHeadSha)) {
+      !SHA.test(input.expectedBaseSha) || !SHA.test(input.expectedHeadSha) ||
+      (input.expectedRepositoryId !== undefined &&
+        (!Number.isSafeInteger(input.expectedRepositoryId) || input.expectedRepositoryId < 1))) {
     throw new Error("github_exact_draft_observation_invalid");
   }
 }
@@ -53,6 +100,21 @@ function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+function publisherId(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1) {
+    throw new Error("github_exact_draft_observation_publisher_invalid");
+  }
+  return Number(value);
+}
+
+function checkIdentity(check: Readonly<{ name?: unknown; app?: { id?: unknown } | null }>): string {
+  return `check:${publisherId(check.app?.id)}:${bounded(check.name) ?? "unnamed-check"}`;
+}
+
+function statusIdentity(status: Readonly<{ context?: unknown }>): string {
+  return `status:${bounded(status.context) ?? "unnamed-status"}`;
+}
+
 export async function observeExactDraftWithOctokit(
   octokit: Octokit,
   input: ExactDraftObservationInput,
@@ -70,10 +132,21 @@ export async function observeExactDraftWithOctokit(
       !SHA.test(baseRevision) || !SHA.test(headRevision)) {
     throw new Error("github_exact_draft_observation_drift");
   }
+  if (input.requireExactDraft === true) {
+    const headRepositoryId = pull.head.repo?.id;
+    const baseRepositoryId = pull.base.repo?.id;
+    if (pull.state !== "open" || pull.draft !== true || baseRevision !== input.expectedBaseSha ||
+        headRevision !== input.expectedHeadSha || input.expectedRepositoryId === undefined ||
+        headRepositoryId !== input.expectedRepositoryId || baseRepositoryId !== input.expectedRepositoryId) {
+      throw new Error("github_exact_draft_observation_authority_mismatch");
+    }
+  }
   const [reviewsResponse, checksResponse, statusesResponse, threads] = await Promise.all([
     octokit.pulls.listReviews({ owner: input.owner, repo: input.repo, pull_number: input.pullRequestNumber, per_page: 100 }),
     octokit.checks.listForRef({ owner: input.owner, repo: input.repo, ref: headRevision, per_page: 100 }),
-    octokit.repos.getCombinedStatusForRef({ owner: input.owner, repo: input.repo, ref: headRevision, per_page: 100 }),
+    input.includeCommitStatuses === true
+      ? octokit.repos.getCombinedStatusForRef({ owner: input.owner, repo: input.repo, ref: headRevision, per_page: 100 })
+      : Promise.resolve({ data: { state: "", total_count: 0, statuses: [] } }),
     octokit.graphql<{
       repository?: { pullRequest?: { reviewThreads?: {
         nodes?: Array<{ id?: string; isResolved?: boolean }>;
@@ -113,11 +186,61 @@ export async function observeExactDraftWithOctokit(
   );
   const threadNodes = reviewThreads?.nodes ?? [];
   const checks = checksResponse.data.check_runs;
+  const failures: ExactDraftFailure[] = [];
+  const checkIdentities = [
+    ...checks.map(checkIdentity),
+    ...statusesResponse.data.statuses.map(statusIdentity),
+  ];
+  if (new Set(checkIdentities).size !== checkIdentities.length) {
+    throw new Error("github_exact_draft_observation_check_identity_ambiguous");
+  }
+  checkIdentities.sort(compareCodeUnits);
+  const checkResults: ExactDraftCheckResult[] = [
+    ...checks.map((check) => Object.freeze({
+      identity: checkIdentity(check),
+      state: check.status !== "completed" ? "running" as const
+        : check.conclusion === "success" ? "success" as const : "failure" as const,
+    })),
+    ...statusesResponse.data.statuses.map((status) => Object.freeze({
+      identity: statusIdentity(status),
+      state: status.state === "pending" ? "running" as const
+        : status.state === "success" ? "success" as const : "failure" as const,
+    })),
+  ].sort((left, right) => compareCodeUnits(left.identity, right.identity));
+  for (const check of checks) {
+    if (check.status !== "completed" || !check.conclusion || check.conclusion === "success") continue;
+    failures.push(Object.freeze({
+      kind: "check_run",
+      id: String(check.id),
+      publisherId: publisherId(check.app?.id),
+      name: bounded(check.name) ?? "unnamed-check",
+      state: "failure",
+      title: bounded(check.output?.title),
+      summary: bounded(check.output?.summary),
+      text: bounded(check.output?.text),
+      detailsUrl: detailsUrl(check.details_url),
+    }));
+  }
+  for (const status of statusesResponse.data.statuses) {
+    if (status.state !== "failure" && status.state !== "error") continue;
+    failures.push(Object.freeze({
+      kind: "commit_status",
+      id: String(status.id),
+      publisherId: null,
+      name: bounded(status.context) ?? "unnamed-status",
+      state: "failure",
+      title: null,
+      summary: bounded(status.description),
+      text: null,
+      detailsUrl: detailsUrl(status.target_url),
+    }));
+  }
+  failures.sort((left, right) => compareCodeUnits(`${left.kind}\0${left.name}\0${left.id}`, `${right.kind}\0${right.name}\0${right.id}`));
   const evidenceRefs = [
     `github:pull-request:${input.owner}/${input.repo}#${input.pullRequestNumber}`,
     `github:base:${baseRevision}`,
     `github:head:${headRevision}`,
-    ...checks.map((check) => `github:check-run:${check.id}:${check.status}:${check.conclusion ?? "none"}`),
+    ...checks.map((check) => `github:check-run:${publisherId(check.app?.id)}:${check.id}:${check.status}:${check.conclusion ?? "none"}`),
     ...statusesResponse.data.statuses.map((status) => `github:commit-status:${status.id}:${status.context}:${status.state}`),
     ...approvals.map((review) => `github:review:${review.id}:${headRevision}`),
     ...threadNodes.map((thread) => `github:review-thread:${thread.id ?? "unknown"}:${thread.isResolved === true ? "resolved" : "open"}`),
@@ -134,6 +257,9 @@ export async function observeExactDraftWithOctokit(
     approvals: approvals.length,
     approvalRevision: approvals.length ? headRevision : null,
     conversationsResolved: threadNodes.every((thread) => thread.isResolved === true),
+    failures: Object.freeze(failures.slice(0, MAX_FAILURES)),
+    checkIdentities: Object.freeze(checkIdentities),
+    checkResults: Object.freeze(checkResults),
     evidenceRefs: Object.freeze(evidenceRefs),
   });
 }

@@ -45,6 +45,13 @@ export type WardenSnapshotLoaderOptions = Readonly<{
   env?: NodeJS.ProcessEnv;
 }>;
 
+export type WardenSnapshotAuthority = Readonly<{
+  repositoryId: string;
+  snapshotId: string;
+  revision: string;
+  manifestSha256: string;
+}>;
+
 function observedInstant(value: string): number {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) throw new Error("warden_snapshot_observed_at_invalid");
@@ -170,6 +177,83 @@ function legacyBinding(
   });
 }
 
+function exactBinding(
+  db: AppDb,
+  tenantId: string,
+  repo: ConsumerRepo,
+  authority: Readonly<Omit<WardenSnapshotAuthority, "manifestSha256"> & { manifestSha256?: string }>,
+  observedAtMs: number,
+  env: NodeJS.ProcessEnv,
+  requireLocalPathMatch: boolean,
+): ExactWardenSnapshotBinding {
+  const { repositoryId, snapshotId, revision, manifestSha256 } = authority;
+  if (!EXACT_COMMIT.test(revision)) throw new Error("warden_snapshot_revision_invalid");
+  if (manifestSha256 !== undefined && !SHA256.test(manifestSha256)) throw new Error("warden_snapshot_manifest_invalid");
+  if (repo.connected_repository_id !== repositoryId) throw new Error("warden_snapshot_repository_mismatch");
+
+  const repository = getConnectedRepository(db, repositoryId, tenantId);
+  if (!repository || !ACTIVE_REPOSITORY_STATES.has(repository.status)) {
+    throw new Error("warden_repository_not_active");
+  }
+  const matchingIdentity = listRepositorySnapshots(db, tenantId, repositoryId)
+    .filter((candidate) => candidate.id === snapshotId);
+  if (!matchingIdentity.length) throw new Error("warden_snapshot_missing");
+  if (matchingIdentity.length !== 1) throw new Error("warden_snapshot_ambiguous");
+  const snapshot = matchingIdentity[0]!;
+  if (snapshot.resolved_sha !== revision) throw new Error("warden_snapshot_revision_mismatch");
+  if (!SHA256.test(snapshot.manifest_sha256) ||
+      (manifestSha256 !== undefined && snapshot.manifest_sha256 !== manifestSha256)) {
+    throw new Error("warden_snapshot_manifest_invalid");
+  }
+  if (snapshot.submodules_policy !== "reject") throw new Error("warden_snapshot_submodules_unsupported");
+  const sparsePaths = snapshotSparsePaths(snapshot.sparse_paths_json);
+  if (sparsePaths.length) throw new Error("warden_snapshot_sparse_unsupported");
+  const expiresAtMs = Date.parse(snapshot.expires_at);
+  if (!Number.isFinite(expiresAtMs)) throw new Error("warden_snapshot_expiry_invalid");
+  if (expiresAtMs <= observedAtMs) throw new Error("warden_snapshot_expired");
+  const deletion = db.raw.prepare(
+    `SELECT 1 AS deleted FROM repository_snapshot_deletions
+     WHERE tenant_id = ? AND snapshot_id = ? AND status = 'deleted'
+     LIMIT 1`,
+  ).get(tenantId, snapshotId) as { deleted: number } | undefined;
+  if (deletion) throw new Error("warden_snapshot_deleted");
+  const root = realDirectory(snapshot.storage_path, {
+    invalidCode: "warden_snapshot_root_invalid",
+    symlinkCode: "warden_snapshot_root_symlink_forbidden",
+  });
+  if (requireLocalPathMatch) {
+    const localRoot = realDirectory(repo.local_path, {
+      invalidCode: "warden_snapshot_local_path_invalid",
+      symlinkCode: "warden_snapshot_local_path_symlink_forbidden",
+    });
+    if (localRoot !== root) throw new Error("warden_snapshot_local_path_mismatch");
+  }
+  enforceTenantBoundary(root, tenantId, env);
+  return Object.freeze({
+    sourceKind: "immutable_snapshot",
+    tenantId,
+    repositoryId,
+    snapshotId,
+    revision,
+    manifestSha256: snapshot.manifest_sha256,
+    expiresAt: snapshot.expires_at,
+    sparsePaths,
+    root,
+  });
+}
+
+export function loadWardenSnapshotBindingFromAuthority(
+  db: AppDb,
+  tenantId: string,
+  repo: ConsumerRepo,
+  authority: WardenSnapshotAuthority,
+  observedAt: string,
+  options: WardenSnapshotLoaderOptions = {},
+): ExactWardenSnapshotBinding {
+  return exactBinding(db, tenantId, repo, Object.freeze({ ...authority }), observedInstant(observedAt),
+    options.env ?? process.env, false);
+}
+
 export function loadWardenSnapshotBinding(
   db: AppDb,
   tenantId: string,
@@ -194,64 +278,9 @@ export function loadWardenSnapshotBinding(
     return legacyBinding(tenantId, repo, env);
   }
 
-  const repositoryId = repo.connected_repository_id!;
-  const snapshotId = repo.snapshot_id!;
-  const revision = repo.exact_commit!;
-  if (!EXACT_COMMIT.test(revision)) throw new Error("warden_snapshot_revision_invalid");
-
-  const repository = getConnectedRepository(db, repositoryId, tenantId);
-  if (!repository || !ACTIVE_REPOSITORY_STATES.has(repository.status)) {
-    throw new Error("warden_repository_not_active");
-  }
-
-  const matchingIdentity = listRepositorySnapshots(db, tenantId, repositoryId)
-    .filter((candidate) => candidate.id === snapshotId);
-  if (!matchingIdentity.length) throw new Error("warden_snapshot_missing");
-  if (matchingIdentity.length !== 1) throw new Error("warden_snapshot_ambiguous");
-  const snapshot = matchingIdentity[0]!;
-
-  if (snapshot.resolved_sha !== revision) {
-    throw new Error("warden_snapshot_revision_mismatch");
-  }
-  if (!SHA256.test(snapshot.manifest_sha256)) {
-    throw new Error("warden_snapshot_manifest_invalid");
-  }
-  if (snapshot.submodules_policy !== "reject") {
-    throw new Error("warden_snapshot_submodules_unsupported");
-  }
-  const sparsePaths = snapshotSparsePaths(snapshot.sparse_paths_json);
-  if (sparsePaths.length) throw new Error("warden_snapshot_sparse_unsupported");
-  const expiresAtMs = Date.parse(snapshot.expires_at);
-  if (!Number.isFinite(expiresAtMs)) throw new Error("warden_snapshot_expiry_invalid");
-  if (expiresAtMs <= observedAtMs) throw new Error("warden_snapshot_expired");
-
-  const deletion = db.raw.prepare(
-    `SELECT 1 AS deleted FROM repository_snapshot_deletions
-     WHERE tenant_id = ? AND snapshot_id = ? AND status = 'deleted'
-     LIMIT 1`,
-  ).get(tenantId, snapshotId) as { deleted: number } | undefined;
-  if (deletion) throw new Error("warden_snapshot_deleted");
-
-  const root = realDirectory(snapshot.storage_path, {
-    invalidCode: "warden_snapshot_root_invalid",
-    symlinkCode: "warden_snapshot_root_symlink_forbidden",
-  });
-  const localRoot = realDirectory(repo.local_path, {
-    invalidCode: "warden_snapshot_local_path_invalid",
-    symlinkCode: "warden_snapshot_local_path_symlink_forbidden",
-  });
-  if (localRoot !== root) throw new Error("warden_snapshot_local_path_mismatch");
-  enforceTenantBoundary(root, tenantId, env);
-
-  return Object.freeze({
-    sourceKind: "immutable_snapshot",
-    tenantId,
-    repositoryId,
-    snapshotId,
-    revision,
-    manifestSha256: snapshot.manifest_sha256,
-    expiresAt: snapshot.expires_at,
-    sparsePaths,
-    root,
-  });
+  return exactBinding(db, tenantId, repo, {
+    repositoryId: repo.connected_repository_id!,
+    snapshotId: repo.snapshot_id!,
+    revision: repo.exact_commit!,
+  }, observedAtMs, env, true);
 }

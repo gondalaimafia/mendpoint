@@ -22,6 +22,8 @@ import {
   getAdaptiveCandidate,
   getAdaptiveDeliveryByCandidate,
   getAgentRun,
+  getJob,
+  getWardenCiCycle,
   getRoutingLedgerForJob,
   insertAgentRun,
   insertApiVersion,
@@ -1922,6 +1924,46 @@ describe("worker runtime", () => {
     db.raw.close();
   });
 
+  it("pauses the exact CI repair cycle when its unreviewed candidate expires", () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-ci-expiry-"));
+    dirs.push(parent);
+    const dataRoot = join(parent, "data");
+    mkdirSync(dataRoot, { recursive: true });
+    const db = createDb(join(parent, "jobs.sqlite"));
+    const tenant = "tenant-ci-expiry";
+    const runId = "repair-run-expiry";
+    insertWardenLifecycleRun(db, {
+      id: runId, tenantId: tenant, status: "candidate_ready",
+      resultJson: JSON.stringify({
+        ciFailure: { cycleId: "cycle-ci-expiry", deliveryId: "delivery-ci-expiry",
+          pullRequestNumber: 17, failedHeadSha: "d".repeat(40),
+          observationDigest: `sha256:${"e".repeat(64)}`,
+          evidenceArtifactId: "artifact-ci-expiry", evidenceDigest: `sha256:${"f".repeat(64)}` },
+        artifacts: { candidateWorkspace: null, candidateManifest: null, evidence: null },
+        retention: { expiresAt: "2020-01-01T00:00:00.000Z" },
+      }),
+    });
+    db.raw.prepare(`INSERT INTO warden_ci_cycles
+      (id, tenant_id, delivery_id, observation_job_id, status, repository_id, remote_repository_id,
+       installation_id, pull_request_number, base_branch, branch_name, base_revision, current_head_sha,
+       required_checks_json, allowed_changed_paths_json, max_cycles, used_cycles, max_model_calls,
+       maximum_cost_usd, current_observation_digest, repair_run_id, repair_job_id, created_at, updated_at)
+      VALUES ('cycle-ci-expiry', ?, 'delivery-ci-expiry', 'observe-ci-expiry', 'repair_pending',
+       'repo-ci-expiry', 11, 22, 17, 'main', 'mendpoint/warden-ci-expiry', ?, ?,
+       '["check:77:unit"]', '["src/client.ts"]', 3, 1, 6, 3, ?, ?, 'repair-job-expiry', ?, ?)`)
+      .run(tenant, "a".repeat(40), "d".repeat(40), `sha256:${"e".repeat(64)}`, runId,
+        "2020-01-01T00:00:00.000Z", "2020-01-01T00:00:00.000Z");
+
+    maintainWardenArtifactsOnce(db, { MENDPOINT_DATA_DIR: dataRoot }, "2026-08-13T12:00:00.000Z");
+
+    expect(getAgentRun(db, runId, tenant)?.status).toBe("candidate_expired");
+    expect(getWardenCiCycle(db, tenant, "cycle-ci-expiry")).toMatchObject({
+      status: "paused", repairRunId: runId, usedCycles: 1,
+      pausedBy: "warden-ci-system", pauseReason: "candidate_expired",
+    });
+    db.raw.close();
+  });
+
   it("retains an approved Warden candidate at expiry while delivery is unresolved", () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-delivery-retention-"));
     dirs.push(parent);
@@ -2310,6 +2352,46 @@ describe("worker runtime", () => {
     );
     fixture.db.raw.close();
   });
+
+  it("atomically pauses a CI repair cycle when the exact failed head no longer reproduces", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-ci-no-action-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: "import { path } from './client.js';\nprocess.exit(path === '/v1/chargess' ? 0 : 1);\n",
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    const job = getJob(fixture.db, "job-warden-snapshot", "tenant_test")!;
+    const payload = JSON.parse(job.payload_json) as Record<string, unknown>;
+    const observationDigest = `sha256:${"e".repeat(64)}`;
+    fixture.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ?")
+      .run(JSON.stringify({ ...payload, ciFailure: { cycleId: "cycle-ci-no-action", deliveryId: "delivery-ci",
+        pullRequestNumber: 17, failedHeadSha: "d".repeat(40), observationDigest,
+        evidenceArtifactId: "artifact-ci", evidenceDigest: `sha256:${"f".repeat(64)}` } }), job.id);
+    fixture.db.raw.prepare(`INSERT INTO warden_ci_cycles
+      (id, tenant_id, delivery_id, observation_job_id, status, repository_id, remote_repository_id,
+       installation_id, pull_request_number, base_branch, branch_name, base_revision, current_head_sha,
+       required_checks_json, allowed_changed_paths_json, max_cycles, used_cycles, max_model_calls,
+       maximum_cost_usd, current_observation_digest, repair_run_id, repair_job_id, created_at, updated_at)
+      VALUES ('cycle-ci-no-action', 'tenant_test', 'delivery-ci', 'observe-ci', 'repair_pending',
+       'repo-warden-a', 11, 22, 17, 'main', 'mendpoint/warden-ci', ?, ?, '["check:77:unit"]',
+       '["client.js"]', 3, 1, 6, 3, ?, 'session-warden-snapshot', 'job-warden-snapshot', ?, ?)`)
+      .run("a".repeat(40), "d".repeat(40), observationDigest, nowIso(), nowIso());
+
+    const result = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test", workerId: "worker-ci-no-action", leaseMs: 30_000,
+      wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
+    });
+
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test"))
+      .toMatchObject({ status: "no_action", ok: 1 });
+    expect(getWardenCiCycle(fixture.db, "tenant_test", "cycle-ci-no-action")).toMatchObject({
+      status: "paused", pausedBy: "warden-ci-system",
+      pauseReason: "warden_attempt_baseline_target_green",
+    });
+    fixture.db.raw.close();
+  }, 30_000);
 
   it("renews a one-second lease before it expires during a long attempt", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-lease-renew-"));

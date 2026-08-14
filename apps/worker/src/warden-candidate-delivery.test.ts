@@ -9,6 +9,7 @@ import {
   enqueueWardenCandidateDelivery,
   getJob,
   getWardenCandidateDeliveryByRun,
+  getWardenCiCycle,
   insertAgentRun,
   recoverExpiredJobs,
   type AppDb,
@@ -125,7 +126,13 @@ describe("Warden exact candidate draft delivery", () => {
     const result = await runWardenCandidateDelivery({
       db, job, github, artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
       now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", remoteRepositoryId: 101, installationId: 202 }),
+      ciReentry: {
+        requiredChecks: ["check:77:unit"],
+        maxCycles: 3,
+        maxModelCalls: 4,
+        maximumCostUsd: 1.5,
+      },
     });
     expect(result.status).toBe("delivered");
     expect(deliver).toHaveBeenCalledWith(expect.objectContaining({
@@ -144,6 +151,13 @@ describe("Warden exact candidate draft delivery", () => {
     expect(getJob(db, job.id, "tenant-a")?.status).toBe("done");
     expect(getWardenCandidateDeliveryByRun(db, "tenant-a", "warden-run-1")?.draftPrUrl)
       .toBe("https://github.com/acme/sdk/pull/17");
+    const cycle = db.raw.prepare("SELECT id FROM warden_ci_cycles WHERE tenant_id = 'tenant-a'").get() as { id: string };
+    expect(getWardenCiCycle(db, "tenant-a", cycle.id)).toMatchObject({
+      status: "observation_pending",
+      currentHeadSha: "b".repeat(40),
+      allowedChangedPaths: ["src/client.ts"],
+      requiredChecks: ["check:77:unit"],
+    });
   });
 
   it("fails closed before GitHub when the sealed bytes are changed", async () => {

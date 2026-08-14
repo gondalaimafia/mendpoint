@@ -24,6 +24,7 @@ import {
   createDb,
   enqueueJob,
   failJob,
+  failWardenCiOperation,
   renewJobLease,
   findMonorepoRoot,
   findAuthorizedGitHubInstallationForRepository,
@@ -33,6 +34,9 @@ import {
   getJob,
   getAgentRun,
   getAgentRunByJobId,
+  getWardenCandidateDelivery,
+  getWardenCiCycle,
+  getWardenCiUpdateByRun,
   getJobRecoverySummary,
   getRepositorySnapshotPolicy,
   getScmConnection,
@@ -54,6 +58,7 @@ import {
   listProviders,
   listVersionsForProvider,
   settleActiveWardenModelReservationsForFence,
+  settleWardenCiRepairWithoutCandidate,
   type AppDb,
   type FeedScheduleRow,
 } from "@mendpoint/db";
@@ -94,6 +99,7 @@ import {
   runWarden,
   runWardenAttempt,
   runPolicyRoutedWarden,
+  readWardenApprovalArtifact,
   resolveAgentModelEndpoint,
   WARDEN_CANDIDATE_REVIEW_LIMITS,
   type AgentModelSourcePolicy,
@@ -122,7 +128,10 @@ import {
   transformerPilotWorkerPath,
   type TransformerPilotLaneResult,
 } from "./transformer-pilot-lane.js";
-import { loadWardenSnapshotBinding } from "./warden-snapshot-loader.js";
+import {
+  loadWardenSnapshotBinding,
+  loadWardenSnapshotBindingFromAuthority,
+} from "./warden-snapshot-loader.js";
 import {
   authorizeConfiguredTransformerAdaptiveExternalProcessing,
   resolveTransformerAdaptivePlannerAdapter,
@@ -143,6 +152,17 @@ import {
 } from "./warden-model-accounting.js";
 import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
+import { runWardenCandidateObservation } from "./warden-candidate-observation.js";
+import { runWardenCiRepairDispatch } from "./warden-ci-repair-dispatch.js";
+import { runWardenCandidateUpdate } from "./warden-candidate-update.js";
+import { createWardenCiEvidenceStore } from "./warden-ci-evidence.js";
+import { materializeWardenCiHead } from "./warden-ci-materializer.js";
+import {
+  createWardenCiGitHubRuntime,
+  createWardenCiRepositorySource,
+  wardenCiConfigForRepository,
+  type WardenCiRepositoryConfig,
+} from "./warden-ci-runtime.js";
 
 const WORKER_ID =
   process.env.MENDPOINT_WORKER_ID ?? `worker:${process.pid}:${randomUUID()}`;
@@ -548,6 +568,8 @@ type WardenJobPayload = Readonly<{
   verifyCommand?: string;
   errorLog?: string;
   maxSteps?: number;
+  maxModelCalls?: number;
+  maximumCostUsd?: number;
   dryRun?: boolean;
   useLlm?: boolean;
   sessionId?: string;
@@ -562,6 +584,21 @@ type WardenJobPayload = Readonly<{
     repositoryId: string;
     snapshotId: string;
     revision: string;
+  }>;
+  snapshotBinding?: Readonly<{
+    repositoryId: string;
+    snapshotId: string;
+    revision: string;
+    manifestSha256: string;
+  }>;
+  ciFailure?: Readonly<{
+    cycleId: string;
+    deliveryId: string;
+    pullRequestNumber: number;
+    failedHeadSha: string;
+    observationDigest: string;
+    evidenceArtifactId: string;
+    evidenceDigest: string;
   }>;
 }>;
 
@@ -1038,6 +1075,10 @@ function expireWardenAgentRuns(
       : null;
     let status = row.status;
     if (status === "candidate_ready" || status === "candidate_approved") {
+      const ciFailure = result?.ciFailure && typeof result.ciFailure === "object"
+        ? result.ciFailure as Record<string, unknown> : null;
+      const ciUpdate = ciFailure ? getWardenCiUpdateByRun(db, tenantId, row.id) : undefined;
+      if (ciUpdate?.status === "pending" || ciUpdate?.status === "intent_bound") continue;
       const expiresAt = typeof retention?.expiresAt === "string"
         ? Date.parse(retention.expiresAt)
         : Number.NaN;
@@ -1056,6 +1097,13 @@ function expireWardenAgentRuns(
          WHERE id = ? AND tenant_id = ? AND status IN ('candidate_ready', 'candidate_approved')`,
       ).run(JSON.stringify(result), observedAt, row.id, tenantId);
       if (Number(update.changes) !== 1) continue;
+      if (typeof ciFailure?.cycleId === "string") {
+        const cycle = getWardenCiCycle(db, tenantId, ciFailure.cycleId);
+        if (cycle?.status === "repair_pending" && cycle.repairRunId === row.id) {
+          settleWardenCiRepairWithoutCandidate(db, { tenantId, cycleId: cycle.id, repairRunId: row.id,
+            reason: "candidate_expired", observedAt });
+        }
+      }
       status = "candidate_expired";
       expired++;
     }
@@ -1295,6 +1343,7 @@ async function persistCompletedAgentJob(
   run: AgentRunWrite,
   applyRoutingOutcome?: RoutingOutcomeFinalizer,
   finalizeTerminal?: () => Promise<WardenRuntimeTerminalEvidence>,
+  applyCompletionOutcome?: () => void,
 ): Promise<void> {
   let routingFinalizationStarted = false;
   db.raw.exec("BEGIN IMMEDIATE");
@@ -1309,6 +1358,7 @@ async function persistCompletedAgentJob(
     if (!completeJob(db, jobId, completedResult, nowIso(), fence)) {
       throw new Error("lease_lost_before_warden_completion");
     }
+    applyCompletionOutcome?.();
     if (applyRoutingOutcome) {
       routingFinalizationStarted = true;
       applyRoutingOutcome();
@@ -1340,6 +1390,7 @@ function persistFailedAgentJob(
   }>,
   run: AgentRunWrite | null,
   applyRoutingOutcome?: RoutingOutcomeFinalizer,
+  applyFailureOutcome?: (status: ReturnType<typeof failJob>["status"]) => void,
 ) {
   let routingFinalizationStarted = false;
   db.raw.exec("BEGIN IMMEDIATE");
@@ -1360,6 +1411,7 @@ function persistFailedAgentJob(
       maxDelayMs: 300_000,
     });
     if (failure.applied) {
+      applyFailureOutcome?.(failure.status);
       if (applyRoutingOutcome) {
         routingFinalizationStarted = true;
         applyRoutingOutcome();
@@ -1984,6 +2036,74 @@ function transformerAdaptiveRepositoryResolver(
   };
 }
 
+function wardenCandidateRepositoryResolver(
+  db: AppDb,
+): ResolveWardenCandidateRepository {
+  const base = transformerAdaptiveRepositoryResolver(db);
+  return async (input) => {
+    const resolved = await base(input);
+    const repository = getConnectedRepository(db, input.repositoryId, input.tenantId);
+    const connection = repository
+      ? getScmConnection(db, repository.connection_id, input.tenantId)
+      : undefined;
+    const remoteRepositoryId = Number(repository?.remote_id);
+    const installationId = Number(connection?.external_account_id);
+    if (!repository || !connection || connection.provider !== "github" || connection.revoked_at ||
+        !Number.isSafeInteger(remoteRepositoryId) || remoteRepositoryId < 1 ||
+        !Number.isSafeInteger(installationId) || installationId < 1) {
+      throw new Error("warden_ci_repository_identity_required");
+    }
+    return Object.freeze({ ...resolved, remoteRepositoryId, installationId });
+  };
+}
+
+function wardenCiConfigForDeliveryJob(
+  db: AppDb,
+  job: Readonly<{ tenant_id: string; payload_json: string }>,
+  env: NodeJS.ProcessEnv,
+): WardenCiRepositoryConfig | undefined {
+  if (env.MENDPOINT_WARDEN_CI_REENTRY_ENABLED !== "1") {
+    return wardenCiConfigForRepository(env, "disabled");
+  }
+  let payload: unknown;
+  try { payload = JSON.parse(job.payload_json); } catch { throw new Error("warden_candidate_delivery_payload_invalid"); }
+  const deliveryId = payload && typeof payload === "object"
+    ? (payload as Record<string, unknown>).deliveryId
+    : undefined;
+  if (typeof deliveryId !== "string") throw new Error("warden_candidate_delivery_payload_invalid");
+  const delivery = getWardenCandidateDelivery(db, job.tenant_id, deliveryId);
+  if (!delivery) throw new Error("warden_candidate_delivery_not_found");
+  return wardenCiConfigForRepository(env, delivery.repositoryId);
+}
+
+function assertWardenCiCycleConfiguration(
+  cycle: NonNullable<ReturnType<typeof getWardenCiCycle>>,
+  env: NodeJS.ProcessEnv,
+): WardenCiRepositoryConfig {
+  const config = wardenCiConfigForRepository(env, cycle.repositoryId);
+  if (!config || JSON.stringify(config.requiredChecks) !== JSON.stringify(cycle.requiredChecks) ||
+      config.maxCycles !== cycle.maxCycles || config.maxModelCalls !== cycle.maxModelCalls ||
+      config.maximumCostUsd !== cycle.maximumCostUsd) {
+    throw new Error("warden_ci_cycle_configuration_mismatch");
+  }
+  return config;
+}
+
+function wardenCiCycleForJob(
+  db: AppDb,
+  job: Readonly<{ tenant_id: string; payload_json: string }>,
+) {
+  let payload: unknown;
+  try { payload = JSON.parse(job.payload_json); } catch { throw new Error("warden_ci_job_payload_invalid"); }
+  const cycleId = payload && typeof payload === "object"
+    ? (payload as Record<string, unknown>).cycleId
+    : undefined;
+  if (typeof cycleId !== "string") throw new Error("warden_ci_job_payload_invalid");
+  const cycle = getWardenCiCycle(db, job.tenant_id, cycleId);
+  if (!cycle) throw new Error("warden_ci_cycle_not_found");
+  return cycle;
+}
+
 function transformerAdaptiveConnectedGitHubRepository(
   db: AppDb,
   tenantId: string,
@@ -2233,7 +2353,9 @@ async function processJobsOnceUnfenced(
   for (; result.claimed < maxJobs && opts.shouldContinue?.() !== false; ) {
     const job = claimNextJob(
       db,
-      ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver", "transformer.adaptive.deliver"],
+      ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
+        "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
+        "transformer.adaptive.deliver"],
       {
       tenantId: opts.allTenants
         ? undefined
@@ -2298,6 +2420,7 @@ async function processJobsOnceUnfenced(
     renewal.unref();
     try {
       if (job.type === "warden.candidate.deliver") {
+        const ciReentry = wardenCiConfigForDeliveryJob(db, job, workerEnv);
         const delivery = await runWardenCandidateDelivery({
           db,
           job,
@@ -2307,14 +2430,73 @@ async function processJobsOnceUnfenced(
             workerEnv,
           ),
           resolveRepository: opts.wardenCandidateRepositoryResolver ??
-            transformerAdaptiveRepositoryResolver(db),
+            wardenCandidateRepositoryResolver(db),
           artifactEnv: workerEnv,
+          ciReentry,
         });
         if (delivery.status === "delivered") result.succeeded++;
         else {
           result.failed++;
           if (delivery.status === "retry_scheduled") result.retried++;
         }
+        continue;
+      }
+      if (job.type === "warden.candidate.observe") {
+        const cycle = wardenCiCycleForJob(db, job);
+        assertWardenCiCycleConfiguration(cycle, workerEnv);
+        const runtime = createWardenCiGitHubRuntime({ db, tenantId: cycle.tenantId,
+          repositoryId: cycle.repositoryId, remoteRepositoryId: cycle.remoteRepositoryId,
+          installationId: cycle.installationId, env: workerEnv });
+        const evidence = createWardenCiEvidenceStore(privateWardenChildDirectory(
+          privateWardenDirectory(resolve(workerEnv.MENDPOINT_DATA_DIR ?? join(process.cwd(), "data"))),
+          resolve(workerEnv.MENDPOINT_DATA_DIR ?? join(process.cwd(), "data"), "warden-ci-evidence"),
+        ));
+        const observation = await runWardenCandidateObservation({ db, job,
+          observe: runtime.observeExactDraft,
+          persistEvidence: (bytes) => evidence.publish(job.tenant_id, bytes),
+          resolveRepository: () => Object.freeze({ owner: runtime.owner, repo: runtime.repo }) });
+        if (observation.status === "checks_passed" || observation.status === "failed_checks") result.succeeded++;
+        else { result.failed++; result.retried++; }
+        continue;
+      }
+      if (job.type === "warden.candidate.repair") {
+        const cycle = wardenCiCycleForJob(db, job);
+        assertWardenCiCycleConfiguration(cycle, workerEnv);
+        const dataRoot = privateWardenDirectory(
+          resolve(workerEnv.MENDPOINT_DATA_DIR ?? join(process.cwd(), "data")),
+        );
+        const evidence = createWardenCiEvidenceStore(privateWardenChildDirectory(
+          dataRoot,
+          join(dataRoot, "warden-ci-evidence"),
+        ));
+        const repositoriesRoot = workerEnv.MENDPOINT_REPOS_DIR;
+        if (!repositoriesRoot || !isAbsolute(repositoriesRoot)) {
+          throw new Error("MENDPOINT_REPOS_DIR is required for Warden CI repair");
+        }
+        await runWardenCiRepairDispatch({ db, job,
+          readEvidence: ({ tenantId, artifactId, expectedDigest }) =>
+            evidence.read(tenantId, artifactId, expectedDigest),
+          materializeHead: async (authority) => materializeWardenCiHead({ db,
+            source: await createWardenCiRepositorySource({ db, ...authority, env: workerEnv }),
+            tenantId: authority.tenantId, repositoryId: authority.repositoryId,
+            remoteRepositoryId: authority.remoteRepositoryId, headSha: authority.headSha,
+            repositoriesRoot, nodeEnv: workerEnv.NODE_ENV }),
+        });
+        result.succeeded++;
+        continue;
+      }
+      if (job.type === "warden.candidate.update") {
+        const cycle = wardenCiCycleForJob(db, job);
+        assertWardenCiCycleConfiguration(cycle, workerEnv);
+        const runtime = createWardenCiGitHubRuntime({ db, tenantId: cycle.tenantId,
+          repositoryId: cycle.repositoryId, remoteRepositoryId: cycle.remoteRepositoryId,
+          installationId: cycle.installationId, env: workerEnv });
+        await runWardenCandidateUpdate({ db, job, updateExactDraft: runtime.updateExactDraft,
+          reconcileExactDraftUpdate: runtime.reconcileExactDraftUpdate,
+          resolveRepository: () => Object.freeze({ owner: runtime.owner, repo: runtime.repo }),
+          readApprovalArtifact: ({ tenantId, path, sha256 }) =>
+            readWardenApprovalArtifact({ tenantId, path, sha256, env: workerEnv }) });
+        result.succeeded++;
         continue;
       }
       if (job.type === "transformer.adaptive.deliver") {
@@ -2369,16 +2551,25 @@ async function processJobsOnceUnfenced(
         }
         pendingAgentRun = { ...pendingAgentRun, repoPath: consumerRepo.local_path };
         const started = nowIso();
-        const binding = loadWardenSnapshotBinding(
-          db,
-          job.tenant_id,
-          consumerRepo,
-          started,
-          {
-            allowLegacyLocalSource: workerEnv.NODE_ENV !== "production",
-            env: workerEnv,
-          },
-        );
+        const binding = payload.snapshotBinding
+          ? loadWardenSnapshotBindingFromAuthority(
+              db,
+              job.tenant_id,
+              consumerRepo,
+              payload.snapshotBinding,
+              started,
+              { env: workerEnv },
+            )
+          : loadWardenSnapshotBinding(
+              db,
+              job.tenant_id,
+              consumerRepo,
+              started,
+              {
+                allowLegacyLocalSource: workerEnv.NODE_ENV !== "production",
+                env: workerEnv,
+              },
+            );
         const wardenPilotSource = binding.sourceKind === "immutable_snapshot"
           ? validatedWardenPilotSource(
               db,
@@ -2482,6 +2673,17 @@ async function processJobsOnceUnfenced(
           payload.verifyCommand,
         );
         const useLlm = payload.useLlm ?? workerEnv.LLM_AGENT === "1";
+        const jobModelBudgetUsd = payload.maximumCostUsd === undefined
+          ? WARDEN_JOB_MODEL_BUDGET_USD
+          : Number.isFinite(payload.maximumCostUsd) && payload.maximumCostUsd > 0 &&
+              payload.maximumCostUsd <= WARDEN_JOB_MODEL_BUDGET_USD
+            ? payload.maximumCostUsd
+            : (() => { throw new Error("warden_model_budget_invalid"); })();
+        const jobModelCalls = payload.maxModelCalls === undefined
+          ? Math.max(1, Math.min(payload.maxSteps ?? 20, 100))
+          : Number.isSafeInteger(payload.maxModelCalls) && payload.maxModelCalls > 0 && payload.maxModelCalls <= 100
+            ? payload.maxModelCalls
+            : (() => { throw new Error("warden_model_budget_invalid"); })();
         const modelSourcePolicy = resolveWardenModelSourcePolicy(
           job.tenant_id,
           useLlm,
@@ -2507,7 +2709,7 @@ async function processJobsOnceUnfenced(
               configuredModel: modelSourcePolicy.model,
               endpoint: modelSourcePolicy.endpoint,
               maximumCallCostUsd: modelSourcePolicy.maximumCallCostUsd,
-              jobBudgetUsd: WARDEN_JOB_MODEL_BUDGET_USD,
+              jobBudgetUsd: jobModelBudgetUsd,
             })
           : undefined;
         const dataRoot = privateWardenDirectory(
@@ -2572,7 +2774,7 @@ async function processJobsOnceUnfenced(
             verifyCommand: verification.targetCommand,
             sourceArtifactId: binding.snapshotId,
             classification: repositoryClassification,
-            budgetUsd: WARDEN_JOB_MODEL_BUDGET_USD,
+            budgetUsd: jobModelBudgetUsd,
             ...(modelSourcePolicy
               ? {
                   modelSource: modelSourcePolicy,
@@ -2657,6 +2859,7 @@ async function processJobsOnceUnfenced(
                   errorLog: payload.errorLog,
                   verifyCommand: verification.targetCommand,
                   maxSteps: Math.max(1, Math.min(payload.maxSteps ?? 20, 100)),
+                  modelBudget: { maxCalls: jobModelCalls },
                   useLlm,
                   ...(opts.wardenPlanner ? { planner: opts.wardenPlanner } : {}),
                   modelRequired: Boolean(modelSourcePolicy),
@@ -2669,7 +2872,9 @@ async function processJobsOnceUnfenced(
                   sessionId,
                   neverTouchPaths: [...verification.protectedPaths],
                   shouldContinue: () =>
-                    !leaseLost && opts.shouldContinue?.() !== false,
+                    !leaseLost && opts.shouldContinue?.() !== false &&
+                    (!payload.ciFailure || getWardenCiCycle(db, job.tenant_id,
+                      payload.ciFailure.cycleId)?.status === "repair_pending"),
                 },
                 verification,
                 limits: {
@@ -2764,6 +2969,7 @@ async function processJobsOnceUnfenced(
             product: "warden",
             sourceKind: "immutable_snapshot",
             ...(wardenPilotSource ? { intake: wardenPilotSource } : {}),
+            ...(payload.ciFailure ? { ciFailure: payload.ciFailure } : {}),
             attemptStatus: attempt.status,
             ...(attempt.status === "rejected" ? { code: attempt.code } : {}),
             summary: attempt.summary,
@@ -2798,6 +3004,13 @@ async function processJobsOnceUnfenced(
             },
             runWrite,
             pendingWardenRoutingFinalizer,
+            (status) => {
+              if (status !== "pending" && payload.ciFailure) {
+                settleWardenCiRepairWithoutCandidate(db, { tenantId: job.tenant_id,
+                  cycleId: payload.ciFailure.cycleId, repairRunId: sessionId,
+                  reason: attempt.code, observedAt: nowIso() });
+              }
+            },
           );
           result.failed++;
           if (failure.status === "pending") result.retried++;
@@ -2828,6 +3041,11 @@ async function processJobsOnceUnfenced(
             runWrite,
             pendingWardenRoutingFinalizer,
             attempt.status === "succeeded" ? attempt.finalizeTerminal : undefined,
+            noAction && payload.ciFailure
+              ? () => settleWardenCiRepairWithoutCandidate(db, { tenantId: job.tenant_id,
+                  cycleId: payload.ciFailure!.cycleId, repairRunId: sessionId,
+                  reason: attempt.code, observedAt: nowIso() })
+              : undefined,
           );
         } catch (error) {
           discardWardenAttempt(attempt, candidateRoot, evidenceRoot);
@@ -3029,6 +3247,29 @@ async function processJobsOnceUnfenced(
     } catch (error) {
       if (error instanceof WardenAtomicFinalizationError) throw error;
       const classified = classifyJobFailure(error);
+      if (["warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update"].includes(job.type)) {
+        db.raw.exec("BEGIN IMMEDIATE");
+        try {
+          const failure = failJob(db, job.id, classified.message, nowIso(), {
+            ...fence, errorCode: classified.errorCode, retryable: classified.retryable,
+            baseDelayMs: 5_000, maxDelayMs: 300_000,
+          });
+          if (failure.applied && failure.status === "dead_letter") {
+            const cycle = wardenCiCycleForJob(db, job);
+            failWardenCiOperation(db, { tenantId: job.tenant_id, cycleId: cycle.id, jobId: job.id,
+              reason: classified.errorCode, observedAt: nowIso() });
+          }
+          db.raw.exec("COMMIT");
+          result.failed++;
+          if (failure.status === "pending") result.retried++;
+          console.error(`  failed: ${classified.message}`);
+          if (!failure.applied) console.error(`  stale lease ignored job=${job.id}`);
+          continue;
+        } catch (settlementError) {
+          if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+          throw settlementError;
+        }
+      }
       const failure = pendingAgentRun || pendingWardenRoutingFinalizer
         ? persistFailedAgentJob(
             db,

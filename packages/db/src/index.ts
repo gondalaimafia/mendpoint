@@ -1316,6 +1316,78 @@ CREATE TABLE IF NOT EXISTS warden_candidate_deliveries (
 );
 CREATE INDEX IF NOT EXISTS warden_candidate_deliveries_tenant_idx
   ON warden_candidate_deliveries(tenant_id, status, requested_at);
+
+CREATE TABLE IF NOT EXISTS warden_ci_cycles (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  delivery_id TEXT NOT NULL,
+  observation_job_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (
+    status IN ('observation_pending', 'checks_running', 'checks_failed', 'repair_pending',
+      'candidate_ready', 'update_pending', 'succeeded', 'paused', 'exhausted')
+  ),
+  repository_id TEXT NOT NULL,
+  remote_repository_id INTEGER NOT NULL,
+  installation_id INTEGER NOT NULL,
+  pull_request_number INTEGER NOT NULL,
+  base_branch TEXT NOT NULL,
+  branch_name TEXT NOT NULL,
+  base_revision TEXT NOT NULL,
+  current_head_sha TEXT NOT NULL,
+  required_checks_json TEXT NOT NULL,
+  allowed_changed_paths_json TEXT NOT NULL,
+  max_cycles INTEGER NOT NULL,
+  used_cycles INTEGER NOT NULL DEFAULT 0,
+  max_model_calls INTEGER NOT NULL,
+  maximum_cost_usd REAL NOT NULL,
+  current_observation_digest TEXT,
+  repair_run_id TEXT,
+  repair_job_id TEXT,
+  paused_by TEXT,
+  pause_reason TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, delivery_id)
+);
+CREATE INDEX IF NOT EXISTS warden_ci_cycles_tenant_status_idx
+  ON warden_ci_cycles(tenant_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS warden_ci_observations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  cycle_id TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  verdict TEXT NOT NULL CHECK (verdict IN ('success', 'failure', 'running', 'missing')),
+  observation_digest TEXT NOT NULL,
+  evidence_artifact_id TEXT NOT NULL,
+  evidence_digest TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  UNIQUE (tenant_id, cycle_id, head_sha, observation_digest)
+);
+CREATE INDEX IF NOT EXISTS warden_ci_observations_cycle_idx
+  ON warden_ci_observations(tenant_id, cycle_id, observed_at);
+
+CREATE TABLE IF NOT EXISTS warden_ci_updates (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  cycle_id TEXT NOT NULL,
+  repair_run_id TEXT NOT NULL,
+  job_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'intent_bound', 'uncertain', 'delivered', 'failed')),
+  expected_head_sha TEXT NOT NULL,
+  sealed_path TEXT NOT NULL,
+  sealed_sha256 TEXT NOT NULL,
+  reviewer_principal_id TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  intent_digest TEXT,
+  commit_sha TEXT,
+  requested_at TEXT NOT NULL,
+  delivered_at TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, cycle_id, repair_run_id)
+);
+CREATE INDEX IF NOT EXISTS warden_ci_updates_tenant_status_idx
+  ON warden_ci_updates(tenant_id, status, updated_at);
 `;
 
 
@@ -2907,6 +2979,29 @@ export {
   type WardenCandidateDeliveryRecord,
   type EnqueueWardenCandidateDeliveryInput,
 } from "./warden-candidate-delivery.js";
+
+export {
+  enqueueWardenCiCycle,
+  getWardenCiCycle,
+  listWardenCiObservations,
+  recordWardenCiObservation,
+  beginWardenCiRepair,
+  exhaustWardenCiCycle,
+  pauseWardenCiCycle,
+  settleWardenCiRepairWithoutCandidate,
+  rebindWardenCiRepair,
+  failWardenCiOperation,
+  getWardenCiUpdate,
+  getWardenCiUpdateByRun,
+  enqueueWardenCiUpdate,
+  bindWardenCiUpdateIntent,
+  markWardenCiUpdateUncertain,
+  completeWardenCiUpdate,
+  type WardenCiCycle,
+  type WardenCiObservation,
+  type WardenCiUpdate,
+  type WardenCiCycleStatus,
+} from "./warden-ci-reentry.js";
 
 export type {
   LearningConsentRow,
