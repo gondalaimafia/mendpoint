@@ -191,6 +191,15 @@ function succeededAttempt(usage: AttemptUsage): WardenAttemptResult {
 }
 
 describe("warden routing runtime", () => {
+  it("binds feature tasks to a distinct executor capability", () => {
+    expect(request({ taskMode: "feature" }).task.requiredCapabilities)
+      .toEqual(["warden.feature"]);
+    expect(wardenExecutorDescriptor("2026-08-01T12:00:00.000Z").capabilities)
+      .toEqual(["warden.repair"]);
+    expect(wardenExecutorDescriptor("2026-08-01T12:00:00.000Z", undefined, "feature").capabilities)
+      .toEqual(expect.arrayContaining(["warden.repair", "warden.feature"]));
+  });
+
   it("hands off an external model before planner execution when processing is denied", async () => {
     const db = freshDb();
     const runtime = createWardenRoutingRuntime({

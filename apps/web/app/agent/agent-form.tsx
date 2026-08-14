@@ -10,6 +10,7 @@ type WardenRequestInput = Readonly<{
   customerMode: boolean;
   providerSlug: string;
   consumerId: string;
+  mode?: "repair" | "feature";
   goal: string;
   allowedPaths: string;
   errorLog: string;
@@ -31,13 +32,14 @@ export function buildWardenRequest(input: WardenRequestInput): Readonly<{
   return {
     endpoint: "/agent/runs",
     body: {
+      mode: input.mode ?? "repair",
       goal: input.goal,
       consumerId: input.consumerId,
       allowedChangedPaths: input.allowedPaths
         .split(/[\n,]/)
         .map((path) => path.trim())
         .filter(Boolean),
-      errorLog: input.errorLog || undefined,
+      ...(input.mode === "feature" || !input.errorLog ? {} : { errorLog: input.errorLog }),
       maxSteps: 20,
       async: true,
     },
@@ -57,6 +59,7 @@ export function AgentForm({
 }) {
   const router = useRouter();
   const [consumerId, setConsumerId] = useState(consumers[0]?.id ?? "");
+  const [mode, setMode] = useState<"repair" | "feature">("repair");
   const [providerSlug, setProviderSlug] = useState(consumers[0]?.providers[0]?.slug ?? "");
   const approvedProviders = consumers.find((consumer) => consumer.id === consumerId)?.providers ?? [];
   const [goal, setGoal] = useState(
@@ -80,6 +83,7 @@ export function AgentForm({
         customerMode,
         providerSlug,
         consumerId,
+        mode,
         goal,
         allowedPaths,
         errorLog,
@@ -188,6 +192,17 @@ export function AgentForm({
         {!customerMode && (
           <>
             <label>
+              Task mode
+              <select
+                className="input"
+                value={mode}
+                onChange={(event) => setMode(event.target.value as "repair" | "feature")}
+              >
+                <option value="repair">Repair a failing check</option>
+                <option value="feature">Build a feature from a green baseline</option>
+              </select>
+            </label>
+            <label>
               Goal
               <textarea
                 className="input"
@@ -208,15 +223,17 @@ export function AgentForm({
               />
               <span className="muted">Enter one repository file path per line.</span>
             </label>
-            <label>
-              Error log (optional seed)
-              <textarea
-                className="input"
-                rows={2}
-                value={errorLog}
-                onChange={(event) => setErrorLog(event.target.value)}
-              />
-            </label>
+            {mode === "repair" && (
+              <label>
+                Error log (optional seed)
+                <textarea
+                  className="input"
+                  rows={2}
+                  value={errorLog}
+                  onChange={(event) => setErrorLog(event.target.value)}
+                />
+              </label>
+            )}
           </>
         )}
         <button

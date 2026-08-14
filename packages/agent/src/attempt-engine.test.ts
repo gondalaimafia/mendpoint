@@ -854,6 +854,114 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
     expect(readdirSync(value.candidateRoot)).toEqual([]);
   });
 
+  it("executes an explicitly authorized feature task from a fully green baseline", async () => {
+    const value = fixture(
+      "feature-green",
+      "export const path = '/v1/charges';\nconst clientLabel = 'legacy';\n",
+    );
+    const featurePlanner: AgentPlanner = async (plannerInput) => {
+      const tools = plannerInput.recentSteps.map((step) => step.tool);
+      if (!tools.includes("read_file")) {
+        return {
+          call: {
+            tool: "read_file",
+            args: { path: "client.js" },
+            thought: "Inspect the exact client before adding the requested feature",
+          },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      if (!tools.includes("replace_in_file")) {
+        const target = plannerInput.observedEvidenceDigests?.find((item) =>
+          item.path === "client.js"
+        );
+        if (!target) throw new Error("feature planner did not receive client evidence");
+        return {
+          call: {
+            tool: "replace_in_file",
+            args: {
+              path: "client.js",
+              from: "const clientLabel = 'legacy';",
+              to: "const clientLabel = 'payments';",
+            },
+            thought: "Add the bounded client label requested by the feature task",
+            intent: {
+              schemaVersion: 1,
+              hypothesis: "The requested client label value differs from the observed client module.",
+              targetPath: "client.js",
+              targetSymbol: "clientLabel",
+              targetDigest: target.digest,
+              evidenceRefs: [{ path: target.path, digest: target.digest }],
+              precondition: "The observed client label is legacy.",
+              expectedObservation: "The client label changes once without changing the charges path.",
+              postcondition: "The feature is present and every approved verifier remains green.",
+              rollback: "Restore the exact observed client.js bytes.",
+              confidence: 0.95,
+              risk: "low",
+              stopCondition: "Stop if the target digest changes or a verifier fails.",
+            },
+          },
+          usage: PER_CALL_USAGE,
+        };
+      }
+      return {
+        call: {
+          tool: "run_command",
+          args: { command: "node check.mjs" },
+          thought: "Verify the feature candidate",
+        },
+        usage: PER_CALL_USAGE,
+      };
+    };
+
+    const result = await runWardenAttempt(input(value, {
+      mode: "feature",
+      task: {
+        ...task(featurePlanner),
+        goal: "Add a clientLabel constant set to payments without changing the charges path.",
+        errorLog: undefined,
+      },
+    }));
+
+    expect(result).toMatchObject({
+      status: "succeeded",
+      changedPaths: ["client.js"],
+    });
+    if (result.status !== "succeeded") return;
+    const evidence = JSON.parse(readFileSync(result.artifacts.evidence, "utf8")) as {
+      taskMode?: string;
+      baseline?: { target?: { ok?: boolean } };
+    };
+    expect(evidence.taskMode).toBe("feature");
+    expect(evidence.baseline?.target?.ok).toBe(true);
+  });
+
+  it("rejects a feature task with a failing baseline before planner execution", async () => {
+    const value = fixture("feature-red-baseline");
+    let plannerCalls = 0;
+    const basePlanner = planner();
+    const featurePlanner: AgentPlanner = async (plannerInput, options) => {
+      plannerCalls++;
+      return basePlanner(plannerInput, options);
+    };
+
+    const result = await runWardenAttempt(input(value, {
+      mode: "feature",
+      task: {
+        ...task(featurePlanner),
+        goal: "Add a new client feature from a clean baseline.",
+        errorLog: undefined,
+      },
+    }));
+
+    expect(result).toMatchObject({
+      status: "rejected",
+      code: "warden_attempt_feature_baseline_failed",
+      artifacts: { candidateWorkspace: null },
+    });
+    expect(plannerCalls).toBe(0);
+  });
+
   it("rejects source content that does not match the stored snapshot manifest", async () => {
     const value = fixture("manifest-mismatch");
     const attempt = input(value);

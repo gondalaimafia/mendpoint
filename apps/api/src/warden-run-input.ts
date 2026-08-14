@@ -6,6 +6,7 @@ import {
 import { deploymentProfile } from "@mendpoint/ops";
 
 export type WardenRunInput = Readonly<{
+  mode: "repair" | "feature";
   goal: string;
   consumerId: string;
   allowedChangedPaths: readonly string[];
@@ -45,6 +46,10 @@ export function parseWardenRunInput(body: unknown): WardenRunInputResult {
     return { ok: false, error: "request body must be an object" };
   }
   const input = body as Record<string, unknown>;
+  const mode = input.mode ?? "repair";
+  if (mode !== "repair" && mode !== "feature") {
+    return { ok: false, error: "mode must be repair or feature" };
+  }
   if (typeof input.goal !== "string" || !input.goal.trim()) {
     return { ok: false, error: "goal required" };
   }
@@ -88,6 +93,9 @@ export function parseWardenRunInput(body: unknown): WardenRunInputResult {
     if (typeof input.errorLog !== "string") {
       return { ok: false, error: "errorLog must be a string" };
     }
+    if (mode === "feature" && input.errorLog.trim()) {
+      return { ok: false, error: "errorLog is only supported for repair mode" };
+    }
     errorLog = redactSourceForModel(input.errorLog, 8_000);
     if (errorLog.excluded || errorLog.truncated) {
       return { ok: false, error: "errorLog contains unsupported or excessive content" };
@@ -110,6 +118,7 @@ export function parseWardenRunInput(body: unknown): WardenRunInputResult {
     return {
       ok: true,
       value: Object.freeze({
+        mode,
         goal: goal.text,
         consumerId: input.consumerId.trim(),
         allowedChangedPaths: Object.freeze([...paths]),

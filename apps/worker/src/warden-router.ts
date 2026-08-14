@@ -19,6 +19,7 @@ import {
 } from "@mendpoint/db";
 import type {
   AgentRunResult,
+  AgentTaskMode,
   WardenAttemptResult,
   WardenRouterPrepared,
   WardenRouterRecorded,
@@ -153,16 +154,21 @@ function modelDeploymentIdentity(profile: WardenModelRoutingProfile): string {
 export function buildWardenExecutorRegistry(
   checkedAt: string = nowIso(),
   modelSource?: WardenModelRoutingProfile,
+  taskMode: AgentTaskMode = "repair",
 ): ExecutorRegistry {
   const registry = new ExecutorRegistry();
-  registry.register(wardenExecutorDescriptor(checkedAt, modelSource));
+  registry.register(wardenExecutorDescriptor(checkedAt, modelSource, taskMode));
   return registry;
 }
 
 export function wardenExecutorDescriptor(
   checkedAt: string = nowIso(),
   modelSource?: WardenModelRoutingProfile,
+  taskMode: AgentTaskMode = "repair",
 ): ExecutorDescriptor {
+  const capabilities = taskMode === "feature"
+    ? ["warden.repair", "warden.feature"]
+    : ["warden.repair"];
   if (modelSource) {
     validateModelRoutingProfile(modelSource);
     const deploymentIdentity = modelDeploymentIdentity(modelSource);
@@ -172,7 +178,7 @@ export function wardenExecutorDescriptor(
       kind: "frontier_model",
       version: `${modelSource.model}@${deploymentIdentity}`,
       deployment: "external",
-      capabilities: ["warden.repair"],
+      capabilities,
       tools: ["read_file", "write_file", "run_command"],
       regions: [modelSource.region],
       price: {
@@ -208,7 +214,7 @@ export function wardenExecutorDescriptor(
     kind: "deterministic_recipe",
     version: "warden-attempt-1",
     deployment: "internal",
-    capabilities: ["warden.repair"],
+    capabilities,
     tools: ["read_file", "write_file", "run_command"],
     regions: [WARDEN_ROUTING_REGION],
     price: {
@@ -240,6 +246,7 @@ export function wardenExecutorDescriptor(
 }
 
 export type WardenRoutingRequestInput = Readonly<{
+  taskMode?: AgentTaskMode;
   taskId: string;
   tenantId: string;
   goal: string;
@@ -277,7 +284,7 @@ function buildTaskSpec(input: WardenRoutingRequestInput): RouterTaskSpec {
     inputArtifactIds: input.modelSource
       ? [sourceArtifactId, input.modelSource.policyDigest]
       : [sourceArtifactId],
-    requiredCapabilities: ["warden.repair"],
+    requiredCapabilities: [input.taskMode === "feature" ? "warden.feature" : "warden.repair"],
     allowedTools: [],
     context: {
       estimatedInputTokens: 0,

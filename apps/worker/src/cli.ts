@@ -588,6 +588,7 @@ export function resolveWorkerRepoPath(
 }
 
 type WardenJobPayload = Readonly<{
+  mode?: "repair" | "feature";
   goal: string;
   consumerId: string;
   verifyCommand?: string;
@@ -2616,7 +2617,11 @@ async function processJobsOnceUnfenced(
         console.log(`Job ${job.id} agent.run ${binding.root}`);
 
         if (binding.sourceKind === "legacy_local") {
+          if (payload.mode === "feature") {
+            throw new Error("warden_feature_requires_immutable_snapshot");
+          }
           const warden = await runWarden({
+            taskMode: "repair",
             goal: executionGoal,
             repoRoot: binding.root,
             verifyCommand: payload.verifyCommand,
@@ -2783,13 +2788,18 @@ async function processJobsOnceUnfenced(
         const routingDescriptor = wardenExecutorDescriptor(
           started,
           modelSourcePolicy,
+          payload.mode ?? "repair",
         );
         const routingRuntime = createWardenRoutingRuntime({
           db,
           tenantId: job.tenant_id,
           jobId: job.id,
           runId: sessionId,
-          registry: buildWardenExecutorRegistry(started, modelSourcePolicy),
+          registry: buildWardenExecutorRegistry(
+            started,
+            modelSourcePolicy,
+            payload.mode ?? "repair",
+          ),
           deferOutcomePersistence: true,
         });
         pendingWardenRoutingFinalizer = () => routingRuntime.applyPendingOutcome();
@@ -2801,6 +2811,7 @@ async function processJobsOnceUnfenced(
             tenantId: job.tenant_id,
           },
           routingRequest: wardenRoutingRequest({
+            taskMode: payload.mode ?? "repair",
             taskId: job.id,
             tenantId: job.tenant_id,
             goal: executionGoal,
@@ -2877,6 +2888,7 @@ async function processJobsOnceUnfenced(
                   }
                 : undefined;
               const attempt = await runWardenAttempt({
+                mode: payload.mode ?? "repair",
                 scope: { tenantId: job.tenant_id, attemptId: job.id },
                 source: {
                   repositoryId: binding.repositoryId,
@@ -2889,6 +2901,7 @@ async function processJobsOnceUnfenced(
                 candidateRoot,
                 evidenceRoot,
                 task: {
+                  taskMode: payload.mode ?? "repair",
                   goal: executionGoal,
                   errorLog: payload.errorLog,
                   verifyCommand: verification.targetCommand,
@@ -3001,6 +3014,7 @@ async function processJobsOnceUnfenced(
           resultJson: JSON.stringify({
             jobId: job.id,
             product: "warden",
+            taskMode: payload.mode ?? "repair",
             sourceKind: "immutable_snapshot",
             ...(wardenPilotSource ? { intake: wardenPilotSource } : {}),
             ...(payload.ciFailure ? { ciFailure: payload.ciFailure } : {}),
@@ -3065,12 +3079,14 @@ async function processJobsOnceUnfenced(
                   artifacts: attempt.artifacts,
                   expiresAt: candidateExpiresAt,
                   product: "warden",
+                  taskMode: payload.mode ?? "repair",
                 }
               : {
                   sessionId,
                   ok: true,
                   status: "no_action",
                   product: "warden",
+                  taskMode: payload.mode ?? "repair",
                 },
             runWrite,
             pendingWardenRoutingFinalizer,

@@ -4,6 +4,7 @@ export type {
   ToolResult,
   AgentStep,
   AgentTask,
+  AgentTaskMode,
   AgentModelBudget,
   AgentPlanner,
   AgentPlannerInput,

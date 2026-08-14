@@ -39,6 +39,7 @@ import type {
   AgentMissionPlan,
   AgentRunResult,
   AgentTask,
+  AgentTaskMode,
 } from "./types.js";
 import {
   openWardenRuntimeExecution,
@@ -73,6 +74,7 @@ export type WardenAttemptRuntime = Readonly<{
 }>;
 
 export type WardenAttemptInput = Readonly<{
+  mode?: AgentTaskMode;
   scope: Readonly<{ tenantId: string; attemptId: string }>;
   source: Readonly<{
     repositoryId: string;
@@ -370,6 +372,7 @@ function validateInput(input: WardenAttemptInput): {
   candidateRoot: string;
   evidenceRoot: string;
   allowedPaths: ReadonlySet<string>;
+  mode: AgentTaskMode;
 } {
   requireIdentifier(input.scope.tenantId, "tenantId");
   requireIdentifier(input.scope.attemptId, "attemptId");
@@ -390,6 +393,15 @@ function validateInput(input: WardenAttemptInput): {
   }
   if (!input.task.goal.trim()) {
     fail("warden_attempt_invalid_task", "The Warden task goal is required.");
+  }
+  if (input.mode !== undefined && input.mode !== "repair" && input.mode !== "feature") {
+    fail("warden_attempt_invalid_task_mode", "Task mode must be repair or feature.");
+  }
+  if ((input.mode ?? "repair") === "feature" && !input.task.useLlm && !input.task.planner) {
+    fail(
+      "warden_attempt_feature_model_required",
+      "Feature tasks require an approved model planner.",
+    );
   }
   if (input.task.allowModelSource) {
     const policy = input.task.modelSourcePolicy;
@@ -421,6 +433,7 @@ function validateInput(input: WardenAttemptInput): {
     candidateRoot,
     evidenceRoot,
     allowedPaths: validateLimits(input.limits),
+    mode: input.mode ?? "repair",
   };
 }
 
@@ -735,6 +748,7 @@ function compareTrees(
 function reviewEvidence(
   agent: AgentRunResult,
   task: Omit<AgentTask, "repoRoot" | "tenantId">,
+  mode: AgentTaskMode,
   changedPaths: readonly string[],
   commands: readonly VerificationRecord[],
 ): CandidateReviewEvidence {
@@ -803,7 +817,7 @@ function reviewEvidence(
           ? "planner" as const
           : "unavailable" as const,
         verification: {
-          summary: `${verification.summary} Repair objective: ${objective}`,
+          summary: `${verification.summary} ${mode === "feature" ? "Feature" : "Repair"} objective: ${objective}`,
           commandOutputSha256: verification.commands.map((command) => command.outputSha256),
         },
       };
@@ -948,43 +962,36 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
         baselineTarget.execution.error ?? "The target verifier is unavailable under production policy.",
       );
     }
-    if (baselineTarget.execution.ok) {
-      const greenRegression = await verifyAll(
-        input.verification.regressionCommands,
-        workspace,
-        input.limits.verificationTimeoutMs,
-      );
-      assertAttemptContinues(input);
-      const greenSecurity = await verifyAll(
-        input.verification.securityCommands,
-        workspace,
-        input.limits.verificationTimeoutMs,
-      );
-      assertAttemptContinues(input);
-      if (!greenRegression.ok || !greenSecurity.ok) {
-        fail(
-          "warden_attempt_primary_target_mismatch",
-          "The primary target passes while another required snapshot policy check fails.",
-        );
-      }
-      fail("warden_attempt_baseline_target_green", "The target verifier already passes on the source snapshot.");
-    }
     const baselineRegression = await verifyAll(
       input.verification.regressionCommands,
       workspace,
       input.limits.verificationTimeoutMs,
     );
     assertAttemptContinues(input);
-    if (!baselineRegression.ok) {
-      fail("warden_attempt_baseline_regression_failed", "A regression verifier fails before repair.");
-    }
     const baselineSecurity = await verifyAll(
       input.verification.securityCommands,
       workspace,
       input.limits.verificationTimeoutMs,
     );
     assertAttemptContinues(input);
-    if (!baselineSecurity.ok) {
+    if (validated.mode === "feature") {
+      if (!baselineTarget.execution.ok || !baselineRegression.ok || !baselineSecurity.ok) {
+        fail(
+          "warden_attempt_feature_baseline_failed",
+          "A feature task requires every approved source verification command to pass before execution.",
+        );
+      }
+    } else if (baselineTarget.execution.ok) {
+      if (!baselineRegression.ok || !baselineSecurity.ok) {
+        fail(
+          "warden_attempt_primary_target_mismatch",
+          "The primary target passes while another required snapshot policy check fails.",
+        );
+      }
+      fail("warden_attempt_baseline_target_green", "The target verifier already passes on the source snapshot.");
+    } else if (!baselineRegression.ok) {
+      fail("warden_attempt_baseline_regression_failed", "A regression verifier fails before repair.");
+    } else if (!baselineSecurity.ok) {
       fail("warden_attempt_baseline_security_failed", "A security verifier fails before repair.");
     }
     const baselineManifest = scanTree(workspace, input.limits, "warden_attempt_candidate_symlink", candidateExclusion);
@@ -998,6 +1005,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
     ])].sort();
     const agentTask: AgentTask = {
       ...input.task,
+      taskMode: validated.mode,
       tenantId: input.scope.tenantId,
       repoRoot: workspace,
       verifyCommand: input.verification.targetCommand,
@@ -1023,6 +1031,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
         sourceManifestSha256: createWardenRuntimeManifestDigest(sourceRuntimeManifest),
         allowedPathsDigest: sha256(canonicalJson([...validated.allowedPaths].sort())),
         verificationProfileDigest: sha256(canonicalJson({
+          ...(validated.mode === "feature" ? { taskMode: "feature" } : {}),
           targetCommand: input.verification.targetCommand,
           regressionCommands: input.verification.regressionCommands,
           securityCommands: input.verification.securityCommands,
@@ -1201,6 +1210,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
 
     const manifestArtifact = {
       schemaVersion: 1,
+      taskMode: validated.mode,
       scope: input.scope,
       source: {
         repositoryId: input.source.repositoryId,
@@ -1218,6 +1228,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
     };
     const evidenceArtifact = {
       schemaVersion: 1,
+      taskMode: validated.mode,
       scope: input.scope,
       sourceDigest: sourceManifest.digest,
       candidateDigest: candidateManifest.digest,
@@ -1234,7 +1245,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       },
       changedPaths: difference.changedPaths,
       changedBytes: difference.changedBytes,
-      review: reviewEvidence(agent, input.task, difference.changedPaths, [
+      review: reviewEvidence(agent, input.task, validated.mode, difference.changedPaths, [
         target.record,
         ...regression.records,
         ...security.records,

@@ -80,6 +80,29 @@ function runtimeModelAuthorityDigest(): string {
   });
 }
 
+describe("runtime model authority", () => {
+  it("binds the explicit task mode into the authority digest", () => {
+    const task = {
+      goal: "Add a bounded client label constant.",
+      repoRoot: "runtime-authority-fixture",
+      verifyCommand: "node check.mjs",
+      maxSteps: 3,
+      useLlm: true,
+      planner: async () => ({
+        call: { tool: "finish" as const, args: { ok: false, message: "authority only" } },
+        usage: TEST_MODEL_USAGE,
+      }),
+      ...TEST_MODEL_SOURCE,
+    };
+
+    const legacyRepairDigest = createWardenRuntimeModelAuthorityDigest(task);
+    expect(createWardenRuntimeModelAuthorityDigest({ ...task, taskMode: "repair" }))
+      .toBe(legacyRepairDigest);
+    expect(createWardenRuntimeModelAuthorityDigest({ ...task, taskMode: "feature" }))
+      .not.toBe(legacyRepairDigest);
+  });
+});
+
 afterEach(() => {
   while (dirs.length) {
     const d = dirs.pop();
@@ -2817,6 +2840,56 @@ if (source.includes("broken") || !source.includes("fixed")) process.exit(1);
     });
     expect(result.ok).toBe(true);
     expect(result.stoppedReason).toMatch(/already_passing|verify/);
+  });
+
+  it("rejects a red feature baseline before planner execution", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-feature-red-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const path = '/v1/chargess';\n");
+    writeFileSync(
+      join(dir, "check.mjs"),
+      "import { path } from './client.js'; process.exit(path === '/v1/charges' ? 0 : 1);\n",
+    );
+    const planner = vi.fn(async () => ({
+      call: { tool: "finish" as const, args: { ok: false, message: "must not run" } },
+      usage: TEST_MODEL_USAGE,
+    }));
+
+    const result = await runWarden({
+      taskMode: "feature",
+      goal: "Add a client capability from a green baseline.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      planner,
+      maxSteps: 5,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.stoppedReason).toBe("feature_baseline_failed");
+    expect(planner).not.toHaveBeenCalled();
+  });
+
+  it("rejects feature mode without an approved model before verifier execution", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-agent-feature-model-required-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "client.js"), "export const path = '/v1/charges';\n");
+    writeFileSync(
+      join(dir, "check.mjs"),
+      "import { writeFileSync } from 'node:fs'; writeFileSync('verifier-ran', 'yes'); process.exit(0);\n",
+    );
+
+    const result = await runWarden({
+      taskMode: "feature",
+      goal: "Add a client capability from a green baseline.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      maxSteps: 5,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.stoppedReason).toBe("feature_model_required");
+    expect(existsSync(join(dir, "verifier-ran"))).toBe(false);
+    expect(result.metrics.verifierCalls).toBe(0);
   });
 
   it("discovers a safe verifier when one is not provided", async () => {
