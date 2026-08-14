@@ -1,0 +1,203 @@
+name: Regauge production proof
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type REGAUGE_DRAFT_ONLY to authorize one draft only pilot
+        required: true
+        type: string
+      live_eval_repetitions:
+        description: Bounded live model repetitions
+        required: true
+        default: "3"
+        type: string
+      readiness_soak_seconds:
+        description: Read only production readiness soak duration
+        required: true
+        default: "300"
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: regauge-production
+    concurrency:
+      group: regauge-production
+      cancel-in-progress: false
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_ORG: ${{ vars.FLY_ORG }}
+      MENDPOINT_REGAUGE_TENANT_ID: ${{ secrets.MENDPOINT_REGAUGE_TENANT_ID }}
+      MENDPOINT_REGAUGE_CAMPAIGN_ID: ${{ secrets.MENDPOINT_REGAUGE_CAMPAIGN_ID }}
+      MENDPOINT_REGAUGE_CANARY_OWNER: ${{ vars.REGAUGE_CANARY_OWNER }}
+      MENDPOINT_REGAUGE_CANARY_REPOSITORY: ${{ vars.REGAUGE_CANARY_REPOSITORY }}
+      MENDPOINT_REGAUGE_GATE: ${{ secrets.MENDPOINT_REGAUGE_GATE }}
+      MENDPOINT_REGAUGE_COORDINATOR_TOKEN: ${{ secrets.MENDPOINT_REGAUGE_COORDINATOR_TOKEN }}
+      MENDPOINT_REGAUGE_CHECKPOINT_KEY: ${{ secrets.MENDPOINT_REGAUGE_CHECKPOINT_KEY }}
+      MENDPOINT_REGAUGE_OPERATION_SECRET: ${{ secrets.MENDPOINT_REGAUGE_OPERATION_SECRET }}
+      MENDPOINT_REGAUGE_S3_ENDPOINT: ${{ secrets.MENDPOINT_REGAUGE_S3_ENDPOINT }}
+      MENDPOINT_REGAUGE_S3_REGION: ${{ secrets.MENDPOINT_REGAUGE_S3_REGION }}
+      MENDPOINT_REGAUGE_S3_BUCKET: ${{ secrets.MENDPOINT_REGAUGE_S3_BUCKET }}
+      MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID: ${{ secrets.MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID }}
+      MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY: ${{ secrets.MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY }}
+      MENDPOINT_REGAUGE_EVIDENCE_REFS: ${{ secrets.MENDPOINT_REGAUGE_EVIDENCE_REFS }}
+      GITHUB_APP_ID: ${{ secrets.REGAUGE_GITHUB_APP_ID }}
+      GITHUB_APP_PRIVATE_KEY: ${{ secrets.REGAUGE_GITHUB_APP_PRIVATE_KEY }}
+      GITHUB_WEBHOOK_SECRET: ${{ secrets.REGAUGE_GITHUB_WEBHOOK_SECRET }}
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS: ${{ secrets.REGAUGE_GITHUB_APP_ACCOUNT_TENANT_BINDINGS }}
+      OPENAI_API_KEY: ${{ secrets.REGAUGE_MODEL_API_KEY }}
+      LLM_AGENT_URL: ${{ secrets.REGAUGE_MODEL_URL }}
+      LLM_AGENT_MODEL: ${{ secrets.REGAUGE_MODEL_ID }}
+      MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER: ${{ vars.REGAUGE_MODEL_PROVIDER }}
+      MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT: ${{ vars.REGAUGE_MODEL_DEPLOYMENT }}
+      MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION: ${{ vars.REGAUGE_MODEL_REGION }}
+      MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION: ${{ vars.REGAUGE_MAX_DATA_CLASSIFICATION }}
+      MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD: ${{ vars.REGAUGE_LIVE_EVAL_MAX_USD }}
+      MENDPOINT_REGAUGE_COORDINATOR_URL: https://mendpoint-transformer-pilot.fly.dev/
+      MENDPOINT_RELEASE_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        with:
+          version: "0.4.79"
+      - name: Install
+        run: npm ci
+      - name: Validate exact authority before mutation
+        shell: bash
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          LIVE_EVAL_REPETITIONS: ${{ inputs.live_eval_repetitions }}
+          READINESS_SOAK_SECONDS: ${{ inputs.readiness_soak_seconds }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = "REGAUGE_DRAFT_ONLY"
+          test "$LIVE_EVAL_REPETITIONS" -ge 3
+          test "$LIVE_EVAL_REPETITIONS" -le 10
+          test "$READINESS_SOAK_SECONDS" -ge 60
+          test "$READINESS_SOAK_SECONDS" -le 21600
+          required=(
+            FLY_API_TOKEN FLY_ORG MENDPOINT_REGAUGE_TENANT_ID MENDPOINT_REGAUGE_CAMPAIGN_ID
+            MENDPOINT_REGAUGE_CANARY_OWNER MENDPOINT_REGAUGE_CANARY_REPOSITORY
+            MENDPOINT_REGAUGE_GATE MENDPOINT_REGAUGE_COORDINATOR_TOKEN MENDPOINT_REGAUGE_CHECKPOINT_KEY
+            MENDPOINT_REGAUGE_OPERATION_SECRET MENDPOINT_REGAUGE_S3_ENDPOINT MENDPOINT_REGAUGE_S3_REGION
+            MENDPOINT_REGAUGE_S3_BUCKET MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY
+            MENDPOINT_REGAUGE_EVIDENCE_REFS GITHUB_APP_ID GITHUB_APP_PRIVATE_KEY GITHUB_WEBHOOK_SECRET
+            GITHUB_APP_ACCOUNT_TENANT_BINDINGS OPENAI_API_KEY LLM_AGENT_URL LLM_AGENT_MODEL
+            MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT
+            MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION
+            MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD
+          )
+          for name in "${required[@]}"; do
+            test -n "${!name:-}" || { echo "Missing required Regauge production authority: $name"; exit 1; }
+          done
+          mkdir -p test-results/regauge-production
+      - name: Provision dedicated app and coordinator volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! flyctl status --app mendpoint-transformer-pilot >/dev/null 2>&1; then
+            flyctl apps create mendpoint-transformer-pilot --org "$FLY_ORG"
+          fi
+          if ! flyctl volumes list --app mendpoint-transformer-pilot --json | jq -e '.[] | select(.name == "mendpoint_transformer_data")' >/dev/null; then
+            flyctl volumes create mendpoint_transformer_data --app mendpoint-transformer-pilot --region sjc --size 20 --yes
+          fi
+      - name: Stage production secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          executor_digest="sha256:$(printf '%s' "$GITHUB_SHA" | sha256sum | cut -d' ' -f1)"
+          flyctl secrets set --stage --app mendpoint-transformer-pilot \
+            MENDPOINT_REGAUGE_TENANT_ID="$MENDPOINT_REGAUGE_TENANT_ID" \
+            MENDPOINT_REGAUGE_CAMPAIGN_ID="$MENDPOINT_REGAUGE_CAMPAIGN_ID" \
+            MENDPOINT_REGAUGE_ENVIRONMENT=production \
+            MENDPOINT_REGAUGE_GATE="$MENDPOINT_REGAUGE_GATE" \
+            MENDPOINT_REGAUGE_COORDINATOR_TOKEN="$MENDPOINT_REGAUGE_COORDINATOR_TOKEN" \
+            MENDPOINT_REGAUGE_CHECKPOINT_KEY="$MENDPOINT_REGAUGE_CHECKPOINT_KEY" \
+            MENDPOINT_REGAUGE_OPERATION_SECRET="$MENDPOINT_REGAUGE_OPERATION_SECRET" \
+            MENDPOINT_REGAUGE_S3_ENDPOINT="$MENDPOINT_REGAUGE_S3_ENDPOINT" \
+            MENDPOINT_REGAUGE_S3_REGION="$MENDPOINT_REGAUGE_S3_REGION" \
+            MENDPOINT_REGAUGE_S3_BUCKET="$MENDPOINT_REGAUGE_S3_BUCKET" \
+            MENDPOINT_REGAUGE_S3_PREFIX="transformer/$MENDPOINT_REGAUGE_TENANT_ID/$MENDPOINT_REGAUGE_CAMPAIGN_ID" \
+            MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID="$MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID" \
+            MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY="$MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY" \
+            MENDPOINT_REGAUGE_EXECUTOR_DIGEST="$executor_digest" \
+            MENDPOINT_REGAUGE_EVIDENCE_REFS="$MENDPOINT_REGAUGE_EVIDENCE_REFS" \
+            MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED=1 \
+            MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_TENANTS="$MENDPOINT_REGAUGE_TENANT_ID" \
+            MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER="$MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER" \
+            MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT="$MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT" \
+            MENDPOINT_REGAUGE_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED=1 \
+            MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION="$MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION" \
+            MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION="$MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION" \
+            LLM_AGENT_URL="$LLM_AGENT_URL" \
+            LLM_AGENT_MODEL="$LLM_AGENT_MODEL" \
+            OPENAI_API_KEY="$OPENAI_API_KEY" \
+            GITHUB_APP_ID="$GITHUB_APP_ID" \
+            GITHUB_APP_PRIVATE_KEY="$GITHUB_APP_PRIVATE_KEY" \
+            GITHUB_WEBHOOK_SECRET="$GITHUB_WEBHOOK_SECRET" \
+            GITHUB_APP_ACCOUNT_TENANT_BINDINGS="$GITHUB_APP_ACCOUNT_TENANT_BINDINGS"
+      - name: Deploy one coordinator and one worker
+        run: >-
+          flyctl deploy --remote-only --ha=false --app mendpoint-transformer-pilot
+          --config fly.transformer.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
+      - name: Verify exact deployed revision and process health
+        shell: bash
+        run: |
+          set -euo pipefail
+          flyctl status --app mendpoint-transformer-pilot --json | tee test-results/regauge-production/fly-status.json
+          flyctl scale count coordinator=1 worker=1 --app mendpoint-transformer-pilot --yes
+          for attempt in {1..60}; do
+            revision="$(curl --fail --silent https://mendpoint-transformer-pilot.fly.dev/version | jq -r '.revision')" || true
+            ready="$(curl --fail --silent https://mendpoint-transformer-pilot.fly.dev/ready | jq -r '.status')" || true
+            if test "$revision" = "$GITHUB_SHA" && test "$ready" = "ok"; then break; fi
+            test "$attempt" -lt 60
+            sleep 2
+          done
+          flyctl checks list --app mendpoint-transformer-pilot | tee test-results/regauge-production/fly-checks.txt
+      - name: Run budget bounded live Regauge evaluation
+        env:
+          MENDPOINT_EVAL_LIVE_REGAUGE: "1"
+          MENDPOINT_REGAUGE_LIVE_EVAL_TENANT: ${{ secrets.MENDPOINT_REGAUGE_TENANT_ID }}
+          MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED: "1"
+          MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_TENANTS: ${{ secrets.MENDPOINT_REGAUGE_TENANT_ID }}
+          MENDPOINT_REGAUGE_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED: "1"
+        run: >-
+          npm run eval:agents:live -- --product=transformer
+          --repetitions=${{ inputs.live_eval_repetitions }}
+          --output=test-results/regauge-production/live-model.json
+      - name: Wait for exact real draft canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..60}; do
+            if npm run regauge:production:proof -- \
+              --mode=draft-canary \
+              --output=test-results/regauge-production/draft-canary.json; then
+              exit 0
+            fi
+            rm -f test-results/regauge-production/draft-canary.json
+            test "$attempt" -lt 60
+            sleep 10
+          done
+      - name: Run read only production readiness soak
+        run: >-
+          npm run regauge:production:proof -- --mode=readiness-soak
+          --duration-seconds=${{ inputs.readiness_soak_seconds }} --interval-seconds=10
+          --output=test-results/regauge-production/readiness-soak.json
+      - name: Upload Regauge production evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: regauge-production-evidence-${{ github.sha }}
+          path: test-results/regauge-production/
+          if-no-files-found: error
+          retention-days: 90

@@ -1,4 +1,4 @@
-import { parseTransformerGateConfig } from "@mendpoint/ops";
+import { parseTransformerGateConfig, resolveReleaseRevision } from "@mendpoint/ops";
 import { resolveEitherRenamedEnv, resolveRenamedEnv } from "@mendpoint/shared";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
@@ -52,6 +52,14 @@ export function validateTransformerProductionProfile(
   exact(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED"), "1", "transformer_production_coordinator_required");
   exact(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_MULTINODE_ENABLED"), "1", "transformer_production_worker_required");
   exact(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ARTIFACT_BACKEND"), "s3", "transformer_production_s3_required");
+  if (!env.MENDPOINT_RELEASE_REVISION?.trim()) {
+    throw new Error("transformer_production_release_revision_required");
+  }
+  try {
+    resolveReleaseRevision(env);
+  } catch {
+    throw new Error("transformer_production_release_revision_invalid");
+  }
   exact(env.MENDPOINT_PILOT_SEED ?? "0", "0", "transformer_production_seed_forbidden");
   exact(env.MENDPOINT_FEED_POLLING_ENABLED ?? "0", "0", "transformer_production_feed_forbidden");
 

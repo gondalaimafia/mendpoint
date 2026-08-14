@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  constants,
+  copyFileSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   readlinkSync,
@@ -9,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   computeModelCostUsd,
   resolveAgentModelEndpoint,
@@ -705,6 +708,24 @@ export function parseLiveEvalOption(args: readonly string[], name: string): stri
   return next && !next.startsWith("--") ? next : undefined;
 }
 
+export function persistLiveEvalReport(
+  path: string,
+  report: LiveEvalReport | TransformerLiveEvalReport,
+): string {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(report, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+  });
+  try {
+    copyFileSync(temporary, path, constants.COPYFILE_EXCL);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+  return path;
+}
+
 function option(name: string): string | undefined {
   return parseLiveEvalOption(process.argv, name);
 }
@@ -769,6 +790,7 @@ function printTransformerReport(report: TransformerLiveEvalReport): void {
 async function main(): Promise<void> {
   const repetitions = Number(option("repetitions") ?? "3");
   const product = option("product") ?? "all";
+  const output = option("output");
   if (!new Set(["all", "warden", "transformer"]).has(product)) {
     console.error("Live model eval refused: product must be all, warden, or transformer");
     process.exit(1);
@@ -779,11 +801,13 @@ async function main(): Promise<void> {
     if (product === "all" || product === "warden") {
       const report = await runWardenLiveEval({ repetitions });
       printWardenReport(report);
+      if (output && product === "warden") persistLiveEvalReport(output, report);
       passed = passed && report.passed;
     }
     if (product === "all" || product === "transformer") {
       const report = await runTransformerLiveEval({ repetitions });
       printTransformerReport(report);
+      if (output && product === "transformer") persistLiveEvalReport(output, report);
       passed = passed && report.passed;
     }
     if (!passed) process.exit(1);

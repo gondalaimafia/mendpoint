@@ -37,6 +37,19 @@ export const RELEASE = {
 
 export type ReleaseInfo = typeof RELEASE;
 
+const IMMUTABLE_RELEASE_REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+
+export function resolveReleaseRevision(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const revision = env.MENDPOINT_RELEASE_REVISION?.trim();
+  if (!revision) return null;
+  if (!IMMUTABLE_RELEASE_REVISION.test(revision)) {
+    throw new Error("release_revision_invalid");
+  }
+  return revision;
+}
+
 export function releaseBanner(): string {
   return `${RELEASE.platform} / ${RELEASE.product} ${RELEASE.version} (${RELEASE.channel})`;
 }

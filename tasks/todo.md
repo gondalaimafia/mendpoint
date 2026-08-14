@@ -1800,3 +1800,33 @@ Review: audited the current 34 workspace repository after rebasing onto `origin/
 Confirmed defects fixed: the API now rejects oversized bodies globally and validates the local sandbox request schema, paths, URLs, file count, and byte budgets before allocating a workspace. A shared hard timeout and streaming response cap now protects Fettler model calls, Regauge adaptive planning, model based repair and impact confirmation, GitHub repository reads, and Slack or paging notifications, including providers that ignore abort signals or stall after response headers. The startup probe found and fixed the final public release metadata label from Warden to Fettler, and the product naming gate now covers that surface.
 
 External limits: Docker is not installed in this Windows environment, so container image startup and the checked in containerized deployment journey must be proven by protected hosted CI. Live model evaluation remains 0 of 0 and the Regauge canary uses mock SCM. A safe performance or soak target was not supplied, so the destructive load runner was not aimed at production. Direct live probes returned 200 for the current Mendpoint liveness and health endpoints, but the combined worker reports Regauge disabled and inactive, while the dedicated Regauge pilot hostname does not resolve. Production activation is therefore not proven despite any configuration intent. The product contract remains 41 verified, 40 partial, 2 scaffolded, and 1 externally blocked; those declared roadmap gaps are not reclassified as shipped functionality.
+
+## Regauge production proof: 2026-08-14
+
+Objective: turn the checked in dedicated Regauge profile into an independently verifiable production pilot. The proof must cover the exact deployed revision, unique worker identity, coordinator and artifact readiness, a bounded live model evaluation, a real draft only source control canary, and a non destructive production soak. Configuration intent alone is not evidence.
+
+### Release authority
+
+- [x] Add a protected, manual dedicated Regauge deployment workflow that fails before mutation when any exact environment, secret, approval, or target binding is missing.
+- [ ] Prove the Regauge container starts both coordinator and worker roles under Fly like machine identity and reports dependency backed readiness.
+- [ ] Deploy exactly one coordinator and one worker first, retaining a documented pause and scale to zero rollback path.
+
+### Live evidence
+
+- [x] Run at least three budget bounded live model trials against the compiled synthetic Regauge fixture and retain the exact provider, model, token, cost, latency, and objective grades.
+- [ ] Run one real GitHub draft only canary against an explicitly approved repository, installation, tenant, campaign, source revision, and allowed path set. Never merge or deploy the candidate.
+- [ ] Run a Regauge specific read only readiness soak first, then a bounded execution soak only against an explicitly approved disposable campaign target.
+
+### Production verification
+
+- [ ] Verify the dedicated hostname resolves and both coordinator and worker health checks are green on the deployed revision.
+- [ ] Restart the worker and coordinator separately and prove checkpoint recovery, unique lease identity, and no duplicate model effect or pull request.
+- [ ] Update the product contract only for requirements supported by retained production evidence. Do not promote roadmap or externally blocked requirements by assertion.
+
+Acceptance: the dedicated Regauge hostname resolves, the exact production revision has one healthy coordinator and at least one uniquely identified worker, encrypted shared checkpoint storage is ready, the live model lane passes its configured repetitions and budget, one approved real draft pull request is created exactly once, and a bounded production soak completes without mutation outside the approved canary. Every artifact is retained and linked to the deployed revision.
+
+Live model checkpoint: the compiled synthetic Regauge lane passed 3 of 3 trials with a 1.000 pass rate and 1.000 consistency rate. The three calls used 9,619 tokens, cost $0.001799 total, and completed in 21,098 ms, 14,780 ms, and 18,386 ms. The retained structured report is `test-results/regauge-production/local-live-model.json`; it contains provider, model, deployment, execution region, policy digest, request provenance, token usage, measured and accounted cost, objective grades, and changed paths. No repository or customer data was read.
+
+Source checkpoint: the new manual `regauge-production` workflow requires the exact draft only confirmation, protected environment, tenant, campaign, gate, repository owner and name, S3 authority, GitHub App authority, live model authority, and bounded evaluation and soak settings before it creates or changes Fly resources. It provisions one coordinator volume, stages secrets without printing values, deploys one coordinator and one worker, verifies the exact source revision through `/version`, runs the live synthetic model lane, requires exact durable GitHub draft evidence for the approved repository, performs a read only readiness soak, and retains all evidence for 90 days. The public version endpoint now reports only a validated immutable 40 or 64 character revision, and the production profile refuses to boot without it.
+
+Verification checkpoint: focused Regauge production proof tests pass 60 of 60. Every workspace test, all workspace typechecks, the production build, GA, spec, public claims, naming, documentation, action pinning, dependency audit, Fly configuration validation, and diff integrity pass in the combined 359.7 second gate. The local Fly credential is present but unauthenticated. The repository has only `FLY_API_TOKEN` and no `regauge-production` environment or Regauge tenant, campaign, storage, GitHub App, model, approval, or target authorities. Therefore the workflow cannot safely run yet, the hostname remains unprovisioned, and draft canary plus production soak remain open external activation work.

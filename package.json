@@ -42,6 +42,7 @@
     "eval:agents:live": "tsx packages/eval/src/agent-eval-live.ts",
     "eval:transformer:canary": "tsx packages/eval/src/transformer-canary.ts",
     "eval:performance": "tsx packages/eval/src/performance-runner.ts",
+    "regauge:production:proof": "tsx scripts/regauge-production-proof.ts",
     "platform:dev": "tsx scripts/platform-dev.ts",
     "graph:bench": "tsx -e \"import { runGraphBenchmark } from '@mendpoint/graph-learn'; const b=runGraphBenchmark(); console.log(b.passed+'/'+b.total); process.exit(b.passed>=18?0:1)\"",
     "graph:temporal": "tsx scripts/git-temporal.ts",

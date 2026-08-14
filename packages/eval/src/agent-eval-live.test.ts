@@ -1,8 +1,15 @@
 import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { parseLiveEvalOption, runWardenLiveEval } from "./agent-eval-live.js";
+import {
+  parseLiveEvalOption,
+  persistLiveEvalReport,
+  runWardenLiveEval,
+} from "./agent-eval-live.js";
 
 const APPROVED_MODEL = "muse-spark-1.2-contributor";
 
@@ -14,6 +21,32 @@ describe("live eval command options", () => {
       .toBe("transformer");
     expect(parseLiveEvalOption(["node", "eval", "--product", "--repetitions", "3"], "product"))
       .toBeUndefined();
+  });
+
+  it("persists immutable structured Regauge evidence without losing trial provenance", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-regauge-live-evidence-"));
+    try {
+      const path = join(root, "report.json");
+      const report = Object.freeze({
+        schemaVersion: 2 as const,
+        caseId: "transformer.live.synthetic_node20.live" as const,
+        lane: "live_model" as const,
+        repetitions: 1,
+        passed: true,
+        passRate: 1,
+        consistencyRate: 1,
+        thresholds: Object.freeze({ minimumPassRate: 1, minimumConsistencyRate: 1 }),
+        budgetUsd: 1,
+        spentUsd: 0.01,
+        totalTokens: 10,
+        trials: Object.freeze([]),
+      });
+      expect(persistLiveEvalReport(path, report)).toBe(path);
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(report);
+      expect(() => persistLiveEvalReport(path, report)).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

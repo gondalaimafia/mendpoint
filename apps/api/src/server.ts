@@ -252,6 +252,7 @@ import {
   liveness,
   readiness,
   RELEASE,
+  resolveReleaseRevision,
   releaseBanner,
   featureMatrix,
   isProduction,
@@ -880,6 +881,7 @@ app.get("/ready", (c) => {
 app.get("/version", (c) =>
   c.json({
     ...RELEASE,
+    revision: resolveReleaseRevision(),
     banner: releaseBanner(),
     features: featureMatrix(),
   }),
