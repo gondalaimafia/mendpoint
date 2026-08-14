@@ -27,7 +27,7 @@ import {
   validateVerificationCommands,
   type VerificationExecution,
 } from "@mendpoint/repair";
-import type { CandidateReviewEvidence } from "@mendpoint/shared";
+import type { CandidateReviewEvidenceV2 } from "@mendpoint/shared";
 import {
   createWardenRuntimeModelAuthorityDigest,
   runWarden,
@@ -102,6 +102,8 @@ type AttemptArtifacts = Readonly<{
   evidence: string;
   sourceDigest: string;
   candidateDigest: string;
+  candidateManifestSha256: string;
+  evidenceSha256: string;
 }>;
 
 export type WardenAttemptAgentSummary = Readonly<{
@@ -751,7 +753,7 @@ function reviewEvidence(
   mode: AgentTaskMode,
   changedPaths: readonly string[],
   commands: readonly VerificationRecord[],
-): CandidateReviewEvidence {
+): CandidateReviewEvidenceV2 {
   if (!commands.length || commands.some((command) => !command.ok || command.exitCode !== 0)) {
     throw new Error("warden_attempt_review_verification_invalid");
   }
@@ -780,8 +782,8 @@ function reviewEvidence(
     intents.push(intent);
     intentsByPath.set(intent.targetPath, intents);
   }
-  const evidence: CandidateReviewEvidence = {
-    schemaVersion: 1 as const,
+  const evidence: CandidateReviewEvidenceV2 = {
+    schemaVersion: 2 as const,
     summary: "Every reviewed file is bound to the source snapshot, its accepted execution intent, and exact verifier evidence.",
     verification,
     edits: changedPaths.map((path) => {
@@ -799,23 +801,34 @@ function reviewEvidence(
         );
       }
       const intent = intents.at(-1)!;
+      const sourceEvidence = [...new Map(intents.flatMap((candidate) => candidate.evidenceRefs)
+        .map((item) => [`${item.path}\0${item.digest}`, item] as const)).values()];
+      if (sourceEvidence.length > 40) {
+        throw new AttemptError(
+          "warden_attempt_review_evidence_limit",
+          `Changed file has too many source evidence references: ${path}`,
+        );
+      }
       const risk = intents.some((candidate) => candidate.risk === "high")
         ? "high" as const
         : intents.some((candidate) => candidate.risk === "medium")
           ? "medium" as const
           : "low" as const;
-      const allModelAssessed = intents.every((candidate) => candidate.assessmentSource === "model");
       return {
         path,
-        rationale: intent.hypothesis.slice(0, 500),
-        category: `${intent.assessmentSource === "heuristic" ? "heuristic:" : ""}${intent.targetSymbol ?? "repository_mutation"}`.slice(0, 100),
+        hypothesis: intent.hypothesis.slice(0, 500),
+        targetSymbol: intent.targetSymbol,
+        sourceEvidence,
+        precondition: intent.precondition,
+        expectedObservation: intent.expectedObservation,
+        postcondition: intent.postcondition,
+        rollback: intent.rollback,
+        stopCondition: intent.stopCondition,
         risk,
-        confidence: allModelAssessed
-          ? Math.min(...intents.map((candidate) => candidate.confidence))
-          : null,
-        assessmentSource: allModelAssessed
+        confidence: Math.min(...intents.map((candidate) => candidate.confidence)),
+        assessmentSource: intents.every((candidate) => candidate.assessmentSource === "model")
           ? "planner" as const
-          : "unavailable" as const,
+          : "heuristic" as const,
         verification: {
           summary: `${verification.summary} ${mode === "feature" ? "Feature" : "Repair"} objective: ${objective}`,
           commandOutputSha256: verification.commands.map((command) => command.outputSha256),
@@ -1261,6 +1274,8 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
     );
     createdArtifacts = artifacts;
     assertAttemptContinues(input);
+    const candidateManifestSha256 = sha256(readFileSync(artifacts.candidateManifest));
+    const evidenceSha256 = sha256(readFileSync(artifacts.evidence));
     const terminalOutcome = runtimeExecution
       ? {
           schemaVersion: 1,
@@ -1268,8 +1283,8 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
           candidateDigest: /^[a-f0-9]{64}$/.test(candidateManifest.digest)
             ? `sha256:${candidateManifest.digest}`
             : sha256(candidateManifest.digest),
-          candidateManifestDigest: sha256(readFileSync(artifacts.candidateManifest)),
-          evidenceDigest: sha256(readFileSync(artifacts.evidence)),
+          candidateManifestDigest: candidateManifestSha256,
+          evidenceDigest: evidenceSha256,
           changedPathsDigest: sha256(canonicalJson(difference.changedPaths)),
         } as const
       : undefined;
@@ -1293,6 +1308,8 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
         evidence: artifacts.evidence,
         sourceDigest: sourceManifest.digest,
         candidateDigest: candidateManifest.digest,
+        candidateManifestSha256,
+        evidenceSha256,
       }),
       ...(finalizeTerminal ? { finalizeTerminal } : {}),
     });

@@ -20,7 +20,7 @@ import { runWardenCandidateDelivery } from "./warden-candidate-delivery.js";
 const NOW = "2026-08-06T12:00:00.000Z";
 const opened: Array<{ db: AppDb; directory: string }> = [];
 
-function fixture() {
+function fixture(preciseEvidence = false) {
   const directory = mkdtempSync(join(tmpdir(), "mendpoint-warden-delivery-worker-"));
   const dataRoot = join(directory, "data");
   const approvalRoot = join(dataRoot, "warden-evidence", "tenant-a", "approvals");
@@ -34,7 +34,7 @@ function fixture() {
     const after = Buffer.from("export const fixed = 1;\n");
     const afterSha = `sha256:${createHash("sha256").update(after).digest("hex")}`;
     const artifact = {
-    schemaVersion: 3,
+    schemaVersion: preciseEvidence ? 4 : 3,
     tenantId: "tenant-a",
     repositoryId: "repo-1",
     snapshotId: "snapshot-1",
@@ -43,7 +43,7 @@ function fixture() {
     reviewerPrincipalId: "human:reviewer@example.com",
     rationale: "The target and regression checks pass.",
     reviewEvidence: {
-      schemaVersion: 1,
+      schemaVersion: preciseEvidence ? 2 : 1,
       summary: "The exact candidate passed every configured check.",
       verification: {
         summary: "The target and regression checks passed.",
@@ -56,8 +56,19 @@ function fixture() {
       },
       edits: [{
         path: "src/client.ts",
-        rationale: "This source change repairs the bounded SDK call.",
-        category: "api_repair",
+        ...(preciseEvidence ? {
+          hypothesis: "The observed legacy SDK call causes the failing request.",
+          targetSymbol: "createCharge",
+          sourceEvidence: [{ path: "src/client.ts", digest: `sha256:${"c".repeat(64)}` }],
+          precondition: "The exact legacy SDK call is still present.",
+          expectedObservation: "The call changes exactly once.",
+          postcondition: "The approved SDK request and regression checks pass.",
+          rollback: "Restore the exact observed source bytes.",
+          stopCondition: "Stop if the source evidence digest changes.",
+        } : {
+          rationale: "This source change repairs the bounded SDK call.",
+          category: "api_repair",
+        }),
         risk: "medium",
         confidence: 1,
         assessmentSource: "planner",
@@ -158,6 +169,26 @@ describe("Warden exact candidate draft delivery", () => {
       allowedChangedPaths: ["src/client.ts"],
       requiredChecks: ["check:77:unit"],
     });
+  });
+
+  it("renders complete source-bound edit authority for a version four approval", async () => {
+    const { db, dataRoot, job } = fixture(true);
+    const deliver = vi.fn(async (input: ExactDraftDeliveryInput) => ({
+      branch: input.branch, title: input.title, baseBranch: input.baseBranch,
+      baseSha: input.expectedBaseSha, commitSha: "b".repeat(40),
+      draft: true as const, number: 17, url: "https://github.com/acme/sdk/pull/17",
+    }));
+    await runWardenCandidateDelivery({
+      db, job, github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+    });
+    const body = (deliver.mock.calls[0]![0] as ExactDraftDeliveryInput).body;
+    expect(body).toContain("Target symbol: createCharge");
+    expect(body).toContain("Source evidence: src/client.ts");
+    expect(body).toContain("Precondition: The exact legacy SDK call is still present.");
+    expect(body).toContain("Postcondition: The approved SDK request and regression checks pass.");
+    expect(body).toContain("Rollback: Restore the exact observed source bytes.");
   });
 
   it("fails closed before GitHub when the sealed bytes are changed", async () => {

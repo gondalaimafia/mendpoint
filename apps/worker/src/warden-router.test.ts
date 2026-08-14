@@ -186,6 +186,8 @@ function succeededAttempt(usage: AttemptUsage): WardenAttemptResult {
       evidence: "/tmp/evidence.json",
       sourceDigest: "sha256:aa",
       candidateDigest: "sha256:bb",
+      candidateManifestSha256: `sha256:${"a".repeat(64)}`,
+      evidenceSha256: `sha256:${"b".repeat(64)}`,
     },
   };
 }

@@ -80,4 +80,42 @@ describe("shared", () => {
       },
     }).success).toBe(false);
   });
+
+  it("requires complete source-bound edit authority in version two review evidence", () => {
+    const evidence = {
+      schemaVersion: 2,
+      summary: "The exact candidate passed every configured check.",
+      verification: {
+        summary: "The target and regression checks passed.",
+        commands: [{
+          command: "npm test",
+          ok: true,
+          exitCode: 0,
+          outputSha256: `sha256:${"a".repeat(64)}`,
+        }],
+      },
+      edits: [{
+        path: "src/client.ts",
+        hypothesis: "The observed legacy endpoint causes the failing request.",
+        targetSymbol: "createCharge",
+        sourceEvidence: [{ path: "src/client.ts", digest: `sha256:${"b".repeat(64)}` }],
+        precondition: "The exact observed endpoint is still present.",
+        expectedObservation: "The endpoint changes exactly once.",
+        postcondition: "The approved request and regression checks pass.",
+        rollback: "Restore the exact observed source bytes.",
+        stopCondition: "Stop if the source evidence digest changes.",
+        risk: "medium",
+        confidence: 0.97,
+        assessmentSource: "planner",
+        verification: {
+          summary: "The target and regression checks passed.",
+          commandOutputSha256: [`sha256:${"a".repeat(64)}`],
+        },
+      }],
+    };
+    expect(CandidateReviewEvidenceSchema.parse(evidence)).toEqual(evidence);
+    const missingRollback = structuredClone(evidence) as Record<string, unknown>;
+    delete ((missingRollback.edits as Array<Record<string, unknown>>)[0]!).rollback;
+    expect(CandidateReviewEvidenceSchema.safeParse(missingRollback).success).toBe(false);
+  });
 });

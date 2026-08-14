@@ -1949,3 +1949,30 @@ Verification: red regressions were observed for green-baseline early exit, red-b
 Acceptance: public Fettler documentation must describe the shipped GitHub requested-change reentry path without broadening its authority. It must state that only fully paginated, current-head, active change requests can reenter, comments do not authorize mutation, cumulative budgets remain in force, and a fresh Mendpoint human approval is required before the branch changes.
 
 Review: post-deploy desktop and mobile browser QA on the Fettler guide found the obsolete limitation with zero console or network errors and no horizontal overflow. A focused regression failed on the stale wording before the catalog was corrected. Fettler and draft delivery now describe authoritative current-head requested-change observation, full pagination, inherited cumulative budgets, unchanged path scope, untrusted comment evidence, and fresh human approval. Full Web tests pass 164 of 164, Web typecheck and the 50-page production build pass, claims and naming gates pass, the generated upload bundle is current, and diff integrity is clean.
+
+## Regauge protected activation authority continuation: 2026-08-14
+
+- [x] Reconfirm exact current main and the protected one-draft workflow before mutation.
+- [x] Verify the authorized private canary repository ID and exact baseline revision.
+- [x] Prove the existing GitHub App installation can read the exact private canary repository without exporting its private key.
+- [x] Verify the App identity and exact least-privilege installation permissions, then bind its public App ID.
+- [x] Bind the installation ID, reviewer identity, model provider, execution region, and account-to-tenant map in the protected environment.
+- [x] Refresh the read-only hosted Fly preflight on exact current main and retain its evidence.
+- [ ] Transfer or replace the GitHub App private key and webhook secret under explicit secret-transfer authority.
+- [ ] Run the protected activation, one real draft-only canary, readiness soak, restart recovery, and containment verification.
+
+Review: current main is `a880aad0974ef40e523a28130dc8bf4604639be4`. The protected environment contains the previously authorized Regauge model URL, model ID, and API key by secret name, plus the exact tenant, campaign, installation, reviewer, repository, revision, provider, region, and tenant-account bindings. A short-lived token minted inside the existing production Fly machine proved installation `151614362` can read private repository `gondalaimafia/mendpoint-canary-drill-20260801` with repository ID `1319732323`; no App key left the machine. A signed installation read additionally proved App ID `4502800`, selected-repository scope, no suspension, and exactly `checks:read`, `contents:write`, `metadata:read`, and `pull_requests:write`; the public App ID is now bound in the protected environment. Read-only workflow run `31846991594` passed on exact main and retained Fly preflight evidence. The dedicated app still does not exist. Activation remains fail-closed because `REGAUGE_GITHUB_APP_PRIVATE_KEY` and `REGAUGE_GITHUB_WEBHOOK_SECRET` are absent; those credentials were not copied because the current explicit authorization covered only the local model credentials.
+
+## Fettler precise edit review authority: 2026-08-14
+
+- [x] Add red schema, attempt, approval, and delivery regressions for complete source-bound edit evidence.
+- [x] Preserve existing version one review evidence and version three approval artifacts for already-created candidates.
+- [x] Emit version two review evidence with the exact hypothesis, target symbol, source evidence, precondition, expected observation, postcondition, rollback, stop condition, risk, confidence, and verifier digests.
+- [x] Bind new review evidence and candidate manifests to persisted SHA 256 digests before human approval.
+- [x] Seal version two evidence only inside a version four approval artifact and render its full authority in the draft pull request.
+- [x] Run focused adversarial tests, every workspace test, every workspace typecheck, the production build, GA gates, dependency audit, and diff integrity.
+- [ ] Commit, push, merge through protected checks, and verify the exact deployed revision.
+
+Acceptance: every newly generated Fettler candidate exposes enough authenticated evidence for a reviewer to understand exactly why each file changed, what source observation authorized it, which condition must remain true, what outcome was expected, how to roll it back, when execution should stop, and which independent verifier outputs passed. Rewriting a valid-looking evidence artifact after execution must fail before approval. Existing version one candidates remain reviewable and deliverable.
+
+Review: red tests first failed at all four intended boundaries because only review evidence version one and approval artifact version three existed. The implementation now emits version two precise edit evidence, stores one immutable digest snapshot for both terminal checkpointing and the durable run result, requires exact manifest and evidence bytes for every new candidate review, and seals version two only as approval artifact version four. The delivery worker renders every source-bound field while retaining the legacy body for existing approvals. A focused tampering regression proves valid JSON with a changed rollback instruction is rejected. All repository tests pass, all workspace typechecks pass, the 50-page production build passes, GA/spec/claims/names/action-pin gates pass, the production dependency audit reports zero vulnerabilities, and diff integrity is clean.

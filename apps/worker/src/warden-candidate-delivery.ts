@@ -120,19 +120,37 @@ function singleLine(value: string): string {
 }
 
 function reviewEvidenceBody(review: CandidateReviewEvidence): string[] {
+  const edits = review.schemaVersion === 2
+    ? review.edits.flatMap((edit, index) => [
+        `Change ${index + 1}: ${edit.path}`,
+        `Hypothesis: ${singleLine(edit.hypothesis)}`,
+        `Target symbol: ${edit.targetSymbol ? singleLine(edit.targetSymbol) : "repository mutation"}`,
+        `Source evidence: ${edit.sourceEvidence.map((item) => `${item.path} at ${item.digest}`).join(", ")}`,
+        `Precondition: ${singleLine(edit.precondition)}`,
+        `Expected observation: ${singleLine(edit.expectedObservation)}`,
+        `Postcondition: ${singleLine(edit.postcondition)}`,
+        `Rollback: ${singleLine(edit.rollback)}`,
+        `Stop condition: ${singleLine(edit.stopCondition)}`,
+        `Risk: ${edit.risk}`,
+        `Confidence: ${edit.confidence.toFixed(3)}`,
+        `Assessment source: ${edit.assessmentSource}`,
+        `Verification: ${singleLine(edit.verification.summary)}`,
+        `Verification output digests: ${edit.verification.commandOutputSha256.join(", ")}`,
+      ])
+    : review.edits.flatMap((edit, index) => [
+        `Change ${index + 1}: ${edit.path}`,
+        `Category: ${edit.category ? singleLine(edit.category) : "not measured"}`,
+        `Rationale: ${edit.rationale ? singleLine(edit.rationale) : "not measured"}`,
+        `Risk: ${edit.risk ?? "not measured"}`,
+        `Confidence: ${edit.confidence === null ? "not measured" : edit.confidence.toFixed(3)}`,
+        `Assessment source: ${edit.assessmentSource}`,
+        `Verification: ${singleLine(edit.verification.summary)}`,
+        `Verification output digests: ${edit.verification.commandOutputSha256.join(", ")}`,
+      ]);
   return [
     "Reviewed change evidence",
     `Summary: ${singleLine(review.summary)}`,
-    ...review.edits.flatMap((edit, index) => [
-      `Change ${index + 1}: ${edit.path}`,
-      `Category: ${edit.category ? singleLine(edit.category) : "not measured"}`,
-      `Rationale: ${edit.rationale ? singleLine(edit.rationale) : "not measured"}`,
-      `Risk: ${edit.risk ?? "not measured"}`,
-      `Confidence: ${edit.confidence === null ? "not measured" : edit.confidence.toFixed(3)}`,
-      `Assessment source: ${edit.assessmentSource}`,
-      `Verification: ${singleLine(edit.verification.summary)}`,
-      `Verification output digests: ${edit.verification.commandOutputSha256.join(", ")}`,
-    ]),
+    ...edits,
     "Objective verification",
     `Summary: ${singleLine(review.verification.summary)}`,
     ...review.verification.commands.flatMap((command, index) => [

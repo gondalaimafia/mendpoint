@@ -59,7 +59,11 @@ export function readWardenApprovalArtifact(input: Readonly<{
   const changedPaths = Array.isArray(record.changedPaths) && record.changedPaths.every((path) => typeof path === "string")
     ? record.changedPaths as string[]
     : [];
-  if (record.schemaVersion !== 3 || record.tenantId !== input.tenantId ||
+  const schemaBound = reviewEvidence.success && (
+    (record.schemaVersion === 3 && reviewEvidence.data.schemaVersion === 1) ||
+    (record.schemaVersion === 4 && reviewEvidence.data.schemaVersion === 2)
+  );
+  if (!schemaBound || record.tenantId !== input.tenantId ||
     typeof record.repositoryId !== "string" || typeof record.snapshotId !== "string" ||
     typeof record.baseBranch !== "string" || typeof record.expectedBaseRevision !== "string" ||
     !/^[a-f0-9]{40}$/.test(record.expectedBaseRevision) ||
