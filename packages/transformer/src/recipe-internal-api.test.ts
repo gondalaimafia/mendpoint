@@ -266,3 +266,248 @@ describe("internal-api-acme-user-getuser-to-fetchuser recipe", () => {
     ).toThrow("recipe_internal_api_noop");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Declaring-module rename (Gap 1) and barrel re-export chains (Gap 2).
+// ---------------------------------------------------------------------------
+
+const ORDERS_REF = recipeReference(getRecipe("internal-api-orders-place-to-submit", 1));
+const BARREL_REF = recipeReference(getRecipe("internal-api-auth-verify-to-check", 1));
+
+describe("internal-api declaring-module rename (Gap 1)", () => {
+  const producer = ['export function placeOrder(id: string): string {', '  return `order:${id}`;', "}", ""].join(
+    "\n",
+  );
+  const cart = [
+    'import { placeOrder } from "./orders.js";',
+    "export function addToCart(id: string): string {",
+    "  return placeOrder(id);",
+    "}",
+    "",
+  ].join("\n");
+  const checkout = [
+    'import { placeOrder } from "./orders.js";',
+    "export function checkout(id: string): string {",
+    "  return placeOrder(id);",
+    "}",
+    "",
+  ].join("\n");
+  const files = (): RecipeFiles => ({
+    "src/orders.ts": producer,
+    "src/cart.ts": cart,
+    "src/checkout.ts": checkout,
+  });
+
+  it("rewrites the declaration, export, imports, and call sites across producer and consumers", () => {
+    const analysis = analyzeRecipe(ORDERS_REF, files());
+    expect(analysis.status).toBe("applicable");
+    expect([...analysis.matchedPaths]).toEqual(["src/cart.ts", "src/checkout.ts", "src/orders.ts"]);
+    expect(analysis.reasons).toEqual([]);
+
+    const output = applyRecipe(ORDERS_REF, files());
+    expect(output.operations.map((operation) => operation.path)).toEqual([
+      "src/cart.ts",
+      "src/checkout.ts",
+      "src/orders.ts",
+    ]);
+    // Producer declaration and export renamed.
+    expect(output.files["src/orders.ts"]).toContain("export function submitOrder(id: string): string");
+    // Consumers: imports and call sites renamed.
+    expect(output.files["src/cart.ts"]).toContain('import { submitOrder } from "./orders.js";');
+    expect(output.files["src/cart.ts"]).toContain("return submitOrder(id);");
+    expect(output.files["src/checkout.ts"]).toContain('import { submitOrder } from "./orders.js";');
+    expect(output.files["src/checkout.ts"]).toContain("return submitOrder(id);");
+    for (const path of ["src/orders.ts", "src/cart.ts", "src/checkout.ts"]) {
+      expect(output.files[path]).not.toMatch(/\bplaceOrder\b/);
+    }
+  });
+
+  it("is idempotent and reports already_applied once producer and consumers are renamed", () => {
+    const output = applyRecipe(ORDERS_REF, files());
+    const reanalysis = analyzeRecipe(ORDERS_REF, output.files);
+    expect(reanalysis.status).toBe("already_applied");
+    expect(() => applyRecipe(ORDERS_REF, output.files)).toThrow("recipe_already_applied");
+  });
+
+  it("restores every new edit type byte-identical via inverse operations", () => {
+    const before = files();
+    const output = applyRecipe(ORDERS_REF, before);
+    const restored = applyInverseOperations(ORDERS_REF, output.files, output.operations);
+    expect(recipeFilesDigest(restored)).toBe(output.inputDigest);
+    expect(restored).toEqual(before);
+  });
+
+  it("abstains when the declaration site is unresolvable (completeness invariant)", () => {
+    // Consumers are individually applicable, but the designated producer no longer
+    // exports the binding, so the whole spec must abstain rather than emit a
+    // partial rename that would not compile.
+    const broken = { ...files(), "src/orders.ts": "export const somethingElse = 1;\n" };
+    const analysis = analyzeRecipe(ORDERS_REF, broken);
+    expect(analysis.status).toBe("unsupported");
+    expect(analysis.matchedPaths).toEqual([]);
+    expect(analysis.reasons).toContain("recipe_internal_api_declaration_unresolved");
+    expect(() => applyRecipe(ORDERS_REF, broken)).toThrow(
+      "recipe_internal_api_declaration_unresolved",
+    );
+  });
+
+  it("abstains on a target-name collision in the defining module with no edit", () => {
+    const source = [
+      "export function placeOrder(id: string): string {",
+      "  return submitOrder(id);",
+      "}",
+      "function submitOrder(id: string): string {",
+      "  return id;",
+      "}",
+      "",
+    ].join("\n");
+    const analysis = analyzeRecipe(ORDERS_REF, { "src/orders.ts": source });
+    expect(analysis.status).toBe("unsupported");
+    expect(analysis.reasons).toContain("recipe_internal_api_declaration_target_conflict");
+    expect(() => applyRecipe(ORDERS_REF, { "src/orders.ts": source })).toThrow(
+      "recipe_internal_api_declaration_target_conflict",
+    );
+  });
+
+  it("abstains on an aliased export of the binding", () => {
+    const source = [
+      "const placeOrder = (id: string): string => id;",
+      "export { placeOrder as publicPlaceOrder };",
+      "",
+    ].join("\n");
+    const analysis = analyzeRecipe(ORDERS_REF, { "src/orders.ts": source });
+    expect(analysis.status).toBe("unsupported");
+    expect(analysis.reasons).toContain("recipe_internal_api_declaration_aliased_export");
+  });
+
+  it("abstains on a non-call value reference to the exported binding", () => {
+    const source = [
+      "export function placeOrder(id: string): string {",
+      "  return id;",
+      "}",
+      "export const handler = placeOrder;",
+      "",
+    ].join("\n");
+    const analysis = analyzeRecipe(ORDERS_REF, { "src/orders.ts": source });
+    expect(analysis.status).toBe("unsupported");
+    expect(analysis.reasons).toContain("recipe_internal_api_declaration_unsupported_reference");
+  });
+
+  it("renames the exported declaration while leaving a same-named member access intact", () => {
+    const source = [
+      "export function placeOrder(id: string): string {",
+      "  if (globalThis.placeOrder) return id;",
+      "  return placeOrder(id);",
+      "}",
+      "",
+    ].join("\n");
+    const output = applyRecipe(ORDERS_REF, { "src/orders.ts": source });
+    const migrated = output.files["src/orders.ts"]!;
+    expect(migrated).toContain("export function submitOrder(id: string): string");
+    // Internal recursive call renamed; the member access on another object stays.
+    expect(migrated).toContain("return submitOrder(id);");
+    expect(migrated).toContain("if (globalThis.placeOrder)");
+  });
+});
+
+describe("internal-api barrel re-export chain (Gap 2)", () => {
+  const producer = [
+    "export function verifyToken(token: string): boolean {",
+    '  return token.length > 0;',
+    "}",
+    "",
+  ].join("\n");
+  const barrel = ['export { verifyToken } from "./token.js";', ""].join("\n");
+  const consumer = [
+    'import { verifyToken } from "./auth/index.js";',
+    "export function guard(token: string): boolean {",
+    "  return verifyToken(token);",
+    "}",
+    "",
+  ].join("\n");
+  const files = (): RecipeFiles => ({
+    "src/auth/token.ts": producer,
+    "src/auth/index.ts": barrel,
+    "src/middleware.ts": consumer,
+  });
+
+  it("rewrites the whole chain: producer declaration, barrel re-export, and consumer import/call", () => {
+    const analysis = analyzeRecipe(BARREL_REF, files());
+    expect(analysis.status).toBe("applicable");
+    expect([...analysis.matchedPaths]).toEqual([
+      "src/auth/index.ts",
+      "src/auth/token.ts",
+      "src/middleware.ts",
+    ]);
+
+    const output = applyRecipe(BARREL_REF, files());
+    expect(output.files["src/auth/token.ts"]).toContain("export function checkToken(token: string)");
+    expect(output.files["src/auth/index.ts"]).toBe('export { checkToken } from "./token.js";\n');
+    expect(output.files["src/middleware.ts"]).toContain(
+      'import { checkToken } from "./auth/index.js";',
+    );
+    expect(output.files["src/middleware.ts"]).toContain("return checkToken(token);");
+    for (const path of Object.keys(files())) {
+      expect(output.files[path]).not.toMatch(/\bverifyToken\b/);
+    }
+  });
+
+  it("restores the barrel chain byte-identical via inverse operations", () => {
+    const before = files();
+    const output = applyRecipe(BARREL_REF, before);
+    const restored = applyInverseOperations(BARREL_REF, output.files, output.operations);
+    expect(recipeFilesDigest(restored)).toBe(output.inputDigest);
+    expect(restored).toEqual(before);
+  });
+});
+
+describe("internal-api declaration-path construction guards", () => {
+  it("requires a declaration path when the module is a relative in-repo specifier", () => {
+    expect(() =>
+      createInternalApiRenameRecipe({
+        recipeId: "internal-api-relative-missing-decl",
+        version: 1,
+        title: "relative without declaration",
+        source: "a",
+        target: "b",
+        module: "./orders.js",
+        from: "placeOrder",
+        to: "submitOrder",
+        paths: ["src/cart.ts"],
+      }),
+    ).toThrow("recipe_internal_api_declaration_required");
+  });
+
+  it("rejects a path listed as both consumer and declaration", () => {
+    expect(() =>
+      createInternalApiRenameRecipe({
+        recipeId: "internal-api-overlap",
+        version: 1,
+        title: "overlap",
+        source: "a",
+        target: "b",
+        module: "./orders.js",
+        from: "placeOrder",
+        to: "submitOrder",
+        paths: ["src/orders.ts"],
+        declarationPaths: ["src/orders.ts"],
+      }),
+    ).toThrow("recipe_internal_api_declaration_path_conflict");
+  });
+
+  it("still permits consumer-only renames for external/bare modules", () => {
+    expect(() =>
+      createInternalApiRenameRecipe({
+        recipeId: "internal-api-bare-ok",
+        version: 1,
+        title: "bare module ok",
+        source: "a",
+        target: "b",
+        module: "@acme/user-service",
+        from: "getUser",
+        to: "fetchUser",
+        paths: ["src/profile.ts"],
+      }),
+    ).not.toThrow();
+  });
+});
