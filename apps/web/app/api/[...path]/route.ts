@@ -112,13 +112,20 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["GET", /^self-serve\/onboarding$/],
     ["GET", /^graph\//],
     ["GET", /^prs\/[^/]+\/reviews$/],
+    // Regauge canonical paths plus the legacy /transformer aliases (kept for
+    // external/legacy callers). Both are permitted so neither 404s at the proxy.
+    ["GET", /^regauge\/gate$/],
     ["GET", /^transformer\/gate$/],
+    ["GET", /^regauge\/adaptive-candidates(?:\/[^/]+)?$/],
     ["GET", /^transformer\/adaptive-candidates(?:\/[^/]+)?$/],
+    ["GET", /^regauge\/control-plane\/campaigns\/[^/]+$/],
     ["GET", /^transformer\/control-plane\/campaigns\/[^/]+$/],
+    ["GET", /^regauge\/control-plane\/campaigns\/[^/]+\/events$/],
     ["GET", /^transformer\/control-plane\/campaigns\/[^/]+\/events$/],
     ["POST", /^tenants\/[^/]+\/plan$/],
     ["POST", /^brands\/[^/]+\/preview$/],
     ["POST", /^agent\/runs$/],
+    ["POST", /^fettler\/pilot$/],
     ["POST", /^warden\/pilot$/],
     ["POST", /^agent\/runs\/[^/]+\/candidate\/review$/],
     ["POST", /^consumers$/],
@@ -141,8 +148,11 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["POST", /^pilot-success-contracts\/[^/]+\/revisions$/],
     ["POST", /^pilot-success-contracts\/[^/]+\/versions\/\d+\/approvals$/],
     ["POST", /^tenants\/memberships(?:\/(?:bootstrap|offboard))?$/],
+    ["POST", /^regauge\/control-plane\/campaigns$/],
     ["POST", /^transformer\/control-plane\/campaigns$/],
+    ["POST", /^regauge\/control-plane\/campaigns\/[^/]+\/(?:review|transitions|exceptions)$/],
     ["POST", /^transformer\/control-plane\/campaigns\/[^/]+\/(?:review|transitions|exceptions)$/],
+    ["POST", /^regauge\/adaptive-candidates\/[^/]+\/(?:review|promote)$/],
     ["POST", /^transformer\/adaptive-candidates\/[^/]+\/(?:review|promote)$/],
     ["PATCH", /^platform\/plans\/[^/]+$/],
     ["PATCH", /^tenants\/memberships\/role$/],
@@ -153,7 +163,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
 }
 
 function requiresCompanyIdentity(path: string): boolean {
-  return path === "warden/pilot" || /^tenants\/memberships(?:\/(?:bootstrap|role|offboard))?$/.test(path);
+  return path === "fettler/pilot" || path === "warden/pilot" || /^tenants\/memberships(?:\/(?:bootstrap|role|offboard))?$/.test(path);
 }
 
 async function proxy(request: NextRequest, context: RouteContext): Promise<Response> {

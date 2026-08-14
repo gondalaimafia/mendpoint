@@ -799,14 +799,19 @@ app.route("/advanced-ai", createAdvancedAiApplicationRoutes({
 
 registerTransformerControlPlaneRoutes(app, transformerCampaigns);
 registerTransformerPilotExecutionRoutes(app, transformerExecutions);
+// Canonical (Regauge) mounts plus their legacy /transformer aliases; both point
+// at the same route instance, so external/legacy callers keep working forever.
+app.route("/regauge/missions", transformerMissionRoutes);
 app.route("/transformer/missions", transformerMissionRoutes);
-app.route("/v1/transformer/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorRoutes({
   enabled: process.env.MENDPOINT_TRANSFORMER_MULTINODE_COORDINATOR_ENABLED === "1",
   store: transformerExecutions.store,
   gateConfig: process.env.MENDPOINT_TRANSFORMER_GATE,
   loadExactSource: (lease, observedAt) => loadTransformerRecipeSnapshot(db, lease, observedAt),
   resolveDraftRepository: createTransformerDraftRepositoryAuthority(db, process.env),
-}));
+});
+app.route("/v1/regauge/attempt-coordinator", transformerAttemptCoordinatorRoutes);
+app.route("/v1/transformer/attempt-coordinator", transformerAttemptCoordinatorRoutes);
 app.route("/auth/signup", createSelfServeSignupRoutes({
   db,
   enabled: selfServeSignupEnabled(process.env),
@@ -829,8 +834,12 @@ app.route("/design-partner-applications", designPartnerRoutes);
 app.route("/pilot-success-contracts", pilotSuccessRoutes);
 app.route("/prs", migrationPrRoutes);
 app.route("/tenants/memberships", tenantMembershipRoutes);
-app.route("/warden/pilot", createWardenPilotIntakeRoutes({ db }));
-app.route("/warden/campaigns", createWardenCampaignEnrollmentRoutes({ db }));
+const wardenPilotIntakeRoutes = createWardenPilotIntakeRoutes({ db });
+app.route("/fettler/pilot", wardenPilotIntakeRoutes);
+app.route("/warden/pilot", wardenPilotIntakeRoutes);
+const wardenCampaignEnrollmentRoutes = createWardenCampaignEnrollmentRoutes({ db });
+app.route("/fettler/campaigns", wardenCampaignEnrollmentRoutes);
+app.route("/warden/campaigns", wardenCampaignEnrollmentRoutes);
 app.route("/metrics/outcomes", createOutcomeMetricsRoutes({ db }));
 app.route("/diagnostics", createDiagnosticsRoutes({ db }));
 app.route("/metrics/dashboard", createDashboardRoutes({ db }));
@@ -935,8 +944,11 @@ app.get("/graph/consumers/:id", (c) => {
 
 // ─── Warden matrix P0: plans, contracts, registry, transformer scaffold ──────
 
+// Canonical (Fettler) paths plus the legacy /warden aliases (kept forever for
+// external/legacy callers). Both register the same handlers.
+const registerFettlerMatrixRoutes = (base: string): void => {
 /** Spec-first plan-of-record from provider OpenAPI pair */
-app.post("/warden/plans/from-spec", async (c) => {
+app.post(`${base}/plans/from-spec`, async (c) => {
   try {
     const body = await c.req.json<{
       providerSlug: string;
@@ -991,7 +1003,7 @@ app.post("/warden/plans/from-spec", async (c) => {
 });
 
 /** PR gates: oas-breaking + contract suite + security stub */
-app.post("/warden/gates", async (c) => {
+app.post(`${base}/gates`, async (c) => {
   try {
     const body = await c.req.json<{
       providerSlug?: string;
@@ -1032,7 +1044,7 @@ app.post("/warden/gates", async (c) => {
 });
 
 /** Read-only API design critic */
-app.post("/warden/review", async (c) => {
+app.post(`${base}/review`, async (c) => {
   try {
     const body = await c.req.json<{
       providerSlug?: string;
@@ -1052,6 +1064,9 @@ app.post("/warden/review", async (c) => {
     return internalErrorResponse(c, e);
   }
 });
+};
+registerFettlerMatrixRoutes("/fettler");
+registerFettlerMatrixRoutes("/warden");
 
 /** Consumer registry for a provider */
 app.get("/registry/providers/:slug/consumers", (c) => {

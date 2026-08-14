@@ -195,6 +195,15 @@ describe("vm + cost + rbac + scm + alerts", () => {
     expect(permissionForRoute("GET", "/transformer/control-plane/campaigns/campaign-a")).toBe("graph:read");
     expect(permissionForRoute("POST", "/transformer/control-plane/campaigns")).toBe("plan:execute");
     expect(permissionForRoute("POST", "/v1/transformer/attempt-coordinator/readyz")).toBe("transformer:worker");
+    // Regauge/Fettler canonical paths resolve to the SAME permission as the
+    // legacy /transformer and /warden aliases, so auth is unchanged on both.
+    expect(permissionForRoute("GET", "/regauge/control-plane/campaigns/campaign-a")).toBe("graph:read");
+    expect(permissionForRoute("POST", "/regauge/control-plane/campaigns")).toBe("plan:execute");
+    expect(permissionForRoute("POST", "/v1/regauge/attempt-coordinator/readyz")).toBe("transformer:worker");
+    expect(permissionForRoute("POST", "/fettler/plans/from-spec")).toBe("plan:execute");
+    expect(permissionForRoute("POST", "/warden/plans/from-spec")).toBe("plan:execute");
+    expect(permissionForRoute("GET", "/fettler/plans")).toBe("plan:read");
+    expect(permissionForRoute("GET", "/warden/plans")).toBe("plan:read");
     expect(permissionForRoute("POST", "/agent/runs/run-a/candidate/review")).toBe("plan:edit");
     expect(permissionForRoute("GET", "/change-sources/source-a")).toBe("graph:read");
     expect(permissionForRoute("POST", "/change-sources")).toBe("plan:execute");
