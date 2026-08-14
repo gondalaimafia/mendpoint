@@ -84,7 +84,7 @@ function fixture(options: {
   return { app, db, audit, directory };
 }
 
-function seedCiRepairCandidate(db: AppDb) {
+function seedCiRepairCandidate(db: AppDb, reviewFeedbackDigest: string | null = null) {
   db.raw.prepare(`INSERT INTO scm_connections
     (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
     VALUES ('connection-ci', 'tenant-a', 'github', 'app://22', '22', 'GitHub', ?, ?)`)
@@ -104,7 +104,8 @@ function seedCiRepairCandidate(db: AppDb) {
   const current = JSON.parse(getAgentRun(db, "warden-run-1", "tenant-a")!.result_json!) as Record<string, unknown>;
   const ciFailure = { cycleId: "cycle-a", deliveryId: "delivery-a", pullRequestNumber: 17,
     failedHeadSha: "d".repeat(40), observationDigest: `sha256:${"e".repeat(64)}`,
-    evidenceArtifactId: "artifact-failure-a", evidenceDigest: `sha256:${"f".repeat(64)}` };
+    evidenceArtifactId: "artifact-failure-a", evidenceDigest: `sha256:${"f".repeat(64)}`,
+    ...(reviewFeedbackDigest ? { trigger: "review_feedback", reviewFeedbackDigest } : { trigger: "ci_failure" }) };
   db.raw.prepare("UPDATE agent_runs SET result_json = ? WHERE id = 'warden-run-1'")
     .run(JSON.stringify({ ...current, source: { repositoryId: "repo-1", snapshotId: "snapshot-1",
       revision: "d".repeat(40) }, ciFailure }));
@@ -188,6 +189,19 @@ describe("Warden candidate human review", () => {
       .toEqual({ count: 0 });
   });
 
+  it("binds an approved review repair update to the exact observed feedback digest", async () => {
+    const reviewDigest = `sha256:${"9".repeat(64)}`;
+    const { app, db } = fixture({ sealApproval: async () => ({ path: "C:\\sealed.json",
+      sha256: `sha256:${"b".repeat(64)}`, created: true }) });
+    seedCiRepairCandidate(db, reviewDigest);
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", { method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve the exact review repair." }) });
+    expect(response.status).toBe(202);
+    expect(getWardenCiUpdateByRun(db, "tenant-a", "warden-run-1"))
+      .toMatchObject({ expectedFeedbackDigest: reviewDigest });
+  });
+
   it("pauses the exact CI repair cycle when the human rejects its candidate", async () => {
     const { app, db } = fixture();
     seedCiRepairCandidate(db);
@@ -216,8 +230,20 @@ describe("Warden candidate human review", () => {
     const body = await response.json() as { supersedingRunId: string; supersedingJobId: string };
     expect(getWardenCiCycle(db, "tenant-a", "cycle-a")).toMatchObject({
       status: "repair_pending", repairRunId: body.supersedingRunId,
-      repairJobId: body.supersedingJobId, currentHeadSha: "d".repeat(40), usedCycles: 1,
+      repairJobId: body.supersedingJobId, currentHeadSha: "d".repeat(40), usedCycles: 2,
     });
+  });
+
+  it("rejects regeneration when the cumulative cycle budget is exhausted", async () => {
+    const { app, db } = fixture();
+    seedCiRepairCandidate(db);
+    db.raw.prepare("UPDATE fettler_ci_cycles SET used_cycles = max_cycles WHERE id = 'cycle-a'").run();
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", { method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Try another bounded repair." }) });
+    expect(response.status).toBe(409);
+    expect(getWardenCiCycle(db, "tenant-a", "cycle-a")).toMatchObject({ usedCycles: 3,
+      repairRunId: "warden-run-1" });
   });
 
   it.each([

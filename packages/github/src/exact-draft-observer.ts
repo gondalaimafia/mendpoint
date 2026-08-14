@@ -33,6 +33,32 @@ export type ExactDraftCheckResult = Readonly<{
   state: "success" | "failure" | "running";
 }>;
 
+export type ExactDraftChangeRequest = Readonly<{
+  id: string;
+  reviewer: string;
+  commitRevision: string;
+  body: string | null;
+  submittedAt: string;
+}>;
+
+export type ExactDraftReviewComment = Readonly<{
+  id: string;
+  threadId: string;
+  reviewer: string;
+  commitRevision: string;
+  body: string;
+  path: string;
+  line: number | null;
+  createdAt: string;
+  updatedAt: string;
+}>;
+
+export type ExactDraftReviewFeedback = Readonly<{
+  verdict: "changes_requested" | "none";
+  changeRequests: readonly ExactDraftChangeRequest[];
+  comments: readonly ExactDraftReviewComment[];
+}>;
+
 export type ExactDraftObservation = Readonly<{
   state: "draft" | "merged" | "closed";
   baseRevision: string;
@@ -45,11 +71,14 @@ export type ExactDraftObservation = Readonly<{
   failures: readonly ExactDraftFailure[];
   checkIdentities: readonly string[];
   checkResults: readonly ExactDraftCheckResult[];
+  reviewFeedback: ExactDraftReviewFeedback;
   evidenceRefs: readonly string[];
 }>;
 
 const MAX_FAILURES = 20;
 const MAX_FAILURE_TEXT = 2_000;
+const MAX_REVIEW_FEEDBACK = 50;
+const MAX_REVIEW_FEEDBACK_BYTES = 64 * 1_024;
 
 function bounded(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -68,6 +97,19 @@ function detailsUrl(value: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+function requiredBounded(value: unknown, code: string, max = MAX_FAILURE_TEXT): string {
+  const result = bounded(value);
+  if (!result || result.length > max) throw new Error(code);
+  return result;
+}
+
+function canonicalTimestamp(value: unknown): string {
+  const raw = requiredBounded(value, "github_exact_draft_review_timestamp_invalid", 100);
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) throw new Error("github_exact_draft_review_timestamp_invalid");
+  return new Date(parsed).toISOString();
 }
 
 function validate(input: ExactDraftObservationInput): void {
@@ -149,13 +191,53 @@ export async function observeExactDraftWithOctokit(
       : Promise.resolve({ data: { state: "", total_count: 0, statuses: [] } }),
     octokit.graphql<{
       repository?: { pullRequest?: { reviewThreads?: {
-        nodes?: Array<{ id?: string; isResolved?: boolean }>;
+        nodes?: Array<{
+          id?: string;
+          isResolved?: boolean;
+          isOutdated?: boolean;
+          comments?: {
+            nodes?: Array<{
+              id?: string;
+              body?: string;
+              author?: { login?: string; __typename?: string } | null;
+              createdAt?: string;
+              updatedAt?: string;
+              path?: string;
+              line?: number | null;
+              pullRequestReview?: {
+                state?: string;
+                commit?: { oid?: string } | null;
+              } | null;
+            }>;
+            pageInfo?: { hasNextPage?: boolean };
+          };
+        }>;
         pageInfo?: { hasNextPage?: boolean };
       } } };
     }>(`query ExactDraftThreads($owner: String!, $repo: String!, $number: Int!) {
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $number) {
-          reviewThreads(first: 100) { nodes { id isResolved } pageInfo { hasNextPage } }
+          reviewThreads(first: 100) {
+            nodes {
+              id
+              isResolved
+              isOutdated
+              comments(first: 100) {
+                nodes {
+                  id
+                  body
+                  author { login __typename }
+                  createdAt
+                  updatedAt
+                  path
+                  line
+                  pullRequestReview { state commit { oid } }
+                }
+                pageInfo { hasNextPage }
+              }
+            }
+            pageInfo { hasNextPage }
+          }
         }
       }
     }`, { owner: input.owner, repo: input.repo, number: input.pullRequestNumber }),
@@ -165,13 +247,21 @@ export async function observeExactDraftWithOctokit(
   if (!reviewThreads || reviewsLink.includes('rel="next"') ||
       checksResponse.data.total_count > checksResponse.data.check_runs.length ||
       statusesResponse.data.total_count > statusesResponse.data.statuses.length ||
-      reviewThreads?.pageInfo?.hasNextPage === true) {
+      reviewThreads?.pageInfo?.hasNextPage === true ||
+      (reviewThreads.nodes ?? []).some((thread) => !thread.comments || thread.comments.pageInfo?.hasNextPage === true)) {
     throw new Error("github_exact_draft_observation_incomplete");
   }
-  const latestByReviewer = new Map<string, { state: string; commitId: string | null; id: number }>();
+  const latestByReviewer = new Map<string, {
+    state: string;
+    commitId: string | null;
+    id: number;
+    reviewer: string;
+    body: string | null;
+    submittedAt: string;
+  }>();
   for (const review of reviewsResponse.data) {
     const reviewer = review.user?.login;
-    if (!reviewer || !Number.isSafeInteger(review.id)) continue;
+    if (!reviewer || review.user?.type !== "User" || !Number.isSafeInteger(review.id)) continue;
     const key = reviewer.toLowerCase();
     const existing = latestByReviewer.get(key);
     if (existing && existing.id >= review.id) continue;
@@ -179,12 +269,74 @@ export async function observeExactDraftWithOctokit(
       state: String(review.state ?? "").toUpperCase(),
       commitId: review.commit_id ?? null,
       id: review.id,
+      reviewer,
+      body: bounded(review.body),
+      submittedAt: canonicalTimestamp(review.submitted_at),
     });
   }
   const approvals = [...latestByReviewer.values()].filter((review) =>
     review.state === "APPROVED" && review.commitId === headRevision
   );
+  const activeChangeRequestReviewers = new Set([...latestByReviewer.values()]
+    .filter((review) => review.state === "CHANGES_REQUESTED" && review.commitId === headRevision)
+    .map((review) => review.reviewer.toLowerCase()));
   const threadNodes = reviewThreads?.nodes ?? [];
+  const changeRequests: ExactDraftChangeRequest[] = [...latestByReviewer.values()]
+    .filter((review) => review.state === "CHANGES_REQUESTED" && review.commitId === headRevision)
+    .map((review) => Object.freeze({
+      id: String(review.id),
+      reviewer: requiredBounded(review.reviewer, "github_exact_draft_review_identity_invalid", 200),
+      commitRevision: headRevision,
+      body: review.body,
+      submittedAt: review.submittedAt,
+    }))
+    .sort((left, right) => compareCodeUnits(left.id, right.id));
+  const reviewComments: ExactDraftReviewComment[] = [];
+  for (const thread of threadNodes) {
+    if (thread.isResolved === true || thread.isOutdated === true) continue;
+    const threadId = requiredBounded(thread.id, "github_exact_draft_review_identity_invalid", 200);
+    for (const comment of thread.comments?.nodes ?? []) {
+      const commitRevision = comment.pullRequestReview?.commit?.oid ?? "";
+      if (commitRevision !== headRevision || comment.pullRequestReview?.state !== "CHANGES_REQUESTED" ||
+          comment.author?.__typename !== "User" ||
+          !activeChangeRequestReviewers.has(String(comment.author.login ?? "").toLowerCase())) continue;
+      const line = comment.line ?? null;
+      if (line !== null && (!Number.isSafeInteger(line) || line < 1)) {
+        throw new Error("github_exact_draft_review_location_invalid");
+      }
+      reviewComments.push(Object.freeze({
+        id: requiredBounded(comment.id, "github_exact_draft_review_identity_invalid", 200),
+        threadId,
+        reviewer: requiredBounded(comment.author?.login, "github_exact_draft_review_identity_invalid", 200),
+        commitRevision,
+        body: requiredBounded(comment.body, "github_exact_draft_review_body_invalid"),
+        path: requiredBounded(comment.path, "github_exact_draft_review_location_invalid", 1_000),
+        line,
+        createdAt: canonicalTimestamp(comment.createdAt),
+        updatedAt: canonicalTimestamp(comment.updatedAt),
+      }));
+    }
+  }
+  reviewComments.sort((left, right) => compareCodeUnits(`${left.threadId}\0${left.id}`, `${right.threadId}\0${right.id}`));
+  if (changeRequests.length + reviewComments.length > MAX_REVIEW_FEEDBACK) {
+    throw new Error("github_exact_draft_review_feedback_limit");
+  }
+  const feedbackIds = [
+    ...changeRequests.map((review) => `review:${review.id}`),
+    ...reviewComments.map((comment) => `comment:${comment.id}`),
+  ];
+  if (new Set(feedbackIds).size !== feedbackIds.length) {
+    throw new Error("github_exact_draft_review_identity_ambiguous");
+  }
+  if (Buffer.byteLength(JSON.stringify({ changeRequests, comments: reviewComments }), "utf8") >
+      MAX_REVIEW_FEEDBACK_BYTES) {
+    throw new Error("github_exact_draft_review_feedback_limit");
+  }
+  const reviewFeedback: ExactDraftReviewFeedback = Object.freeze({
+    verdict: changeRequests.length || reviewComments.length ? "changes_requested" : "none",
+    changeRequests: Object.freeze(changeRequests),
+    comments: Object.freeze(reviewComments),
+  });
   const checks = checksResponse.data.check_runs;
   const failures: ExactDraftFailure[] = [];
   const checkIdentities = [
@@ -244,6 +396,8 @@ export async function observeExactDraftWithOctokit(
     ...statusesResponse.data.statuses.map((status) => `github:commit-status:${status.id}:${status.context}:${status.state}`),
     ...approvals.map((review) => `github:review:${review.id}:${headRevision}`),
     ...threadNodes.map((thread) => `github:review-thread:${thread.id ?? "unknown"}:${thread.isResolved === true ? "resolved" : "open"}`),
+    ...changeRequests.map((review) => `github:change-request:${review.id}:${headRevision}`),
+    ...reviewComments.map((comment) => `github:review-comment:${comment.id}:${headRevision}`),
   ].sort(compareCodeUnits);
   return Object.freeze({
     state: pull.merged_at ? "merged" : pull.state === "closed" ? "closed" : "draft",
@@ -260,6 +414,7 @@ export async function observeExactDraftWithOctokit(
     failures: Object.freeze(failures.slice(0, MAX_FAILURES)),
     checkIdentities: Object.freeze(checkIdentities),
     checkResults: Object.freeze(checkResults),
+    reviewFeedback,
     evidenceRefs: Object.freeze(evidenceRefs),
   });
 }

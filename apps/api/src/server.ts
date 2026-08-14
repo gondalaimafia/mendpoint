@@ -126,6 +126,7 @@ import {
   resolveGitHubAccountTenantBinding,
   resolveGitHubTenantAccountBinding,
 } from "@mendpoint/github";
+import { wakeFettlerReviewFromWebhook } from "./warden-review-webhook.js";
 import {
   listBrandPacks,
   getBrandPack,
@@ -2413,6 +2414,40 @@ app.post("/webhooks/github", async (c) => {
       }
     }
     return c.json({ ok: true, type: "installation", installationId: event.installationId });
+  }
+
+  if (event.type === "pull_request_review") {
+    if (!wh.delivery) return c.json({ error: "delivery id required" }, 400);
+    try {
+      const result = wakeFettlerReviewFromWebhook({ db, event, deliveryId: wh.delivery, observedAt: nowIso() });
+      recordAudit(db, {
+        tenantId: result.cycle?.tenantId ?? "tenant_system_unassigned",
+        actor: "github_webhook",
+        action: `fettler.review.${event.source}.${event.action}`,
+        resourceType: "fettler_ci_cycle",
+        resourceId: result.cycle?.id,
+        requestId: c.get("requestId"),
+        metadata: {
+          delivery: wh.delivery,
+          repositoryId: event.repositoryId,
+          installationId: event.installationId,
+          accountId: event.accountId,
+          pullRequestNumber: event.pullRequestNumber,
+          headSha: event.headSha,
+          sourceId: event.sourceId,
+          wakeStatus: result.status,
+        },
+      });
+      return c.json({ ok: true, type: event.type, wakeStatus: result.status, cycleId: result.cycle?.id ?? null });
+    } catch (error) {
+      return mappedErrorResponse(c, error, publicErrorRules(
+        409,
+        "warden_review_webhook_identity_invalid",
+        "warden_review_webhook_installation_not_authorized",
+        "warden_review_webhook_repository_not_authorized",
+        "warden_ci_review_wake_ambiguous",
+      ));
+    }
   }
 
   if (event.type === "pull_request") {

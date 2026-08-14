@@ -125,6 +125,7 @@ describe("real Transformer multi-node coordinator", () => {
           title: "failed", summary: null, text: null, detailsUrl: null }],
         checkIdentities: ["check:77:unit"],
         checkResults: [{ identity: "check:77:unit", state: "failure" as const }],
+        reviewFeedback: { verdict: "none" as const, changeRequests: [], comments: [] },
         evidenceRefs: ["github:check-run:77:9:completed:failure"],
       };
     } };

@@ -80,6 +80,19 @@ export type NormalizedWebhookAction =
       zen?: string;
     }
   | {
+      type: "pull_request_review";
+      source: "review" | "comment";
+      action: string;
+      owner: string;
+      repo: string;
+      repositoryId?: number;
+      accountId?: number;
+      installationId?: number;
+      pullRequestNumber: number;
+      headSha: string;
+      sourceId?: number;
+    }
+  | {
       type: "other";
       event: string;
       action?: string;
@@ -170,6 +183,42 @@ export function normalizeGitHubEvent(
       htmlUrl: String(pr?.html_url ?? ""),
       headRef: pr?.head?.ref,
       labels: (pr?.labels ?? []).map((l) => l.name ?? "").filter(Boolean),
+    };
+  }
+
+  if (event === "pull_request_review" || event === "pull_request_review_comment") {
+    const pullRequest = payload.pull_request as { number?: number; head?: { sha?: string } } | undefined;
+    const repository = payload.repository as {
+      id?: number;
+      name?: string;
+      owner?: { id?: number; login?: string };
+      full_name?: string;
+    } | undefined;
+    const installation = payload.installation as { id?: number } | undefined;
+    const resource = (event === "pull_request_review" ? payload.review : payload.comment) as
+      { id?: number } | undefined;
+    const owner = repository?.owner?.login ??
+      (repository?.full_name ? repository.full_name.split("/")[0] : "") ?? "";
+    return {
+      type: "pull_request_review",
+      source: event === "pull_request_review" ? "review" : "comment",
+      action: String(payload.action ?? ""),
+      owner,
+      repo: repository?.name ?? "",
+      ...(Number.isSafeInteger(repository?.id) && Number(repository?.id) > 0
+        ? { repositoryId: repository!.id }
+        : {}),
+      ...(Number.isSafeInteger(repository?.owner?.id) && Number(repository?.owner?.id) > 0
+        ? { accountId: repository!.owner!.id }
+        : {}),
+      ...(Number.isSafeInteger(installation?.id) && Number(installation?.id) > 0
+        ? { installationId: installation!.id }
+        : {}),
+      pullRequestNumber: Number(pullRequest?.number ?? 0),
+      headSha: String(pullRequest?.head?.sha ?? ""),
+      ...(Number.isSafeInteger(resource?.id) && Number(resource?.id) > 0
+        ? { sourceId: resource!.id }
+        : {}),
     };
   }
 

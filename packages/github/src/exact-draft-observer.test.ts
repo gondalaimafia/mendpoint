@@ -17,6 +17,27 @@ function octokit(input: Readonly<{
   draft?: boolean;
   repositoryId?: number;
   checkDetailsUrl?: string;
+  reviews?: Array<Readonly<{
+    id: number;
+    state: string;
+    commitId?: string;
+    login?: string;
+    body?: string;
+    submittedAt?: string;
+    userType?: string;
+  }>>;
+  threadOutdated?: boolean;
+  threadCommentsNextPage?: boolean;
+  threadComments?: Array<Readonly<{
+    id: string;
+    body: string;
+    login: string;
+    commitId?: string;
+    reviewState?: string;
+    path?: string;
+    line?: number | null;
+    authorType?: string;
+  }>>;
 }> = {}): Octokit {
   const head = input.headSha ?? sha("b");
   const checkRuns = Array.from({ length: input.checkCount ?? 1 }, (_, index) => ({
@@ -42,7 +63,15 @@ function octokit(input: Readonly<{
         merged_at: null,
       } })),
       listReviews: vi.fn(async () => ({
-        data: [{ id: 7, state: "APPROVED", commit_id: input.reviewCommit ?? head, user: { login: "reviewer" } }],
+        data: (input.reviews ?? [{ id: 7, state: "APPROVED", commitId: input.reviewCommit ?? head,
+          login: "reviewer", submittedAt: "2026-08-14T12:00:00.000Z", userType: "User" }]).map((review) => ({
+          id: review.id,
+          state: review.state,
+          commit_id: review.commitId ?? head,
+          user: { login: review.login ?? "reviewer", type: review.userType ?? "User" },
+          body: review.body ?? null,
+          submitted_at: review.submittedAt ?? "2026-08-14T12:00:00.000Z",
+        })),
         headers: {},
       })),
     },
@@ -67,7 +96,27 @@ function octokit(input: Readonly<{
       } })),
     },
     graphql: vi.fn(async () => ({ repository: { pullRequest: { reviewThreads: {
-      nodes: [{ id: "thread-1", isResolved: input.openThread !== true }],
+      nodes: [{
+        id: "thread-1",
+        isResolved: input.openThread !== true,
+        isOutdated: input.threadOutdated === true,
+        comments: {
+          nodes: (input.threadComments ?? []).map((comment) => ({
+            id: comment.id,
+            body: comment.body,
+            author: { login: comment.login, __typename: comment.authorType ?? "User" },
+            createdAt: "2026-08-14T12:01:00.000Z",
+            updatedAt: "2026-08-14T12:02:00.000Z",
+            path: comment.path ?? "src/client.ts",
+            line: comment.line ?? 12,
+            pullRequestReview: {
+              state: comment.reviewState ?? "CHANGES_REQUESTED",
+              commit: { oid: comment.commitId ?? head },
+            },
+          })),
+          pageInfo: { hasNextPage: input.threadCommentsNextPage === true },
+        },
+      }],
       pageInfo: { hasNextPage: false },
     } } } })),
   } as unknown as Octokit;
@@ -179,6 +228,128 @@ describe("exact GitHub draft observation", () => {
   it("fails closed when GitHub pagination would omit authority evidence", async () => {
     await expect(observeExactDraftWithOctokit(octokit({ checksTotal: 2 }), input))
       .rejects.toThrow("github_exact_draft_observation_incomplete");
+  });
+
+  it("returns bounded current-head change requests and unresolved inline comments", async () => {
+    const observed = await observeExactDraftWithOctokit(octokit({
+      openThread: true,
+      reviews: [
+        { id: 6, state: "CHANGES_REQUESTED", commitId: sha("a"), body: "stale request" },
+        { id: 7, state: "CHANGES_REQUESTED", commitId: sha("b"), body: `Fix the retry path ${"r".repeat(3_000)}` },
+      ],
+      threadComments: [{ id: "comment-1", login: "reviewer", body: `Handle the nil response ${"c".repeat(3_000)}` }],
+    }), input);
+
+    expect(observed.reviewFeedback).toEqual({
+      verdict: "changes_requested",
+      changeRequests: [{
+        id: "7",
+        reviewer: "reviewer",
+        commitRevision: sha("b"),
+        body: expect.stringMatching(/^Fix the retry path /),
+        submittedAt: "2026-08-14T12:00:00.000Z",
+      }],
+      comments: [{
+        id: "comment-1",
+        threadId: "thread-1",
+        reviewer: "reviewer",
+        commitRevision: sha("b"),
+        body: expect.stringMatching(/^Handle the nil response /),
+        path: "src/client.ts",
+        line: 12,
+        createdAt: "2026-08-14T12:01:00.000Z",
+        updatedAt: "2026-08-14T12:02:00.000Z",
+      }],
+    });
+    expect(observed.reviewFeedback.changeRequests[0]!.body!.length).toBeLessThanOrEqual(2_000);
+    expect(observed.reviewFeedback.comments[0]!.body.length).toBeLessThanOrEqual(2_000);
+    expect(Object.isFrozen(observed.reviewFeedback)).toBe(true);
+    expect(Object.isFrozen(observed.reviewFeedback.comments)).toBe(true);
+  });
+
+  it("preserves a bodyless current-head change request as authoritative feedback", async () => {
+    const observed = await observeExactDraftWithOctokit(octokit({
+      reviews: [{ id: 7, state: "CHANGES_REQUESTED", commitId: sha("b") }],
+    }), input);
+
+    expect(observed.reviewFeedback).toEqual({
+      verdict: "changes_requested",
+      changeRequests: [{
+        id: "7",
+        reviewer: "reviewer",
+        commitRevision: sha("b"),
+        body: null,
+        submittedAt: "2026-08-14T12:00:00.000Z",
+      }],
+      comments: [],
+    });
+  });
+
+  it("ignores stale, dismissed, resolved, and outdated review feedback", async () => {
+    const dismissed = await observeExactDraftWithOctokit(octokit({
+      reviews: [
+        { id: 6, state: "CHANGES_REQUESTED", commitId: sha("b"), body: "old request" },
+        { id: 7, state: "DISMISSED", commitId: sha("b"), body: "dismissed" },
+      ],
+      openThread: true,
+      threadOutdated: true,
+      threadComments: [{ id: "comment-1", login: "reviewer", body: "outdated comment" }],
+    }), input);
+    expect(dismissed.reviewFeedback).toEqual({ verdict: "none", changeRequests: [], comments: [] });
+
+    const resolved = await observeExactDraftWithOctokit(octokit({
+      openThread: false,
+      threadComments: [{ id: "comment-2", login: "reviewer", body: "resolved comment" }],
+    }), input);
+    expect(resolved.reviewFeedback.comments).toEqual([]);
+  });
+
+  it("ignores comments outside an active human change request", async () => {
+    const observed = await observeExactDraftWithOctokit(octokit({
+      openThread: true,
+      reviews: [{ id: 7, state: "COMMENTED", commitId: sha("b"), body: "non-authoritative" }],
+      threadComments: [
+        { id: "comment-approved", login: "reviewer", body: "looks good", reviewState: "APPROVED" },
+        { id: "comment-bot", login: "mendpoint-bot", body: "loop", authorType: "Bot" },
+      ],
+    }), input);
+    expect(observed.reviewFeedback).toEqual({ verdict: "none", changeRequests: [], comments: [] });
+
+    const superseded = await observeExactDraftWithOctokit(octokit({
+      openThread: true,
+      reviews: [{ id: 8, state: "APPROVED", commitId: sha("b"), login: "reviewer" }],
+      threadComments: [{ id: "old-request", login: "reviewer", body: "already addressed",
+        reviewState: "CHANGES_REQUESTED" }],
+    }), input);
+    expect(superseded.reviewFeedback).toEqual({ verdict: "none", changeRequests: [], comments: [] });
+  });
+
+  it("normalizes provider timestamps and fails closed on invalid time or duplicate feedback identities", async () => {
+    await expect(observeExactDraftWithOctokit(octokit({
+      reviews: [{ id: 7, state: "CHANGES_REQUESTED", commitId: sha("b"), body: "fix",
+        submittedAt: "2026-08-14T12:00:00Z" }],
+    }), input)).resolves.toMatchObject({ reviewFeedback: { changeRequests: [{
+      submittedAt: "2026-08-14T12:00:00.000Z",
+    }] } });
+    await expect(observeExactDraftWithOctokit(octokit({
+      reviews: [{ id: 7, state: "CHANGES_REQUESTED", commitId: sha("b"), submittedAt: "not-a-time" }],
+    }), input)).rejects.toThrow("github_exact_draft_review_timestamp_invalid");
+    await expect(observeExactDraftWithOctokit(octokit({
+      openThread: true,
+      reviews: [{ id: 7, state: "CHANGES_REQUESTED", commitId: sha("b"), login: "reviewer", body: "fix" }],
+      threadComments: [
+        { id: "duplicate", login: "reviewer", body: "first" },
+        { id: "duplicate", login: "reviewer", body: "second" },
+      ],
+    }), input)).rejects.toThrow("github_exact_draft_review_identity_ambiguous");
+  });
+
+  it("fails closed when inline review comment pagination is incomplete", async () => {
+    await expect(observeExactDraftWithOctokit(octokit({
+      openThread: true,
+      threadCommentsNextPage: true,
+      threadComments: [{ id: "comment-1", login: "reviewer", body: "more follows" }],
+    }), input)).rejects.toThrow("github_exact_draft_observation_incomplete");
   });
 
   it.each([

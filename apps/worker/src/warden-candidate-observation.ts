@@ -19,6 +19,11 @@ import type {
 const JOB_TYPE = "warden.candidate.observe";
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const MAX_FIELD_CHARS = 2_000;
+const MAX_REVIEW_FEEDBACK_BYTES = 64 * 1_024;
+const MAX_EVIDENCE_BYTES = 128 * 1_024;
+const REVIEW_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const REVIEWER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const REVIEW_PATH = /^(?!\/)(?!.*(?:\.\.\/|\/\.\.?\/|\\|\/\/))[A-Za-z0-9._-][A-Za-z0-9._\/-]{0,999}$/;
 
 export type WardenCandidateObservationInput = Readonly<{
   db: AppDb;
@@ -127,8 +132,15 @@ function evidenceBytes(input: Readonly<{
   baseRevision: string;
   headRevision: string;
   verdict: "success" | "failure";
+  trigger: "checks_passed" | "ci_failure" | "review_feedback";
   requiredResults: readonly ExactDraftCheckResult[];
   failures: readonly Readonly<Record<string, string | null>>[];
+  reviewFeedback: Readonly<{
+    verdict: "changes_requested" | "none";
+    changeRequests: readonly Readonly<Record<string, string | null>>[];
+    comments: readonly Readonly<Record<string, string | number | null>>[];
+  }>;
+  reviewFeedbackDigest: string | null;
   evidenceRefs: readonly string[];
   observedAt: string;
 }>): Uint8Array {
@@ -146,12 +158,84 @@ function evidenceBytes(input: Readonly<{
     baseRevision: input.baseRevision,
     headRevision: input.headRevision,
     verdict: input.verdict,
+    trigger: input.trigger,
     requiredResults: [...input.requiredResults].sort((left, right) => compareCodeUnits(left.identity, right.identity)),
     failures: input.failures,
+    reviewFeedback: input.reviewFeedback,
+    reviewFeedbackDigest: input.reviewFeedbackDigest,
     evidenceRefs: [...input.evidenceRefs].sort(compareCodeUnits),
     observedAt: input.observedAt,
   };
   return Buffer.from(JSON.stringify(document), "utf8");
+}
+
+function canonicalTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+export function safeWardenReviewFeedback(observation: ExactDraftObservation) {
+  const feedback = observation.reviewFeedback;
+  if (!feedback || (feedback.verdict !== "none" && feedback.verdict !== "changes_requested") ||
+      !Array.isArray(feedback.changeRequests) || !Array.isArray(feedback.comments) ||
+      feedback.changeRequests.length + feedback.comments.length > 50 ||
+      (feedback.verdict === "none" && (feedback.changeRequests.length > 0 || feedback.comments.length > 0)) ||
+      (feedback.verdict === "changes_requested" && feedback.changeRequests.length + feedback.comments.length === 0)) {
+    throw new Error("warden_ci_review_feedback_invalid");
+  }
+  const changeRequests = feedback.changeRequests.map((review) => {
+    if (!REVIEW_ID.test(review.id) || !REVIEWER.test(review.reviewer) ||
+        review.commitRevision !== observation.headRevision ||
+        !canonicalTimestamp(review.submittedAt) ||
+        (review.body !== null && typeof review.body !== "string")) {
+      throw new Error("warden_ci_review_feedback_invalid");
+    }
+    return Object.freeze({
+      id: review.id,
+      reviewer: review.reviewer,
+      commitRevision: review.commitRevision,
+      body: redact(review.body),
+      submittedAt: review.submittedAt,
+    });
+  });
+  const comments = feedback.comments.map((comment) => {
+    if (!REVIEW_ID.test(comment.id) || !REVIEW_ID.test(comment.threadId) || !REVIEWER.test(comment.reviewer) ||
+        comment.commitRevision !== observation.headRevision || !REVIEW_PATH.test(comment.path) ||
+        (comment.line !== null && (!Number.isSafeInteger(comment.line) || comment.line < 1)) ||
+        !canonicalTimestamp(comment.createdAt) || !canonicalTimestamp(comment.updatedAt)) {
+      throw new Error("warden_ci_review_feedback_invalid");
+    }
+    return Object.freeze({
+      id: comment.id,
+      threadId: comment.threadId,
+      reviewer: comment.reviewer,
+      commitRevision: comment.commitRevision,
+      body: redact(comment.body),
+      path: comment.path,
+      line: comment.line,
+      createdAt: comment.createdAt,
+      updatedAt: comment.updatedAt,
+    });
+  });
+  changeRequests.sort((left, right) => compareCodeUnits(String(left.id), String(right.id)));
+  comments.sort((left, right) => compareCodeUnits(`${left.threadId}\0${left.id}`, `${right.threadId}\0${right.id}`));
+  const result = Object.freeze({
+    verdict: feedback.verdict,
+    changeRequests: Object.freeze(changeRequests),
+    comments: Object.freeze(comments),
+  });
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_REVIEW_FEEDBACK_BYTES) {
+    throw new Error("warden_ci_review_feedback_limit");
+  }
+  return result;
+}
+
+export function wardenReviewFeedbackDigest(observation: ExactDraftObservation): string | null {
+  const feedback = safeWardenReviewFeedback(observation);
+  return feedback.verdict === "changes_requested"
+    ? `sha256:${createHash("sha256").update(JSON.stringify(feedback), "utf8").digest("hex")}`
+    : null;
 }
 
 export async function runWardenCandidateObservation(input: WardenCandidateObservationInput) {
@@ -215,7 +299,13 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
     if (!failed.applied || failed.status !== "pending") throw new Error("warden_ci_observation_lease_lost");
     return Object.freeze({ status: "retry_scheduled" as const, cycleId: cycle.id, availableAt: failed.availableAt });
   }
-  const verdict = checks.every((check) => check.state === "success") ? "success" as const : "failure" as const;
+  const reviewFeedback = safeWardenReviewFeedback(observation);
+  const reviewFeedbackDigest = wardenReviewFeedbackDigest(observation);
+  const checksPassed = checks.every((check) => check.state === "success");
+  const trigger = !checksPassed ? "ci_failure" as const
+    : reviewFeedback.verdict === "changes_requested" ? "review_feedback" as const
+      : "checks_passed" as const;
+  const verdict = trigger === "checks_passed" ? "success" as const : "failure" as const;
   const bytes = evidenceBytes({
     tenantId: cycle.tenantId,
     cycleId: cycle.id,
@@ -229,11 +319,15 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
     baseRevision: cycle.baseRevision,
     headRevision: cycle.currentHeadSha,
     verdict,
+    trigger,
     requiredResults: checks,
     failures: safeFailures(observation, cycle.requiredChecks),
+    reviewFeedback,
+    reviewFeedbackDigest,
     evidenceRefs: observation.evidenceRefs,
     observedAt,
   });
+  if (bytes.byteLength > MAX_EVIDENCE_BYTES) throw new Error("warden_ci_observation_evidence_limit");
   const observationDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
   const persisted = await input.persistEvidence(bytes);
   if (!persisted.artifactId || persisted.artifactId.length > 200 || persisted.digest !== observationDigest ||
@@ -266,7 +360,8 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
     throw error;
   }
   return Object.freeze({
-    status: verdict === "success" ? "checks_passed" as const : "failed_checks" as const,
+    status: trigger === "checks_passed" ? "checks_passed" as const
+      : trigger === "review_feedback" ? "review_feedback" as const : "failed_checks" as const,
     cycleId: cycle.id,
     observationDigest,
   });

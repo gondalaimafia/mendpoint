@@ -54,7 +54,14 @@ export function getGitHubAppConfig(
       metadata: "read",
       checks: "read",
     },
-    events: ["installation", "installation_repositories", "pull_request", "push"],
+    events: [
+      "installation",
+      "installation_repositories",
+      "pull_request",
+      "pull_request_review",
+      "pull_request_review_comment",
+      "push",
+    ],
   };
 }
 

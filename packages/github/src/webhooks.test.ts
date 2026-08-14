@@ -105,6 +105,34 @@ describe("github webhooks", () => {
       expect(n.reposRemoved).toEqual([{ owner: "acme", name: "old" }]);
     }
   });
+
+  it.each([
+    ["pull_request_review", "review", { review: { id: 71, commit_id: "b".repeat(40), body: "untrusted" } }],
+    ["pull_request_review_comment", "comment", { comment: { id: 72, commit_id: "b".repeat(40), body: "untrusted" } }],
+  ])("normalizes %s as a stable wake-only review event", (eventName, source, resource) => {
+    const normalized = normalizeGitHubEvent(eventName, {
+      action: "submitted",
+      ...resource,
+      pull_request: { number: 17, head: { sha: "b".repeat(40) } },
+      repository: { id: 77, name: "service", owner: { id: 7123456, login: "acme" } },
+      installation: { id: 99 },
+    });
+
+    expect(normalized).toEqual({
+      type: "pull_request_review",
+      source,
+      action: "submitted",
+      owner: "acme",
+      repo: "service",
+      repositoryId: 77,
+      accountId: 7123456,
+      installationId: 99,
+      pullRequestNumber: 17,
+      headSha: "b".repeat(40),
+      sourceId: source === "review" ? 71 : 72,
+    });
+    expect(JSON.stringify(normalized)).not.toContain("untrusted");
+  });
 });
 
 describe("ci check comment", () => {

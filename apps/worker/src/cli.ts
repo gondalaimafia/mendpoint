@@ -624,6 +624,8 @@ type WardenJobPayload = Readonly<{
     observationDigest: string;
     evidenceArtifactId: string;
     evidenceDigest: string;
+    trigger?: "ci_failure" | "review_feedback";
+    reviewFeedbackDigest?: string | null;
   }>;
 }>;
 
@@ -2484,7 +2486,8 @@ async function processJobsOnceUnfenced(
           observe: runtime.observeExactDraft,
           persistEvidence: (bytes) => evidence.publish(job.tenant_id, bytes),
           resolveRepository: () => Object.freeze({ owner: runtime.owner, repo: runtime.repo }) });
-        if (observation.status === "checks_passed" || observation.status === "failed_checks") result.succeeded++;
+        if (observation.status === "checks_passed" || observation.status === "failed_checks" ||
+            observation.status === "review_feedback") result.succeeded++;
         else { result.failed++; result.retried++; }
         continue;
       }
@@ -2521,6 +2524,7 @@ async function processJobsOnceUnfenced(
           repositoryId: cycle.repositoryId, remoteRepositoryId: cycle.remoteRepositoryId,
           installationId: cycle.installationId, env: workerEnv });
         await runWardenCandidateUpdate({ db, job, updateExactDraft: runtime.updateExactDraft,
+          observeExactDraft: runtime.observeExactDraft,
           reconcileExactDraftUpdate: runtime.reconcileExactDraftUpdate,
           resolveRepository: () => Object.freeze({ owner: runtime.owner, repo: runtime.repo }),
           readApprovalArtifact: ({ tenantId, path, sha256 }) =>

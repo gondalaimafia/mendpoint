@@ -1884,3 +1884,29 @@ Acceptance: a fresh dedicated coordinator can use an approved GitHub App install
 Review: the bootstrap now runs before worker credential creation and API startup, materializes only the protected branch at commit `1f6b21665d68541c9f3c9dda81642485a66a6baa`, selects the single Node 20 to Node 22 recipe, normalizes CODEOWNERS identities, requires a distinct human reviewer, launches one execution campaign, and records a hash chained receipt. Receipt replay revalidates both control-plane and execution authority, so a surviving receipt cannot hide a deleted or drifted campaign database. Coordinator and worker readiness are bound to the exact tenant and campaign; a fresh volume returns 503 until bootstrap succeeds, while a later paused campaign remains observable for safe reconciliation. Revision mismatch now stops before GitHub tree content is read.
 
 Verification: every workspace test passes, all workspace typechecks pass, the 50-page production build passes, GA/spec/claims/names/action-pin gates pass, the generated docs bundle is current, production dependency audit reports zero vulnerabilities, Fly configuration validates, and diff integrity is clean. The protected environment contains the authorized local model values plus the exact nonsecret canary repository revision and reviewer identity. Production activation is still withheld because the GitHub App installation ID, App ID, private key, and webhook secret are absent, and the durable delivery gate write was rejected as broader than the one-draft authorization. No deployment or SCM mutation was attempted.
+
+## Fettler post pull request review feedback loop: 2026-08-14
+
+Objective: let an engineer request changes on a Fettler draft in GitHub and receive one new bounded, checkpointed repair candidate without trusting webhook text, widening scope, resetting budgets, or bypassing fresh Mendpoint approval.
+
+### Authoritative observation
+
+- [x] Add red tests for current-head change requests, unresolved inline comments, stale or dismissed reviews, outdated or resolved threads, pagination, bounds, and prompt-safety redaction.
+- [x] Extend exact GitHub draft observation to return immutable current-head review feedback with stable evidence identities.
+- [x] Keep webhooks wake-only: normalize stable review and review-comment identities, then refetch the pull request authoritatively before any model input.
+
+### Durable reentry
+
+- [x] Add a tenant, installation, repository, pull request, and head-bound cycle wake transition with transactional idempotency.
+- [x] Convert green-check review feedback into the existing cumulative-budget repair dispatch while preserving exact snapshot, allowed paths, model policy, and verification policy.
+- [x] Require the existing fresh human candidate approval before the same draft branch can change, then reobserve the new exact head.
+
+### Verification and release
+
+- [x] Run focused GitHub, DB, API, Worker, and joined repair-update tests, then full affected suites and typechecks.
+- [x] Run repository release gates, production build, dependency audit, diff integrity, and an independent P0/P1 review.
+- [ ] Commit, push, merge through protected CI, verify the exact main deployment, and retain rollback evidence.
+
+Acceptance: a signed GitHub review or review-comment webhook can only wake an exact known Fettler draft cycle. The worker refetches fully paginated current-head review state, persists bounded redacted evidence, enqueues at most one standard checkpointed repair under inherited cumulative budgets and unchanged path authority, and cannot update GitHub until a fresh authorized human approves the new candidate. Duplicate, stale, dismissed, outdated, resolved, cross-tenant, paused, exhausted, or drifted input performs no mutation.
+
+Review: GitHub review and review-comment payloads are wake-only and tenant authority is derived from the active installation plus exact repository, pull request, and head binding. The worker refetches current-head GitHub reviews and threads, rejects incomplete pagination, keeps only active human change requests, redacts prose, caps feedback at 64 KiB and total observation evidence at 128 KiB, and binds the resulting digest through repair, fresh human approval, and the final branch mutation. A second authoritative read immediately before GitHub rejects dismissed, edited, resolved, or otherwise drifted feedback. Regeneration now consumes the delivery-wide cycle budget rather than resetting it. The full repository test command, every workspace typecheck, the 50-page production build, GA/spec/claims/names/action-pin gates, dependency audit, and diff integrity pass. The final bodyless-change-request regression was observed red before the observer was corrected and passes green.

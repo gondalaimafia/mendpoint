@@ -14,12 +14,14 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { runWardenCandidateUpdate } from "./warden-candidate-update.js";
+import { wardenReviewFeedbackDigest } from "./warden-candidate-observation.js";
+import type { ExactDraftObservation } from "@mendpoint/github";
 
 const opened: Array<{ db: AppDb; root: string }> = [];
 const sha = (value: string) => value.repeat(40);
 const digest = (value: string) => `sha256:${value.repeat(64)}`;
 
-function fixture() {
+function fixture(expectedFeedbackDigest: string | null = null) {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-warden-update-"));
   const db = createDb(join(root, "worker.sqlite"));
   opened.push({ db, root });
@@ -34,6 +36,7 @@ function fixture() {
     .run(sha("a"), sha("d"), digest("e"), "2026-08-13T12:00:00.000Z", "2026-08-13T12:03:00.000Z");
   const update = enqueueWardenCiUpdate(db, { tenantId: "tenant-a", cycleId: "cycle-a",
     repairRunId: "repair-run-a", expectedHeadSha: sha("d"), sealedPath: "sealed/approval.json",
+    expectedFeedbackDigest,
     sealedSha256: digest("f"), reviewerPrincipalId: "principal-a", rationale: "Approve CI repair",
     observedAt: "2026-08-13T12:04:00.000Z" });
   insertAgentRun(db, { id: "repair-run-a", tenantId: "tenant-a", goal: "Repair CI", repoPath: root,
@@ -50,6 +53,16 @@ function fixture() {
       executable: false, size: 1 }] }, files: [{ path: "src/a.ts", after: Buffer.from("x").toString("base64"),
       afterSha256 }] };
   return { db, root, update, job, artifact };
+}
+
+function observedFeedback(body: string): ExactDraftObservation {
+  return Object.freeze({ state: "draft", baseRevision: sha("a"), headRevision: sha("d"), checks: "success",
+    checkRevision: sha("d"), approvals: 0, approvalRevision: null, conversationsResolved: false,
+    failures: Object.freeze([]), checkIdentities: Object.freeze(["check:77:unit"]),
+    checkResults: Object.freeze([{ identity: "check:77:unit", state: "success" as const }]),
+    evidenceRefs: Object.freeze([]), reviewFeedback: Object.freeze({ verdict: "changes_requested" as const,
+      changeRequests: Object.freeze([{ id: "7", reviewer: "reviewer", commitRevision: sha("d"), body,
+        submittedAt: "2026-08-13T12:01:40.000Z" }]), comments: Object.freeze([]) }) });
 }
 
 afterEach(() => {
@@ -94,6 +107,34 @@ describe("Warden candidate exact draft update", () => {
       resolveRepository: async () => ({ owner: "acme", repo: "service" }),
       now: () => "2026-08-13T12:05:00.000Z" })).rejects.toThrow("warden_ci_update_not_authorized");
     expect(updateExactDraft).not.toHaveBeenCalled();
+  });
+
+  it("reobserves and rejects edited or dismissed review feedback before the branch mutation", async () => {
+    const approved = observedFeedback("Fix the nil response.");
+    const expected = wardenReviewFeedbackDigest(approved)!;
+    const { db, job, artifact } = fixture(expected);
+    const updateExactDraft = vi.fn();
+    const observeExactDraft = vi.fn(async () => observedFeedback("The request changed."));
+    await expect(runWardenCandidateUpdate({ db, job, updateExactDraft, observeExactDraft,
+      reconcileExactDraftUpdate: vi.fn(), readApprovalArtifact: () => artifact,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:05:00.000Z" })).rejects.toThrow("warden_ci_review_feedback_drift");
+    expect(observeExactDraft).toHaveBeenCalledWith(expect.objectContaining({
+      expectedHeadSha: sha("d"), expectedRepositoryId: 101, requireExactDraft: true,
+    }));
+    expect(updateExactDraft).not.toHaveBeenCalled();
+  });
+
+  it("updates once when the exact approved review feedback remains current", async () => {
+    const approved = observedFeedback("Fix the nil response.");
+    const { db, job, artifact } = fixture(wardenReviewFeedbackDigest(approved)!);
+    const updateExactDraft = vi.fn(async () => ({ number: 17, url: "https://github.com/acme/service/pull/17",
+      branch: "mendpoint/warden-a", previousHeadSha: sha("d"), commitSha: sha("f"), draft: true as const }));
+    await expect(runWardenCandidateUpdate({ db, job, updateExactDraft,
+      observeExactDraft: async () => approved, reconcileExactDraftUpdate: vi.fn(),
+      readApprovalArtifact: () => artifact, resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:05:00.000Z" })).resolves.toMatchObject({ status: "updated" });
+    expect(updateExactDraft).toHaveBeenCalledTimes(1);
   });
 
   it("serializes a one-use remote mutation permit against a later human pause", async () => {
