@@ -116,10 +116,14 @@ function fixture() {
     }
     return next();
   });
-  app.route("/warden/pilot", createWardenPilotIntakeRoutes({
+  // Mirror server.ts: the same intake instance is mounted under the Fettler
+  // canonical prefix and the legacy /warden alias.
+  const pilotRoutes = createWardenPilotIntakeRoutes({
     db,
     now: () => NOW,
-  }));
+  });
+  app.route("/fettler/pilot", pilotRoutes);
+  app.route("/warden/pilot", pilotRoutes);
   return { app, db };
 }
 
@@ -219,5 +223,55 @@ describe("Warden pilot intake", () => {
     expect((await request(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-unbound")).status)
       .toBe(409);
     expect(listJobs(db, 20, "tenant-a")).toHaveLength(0);
+  });
+});
+
+describe("Fettler pilot intake mirrors the legacy /warden alias", () => {
+  function fettlerRequest(app: Hono<ApiEnv>, body: Record<string, unknown>, key = "pilot-request-fettler") {
+    return app.request("/fettler/pilot", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": key,
+        "X-Test-Tenant": "tenant-a",
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("resolves to the same permission on the canonical and legacy paths", () => {
+    expect(permissionForRoute("POST", "/fettler/pilot")).toBe("plan:execute");
+    expect(permissionForRoute("POST", "/fettler/pilot")).toBe(
+      permissionForRoute("POST", "/warden/pilot"),
+    );
+  });
+
+  it("shares one handler: a canonical create replays through the legacy alias", async () => {
+    const { app, db } = fixture();
+    const canonical = await fettlerRequest(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-shared");
+    expect(canonical.status).toBe(202);
+    const canonicalBody = await canonical.json() as { jobId: string; replayed: boolean };
+    expect(canonicalBody).toMatchObject({ replayed: false });
+
+    // Same idempotency key through the legacy /warden alias returns the identical job.
+    const replay = await request(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-shared");
+    expect(replay.status).toBe(202);
+    expect(await replay.json()).toEqual({ ...canonicalBody, replayed: true });
+    expect(listJobs(db, 20, "tenant-a")).toHaveLength(1);
+  });
+
+  it("keeps the legacy /warden alias working", async () => {
+    const { app } = fixture();
+    const legacy = await request(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-legacy");
+    expect(legacy.status).toBe(202);
+    expect(await legacy.json()).toMatchObject({ replayed: false });
+  });
+
+  it("rejects unauthenticated calls identically on the canonical and legacy paths", async () => {
+    const { app } = fixture();
+    const canonical = await app.request("/fettler/pilot", { method: "POST" });
+    const legacy = await app.request("/warden/pilot", { method: "POST" });
+    expect(canonical.status).toBe(401);
+    expect(legacy.status).toBe(401);
   });
 });

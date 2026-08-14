@@ -195,14 +195,21 @@ export function permissionForRoute(
 ): Permission | null {
   const m = method.toUpperCase();
   if (isPublicRoute(m, path)) return null;
-  if (path.startsWith("/v1/transformer/attempt-coordinator/"))
+  if (
+    path.startsWith("/v1/regauge/attempt-coordinator/") ||
+    path.startsWith("/v1/transformer/attempt-coordinator/")
+  )
     return "transformer:worker";
 
   if (m === "GET" || m === "HEAD" || m === "OPTIONS") {
     // Sensitive reads still permission-mapped when X-Role is present (middleware enforces)
     if (path.startsWith("/platform/dogfood") || path.startsWith("/platform/alerts"))
       return "dogfood:read";
-    if (path.startsWith("/platform/plans") || path.startsWith("/warden/plans"))
+    if (
+      path.startsWith("/platform/plans") ||
+      path.startsWith("/fettler/plans") ||
+      path.startsWith("/warden/plans")
+    )
       return "plan:read";
     if (path.startsWith("/platform/scm")) return "tenant:admin";
     if (path.startsWith("/billing/")) return "tenant:admin";
@@ -242,7 +249,12 @@ export function permissionForRoute(
     return "sandbox:run";
   if (path.startsWith("/graph-learn") && m === "POST") return "graph:write";
   if (path.startsWith("/platform/") && m === "POST") return "plan:execute";
-  if (path.startsWith("/warden/") || path.startsWith("/transformer/"))
+  if (
+    path.startsWith("/fettler/") ||
+    path.startsWith("/warden/") ||
+    path.startsWith("/regauge/") ||
+    path.startsWith("/transformer/")
+  )
     return "plan:execute";
   if (path.startsWith("/providers") || path.startsWith("/consumers") || path.startsWith("/changes"))
     return "graph:write";

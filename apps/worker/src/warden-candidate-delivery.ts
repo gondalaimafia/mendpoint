@@ -152,9 +152,9 @@ function deliveryIntent(
 ): ExactDraftDeliveryInput {
   if (repository.baseBranch !== delivery.baseBranch) throw new Error("warden_candidate_delivery_base_branch_mismatch");
   const suffix = createHash("sha256").update(delivery.runId).digest("hex").slice(0, 24);
-  const title = `Apply approved Warden repair ${delivery.runId}`;
+  const title = `Apply approved Fettler repair ${delivery.runId}`;
   const body = [
-    "This draft contains only the exact files approved in Warden review.",
+    "This draft contains only the exact files approved in Fettler review.",
     "",
     `Review rationale: ${delivery.rationale}`,
     `Reviewer: ${delivery.requesterPrincipalId}`,

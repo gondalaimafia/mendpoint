@@ -17,9 +17,9 @@ const GROUPS = [
   {
     label: "Automation",
     links: [
-      { href: "/agent", label: "Warden runs", glyph: "W" },
+      { href: "/agent", label: "Fettler runs", glyph: "W" },
       { href: "/repair", label: "Verified repair", glyph: "V" },
-      { href: "/transformer", label: "Transformer", glyph: "T" },
+      { href: "/transformer", label: "Regauge", glyph: "T" },
       { href: "/feeds", label: "Change feeds", glyph: "F" },
     ],
   },

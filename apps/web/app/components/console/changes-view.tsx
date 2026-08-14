@@ -23,7 +23,7 @@ export function ChangesView({ data }: { data: ChangesData | null }) {
     return (
       <div className="ds-view">
         <header className="ds-view__header ds-view__header--stack">
-          <SectionLabel tone="warden">WARDEN</SectionLabel>
+          <SectionLabel tone="warden">FETTLER</SectionLabel>
           <h1 className="ds-view__title">{data?.target ?? "No breaking changes"}</h1>
         </header>
         <section className="ds-panel">
@@ -31,7 +31,7 @@ export function ChangesView({ data }: { data: ChangesData | null }) {
             <span className="ds-panel__title">Spec diff</span>
           </div>
           <p className="ds-spec-row__note" style={{ padding: "1rem" }}>
-            No structural change is staged yet. Warden populates this view once a
+            No structural change is staged yet. Fettler populates this view once a
             provider spec is analyzed.
           </p>
         </section>
@@ -46,7 +46,7 @@ export function ChangesView({ data }: { data: ChangesData | null }) {
   return (
     <div className="ds-view">
       <header className="ds-view__header ds-view__header--stack">
-        <SectionLabel tone="warden">WARDEN</SectionLabel>
+        <SectionLabel tone="warden">FETTLER</SectionLabel>
         <h1 className="ds-view__title">{data.target}</h1>
       </header>
 

@@ -27,7 +27,7 @@ describe("Warden intake form", () => {
     expect(html).toContain("Approved provider");
     expect(html).toContain("Canary repository");
     expect(html).toContain("Start bounded pilot");
-    expect(html).not.toContain("Files Warden may change");
+    expect(html).not.toContain("Files Fettler may change");
     expect(html).not.toContain("Error log");
     expect(html).not.toContain("Goal");
   });
@@ -41,7 +41,7 @@ describe("Warden intake form", () => {
       allowedPaths: "src/private.ts",
       errorLog: "ignored",
     })).toEqual({
-      endpoint: "/warden/pilot",
+      endpoint: "/fettler/pilot",
       body: { providerSlug: "stripe", consumerId: "consumer-a" },
     });
   });

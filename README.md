@@ -1,10 +1,10 @@
 # Mendpoint
 
-**Warden** is Mendpoint’s API integration teammate — **GA 1.0**. **Graph engineering** is the go-to agentic approach: specialized loop-nodes (change intel → call-graph expand → generate → verify → human review), not one overloaded agent. Never auto-merges by default.
+**Fettler — the first AI API Engineer** is Mendpoint’s API integration teammate — **GA 1.0**. Its companion, **Regauge — the first AI Legacy Engineer**, takes on legacy and multi-repo migration campaigns. **Graph engineering** is the go-to agentic approach: specialized loop-nodes (change intel → call-graph expand → generate → verify → human review), not one overloaded agent. Never auto-merges by default.
 
 When an API provider ships a breaking change or a high-value capability, Mendpoint (with explicit customer permission) can scan the relevant codebase and open a **reviewable** PR. Customers review and merge.
 
-> Platform: **Mendpoint**. Product: **Warden GA 1.0**. Production: [`docs/PRODUCTION_GA.md`](./docs/PRODUCTION_GA.md). Claims: [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md). Doctrine: [`docs/GRAPH_ENGINEERING.md`](./docs/GRAPH_ENGINEERING.md).
+> Platform: **Mendpoint**. Product: **Fettler GA 1.0**. Production: [`docs/PRODUCTION_GA.md`](./docs/PRODUCTION_GA.md). Claims: [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md). Doctrine: [`docs/GRAPH_ENGINEERING.md`](./docs/GRAPH_ENGINEERING.md).
 
 ## Quickstart
 
@@ -74,9 +74,9 @@ See `docs/ARCHITECTURE.md` for the full design and `docs/EXAMPLES.md` for concre
 | `packages/pipeline` | Executes product stages (aligned to agent graph nodes) + policy + audit |
 | `packages/orchestrator` | **Graph engineering**: topology, routing, shared state (`wardenProductGraph`) |
 | `packages/graph` | Domain product graphs (change / impact / API surface) |
-| `packages/agent` | **Warden** — verify loop-node (API debug) |
+| `packages/agent` | **Fettler** — verify loop-node (API debug) |
 | `packages/contract` | Contract suite, oas-breaking gates, API design critic |
-| `packages/transformer` | **Transformer** — BSG, DAG campaigns, multi-repo agent plan |
+| `packages/transformer` | **Regauge** — BSG, DAG campaigns, multi-repo agent plan |
 | `packages/platform` | Shared sandbox, 4-layer memory, knowledge, canary hooks |
 | `packages/graph-learn` | **Dim 6** durable KG + graph-RAG + PR outcome labels · **Schema v0** (`schema/v0.md`) |
 | `packages/phase-a` | Real PR ship + TS/Python/Go quality harnesses |
@@ -130,9 +130,9 @@ This scaffold is a **thin, working slice** of every major layer from the Months 
 - [x] **Phase F:** Graph-native explorer + APIs (`docs/GRAPH_NATIVE.md`, `/graph`)
 - [x] **Gap closure:** design-partner eval, GitHub App runtime, SDK feeds, severity, queue, notify-only, audit export (`docs/GAP_CLOSURE_PLAN.md`)
 - [x] **Agentic repair layer:** diagnose → plan → apply → verify (`docs/AGENTIC_REPAIR.md`, `/repair`, `AGENTIC_REPAIR=1`)
-- [x] **Warden** (on-demand API debug agent): trained on protocol/serialization/semantic/network/cascading/async/rate-limit failures (`docs/WARDEN_TRAINING.md`, `/agent`, `@mendpoint/agent`)
+- [x] **Fettler** (on-demand API debug agent): trained on protocol/serialization/semantic/network/cascading/async/rate-limit failures (`docs/WARDEN_TRAINING.md`, `/agent`, `@mendpoint/agent`)
 - [ ] Continuous multi-repo watch + changelog RSS intelligence (design-partner track)
-- [ ] Public Warden/API benchmark pack
+- [ ] Public Fettler/API benchmark pack
 - [ ] Real payment processor invoices (plan flip is stubbed)
 - [ ] Enterprise SSO (SAML/OIDC)
 - [ ] GitLab / Bitbucket / FedRAMP

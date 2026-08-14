@@ -14,7 +14,7 @@ faithful to the source document.
 ## Document overview
 
 **Product:** Mendpoint  
-**Primary agents:** Warden and Transformer  
+**Primary agents:** Fettler and Regauge  
 **Document type:** Product specification / PRD + technical architecture brief  
 **Status:** Working draft  
 **Audience:** Founder, engineering, design partners, forward deployed engineers, GTM, future investors
@@ -23,12 +23,12 @@ faithful to the source document.
 
 Mendpoint is an AI-native migration platform that turns external change into reviewable code updates. It has two tightly connected products:
 
-- **Warden** monitors third-party API, SDK, and contract changes, maps them to affected customer code, and opens reviewable migration pull requests.
-- **Transformer** handles broader legacy modernization and internal migration work, including framework upgrades, runtime migrations, SDK rewrites, codebase standardization, and architecture-level transformation campaigns.
+- **Fettler** monitors third-party API, SDK, and contract changes, maps them to affected customer code, and opens reviewable migration pull requests.
+- **Regauge** handles broader legacy modernization and internal migration work, including framework upgrades, runtime migrations, SDK rewrites, codebase standardization, and architecture-level transformation campaigns.
 
-The core thesis is simple: software teams should not discover breaking changes after they cause incidents, and API providers should not merely announce changes when software can help apply them. Warden is the change-detection and remediation layer for external dependencies. Transformer is the migration engine for larger, harder, longer-horizon code evolution inside the customer environment.
+The core thesis is simple: software teams should not discover breaking changes after they cause incidents, and API providers should not merely announce changes when software can help apply them. Fettler is the change-detection and remediation layer for external dependencies. Regauge is the migration engine for larger, harder, longer-horizon code evolution inside the customer environment.
 
-Together, Warden and Transformer make Mendpoint a full migration platform rather than a single-point API utility.
+Together, Fettler and Regauge make Mendpoint a full migration platform rather than a single-point API utility.
 
 ## Problem statement
 
@@ -52,8 +52,8 @@ Mendpoint becomes the system of record for code change adoption.
 
 In the long run:
 
-- **Warden** becomes the trusted interface between external platform changes and customer codebases.
-- **Transformer** becomes the trusted interface between business intent and large-scale internal code migration.
+- **Fettler** becomes the trusted interface between external platform changes and customer codebases.
+- **Regauge** becomes the trusted interface between business intent and large-scale internal code migration.
 - Every migration is graph-scoped, explainable, reviewable, testable, and measurable.
 - Customers stop treating migration work as an ad hoc engineering burden and start treating it as an operating system capability.
 
@@ -63,7 +63,7 @@ In the long run:
 2. **Review-first execution** — no silent production changes; output is a PR, patch set, migration plan, or staged campaign.
 3. **Evidence-backed changes** — every proposed fix is linked to the source change, impacted code, and verification result.
 4. **Hybrid model orchestration** — route work across open-source, post-trained, and frontier models based on task type, cost, and risk.
-5. **Migration as a platform** — support both external dependency remediation (Warden) and internal modernization (Transformer).
+5. **Migration as a platform** — support both external dependency remediation (Fettler) and internal modernization (Regauge).
 
 ## Users
 
@@ -83,7 +83,7 @@ In the long run:
 
 ## Core use cases
 
-### Warden use cases
+### Fettler use cases
 
 - Detect a breaking Stripe or payments API change and generate remediation PRs
 - Track OpenAPI spec diffs and map changes to code references
@@ -92,7 +92,7 @@ In the long run:
 - Alert teams to low-adoption but high-value new API capabilities
 - Run provider-wide migration campaigns for selected customer codebases
 
-### Transformer use cases
+### Regauge use cases
 
 - Upgrade a monolith from one framework version to another
 - Migrate a service from one SDK or runtime to another
@@ -105,10 +105,10 @@ In the long run:
 
 Mendpoint is not just an AI coding tool. It is a migration operating layer.
 
-- **Warden** is the external-change remediation product.
-- **Transformer** is the internal modernization product.
+- **Fettler** is the external-change remediation product.
+- **Regauge** is the internal modernization product.
 
-This matters because customers do not only need help when Stripe, Twilio, AWS, or another provider changes. They also need help when their own platform evolves, when internal standards shift, and when technical debt makes progress too slow. Warden gets Mendpoint into the workflow through a sharp wedge. Transformer expands Mendpoint into a broader platform for code change adoption.
+This matters because customers do not only need help when Stripe, Twilio, AWS, or another provider changes. They also need help when their own platform evolves, when internal standards shift, and when technical debt makes progress too slow. Fettler gets Mendpoint into the workflow through a sharp wedge. Regauge expands Mendpoint into a broader platform for code change adoption.
 
 ## Scope
 
@@ -123,8 +123,8 @@ This matters because customers do not only need help when Stripe, Twilio, AWS, o
 - Human review workflow with comments and evidence
 - Verification pipeline integration (tests, linting, compile checks)
 - Campaign dashboard for tracking changes and PR outcomes
-- Transformer migration plan generation for selected modernization tasks
-- Transformer staged PR campaigns for internal code migration
+- Regauge migration plan generation for selected modernization tasks
+- Regauge staged PR campaigns for internal code migration
 
 ### Out of scope for v1
 
@@ -164,8 +164,8 @@ Mendpoint consists of six layers:
    - Workflow orchestration
 
 4. **Execution layer**
-   - Warden remediation engine
-   - Transformer migration engine
+   - Fettler remediation engine
+   - Regauge migration engine
    - Code edit generator
    - PR packager
    - Verification runner
@@ -184,13 +184,13 @@ Mendpoint consists of six layers:
    - Audit logs
    - Success metrics and evaluation dashboards
 
-## Warden specification
+## Fettler specification
 
-### Warden purpose
+### Fettler purpose
 
-Warden detects external change and turns it into safe, reviewable remediation.
+Fettler detects external change and turns it into safe, reviewable remediation.
 
-### Warden workflow
+### Fettler workflow
 
 1. Ingest provider change source.
 2. Normalize and classify the change.
@@ -203,7 +203,7 @@ Warden detects external change and turns it into safe, reviewable remediation.
 9. Package reviewable PR with explanation.
 10. Track merge, rejection, follow-up edits, and post-merge outcomes.
 
-### Warden input types
+### Fettler input types
 
 - OpenAPI spec diff
 - SDK changelog
@@ -212,7 +212,7 @@ Warden detects external change and turns it into safe, reviewable remediation.
 - Customer-reported incident
 - Scheduled provider update campaign
 
-### Warden outputs
+### Fettler outputs
 
 - Reviewable pull request
 - Impact report
@@ -223,7 +223,7 @@ Warden detects external change and turns it into safe, reviewable remediation.
 - Suggested rollout order
 - Optional human-readable migration guide
 
-### Warden functional requirements
+### Fettler functional requirements
 
 - Detect additive, breaking, behavioral, and deprecation changes
 - Map API contract change to code references with repository and file precision
@@ -233,13 +233,13 @@ Warden detects external change and turns it into safe, reviewable remediation.
 - Support org-wide scans and provider-scoped campaigns
 - Maintain audit logs of every inference, edit, and reviewer action
 
-## Transformer specification
+## Regauge specification
 
-### Transformer purpose
+### Regauge purpose
 
-Transformer handles complex, internal, and legacy migration work that goes beyond one provider event. It turns migration intent into phased plans and reviewable code transformation campaigns.
+Regauge handles complex, internal, and legacy migration work that goes beyond one provider event. It turns migration intent into phased plans and reviewable code transformation campaigns.
 
-### Transformer workflow
+### Regauge workflow
 
 1. Ingest migration objective.
 2. Parse codebase topology and standards.
@@ -251,7 +251,7 @@ Transformer handles complex, internal, and legacy migration work that goes beyon
 8. Escalate ambiguous or high-risk transformation points to human review.
 9. Track campaign completion, exceptions, and architectural drift.
 
-### Transformer input types
+### Regauge input types
 
 - "Upgrade framework X from version A to B"
 - "Migrate runtime from Python 3.10 to 3.13"
@@ -260,7 +260,7 @@ Transformer handles complex, internal, and legacy migration work that goes beyon
 - "Convert legacy service integrations to event-driven architecture"
 - "Prepare codebase for vendor or infrastructure migration"
 
-### Transformer outputs
+### Regauge outputs
 
 - Migration blueprint
 - Dependency and risk map
@@ -271,7 +271,7 @@ Transformer handles complex, internal, and legacy migration work that goes beyon
 - Rollback guidance
 - Executive modernization report
 
-### Transformer functional requirements
+### Regauge functional requirements
 
 - Support multi-repo and mono-repo migration planning
 - Handle phased rollout and dependency ordering
@@ -325,7 +325,7 @@ This architecture improves cost and margin. Most work should run on tuned, cheap
 4. Higher acceptance increases trust and distribution.
 5. More distribution creates more migration data.
 
-Warden generates valuable data around external changes. Transformer generates valuable data around internal modernization. Together they create a stronger model moat than either could alone.
+Fettler generates valuable data around external changes. Regauge generates valuable data around internal modernization. Together they create a stronger model moat than either could alone.
 
 ## User experience
 
@@ -337,7 +337,7 @@ Warden generates valuable data around external changes. Transformer generates va
 - Impact analysis page
 - PR review and explanation page
 - Migration campaign dashboard
-- Transformer migration blueprint workspace
+- Regauge migration blueprint workspace
 - Audit and analytics views
 
 ### Core UX principles
@@ -347,8 +347,8 @@ Warden generates valuable data around external changes. Transformer generates va
 - Let users review diffs by semantic category, not just file order
 - Make tests, risk, and confidence obvious
 - Favor phased execution over one-click magic
-- Keep Warden event-driven and fast
-- Keep Transformer plan-driven and structured
+- Keep Fettler event-driven and fast
+- Keep Regauge plan-driven and structured
 
 ## Functional requirements
 
@@ -380,7 +380,7 @@ Warden generates valuable data around external changes. Transformer generates va
 ### Campaign management
 
 - Launch a provider migration campaign across many repos
-- Launch a Transformer modernization campaign across many repos
+- Launch a Regauge modernization campaign across many repos
 - Track status by repo, team, owner, and change class
 - Support pause, rollback, and retry
 
@@ -402,9 +402,9 @@ Warden generates valuable data around external changes. Transformer generates va
 
 ### Performance
 
-- Small-repo Warden impact analysis in minutes, not hours
+- Small-repo Fettler impact analysis in minutes, not hours
 - Large campaign summary available quickly, even while deeper scans continue
-- Transformer plans should generate staged output without requiring whole-campaign completion first
+- Regauge plans should generate staged output without requiring whole-campaign completion first
 
 ### Explainability
 
@@ -420,7 +420,7 @@ Warden generates valuable data around external changes. Transformer generates va
 
 ## MVP definition
 
-### MVP 1: Warden wedge
+### MVP 1: Fettler wedge
 
 Goal: prove that external API changes can reliably become reviewable PRs.
 
@@ -433,7 +433,7 @@ Includes:
 - Basic explanation and verification output
 - Dashboard for event, impact, and PR status
 
-### MVP 2: Transformer expansion
+### MVP 2: Regauge expansion
 
 Goal: prove that the same graph and review architecture can support broader modernization.
 
@@ -447,7 +447,7 @@ Includes:
 
 ## Success metrics
 
-### Warden metrics
+### Fettler metrics
 
 - Time from provider change to first PR
 - PR acceptance rate
@@ -457,7 +457,7 @@ Includes:
 - Engineering hours saved
 - Incidents prevented or remediated faster
 
-### Transformer metrics
+### Regauge metrics
 
 - Migration campaign completion rate
 - PR batch acceptance rate
@@ -470,7 +470,7 @@ Includes:
 
 - MCU consumption per customer
 - Gross margin per migration class
-- Expansion from Warden into Transformer usage
+- Expansion from Fettler into Regauge usage
 - Number of repos connected per account
 - Logo retention and net revenue retention
 
@@ -488,23 +488,23 @@ Mendpoint should use a consumption-driven model inspired by infrastructure and C
 
 - Aligns pricing with delivered migration work, not seats alone
 - Scales with customer value
-- Works for both Warden and Transformer
+- Works for both Fettler and Regauge
 - Supports a low-friction wedge and enterprise expansion
 
 ## Go-to-market implications
 
-### Warden as entry wedge
+### Fettler as entry wedge
 
-Warden is easier to explain, easier to pilot, and more time-sensitive. It should be the initial product wedge.
+Fettler is easier to explain, easier to pilot, and more time-sensitive. It should be the initial product wedge.
 
-### Transformer as expansion motion
+### Regauge as expansion motion
 
-Once trust is established, customers will ask for adjacent migration work: SDK upgrades, runtime upgrades, framework migrations, and architectural modernization. Transformer monetizes that pull.
+Once trust is established, customers will ask for adjacent migration work: SDK upgrades, runtime upgrades, framework migrations, and architectural modernization. Regauge monetizes that pull.
 
 This makes the product strategy:
 
-1. Land with Warden on an urgent external change problem.
-2. Expand with Transformer into broader migration programs.
+1. Land with Fettler on an urgent external change problem.
+2. Expand with Regauge into broader migration programs.
 3. Become the default migration platform for the account.
 
 ## Risks and mitigations
@@ -514,7 +514,7 @@ This makes the product strategy:
 | Incomplete graph | Impact analysis misses hidden usages | Hybrid static analysis, runtime metadata, human review fallback |
 | Low trust | Teams hesitate to merge AI-generated PRs | Review-first design, evidence UI, draft PR mode |
 | Model cost | Frontier-heavy reasoning hurts margins | Router strategy, post-training, deterministic recipes |
-| Broad scope | Product becomes generic coding agent | Keep Warden and Transformer centered on migration workflows |
+| Broad scope | Product becomes generic coding agent | Keep Fettler and Regauge centered on migration workflows |
 | Verification gaps | Passing tests may not equal safe behavior | Add policy tests, smoke tests, and staged rollout support |
 | Slow enterprise adoption | Security and access concerns delay pilots | Self-host/VPC roadmap, least-privilege access, FDE support |
 
@@ -522,7 +522,7 @@ This makes the product strategy:
 
 ### Phase 1
 
-- Warden MVP
+- Fettler MVP
 - GitHub integration
 - OpenAPI diffing
 - First migration PR workflow
@@ -538,7 +538,7 @@ This makes the product strategy:
 
 ### Phase 3
 
-- Transformer migration planning
+- Regauge migration planning
 - Staged modernization campaigns
 - Reusable migration recipes
 - Enterprise deployment controls
@@ -552,7 +552,7 @@ This makes the product strategy:
 
 ## Acceptance criteria
 
-### Warden acceptance criteria
+### Fettler acceptance criteria
 
 - A provider change can be ingested and classified correctly
 - Impacted code can be identified with usable precision
@@ -560,7 +560,7 @@ This makes the product strategy:
 - A reviewer can approve, reject, or request regeneration
 - Audit logs persist the full decision path
 
-### Transformer acceptance criteria
+### Regauge acceptance criteria
 
 - A migration objective can be translated into a staged plan
 - The system can generate at least one validated PR batch from that plan
@@ -571,10 +571,10 @@ This makes the product strategy:
 
 Mendpoint is building the migration layer for software.
 
-- **Warden** solves external change adoption.
-- **Transformer** solves internal modernization.
+- **Fettler** solves external change adoption.
+- **Regauge** solves internal modernization.
 
-The market entry is narrow and urgent: when providers change, code breaks. The platform expansion is broad and compounding: every organization also has ongoing migration debt. Warden earns trust by fixing what just changed. Transformer expands that trust into the rest of the codebase.
+The market entry is narrow and urgent: when providers change, code breaks. The platform expansion is broad and compounding: every organization also has ongoing migration debt. Fettler earns trust by fixing what just changed. Regauge expands that trust into the rest of the codebase.
 
 That combination is the long-term product story and should remain explicit in product, GTM, fundraising, and hiring materials going forward.
 
@@ -582,22 +582,22 @@ That combination is the long-term product story and should remain explicit in pr
 
 ### Strategic framing
 
-Mendpoint is a vertical AI company, not a single-model wrapper. The vertical is migration and code change adoption. Warden owns the external-change slice of that vertical. Transformer owns the internal-modernization slice. Both products sit behind the same router and post-training infrastructure so the company benefits from one compounding model strategy instead of two disconnected ones.
+Mendpoint is a vertical AI company, not a single-model wrapper. The vertical is migration and code change adoption. Fettler owns the external-change slice of that vertical. Regauge owns the internal-modernization slice. Both products sit behind the same router and post-training infrastructure so the company benefits from one compounding model strategy instead of two disconnected ones.
 
-The broader industry pattern behind this decision: routers, open-source models, and specialized post-training (enabled by infrastructure providers such as Fireworks AI) have advanced enough that vertical AI companies can post-train an open-source model on their own proprietary data, place it behind a router alongside frontier models, and match or beat frontier-only performance at a fraction of the cost. Legora has demonstrated this in legal AI. Cognition is moving in the same direction for coding agents. Mendpoint should build the same architecture natively into both Warden and Transformer rather than treating it as a future optimization.
+The broader industry pattern behind this decision: routers, open-source models, and specialized post-training (enabled by infrastructure providers such as Fireworks AI) have advanced enough that vertical AI companies can post-train an open-source model on their own proprietary data, place it behind a router alongside frontier models, and match or beat frontier-only performance at a fraction of the cost. Legora has demonstrated this in legal AI. Cognition is moving in the same direction for coding agents. Mendpoint should build the same architecture natively into both Fettler and Regauge rather than treating it as a future optimization.
 
 ### Vertical focus definition
 
 Mendpoint's vertical is narrow and explicit: turning code change, external or internal, into reviewable migration pull requests. This vertical splits into two workflows that share infrastructure but serve different triggers:
 
-- **Warden's workflow:** provider-driven change → impact graph → migration PR
-- **Transformer's workflow:** modernization intent → migration plan → staged migration PR campaign
+- **Fettler's workflow:** provider-driven change → impact graph → migration PR
+- **Regauge's workflow:** modernization intent → migration plan → staged migration PR campaign
 
 Both workflows are migration-specific, not general-purpose coding. This is the discipline that keeps Mendpoint a vertical AI company instead of drifting into a horizontal coding agent, which is already contested by Devin, Claude Code, Cursor, and Copilot.
 
 ### Router layer
 
-A model router sits in front of every model and tool call in the system, for both Warden and Transformer. The router receives a structured task spec, not a raw prompt, and decides which execution path should handle it.
+A model router sits in front of every model and tool call in the system, for both Fettler and Regauge. The router receives a structured task spec, not a raw prompt, and decides which execution path should handle it.
 
 **Router responsibilities:**
 
@@ -605,7 +605,7 @@ A model router sits in front of every model and tool call in the system, for bot
 - Select the lowest-cost model or adapter capable of meeting the required confidence threshold for that subtask
 - Escalate automatically to a frontier model when confidence, complexity, or risk exceeds the threshold for the cheaper option
 - Track cost, latency, and acceptance outcome per model per task type to continuously tune routing policy
-- Apply the same routing logic across Warden and Transformer, since both products generate the same underlying primitive: a reviewable code edit
+- Apply the same routing logic across Fettler and Regauge, since both products generate the same underlying primitive: a reviewable code edit
 
 **Router inputs per task:**
 
@@ -629,8 +629,8 @@ Mendpoint post-trains open-source code models on its own proprietary migration d
 
 **Data used for post-training:**
 
-- Historical Warden migration diffs, labeled by provider and change type
-- Historical Transformer migration diffs, labeled by framework, runtime, and pattern
+- Historical Fettler migration diffs, labeled by provider and change type
+- Historical Regauge migration diffs, labeled by framework, runtime, and pattern
 - Accepted vs. rejected PR outcomes, including reviewer edits and rationale
 - Verification results (test pass/fail, lint outcomes, regression signals)
 - Vendor-specific idiom patterns collected across customers, anonymized and generalized
@@ -640,7 +640,7 @@ Mendpoint post-trains open-source code models on its own proprietary migration d
 **Post-training scope:**
 
 - **Vendor adapters:** a per-provider fine-tuned adapter (e.g., a Stripe adapter, a Twilio adapter) trained specifically on that provider's historical change patterns and typical remediation code
-- **Framework adapters:** a per-framework fine-tuned adapter for Transformer's most common modernization targets (e.g., a Django upgrade adapter, a Python 3.x runtime adapter)
+- **Framework adapters:** a per-framework fine-tuned adapter for Regauge's most common modernization targets (e.g., a Django upgrade adapter, a Python 3.x runtime adapter)
 - **General migration adapter:** a broader adapter trained across all migration data for tasks that do not cleanly map to one vendor or framework
 
 **Why this compounds:** every migration Mendpoint completes, across every customer, adds labeled training data that improves the relevant adapter, which lowers cost and improves acceptance rate on the next similar migration, which increases the volume of migrations processed, which produces more data. This is the same data flywheel dynamic already described for the graph engine, now extended explicitly to the model layer.
@@ -650,39 +650,39 @@ Mendpoint post-trains open-source code models on its own proprietary migration d
 Frontier models (Claude, GPT, Gemini, Grok) remain available behind the router but are reserved for the cases that justify their cost:
 
 - Ambiguous migrations where the graph is incomplete or the change type is novel
-- Long-horizon planning tasks in Transformer, such as multi-phase modernization campaigns spanning many repositories
+- Long-horizon planning tasks in Regauge, such as multi-phase modernization campaigns spanning many repositories
 - Safety-critical reasoning where an incorrect edit carries high blast radius
 - Complex refactors that require synthesizing context across many files or services simultaneously
 - Any task where the post-trained adapter's confidence score falls below the router's threshold
 
 Frontier models are not the default execution path for every token processed. They are the fallback for the subset of work that genuinely requires frontier-level reasoning, which keeps Mendpoint's average cost per migration low while preserving quality on hard cases.
 
-### Warden as orchestrator, not just an agent
+### Fettler as orchestrator, not just an agent
 
-Warden's role changes from "the agent that generates PRs" to "the orchestrator that calls the router with a task spec and assembles the result." This distinction matters for both products:
+Fettler's role changes from "the agent that generates PRs" to "the orchestrator that calls the router with a task spec and assembles the result." This distinction matters for both products:
 
-1. Warden receives an event (e.g., "Stripe deprecates endpoint X") and converts it into a structured task spec.
-2. Warden queries the graph for blast radius and affected code.
-3. Warden sends each subtask to the router.
+1. Fettler receives an event (e.g., "Stripe deprecates endpoint X") and converts it into a structured task spec.
+2. Fettler queries the graph for blast radius and affected code.
+3. Fettler sends each subtask to the router.
 4. The router selects the vendor adapter, general adapter, or frontier model per subtask.
-5. Warden collects candidate edits, runs verification, and packages the result into a PR with explanation and evidence.
+5. Fettler collects candidate edits, runs verification, and packages the result into a PR with explanation and evidence.
 
-Transformer follows the same orchestration pattern for its own workflow: it converts a modernization objective into a staged task spec, sends each stage's subtasks to the router, collects and verifies edits per stage, and packages staged PR batches. Both agents are orchestrators over the same router and adapter infrastructure; they differ only in trigger type (external event vs. internal objective) and output cadence (single PR vs. staged campaign).
+Regauge follows the same orchestration pattern for its own workflow: it converts a modernization objective into a staged task spec, sends each stage's subtasks to the router, collects and verifies edits per stage, and packages staged PR batches. Both agents are orchestrators over the same router and adapter infrastructure; they differ only in trigger type (external event vs. internal objective) and output cadence (single PR vs. staged campaign).
 
 ### Concrete routing examples
 
 | Task | Product | Routing decision |
 |---|---|---|
-| Bulk scan for deprecated endpoint usage across 200 repos | Warden | Cheap open-source model, general migration adapter |
-| Generate Stripe-specific remediation edit | Warden | Post-trained Stripe vendor adapter |
-| Plan a 6-month framework migration across a monorepo | Transformer | Frontier model for long-horizon planning |
-| Rewrite legacy auth middleware to new internal standard | Transformer | Post-trained framework adapter, escalate to frontier on low confidence |
-| Resolve an ambiguous, undocumented breaking change with no clear pattern | Warden | Frontier model, high-risk classification |
-| Sequence PR batch order across dependent services | Transformer | Frontier model, cross-service reasoning |
+| Bulk scan for deprecated endpoint usage across 200 repos | Fettler | Cheap open-source model, general migration adapter |
+| Generate Stripe-specific remediation edit | Fettler | Post-trained Stripe vendor adapter |
+| Plan a 6-month framework migration across a monorepo | Regauge | Frontier model for long-horizon planning |
+| Rewrite legacy auth middleware to new internal standard | Regauge | Post-trained framework adapter, escalate to frontier on low confidence |
+| Resolve an ambiguous, undocumented breaking change with no clear pattern | Fettler | Frontier model, high-risk classification |
+| Sequence PR batch order across dependent services | Regauge | Frontier model, cross-service reasoning |
 
 ### Business model impact
 
-This architecture changes Mendpoint's unit economics and pricing narrative in three concrete ways, extending the MCU-based pricing model already defined for Warden and Transformer.
+This architecture changes Mendpoint's unit economics and pricing narrative in three concrete ways, extending the MCU-based pricing model already defined for Fettler and Regauge.
 
 **Lower COGS per migration:** because most Migration Compute Units are served by the post-trained open-source adapters rather than frontier models, marginal cost per MCU drops materially compared to a frontier-only architecture. This improves gross margin at the same usage-based price point, or allows more competitive per-MCU pricing without sacrificing margin.
 
@@ -701,4 +701,4 @@ Two sequencing options exist for how narrowly to focus the vertical at launch:
 - **Single-vertical-first:** focus initial post-training and go-to-market entirely on one API category, such as payments and fintech APIs, leveraging the founder's LSEG and PayPal background for both domain credibility and design partner access. This produces a sharper vertical AI story, faster adapter maturity for that specific domain, and a clearer initial ICP for sales.
 - **Cross-API-from-day-one:** support multiple provider categories simultaneously from launch, trading a less sharp initial vertical story for broader addressable market and faster discovery of which vertical actually pulls hardest.
 
-Given the founder's direct domain expertise in payments and financial infrastructure integration, the single-vertical-first path (payments and fintech APIs) is the stronger default: it lets the Stripe vendor adapter and payments-specific graph patterns mature fastest, gives the go-to-market motion a concrete initial ICP consistent with the land-and-expand strategy already defined for Warden, and preserves the option to add provider categories and corresponding adapters once the payments vertical adapter demonstrates strong acceptance rates and cost advantage.
+Given the founder's direct domain expertise in payments and financial infrastructure integration, the single-vertical-first path (payments and fintech APIs) is the stronger default: it lets the Stripe vendor adapter and payments-specific graph patterns mature fastest, gives the go-to-market motion a concrete initial ICP consistent with the land-and-expand strategy already defined for Fettler, and preserves the option to add provider categories and corresponding adapters once the payments vertical adapter demonstrates strong acceptance rates and cost advantage.

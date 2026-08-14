@@ -56,6 +56,12 @@ export type RecipePrecondition =
       module: string;
       from: string;
       to: string;
+    }>
+  | Readonly<{
+      kind: "internal_api_rename_declaration";
+      path: string;
+      from: string;
+      to: string;
     }>;
 
 export type RecipeTransform =
@@ -108,6 +114,12 @@ export type RecipeTransform =
       kind: "internal_api_rename";
       path: string;
       module: string;
+      from: string;
+      to: string;
+    }>
+  | Readonly<{
+      kind: "internal_api_rename_declaration";
+      path: string;
       from: string;
       to: string;
     }>;
@@ -1763,6 +1775,162 @@ function rewriteInternalApiRenameSource(
   return applyInternalApiRanges(content, to, plan.ranges);
 }
 
+// ---------------------------------------------------------------------------
+// Declaring-module rename (Gap 1 + Gap 2).
+//
+// The consumer-side rename above updates every module that IMPORTS the binding.
+// The producing module — the one that owns `export function/const/class from`,
+// or a barrel that re-exports it with `export { from } from "./y.js"` — is
+// handled here. Without this, a rename leaves the producer exporting the old
+// name and the workspace fails to compile (TS2305). A relative `spec.module`
+// (in-repo) therefore requires at least one declaration path so the producer and
+// any barrels in the chain are rewritten in lockstep with the consumers.
+//
+// Supported export surface (anything else abstains, status `unsupported`):
+//   - An exported local declaration of `from`: `export function from`,
+//     `export const|let|var from`, `export class from` (with `async`/`abstract`).
+//   - A named re-export list `export { from }` / `export { from } from "./y.js"`,
+//     the barrel form. Internal bare call sites of `from` in the producer are
+//     renamed too.
+//
+// Out-of-scope (abstains, so the whole spec abstains rather than emitting a
+// partial rename that does not compile):
+//   - `recipe_internal_api_declaration_unresolved`: the designated declaration
+//     path exposes no rewritable `from` export (completeness invariant).
+//   - `recipe_internal_api_declaration_aliased_export`: an aliased specifier
+//     `export { from as X }` / `export { X as from }` (ambiguous local/exported
+//     name split).
+//   - `recipe_internal_api_declaration_target_conflict`: the target name already
+//     appears as a code identifier in the producer.
+//   - `recipe_internal_api_declaration_unsupported_reference`: a non-call, value
+//     reference to the binding (spread, alias, member definition).
+//   - `recipe_internal_api_declaration_residual`: a `from` export would survive
+//     the rewrite (defence-in-depth completeness check).
+// ---------------------------------------------------------------------------
+
+// Brace regions of every `export { ... }` list (with or without a trailing
+// `from "..."`), used to locate re-exported specifiers in code position.
+function internalApiExportListBraces(content: string): Array<readonly [number, number]> {
+  const braces: Array<readonly [number, number]> = [];
+  const pattern = /\bexport\s*\{/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(content))) {
+    const open = content.indexOf("{", match.index);
+    if (open < 0) continue;
+    const close = content.indexOf("}", open);
+    if (close < 0) continue;
+    braces.push([open + 1, close] as const);
+  }
+  return braces;
+}
+
+type InternalApiDeclarationSites = Readonly<{ starts: ReadonlySet<number>; aliased: boolean }>;
+
+// Every code-position occurrence of `name` that is an export site: an exported
+// local declaration, or a bare specifier inside an `export { ... }` list. Sets
+// `aliased` when the name only appears through an `as` alias, which the recipe
+// abstains on. String/comment false matches are discarded by requiring a real
+// scanned token at the offset.
+function internalApiDeclarationSites(
+  content: string,
+  tokens: readonly CodeIdent[],
+  name: string,
+): InternalApiDeclarationSites {
+  const starts = new Set<number>();
+  let aliased = false;
+  const tokenStarts = new Map(tokens.map((token) => [token.start, token] as const));
+  const localPattern = new RegExp(
+    `\\bexport\\s+(?:(?:async\\s+)?function|(?:abstract\\s+)?class|const|let|var)\\s+(${escapeRegExp(name)})\\b`,
+    "g",
+  );
+  let match: RegExpExecArray | null;
+  while ((match = localPattern.exec(content))) {
+    const nameStart = match.index + match[0].length - match[1]!.length;
+    const token = tokenStarts.get(nameStart);
+    if (token && token.name === name) starts.add(nameStart);
+  }
+  const braces = internalApiExportListBraces(content);
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token.name !== name) continue;
+    if (!braces.some(([open, close]) => token.start >= open && token.end <= close)) continue;
+    const previous = tokens[index - 1];
+    const next = tokens[index + 1];
+    const previousIsAs =
+      previous?.name === "as" && content.slice(previous.end, token.start).trim() === "";
+    const nextIsAs = next?.name === "as" && content.slice(token.end, next.start).trim() === "";
+    if (previousIsAs || nextIsAs) {
+      aliased = true;
+      continue;
+    }
+    starts.add(token.start);
+  }
+  return { starts, aliased };
+}
+
+function planInternalApiDeclarationRename(
+  content: string,
+  from: string,
+  to: string,
+): InternalApiPlan {
+  const tokens = scanCodeIdentifiers(content);
+  const fromSites = internalApiDeclarationSites(content, tokens, from);
+  const toSites = internalApiDeclarationSites(content, tokens, to);
+  const fromTokens = tokens.filter((token) => token.name === from);
+  const toTokens = tokens.filter((token) => token.name === to);
+
+  if (fromSites.aliased || toSites.aliased) {
+    return { state: "unsupported", reason: "recipe_internal_api_declaration_aliased_export" };
+  }
+  if (fromSites.starts.size === 0) {
+    if (toSites.starts.size > 0 && fromTokens.length === 0) return { state: "target" };
+    return { state: "unsupported", reason: "recipe_internal_api_declaration_unresolved" };
+  }
+  if (toTokens.length > 0) {
+    return { state: "unsupported", reason: "recipe_internal_api_declaration_target_conflict" };
+  }
+  const ranges: Array<readonly [number, number]> = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token.name !== from) continue;
+    if (fromSites.starts.has(token.start)) {
+      ranges.push([token.start, token.end]);
+      continue;
+    }
+    const kind = internalApiReferenceKind(content, tokens, index);
+    if (kind === "member") continue;
+    if (kind === "call") {
+      ranges.push([token.start, token.end]);
+      continue;
+    }
+    return { state: "unsupported", reason: "recipe_internal_api_declaration_unsupported_reference" };
+  }
+  if (ranges.length === 0) {
+    return { state: "unsupported", reason: "recipe_internal_api_declaration_unresolved" };
+  }
+  const transformed = applyInternalApiRanges(content, to, ranges);
+  const residual = internalApiDeclarationSites(transformed, scanCodeIdentifiers(transformed), from);
+  if (residual.starts.size !== 0) {
+    return { state: "unsupported", reason: "recipe_internal_api_declaration_residual" };
+  }
+  return { state: "source", ranges };
+}
+
+function classifyInternalApiDeclarationRename(
+  content: string,
+  from: string,
+  to: string,
+): PreconditionState {
+  const plan = planInternalApiDeclarationRename(content, from, to);
+  return plan.reason ? { state: plan.state, reason: plan.reason } : { state: plan.state };
+}
+
+function rewriteInternalApiDeclarationRename(content: string, from: string, to: string): string {
+  const plan = planInternalApiDeclarationRename(content, from, to);
+  if (plan.state !== "source" || !plan.ranges) return content;
+  return applyInternalApiRanges(content, to, plan.ranges);
+}
+
 export type InternalApiRenameSpec = Readonly<{
   recipeId: string;
   version: number;
@@ -1773,6 +1941,12 @@ export type InternalApiRenameSpec = Readonly<{
   from: string;
   to: string;
   paths: readonly string[];
+  /**
+   * In-repo declaration and barrel files that own or re-export `from`. Required
+   * when `module` is a relative specifier (the producer lives in the repository);
+   * omitted for external/bare modules whose producer ships the new name already.
+   */
+  declarationPaths?: readonly string[];
 }>;
 
 function internalApiVerifierScript(
@@ -1802,42 +1976,76 @@ export function createInternalApiRenameRecipe(spec: InternalApiRenameSpec): Migr
   }
   if (spec.from === spec.to) throw new Error("recipe_internal_api_noop");
   if (!spec.module || /["'\\]/.test(spec.module)) throw new Error("recipe_internal_api_module_invalid");
-  const paths = [...spec.paths].sort();
-  if (!paths.length) throw new Error("recipe_internal_api_paths_required");
-  const preconditions = paths.map(
-    (path) =>
-      ({
-        kind: "internal_api_rename_source",
-        path,
-        module: spec.module,
-        from: spec.from,
-        to: spec.to,
-      }) as const,
-  );
-  const transforms = paths.map(
-    (path) =>
-      ({
-        kind: "internal_api_rename",
-        path,
-        module: spec.module,
-        from: spec.from,
-        to: spec.to,
-      }) as const,
-  );
+  const consumerPaths = [...spec.paths].sort();
+  if (!consumerPaths.length) throw new Error("recipe_internal_api_paths_required");
+  const declarationPaths = [...(spec.declarationPaths ?? [])].sort();
+  const consumerSet = new Set(consumerPaths);
+  for (const path of declarationPaths) {
+    if (consumerSet.has(path)) throw new Error("recipe_internal_api_declaration_path_conflict");
+  }
+  // Completeness: a relative `module` names an in-repo producer, so the rename is
+  // only complete when its declaration (and any barrels) travel with it.
+  const relativeModule = spec.module.startsWith("./") || spec.module.startsWith("../");
+  if (relativeModule && declarationPaths.length === 0) {
+    throw new Error("recipe_internal_api_declaration_required");
+  }
+  const allowedPaths = [...consumerPaths, ...declarationPaths].sort();
+  const preconditions = [
+    ...consumerPaths.map(
+      (path) =>
+        ({
+          kind: "internal_api_rename_source",
+          path,
+          module: spec.module,
+          from: spec.from,
+          to: spec.to,
+        }) as const,
+    ),
+    ...declarationPaths.map(
+      (path) =>
+        ({
+          kind: "internal_api_rename_declaration",
+          path,
+          from: spec.from,
+          to: spec.to,
+        }) as const,
+    ),
+  ];
+  const transforms = [
+    ...consumerPaths.map(
+      (path) =>
+        ({
+          kind: "internal_api_rename",
+          path,
+          module: spec.module,
+          from: spec.from,
+          to: spec.to,
+        }) as const,
+    ),
+    ...declarationPaths.map(
+      (path) =>
+        ({
+          kind: "internal_api_rename_declaration",
+          path,
+          from: spec.from,
+          to: spec.to,
+        }) as const,
+    ),
+  ];
   return createRecipe({
     id: spec.recipeId,
     version: spec.version,
     title: spec.title,
     source: spec.source,
     target: spec.target,
-    allowedPaths: paths,
+    allowedPaths,
     preconditions,
     transforms,
     verificationCommands: [
       {
         id: "internal-api-old-surface-absent",
         command: `node -e "${internalApiVerifierScript(
-          paths,
+          allowedPaths,
           spec.from,
           false,
           "internal_api_source_missing",
@@ -1848,7 +2056,7 @@ export function createInternalApiRenameRecipe(spec: InternalApiRenameSpec): Migr
       {
         id: "internal-api-new-surface-present",
         command: `node -e "${internalApiVerifierScript(
-          paths,
+          allowedPaths,
           spec.to,
           true,
           "internal_api_new_call_missing",
@@ -1886,6 +2094,62 @@ const INTERNAL_API_ACME_USER_RENAME_V1 = createInternalApiRenameRecipe(
 
 export const INTERNAL_API_ACME_USER_RENAME_RECIPE = INTERNAL_API_ACME_USER_RENAME_V1;
 
+// Worked example (Gap 1): an in-repo rename where the producing module owns the
+// declaration. `placeOrder` is exported from `./orders.js` and called by two
+// consumers; the relative module forces a declaration path so the producer's
+// `export function` is rewritten alongside the import and call sites.
+const INTERNAL_API_ORDERS_RENAME_V1 = createInternalApiRenameRecipe({
+  recipeId: "internal-api-orders-place-to-submit",
+  version: 1,
+  title: "Internal API refactor: orders placeOrder to submitOrder",
+  source: "orders-placeOrder",
+  target: "orders-submitOrder",
+  module: "./orders.js",
+  from: "placeOrder",
+  to: "submitOrder",
+  paths: ["src/cart.ts", "src/checkout.ts"],
+  declarationPaths: ["src/orders.ts"],
+});
+
+// Worked example (Gap 2): a rename that threads a barrel re-export. `verifyToken`
+// is declared in `./auth/token.js`, re-exported by the `./auth/index.js` barrel,
+// and imported by a consumer through the barrel. All three files in the chain are
+// rewritten consistently.
+const INTERNAL_API_AUTH_BARREL_RENAME_V1 = createInternalApiRenameRecipe({
+  recipeId: "internal-api-auth-verify-to-check",
+  version: 1,
+  title: "Internal API refactor: auth verifyToken to checkToken via barrel",
+  source: "auth-verifyToken",
+  target: "auth-checkToken",
+  module: "./auth/index.js",
+  from: "verifyToken",
+  to: "checkToken",
+  paths: ["src/middleware.ts"],
+  declarationPaths: ["src/auth/index.ts", "src/auth/token.ts"],
+});
+
+// Dogfood proof: renaming this repository's own `isHumanWardenReviewer` export to
+// `isHumanFettlerReviewer`. The producing module `apps/api/src/warden-review-auth.ts`
+// is a declaration path; the three files that import and call the binding are the
+// consumers. This is the concrete real-repo case that measured 0% before the
+// declaration rewrite landed. See `scripts/rename-dogfood-proof.ts`.
+const INTERNAL_API_WARDEN_REVIEWER_RENAME_V1 = createInternalApiRenameRecipe({
+  recipeId: "internal-api-warden-ishuman-reviewer-rename",
+  version: 1,
+  title: "Internal API refactor: isHumanWardenReviewer to isHumanFettlerReviewer",
+  source: "warden-isHumanWardenReviewer",
+  target: "warden-isHumanFettlerReviewer",
+  module: "./warden-review-auth.js",
+  from: "isHumanWardenReviewer",
+  to: "isHumanFettlerReviewer",
+  paths: [
+    "apps/api/src/transformer-adaptive-review.ts",
+    "apps/api/src/warden-candidate-review.ts",
+    "apps/api/src/warden-review-auth.test.ts",
+  ],
+  declarationPaths: ["apps/api/src/warden-review-auth.ts"],
+});
+
 const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${NODE_RUNTIME_18_TO_20_V1.id}@${NODE_RUNTIME_18_TO_20_V1.version}`,
@@ -1922,6 +2186,18 @@ const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
   [
     `${INTERNAL_API_ACME_USER_RENAME_V1.id}@${INTERNAL_API_ACME_USER_RENAME_V1.version}`,
     INTERNAL_API_ACME_USER_RENAME_V1,
+  ],
+  [
+    `${INTERNAL_API_ORDERS_RENAME_V1.id}@${INTERNAL_API_ORDERS_RENAME_V1.version}`,
+    INTERNAL_API_ORDERS_RENAME_V1,
+  ],
+  [
+    `${INTERNAL_API_AUTH_BARREL_RENAME_V1.id}@${INTERNAL_API_AUTH_BARREL_RENAME_V1.version}`,
+    INTERNAL_API_AUTH_BARREL_RENAME_V1,
+  ],
+  [
+    `${INTERNAL_API_WARDEN_REVIEWER_RENAME_V1.id}@${INTERNAL_API_WARDEN_REVIEWER_RENAME_V1.version}`,
+    INTERNAL_API_WARDEN_REVIEWER_RENAME_V1,
   ],
 ]);
 
@@ -2024,7 +2300,7 @@ export function classifyRecipeContract(recipe: MigrationRecipeContract): RecipeC
   if (kinds.has("node_version_set") || kinds.has("docker_node_major_set")) {
     return Object.freeze({ family: "runtime", provider: "node", framework: null });
   }
-  if (kinds.has("internal_api_rename")) {
+  if (kinds.has("internal_api_rename") || kinds.has("internal_api_rename_declaration")) {
     // Internal API renames are per-customer; there is no canonical provider slug
     // or framework to attach, so those stay null while the family is determinable.
     return Object.freeze({ family: "internal_api", provider: null, framework: null });
@@ -2121,6 +2397,9 @@ function preconditionFailure(precondition: RecipePrecondition): string {
   if (precondition.kind === "internal_api_rename_source") {
     return `recipe_precondition_failed:${precondition.path}:internal_api_rename`;
   }
+  if (precondition.kind === "internal_api_rename_declaration") {
+    return `recipe_precondition_failed:${precondition.path}:internal_api_declaration`;
+  }
   return `recipe_precondition_failed:${precondition.path}:node_major`;
 }
 
@@ -2178,6 +2457,11 @@ function preconditionState(
       precondition.from,
       precondition.to,
     );
+  }
+  if (precondition.kind === "internal_api_rename_declaration") {
+    const content = files[precondition.path];
+    if (content === undefined) return { state: "neutral" };
+    return classifyInternalApiDeclarationRename(content, precondition.from, precondition.to);
   }
   if (precondition.kind === "json_string_in") {
     let value: unknown;
@@ -2391,10 +2675,16 @@ function applyTransform(transform: RecipeTransform, files: Record<string, string
     files[transform.path] = rewriteGoogleapisSource(before!);
   } else if (transform.kind === "react_dom_render_to_root") {
     files[transform.path] = rewriteReactDomSource(before!);
-  } else {
+  } else if (transform.kind === "internal_api_rename") {
     files[transform.path] = rewriteInternalApiRenameSource(
       before!,
       transform.module,
+      transform.from,
+      transform.to,
+    );
+  } else {
+    files[transform.path] = rewriteInternalApiDeclarationRename(
+      before!,
       transform.from,
       transform.to,
     );

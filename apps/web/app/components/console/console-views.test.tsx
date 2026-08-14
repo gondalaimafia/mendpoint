@@ -105,7 +105,7 @@ describe("DS4 console — one indigo CTA per screen", () => {
 describe("DS3 console views — content fidelity", () => {
   it("renders the Warden overview: eyebrow, version, stats, and severities", () => {
     const html = renderToStaticMarkup(<ChangesView data={SAMPLE_CHANGES_DATA} />);
-    expect(html).toContain("WARDEN");
+    expect(html).toContain("FETTLER");
     expect(html).toContain("payments-api");
     expect(html).toContain("v2.9.4");
     expect(html).toContain("POST /v1/charges");
@@ -119,7 +119,7 @@ describe("DS3 console views — content fidelity", () => {
     for (const label of ["All", "Needs review", "Failing", "Merged"]) {
       expect(html).toContain(label);
     }
-    expect(html).toContain("TRANSFORMER");
+    expect(html).toContain("REGAUGE");
   });
 
   it("renders the PR review with an amber alert and Open on GitHub; the merge CTA is the shell topbar", () => {
@@ -148,7 +148,7 @@ describe("DS3 console views — content fidelity", () => {
 describe("DS console views — honest empty states", () => {
   it("renders a Warden empty state when no change is available", () => {
     const html = renderToStaticMarkup(<ChangesView data={null} />);
-    expect(html).toContain("WARDEN");
+    expect(html).toContain("FETTLER");
     expect(html).toContain("No structural change is staged yet");
     expect(countGlow(html)).toBe(0);
   });
@@ -179,7 +179,7 @@ describe("DS3 interactions — AlertDialog + toast", () => {
         open
         onClose={() => {}}
         title="Open 42 pull requests?"
-        description="Each PR targets the default branch and opens as a draft. Transformer runs the test suite before anything is pushed."
+        description="Each PR targets the default branch and opens as a draft. Regauge runs the test suite before anything is pushed."
         confirmLabel="Open PRs"
         onConfirm={confirmOpenAllPrs}
       />,

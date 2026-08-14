@@ -12,7 +12,7 @@ infrastructure step.
 ## What it reads
 
 The exporter is strictly read-only over the learning tables and reuses the exact
-consent, residency, and temporal-cutoff eligibility gate that the Transformer
+consent, residency, and temporal-cutoff eligibility gate that the Regauge
 precedent consumer uses (`listEligibleLearningDatasetMembers`). It:
 
 1. Resolves the tenant's single active consent for the purpose
@@ -156,7 +156,7 @@ consent/eligibility count), and distributions `byDecision`, `byOverallRisk`, and
    candidate row, threaded into the approved-outcome document, and emitted by the
    exporter as `labels.family` / `labels.provider` / `labels.framework`. Values are
    `sdk` / `framework` / `runtime` / `internal_api` (and `warden-provider` reserved
-   for the Warden path). Where the classification is genuinely undeterminable (a
+   for the Fettler path). Where the classification is genuinely undeterminable (a
    purely adaptive candidate with no bound recipe) each label is stored and emitted
    as `null` — never fabricated — and a pre-labeling (legacy) candidate exports the
    same all-`null` labels it did before, so its corpus bytes are unchanged. The

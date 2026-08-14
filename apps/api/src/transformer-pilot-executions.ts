@@ -50,7 +50,7 @@ const TRANSFORMER_PILOT_ERRORS: readonly PublicErrorRule[] = [
   {
     internalCode: "transformer_worker_principal_denied",
     status: 403,
-    publicMessage: "Transformer worker principal required",
+    publicMessage: "Regauge worker principal required",
   },
   ...publicRules(
     404,
@@ -166,7 +166,7 @@ const TRANSFORMER_PILOT_DETAIL_CODES = new Set([
 const TRANSFORMER_PILOT_DOMAIN_ERRORS: readonly PublicErrorRule[] = [
   ...publicRules(
     403,
-    "Transformer authorization denied",
+    "Regauge authorization denied",
     "transformer_pilot_gate_denied",
     "transformer_pilot_delivery_denied",
   ),
@@ -530,7 +530,8 @@ export function registerTransformerPilotExecutionRoutes(
   app: Hono<ApiEnv>,
   service: TransformerPilotExecutionService,
 ): void {
-  app.get("/transformer/executions/gate", (c) => {
+  const mount = (base: string): void => {
+  app.get(`${base}/executions/gate`, (c) => {
     try {
       const principal = c.get("principal");
       if (!principal) throw new Error("authenticated_principal_required");
@@ -540,17 +541,17 @@ export function registerTransformerPilotExecutionRoutes(
     }
   });
 
-  app.post("/transformer/executions", async (c) => {
+  app.post(`${base}/executions`, async (c) => {
     try {
       const result = service.create(requestMetadata(c), await json(c));
-      c.header("Location", `/transformer/executions/${result.campaignId}`);
+      c.header("Location", `${base}/executions/${result.campaignId}`);
       return c.json(result, 201);
     } catch (error) {
       return errorResponse(c, error);
     }
   });
 
-  app.get("/transformer/executions/:campaignId", (c) => {
+  app.get(`${base}/executions/:campaignId`, (c) => {
     try {
       const principal = c.get("principal");
       if (!principal) throw new Error("authenticated_principal_required");
@@ -560,7 +561,7 @@ export function registerTransformerPilotExecutionRoutes(
     }
   });
 
-  app.get("/transformer/executions/:campaignId/events", (c) => {
+  app.get(`${base}/executions/:campaignId/events`, (c) => {
     try {
       const principal = c.get("principal");
       if (!principal) throw new Error("authenticated_principal_required");
@@ -570,7 +571,7 @@ export function registerTransformerPilotExecutionRoutes(
     }
   });
 
-  app.get("/transformer/executions/:campaignId/metrics", (c) => {
+  app.get(`${base}/executions/:campaignId/metrics`, (c) => {
     try {
       const principal = c.get("principal");
       if (!principal) throw new Error("authenticated_principal_required");
@@ -580,7 +581,7 @@ export function registerTransformerPilotExecutionRoutes(
     }
   });
 
-  app.get("/transformer/executions/:campaignId/report", (c) => {
+  app.get(`${base}/executions/:campaignId/report`, (c) => {
     try {
       const principal = c.get("principal");
       if (!principal) throw new Error("authenticated_principal_required");
@@ -611,14 +612,14 @@ export function registerTransformerPilotExecutionRoutes(
     });
   };
 
-  mutation("/transformer/executions/:campaignId/attempts/claim", (request, campaignId, body) => ({
+  mutation(`${base}/executions/:campaignId/attempts/claim`, (request, campaignId, body) => ({
     lease: service.claim(request, campaignId, body),
   }), 200, true);
-  mutation("/transformer/executions/:campaignId/attempts/complete", (request, campaignId, body) => service.complete(request, campaignId, body), 200, true);
-  mutation("/transformer/executions/:campaignId/attempts/crash", (request, campaignId, body) => service.crash(request, campaignId, body), 200, true);
-  mutation("/transformer/executions/:campaignId/observations", (request, campaignId, body) => service.observe(request, campaignId, body), 200, true);
-  mutation("/transformer/executions/:campaignId/control", (request, campaignId, body) => service.control(request, campaignId, body));
-  mutation("/transformer/executions/:campaignId/drafts/authorize", (request, campaignId, body) => ({
+  mutation(`${base}/executions/:campaignId/attempts/complete`, (request, campaignId, body) => service.complete(request, campaignId, body), 200, true);
+  mutation(`${base}/executions/:campaignId/attempts/crash`, (request, campaignId, body) => service.crash(request, campaignId, body), 200, true);
+  mutation(`${base}/executions/:campaignId/observations`, (request, campaignId, body) => service.observe(request, campaignId, body), 200, true);
+  mutation(`${base}/executions/:campaignId/control`, (request, campaignId, body) => service.control(request, campaignId, body));
+  mutation(`${base}/executions/:campaignId/drafts/authorize`, (request, campaignId, body) => ({
     actions: service.authorizeDrafts(request, campaignId, body),
     delivery: service.get(request.tenantId, campaignId).units
       .filter((unit) => unit.state === "draft")
@@ -627,7 +628,7 @@ export function registerTransformerPilotExecutionRoutes(
         : "external",
   }));
 
-  app.post("/transformer/executions/:campaignId/rollback-plan", (c) => {
+  app.post(`${base}/executions/:campaignId/rollback-plan`, (c) => {
     try {
       return c.json({
         actions: service.planRollback(requestMetadata(c), c.req.param("campaignId")),
@@ -638,7 +639,7 @@ export function registerTransformerPilotExecutionRoutes(
     }
   });
 
-  app.get("/transformer/executions/:campaignId/rollback-plan", (c) => {
+  app.get(`${base}/executions/:campaignId/rollback-plan`, (c) => {
     try {
       const principal = c.get("principal");
       if (!principal) throw new Error("authenticated_principal_required");
@@ -650,4 +651,9 @@ export function registerTransformerPilotExecutionRoutes(
       return errorResponse(c, error);
     }
   });
+  };
+  // Canonical (Regauge) paths plus the legacy /transformer aliases (kept forever
+  // for external/legacy callers). Both register the same handlers.
+  mount("/regauge");
+  mount("/transformer");
 }

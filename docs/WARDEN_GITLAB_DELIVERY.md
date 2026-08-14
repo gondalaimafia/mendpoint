@@ -1,6 +1,6 @@
-# Warden GitLab delivery (Gap-closure G1a)
+# Fettler GitLab delivery (Gap-closure G1a)
 
-Warden delivers an approved candidate as an exact draft: a source branch, one
+Fettler delivers an approved candidate as an exact draft: a source branch, one
 commit of the exact sealed files, and a draft change that a human reviews and
 merges. Gap-closure slice G1a lets that same approved candidate be delivered to
 a **GitLab** project as a draft merge request, as an alternative to the default
@@ -9,7 +9,7 @@ is not selected.
 
 This document states exactly what exists so any public claim stays accurate. It
 builds on the general GitLab delivery described in
-[`GITLAB_DELIVERY.md`](./GITLAB_DELIVERY.md) and mirrors the Transformer path in
+[`GITLAB_DELIVERY.md`](./GITLAB_DELIVERY.md) and mirrors the Regauge path in
 [`TRANSFORMER_GITLAB_DELIVERY.md`](./TRANSFORMER_GITLAB_DELIVERY.md).
 
 ## What is delivered
@@ -31,7 +31,7 @@ On the GitLab side the exact-draft intent is applied with the Wave B
 
 The adapter that maps the exact-draft intent onto those three calls is
 `gitlabAsExactDraftDelivery` (`packages/github/src/gitlab-exact-draft.ts`). It
-reuses `GitLabDelivery` rather than rebuilding delivery, so the Warden delivery
+reuses `GitLabDelivery` rather than rebuilding delivery, so the Fettler delivery
 worker (`apps/worker/src/warden-candidate-delivery.ts`) stays shaped around a
 single `deliverExactDraft` call and is unchanged: the provider is chosen at the
 construction site, not in the delivery body.
@@ -40,14 +40,14 @@ construction site, not in the delivery body.
 
 Delivery accepts the result only when GitLab confirms the merge request is a
 draft. If the returned merge request is not a draft, delivery raises
-`gitlab_exact_draft_not_draft` and Warden records a delivery failure instead of
+`gitlab_exact_draft_not_draft` and Fettler records a delivery failure instead of
 reporting success. Nothing is merged and no branch is force-updated. Human
-review and manual merge stay in force, the same as the GitHub path. Warden's
+review and manual merge stay in force, the same as the GitHub path. Fettler's
 existing delivery-evidence checks (draft flag, branch, base branch, base
 revision, merge-request number, URL, and a hex commit SHA) are unchanged.
 
 `commitFiles` returns the real 40-hex commit SHA GitLab reports (`id` from the
-create-commit response), so Warden's evidence check accepts it exactly as it
+create-commit response), so Fettler's evidence check accepts it exactly as it
 accepts a GitHub commit SHA. If GitLab ever omits the commit id, the adapter
 falls back to a deterministic synthesized identifier derived from the immutable
 commit inputs, stable on replay of the same sealed intent.
@@ -56,8 +56,8 @@ commit inputs, stable on replay of the same sealed intent.
 
 Selection is driven by the existing `SCM_PROVIDER` configuration and wired where
 the worker constructs the delivery for a `warden.candidate.deliver` job. The
-Warden construction site routes through the same `transformerAdaptiveScmDelivery`
-selector the Transformer path uses (`apps/worker/src/cli.ts`):
+Fettler construction site routes through the same `transformerAdaptiveScmDelivery`
+selector the Regauge path uses (`apps/worker/src/cli.ts`):
 
 - `SCM_PROVIDER` unset or `github`: the existing GitHub App / token delivery is
   used, byte for byte unchanged. A default deployment is unaffected.
@@ -70,7 +70,7 @@ selector the Transformer path uses (`apps/worker/src/cli.ts`):
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `SCM_PROVIDER` | `gitlab` routes Warden approved-candidate delivery to GitLab; unset or `github` keeps GitHub. | `github` |
+| `SCM_PROVIDER` | `gitlab` routes Fettler approved-candidate delivery to GitLab; unset or `github` keeps GitHub. | `github` |
 | `GITLAB_MODE` | `real` selects the HTTP client; anything else uses the mock. | `mock` |
 | `GITLAB_TOKEN` | Project, group, or personal access token, required for `real`. | none |
 | `GITLAB_API_URL` | REST v4 base URL, for self-managed GitLab. | `https://gitlab.com/api/v4` |
@@ -83,13 +83,13 @@ selector the Transformer path uses (`apps/worker/src/cli.ts`):
   supplied through configuration.
 - **Not automatic merge.** Delivery is draft only. A human reviews and merges.
   This is intentional and permanent.
-- **Not a change to the GitHub path.** When GitLab is not selected, Warden's
+- **Not a change to the GitHub path.** When GitLab is not selected, Fettler's
   GitHub delivery, its App and token enforcement, and the review-first,
   no-auto-merge model are unchanged.
 
 ## Summary for marketing
 
-Warden can deliver an approved candidate as a **token-authenticated draft merge
+Fettler can deliver an approved candidate as a **token-authenticated draft merge
 request** to a GitLab project on gitlab.com or a self-managed instance, selected
 with `SCM_PROVIDER=gitlab`, with the same human-review-first, no-auto-merge
 guarantees as the GitHub draft pull request. State it as "GitLab draft

@@ -1,6 +1,6 @@
 # Learning Capture (opt-in enrichment purposes)
 
-The Transformer learning loop admits one governed record per human-approved
+The Regauge learning loop admits one governed record per human-approved
 adaptive outcome under the base purpose `transformer-adaptive-repair`
 (see `docs/TRANSFORMER_LEARNING_LOOP.md`). That base record carries only the
 redacted **change specification** (paths, per-edit semantic category, risk,

@@ -1,10 +1,10 @@
-# Warden training — API communication failures
+# Fettler training — API communication failures
 
-**Warden** is Mendpoint’s API debug agent. It is trained on the full stack of **API communication failure modes** (protocol/contract, serialization, semantics, network, cascading errors, async/webhooks, rate limits) — not just path typos.
+**Fettler** is Mendpoint’s API debug agent. It is trained on the full stack of **API communication failure modes** (protocol/contract, serialization, semantics, network, cascading errors, async/webhooks, rate limits) — not just path typos.
 
 ## Categories
 
-| Category | Client-fixable (Warden) | FDE / infra |
+| Category | Client-fixable (Fettler) | FDE / infra |
 |----------|--------------------------|-------------|
 | Protocol & contract | Paths, Content-Type, Accept, version headers, GraphQL body shape, trailing slash, gRPC/JSON hints | Mesh, gateway schema translation |
 | Serialization drift | Field renames, enum/date hints, snake/camel when stated | Producer versioning governance |
@@ -28,14 +28,14 @@ Code:
 - `packages/agent/src/heuristics.ts` — planner  
 - Entry: `runWarden()`  
 
-## What Warden will *not* pretend to fix alone
+## What Fettler will *not* pretend to fix alone
 
 - Production gateway misconfiguration without client repro  
 - NTP/clock skew on identity infrastructure  
 - CAP/partition strategy across data centers  
 - Cross-org semantic dictionary design  
 
-Those surface as **FDE handoff** in the Warden report.
+Those surface as **FDE handoff** in the Fettler report.
 
 ## Verify
 

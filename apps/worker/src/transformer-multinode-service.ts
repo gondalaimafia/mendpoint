@@ -96,11 +96,11 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
     "reserveAdaptiveModelCall", "settleAdaptiveModelCall", "recordAdaptiveCandidateHandoff",
     "completeAttempt", "recordAttemptFailure", "claimNextDraftDelivery",
     "assertCurrentDraftDeliveryFence", "completeDraftDelivery", "reconcileWave",
-  ].map((operation) => [operation, (input: unknown) => remote(`/v1/transformer/attempt-coordinator/operations/${operation}`, input)]))) as TransformerAttemptCoordinatorPort;
+  ].map((operation) => [operation, (input: unknown) => remote(`/v1/regauge/attempt-coordinator/operations/${operation}`, input)]))) as TransformerAttemptCoordinatorPort;
   const authority = Object.freeze(Object.fromEntries([
     "readBindingAuthority", "readLease", "readHead", "compareAndSwapHead",
     "completeWithHead", "failWithHead", "readFailureReceipt",
-  ].map((operation) => [operation, (input: unknown) => remote(`/v1/transformer/attempt-coordinator/checkpoint-authority/${operation}`, input)]))) as unknown as TransformerAttemptCheckpointAuthorityPort;
+  ].map((operation) => [operation, (input: unknown) => remote(`/v1/regauge/attempt-coordinator/checkpoint-authority/${operation}`, input)]))) as unknown as TransformerAttemptCheckpointAuthorityPort;
   const checkpointArtifacts: TransformerAttemptCheckpointArtifactStore = Object.freeze({
     async read(storageKey) { return readArtifact(storageKey); },
     async publishImmutableDurable(storageKey, bytes) {
@@ -148,12 +148,12 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
       if (running) throw new Error("transformer_multinode_run_in_progress");
       running = true;
       try {
-        await remote("/v1/transformer/attempt-coordinator/readyz", { tenantId: config.tenantId });
+        await remote("/v1/regauge/attempt-coordinator/readyz", { tenantId: config.tenantId });
         const result = await runTransformerAttempt({
           scope: { tenantId: config.tenantId, campaignId: config.campaignId, environment: config.environment },
           ...(config.gateConfig === undefined ? {} : { gateConfig: config.gateConfig }),
           coordinator,
-          loadExactSource: async (lease: TransformerExecutableAttemptLease): Promise<ExactSourceSnapshot> => await remote("/v1/transformer/attempt-coordinator/source", { tenantId: config.tenantId, lease, leaseToken }) as ExactSourceSnapshot,
+          loadExactSource: async (lease: TransformerExecutableAttemptLease): Promise<ExactSourceSnapshot> => await remote("/v1/regauge/attempt-coordinator/source", { tenantId: config.tenantId, lease, leaseToken }) as ExactSourceSnapshot,
           evidenceRoot: config.evidenceRoot,
           candidateRoot: config.candidateRoot,
           leaseDurationMs: config.leaseDurationMs,
@@ -174,13 +174,13 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
       if (running) throw new Error("transformer_multinode_run_in_progress");
       running = true;
       try {
-        await remote("/v1/transformer/attempt-coordinator/readyz", { tenantId: config.tenantId });
+        await remote("/v1/regauge/attempt-coordinator/readyz", { tenantId: config.tenantId });
         const deliveryLeaseToken = stable("draft-delivery-token");
         const claimIdempotencyKey = `${config.workerId}-draft-claim-${stable(
           `draft-claim:${serviceInstanceId}:${deliveryClaimOrdinal}`,
         ).slice(0, 32)}`;
         const claim = await remote(
-          "/v1/transformer/attempt-coordinator/operations/claimNextDraftDelivery",
+          "/v1/regauge/attempt-coordinator/operations/claimNextDraftDelivery",
           {
             tenantId: config.tenantId,
             campaignId: config.campaignId,
@@ -198,7 +198,7 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
         deliveryClaimOrdinal += 1;
         assertDraftLease(claim, config);
         const recovered = await remote(
-          "/v1/transformer/attempt-coordinator/draft-source",
+          "/v1/regauge/attempt-coordinator/draft-source",
           { tenantId: config.tenantId, lease: claim, leaseToken: deliveryLeaseToken },
         ) as Readonly<{ source: ExactSourceSnapshot; target: TransformerMultinodeDraftTarget }>;
         const target = assertDraftTarget(recovered.target);
@@ -280,11 +280,11 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
           baseBranch: target.baseBranch,
           expectedBaseSha: claim.snapshot.revision,
           branch,
-          commitMessage: `Transformer: ${title}`,
+          commitMessage: `Regauge: ${title}`,
           commitDate: claim.authorizedAt,
           title: `Draft: ${title}`,
           body: [
-            "Automated Transformer migration draft.",
+            "Automated Regauge migration draft.",
             "",
             `Candidate digest: ${claim.candidateDigest}`,
             `Checkpoint: ${claim.checkpointHead.stateDigest}`,
@@ -296,7 +296,7 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
         });
         const intentDigest = digestBytes(new TextEncoder().encode(JSON.stringify(intent)));
         await remote(
-          "/v1/transformer/attempt-coordinator/operations/assertCurrentDraftDeliveryFence",
+          "/v1/regauge/attempt-coordinator/operations/assertCurrentDraftDeliveryFence",
           {
             tenantId: config.tenantId,
             campaignId: config.campaignId,
@@ -342,7 +342,7 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
         for (let attempt = 0; attempt < 2 && !completed; attempt += 1) {
           try {
             await remote(
-              "/v1/transformer/attempt-coordinator/operations/completeDraftDelivery",
+              "/v1/regauge/attempt-coordinator/operations/completeDraftDelivery",
               completionBody,
             );
             completed = true;
@@ -364,9 +364,9 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
       if (running) throw new Error("transformer_multinode_run_in_progress");
       running = true;
       try {
-        await remote("/v1/transformer/attempt-coordinator/readyz", { tenantId: config.tenantId });
+        await remote("/v1/regauge/attempt-coordinator/readyz", { tenantId: config.tenantId });
         const entries = await remote(
-          "/v1/transformer/attempt-coordinator/draft-observations",
+          "/v1/regauge/attempt-coordinator/draft-observations",
           { tenantId: config.tenantId, campaignId: config.campaignId },
         ) as readonly Readonly<{
           draft: TransformerDeliveredDraftObservation;
@@ -411,7 +411,7 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
         observations.sort((left, right) => left.unitId < right.unitId ? -1 : left.unitId > right.unitId ? 1 : 0);
         const observationDigest = digestBytes(new TextEncoder().encode(JSON.stringify(observations)));
         const campaign = await remote(
-          "/v1/transformer/attempt-coordinator/operations/reconcileWave",
+          "/v1/regauge/attempt-coordinator/operations/reconcileWave",
           {
             tenantId: config.tenantId,
             campaignId: config.campaignId,

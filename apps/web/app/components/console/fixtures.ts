@@ -232,7 +232,7 @@ export const SAMPLE_PR_DETAIL: PrDetailData = {
   githubUrl: "https://github.com/acme/payments-sdk/pull/4821",
   alert: {
     title: "Breaking change · POST /v1/charges",
-    body: "charge() was removed in v3.0.0. Transformer rewrote 6 call sites and left inline notes where behavior changed.",
+    body: "charge() was removed in v3.0.0. Regauge rewrote 6 call sites and left inline notes where behavior changed.",
   },
   diffs: [
     {

@@ -1,6 +1,6 @@
 # Multi-provider model gateway
 
-The Warden agent routes its live model calls through a provider-registry gateway.
+The Fettler agent routes its live model calls through a provider-registry gateway.
 The active backend is one of several **named providers**, selected by
 configuration. Each provider declares its endpoint source, auth source, native
 wire format, transport class, and a per-provider price table. This is the
