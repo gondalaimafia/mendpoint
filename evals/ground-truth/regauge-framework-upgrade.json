@@ -1,0 +1,46 @@
+{
+  "scenario_id": "regauge-framework-upgrade",
+  "repo_family": "react-spa",
+  "difficulty": 4,
+  "difficulty_rationale": "Level 4: React 17->18 framework migration (createRoot/hydrateRoot, UNSAFE_ lifecycles, legacy context). A react-dom-17-to-18 recipe now ships, but it targets render/hydrate call sites and may not cover the deprecated lifecycles or legacy context in this subject. renderRow in csv is a `render`-substring trap; src/lib, src/state, src/logic must stay untouched.",
+  "intended_product": [
+    "regauge"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "coverage_gap",
+  "faults": [
+    {
+      "id": "framework-upgrade",
+      "description": "React 17 -> 18 framework migration.",
+      "family": "framework-upgrade"
+    }
+  ],
+  "expected_findings": [
+    "src/main.tsx",
+    "src/hydrate.tsx",
+    "src/components/StatsPanel.tsx",
+    "src/components/TaskEditor.tsx",
+    "src/context/ThemeContext.tsx",
+    "src/components/Header.tsx"
+  ],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "src/lib/",
+    "src/state/",
+    "src/logic/"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 6
+  },
+  "recipe_expectation": {
+    "family": "framework-upgrade",
+    "shippedRecipeId": "react-dom-17-to-18"
+  },
+  "tags": [
+    "regauge",
+    "framework-upgrade",
+    "react",
+    "partial-coverage"
+  ],
+  "notes": "EXPECTED.md predates the react-dom recipe and asserts abstention-by-absence; the runner empirically records whether the shipped react-dom-17-to-18 recipe matches and how much of the six-file oracle it covers."
+}

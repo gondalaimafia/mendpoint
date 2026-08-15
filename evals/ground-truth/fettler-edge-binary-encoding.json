@@ -1,0 +1,40 @@
+{
+  "scenario_id": "fettler-edge-binary-encoding",
+  "repo_family": "node-service-edge",
+  "difficulty": 4,
+  "difficulty_rationale": "Level 4 (robustness): a PNG, a ZIP, a UTF-16LE+BOM file, and a UTF-8+BOM file sit beside a plain UTF-8 source. Pass bar: do not crash, do not corrupt binary/UTF-16 files; migrate the plain source. Probes scanner robustness to non-UTF-8 content.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "src/charge.js"
+  ],
+  "acceptable_findings": [
+    "src/charge.bom.js",
+    "src/charge.utf16.js",
+    "check.mjs"
+  ],
+  "false_positive_traps": [
+    "fixtures/pixel.png",
+    "fixtures/empty.zip"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 1
+  },
+  "tags": [
+    "edge",
+    "binary",
+    "encoding",
+    "robustness"
+  ],
+  "notes": "Failure to catch: crash/stack trace on PNG/ZIP/UTF-16, or UTF-8 re-encoding that corrupts the UTF-16 file."
+}
