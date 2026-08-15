@@ -46,10 +46,12 @@ export {
 } from "./saturate.js";
 
 export {
-  defaultApiMigrationRules,
+  structuralMigrationRules,
+  fieldRenameRules,
   exploreMigration,
   migrateFieldAccess,
   migrateFromFixHint,
   compareMigrationStrategies,
+  type FieldRename,
   type MigrationExploreResult,
 } from "./migration.js";

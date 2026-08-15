@@ -1996,13 +1996,34 @@ function internalApiExportListBraces(content: string): Array<readonly [number, n
   return braces;
 }
 
-type InternalApiDeclarationSites = Readonly<{ starts: ReadonlySet<number>; aliased: boolean }>;
+// Does the export list whose closing brace is at `close` carry a trailing
+// `from "..."` re-export clause? A re-export's specifiers name symbols in the
+// SOURCE module, so the left side of `X as Y` is the imported symbol (rewritable
+// when that very symbol is being renamed at its declaration), while the public
+// alias `Y` stays. A local `export { X as Y }` (no `from`) binds a local value
+// the recipe still abstains on, so its aliasing is treated as before.
+function internalApiExportListIsReexport(content: string, close: number): boolean {
+  return /^\s*from\s*["']/.test(content.slice(close + 1));
+}
+
+type InternalApiDeclarationSites = Readonly<{
+  starts: ReadonlySet<number>;
+  aliased: boolean;
+  // `from` occurrences that are the SOURCE side of an aliased re-export
+  // (`from as Y` in an `export { ... } from "..."` list). These reference the
+  // renamed declaration and are rewritten to `to`; the public alias `Y` is left
+  // untouched (Case A: a deliberately stable public name coexists with the
+  // rename of the underlying symbol).
+  reexportAliasSourceStarts: ReadonlySet<number>;
+}>;
 
 // Every code-position occurrence of `name` that is an export site: an exported
 // local declaration, or a bare specifier inside an `export { ... }` list. Sets
-// `aliased` when the name only appears through an `as` alias, which the recipe
-// abstains on. String/comment false matches are discarded by requiring a real
-// scanned token at the offset.
+// `aliased` when the name appears only through a local `as` alias (or as the
+// public target of a re-export alias), which the recipe abstains on. The source
+// side of a re-export alias is collected in `reexportAliasSourceStarts` instead.
+// String/comment false matches are discarded by requiring a real scanned token
+// at the offset.
 function internalApiDeclarationSites(
   content: string,
   tokens: readonly CodeIdent[],
@@ -2022,22 +2043,37 @@ function internalApiDeclarationSites(
     if (token && token.name === name) starts.add(nameStart);
   }
   const braces = internalApiExportListBraces(content);
+  const reexportAliasSourceStarts = new Set<number>();
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (token.name !== name) continue;
-    if (!braces.some(([open, close]) => token.start >= open && token.end <= close)) continue;
+    const brace = braces.find(([open, close]) => token.start >= open && token.end <= close);
+    if (!brace) continue;
     const previous = tokens[index - 1];
     const next = tokens[index + 1];
     const previousIsAs =
       previous?.name === "as" && content.slice(previous.end, token.start).trim() === "";
     const nextIsAs = next?.name === "as" && content.slice(token.end, next.start).trim() === "";
-    if (previousIsAs || nextIsAs) {
+    if (nextIsAs) {
+      // `name as Y`: `name` is the source side of the alias. In a re-export it
+      // names the imported (renamed) symbol and is rewritten; in a local aliased
+      // export it names a local binding the recipe still abstains on.
+      if (internalApiExportListIsReexport(content, brace[1])) {
+        reexportAliasSourceStarts.add(token.start);
+      } else {
+        aliased = true;
+      }
+      continue;
+    }
+    if (previousIsAs) {
+      // `X as name`: `name` is the public alias target; renaming it would move a
+      // published surface, so abstain.
       aliased = true;
       continue;
     }
     starts.add(token.start);
   }
-  return { starts, aliased };
+  return { starts, aliased, reexportAliasSourceStarts };
 }
 
 function planInternalApiDeclarationRename(
@@ -2054,8 +2090,14 @@ function planInternalApiDeclarationRename(
   if (fromSites.aliased || toSites.aliased) {
     return { state: "unsupported", reason: "recipe_internal_api_declaration_aliased_export" };
   }
-  if (fromSites.starts.size === 0) {
-    if (toSites.starts.size > 0 && fromTokens.length === 0) return { state: "target" };
+  const fromExportSites = fromSites.starts.size + fromSites.reexportAliasSourceStarts.size;
+  if (fromExportSites === 0) {
+    if (
+      toSites.starts.size + toSites.reexportAliasSourceStarts.size > 0 &&
+      fromTokens.length === 0
+    ) {
+      return { state: "target" };
+    }
     return { state: "unsupported", reason: "recipe_internal_api_declaration_unresolved" };
   }
   if (toTokens.length > 0) {
@@ -2065,7 +2107,7 @@ function planInternalApiDeclarationRename(
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (token.name !== from) continue;
-    if (fromSites.starts.has(token.start)) {
+    if (fromSites.starts.has(token.start) || fromSites.reexportAliasSourceStarts.has(token.start)) {
       ranges.push([token.start, token.end]);
       continue;
     }
@@ -2082,7 +2124,7 @@ function planInternalApiDeclarationRename(
   }
   const transformed = applyInternalApiRanges(content, to, ranges);
   const residual = internalApiDeclarationSites(transformed, scanCodeIdentifiers(transformed), from);
-  if (residual.starts.size !== 0) {
+  if (residual.starts.size !== 0 || residual.reexportAliasSourceStarts.size !== 0) {
     return { state: "unsupported", reason: "recipe_internal_api_declaration_residual" };
   }
   return { state: "source", ranges };
@@ -2243,7 +2285,9 @@ function internalApiTypeDeclarationSites(
     }
     starts.add(token.start);
   }
-  return { starts, aliased };
+  // Type re-export aliases are not rewritten by this slice; the field is present
+  // only to satisfy the shared shape.
+  return { starts, aliased, reexportAliasSourceStarts: new Set<number>() };
 }
 
 // Compute rename ranges for every type-position occurrence of `name`: skip
@@ -2396,23 +2440,51 @@ function rewriteInternalApiTypeDeclarationRename(content: string, from: string, 
   return applyInternalApiRanges(content, to, plan.ranges);
 }
 
+// A consumer file plus, optionally, the module specifier it imports `from`
+// through. Real workspaces reach one renamed symbol under more than one
+// specifier: cross-package consumers import the package name (`@scope/pkg`)
+// while files inside the producing package import a sibling by relative path
+// (`./ledger`). A plain string uses the spec's default `module`; the object form
+// pins a per-file specifier so a single campaign can span both.
+export type InternalApiConsumerPath = Readonly<{ path: string; module?: string }>;
+
 export type InternalApiRenameSpec = Readonly<{
   recipeId: string;
   version: number;
   title: string;
   source: string;
   target: string;
+  /** Default module specifier applied to any consumer path given as a string. */
   module: string;
   from: string;
   to: string;
-  paths: readonly string[];
+  paths: readonly (string | InternalApiConsumerPath)[];
   /**
    * In-repo declaration and barrel files that own or re-export `from`. Required
-   * when `module` is a relative specifier (the producer lives in the repository);
+   * when a consumer specifier is relative (the producer lives in the repository);
    * omitted for external/bare modules whose producer ships the new name already.
    */
   declarationPaths?: readonly string[];
 }>;
+
+function normalizeInternalApiConsumers(
+  spec: InternalApiRenameSpec,
+): { path: string; module: string }[] {
+  const consumers = spec.paths.map((entry) => {
+    const path = typeof entry === "string" ? entry : entry.path;
+    const module = typeof entry === "string" ? spec.module : entry.module ?? spec.module;
+    if (!module || /["'\\]/.test(module)) throw new Error("recipe_internal_api_module_invalid");
+    return { path, module };
+  });
+  // Deterministic, deduplicated order keyed on the path so the recipe digest is
+  // stable regardless of how the spec listed its consumers.
+  const seen = new Set<string>();
+  for (const consumer of consumers) {
+    if (seen.has(consumer.path)) throw new Error("recipe_internal_api_duplicate_path");
+    seen.add(consumer.path);
+  }
+  return consumers.sort((left, right) => left.path.localeCompare(right.path));
+}
 
 function internalApiVerifierScript(
   paths: readonly string[],
@@ -2441,27 +2513,32 @@ export function createInternalApiRenameRecipe(spec: InternalApiRenameSpec): Migr
   }
   if (spec.from === spec.to) throw new Error("recipe_internal_api_noop");
   if (!spec.module || /["'\\]/.test(spec.module)) throw new Error("recipe_internal_api_module_invalid");
-  const consumerPaths = [...spec.paths].sort();
-  if (!consumerPaths.length) throw new Error("recipe_internal_api_paths_required");
+  const consumers = normalizeInternalApiConsumers(spec);
+  if (!consumers.length) throw new Error("recipe_internal_api_paths_required");
+  const consumerPaths = consumers.map((consumer) => consumer.path);
   const declarationPaths = [...(spec.declarationPaths ?? [])].sort();
   const consumerSet = new Set(consumerPaths);
   for (const path of declarationPaths) {
     if (consumerSet.has(path)) throw new Error("recipe_internal_api_declaration_path_conflict");
   }
-  // Completeness: a relative `module` names an in-repo producer, so the rename is
-  // only complete when its declaration (and any barrels) travel with it.
-  const relativeModule = spec.module.startsWith("./") || spec.module.startsWith("../");
+  // Completeness: a relative specifier (the spec default or any per-consumer
+  // override) names an in-repo producer, so the rename is only complete when its
+  // declaration (and any barrels) travel with it.
+  const relativeModule =
+    spec.module.startsWith("./") ||
+    spec.module.startsWith("../") ||
+    consumers.some((consumer) => consumer.module.startsWith("./") || consumer.module.startsWith("../"));
   if (relativeModule && declarationPaths.length === 0) {
     throw new Error("recipe_internal_api_declaration_required");
   }
   const allowedPaths = [...consumerPaths, ...declarationPaths].sort();
   const preconditions = [
-    ...consumerPaths.map(
-      (path) =>
+    ...consumers.map(
+      (consumer) =>
         ({
           kind: "internal_api_rename_source",
-          path,
-          module: spec.module,
+          path: consumer.path,
+          module: consumer.module,
           from: spec.from,
           to: spec.to,
         }) as const,
@@ -2477,12 +2554,12 @@ export function createInternalApiRenameRecipe(spec: InternalApiRenameSpec): Migr
     ),
   ];
   const transforms = [
-    ...consumerPaths.map(
-      (path) =>
+    ...consumers.map(
+      (consumer) =>
         ({
           kind: "internal_api_rename",
-          path,
-          module: spec.module,
+          path: consumer.path,
+          module: consumer.module,
           from: spec.from,
           to: spec.to,
         }) as const,
@@ -2569,27 +2646,32 @@ export function createInternalApiTypeRenameRecipe(
   }
   if (spec.from === spec.to) throw new Error("recipe_internal_api_noop");
   if (!spec.module || /["'\\]/.test(spec.module)) throw new Error("recipe_internal_api_module_invalid");
-  const consumerPaths = [...spec.paths].sort();
-  if (!consumerPaths.length) throw new Error("recipe_internal_api_paths_required");
+  const consumers = normalizeInternalApiConsumers(spec);
+  if (!consumers.length) throw new Error("recipe_internal_api_paths_required");
+  const consumerPaths = consumers.map((consumer) => consumer.path);
   const declarationPaths = [...(spec.declarationPaths ?? [])].sort();
   const consumerSet = new Set(consumerPaths);
   for (const path of declarationPaths) {
     if (consumerSet.has(path)) throw new Error("recipe_internal_api_declaration_path_conflict");
   }
-  // Completeness: a relative `module` names an in-repo producer, so the type
-  // declaration (and any barrels) must travel with the consumer edits.
-  const relativeModule = spec.module.startsWith("./") || spec.module.startsWith("../");
+  // Completeness: a relative specifier (the spec default or any per-consumer
+  // override) names an in-repo producer, so the type declaration (and any
+  // barrels) must travel with the consumer edits.
+  const relativeModule =
+    spec.module.startsWith("./") ||
+    spec.module.startsWith("../") ||
+    consumers.some((consumer) => consumer.module.startsWith("./") || consumer.module.startsWith("../"));
   if (relativeModule && declarationPaths.length === 0) {
     throw new Error("recipe_internal_api_declaration_required");
   }
   const allowedPaths = [...consumerPaths, ...declarationPaths].sort();
   const preconditions = [
-    ...consumerPaths.map(
-      (path) =>
+    ...consumers.map(
+      (consumer) =>
         ({
           kind: "internal_api_type_rename_source",
-          path,
-          module: spec.module,
+          path: consumer.path,
+          module: consumer.module,
           from: spec.from,
           to: spec.to,
         }) as const,
@@ -2605,12 +2687,12 @@ export function createInternalApiTypeRenameRecipe(
     ),
   ];
   const transforms = [
-    ...consumerPaths.map(
-      (path) =>
+    ...consumers.map(
+      (consumer) =>
         ({
           kind: "internal_api_type_rename",
-          path,
-          module: spec.module,
+          path: consumer.path,
+          module: consumer.module,
           from: spec.from,
           to: spec.to,
         }) as const,
@@ -2778,7 +2860,55 @@ const INTERNAL_API_REVIEW_DECISION_TYPE_RENAME_V1 = createInternalApiTypeRenameR
   declarationPaths: ["apps/api/src/reviews.ts"],
 });
 
+// Worked example: a workspace-wide internal rename of the exported value
+// `computeLedgerBalance` to `deriveLedgerBalance` in the internal package
+// `@ledgerkit/core`. This is the realistic multi-package case that exercises
+// every form the engine supports in one campaign:
+//   - the declaration + internal call in `packages/core/src/ledger.ts`;
+//   - the barrel in `packages/core/src/index.ts`, which mixes a plain re-export
+//     (renamed) with an aliased re-export `computeLedgerBalance as legacyBalance`
+//     (source side renamed to keep the workspace compiling, public alias kept);
+//   - the intra-package `typeof` consumer in `packages/core/src/types.ts`, which
+//     imports through the sibling relative specifier `./ledger`;
+//   - the cross-package consumers in `packages/api/src/routes.ts` (named import),
+//     `packages/api/src/typed.ts` (value import + typed assignment), and
+//     `packages/worker/src/job.ts` (namespace member access), all through the
+//     package specifier `@ledgerkit/core`.
+// Files that merely share the name but resolve elsewhere stay OUT of scope by
+// construction: the alias consumers in `packages/api/src/legacy.ts` import the
+// stable public name `legacyBalance` (never `computeLedgerBalance`), and the
+// entire `@ledgerkit/reports` package declares its own coincidentally-named
+// symbol. Neither is listed here, so neither is touched.
+const INTERNAL_API_LEDGER_BALANCE_RENAME_V1 = createInternalApiRenameRecipe({
+  recipeId: "internal-api-ledgerkit-compute-to-derive-balance",
+  version: 1,
+  title: "Internal API refactor: ledgerkit computeLedgerBalance to deriveLedgerBalance",
+  source: "ledgerkit-core-computeLedgerBalance",
+  target: "ledgerkit-core-deriveLedgerBalance",
+  module: "@ledgerkit/core",
+  from: "computeLedgerBalance",
+  to: "deriveLedgerBalance",
+  paths: [
+    "packages/api/src/routes.ts",
+    "packages/api/src/typed.ts",
+    "packages/worker/src/job.ts",
+    // Inside the producing package, the type surface and the unit test reach the
+    // symbol through relative specifiers rather than the package name: the type
+    // alias imports the sibling `./ledger`, the test imports the barrel
+    // `../src/index`. Both are consumers that a complete rename must carry.
+    { path: "packages/core/src/types.ts", module: "./ledger" },
+    { path: "packages/core/test/ledger.test.ts", module: "../src/index" },
+  ],
+  declarationPaths: ["packages/core/src/index.ts", "packages/core/src/ledger.ts"],
+});
+
+export const INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE = INTERNAL_API_LEDGER_BALANCE_RENAME_V1;
+
 const RECIPE_REGISTRY = new Map<string, MigrationRecipeContract>([
+  [
+    `${INTERNAL_API_LEDGER_BALANCE_RENAME_V1.id}@${INTERNAL_API_LEDGER_BALANCE_RENAME_V1.version}`,
+    INTERNAL_API_LEDGER_BALANCE_RENAME_V1,
+  ],
   [
     `${NODE_RUNTIME_18_TO_20_V1.id}@${NODE_RUNTIME_18_TO_20_V1.version}`,
     NODE_RUNTIME_18_TO_20_V1,

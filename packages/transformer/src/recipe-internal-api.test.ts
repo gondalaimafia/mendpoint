@@ -3,9 +3,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   INTERNAL_API_ACME_USER_RENAME_RECIPE,
+  INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE,
   analyzeRecipe,
   applyInverseOperations,
   applyRecipe,
+  authorFactoryRecipe,
   createInternalApiRenameRecipe,
   createInternalApiTypeRenameRecipe,
   getRecipe,
@@ -789,5 +791,375 @@ describe("internal-api type rename (Gap 4)", () => {
     expect(other.digest).not.toBe(getRecipe("internal-api-order-record-to-order-row", 1).digest);
     expect(other.preconditions[0]!.kind).toBe("internal_api_type_rename_source");
     expect(other.transforms[0]!.kind).toBe("internal_api_type_rename");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workspace-wide rename across a mixed barrel and two module specifiers.
+//
+// The `internal-api-ledgerkit-compute-to-derive-balance` recipe renames the
+// exported value `computeLedgerBalance` to `deriveLedgerBalance` across a
+// multi-package workspace. It exercises, in one campaign, every form the engine
+// supports: the declaration + internal call, a barrel that mixes a plain
+// re-export with an aliased re-export (whose public alias must be preserved), a
+// `typeof` consumer that reaches the symbol through a sibling relative specifier
+// (`./ledger`), and three cross-package consumers reached through the package
+// name (`@ledgerkit/core`): a named import, a value import + typed assignment,
+// and a namespace member access. Fixtures below mirror the corpus subject
+// `regauge/internal-api-rename` so the assertions are machine-independent.
+// ---------------------------------------------------------------------------
+
+const LEDGER_REF = recipeReference(INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE);
+
+const LEDGER_LEDGER_TS = [
+  'export type EntryDirection = "debit" | "credit";',
+  "export interface LedgerEntry { id: string; direction: EntryDirection; minorUnits: number; }",
+  "export function computeLedgerBalance(entries: readonly LedgerEntry[]): number {",
+  "  let balance = 0;",
+  "  for (const entry of entries) {",
+  '    balance += entry.direction === "credit" ? entry.minorUnits : -entry.minorUnits;',
+  "  }",
+  "  return balance;",
+  "}",
+  "export function isLedgerSettled(entries: readonly LedgerEntry[]): boolean {",
+  "  return computeLedgerBalance(entries) === 0;",
+  "}",
+  "",
+].join("\n");
+
+const LEDGER_INDEX_TS = [
+  "// Public barrel for @ledgerkit/core.",
+  'export { computeLedgerBalance, isLedgerSettled } from "./ledger";',
+  "// Stable public alias. Do not rename `legacyBalance`: it is a supported name.",
+  'export { computeLedgerBalance as legacyBalance } from "./ledger";',
+  'export type { LedgerEntry, EntryDirection, LedgerBalanceFn } from "./types";',
+  "",
+].join("\n");
+
+const LEDGER_TYPES_TS = [
+  'import { computeLedgerBalance, type LedgerEntry } from "./ledger";',
+  'export type { LedgerEntry } from "./ledger";',
+  "export type LedgerBalanceFn = typeof computeLedgerBalance;",
+  "export interface BalanceReport { entries: readonly LedgerEntry[]; balanceMinorUnits: number; }",
+  "",
+].join("\n");
+
+const LEDGER_ROUTES_TS = [
+  'import { computeLedgerBalance, type LedgerEntry } from "@ledgerkit/core";',
+  "export interface BalanceRequest { accountId: string; entries: readonly LedgerEntry[]; }",
+  "export function handleBalance(request: BalanceRequest): number {",
+  "  return computeLedgerBalance(request.entries);",
+  "}",
+  "export function handleBatchBalances(requests: readonly BalanceRequest[]): number[] {",
+  "  return requests.map((request) => computeLedgerBalance(request.entries));",
+  "}",
+  "",
+].join("\n");
+
+const LEDGER_TYPED_TS = [
+  'import type { LedgerBalanceFn, LedgerEntry } from "@ledgerkit/core";',
+  'import { computeLedgerBalance } from "@ledgerkit/core";',
+  "const balanceFn: LedgerBalanceFn = computeLedgerBalance;",
+  "export function defaultBalanceFn(entries: readonly LedgerEntry[]): number {",
+  "  return balanceFn(entries);",
+  "}",
+  "",
+].join("\n");
+
+const LEDGER_JOB_TS = [
+  'import * as core from "@ledgerkit/core";',
+  "export interface SettlementJob { accountId: string; entries: core.LedgerEntry[]; }",
+  "export function runSettlement(job: SettlementJob): number {",
+  "  return core.computeLedgerBalance(job.entries);",
+  "}",
+  "",
+].join("\n");
+
+// Intra-package unit test: imports the symbol through the barrel (`../src/index`)
+// and calls it. The import + call sites must rename, but the descriptive test
+// name strings that mention the old name are string literals and must survive.
+const LEDGER_CORE_TEST_TS = [
+  'import { test } from "node:test";',
+  'import { computeLedgerBalance, type LedgerEntry } from "../src/index";',
+  "const entries: LedgerEntry[] = [];",
+  'test("computeLedgerBalance nets credits against debits", () => {',
+  "  computeLedgerBalance(entries);",
+  "});",
+  "",
+].join("\n");
+
+function ledgerFiles(): RecipeFiles {
+  return {
+    "packages/api/src/routes.ts": LEDGER_ROUTES_TS,
+    "packages/api/src/typed.ts": LEDGER_TYPED_TS,
+    "packages/core/src/index.ts": LEDGER_INDEX_TS,
+    "packages/core/src/ledger.ts": LEDGER_LEDGER_TS,
+    "packages/core/src/types.ts": LEDGER_TYPES_TS,
+    "packages/core/test/ledger.test.ts": LEDGER_CORE_TEST_TS,
+    "packages/worker/src/job.ts": LEDGER_JOB_TS,
+  };
+}
+
+const LEDGER_ALLOWED_PATHS = [
+  "packages/api/src/routes.ts",
+  "packages/api/src/typed.ts",
+  "packages/core/src/index.ts",
+  "packages/core/src/ledger.ts",
+  "packages/core/src/types.ts",
+  "packages/core/test/ledger.test.ts",
+  "packages/worker/src/job.ts",
+];
+
+describe("internal-api ledgerkit workspace rename (mixed barrel, two specifiers)", () => {
+  it("is a valid, registered, content-addressed recipe with the expected scope", () => {
+    expect(() => validateRecipe(INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE)).not.toThrow();
+    expect(getRecipe("internal-api-ledgerkit-compute-to-derive-balance", 1)).toBe(
+      INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE,
+    );
+    expect(resolveRecipe(LEDGER_REF)).toBe(INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE);
+    expect([...INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE.allowedPaths]).toEqual(LEDGER_ALLOWED_PATHS);
+    // The intra-package consumer carries its own relative specifier; the rest use
+    // the package name. Paths are data, not hardcoded to one layout.
+    const modules = new Map(
+      INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE.transforms
+        .filter(
+          (t): t is Extract<typeof t, { kind: "internal_api_rename" }> =>
+            t.kind === "internal_api_rename",
+        )
+        .map((t) => [t.path, t.module] as const),
+    );
+    expect(modules.get("packages/core/src/types.ts")).toBe("./ledger");
+    expect(modules.get("packages/api/src/routes.ts")).toBe("@ledgerkit/core");
+  });
+
+  it("migrates all five forms across the workspace and leaves the sources coherent", () => {
+    const before = ledgerFiles();
+    const analysis = analyzeRecipe(LEDGER_REF, before);
+    expect(analysis.status).toBe("applicable");
+    expect([...analysis.matchedPaths]).toEqual(LEDGER_ALLOWED_PATHS);
+    expect(analysis.reasons).toEqual([]);
+
+    const out = applyRecipe(LEDGER_REF, before);
+
+    // Form 1: declaration + internal call.
+    expect(out.files["packages/core/src/ledger.ts"]).toContain(
+      "export function deriveLedgerBalance(entries: readonly LedgerEntry[]): number",
+    );
+    expect(out.files["packages/core/src/ledger.ts"]).toContain(
+      "return deriveLedgerBalance(entries) === 0;",
+    );
+
+    // Form 2: barrel plain re-export renamed; aliased re-export source renamed but
+    // the public alias name `legacyBalance` preserved (Case A abstain).
+    expect(out.files["packages/core/src/index.ts"]).toContain(
+      'export { deriveLedgerBalance, isLedgerSettled } from "./ledger";',
+    );
+    expect(out.files["packages/core/src/index.ts"]).toContain(
+      'export { deriveLedgerBalance as legacyBalance } from "./ledger";',
+    );
+
+    // Form 3: named import + both call sites.
+    expect(out.files["packages/api/src/routes.ts"]).toContain(
+      'import { deriveLedgerBalance, type LedgerEntry } from "@ledgerkit/core";',
+    );
+    expect(out.files["packages/api/src/routes.ts"]).toContain(
+      "return deriveLedgerBalance(request.entries);",
+    );
+
+    // Form 4: type position. `typeof` target + value import + typed assignment
+    // renamed; the `LedgerBalanceFn` type name itself is unchanged.
+    expect(out.files["packages/core/src/types.ts"]).toContain(
+      "export type LedgerBalanceFn = typeof deriveLedgerBalance;",
+    );
+    expect(out.files["packages/core/src/types.ts"]).toContain(
+      'import { deriveLedgerBalance, type LedgerEntry } from "./ledger";',
+    );
+    expect(out.files["packages/api/src/typed.ts"]).toContain(
+      "const balanceFn: LedgerBalanceFn = deriveLedgerBalance;",
+    );
+    expect(out.files["packages/api/src/typed.ts"]).toContain(
+      'import type { LedgerBalanceFn, LedgerEntry } from "@ledgerkit/core";',
+    );
+
+    // Form 5: namespace member access renamed; the `core.LedgerEntry` member and
+    // the namespace binding are untouched.
+    expect(out.files["packages/worker/src/job.ts"]).toContain(
+      "return core.deriveLedgerBalance(job.entries);",
+    );
+    expect(out.files["packages/worker/src/job.ts"]).toContain("entries: core.LedgerEntry[]");
+    expect(out.files["packages/worker/src/job.ts"]).toContain(
+      'import * as core from "@ledgerkit/core";',
+    );
+
+    // Extra form: the intra-package unit test imports through the barrel
+    // (`../src/index`). Its import and call site rename; the descriptive string
+    // that happens to mention the old name is a literal and is left intact.
+    expect(out.files["packages/core/test/ledger.test.ts"]).toContain(
+      'import { deriveLedgerBalance, type LedgerEntry } from "../src/index";',
+    );
+    expect(out.files["packages/core/test/ledger.test.ts"]).toContain("  deriveLedgerBalance(entries);");
+    expect(out.files["packages/core/test/ledger.test.ts"]).toContain(
+      'test("computeLedgerBalance nets credits against debits"',
+    );
+
+    // No form leaves a live `computeLedgerBalance` reference behind (calls,
+    // imports, exports); only string literals may still mention it. The
+    // deliberately stable public alias `legacyBalance` also survives.
+    for (const path of INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE.allowedPaths) {
+      expect(out.files[path]).not.toMatch(/\bcomputeLedgerBalance\s*\(/);
+      expect(out.files[path]).not.toMatch(/\{[^}]*\bcomputeLedgerBalance\b[^}]*\}\s*(?:from|;)/);
+    }
+    expect(out.files["packages/core/src/index.ts"]).toMatch(/\blegacyBalance\b/);
+  });
+
+  it("is idempotent: a fully migrated tree reports already_applied and refuses to re-apply", () => {
+    const out = applyRecipe(LEDGER_REF, ledgerFiles());
+    const reanalysis = analyzeRecipe(LEDGER_REF, out.files);
+    expect(reanalysis.status).toBe("already_applied");
+    expect(() => applyRecipe(LEDGER_REF, out.files)).toThrow("recipe_already_applied");
+  });
+
+  it("restores the exact input via inverse operations", () => {
+    const before = ledgerFiles();
+    const out = applyRecipe(LEDGER_REF, before);
+    const restored = applyInverseOperations(LEDGER_REF, out.files, out.operations);
+    expect(recipeFilesDigest(restored)).toBe(out.inputDigest);
+    expect(restored).toEqual(before);
+  });
+
+  it("leaves aliased-export consumers and a same-named reports symbol out of scope", () => {
+    // Neither the alias consumer (`legacyBalance` from @ledgerkit/core) nor the
+    // reports package (its own `computeLedgerBalance` from @ledgerkit/reports) is
+    // in scope. The campaign never lists them, so they cannot be edited.
+    const scope = new Set(INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE.allowedPaths);
+    expect(scope.has("packages/api/src/legacy.ts")).toBe(false);
+    expect(scope.has("packages/reports/src/stats.ts")).toBe(false);
+  });
+});
+
+describe("internal-api rename parameterization and abstention traps", () => {
+  const TENANT = "recipes-test";
+  const withAuthoring = <T>(run: () => T): T => {
+    const prior = process.env.MENDPOINT_REGAUGE_RECIPE_AUTHORING_ENABLED;
+    process.env.MENDPOINT_REGAUGE_RECIPE_AUTHORING_ENABLED = "1";
+    try {
+      return run();
+    } finally {
+      if (prior === undefined) delete process.env.MENDPOINT_REGAUGE_RECIPE_AUTHORING_ENABLED;
+      else process.env.MENDPOINT_REGAUGE_RECIPE_AUTHORING_ENABLED = prior;
+    }
+  };
+
+  it("matches a repo whose layout differs entirely from any fixture", () => {
+    withAuthoring(() => {
+      // A flat, single-package layout the shipped recipes never mention.
+      const recipe = authorFactoryRecipe(
+        "internal_api_rename",
+        {
+          recipeId: "internal-api-flat-layout",
+          version: 1,
+          title: "flat layout rename",
+          source: "flat-a",
+          target: "flat-b",
+          module: "./balance.js",
+          from: "computeLedgerBalance",
+          to: "deriveLedgerBalance",
+          paths: ["lib/api.ts"],
+          declarationPaths: ["lib/balance.ts"],
+        },
+        { tenantId: TENANT },
+      );
+      const ref = recipeReference(recipe);
+      const files: RecipeFiles = {
+        "lib/balance.ts":
+          "export function computeLedgerBalance(n: number[]): number { return n.length; }\n",
+        "lib/api.ts": [
+          'import { computeLedgerBalance } from "./balance.js";',
+          "export const total = (n: number[]): number => computeLedgerBalance(n);",
+          "",
+        ].join("\n"),
+      };
+      const analysis = analyzeRecipe(ref, files, { tenantId: TENANT });
+      expect(analysis.status).toBe("applicable");
+      const out = applyRecipe(ref, files, { tenantId: TENANT });
+      expect(out.files["lib/balance.ts"]).toContain("export function deriveLedgerBalance(");
+      expect(out.files["lib/api.ts"]).toContain(
+        'import { deriveLedgerBalance } from "./balance.js";',
+      );
+      expect(out.files["lib/api.ts"]).toContain("=> deriveLedgerBalance(n);");
+    });
+  });
+
+  it("abstains with a reason when asked to rename a stable public alias (Case A)", () => {
+    withAuthoring(() => {
+      const recipe = authorFactoryRecipe(
+        "internal_api_rename",
+        {
+          recipeId: "internal-api-alias-trap",
+          version: 1,
+          title: "alias trap",
+          source: "alias-a",
+          target: "alias-b",
+          module: "./ledger.js",
+          from: "legacyBalance",
+          to: "renamedBalance",
+          paths: ["src/consumer.ts"],
+          declarationPaths: ["src/index.ts"],
+        },
+        { tenantId: TENANT },
+      );
+      const ref = recipeReference(recipe);
+      const files: RecipeFiles = {
+        // The public name `legacyBalance` exists only as the target of a re-export
+        // alias, which the engine refuses to move.
+        "src/index.ts": 'export { computeLedgerBalance as legacyBalance } from "./ledger";\n',
+        "src/consumer.ts": [
+          'import { legacyBalance } from "./ledger.js";',
+          "export const run = (n: number[]): number => legacyBalance(n);",
+          "",
+        ].join("\n"),
+      };
+      const analysis = analyzeRecipe(ref, files, { tenantId: TENANT });
+      expect(analysis.status).toBe("unsupported");
+      expect(analysis.reasons).toContain("recipe_internal_api_declaration_aliased_export");
+      expect(() => applyRecipe(ref, files, { tenantId: TENANT })).toThrow(
+        "recipe_internal_api_declaration_aliased_export",
+      );
+    });
+  });
+
+  it("abstains with a reason on a same-named symbol bound from a different module (Case B)", () => {
+    withAuthoring(() => {
+      const recipe = authorFactoryRecipe(
+        "internal_api_rename",
+        {
+          recipeId: "internal-api-samename-trap",
+          version: 1,
+          title: "same-name trap",
+          source: "samename-a",
+          target: "samename-b",
+          module: "@ledgerkit/core",
+          from: "computeLedgerBalance",
+          to: "deriveLedgerBalance",
+          paths: ["src/summary.ts"],
+        },
+        { tenantId: TENANT },
+      );
+      const ref = recipeReference(recipe);
+      const files: RecipeFiles = {
+        // References @ledgerkit/core (so the module guard passes) but binds the
+        // name `computeLedgerBalance` from the unrelated @ledgerkit/reports.
+        "src/summary.ts": [
+          'import { type LedgerEntry } from "@ledgerkit/core";',
+          'import { computeLedgerBalance } from "@ledgerkit/reports";',
+          "export const summarize = (entries: readonly LedgerEntry[]): number =>",
+          "  computeLedgerBalance(entries);",
+          "",
+        ].join("\n"),
+      };
+      const analysis = analyzeRecipe(ref, files, { tenantId: TENANT });
+      expect(analysis.status).toBe("unsupported");
+      expect(analysis.reasons).toContain("recipe_internal_api_binding_unresolved");
+    });
   });
 });

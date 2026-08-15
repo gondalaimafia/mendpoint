@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { classifyDependencyDirectory } from "@mendpoint/shared";
 import type {
   CallEdge,
   CallEdgeConfidence,
@@ -45,32 +46,6 @@ const UNSUPPORTED_CODE_EXTS = new Map<string, string>([
   [".kt", "kotlin"],
   [".rb", "ruby"],
 ]);
-
-/**
- * Directory names that are unambiguously dependency, build-cache, or tooling
- * output — never first-party source we want in the call graph. Marker-based, not
- * blind: deliberately excludes vendor/build/target/out/bin/obj, which hold
- * committed source in real repos (Go vendoring is tracked; the eval suite tracks
- * a file under vendor/).
- */
-const SKIP_DIR_NAMES = new Set([
-  "node_modules",
-  ".git",
-  ".venv",
-  "site-packages",
-  "__pycache__",
-  ".tox",
-  ".mypy_cache",
-  ".pytest_cache",
-  ".gradle",
-  ".next",
-  "dist",
-  "coverage",
-  ".turbo",
-]);
-
-/** Custom-named virtualenvs: pruned only when a pyvenv.cfg marker is present. */
-const VENV_MARKER_DIR_NAMES = new Set(["venv", "env"]);
 
 type WalkResult = {
   files: string[];
@@ -110,12 +85,16 @@ function walk(repoRoot: string, dir: string, acc: WalkResult): WalkResult {
     const p = join(dir, name);
     const st = statSync(p);
     if (st.isDirectory()) {
-      if (SKIP_DIR_NAMES.has(name)) {
-        acc.skipped.push({ path: relPosix(repoRoot, p), reason: "dependency-directory" });
-        continue;
-      }
-      if (VENV_MARKER_DIR_NAMES.has(name) && existsSync(join(p, "pyvenv.cfg"))) {
-        acc.skipped.push({ path: relPosix(repoRoot, p), reason: "virtualenv-marker" });
+      // Shared prune list + marker decision (see @mendpoint/shared); only the
+      // reason label is local so the three walkers cannot drift apart again.
+      const decision = classifyDependencyDirectory(name, (marker) =>
+        existsSync(join(p, marker)),
+      );
+      if (decision) {
+        acc.skipped.push({
+          path: relPosix(repoRoot, p),
+          reason: decision.kind === "ignored_name" ? "dependency-directory" : "virtualenv-marker",
+        });
         continue;
       }
       walk(repoRoot, p, acc);

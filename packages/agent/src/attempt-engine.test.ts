@@ -1416,6 +1416,38 @@ describe("Warden source tree scanner", () => {
     ]);
   });
 
+  it("candidate scan prunes shared dependency dirs (a Python .venv) but keeps tracked vendor/build", () => {
+    // Proves the agent consumes the one shared prune list: an untracked .venv
+    // (a shared dependency dir) is dropped, while a committed vendor/ and build/
+    // survive because keepDirectories carries their tracked prefixes.
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-scan-shared-list-"));
+    roots.push(root);
+    writeTree(root, {
+      "src/index.ts": "export const a = 1;\n",
+      "vendor/provider.json": "{}\n",
+      "build/committed.ts": "export const b = 2;\n",
+      ".venv/pyvenv.cfg": "home = /usr/bin\n",
+      ".venv/lib/site-packages/dep.py": "def dep():\n    return 1\n",
+      "__pycache__/index.cpython-311.pyc": "cache\n",
+    });
+
+    const manifest = scanTree(root, scanLimits(), "warden_attempt_candidate_symlink", {
+      excludeGenerated: EXCLUDED_DIRECTORIES,
+      keepDirectories: new Set(["vendor", "build"]),
+    });
+
+    expect(manifest.entries.map((entry) => entry.path)).toEqual([
+      "build/committed.ts",
+      "src/index.ts",
+      "vendor/provider.json",
+    ]);
+    expect(
+      manifest.entries.some((entry) =>
+        entry.path.split("/").some((seg) => seg === ".venv" || seg === "__pycache__"),
+      ),
+    ).toBe(false);
+  });
+
   it("skips and records a symbolic link that stays inside the repo root", () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-scan-symlink-in-"));
     roots.push(root);
