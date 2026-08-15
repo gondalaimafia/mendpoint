@@ -1,0 +1,32 @@
+{
+  "scenario_id": "fettler-edge-already-migrated",
+  "repo_family": "node-service-edge",
+  "difficulty": 4,
+  "difficulty_rationale": "Level 4 (restraint): the repo is already on payment_method, so the correct output is NOTHING. Any diff is a failure. A `source` log-label in util/logging.js is a trap. Tests idempotency and false-positive restraint, which are harder than detection.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "no_op",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Repo already migrated to payment_method; no work remains.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "src/util/logging.js"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 0
+  },
+  "tags": [
+    "edge",
+    "idempotency",
+    "false-positive",
+    "restraint"
+  ]
+}

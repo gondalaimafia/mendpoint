@@ -1,0 +1,57 @@
+{
+  "scenario_id": "regauge-internal-api-rename",
+  "repo_family": "typescript-monorepo",
+  "difficulty": 5,
+  "difficulty_rationale": "Level 5 (adversarial): rename computeLedgerBalance->deriveLedgerBalance across five coordinated forms (declaration+internal call, barrel re-export, named import, type-position typeof, namespace member access) while ABSTAINING on two traps: a deliberately-stable aliased export (legacyBalance) and a coincidental same-named symbol in an unrelated package. Requires reason-coded abstention, not just renaming.",
+  "intended_product": [
+    "regauge"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "coverage_gap",
+  "faults": [
+    {
+      "id": "internal-api-rename",
+      "description": "Rename internal exported symbol computeLedgerBalance -> deriveLedgerBalance across a workspace.",
+      "family": "internal-api-rename"
+    }
+  ],
+  "expected_findings": [
+    "packages/core/src/ledger.ts",
+    "packages/core/src/index.ts",
+    "packages/api/src/routes.ts",
+    "packages/core/src/types.ts",
+    "packages/api/src/typed.ts",
+    "packages/worker/src/job.ts"
+  ],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "packages/api/src/legacy.ts",
+    "packages/reports/"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 6,
+    "affectedPackages": [
+      "@ledgerkit/core",
+      "@ledgerkit/api",
+      "@ledgerkit/worker"
+    ],
+    "untouchedSubsystems": [
+      "@ledgerkit/reports"
+    ]
+  },
+  "recipe_expectation": {
+    "family": "internal-api-rename",
+    "shippedRecipeId": null,
+    "abstainReasons": [
+      "abstain:aliased_export",
+      "abstain:ambiguous_same_named_symbol"
+    ]
+  },
+  "tags": [
+    "regauge",
+    "internal-api-rename",
+    "abstain-traps",
+    "coverage-gap"
+  ],
+  "notes": "Shipped internal-api recipes target specific unrelated symbols; recipe authoring is default-off. So computeLedgerBalance is uncovered -> abstention-by-absence is the correct shipped behavior. A correct future engine must ALSO emit the two abstain reason codes for the trap cases."
+}

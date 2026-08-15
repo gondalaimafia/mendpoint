@@ -1,0 +1,53 @@
+{
+  "scenario_id": "fettler-node-cjs-rename",
+  "repo_family": "node-cjs-service",
+  "difficulty": 3,
+  "difficulty_rationale": "Level 3: legacy CommonJS (require/module.exports) service. The field flows through a client wrapper, two services, a background settlement task, and JSON fixtures. Probes CJS import-graph tracing. sourceMap, event_source, import-record source, and a logger `source` label are distractors.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "lib/paymentsClient.js",
+    "lib/chargeService.js",
+    "lib/refundService.js",
+    "lib/tasks/settlementTask.js",
+    "test/fixtures/charge.v1.json",
+    "test/fixtures/refund.v1.json",
+    "test/fixtures/settlement.batch.json"
+  ],
+  "acceptable_findings": [
+    "test/paymentsClient.test.js",
+    "test/chargeService.test.js",
+    "test/refundService.test.js",
+    "test/settlementTask.test.js"
+  ],
+  "false_positive_traps": [
+    "lib/build/assetManifest.js",
+    "lib/events/auditLog.js",
+    "lib/importer/importRecord.js",
+    "lib/importer/csvImporter.js",
+    "lib/util/logger.js",
+    "bin/server.js"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 7,
+    "importChain": [
+      "lib/index.js wires paymentsClient into chargeService/refundService/settlementTask"
+    ]
+  },
+  "tags": [
+    "node",
+    "commonjs",
+    "field-rename",
+    "distractors"
+  ]
+}

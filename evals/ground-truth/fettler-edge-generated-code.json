@@ -1,0 +1,35 @@
+{
+  "scenario_id": "fettler-edge-generated-code",
+  "repo_family": "node-service-edge",
+  "difficulty": 4,
+  "difficulty_rationale": "Level 4: hand-written vs generated output. Migrate only handwritten source; do not rewrite src/generated/* (marked AUTO-GENERATED, listed in .openapi-generator/FILES) — those are regenerated from the spec. Requires recognizing generated code, not just field matches.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "src/handwritten/charges.js",
+    "check.mjs"
+  ],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "src/generated/"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 2
+  },
+  "tags": [
+    "edge",
+    "generated-code",
+    "restraint"
+  ],
+  "notes": "Ideal report notes generated files carry the old field and should be regenerated, but must not hand-edit them."
+}
