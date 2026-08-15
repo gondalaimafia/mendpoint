@@ -3,21 +3,36 @@
  *
  * Localized to impacted fragments — not whole-program.
  * Complements call-graph impact localization with non-destructive rewrite search.
+ *
+ * The rewrite rules are derived from the change under analysis (the renamed
+ * tokens), never from hard-coded demo SDK literals. Earlier revisions shipped
+ * rules named after our own fixtures (amount_cents→amount,
+ * max_tokens→max_completion_tokens, charges.create v1→v2) carrying literal field
+ * tokens for those specific SDKs: they fired for the vendors we hard-coded and
+ * silently did nothing for every other provider. A change that yields no
+ * renameable token pair now abstains explicitly (see `migrateFromFixHint`)
+ * instead of returning a rule set that matches nothing.
+ *
+ * Output is informational only: it feeds the "E-graph migration exploration"
+ * prose in a generated PR body (`@mendpoint/generation`). It drives no code edit,
+ * so the fix is scoped to making that prose provider-agnostic and honest about
+ * abstention.
  */
 import { EGraph } from "./egraph.js";
 import { app, lit, type Term, v } from "./term.js";
 import { extractPretty, migrationCost, saturate, type Rewrite } from "./saturate.js";
 
+/** A concrete field/token rename taken from the change under analysis. */
+export type FieldRename = { from: string; to: string };
+
 /**
- * Classic Acme/Stripe-style field rename + pagination migration rules.
+ * Provider-agnostic structural rewrites that carry no vendor-specific literal.
+ * These generalise across providers: page-based pagination migrates to a cursor,
+ * and the same shape can auto-page. Variables (`?req`, `?n`) mean they match any
+ * provider's fragment rather than a hard-coded SDK surface.
  */
-export function defaultApiMigrationRules(): Rewrite[] {
+export function structuralMigrationRules(): Rewrite[] {
   return [
-    {
-      name: "amount_cents_to_amount",
-      lhs: app("field", lit("amount_cents")),
-      rhs: app("field", lit("amount")),
-    },
     {
       name: "legacy_page_to_cursor",
       lhs: app("paginate", v("req"), app("page", v("n"))),
@@ -28,32 +43,38 @@ export function defaultApiMigrationRules(): Rewrite[] {
       lhs: app("paginate", v("req"), app("page", v("n"))),
       rhs: app("autoPagingToArray", v("req"), lit(1000)),
     },
-    {
-      name: "max_tokens_to_max_completion_tokens",
-      lhs: app("param", lit("max_tokens"), v("n")),
-      rhs: app("param", lit("max_completion_tokens"), v("n")),
-    },
-    {
-      name: "choices_text_to_message_content",
-      lhs: app("access", lit("choices[0].text")),
-      rhs: app("access", lit("choices[0].message.content")),
-    },
+  ];
+}
 
+/**
+ * Rewrite rules derived from a concrete rename in the change under analysis. The
+ * tokens come from the diff/fix hint, so the same code migrates any provider's
+ * field, request parameter, or SDK-body rename — nothing is hard-coded per SDK.
+ * Rules where `from === to` are omitted (they would match nothing).
+ */
+export function fieldRenameRules(rename: FieldRename): Rewrite[] {
+  const { from, to } = rename;
+  if (!from || !to || from === to) return [];
+  return [
     {
-      name: "charges_create_v1_to_v2",
-      lhs: app("sdk", lit("charges.create"), v("body")),
-      rhs: app("sdk", lit("charges.create"), app("rename_field", v("body"), lit("amount_cents"), lit("amount"))),
+      name: `rename_field_${from}_to_${to}`,
+      lhs: app("field", lit(from)),
+      rhs: app("field", lit(to)),
     },
     {
-      name: "http_receipt_removed",
-      // keep both forms equivalent for search; extraction prefers non-legacy
-      lhs: app("http", lit("GET"), lit("/v1/charges/{id}/receipt")),
-      rhs: app("legacy_http", lit("GET"), lit("/v1/charges/{id}/receipt")),
+      name: `rename_param_${from}_to_${to}`,
+      lhs: app("param", lit(from), v("n")),
+      rhs: app("param", lit(to), v("n")),
     },
     {
-      name: "prefer_balance_endpoint",
-      lhs: app("http", lit("GET"), lit("/v1/balance")),
-      rhs: app("http", lit("GET"), lit("/v1/balance")),
+      name: `rename_access_${from}_to_${to}`,
+      lhs: app("access", lit(from)),
+      rhs: app("access", lit(to)),
+    },
+    {
+      name: `rename_sdk_body_${from}_to_${to}`,
+      lhs: app("sdk", v("method"), v("body")),
+      rhs: app("sdk", v("method"), app("rename_field", v("body"), lit(from), lit(to))),
     },
   ];
 }
@@ -69,10 +90,12 @@ export type MigrationExploreResult = {
 
 /**
  * Explore equivalent migrations for a single term representing a code/API fragment.
+ * Defaults to the provider-agnostic structural rules; pass change-derived rules
+ * (see `fieldRenameRules`) to explore a specific rename.
  */
 export function exploreMigration(
   term: Term,
-  rules: Rewrite[] = defaultApiMigrationRules(),
+  rules: Rewrite[] = structuralMigrationRules(),
   opts?: { maxIterations?: number },
 ): MigrationExploreResult {
   const eg = new EGraph();
@@ -95,29 +118,29 @@ export function exploreMigration(
 }
 
 /**
- * Encode a structural API field rename as a term and run saturation.
+ * Explore a field rename drawn from the change under analysis. Both endpoints of
+ * the rename come from the caller, so this generalises to any provider.
  */
-export function migrateFieldAccess(fieldName: string): MigrationExploreResult {
-  return exploreMigration(app("field", lit(fieldName)));
+export function migrateFieldAccess(rename: FieldRename): MigrationExploreResult {
+  return exploreMigration(app("field", lit(rename.from)), [
+    ...fieldRenameRules(rename),
+    ...structuralMigrationRules(),
+  ]);
 }
 
 /**
- * Given impact fix hints like "amount_cents → amount", build a term and saturate.
+ * Given an impact fix hint like "amount_cents → amount", derive rewrite rules
+ * from the two tokens and saturate. Returns null — an explicit abstention — when
+ * the hint carries no renameable token pair, rather than running fixture rules
+ * that would match nothing.
  */
 export function migrateFromFixHint(hint: string): MigrationExploreResult | null {
   const m = hint.match(/(\w+)\s*→\s*(\w+)/);
   if (!m) return null;
-  const from = m[1]!;
-  const to = m[2]!;
-  const rules: Rewrite[] = [
-    {
-      name: `rename_${from}_${to}`,
-      lhs: app("field", lit(from)),
-      rhs: app("field", lit(to)),
-    },
-    ...defaultApiMigrationRules(),
-  ];
-  return exploreMigration(app("field", lit(from)), rules);
+  const rename: FieldRename = { from: m[1]!, to: m[2]! };
+  const rules = [...fieldRenameRules(rename), ...structuralMigrationRules()];
+  if (!rules.some((r) => r.name.startsWith("rename_"))) return null;
+  return exploreMigration(app("field", lit(rename.from)), rules);
 }
 
 /**

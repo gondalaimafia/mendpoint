@@ -1,25 +1,30 @@
 /** Safety rails for the API bug agent. */
 
+import { DEPENDENCY_DIRECTORIES } from "@mendpoint/shared";
+
 /**
- * Directories that every tree walker skips. These are build outputs, package
- * caches, and VCS metadata that are never source and, on a real customer repo,
- * dwarf the tracked tree (an installed `node_modules` alone can be hundreds of
- * thousands of files). Kept as one shared constant so the source scanner, the
- * search walker, and the directory lister cannot drift apart. Mirrors and
- * extends `IGNORED_DIRECTORIES` in `@mendpoint/codebase-index`.
+ * Directories a Warden *candidate* scan skips: package caches, VCS metadata, and
+ * build outputs that are never source and, on a real customer repo, dwarf the
+ * tracked tree (an installed `node_modules` alone can be hundreds of thousands of
+ * files).
+ *
+ * Built from the one shared prune list (`DEPENDENCY_DIRECTORIES` in
+ * `@mendpoint/shared`) so this scanner, the codebase index, and the call graph
+ * cannot drift apart again. The agent adds `build` / `out` / `target` / `vendor`
+ * on top: unlike the pure index walkers, a candidate scan runs over an untracked
+ * workspace where these are verifier-generated build output, and it is safe to
+ * prune them here only because the candidate scan pairs this set with a
+ * `keepDirectories` guard (see `scanTree` in attempt-engine) that preserves any
+ * of these directories that the tracked source itself carried. The immutable
+ * source scan passes no exclusion at all, so its digest still covers every
+ * tracked file.
  */
 export const EXCLUDED_DIRECTORIES: ReadonlySet<string> = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  ".next",
+  ...DEPENDENCY_DIRECTORIES,
   "build",
   "out",
   "target",
   "vendor",
-  "coverage",
-  ".turbo",
-  ".venv",
 ]);
 
 export const DEFAULT_NEVER_TOUCH = [

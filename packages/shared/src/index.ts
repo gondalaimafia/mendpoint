@@ -23,6 +23,13 @@ export {
   type BoundedHttpResult,
 } from "./bounded-http.js";
 
+export {
+  DEPENDENCY_DIRECTORIES,
+  PYTHON_VIRTUALENV_MARKER,
+  classifyDependencyDirectory,
+  type DependencyDirectoryDecision,
+} from "./dependency-directories.js";
+
 /**
  * Model egress boundary policy.
  *
