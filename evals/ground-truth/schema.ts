@@ -23,6 +23,12 @@ export type Product = "fettler" | "regauge";
 export type Difficulty = 1 | 2 | 3 | 4 | 5;
 
 /**
+ * Phase 8 dataset split. `development` may be inspected while fixing; `holdout`
+ * is the honest quality measure and is never inspected during a fix.
+ */
+export type DatasetSplit = "development" | "validation" | "holdout";
+
+/**
  * The kind of behaviour that counts as correct for the scenario. This drives
  * grader selection so we never grade an abstention scenario as if it were a
  * find-the-files scenario.
@@ -96,7 +102,7 @@ export interface GroundTruth {
   /** Which product(s) the scenario targets. */
   intended_product: Product[];
   /** Development split: dev scenarios may be inspected while fixing. */
-  dataset_split: "development" | "validation" | "holdout";
+  dataset_split: DatasetSplit;
   /** The behaviour that counts as correct. */
   correct_behavior: CorrectBehavior;
   /** Known faults / migration under test. */

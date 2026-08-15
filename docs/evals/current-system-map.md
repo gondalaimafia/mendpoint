@@ -166,10 +166,37 @@ bypassed to flatter the product).
   decision, the same core `executeRecipeInWorkspace` wraps. Not exercised:
   apply + verification-gate, inverse/rollback, adaptive LLM repair, delivery.
 
-Ground truth lives in `evals/ground-truth/*.json`, loaded only by the graders
-after the product runs. The corpus repos live outside this git repo
-(`C:/Users/Talal/dev`, overridable via `MENDPOINT_CORPUS_ROOT`), so a run cannot
-read a repo's own answer key.
+Ground truth lives in `evals/ground-truth/*.json` (corpus) or in memory
+(generated), loaded only by the graders after the product runs. The corpus repos
+live outside this git repo (`C:/Users/Talal/dev`, overridable via
+`MENDPOINT_CORPUS_ROOT`), so a run cannot read a repo's own answer key.
+
+### Answer-key staging (leak closed)
+
+Each corpus repo carries a prose grading key INSIDE it (`EXPECTED.md`,
+`SYNTHETIC_REPO_NOTES.md`). Before either product sees a repo, the runner stages
+it into scratch with those keys (and dependency/VCS trees) excluded
+(`evals/runners/stage.ts`) and hands the product the staged copy. This prevents
+an LLM-enabled runner from reading its own answer key. The staged tree prunes
+exactly the directories `classifyDependencyDirectory` (`@mendpoint/shared`)
+prunes, so it never diverges from what a product's own walkers index.
+`stage.test.ts` asserts no answer-key file reaches a staged tree.
+
+### Generation, holdout, and the learning dataset
+
+- **Mutation engine** (`evals/mutations/engine.ts`, Phase 2/12): seeded,
+  reversible, self-describing API and dependency mutations that emit their own
+  ground truth.
+- **Generators** (`evals/generators/`, Phase 8/13/14): families expanded by
+  mutation ($ref blindness, ambiguity, generated/vendored, dependency runtime),
+  each with a counterfactual; splits (`development`/`validation`/`holdout`) and a
+  procedural holdout generator. `scenarios/resolve.ts` unifies corpus + generated
+  into one runnable list; generated repos materialize to scratch per run.
+- **Dataset** (`evals/datasets/`, Phase 10): one append-only, versioned record
+  per run (positive / negative / coverage-gap; correct abstention is a positive),
+  observable fields only — never chain-of-thought.
+- The report (`evals/reports/latest.md`) presents the three dataset splits
+  separately; holdout is the honest product-quality signal.
 
 ### Notes / conflicts found vs. the task brief
 - The brief references `scripts/synthetic-e2e.ts`. That file is **not on
