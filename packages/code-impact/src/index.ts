@@ -28,6 +28,11 @@ import { expandContexts } from "./expand.js";
 import { confirmImpacts, partitionByConfidence } from "./confirm.js";
 
 export { discoverCandidates } from "./candidates.js";
+export {
+  buildImporterGraph,
+  reachableFromAnchors,
+  resolveRelativeImport,
+} from "./provenance.js";
 export { expandContexts } from "./expand.js";
 export { confirmImpacts, partitionByConfidence } from "./confirm.js";
 export {

@@ -16,6 +16,7 @@ import type {
 import type { CodebaseIndex } from "@mendpoint/codebase-index";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { buildImporterGraph, reachableFromAnchors } from "./provenance.js";
 
 function confFromSource(source: CandidateSource, breaking: boolean): Confidence {
   if (source === "sdk_graph") return breaking ? "high" : "medium";
@@ -129,12 +130,80 @@ function add(
   });
 }
 
+/**
+ * Files carrying a first-class provider signal for this change: an HTTP path
+ * that matches the changed surface, or an import of the provider package. These
+ * anchor provider provenance — provider-reachable files are the ones that
+ * transitively import an anchor.
+ */
+function providerAnchors(
+  index: CodebaseIndex,
+  surfaces: ImpactableSurface[],
+): Set<string> {
+  const anchors = new Set<string>();
+  const pathHints = surfaces
+    .flatMap((s) => (s.path ? [s.path, s.path.replace(/\{[^}]+\}/g, "")] : []))
+    .filter(Boolean) as string[];
+  for (const u of index.apiUsages) {
+    if (u.kind === "http_path" && pathHints.some((h) => pathMatchesUsage(h, u.value))) {
+      anchors.add(u.filePath);
+    }
+  }
+  // Provider package imports. Derive hints from the surface slug only (not
+  // resource names like "charges", which collide with local modules such as
+  // `../db/charges`).
+  const importHints = [
+    ...new Set(
+      surfaces.flatMap((s) =>
+        (s.canonicalId.split(".")[0] ?? "")
+          .split(/[^A-Za-z0-9]+/)
+          .map((p) => p.toLowerCase())
+          .filter((p) => p.length >= 3 && p !== "api"),
+      ),
+    ),
+  ];
+  if (importHints.length) {
+    for (const f of index.files) {
+      if (
+        f.imports.some((i) => {
+          // Package imports only. A relative specifier that merely contains the
+          // slug (e.g. `../providers/meridian/signing`) is an internal module,
+          // not the provider package, and must not anchor provenance.
+          if (i.startsWith(".")) return false;
+          const spec = i.toLowerCase();
+          return importHints.some((h) => spec === h || spec.endsWith(`/${h}`) || spec.includes(h));
+        })
+      ) {
+        anchors.add(f.path);
+      }
+    }
+  }
+  return anchors;
+}
+
 export function discoverCandidates(
   index: CodebaseIndex,
   surfaces: ImpactableSurface[],
 ): CandidateSite[] {
   const acc: Acc = new Map();
   const breaking = surfaces.some((s) => s.severity === "breaking");
+
+  // Provider provenance. A field-name or SDK-call match only earns a confident
+  // tier when the file can reach the provider surface through imports. Anchors
+  // that we cannot locate (no HTTP path, no vendor package) leave `gateEnabled`
+  // false, so confidence falls back to the token match — absence of a locatable
+  // surface degrades precision, never recall.
+  const anchors = providerAnchors(index, surfaces);
+  const reachable = reachableFromAnchors(anchors, buildImporterGraph(index.files));
+  const gateEnabled = anchors.size > 0;
+  const gate = (
+    filePath: string,
+    source: CandidateSource,
+    confidence: Confidence,
+  ): { source: CandidateSource; confidence: Confidence } =>
+    gateEnabled && !reachable.has(filePath)
+      ? { source: "string_heuristic", confidence: "low" }
+      : { source, confidence };
 
   // 1) SDK graph — apiUsages kind sdk_call. A call matched against the known
   //    provider surface is a high-signal `sdk_graph` hit; one recognised only by
@@ -146,6 +215,11 @@ export function discoverCandidates(
         if (u.kind !== "sdk_call") continue;
         if (!tokenMatchesUsage(token, u.value)) continue;
         const heuristic = u.detection === "general_heuristic";
+        const g = gate(
+          u.filePath,
+          heuristic ? "string_heuristic" : "sdk_graph",
+          heuristic ? "low" : confFromSource("sdk_graph", surface.severity === "breaking"),
+        );
         add(acc, {
           filePath: u.filePath,
           lineStart: u.line,
@@ -153,11 +227,9 @@ export function discoverCandidates(
           symbol: u.value,
           functionName: u.functionName,
           evidence: u.value,
-          source: heuristic ? "string_heuristic" : "sdk_graph",
+          source: g.source,
           surfaceId: surface.id,
-          confidence: heuristic
-            ? "low"
-            : confFromSource("sdk_graph", surface.severity === "breaking"),
+          confidence: g.confidence,
         });
       }
     }
@@ -175,6 +247,11 @@ export function discoverCandidates(
       if (u.kind === "http_path") {
         for (const hint of pathHints) {
           if (pathMatchesUsage(hint, u.value)) {
+            const g = gate(
+              u.filePath,
+              "syntactic",
+              confFromSource("syntactic", surface.severity === "breaking"),
+            );
             add(acc, {
               filePath: u.filePath,
               lineStart: u.line,
@@ -182,9 +259,9 @@ export function discoverCandidates(
               symbol: surface.path ?? u.value,
               functionName: u.functionName,
               evidence: u.value,
-              source: "syntactic",
+              source: g.source,
               surfaceId: surface.id,
-              confidence: confFromSource("syntactic", surface.severity === "breaking"),
+              confidence: g.confidence,
             });
           }
         }
@@ -216,8 +293,13 @@ export function discoverCandidates(
           // actual path. The mere presence of "api"/"http"/"charge" is not
           // evidence and no longer promotes confidence.
           const onSurfacePath = pathHints.some((h) => pathInLine(line, h));
-          const source: CandidateSource =
+          const rawSource: CandidateSource =
             apiFiles.has(file.path) || onSurfacePath ? "syntactic" : "string_heuristic";
+          const g = gate(
+            file.path,
+            rawSource,
+            confFromSource(rawSource, surface.severity === "breaking" || breaking),
+          );
           add(acc, {
             filePath: file.path,
             lineStart: lineNo,
@@ -227,24 +309,25 @@ export function discoverCandidates(
               (f) => f.filePath === file.path && lineNo >= f.lineStart && lineNo <= f.lineEnd,
             )?.name,
             evidence: line.trim(),
-            source,
+            source: g.source,
             surfaceId: surface.id,
-            confidence: confFromSource(source, surface.severity === "breaking" || breaking),
+            confidence: g.confidence,
           });
         }
         for (const hint of pathHints) {
           if (!hint || hint.length < 4) continue;
           if (!pathInLine(line, hint)) continue;
           if (!line.includes("/v") && !line.includes("http")) continue;
+          const g = gate(file.path, "syntactic", confFromSource("syntactic", true));
           add(acc, {
             filePath: file.path,
             lineStart: lineNo,
             lineEnd: lineNo,
             symbol: surface.path ?? hint,
             evidence: line.trim(),
-            source: "syntactic",
+            source: g.source,
             surfaceId: surface.id,
-            confidence: confFromSource("syntactic", true),
+            confidence: g.confidence,
           });
         }
       });
