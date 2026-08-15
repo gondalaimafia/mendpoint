@@ -398,6 +398,187 @@ export interface ResolvedStructuralDiff extends StructuralDiff {
   resolution: SpecResolutionReport;
 }
 
+/**
+ * Diff the operations (methods, request/response fields) of a single path pair.
+ * `recordPath` is the path recorded on every emitted entry — for an exact match
+ * it is that path; for a version-normalized pair it is the old (v1) path so the
+ * entries align with the code under analysis.
+ */
+function diffPathOperations(
+  oldPathItem: unknown,
+  newPathItem: unknown,
+  recordPath: string,
+  oldResolver: SchemaResolver,
+  newResolver: SchemaResolver,
+  entries: DiffEntry[],
+): void {
+  const path = recordPath;
+  const oldMethods = getMethods(oldPathItem);
+  const newMethods = getMethods(newPathItem);
+  const oldM = new Set(Object.keys(oldMethods));
+  const newM = new Set(Object.keys(newMethods));
+
+  for (const method of oldM) {
+    if (!newM.has(method)) {
+      entries.push({
+        op: "method_removed",
+        path,
+        method,
+        breaking: true,
+        detail: `${method.toUpperCase()} ${path} removed`,
+      });
+    }
+  }
+  for (const method of newM) {
+    if (!oldM.has(method)) {
+      entries.push({
+        op: "method_added",
+        path,
+        method,
+        breaking: false,
+        detail: `${method.toUpperCase()} ${path} added`,
+      });
+    }
+  }
+
+  for (const method of oldM) {
+    if (!newM.has(method)) continue;
+    const oldReq = oldResolver.properties(
+      requestBodySchema(oldMethods[method], oldResolver),
+    );
+    const newReq = newResolver.properties(
+      requestBodySchema(newMethods[method], newResolver),
+    );
+    const oldKeys = new Set(oldReq.props.keys());
+    const newKeys = new Set(newReq.props.keys());
+    const newRequired = newReq.required;
+    const oldRequired = oldReq.required;
+
+    const { renames, ambiguities } = detectFieldChanges(oldReq.props, newReq.props);
+    const renamedFrom = new Set(renames.map((r) => r.from));
+    const renamedTo = new Set(renames.map((r) => r.to));
+    const ambiguousFrom = new Set(ambiguities.map((a) => a.from));
+    const ambiguousTo = new Set(ambiguities.flatMap((a) => a.candidates));
+
+    for (const r of renames) {
+      entries.push({
+        op: "request_field_renamed",
+        path,
+        method,
+        fromField: r.from,
+        toField: r.to,
+        field: r.to,
+        breaking: true,
+        detail: `Request field ${r.from} renamed to ${r.to}`,
+      });
+    }
+
+    for (const a of ambiguities) {
+      entries.push({
+        op: "request_field_ambiguous",
+        path,
+        method,
+        fromField: a.from,
+        field: a.from,
+        candidates: a.candidates,
+        breaking: true,
+        detail: `Request field ${a.from} has more than one plausible successor (${a.candidates.join(", ")}); the successor is selected by a runtime condition and cannot be resolved statically. Human decision required.`,
+      });
+    }
+
+    for (const field of oldKeys) {
+      if (!newKeys.has(field) && !renamedFrom.has(field) && !ambiguousFrom.has(field)) {
+        entries.push({
+          op: "request_field_removed",
+          path,
+          method,
+          field,
+          breaking: true,
+          detail: `Request field ${field} removed`,
+        });
+      }
+    }
+
+    for (const field of newKeys) {
+      if (oldKeys.has(field) || renamedTo.has(field) || ambiguousTo.has(field)) continue;
+      if (newRequired.has(field) && !oldRequired.has(field)) {
+        entries.push({
+          op: "request_field_added_required",
+          path,
+          method,
+          field,
+          breaking: true,
+          detail: `Required request field ${field} added`,
+        });
+      } else {
+        entries.push({
+          op: "request_field_added",
+          path,
+          method,
+          field,
+          breaking: false,
+          detail: `Optional request field ${field} added`,
+        });
+      }
+    }
+
+    const oldRes = oldResolver.properties(
+      responseSchema(oldMethods[method], oldResolver),
+    );
+    const newRes = newResolver.properties(
+      responseSchema(newMethods[method], newResolver),
+    );
+    const oldResKeys = new Set(oldRes.props.keys());
+    const newResKeys = new Set(newRes.props.keys());
+    // Response fields have no rename op; a single-successor change stays a
+    // removed + added pair. Only ambiguity (a field that splits into several
+    // successors) is special-cased, so the tool abstains instead of asserting
+    // one successor's removal as a confident finding.
+    const { ambiguities: resAmbiguities } = detectFieldChanges(
+      oldRes.props,
+      newRes.props,
+    );
+    const resAmbiguousFrom = new Set(resAmbiguities.map((a) => a.from));
+    const resAmbiguousTo = new Set(resAmbiguities.flatMap((a) => a.candidates));
+    for (const a of resAmbiguities) {
+      entries.push({
+        op: "response_field_ambiguous",
+        path,
+        method,
+        fromField: a.from,
+        field: a.from,
+        candidates: a.candidates,
+        breaking: true,
+        detail: `Response field ${a.from} has more than one plausible successor (${a.candidates.join(", ")}); which one is populated is selected by a runtime condition. Human decision required.`,
+      });
+    }
+    for (const field of oldResKeys) {
+      if (!newResKeys.has(field) && !resAmbiguousFrom.has(field)) {
+        entries.push({
+          op: "response_field_removed",
+          path,
+          method,
+          field,
+          breaking: true,
+          detail: `Response field ${field} removed`,
+        });
+      }
+    }
+    for (const field of newResKeys) {
+      if (!oldResKeys.has(field) && !resAmbiguousTo.has(field)) {
+        entries.push({
+          op: "response_field_added",
+          path,
+          method,
+          field,
+          breaking: false,
+          detail: `Response field ${field} added`,
+        });
+      }
+    }
+  }
+}
+
 export function diffOpenApi(
   oldSpec: unknown,
   newSpec: unknown,
@@ -437,170 +618,52 @@ export function diffOpenApi(
 
   for (const path of oldPathKeys) {
     if (!newPathKeys.has(path)) continue;
-    const oldMethods = getMethods(oldPaths[path]);
-    const newMethods = getMethods(newPaths[path]);
-    const oldM = new Set(Object.keys(oldMethods));
-    const newM = new Set(Object.keys(newMethods));
+    diffPathOperations(
+      oldPaths[path],
+      newPaths[path],
+      path,
+      oldResolver,
+      newResolver,
+      entries,
+    );
+  }
 
-    for (const method of oldM) {
-      if (!newM.has(method)) {
-        entries.push({
-          op: "method_removed",
-          path,
-          method,
-          breaking: true,
-          detail: `${method.toUpperCase()} ${path} removed`,
-        });
-      }
-    }
-    for (const method of newM) {
-      if (!oldM.has(method)) {
-        entries.push({
-          op: "method_added",
-          path,
-          method,
-          breaking: false,
-          detail: `${method.toUpperCase()} ${path} added`,
-        });
-      }
-    }
-
-    for (const method of oldM) {
-      if (!newM.has(method)) continue;
-      const oldReq = oldResolver.properties(
-        requestBodySchema(oldMethods[method], oldResolver),
-      );
-      const newReq = newResolver.properties(
-        requestBodySchema(newMethods[method], newResolver),
-      );
-      const oldKeys = new Set(oldReq.props.keys());
-      const newKeys = new Set(newReq.props.keys());
-      const newRequired = newReq.required;
-      const oldRequired = oldReq.required;
-
-      const { renames, ambiguities } = detectFieldChanges(oldReq.props, newReq.props);
-      const renamedFrom = new Set(renames.map((r) => r.from));
-      const renamedTo = new Set(renames.map((r) => r.to));
-      const ambiguousFrom = new Set(ambiguities.map((a) => a.from));
-      const ambiguousTo = new Set(ambiguities.flatMap((a) => a.candidates));
-
-      for (const r of renames) {
-        entries.push({
-          op: "request_field_renamed",
-          path,
-          method,
-          fromField: r.from,
-          toField: r.to,
-          field: r.to,
-          breaking: true,
-          detail: `Request field ${r.from} renamed to ${r.to}`,
-        });
-      }
-
-      for (const a of ambiguities) {
-        entries.push({
-          op: "request_field_ambiguous",
-          path,
-          method,
-          fromField: a.from,
-          field: a.from,
-          candidates: a.candidates,
-          breaking: true,
-          detail: `Request field ${a.from} has more than one plausible successor (${a.candidates.join(", ")}); the successor is selected by a runtime condition and cannot be resolved statically. Human decision required.`,
-        });
-      }
-
-      for (const field of oldKeys) {
-        if (!newKeys.has(field) && !renamedFrom.has(field) && !ambiguousFrom.has(field)) {
-          entries.push({
-            op: "request_field_removed",
-            path,
-            method,
-            field,
-            breaking: true,
-            detail: `Request field ${field} removed`,
-          });
-        }
-      }
-
-      for (const field of newKeys) {
-        if (oldKeys.has(field) || renamedTo.has(field) || ambiguousTo.has(field)) continue;
-        if (newRequired.has(field) && !oldRequired.has(field)) {
-          entries.push({
-            op: "request_field_added_required",
-            path,
-            method,
-            field,
-            breaking: true,
-            detail: `Required request field ${field} added`,
-          });
-        } else {
-          entries.push({
-            op: "request_field_added",
-            path,
-            method,
-            field,
-            breaking: false,
-            detail: `Optional request field ${field} added`,
-          });
-        }
-      }
-
-      const oldRes = oldResolver.properties(
-        responseSchema(oldMethods[method], oldResolver),
-      );
-      const newRes = newResolver.properties(
-        responseSchema(newMethods[method], newResolver),
-      );
-      const oldResKeys = new Set(oldRes.props.keys());
-      const newResKeys = new Set(newRes.props.keys());
-      // Response fields have no rename op; a single-successor change stays a
-      // removed + added pair. Only ambiguity (a field that splits into several
-      // successors) is special-cased, so the tool abstains instead of asserting
-      // one successor's removal as a confident finding.
-      const { ambiguities: resAmbiguities } = detectFieldChanges(
-        oldRes.props,
-        newRes.props,
-      );
-      const resAmbiguousFrom = new Set(resAmbiguities.map((a) => a.from));
-      const resAmbiguousTo = new Set(resAmbiguities.flatMap((a) => a.candidates));
-      for (const a of resAmbiguities) {
-        entries.push({
-          op: "response_field_ambiguous",
-          path,
-          method,
-          fromField: a.from,
-          field: a.from,
-          candidates: a.candidates,
-          breaking: true,
-          detail: `Response field ${a.from} has more than one plausible successor (${a.candidates.join(", ")}); which one is populated is selected by a runtime condition. Human decision required.`,
-        });
-      }
-      for (const field of oldResKeys) {
-        if (!newResKeys.has(field) && !resAmbiguousFrom.has(field)) {
-          entries.push({
-            op: "response_field_removed",
-            path,
-            method,
-            field,
-            breaking: true,
-            detail: `Response field ${field} removed`,
-          });
-        }
-      }
-      for (const field of newResKeys) {
-        if (!oldResKeys.has(field) && !resAmbiguousTo.has(field)) {
-          entries.push({
-            op: "response_field_added",
-            path,
-            method,
-            field,
-            breaking: false,
-            detail: `Response field ${field} added`,
-          });
-        }
-      }
-    }
+  // Version-normalized path pairing. When a path changed only by its `/vN`
+  // version prefix (e.g. `/v1/charges` → `/v2/charges`), the resource is the
+  // same and its schema-level field changes must still surface — otherwise a
+  // provider version bump hides a field rename (`source` → `payment_method`)
+  // behind a bare path add/remove, and downstream consumers never see it. We
+  // pair each removed old path with a uniquely-matching added new path by their
+  // version-stripped key and diff their operations, recording entries against
+  // the OLD path so they align with the (v1) code under analysis. The
+  // path_removed / path_added entries above are left intact so the version bump
+  // is still reported and still anchors provenance.
+  const stripVersion = (p: string): string => p.replace(/^\/v\d+(?=\/|$)/, "");
+  const removedByNorm = new Map<string, string[]>();
+  const addedByNorm = new Map<string, string[]>();
+  for (const path of oldPathKeys) {
+    if (newPathKeys.has(path)) continue;
+    const key = stripVersion(path);
+    if (key === path) continue; // no version prefix to normalize
+    (removedByNorm.get(key) ?? removedByNorm.set(key, []).get(key)!).push(path);
+  }
+  for (const path of newPathKeys) {
+    if (oldPathKeys.has(path)) continue;
+    const key = stripVersion(path);
+    if (key === path) continue;
+    (addedByNorm.get(key) ?? addedByNorm.set(key, []).get(key)!).push(path);
+  }
+  for (const [key, olds] of removedByNorm) {
+    const news = addedByNorm.get(key);
+    if (!news || olds.length !== 1 || news.length !== 1) continue; // only unambiguous pairs
+    diffPathOperations(
+      oldPaths[olds[0]!],
+      newPaths[news[0]!],
+      olds[0]!,
+      oldResolver,
+      newResolver,
+      entries,
+    );
   }
 
   // Nested path removals already covered; also detect method-level path that existed as nested
