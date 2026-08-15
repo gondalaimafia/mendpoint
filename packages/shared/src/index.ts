@@ -383,8 +383,10 @@ export const DiffOpSchema = z.enum([
   "request_field_added",
   "request_field_removed",
   "request_field_renamed",
+  "request_field_ambiguous",
   "response_field_removed",
   "response_field_added",
+  "response_field_ambiguous",
   "security_changed",
 ]);
 export type DiffOp = z.infer<typeof DiffOpSchema>;
@@ -396,6 +398,8 @@ export const DiffEntrySchema = z.object({
   field: z.string().optional(),
   fromField: z.string().optional(),
   toField: z.string().optional(),
+  /** For ambiguous field changes: the plausible successors a human must choose between. */
+  candidates: z.array(z.string()).optional(),
   detail: z.string().optional(),
   breaking: z.boolean(),
 });
@@ -430,6 +434,8 @@ export const ImpactableSurfaceSchema = z.object({
   toField: z.string().optional(),
   before: z.string().optional(),
   after: z.string().optional(),
+  /** For ambiguous field changes: the plausible successors a human must choose between. */
+  candidates: z.array(z.string()).optional(),
   severity: ChangeRiskSchema,
   migrationStrategy: z.string(),
   explanation: z.string(),
@@ -516,6 +522,36 @@ export const ConfirmedImpactSchema = z.object({
 });
 export type ConfirmedImpact = z.infer<typeof ConfirmedImpactSchema>;
 
+/**
+ * A field change the tool refuses to auto-apply because it has more than one
+ * plausible successor. Reported so a human can choose; never turned into a
+ * confident per-site finding or an edit.
+ */
+export const AmbiguousChangeSchema = z.object({
+  op: DiffOpSchema,
+  path: z.string().optional(),
+  method: z.string().optional(),
+  fromField: z.string(),
+  candidates: z.array(z.string()),
+  reason: z.string(),
+});
+export type AmbiguousChange = z.infer<typeof AmbiguousChangeSchema>;
+
+/**
+ * A generated (non-hand-written) file that references a changed surface. Editing
+ * it is wrong because the next codegen overwrites the edit; the fix is to
+ * regenerate from the updated spec. Surfaced as its own outcome, not a finding.
+ */
+export const GeneratedReferenceSchema = z.object({
+  filePath: z.string(),
+  lineStart: z.number().int().positive(),
+  symbol: z.string(),
+  evidence: z.string(),
+  relatedOps: z.array(DiffOpSchema).default([]),
+  note: z.string(),
+});
+export type GeneratedReference = z.infer<typeof GeneratedReferenceSchema>;
+
 export const ImpactReportSchema = z.object({
   surfaces: z.array(ImpactableSurfaceSchema),
   sites: z.array(ConfirmedImpactSchema),
@@ -525,6 +561,10 @@ export const ImpactReportSchema = z.object({
   candidateCount: z.number().int().nonnegative(),
   confirmedCount: z.number().int().nonnegative(),
   lowConfidenceNotifications: z.array(ConfirmedImpactSchema).default([]),
+  /** Field changes with multiple plausible successors — abstained, human decides. */
+  ambiguousChanges: z.array(AmbiguousChangeSchema).optional(),
+  /** Generated files that reference a changed surface — regenerate, do not edit. */
+  generatedReferences: z.array(GeneratedReferenceSchema).optional(),
 });
 export type ImpactReport = z.infer<typeof ImpactReportSchema>;
 
