@@ -64,7 +64,9 @@ import {
   evaluateVerificationWaiver,
   evaluatePrGates,
   reviewOpenApiDesign,
+  securityAttestationPolicyFromEnv,
   type ContractCase,
+  type SecurityScanAttestation,
   type VerificationWaiver,
 } from "@mendpoint/contract";
 import { createWardenDraftPrPackage } from "./warden-pr-package.js";
@@ -187,9 +189,15 @@ export type PipelineInput = {
   /**
    * Caller's attestation that a security scan passed. No scanner runs in this
    * pipeline, so this is an unverified assertion required before PR delivery,
-   * not an independently verified result.
+   * not an independently verified result. A bare boolean degrades to the weakest,
+   * unattributed tier.
    */
   securityScanAttested?: boolean;
+  /**
+   * Structured, subject-bound attestation from a current client. When supplied it
+   * supersedes the bare boolean above and can reach the verified tier.
+   */
+  securityScanAttestation?: SecurityScanAttestation;
   /** Signed human waiver for one tenant, run, and verification check. */
   verificationWaiver?: {
     runId: string;
@@ -562,12 +570,20 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   const registryHits = listConsumersForProvider(db, provider.slug, input.tenantId);
   const registryMd = registrySummaryMarkdown(registryHits, provider.slug);
   const apiReview = reviewOpenApiDesign(newSpec);
+  // Deployment policy for the security gate. Keys on the deployment PROFILE
+  // (customer profile requires a verified scanner result), never the deployment
+  // CLASS — the live app runs CLASS=customer with PROFILE=demo, and keying on
+  // CLASS would block every delivery in production. An explicit operator override
+  // can accept the attested tier, recorded below as a downgrade.
+  const securityAttestationPolicy = securityAttestationPolicyFromEnv(process.env);
   const gates = evaluatePrGates({
     oldSpec,
     newSpec,
     providerSlug: provider.slug,
     contractCases: input.contractCases,
     securityScanAttested: input.securityScanAttested,
+    securityScanAttestation: input.securityScanAttestation,
+    securityAttestationPolicy,
   });
   // Provider breaking changes are the reason migration PRs exist. Delivery
   // fails closed on missing runtime contract/security evidence, while the
@@ -594,6 +610,48 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       surfaces: surfaces.length,
       gatesPassed: gates.ok,
     },
+    createdAt: nowIso(),
+  });
+
+  // Durable, append-only audit record of the security-scan attestation: who
+  // asserted what, against which subject, at which tier, under which policy, and
+  // whether it satisfied the gate. Reuses the existing hash-chained domain_events
+  // surface (no new table). The idempotency key discriminates on the outcome
+  // digest, so an identical re-run converges to one record while a re-evaluation
+  // that reaches a different outcome (for example a bare claim later upgraded to a
+  // verified scanner result) appends its own record — every attestation is kept.
+  const attn = gates.attestation;
+  const attnPayload = {
+    present: attn.present,
+    tier: attn.tier,
+    verified: attn.verified,
+    satisfied: attn.satisfied,
+    unattributed: attn.unattributed,
+    downgradeApplied: attn.downgradeApplied,
+    code: attn.code,
+    detail: attn.detail,
+    requiredTier: attn.requiredTier,
+    policySource: attn.policySource,
+    attestingPrincipal: attn.principal ?? null,
+    attestedAt: attn.attestedAt ?? null,
+    subjectDigest: attn.subjectDigest ?? null,
+    expiresAt: attn.expiresAt ?? null,
+    tool: attn.tool ?? null,
+    evidenceRef: attn.evidenceRef ?? null,
+  };
+  const attnOutcomeDigest = textDigest(JSON.stringify(attnPayload));
+  appendDomainEvent(db, {
+    id: trustId("event", input.tenantId, changeId, "security-attestation", attnOutcomeDigest),
+    tenantId: input.tenantId,
+    schemaVersion: 1,
+    eventType: "change.security_attestation",
+    aggregateType: "api_change",
+    aggregateId: changeId,
+    actorPrincipalId: pipelinePrincipal.id,
+    correlationId: changeId,
+    causationId: trustId("event", input.tenantId, changeId, "normalized"),
+    idempotencyKey: `api_change:${changeId}:security_attestation:${attnOutcomeDigest}`,
+    payload: attnPayload,
     createdAt: nowIso(),
   });
 

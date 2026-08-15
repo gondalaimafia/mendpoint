@@ -3,6 +3,13 @@
  * Spec is an executable object: schema checks, status expectations, auth probes.
  */
 import { normalizeChange } from "@mendpoint/change-intel";
+import {
+  changeSubjectDigest,
+  evaluateSecurityAttestation,
+  type SecurityAttestationOutcome,
+  type SecurityAttestationPolicy,
+  type SecurityScanAttestation,
+} from "./security-attestation.js";
 
 export type ContractCase = {
   id: string;
@@ -210,6 +217,14 @@ export type PrGateResult = {
    */
   gates: Array<{ id: string; ok: boolean; detail: string; verified: boolean }>;
   reportMarkdown: string;
+  /**
+   * Structured outcome of the security-scan attestation: who attested, when,
+   * against which subject, which tier, and whether it satisfied the gate. Callers
+   * with a durable audit surface (the pipeline) persist this; the PR evidence
+   * renders it. Additive — it never changes the `gates`/`reportMarkdown` bytes an
+   * older bare-boolean caller already produced.
+   */
+  attestation: SecurityAttestationOutcome;
 };
 
 /** PR gate bundle: breaking-change + contract suite (+ caller-attested security). */
@@ -222,10 +237,21 @@ export function evaluatePrGates(input: {
    * Caller's attestation that a security scan passed. No scanner runs in this
    * process, so this is an unverified assertion, not a verified result. Named to
    * reflect that provenance; `securityScanOk` remains accepted as a legacy alias.
+   * A bare boolean from an older client degrades to the weakest, unattributed
+   * `claim` tier — never silently promoted.
    */
   securityScanAttested?: boolean;
   /** @deprecated Ambiguous name — prefer `securityScanAttested`. */
   securityScanOk?: boolean;
+  /**
+   * Structured attestation from a current client, bound to the change via a
+   * subject digest. When supplied it supersedes the bare boolean above.
+   */
+  securityScanAttestation?: SecurityScanAttestation;
+  /** Deployment policy for the security gate. Defaults to today's behaviour (claim tier). */
+  securityAttestationPolicy?: SecurityAttestationPolicy;
+  /** Evaluation clock (ISO-8601) for attestation expiry; defaults to now. */
+  now?: string;
 }): PrGateResult {
   const gates: PrGateResult["gates"] = [];
 
@@ -258,21 +284,58 @@ export function evaluatePrGates(input: {
     verified: true,
   });
 
-  // Fail-closed, caller-attested only. No security scanner runs here, so a truthy
-  // value is an assertion by the caller, never an independently verified result.
-  const securityAttested =
-    input.securityScanAttested === true || input.securityScanOk === true;
+  // Fail-closed security gate. No scanner runs here, so a caller assertion is
+  // never verified; only a structured scanner-tier attestation can be. The
+  // attestation is bound to the exact change (subject digest) so it cannot be
+  // replayed onto a different one; missing, malformed, expired, mismatched, or
+  // policy-insufficient all block delivery.
+  const expectedSubjectDigest =
+    input.oldSpec && input.newSpec
+      ? changeSubjectDigest(input.oldSpec, input.newSpec)
+      : undefined;
+  const attestation = evaluateSecurityAttestation({
+    attestation: input.securityScanAttestation,
+    legacyAttested: input.securityScanAttestation
+      ? undefined
+      : input.securityScanAttested === true || input.securityScanOk === true,
+    expectedSubjectDigest,
+    policy: input.securityAttestationPolicy,
+    now: input.now,
+  });
   gates.push({
     id: "security-scan",
-    ok: securityAttested,
-    detail: securityAttested
-      ? "attested by caller — NOT independently verified (no security scanner runs in this pipeline)"
-      : "no security-scan attestation supplied",
-    verified: false,
+    ok: attestation.satisfied,
+    detail: attestation.detail,
+    verified: attestation.verified,
   });
 
   const ok = gates.every((g) => g.ok);
   const hasUnverifiedPass = gates.some((g) => g.ok && !g.verified);
+  // Attribution lines render only for a structured attestation or an override
+  // downgrade, so an older bare-boolean caller's markdown stays byte-identical.
+  const attestationEvidence =
+    attestation.present && (!attestation.unattributed || attestation.downgradeApplied)
+      ? [
+          "",
+          "**Security attestation**",
+          `- tier: ${attestation.tier}${attestation.verified ? " (verified)" : " (not verified)"}`,
+          `- principal: ${attestation.principal ?? "unattributed (legacy boolean)"}`,
+          ...(attestation.attestedAt ? [`- attested at: ${attestation.attestedAt}`] : []),
+          ...(attestation.subjectDigest
+            ? [`- subject: ${attestation.subjectDigest}`]
+            : []),
+          ...(attestation.expiresAt ? [`- expires at: ${attestation.expiresAt}`] : []),
+          ...(attestation.tool
+            ? [`- scanner: ${attestation.tool.name}@${attestation.tool.version}`]
+            : []),
+          ...(attestation.evidenceRef ? [`- evidence: ${attestation.evidenceRef}`] : []),
+          ...(attestation.downgradeApplied
+            ? [
+                "- ⚠️ operator override active: a weaker (unverified) tier was accepted and recorded as a downgrade.",
+              ]
+            : []),
+        ]
+      : [];
   const reportMarkdown = [
     "### Warden PR gates",
     "",
@@ -280,6 +343,7 @@ export function evaluatePrGates(input: {
       (g) =>
         `- ${g.ok ? "✅" : "❌"} **${g.id}**${g.verified ? "" : " _(attested, not verified)_"}: ${g.detail}`,
     ),
+    ...attestationEvidence,
     "",
     ...(hasUnverifiedPass
       ? [
@@ -292,5 +356,5 @@ export function evaluatePrGates(input: {
       : "_Gates failed — do not merge until fixed or waived by API owner._",
   ].join("\n");
 
-  return { ok, gates, reportMarkdown };
+  return { ok, gates, reportMarkdown, attestation };
 }

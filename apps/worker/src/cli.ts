@@ -122,7 +122,10 @@ import {
   discardAdaptiveCandidate,
   TransformerPilotExecutionStore,
 } from "@mendpoint/transformer";
-import type { ContractCase } from "@mendpoint/contract";
+import type {
+  ContractCase,
+  SecurityScanAttestation,
+} from "@mendpoint/contract";
 import {
   runTransformerPilotLaneOnce,
   transformerPilotWorkerPath,
@@ -3211,6 +3214,7 @@ async function processJobsOnceUnfenced(
         securityScanAttested?: boolean;
         /** @deprecated Legacy payload key from jobs enqueued before the rename. */
         securityScanOk?: boolean;
+        securityScanAttestation?: SecurityScanAttestation;
         repairVerifyCommands?: string[];
       };
       console.log(`Job ${job.id} pipeline.fanout ${payload.providerSlug}`);
@@ -3226,6 +3230,7 @@ async function processJobsOnceUnfenced(
         // Accept the legacy key so jobs enqueued before the rename still carry
         // their attestation across the deploy boundary; both map fail-closed.
         securityScanAttested: payload.securityScanAttested ?? payload.securityScanOk,
+        securityScanAttestation: payload.securityScanAttestation,
         repairVerifyCommands: payload.repairVerifyCommands,
         shouldContinue: () =>
           !leaseLost && opts.shouldContinue?.() !== false,
