@@ -9,7 +9,8 @@ import {
   exploreMigration,
   migrateFieldAccess,
   migrateFromFixHint,
-  defaultApiMigrationRules,
+  fieldRenameRules,
+  structuralMigrationRules,
   compareMigrationStrategies,
 } from "./index.js";
 
@@ -55,54 +56,69 @@ describe("e-graph core", () => {
 });
 
 describe("equality saturation", () => {
-  it("applies rewrite amount_cents → amount non-destructively", () => {
+  it("applies a change-derived field rename non-destructively", () => {
+    // Rules come from the tokens of the change under analysis, not fixtures.
     const eg = new EGraph();
     const root = eg.add(app("field", lit("amount_cents")));
-    const run = saturate(eg, defaultApiMigrationRules(), { maxIterations: 10 });
-    expect(run.applied.some((a) => a.rule === "amount_cents_to_amount")).toBe(true);
+    const run = saturate(eg, fieldRenameRules({ from: "amount_cents", to: "amount" }), {
+      maxIterations: 10,
+    });
+    expect(run.applied.some((a) => a.rule === "rename_field_amount_cents_to_amount")).toBe(true);
     const extracted = pretty(eg.extractOne(root));
     // both forms may extract; after rewrite they're equivalent
     expect(eg.stats().nodes).toBeGreaterThan(1);
     expect(extracted.includes("amount") || extracted.includes("field")).toBe(true);
   });
 
-  it("migrateFieldAccess explores field rename", () => {
-    const r = migrateFieldAccess("amount_cents");
-    expect(r.appliedRules).toContain("amount_cents_to_amount");
+  it("migrateFieldAccess explores a rename drawn from the change", () => {
+    const r = migrateFieldAccess({ from: "amount_cents", to: "amount" });
+    expect(r.appliedRules).toContain("rename_field_amount_cents_to_amount");
     expect(r.egraphStats.classes).toBeGreaterThan(0);
   });
 
-  it("migrateFromFixHint parses amount_cents → amount", () => {
-    const r = migrateFromFixHint("Rename field usages amount_cents → amount on POST /v1/charges");
+  it("migrateFromFixHint generalises to an arbitrary provider's rename", () => {
+    // A vendor we never hard-coded: the rule is derived from the hint tokens.
+    const r = migrateFromFixHint("Rename field usages customer_ref → client_ref on POST /orders");
     expect(r).not.toBeNull();
-    expect(r!.appliedRules.length).toBeGreaterThan(0);
+    // The rule fired (a union between the old and new field forms), proving the
+    // rename was derived from the hint tokens for a vendor we never hard-coded.
+    expect(r!.appliedRules).toContain("rename_field_customer_ref_to_client_ref");
+    // Rewrites are non-destructive, so extraction may keep either equivalent form.
+    expect(r!.extracted.includes("client_ref") || r!.extracted.includes("customer_ref")).toBe(true);
+  });
+
+  it("migrateFromFixHint abstains explicitly when no rename token pair is present", () => {
+    // No "→" token pair to derive a rule from: return null rather than silently
+    // running rules that match nothing.
+    expect(migrateFromFixHint("Upgrade charges endpoint to v2 (no field rename)")).toBeNull();
   });
 
   it("compareMigrationStrategies returns both strategies", () => {
     const term = app("field", lit("amount_cents"));
     const results = compareMigrationStrategies(term, [
-      { name: "default", rules: defaultApiMigrationRules() },
+      { name: "structural", rules: structuralMigrationRules() },
       {
-        name: "aggressive",
-        rules: [
-          {
-            name: "force_amount",
-            lhs: app("field", lit("amount_cents")),
-            rhs: app("field", lit("amount")),
-          },
-        ],
+        name: "derived",
+        rules: fieldRenameRules({ from: "amount_cents", to: "amount" }),
       },
     ]);
     expect(results).toHaveLength(2);
-    expect(results[0]!.name).toBe("default");
+    expect(results[0]!.name).toBe("structural");
+    expect(results[1]!.result.appliedRules).toContain("rename_field_amount_cents_to_amount");
   });
 });
 
 describe("exploreMigration", () => {
-  it("runs end-to-end on sdk-shaped term", () => {
+  it("runs end-to-end on an sdk-shaped term with a change-derived rename", () => {
     const term = app("sdk", lit("charges.create"), app("field", lit("amount_cents")));
-    const r = exploreMigration(term);
+    const r = exploreMigration(term, fieldRenameRules({ from: "amount_cents", to: "amount" }));
     expect(r.iterations).toBeGreaterThan(0);
     expect(r.egraphStats.nodes).toBeGreaterThan(0);
+  });
+
+  it("applies provider-agnostic structural pagination rules by default", () => {
+    const term = app("paginate", lit("customers"), app("page", lit(1)));
+    const r = exploreMigration(term);
+    expect(r.appliedRules).toContain("legacy_page_to_cursor");
   });
 });

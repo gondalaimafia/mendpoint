@@ -15,6 +15,7 @@ import {
   reverseReachability,
   type CallGraph,
 } from "@mendpoint/call-graph";
+import { classifyDependencyDirectory } from "@mendpoint/shared";
 import {
   extractWithTypescript,
   isTypescriptFile,
@@ -169,47 +170,22 @@ type DiscoveredFile = {
 type DiscoveryUsage = { files: number; totalBytes: number };
 
 /**
- * Directories that are unambiguously VCS metadata, dependency trees, or
- * generated caches across ecosystems — never hand-written source. Safe to skip
- * by name. Deliberately excludes the ambiguous `vendor` / `build` / `target` /
- * `out` / `bin` / `obj`: those are frequently *tracked* source (committed Go
- * vendoring, generated-but-checked-in code), so excluding them by name alone
- * would drop real files. `dist` / `.next` are retained from the original list.
- */
-const IGNORED_DIRECTORIES = new Set([
-  "node_modules",
-  ".git",
-  ".hg",
-  ".svn",
-  "dist",
-  ".next",
-  ".turbo",
-  ".venv",
-  "__pycache__",
-  ".tox",
-  ".mypy_cache",
-  ".pytest_cache",
-  ".ruff_cache",
-  "site-packages",
-  ".gradle",
-]);
-
-/**
  * Detect a dependency/generated directory that we should NOT walk, preferring a
  * structural marker over a bare name so we never drop tracked source that merely
  * happens to be named `venv` / `env`. Returns the reason for the skip, or null.
+ *
+ * The list and marker decision are the shared definition in `@mendpoint/shared`
+ * (`classifyDependencyDirectory`), so this walker, the call graph, and the agent
+ * cannot drift apart again; only the reason-string format is local.
  */
 function ignoredDirectoryReason(name: string, absPath: string): string | null {
-  if (IGNORED_DIRECTORIES.has(name)) return `ignored_name:${name}`;
-  // Python virtualenv marker — catches venv / env / any custom-named env dir
-  // without excluding a source module that merely shares the name.
-  if (
-    (name === "venv" || name === "env" || name.startsWith(".venv")) &&
-    existsSync(join(absPath, "pyvenv.cfg"))
-  ) {
-    return "python_virtualenv:pyvenv.cfg";
-  }
-  return null;
+  const decision = classifyDependencyDirectory(name, (marker) =>
+    existsSync(join(absPath, marker)),
+  );
+  if (!decision) return null;
+  return decision.kind === "ignored_name"
+    ? `ignored_name:${decision.name}`
+    : `python_virtualenv:${decision.marker}`;
 }
 
 function normalizedLimits(input?: Partial<CodebaseIndexLimits>): CodebaseIndexLimits {
