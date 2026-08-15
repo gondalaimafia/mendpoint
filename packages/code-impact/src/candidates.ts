@@ -16,7 +16,7 @@ import type {
 import type { CodebaseIndex } from "@mendpoint/codebase-index";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildImporterGraph, reachableFromAnchors } from "./provenance.js";
+import { buildProviderReachability } from "./lang-import-graph.js";
 
 function confFromSource(source: CandidateSource, breaking: boolean): Confidence {
   if (source === "sdk_graph") return breaking ? "high" : "medium";
@@ -194,7 +194,7 @@ export function discoverCandidates(
   // false, so confidence falls back to the token match — absence of a locatable
   // surface degrades precision, never recall.
   const anchors = providerAnchors(index, surfaces);
-  const reachable = reachableFromAnchors(anchors, buildImporterGraph(index.files));
+  const { reachable } = buildProviderReachability(index.files, index.repoRoot, anchors);
   const gateEnabled = anchors.size > 0;
   const gate = (
     filePath: string,
@@ -245,6 +245,10 @@ export function discoverCandidates(
 
     for (const u of index.apiUsages) {
       if (u.kind === "http_path") {
+        // A path found in a doc comment anchors provenance (handled in
+        // providerAnchors) but is not itself an edit site — do not raise it to a
+        // confident candidate.
+        if (u.inComment) continue;
         for (const hint of pathHints) {
           if (pathMatchesUsage(hint, u.value)) {
             const g = gate(
@@ -314,7 +318,11 @@ export function discoverCandidates(
             confidence: g.confidence,
           });
         }
+        // A path literal inside a doc/line comment documents an endpoint but is
+        // not a code edit site; it anchors provenance elsewhere, not here.
+        const lineIsComment = /^\s*(?:\/\/|\*|\/\*|#)/.test(line);
         for (const hint of pathHints) {
+          if (lineIsComment) continue;
           if (!hint || hint.length < 4) continue;
           if (!pathInLine(line, hint)) continue;
           if (!line.includes("/v") && !line.includes("http")) continue;

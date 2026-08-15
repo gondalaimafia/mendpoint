@@ -66,6 +66,13 @@ export type ApiUsageRecord = {
    * kinds that carry no such distinction.
    */
   detection?: SdkDetection;
+  /**
+   * For `http_path` usages: the path literal was found inside a comment (a doc
+   * comment documenting which endpoint a class talks to). Such a path still
+   * anchors provider provenance, but it is not itself a code edit site, so it
+   * must not create a promotable candidate.
+   */
+  inComment?: boolean;
 };
 
 export type FileRecord = {
@@ -387,7 +394,24 @@ function isTestPath(rel: string): boolean {
 function extractImports(text: string, language: FileRecord["language"]): string[] {
   const imports: string[] = [];
   if (language === "python") {
+    // Leading dots are kept in the class so relative imports (`from . import x`,
+    // `from ..pkg import y`) survive for the per-language resolver.
     for (const m of text.matchAll(/^\s*(?:from|import)\s+([a-zA-Z0-9_.]+)/gm)) {
+      imports.push(m[1]!);
+    }
+  } else if (language === "go") {
+    // Grouped `import ( "a"\n alias "b"\n _ "c" )` and single `import "a"`.
+    for (const block of text.matchAll(/import\s*\(([\s\S]*?)\)/g)) {
+      for (const m of block[1]!.matchAll(/(?:[A-Za-z0-9_.]+\s+)?["`]([^"`]+)["`]/g)) {
+        imports.push(m[1]!);
+      }
+    }
+    for (const m of text.matchAll(/^\s*import\s+(?:[A-Za-z0-9_.]+\s+)?["`]([^"`]+)["`]/gm)) {
+      imports.push(m[1]!);
+    }
+  } else if (language === "java") {
+    // `import a.b.C;`, static imports, and wildcard `import a.b.*;`.
+    for (const m of text.matchAll(/^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_.]*(?:\.\*)?)\s*;/gm)) {
       imports.push(m[1]!);
     }
   } else {
@@ -581,8 +605,21 @@ function extractApiUsages(
     return hit?.name;
   };
 
+  let inBlockComment = false;
   lines.forEach((line, idx) => {
     const lineNo = idx + 1;
+    const trimmed = line.trimStart();
+    // A path in a doc/line comment documents an endpoint but is not a code site.
+    // Track block comments across lines and recognise line/javadoc comments.
+    const lineIsComment =
+      inBlockComment ||
+      trimmed.startsWith("//") ||
+      trimmed.startsWith("*") ||
+      trimmed.startsWith("/*") ||
+      trimmed.startsWith("#");
+    if (line.includes("/*") && !line.includes("*/")) inBlockComment = true;
+    else if (inBlockComment && line.includes("*/")) inBlockComment = false;
+    const commentTag = lineIsComment ? { inComment: true as const } : {};
     // HTTP path literals (quoted or embedded in template strings / concatenations)
     for (const m of line.matchAll(/['"`](\/v\d+\/[^'"`\s]+)['"`]/g)) {
       out.push({
@@ -591,6 +628,7 @@ function extractApiUsages(
         kind: "http_path",
         value: m[1]!,
         functionName: fnAt(lineNo),
+        ...commentTag,
       });
     }
     for (const m of line.matchAll(/(\/v\d+\/[A-Za-z0-9_{}\/-]+)/g)) {
@@ -600,6 +638,7 @@ function extractApiUsages(
         kind: "http_path",
         value: m[1]!,
         functionName: fnAt(lineNo),
+        ...commentTag,
       });
     }
 
@@ -607,6 +646,12 @@ function extractApiUsages(
     // surface. A provider-matched chain is recorded even without a trailing call
     // (it may be passed around); a general-heuristic chain requires a call `(` to
     // suppress plain property reads (`res.ok`, `err.message`).
+    // Declaration lines (`package a.b.c;`, `import a.b.C;`, `from a.b import x`)
+    // are dotted namespaces, not call sites — a Go/Java/Python package path such
+    // as `com.acme.settlement.payments` is not an SDK call and must not be
+    // classified as one just because a segment matches a provider token.
+    const isDeclaration = /^\s*(?:import|package|from|using|require)\b/.test(line);
+    if (!isDeclaration)
     for (const m of line.matchAll(/([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\s*(\()?/g)) {
       const chain = m[1]!;
       const detection = classifyMemberChain(chain, sdkSets, fileReceivers);
