@@ -183,9 +183,16 @@ function providerAnchors(
 
 export function discoverCandidates(
   index: CodebaseIndex,
-  surfaces: ImpactableSurface[],
+  allSurfaces: ImpactableSurface[],
 ): CandidateSite[] {
   const acc: Acc = new Map();
+  // Ambiguous field changes have more than one plausible successor. The tool
+  // abstains on them: they never drive confident candidate discovery or edits.
+  // They are surfaced separately as a human-decision outcome.
+  const surfaces = allSurfaces.filter(
+    (s) =>
+      s.op !== "request_field_ambiguous" && s.op !== "response_field_ambiguous",
+  );
   const breaking = surfaces.some((s) => s.severity === "breaking");
 
   // Provider provenance. A field-name or SDK-call match only earns a confident
@@ -352,12 +359,25 @@ export function discoverCandidates(
     }
   }
 
-  // 4) Import expansion — files importing packages that look like the provider
-  const providerHints = surfaces.flatMap((s) => s.searchTokens).filter((t) => t.length > 2);
+  // 4) Import expansion — files importing packages that look like the provider.
+  // Match import specifiers against *meaningful* fragments of the change's
+  // search tokens. Splitting a path token like "/v1/charges" on "/" yields a
+  // leading empty segment; matching an import against "" made every file with
+  // any import "touch vendor". Extract non-empty fragments (length >= 3) from
+  // every token so the match is real.
+  const importFragments = [
+    ...new Set(
+      surfaces
+        .flatMap((s) => s.searchTokens)
+        .flatMap((t) => t.toLowerCase().split(/[^a-z0-9]+/))
+        .filter((frag) => frag.length >= 3),
+    ),
+  ];
   for (const file of index.files) {
-    const touchesVendor = file.imports.some((i) =>
-      providerHints.some((h) => i.toLowerCase().includes(h.toLowerCase().split("/")[0] ?? "")),
-    );
+    const touchesVendor = file.imports.some((i) => {
+      const spec = i.toLowerCase();
+      return importFragments.some((frag) => spec.includes(frag));
+    });
     if (!touchesVendor) continue;
     // Mark file-level candidate at first line of first function or line 1
     const fn = index.functions.find((f) => f.filePath === file.path);

@@ -168,36 +168,96 @@ function responseSchema(operation: unknown, resolver: SchemaResolver): unknown {
   return pickContentSchema(asObj(asObj(resolver.deref(success)).content));
 }
 
-function detectRenames(
+function fieldType(schema: unknown): string | undefined {
+  const t = asObj(schema).type;
+  return typeof t === "string" ? t : undefined;
+}
+
+/** Same primitive JSON type, or lenient when either side omits `type`. */
+function typeCompatible(a: unknown, b: unknown): boolean {
+  const ta = fieldType(a);
+  const tb = fieldType(b);
+  if (ta === undefined || tb === undefined) return true;
+  return ta === tb;
+}
+
+/** Both fields carry the same non-empty `example` value. */
+function sharedExample(a: unknown, b: unknown): boolean {
+  const ea = asObj(a).example;
+  const eb = asObj(b).example;
+  if (ea === undefined || eb === undefined) return false;
+  return schemaDeepEqual(ea, eb);
+}
+
+/**
+ * Whether an added field is a plausible successor of a removed field. Broader
+ * than a confident rename on purpose: it is the predicate that *counts*
+ * successors, so it must catch every candidate a human would consider. Names
+ * that are lexically close, schemas that are structurally identical, or
+ * type-compatible fields that carry the same example value all qualify — a
+ * copied example strongly implies the same underlying field even when names and
+ * descriptions diverge.
+ */
+function isPlausibleSuccessor(
+  from: string,
+  fromSchema: unknown,
+  to: string,
+  toSchema: unknown,
+): boolean {
+  const lexical =
+    from.includes(to) ||
+    to.includes(from) ||
+    from.replace(/_cents$/, "") === to ||
+    to.replace(/_cents$/, "") === from ||
+    levenshtein(from, to) <= 3;
+  if (lexical) return true;
+  if (schemaDeepEqual(fromSchema, toSchema)) return true;
+  if (typeCompatible(fromSchema, toSchema) && sharedExample(fromSchema, toSchema)) {
+    return true;
+  }
+  return false;
+}
+
+export interface FieldRename {
+  from: string;
+  to: string;
+}
+export interface FieldAmbiguity {
+  from: string;
+  candidates: string[];
+}
+
+/**
+ * Pair removed fields with added ones. A removed field with exactly one
+ * plausible successor is a confident rename. A removed field with two or more
+ * plausible successors is ambiguous: the tool must not guess which one it
+ * became — it splits (e.g. `source` -> `payment_method` OR `payment_source`
+ * chosen at runtime), so those fields are reported for a human to resolve and
+ * are never turned into a rename.
+ */
+function detectFieldChanges(
   oldProps: Map<string, Json>,
   newProps: Map<string, Json>,
-): Array<{ from: string; to: string }> {
+): { renames: FieldRename[]; ambiguities: FieldAmbiguity[] } {
   const removed = [...oldProps.keys()].filter((k) => !newProps.has(k));
   const added = [...newProps.keys()].filter((k) => !oldProps.has(k));
-  const renames: Array<{ from: string; to: string }> = [];
+  const renames: FieldRename[] = [];
+  const ambiguities: FieldAmbiguity[] = [];
   const usedTo = new Set<string>();
-  // A removed field pairs with an added field when their names are lexically
-  // close OR when their resolved schemas are structurally identical. The schema
-  // signal catches semantic renames whose names share nothing (source ->
-  // payment_method), which the lexical heuristic alone misses.
   for (const from of removed) {
-    for (const to of added) {
-      if (usedTo.has(to)) continue;
-      const lexical =
-        from.includes(to) ||
-        to.includes(from) ||
-        from.replace(/_cents$/, "") === to ||
-        to.replace(/_cents$/, "") === from ||
-        levenshtein(from, to) <= 3;
-      const structural = schemaDeepEqual(oldProps.get(from), newProps.get(to));
-      if (lexical || structural) {
-        renames.push({ from, to });
-        usedTo.add(to);
-        break;
-      }
+    const candidates = added.filter(
+      (to) =>
+        !usedTo.has(to) &&
+        isPlausibleSuccessor(from, oldProps.get(from), to, newProps.get(to)),
+    );
+    if (candidates.length === 1) {
+      renames.push({ from, to: candidates[0]! });
+      usedTo.add(candidates[0]!);
+    } else if (candidates.length > 1) {
+      ambiguities.push({ from, candidates });
     }
   }
-  return renames;
+  return { renames, ambiguities };
 }
 
 function levenshtein(a: string, b: string): number {
@@ -243,10 +303,23 @@ export function summarizeChange(
   }
   const parts: string[] = [];
   const removed = entries.filter((e) => e.op === "path_removed" || e.op === "method_removed");
+  const ambiguous = entries.filter(
+    (e) => e.op === "request_field_ambiguous" || e.op === "response_field_ambiguous",
+  );
   const renames = entries.filter((e) => e.op === "request_field_renamed");
   const required = entries.filter((e) => e.op === "request_field_added_required");
   const optionalFields = entries.filter((e) => e.op === "request_field_added");
   const added = entries.filter((e) => e.op === "path_added" || e.op === "method_added");
+  if (ambiguous.length) {
+    parts.push(
+      ambiguous
+        .map(
+          (a) =>
+            `ambiguous field ${a.fromField} on ${a.method?.toUpperCase()} ${a.path} (candidates: ${(a.candidates ?? []).join(", ")}; human decision required)`,
+        )
+        .join("; "),
+    );
+  }
   if (renames.length) {
     parts.push(
       renames
@@ -283,6 +356,7 @@ export function summarizeChange(
   const rest = entries.filter(
     (e) =>
       !renames.includes(e) &&
+      !ambiguous.includes(e) &&
       !removed.includes(e) &&
       !required.includes(e) &&
       !optionalFields.includes(e) &&
@@ -404,9 +478,11 @@ export function diffOpenApi(
       const newRequired = newReq.required;
       const oldRequired = oldReq.required;
 
-      const renames = detectRenames(oldReq.props, newReq.props);
+      const { renames, ambiguities } = detectFieldChanges(oldReq.props, newReq.props);
       const renamedFrom = new Set(renames.map((r) => r.from));
       const renamedTo = new Set(renames.map((r) => r.to));
+      const ambiguousFrom = new Set(ambiguities.map((a) => a.from));
+      const ambiguousTo = new Set(ambiguities.flatMap((a) => a.candidates));
 
       for (const r of renames) {
         entries.push({
@@ -421,8 +497,21 @@ export function diffOpenApi(
         });
       }
 
+      for (const a of ambiguities) {
+        entries.push({
+          op: "request_field_ambiguous",
+          path,
+          method,
+          fromField: a.from,
+          field: a.from,
+          candidates: a.candidates,
+          breaking: true,
+          detail: `Request field ${a.from} has more than one plausible successor (${a.candidates.join(", ")}); the successor is selected by a runtime condition and cannot be resolved statically. Human decision required.`,
+        });
+      }
+
       for (const field of oldKeys) {
-        if (!newKeys.has(field) && !renamedFrom.has(field)) {
+        if (!newKeys.has(field) && !renamedFrom.has(field) && !ambiguousFrom.has(field)) {
           entries.push({
             op: "request_field_removed",
             path,
@@ -435,7 +524,7 @@ export function diffOpenApi(
       }
 
       for (const field of newKeys) {
-        if (oldKeys.has(field) || renamedTo.has(field)) continue;
+        if (oldKeys.has(field) || renamedTo.has(field) || ambiguousTo.has(field)) continue;
         if (newRequired.has(field) && !oldRequired.has(field)) {
           entries.push({
             op: "request_field_added_required",
@@ -457,18 +546,38 @@ export function diffOpenApi(
         }
       }
 
-      const oldResKeys = new Set(
-        oldResolver
-          .properties(responseSchema(oldMethods[method], oldResolver))
-          .props.keys(),
+      const oldRes = oldResolver.properties(
+        responseSchema(oldMethods[method], oldResolver),
       );
-      const newResKeys = new Set(
-        newResolver
-          .properties(responseSchema(newMethods[method], newResolver))
-          .props.keys(),
+      const newRes = newResolver.properties(
+        responseSchema(newMethods[method], newResolver),
       );
+      const oldResKeys = new Set(oldRes.props.keys());
+      const newResKeys = new Set(newRes.props.keys());
+      // Response fields have no rename op; a single-successor change stays a
+      // removed + added pair. Only ambiguity (a field that splits into several
+      // successors) is special-cased, so the tool abstains instead of asserting
+      // one successor's removal as a confident finding.
+      const { ambiguities: resAmbiguities } = detectFieldChanges(
+        oldRes.props,
+        newRes.props,
+      );
+      const resAmbiguousFrom = new Set(resAmbiguities.map((a) => a.from));
+      const resAmbiguousTo = new Set(resAmbiguities.flatMap((a) => a.candidates));
+      for (const a of resAmbiguities) {
+        entries.push({
+          op: "response_field_ambiguous",
+          path,
+          method,
+          fromField: a.from,
+          field: a.from,
+          candidates: a.candidates,
+          breaking: true,
+          detail: `Response field ${a.from} has more than one plausible successor (${a.candidates.join(", ")}); which one is populated is selected by a runtime condition. Human decision required.`,
+        });
+      }
       for (const field of oldResKeys) {
-        if (!newResKeys.has(field)) {
+        if (!newResKeys.has(field) && !resAmbiguousFrom.has(field)) {
           entries.push({
             op: "response_field_removed",
             path,
@@ -480,7 +589,7 @@ export function diffOpenApi(
         }
       }
       for (const field of newResKeys) {
-        if (!oldResKeys.has(field)) {
+        if (!oldResKeys.has(field) && !resAmbiguousTo.has(field)) {
           entries.push({
             op: "response_field_added",
             path,
@@ -520,6 +629,9 @@ function migrationStrategyFor(op: DiffOp, e: DiffEntry): string {
       return `Remove or replace calls to ${e.method ? e.method.toUpperCase() + " " : ""}${e.path}; follow provider migration notes.`;
     case "request_field_added_required":
       return `Supply new required field ${e.field} on ${e.method?.toUpperCase() ?? ""} ${e.path ?? ""}`.trim();
+    case "request_field_ambiguous":
+    case "response_field_ambiguous":
+      return `Field ${e.fromField} splits into ${(e.candidates ?? []).join(" or ")}; a human must choose the successor per call site. Do not auto-apply.`;
     case "request_field_removed":
     case "response_field_removed":
       return `Stop reading/writing field ${e.field}; migrate consumers of that property.`;
@@ -598,6 +710,7 @@ export function toImpactableSurfaces(
       field: e.field,
       fromField: e.fromField,
       toField: e.toField,
+      candidates: e.candidates,
       before: e.fromField ?? (e.op.includes("removed") ? e.path : undefined),
       after: e.toField ?? (e.op.includes("added") ? e.path : undefined),
       severity,
