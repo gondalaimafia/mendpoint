@@ -9,13 +9,17 @@
 **Status:** Development foundation
 **Last updated:** 2026-08-14
 **Primary audience:** Founder, product, engineering, design, forward deployed engineering, security, GTM, design partners, and future technical diligence
-**Supersedes:** `mendpoint_product_spec_updated.md` as the development baseline
+**Supersedes:** `mendpoint_product_spec_updated.md` as the development baseline, and `docs/FOUNDATIONAL_PRODUCT_SPEC.md` (v1.0) as the canonical repository authority (see `docs/adr/0001-canonical-product-specification.md`, 2026-08-17)
+**Requirement register:** [`PRODUCT_REQUIREMENTS.json`](../PRODUCT_REQUIREMENTS.json)
+**Release contract:** [`PRODUCT_CONTRACT.md`](../PRODUCT_CONTRACT.md)
 
 ---
 
 # 0. How to use this document
 
 This document is the canonical product and platform specification for future Mendpoint development unless superseded by an approved architecture decision record, product decision, or newer version of this specification.
+
+The machine-checked requirement register is [`PRODUCT_REQUIREMENTS.json`](../PRODUCT_REQUIREMENTS.json), pinned to this document and enforced by the `npm run spec:check` gate. The release acceptance contract derived from these requirements is [`PRODUCT_CONTRACT.md`](../PRODUCT_CONTRACT.md).
 
 The previous product specification established the core thesis, the Fettler/ReGauge product split, graph-scoped reasoning, review-first execution, hybrid model orchestration, migration data as a compounding asset, and the land-and-expand product strategy. This revision preserves those decisions and formalizes the missing contracts required to build, evaluate, operate, and evolve the platform coherently.
 
