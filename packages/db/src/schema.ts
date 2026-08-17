@@ -320,6 +320,14 @@ export type MigrationPrRow = {
   github_account_id: string | null;
   created_at: string;
   resolved_at: string | null;
+  /**
+   * JSON-serialized {@link ImpactCoverage} for the analysis behind this PR. Lets
+   * the API and console distinguish a clean result (analyzed, no impact) from an
+   * unknown one (analysis incomplete or never ran) — the §11.7 distinction that
+   * an empty findings list alone cannot carry. Null for rows written before this
+   * column existed.
+   */
+  coverage_json: string | null;
 };
 
 export type AuditEvent = {
