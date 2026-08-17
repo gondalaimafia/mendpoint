@@ -50,20 +50,31 @@ describe("Regauge production workflow", () => {
     expect(preflightRun).not.toMatch(/flyctl (?:apps create|deploy|scale|secrets set|volumes create)/);
   });
 
-  it("provisions private Tigris storage directly on the dedicated app", () => {
+  it("requires pre-provisioned private Tigris storage under the app-scoped deploy token", () => {
     const source = readFileSync(".github/workflows/regauge-production.yml", "utf8");
     const workflow = parse(source) as Record<string, any>;
     const deploy = workflow.jobs.deploy;
+    const infrastructure = deploy.steps.find(
+      (step: Record<string, unknown>) => step.name === "Verify dedicated app and coordinator volume",
+    );
+    expect(infrastructure).toBeDefined();
+    expect(infrastructure.run).toContain("regauge_fly_app_bootstrap_required");
+    expect(infrastructure.run).not.toContain("flyctl apps create");
     const storage = deploy.steps.find(
-      (step: Record<string, unknown>) => step.name === "Provision private checkpoint storage",
+      (step: Record<string, unknown>) => step.name === "Verify private checkpoint storage",
     );
     expect(storage).toBeDefined();
-    expect(storage.run).toContain("flyctl storage status --app mendpoint-transformer-pilot");
-    expect(storage.run).toContain("flyctl storage create");
-    expect(storage.run).toContain("--app mendpoint-transformer-pilot");
-    expect(storage.run).toContain("--org \"$FLY_ORG\"");
-    expect(storage.run).toContain("--yes");
-    expect(storage.run).not.toContain("--public");
+    expect(storage.run).toContain("flyctl secrets list --app mendpoint-transformer-pilot --json");
+    for (const name of [
+      "AWS_ENDPOINT_URL_S3",
+      "AWS_REGION",
+      "BUCKET_NAME",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+    ]) expect(storage.run).toContain(name);
+    expect(storage.run).toContain("regauge_storage_bootstrap_required");
+    expect(storage.run).not.toContain("flyctl storage status");
+    expect(storage.run).not.toContain("flyctl storage create");
     expect(source).not.toContain("secrets.MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID");
     expect(source).not.toContain("secrets.MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY");
   });
@@ -152,6 +163,8 @@ describe("Regauge production workflow", () => {
 
     expect(containment).toBeDefined();
     expect(containment.if).toBe("${{ always() }}");
+    expect(containment.run).toContain("flyctl machines list --app mendpoint-transformer-pilot --json");
+    expect(containment.run).toContain('jq -e \"length == 0\"');
     expect(containment.run).toContain("flyctl scale count coordinator=1 worker=0");
     expect(containment.run).toContain("containment.json");
     expect(containmentIndex).toBeGreaterThan(-1);
