@@ -5,16 +5,18 @@
  * Tool loop with API-domain heuristics (+ optional LLM).
  */
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import ts from "typescript";
 import { fetchBoundedText, newId } from "@mendpoint/shared";
 import { validateVerificationCommands } from "@mendpoint/repair";
 import {
+  captureToolRollbackPreimage,
   executeTool,
   executeToolAsync,
   currentToolFileDigest,
   replaceLiteralOccurrences,
+  resolveToolPath,
   rollbackToolWrites,
   type ToolContext,
   type ToolSourceContextState,
@@ -68,7 +70,7 @@ const MAX_WARDEN_STEPS = 48;
 const DEFAULT_MODEL_TIMEOUT_MS = 15_000;
 const DEFAULT_MODEL_RESPONSE_BYTES = 64 * 1024;
 const DEFAULT_MODEL_OUTPUT_TOKENS = 8_192;
-const MUTATION_TOOLS = new Set<ToolName>(["write_file", "replace_in_file"]);
+const MUTATION_TOOLS = new Set<ToolName>(["write_file", "replace_in_file", "delete_file"]);
 const EXECUTION_INTENT_RISKS = new Set(["low", "medium", "high", "critical"]);
 export const ABSENT_FILE_EVIDENCE_DIGEST = `sha256:${createHash("sha256")
   .update("mendpoint:absent-file:v1", "utf8")
@@ -101,6 +103,7 @@ const TOOL_NAMES = new Set<ToolName>([
   "search",
   "write_file",
   "replace_in_file",
+  "delete_file",
   "run_command",
   "http_probe",
   "finish",
@@ -138,6 +141,7 @@ const TOOL_REQUIRED_ARGS: Record<ToolName, readonly ToolArgKey[]> = {
   search: ["query"],
   write_file: ["path", "content"],
   replace_in_file: ["path", "from", "to"],
+  delete_file: ["path"],
   run_command: ["command"],
   http_probe: ["url"],
   finish: ["message", "ok"],
@@ -219,6 +223,7 @@ const TOOL_OPTIONAL_ARGS: Record<ToolName, readonly ToolArgKey[]> = {
   search: ["scopePath"],
   write_file: [],
   replace_in_file: ["global"],
+  delete_file: [],
   run_command: [],
   http_probe: [],
   finish: [],
@@ -378,7 +383,7 @@ function platformMutationRisk(
     currentContent,
   )) return "high";
   if (mutationDisablesSecurityControl(tool, targetPath, mutationArgs, currentContent)) return "critical";
-  if (tool === "write_file") return "high";
+  if (tool === "write_file" || tool === "delete_file") return "high";
   return "high";
 }
 
@@ -476,6 +481,9 @@ function mutationDisablesSecurityControl(
   currentContent?: string,
 ): boolean {
   if (!MUTATION_TOOLS.has(tool)) return false;
+  if (tool === "delete_file") {
+    return typeof currentContent === "string" && SENSITIVE_MUTATION_SIGNAL.test(currentContent);
+  }
   const resultingText = tool === "write_file"
     ? args.content
     : typeof currentContent === "string" && typeof args.from === "string" &&
@@ -1558,10 +1566,15 @@ function applyRuntimeMutationRisk(
     trustedHeuristicModeId,
   );
   const proposed = proposedMutation(call.tool, call.args, observedContent?.content);
+  const expectedResultDigest = call.tool === "delete_file"
+    ? ABSENT_FILE_EVIDENCE_DIGEST
+    : proposed === null
+      ? null
+      : evidenceDigest(proposed);
   const runtimeIntent = {
     ...call.intent,
     risk,
-    ...(proposed
+    ...(expectedResultDigest
       ? {
         operationDigest: evidenceDigest(stableSerialize({
           schemaVersion: 1,
@@ -1569,7 +1582,7 @@ function applyRuntimeMutationRisk(
           targetPath,
           args: call.args,
         })),
-        expectedResultDigest: evidenceDigest(proposed),
+        expectedResultDigest,
       }
       : {}),
   };
@@ -1604,7 +1617,7 @@ export function validatedToolCall(value: unknown): ToolCall | null {
   if (contract.some((key) => typeof args[key] !== TOOL_ARG_TYPES[key])) return null;
   if (tool === "list_dir" && args.path === "") args.path = ".";
   if (
-    (["read_file", "write_file", "replace_in_file"] as ToolName[]).includes(tool) &&
+    (["read_file", "write_file", "replace_in_file", "delete_file"] as ToolName[]).includes(tool) &&
     typeof args.path === "string" && !args.path.trim()
   ) return null;
   if (tool === "replace_in_file" && typeof args.from === "string" && !args.from) return null;
@@ -1920,7 +1933,7 @@ function missionPlanFromPrivateState(privateState: WardenRuntimeJson): AgentMiss
     const actionKeys = Object.keys(action).sort().join(",");
     if (!["callDigest,status,targetPath,tool", "callDigest,resultDigest,status,targetPath,tool"]
         .includes(actionKeys) ||
-        !["list_dir", "read_file", "search", "write_file", "replace_in_file",
+        !["list_dir", "read_file", "search", "write_file", "replace_in_file", "delete_file",
           "run_command", "http_probe", "finish"].includes(String(action.tool)) ||
         (action.targetPath !== null && (typeof action.targetPath !== "string" ||
           action.targetPath.length > 500)) ||
@@ -2187,7 +2200,7 @@ export type WardenRuntimeLoop = Readonly<{
   durableEffects?: boolean;
 }>;
 
-type RuntimeMutationMaterial = Readonly<{
+type RuntimeUpsertMaterial = Readonly<{
   path: string;
   preExisted: boolean;
   preDigest: string | null;
@@ -2195,6 +2208,22 @@ type RuntimeMutationMaterial = Readonly<{
   postDigest: string;
   postContentBase64: string;
 }>;
+
+type RuntimeDeletionMaterial = Readonly<{
+  path: string;
+  preExisted: true;
+  preDigest: string;
+  preContentBase64: string;
+  postAbsent: true;
+}>;
+
+type RuntimeMutationMaterial = RuntimeUpsertMaterial | RuntimeDeletionMaterial;
+
+function runtimeMutationIsDeletion(
+  mutation: RuntimeMutationMaterial,
+): mutation is RuntimeDeletionMaterial {
+  return "postAbsent" in mutation;
+}
 
 type RuntimeToolEffectResult = Readonly<{
   result: WardenRuntimeJson;
@@ -2684,14 +2713,15 @@ async function llmSuggestTool(
   const system = `${wardenPlaybook()}
 
 Reply with JSON only:
-{"tool":"search|read_file|replace_in_file|run_command|list_dir|finish","args":{...},"thought":"...","intent":null}
+{"tool":"search|read_file|write_file|replace_in_file|delete_file|run_command|list_dir|finish","args":{...},"thought":"...","intent":null}
 Tool contract:
 - list_dir paths are repository relative. Use "." for the repository root. Paginate with offset and maxFiles when truncated.
 - search requires one nonempty literal substring of at least two characters. It is not a regular expression. Never join alternatives with "|".
 - search may include scopePath to constrain inspection to one repository-relative directory.
 - read_file paths are repository relative. Use offset and maxChars for later bounded windows in large files. Verifier files may be read but never edited.
 - replace_in_file requires an exact observed substring in "from" and its replacement in "to".
-- Every write_file or replace_in_file call requires a version 1 intent. Cite the exact current target path and digest from observedEvidenceDigests in both targetDigest and evidenceRefs. For a new file, first list its exact parent and use ${ABSENT_FILE_EVIDENCE_DIGEST} for the target digest and target evidence reference. Include hypothesis, target symbol or null, precondition, expected observation, postcondition, rollback, confidence from 0 to 1, risk, and stop condition. Use null intent for nonmutation tools.
+- delete_file requires the complete current file to be observed first and removes only that exact regular file.
+- Every write_file, replace_in_file, or delete_file call requires a version 1 intent. Cite the exact current target path and digest from observedEvidenceDigests in both targetDigest and evidenceRefs. For a new file, first list its exact parent and use ${ABSENT_FILE_EVIDENCE_DIGEST} for the target digest and target evidence reference. Include hypothesis, target symbol or null, precondition, expected observation, postcondition, rollback, confidence from 0 to 1, risk, and stop condition. Use null intent for nonmutation tools.
 - run_command accepts only the exact verifyCommand in the user payload. The system has already run it once, so run it again only after a successful edit.
 - After an empty, blocked, or failed tool result, change the tool or arguments instead of repeating it.
 Tools only. Prefer minimal edits. Never touch secrets/.env. Never claim merge.
@@ -3267,23 +3297,36 @@ function validateRuntimeToolEffectResult(
     }
     const item = envelope.mutation as unknown as RuntimeMutationMaterial;
     const mutationKeys = Object.keys(item).sort().join(",");
-    if (mutationKeys !== ["path", "postContentBase64", "postDigest", "preContentBase64",
-      "preDigest", "preExisted"].sort().join(",") ||
+    const deletion = mutationKeys === ["path", "postAbsent", "preContentBase64",
+      "preDigest", "preExisted"].sort().join(",");
+    const upsert = mutationKeys === ["path", "postContentBase64", "postDigest", "preContentBase64",
+      "preDigest", "preExisted"].sort().join(",");
+    if ((!deletion && !upsert) ||
         typeof item.path !== "string" || typeof item.preExisted !== "boolean" ||
         (item.preDigest !== null && typeof item.preDigest !== "string") ||
         (item.preContentBase64 !== null && typeof item.preContentBase64 !== "string") ||
-        typeof item.postDigest !== "string" || typeof item.postContentBase64 !== "string" ||
         item.preExisted !== (item.preDigest !== null) ||
         item.preExisted !== (item.preContentBase64 !== null)) {
       throw new Error("warden_runtime_tool_result_invalid");
     }
-    const post = Buffer.from(item.postContentBase64, "base64");
     const pre = item.preContentBase64 === null ? null : Buffer.from(item.preContentBase64, "base64");
-    if (post.toString("base64") !== item.postContentBase64 ||
-        evidenceDigest(post.toString("utf8")) !== item.postDigest ||
-        (pre !== null && (pre.toString("base64") !== item.preContentBase64 ||
-          evidenceDigest(pre.toString("utf8")) !== item.preDigest))) {
+    if ((pre !== null && (pre.toString("base64") !== item.preContentBase64 ||
+          evidenceDigest(pre.toString("utf8")) !== item.preDigest)) ||
+        (deletion && (item.preExisted !== true ||
+          (item as RuntimeDeletionMaterial).postAbsent !== true))) {
       throw new Error("warden_runtime_tool_result_invalid");
+    }
+    if (upsert) {
+      const upsertItem = item as RuntimeUpsertMaterial;
+      if (typeof upsertItem.postDigest !== "string" ||
+          typeof upsertItem.postContentBase64 !== "string") {
+        throw new Error("warden_runtime_tool_result_invalid");
+      }
+      const post = Buffer.from(upsertItem.postContentBase64, "base64");
+      if (post.toString("base64") !== upsertItem.postContentBase64 ||
+          evidenceDigest(post.toString("utf8")) !== upsertItem.postDigest) {
+        throw new Error("warden_runtime_tool_result_invalid");
+      }
     }
     mutation = Object.freeze({ ...item });
   }
@@ -3291,13 +3334,23 @@ function validateRuntimeToolEffectResult(
 }
 
 function runtimeMutationPlan(ctx: ToolContext, call: ToolCall): RuntimeMutationMaterial | null {
-  if (call.tool !== "write_file" && call.tool !== "replace_in_file") return null;
+  if (!MUTATION_TOOLS.has(call.tool)) return null;
   const path = String(call.args.path ?? "");
-  const root = resolve(ctx.repoRoot);
-  const absolute = resolve(root, path);
-  const rel = relative(root, absolute);
-  if (!path || rel.startsWith("..") || isAbsolute(rel)) return null;
+  const resolvedPath = resolveToolPath(ctx.repoRoot, path, true);
+  if (!resolvedPath) return null;
+  const { path: rel, absolutePath: absolute } = resolvedPath;
   const preExisted = existsSync(absolute);
+  if (call.tool === "delete_file") {
+    if (!preExisted || !statSync(absolute).isFile()) return null;
+    const pre = readFileSync(absolute);
+    return Object.freeze({
+      path: rel.replace(/\\/g, "/"),
+      preExisted: true,
+      preDigest: evidenceDigest(pre.toString("utf8")),
+      preContentBase64: pre.toString("base64"),
+      postAbsent: true,
+    });
+  }
   const pre = preExisted ? readFileSync(absolute) : null;
   const postText = call.tool === "write_file"
     ? String(call.args.content ?? "")
@@ -3321,7 +3374,10 @@ function runtimeMutationPlan(ctx: ToolContext, call: ToolCall): RuntimeMutationM
 
 function reconciledMutationResult(call: ToolCall, mutation: RuntimeMutationMaterial): ToolResult {
   const dryRun = false;
-  return call.tool === "write_file"
+  return call.tool === "delete_file"
+    ? { ok: true, tool: call.tool, summary: `${dryRun ? "dry-run delete" : "deleted"} ${mutation.path}`,
+      data: { path: mutation.path, deleted: true } }
+    : call.tool === "write_file"
     ? { ok: true, tool: call.tool, summary: `${dryRun ? "dry-run write" : "wrote"} ${mutation.path}`,
       data: { path: mutation.path } }
     : { ok: true, tool: call.tool, summary: `${dryRun ? "dry-run replace in" : "replaced in"} ${mutation.path}`,
@@ -3380,7 +3436,10 @@ async function runtimeExecuteTool(
       reconcile: async () => {
         if (plannedMutation) {
           const current = currentToolFileDigest(ctx, plannedMutation.path);
-          if (current === plannedMutation.postDigest) {
+          const applied = runtimeMutationIsDeletion(plannedMutation)
+            ? current === null
+            : current === plannedMutation.postDigest;
+          if (applied) {
             return {
               status: "completed" as const,
               value: Object.freeze({
@@ -3412,7 +3471,10 @@ async function runtimeExecuteTool(
         executed = true;
         if (!result.ok || !before) return Object.freeze({ result: runtimeJson(result) });
         const postDigest = currentToolFileDigest(ctx, before.path);
-        if (postDigest !== before.postDigest) {
+        const resultMatches = runtimeMutationIsDeletion(before)
+          ? postDigest === null
+          : postDigest === before.postDigest;
+        if (!resultMatches) {
           throw new Error("warden_runtime_mutation_result_mismatch");
         }
         return Object.freeze({ result: runtimeJson(result), mutation: before });
@@ -3426,10 +3488,11 @@ async function runtimeExecuteTool(
       let rollbackPreimages = [...state.rollbackPreimages];
       let sourceCounters = state.sourceCounters;
       if (value.mutation && result.ok) {
-        const post = Buffer.from(value.mutation.postContentBase64, "base64");
-        const postBlob = {
+        const deletion = runtimeMutationIsDeletion(value.mutation);
+        const post = deletion ? null : Buffer.from(value.mutation.postContentBase64, "base64");
+        const postBlob = deletion ? null : {
           digest: value.mutation.postDigest,
-          bytes: post.byteLength,
+          bytes: post!.byteLength,
           contentBase64: value.mutation.postContentBase64,
         };
         const preBlob = value.mutation.preExisted ? {
@@ -3442,7 +3505,11 @@ async function runtimeExecuteTool(
         }
         workspaceManifest = [
           ...workspaceManifest.filter((entry) => entry.path !== value.mutation!.path),
-          { path: value.mutation.path, digest: value.mutation.postDigest, bytes: post.byteLength },
+          ...(deletion ? [] : [{
+            path: value.mutation.path,
+            digest: value.mutation.postDigest,
+            bytes: post!.byteLength,
+          }]),
         ];
         if (!rollbackPreimages.some((entry) => entry.path === value.mutation!.path)) {
           rollbackPreimages = [...rollbackPreimages, {
@@ -3454,7 +3521,8 @@ async function runtimeExecuteTool(
         sourceCounters = {
           ...sourceCounters,
           groundedMutations: sourceCounters.groundedMutations + 1,
-          changedBytes: sourceCounters.changedBytes + post.byteLength,
+          changedBytes: sourceCounters.changedBytes +
+            (post?.byteLength ?? Buffer.from(value.mutation.preContentBase64!, "base64").byteLength),
         };
       }
       const runtimeEvent = {
@@ -3491,27 +3559,38 @@ async function runtimeExecuteTool(
   const value = validateRuntimeToolEffectResult(outcome.value, call);
   const result = value.result as unknown as ToolResult;
   if (value.mutation && result.ok) {
-    const root = resolve(ctx.repoRoot);
-    const absolute = resolve(root, value.mutation.path);
-    const rel = relative(root, absolute);
-    if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("warden_runtime_tool_path_invalid");
-    if (currentToolFileDigest(ctx, value.mutation.path) !== value.mutation.postDigest) {
+    const resolvedPath = resolveToolPath(ctx.repoRoot, value.mutation.path, true);
+    if (!resolvedPath) throw new Error("warden_runtime_tool_path_invalid");
+    const absolute = resolvedPath.absolutePath;
+    const deletion = runtimeMutationIsDeletion(value.mutation);
+    const currentDigest = currentToolFileDigest(ctx, value.mutation.path);
+    const applied = deletion ? currentDigest === null : currentDigest === value.mutation.postDigest;
+    if (!applied) {
       await runtime.execution.assertCurrent();
-      writeFileSync(absolute, Buffer.from(value.mutation.postContentBase64, "base64"));
+      captureToolRollbackPreimage(ctx, value.mutation.path);
+      if (deletion) rmSync(absolute, { force: true });
+      else writeFileSync(absolute, Buffer.from(value.mutation.postContentBase64, "base64"));
     }
     ctx.changedFiles.add(value.mutation.path);
     if (outcome.replayed && ctx.sourceContext) {
-      const post = Buffer.from(value.mutation.postContentBase64, "base64");
+      const post = deletion ? null : Buffer.from(value.mutation.postContentBase64, "base64");
       ctx.sourceContext.groundedMutations++;
-      ctx.sourceContext.changedBytes += post.byteLength;
-      ctx.sourceContext.observedFiles.set(value.mutation.path, {
-        digest: value.mutation.postDigest,
-        bytes: post.byteLength,
-      });
-      ctx.sourceContext.observedContents.set(value.mutation.path, {
-        digest: value.mutation.postDigest,
-        content: post.toString("utf8"),
-      });
+      ctx.sourceContext.changedBytes += post?.byteLength ??
+        Buffer.from(value.mutation.preContentBase64!, "base64").byteLength;
+      if (deletion) {
+        ctx.sourceContext.observedFiles.delete(value.mutation.path);
+        ctx.sourceContext.observedContents.delete(value.mutation.path);
+        ctx.sourceContext.readCoverage.delete(value.mutation.path);
+      } else {
+        ctx.sourceContext.observedFiles.set(value.mutation.path, {
+          digest: value.mutation.postDigest,
+          bytes: post!.byteLength,
+        });
+        ctx.sourceContext.observedContents.set(value.mutation.path, {
+          digest: value.mutation.postDigest,
+          content: post!.toString("utf8"),
+        });
+      }
     }
   } else if (outcome.replayed && ["list_dir", "read_file", "search"].includes(call.tool)) {
     const replayed = executeTool(ctx, call);
@@ -3613,8 +3692,13 @@ async function runWardenCore(
   const verifierMutatedPath = (): string | undefined => task.dryRun
     ? undefined
     : [...changed].find((path) => {
-      const expected = sourceContext.observedFiles.get(path)?.digest;
-      return !expected || currentToolFileDigest(ctx, path) !== expected;
+      const expected = [...steps].reverse().find((step) =>
+        step.result.ok && MUTATION_TOOLS.has(step.call.tool) &&
+        step.call.intent?.targetPath === path
+      )?.call.intent?.expectedResultDigest ?? sourceContext.observedFiles.get(path)?.digest;
+      const current = currentToolFileDigest(ctx, path);
+      const actual = current === null ? ABSENT_FILE_EVIDENCE_DIGEST : current;
+      return !expected || actual !== expected;
     });
   let rollback: AgentRollbackState = {
     performed: false,
@@ -3980,10 +4064,13 @@ async function runWardenCore(
       ok = false;
     }
 
-    const mutationTool = call.tool === "replace_in_file" || call.tool === "write_file";
+    const mutationTool = MUTATION_TOOLS.has(call.tool);
     if (result.ok && mutationTool && !task.dryRun) {
       const path = String(call.args.path ?? "");
-      const actualDigest = currentToolFileDigest(ctx, path);
+      const currentDigest = currentToolFileDigest(ctx, path);
+      const actualDigest = call.tool === "delete_file" && currentDigest === null
+        ? ABSENT_FILE_EVIDENCE_DIGEST
+        : currentDigest;
       if (!call.intent?.expectedResultDigest || actualDigest !== call.intent.expectedResultDigest) {
         result = {
           ok: false,

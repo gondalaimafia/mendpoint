@@ -277,18 +277,26 @@ export class HttpGitLabDelivery implements GitLabDelivery {
     if (!files.length) return "";
     assertBranch(branch);
     const id = this.projectId(namespace, project);
-    const actions: Array<{ action: "create" | "update"; file_path: string; content: string }> = [];
+    const actions: Array<
+      { action: "create" | "update"; file_path: string; content: string } |
+      { action: "delete"; file_path: string }
+    > = [];
     for (const file of files) {
       const filePath = normalizePath(file.path);
       const head = await this.fetchImpl(
         `${this.api}/projects/${id}/repository/files/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(branch)}`,
         { headers: this.headers() },
       );
-      actions.push({
-        action: head.ok ? "update" : "create",
-        file_path: filePath,
-        content: file.content,
-      });
+      if ("delete" in file) {
+        if (!head.ok) throw new Error("gitlab_delete_source_missing");
+        actions.push({ action: "delete", file_path: filePath });
+      } else {
+        actions.push({
+          action: head.ok ? "update" : "create",
+          file_path: filePath,
+          content: file.content,
+        });
+      }
     }
     const committed = await this.fetchImpl(
       `${this.api}/projects/${id}/repository/commits`,
@@ -415,7 +423,12 @@ export class MockGitLabDelivery implements GitLabDelivery {
     const proj = this.#project(namespace, project);
     const contents = proj.branches.get(branch) ?? new Map<string, string>();
     for (const file of files) {
-      contents.set(normalizePath(file.path), file.content);
+      const path = normalizePath(file.path);
+      if ("delete" in file) {
+        if (!contents.delete(path)) throw new Error("gitlab_delete_source_missing");
+      } else {
+        contents.set(path, file.content);
+      }
     }
     proj.branches.set(branch, contents);
     // A deterministic 40-hex SHA-1 over the commit inputs, mirroring a real
@@ -428,7 +441,9 @@ export class MockGitLabDelivery implements GitLabDelivery {
           project,
           branch,
           message,
-          files: files.map((file) => ({ path: normalizePath(file.path), content: file.content })),
+          files: files.map((file) => "delete" in file
+            ? { path: normalizePath(file.path), delete: true }
+            : { path: normalizePath(file.path), content: file.content }),
         }),
       )
       .digest("hex");

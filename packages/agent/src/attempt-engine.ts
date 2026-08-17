@@ -29,6 +29,7 @@ import {
 } from "@mendpoint/repair";
 import type { CandidateReviewEvidenceV2 } from "@mendpoint/shared";
 import {
+  ABSENT_FILE_EVIDENCE_DIGEST,
   createWardenRuntimeModelAuthorityDigest,
   runWarden,
   runWardenWithRuntime,
@@ -774,7 +775,8 @@ function reviewEvidence(
     const intent = step.call.intent;
     if (
       !step.result.ok ||
-      (step.call.tool !== "write_file" && step.call.tool !== "replace_in_file") ||
+      (step.call.tool !== "write_file" && step.call.tool !== "replace_in_file" &&
+        step.call.tool !== "delete_file") ||
       !intent ||
       intent.targetPath !== step.call.args.path
     ) continue;
@@ -1140,10 +1142,12 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
     for (const path of agent.filesChanged) {
       const expected = [...agent.steps].reverse().find((step) =>
         step.result.ok &&
-        (step.call.tool === "write_file" || step.call.tool === "replace_in_file") &&
+        (step.call.tool === "write_file" || step.call.tool === "replace_in_file" ||
+          step.call.tool === "delete_file") &&
         step.call.intent?.targetPath === path
       )?.call.intent?.expectedResultDigest;
-      const actual = agentCandidateManifest.entries.find((entry) => entry.path === path)?.sha256;
+      const actual = agentCandidateManifest.entries.find((entry) => entry.path === path)?.sha256 ??
+        ABSENT_FILE_EVIDENCE_DIGEST;
       if (!expected || actual !== expected) {
         fail(
           "warden_attempt_verifier_mutated_candidate",

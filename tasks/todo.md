@@ -1994,14 +1994,16 @@ Review: the existing candidate page was statically limited to review evidence ve
 
 Objective: let Fettler remove an obsolete tracked source file as one evidence-bound mutation and deliver that deletion in the same human-reviewed, replay-safe draft workflow as file writes.
 
-- [ ] Add red tests for source-observed deletion, protected-path rejection, rollback restoration, runtime replay, and stale-fence rejection.
-- [ ] Add red tests proving candidate manifests and approval artifacts retain the deleted file preimage, absent post-state, precise intent, and verifier evidence.
-- [ ] Add red tests for initial GitHub draft deletion, review-feedback update deletion, exact response-loss reconciliation, and omitted or extra tree changes failing closed.
-- [ ] Implement the smallest end-to-end delete-file operation without widening path, model, network, merge, or deploy authority.
-- [ ] Run focused suites, every workspace test and typecheck, the production build, GA gates, dependency audit, diff integrity, and independent P0/P1 review.
+- [x] Add red tests for source-observed deletion, protected-path rejection, rollback restoration, runtime replay, and stale-fence rejection.
+- [x] Add red tests proving candidate manifests and approval artifacts retain the deleted file preimage, absent post-state, precise intent, and verifier evidence.
+- [x] Add red tests for initial GitHub draft deletion, review-feedback update deletion, exact response-loss reconciliation, and omitted or extra tree changes failing closed.
+- [x] Implement the smallest end-to-end delete-file operation without widening path, model, network, merge, or deploy authority.
+- [x] Run focused suites, every workspace test and typecheck, the production build, GA gates, dependency audit, diff integrity, and independent P0/P1 review.
 - [ ] Merge through protected CI and verify the exact production revision.
 
 Acceptance: a model or deterministic planner may delete only an allowed, fully observed regular file with an authenticated version-one mutation intent bound to its exact digest. The checkpoint journal records the pre-state and authenticated absent post-state, takeover does not repeat an already-completed deletion, rollback restores the exact bytes and mode, review evidence states why the deletion is safe, and GitHub draft creation or update removes exactly that leaf while preserving every other tracked leaf. Human approval remains mandatory, and Fettler still cannot merge or deploy.
+
+Review: the operation now shares Fettler's existing containment, symlink, protected-path, observation, change-budget, intent, lease, checkpoint, verification, review, approval, and delivery authorities. Durable takeover replays the authenticated absent state without repeating the tool effect, and rollback retains the original bytes and executable mode. GitHub and GitLab initial drafts and same-draft review updates express deletion as an exact tree operation. A strict review found and closed two additional fail-closed boundaries: durable planning now uses the same path resolver as tool execution, and response-loss recovery treats only an authoritative 404 as proof of deletion rather than accepting transport or provider failures. Full affected Agent, GitHub, Worker, API, Eval, Pipeline, and ReGauge suites pass at bounded concurrency; every workspace typechecks; the production build, GA gates, production dependency audit, and diff integrity pass. The unconstrained Windows workspace run saturated process and filesystem timing budgets in unrelated tests; every reported case passed in its complete package or isolated bounded rerun.
 
 ## Governed model learning and post training: 2026-08-14
 

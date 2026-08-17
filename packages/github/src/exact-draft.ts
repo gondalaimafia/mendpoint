@@ -16,12 +16,19 @@ export type ExactDraftDeliveryInput = Readonly<{
   commitDate: string;
   title: string;
   body: string;
-  files: readonly Readonly<{
+  files: readonly ExactDraftFileChange[];
+}>;
+
+export type ExactDraftFileChange =
+  | Readonly<{
     path: string;
     content: string;
     mode: ExactDraftFileMode;
-  }>[];
-}>;
+  }>
+  | Readonly<{
+    path: string;
+    delete: true;
+  }>;
 
 export type ExactDraftFileMode = "100644" | "100755";
 
@@ -77,6 +84,7 @@ export function validateExactDraftDeliveryInput(
   const paths = new Set<string>();
   let totalBytes = 0;
   for (const file of input.files) {
+    const deletion = "delete" in file;
     if (
       typeof file.path !== "string" ||
       !file.path ||
@@ -86,13 +94,16 @@ export function validateExactDraftDeliveryInput(
       file.path.includes("//") ||
       file.path.split("/").some((part: string) => !part || part === "." || part === "..") ||
       paths.has(file.path) ||
-      typeof file.content !== "string" ||
-      (file.mode !== "100644" && file.mode !== "100755")
+      (deletion
+        ? file.delete !== true || Object.keys(file).sort().join(",") !== "delete,path"
+        : typeof file.content !== "string" ||
+          (file.mode !== "100644" && file.mode !== "100755") ||
+          Object.keys(file).some((key) => !["path", "content", "mode"].includes(key)))
     ) {
       throw new Error("github_exact_draft_files_invalid");
     }
     paths.add(file.path);
-    totalBytes += Buffer.byteLength(file.content, "utf8");
+    if (!deletion) totalBytes += Buffer.byteLength(file.content, "utf8");
     if (totalBytes > MAX_TOTAL_BYTES) throw new Error("github_exact_draft_files_too_large");
   }
   return input;
@@ -227,6 +238,14 @@ export async function deliverExactDraftWithOctokit(
     commit_sha: input.expectedBaseSha,
   });
   const tree = await Promise.all(input.files.map(async (file) => {
+    if ("delete" in file) {
+      return {
+        path: file.path,
+        mode: "100644" as const,
+        type: "blob" as const,
+        sha: null,
+      };
+    }
     const { data: blob } = await octokit.git.createBlob({
       owner: input.owner,
       repo: input.repo,

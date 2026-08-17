@@ -5,7 +5,7 @@ import {
   type WardenCheckpointPayload,
   type WardenCheckpointSourceEvidence,
 } from "./checkpoint.js";
-import { validatedToolCall } from "./agent.js";
+import { ABSENT_FILE_EVIDENCE_DIGEST, validatedToolCall } from "./agent.js";
 import type { AgentStep, ToolName } from "./types.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -128,7 +128,7 @@ function sha256(value: string | Uint8Array): string {
 }
 
 export function createWardenRuntimeMutationOperationDigest(
-  tool: "write_file" | "replace_in_file",
+  tool: "write_file" | "replace_in_file" | "delete_file",
   targetPath: string,
   args: Readonly<Record<string, WardenRuntimeJson>>,
 ): string {
@@ -261,30 +261,35 @@ function effectEventResultFromBytes(content: Uint8Array): WardenRuntimeJson {
     ...(result.error === undefined ? [] : ["error"]),
   ], code);
   if (typeof result.ok !== "boolean" || typeof result.summary !== "string" ||
-      !( ["list_dir", "read_file", "search", "write_file", "replace_in_file",
+      !( ["list_dir", "read_file", "search", "write_file", "replace_in_file", "delete_file",
         "run_command", "http_probe", "finish"] as const).includes(result.tool as ToolName) ||
       (result.error !== undefined && typeof result.error !== "string")) {
     throw new Error(code);
   }
   if (envelope.mutation !== undefined) {
     const mutation = jsonRecord(envelope.mutation, code);
-    exactKeys(mutation, [
-      "path", "preExisted", "preDigest", "preContentBase64",
-      "postDigest", "postContentBase64",
-    ], code);
+    const deletion = mutation.postAbsent === true;
+    exactKeys(mutation, deletion
+      ? ["path", "preExisted", "preDigest", "preContentBase64", "postAbsent"]
+      : ["path", "preExisted", "preDigest", "preContentBase64",
+        "postDigest", "postContentBase64"], code);
     if (typeof mutation.path !== "string" || typeof mutation.preExisted !== "boolean" ||
         (mutation.preDigest !== null && typeof mutation.preDigest !== "string") ||
         (mutation.preContentBase64 !== null && typeof mutation.preContentBase64 !== "string") ||
-        typeof mutation.postDigest !== "string" || typeof mutation.postContentBase64 !== "string" ||
         mutation.preExisted !== (mutation.preDigest !== null) ||
-        mutation.preExisted !== (mutation.preContentBase64 !== null)) {
+        mutation.preExisted !== (mutation.preContentBase64 !== null) ||
+        (deletion && mutation.preExisted !== true) ||
+        (!deletion && (typeof mutation.postDigest !== "string" ||
+          typeof mutation.postContentBase64 !== "string"))) {
       throw new Error(code);
     }
     validPath(mutation.path, code);
-    validDigest(mutation.postDigest, code);
-    const post = Buffer.from(mutation.postContentBase64, "base64");
-    if (post.toString("base64") !== mutation.postContentBase64 ||
-        sha256(post) !== mutation.postDigest) throw new Error(code);
+    if (!deletion) {
+      validDigest(mutation.postDigest as string, code);
+      const post = Buffer.from(mutation.postContentBase64 as string, "base64");
+      if (post.toString("base64") !== mutation.postContentBase64 ||
+          sha256(post) !== mutation.postDigest) throw new Error(code);
+    }
     if (mutation.preExisted) {
       validDigest(mutation.preDigest as string, code);
       const pre = Buffer.from(mutation.preContentBase64 as string, "base64");
@@ -308,7 +313,9 @@ function mutationIdentity(event: WardenRuntimeEvent): Readonly<{ path: string; d
   const args = jsonRecord(call.args!, code);
   const expectedArgs = event.tool === "write_file"
     ? ["path", "content"]
-    : ["path", "from", "to", ...(args.global === undefined ? [] : ["global"] )];
+    : event.tool === "delete_file"
+      ? ["path"]
+      : ["path", "from", "to", ...(args.global === undefined ? [] : ["global"] )];
   exactKeys(args, expectedArgs, code);
   if (typeof args.path !== "string" ||
       (event.tool === "write_file" && typeof args.content !== "string") ||
@@ -333,10 +340,14 @@ function mutationIdentity(event: WardenRuntimeEvent): Readonly<{ path: string; d
   validDigest(intent.operationDigest, code);
   validDigest(intent.expectedResultDigest, code);
   if (intent.operationDigest !== createWardenRuntimeMutationOperationDigest(
-    event.tool as "write_file" | "replace_in_file",
+    event.tool as "write_file" | "replace_in_file" | "delete_file",
     args.path,
     args,
   )) {
+    throw new Error(code);
+  }
+  if ((event.tool === "delete_file") !==
+      (intent.expectedResultDigest === ABSENT_FILE_EVIDENCE_DIGEST)) {
     throw new Error(code);
   }
   const result = jsonRecord(event.result, code);
@@ -451,12 +462,13 @@ function validateEvent(event: WardenRuntimeEvent): void {
       (event.modelEffectId !== undefined &&
         (event.plannerSource !== "model" || !event.executed || !IDENTIFIER.test(event.modelEffectId))) ||
       (event.modelPlannedCall !== undefined && event.modelEffectId === undefined) ||
-      !(["list_dir", "read_file", "search", "write_file", "replace_in_file",
+      !(["list_dir", "read_file", "search", "write_file", "replace_in_file", "delete_file",
         "run_command", "http_probe", "finish"] as const).includes(event.tool)) {
     throw new Error("warden_runtime_state_event_invalid");
   }
   if (event.mutation && (!event.executed || !event.ok ||
-      (event.tool !== "write_file" && event.tool !== "replace_in_file"))) {
+      (event.tool !== "write_file" && event.tool !== "replace_in_file" &&
+        event.tool !== "delete_file"))) {
     throw new Error("warden_runtime_state_event_invalid");
   }
   validateJson(event.call);
@@ -738,6 +750,13 @@ function validateState(state: WardenPrivateRuntimeStateV1): void {
   if (mutationTargets.size !== state.rollbackPreimages.length) {
     throw new Error("warden_runtime_state_rollback_invalid");
   }
+  for (const sourceEntry of state.sourceManifest) {
+    if (!state.workspaceManifest.some((entry) => entry.path === sourceEntry.path) &&
+        mutationTargets.get(sourceEntry.path.toLowerCase())?.digest !==
+          ABSENT_FILE_EVIDENCE_DIGEST) {
+      throw new Error("warden_runtime_state_workspace_manifest_invalid");
+    }
+  }
   for (const identity of mutationTargets.values()) {
     const preimage = state.rollbackPreimages.find(
       (entry) => entry.path.toLowerCase() === identity.path.toLowerCase(),
@@ -967,12 +986,12 @@ export function projectWardenCheckpointPayload(
       throw new Error("warden_runtime_state_source_evidence_invalid");
     }
   }
-  for (const path of source.keys()) {
-    if (!workspace.has(path)) throw new Error("warden_runtime_state_workspace_manifest_invalid");
-  }
-  const changedFiles = [...workspace.values()]
-    .filter((entry) => source.get(entry.path)?.digest !== entry.digest)
-    .map((entry) => ({ path: entry.path, digest: entry.digest }))
+  const changedFiles = [...new Set([...source.keys(), ...workspace.keys()])]
+    .filter((path) => source.get(path)?.digest !== workspace.get(path)?.digest)
+    .map((path) => ({
+      path,
+      digest: workspace.get(path)?.digest ?? ABSENT_FILE_EVIDENCE_DIGEST,
+    }))
     .sort((a, b) => compareCodeUnits(a.path, b.path));
   const executed = normalized.events.filter((event) => event.executed);
   const successfulMutationCount = executed.filter((event) => event.mutation).length;

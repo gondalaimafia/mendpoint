@@ -554,7 +554,9 @@ export const TRANSFORMER_ADAPTIVE_DELIVERY_EVAL_SCENARIO: AgentEvalScenario = Ob
         await deliverExactDraft({
           ...exactCalls[0]!,
           files: exactCalls[0]!.files.map((file, index) => index === 0
-            ? { ...file, content: `${file.content}\nunsafe divergence` }
+            ? "delete" in file
+              ? file
+              : { ...file, content: `${file.content}\nunsafe divergence` }
             : file),
         });
       } catch (error) {
@@ -622,7 +624,10 @@ export const TRANSFORMER_ADAPTIVE_DELIVERY_EVAL_SCENARIO: AgentEvalScenario = Ob
           exactSealedBytes &&
             JSON.stringify(deliveredFiles.map((file) => file.path)) ===
               JSON.stringify(expectedDeliveryPaths) &&
-            deliveredFiles.find((file) => file.path === "package.json")?.mode === "100755" &&
+            (() => {
+              const file = deliveredFiles.find((candidate) => candidate.path === "package.json");
+              return file !== undefined && !("delete" in file) && file.mode === "100755";
+            })() &&
             pilotHandoff?.fileModes["package.json"] === "100755" &&
             artifact.fileModes["package.json"] === "100755",
           expectedFiles,
@@ -703,7 +708,9 @@ export const TRANSFORMER_ADAPTIVE_DELIVERY_EVAL_SCENARIO: AgentEvalScenario = Ob
             steps: grades.length + exactCalls.length,
             changedFiles: deliveredFiles.length,
             changedBytes: deliveredFiles.reduce(
-              (total, file) => total + Buffer.byteLength(file.content, "utf8"),
+              (total, file) => total + ("delete" in file
+                ? 0
+                : Buffer.byteLength(file.content, "utf8")),
               0,
             ),
             evidenceBytes,

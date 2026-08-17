@@ -3,6 +3,7 @@
  */
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -127,7 +128,8 @@ function redactProbeText(value: string): string {
 
 type OriginalFileSnapshot = {
   existed: boolean;
-  content?: string;
+  content?: Buffer;
+  mode?: number;
 };
 
 export type ToolRollbackResult = {
@@ -176,6 +178,20 @@ function safeRel(repoRoot: string, p: string, allowMissing = false): string | nu
     return null;
   }
   return relative(root, abs).replace(/\\/g, "/") || ".";
+}
+
+/** Resolve one repository path through the same containment and symlink fence as tools. */
+export function resolveToolPath(
+  repoRoot: string,
+  path: string,
+  allowMissing = false,
+): Readonly<{ path: string; absolutePath: string }> | null {
+  const safe = safeRel(repoRoot, path, allowMissing);
+  if (!safe || safe === ".") return null;
+  return Object.freeze({
+    path: safe,
+    absolutePath: join(realpathSync(resolve(repoRoot)), safe),
+  });
 }
 
 function walk(
@@ -334,6 +350,7 @@ function blockMutation(ctx: ToolContext, tool: ToolCall["tool"], summary: string
 
 function assertObservedMutation(
   ctx: ToolContext,
+  tool: ToolCall["tool"],
   safe: string,
   absolutePath: string,
 ): ToolResult | undefined {
@@ -342,24 +359,34 @@ function assertObservedMutation(
   if (existsSync(absolutePath)) {
     const observed = state.observedFiles.get(safe);
     if (!observed) {
-      return blockMutation(ctx, "write_file", `read ${safe} before changing it`, "source_context_required");
+      return blockMutation(ctx, tool, `read ${safe} before changing it`, "source_context_required");
     }
     const stat = statSync(absolutePath);
     if (!stat.isFile() || stat.size > state.budget.maxFileBytes) {
-      return blockMutation(ctx, "write_file", `source fence rejected ${safe}`, "source_context_invalid");
+      return blockMutation(ctx, tool, `source fence rejected ${safe}`, "source_context_invalid");
     }
     const current = readFileSync(absolutePath);
     if (sha256(current) !== observed.digest) {
-      return blockMutation(ctx, "write_file", `source changed after observation: ${safe}`, "source_context_stale");
+      return blockMutation(ctx, tool, `source changed after observation: ${safe}`, "source_context_stale");
     }
     return undefined;
   }
   const parent = relative(realpathSync(resolve(ctx.repoRoot)), dirname(absolutePath))
     .replace(/\\/g, "/") || ".";
   if (!state.observedDirectories.has(parent)) {
-    return blockMutation(ctx, "write_file", `list ${parent} before creating ${safe}`, "source_context_required");
+    return blockMutation(ctx, tool, `list ${parent} before creating ${safe}`, "source_context_required");
   }
   return undefined;
+}
+
+function recordDeletion(ctx: ToolContext, safe: string, deletedBytes: number): void {
+  const state = ctx.sourceContext;
+  if (!state) return;
+  state.changedBytes += deletedBytes;
+  state.groundedMutations++;
+  state.observedFiles.delete(safe);
+  state.observedContents.delete(safe);
+  state.readCoverage.delete(safe);
 }
 
 function recordMutation(ctx: ToolContext, safe: string, content: string): void {
@@ -391,13 +418,22 @@ function captureOriginal(
   }
   if (originals.has(safe)) return;
   if (existsSync(absolutePath)) {
+    const info = statSync(absolutePath);
     originals.set(safe, {
       existed: true,
-      content: readFileSync(absolutePath, "utf8"),
+      content: readFileSync(absolutePath),
+      mode: info.mode & 0o777,
     });
   } else {
     originals.set(safe, { existed: false });
   }
+}
+
+/** Retain a rollback preimage before replaying a durable mutation into this workspace. */
+export function captureToolRollbackPreimage(ctx: ToolContext, path: string): void {
+  const resolvedPath = resolveToolPath(ctx.repoRoot, path, true);
+  if (!resolvedPath) throw new Error("tool_path_invalid");
+  captureOriginal(ctx, resolvedPath.path, resolvedPath.absolutePath);
 }
 
 export function rollbackToolWrites(ctx: ToolContext): ToolRollbackResult {
@@ -425,7 +461,10 @@ export function rollbackToolWrites(ctx: ToolContext): ToolRollbackResult {
       const absolutePath = join(ctx.repoRoot, safe);
       if (original.existed) {
         mkdirSync(dirname(absolutePath), { recursive: true });
-        writeFileSync(absolutePath, original.content ?? "", "utf8");
+        writeFileSync(absolutePath, original.content ?? Buffer.alloc(0));
+        if (original.mode !== undefined && process.platform !== "win32") {
+          chmodSync(absolutePath, original.mode);
+        }
       } else if (existsSync(absolutePath)) {
         rmSync(absolutePath, { force: true });
       }
@@ -646,7 +685,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         )) {
           return blockMutation(ctx, tool, `change budget rejected ${safe}`, "change_budget");
         }
-        const sourceFence = assertObservedMutation(ctx, safe, abs);
+        const sourceFence = assertObservedMutation(ctx, tool, safe, abs);
         if (sourceFence) return { ...sourceFence, tool };
         if (existsSync(abs) && readFileSync(abs, "utf8") === content) {
           return {
@@ -687,7 +726,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         const abs = join(ctx.repoRoot, safe);
         if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT" };
         const original = readFileSync(abs, "utf8");
-        const sourceFence = assertObservedMutation(ctx, safe, abs);
+        const sourceFence = assertObservedMutation(ctx, tool, safe, abs);
         if (sourceFence) return { ...sourceFence, tool };
         if (!original.includes(from)) {
           return { ok: false, tool, summary: `pattern not found in ${safe}`, error: "no_match" };
@@ -725,6 +764,36 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         ctx.changedFiles.add(safe);
         recordMutation(ctx, safe, updated);
         return { ok: true, tool, summary: `replaced in ${safe}`, data: { path: safe } };
+      }
+
+      case "delete_file": {
+        const rel = String(args.path ?? "");
+        const safe = safeRel(ctx.repoRoot, rel, true);
+        if (!safe || safe === "." || pathBlocked(safe, neverMutate)) {
+          return { ok: false, tool, summary: "blocked path", error: "policy" };
+        }
+        const abs = join(ctx.repoRoot, safe);
+        if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT" };
+        const info = statSync(abs);
+        if (!info.isFile()) return { ok: false, tool, summary: "not a regular file", error: "type" };
+        const state = ctx.sourceContext;
+        if (state && (
+          info.size > state.budget.maxFileBytes ||
+          (!ctx.changedFiles.has(safe) && ctx.changedFiles.size >= state.budget.maxChangedFiles) ||
+          state.changedBytes + info.size > state.budget.maxChangedBytes
+        )) {
+          return blockMutation(ctx, tool, `change budget rejected ${safe}`, "change_budget");
+        }
+        const sourceFence = assertObservedMutation(ctx, tool, safe, abs);
+        if (sourceFence) return sourceFence;
+        captureOriginal(ctx, safe, abs);
+        ctx.changedFiles.add(safe);
+        recordDeletion(ctx, safe, info.size);
+        if (ctx.dryRun) {
+          return { ok: true, tool, summary: `dry-run delete ${safe}`, data: { path: safe, deleted: true, simulated: true } };
+        }
+        rmSync(abs, { force: true });
+        return { ok: true, tool, summary: `deleted ${safe}`, data: { path: safe, deleted: true } };
       }
 
       case "run_command": {

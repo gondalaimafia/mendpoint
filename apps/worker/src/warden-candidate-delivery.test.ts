@@ -20,7 +20,7 @@ import { runWardenCandidateDelivery } from "./warden-candidate-delivery.js";
 const NOW = "2026-08-06T12:00:00.000Z";
 const opened: Array<{ db: AppDb; directory: string }> = [];
 
-function fixture(preciseEvidence = false) {
+function fixture(preciseEvidence = false, deleted = false) {
   const directory = mkdtempSync(join(tmpdir(), "mendpoint-warden-delivery-worker-"));
   const dataRoot = join(directory, "data");
   const approvalRoot = join(dataRoot, "warden-evidence", "tenant-a", "approvals");
@@ -31,6 +31,8 @@ function fixture(preciseEvidence = false) {
     `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
      VALUES ('tenant-a', 'tenant-a', 'Tenant A', 'team', 'active', 10, ?)`,
   ).run(NOW);
+    const before = Buffer.from("export const old = 1;\n");
+    const beforeSha = `sha256:${createHash("sha256").update(before).digest("hex")}`;
     const after = Buffer.from("export const fixed = 1;\n");
     const afterSha = `sha256:${createHash("sha256").update(after).digest("hex")}`;
     const artifact = {
@@ -82,14 +84,14 @@ function fixture(preciseEvidence = false) {
     sourceDigest: `sha256:${"c".repeat(64)}`,
     candidate: {
       digest: `sha256:${"d".repeat(64)}`,
-      entries: [{ path: "src/client.ts", size: after.byteLength, sha256: afterSha, executable: false }],
+      entries: deleted ? [] : [{ path: "src/client.ts", size: after.byteLength, sha256: afterSha, executable: false }],
     },
     files: [{
       path: "src/client.ts",
-      before: Buffer.from("export const old = 1;\n").toString("base64"),
-      after: after.toString("base64"),
-      beforeSha256: `sha256:${"f".repeat(64)}`,
-      afterSha256: afterSha,
+      before: before.toString("base64"),
+      after: deleted ? null : after.toString("base64"),
+      beforeSha256: beforeSha,
+      afterSha256: deleted ? null : afterSha,
     }],
   };
   const bytes = Buffer.from(JSON.stringify(artifact));
@@ -189,6 +191,25 @@ describe("Warden exact candidate draft delivery", () => {
     expect(body).toContain("Precondition: The exact legacy SDK call is still present.");
     expect(body).toContain("Postcondition: The approved SDK request and regression checks pass.");
     expect(body).toContain("Rollback: Restore the exact observed source bytes.");
+  });
+
+  it("delivers an approved deletion as an exact delete operation", async () => {
+    const { db, dataRoot, job } = fixture(true, true);
+    const deliver = vi.fn(async (input: ExactDraftDeliveryInput) => ({
+      branch: input.branch, title: input.title, baseBranch: input.baseBranch,
+      baseSha: input.expectedBaseSha, commitSha: "b".repeat(40),
+      draft: true as const, number: 17, url: "https://github.com/acme/sdk/pull/17",
+    }));
+
+    await runWardenCandidateDelivery({
+      db, job, github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+    });
+
+    expect(deliver).toHaveBeenCalledWith(expect.objectContaining({
+      files: [{ path: "src/client.ts", delete: true }],
+    }));
   });
 
   it("fails closed before GitHub when the sealed bytes are changed", async () => {

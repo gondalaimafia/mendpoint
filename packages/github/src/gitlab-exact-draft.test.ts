@@ -112,6 +112,16 @@ describe("gitlabAsExactDraftDelivery", () => {
     expect(result.commitSha).toMatch(/^[a-f0-9]{40}$/);
   });
 
+  it("preserves an approved deletion as a GitLab delete action", async () => {
+    const gitlab = recordingGitLab();
+    await gitlabAsExactDraftDelivery(gitlab).deliverExactDraft(intent({
+      files: Object.freeze([{ path: "src/obsolete.ts", delete: true as const }]),
+    }));
+    expect(gitlab.calls.commitFiles[0]![4]).toEqual([
+      { path: "src/obsolete.ts", delete: true },
+    ] satisfies FileEdit[]);
+  });
+
   it("falls back to a deterministic synthesized commit id when GitLab omits the SHA", async () => {
     const first = await gitlabAsExactDraftDelivery(recordingGitLab({}, "")).deliverExactDraft(intent());
     const second = await gitlabAsExactDraftDelivery(recordingGitLab({}, "")).deliverExactDraft(intent());
