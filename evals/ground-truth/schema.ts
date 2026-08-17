@@ -23,10 +23,19 @@ export type Product = "fettler" | "regauge";
 export type Difficulty = 1 | 2 | 3 | 4 | 5;
 
 /**
- * Phase 8 dataset split. `development` may be inspected while fixing; `holdout`
- * is the honest quality measure and is never inspected during a fix.
+ * Dataset split (spec §18.9 — three tiers). `development` may be inspected while
+ * fixing. `regression` holds scenarios added AFTER a failure was diagnosed: every
+ * fixed defect becomes a permanent regression case here, so a later change that
+ * reintroduces the defect is caught. `holdout` is the honest quality measure and
+ * is never inspected during a fix. (`validation` is the tuning split between
+ * development and holdout; it is not one of the three canonical tiers but is
+ * retained so procedurally-generated tuning scenarios have a home.)
  */
-export type DatasetSplit = "development" | "validation" | "holdout";
+export type DatasetSplit =
+  | "development"
+  | "regression"
+  | "validation"
+  | "holdout";
 
 /**
  * The kind of behaviour that counts as correct for the scenario. This drives
@@ -146,6 +155,7 @@ const BEHAVIORS: ReadonlySet<string> = new Set([
 ]);
 const SPLITS: ReadonlySet<string> = new Set([
   "development",
+  "regression",
   "validation",
   "holdout",
 ]);
@@ -185,7 +195,7 @@ export function validateGroundTruth(value: unknown): string[] {
     problems.push("intended_product must be a non-empty array of fettler|regauge");
   }
   if (typeof g.dataset_split !== "string" || !SPLITS.has(g.dataset_split)) {
-    problems.push("dataset_split must be development|validation|holdout");
+    problems.push("dataset_split must be development|regression|validation|holdout");
   }
   if (typeof g.correct_behavior !== "string" || !BEHAVIORS.has(g.correct_behavior)) {
     problems.push(
