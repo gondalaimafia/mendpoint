@@ -10,7 +10,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 describe("platform SDK", () => {
   it("exposes graph_query plan execute record_outcome", () => {
-    const p = createPlatform();
+    const p = createPlatform({ tenantId: "sdk-test" });
     const stats = p.graphQuery({ op: "stats" });
     expect(stats.summary).toBeTruthy();
     expect(p.plannerContext("warden")).toMatch(/Idempotency|Knowledge|style/i);
@@ -54,7 +54,7 @@ describe("platform SDK", () => {
   });
 
   it("exposes backfillGit latencySlo dogfood", () => {
-    const p = createPlatform();
+    const p = createPlatform({ tenantId: "sdk-test" });
     p.graphQuery({ op: "stats" });
     p.graphQuery({ op: "stats" });
     p.graphQuery({ op: "stats" });

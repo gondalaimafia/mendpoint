@@ -10,6 +10,7 @@ import {
   type PlanStep,
 } from "@mendpoint/orchestrator";
 import { createSandbox, type SandboxHandle } from "@mendpoint/platform";
+import type { GraphTenantScope } from "@mendpoint/graph-learn";
 import { newId } from "@mendpoint/shared";
 import {
   appendTrace,
@@ -40,6 +41,11 @@ export type ExecuteOptions = {
   maxSteps?: number;
   /** Pre-created isolated backend for shell-capable plans. */
   sandbox?: SandboxHandle;
+  /**
+   * Tenant scope for graph-backed tools. Graph tools fail closed (return no
+   * data) when this is absent, so a plan can never read the global graph.
+   */
+  scope?: GraphTenantScope;
 };
 
 export type ExecuteResult = {
@@ -56,6 +62,7 @@ function runTool(
   step: PlanStep,
   sbx: SandboxHandle,
   injectFail?: string,
+  scope?: GraphTenantScope,
 ): ToolResult {
   if (injectFail && step.action === injectFail) {
     return {
@@ -64,7 +71,7 @@ function runTool(
       error: `structured_tool_error: injected failure on action=${step.action}`,
     };
   }
-  const result = runSpecialistTool(step, sbx);
+  const result = runSpecialistTool(step, sbx, scope);
   if (!result.ok) return result;
   if (!step.successCriteria.length) {
     return {
@@ -143,7 +150,7 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
         data: { action: step.action, id: step.id },
       });
 
-      const result = runTool(step, sbx, inject);
+      const result = runTool(step, sbx, inject, opts.scope);
       // only inject once
       if (inject && step.action === inject) inject = undefined;
 

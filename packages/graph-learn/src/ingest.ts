@@ -12,6 +12,20 @@ import {
   type GraphLearnDb,
 } from "./store.js";
 
+/**
+ * Stamp tenant ownership onto a created node's props when a tenant is known, so
+ * the fail-closed tenant graph view can include the node. Nodes whose ids are
+ * already tenant-namespaced are owned regardless; this covers the ones (Change,
+ * Surface) that are keyed on tenant-agnostic identifiers.
+ */
+function tenantProps(
+  tenantId: string | undefined,
+  props?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (!tenantId) return props;
+  return { ...(props ?? {}), tenant_id: tenantId };
+}
+
 export type IngestControlPlane = {
   provider: { id: string; slug: string; name: string };
   consumers: Array<{
@@ -23,28 +37,32 @@ export type IngestControlPlane = {
   monitors: Array<{ consumerId: string; providerId: string }>;
 };
 
-export function ingestControlPlane(db: GraphLearnDb, data: IngestControlPlane): void {
+export function ingestControlPlane(
+  db: GraphLearnDb,
+  data: IngestControlPlane,
+  tenantId?: string,
+): void {
   upsertNode(db, {
     id: `provider:${data.provider.slug}`,
     kind: "Provider",
     label: data.provider.name,
-    props: { id: data.provider.id, slug: data.provider.slug },
+    props: tenantProps(tenantId, { id: data.provider.id, slug: data.provider.slug }),
   });
   upsertNode(db, {
     id: `service:${data.provider.slug}`,
     kind: "Service",
     label: data.provider.name,
-    props: { tier: "t1" },
+    props: tenantProps(tenantId, { tier: "t1" }),
   });
   for (const c of data.consumers) {
     upsertNode(db, {
       id: `consumer:${c.id}`,
       kind: "Consumer",
       label: c.name,
-      props: {
+      props: tenantProps(tenantId, {
         identifier: `${c.githubOwner}/${c.githubRepo}`,
         github: `${c.githubOwner}/${c.githubRepo}`,
-      },
+      }),
     });
   }
   for (const m of data.monitors) {
@@ -77,18 +95,20 @@ export function ingestSpecDiff(
     diff: StructuralDiff;
     surfaces: ImpactableSurface[];
   },
+  tenantId?: string,
 ): void {
   const pId = `provider:${input.providerSlug}`;
   upsertNode(db, {
     id: pId,
     kind: "Provider",
     label: input.providerSlug,
+    props: tenantProps(tenantId),
   });
   upsertNode(db, {
     id: `change:${input.changeId}`,
     kind: "Change",
     label: input.diff.summary.slice(0, 120),
-    props: { risk: input.diff.risk },
+    props: tenantProps(tenantId, { risk: input.diff.risk }),
   });
   upsertEdge(db, {
     id: `VERSIONS:${input.changeId}`,
@@ -105,13 +125,13 @@ export function ingestSpecDiff(
       id: sid,
       kind: "Surface",
       label: s.canonicalId,
-      props: {
+      props: tenantProps(tenantId, {
         severity: s.severity,
         op: s.op,
         path: s.path,
         method: s.method,
         field: s.field,
-      },
+      }),
     });
     upsertEdge(db, {
       id: `RELATED:${input.changeId}:${s.id}`,
@@ -128,12 +148,12 @@ export function ingestSpecDiff(
         id: eid,
         kind: "Endpoint",
         label: `${method} ${s.path}`,
-        props: {
+        props: tenantProps(tenantId, {
           path: s.path,
           method,
           protocol: "rest",
           operation_id: s.canonicalId,
-        },
+        }),
       });
       upsertEdge(db, {
         id: `HAS_ENDPOINT:${input.providerSlug}:${s.id}`,
@@ -171,11 +191,11 @@ export function ingestSpecDiff(
         id: fid,
         kind: "Field",
         label: fname,
-        props: {
+        props: tenantProps(tenantId, {
           name: fname,
           from_field: s.fromField,
           to_field: s.toField,
-        },
+        }),
       });
       upsertEdge(db, {
         id: `HAS_FIELD:${sid}:${fname}`,
@@ -252,6 +272,7 @@ export function labelPrOutcome(
     /** A/B experiment arm */
     experiment?: "control" | "treatment" | string;
   },
+  tenantId?: string,
 ): void {
   const prNode = `pr:${input.prId}`;
   const consumerNode = `consumer:${input.consumerId}`;
@@ -281,31 +302,31 @@ export function labelPrOutcome(
     id: consumerNode,
     kind: "Consumer",
     label: input.consumerId,
-    props: { id: input.consumerId },
+    props: tenantProps(tenantId, { id: input.consumerId }),
   });
   upsertNode(db, {
     id: `change:${input.changeId}`,
     kind: "Change",
     label: input.changeId,
-    props: { id: input.changeId },
+    props: tenantProps(tenantId, { id: input.changeId }),
   });
   upsertNode(db, {
     id: prNode,
     kind: "PullRequest",
     label: input.title ?? input.prId,
-    props: {
+    props: tenantProps(tenantId, {
       outcome: input.outcome,
       number: input.prId,
       plan_id: input.planId,
       experiment: input.experiment,
-    },
+    }),
   });
   if (input.planId) {
     upsertNode(db, {
       id: `plan:${input.planId}`,
       kind: "Plan",
       label: input.planId,
-      props: { plan_id: input.planId },
+      props: tenantProps(tenantId, { plan_id: input.planId }),
     });
     upsertEdge(db, {
       id: `EXECUTED_PLAN:${input.prId}:${input.planId}`.slice(0, 240),

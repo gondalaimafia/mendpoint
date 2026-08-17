@@ -23,7 +23,7 @@ import { nextHeuristicCall, type HeuristicState } from "./heuristics.js";
 import { DEFAULT_NEVER_TOUCH } from "./policies.js";
 import { discoverVerifyCommand } from "./discover-verify.js";
 import { hasAutomaticWardenRepair } from "./fixes.js";
-import { redactSourceForModel } from "./source-redaction.js";
+import { redactSourceForModel } from "@mendpoint/shared";
 import { resolveTenantModelBackend } from "./model-tenant-routing.js";
 import {
   buildNonOpenAiModelRequest,

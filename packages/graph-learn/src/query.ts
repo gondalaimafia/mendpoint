@@ -68,21 +68,18 @@ export function blastRadius(
 export function runGraphQuery(
   db: GraphLearnDb,
   q: GraphQuery,
-  scope?: GraphTenantScope,
+  scope: GraphTenantScope,
 ): GraphQueryResult {
+  // Fail closed by construction: the tenant scope is mandatory. Omitting it is a
+  // type error at the call site; a blank tenant is rejected at runtime so no op
+  // can ever fall back to the global cross-tenant graph.
+  if (!scope || !scope.tenantId) {
+    throw new Error("graph_tenant_scope_required");
+  }
   const t0 = performance.now();
   let tenantView: GraphLearnDb | undefined;
   try {
-    if (q.op === "repository_evidence" && !scope) {
-      return {
-        op: q.op,
-        nodes: [],
-        edges: [],
-        summary: "tenant scope required",
-        rows: [],
-      };
-    }
-    if (scope && q.op === "pattern_success_rates") {
+    if (q.op === "pattern_success_rates") {
       const minSamples = q.minSamples ?? 1;
       const rows = tenantPatternSuccessRows(db, scope, minSamples);
       return {
@@ -93,7 +90,7 @@ export function runGraphQuery(
         rows,
       };
     }
-    if (scope && q.op === "stats") {
+    if (q.op === "stats") {
       const stats = tenantGraphStats(db, scope);
       return {
         op: "stats",
@@ -103,11 +100,11 @@ export function runGraphQuery(
         rows: [stats],
       };
     }
-    if (scope && q.op === "latency_stats") {
+    if (q.op === "latency_stats") {
       return runGraphQueryInner(db, q);
     }
-    tenantView = scope ? createTenantGraphView(db, scope) : undefined;
-    return runGraphQueryInner(tenantView ?? db, q);
+    tenantView = createTenantGraphView(db, scope);
+    return runGraphQueryInner(tenantView, q);
   } finally {
     tenantView?.raw.close();
     recordLatency(q.op, performance.now() - t0);
@@ -254,7 +251,9 @@ function runGraphQueryInner(
     }
     case "who_consumes_endpoint": {
       const eid = `endpoint:${q.providerSlug}:${(q.method ?? "ANY").toUpperCase()}:${q.path}`;
-      const p = runGraphQuery(db, {
+      // db here is already the tenant-scoped view; recurse into the inner
+      // dispatcher so we neither re-wrap the view nor require a redundant scope.
+      const p = runGraphQueryInner(db, {
         op: "who_consumes_provider",
         providerSlug: q.providerSlug,
       });
@@ -313,7 +312,8 @@ function runGraphQueryInner(
       };
     }
     case "neighborhood": {
-      return runGraphQuery(db, {
+      // db here is already the tenant-scoped view (see who_consumes_endpoint).
+      return runGraphQueryInner(db, {
         op: "blast_radius",
         nodeId: q.nodeId,
         maxHops: q.k ?? 1,

@@ -24,6 +24,13 @@ export {
 } from "./bounded-http.js";
 
 export {
+  redactSourceForModel,
+  type SourceRedactionCounts,
+  type SourceRedactionExclusionReason,
+  type SourceRedactionResult,
+} from "./source-redaction.js";
+
+export {
   DEPENDENCY_DIRECTORIES,
   PYTHON_VIRTUALENV_MARKER,
   classifyDependencyDirectory,

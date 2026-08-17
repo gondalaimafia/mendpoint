@@ -15,8 +15,11 @@ export async function wardenSpecDiffStub(opts: {
   newSpecPath: string;
   baseDir?: string;
   execute?: boolean;
+  /** Tenant that owns this specialist run's graph reads/writes. */
+  tenantId?: string;
 }) {
-  const platform = createPlatform();
+  const scope = { tenantId: opts.tenantId ?? "sdk-specialist-demo" };
+  const platform = createPlatform(scope);
   const oldSpec = JSON.parse(readFileSync(opts.oldSpecPath, "utf8"));
   const newSpec = JSON.parse(readFileSync(opts.newSpecPath, "utf8"));
 
@@ -41,6 +44,7 @@ export async function wardenSpecDiffStub(opts: {
   const run = await executePlan({
     plan,
     baseDir: opts.baseDir,
+    scope,
   });
   return { plan, markdown, consumers, context, run };
 }

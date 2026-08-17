@@ -7,12 +7,18 @@ import {
   type GraphLearnDb,
 } from "./index.js";
 
-function addNode(db: GraphLearnDb, id: string, repoId?: string) {
+function addNode(
+  db: GraphLearnDb,
+  id: string,
+  repoId?: string,
+  tenantId?: string,
+) {
   upsertNode(db, {
     id,
     kind: "MigrationUnit",
     label: id,
     repo_id: repoId,
+    props: tenantId ? { tenant_id: tenantId } : undefined,
   });
 }
 
@@ -36,7 +42,7 @@ describe("complete dependency path query", () => {
     const db = openGraphLearnMemory();
     try {
       for (const id of ["root", "high", "high-leaf", "low", "low-leaf"]) {
-        addNode(db, id);
+        addNode(db, id, "tenant-x");
       }
       addDependency(db, "root", "low", 0.7);
       addDependency(db, "low", "low-leaf", 1);
@@ -46,11 +52,11 @@ describe("complete dependency path query", () => {
       const first = runGraphQuery(db, {
         op: "depends_on_path",
         nodeId: "root",
-      });
+      }, { tenantId: "tenant-x" });
       const second = runGraphQuery(db, {
         op: "depends_on_path",
         nodeId: "root",
-      });
+      }, { tenantId: "tenant-x" });
 
       expect(first.rows).toEqual([
         expect.objectContaining({
@@ -77,7 +83,7 @@ describe("complete dependency path query", () => {
   it("records cycles as terminal evidence without revisiting them", () => {
     const db = openGraphLearnMemory();
     try {
-      for (const id of ["root", "branch", "leaf"]) addNode(db, id);
+      for (const id of ["root", "branch", "leaf"]) addNode(db, id, "tenant-x");
       addDependency(db, "root", "branch");
       addDependency(db, "branch", "leaf", 1);
       addDependency(db, "branch", "root", 0.5);
@@ -86,7 +92,7 @@ describe("complete dependency path query", () => {
         op: "depends_on_path",
         nodeId: "root",
         maxHops: 20,
-      });
+      }, { tenantId: "tenant-x" });
 
       expect(result.rows).toEqual([
         expect.objectContaining({
@@ -108,7 +114,7 @@ describe("complete dependency path query", () => {
   it("reports path-count and depth truncation explicitly", () => {
     const db = openGraphLearnMemory();
     try {
-      for (const id of ["root", "a", "b", "c", "leaf"]) addNode(db, id);
+      for (const id of ["root", "a", "b", "c", "leaf"]) addNode(db, id, "tenant-x");
       addDependency(db, "root", "a", 0.9);
       addDependency(db, "root", "b", 0.8);
       addDependency(db, "root", "c", 0.7);
@@ -118,7 +124,7 @@ describe("complete dependency path query", () => {
         op: "depends_on_path",
         nodeId: "root",
         maxPaths: 2,
-      });
+      }, { tenantId: "tenant-x" });
       expect(pathLimited.rows).toHaveLength(2);
       expect(pathLimited.truncation).toEqual(
         expect.objectContaining({
@@ -135,7 +141,7 @@ describe("complete dependency path query", () => {
         nodeId: "root",
         maxHops: 1,
         maxPaths: 10,
-      });
+      }, { tenantId: "tenant-x" });
       expect(depthLimited.rows?.[0]).toEqual(
         expect.objectContaining({
           nodeIds: ["root", "a"],
@@ -194,16 +200,16 @@ describe("complete dependency path query", () => {
   it("retains dependency ordered repository transitions for cross repository rollout", () => {
     const db = openGraphLearnMemory();
     try {
-      addNode(db, "unit:edge", "repo-edge");
-      addNode(db, "unit:service", "repo-service");
-      addNode(db, "unit:contract", "repo-contract");
+      addNode(db, "unit:edge", "repo-edge", "tenant-x");
+      addNode(db, "unit:service", "repo-service", "tenant-x");
+      addNode(db, "unit:contract", "repo-contract", "tenant-x");
       addDependency(db, "unit:edge", "unit:service");
       addDependency(db, "unit:service", "unit:contract");
 
       const result = runGraphQuery(db, {
         op: "depends_on_path",
         nodeId: "unit:edge",
-      });
+      }, { tenantId: "tenant-x" });
 
       expect(result.rows?.[0]).toEqual(expect.objectContaining({
         nodeIds: ["unit:edge", "unit:service", "unit:contract"],
