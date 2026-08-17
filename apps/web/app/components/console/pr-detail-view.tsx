@@ -10,15 +10,18 @@ import {
 } from "../ds/index.js";
 import Link from "next/link";
 import type { PrDetailData } from "./fixtures.js";
+import { PrReviewActions } from "./pr-review-actions.js";
 
 /**
  * `/prs/[id]` — one PR in review, driven by live data (`PrDetailData`) fetched
- * in the page. Back link, a title row with the `StatusPill` and an outline
- * "Open on GitHub", then (when the linked change is breaking) an amber alert
- * naming it. The body is a two-column grid: stacked `DiffView`s parsed from the
- * PR's unified patch on the left, checks and provenance cards on the right. The
- * single indigo primary action ("Approve & merge") lives in the console topbar,
- * wired by `ConsoleShell`.
+ * in the page. Back link, a title row with the `StatusPill`, an outline "Open on
+ * GitHub", and the secondary review controls ("Request changes" / "Reject"),
+ * then (when the linked change is breaking) an amber alert naming it. The body
+ * is a two-column grid: stacked `DiffView`s parsed from the PR's unified patch
+ * on the left, checks and provenance cards on the right. The single indigo
+ * primary action ("Approve") lives in the console topbar, wired by
+ * `ConsoleShell`; all review controls open the shared dialog and record a real
+ * decision. Mendpoint never merges — that stays a human action in GitHub.
  */
 export function PrDetailView({ pr }: { pr: PrDetailData }) {
   return (
@@ -58,6 +61,7 @@ export function PrDetailView({ pr }: { pr: PrDetailData }) {
               Open on GitHub
             </button>
           )}
+          {pr.id && <PrReviewActions prId={pr.id} />}
         </div>
       </header>
 
