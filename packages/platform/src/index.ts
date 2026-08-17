@@ -34,6 +34,8 @@ export type {
   FlySandboxResources,
   FlySandboxOptions,
   FlySandboxHandle,
+  FlyRetryOptions,
+  OrphanReconcileResult,
   MockFlyBehavior,
   MockFlyClient,
 } from "./fly-sandbox.js";
@@ -45,6 +47,9 @@ export {
   createMockFlyClient,
   createFlyRestClient,
   collectWorkspaceFiles,
+  isTransientFlyError,
+  withFlyRetry,
+  reconcileOrphanedMachines,
 } from "./fly-sandbox.js";
 
 export type { KnowledgeDoc } from "./knowledge.js";

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Buffer } from "node:buffer";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -125,6 +126,38 @@ describe("verification sandbox routing", () => {
     // The sandbox was never touched — the host path ran, byte-identical to today.
     expect(client.created).toHaveLength(0);
     expect(client.execed).toHaveLength(0);
+  });
+
+  it("transfers a binary workspace file to the Machine byte-for-byte (no UTF-8 mangling)", async () => {
+    const dir = tempRepo("mp-verify-sbx-binary-");
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "exit 0" } }));
+    // A genuinely binary payload: a NUL byte plus sequences that are INVALID
+    // UTF-8 (0xC0 0x80 overlong, 0xED 0xA0 0x80 surrogate, lone 0xFF/0xFE). A
+    // readFileSync(_, "utf8") round-trip would replace these with U+FFFD and
+    // corrupt the file; a byte-accurate transfer preserves them exactly.
+    const binary = Buffer.from([
+      0x00, 0xff, 0xfe, 0x80, 0xc0, 0x80, 0x01, 0x02, 0xed, 0xa0, 0x80, 0x7f, 0x00,
+    ]);
+    writeFileSync(join(dir, "fixture.bin"), binary);
+
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("MENDPOINT_SANDBOX_KIND", "fly_machines");
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_APP", "mendpoint-sandbox-test");
+    vi.stubEnv("MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION", "npm test");
+
+    const client = createMockFlyClient();
+    const result = await runVerificationCommand("npm test", dir, 60_000, undefined, {
+      flyClient: client,
+      tenantId: "tenant-a",
+    });
+
+    expect(result.ok).toBe(true);
+    const config = client.created[0]!.config;
+    const uploaded = config.files!.find((f) => f.guest_path === "/workspace/fixture.bin")!;
+    // Decode exactly what the Machine would receive and assert byte equality.
+    const received = Buffer.from(uploaded.raw_value, "base64");
+    expect(received.equals(binary)).toBe(true);
+    expect(received).toHaveLength(binary.length);
   });
 
   it("does not forward host secrets to the sandboxed Machine (env scrub holds)", async () => {
