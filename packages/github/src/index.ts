@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -32,10 +33,14 @@ export type PullRequestResult = {
   title: string;
 };
 
-export type FileEdit = { path: string; content: string };
+export type FileEdit = { path: string; content: string } | { path: string; delete: true };
 
 const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 const GITHUB_FILE_CONCURRENCY = 8;
+
+function isNotFoundError(error: unknown): boolean {
+  return (error as { status?: unknown } | null)?.status === 404;
+}
 
 async function mapWithConcurrency<T, R>(
   values: readonly T[],
@@ -176,7 +181,9 @@ export class MockGitHubDelivery implements GitHubDelivery {
       commitMessage: input.commitMessage,
       commitDate: input.commitDate,
       fileModes: [...input.files]
-        .map((file) => ({ path: file.path, mode: file.mode }))
+        .map((file) => "delete" in file
+          ? ({ path: file.path, delete: true as const })
+          : ({ path: file.path, mode: file.mode }))
         .sort((a, b) => a.path.localeCompare(b.path)),
     };
     if (existsSync(branchDir)) {
@@ -187,6 +194,10 @@ export class MockGitHubDelivery implements GitHubDelivery {
       }
       for (const file of input.files) {
         const path = this.containedPathFrom(branchDir, file.path);
+        if ("delete" in file) {
+          if (existsSync(path)) throw new Error("github_exact_draft_branch_diverged");
+          continue;
+        }
         if (
           !existsSync(path) ||
           readFileSync(path, "utf8") !== file.content ||
@@ -200,6 +211,10 @@ export class MockGitHubDelivery implements GitHubDelivery {
       mkdirSync(branchDir, { recursive: true });
       for (const file of input.files) {
         const path = this.containedPathFrom(branchDir, file.path);
+        if ("delete" in file) {
+          if (existsSync(path)) rmSync(path, { force: true });
+          continue;
+        }
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, file.content, "utf8");
         if (process.platform !== "win32") {
@@ -282,6 +297,10 @@ export class MockGitHubDelivery implements GitHubDelivery {
     mkdirSync(dir, { recursive: true });
     for (const f of files) {
       const target = this.containedPathFrom(dir, f.path);
+      if ("delete" in f) {
+        rmSync(target, { force: true });
+        continue;
+      }
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, f.content, "utf8");
     }
@@ -389,6 +408,20 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
         files,
         GITHUB_FILE_CONCURRENCY,
         async (file) => {
+          if ("delete" in file) {
+            try {
+              await this.octokit.repos.getContent({
+                owner,
+                repo,
+                path: file.path.replace(/\\/g, "/"),
+                ref: branch,
+              });
+              return false;
+            } catch (error) {
+              if (isNotFoundError(error)) return true;
+              throw error;
+            }
+          }
           const { data } = await this.octokit.repos.getContent({
             owner,
             repo,
@@ -468,6 +501,14 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
       files,
       GITHUB_FILE_CONCURRENCY,
       async (f) => {
+        if ("delete" in f) {
+          return {
+            path: f.path.replace(/\\/g, "/"),
+            mode: "100644" as const,
+            type: "blob" as const,
+            sha: null,
+          };
+        }
         const { data: blob } = await this.octokit.git.createBlob({
           owner,
           repo,
@@ -617,6 +658,7 @@ export function createReviewableChangeDelivery(
 
 export {
   ExactDraftRemoteSideEffectUncertainError,
+  type ExactDraftFileChange,
   type ExactDraftFileMode,
   type ExactDraftDeliveryInput,
   type ExactDraftDeliveryResult,

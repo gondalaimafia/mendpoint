@@ -91,10 +91,22 @@ function exactFiles(artifact: Record<string, unknown>) {
   return Object.freeze(files.map((raw) => {
     if (!raw || typeof raw !== "object") throw new Error("warden_candidate_delivery_artifact_invalid");
     const file = raw as Record<string, unknown>;
-    if (typeof file.path !== "string" || typeof file.after !== "string" || typeof file.afterSha256 !== "string") {
-      throw new Error("warden_candidate_delivery_file_deletion_unsupported");
-    }
+    if (typeof file.path !== "string") throw new Error("warden_candidate_delivery_artifact_invalid");
     const entry = entryByPath.get(file.path);
+    if (file.after === null && file.afterSha256 === null) {
+      if (entry || typeof file.before !== "string" || typeof file.beforeSha256 !== "string") {
+        throw new Error("warden_candidate_delivery_artifact_invalid");
+      }
+      const before = Buffer.from(file.before, "base64");
+      const beforeDigest = `sha256:${createHash("sha256").update(before).digest("hex")}`;
+      if (before.toString("base64") !== file.before || beforeDigest !== file.beforeSha256 || before.includes(0)) {
+        throw new Error("warden_candidate_delivery_file_digest_mismatch");
+      }
+      return Object.freeze({ path: file.path, delete: true as const });
+    }
+    if (typeof file.after !== "string" || typeof file.afterSha256 !== "string") {
+      throw new Error("warden_candidate_delivery_artifact_invalid");
+    }
     if (!entry) throw new Error("warden_candidate_delivery_artifact_invalid");
     const bytes = Buffer.from(file.after, "base64");
     const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;

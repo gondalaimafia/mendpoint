@@ -75,6 +75,23 @@ describe("exact GitHub draft update", () => {
     }));
   });
 
+  it("deletes an approved tracked file with an exact null tree entry", async () => {
+    const octokit = client();
+    const deletion = {
+      ...input,
+      files: [{ path: "src/obsolete.ts", delete: true } as never],
+    };
+
+    await expect(updateExactDraftWithOctokit(octokit, deletion)).resolves.toMatchObject({
+      previousHeadSha: PREVIOUS,
+      commitSha: CREATED,
+    });
+    expect(octokit.git.createBlob).not.toHaveBeenCalled();
+    expect(octokit.git.createTree).toHaveBeenCalledWith(expect.objectContaining({
+      tree: [{ path: "src/obsolete.ts", mode: "100644", type: "blob", sha: null }],
+    }));
+  });
+
   it.each([
     [{ head: sha("c") }, "github_exact_draft_update_head_drift"],
     [{ draft: false }, "github_exact_draft_update_not_draft"],
@@ -159,6 +176,41 @@ describe("exact GitHub draft update", () => {
     } as unknown as Octokit;
 
     await expect(reconcileExactDraftUpdateWithOctokit(octokit, missing)).resolves.toEqual({ status: "unknown" });
+  });
+
+  it("reconciles an exact applied deletion only when the approved leaf is absent", async () => {
+    const deletion = {
+      ...input,
+      files: [{ path: "src/obsolete.ts", delete: true } as never],
+    };
+    const octokit = {
+      pulls: { get: vi.fn(async () => ({ data: {
+        number: 17, html_url: "https://github.com/acme/service/pull/17", state: "open", draft: true,
+        base: { ref: "main", repo: { id: 101 } },
+        head: { ref: "mendpoint/warden-run", sha: CREATED, repo: { id: 101 } },
+      } })) },
+      git: {
+        getRef: vi.fn(async () => ({ data: { object: { sha: CREATED } } })),
+        getCommit: vi.fn(async ({ commit_sha }: { commit_sha: string }) => ({ data: commit_sha === CREATED ? {
+          tree: { sha: "candidate-tree" }, parents: [{ sha: PREVIOUS }], message: input.commitMessage,
+          author: { name: "Mendpoint", email: "delivery@mendpoint.ai", date: input.commitDate },
+          committer: { name: "Mendpoint", email: "delivery@mendpoint.ai", date: input.commitDate },
+        } : { tree: { sha: "base-tree" }, parents: [], message: "base" } })),
+        getTree: vi.fn(async ({ tree_sha }: { tree_sha: string }) => ({ data: { truncated: false,
+          tree: tree_sha === "candidate-tree"
+            ? [{ path: "src/a.ts", mode: "100644", type: "blob", sha: sha("c") }]
+            : [{ path: "src/a.ts", mode: "100644", type: "blob", sha: sha("c") },
+              { path: "src/obsolete.ts", mode: "100644", type: "blob", sha: sha("d") }],
+        } })),
+        getBlob: vi.fn(),
+      },
+    } as unknown as Octokit;
+
+    await expect(reconcileExactDraftUpdateWithOctokit(octokit, deletion)).resolves.toMatchObject({
+      status: "applied",
+      result: { commitSha: CREATED, previousHeadSha: PREVIOUS },
+    });
+    expect(octokit.git.getBlob).not.toHaveBeenCalled();
   });
 
   it("reports not applied without writes when the branch is still at the expected head", async () => {
