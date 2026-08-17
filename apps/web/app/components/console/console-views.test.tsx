@@ -146,11 +146,25 @@ describe("DS3 console views — content fidelity", () => {
 });
 
 describe("DS console views — honest empty states", () => {
-  it("renders a Warden empty state when no change is available", () => {
+  it("does not certify a null (failed/absent) change feed as clean", () => {
+    // data === null means the fetch failed OR nothing is staged; the view must
+    // not claim "No breaking changes", which would present a fetch failure as a
+    // clean result (the §11.7 silent-zero bug in the UI).
     const html = renderToStaticMarkup(<ChangesView data={null} />);
     expect(html).toContain("FETTLER");
-    expect(html).toContain("No structural change is staged yet");
+    expect(html).toContain("Changes unavailable");
+    expect(html).not.toContain("No breaking changes");
+    expect(html).toContain("not a claim that the spec is unchanged");
     expect(countGlow(html)).toBe(0);
+  });
+
+  it("renders an analyzed-but-empty diff without conflating it with a load failure", () => {
+    const html = renderToStaticMarkup(
+      <ChangesView data={{ target: "acme · v1 → v2", stats: [], changes: [] }} />,
+    );
+    expect(html).toContain("acme · v1 → v2");
+    expect(html).toContain("No structural change is staged yet");
+    expect(html).not.toContain("Changes unavailable");
   });
 
   it("renders an empty PR list when the feed has no pull requests", () => {
