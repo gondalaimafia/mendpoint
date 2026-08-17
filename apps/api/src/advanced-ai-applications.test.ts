@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendDomainEvent, createDb, insertArtifactManifest, insertEvidenceRecord, insertPrincipal, insertTenant, type AppDb } from "@mendpoint/db";
-import { postTrainedCanaryResultDigest, postTrainedEvaluationResultDigest, postTrainedReconciliationResultDigest } from "@mendpoint/pipeline";
+import { admitGovernedLearningEvent, governedLearningAdmissionIds, postTrainedCanaryResultDigest, postTrainedEvaluationResultDigest, postTrainedReconciliationResultDigest } from "@mendpoint/pipeline";
 import type { AdapterLifecycleRecord, ExecutorDescriptor, PostTrainedConsentSnapshot } from "@mendpoint/platform";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
@@ -64,6 +64,64 @@ function fixture(enabled = true) {
 const SPLIT_MANIFEST = "a".repeat(64);
 function add(db: AppDb, id: string, kind = id) { const split = kind === "learning_dataset_corpus" ? "train" : kind === "learning_dataset_validation" ? "validation" : kind === "learning_dataset_holdout" ? "holdout" : null; const content = JSON.stringify(split ? { id, datasetSplit: split, splitManifestDigest: SPLIT_MANIFEST, examples: [{ sourceEventId: `${id}-event`, sourceEventDigest: "b".repeat(64), specialization: { splitGroupId: `${id}-group` }, datasetSplit: split, task: { scenarioId: `${id}-scenario`, sourceRevision: createHash("sha1").update(id).digest("hex"), sourceDigest: `sha256:${createHash("sha256").update(id).digest("hex")}` } }] } : { id }); const digest = createHash("sha256").update(content).digest("hex"); insertArtifactManifest(db, { id, tenantId: "tenant-a", kind, schemaVersion: 1, sha256: digest, mediaType: "application/json", sizeBytes: Buffer.byteLength(content), storageRef: `sqlite://${id}`, content, producerPrincipalId: "actor", createdAt: now }); }
 function addTrainingAuthority(db: AppDb, prefix: string) { add(db, `${prefix}-corpus`, "learning_dataset_corpus"); add(db, `${prefix}-validation`, "learning_dataset_validation"); add(db, `${prefix}-holdout`, "learning_dataset_holdout"); }
+
+function admitFlywheelEvent(db: AppDb, input: Readonly<{
+  eventId: string;
+  product: "fettler" | "regauge";
+  splitGroupId: string;
+  migrationFamily: string;
+  sourceObjectId: string;
+}>): void {
+  const ids = governedLearningAdmissionIds("tenant-a", input.eventId);
+  const observedAt = "2026-08-12T11:00:00.000Z";
+  const event = {
+    schemaVersion: 1,
+    eventId: input.eventId,
+    product: input.product,
+    missionId: input.sourceObjectId,
+    repositoryId: "repository-flywheel",
+    taskType: input.product === "fettler" ? "api_remediation" : "legacy_migration",
+    capability: "remediation_generation",
+    specialization: { provider: "stripe", framework: "hono", language: "typescript", runtime: "node-20", migrationFamily: input.migrationFamily, riskClass: "medium", splitGroupId: input.splitGroupId },
+    execution: { modelId: "baseline-frontier", adapterId: null, routerDecisionId: `route-${input.eventId}`, fallback: false },
+    references: { graphContextArtifactId: null, inputArtifactId: ids.sourceArtifactId, proposedActionArtifactId: ids.redactedArtifactId },
+    prediction: { summary: "Apply the evidence-bound migration.", evidenceRefs: [ids.redactionEvidenceId] },
+    observedOutcome: { status: "corrected", summary: "The corrected migration passed deterministic verification.", attribution: "model_behavior", evidenceRefs: [ids.verificationEvidenceId] },
+    verification: { verdict: "passed", evidenceRefs: [ids.verificationEvidenceId] },
+    reviewerDecision: { decision: "modified", evidenceRefs: [ids.reviewDecisionId] },
+    correction: { artifactId: ids.redactedArtifactId, substantive: true },
+    confidence: 0.9,
+    economics: { inputTokens: 800, outputTokens: 180, latencyMs: 900, costUsd: 0.01 },
+    governance: { tenantId: "tenant-a", residencyRegion: "local", consentId: "consent-flywheel", sourceClass: "synthetic_ground_truth", provenanceQualifiers: ["deterministically_verified", "human_corrected"], mayLeaveTenantBoundary: false },
+    createdAt: observedAt,
+  } as const;
+  admitGovernedLearningEvent(db, {
+    tenantId: "tenant-a",
+    purpose: "adapter_training",
+    sourceObjectType: input.product === "fettler" ? "fettler_agent_run" : "transformer_adaptive_candidate",
+    sourceObjectId: input.sourceObjectId,
+    event,
+    actorPrincipalId: "actor",
+    idempotencyKey: `admit-${input.eventId}`,
+    createdAt: now,
+  }, {
+    resolve: () => ({
+      revision: createHash("sha1").update(input.eventId).digest("hex"),
+      snapshotDigest: `sha256:${createHash("sha256").update(`snapshot:${input.eventId}`).digest("hex")}`,
+      scenarioId: input.eventId,
+      syntheticFamilyId: input.splitGroupId.slice(0, input.splitGroupId.lastIndexOf(":")),
+      outcomeAttribution: "model_behavior",
+      verificationVerdict: "passed",
+      sourceClass: "synthetic_ground_truth",
+      provenanceQualifiers: ["deterministically_verified", "human_corrected"],
+      correctionSubstantive: true,
+      reviewerPrincipalId: "actor",
+      reviewRationale: "Ground truth and deterministic verification agree.",
+      contaminationFree: true,
+    }),
+    redact: (content) => ({ ok: true, content, redactionCount: 0 }),
+  });
+}
 
 describe("advanced AI applications API", () => {
   it("governs learning consent, status, and corpus materialization without trusting caller identity", async () => {
@@ -187,6 +245,45 @@ describe("advanced AI applications API", () => {
     const rollback = await app.request("/advanced-ai/post-trained/adapters/adapter-1/rollback", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "rollback-register" }, body: JSON.stringify({ expectedArtifactDigest: trained.adapterDigest, reason: "Canary regression" }) }); expect(rollback.status).toBe(200); expect(await rollback.json()).toMatchObject({ lifecycle: { state: "rolled_back" } });
     const afterRollback = await app.request("/advanced-ai/post-trained/adapters/adapter-1/eligibility", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: task() }) }); expect(await afterRollback.json()).toMatchObject({ eligible: false, reason: "lifecycle_not_servable" });
     expect((await app.request("/advanced-ai/post-trained/adapters/adapter-1", { headers: { "x-tenant": "tenant-b" } })).status).toBe(404);
+  });
+  it("joins governed Fettler and ReGauge outcomes through training, canary, routing, and rollback", async () => {
+    const { app, db } = fixture();
+    const grant = await app.request("/advanced-ai/learning/consents", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "consent-flywheel" }, body: JSON.stringify({ id: "consent-flywheel", consentVersion: 1, purpose: "adapter_training", residencyRegion: "local", effectiveAt: "2026-08-12T10:00:00.000Z", reason: "Authorize only redacted verified migration lessons." }) });
+    expect(grant.status).toBe(201);
+    admitFlywheelEvent(db, { eventId: "fettler-train", product: "fettler", sourceObjectId: "fettler-run-1", migrationFamily: "response-field-replacement", splitGroupId: "repository-a:response-field-replacement" });
+    admitFlywheelEvent(db, { eventId: "regauge-validation", product: "regauge", sourceObjectId: "regauge-candidate-1", migrationFamily: "family-7", splitGroupId: "repository-a:family-7" });
+    admitFlywheelEvent(db, { eventId: "regauge-holdout", product: "regauge", sourceObjectId: "regauge-candidate-2", migrationFamily: "family-3", splitGroupId: "repository-a:family-3" });
+
+    const corpusResponse = await app.request("/advanced-ai/learning/corpora", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "corpus-flywheel" }, body: JSON.stringify({ purpose: "adapter_training", temporalCutoffAt: "2026-08-12T11:30:00.000Z" }) });
+    expect(corpusResponse.status).toBe(201);
+    const corpus = await corpusResponse.json() as { datasetVersionId: string; artifactId: string; validationArtifactId: string; holdoutArtifactId: string; splitManifestDigest: string; trainExampleCount: number; validationExampleCount: number; holdoutExampleCount: number };
+    expect(corpus).toMatchObject({ trainExampleCount: 1, validationExampleCount: 1, holdoutExampleCount: 1 });
+
+    const trainResponse = await app.request("/advanced-ai/post-trained/training-jobs", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "train-flywheel" }, body: JSON.stringify({ jobId: "job-flywheel", adapterId: "adapter-flywheel", baseModelId: "base-1", datasetId: corpus.datasetVersionId, purpose: "adapter_training", residencyRegion: "local", trainingCorpusArtifactIds: [corpus.artifactId], validationArtifactId: corpus.validationArtifactId, holdoutArtifactId: corpus.holdoutArtifactId, splitManifestDigest: corpus.splitManifestDigest, recipe: { epochs: 1, maximumExamples: 10, seed: 7 } }) });
+    expect(trainResponse.status).toBe(201);
+    const trained = await trainResponse.json() as { adapterDigest: string };
+    const evaluationResponse = await app.request("/advanced-ai/post-trained/evaluations", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "evaluate-flywheel" }, body: JSON.stringify({ evaluationId: "evaluation-flywheel", trainingJobId: "job-flywheel", adapterId: "adapter-flywheel" }) });
+    expect(evaluationResponse.status).toBe(201);
+    const evaluation = await evaluationResponse.json() as { evaluationId: string; reportArtifactId: string; successRate: number; regressionRate: number };
+    const canaryResponse = await app.request("/advanced-ai/post-trained/canaries", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "canary-flywheel" }, body: JSON.stringify({ canaryId: "canary-flywheel", adapterId: "adapter-flywheel", trainingJobId: "job-flywheel", evaluationId: evaluation.evaluationId }) });
+    expect(canaryResponse.status).toBe(201);
+    const canary = await canaryResponse.json() as { observedAt: string; evidenceRefs: string[] };
+
+    const baseLifecycle = lifecycle();
+    const registered = await app.request("/advanced-ai/post-trained/adapters", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "register-flywheel" }, body: JSON.stringify({
+      adapterId: "adapter-flywheel",
+      trainingJobId: "job-flywheel",
+      lifecycle: { ...baseLifecycle, adapterId: "adapter-flywheel", artifactDigest: trained.adapterDigest, trainingDataset: { ...baseLifecycle.trainingDataset, datasetId: corpus.datasetVersionId }, heldOutEvaluation: { reportRef: evaluation.reportArtifactId, passed: true, successRate: evaluation.successRate, regressionRate: evaluation.regressionRate }, canaryEvidence: { passed: true, observedAt: canary.observedAt, evidenceRefs: canary.evidenceRefs } },
+      consent: { ...consent(), datasetId: corpus.datasetVersionId },
+      descriptor: descriptor(),
+    }) });
+    expect(registered.status).toBe(201);
+    const eligible = await app.request("/advanced-ai/post-trained/adapters/adapter-flywheel/eligibility", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: task() }) });
+    expect(await eligible.json()).toMatchObject({ eligible: true, adapterId: "adapter-flywheel" });
+    const rolledBack = await app.request("/advanced-ai/post-trained/adapters/adapter-flywheel/rollback", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "rollback-flywheel" }, body: JSON.stringify({ expectedArtifactDigest: trained.adapterDigest, reason: "Bounded canary regression drill." }) });
+    expect(rolledBack.status).toBe(200);
+    const blocked = await app.request("/advanced-ai/post-trained/adapters/adapter-flywheel/eligibility", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: task() }) });
+    expect(await blocked.json()).toMatchObject({ eligible: false, reason: "lifecycle_not_servable" });
   });
   it("runs a bounded local training fixture and exposes durable job status", async () => { const { app, db } = fixture(); addTrainingAuthority(db, "learning"); const response = await app.request("/advanced-ai/post-trained/training-jobs", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "train-1" }, body: JSON.stringify({ jobId: "job-1", adapterId: "adapter-1", baseModelId: "base-1", datasetId: "dataset-1", purpose: "adapter_training", residencyRegion: "local", trainingCorpusArtifactIds: ["learning-corpus"], validationArtifactId: "learning-validation", holdoutArtifactId: "learning-holdout", splitManifestDigest: SPLIT_MANIFEST, recipe: { epochs: 1, maximumExamples: 10, seed: 1 } }) }); expect(response.status).toBe(201); expect(await response.json()).toMatchObject({ jobId: "job-1", status: "completed", adapterArtifactId: expect.stringMatching(/^artifact_/) }); expect(await (await app.request("/advanced-ai/post-trained/training-jobs/job-1")).json()).toMatchObject({ status: "completed" }); });
 });
