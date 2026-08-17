@@ -24,7 +24,7 @@ export type PromoteOptions = {
 export function promotePatterns(
   db: GraphLearnDb,
   opts: PromoteOptions = {},
-  scope?: GraphTenantScope,
+  scope: GraphTenantScope,
 ): Promotion[] {
   const minSamples = opts.minSamples ?? 2;
   const minSuccessRate = opts.minSuccessRate ?? 0.6;

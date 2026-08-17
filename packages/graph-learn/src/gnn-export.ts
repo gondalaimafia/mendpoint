@@ -140,8 +140,9 @@ export function exportGnnFeatures(
 export function writeGnnExport(
   db: GraphLearnDb,
   outPath: string,
+  scope?: GraphTenantScope,
 ): { path: string; nodes: number; edges: number } {
-  const exp = exportGnnFeatures(db);
+  const exp = exportGnnFeatures(db, scope);
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, JSON.stringify(exp, null, 2), "utf8");
   // also JSONL for torch geometric loaders

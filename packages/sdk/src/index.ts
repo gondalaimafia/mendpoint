@@ -23,6 +23,7 @@ import {
   writeGnnExport,
   type GraphQuery,
   type GraphQueryResult,
+  type GraphTenantScope,
   type GitTemporalOptions,
   type GitTemporalResult,
   type QueryPick,
@@ -122,10 +123,15 @@ export type PlatformClient = {
   }) => CostBreakdown;
 };
 
-export function createPlatform(): PlatformClient {
+/**
+ * Build a platform client bound to a single tenant. Every graph read and write
+ * is scoped to `scope`, so an SDK consumer can never reach another tenant's
+ * graph. The scope is mandatory: there is no unscoped/global client.
+ */
+export function createPlatform(scope: GraphTenantScope): PlatformClient {
   return {
     graphQuery(q) {
-      const r = runGraphQuery(getGraphLearnDb(), q);
+      const r = runGraphQuery(getGraphLearnDb(), q, scope);
       return { ...r, markdown: formatQueryForPlanner(r) };
     },
     planSpecDiff(input) {
@@ -147,13 +153,13 @@ export function createPlatform(): PlatformClient {
       return { plan, markdown: planToMarkdown(plan) };
     },
     execute(plan, baseDir) {
-      return executePlan({ plan, baseDir });
+      return executePlan({ plan, baseDir, scope });
     },
     executeHello(baseDir) {
       return helloWorldRun(baseDir);
     },
     recordOutcome(input) {
-      labelPrOutcome(getGraphLearnDb(), input);
+      labelPrOutcome(getGraphLearnDb(), input, scope.tenantId);
     },
     plannerContext(agent) {
       let mem = createMemory();
@@ -162,7 +168,7 @@ export function createPlatform(): PlatformClient {
         const rates = runGraphQuery(getGraphLearnDb(), {
           op: "pattern_success_rates",
           minSamples: 1,
-        });
+        }, scope);
         if (rates.rows?.length) {
           const top = rates.rows
             .slice(0, 3)
@@ -206,7 +212,7 @@ export function createPlatform(): PlatformClient {
       return pickGraphQuery(q);
     },
     promotePatterns() {
-      return promotePatterns(getGraphLearnDb());
+      return promotePatterns(getGraphLearnDb(), {}, scope);
     },
     abLift() {
       const report = measureAbLift(getGraphLearnDb());
@@ -227,9 +233,9 @@ export function createPlatform(): PlatformClient {
     },
     gnnExport(outPath) {
       if (outPath) {
-        return writeGnnExport(getGraphLearnDb(), outPath);
+        return writeGnnExport(getGraphLearnDb(), outPath, scope);
       }
-      const exp = exportGnnFeatures(getGraphLearnDb());
+      const exp = exportGnnFeatures(getGraphLearnDb(), scope);
       return { nodes: exp.nodes.length, edges: exp.edges.length };
     },
     vmStatus() {

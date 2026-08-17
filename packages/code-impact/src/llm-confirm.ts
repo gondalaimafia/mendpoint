@@ -8,6 +8,7 @@
  */
 import {
   fetchBoundedText,
+  redactSourceForModel,
   type Confidence,
   type ConfirmedImpact,
   type ExpandedContext,
@@ -40,11 +41,11 @@ export function resolveLlmConfirmMode(): "off" | "heuristic" | "live" {
   if (mode === "off") return "off";
   if (mode === "heuristic") return "heuristic";
   if (mode === "live") return hasLlmKey() ? "live" : "heuristic";
-  // default: live if key, else off (preserve static-only unless asked)
+  // Opt-in only: a live external call requires an explicit LLM_CONFIRM opt-in.
+  // The mere presence of an API key must never enable egress of source slices.
   if (process.env.LLM_CONFIRM === "1" || process.env.LLM_CONFIRM === "true") {
     return hasLlmKey() ? "live" : "heuristic";
   }
-  if (hasLlmKey()) return "live";
   return "off";
 }
 
@@ -227,11 +228,20 @@ export async function llmConfirmLive(
   budget: LlmConfirmBudget,
 ): Promise<ConfirmedImpact | null> {
   if (budget.used >= budget.maxCalls) return staticResult;
-  budget.used++;
 
   const { system, user } = buildPrompt(ctx, surfaces);
+  // Redact secret material from the raw code slices before egress. The engine
+  // fails closed on high-entropy residue: if it excludes, send nothing and fall
+  // back to the static result rather than leaking an unredacted slice.
+  const redaction = redactSourceForModel(
+    user,
+    Math.min(Math.max(user.length, 1), 1_000_000),
+  );
+  if (redaction.excluded) return staticResult;
+
+  budget.used++;
   try {
-    const raw = await callOpenAiCompatible(system, user);
+    const raw = await callOpenAiCompatible(system, redaction.text);
     const decision = parseDecision(raw);
     if (!decision) return staticResult;
     if (!decision.affected) {

@@ -18,8 +18,11 @@ export async function transformerCampaignStub(opts: {
   }>;
   baseDir?: string;
   execute?: boolean;
+  /** Tenant that owns this specialist run's graph reads/writes. */
+  tenantId?: string;
 }) {
-  const platform = createPlatform();
+  const scope = { tenantId: opts.tenantId ?? "sdk-specialist-demo" };
+  const platform = createPlatform(scope);
   const { plan, markdown } = platform.planCampaign(opts);
   const campaign = createCampaign({
     name: opts.name,
@@ -45,7 +48,7 @@ export async function transformerCampaignStub(opts: {
     };
   }
 
-  const run = await executePlan({ plan, baseDir: opts.baseDir });
+  const run = await executePlan({ plan, baseDir: opts.baseDir, scope });
   return {
     plan,
     markdown,

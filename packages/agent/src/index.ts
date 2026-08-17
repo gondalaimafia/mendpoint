@@ -131,7 +131,7 @@ export {
   type SourceRedactionCounts,
   type SourceRedactionExclusionReason,
   type SourceRedactionResult,
-} from "./source-redaction.js";
+} from "@mendpoint/shared";
 export {
   runPolicyRoutedWarden,
   type RoutedWardenResult,

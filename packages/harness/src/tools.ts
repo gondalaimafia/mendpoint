@@ -13,6 +13,7 @@ import {
   runGraphQuery,
   getGraphLearnDb,
   formatQueryForPlanner,
+  type GraphTenantScope,
 } from "@mendpoint/graph-learn";
 import type { PlanStep } from "@mendpoint/orchestrator";
 import type { SandboxHandle } from "@mendpoint/platform";
@@ -28,9 +29,22 @@ function parseJsonNotes(notes?: string): Record<string, unknown> {
   }
 }
 
+/**
+ * Graph-backed tools fail closed without a tenant scope: rather than read the
+ * global cross-tenant graph, they refuse and surface a structured error.
+ */
+function graphScopeRequired(action: string): ToolResult {
+  return {
+    ok: false,
+    output: "",
+    error: `graph_tenant_scope_required for action=${action}`,
+  };
+}
+
 export function runSpecialistTool(
   step: PlanStep,
   sbx: SandboxHandle,
+  scope?: GraphTenantScope,
 ): ToolResult {
   const meta = parseJsonNotes(step.notes);
   const ref = step.ref ?? "";
@@ -148,13 +162,14 @@ export function runSpecialistTool(
     }
 
     case "impact.fanout_prs": {
+      if (!scope) return graphScopeRequired(step.action);
       try {
         const db = getGraphLearnDb();
         const slug = String(meta.providerSlug ?? "acme");
         const q = runGraphQuery(db, {
           op: "who_consumes_provider",
           providerSlug: slug,
-        });
+        }, scope);
         const n = q.rows?.length ?? 0;
         const requireConsumers = meta.requireConsumers === true;
         return {
@@ -180,13 +195,15 @@ export function runSpecialistTool(
     }
 
     case "graph.stats": {
-      const q = runGraphQuery(getGraphLearnDb(), { op: "stats" });
+      if (!scope) return graphScopeRequired(step.action);
+      const q = runGraphQuery(getGraphLearnDb(), { op: "stats" }, scope);
       return { ok: true, output: JSON.stringify({ action: step.action, ...q.rows?.[0], summary: q.summary }) };
     }
 
     case "graph.query": {
+      if (!scope) return graphScopeRequired(step.action);
       const op = String(meta.op ?? "stats") as "stats";
-      const q = runGraphQuery(getGraphLearnDb(), (meta.query as never) ?? { op });
+      const q = runGraphQuery(getGraphLearnDb(), (meta.query as never) ?? { op }, scope);
       return {
         ok: true,
         output: formatQueryForPlanner(q).slice(0, 1200),

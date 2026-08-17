@@ -23,7 +23,7 @@ async function main() {
   console.log("=== Mendpoint Shared Platform P0 bring-up ===\n");
   resetLatencySamples();
 
-  const platform = createPlatform();
+  const platform = createPlatform({ tenantId: "platform-dev" });
   console.log("1) Graph-RAG stats:");
   console.log("  ", platform.graphQuery({ op: "stats" }).summary);
 
