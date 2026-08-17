@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Buffer } from "node:buffer";
 import {
+  collectWorkspaceFiles,
   createFlyMachinesSandbox,
+  createFlyRestClient,
   createMockFlyClient,
+  FlySandboxError,
+  isTransientFlyError,
+  reconcileOrphanedMachines,
   resolveFlyClient,
   resolveFlySandboxToken,
+  withFlyRetry,
   type MockFlyClient,
 } from "./fly-sandbox.js";
 import {
@@ -348,5 +354,235 @@ describe("fly_machines fail-closed on missing credential", () => {
     } finally {
       sbx.dispose();
     }
+  });
+});
+
+describe("byte-accurate workspace transfer (binary files survive)", () => {
+  it("base64-encodes raw bytes verbatim for a binary seed file", () => {
+    // NUL + invalid UTF-8 (0xC0 0x80 overlong, 0xED 0xA0 0x80 surrogate, lone
+    // 0xFF/0xFE). A UTF-8 round-trip would replace these with U+FFFD; raw bytes
+    // must survive untouched.
+    const binary = Buffer.from([0x00, 0xff, 0xfe, 0x80, 0xc0, 0x80, 0xed, 0xa0, 0x80, 0x7f]);
+    const files = collectWorkspaceFiles({ files: { "fixture.bin": binary } });
+    const uploaded = files.find((f) => f.guest_path === "/workspace/fixture.bin")!;
+    const decoded = Buffer.from(uploaded.raw_value, "base64");
+    expect(decoded.equals(binary)).toBe(true);
+  });
+
+  it("still encodes string content as UTF-8 (unchanged for text files)", () => {
+    const files = collectWorkspaceFiles({ files: { "a.ts": "export const x = 1;\n" } });
+    const uploaded = files.find((f) => f.guest_path === "/workspace/a.ts")!;
+    expect(Buffer.from(uploaded.raw_value, "base64").toString("utf8")).toBe(
+      "export const x = 1;\n",
+    );
+  });
+});
+
+describe("teardown failures surface as leaked microVMs (never a silent green)", () => {
+  it("forces a run failure and tracks the leak when destroy keeps failing", async () => {
+    const client = createMockFlyClient({ destroyError: new Error("fly destroy 500") });
+    const sbx = createFlyMachinesSandbox(flyOpts(client));
+    try {
+      // The command itself succeeds, but the Machine cannot be destroyed.
+      const result = await sbx.runIsolated("echo ok");
+
+      expect(result.ok).toBe(false);
+      expect(result.exitCode).toBe(-1);
+      expect(result.stderr).toMatch(/sandbox_machine_not_destroyed/);
+      const id = client.created[0]!.id;
+      expect(sbx.leakedMachineIds()).toEqual([id]);
+      // The leaked Machine is not misreported as an in-flight run.
+      expect(sbx.activeMachineIds()).toEqual([]);
+    } finally {
+      await sbx.destroy().catch(() => {});
+    }
+  });
+});
+
+describe("isTransientFlyError (429/5xx only)", () => {
+  it("treats 429 and 5xx as transient", () => {
+    expect(isTransientFlyError(new FlySandboxError("create", 429, ""))).toBe(true);
+    expect(isTransientFlyError(new FlySandboxError("wait", 500, ""))).toBe(true);
+    expect(isTransientFlyError(new FlySandboxError("exec", 503, ""))).toBe(true);
+    expect(isTransientFlyError(new FlySandboxError("destroy", 599, ""))).toBe(true);
+  });
+
+  it("treats deterministic 4xx and non-Fly errors as non-transient", () => {
+    expect(isTransientFlyError(new FlySandboxError("create", 400, ""))).toBe(false);
+    expect(isTransientFlyError(new FlySandboxError("create", 404, ""))).toBe(false);
+    expect(isTransientFlyError(new FlySandboxError("create", 403, ""))).toBe(false);
+    expect(isTransientFlyError(new Error("network gone"))).toBe(false);
+    expect(isTransientFlyError("nope")).toBe(false);
+  });
+});
+
+describe("withFlyRetry (bounded backoff for transient failures)", () => {
+  const fastSleep = () => Promise.resolve();
+
+  it("retries a transient failure and then succeeds", async () => {
+    let calls = 0;
+    const value = await withFlyRetry(
+      async () => {
+        calls++;
+        if (calls < 3) throw new FlySandboxError("create", 503, "overloaded");
+        return "ok";
+      },
+      { baseMs: 1, maxAttempts: 4, sleep: fastSleep },
+    );
+    expect(value).toBe("ok");
+    expect(calls).toBe(3);
+  });
+
+  it("does NOT retry a deterministic 4xx (throws on first occurrence)", async () => {
+    let calls = 0;
+    await expect(
+      withFlyRetry(
+        async () => {
+          calls++;
+          throw new FlySandboxError("create", 400, "bad request");
+        },
+        { baseMs: 1, maxAttempts: 4, sleep: fastSleep },
+      ),
+    ).rejects.toBeInstanceOf(FlySandboxError);
+    expect(calls).toBe(1);
+  });
+
+  it("gives up after maxAttempts on a persistent transient failure", async () => {
+    let calls = 0;
+    await expect(
+      withFlyRetry(
+        async () => {
+          calls++;
+          throw new FlySandboxError("wait", 500, "still down");
+        },
+        { baseMs: 1, maxAttempts: 3, sleep: fastSleep },
+      ),
+    ).rejects.toBeInstanceOf(FlySandboxError);
+    expect(calls).toBe(3);
+  });
+});
+
+describe("REST client retry on transient Fly API failures", () => {
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  it("retries a 503 create then succeeds", async () => {
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls++;
+      if (calls === 1) return new Response("overloaded", { status: 503 });
+      return jsonResponse({ id: "m-1", state: "started" });
+    });
+    const client = createFlyRestClient({
+      token: "token-sentinel",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      retry: { baseMs: 1, sleep: () => Promise.resolve() },
+    });
+    const m = await client.createMachine({
+      app: "app",
+      config: { image: "img", guest: { cpu_kind: "shared", cpus: 1, memory_mb: 256 } },
+    });
+    expect(m.id).toBe("m-1");
+    expect(calls).toBe(2);
+  });
+
+  it("does NOT retry a 400 create", async () => {
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls++;
+      return new Response("bad request", { status: 400 });
+    });
+    const client = createFlyRestClient({
+      token: "token-sentinel",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      retry: { baseMs: 1, sleep: () => Promise.resolve() },
+    });
+    await expect(
+      client.createMachine({
+        app: "app",
+        config: { image: "img", guest: { cpu_kind: "shared", cpus: 1, memory_mb: 256 } },
+      }),
+    ).rejects.toBeInstanceOf(FlySandboxError);
+    expect(calls).toBe(1);
+  });
+});
+
+describe("orphan reconciliation (sweep machines a crashed worker left behind)", () => {
+  it("destroys tagged orphans, protects in-flight ids, and reports a summary", async () => {
+    const client = createMockFlyClient({ createdAt: "2020-01-01T00:00:00.000Z" });
+    // Two of our machines plus one that is not ours (no mendpoint_sandbox tag).
+    const ours1 = await client.createMachine({
+      app: "app",
+      config: {
+        image: "i",
+        guest: { cpu_kind: "shared", cpus: 1, memory_mb: 256 },
+        metadata: { mendpoint_sandbox: "sbx-1", mendpoint_tenant: "t" },
+      },
+    });
+    const ours2 = await client.createMachine({
+      app: "app",
+      config: {
+        image: "i",
+        guest: { cpu_kind: "shared", cpus: 1, memory_mb: 256 },
+        metadata: { mendpoint_sandbox: "sbx-2", mendpoint_tenant: "t" },
+      },
+    });
+    await client.createMachine({
+      app: "app",
+      config: { image: "i", guest: { cpu_kind: "shared", cpus: 1, memory_mb: 256 } },
+    });
+
+    const result = await reconcileOrphanedMachines({
+      client,
+      app: "app",
+      // ours2 is a legitimately in-flight run — must be protected.
+      protectIds: [ours2.id],
+      olderThanMs: 0,
+    });
+
+    expect(result.supported).toBe(true);
+    expect(result.scanned).toBe(2); // only our two tagged machines
+    expect(result.orphans).toEqual([ours1.id]);
+    expect(result.destroyed).toEqual([ours1.id]);
+    expect(result.failed).toEqual([]);
+    expect(client.isDestroyed(ours1.id)).toBe(true);
+    expect(client.isLive(ours2.id)).toBe(true); // protected, untouched
+  });
+
+  it("does not sweep machines younger than the age threshold (shared-app safety)", async () => {
+    const now = Date.parse("2020-01-01T00:01:00.000Z");
+    const client = createMockFlyClient({ createdAt: "2020-01-01T00:00:59.000Z" });
+    await client.createMachine({
+      app: "app",
+      config: {
+        image: "i",
+        guest: { cpu_kind: "shared", cpus: 1, memory_mb: 256 },
+        metadata: { mendpoint_sandbox: "sbx-young", mendpoint_tenant: "t" },
+      },
+    });
+    const result = await reconcileOrphanedMachines({
+      client,
+      app: "app",
+      olderThanMs: 30_000, // machine is only 1s old
+      now,
+    });
+    expect(result.scanned).toBe(1);
+    expect(result.orphans).toEqual([]);
+    expect(result.destroyed).toEqual([]);
+  });
+
+  it("reports unsupported when the client cannot list machines", async () => {
+    const base = createMockFlyClient();
+    // A client without listMachines capability.
+    const noList = { ...base, listMachines: undefined } as unknown as Parameters<
+      typeof reconcileOrphanedMachines
+    >[0]["client"];
+    const result = await reconcileOrphanedMachines({ client: noList, app: "app" });
+    expect(result.supported).toBe(false);
+    expect(result.destroyed).toEqual([]);
   });
 });

@@ -37,7 +37,15 @@ export type FlyMachineConfig = {
   metadata?: Record<string, string>;
 };
 
-export type FlyMachine = { id: string; state: string; region?: string };
+export type FlyMachine = {
+  id: string;
+  state: string;
+  region?: string;
+  /** Machine metadata (`config.metadata`) — carries our tenant/sandbox tags. */
+  metadata?: Record<string, string>;
+  /** Creation time (ISO 8601) when the API reports it; used for orphan age. */
+  createdAt?: string;
+};
 
 export type FlyExecResult = { exit_code: number; stdout: string; stderr: string };
 
@@ -65,6 +73,12 @@ export interface FlyMachineClient {
     timeoutMs: number;
   }): Promise<FlyExecResult>;
   destroyMachine(input: { app: string; id: string }): Promise<void>;
+  /**
+   * Enumerate machines in an app, for orphan reconciliation. Optional: a client
+   * that cannot list (older mocks) yields no reconciliation capability rather
+   * than a hard failure.
+   */
+  listMachines?(input: { app: string }): Promise<FlyMachine[]>;
 }
 
 export type FlySandboxResources = {
@@ -84,6 +98,8 @@ export type FlySandboxOptions = {
   startTimeoutMs?: number;
   /** Default per-exec timeout handed to the Machine. */
   execTimeoutMs?: number;
+  /** Bounded-backoff policy for transient (429/5xx) Fly API failures. */
+  retry?: FlyRetryOptions;
 };
 
 export const FLY_SANDBOX_DEFAULTS = {
@@ -109,10 +125,21 @@ export type FlySandboxHandle = SandboxHandle & {
   destroy: () => Promise<void>;
   /** Ids of Machines currently in flight (should be empty between runs). */
   activeMachineIds: () => string[];
+  /** Ids of Machines whose teardown failed and that are therefore leaked. */
+  leakedMachineIds: () => string[];
+  /**
+   * Sweep orphaned Machines left behind on the app (e.g. by a crashed worker).
+   * This handle's in-flight Machines are always protected automatically.
+   */
+  reconcileOrphans: (input?: {
+    protectIds?: Iterable<string>;
+    olderThanMs?: number;
+    now?: number;
+  }) => Promise<OrphanReconcileResult>;
 };
 
 export class FlySandboxError extends Error {
-  readonly stage: "create" | "wait" | "exec" | "destroy";
+  readonly stage: "create" | "wait" | "exec" | "destroy" | "list";
   readonly status: number;
   readonly response: unknown;
 
@@ -134,6 +161,71 @@ function errMsg(e: unknown): string {
   return String(e);
 }
 
+/**
+ * A Fly API failure is transient ONLY for 429 (rate limit) and 5xx (server).
+ * Everything else — a deterministic 4xx (bad request, not found, forbidden), a
+ * missing credential, or any non-Fly error — is a product/deterministic failure
+ * that retrying would only mask. Mirrors the transient-vs-deterministic split in
+ * `classifyJobFailure` (apps/worker) and the retryable set in the router.
+ */
+export function isTransientFlyError(e: unknown): boolean {
+  if (e instanceof FlySandboxError) {
+    return e.status === 429 || (e.status >= 500 && e.status <= 599);
+  }
+  return false;
+}
+
+export type FlyRetryOptions = {
+  /** Total attempts including the first (>=1). Default 4. */
+  maxAttempts?: number;
+  /** First backoff step in ms; doubles each attempt. Default 250. */
+  baseMs?: number;
+  /** Backoff ceiling in ms. Default 10_000. */
+  maxMs?: number;
+  /** Injectable delay (tests pass a no-op / fast sleep). */
+  sleep?: (ms: number) => Promise<void>;
+};
+
+const FLY_RETRY_DEFAULTS = { maxAttempts: 4, baseMs: 250, maxMs: 10_000 } as const;
+
+/**
+ * Bounded exponential backoff (base * 2**n, capped). Same shape as the job
+ * queue's `boundedDelayMs` (packages/db) so backoff behaviour is consistent
+ * across the system rather than reinvented here.
+ */
+function flyBackoffMs(attempt: number, baseMs: number, maxMs: number): number {
+  const base = Math.max(1, baseMs);
+  const ceiling = Math.max(base, maxMs);
+  const exponent = Math.max(0, Math.min(attempt - 1, 16));
+  return Math.min(ceiling, base * 2 ** exponent);
+}
+
+/**
+ * Run a Fly API operation with bounded retry. ONLY transient failures (429/5xx)
+ * are retried; a deterministic 4xx or any non-Fly error is re-thrown on the
+ * first occurrence so a real product failure is never buried under retries.
+ */
+export async function withFlyRetry<T>(
+  op: () => Promise<T>,
+  options: FlyRetryOptions = {},
+): Promise<T> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? FLY_RETRY_DEFAULTS.maxAttempts);
+  const baseMs = options.baseMs ?? FLY_RETRY_DEFAULTS.baseMs;
+  const maxMs = options.maxMs ?? FLY_RETRY_DEFAULTS.maxMs;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await op();
+    } catch (e) {
+      lastError = e;
+      if (attempt >= maxAttempts || !isTransientFlyError(e)) throw e;
+      await sleep(flyBackoffMs(attempt, baseMs, maxMs));
+    }
+  }
+  throw lastError;
+}
+
 function clip(s: string, max: number): string {
   return String(s).slice(0, max);
 }
@@ -148,6 +240,17 @@ function posixJoin(base: string, rel: string): string {
 }
 
 /**
+ * Exact bytes for a seed-file value. A string is encoded as UTF-8; raw bytes
+ * (`Uint8Array`/`Buffer`) are copied verbatim. This is the seam that keeps
+ * binary files (images, compiled artifacts, `.so`/`.dll`, PDFs) byte-accurate:
+ * the `config.files.raw_value` base64 below is taken over these exact bytes, so
+ * the Machine decodes back to the original content with no UTF-8 mangling.
+ */
+function toBytes(content: string | Uint8Array): Buffer {
+  return typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content);
+}
+
+/**
  * Collect the caller tenant's workspace as base64-encoded Machine files. Only
  * the tenant's own seeded files (and its mock manifest) are uploaded — never the
  * host process or another tenant's data.
@@ -157,7 +260,7 @@ export function collectWorkspaceFiles(opts: CreateSandboxOpts): FlyMachineFile[]
   for (const [rel, content] of Object.entries(opts.files ?? {})) {
     files.push({
       guest_path: posixJoin("/workspace", rel),
-      raw_value: Buffer.from(content, "utf8").toString("base64"),
+      raw_value: toBytes(content).toString("base64"),
     });
   }
   if (opts.mocks?.length) {
@@ -172,15 +275,24 @@ export function collectWorkspaceFiles(opts: CreateSandboxOpts): FlyMachineFile[]
   return files;
 }
 
+/**
+ * Attempt teardown of a Machine. Returns `true` only when the destroy actually
+ * succeeded. A failure is NOT swallowed silently: it never throws out of a
+ * finally block, but the boolean lets the caller surface the leak (a Machine we
+ * could not destroy is both a billing liability and an isolation liability, and
+ * must never coexist with a green verification result).
+ */
 async function safeDestroy(
   client: FlyMachineClient,
   app: string,
   id: string,
-): Promise<void> {
+  retry?: FlyRetryOptions,
+): Promise<{ destroyed: true } | { destroyed: false; error: string }> {
   try {
-    await client.destroyMachine({ app, id });
-  } catch {
-    /* best-effort teardown; teardown must never throw out of finally */
+    await withFlyRetry(() => client.destroyMachine({ app, id }), retry);
+    return { destroyed: true };
+  } catch (e) {
+    return { destroyed: false, error: errMsg(e) };
   }
 }
 
@@ -266,6 +378,7 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
   const capMs = flyOpts.capMs ?? FLY_SANDBOX_DEFAULTS.capMs;
   const startTimeoutMs = flyOpts.startTimeoutMs ?? FLY_SANDBOX_DEFAULTS.startTimeoutMs;
   const execTimeoutMs = flyOpts.execTimeoutMs ?? FLY_SANDBOX_DEFAULTS.execTimeoutMs;
+  const retryOptions = flyOpts.retry;
 
   // Local workspace root reuses the path-safe seeding of the local backend so the
   // uploaded workspace holds ONLY this tenant's files. It does NOT expose host exec.
@@ -278,6 +391,10 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
   const tenantId = opts.tenantId;
   const workspaceFiles = collectWorkspaceFiles(opts);
   const activeMachines = new Set<string>();
+  // Machines whose teardown failed even after retry. A leaked microVM is a
+  // billing + isolation liability, so it is tracked (never silently dropped) for
+  // the orphan sweep and surfaced as a run failure.
+  const leakedMachines = new Set<string>();
 
   const runIsolated = async (
     cmd: string,
@@ -308,20 +425,26 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
 
     let machine: FlyMachine;
     try {
-      machine = await client.createMachine({
-        app,
-        region,
-        config: {
-          image,
-          guest,
-          files: workspaceFiles,
-          auto_destroy: true,
-          metadata: {
-            mendpoint_tenant: tenantId ?? "unknown",
-            mendpoint_sandbox: base.id,
-          },
-        },
-      });
+      // Transient (429/5xx) create failures back off and retry; a deterministic
+      // 4xx or non-Fly error still throws straight through to fail-closed.
+      machine = await withFlyRetry(
+        () =>
+          client.createMachine({
+            app,
+            region,
+            config: {
+              image,
+              guest,
+              files: workspaceFiles,
+              auto_destroy: true,
+              metadata: {
+                mendpoint_tenant: tenantId ?? "unknown",
+                mendpoint_sandbox: base.id,
+              },
+            },
+          }),
+        retryOptions,
+      );
     } catch (e) {
       // fail-closed: no Machine means no host fallback.
       return {
@@ -334,49 +457,69 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
 
     activeMachines.add(machine.id);
     const timeoutMs = Math.min(runOpts?.timeoutMs ?? execTimeoutMs, capMs);
+    let result: SandboxRunResult;
     try {
-      await client.waitForState({
-        app,
-        id: machine.id,
-        state: "started",
-        timeoutMs: startTimeoutMs,
-      });
+      await withFlyRetry(
+        () =>
+          client.waitForState({
+            app,
+            id: machine.id,
+            state: "started",
+            timeoutMs: startTimeoutMs,
+          }),
+        retryOptions,
+      );
 
       const capped = await withCap(
+        // exec is intentionally single-shot (not retried): re-running a customer
+        // verification command on a transient response could double its effects.
         client.exec({ app, id: machine.id, command: toCommand(cmd), timeoutMs }),
         capMs,
       );
       if (capped.timedOut) {
-        // Kill the over-limit Machine (also destroyed in finally; idempotent).
-        await safeDestroy(client, app, machine.id);
-        return {
+        result = {
           ok: false,
           stdout: "",
           stderr: `fly_machines: run exceeded cap ${capMs}ms; Machine ${machine.id} killed`,
           exitCode: 124,
           timedOut: true,
         };
+      } else {
+        const exec = capped.value;
+        result = {
+          ok: exec.exit_code === 0,
+          stdout: clip(exec.stdout, 8000),
+          stderr: clip(exec.stderr, 4000),
+          exitCode: exec.exit_code,
+        };
       }
-
-      const exec = capped.value;
-      return {
-        ok: exec.exit_code === 0,
-        stdout: clip(exec.stdout, 8000),
-        stderr: clip(exec.stderr, 4000),
-        exitCode: exec.exit_code,
-      };
     } catch (e) {
       // fail-closed on wait/exec failure: error, never run on the shared host.
-      return {
+      result = {
         ok: false,
         stdout: "",
         stderr: `fly_machines: isolation could not be established (run): ${errMsg(e)}; refusing host fallback`,
         exitCode: -1,
       };
     } finally {
-      await safeDestroy(client, app, machine.id);
-      activeMachines.delete(machine.id);
+      // Teardown is mandatory. A destroy that fails even after retry is NOT
+      // swallowed: the Machine is recorded as leaked and the run is forced to
+      // fail so a leaked microVM can never coexist with a green result.
+      const teardown = await safeDestroy(client, app, machine.id, retryOptions);
+      if (teardown.destroyed) {
+        activeMachines.delete(machine.id);
+      } else {
+        leakedMachines.add(machine.id);
+        activeMachines.delete(machine.id);
+        result = {
+          ok: false,
+          stdout: "",
+          stderr: `fly_machines: sandbox_machine_not_destroyed: Machine ${machine.id} could not be torn down (${teardown.error}); leaked microVM`,
+          exitCode: -1,
+        };
+      }
     }
+    return result;
   };
 
   return {
@@ -398,19 +541,118 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
     runIsolated,
     dispose: () => {
       if (app) {
-        for (const id of activeMachines) void safeDestroy(client, app, id);
+        for (const id of activeMachines) {
+          void safeDestroy(client, app, id, retryOptions).then((t) => {
+            if (!t.destroyed) leakedMachines.add(id);
+          });
+        }
       }
       activeMachines.clear();
       base.dispose();
     },
     destroy: async () => {
       if (app) {
-        await Promise.all([...activeMachines].map((id) => safeDestroy(client, app, id)));
+        await Promise.all(
+          [...activeMachines].map(async (id) => {
+            const t = await safeDestroy(client, app, id, retryOptions);
+            if (!t.destroyed) leakedMachines.add(id);
+          }),
+        );
       }
       activeMachines.clear();
       base.dispose();
     },
     activeMachineIds: () => [...activeMachines],
+    leakedMachineIds: () => [...leakedMachines],
+    reconcileOrphans: (input) =>
+      app
+        ? reconcileOrphanedMachines({
+            client,
+            app,
+            protectIds: [...activeMachines, ...input?.protectIds ?? []],
+            olderThanMs: input?.olderThanMs,
+            now: input?.now,
+            retry: retryOptions,
+          })
+        : Promise.resolve({
+            supported: false,
+            scanned: 0,
+            orphans: [],
+            destroyed: [],
+            failed: [],
+          }),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Orphan reconciliation (sweep machines a crashed worker left behind) */
+/* ------------------------------------------------------------------ */
+
+export type OrphanReconcileResult = {
+  /** False when the client cannot enumerate machines (no listMachines). */
+  supported: boolean;
+  /** Machines tagged as ours that were examined. */
+  scanned: number;
+  /** Ids identified as orphans (tagged, unprotected, over-age). */
+  orphans: string[];
+  /** Ids actually destroyed. */
+  destroyed: string[];
+  /** Orphans whose teardown still failed (remain leaked). */
+  failed: Array<{ id: string; error: string }>;
+};
+
+/**
+ * Identify and destroy Fly Machines left behind by a crashed worker.
+ *
+ * Safe on a shared app: only machines carrying our `mendpoint_sandbox` metadata
+ * tag are ever considered, machines in the caller's `protectIds` are never
+ * touched, and — because every run is wall-clock capped — a machine is treated
+ * as an orphan only once its age exceeds `olderThanMs` (default: the run cap),
+ * so a peer worker's in-flight run cannot be swept out from under it. A machine
+ * whose creation time is unknown is destroyed only when `olderThanMs <= 0` is
+ * requested explicitly.
+ */
+export async function reconcileOrphanedMachines(input: {
+  client: FlyMachineClient;
+  app: string;
+  protectIds?: Iterable<string>;
+  olderThanMs?: number;
+  now?: number;
+  retry?: FlyRetryOptions;
+}): Promise<OrphanReconcileResult> {
+  const { client, app } = input;
+  if (typeof client.listMachines !== "function") {
+    return { supported: false, scanned: 0, orphans: [], destroyed: [], failed: [] };
+  }
+  const olderThanMs = input.olderThanMs ?? FLY_SANDBOX_DEFAULTS.capMs;
+  const now = input.now ?? Date.now();
+  const protect = new Set(input.protectIds ?? []);
+
+  const machines = await withFlyRetry(() => client.listMachines!({ app }), input.retry);
+  const ours = machines.filter((m) => Boolean(m.metadata?.mendpoint_sandbox));
+  const eligible = (m: FlyMachine): boolean => {
+    if (protect.has(m.id)) return false;
+    if (olderThanMs <= 0) return true;
+    if (!m.createdAt) return false;
+    const created = Date.parse(m.createdAt);
+    if (Number.isNaN(created)) return false;
+    return now - created >= olderThanMs;
+  };
+  const orphans = ours.filter(eligible);
+
+  const destroyed: string[] = [];
+  const failed: Array<{ id: string; error: string }> = [];
+  for (const m of orphans) {
+    const t = await safeDestroy(client, app, m.id, input.retry);
+    if (t.destroyed) destroyed.push(m.id);
+    else failed.push({ id: m.id, error: t.error });
+  }
+  return {
+    supported: true,
+    scanned: ours.length,
+    orphans: orphans.map((m) => m.id),
+    destroyed,
+    failed,
   };
 }
 
@@ -429,6 +671,12 @@ export type MockFlyBehavior = {
     command: string[];
     timeoutMs: number;
   }) => FlyExecResult | Promise<FlyExecResult>;
+  /** Force teardown to fail — for exercising the leaked-microVM path. Returns an
+   *  error (constant, or per-id) to throw from destroyMachine, or undefined to
+   *  let the destroy succeed. */
+  destroyError?: Error | ((id: string) => Error | undefined);
+  /** ISO creation time stamped on each created machine (default: now). */
+  createdAt?: string;
 };
 
 export type MockFlyClient = FlyMachineClient & {
@@ -437,6 +685,7 @@ export type MockFlyClient = FlyMachineClient & {
   readonly execed: string[];
   isDestroyed: (id: string) => boolean;
   isLive: (id: string) => boolean;
+  listMachines(input: { app: string }): Promise<FlyMachine[]>;
 };
 
 function delay(ms: number): Promise<void> {
@@ -449,6 +698,12 @@ export function createMockFlyClient(behavior: MockFlyBehavior = {}): MockFlyClie
   const destroyed: string[] = [];
   const execed: string[] = [];
   const live = new Set<string>();
+  const meta = new Map<string, { metadata?: Record<string, string>; createdAt: string }>();
+
+  const destroyErrorFor = (id: string): Error | undefined =>
+    typeof behavior.destroyError === "function"
+      ? behavior.destroyError(id)
+      : behavior.destroyError;
 
   return {
     mode: "mock",
@@ -457,6 +712,10 @@ export function createMockFlyClient(behavior: MockFlyBehavior = {}): MockFlyClie
       const id = `fly-mock-${++seq}`;
       created.push({ id, config });
       live.add(id);
+      meta.set(id, {
+        metadata: config.metadata,
+        createdAt: behavior.createdAt ?? new Date().toISOString(),
+      });
       return { id, state: "created" };
     },
     async waitForState({ id }) {
@@ -475,8 +734,18 @@ export function createMockFlyClient(behavior: MockFlyBehavior = {}): MockFlyClie
       };
     },
     async destroyMachine({ id }) {
+      const err = destroyErrorFor(id);
+      if (err) throw err;
       destroyed.push(id);
       live.delete(id);
+    },
+    async listMachines() {
+      return [...live].map((id) => ({
+        id,
+        state: "started",
+        metadata: meta.get(id)?.metadata,
+        createdAt: meta.get(id)?.createdAt,
+      }));
     },
     created,
     destroyed,
@@ -500,13 +769,34 @@ async function safeText(res: Response): Promise<string> {
   }
 }
 
+type FlyRestMachineJson = {
+  id?: string;
+  state?: string;
+  region?: string;
+  created_at?: string;
+  config?: { metadata?: Record<string, string> };
+};
+
+function toFlyMachine(j: FlyRestMachineJson, fallbackState = "created"): FlyMachine {
+  return {
+    id: j.id ?? "",
+    state: j.state ?? fallbackState,
+    region: j.region,
+    metadata: j.config?.metadata,
+    createdAt: j.created_at,
+  };
+}
+
 export function createFlyRestClient(cfg: {
   token: string;
   apiBase?: string;
   fetchImpl?: FetchImpl;
+  /** Bounded-backoff policy for transient (429/5xx) failures. */
+  retry?: FlyRetryOptions;
 }): FlyMachineClient {
   const apiBase = cfg.apiBase ?? "https://api.machines.dev";
   const fetchImpl = cfg.fetchImpl ?? fetch;
+  const retry = cfg.retry;
   const headers = (): Record<string, string> => ({
     Authorization: `Bearer ${cfg.token}`,
     "Content-Type": "application/json",
@@ -516,26 +806,34 @@ export function createFlyRestClient(cfg: {
 
   return {
     mode: "live",
-    async createMachine({ app, region, config }) {
-      const res = await fetchImpl(appUrl(app), {
-        method: "POST",
-        headers: headers(),
-        body: JSON.stringify({ region, config }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!res.ok) throw new FlySandboxError("create", res.status, await safeText(res));
-      const j = (await res.json()) as { id?: string; state?: string; region?: string };
-      if (!j.id) throw new FlySandboxError("create", res.status, "response missing machine id");
-      return { id: j.id, state: j.state ?? "created", region: j.region };
+    // Control-plane calls (create/wait/destroy/list) retry transient 429/5xx via
+    // withFlyRetry; a deterministic 4xx throws through unretried.
+    createMachine({ app, region, config }) {
+      return withFlyRetry(async () => {
+        const res = await fetchImpl(appUrl(app), {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({ region, config }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!res.ok) throw new FlySandboxError("create", res.status, await safeText(res));
+        const j = (await res.json()) as FlyRestMachineJson;
+        if (!j.id) throw new FlySandboxError("create", res.status, "response missing machine id");
+        return toFlyMachine(j);
+      }, retry);
     },
-    async waitForState({ app, id, state, timeoutMs }) {
+    waitForState({ app, id, state, timeoutMs }) {
       const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
-      const res = await fetchImpl(
-        `${appUrl(app)}/${encodeURIComponent(id)}/wait?state=${state}&timeout=${seconds}`,
-        { headers: headers(), signal: AbortSignal.timeout(timeoutMs + 5_000) },
-      );
-      if (!res.ok) throw new FlySandboxError("wait", res.status, await safeText(res));
+      return withFlyRetry(async () => {
+        const res = await fetchImpl(
+          `${appUrl(app)}/${encodeURIComponent(id)}/wait?state=${state}&timeout=${seconds}`,
+          { headers: headers(), signal: AbortSignal.timeout(timeoutMs + 5_000) },
+        );
+        if (!res.ok) throw new FlySandboxError("wait", res.status, await safeText(res));
+      }, retry);
     },
+    // exec is intentionally NOT retried: re-running a customer verification
+    // command on a transient response could double its side effects.
     async exec({ app, id, command, timeoutMs }) {
       const res = await fetchImpl(`${appUrl(app)}/${encodeURIComponent(id)}/exec`, {
         method: "POST",
@@ -555,16 +853,31 @@ export function createFlyRestClient(cfg: {
         stderr: j.stderr ?? "",
       };
     },
-    async destroyMachine({ app, id }) {
-      const res = await fetchImpl(`${appUrl(app)}/${encodeURIComponent(id)}?force=true`, {
-        method: "DELETE",
-        headers: headers(),
-        signal: AbortSignal.timeout(30_000),
-      });
-      // 404 means the Machine is already gone — acceptable for idempotent teardown.
-      if (!res.ok && res.status !== 404) {
-        throw new FlySandboxError("destroy", res.status, await safeText(res));
-      }
+    destroyMachine({ app, id }) {
+      return withFlyRetry(async () => {
+        const res = await fetchImpl(`${appUrl(app)}/${encodeURIComponent(id)}?force=true`, {
+          method: "DELETE",
+          headers: headers(),
+          signal: AbortSignal.timeout(30_000),
+        });
+        // 404 means the Machine is already gone — acceptable for idempotent teardown.
+        if (!res.ok && res.status !== 404) {
+          throw new FlySandboxError("destroy", res.status, await safeText(res));
+        }
+      }, retry);
+    },
+    listMachines({ app }) {
+      return withFlyRetry(async () => {
+        const res = await fetchImpl(appUrl(app), {
+          headers: headers(),
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!res.ok) throw new FlySandboxError("list", res.status, await safeText(res));
+        const j = (await res.json()) as FlyRestMachineJson[];
+        return (Array.isArray(j) ? j : [])
+          .filter((m): m is FlyRestMachineJson => Boolean(m?.id))
+          .map((m) => toFlyMachine(m, "started"));
+      }, retry);
     },
   };
 }
