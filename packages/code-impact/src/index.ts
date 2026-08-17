@@ -15,13 +15,16 @@ import type {
   AmbiguousChange,
   Confidence,
   ConfirmedImpact,
+  CoverageGap,
   DiffOp,
   ExpandedContext,
   GeneratedReference,
+  ImpactCoverage,
   ImpactFinding,
   ImpactReport,
   ImpactableSurface,
   ImpactType,
+  OverallConfidence,
   StructuralDiff,
   VendoredReference,
 } from "@mendpoint/shared";
@@ -156,13 +159,76 @@ function surfacesFromDiff(
   }));
 }
 
-function overallConfidence(sites: ConfirmedImpact[]): Confidence {
-  if (!sites.length) return "low";
+function overallConfidence(
+  sites: ConfirmedImpact[],
+  coverage: ImpactCoverage,
+): OverallConfidence {
+  if (!sites.length) {
+    // An empty result is "clean" (complete evidence of no impact) ONLY when the
+    // codebase was fully covered. Under partial or absent coverage it is
+    // "unknown": absence of findings then carries no information (§11.7). This is
+    // the fix for the collapse where "we found nothing" and "we found nothing
+    // because we could not look" both returned "low".
+    return coverage.basis === "analyzed" ? "high" : "unknown";
+  }
   if (sites.every((s) => s.confidence === "high")) return "high";
   if (sites.some((s) => s.confidence === "low") && !sites.some((s) => s.confidence === "high")) {
     return "low";
   }
   return "medium";
+}
+
+/**
+ * Derive the coverage/basis discriminator (§11.7, §12.4) from signals the index
+ * already carries. The key signal is call-graph
+ * {@link CallGraphDiagnostics.unsupportedLanguageFiles}: source that IS in scope
+ * but that no front-end can read, which is the difference between "no impact" and
+ * "no impact we could see". Routine dependency-directory pruning
+ * (`skippedDirectories`) is deliberately NOT treated as a coverage gap — those
+ * trees (node_modules, virtualenvs, caches) are out of scope by design, so
+ * skipping them does not undermine "complete evidence of no impact in your code".
+ * File/byte caps throw during indexing rather than truncate, so a successfully
+ * built index never carries a cap gap; the pipeline records that on the failure
+ * path instead.
+ */
+function computeCoverage(index: CodebaseIndex): ImpactCoverage {
+  const gaps: CoverageGap[] = [];
+  const filesInspected = index.files.length;
+  const languagesPresent = [...new Set(index.files.map((f) => f.language))].sort();
+  const diagnostics = index.callGraph.diagnostics;
+  const languagesSupported = diagnostics?.supportedLanguages
+    ? [...diagnostics.supportedLanguages].sort()
+    : undefined;
+
+  const unsupported = diagnostics?.unsupportedLanguageFiles ?? [];
+  if (unsupported.length) {
+    const langs = [...new Set(unsupported.map((u) => u.language))].sort();
+    gaps.push({
+      reason: "unsupported_language",
+      detail: `${unsupported.length} in-scope source file(s) in language(s) with no analysis front-end: ${langs.join(", ")}`,
+      count: unsupported.length,
+    });
+  }
+
+  const basis: ImpactCoverage["basis"] =
+    filesInspected === 0 ? "not_analyzed" : gaps.length ? "partial" : "analyzed";
+
+  const reason =
+    basis === "not_analyzed"
+      ? "No analyzable source files were indexed (repository empty, unsupported, or pruned to nothing during discovery)."
+      : basis === "partial"
+        ? gaps.map((g) => g.detail).join("; ")
+        : undefined;
+
+  return {
+    basis,
+    ...(reason ? { reason } : {}),
+    gaps,
+    filesInspected,
+    filesInScope: filesInspected,
+    ...(languagesSupported ? { languagesSupported } : {}),
+    languagesPresent,
+  };
 }
 
 function strategySummary(surfaces: ImpactableSurface[], sites: ConfirmedImpact[]): string {
@@ -323,6 +389,7 @@ function buildReport(
   candidatesCount: number,
   confirmed: ConfirmedImpact[],
   min: Confidence,
+  coverage: ImpactCoverage,
   generatedFiles: Set<string> = new Set(),
   vendoredFiles: Set<string> = new Set(),
 ): ImpactReport {
@@ -366,7 +433,8 @@ function buildReport(
     surfaces,
     sites,
     overallRisk,
-    overallConfidence: overallConfidence(sites.length ? sites : low),
+    overallConfidence: overallConfidence(sites.length ? sites : low, coverage),
+    coverage,
     strategySummary: [strategySummary(surfaces, sites), ...extraNotes].join(" ").trim(),
     candidateCount: candidatesCount,
     confirmedCount: confirmed.length,
@@ -400,6 +468,7 @@ export async function analyzeImpact(
     candidates.length,
     confirmed,
     options.minConfidence ?? "medium",
+    computeCoverage(index),
     detectGeneratedFiles(index),
     detectVendoredFiles(index),
   );
@@ -426,6 +495,7 @@ export function analyzeRepo(
     candidates.length,
     confirmed,
     options.minConfidence ?? "medium",
+    computeCoverage(index),
     detectGeneratedFiles(index),
     detectVendoredFiles(index),
   );

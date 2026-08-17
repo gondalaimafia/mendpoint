@@ -60,6 +60,7 @@ export default async function PullRequestDetailPage({
 
   if (!pr) {
     const empty: PrDetailData = {
+      id: null,
       repo: "unknown",
       title: "Pull request unavailable",
       number: null,
@@ -89,6 +90,7 @@ export default async function PullRequestDetailPage({
   }));
 
   const data: PrDetailData = {
+    id: pr.id,
     repo: consumer ? `${consumer.githubOwner}/${consumer.githubRepo}` : pr.branchName || "unknown",
     title: pr.title,
     number: pr.githubPrNumber,

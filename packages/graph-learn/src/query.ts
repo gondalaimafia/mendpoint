@@ -2,7 +2,13 @@
  * Graph-RAG query layer — deterministic multi-hop templates for planners.
  * All queries record latency samples for SLO checks.
  */
-import type { GlEdge, GlNode, GraphQuery, GraphQueryResult } from "./schema.js";
+import type {
+  GlEdge,
+  GlNode,
+  GraphQuery,
+  GraphQueryCoverage,
+  GraphQueryResult,
+} from "./schema.js";
 import {
   countStats,
   edgesByKindAt,
@@ -65,6 +71,17 @@ export function blastRadius(
   return { nodes: collectNodes(db, seen), edges: edgeAcc };
 }
 
+/**
+ * Ensure every result carries a coverage assessment. Ops that do not know they
+ * are incomplete are `complete` within their scope by construction (deterministic
+ * template enumeration); ops that can be truncated or targeted at an absent node
+ * set their own coverage, which is preserved here.
+ */
+function withDefaultCoverage(result: GraphQueryResult): GraphQueryResult {
+  if (result.coverage) return result;
+  return { ...result, coverage: { basis: "complete" } };
+}
+
 export function runGraphQuery(
   db: GraphLearnDb,
   q: GraphQuery,
@@ -79,32 +96,33 @@ export function runGraphQuery(
   const t0 = performance.now();
   let tenantView: GraphLearnDb | undefined;
   try {
+    let result: GraphQueryResult;
     if (q.op === "pattern_success_rates") {
       const minSamples = q.minSamples ?? 1;
       const rows = tenantPatternSuccessRows(db, scope, minSamples);
-      return {
+      result = {
         op: q.op,
         nodes: [],
         edges: [],
         summary: `${rows.length} pattern(s) with >=${minSamples} samples`,
         rows,
       };
-    }
-    if (q.op === "stats") {
+    } else if (q.op === "stats") {
       const stats = tenantGraphStats(db, scope);
-      return {
+      result = {
         op: "stats",
         nodes: [],
         edges: [],
         summary: `${stats.nodes} nodes, ${stats.edges} edges`,
         rows: [stats],
       };
+    } else if (q.op === "latency_stats") {
+      result = runGraphQueryInner(db, q);
+    } else {
+      tenantView = createTenantGraphView(db, scope);
+      result = runGraphQueryInner(tenantView, q);
     }
-    if (q.op === "latency_stats") {
-      return runGraphQueryInner(db, q);
-    }
-    tenantView = createTenantGraphView(db, scope);
-    return runGraphQueryInner(tenantView, q);
+    return withDefaultCoverage(result);
   } finally {
     tenantView?.raw.close();
     recordLatency(q.op, performance.now() - t0);
@@ -268,15 +286,20 @@ function runGraphQueryInner(
       };
     }
     case "blast_radius": {
+      const present = Boolean(getNode(db, q.nodeId));
       const r = blastRadius(db, q.nodeId, q.maxHops ?? 2);
       return {
         op: q.op,
         nodes: r.nodes,
         edges: r.edges,
         summary: `blast radius from ${q.nodeId}: ${r.nodes.length} nodes, ${r.edges.length} edges`,
+        coverage: present
+          ? { basis: "complete" }
+          : { basis: "target_absent", reason: `node ${q.nodeId} is not in the graph` },
       };
     }
     case "neighbors": {
+      const present = Boolean(getNode(db, q.nodeId));
       const dir = q.direction ?? "both";
       const outE =
         dir === "in" ? [] : edgesFrom(db, q.nodeId, q.edgeKinds);
@@ -292,6 +315,9 @@ function runGraphQueryInner(
         nodes: collectNodes(db, ids),
         edges,
         summary: `${edges.length} neighbor edge(s)`,
+        coverage: present
+          ? { basis: "complete" }
+          : { basis: "target_absent", reason: `node ${q.nodeId} is not in the graph` },
       };
     }
     case "depends_on_path": {
@@ -299,9 +325,21 @@ function runGraphQueryInner(
         maxHops: q.maxHops,
         maxPaths: q.maxPaths,
       });
-      const reason = enumeration.truncation.truncated
-        ? `; truncated by ${enumeration.truncation.reasons.join(",")}`
-        : "; complete within bounds";
+      const coverage: GraphQueryCoverage =
+        enumeration.coverage === "target_absent"
+          ? { basis: "target_absent", reason: `node ${q.nodeId} is not in the graph` }
+          : enumeration.coverage === "partial"
+            ? {
+                basis: "partial",
+                reason: `truncated by ${enumeration.truncation.reasons.join(",")}`,
+              }
+            : { basis: "complete" };
+      const reason =
+        enumeration.coverage === "target_absent"
+          ? "; node not in graph (no evidence either way)"
+          : enumeration.truncation.truncated
+            ? `; truncated by ${enumeration.truncation.reasons.join(",")}`
+            : "; complete within bounds";
       return {
         op: q.op,
         nodes: collectNodes(db, enumeration.nodeIds),
@@ -309,6 +347,7 @@ function runGraphQueryInner(
         summary: `depends_on ${enumeration.paths.length} terminal path(s) from ${q.nodeId}${reason}`,
         rows: enumeration.paths,
         truncation: enumeration.truncation,
+        coverage,
       };
     }
     case "neighborhood": {
@@ -320,6 +359,7 @@ function runGraphQueryInner(
       });
     }
     case "callers": {
+      const present = Boolean(getNode(db, q.symbolId));
       const edges = edgesTo(db, q.symbolId, ["CALLS", "IMPACTS"]);
       const ids = new Set<string>([q.symbolId, ...edges.map((e) => e.source)]);
       return {
@@ -328,10 +368,15 @@ function runGraphQueryInner(
         edges,
         summary: `${edges.length} caller edge(s) into ${q.symbolId}`,
         rows: edges.map((e) => ({ from: e.source, kind: e.kind })),
+        coverage: present
+          ? { basis: "complete" }
+          : { basis: "target_absent", reason: `symbol ${q.symbolId} is not in the graph` },
       };
     }
     case "path": {
       // BFS path from → to
+      const fromPresent = Boolean(getNode(db, q.fromId));
+      const toPresent = Boolean(getNode(db, q.toId));
       const maxHops = q.maxHops ?? 6;
       const prev = new Map<string, { id: string; edge?: GlEdge }>();
       prev.set(q.fromId, { id: q.fromId });
@@ -354,11 +399,18 @@ function runGraphQueryInner(
         frontier = next;
       }
       if (!found) {
+        const absent = !fromPresent || !toPresent;
         return {
           op: q.op,
           nodes: [],
           edges: [],
-          summary: `no path ${q.fromId} → ${q.toId}`,
+          summary: `no path ${q.fromId} → ${q.toId}${absent ? " (endpoint not in graph)" : ""}`,
+          coverage: absent
+            ? {
+                basis: "target_absent",
+                reason: `${!fromPresent ? q.fromId : q.toId} is not in the graph`,
+              }
+            : { basis: "complete" },
         };
       }
       const pathIds: string[] = [];

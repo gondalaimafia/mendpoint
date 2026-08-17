@@ -10,9 +10,9 @@ import type { SettingsData } from "./fixtures.js";
  * provider, and the PR-policy toggles from `/policies/defaults`. Two cards: spec
  * source (a mono URL input and a target-version select) and pull requests (a
  * "drafts" checkbox with its consequence line and two switches). Cancel is a
- * ghost button in the footer; the single indigo primary action ("Save") lives in
- * the console topbar, wired by `ConsoleShell` to fire the confirmation toast.
- * Reads are live; persisting edits is a follow-up.
+ * ghost button in the footer. Reads are live; there is no settings-persistence
+ * endpoint yet, so the console shows no "Save" action rather than a control that
+ * claims to save when it does not.
  */
 export function SettingsView({ data }: { data: SettingsData }) {
   const [drafts, setDrafts] = React.useState(data.drafts);

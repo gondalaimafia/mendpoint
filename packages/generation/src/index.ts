@@ -357,7 +357,13 @@ export function generateMigration(input: GenerateInput): MigrationDraft {
   }
 
   const report = input.impactReport;
+  // Display confidence keeps the honest "unknown" value from the report (an
+  // empty result under incomplete coverage). The migration draft, however,
+  // carries a three-value Confidence, so "unknown" floors to "low" there — an
+  // uncertain result must never be packaged as anything stronger.
   const confidence = report?.overallConfidence ?? overallConfidence(findings);
+  const draftConfidence: Confidence = confidence === "unknown" ? "low" : confidence;
+  const coverage = report?.coverage;
   const risk = report?.overallRisk ?? change.risk;
   const short = change.summary.slice(0, 72);
   const verb = mode === "adopt" ? "adopt" : "migrate";
@@ -381,6 +387,9 @@ export function generateMigration(input: GenerateInput): MigrationDraft {
     "",
     `**Risk:** \`${risk}\`  `,
     `**Confidence:** \`${confidence}\`  `,
+    coverage
+      ? `**Coverage:** \`${coverage.basis}\`${coverage.reason ? ` — ${coverage.reason}` : ""}  `
+      : "",
     `**Mode:** \`${mode}\`  `,
     `**Files edited:** **${fileEdits.length}**  `,
     `**Agent policy:** opens a PR only — never commits to protected branches.`,
@@ -396,6 +405,28 @@ export function generateMigration(input: GenerateInput): MigrationDraft {
           `- Candidates discovered: **${report.candidateCount}**`,
           `- Confirmed sites: **${report.confirmedCount}**`,
           `- Low-confidence notifications: **${report.lowConfidenceNotifications.length}**`,
+          ...(report.coverage
+            ? [
+                `- Coverage: **${report.coverage.basis}**` +
+                  (report.coverage.filesInspected !== undefined
+                    ? ` — ${report.coverage.filesInspected} file(s) inspected` +
+                      (report.coverage.languagesSupported && report.coverage.languagesPresent
+                        ? `; languages present: ${report.coverage.languagesPresent.join(", ") || "none"}; supported: ${report.coverage.languagesSupported.join(", ")}`
+                        : "")
+                    : ""),
+                ...(report.coverage.gaps.length
+                  ? [
+                      "",
+                      "**Not verified (coverage gaps):**",
+                      ...report.coverage.gaps.map(
+                        (g) => `- \`${g.reason}\`: ${g.detail}`,
+                      ),
+                    ]
+                  : report.coverage.basis === "analyzed"
+                    ? ["", "_Full coverage: this is complete evidence, not merely an empty result._"]
+                    : []),
+              ]
+            : []),
           "",
           "### Impactable surfaces (sample)",
           ...report.surfaces.slice(0, 8).map(
@@ -458,7 +489,7 @@ export function generateMigration(input: GenerateInput): MigrationDraft {
     branchName,
     patch: patches.join("\n\n"),
     risk,
-    confidence,
+    confidence: draftConfidence,
     fileEdits,
   };
 }
