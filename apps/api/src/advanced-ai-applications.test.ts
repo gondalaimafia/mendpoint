@@ -8,7 +8,7 @@ import type { AdapterLifecycleRecord, ExecutorDescriptor, PostTrainedConsentSnap
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ApiEnv } from "./auth.js";
-import { advancedAiAttestationCryptoFromEnv, advancedAiEvaluationRuntimeFromEnv, advancedAiTrainingRuntimeFromEnv, createAdvancedAiApplicationRoutes, createDurableAttestationScopeAuthority, createDurablePostTrainedEvidenceAuthority } from "./advanced-ai-applications.js";
+import { advancedAiAttestationCryptoFromEnv, advancedAiEvaluationRuntimeFromEnv, advancedAiRuntimeAuthoritiesIndependent, advancedAiTrainingRuntimeFromEnv, createAdvancedAiApplicationRoutes, createDurableAttestationScopeAuthority, createDurablePostTrainedEvidenceAuthority } from "./advanced-ai-applications.js";
 
 const dirs: string[] = []; const dbs: AppDb[] = [];
 afterEach(() => { dbs.splice(0).forEach((db) => db.raw.close()); dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })); });
@@ -212,6 +212,17 @@ describe("advanced AI applications API", () => {
     expect(calls).toBe(0); expect(runtime.evaluator).toBeDefined();
     const result = await runtime.evaluator!.evaluate({ evaluationId: "evaluation", requestDigest: "digest", authorityId: "evaluation-authority", candidate: { adapterId: "adapter", artifactId: "artifact", artifactDigest: DIGEST, contentBase64: "YQ==" }, baseline: { executorId: "baseline", revision: "7".repeat(40) }, trainingDatasetId: "dataset", trainingSplitManifestDigest: SPLIT_MANIFEST, training: [], holdout: { artifactId: "holdout", sha256: "a".repeat(64), content: "{}" }, evaluator: { harnessVersion: "h1", graderVersion: "g1" }, policy: { minimumSuccessRate: .9, maximumRegressionRate: .02, maximumSecurityRegressions: 0 }, signal: new AbortController().signal });
     expect(result.result).toEqual({ status: "pending" }); expect(calls).toBe(1);
+  });
+  it("rejects post training runtimes that reuse an endpoint or credential across trust roles", () => {
+    const distinct = {
+      trainingAuthorityId: "trainer-authority", trainingEndpointIdentity: "https://trainer.example/v1", trainingCredentialIdentity: "sha256:trainer",
+      evaluationAuthorityId: "evaluator-authority", evaluationEndpointIdentity: "https://evaluator.example/v1", evaluationCredentialIdentity: "sha256:evaluator",
+      canaryAuthorityId: "canary-authority", canaryEndpointIdentity: "https://canary.example/v1", canaryCredentialIdentity: "sha256:canary",
+    };
+    expect(advancedAiRuntimeAuthoritiesIndependent(distinct)).toBe(true);
+    expect(advancedAiRuntimeAuthoritiesIndependent({ ...distinct, evaluationEndpointIdentity: distinct.trainingEndpointIdentity })).toBe(false);
+    expect(advancedAiRuntimeAuthoritiesIndependent({ ...distinct, canaryCredentialIdentity: distinct.evaluationCredentialIdentity })).toBe(false);
+    expect(advancedAiRuntimeAuthoritiesIndependent({ ...distinct, evaluationAuthorityId: distinct.trainingAuthorityId })).toBe(false);
   });
   it("binds consent evidence to the dataset through the durable consent authority", () => {
     const { db } = fixture();
