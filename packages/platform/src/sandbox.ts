@@ -55,8 +55,14 @@ export type SandboxHandle = {
 export type CreateSandboxOpts = {
   kind?: SandboxKind;
   prefix?: string;
-  /** Seed files: relative path → content */
-  files?: Record<string, string>;
+  /**
+   * Seed files: relative path → content. Content may be a `string` (written as
+   * UTF-8) or raw bytes (`Uint8Array`/`Buffer`). Byte content is written and
+   * transferred verbatim, so a binary file in a customer repo (images, compiled
+   * artifacts, `.so`/`.dll`, PDFs) round-trips into the sandbox without the
+   * UTF-8 mangling that a text-only channel would inflict.
+   */
+  files?: Record<string, string | Uint8Array>;
   mocks?: MockUpstream[];
   serviceBaseUrl?: string;
   runtime?: "node" | "python" | "jvm" | "dotnet" | "cobol";
@@ -223,7 +229,9 @@ export function createLocalSandbox(opts: CreateSandboxOpts = {}): SandboxHandle 
     for (const [rel, content] of Object.entries(opts.files ?? {})) {
       const abs = seedPath(root, rel);
       mkdirSync(dirname(abs), { recursive: true });
-      writeFileSync(abs, content, "utf8");
+      // Byte content is written verbatim; a string defaults to UTF-8 (byte-
+      // identical to the previous explicit "utf8"), so binary files survive.
+      writeFileSync(abs, content);
     }
   } catch (error) {
     if (opts.cacheKey) clearSandboxCache(opts.cacheKey);
