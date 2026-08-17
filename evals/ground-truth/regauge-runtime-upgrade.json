@@ -1,0 +1,47 @@
+{
+  "scenario_id": "regauge-runtime-upgrade",
+  "repo_family": "node-service",
+  "difficulty": 2,
+  "difficulty_rationale": "Level 2: this is the one subject that maps to a shipped recipe (node-runtime-18-to-20). The core task is a config-only edit of four root files. It is rated 2, but two coverage findings raise the ceiling: a non-root docker/Dockerfile.ci left on node:18, and code-level Node-18 patterns (compat shim, url.parse) the config-only recipe cannot address.",
+  "intended_product": [
+    "regauge"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "apply_recipe",
+  "faults": [
+    {
+      "id": "node-runtime-bump",
+      "description": "Upgrade Node runtime 18 -> 20.",
+      "family": "runtime-upgrade"
+    }
+  ],
+  "expected_findings": [
+    "package.json",
+    ".nvmrc",
+    ".node-version",
+    "Dockerfile"
+  ],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "src/",
+    "docker/Dockerfile.ci"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 4,
+    "untouchedSubsystems": [
+      "src/",
+      "src/reporting/"
+    ]
+  },
+  "recipe_expectation": {
+    "family": "runtime-upgrade",
+    "shippedRecipeId": "node-runtime-18-to-20"
+  },
+  "tags": [
+    "regauge",
+    "runtime-upgrade",
+    "shipped-recipe",
+    "coverage-finding"
+  ],
+  "notes": "docker/Dockerfile.ci is outside the recipe allowedPaths; residual detection may report status=incomplete rather than applicable. The runner records the actual analyze status; that is an empirical coverage finding, not an assumed one."
+}

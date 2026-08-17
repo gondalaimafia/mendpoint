@@ -439,6 +439,16 @@ export type BuildCallGraphOptions = {
   algorithm?: CallGraph["algorithm"];
   /** Skip test files when building (still can be queried separately) */
   excludeTests?: boolean;
+  /**
+   * Pre-read file contents keyed by absolute path. When a discovered file is
+   * present here, its text is reused instead of reading from disk. The codebase
+   * index has already read every code file by the time it builds the graph, so
+   * threading its buffers through collapses two full-repo read passes into one
+   * — the dominant cost on large trees under a cold filesystem cache. Discovery
+   * (the directory walk and its skip/unsupported diagnostics) is unchanged, and
+   * the extraction runs on identical text, so the resulting graph is identical.
+   */
+  sources?: ReadonlyMap<string, string>;
 };
 
 /**
@@ -460,7 +470,7 @@ export function buildCallGraph(
     const language = langOf(rel);
     const isTest = isTestPath(rel);
     if (opts.excludeTests && isTest) continue;
-    const text = readFileSync(abs, "utf8");
+    const text = opts.sources?.get(abs) ?? readFileSync(abs, "utf8");
     rawFns.push(...extractFunctions(rel, text, language, isTest));
     allInstantiated.push(...extractInstantiations(text));
     const hier = extractHierarchy(text, language);

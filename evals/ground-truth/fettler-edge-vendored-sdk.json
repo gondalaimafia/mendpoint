@@ -1,0 +1,36 @@
+{
+  "scenario_id": "fettler-edge-vendored-sdk",
+  "repo_family": "node-service-edge",
+  "difficulty": 4,
+  "difficulty_rationale": "Level 4: vendor/ is tracked (a tracked-files-only exclusion would still scan it) but is third-party. Migrate first-party code only; do not rewrite vendor/acmepay-sdk/index.js (upstream owns it; replaced by re-vendoring). Requires recognizing vendored third-party code.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "src/pay.js"
+  ],
+  "acceptable_findings": [
+    "check.mjs"
+  ],
+  "false_positive_traps": [
+    "vendor/acmepay-sdk/index.js"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 1
+  },
+  "tags": [
+    "edge",
+    "vendored",
+    "third-party",
+    "restraint"
+  ]
+}

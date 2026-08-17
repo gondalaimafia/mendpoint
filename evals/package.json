@@ -1,0 +1,6 @@
+{
+  "name": "@mendpoint/evals",
+  "private": true,
+  "type": "module",
+  "description": "Synthetic-repo evaluation suite for Fettler and ReGauge (not a workspace; run via tsx)."
+}

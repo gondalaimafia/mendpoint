@@ -1,0 +1,38 @@
+{
+  "scenario_id": "fettler-edge-pnpm-workspace",
+  "repo_family": "typescript-monorepo",
+  "difficulty": 4,
+  "difficulty_rationale": "Level 4: pnpm workspace with symlinks under node_modules. Historically Fettler aborted the whole scan on any symlink. Correct behavior: skip and record symlinks, complete the scan, migrate the one real source file, and do not follow symlinks into packages/payments twice.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "packages/payments/src/index.js"
+  ],
+  "acceptable_findings": [
+    "check.mjs"
+  ],
+  "false_positive_traps": [
+    "node_modules/",
+    "apps/web/src/pay.js"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 1
+  },
+  "tags": [
+    "edge",
+    "symlink",
+    "pnpm",
+    "workspace"
+  ],
+  "notes": "apps/web/src/pay.js has no literal `source` and must not be flagged. Symlinks must be recorded as skipped, not silently dropped."
+}

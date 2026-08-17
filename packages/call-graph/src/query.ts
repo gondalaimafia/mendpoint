@@ -15,8 +15,26 @@ import type {
 } from "./types.js";
 import { confRank, minConf } from "./build.js";
 
+/**
+ * Edge-by-id lookup. `graph.edges.find(...)` scanned all edges on every call,
+ * making reverse/forward reachability O(E^2) — catastrophic on dense graphs
+ * (the reason a virtualenv-inflated graph could stall). We memoize an id->edge
+ * index per graph, rebuilding only when the edge count changes (graphs are
+ * immutable during a query; incremental rebuilds replace the edges array).
+ */
+const edgeIndexCache = new WeakMap<CallGraph, { size: number; byId: Map<string, CallEdge> }>();
+
+function edgeIndexOf(graph: CallGraph): Map<string, CallEdge> {
+  const cached = edgeIndexCache.get(graph);
+  if (cached && cached.size === graph.edges.length) return cached.byId;
+  const byId = new Map<string, CallEdge>();
+  for (const e of graph.edges) byId.set(e.id, e);
+  edgeIndexCache.set(graph, { size: graph.edges.length, byId });
+  return byId;
+}
+
 function edgeById(graph: CallGraph, id: string): CallEdge | undefined {
-  return graph.edges.find((e) => e.id === id);
+  return edgeIndexOf(graph).get(id);
 }
 
 /** Nodes that match a simple name (RA lookup). */
@@ -73,10 +91,13 @@ export function reverseReachability(
     path: string[];
     conf: CallEdgeConfidence;
   };
+  // FIFO queue via a moving head index; Array.shift() is O(n) per dequeue,
+  // which turns a wide frontier into O(n^2). Order of dequeue is identical.
   const queue: Q[] = [{ id: seedId, depth: 0, path: [seedId], conf: "high" }];
+  let head = 0;
 
-  while (queue.length) {
-    const cur = queue.shift()!;
+  while (head < queue.length) {
+    const cur = queue[head++]!;
     if (cur.depth >= maxDepth) continue;
     const incoming = graph.inEdges[cur.id] ?? [];
     for (const eid of incoming) {
@@ -115,8 +136,9 @@ export function forwardReachability(
   const visited = new Set<string>([seedId]);
   type Q = { id: string; depth: number; path: string[]; conf: CallEdgeConfidence };
   const queue: Q[] = [{ id: seedId, depth: 0, path: [seedId], conf: "high" }];
-  while (queue.length) {
-    const cur = queue.shift()!;
+  let head = 0;
+  while (head < queue.length) {
+    const cur = queue[head++]!;
     if (cur.depth >= maxDepth) continue;
     for (const eid of graph.outEdges[cur.id] ?? []) {
       const edge = edgeById(graph, eid);

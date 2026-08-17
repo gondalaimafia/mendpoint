@@ -1,0 +1,46 @@
+{
+  "scenario_id": "regauge-should-abstain",
+  "repo_family": "typescript-service",
+  "difficulty": 5,
+  "difficulty_rationale": "Level 5 (required abstention, P0): every site touching the two rename targets sits behind one of four unsafe-to-automate constructs (dynamic dispatch, reflection, string-concatenated member access, shadowed local bindings). There is no safe site, so the only correct output is a global abstention with four reason codes. Any edit is a broken migration.",
+  "intended_product": [
+    "regauge"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "abstain",
+  "faults": [
+    {
+      "id": "unsafe-rename",
+      "description": "SDK field/method rename where every site is guarded by an unsafe-to-automate construct.",
+      "family": "sdk-upgrade"
+    }
+  ],
+  "expected_findings": [],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "src/dispatch/",
+    "src/audit/",
+    "vendor/switchboard/"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 0
+  },
+  "recipe_expectation": {
+    "family": "sdk-upgrade",
+    "shippedRecipeId": null,
+    "abstainReasons": [
+      "abstain:dynamic_dispatch",
+      "abstain:reflection",
+      "abstain:dynamic_member_access",
+      "abstain:shadowed_binding"
+    ]
+  },
+  "tags": [
+    "regauge",
+    "abstain",
+    "P0",
+    "dangerous-advice",
+    "unsafe-constructs"
+  ],
+  "notes": "Abstention-by-absence and reasoned-abstention agree on the observable outcome: no edit anywhere. A reasoned engine must emit the four reason codes."
+}
