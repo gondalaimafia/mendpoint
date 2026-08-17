@@ -230,12 +230,33 @@ export type GraphQuery =
     }
   | { op: "stats" };
 
+/**
+ * Coverage assessment for a graph query result. Every op carries one so a caller
+ * can never mistake an empty result for a definitive "nothing depends on this":
+ *
+ *  - `complete`      — the result enumerates everything within the query's scope.
+ *  - `partial`       — a safety bound (max hops/paths) stopped enumeration early;
+ *    there may be more than what is returned.
+ *  - `target_absent` — the queried node/entity is not in the (tenant) graph, so
+ *    an empty result means "we have never seen it", NOT "it has no relationships".
+ */
+export type GraphQueryCoverage = {
+  basis: "complete" | "partial" | "target_absent";
+  reason?: string;
+};
+
 export type GraphQueryResult = {
   op: string;
   nodes: GlNode[];
   edges: GlEdge[];
   summary: string;
   rows?: Array<Record<string, unknown>>;
+  /**
+   * Coverage of this result. Optional only for backward-compatibility with
+   * results built before this field existed; {@link runGraphQuery} normalizes
+   * every returned result to carry one (defaulting to `complete`).
+   */
+  coverage?: GraphQueryCoverage;
   truncation?: {
     truncated: boolean;
     reasons: Array<"max_hops" | "max_paths">;

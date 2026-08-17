@@ -3,6 +3,19 @@
 import { DEPENDENCY_DIRECTORIES } from "@mendpoint/shared";
 
 /**
+ * Warden behavior policy — three researched principles from the specialist
+ * capability taxonomy (docs/AGENT_CAPABILITY_TAXONOMY.md). Each encodes a class
+ * of correct specialist behavior that grading on response success alone misses.
+ * These strings are written to shape live model behavior when injected into the
+ * planner prompt, so keep them precise and non-verbose.
+ */
+export const WARDEN_BEHAVIOR_POLICY = [
+  "Attribution before modification: for intermittent, cohort-scoped, or status-page-clean failures, correlate onset with a region or cohort, check component-level status, and reproduce from an independent path before editing. When the client is correct, change no client logic and hand off the attribution evidence.",
+  "Retry is not the default repair: it is harmful for non-idempotent timeouts, idempotency-key semantics, rate-limit storms, OAuth refresh-token rotation, and SDK-wrapped errors. Query the outcome of an ambiguous request before retrying, and never regenerate an idempotency key per attempt.",
+  "Verify safety invariants, not response success: assert created-resource counts, that signature verification still rejects a forged and a replayed event, and that a refresh-token family stays valid. A green functional check that breaks one of these is a failed repair.",
+] as const;
+
+/**
  * Directories a Warden *candidate* scan skips: package caches, VCS metadata, and
  * build outputs that are never source and, on a real customer repo, dwarf the
  * tracked tree (an installed `node_modules` alone can be hundreds of thousands of

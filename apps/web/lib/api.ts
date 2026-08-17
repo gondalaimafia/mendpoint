@@ -102,6 +102,20 @@ export type MigrationPr = {
   githubPrNumber: number | null;
   githubPrUrl: string | null;
   createdAt: string;
+  /**
+   * Coverage/basis of the impact analysis behind this PR (§11.7, §12.4). Lets the
+   * console distinguish "analyzed, no impact" (clean) from "analysis incomplete
+   * or never ran" (unknown). Null for PRs recorded before this channel existed.
+   */
+  coverage?: {
+    basis: "analyzed" | "partial" | "not_analyzed";
+    reason?: string;
+    gaps?: Array<{ reason: string; detail: string; count?: number }>;
+    filesInspected?: number;
+    filesInScope?: number;
+    languagesSupported?: string[];
+    languagesPresent?: string[];
+  } | null;
 };
 
 export type MigrationPrReview = {

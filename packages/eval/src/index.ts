@@ -44,6 +44,21 @@ export {
 } from "./warden-source-eval.js";
 export { TRANSFORMER_AGENT_EVAL_SCENARIOS } from "./transformer-agent-eval.js";
 export {
+  containsRetryConstruct,
+  everyGradePassed,
+  gradeDiagnosisOnly,
+  gradeFailed,
+  gradeInvariant,
+  gradePassed,
+  gradeRetryPenalty,
+  type DiagnosisAttribution,
+  type DiagnosisOnlyInput,
+  type InvariantCheck,
+  type InvariantGradeInput,
+  type RetryPenaltyInput,
+} from "./specialist-grades.js";
+export { SPECIALIST_AGENT_EVAL_SCENARIOS } from "./specialist-scenarios.js";
+export {
   DEFAULT_APPROVED_LIVE_MODEL,
   LIVE_MODEL_EVIDENCE_VERSION,
   gradeLiveModelProvenance,
