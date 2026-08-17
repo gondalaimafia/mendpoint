@@ -337,6 +337,30 @@ describe("web credential proxy", () => {
     );
     expect(write.status).toBe(200);
 
+    const learningStatus = await GET(
+      new NextRequest("https://console.example/api/advanced-ai/learning/status", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["advanced-ai", "learning", "status"] }) },
+    );
+    expect(learningStatus.status).toBe(200);
+
+    const consent = await POST(
+      new NextRequest("https://console.example/api/advanced-ai/learning/consents", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "consent-1",
+        },
+        body: JSON.stringify({ purpose: "fettler-api-engineering" }),
+      }),
+      { params: Promise.resolve({ path: ["advanced-ai", "learning", "consents"] }) },
+    );
+    expect(consent.status).toBe(200);
+
     const denied = await POST(
       new NextRequest("https://console.example/api/advanced-ai/internal/reset", {
         method: "POST",
@@ -349,7 +373,7 @@ describe("web credential proxy", () => {
       { params: Promise.resolve({ path: ["advanced-ai", "internal", "reset"] }) },
     );
     expect(denied.status).toBe(404);
-    expect(upstream).toHaveBeenCalledTimes(2);
+    expect(upstream).toHaveBeenCalledTimes(4);
   });
 
   it("allows authenticated same origin consumer creation", async () => {
