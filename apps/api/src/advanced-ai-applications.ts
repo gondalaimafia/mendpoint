@@ -49,6 +49,8 @@ export type AdvancedAiApplicationRoutesOptions = Readonly<{
   trainingWorkerId?: string;
   trainingProcessingBoundary?: "tenant_local" | "external";
   trainingAuthorityId?: string;
+  trainingEndpointIdentity?: string;
+  trainingCredentialIdentity?: string;
   verifyReconciliation?(receipt: PostTrainedReconciliationReceipt): boolean;
   authorizeAttestationScope?: SoftwareAttestationOperationDependencies["authorizeScope"];
   authorizeDataset?: import("@mendpoint/pipeline").PostTrainedTrainingDependencies["authorizeDataset"];
@@ -58,6 +60,8 @@ export type AdvancedAiApplicationRoutesOptions = Readonly<{
   evaluationWorkerId?: string;
   evaluationPrincipalId?: string;
   evaluationAuthorityId?: string;
+  evaluationEndpointIdentity?: string;
+  evaluationCredentialIdentity?: string;
   evaluationProcessingBoundary?: "tenant_local" | "external";
   evaluationExpected?: PostTrainedEvaluationDependencies["expected"];
   authorizeEvaluationDataset?: PostTrainedEvaluationDependencies["authorizeDataset"];
@@ -68,12 +72,27 @@ export type AdvancedAiApplicationRoutesOptions = Readonly<{
   canaryWorkerId?: string;
   canaryPrincipalId?: string;
   canaryAuthorityId?: string;
+  canaryEndpointIdentity?: string;
+  canaryCredentialIdentity?: string;
   canaryExpected?: PostTrainedCanaryDependencies["expected"];
   verifyCanaryReceipt?: PostTrainedCanaryDependencies["verifyReceipt"];
 }>;
 
 export function advancedAiApplicationsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.MENDPOINT_ADVANCED_AI_APPLICATIONS_ENABLED === "1";
+}
+
+export function advancedAiRuntimeAuthoritiesIndependent(input: Readonly<{
+  trainingAuthorityId?: string; trainingEndpointIdentity?: string; trainingCredentialIdentity?: string;
+  evaluationAuthorityId?: string; evaluationEndpointIdentity?: string; evaluationCredentialIdentity?: string;
+  canaryAuthorityId?: string; canaryEndpointIdentity?: string; canaryCredentialIdentity?: string;
+}>): boolean {
+  const authorities = [input.trainingAuthorityId, input.evaluationAuthorityId, input.canaryAuthorityId];
+  const endpoints = [input.trainingEndpointIdentity, input.evaluationEndpointIdentity, input.canaryEndpointIdentity];
+  const credentials = [input.trainingCredentialIdentity, input.evaluationCredentialIdentity, input.canaryCredentialIdentity];
+  return [authorities, endpoints, credentials].every((values) =>
+    values.every((value) => typeof value === "string" && value.trim().length > 0)
+    && new Set(values).size === values.length);
 }
 
 export function advancedAiAttestationCryptoFromEnv(env: NodeJS.ProcessEnv = process.env): Pick<AdvancedAiApplicationRoutesOptions, "signer" | "trustPolicy" | "attestationPrincipalId"> {
@@ -104,7 +123,7 @@ export function advancedAiTrainingRuntimeFromEnv(
   db: AppDb,
   env: NodeJS.ProcessEnv = process.env,
   transport: typeof fetch = fetch,
-): Pick<AdvancedAiApplicationRoutesOptions, "trainer" | "trainingTimeoutMs" | "trainingLeaseMs" | "trainingWorkerId" | "trainingProcessingBoundary" | "trainingAuthorityId" | "verifyReconciliation" | "verifyEvidence" | "authorizeDataset"> {
+): Pick<AdvancedAiApplicationRoutesOptions, "trainer" | "trainingTimeoutMs" | "trainingLeaseMs" | "trainingWorkerId" | "trainingProcessingBoundary" | "trainingAuthorityId" | "trainingEndpointIdentity" | "trainingCredentialIdentity" | "verifyReconciliation" | "verifyEvidence" | "authorizeDataset"> {
   const endpoint = env.MENDPOINT_POST_TRAINED_TRAINER_URL;
   const token = env.MENDPOINT_POST_TRAINED_TRAINER_TOKEN;
   const externalApproved = env.MENDPOINT_POST_TRAINED_EXTERNAL_PROCESSING_APPROVED === "1";
@@ -166,7 +185,7 @@ export function advancedAiTrainingRuntimeFromEnv(
     const supplied = Buffer.from(receipt.signature, "hex");
     return supplied.length === expected.length && timingSafeEqual(supplied, expected);
   };
-  return { trainer, trainingTimeoutMs: rawTimeout, trainingLeaseMs: rawLease, trainingWorkerId: workerId, trainingProcessingBoundary: "external", trainingAuthorityId: authorityId, verifyReconciliation, verifyEvidence, authorizeDataset };
+  return { trainer, trainingTimeoutMs: rawTimeout, trainingLeaseMs: rawLease, trainingWorkerId: workerId, trainingProcessingBoundary: "external", trainingAuthorityId: authorityId, trainingEndpointIdentity: base.toString(), trainingCredentialIdentity: `sha256:${createHash("sha256").update(token).digest("hex")}`, verifyReconciliation, verifyEvidence, authorizeDataset };
 }
 
 export function createDurablePostTrainedEvidenceAuthority(db: AppDb): NonNullable<AdvancedAiApplicationRoutesOptions["verifyEvidence"]> {
@@ -366,7 +385,7 @@ export function createAdvancedAiApplicationRoutes(options: AdvancedAiApplication
     try {
       const principal = identity(c); if (!principal) return c.json({ error: "authenticated_principal_required" }, 401);
       if (!can(principal, "tenant:admin")) return c.json({ error: "forbidden" }, 403);
-      if (!options.evaluator || !options.evaluationWorkerId || !options.evaluationPrincipalId || !options.evaluationAuthorityId || !options.evaluationProcessingBoundary || !options.evaluationExpected || !options.authorizeEvaluationDataset || !options.verifyEvaluationReceipt || !options.evaluationLeaseMs || options.evaluationAuthorityId === options.trainingAuthorityId) return c.json({ error: "post_trained_evaluation_unconfigured" }, 503);
+      if (!options.evaluator || !options.evaluationWorkerId || !options.evaluationPrincipalId || !options.evaluationAuthorityId || !options.evaluationProcessingBoundary || !options.evaluationExpected || !options.authorizeEvaluationDataset || !options.verifyEvaluationReceipt || !options.evaluationLeaseMs || options.evaluationAuthorityId === options.trainingAuthorityId || !runtimePairIndependent(options.trainingEndpointIdentity, options.trainingCredentialIdentity, options.evaluationEndpointIdentity, options.evaluationCredentialIdentity)) return c.json({ error: "post_trained_evaluation_unconfigured" }, 503);
       const evaluatorPrincipal = options.db.raw.prepare("SELECT 1 FROM principals WHERE tenant_id = ? AND id = ? AND revoked_at IS NULL").get(principal.tenantId, options.evaluationPrincipalId);
       if (!evaluatorPrincipal) return c.json({ error: "post_trained_evaluation_principal_invalid" }, 503);
       const body = await jsonBody(c);
@@ -380,7 +399,7 @@ export function createAdvancedAiApplicationRoutes(options: AdvancedAiApplication
     try {
       const principal = identity(c); if (!principal) return c.json({ error: "authenticated_principal_required" }, 401);
       if (!can(principal, "tenant:admin")) return c.json({ error: "forbidden" }, 403);
-      if (!options.canaryRunner || !options.canaryWorkerId || !options.canaryPrincipalId || !options.canaryAuthorityId || !options.canaryExpected || !options.verifyCanaryReceipt || !options.canaryLeaseMs) return c.json({ error: "post_trained_canary_unconfigured" }, 503);
+      if (!options.canaryRunner || !options.canaryWorkerId || !options.canaryPrincipalId || !options.canaryAuthorityId || !options.canaryExpected || !options.verifyCanaryReceipt || !options.canaryLeaseMs || !runtimeCanaryIndependent(options)) return c.json({ error: "post_trained_canary_unconfigured" }, 503);
       const canaryPrincipal = options.db.raw.prepare("SELECT 1 FROM principals WHERE tenant_id = ? AND id = ? AND revoked_at IS NULL").get(principal.tenantId, options.canaryPrincipalId); if (!canaryPrincipal) return c.json({ error: "post_trained_canary_principal_invalid" }, 503);
       const body = await jsonBody(c); const idempotencyKey = c.req.header("idempotency-key"); if (!idempotencyKey?.trim()) throw new Error("idempotency_key_required");
       const canary = await runPostTrainedCanary(options.db, { ...body, servingRevision: options.canaryExpected.servingRevision, mode: options.canaryExpected.mode, allocationPercent: options.canaryExpected.allocationPercent, policy: options.canaryExpected.policy, tenantId: principal.tenantId, actorPrincipalId: options.canaryPrincipalId, idempotencyKey, requestedAt: now() } as never, { enabled: true, runner: options.canaryRunner, workerId: options.canaryWorkerId, authorityId: options.canaryAuthorityId, expected: options.canaryExpected, verifyReceipt: options.verifyCanaryReceipt, leaseMs: options.canaryLeaseMs, timeoutMs: options.canaryTimeoutMs ?? 30_000 });
@@ -395,7 +414,7 @@ export function advancedAiEvaluationRuntimeFromEnv(
   db: AppDb,
   env: NodeJS.ProcessEnv = process.env,
   transport: typeof fetch = fetch,
-): Pick<AdvancedAiApplicationRoutesOptions, "evaluator" | "evaluationTimeoutMs" | "evaluationLeaseMs" | "evaluationWorkerId" | "evaluationPrincipalId" | "evaluationAuthorityId" | "evaluationProcessingBoundary" | "evaluationExpected" | "authorizeEvaluationDataset" | "verifyEvaluationReceipt"> {
+): Pick<AdvancedAiApplicationRoutesOptions, "evaluator" | "evaluationTimeoutMs" | "evaluationLeaseMs" | "evaluationWorkerId" | "evaluationPrincipalId" | "evaluationAuthorityId" | "evaluationEndpointIdentity" | "evaluationCredentialIdentity" | "evaluationProcessingBoundary" | "evaluationExpected" | "authorizeEvaluationDataset" | "verifyEvaluationReceipt"> {
   const endpoint = env.MENDPOINT_POST_TRAINED_EVALUATOR_URL;
   const token = env.MENDPOINT_POST_TRAINED_EVALUATOR_TOKEN;
   const receiptSecret = env.MENDPOINT_POST_TRAINED_EVALUATOR_RECEIPT_HMAC_SECRET;
@@ -458,14 +477,14 @@ export function advancedAiEvaluationRuntimeFromEnv(
   }, transport).authorizeDataset;
   if (!authorizeEvaluationDataset) return {};
   const evaluationExpected = Object.freeze({ baseline: Object.freeze({ executorId: baselineExecutorId!, revision: baselineRevision! }), evaluator: Object.freeze({ harnessVersion: harnessVersion!, graderVersion: graderVersion! }), policy: Object.freeze({ minimumSuccessRate, maximumRegressionRate, maximumSecurityRegressions }) });
-  return { evaluator, evaluationTimeoutMs: rawTimeout, evaluationLeaseMs: rawLease, evaluationWorkerId: workerId!, evaluationPrincipalId: principalId!, evaluationAuthorityId: authorityId!, evaluationProcessingBoundary: "external", evaluationExpected, authorizeEvaluationDataset, verifyEvaluationReceipt };
+  return { evaluator, evaluationTimeoutMs: rawTimeout, evaluationLeaseMs: rawLease, evaluationWorkerId: workerId!, evaluationPrincipalId: principalId!, evaluationAuthorityId: authorityId!, evaluationEndpointIdentity: base.toString(), evaluationCredentialIdentity: `sha256:${createHash("sha256").update(token!).digest("hex")}`, evaluationProcessingBoundary: "external", evaluationExpected, authorizeEvaluationDataset, verifyEvaluationReceipt };
 }
 
 export function advancedAiCanaryRuntimeFromEnv(
   db: AppDb,
   env: NodeJS.ProcessEnv = process.env,
   transport: typeof fetch = fetch,
-): Pick<AdvancedAiApplicationRoutesOptions, "canaryRunner" | "canaryTimeoutMs" | "canaryLeaseMs" | "canaryWorkerId" | "canaryPrincipalId" | "canaryAuthorityId" | "canaryExpected" | "verifyCanaryReceipt"> {
+): Pick<AdvancedAiApplicationRoutesOptions, "canaryRunner" | "canaryTimeoutMs" | "canaryLeaseMs" | "canaryWorkerId" | "canaryPrincipalId" | "canaryAuthorityId" | "canaryEndpointIdentity" | "canaryCredentialIdentity" | "canaryExpected" | "verifyCanaryReceipt"> {
   const endpoint = env.MENDPOINT_POST_TRAINED_CANARY_URL;
   const token = env.MENDPOINT_POST_TRAINED_CANARY_TOKEN;
   const receiptSecret = env.MENDPOINT_POST_TRAINED_CANARY_RECEIPT_HMAC_SECRET;
@@ -499,7 +518,18 @@ export function advancedAiCanaryRuntimeFromEnv(
   });
   const verifyCanaryReceipt: PostTrainedCanaryDependencies["verifyReceipt"] = (receipt) => { if (!receipt || typeof receipt.signature !== "string" || !/^[a-f0-9]{64}$/u.test(receipt.signature)) return false; const expected = createHmac("sha256", receiptSecret!).update(postTrainedCanaryReceiptSigningBytes(receipt)).digest(); const supplied = Buffer.from(receipt.signature, "hex"); return supplied.length === expected.length && timingSafeEqual(supplied, expected); };
   const canaryExpected = Object.freeze({ servingRevision: servingRevision!, mode: mode as "shadow" | "canary", allocationPercent, policy: Object.freeze({ minimumSuccessRate, maximumErrorRate, maximumPolicyViolations, maximumP95LatencyMs, maximumCostUsd }) });
-  return { canaryRunner, canaryTimeoutMs: rawTimeout, canaryLeaseMs: rawLease, canaryWorkerId: workerId!, canaryPrincipalId: principalId!, canaryAuthorityId: authorityId!, canaryExpected, verifyCanaryReceipt };
+  return { canaryRunner, canaryTimeoutMs: rawTimeout, canaryLeaseMs: rawLease, canaryWorkerId: workerId!, canaryPrincipalId: principalId!, canaryAuthorityId: authorityId!, canaryEndpointIdentity: base.toString(), canaryCredentialIdentity: `sha256:${createHash("sha256").update(token!).digest("hex")}`, canaryExpected, verifyCanaryReceipt };
+}
+
+function runtimePairIndependent(firstEndpoint: string | undefined, firstCredential: string | undefined, secondEndpoint: string | undefined, secondCredential: string | undefined): boolean {
+  if ([firstEndpoint, firstCredential, secondEndpoint, secondCredential].every((value) => value === undefined)) return true;
+  return Boolean(firstEndpoint?.trim() && firstCredential?.trim() && secondEndpoint?.trim() && secondCredential?.trim() && firstEndpoint !== secondEndpoint && firstCredential !== secondCredential);
+}
+
+function runtimeCanaryIndependent(options: AdvancedAiApplicationRoutesOptions): boolean {
+  const identities = [options.trainingEndpointIdentity, options.trainingCredentialIdentity, options.evaluationEndpointIdentity, options.evaluationCredentialIdentity, options.canaryEndpointIdentity, options.canaryCredentialIdentity];
+  if (identities.every((value) => value === undefined)) return options.canaryAuthorityId !== options.trainingAuthorityId && options.canaryAuthorityId !== options.evaluationAuthorityId;
+  return advancedAiRuntimeAuthoritiesIndependent(options);
 }
 
 function identity(c: Context<ApiEnv>) { const principal = c.get("principal"); return principal?.tenantId?.trim() ? principal : undefined; }
