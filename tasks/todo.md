@@ -1988,3 +1988,17 @@ Review: red tests first failed at all four intended boundaries because only revi
 Acceptance: before a reviewer can approve, regenerate, or reject a newly generated Fettler candidate, the page displays the exact authenticated hypothesis, target symbol, source paths and digests, precondition, expected observation, postcondition, rollback, stop condition, risk, confidence, assessment source, and verifier evidence returned by the candidate API. Existing version one candidates remain readable.
 
 Review: the existing candidate page was statically limited to review evidence version one and omitted the newly authenticated precise edit fields. The new typed panel renders both versions, with every version two source and condition visible ahead of file diffs and the human decision controls. React performs all text escaping, arrays remain bounded by the authoritative shared schema, and no second evidence source was introduced. The focused test first failed because the panel did not exist. The final focused tests pass 4 of 4, full Web passes 166 of 166, all workspace typechecks pass, the 50-page production build passes, GA/spec/claims/names/action-pin gates pass, the production dependency audit reports zero vulnerabilities, and diff integrity is clean. The full repository suite had one Windows temporary-directory rename race while tests and typechecks ran concurrently; the complete Ops suite then passed 94 of 94 in isolation.
+
+## Dual agent engineering workflow: 2026-08-17
+
+- [x] Read the attached Codex, Claude, review, protocol, security, and definition of done instructions.
+- [x] Compare the setup package with current main, open work, and repository checks.
+- [x] Install the authoritative workflow files in an isolated Codex worktree.
+- [x] Protect main with the exact pull request checks without requiring an unavailable reviewer integration.
+- [x] Validate configuration syntax, links, secret boundaries, naming, specification integrity, and repository gates.
+- [ ] Commit and push the isolated branch, open the dogfood pull request, and request Claude review.
+- [ ] Record the attributable review response or the exact integration blocker.
+
+Acceptance: Codex and Claude have separate branch and worktree conventions, one shared issue and pull request protocol, conservative credential boundaries, actual current pull request checks, a review handoff contract, and an authoritative product specification. The setup itself is introduced through a protected pull request and is not self merged.
+
+Review: main now requires the current pull request checks `test`, `release-gates`, `container-builds`, and `deployment-e2e`, dismisses stale reviews, requires resolved conversations, applies to administrators, and rejects force pushes and deletion without locking the branch. Approval count remains zero until an attributable reviewer integration is proven, preventing a sole-maintainer lockout while the documented human merge boundary remains in force. Claude JSON and Codex TOML parse, all local Markdown links resolve, the setup contains no credential material, the Markdown specification digest is `sha256:a62e1b0a7569b9599cf8b155d6489a99c11f47a892885981ced61c3a573f74c9`, and the 73-page PDF contains the Fettler and ReGauge product identities. All workspace tests, all workspace typechecks, the 50-page production build, product contract, public claims, action pinning, and product naming gates pass.
