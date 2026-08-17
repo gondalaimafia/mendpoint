@@ -54,3 +54,8 @@
 **Mistake:** The first attached flywheel brief was converted into a useful but narrower corpus and training plan before Talal supplied the definitive master prompt.
 **Correction:** Talal replaced the earlier brief with the master learning flywheel prompt and asked Codex to run that complete contract.
 **Rule:** When a newer implementation brief supersedes an earlier one, pause production edits, retain valid red first evidence, update the checked in plan and acceptance matrix to the newest contract, and only then resume the smallest complete vertical slice.
+
+### 2026-08-17 — Treat attached Codex instructions as authority
+**Mistake:** I initially treated the attached dual agent package as a proposal to interpret rather than an authoritative execution package.
+**Correction:** Talal stated that the instructions for Codex have high priority authority.
+**Rule:** When Talal designates attached Codex instructions as high priority authority, execute their safe repository actions directly, preserving only higher priority safety and explicit current user constraints.
