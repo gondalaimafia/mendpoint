@@ -149,13 +149,19 @@ describe("repository runtime evidence", () => {
         });
       }
 
-      const unscoped = runGraphQuery(db, {
-        op: "repository_evidence",
-        repositoryId: "payments-api",
-        snapshotId: "snapshot-17",
-      });
-      expect(unscoped.nodes).toEqual([]);
-      expect(unscoped.summary).toBe("tenant scope required");
+      // Fail closed by construction: omitting the tenant scope is a type error,
+      // and a blank scope is rejected at runtime rather than reading globally.
+      expect(() =>
+        runGraphQuery(
+          db,
+          {
+            op: "repository_evidence",
+            repositoryId: "payments-api",
+            snapshotId: "snapshot-17",
+          },
+          undefined as never,
+        ),
+      ).toThrow("graph_tenant_scope_required");
 
       const scoped = runGraphQuery(
         db,

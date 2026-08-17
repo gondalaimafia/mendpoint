@@ -114,6 +114,46 @@ describe("llm confirm", () => {
     expect(result).toEqual(staticResult);
   });
 
+  it("does not enable live confirmation from an API key alone", () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.XAI_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.LLM_CONFIRM;
+    delete process.env.LLM_CONFIRM_MODE;
+    // A key without an explicit LLM_CONFIRM opt-in must stay off.
+    expect(resolveLlmConfirmMode()).toBe("off");
+    process.env.LLM_CONFIRM = "1";
+    expect(resolveLlmConfirmMode()).toBe("live");
+  });
+
+  it("redacts secret material from the outbound request body", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.LLM_CONFIRM_TIMEOUT_MS;
+    const secretUrl = "postgres://user:supersecretpassword@db.example.com/prod";
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        affected: true,
+        confidence: "high",
+        impactType: "field_access",
+        rationale: "affected",
+      }) } }],
+    })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await llmConfirmLive(
+      ctx({ slice: `const dsn = "${secretUrl}"; amount_cents` }),
+      surfaces,
+      null,
+      createBudget(1),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = String(fetchMock.mock.calls[0]?.[1]?.body);
+    expect(body).not.toContain("supersecretpassword");
+    expect(body).not.toContain(secretUrl);
+    expect(body).toContain("[REDACTED_DATABASE_URL]");
+  });
+
   it("settles a noncooperative provider call at the configured timeout", async () => {
     process.env.OPENAI_API_KEY = "test-key";
     process.env.LLM_CONFIRM_TIMEOUT_MS = "10";

@@ -62,8 +62,8 @@ describe("graph-learn substrate", () => {
         { consumerId: "c1", providerId: "p1" },
         { consumerId: "c2", providerId: "p1" },
       ],
-    });
-    const r = runGraphQuery(db, { op: "who_consumes_provider", providerSlug: "acme" });
+    }, "tenant-x");
+    const r = runGraphQuery(db, { op: "who_consumes_provider", providerSlug: "acme" }, { tenantId: "tenant-x", consumerIds: ["c1", "c2"] });
     expect(r.rows?.length).toBe(2);
     expect(formatQueryForPlanner(r)).toContain("Graph-RAG");
   });
@@ -97,12 +97,12 @@ describe("graph-learn substrate", () => {
       changeId: "ch1",
       diff,
       surfaces,
-    });
+    }, "tenant-x");
     const br = runGraphQuery(db, {
       op: "blast_radius",
       nodeId: "change:ch1",
       maxHops: 2,
-    });
+    }, { tenantId: "tenant-x" });
     expect(br.nodes.length).toBeGreaterThan(1);
   });
 
@@ -112,15 +112,15 @@ describe("graph-learn substrate", () => {
       provider: { id: "p1", slug: "acme", name: "Acme" },
       consumers: [{ id: "c1", name: "Shop", githubOwner: "o", githubRepo: "s" }],
       monitors: [{ consumerId: "c1", providerId: "p1" }],
-    });
+    }, "tenant-x");
     labelPrOutcome(db, {
       prId: "pr1",
       changeId: "ch1",
       consumerId: "c1",
       outcome: "merged",
       title: "fix amount",
-    });
-    const r = runGraphQuery(db, { op: "outcomes_for_pattern", pattern: "amount" });
+    }, "tenant-x");
+    const r = runGraphQuery(db, { op: "outcomes_for_pattern", pattern: "amount" }, { tenantId: "tenant-x", consumerIds: ["c1"] });
     expect(r.summary).toMatch(/outcome/i);
   });
 
@@ -247,7 +247,7 @@ describe("graph-learn substrate", () => {
       expect(JSON.stringify(runGraphQuery(view, {
         op: "neighbors",
         nodeId: "file:tenant-a:index.ts",
-      }))).not.toContain("tenant-b");
+      }, { tenantId: "tenant-a" }))).not.toContain("tenant-b");
       expect(() =>
         upsertNode(view!, {
           id: "file:tenant-a:forbidden.ts",
@@ -300,6 +300,74 @@ describe("graph-learn substrate", () => {
       );
       expect(getNode(db, "pattern:tenant-a:secret_b")).toBeUndefined();
       expect(getNode(db, "pattern:tenant-b:secret_b")).toBeUndefined();
+    } finally {
+      db.raw.close();
+    }
+  });
+
+  it("scopes the pipeline blast-radius path so it cannot reach another tenant", () => {
+    const db = openGraphLearnMemory();
+    try {
+      // Two tenants whose changes share one surface identifier (the canonicalId
+      // is tenant-agnostic, so `surface:<canonicalId>` is a single shared node —
+      // the exact cross-tenant join the pipeline blast-radius used to traverse).
+      const sharedSurface: ImpactableSurface = {
+        id: "s1",
+        canonicalId: "POST /v1/charges.amount_cents",
+        kind: "request_field",
+        op: "request_field_renamed",
+        path: "/v1/charges",
+        method: "post",
+        fromField: "amount_cents",
+        toField: "amount",
+        severity: "breaking",
+        migrationStrategy: "rename",
+        explanation: "rename",
+        searchTokens: ["amount"],
+      };
+      for (const tenant of ["tenant-a", "tenant-b"]) {
+        ingestSpecDiff(
+          db,
+          {
+            providerSlug: `${tenant}:acme`,
+            changeId: `${tenant}:ch`,
+            diff: {
+              risk: "breaking",
+              summary: `${tenant} secret change summary`,
+              entries: [],
+            },
+            surfaces: [sharedSurface],
+          },
+          tenant,
+        );
+      }
+
+      const blast = runGraphQuery(
+        db,
+        { op: "blast_radius", nodeId: "change:tenant-a:ch", maxHops: 2 },
+        { tenantId: "tenant-a" },
+      );
+
+      // Tenant-a sees its own impact graph...
+      expect(blast.nodes.map((node) => node.id)).toContain("change:tenant-a:ch");
+      expect(blast.nodes.length).toBeGreaterThan(0);
+      // ...and never another tenant's change through the shared surface.
+      expect(blast.nodes.map((node) => node.id)).not.toContain("change:tenant-b:ch");
+      expect(JSON.stringify(blast)).not.toContain("tenant-b");
+    } finally {
+      db.raw.close();
+    }
+  });
+
+  it("rejects a graph query that omits the tenant scope", () => {
+    const db = openGraphLearnMemory();
+    try {
+      expect(() =>
+        runGraphQuery(db, { op: "stats" }, undefined as never),
+      ).toThrow("graph_tenant_scope_required");
+      expect(() =>
+        runGraphQuery(db, { op: "stats" }, { tenantId: "" }),
+      ).toThrow("graph_tenant_scope_required");
     } finally {
       db.raw.close();
     }
@@ -455,12 +523,12 @@ db.raw.close();`,
       op: "time_travel_modifies",
       at: "2025-03-01T00:00:00.000Z",
       repoId: "demo",
-    });
+    }, { tenantId: "demo" });
     expect(mid.edges.length).toBeGreaterThanOrEqual(1);
     const calls = runGraphQuery(db, {
       op: "time_travel_calls",
       at: "2025-03-01T00:00:00.000Z",
-    });
+    }, { tenantId: "demo" });
     expect(calls.summary).toMatch(/CALLS/);
   });
 
@@ -475,7 +543,7 @@ db.raw.close();`,
       });
       expect(r.commits).toBeGreaterThan(0);
       expect(r.edges).toBeGreaterThan(0);
-      const stats = runGraphQuery(db, { op: "stats" });
+      const stats = runGraphQuery(db, { op: "stats" }, { tenantId: "mendpoint-test" });
       expect(Number((stats.rows?.[0] as { nodes?: number })?.nodes)).toBeGreaterThan(
         0,
       );
@@ -494,14 +562,14 @@ db.raw.close();`,
     resetLatencySamples();
     const db = openGraphLearnMemory();
     for (let i = 0; i < 5; i++) {
-      runGraphQuery(db, { op: "stats" });
+      runGraphQuery(db, { op: "stats" }, { tenantId: "tenant-x" });
     }
     const report = latencyReport();
     expect(report.totalSamples).toBeGreaterThanOrEqual(5);
     expect(percentile([1, 2, 3, 4, 5], 50)).toBe(3);
     const slo = checkSlos(3);
     expect(slo.evaluated).toBeGreaterThanOrEqual(1);
-    const lat = runGraphQuery(db, { op: "latency_stats" });
+    const lat = runGraphQuery(db, { op: "latency_stats" }, { tenantId: "tenant-x" });
     expect(lat.rows?.length).toBeGreaterThan(0);
     expect(lat.summary).toMatch(/latency/i);
   });
@@ -533,7 +601,7 @@ export function bar() { return 1; }
       title: "amount rename",
       experiment: "treatment",
       planId: "plan-1",
-    });
+    }, "tenant-x");
     labelPrOutcome(db, {
       prId: "p2",
       changeId: "ch1",
@@ -541,8 +609,8 @@ export function bar() { return 1; }
       outcome: "closed",
       title: "amount rename",
       experiment: "control",
-    });
-    const prom = promotePatterns(db, { minSamples: 1, minSuccessRate: 0.1 });
+    }, "tenant-x");
+    const prom = promotePatterns(db, { minSamples: 1, minSuccessRate: 0.1 }, { tenantId: "tenant-x", consumerIds: ["c1", "c2"] });
     expect(Array.isArray(prom)).toBe(true);
     const ab = measureAbLift(db);
     expect(ab.control.samples + ab.treatment.samples).toBeGreaterThan(0);

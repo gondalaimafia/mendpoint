@@ -12,16 +12,29 @@ where this harness attaches.
 
 ```
 evals/
-  scenarios/       run config: scenario_id -> product, repo path, spec, slug
+  scenarios/       run config + resolver (corpus + generated) -> runnable list
   ground-truth/    machine-readable answer keys (JSON) + schema + loader
-  runners/         per-product runners (Phase 4) + report generator + driver
+  runners/         per-product runners (Phase 4) + staging + report + driver
   graders/         deterministic graders (Phase 5) + failure taxonomy (Phase 6)
-  datasets/        structured model-learning dataset seed (Phase 10 scaffold)
-  generators/      procedural scenario generators (Phase 8 scaffold)
-  mutations/       controlled-defect mutation engine (Phase 2 scaffold)
+  datasets/        model-learning dataset schema + builder (Phase 10)
+  generators/      procedural scenario generators + families (Phase 8/13/14)
+  mutations/       controlled-defect mutation engine (Phase 2/12)
   reports/         generated: latest.md, latest-runs.json
   FAILURES.md      generated failure backlog
 ```
+
+## Corpus + generated scenarios
+
+The suite runs two kinds of scenarios, unified by `scenarios/resolve.ts`:
+
+- **corpus** — the 21 hand-authored repos under `MENDPOINT_CORPUS_ROOT`, ground
+  truth in `ground-truth/*.json`.
+- **generated** — procedurally expanded families (`generators/`), materialized to
+  scratch per run, ground truth emitted automatically by the mutation engine.
+
+The report presents results by `development` / `validation` / **holdout** split
+separately; holdout is the honest product-quality signal (never inspected during
+a fix). Build the learning dataset from a run with `tsx evals/datasets/build.ts`.
 
 ## Running
 
@@ -33,11 +46,14 @@ npx tsx evals/runners/run-all.ts
 npx tsx evals/runners/run-all.ts --only fettler-ts-payments-rename
 npx tsx evals/runners/run-all.ts --product regauge
 
-# grader unit tests
-npx vitest run evals/graders/graders.test.ts
+# all eval unit tests (graders, staging, mutation engine, generators, dataset)
+npx vitest run evals/
 
-# typecheck just the eval sources
-npx tsc -p evals/tsconfig.json
+# build the learning dataset from the latest run (append-only, versioned)
+npx tsx evals/datasets/build.ts
+
+# typecheck just the eval sources (use the repo-local tsc, not npx)
+node_modules/.bin/tsc -p evals/tsconfig.json
 ```
 
 The corpus repositories live OUTSIDE this git repo (default `C:/Users/Talal/dev`;
@@ -46,19 +62,24 @@ the repo under test.
 
 ## Answer-key isolation (do not break this)
 
-Ground truth lives only in `evals/ground-truth/*.json` and is loaded only by the
-graders, after the product has produced its output. It is never copied into a
-repo under test and never fed to the product as context. `evals/scenarios/` holds
-run config (paths, slugs) but no expected findings.
+Ground truth lives only in `evals/ground-truth/*.json` (corpus) or in memory
+(generated), and is loaded only by the graders, after the product has produced
+its output. It is never copied into a repo under test and never fed to the
+product as context. `evals/scenarios/` holds run config (paths, slugs) but no
+expected findings.
 
-Caveat about the prose keys: each corpus repo also carries a human-readable
-`EXPECTED.md` (or `SYNTHETIC_REPO_NOTES.md`) grading key **inside** the repo.
-Those pre-date this harness and the brief forbids modifying the corpus. The
-deterministic path here does not consult them (verified: no `.md` answer-key file
-appears in any product finding, and Fettler runs with `useLlm:false`). A future
-LLM-on runner MUST exclude these files from what the product sees — copy the repo
-to scratch minus the answer key — or an LLM could read the answer off the prose
-key. This is the one isolation gap to close before enabling LLM runs.
+The prose keys are now handled by **staging** (`evals/runners/stage.ts`). Each
+corpus repo also carries a human-readable `EXPECTED.md` (or
+`SYNTHETIC_REPO_NOTES.md`) grading key **inside** the repo; those pre-date this
+harness and the brief forbids modifying the corpus. So before ANY product sees a
+repo, both runners copy it into scratch with the grading keys (and dependency/VCS
+trees) excluded, and hand the product the staged copy. This closes the leak that
+would otherwise let an LLM-enabled runner read its own answer key. `isAnswerKeyFile`
+defines the excluded patterns; `stage.test.ts` asserts no answer-key file reaches
+a staged tree (both hermetically and against every real corpus repo). The staged
+tree mirrors what a product's own walkers index (it prunes exactly the
+directories `classifyDependencyDirectory` prunes), so it never diverges from what
+the product would see.
 
 ## No benchmark gaming
 

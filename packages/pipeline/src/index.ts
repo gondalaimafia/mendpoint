@@ -662,34 +662,54 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   // Dimension 6: graph learning substrate ingest + blast-radius query for planner
   const gldb = input.graphDb ?? getGraphLearnDb();
   const graphProviderSlug = `${input.tenantId}:${provider.slug}`;
-  ingestControlPlane(gldb, {
-    provider: {
-      id: `${input.tenantId}:${provider.id}`,
-      slug: graphProviderSlug,
-      name: provider.name,
+  const graphScope = {
+    tenantId: input.tenantId,
+    consumerIds: registryHits.map((h) => `${input.tenantId}:${h.consumerId}`),
+  };
+  ingestControlPlane(
+    gldb,
+    {
+      provider: {
+        id: `${input.tenantId}:${provider.id}`,
+        slug: graphProviderSlug,
+        name: provider.name,
+      },
+      consumers: registryHits.map((h) => ({
+        id: `${input.tenantId}:${h.consumerId}`,
+        name: h.consumerName,
+        githubOwner: h.githubOwner,
+        githubRepo: h.githubRepo,
+      })),
+      monitors: registryHits.map((h) => ({
+        consumerId: `${input.tenantId}:${h.consumerId}`,
+        providerId: `${input.tenantId}:${provider.id}`,
+      })),
     },
-    consumers: registryHits.map((h) => ({
-      id: `${input.tenantId}:${h.consumerId}`,
-      name: h.consumerName,
-      githubOwner: h.githubOwner,
-      githubRepo: h.githubRepo,
-    })),
-    monitors: registryHits.map((h) => ({
-      consumerId: `${input.tenantId}:${h.consumerId}`,
-      providerId: `${input.tenantId}:${provider.id}`,
-    })),
-  });
-  ingestSpecDiff(gldb, {
-    providerSlug: graphProviderSlug,
-    changeId,
-    diff,
-    surfaces,
-  });
-  const blast = runGraphQuery(gldb, {
-    op: "blast_radius",
-    nodeId: `change:${changeId}`,
-    maxHops: 2,
-  });
+    input.tenantId,
+  );
+  ingestSpecDiff(
+    gldb,
+    {
+      providerSlug: graphProviderSlug,
+      changeId,
+      diff,
+      surfaces,
+    },
+    input.tenantId,
+  );
+  // Scope the blast radius to this tenant. The change and surface nodes are
+  // stamped with the tenant above, so the fail-closed view returns this
+  // tenant's own impact graph and can never reach another tenant's nodes
+  // through shared surface identifiers.
+  const blast = runGraphQuery(
+    gldb,
+    {
+      op: "blast_radius",
+      nodeId: `change:${changeId}`,
+      maxHops: 2,
+    },
+    graphScope,
+  );
   const graphRagMd = formatQueryForPlanner(blast);
 
   recordAudit(db, {

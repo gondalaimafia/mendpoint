@@ -131,7 +131,7 @@ describe("GA review regressions", () => {
         { id: "consumer:shop", kind: "Consumer", label: "Shop" },
         { id: "consumer:other", kind: "Consumer", label: "Other" },
       ] as const) {
-        upsertNode(db, node);
+        upsertNode(db, { ...node, repo_id: "tenant-x" });
       }
       for (const edge of [
         {
@@ -171,7 +171,7 @@ describe("GA review regressions", () => {
         op: "consumers_of_field",
         schemaName: "Charge",
         fieldName: "amount",
-      });
+      }, { tenantId: "tenant-x" });
       expect(result.rows).toEqual([
         { consumerId: "shop", schemaName: "Charge", fieldName: "amount" },
       ]);
@@ -286,31 +286,31 @@ describe("GA review regressions", () => {
       changeId: "related",
       diff,
       surfaces,
-    });
+    }, "tenant-x");
     labelPrOutcome(db, {
       prId: "related-pr",
       changeId: "related",
       consumerId: "c",
       outcome: "broke",
-    });
+    }, "tenant-x");
     labelPrOutcome(db, {
       prId: "unrelated-pr",
       changeId: "other",
       consumerId: "c",
       outcome: "broke",
-    });
+    }, "tenant-x");
     const broke = runGraphQuery(db, {
       op: "broke_modes_for_endpoint",
       operationId: "createCharge",
-    });
+    }, { tenantId: "tenant-x", consumerIds: ["c"] });
     expect(broke.edges.some((edge) => edge.source === "pr:related-pr")).toBe(true);
     expect(broke.edges.some((edge) => edge.source === "pr:unrelated-pr")).toBe(
       false,
     );
 
-    upsertNode(db, { id: "commit:r:c1", kind: "Commit", label: "c1" });
-    upsertNode(db, { id: "commit:r:c2", kind: "Commit", label: "c2" });
-    upsertNode(db, { id: "file:r:a.ts", kind: "File", label: "a.ts" });
+    upsertNode(db, { id: "commit:r:c1", kind: "Commit", label: "c1", repo_id: "tenant-x" });
+    upsertNode(db, { id: "commit:r:c2", kind: "Commit", label: "c2", repo_id: "tenant-x" });
+    upsertNode(db, { id: "file:r:a.ts", kind: "File", label: "a.ts", repo_id: "tenant-x" });
     for (const kind of ["MODIFIES", "TOUCHES"] as const) {
       upsertEdge(db, {
         id: `${kind}:c1:a.ts`,
@@ -343,7 +343,7 @@ describe("GA review regressions", () => {
       op: "time_travel_modifies",
       at: "2025-03-01T00:00:00.000Z",
       repoId: "r",
-    });
+    }, { tenantId: "tenant-x" });
     expect(temporal.edges).toHaveLength(1);
     expect(temporal.edges[0]?.id).toBe("MODIFIES:c2:a.ts");
     db.raw.close();

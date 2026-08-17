@@ -1,7 +1,7 @@
 /**
  * Build a repair plan from observations (deterministic first, optional LLM later).
  */
-import { fetchBoundedText } from "@mendpoint/shared";
+import { fetchBoundedText, redactSourceForModel } from "@mendpoint/shared";
 import type { FailureObservation, RepairAction, RepairPlan } from "./types.js";
 
 export function planRepairs(
@@ -163,13 +163,21 @@ export async function planRepairsWithLlm(
 {"actions":[{"type":"replace_in_file","filePath":"...","from":"...","to":"...","global":true,"reason":"..."}]}
 Only edit provided slices. Never invent secrets. Max 8 actions.`;
 
-  const user = JSON.stringify({
+  const rawUser = JSON.stringify({
     observations: observations.slice(0, 12),
     slices: slices.slice(0, 6).map((s) => ({
       filePath: s.filePath,
       content: s.content.slice(0, 2500),
     })),
   });
+  // Redact secret material from the raw file slices before egress. Fail closed:
+  // if the redaction engine excludes on high-entropy residue, send nothing.
+  const redaction = redactSourceForModel(
+    rawUser,
+    Math.min(Math.max(rawUser.length, 1), 1_000_000),
+  );
+  if (redaction.excluded) return null;
+  const user = redaction.text;
 
   try {
     const { response: res, text: responseText } = await fetchBoundedText(
