@@ -2046,13 +2046,27 @@ Review: the branch now contains a common bounded Fettler and ReGauge event, auth
 
 ## Tomorrow: Regauge protected activation authority: 2026-08-18
 
-- [ ] Keep the protected activation workflow fail closed until both `REGAUGE_GITHUB_APP_PRIVATE_KEY` and `REGAUGE_GITHUB_WEBHOOK_SECRET` are present through an explicitly authorized secret transfer or replacement.
-- [ ] Re-audit the protected environment for every required nonsecret reviewer and model-routing binding used by `.github/workflows/regauge-production.yml`.
-- [ ] Resolve each missing nonsecret binding from an existing authoritative repository, GitHub environment, installation, or runtime source. Do not infer or synthesize reviewer or routing authority.
-- [ ] Rerun the read-only protected preflight and retain exact evidence before any activation mutation.
+- [x] Keep the protected activation workflow fail closed until both `REGAUGE_GITHUB_APP_PRIVATE_KEY` and `REGAUGE_GITHUB_WEBHOOK_SECRET` are present through an explicitly authorized secret transfer or replacement.
+- [x] Re-audit the protected environment for every required nonsecret reviewer and model-routing binding used by `.github/workflows/regauge-production.yml`.
+- [x] Resolve each nonsecret binding from an existing authoritative repository, GitHub environment, installation, or runtime source. Do not infer or synthesize reviewer or routing authority.
+- [x] Rerun the read-only protected preflight and retain exact evidence before any activation mutation.
 - [ ] Only after every authority is complete, run the one-draft canary, readiness soak, restart recovery, and containment verification.
 
 Acceptance: the workflow remains unable to deploy or deliver while either GitHub credential or any exact reviewer/model-routing authority is absent. Completing the checklist requires authoritative source evidence for every binding, a green read-only preflight, and a separately authorized protected activation.
+
+## Regauge activation authority repair: 2026-08-17
+
+- [x] Confirm the protected environment and workflow require exactly two absent GitHub secrets.
+- [x] Verify every reviewer, model-routing, repository, branch, revision, installation, and environment-protection binding against its authoritative source.
+- [x] Transfer the existing production GitHub App private key and webhook secret into `regauge-production` without printing or persisting either value.
+- [x] Re-list protected secret names and prove the workflow authority matrix is complete.
+- [x] Run the workflow in `preflight` mode only and retain the exact Fly discovery evidence.
+- [x] Run focused workflow/profile tests, typecheck, diff integrity, and a final security review.
+- [x] Commit and push the repair evidence without starting the protected `activate` phase.
+
+Acceptance: the `regauge-production` environment contains a coherent existing GitHub App credential set plus every independently verified nonsecret binding. Read-only preflight passes. No secret value enters logs, files, commits, or command arguments. The dedicated app, model evaluation, draft canary, and worker activation remain unchanged until the separately protected `activate` dispatch is reviewed.
+
+Review: GitHub environment inspection confirms all repository, reviewer, installation, model-routing, region, classification, and budget variables are configured. Direct GitHub reads bind the private canary to repository `1319732323`, default branch `main`, selected branch `codex/regauge-canary-baseline`, and revision `1f6b21665d68541c9f3c9dda81642485a66a6baa`; the reviewer subject is also the protected environment approver. With explicit user authorization, `GITHUB_APP_PRIVATE_KEY` and `GITHUB_WEBHOOK_SECRET` were copied from `mendpoint-talal` to the protected environment as `REGAUGE_GITHUB_APP_PRIVATE_KEY` and `REGAUGE_GITHUB_WEBHOOK_SECRET` using in-memory standard input only. Neither value was printed, written to disk, committed, or placed in command arguments. GitHub reports both protected secrets updated at `2026-08-17T21:26:40Z`; the final name-only matrix proves all 12 environment secrets, the repository Fly deploy token, and all 16 protected variables are present. Read-only workflow run `32070356283` passed on `ae8e17f`; its retained artifact reports Fly org `personal` and `mendpoint-transformer-pilot` absent, with deploy skipped. Focused workflow, proof, profile, and bootstrap tests pass 26 of 26; API and Worker typechecks and diff integrity pass. The protected `activate` phase was not dispatched.
 
 ## PR 140 strict integration review: 2026-08-17
 
