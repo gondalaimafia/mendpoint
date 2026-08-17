@@ -56,6 +56,29 @@ describe("post trained training workflow", () => {
     expect(getPostTrainedTrainingJob(db, "tenant", "job-1")?.status).toBe("submitted");
   });
 
+  it("requires canonical UTC timestamps for requests, receipts, and terminal results", async () => {
+    {
+      const { db } = fixture(); let calls = 0;
+      await expect(runPostTrainedTrainingJob(db, { ...input, submittedAt: "2026-08-12T12:00:01Z" }, deps({ train: async () => { calls++; throw new Error("must_not_run"); }, reconcile: async () => { throw new Error("must_not_run"); } })))
+        .rejects.toThrow("post_trained_training_input_invalid");
+      expect(calls).toBe(0);
+    }
+    {
+      const { db } = fixture();
+      await expect(runPostTrainedTrainingJob(db, input, deps({
+        train: async (request: any) => ({ ...exchange(request), receipt: { ...exchange(request).receipt, observedAt: "2026-08-12T12:00:03Z" } }),
+        reconcile: async () => { throw new Error("unexpected"); },
+      }))).rejects.toThrow("post_trained_training_receipt_invalid");
+    }
+    {
+      const { db } = fixture();
+      await expect(runPostTrainedTrainingJob(db, input, deps({
+        train: async (request: any) => exchange(request, { ...completion, completedAt: "2026-08-12T12:00:02Z" }),
+        reconcile: async () => { throw new Error("unexpected"); },
+      }))).rejects.toThrow("post_trained_training_result_invalid");
+    }
+  });
+
   it("allows only one dispatcher across two database handles", async () => {
     const { db, path } = fixture(); const second = createDb(path); dbs.push(second); let release!: (value: PostTrainedReconciliation) => void; let calls = 0;
     const held = new Promise<PostTrainedReconciliation>((resolve) => { release = resolve; });
