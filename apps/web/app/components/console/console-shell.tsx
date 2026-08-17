@@ -2,22 +2,10 @@
 
 import React from "react";
 import { usePathname, useRouter } from "next/navigation";
-import {
-  AppShell,
-  CheckIcon,
-  GitMergeIcon,
-  GitPullRequestIcon,
-  ShieldAlertIcon,
-  type IconProps,
-} from "../ds/index.js";
-import { AlertDialog } from "./alert-dialog.js";
+import { AppShell, CheckIcon, type IconProps } from "../ds/index.js";
 import { Toaster } from "./toast.js";
-import {
-  analyzeChange,
-  approveAndMerge,
-  confirmOpenAllPrs,
-  saveSettings,
-} from "./interactions.js";
+import { ReviewDialog } from "./review-dialog.js";
+import { openReviewDialog } from "./review-dialog-store.js";
 
 const ROUTE_BY_NAV: Record<string, string> = {
   changes: "/changes",
@@ -44,43 +32,25 @@ type PrimaryAction = {
 /**
  * The one client frame every DS console route mounts into (via the shared
  * `app/(console)/layout.tsx`). It supplies the DS2 `AppShell` with router-backed
- * navigation, owns the "Open all PRs" alert dialog, and mounts the toast
- * surface. The topbar CTA is CONTEXTUAL — derived from the current path so each
- * screen shows exactly one indigo primary action (and the view bodies author
- * none). Views stay presentational; all console client interactivity lives here.
+ * navigation and mounts the toast + review-dialog surfaces. The only topbar CTA
+ * is the PR review screen's "Approve" — the single indigo primary action —
+ * which opens the shared review dialog to record a real approval (Mendpoint is
+ * review-first and never merges). Other screens carry no fabricated CTA.
  */
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname() ?? "";
-  const [dialogOpen, setDialogOpen] = React.useState(false);
 
   const view = navViewFor(pathname);
 
   const primary = React.useMemo<PrimaryAction | null>(() => {
     const detail = pathname.match(/^\/prs\/([^/]+)/);
     if (detail) {
-      const prNumber = Number(detail[1]);
+      const prId = decodeURIComponent(detail[1]!);
       return {
-        label: "Approve & merge",
-        icon: GitMergeIcon,
-        onPrimary: () => approveAndMerge(prNumber),
-      };
-    }
-    if (pathname.startsWith("/prs")) {
-      return {
-        label: "Open all PRs",
-        icon: GitPullRequestIcon,
-        onPrimary: () => setDialogOpen(true),
-      };
-    }
-    if (pathname.startsWith("/settings")) {
-      return { label: "Save", icon: CheckIcon, onPrimary: saveSettings };
-    }
-    if (pathname.startsWith("/changes")) {
-      return {
-        label: "Analyze a change",
-        icon: ShieldAlertIcon,
-        onPrimary: analyzeChange,
+        label: "Approve",
+        icon: CheckIcon,
+        onPrimary: () => openReviewDialog(prId, "approve"),
       };
     }
     return null;
@@ -101,16 +71,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
         {children}
       </AppShell>
 
-      <AlertDialog
-        open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
-        title="Open 42 pull requests?"
-        description="Each PR targets the default branch and opens as a draft. Regauge runs the test suite before anything is pushed."
-        cancelLabel="Cancel"
-        confirmLabel="Open PRs"
-        onConfirm={confirmOpenAllPrs}
-      />
-
+      <ReviewDialog />
       <Toaster />
     </>
   );
