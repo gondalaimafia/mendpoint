@@ -16,6 +16,7 @@ import {
   WARDEN_SOURCE_EVAL_SCENARIO,
   WARDEN_WORKER_SOURCE_EVAL_SCENARIO,
 } from "./warden-source-eval.js";
+import { SPECIALIST_AGENT_EVAL_SCENARIOS } from "./specialist-scenarios.js";
 
 export type WardenTransformerEvalReport = Readonly<{
   schemaVersion: 1;
@@ -32,6 +33,7 @@ export async function runWardenTransformerEval(
       ...WARDEN_AGENT_EVAL_SCENARIOS,
       WARDEN_SOURCE_EVAL_SCENARIO,
       WARDEN_WORKER_SOURCE_EVAL_SCENARIO,
+      ...SPECIALIST_AGENT_EVAL_SCENARIOS,
       ...TRANSFORMER_AGENT_EVAL_SCENARIOS,
       TRANSFORMER_ADAPTIVE_DELIVERY_EVAL_SCENARIO,
     ],
