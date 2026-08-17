@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  admitLearningRecord,
   addLearningDatasetMember,
   countLearningDatasetMembers,
   createLearningDatasetVersion,
@@ -8,6 +9,7 @@ import {
   getLearningRecord,
   insertArtifactManifest,
   insertEvidenceRecord,
+  insertReviewDecision,
   listAdmittableLearningRecords,
   listEligibleLearningDatasetMembers,
   sealLearningDatasetVersion,
@@ -61,6 +63,64 @@ export type GovernedLearningCorpusAuthorizationInput = Readonly<{
   splitManifestDigest: string;
   processingBoundary: "tenant_local" | "external";
   at: string;
+}>;
+
+export type GovernedLearningAdmissionIds = Readonly<{
+  sourceArtifactId: string;
+  redactedArtifactId: string;
+  verificationArtifactId: string;
+  contaminationArtifactId: string;
+  redactionEvidenceId: string;
+  verificationEvidenceId: string;
+  contaminationEvidenceId: string;
+  reviewDecisionId: string;
+  learningRecordId: string;
+}>;
+
+export type GovernedLearningAdmissionInput = Readonly<{
+  tenantId: string;
+  purpose: string;
+  sourceObjectType: "fettler_agent_run" | "transformer_adaptive_candidate";
+  sourceObjectId: string;
+  event: GovernedLearningEventV1;
+  actorPrincipalId: string;
+  idempotencyKey: string;
+  createdAt: string;
+}>;
+
+export type GovernedLearningOutcomeAuthority = Readonly<{
+  resolve(input: Readonly<{
+    tenantId: string;
+    product: GovernedLearningEventV1["product"];
+    sourceObjectType: GovernedLearningAdmissionInput["sourceObjectType"];
+    sourceObjectId: string;
+    eventId: string;
+    eventDigest: string;
+  }>): Readonly<{
+    revision: string;
+    snapshotDigest: string;
+    scenarioId: string | null;
+    syntheticFamilyId: string | null;
+    outcomeAttribution: GovernedLearningEventV1["observedOutcome"]["attribution"];
+    verificationVerdict: GovernedLearningEventV1["verification"]["verdict"];
+    sourceClass: GovernedLearningEventV1["governance"]["sourceClass"];
+    provenanceQualifiers: GovernedLearningEventV1["governance"]["provenanceQualifiers"];
+    correctionSubstantive: boolean;
+    reviewerPrincipalId: string;
+    reviewRationale: string;
+    contaminationFree: boolean;
+  }>;
+  redact(content: string): Readonly<
+    | { ok: true; content: string; redactionCount: number }
+    | { ok: false; reason: string }
+  >;
+}>;
+
+export type AdmittedGovernedLearningEvent = Readonly<{
+  eventId: string;
+  eventDigest: string;
+  learningRecordId: string;
+  lesson: GovernedLearningLesson;
 }>;
 
 type DatasetSplit = "train" | "validation" | "holdout";
@@ -134,6 +194,196 @@ const SPLIT_POLICY = Object.freeze({
   subject: "split_group_id" as const,
 });
 const AMBIENT_SAVEPOINT = "materialize_governed_learning_corpus";
+const ADMISSION_SAVEPOINT = "admit_governed_learning_event";
+
+export function governedLearningAdmissionIds(
+  tenantId: string,
+  eventId: string,
+): GovernedLearningAdmissionIds {
+  requireBoundedText(tenantId, "learning_admission_tenant_id_invalid");
+  requireBoundedText(eventId, "learning_admission_event_id_invalid");
+  const identity = sha256(`${tenantId}\0${eventId}`);
+  return deepFreeze({
+    sourceArtifactId: `learning_source_${identity}`,
+    redactedArtifactId: `learning_redacted_${identity}`,
+    verificationArtifactId: `learning_verification_${identity}`,
+    contaminationArtifactId: `learning_contamination_${identity}`,
+    redactionEvidenceId: `learning_redaction_evidence_${identity}`,
+    verificationEvidenceId: `learning_verification_evidence_${identity}`,
+    contaminationEvidenceId: `learning_contamination_evidence_${identity}`,
+    reviewDecisionId: `learning_review_${identity}`,
+    learningRecordId: `learning_record_${identity}`,
+  });
+}
+
+export function admitGovernedLearningEvent(
+  db: AppDb,
+  input: GovernedLearningAdmissionInput,
+  authority: GovernedLearningOutcomeAuthority,
+): AdmittedGovernedLearningEvent {
+  validateAdmissionInput(input);
+  const ids = governedLearningAdmissionIds(input.tenantId, input.event.eventId);
+  const original = createGovernedLearningEvent(input.event);
+  const resolved = snapshotAdmissionAuthority(authority.resolve({
+    tenantId: input.tenantId,
+    product: original.event.product,
+    sourceObjectType: input.sourceObjectType,
+    sourceObjectId: input.sourceObjectId,
+    eventId: original.event.eventId,
+    eventDigest: original.digest,
+  }));
+  assertAdmissionBindings(input, original.event, ids, resolved);
+
+  const redaction = authority.redact(canonicalJson(original.event));
+  if (!redaction.ok) throw new Error("learning_admission_redaction_failed");
+  if (
+    typeof redaction.content !== "string"
+    || Buffer.byteLength(redaction.content, "utf8") > 128 * 1024
+    || !Number.isSafeInteger(redaction.redactionCount)
+    || redaction.redactionCount < 0
+  ) throw new Error("learning_admission_redaction_invalid");
+  let redactedValue: unknown;
+  try { redactedValue = JSON.parse(redaction.content); } catch {
+    throw new Error("learning_admission_redaction_invalid");
+  }
+  const governed = createGovernedLearningEvent(redactedValue);
+  assertAdmissionBindings(input, governed.event, ids, resolved);
+  const lesson = extractGovernedLesson(governed);
+  const document = canonicalJson({
+    schemaVersion: 1,
+    kind: "governed_learning_lesson",
+    event: governed.event,
+    eventDigest: governed.digest,
+    lesson,
+  });
+  const sourceDocument = canonicalJson({
+    schemaVersion: 1,
+    kind: "governed_learning_source",
+    product: governed.event.product,
+    repositoryId: governed.event.repositoryId,
+    revision: resolved.revision,
+    snapshotDigest: resolved.snapshotDigest,
+    snapshotArtifactId: ids.sourceArtifactId,
+    scenarioId: resolved.scenarioId,
+    syntheticFamilyId: resolved.syntheticFamilyId,
+    sourceClass: resolved.sourceClass,
+    provenanceQualifiers: resolved.provenanceQualifiers,
+  });
+  const verificationDocument = canonicalJson({
+    schemaVersion: 1,
+    kind: "governed_learning_verification",
+    sourceId: input.sourceObjectId,
+    outcomeAttribution: resolved.outcomeAttribution,
+    verificationVerdict: resolved.verificationVerdict,
+    sourceClass: resolved.sourceClass,
+    provenanceQualifiers: resolved.provenanceQualifiers,
+    correctionSubstantive: resolved.correctionSubstantive,
+  });
+  const contaminationDocument = canonicalJson({
+    schemaVersion: 1,
+    kind: "governed_learning_contamination_check",
+    eventId: governed.event.eventId,
+    contaminationFree: resolved.contaminationFree,
+  });
+
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  else db.raw.exec(`SAVEPOINT ${ADMISSION_SAVEPOINT}`);
+  try {
+    const consent = findActiveLearningConsent(db, {
+      tenantId: input.tenantId,
+      purpose: input.purpose,
+      at: input.createdAt,
+    });
+    if (
+      !consent
+      || consent.id !== governed.event.governance.consentId
+      || consent.residency_region !== governed.event.governance.residencyRegion
+    ) throw new Error("learning_admission_active_consent_required");
+
+    persistAdmissionArtifact(db, ids.sourceArtifactId, input, "learning-source", sourceDocument);
+    persistAdmissionArtifact(db, ids.redactedArtifactId, input, "learning-redacted", document);
+    persistAdmissionArtifact(db, ids.verificationArtifactId, input, "verification", verificationDocument);
+    persistAdmissionArtifact(db, ids.contaminationArtifactId, input, "contamination", contaminationDocument);
+    const subjectType = governed.event.product === "fettler" ? "fettler_outcome" : "regauge_outcome";
+    insertEvidenceRecord(db, {
+      id: ids.redactionEvidenceId,
+      tenantId: input.tenantId,
+      subjectType,
+      subjectId: input.sourceObjectId,
+      artifactId: ids.redactedArtifactId,
+      inputArtifactId: ids.sourceArtifactId,
+      producerPrincipalId: input.actorPrincipalId,
+      tool: "learning-redaction",
+      toolVersion: "1",
+      verdict: "passed",
+      createdAt: input.createdAt,
+    });
+    insertEvidenceRecord(db, {
+      id: ids.verificationEvidenceId,
+      tenantId: input.tenantId,
+      subjectType,
+      subjectId: input.sourceObjectId,
+      artifactId: ids.verificationArtifactId,
+      inputArtifactId: ids.redactedArtifactId,
+      producerPrincipalId: input.actorPrincipalId,
+      tool: "learning-verification",
+      toolVersion: "1",
+      verdict: "passed",
+      createdAt: input.createdAt,
+    });
+    insertEvidenceRecord(db, {
+      id: ids.contaminationEvidenceId,
+      tenantId: input.tenantId,
+      subjectType,
+      subjectId: input.sourceObjectId,
+      artifactId: ids.contaminationArtifactId,
+      inputArtifactId: ids.redactedArtifactId,
+      producerPrincipalId: input.actorPrincipalId,
+      tool: "learning-contamination",
+      toolVersion: "1",
+      verdict: "passed",
+      createdAt: input.createdAt,
+    });
+    persistAdmissionReview(db, input, ids, subjectType, resolved);
+    const record = admitLearningRecord(db, {
+      id: ids.learningRecordId,
+      tenantId: input.tenantId,
+      consentId: governed.event.governance.consentId!,
+      sourceObjectType: input.sourceObjectType,
+      sourceObjectId: input.sourceObjectId,
+      sourceArtifactId: ids.sourceArtifactId,
+      redactedArtifactId: ids.redactedArtifactId,
+      redactionEvidenceId: ids.redactionEvidenceId,
+      verificationEvidenceId: ids.verificationEvidenceId,
+      acceptedReviewId: ids.reviewDecisionId,
+      contaminationEvidenceId: ids.contaminationEvidenceId,
+      observedAt: governed.event.createdAt,
+      admittedByPrincipalId: input.actorPrincipalId,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: input.createdAt,
+    });
+    if (record.id !== ids.learningRecordId || record.content_sha256 !== sha256(document)) {
+      throw new Error("learning_admission_record_mismatch");
+    }
+    const result = deepFreeze({
+      eventId: governed.event.eventId,
+      eventDigest: governed.digest,
+      learningRecordId: record.id,
+      lesson,
+    });
+    if (ownsTransaction) db.raw.exec("COMMIT");
+    else db.raw.exec(`RELEASE ${ADMISSION_SAVEPOINT}`);
+    return result;
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    else if (db.raw.isTransaction) {
+      db.raw.exec(`ROLLBACK TO ${ADMISSION_SAVEPOINT}`);
+      db.raw.exec(`RELEASE ${ADMISSION_SAVEPOINT}`);
+    }
+    throw error;
+  }
+}
 
 export function materializeGovernedLearningCorpus(
   db: AppDb,
@@ -801,6 +1051,158 @@ function persistSplitArtifact(
     });
   }
   return { id: artifact.id, sha256: artifact.sha256 };
+}
+
+type ResolvedAdmissionAuthority = ReturnType<typeof snapshotAdmissionAuthority>;
+
+function snapshotAdmissionAuthority(value: ReturnType<GovernedLearningOutcomeAuthority["resolve"]>) {
+  const qualifiers = [...value.provenanceQualifiers].sort(codeUnitCompare);
+  const result = {
+    revision: value.revision,
+    snapshotDigest: value.snapshotDigest,
+    scenarioId: value.scenarioId,
+    syntheticFamilyId: value.syntheticFamilyId,
+    outcomeAttribution: value.outcomeAttribution,
+    verificationVerdict: value.verificationVerdict,
+    sourceClass: value.sourceClass,
+    provenanceQualifiers: qualifiers,
+    correctionSubstantive: value.correctionSubstantive,
+    reviewerPrincipalId: value.reviewerPrincipalId,
+    reviewRationale: value.reviewRationale,
+    contaminationFree: value.contaminationFree,
+  } as const;
+  if (
+    !/^[a-f0-9]{40,64}$/u.test(result.revision)
+    || !/^sha256:[a-f0-9]{64}$/u.test(result.snapshotDigest)
+    || !(result.scenarioId === null || isBoundedText(result.scenarioId))
+    || !(result.syntheticFamilyId === null || isBoundedText(result.syntheticFamilyId))
+    || !isBoundedText(result.reviewerPrincipalId)
+    || !isBoundedText(result.reviewRationale)
+    || typeof result.correctionSubstantive !== "boolean"
+    || result.contaminationFree !== true
+    || new Set(result.provenanceQualifiers).size !== result.provenanceQualifiers.length
+  ) throw new Error("learning_admission_authority_invalid");
+  return deepFreeze(result);
+}
+
+function assertAdmissionBindings(
+  input: GovernedLearningAdmissionInput,
+  event: GovernedLearningEventV1,
+  ids: GovernedLearningAdmissionIds,
+  authority: ResolvedAdmissionAuthority,
+): void {
+  const expectedProduct = input.sourceObjectType === "fettler_agent_run" ? "fettler" : "regauge";
+  const expectedSplitGroup = authority.sourceClass === "synthetic_ground_truth"
+    ? `${authority.syntheticFamilyId}:${event.specialization.migrationFamily}`
+    : `${event.repositoryId}:${event.specialization.migrationFamily}`;
+  const bindings: ReadonlyArray<readonly [string, boolean]> = [
+    ["tenant", event.governance.tenantId === input.tenantId],
+    ["product", event.product === expectedProduct],
+    ["mission", event.missionId === input.sourceObjectId],
+    ["source_artifact", event.references.inputArtifactId === ids.sourceArtifactId],
+    ["redacted_artifact", event.references.proposedActionArtifactId === ids.redactedArtifactId],
+    ["correction_artifact", event.correction?.artifactId === ids.redactedArtifactId],
+    ["redaction_evidence", event.prediction.evidenceRefs.includes(ids.redactionEvidenceId)],
+    ["outcome_evidence", event.observedOutcome.evidenceRefs.includes(ids.verificationEvidenceId)],
+    ["verification_evidence", event.verification.evidenceRefs.includes(ids.verificationEvidenceId)],
+    ["review_evidence", event.reviewerDecision?.evidenceRefs.includes(ids.reviewDecisionId) === true],
+    ["review_decision", event.reviewerDecision !== null && ["accepted", "modified", "merged"].includes(event.reviewerDecision.decision)],
+    ["attribution", event.observedOutcome.attribution === authority.outcomeAttribution],
+    ["verification_verdict", event.verification.verdict === authority.verificationVerdict],
+    ["source_class", event.governance.sourceClass === authority.sourceClass],
+    ["provenance", canonicalJson(event.governance.provenanceQualifiers) === canonicalJson(authority.provenanceQualifiers)],
+    ["correction", (event.correction?.substantive ?? false) === authority.correctionSubstantive],
+    ["split_group", event.specialization.splitGroupId === expectedSplitGroup],
+    ["synthetic_family", authority.sourceClass !== "synthetic_ground_truth" || Boolean(authority.syntheticFamilyId)],
+  ];
+  const mismatch = bindings.find(([, matches]) => !matches);
+  if (mismatch) throw new Error(`learning_admission_authority_mismatch:${mismatch[0]}`);
+}
+
+function persistAdmissionArtifact(
+  db: AppDb,
+  id: string,
+  input: GovernedLearningAdmissionInput,
+  kind: string,
+  content: string,
+): void {
+  const inserted = insertArtifactManifest(db, {
+    id,
+    tenantId: input.tenantId,
+    kind,
+    schemaVersion: 1,
+    sha256: sha256(content),
+    mediaType: "application/json",
+    sizeBytes: Buffer.byteLength(content, "utf8"),
+    storageRef: `sqlite://artifact_manifests/${id}#content_text`,
+    content,
+    producerPrincipalId: input.actorPrincipalId,
+    createdAt: input.createdAt,
+  }).row;
+  if (inserted.id !== id || inserted.content_text !== content) {
+    throw new Error("learning_admission_artifact_mismatch");
+  }
+}
+
+function persistAdmissionReview(
+  db: AppDb,
+  input: GovernedLearningAdmissionInput,
+  ids: GovernedLearningAdmissionIds,
+  subjectType: string,
+  authority: ResolvedAdmissionAuthority,
+): void {
+  const existing = db.raw.prepare(
+    `SELECT tenant_id, subject_type, subject_id, candidate_artifact_id,
+            reviewer_principal_id, decision, rationale, created_at
+     FROM review_decisions WHERE id = ?`,
+  ).get(ids.reviewDecisionId) as {
+    tenant_id: string; subject_type: string; subject_id: string; candidate_artifact_id: string;
+    reviewer_principal_id: string; decision: string; rationale: string; created_at: string;
+  } | undefined;
+  if (existing) {
+    if (canonicalJson(existing) !== canonicalJson({
+      tenant_id: input.tenantId,
+      subject_type: subjectType,
+      subject_id: input.sourceObjectId,
+      candidate_artifact_id: ids.redactedArtifactId,
+      reviewer_principal_id: authority.reviewerPrincipalId,
+      decision: "approve",
+      rationale: authority.reviewRationale,
+      created_at: input.createdAt,
+    })) throw new Error("learning_admission_review_mismatch");
+    return;
+  }
+  insertReviewDecision(db, {
+    id: ids.reviewDecisionId,
+    tenantId: input.tenantId,
+    subjectType,
+    subjectId: input.sourceObjectId,
+    candidateArtifactId: ids.redactedArtifactId,
+    reviewerPrincipalId: authority.reviewerPrincipalId,
+    decision: "approve",
+    rationale: authority.reviewRationale,
+    createdAt: input.createdAt,
+  });
+}
+
+function validateAdmissionInput(input: GovernedLearningAdmissionInput): void {
+  requireBoundedText(input.tenantId, "learning_admission_tenant_id_invalid");
+  requireBoundedText(input.purpose, "learning_admission_purpose_invalid");
+  requireBoundedText(input.sourceObjectId, "learning_admission_source_id_invalid");
+  requireBoundedText(input.actorPrincipalId, "learning_admission_actor_invalid");
+  requireBoundedText(input.idempotencyKey, "learning_admission_idempotency_key_invalid");
+  const parsed = Date.parse(input.createdAt);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== input.createdAt) {
+    throw new Error("learning_admission_created_at_invalid");
+  }
+}
+
+function requireBoundedText(value: string, code: string): void {
+  if (!isBoundedText(value)) throw new Error(code);
+}
+
+function isBoundedText(value: unknown): value is string {
+  return typeof value === "string" && value.trim() === value && value.length > 0 && value.length <= 512;
 }
 
 function validateInput(input: MaterializeGovernedLearningCorpusInput): void {
