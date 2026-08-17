@@ -1,0 +1,41 @@
+{
+  "scenario_id": "fettler-edge-huge-monorepo",
+  "repo_family": "typescript-monorepo-scale",
+  "difficulty": 5,
+  "difficulty_rationale": "Level 5 (scale + adversarial): 25,814 files across 300 packages, plus ~4,200 node_modules files including red-herring index.js files containing `source`. Exactly 6 carrier files must be migrated. Tests raised file caps, node_modules exclusion, and full-walk completeness (pkg299 is last).",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "packages/pkg000/src/provider.js",
+    "packages/pkg050/src/billing/charge.js",
+    "packages/pkg123/src/checkout.js",
+    "packages/pkg200/lib/payments/create.js",
+    "packages/pkg255/src/api/charges.js",
+    "packages/pkg299/src/legacy/pay.js"
+  ],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "node_modules/"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 6
+  },
+  "tags": [
+    "edge",
+    "scale",
+    "monorepo",
+    "node_modules-exclusion",
+    "file-cap"
+  ],
+  "notes": "Field-noted product weakness: 20k file cap + no node_modules exclusion. Watch for cap-truncated walks that miss pkg299."
+}

@@ -1,0 +1,34 @@
+{
+  "scenario_id": "fettler-edge-ambiguous",
+  "repo_family": "node-service-edge",
+  "difficulty": 5,
+  "difficulty_rationale": "Level 5 (adversarial, P0): `source` in src/charge.js splits into two successors chosen by a runtime condition (input.kind), unresolvable statically. The only safe output is abstention with an explanation. A confident auto-rename would corrupt one branch for real customers. This is the most important repo in the set.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "abstain",
+  "faults": [
+    {
+      "id": "ambiguous-rename",
+      "description": "`source` maps to two different targets by runtime branch; static resolution impossible.",
+      "family": "ambiguous-rename"
+    }
+  ],
+  "expected_findings": [],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "src/charge.js"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 0
+  },
+  "tags": [
+    "edge",
+    "ambiguous",
+    "abstain",
+    "P0",
+    "dangerous-advice"
+  ],
+  "notes": "Correct output is a question/annotation for a human, never an applied diff. Confidently renaming source->payment_method (or payment_source) is the failure to catch."
+}

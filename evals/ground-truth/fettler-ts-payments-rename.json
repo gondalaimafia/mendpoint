@@ -1,0 +1,54 @@
+{
+  "scenario_id": "fettler-ts-payments-rename",
+  "repo_family": "typescript-service",
+  "difficulty": 3,
+  "difficulty_rationale": "Level 3 cross-cutting: the renamed field is carried across five files linked by imports and an in-process settlement queue (client type -> SettlementTask.request -> job read), so a correct trace must follow indirection, not grep one directory. Six same-spelling distractors keep it from being pattern-matchable.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "src/infra/providers/meridian/client.ts",
+    "src/services/checkoutService.ts",
+    "src/services/subscriptionService.ts",
+    "src/jobs/settlementJob.ts",
+    "test/fixtures/charges.ts"
+  ],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "src/config/constants.ts",
+    "src/analytics/tracker.ts",
+    "src/domain/events.ts",
+    "src/services/notificationService.ts",
+    "src/legacy/oldBillingClient.ts",
+    "src/jobs/reconciliationJob.ts",
+    "src/lib/logger.ts",
+    "src/http/routes/webhooks.ts",
+    "src/legacy/unusedHelpers.ts"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 5,
+    "importChain": [
+      "src/infra/providers/meridian/client.ts (MeridianChargeRequest.source)",
+      "-> checkoutService.ts / subscriptionService.ts (build request)",
+      "-> src/jobs/tasks.ts (SettlementTask.request: MeridianChargeRequest)",
+      "-> src/jobs/settlementJob.ts (reads task.request.source)"
+    ]
+  },
+  "tags": [
+    "typescript",
+    "control",
+    "field-rename",
+    "indirection",
+    "distractors"
+  ],
+  "notes": "The control fixture; contains none of the tokens special-cased in packages/agent/src/fixes.ts."
+}

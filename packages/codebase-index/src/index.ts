@@ -687,18 +687,35 @@ function buildIndexFromDiscovered(
   const functions: IndexedFunction[] = [];
   const apiUsages: ApiUsageRecord[] = [];
   const packageImports = new Set<string>();
-  // null prototype — avoid 'constructor' / other Object.prototype keys breaking spreads
-  const calleesOf: Record<string, string[]> = Object.create(null);
-  const callersOf: Record<string, string[]> = Object.create(null);
+  // null prototype — avoid 'constructor' / other Object.prototype keys breaking spreads.
+  // Accumulate reverse/forward edges in Sets so adding one caller/callee is O(1);
+  // the previous `[...new Set([...prev, next])]` per occurrence was O(K) each,
+  // making a symbol with K callers cost O(K^2). Materialized to string[] once,
+  // preserving insertion order (Set iteration order) so output is unchanged.
+  const calleesSet: Record<string, Set<string>> = Object.create(null);
+  const callersSet: Record<string, Set<string>> = Object.create(null);
+  const addCallees = (name: string, callees: Iterable<string>): void => {
+    const set = (calleesSet[name] ??= new Set<string>());
+    for (const c of callees) set.add(c);
+  };
+  const addCaller = (callee: string, caller: string): void => {
+    (callersSet[callee] ??= new Set<string>()).add(caller);
+  };
 
 
   const tsApi = loadTypescriptSync();
   const sdkSets = resolveSdkContext(opts.sdkContext);
 
+  // Buffers for every code file read here, keyed by absolute path. Threaded into
+  // buildCallGraph below so the graph reuses them instead of re-reading the whole
+  // tree — one read pass over the repo instead of two.
+  const sources = new Map<string, string>();
+
   for (const discovered of discoveredFiles) {
     const abs = discovered.abs;
     const rel = discovered.rel;
     const text = discovered.text ?? readDiscoveredFile(repoRoot, discovered, limits);
+    sources.set(abs, text);
     const language = langOf(rel);
     let imports = extractImports(text, language);
     let fns = extractFunctions(text, language);
@@ -738,12 +755,8 @@ function buildIndexFromDiscovered(
           });
         }
         for (const rf of richer.functions) {
-          calleesOf[rf.name] = [
-            ...new Set([...(calleesOf[rf.name] ?? []), ...rf.callees]),
-          ];
-          for (const c of rf.callees) {
-            callersOf[c] = [...new Set([...(callersOf[c] ?? []), rf.name])];
-          }
+          addCallees(rf.name, rf.callees);
+          for (const c of rf.callees) addCaller(c, rf.name);
         }
       } catch {
         /* keep heuristic */
@@ -766,7 +779,7 @@ function buildIndexFromDiscovered(
       const callees =
         fn.body && fn.body.length
           ? extractCallees(fn.body, fn.name)
-          : (calleesOf[fn.name] ?? []);
+          : [...(calleesSet[fn.name] ?? [])];
       functions.push({
         name: fn.name,
         filePath: rel,
@@ -774,10 +787,8 @@ function buildIndexFromDiscovered(
         lineEnd: fn.end,
         callees,
       });
-      calleesOf[fn.name] = [...new Set([...(calleesOf[fn.name] ?? []), ...callees])];
-      for (const c of callees) {
-        callersOf[c] = [...new Set([...(callersOf[c] ?? []), fn.name])];
-      }
+      addCallees(fn.name, callees);
+      for (const c of callees) addCaller(c, fn.name);
     }
 
     apiUsages.push(...extractApiUsages(rel, text, fns, sdkSets, fileReceivers));
@@ -806,7 +817,13 @@ function buildIndexFromDiscovered(
   }
 
   const callGraph =
-    opts?.callGraph ?? buildCallGraph(repoRoot, { algorithm: "hybrid" });
+    opts?.callGraph ?? buildCallGraph(repoRoot, { algorithm: "hybrid", sources });
+
+  // Materialize the accumulated edges to arrays (insertion order preserved).
+  const calleesOf: Record<string, string[]> = Object.create(null);
+  const callersOf: Record<string, string[]> = Object.create(null);
+  for (const name in calleesSet) calleesOf[name] = [...calleesSet[name]!];
+  for (const name in callersSet) callersOf[name] = [...callersSet[name]!];
 
   // Prefer graph-derived reverse edges when available (richer than name-only)
   const nameMaps = deriveNameMaps(callGraph);
@@ -893,15 +910,21 @@ function deriveNameMaps(callGraph: CallGraph): {
   callersOf: Record<string, string[]>;
   calleesOf: Record<string, string[]>;
 } {
-  const callersOf: Record<string, string[]> = Object.create(null);
-  const calleesOf: Record<string, string[]> = Object.create(null);
+  // Set accumulators keep adding an edge O(1); the previous per-edge
+  // `[...new Set([...prev, next])]` was O(K), i.e. O(K^2) for a hot name.
+  const callersSet: Record<string, Set<string>> = Object.create(null);
+  const calleesSet: Record<string, Set<string>> = Object.create(null);
   for (const edge of callGraph.edges) {
     const caller = callGraph.nodes[edge.callerId];
     const callee = callGraph.nodes[edge.calleeId];
     if (!caller || !callee) continue;
-    calleesOf[caller.name] = [...new Set([...(calleesOf[caller.name] ?? []), callee.name])];
-    callersOf[callee.name] = [...new Set([...(callersOf[callee.name] ?? []), caller.name])];
+    (calleesSet[caller.name] ??= new Set<string>()).add(callee.name);
+    (callersSet[callee.name] ??= new Set<string>()).add(caller.name);
   }
+  const callersOf: Record<string, string[]> = Object.create(null);
+  const calleesOf: Record<string, string[]> = Object.create(null);
+  for (const name in calleesSet) calleesOf[name] = [...calleesSet[name]!];
+  for (const name in callersSet) callersOf[name] = [...callersSet[name]!];
   return { callersOf, calleesOf };
 }
 

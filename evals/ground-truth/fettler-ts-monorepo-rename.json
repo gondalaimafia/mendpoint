@@ -1,0 +1,60 @@
+{
+  "scenario_id": "fettler-ts-monorepo-rename",
+  "repo_family": "typescript-monorepo",
+  "difficulty": 3,
+  "difficulty_rationale": "Level 3: the discriminator is scope. The rename is correct ONLY inside @acme/payments; three sibling packages (@acme/inventory, @acme/logger, @acme/config) carry same-spelling fields (import-record source, event_source, sourceMap) that must be left alone. Requires package-boundary awareness, not token matching.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "packages/payments/src/types.ts",
+    "packages/payments/src/paymentsClient.ts",
+    "packages/payments/src/chargeService.ts",
+    "packages/payments/src/refundService.ts",
+    "packages/payments/src/settlementWorker.ts",
+    "packages/payments/src/__fixtures__/charge.json",
+    "packages/payments/src/__fixtures__/refund.json",
+    "packages/payments/src/__fixtures__/settlementBatch.json"
+  ],
+  "acceptable_findings": [
+    "packages/payments/src/__tests__/charge.test.ts",
+    "packages/payments/src/__tests__/refund.test.ts",
+    "packages/payments/src/__tests__/settlement.test.ts"
+  ],
+  "false_positive_traps": [
+    "packages/config/src/buildConfig.ts",
+    "packages/config/src/__tests__/config.test.ts",
+    "packages/logger/src/eventLog.ts",
+    "packages/logger/src/logger.ts",
+    "packages/logger/src/__tests__/logger.test.ts",
+    "packages/inventory/src/importRecord.ts",
+    "packages/inventory/src/__tests__/inventory.test.ts"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 8,
+    "affectedPackages": [
+      "@acme/payments"
+    ],
+    "untouchedSubsystems": [
+      "@acme/inventory",
+      "@acme/logger",
+      "@acme/config"
+    ]
+  },
+  "tags": [
+    "typescript",
+    "monorepo",
+    "field-rename",
+    "scoping",
+    "distractors"
+  ]
+}

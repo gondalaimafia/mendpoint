@@ -1,0 +1,34 @@
+{
+  "scenario_id": "fettler-edge-no-test-command",
+  "repo_family": "node-service-edge",
+  "difficulty": 3,
+  "difficulty_rationale": "Level 3: the impact finding is simple (one file), but the graded weakness is verification honesty — with no test command and no check.mjs the tool must report 'cannot verify', not fabricate a green result. The verification dimension is not exercised by the offline impact-analysis runner (see notes).",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "src/charge.js"
+  ],
+  "acceptable_findings": [
+    "weird-test-command/"
+  ],
+  "false_positive_traps": [],
+  "blast_radius_truth": {
+    "affectedFiles": 1
+  },
+  "tags": [
+    "edge",
+    "verification-honesty",
+    "unmeasured-dimension"
+  ],
+  "notes": "The primary weakness (fabricated verification success) requires the generation+verification path (GitHub + sandbox), which the deterministic impact-analysis runner does not exercise. Recorded as an unmeasured dimension in the report."
+}

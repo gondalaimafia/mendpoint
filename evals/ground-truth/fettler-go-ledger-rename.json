@@ -1,0 +1,59 @@
+{
+  "scenario_id": "fettler-go-ledger-rename",
+  "repo_family": "go-service",
+  "difficulty": 3,
+  "difficulty_rationale": "Level 3: Go stdlib-only service; the payment `source` struct field (with json tag) fans out to two services, a worker goroutine, main, testdata fixtures, and tests. Probes Go language support plus struct-tag/field tracing. build `source_map`, audit `event_source`, and reporting import `Source` are distractors.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "internal/payments/types.go",
+    "internal/payments/client.go",
+    "internal/payments/client_test.go",
+    "internal/payments/testdata/charge_request.json",
+    "internal/payments/testdata/charge_response.json",
+    "internal/ledger/ledger.go",
+    "internal/ledger/entry.go",
+    "internal/ledger/ledger_test.go",
+    "internal/ledger/testdata/entry.json",
+    "internal/settlement/settlement.go",
+    "internal/settlement/batch.go",
+    "internal/settlement/settlement_test.go",
+    "internal/settlement/testdata/settlement.json",
+    "internal/worker/worker.go",
+    "internal/worker/worker_test.go",
+    "internal/worker/testdata/items.json",
+    "cmd/ledger/main.go"
+  ],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "internal/build/assets.go",
+    "internal/events/event.go",
+    "internal/events/audit.go",
+    "internal/reporting/report.go",
+    "internal/reporting/aggregate.go"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 17,
+    "importChain": [
+      "internal/payments (ChargeRequest.Source json:\"source\")",
+      "-> internal/ledger, internal/settlement, internal/worker",
+      "-> cmd/ledger/main.go"
+    ]
+  },
+  "tags": [
+    "go",
+    "field-rename",
+    "language-support",
+    "distractors"
+  ]
+}

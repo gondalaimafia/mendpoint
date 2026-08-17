@@ -1,0 +1,48 @@
+{
+  "scenario_id": "regauge-partial-campaign",
+  "repo_family": "typescript-service",
+  "difficulty": 5,
+  "difficulty_rationale": "Level 5 (idempotency under half-applied state): four settlement modules still read deprecated res.statusCode/res.body; four already read the canonical res.status/res.data. The SDK exposes both shapes, so the tree type-checks either way. Correct output is either completing the four deprecated sites OR a clean abstention, never a double-apply that corrupts an already-migrated site. A generic HTTP layer with its own statusCode/body is a trap.",
+  "intended_product": [
+    "regauge"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "coverage_gap",
+  "faults": [
+    {
+      "id": "partial-sdk-migration",
+      "description": "Half-applied SDK response-field rename (statusCode->status, body->data).",
+      "family": "sdk-upgrade"
+    }
+  ],
+  "expected_findings": [
+    "src/settlement/refund.ts",
+    "src/settlement/void.ts",
+    "src/settlement/reconcile.ts",
+    "src/settlement/ledger.ts"
+  ],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "src/settlement/authorize.ts",
+    "src/settlement/capture.ts",
+    "src/settlement/payout.ts",
+    "src/settlement/dispute.ts",
+    "src/http/types.ts",
+    "src/http/fetchClient.ts",
+    "src/inventory/"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 4
+  },
+  "recipe_expectation": {
+    "family": "sdk-upgrade",
+    "shippedRecipeId": null
+  },
+  "tags": [
+    "regauge",
+    "idempotency",
+    "partial-campaign",
+    "coverage-gap"
+  ],
+  "notes": "Both a correct completion of the four deprecated sites AND a clean abstention are acceptable. Double-apply or corrupting an already-migrated site is the failure. The offline analyze runner records whether the engine abstains; it does not itself apply-then-reapply (idempotency check noted as a partially-measured dimension)."
+}

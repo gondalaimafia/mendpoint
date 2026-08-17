@@ -1,0 +1,38 @@
+{
+  "scenario_id": "fettler-edge-deep-indirection",
+  "repo_family": "node-service-edge",
+  "difficulty": 4,
+  "difficulty_rationale": "Level 4: the field named literally `source` passes through four wrapper layers (app -> facade -> http-client -> vendor-sdk). A correct migration renames all four consistently or the data path breaks; a grep-shallow tool edits only the nearest layer.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "src/app/order.js",
+    "src/shared/payments-facade.js",
+    "src/shared/http-client.js",
+    "src/vendor-sdk/acmepay.js",
+    "check.mjs"
+  ],
+  "acceptable_findings": [],
+  "false_positive_traps": [],
+  "blast_radius_truth": {
+    "affectedFiles": 5,
+    "importChain": [
+      "order.js -> payments-facade.js -> http-client.js -> vendor-sdk/acmepay.js"
+    ]
+  },
+  "tags": [
+    "edge",
+    "indirection",
+    "wrapper-layers"
+  ]
+}
