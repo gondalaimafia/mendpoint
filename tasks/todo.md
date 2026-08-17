@@ -1988,3 +1988,66 @@ Review: red tests first failed at all four intended boundaries because only revi
 Acceptance: before a reviewer can approve, regenerate, or reject a newly generated Fettler candidate, the page displays the exact authenticated hypothesis, target symbol, source paths and digests, precondition, expected observation, postcondition, rollback, stop condition, risk, confidence, assessment source, and verifier evidence returned by the candidate API. Existing version one candidates remain readable.
 
 Review: the existing candidate page was statically limited to review evidence version one and omitted the newly authenticated precise edit fields. The new typed panel renders both versions, with every version two source and condition visible ahead of file diffs and the human decision controls. React performs all text escaping, arrays remain bounded by the authoritative shared schema, and no second evidence source was introduced. The focused test first failed because the panel did not exist. The final focused tests pass 4 of 4, full Web passes 166 of 166, all workspace typechecks pass, the 50-page production build passes, GA/spec/claims/names/action-pin gates pass, the production dependency audit reports zero vulnerabilities, and diff integrity is clean. The full repository suite had one Windows temporary-directory rename race while tests and typechecks ran concurrently; the complete Ops suite then passed 94 of 94 in isolation.
+
+## Fettler exact file deletion: 2026-08-14
+
+Objective: let Fettler remove an obsolete tracked source file as one evidence-bound mutation and deliver that deletion in the same human-reviewed, replay-safe draft workflow as file writes.
+
+- [ ] Add red tests for source-observed deletion, protected-path rejection, rollback restoration, runtime replay, and stale-fence rejection.
+- [ ] Add red tests proving candidate manifests and approval artifacts retain the deleted file preimage, absent post-state, precise intent, and verifier evidence.
+- [ ] Add red tests for initial GitHub draft deletion, review-feedback update deletion, exact response-loss reconciliation, and omitted or extra tree changes failing closed.
+- [ ] Implement the smallest end-to-end delete-file operation without widening path, model, network, merge, or deploy authority.
+- [ ] Run focused suites, every workspace test and typecheck, the production build, GA gates, dependency audit, diff integrity, and independent P0/P1 review.
+- [ ] Merge through protected CI and verify the exact production revision.
+
+Acceptance: a model or deterministic planner may delete only an allowed, fully observed regular file with an authenticated version-one mutation intent bound to its exact digest. The checkpoint journal records the pre-state and authenticated absent post-state, takeover does not repeat an already-completed deletion, rollback restores the exact bytes and mode, review evidence states why the deletion is safe, and GitHub draft creation or update removes exactly that leaf while preserving every other tracked leaf. Human approval remains mandatory, and Fettler still cannot merge or deploy.
+
+## Governed model learning and post training: 2026-08-14
+
+Capability: every verified Fettler or ReGauge migration outcome can become a governed learning event, a validated lesson, and a correctly classified improvement to model weights, router policy, retrieval, graph, parser, tooling, deterministic recipes, prompts, calibration, or product logic. Eligible model lessons can proceed through immutable datasets, disjoint train, validation, and holdout partitions, authenticated training, unseen evaluation, human promotion, selective routing, shadow or canary use, monitoring, and rollback. Work outcome capture never implies permission to train, and training completion never implies permission to serve.
+
+### Constraints and trust boundaries
+
+- [ ] Keep raw repository content out of the base lesson record. Store only fail closed redacted derivatives, immutable digests, review authority, verification evidence, temporal cutoff, tenant, purpose, and residency.
+- [ ] Require an active purpose specific consent and a tenant administrator for dataset sealing and corpus materialization. Revocation and deletion must remove records from future eligibility without rewriting sealed evidence.
+- [ ] Preserve exactly once trainer dispatch, authenticated response loss reconciliation, database time leases, evaluation and canary gates, human promotion, monitoring, and rollback.
+- [ ] Keep training and serving external through explicit authenticated ports. Do not claim Mendpoint ships model weights or a trainer until a real configured provider returns durable evidence.
+
+### Build
+
+- [x] Verify the actual repository control flow and document it in `docs/learning/current-state.md`.
+- [x] Record the parallel Claude ownership boundary and collision protocol in `docs/learning/parallel-work-notes.md`.
+- [x] Replace the inferred plan with the master prompt implementation and acceptance contract in `docs/learning/implementation-plan.md`.
+- [ ] Define one versioned learning event for Fettler, ReGauge, and synthetic ground truth, with canonical provenance, bounded observable output, router economics, tenant, residency, consent, and immutable references.
+- [ ] Capture approved, rejected, corrected, failed, abstained, escalated, merged, and rolled back Fettler and ReGauge outcomes without storing private chain of thought.
+- [ ] Extract evidence validated lessons and classify them into model weight, router policy, retrieval, graph, parser, tooling, deterministic recipe, prompt, product logic, calibration, or no action.
+- [ ] Add red tests for a generic consented dataset to corpus operation, exact replay, tenant isolation, stale or revoked consent, temporal leakage, empty datasets, artifact digest verification, provenance separation, quarantine, and train to holdout leakage.
+- [ ] Build capability specific datasets and deterministic train, validation, and holdout exports that distinguish synthetic development, synthetic hidden, design partner, and production holdouts.
+- [ ] Add red API tests for consent grant and revocation, learning status, dataset sealing, corpus materialization, training dispatch, status, reconciliation, cancellation, candidate registration, lifecycle transition, canary, rollback, and least privilege authorization.
+- [ ] Join the trainer to Claude's synthetic evaluation boundary without modifying Claude's benchmark or allowing train scenarios into hidden holdouts.
+- [ ] Register trained candidates with exact lineage, compare them against the current baseline, reject regressions, require independent human promotion, and make approved candidates selectively router eligible.
+- [ ] Add an injected serving path with immediate consent and lifecycle checks, shadow and bounded canary allocation, monitoring, circuit breaking, and atomic rollback.
+- [ ] Record router decisions, execution economics, calibration, abstention, and canary outcomes as new governed learning events.
+- [ ] Add threshold based scheduling that prepares datasets and candidates but never promotes automatically.
+- [ ] Add tenant scoped observability for capture, classification, eligibility, datasets, training, evaluation, router use, canary health, and rollback.
+- [ ] Correct verified API documentation and naming, then create `docs/learning/ship-readiness.md` with every master prompt answer marked ready, ship blocker, or explicitly deferred.
+
+### Verification and shipment
+
+- [ ] Prove one joined Fettler and one joined ReGauge path from mission outcome through next generation learning, including unverified, consent, tenancy, residency, duplicate, timeout, response loss, forged receipt, failed holdout, rejection, approval, canary failure, and rollback cases.
+- [ ] Run focused red and green suites, all affected package suites and typechecks, full repository tests, production build, GA gates, dependency audit, migration validation, and diff integrity.
+- [ ] Reconcile Claude's concurrent diff before each commit and before push. Preserve unrelated changes and stop on overlapping edits.
+- [ ] Push a reviewed branch, open a pull request, require protected CI, merge only when green, verify the exact deployed revision, and probe the authenticated learning surface.
+- [ ] Verify feature flags, trainer configuration, model registry, monitoring, rollback, and governance before activation. A missing external trainer or serving authority remains a ship blocker rather than a mocked production claim.
+
+Acceptance: Fettler, ReGauge, and Claude's synthetic system emit standardized governed events whose provenance remains distinct. Observable outcomes become validated lessons and only true model learning lessons enter immutable capability datasets with reproducible disjoint splits. Training dispatch is crash safe and authenticated. Candidate lineage, unseen evaluation, human promotion, selective router eligibility, shadow or canary traffic, monitoring, and rollback are durable and auditable. Router, production, and rollback outcomes feed the next cycle. No unreviewed work, private chain of thought, raw secret bearing content, cross tenant data, failed evaluation, leaked holdout, revoked consent, stale lifecycle, or unconfigured trainer can train or serve a model.
+
+## Tomorrow: Regauge protected activation authority: 2026-08-18
+
+- [ ] Keep the protected activation workflow fail closed until both `REGAUGE_GITHUB_APP_PRIVATE_KEY` and `REGAUGE_GITHUB_WEBHOOK_SECRET` are present through an explicitly authorized secret transfer or replacement.
+- [ ] Re-audit the protected environment for every required nonsecret reviewer and model-routing binding used by `.github/workflows/regauge-production.yml`.
+- [ ] Resolve each missing nonsecret binding from an existing authoritative repository, GitHub environment, installation, or runtime source. Do not infer or synthesize reviewer or routing authority.
+- [ ] Rerun the read-only protected preflight and retain exact evidence before any activation mutation.
+- [ ] Only after every authority is complete, run the one-draft canary, readiness soak, restart recovery, and containment verification.
+
+Acceptance: the workflow remains unable to deploy or deliver while either GitHub credential or any exact reviewer/model-routing authority is absent. Completing the checklist requires authoritative source evidence for every binding, a green read-only preflight, and a separately authorized protected activation.

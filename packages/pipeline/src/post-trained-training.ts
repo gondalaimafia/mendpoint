@@ -5,13 +5,14 @@ export type PostTrainedTrainingInput = Readonly<{
   tenantId: string; jobId: string; adapterId: string; actorPrincipalId: string;
   idempotencyKey: string; submittedAt: string; baseModelId: string;
   datasetId: string; purpose: string; residencyRegion: string;
-  corpusArtifactIds: readonly string[];
+  trainingCorpusArtifactIds: readonly string[];
+  validationArtifactId: string;
+  holdoutArtifactId: string;
+  splitManifestDigest: string;
   recipe: Readonly<{ epochs: number; maximumExamples: number; seed: number }>;
 }>;
 export type PostTrainedTrainingCompletion = Readonly<{
   status: "completed"; adapterBase64: string;
-  evaluation: Readonly<{ passed: boolean; successRate: number; regressionRate: number; reportRef: string }>;
-  canary: Readonly<{ passed: boolean; observedAt: string; evidenceRefs: readonly string[] }>;
   evidenceRefs: readonly string[]; completedAt: string;
 }>;
 export type PostTrainedTrainerResolution = PostTrainedTrainingCompletion
@@ -20,28 +21,34 @@ export type PostTrainedTrainerResolution = PostTrainedTrainingCompletion
   | Readonly<{ status: "safe_to_run" }>;
 export type PostTrainedReconciliationReceipt = Readonly<{
   tenantId: string; jobId: string; requestDigest: string; leaseGeneration: number;
+  authorityId: string;
   outcome: PostTrainedTrainerResolution["status"]; resultDigest: string;
   observedAt: string; signature: string;
 }>;
 export type PostTrainedReconciliation = Readonly<{ receipt: PostTrainedReconciliationReceipt; result: PostTrainedTrainerResolution }>;
 export type PostTrainedTrainer = Readonly<{
-  train(input: Readonly<{ jobId: string; adapterId: string; tenantId: string; requestDigest: string; leaseGeneration: number; baseModelId: string; corpus: readonly Readonly<{ artifactId: string; sha256: string; content: string }>[]; recipe: PostTrainedTrainingInput["recipe"]; signal: AbortSignal }>): Promise<PostTrainedReconciliation>;
-  reconcile(input: Readonly<{ jobId: string; tenantId: string; requestDigest: string; leaseGeneration: number; signal: AbortSignal }>): Promise<PostTrainedReconciliation>;
+  train(input: Readonly<{ jobId: string; adapterId: string; tenantId: string; requestDigest: string; leaseGeneration: number; authorityId: string; baseModelId: string; corpus: readonly Readonly<{ artifactId: string; sha256: string; content: string }>[]; recipe: PostTrainedTrainingInput["recipe"]; signal: AbortSignal }>): Promise<PostTrainedReconciliation>;
+  reconcile(input: Readonly<{ jobId: string; tenantId: string; requestDigest: string; leaseGeneration: number; authorityId: string; signal: AbortSignal }>): Promise<PostTrainedReconciliation>;
 }>;
 export type PostTrainedTrainingDependencies = Readonly<{
   enabled?: boolean; timeoutMs: number; leaseMs: number; workerId: string;
-  verifyEvidence(tenantId: string, evidenceRefs: readonly string[], expected: Readonly<{ subjectTypes: readonly string[]; subjectId: string; artifactIds?: readonly string[] }>): boolean;
-  authorizeDataset(input: Readonly<{ tenantId: string; datasetId: string; purpose: string; residencyRegion: string; corpusArtifactIds: readonly string[]; at: string }>): boolean;
+  processingBoundary: "tenant_local" | "external";
+  authorityId: string;
+  authorizeDataset(input: Readonly<{
+    tenantId: string; datasetId: string; purpose: string; residencyRegion: string;
+    trainingCorpusArtifactIds: readonly string[]; validationArtifactId: string;
+    holdoutArtifactId: string; splitManifestDigest: string;
+    processingBoundary: "tenant_local" | "external"; at: string;
+  }>): boolean;
   verifyReconciliation(receipt: PostTrainedReconciliationReceipt): boolean;
   trainer: PostTrainedTrainer;
 }>;
-export type PostTrainedTrainingJob = Readonly<{ tenantId: string; jobId: string; adapterId: string; requestDigest: string; status: "submitted" | "completed" | "failed"; submittedAt: string; completedAt?: string; adapterArtifactId?: string; adapterDigest?: string; evaluation?: PostTrainedTrainingCompletion["evaluation"]; canary?: PostTrainedTrainingCompletion["canary"]; evidenceRefs?: readonly string[]; failureCode?: string }>;
+export type PostTrainedTrainingJob = Readonly<{ tenantId: string; jobId: string; adapterId: string; requestDigest: string; status: "submitted" | "completed" | "failed"; submittedAt: string; completedAt?: string; adapterArtifactId?: string; adapterDigest?: string; evidenceRefs?: readonly string[]; failureCode?: string }>;
 
 const MAX_ADAPTER_BYTES = 16 * 1024 * 1024;
 const MAX_CORPUS_ARTIFACTS = 32;
 const MAX_CORPUS_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const MAX_CORPUS_BYTES = 64 * 1024 * 1024;
-const CORPUS_KINDS = new Set(["learning_dataset_corpus", "learning_dataset_version", "post_trained_training_corpus"]);
 const ACTIVE_EFFECTS = new Set<string>();
 const PROCESS_INSTANCE_ID = randomBytes(16).toString("hex");
 const EFFECT_TABLE = `CREATE TABLE IF NOT EXISTS post_trained_training_effects (
@@ -68,34 +75,30 @@ async function runPostTrainedTrainingJobOwned(db: AppDb, input: PostTrainedTrain
   let current = getPostTrainedTrainingJob(db, input.tenantId, input.jobId);
   if (current && current.requestDigest !== requestDigest) throw new Error("post_trained_training_idempotency_conflict");
   if (current?.status === "completed" || current?.status === "failed") return current;
-  const corpus = resolveCorpus(db, input);
-  if (!deps.authorizeDataset({ tenantId: input.tenantId, datasetId: input.datasetId, purpose: input.purpose, residencyRegion: input.residencyRegion, corpusArtifactIds: Object.freeze([...input.corpusArtifactIds]), at: new Date().toISOString() })) throw new Error("post_trained_training_dataset_unauthorized");
-  if (!deps.verifyEvidence(input.tenantId, Object.freeze(corpus.map((item) => item.artifactId)), { subjectTypes: Object.freeze(["learning_dataset", "learning_dataset_version"]), subjectId: input.datasetId, artifactIds: Object.freeze(corpus.map((item) => item.artifactId)) })) throw new Error("post_trained_training_evidence_not_authoritative");
+  const authority = resolveDatasetAuthority(db, input);
+  const corpus = authority.training;
+  if (!deps.authorizeDataset({ tenantId: input.tenantId, datasetId: input.datasetId, purpose: input.purpose, residencyRegion: input.residencyRegion, trainingCorpusArtifactIds: Object.freeze([...input.trainingCorpusArtifactIds]), validationArtifactId: input.validationArtifactId, holdoutArtifactId: input.holdoutArtifactId, splitManifestDigest: input.splitManifestDigest, processingBoundary: deps.processingBoundary, at: new Date().toISOString() })) throw new Error("post_trained_training_dataset_unauthorized");
   if (!current) {
-    appendDomainEvent(db, { id: `event_${sha256(`${input.jobId}\0submitted`)}`, tenantId: input.tenantId, schemaVersion: 1, eventType: "post_trained_training.submitted", aggregateType: "post_trained_training_job", aggregateId: input.jobId, actorPrincipalId: input.actorPrincipalId, correlationId: input.idempotencyKey, idempotencyKey: `post-trained-training:${input.idempotencyKey}:submitted`, payload: { requestDigest, adapterId: input.adapterId, submittedAt: input.submittedAt, datasetId: input.datasetId, purpose: input.purpose, residencyRegion: input.residencyRegion, corpus: corpus.map(({ artifactId, sha256 }) => ({ artifactId, sha256 })), baseModelId: input.baseModelId, recipe: input.recipe }, createdAt: input.submittedAt });
+    appendDomainEvent(db, { id: `event_${sha256(`${input.jobId}\0submitted`)}`, tenantId: input.tenantId, schemaVersion: 1, eventType: "post_trained_training.submitted", aggregateType: "post_trained_training_job", aggregateId: input.jobId, actorPrincipalId: input.actorPrincipalId, correlationId: input.idempotencyKey, idempotencyKey: `post-trained-training:${input.idempotencyKey}:submitted`, payload: { requestDigest, authorityId: deps.authorityId, adapterId: input.adapterId, submittedAt: input.submittedAt, datasetId: input.datasetId, purpose: input.purpose, residencyRegion: input.residencyRegion, trainingCorpus: corpus.map(({ artifactId, sha256 }) => ({ artifactId, sha256 })), validation: { artifactId: authority.validation.artifactId, sha256: authority.validation.sha256 }, holdout: { artifactId: authority.holdout.artifactId, sha256: authority.holdout.sha256 }, splitManifestDigest: input.splitManifestDigest, baseModelId: input.baseModelId, recipe: input.recipe }, createdAt: input.submittedAt });
     current = getPostTrainedTrainingJob(db, input.tenantId, input.jobId)!;
   }
   const claim = claimEffect(db, input.tenantId, input.jobId, requestDigest, effectOwnerId, deps.leaseMs);
   if (!claim.owned) throw new Error("post_trained_training_lease_held");
   let exchange: PostTrainedReconciliation;
   if (claim.dispatch) {
-    exchange = await bounded(deps.timeoutMs, (signal) => deps.trainer.train({ jobId: input.jobId, adapterId: input.adapterId, tenantId: input.tenantId, requestDigest, leaseGeneration: claim.generation, baseModelId: input.baseModelId, corpus, recipe: input.recipe, signal }));
+    exchange = await bounded(deps.timeoutMs, (signal) => deps.trainer.train({ jobId: input.jobId, adapterId: input.adapterId, tenantId: input.tenantId, requestDigest, leaseGeneration: claim.generation, authorityId: deps.authorityId, baseModelId: input.baseModelId, corpus, recipe: input.recipe, signal }));
   } else {
-    exchange = await bounded(deps.timeoutMs, (signal) => deps.trainer.reconcile({ jobId: input.jobId, tenantId: input.tenantId, requestDigest, leaseGeneration: claim.generation, signal }));
+    exchange = await bounded(deps.timeoutMs, (signal) => deps.trainer.reconcile({ jobId: input.jobId, tenantId: input.tenantId, requestDigest, leaseGeneration: claim.generation, authorityId: deps.authorityId, signal }));
   }
   let resolution = validateExchange(exchange, input, requestDigest, claim.generation, deps);
   let receipt = exchange.receipt;
   if (resolution.status === "safe_to_run") {
-    const retry = await bounded(deps.timeoutMs, (signal) => deps.trainer.train({ jobId: input.jobId, adapterId: input.adapterId, tenantId: input.tenantId, requestDigest, leaseGeneration: claim.generation, baseModelId: input.baseModelId, corpus, recipe: input.recipe, signal }));
+    const retry = await bounded(deps.timeoutMs, (signal) => deps.trainer.train({ jobId: input.jobId, adapterId: input.adapterId, tenantId: input.tenantId, requestDigest, leaseGeneration: claim.generation, authorityId: deps.authorityId, baseModelId: input.baseModelId, corpus, recipe: input.recipe, signal }));
     resolution = validateExchange(retry, input, requestDigest, claim.generation, deps);
     receipt = retry.receipt;
   }
   if (resolution.status === "pending") throw new Error("post_trained_training_outcome_unknown");
   if (resolution.status === "safe_to_run") throw new Error("post_trained_training_result_invalid");
-  const evidenceRefs = resolution.status === "completed"
-    ? Object.freeze([...new Set([...resolution.evidenceRefs, ...resolution.canary.evidenceRefs, resolution.evaluation.reportRef])])
-    : resolution.evidenceRefs;
-  if (!deps.verifyEvidence(input.tenantId, evidenceRefs, { subjectTypes: Object.freeze(["post_trained_training_job"]), subjectId: input.jobId })) throw new Error("post_trained_training_evidence_not_authoritative");
   if (resolution.status === "failed") return settleFailure(db, input, requestDigest, claim.generation, effectOwnerId, receipt, resolution);
   validateCompletion(resolution);
   return settleCompletion(db, input, requestDigest, claim.generation, effectOwnerId, receipt, resolution, corpus);
@@ -106,7 +109,7 @@ export function getPostTrainedTrainingJob(db: AppDb, tenantId: string, jobId: st
   if (!events.length) return undefined;
   const submitted = JSON.parse(events[0]!.payload_json) as { requestDigest: string; adapterId: string; submittedAt: string };
   const latest = events.at(-1)!; const payload = JSON.parse(latest.payload_json) as Record<string, unknown>;
-  if (latest.event_type.endsWith(".completed")) return deepFreeze({ tenantId, jobId, adapterId: submitted.adapterId, requestDigest: submitted.requestDigest, status: "completed", submittedAt: submitted.submittedAt, completedAt: String(payload.completedAt), adapterArtifactId: String(payload.artifactId), adapterDigest: String(payload.adapterDigest), evaluation: payload.evaluation as PostTrainedTrainingCompletion["evaluation"], canary: payload.canary as PostTrainedTrainingCompletion["canary"], evidenceRefs: payload.evidenceRefs as string[] });
+  if (latest.event_type.endsWith(".completed")) return deepFreeze({ tenantId, jobId, adapterId: submitted.adapterId, requestDigest: submitted.requestDigest, status: "completed", submittedAt: submitted.submittedAt, completedAt: String(payload.completedAt), adapterArtifactId: String(payload.artifactId), adapterDigest: String(payload.adapterDigest), evidenceRefs: payload.evidenceRefs as string[] });
   if (latest.event_type.endsWith(".failed")) return deepFreeze({ tenantId, jobId, adapterId: submitted.adapterId, requestDigest: submitted.requestDigest, status: "failed", submittedAt: submitted.submittedAt, completedAt: String(payload.completedAt), failureCode: String(payload.code), evidenceRefs: payload.evidenceRefs as string[] });
   return deepFreeze({ tenantId, jobId, adapterId: submitted.adapterId, requestDigest: submitted.requestDigest, status: "submitted", submittedAt: submitted.submittedAt });
 }
@@ -141,7 +144,7 @@ function settleFailure(db: AppDb, input: PostTrainedTrainingInput, requestDigest
   db.raw.exec("BEGIN IMMEDIATE");
   try {
     assertLeaseCurrent(db, input, requestDigest, generation, workerId);
-    appendDomainEvent(db, { id: `event_${sha256(`${input.jobId}\0failed\0${resolution.code}`)}`, tenantId: input.tenantId, schemaVersion: 1, eventType: "post_trained_training.failed", aggregateType: "post_trained_training_job", aggregateId: input.jobId, actorPrincipalId: input.actorPrincipalId, correlationId: input.idempotencyKey, idempotencyKey: `post-trained-training:${input.idempotencyKey}:failed`, payload: { requestDigest, code: resolution.code, evidenceRefs: resolution.evidenceRefs, completedAt: resolution.completedAt }, createdAt: resolution.completedAt });
+    appendDomainEvent(db, { id: `event_${sha256(`${input.jobId}\0failed\0${resolution.code}`)}`, tenantId: input.tenantId, schemaVersion: 1, eventType: "post_trained_training.failed", aggregateType: "post_trained_training_job", aggregateId: input.jobId, actorPrincipalId: input.actorPrincipalId, correlationId: input.idempotencyKey, idempotencyKey: `post-trained-training:${input.idempotencyKey}:failed`, payload: { requestDigest, authorityId: receipt.authorityId, code: resolution.code, evidenceRefs: resolution.evidenceRefs, completedAt: resolution.completedAt }, createdAt: resolution.completedAt });
     settleEffect(db, input, requestDigest, generation, workerId, receipt);
     db.raw.exec("COMMIT");
   } catch (error) { if (db.raw.isTransaction) db.raw.exec("ROLLBACK"); throw error; }
@@ -158,7 +161,7 @@ function settleCompletion(db: AppDb, input: PostTrainedTrainingInput, requestDig
     assertLeaseCurrent(db, input, requestDigest, generation, workerId);
     insertArtifactManifest(db, { id: artifactId, tenantId: input.tenantId, kind: "post_trained_adapter_artifact", schemaVersion: 1, sha256: sha256(artifactContent), mediaType: "application/vnd.mendpoint.post-trained-adapter-bytes+json", sizeBytes: Buffer.byteLength(artifactContent), storageRef: `sqlite://artifact_manifests/${artifactId}#content_text`, content: artifactContent, producerPrincipalId: input.actorPrincipalId, createdAt: resolution.completedAt });
     insertEvidenceRecord(db, { id: `evidence_${sha256(`${input.jobId}\0training`)}`, tenantId: input.tenantId, subjectType: "post_trained_training_job", subjectId: input.jobId, artifactId, inputArtifactId: corpus[0]?.artifactId, producerPrincipalId: input.actorPrincipalId, tool: "post-trained-trainer", toolVersion: "1", verdict: "passed", createdAt: resolution.completedAt });
-    appendDomainEvent(db, { id: `event_${sha256(`${input.jobId}\0completed\0${adapterDigest}`)}`, tenantId: input.tenantId, schemaVersion: 1, eventType: "post_trained_training.completed", aggregateType: "post_trained_training_job", aggregateId: input.jobId, actorPrincipalId: input.actorPrincipalId, correlationId: input.idempotencyKey, idempotencyKey: `post-trained-training:${input.idempotencyKey}:completed`, payload: { requestDigest, artifactId, adapterDigest, datasetId: input.datasetId, purpose: input.purpose, residencyRegion: input.residencyRegion, evaluation: resolution.evaluation, canary: resolution.canary, evidenceRefs: resolution.evidenceRefs, completedAt: resolution.completedAt }, createdAt: resolution.completedAt });
+    appendDomainEvent(db, { id: `event_${sha256(`${input.jobId}\0completed\0${adapterDigest}`)}`, tenantId: input.tenantId, schemaVersion: 1, eventType: "post_trained_training.completed", aggregateType: "post_trained_training_job", aggregateId: input.jobId, actorPrincipalId: input.actorPrincipalId, correlationId: input.idempotencyKey, idempotencyKey: `post-trained-training:${input.idempotencyKey}:completed`, payload: { requestDigest, authorityId: receipt.authorityId, artifactId, adapterDigest, datasetId: input.datasetId, purpose: input.purpose, residencyRegion: input.residencyRegion, evidenceRefs: resolution.evidenceRefs, completedAt: resolution.completedAt }, createdAt: resolution.completedAt });
     settleEffect(db, input, requestDigest, generation, workerId, receipt);
     db.raw.exec("COMMIT");
   } catch (error) { if (db.raw.isTransaction) db.raw.exec("ROLLBACK"); throw error; }
@@ -179,32 +182,52 @@ function sqliteNow(db: AppDb): number { return (db.raw.prepare("SELECT CAST((jul
 function validateExchange(exchange: PostTrainedReconciliation, input: PostTrainedTrainingInput, requestDigest: string, generation: number, deps: PostTrainedTrainingDependencies): PostTrainedTrainerResolution {
   if (!exchange || typeof exchange !== "object" || !exchange.receipt || !exchange.result) throw new Error("post_trained_training_receipt_invalid");
   const receipt = exchange.receipt;
-  if (receipt.tenantId !== input.tenantId || receipt.jobId !== input.jobId || receipt.requestDigest !== requestDigest || receipt.leaseGeneration !== generation || receipt.outcome !== exchange.result.status || receipt.resultDigest !== postTrainedReconciliationResultDigest(exchange.result) || !Number.isFinite(Date.parse(receipt.observedAt)) || typeof receipt.signature !== "string" || !receipt.signature.trim() || !deps.verifyReconciliation(deepFreeze(structuredClone(receipt)))) throw new Error("post_trained_training_receipt_invalid");
+  if (receipt.tenantId !== input.tenantId || receipt.jobId !== input.jobId || receipt.requestDigest !== requestDigest || receipt.leaseGeneration !== generation || receipt.authorityId !== deps.authorityId || receipt.outcome !== exchange.result.status || receipt.resultDigest !== postTrainedReconciliationResultDigest(exchange.result) || !Number.isFinite(Date.parse(receipt.observedAt)) || typeof receipt.signature !== "string" || !receipt.signature.trim() || !deps.verifyReconciliation(deepFreeze(structuredClone(receipt)))) throw new Error("post_trained_training_receipt_invalid");
   return deepFreeze(structuredClone(exchange.result));
 }
 
-function resolveCorpus(db: AppDb, input: PostTrainedTrainingInput) {
+type ResolvedCorpusArtifact = Readonly<{ artifactId: string; sha256: string; content: string; exampleIds: readonly string[] }>;
+
+function resolveDatasetAuthority(db: AppDb, input: PostTrainedTrainingInput): Readonly<{
+  training: readonly ResolvedCorpusArtifact[];
+  validation: ResolvedCorpusArtifact;
+  holdout: ResolvedCorpusArtifact;
+}> {
   let totalBytes = 0; let totalExamples = 0;
-  const corpus = input.corpusArtifactIds.map((artifactId) => {
+  const resolve = (artifactId: string, expectedKind: string, expectedSplit: "train" | "validation" | "holdout", errorCode: string): ResolvedCorpusArtifact => {
     const row = db.raw.prepare("SELECT id, kind, sha256, size_bytes, content_text FROM artifact_manifests WHERE tenant_id = ? AND id = ?").get(input.tenantId, artifactId) as { id: string; kind: string; sha256: string; size_bytes: number; content_text: string | null } | undefined;
     const actualBytes = row?.content_text ? Buffer.byteLength(row.content_text) : 0;
-    if (!row?.content_text || !CORPUS_KINDS.has(row.kind) || actualBytes !== row.size_bytes || actualBytes > MAX_CORPUS_ARTIFACT_BYTES || sha256(row.content_text) !== row.sha256) throw new Error("post_trained_training_corpus_not_authoritative");
+    if (!row?.content_text || row.kind !== expectedKind || actualBytes !== row.size_bytes || actualBytes > MAX_CORPUS_ARTIFACT_BYTES || sha256(row.content_text) !== row.sha256) throw new Error(errorCode);
     totalBytes += actualBytes;
     let parsed: unknown; try { parsed = JSON.parse(row.content_text); } catch { throw new Error("post_trained_training_corpus_invalid"); }
-    const samples = parsed && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>).samples) ? (parsed as { samples: unknown[] }).samples.length : 0;
-    if (samples < 1) throw new Error("post_trained_training_corpus_invalid"); totalExamples += samples;
-    return Object.freeze({ artifactId: row.id, sha256: row.sha256, content: row.content_text });
-  });
+    const object = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
+    const examples = object && Array.isArray(object.examples) ? object.examples : object && Array.isArray(object.samples) ? object.samples : [];
+    if (examples.length < 1 || object?.datasetSplit !== expectedSplit || object?.splitManifestDigest !== input.splitManifestDigest) throw new Error(errorCode);
+    const exampleIds = examples.map((value, index) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return `${expectedSplit}:${index}`;
+      const candidate = (value as Record<string, unknown>).sourceEventId;
+      return typeof candidate === "string" && candidate ? candidate : `${expectedSplit}:${index}`;
+    });
+    totalExamples += examples.length;
+    return Object.freeze({ artifactId: row.id, sha256: row.sha256, content: row.content_text, exampleIds: Object.freeze(exampleIds) });
+  };
+  const corpus = input.trainingCorpusArtifactIds.map((artifactId) =>
+    resolve(artifactId, "learning_dataset_corpus", "train", "post_trained_training_corpus_not_authoritative"));
+  const validation = resolve(input.validationArtifactId, "learning_dataset_validation", "validation", "post_trained_training_validation_not_authoritative");
+  const holdout = resolve(input.holdoutArtifactId, "learning_dataset_holdout", "holdout", "post_trained_training_holdout_not_authoritative");
   if (totalBytes > MAX_CORPUS_BYTES || totalExamples > input.recipe.maximumExamples) throw new Error("post_trained_training_corpus_limit_exceeded");
-  return Object.freeze(corpus);
+  const allIds = [...corpus.flatMap((artifact) => artifact.exampleIds), ...validation.exampleIds, ...holdout.exampleIds];
+  if (new Set(allIds).size !== allIds.length) throw new Error("post_trained_training_split_overlap");
+  return deepFreeze({ training: corpus, validation, holdout });
 }
 function validateInput(input: PostTrainedTrainingInput, deps: PostTrainedTrainingDependencies) {
   for (const value of [input.tenantId, input.jobId, input.adapterId, input.actorPrincipalId, input.idempotencyKey, input.baseModelId, input.datasetId, input.purpose, input.residencyRegion, deps.workerId]) if (!value?.trim()) throw new Error("post_trained_training_input_invalid");
-  if (!Number.isFinite(Date.parse(input.submittedAt)) || !input.corpusArtifactIds.length || input.corpusArtifactIds.length > MAX_CORPUS_ARTIFACTS || new Set(input.corpusArtifactIds).size !== input.corpusArtifactIds.length || !Number.isSafeInteger(input.recipe.epochs) || input.recipe.epochs < 1 || input.recipe.epochs > 100 || !Number.isSafeInteger(input.recipe.maximumExamples) || input.recipe.maximumExamples < 1 || input.recipe.maximumExamples > 1_000_000 || !Number.isSafeInteger(input.recipe.seed) || !Number.isSafeInteger(deps.timeoutMs) || deps.timeoutMs < 1 || deps.timeoutMs > 300_000 || !Number.isSafeInteger(deps.leaseMs) || deps.leaseMs < deps.timeoutMs * 2 || deps.leaseMs > 3_600_000) throw new Error("post_trained_training_input_invalid");
+  const artifactIds = [...(input.trainingCorpusArtifactIds ?? []), input.validationArtifactId, input.holdoutArtifactId];
+  if (!Number.isFinite(Date.parse(input.submittedAt)) || !deps.authorityId?.trim() || !Array.isArray(input.trainingCorpusArtifactIds) || !input.trainingCorpusArtifactIds.length || input.trainingCorpusArtifactIds.length > MAX_CORPUS_ARTIFACTS || artifactIds.some((value) => typeof value !== "string" || !value.trim()) || new Set(artifactIds).size !== artifactIds.length || !/^[a-f0-9]{64}$/u.test(input.splitManifestDigest) || !["tenant_local", "external"].includes(deps.processingBoundary) || !Number.isSafeInteger(input.recipe.epochs) || input.recipe.epochs < 1 || input.recipe.epochs > 100 || !Number.isSafeInteger(input.recipe.maximumExamples) || input.recipe.maximumExamples < 1 || input.recipe.maximumExamples > 1_000_000 || !Number.isSafeInteger(input.recipe.seed) || !Number.isSafeInteger(deps.timeoutMs) || deps.timeoutMs < 1 || deps.timeoutMs > 300_000 || !Number.isSafeInteger(deps.leaseMs) || deps.leaseMs < deps.timeoutMs * 2 || deps.leaseMs > 3_600_000) throw new Error("post_trained_training_input_invalid");
 }
 function validateCompletion(value: PostTrainedTrainingCompletion) {
   decodeCanonicalBase64(value.adapterBase64);
-  if (!value.evaluation.passed || !value.canary.passed || !Number.isFinite(Date.parse(value.completedAt)) || !Number.isFinite(Date.parse(value.canary.observedAt)) || Date.parse(value.canary.observedAt) > Date.parse(value.completedAt) || !value.evaluation.reportRef?.trim() || !Array.isArray(value.evidenceRefs) || !value.evidenceRefs.length || !Array.isArray(value.canary.evidenceRefs) || !value.canary.evidenceRefs.length || ![value.evaluation.successRate, value.evaluation.regressionRate].every((number) => Number.isFinite(number) && number >= 0 && number <= 1)) throw new Error("post_trained_training_result_invalid");
+  if (!Number.isFinite(Date.parse(value.completedAt)) || !Array.isArray(value.evidenceRefs) || !value.evidenceRefs.length || value.evidenceRefs.some((reference) => typeof reference !== "string" || !reference.trim())) throw new Error("post_trained_training_result_invalid");
 }
 function decodeCanonicalBase64(value: string): Buffer { if (typeof value !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) throw new Error("post_trained_training_result_invalid"); const bytes = Buffer.from(value, "base64"); if (bytes.length < 1 || bytes.length > MAX_ADAPTER_BYTES || bytes.toString("base64") !== value) throw new Error("post_trained_training_result_invalid"); return bytes; }
 async function bounded<T>(timeoutMs: number, operation: (signal: AbortSignal) => Promise<T>): Promise<T> { const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined; try { return await Promise.race([operation(controller.signal), new Promise<T>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("post_trained_training_timeout")); }, timeoutMs); })]); } finally { if (timer) clearTimeout(timer); } }
