@@ -1,9 +1,11 @@
 # Product Spec: Mendpoint
 
 > Superseded on 2026-08-01. The canonical product authority is
-> [`FOUNDATIONAL_PRODUCT_SPEC.md`](./FOUNDATIONAL_PRODUCT_SPEC.md). This file is
-> retained only as the historical engineering compression for the original
-> monorepo scaffold.
+> [`product/mendpoint-product-platform-specification.md`](./product/mendpoint-product-platform-specification.md)
+> (v2.0, canonical as of 2026-08-17; it superseded
+> [`FOUNDATIONAL_PRODUCT_SPEC.md`](./FOUNDATIONAL_PRODUCT_SPEC.md), which had
+> superseded this file). This file is retained only as the historical
+> engineering compression for the original monorepo scaffold.
 
 **Version:** 0.9 (Foundational Spec)  
 **Date:** July 22, 2026

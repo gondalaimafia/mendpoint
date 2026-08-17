@@ -2,7 +2,7 @@
 
 Version: 1.0  
 Effective date: 2026-08-01  
-Authority: `FOUNDATIONAL_PRODUCT_SPEC.md`
+Authority: `product/mendpoint-product-platform-specification.md` (v2.0, canonical as of 2026-08-17; see `adr/0001-canonical-product-specification.md`)
 
 This contract resolves the foundational specification decisions that must be
 stable before implementation can be treated as release evidence. The machine
