@@ -19,6 +19,10 @@ import {
   postTrainedCanaryReceiptSigningBytes,
   postTrainedReconciliationSigningBytes,
   authorizeGovernedLearningCorpus,
+  getGovernedLearningStatus,
+  grantGovernedLearningConsent,
+  materializeGovernedLearningCorpus,
+  revokeGovernedLearningConsent,
   type PostTrainedTrainer,
   type PostTrainedReconciliationReceipt,
   type PostTrainedEvaluationDependencies,
@@ -239,6 +243,82 @@ export function createAdvancedAiApplicationRoutes(options: AdvancedAiApplication
   const routes = new Hono<ApiEnv>({ strict: false });
   if (!options.enabled) { routes.all("*", (c) => c.json({ error: "not_found" }, 404)); return routes; }
   const now = options.now ?? (() => new Date().toISOString());
+
+  routes.post("/learning/consents", async (c) => {
+    try {
+      const principal = identity(c); if (!principal) return c.json({ error: "authenticated_principal_required" }, 401);
+      const actorPrincipalId = c.get("trustPrincipalId"); if (!actorPrincipalId) return c.json({ error: "trust_principal_required" }, 401);
+      if (!can(principal, "tenant:admin")) return c.json({ error: "forbidden" }, 403);
+      const body = await jsonBody(c);
+      const idempotencyKey = c.req.header("idempotency-key"); if (!idempotencyKey?.trim()) throw new Error("idempotency_key_required");
+      const result = grantGovernedLearningConsent(options.db, {
+        id: body.id,
+        tenantId: principal.tenantId,
+        consentVersion: body.consentVersion,
+        purpose: body.purpose,
+        residencyRegion: body.residencyRegion,
+        actorPrincipalId,
+        supersedesConsentId: body.supersedesConsentId,
+        effectiveAt: body.effectiveAt,
+        expiresAt: body.expiresAt,
+        reason: body.reason,
+        idempotencyKey,
+        createdAt: now(),
+      });
+      c.header("Cache-Control", "no-store");
+      c.header("Location", `/advanced-ai/learning/consents/${result.id}`);
+      return c.json(result, 201);
+    } catch (error) { return failure(c, error); }
+  });
+  routes.post("/learning/consents/:consentId/revoke", async (c) => {
+    try {
+      const principal = identity(c); if (!principal) return c.json({ error: "authenticated_principal_required" }, 401);
+      const actorPrincipalId = c.get("trustPrincipalId"); if (!actorPrincipalId) return c.json({ error: "trust_principal_required" }, 401);
+      if (!can(principal, "tenant:admin")) return c.json({ error: "forbidden" }, 403);
+      const body = await jsonBody(c);
+      const idempotencyKey = c.req.header("idempotency-key"); if (!idempotencyKey?.trim()) throw new Error("idempotency_key_required");
+      const result = revokeGovernedLearningConsent(options.db, {
+        id: body.id,
+        tenantId: principal.tenantId,
+        consentId: c.req.param("consentId"),
+        consentVersion: body.consentVersion,
+        actorPrincipalId,
+        reason: body.reason,
+        idempotencyKey,
+        createdAt: now(),
+      });
+      c.header("Cache-Control", "no-store");
+      return c.json(result);
+    } catch (error) { return failure(c, error); }
+  });
+  routes.get("/learning/status", (c) => {
+    try {
+      const principal = identity(c); if (!principal) return c.json({ error: "authenticated_principal_required" }, 401);
+      if (!can(principal, "plan:read")) return c.json({ error: "forbidden" }, 403);
+      c.header("Cache-Control", "no-store");
+      return c.json(getGovernedLearningStatus(options.db, principal.tenantId, now()));
+    } catch (error) { return failure(c, error); }
+  });
+  routes.post("/learning/corpora", async (c) => {
+    try {
+      const principal = identity(c); if (!principal) return c.json({ error: "authenticated_principal_required" }, 401);
+      const actorPrincipalId = c.get("trustPrincipalId"); if (!actorPrincipalId) return c.json({ error: "trust_principal_required" }, 401);
+      if (!can(principal, "tenant:admin")) return c.json({ error: "forbidden" }, 403);
+      const body = await jsonBody(c);
+      const idempotencyKey = c.req.header("idempotency-key"); if (!idempotencyKey?.trim()) throw new Error("idempotency_key_required");
+      const result = materializeGovernedLearningCorpus(options.db, {
+        tenantId: principal.tenantId,
+        purpose: body.purpose,
+        temporalCutoffAt: body.temporalCutoffAt,
+        actorPrincipalId,
+        idempotencyKey,
+        createdAt: now(),
+      });
+      c.header("Cache-Control", "no-store");
+      c.header("Location", `/advanced-ai/learning/corpora/${result.datasetVersionId}`);
+      return c.json(result, 201);
+    } catch (error) { return failure(c, error); }
+  });
 
   routes.post("/attestations", async (c) => {
     try {

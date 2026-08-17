@@ -5,6 +5,7 @@ import {
   countLearningDatasetMembers,
   createLearningDatasetVersion,
   findActiveLearningConsent,
+  grantLearningConsent,
   getLatestLearningDatasetVersion,
   getLearningRecord,
   insertArtifactManifest,
@@ -12,6 +13,7 @@ import {
   insertReviewDecision,
   listAdmittableLearningRecords,
   listEligibleLearningDatasetMembers,
+  revokeLearningConsent,
   sealLearningDatasetVersion,
   type AppDb,
   type LearningRecordRow,
@@ -123,6 +125,46 @@ export type AdmittedGovernedLearningEvent = Readonly<{
   lesson: GovernedLearningLesson;
 }>;
 
+export type GovernedLearningConsentInput = Readonly<{
+  id: string;
+  tenantId: string;
+  consentVersion: number;
+  purpose: string;
+  residencyRegion: string;
+  actorPrincipalId: string;
+  supersedesConsentId?: string | null;
+  effectiveAt: string;
+  expiresAt?: string | null;
+  reason: string;
+  idempotencyKey: string;
+  createdAt: string;
+}>;
+
+export type GovernedLearningConsentResult = Readonly<{
+  id: string;
+  tenantId: string;
+  action: "granted" | "revoked";
+  consentVersion: number;
+  purpose: string;
+  residencyRegion: string;
+  supersedesConsentId: string | null;
+  effectiveAt: string;
+  expiresAt: string | null;
+  evidenceId: string;
+}>;
+
+export type GovernedLearningStatus = Readonly<{
+  tenantId: string;
+  activeConsentCount: number;
+  learningRecordCount: number;
+  datasetCount: number;
+  sealedDatasetCount: number;
+  trainingJobCount: number;
+  evaluationCount: number;
+  canaryCount: number;
+  adapterCount: number;
+}>;
+
 type DatasetSplit = "train" | "validation" | "holdout";
 
 type StoredLearningDocument = Readonly<{
@@ -195,6 +237,7 @@ const SPLIT_POLICY = Object.freeze({
 });
 const AMBIENT_SAVEPOINT = "materialize_governed_learning_corpus";
 const ADMISSION_SAVEPOINT = "admit_governed_learning_event";
+const CONSENT_SAVEPOINT = "govern_learning_consent";
 
 export function governedLearningAdmissionIds(
   tenantId: string,
@@ -383,6 +426,74 @@ export function admitGovernedLearningEvent(
     }
     throw error;
   }
+}
+
+export function grantGovernedLearningConsent(
+  db: AppDb,
+  input: GovernedLearningConsentInput,
+): GovernedLearningConsentResult {
+  return persistGovernedLearningConsent(db, input, "granted");
+}
+
+export function revokeGovernedLearningConsent(
+  db: AppDb,
+  input: Readonly<{
+    id: string;
+    tenantId: string;
+    consentId: string;
+    consentVersion: number;
+    actorPrincipalId: string;
+    reason: string;
+    idempotencyKey: string;
+    createdAt: string;
+  }>,
+): GovernedLearningConsentResult {
+  const grant = db.raw.prepare(
+    `SELECT purpose, residency_region, effective_at, expires_at
+     FROM learning_consents WHERE id = ? AND tenant_id = ? AND action = 'granted'`,
+  ).get(input.consentId, input.tenantId) as {
+    purpose: string; residency_region: string; effective_at: string; expires_at: string | null;
+  } | undefined;
+  if (!grant) throw new Error("learning_consent_tenant_mismatch");
+  return persistGovernedLearningConsent(db, {
+    id: input.id,
+    tenantId: input.tenantId,
+    consentVersion: input.consentVersion,
+    purpose: grant.purpose,
+    residencyRegion: grant.residency_region,
+    actorPrincipalId: input.actorPrincipalId,
+    supersedesConsentId: input.consentId,
+    effectiveAt: input.createdAt,
+    expiresAt: grant.expires_at,
+    reason: input.reason,
+    idempotencyKey: input.idempotencyKey,
+    createdAt: input.createdAt,
+  }, "revoked");
+}
+
+export function getGovernedLearningStatus(db: AppDb, tenantId: string, at: string): GovernedLearningStatus {
+  requireBoundedText(tenantId, "learning_status_tenant_invalid");
+  if (new Date(at).toISOString() !== at) throw new Error("learning_status_time_invalid");
+  const count = (sql: string, ...params: string[]) => (db.raw.prepare(sql).get(...params) as { count: number }).count;
+  return deepFreeze({
+    tenantId,
+    activeConsentCount: count(
+      `SELECT COUNT(*) count FROM learning_consents consent
+       WHERE consent.tenant_id = ? AND consent.action = 'granted'
+         AND consent.effective_at <= ? AND (consent.expires_at IS NULL OR consent.expires_at > ?)
+         AND NOT EXISTS (SELECT 1 FROM learning_consents revoked
+           WHERE revoked.tenant_id = consent.tenant_id AND revoked.action = 'revoked'
+             AND revoked.supersedes_consent_id = consent.id)`,
+      tenantId, at, at,
+    ),
+    learningRecordCount: count("SELECT COUNT(*) count FROM learning_records WHERE tenant_id = ?", tenantId),
+    datasetCount: count("SELECT COUNT(*) count FROM learning_dataset_versions WHERE tenant_id = ?", tenantId),
+    sealedDatasetCount: count("SELECT COUNT(*) count FROM learning_dataset_versions WHERE tenant_id = ? AND status = 'sealed'", tenantId),
+    trainingJobCount: count("SELECT COUNT(DISTINCT aggregate_id) count FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'post_trained_training_job'", tenantId),
+    evaluationCount: count("SELECT COUNT(DISTINCT aggregate_id) count FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'post_trained_evaluation'", tenantId),
+    canaryCount: count("SELECT COUNT(DISTINCT aggregate_id) count FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'post_trained_canary_run'", tenantId),
+    adapterCount: count("SELECT COUNT(DISTINCT aggregate_id) count FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'post_trained_adapter'", tenantId),
+  });
 }
 
 export function materializeGovernedLearningCorpus(
@@ -1055,6 +1166,108 @@ function persistSplitArtifact(
 
 type ResolvedAdmissionAuthority = ReturnType<typeof snapshotAdmissionAuthority>;
 
+function persistGovernedLearningConsent(
+  db: AppDb,
+  input: GovernedLearningConsentInput,
+  action: "granted" | "revoked",
+): GovernedLearningConsentResult {
+  for (const [value, code] of [
+    [input.id, "learning_consent_id_invalid"],
+    [input.tenantId, "learning_consent_tenant_invalid"],
+    [input.purpose, "learning_consent_purpose_invalid"],
+    [input.residencyRegion, "learning_consent_residency_invalid"],
+    [input.actorPrincipalId, "learning_consent_actor_invalid"],
+    [input.reason, "learning_consent_reason_invalid"],
+    [input.idempotencyKey, "learning_consent_idempotency_invalid"],
+  ] as const) requireBoundedText(value, code);
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  else db.raw.exec(`SAVEPOINT ${CONSENT_SAVEPOINT}`);
+  try {
+    const row = action === "granted"
+      ? grantLearningConsent(db, {
+          id: input.id,
+          tenantId: input.tenantId,
+          consentVersion: input.consentVersion,
+          purpose: input.purpose,
+          residencyRegion: input.residencyRegion,
+          authorizedByPrincipalId: input.actorPrincipalId,
+          supersedesConsentId: input.supersedesConsentId,
+          effectiveAt: input.effectiveAt,
+          expiresAt: input.expiresAt,
+          reason: input.reason,
+          idempotencyKey: input.idempotencyKey,
+          createdAt: input.createdAt,
+        })
+      : revokeLearningConsent(db, {
+          id: input.id,
+          tenantId: input.tenantId,
+          consentId: input.supersedesConsentId!,
+          consentVersion: input.consentVersion,
+          authorizedByPrincipalId: input.actorPrincipalId,
+          reason: input.reason,
+          idempotencyKey: input.idempotencyKey,
+          createdAt: input.createdAt,
+        });
+    const content = canonicalJson({
+      schemaVersion: 1,
+      kind: "governed_learning_consent",
+      id: row.id,
+      tenantId: row.tenant_id,
+      action: row.action,
+      consentVersion: row.consent_version,
+      purpose: row.purpose,
+      residencyRegion: row.residency_region,
+      authorizedByPrincipalId: row.authorized_by_principal_id,
+      supersedesConsentId: row.supersedes_consent_id,
+      effectiveAt: row.effective_at,
+      expiresAt: row.expires_at,
+      reason: row.reason,
+    });
+    const artifactId = `artifact_${sha256(content)}`;
+    const evidenceId = `evidence_${sha256(`${row.tenant_id}\0${row.id}\0${artifactId}`)}`;
+    persistAdmissionArtifact(db, artifactId, {
+      tenantId: row.tenant_id,
+      actorPrincipalId: row.authorized_by_principal_id,
+      createdAt: row.created_at,
+    }, "learning_consent_evidence", content);
+    insertEvidenceRecord(db, {
+      id: evidenceId,
+      tenantId: row.tenant_id,
+      subjectType: "learning_consent",
+      subjectId: row.id,
+      artifactId,
+      producerPrincipalId: row.authorized_by_principal_id,
+      tool: "governed-learning-consent",
+      toolVersion: "1",
+      verdict: "passed",
+      createdAt: row.created_at,
+    });
+    const result = deepFreeze({
+      id: row.id,
+      tenantId: row.tenant_id,
+      action: row.action as "granted" | "revoked",
+      consentVersion: row.consent_version,
+      purpose: row.purpose,
+      residencyRegion: row.residency_region,
+      supersedesConsentId: row.supersedes_consent_id,
+      effectiveAt: row.effective_at,
+      expiresAt: row.expires_at,
+      evidenceId,
+    });
+    if (ownsTransaction) db.raw.exec("COMMIT");
+    else db.raw.exec(`RELEASE ${CONSENT_SAVEPOINT}`);
+    return result;
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    else if (db.raw.isTransaction) {
+      db.raw.exec(`ROLLBACK TO ${CONSENT_SAVEPOINT}`);
+      db.raw.exec(`RELEASE ${CONSENT_SAVEPOINT}`);
+    }
+    throw error;
+  }
+}
+
 function snapshotAdmissionAuthority(value: ReturnType<GovernedLearningOutcomeAuthority["resolve"]>) {
   const qualifiers = [...value.provenanceQualifiers].sort(codeUnitCompare);
   const result = {
@@ -1122,7 +1335,7 @@ function assertAdmissionBindings(
 function persistAdmissionArtifact(
   db: AppDb,
   id: string,
-  input: GovernedLearningAdmissionInput,
+  input: Pick<GovernedLearningAdmissionInput, "tenantId" | "actorPrincipalId" | "createdAt">,
   kind: string,
   content: string,
 ): void {
