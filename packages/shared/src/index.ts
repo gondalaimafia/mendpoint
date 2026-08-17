@@ -559,6 +559,23 @@ export const GeneratedReferenceSchema = z.object({
 });
 export type GeneratedReference = z.infer<typeof GeneratedReferenceSchema>;
 
+/**
+ * A vendored third-party file (a committed copy of a provider's own SDK) that
+ * references a changed surface. Editing it is wrong because the customer does
+ * not own that code and a hand-edit conflicts on the next re-vendoring; the fix
+ * is to update the vendored copy from upstream. Surfaced as its own outcome,
+ * not a finding.
+ */
+export const VendoredReferenceSchema = z.object({
+  filePath: z.string(),
+  lineStart: z.number().int().positive(),
+  symbol: z.string(),
+  evidence: z.string(),
+  relatedOps: z.array(DiffOpSchema).default([]),
+  note: z.string(),
+});
+export type VendoredReference = z.infer<typeof VendoredReferenceSchema>;
+
 export const ImpactReportSchema = z.object({
   surfaces: z.array(ImpactableSurfaceSchema),
   sites: z.array(ConfirmedImpactSchema),
@@ -572,6 +589,8 @@ export const ImpactReportSchema = z.object({
   ambiguousChanges: z.array(AmbiguousChangeSchema).optional(),
   /** Generated files that reference a changed surface — regenerate, do not edit. */
   generatedReferences: z.array(GeneratedReferenceSchema).optional(),
+  /** Vendored third-party files that reference a changed surface — update from upstream, do not edit. */
+  vendoredReferences: z.array(VendoredReferenceSchema).optional(),
 });
 export type ImpactReport = z.infer<typeof ImpactReportSchema>;
 
