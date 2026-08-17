@@ -97,7 +97,7 @@ Focused package tests additionally cover consent revocation, deletion after seal
 
 1. Production Fettler and ReGauge completion paths do not automatically call common event admission.
 2. Router execution, canary observations, rollback results, and production outcomes do not automatically feed the next learning generation.
-3. Claude's synthetic harness is not imported. Its holdout cohort and candidate execution adapter remain a separately owned integration boundary.
+3. The synthetic harness now exists under `evals/`, but it is not joined to post-trained evaluation. Its checked-in ground-truth scenarios are still marked `development`, so it does not supply a sealed unseen holdout or candidate-adapter comparison.
 4. There is no live trainer, evaluator, canary provider, or post-trained serving endpoint proven by this repository.
 5. Route dry-run proves selection authority, not actual adapter invocation.
 6. Dataset threshold scheduling, operator cancellation, continuous monitoring, and automatic circuit breaking are not implemented by this branch.

@@ -27,7 +27,7 @@ Status values:
 | Exactly-once external training | Ready | Database-time leases, generation fences, active-effect ownership, authenticated receipts, and response-loss reconciliation are implemented. |
 | Live external trainer | Ship blocker | No protected provider configuration or completed real training receipt is proven. |
 | Independent unseen evaluation | Ready in code | A separate authority consumes candidate bytes and exact holdout with zero-overlap proof. |
-| Claude hidden holdout integration | Explicitly deferred | Claude owns the changing benchmark harness. No holdout claim is made until a sealed adapter and cohort boundary lands. |
+| Synthetic hidden holdout integration | Ship blocker | The harness is checked in under `evals/`, but all current ground-truth scenarios are development data and no candidate-adapter evaluator is joined. |
 | Live independent evaluator | Ship blocker | No protected independent provider, credential, cohort, or evaluation receipt is proven. |
 | Human candidate promotion | Ready | Registration requires an authorized independent human and exact training, evaluation, canary, consent, infrastructure, and evidence bindings. |
 | Selective router eligibility | Ready | Eligibility and route dry-run bind tenant, capability, risk, privacy, region, health, quality, latency, cost, and lifecycle. |
