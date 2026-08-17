@@ -99,7 +99,10 @@ async function runPostTrainedTrainingJobOwned(db: AppDb, input: PostTrainedTrain
   }
   if (resolution.status === "pending") throw new Error("post_trained_training_outcome_unknown");
   if (resolution.status === "safe_to_run") throw new Error("post_trained_training_result_invalid");
-  if (resolution.status === "failed") return settleFailure(db, input, requestDigest, claim.generation, effectOwnerId, receipt, resolution);
+  if (resolution.status === "failed") {
+    validateFailure(resolution, input.submittedAt);
+    return settleFailure(db, input, requestDigest, claim.generation, effectOwnerId, receipt, resolution);
+  }
   validateCompletion(resolution, input.submittedAt);
   return settleCompletion(db, input, requestDigest, claim.generation, effectOwnerId, receipt, resolution, corpus);
 }
@@ -227,8 +230,13 @@ function validateInput(input: PostTrainedTrainingInput, deps: PostTrainedTrainin
 }
 function validateCompletion(value: PostTrainedTrainingCompletion, submittedAt: string) {
   decodeCanonicalBase64(value.adapterBase64);
-  if (!canonicalTime(value.completedAt) || Date.parse(value.completedAt) < Date.parse(submittedAt) || !Array.isArray(value.evidenceRefs) || !value.evidenceRefs.length || value.evidenceRefs.some((reference) => typeof reference !== "string" || !reference.trim())) throw new Error("post_trained_training_result_invalid");
+  if (!canonicalTime(value.completedAt) || Date.parse(value.completedAt) < Date.parse(submittedAt) || !validEvidenceRefs(value.evidenceRefs)) throw new Error("post_trained_training_result_invalid");
 }
+function validateFailure(value: Extract<PostTrainedTrainerResolution, { status: "failed" }>, submittedAt: string) {
+  if (!boundedCode(value.code) || !canonicalTime(value.completedAt) || Date.parse(value.completedAt) < Date.parse(submittedAt) || !validEvidenceRefs(value.evidenceRefs)) throw new Error("post_trained_training_result_invalid");
+}
+function boundedCode(value: unknown): value is string { return typeof value === "string" && value.length <= 256 && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(value); }
+function validEvidenceRefs(value: unknown): value is readonly string[] { return Array.isArray(value) && value.length > 0 && value.length <= 128 && new Set(value).size === value.length && value.every((reference) => typeof reference === "string" && reference.length <= 1_024 && reference.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(reference)); }
 function canonicalTime(value: unknown): value is string { if (typeof value !== "string") return false; const parsed = Date.parse(value); return Number.isFinite(parsed) && new Date(parsed).toISOString() === value; }
 function decodeCanonicalBase64(value: string): Buffer { if (typeof value !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) throw new Error("post_trained_training_result_invalid"); const bytes = Buffer.from(value, "base64"); if (bytes.length < 1 || bytes.length > MAX_ADAPTER_BYTES || bytes.toString("base64") !== value) throw new Error("post_trained_training_result_invalid"); return bytes; }
 async function bounded<T>(timeoutMs: number, operation: (signal: AbortSignal) => Promise<T>): Promise<T> { const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined; try { return await Promise.race([operation(controller.signal), new Promise<T>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("post_trained_training_timeout")); }, timeoutMs); })]); } finally { if (timer) clearTimeout(timer); } }

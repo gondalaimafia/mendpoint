@@ -322,7 +322,12 @@ function validateExchange(
     || !dependencies.verifyReceipt(deepFreeze(structuredClone(receipt)))
   ) throw new Error("post_trained_evaluation_receipt_invalid");
   const result = deepFreeze(structuredClone(exchange.result));
+  if (result.status === "failed") {
+    if (!boundedCode(result.code) || !canonicalTime(result.completedAt) || Date.parse(result.completedAt) < Date.parse(input.requestedAt) || !validEvidenceRefs(result.evidenceRefs)) throw new Error("post_trained_evaluation_result_invalid");
+    return result;
+  }
   if (result.status !== "completed") return result;
+  if (!canonicalTime(result.completedAt) || Date.parse(result.completedAt) < Date.parse(input.requestedAt)) throw new Error("post_trained_evaluation_result_invalid");
   const report = result.report;
   const expectedCohortRevision = authority.holdout.sha256.slice(0, 40);
   if (
@@ -452,6 +457,9 @@ function validateInput(input: PostTrainedEvaluationInput, dependencies: PostTrai
 }
 
 function rate(value: number): boolean { return Number.isFinite(value) && value >= 0 && value <= 1; }
+function boundedCode(value: unknown): value is string { return typeof value === "string" && value.length <= 256 && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(value); }
+function validEvidenceRefs(value: unknown): value is readonly string[] { return Array.isArray(value) && value.length > 0 && value.length <= 128 && new Set(value).size === value.length && value.every((reference) => typeof reference === "string" && reference.length <= 1_024 && reference.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(reference)); }
+function canonicalTime(value: unknown): value is string { if (typeof value !== "string") return false; const parsed = Date.parse(value); return Number.isFinite(parsed) && new Date(parsed).toISOString() === value; }
 function sqliteNow(db: AppDb): number { return (db.raw.prepare("SELECT CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) AS now_ms").get() as { now_ms: number }).now_ms; }
 async function bounded<T>(timeoutMs: number, operation: (signal: AbortSignal) => Promise<T>): Promise<T> { const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined; try { return await Promise.race([operation(controller.signal), new Promise<T>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("post_trained_evaluation_timeout")); }, timeoutMs); })]); } finally { if (timer) clearTimeout(timer); } }
 function sha256(value: string): string { return createHash("sha256").update(value).digest("hex"); }
