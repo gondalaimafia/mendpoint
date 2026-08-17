@@ -86,11 +86,16 @@ change delivery.
 
 ### Telemetry
 
-When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, traces and metrics export over
-OTLP/HTTP (`packages/ops/src/telemetry.ts`). Useful series during an incident:
-`readiness_check_total{status}`, `readiness_check_duration_ms`,
-`service_health_total{service,status}`, and `dr_drill_total{outcome}`. Telemetry
-is fail-open and a no-op when the endpoint is unset.
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, traces and metrics are buffered and
+exported over OTLP/HTTP (`packages/ops/src/telemetry.ts`). Both the API and the
+worker flush the buffers on a fixed cadence (`MENDPOINT_TELEMETRY_FLUSH_MS`,
+default 15s) and once more on graceful shutdown, so a configured collector
+receives series like `readiness_check_total{status}`,
+`readiness_check_duration_ms`, `service_health_total{service,status}`, and
+`dr_drill_total{outcome}` — expect them to lag live signal by up to one flush
+interval. Export is fail-open (a transport error is logged, never thrown), and
+the whole path is a no-op — no recording, no buffering, no flush timer — when
+the endpoint is unset.
 
 ## 2. Triage by symptom
 
