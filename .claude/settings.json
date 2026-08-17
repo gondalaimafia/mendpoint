@@ -24,9 +24,7 @@
       "Bash(npm run typecheck*)",
       "Bash(npm run build*)",
       "Bash(npm run lint*)",
-      "Bash(npx tsc*)",
-      "Read(./.env.example)",
-      "Read(./**/.env.example)"
+      "Bash(npx tsc*)"
     ],
     "deny": [
       "Read(./**/.env*)",
