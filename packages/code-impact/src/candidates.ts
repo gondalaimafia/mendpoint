@@ -13,7 +13,7 @@ import type {
   Confidence,
   ImpactableSurface,
 } from "@mendpoint/shared";
-import type { CodebaseIndex } from "@mendpoint/codebase-index";
+import type { CodebaseIndex, FileRecord } from "@mendpoint/codebase-index";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildProviderReachability } from "./lang-import-graph.js";
@@ -87,6 +87,122 @@ function pathInLine(line: string, hint: string): boolean {
   for (const h of variants) {
     if (!h || h.length < 4) continue;
     if (new RegExp(`${escapeReg(h)}(?![A-Za-z0-9_])`).test(line)) return true;
+  }
+  return false;
+}
+
+function isWordChar(c: string): boolean {
+  return /[A-Za-z0-9_$]/.test(c);
+}
+
+/**
+ * Whether `field` appears as a genuine field *reference* on `line`, as opposed to
+ * a word that merely sits inside a prose comment or a free-text string. A
+ * field-rename tool edits code references (`data.source`, `source:`, a
+ * destructured `source`) and structured wire tokens (a Go struct tag
+ * `json:"source"`, a Java `@JsonProperty("source")`, a JS field id
+ * `new ValidationError(..., 'source')`) — but not the word "source" inside a log
+ * message or a sentence.
+ *
+ * We walk the line tracking string state and stopping at the line's comment
+ * marker. A whole-word match reached in code is genuine. A whole-word match
+ * reached inside a string is genuine only when it is a discrete quoted/structural
+ * token (not flanked by whitespace) — the shape of a wire key, tag, or field id
+ * — and prose when it is flanked by a space, the shape of a word in a sentence.
+ * The match is case-insensitive so a Go/Java field (`e.Source`,
+ * `Source: req.Source`) counts even though the wire token the change carries is
+ * lower-case. This is the discriminator that separates `bin/server.js`'s
+ * `'loaded configuration source ...'` log string from a real `source` reference,
+ * without a blanket "strings never count" rule that would drop a Go/Java wire
+ * field carried in a string literal or a capitalised field the case-sensitive
+ * candidate scan never saw as code.
+ *
+ * Comment and string syntax is language-aware: Python uses `#` line comments and
+ * has no back-quote string, while JS/TS/Go/Java use `//` and (except Java) a
+ * back-quote string. Getting this wrong reads a Javadoc `{@link #member}` as a
+ * comment or a Python `//` floor-division as one, silently dropping real fields.
+ */
+function sourceHasGenuineReference(
+  text: string,
+  field: string,
+  language: FileRecord["language"],
+): boolean {
+  const lower = field.toLowerCase();
+  const matchesAt = (i: number): boolean =>
+    text.slice(i, i + field.length).toLowerCase() === lower;
+  const firstLower = lower[0]!;
+  const hashComments = language === "python" || language === "ruby";
+  const slashComments = !hashComments;
+  const backtickStrings =
+    language === "javascript" || language === "typescript" || language === "go";
+  const tripleQuoted = language === "python";
+  let inString: { quote: string; width: 1 | 3 } | null = null;
+  let inBlockComment = false;
+  let inLineComment = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (inLineComment) {
+      if (c === "\n") inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (c === "*" && text[i + 1] === "/") {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (inString) {
+      if (c === "\\") {
+        i++;
+        continue;
+      }
+      if (
+        c === inString.quote &&
+        (inString.width === 1 || text.slice(i, i + 3) === inString.quote.repeat(3))
+      ) {
+        i += inString.width - 1;
+        inString = null;
+        continue;
+      }
+      if (c.toLowerCase() === firstLower && matchesAt(i)) {
+        const before = text[i - 1] ?? "";
+        const after = text[i + field.length] ?? "";
+        if (!isWordChar(before) && !isWordChar(after)) {
+          // Discrete quoted/structural token (wire key, tag, field id) is a real
+          // reference; a token flanked by whitespace is a word in running text.
+          if (!/\s/.test(before) && !/\s/.test(after)) return true;
+        }
+        i += field.length - 1;
+      }
+      continue;
+    }
+    if (hashComments && c === "#") {
+      inLineComment = true;
+      continue;
+    }
+    if (slashComments && c === "/" && text[i + 1] === "/") {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (slashComments && c === "/" && text[i + 1] === "*") {
+      inBlockComment = true;
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'" || (backtickStrings && c === "`")) {
+      const width = tripleQuoted && text.slice(i, i + 3) === c.repeat(3) ? 3 : 1;
+      inString = { quote: c, width };
+      i += width - 1;
+      continue;
+    }
+    if (c.toLowerCase() === firstLower && matchesAt(i)) {
+      const before = i === 0 ? "" : text[i - 1]!;
+      const after = text[i + field.length] ?? "";
+      if (!isWordChar(before) && !isWordChar(after)) return true; // code identifier
+      i += field.length - 1;
+    }
   }
   return false;
 }
@@ -295,10 +411,22 @@ export function discoverCandidates(
         continue;
       }
       const lines = text.split(/\r?\n/);
+      // Per-field: does this file reference the field as real code / a wire token
+      // anywhere, or only ever mention the word in prose? A provider-reachable
+      // file that never genuinely references the field (only a log message or a
+      // comment mentions it) is not an edit site — this is what lets the gate
+      // demote `bin/server.js` without a blanket string/comment blacklist.
+      const fileGenuine = new Map<string, boolean>();
+      for (const field of fieldHints) {
+        fileGenuine.set(
+          field,
+          sourceHasGenuineReference(text, field, file.language),
+        );
+      }
       lines.forEach((line, idx) => {
         const lineNo = idx + 1;
         for (const field of fieldHints) {
-          if (!new RegExp(`\\b${escapeReg(field)}\\b`).test(line)) continue;
+          if (!new RegExp(`\\b${escapeReg(field)}\\b`, "i").test(line)) continue;
           // Promote to syntactic only on real provider-surface evidence: the file
           // already touches API surfaces, or the line references this surface's
           // actual path. The mere presence of "api"/"http"/"charge" is not
@@ -306,11 +434,20 @@ export function discoverCandidates(
           const onSurfacePath = pathHints.some((h) => pathInLine(line, h));
           const rawSource: CandidateSource =
             apiFiles.has(file.path) || onSurfacePath ? "syntactic" : "string_heuristic";
-          const g = gate(
+          let g = gate(
             file.path,
             rawSource,
             confFromSource(rawSource, surface.severity === "breaking" || breaking),
           );
+          // When provider provenance is established, a file that never
+          // references this field in real code or a wire token — only mentions
+          // the word in a log string or a comment — is not an edit site. Degrade
+          // it like a non-reachable match. Gating stays off when no anchor is
+          // locatable, so a token-only repo (e.g. deeply-indirected wrappers
+          // whose provider signal is a comment) keeps its recall.
+          if (gateEnabled && !fileGenuine.get(field)) {
+            g = { source: "string_heuristic", confidence: "low" };
+          }
           add(acc, {
             filePath: file.path,
             lineStart: lineNo,

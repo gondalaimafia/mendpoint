@@ -1,0 +1,4 @@
+# Generated, append-only learning-dataset records (Phase 10).
+# The SCHEMA (schema.ts) and builder (build.ts) are version-controlled; the
+# emitted per-run JSONL logs are regenerable artifacts and are not committed.
+*.jsonl

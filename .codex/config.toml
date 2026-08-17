@@ -1,0 +1,8 @@
+# Conservative project defaults for Mendpoint.
+# Loosen permissions only for a specific task when needed.
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = false

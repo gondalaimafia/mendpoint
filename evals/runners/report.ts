@@ -86,6 +86,41 @@ export function renderLatestReport(scored: ScoredRun[]): string {
   out.push(`- P0 failures (dangerous / materially incorrect): ${allUnsafe.filter((x) => x.f.severity === "P0").length}`);
   out.push("");
 
+  // Phase 8: development / validation / holdout, presented SEPARATELY. A number
+  // computed on development scenarios (seen during fixing) tells us the benchmark
+  // improved; the holdout number is the honest measure of whether the PRODUCT
+  // improved. Never conflate them.
+  out.push(`## Dataset splits (Phase 8 — development / validation / holdout)`);
+  out.push("");
+  out.push(
+    `Holdout scenarios are procedurally generated from scenario families and are NEVER inspected while fixing. Read the holdout row as the honest product-quality signal; development/validation can be inflated by fixing to the benchmark.`,
+  );
+  out.push("");
+  const splitOrder = ["development", "validation", "holdout"] as const;
+  out.push(`| split | scenarios | passed | pass rate |`);
+  out.push(`| --- | --- | --- | --- |`);
+  for (const split of splitOrder) {
+    const rows = scored.filter((s) => s.gt.dataset_split === split);
+    const pass = rows.filter((s) => s.record.passed).length;
+    out.push(`| ${split} | ${rows.length} | ${pass} | ${pct(pass, rows.length)} |`);
+  }
+  out.push("");
+  const holdout = scored.filter((s) => s.gt.dataset_split === "holdout");
+  out.push(`### Holdout detail`);
+  out.push("");
+  if (holdout.length === 0) {
+    out.push(`No holdout scenarios in this run.`);
+  } else {
+    out.push(`| scenario | product | L | behavior | passed |`);
+    out.push(`| --- | --- | --- | --- | --- |`);
+    for (const s of holdout) {
+      out.push(
+        `| ${s.record.scenario_id} | ${s.record.product} | ${s.gt.difficulty} | ${s.gt.correct_behavior} | ${s.record.passed ? "yes" : "NO"} |`,
+      );
+    }
+  }
+  out.push("");
+
   out.push(`## Fettler`);
   out.push("");
   out.push(`Scenarios: ${fettler.length}, passed ${fettler.filter((s) => s.record.passed).length} (${pct(fettler.filter((s) => s.record.passed).length, fettler.length)})`);
