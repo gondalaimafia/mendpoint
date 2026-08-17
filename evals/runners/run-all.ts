@@ -16,7 +16,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { SCENARIOS, type ScenarioConfig } from "../scenarios/index.js";
+import { resolveScenarios, type RunnableScenario } from "../scenarios/resolve.js";
 import { loadGroundTruth } from "../ground-truth/load.js";
+import type { GroundTruth } from "../ground-truth/schema.js";
 import { runFettler } from "./fettler-runner.js";
 import { runRegauge } from "./regauge-runner.js";
 import { renderLatestReport, renderFailuresBacklog, type ScoredRun } from "./report.js";
@@ -63,10 +65,26 @@ function parseArgs(argv: string[]): {
 
 async function runOne(
   cfg: ScenarioConfig,
+  gt: GroundTruth,
   ctx: { gitCommit: string; productVersion: string },
 ): Promise<RunRecord> {
-  const gt = loadGroundTruth(cfg.scenario_id);
   return cfg.product === "fettler" ? runFettler(cfg, gt, ctx) : runRegauge(cfg, gt, ctx);
+}
+
+/**
+ * Run a resolved scenario in-process: prepare (materialize a generated repo or
+ * point at the corpus repo), run the product, then clean up scratch.
+ */
+async function runResolved(
+  rs: RunnableScenario,
+  ctx: { gitCommit: string; productVersion: string },
+): Promise<RunRecord> {
+  const { config, cleanup } = rs.prepare();
+  try {
+    return await runOne(config, rs.gt, ctx);
+  } finally {
+    cleanup();
+  }
 }
 
 /**
@@ -141,27 +159,34 @@ async function main(): Promise<void> {
   const ctx = { gitCommit: commit, productVersion: productVersion(commit) };
 
   // --record: single-scenario in-process run, emit the record for the parent.
+  // Only budgeted CORPUS scenarios use this path (generated scenarios never
+  // carry a budget, so they always run in the parent process).
   if (args.record) {
     if (!args.only) throw new Error("--record requires --only <scenario_id>");
     const cfg = SCENARIOS.find((s) => s.scenario_id === args.only);
     if (!cfg) throw new Error(`unknown scenario: ${args.only}`);
-    const record = await runOne(cfg, ctx);
+    const record = await runOne(cfg, loadGroundTruth(cfg.scenario_id), ctx);
     process.stdout.write(`\n${RECORD_START}${JSON.stringify(record)}${RECORD_END}\n`);
     return;
   }
 
-  let scenarios: readonly ScenarioConfig[] = SCENARIOS;
+  let scenarios: RunnableScenario[] = resolveScenarios();
   if (args.only) scenarios = scenarios.filter((s) => s.scenario_id === args.only);
   if (args.product) scenarios = scenarios.filter((s) => s.product === args.product);
   if (args.skip.length) scenarios = scenarios.filter((s) => !args.skip.includes(s.scenario_id));
 
   const scored: ScoredRun[] = [];
-  for (const cfg of scenarios) {
-    const gt = loadGroundTruth(cfg.scenario_id);
-    process.stdout.write(`running ${cfg.scenario_id} (${cfg.product})${cfg.budgetMs ? " [isolated]" : ""} ... `);
-    // Budgeted scenarios run isolated so a CPU-bound stall cannot hang the suite.
-    const record = cfg.budgetMs ? runIsolated(cfg, ctx) : await runOne(cfg, ctx);
-    scored.push({ record, gt });
+  for (const rs of scenarios) {
+    const isolated = rs.origin === "corpus" && rs.budgetMs !== undefined;
+    process.stdout.write(
+      `running ${rs.scenario_id} (${rs.product}, ${rs.origin})${isolated ? " [isolated]" : ""} ... `,
+    );
+    // Budgeted corpus scenarios run isolated so a CPU-bound stall cannot hang
+    // the suite; the isolated child re-resolves the config from the registry.
+    const record = isolated
+      ? runIsolated(SCENARIOS.find((s) => s.scenario_id === rs.scenario_id)!, ctx)
+      : await runResolved(rs, ctx);
+    scored.push({ record, gt: rs.gt });
     const gap = record.failures.some((f) => f.category === "COVERAGE_GAP");
     process.stdout.write(
       `${record.passed ? "PASS" : "FAIL"}${gap ? " (coverage gap)" : ""}${record.error ? ` (${record.error})` : ""} ${record.latency_ms}ms\n`,
