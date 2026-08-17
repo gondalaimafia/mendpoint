@@ -1,0 +1,47 @@
+{
+  "scenario_id": "regauge-sdk-upgrade",
+  "repo_family": "typescript-service",
+  "difficulty": 4,
+  "difficulty_rationale": "Level 4: SDK v2->v3 major upgrade of a fictional vendored SDK (pulsegate) with three transform kinds (factory construction + option rename, positional->options-object, response field renames). Shipped SDK recipes target aws/stripe/googleapis only, so no shipped recipe matches pulsegate; a Beacon distractor and the app's own RelayReceipt.statusCode are traps.",
+  "intended_product": [
+    "regauge"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "coverage_gap",
+  "faults": [
+    {
+      "id": "sdk-major-upgrade",
+      "description": "pulsegate SDK v2 -> v3 client migration.",
+      "family": "sdk-upgrade"
+    }
+  ],
+  "expected_findings": [
+    "src/relay/client.ts",
+    "src/notifications/service.ts",
+    "src/relay/dispatcher.ts",
+    "src/relay/batch.ts",
+    "src/relay/retry.ts"
+  ],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "src/relay/beacon.ts",
+    "src/relay/health.ts",
+    "src/relay/types.ts",
+    "src/metrics/",
+    "vendor/pulsegate/"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 5
+  },
+  "recipe_expectation": {
+    "family": "sdk-upgrade",
+    "shippedRecipeId": null
+  },
+  "tags": [
+    "regauge",
+    "sdk-upgrade",
+    "coverage-gap",
+    "distractors"
+  ],
+  "notes": "Correct shipped behavior today is abstention-by-absence (no recipe matches pulsegate). expected_findings is the human oracle a future general SDK recipe must satisfy."
+}

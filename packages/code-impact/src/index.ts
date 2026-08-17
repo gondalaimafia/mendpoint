@@ -12,21 +12,28 @@ import {
   defaultIndexPath,
 } from "@mendpoint/codebase-index";
 import type {
+  AmbiguousChange,
   Confidence,
   ConfirmedImpact,
   DiffOp,
   ExpandedContext,
+  GeneratedReference,
   ImpactFinding,
   ImpactReport,
   ImpactableSurface,
   ImpactType,
   StructuralDiff,
+  VendoredReference,
 } from "@mendpoint/shared";
 import { CONF_RANK, confirmedToFinding } from "@mendpoint/shared";
 import { discoverCandidates } from "./candidates.js";
 import { expandContexts } from "./expand.js";
 import { confirmImpacts, partitionByConfidence } from "./confirm.js";
+import { detectGeneratedFiles } from "./generated.js";
+import { detectVendoredFiles } from "./vendored.js";
 
+export { detectGeneratedFiles, isGeneratedFile } from "./generated.js";
+export { detectVendoredFiles } from "./vendored.js";
 export { discoverCandidates } from "./candidates.js";
 export {
   buildImporterGraph,
@@ -139,6 +146,7 @@ function surfacesFromDiff(
     field: e.field,
     fromField: e.fromField,
     toField: e.toField,
+    candidates: e.candidates,
     severity: (e.breaking ? "breaking" : "non_breaking") as ImpactableSurface["severity"],
     migrationStrategy: e.detail ?? change.summary,
     explanation: e.detail ?? change.summary,
@@ -237,29 +245,135 @@ function staticConfirmAll(
   });
 }
 
+/** Ambiguous surfaces → the labelled human-decision outcome. */
+function ambiguousChangesFrom(surfaces: ImpactableSurface[]): AmbiguousChange[] {
+  return surfaces
+    .filter(
+      (s) =>
+        s.op === "request_field_ambiguous" || s.op === "response_field_ambiguous",
+    )
+    .map((s) => ({
+      op: s.op,
+      path: s.path,
+      method: s.method,
+      fromField: s.fromField ?? s.field ?? "",
+      candidates: s.candidates ?? [],
+      reason: s.explanation,
+    }));
+}
+
+/**
+ * Confirmed impacts that landed in generated files → the labelled
+ * regenerate-don't-edit outcome, one entry per generated file. These are pulled
+ * out of the confident findings and edit targets, but not dropped: a generated
+ * file that references the changed field is a real signal that the customer must
+ * regenerate from the updated spec.
+ */
+function generatedReferencesFrom(
+  confirmed: ConfirmedImpact[],
+  generatedFiles: Set<string>,
+): GeneratedReference[] {
+  const seen = new Set<string>();
+  const out: GeneratedReference[] = [];
+  for (const c of confirmed) {
+    if (!generatedFiles.has(c.filePath) || seen.has(c.filePath)) continue;
+    seen.add(c.filePath);
+    out.push({
+      filePath: c.filePath,
+      lineStart: c.lineStart,
+      symbol: c.symbol,
+      evidence: c.evidence,
+      relatedOps: c.relatedOps,
+      note: "Generated file; regenerate from the updated spec rather than editing in place.",
+    });
+  }
+  return out;
+}
+
+/**
+ * Confirmed impacts that landed in vendored third-party files → the labelled
+ * update-from-upstream outcome, one entry per vendored file. Like generated
+ * references these are pulled out of the confident findings and edit targets but
+ * not dropped: a vendored copy that carries the changed field is a real signal
+ * that the customer must refresh their vendored copy from upstream.
+ */
+function vendoredReferencesFrom(
+  confirmed: ConfirmedImpact[],
+  vendoredFiles: Set<string>,
+): VendoredReference[] {
+  const seen = new Set<string>();
+  const out: VendoredReference[] = [];
+  for (const c of confirmed) {
+    if (!vendoredFiles.has(c.filePath) || seen.has(c.filePath)) continue;
+    seen.add(c.filePath);
+    out.push({
+      filePath: c.filePath,
+      lineStart: c.lineStart,
+      symbol: c.symbol,
+      evidence: c.evidence,
+      relatedOps: c.relatedOps,
+      note: "Vendored third-party copy; update it from upstream rather than editing in place.",
+    });
+  }
+  return out;
+}
+
 function buildReport(
   surfaces: ImpactableSurface[],
   candidatesCount: number,
   confirmed: ConfirmedImpact[],
   min: Confidence,
+  generatedFiles: Set<string> = new Set(),
+  vendoredFiles: Set<string> = new Set(),
 ): ImpactReport {
-  const { highMedium, low } = partitionByConfidence(confirmed);
+  const generatedReferences = generatedReferencesFrom(confirmed, generatedFiles);
+  const vendoredReferences = vendoredReferencesFrom(
+    confirmed.filter((c) => !generatedFiles.has(c.filePath)),
+    vendoredFiles,
+  );
+  // Generated output and vendored third-party copies are never confident
+  // findings or edit targets.
+  const editable = confirmed.filter(
+    (c) => !generatedFiles.has(c.filePath) && !vendoredFiles.has(c.filePath),
+  );
+  const { highMedium, low } = partitionByConfidence(editable);
   const sites = highMedium.filter((s) => CONF_RANK[s.confidence] >= CONF_RANK[min]);
+  const ambiguousChanges = ambiguousChangesFrom(surfaces);
   const overallRisk = surfaces.some((s) => s.severity === "breaking")
     ? "breaking"
     : surfaces.some((s) => s.severity === "new_capability")
       ? "new_capability"
       : "non_breaking";
 
+  const extraNotes: string[] = [];
+  if (ambiguousChanges.length) {
+    extraNotes.push(
+      `${ambiguousChanges.length} ambiguous change(s) need a human decision (not auto-applied).`,
+    );
+  }
+  if (generatedReferences.length) {
+    extraNotes.push(
+      `${generatedReferences.length} generated file(s) reference this; regenerate rather than edit.`,
+    );
+  }
+  if (vendoredReferences.length) {
+    extraNotes.push(
+      `${vendoredReferences.length} vendored file(s) reference the changed field; update the vendored copy from upstream.`,
+    );
+  }
+
   return {
     surfaces,
     sites,
     overallRisk,
     overallConfidence: overallConfidence(sites.length ? sites : low),
-    strategySummary: strategySummary(surfaces, sites),
+    strategySummary: [strategySummary(surfaces, sites), ...extraNotes].join(" ").trim(),
     candidateCount: candidatesCount,
     confirmedCount: confirmed.length,
     lowConfidenceNotifications: low,
+    ambiguousChanges,
+    generatedReferences,
+    vendoredReferences,
   };
 }
 
@@ -281,7 +395,14 @@ export async function analyzeImpact(
   const candidates = discoverCandidates(index, surfaces);
   const expanded = expandContexts(index, candidates);
   const confirmed = await confirmImpacts(expanded, surfaces, { useLlm: options.useLlm });
-  return buildReport(surfaces, candidates.length, confirmed, options.minConfidence ?? "medium");
+  return buildReport(
+    surfaces,
+    candidates.length,
+    confirmed,
+    options.minConfidence ?? "medium",
+    detectGeneratedFiles(index),
+    detectVendoredFiles(index),
+  );
 }
 
 /**
@@ -305,6 +426,8 @@ export function analyzeRepo(
     candidates.length,
     confirmed,
     options.minConfidence ?? "medium",
+    detectGeneratedFiles(index),
+    detectVendoredFiles(index),
   );
   return report.sites.map(confirmedToFinding);
 }

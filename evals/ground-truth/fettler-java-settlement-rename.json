@@ -1,0 +1,62 @@
+{
+  "scenario_id": "fettler-java-settlement-rename",
+  "repo_family": "java-service",
+  "difficulty": 3,
+  "difficulty_rationale": "Level 3: Spring-style Java service where the wire contract is two @JsonProperty(\"source\") annotations; the field flows through client, two @Service classes, two controllers, a @Scheduled sweep job, DTO accessors, resources fixtures, and tests. Probes Java support and annotation-aware tracing. Asset source_map, audit event_source, import-log source are distractors.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "src/main/java/com/acme/settlement/payments/PaymentRequest.java",
+    "src/main/java/com/acme/settlement/payments/PaymentResponse.java",
+    "src/main/java/com/acme/settlement/payments/PaymentsClient.java",
+    "src/main/java/com/acme/settlement/charge/ChargeService.java",
+    "src/main/java/com/acme/settlement/charge/Charge.java",
+    "src/main/java/com/acme/settlement/charge/ChargeController.java",
+    "src/main/java/com/acme/settlement/settlement/SettlementService.java",
+    "src/main/java/com/acme/settlement/settlement/SettlementLine.java",
+    "src/main/java/com/acme/settlement/settlement/SettlementController.java",
+    "src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java",
+    "src/test/resources/payment-request.json",
+    "src/test/resources/payment-response.json",
+    "src/test/resources/settlement-batch.json"
+  ],
+  "acceptable_findings": [
+    "src/test/java/com/acme/settlement/payments/PaymentsClientTest.java",
+    "src/test/java/com/acme/settlement/charge/ChargeServiceTest.java",
+    "src/test/java/com/acme/settlement/settlement/SettlementServiceTest.java",
+    "src/test/java/com/acme/settlement/sweep/SettlementSweepJobTest.java"
+  ],
+  "false_positive_traps": [
+    "src/main/java/com/acme/settlement/asset/AssetManifest.java",
+    "src/main/java/com/acme/settlement/asset/AssetService.java",
+    "src/main/java/com/acme/settlement/audit/AuditEvent.java",
+    "src/main/java/com/acme/settlement/audit/AuditService.java",
+    "src/main/java/com/acme/settlement/importlog/ImportRecord.java",
+    "src/main/java/com/acme/settlement/importlog/ImportLogService.java"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 13,
+    "importChain": [
+      "PaymentsClient (@JsonProperty source)",
+      "-> ChargeService, SettlementService",
+      "-> SettlementSweepJob (@Scheduled)"
+    ]
+  },
+  "tags": [
+    "java",
+    "spring",
+    "field-rename",
+    "language-support",
+    "distractors"
+  ]
+}

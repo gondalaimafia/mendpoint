@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { classifyDependencyDirectory } from "@mendpoint/shared";
 import type {
   CallEdge,
   CallEdgeConfidence,
@@ -45,32 +46,6 @@ const UNSUPPORTED_CODE_EXTS = new Map<string, string>([
   [".kt", "kotlin"],
   [".rb", "ruby"],
 ]);
-
-/**
- * Directory names that are unambiguously dependency, build-cache, or tooling
- * output — never first-party source we want in the call graph. Marker-based, not
- * blind: deliberately excludes vendor/build/target/out/bin/obj, which hold
- * committed source in real repos (Go vendoring is tracked; the eval suite tracks
- * a file under vendor/).
- */
-const SKIP_DIR_NAMES = new Set([
-  "node_modules",
-  ".git",
-  ".venv",
-  "site-packages",
-  "__pycache__",
-  ".tox",
-  ".mypy_cache",
-  ".pytest_cache",
-  ".gradle",
-  ".next",
-  "dist",
-  "coverage",
-  ".turbo",
-]);
-
-/** Custom-named virtualenvs: pruned only when a pyvenv.cfg marker is present. */
-const VENV_MARKER_DIR_NAMES = new Set(["venv", "env"]);
 
 type WalkResult = {
   files: string[];
@@ -110,12 +85,16 @@ function walk(repoRoot: string, dir: string, acc: WalkResult): WalkResult {
     const p = join(dir, name);
     const st = statSync(p);
     if (st.isDirectory()) {
-      if (SKIP_DIR_NAMES.has(name)) {
-        acc.skipped.push({ path: relPosix(repoRoot, p), reason: "dependency-directory" });
-        continue;
-      }
-      if (VENV_MARKER_DIR_NAMES.has(name) && existsSync(join(p, "pyvenv.cfg"))) {
-        acc.skipped.push({ path: relPosix(repoRoot, p), reason: "virtualenv-marker" });
+      // Shared prune list + marker decision (see @mendpoint/shared); only the
+      // reason label is local so the three walkers cannot drift apart again.
+      const decision = classifyDependencyDirectory(name, (marker) =>
+        existsSync(join(p, marker)),
+      );
+      if (decision) {
+        acc.skipped.push({
+          path: relPosix(repoRoot, p),
+          reason: decision.kind === "ignored_name" ? "dependency-directory" : "virtualenv-marker",
+        });
         continue;
       }
       walk(repoRoot, p, acc);
@@ -460,6 +439,16 @@ export type BuildCallGraphOptions = {
   algorithm?: CallGraph["algorithm"];
   /** Skip test files when building (still can be queried separately) */
   excludeTests?: boolean;
+  /**
+   * Pre-read file contents keyed by absolute path. When a discovered file is
+   * present here, its text is reused instead of reading from disk. The codebase
+   * index has already read every code file by the time it builds the graph, so
+   * threading its buffers through collapses two full-repo read passes into one
+   * — the dominant cost on large trees under a cold filesystem cache. Discovery
+   * (the directory walk and its skip/unsupported diagnostics) is unchanged, and
+   * the extraction runs on identical text, so the resulting graph is identical.
+   */
+  sources?: ReadonlyMap<string, string>;
 };
 
 /**
@@ -481,7 +470,7 @@ export function buildCallGraph(
     const language = langOf(rel);
     const isTest = isTestPath(rel);
     if (opts.excludeTests && isTest) continue;
-    const text = readFileSync(abs, "utf8");
+    const text = opts.sources?.get(abs) ?? readFileSync(abs, "utf8");
     rawFns.push(...extractFunctions(rel, text, language, isTest));
     allInstantiated.push(...extractInstantiations(text));
     const hier = extractHierarchy(text, language);

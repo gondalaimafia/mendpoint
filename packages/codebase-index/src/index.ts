@@ -15,6 +15,7 @@ import {
   reverseReachability,
   type CallGraph,
 } from "@mendpoint/call-graph";
+import { classifyDependencyDirectory } from "@mendpoint/shared";
 import {
   extractWithTypescript,
   isTypescriptFile,
@@ -66,6 +67,13 @@ export type ApiUsageRecord = {
    * kinds that carry no such distinction.
    */
   detection?: SdkDetection;
+  /**
+   * For `http_path` usages: the path literal was found inside a comment (a doc
+   * comment documenting which endpoint a class talks to). Such a path still
+   * anchors provider provenance, but it is not itself a code edit site, so it
+   * must not create a promotable candidate.
+   */
+  inComment?: boolean;
 };
 
 export type FileRecord = {
@@ -169,47 +177,22 @@ type DiscoveredFile = {
 type DiscoveryUsage = { files: number; totalBytes: number };
 
 /**
- * Directories that are unambiguously VCS metadata, dependency trees, or
- * generated caches across ecosystems — never hand-written source. Safe to skip
- * by name. Deliberately excludes the ambiguous `vendor` / `build` / `target` /
- * `out` / `bin` / `obj`: those are frequently *tracked* source (committed Go
- * vendoring, generated-but-checked-in code), so excluding them by name alone
- * would drop real files. `dist` / `.next` are retained from the original list.
- */
-const IGNORED_DIRECTORIES = new Set([
-  "node_modules",
-  ".git",
-  ".hg",
-  ".svn",
-  "dist",
-  ".next",
-  ".turbo",
-  ".venv",
-  "__pycache__",
-  ".tox",
-  ".mypy_cache",
-  ".pytest_cache",
-  ".ruff_cache",
-  "site-packages",
-  ".gradle",
-]);
-
-/**
  * Detect a dependency/generated directory that we should NOT walk, preferring a
  * structural marker over a bare name so we never drop tracked source that merely
  * happens to be named `venv` / `env`. Returns the reason for the skip, or null.
+ *
+ * The list and marker decision are the shared definition in `@mendpoint/shared`
+ * (`classifyDependencyDirectory`), so this walker, the call graph, and the agent
+ * cannot drift apart again; only the reason-string format is local.
  */
 function ignoredDirectoryReason(name: string, absPath: string): string | null {
-  if (IGNORED_DIRECTORIES.has(name)) return `ignored_name:${name}`;
-  // Python virtualenv marker — catches venv / env / any custom-named env dir
-  // without excluding a source module that merely shares the name.
-  if (
-    (name === "venv" || name === "env" || name.startsWith(".venv")) &&
-    existsSync(join(absPath, "pyvenv.cfg"))
-  ) {
-    return "python_virtualenv:pyvenv.cfg";
-  }
-  return null;
+  const decision = classifyDependencyDirectory(name, (marker) =>
+    existsSync(join(absPath, marker)),
+  );
+  if (!decision) return null;
+  return decision.kind === "ignored_name"
+    ? `ignored_name:${decision.name}`
+    : `python_virtualenv:${decision.marker}`;
 }
 
 function normalizedLimits(input?: Partial<CodebaseIndexLimits>): CodebaseIndexLimits {
@@ -387,7 +370,24 @@ function isTestPath(rel: string): boolean {
 function extractImports(text: string, language: FileRecord["language"]): string[] {
   const imports: string[] = [];
   if (language === "python") {
+    // Leading dots are kept in the class so relative imports (`from . import x`,
+    // `from ..pkg import y`) survive for the per-language resolver.
     for (const m of text.matchAll(/^\s*(?:from|import)\s+([a-zA-Z0-9_.]+)/gm)) {
+      imports.push(m[1]!);
+    }
+  } else if (language === "go") {
+    // Grouped `import ( "a"\n alias "b"\n _ "c" )` and single `import "a"`.
+    for (const block of text.matchAll(/import\s*\(([\s\S]*?)\)/g)) {
+      for (const m of block[1]!.matchAll(/(?:[A-Za-z0-9_.]+\s+)?["`]([^"`]+)["`]/g)) {
+        imports.push(m[1]!);
+      }
+    }
+    for (const m of text.matchAll(/^\s*import\s+(?:[A-Za-z0-9_.]+\s+)?["`]([^"`]+)["`]/gm)) {
+      imports.push(m[1]!);
+    }
+  } else if (language === "java") {
+    // `import a.b.C;`, static imports, and wildcard `import a.b.*;`.
+    for (const m of text.matchAll(/^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_.]*(?:\.\*)?)\s*;/gm)) {
       imports.push(m[1]!);
     }
   } else {
@@ -581,8 +581,21 @@ function extractApiUsages(
     return hit?.name;
   };
 
+  let inBlockComment = false;
   lines.forEach((line, idx) => {
     const lineNo = idx + 1;
+    const trimmed = line.trimStart();
+    // A path in a doc/line comment documents an endpoint but is not a code site.
+    // Track block comments across lines and recognise line/javadoc comments.
+    const lineIsComment =
+      inBlockComment ||
+      trimmed.startsWith("//") ||
+      trimmed.startsWith("*") ||
+      trimmed.startsWith("/*") ||
+      trimmed.startsWith("#");
+    if (line.includes("/*") && !line.includes("*/")) inBlockComment = true;
+    else if (inBlockComment && line.includes("*/")) inBlockComment = false;
+    const commentTag = lineIsComment ? { inComment: true as const } : {};
     // HTTP path literals (quoted or embedded in template strings / concatenations)
     for (const m of line.matchAll(/['"`](\/v\d+\/[^'"`\s]+)['"`]/g)) {
       out.push({
@@ -591,6 +604,7 @@ function extractApiUsages(
         kind: "http_path",
         value: m[1]!,
         functionName: fnAt(lineNo),
+        ...commentTag,
       });
     }
     for (const m of line.matchAll(/(\/v\d+\/[A-Za-z0-9_{}\/-]+)/g)) {
@@ -600,6 +614,7 @@ function extractApiUsages(
         kind: "http_path",
         value: m[1]!,
         functionName: fnAt(lineNo),
+        ...commentTag,
       });
     }
 
@@ -607,6 +622,12 @@ function extractApiUsages(
     // surface. A provider-matched chain is recorded even without a trailing call
     // (it may be passed around); a general-heuristic chain requires a call `(` to
     // suppress plain property reads (`res.ok`, `err.message`).
+    // Declaration lines (`package a.b.c;`, `import a.b.C;`, `from a.b import x`)
+    // are dotted namespaces, not call sites — a Go/Java/Python package path such
+    // as `com.acme.settlement.payments` is not an SDK call and must not be
+    // classified as one just because a segment matches a provider token.
+    const isDeclaration = /^\s*(?:import|package|from|using|require)\b/.test(line);
+    if (!isDeclaration)
     for (const m of line.matchAll(/([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\s*(\()?/g)) {
       const chain = m[1]!;
       const detection = classifyMemberChain(chain, sdkSets, fileReceivers);
@@ -666,18 +687,35 @@ function buildIndexFromDiscovered(
   const functions: IndexedFunction[] = [];
   const apiUsages: ApiUsageRecord[] = [];
   const packageImports = new Set<string>();
-  // null prototype — avoid 'constructor' / other Object.prototype keys breaking spreads
-  const calleesOf: Record<string, string[]> = Object.create(null);
-  const callersOf: Record<string, string[]> = Object.create(null);
+  // null prototype — avoid 'constructor' / other Object.prototype keys breaking spreads.
+  // Accumulate reverse/forward edges in Sets so adding one caller/callee is O(1);
+  // the previous `[...new Set([...prev, next])]` per occurrence was O(K) each,
+  // making a symbol with K callers cost O(K^2). Materialized to string[] once,
+  // preserving insertion order (Set iteration order) so output is unchanged.
+  const calleesSet: Record<string, Set<string>> = Object.create(null);
+  const callersSet: Record<string, Set<string>> = Object.create(null);
+  const addCallees = (name: string, callees: Iterable<string>): void => {
+    const set = (calleesSet[name] ??= new Set<string>());
+    for (const c of callees) set.add(c);
+  };
+  const addCaller = (callee: string, caller: string): void => {
+    (callersSet[callee] ??= new Set<string>()).add(caller);
+  };
 
 
   const tsApi = loadTypescriptSync();
   const sdkSets = resolveSdkContext(opts.sdkContext);
 
+  // Buffers for every code file read here, keyed by absolute path. Threaded into
+  // buildCallGraph below so the graph reuses them instead of re-reading the whole
+  // tree — one read pass over the repo instead of two.
+  const sources = new Map<string, string>();
+
   for (const discovered of discoveredFiles) {
     const abs = discovered.abs;
     const rel = discovered.rel;
     const text = discovered.text ?? readDiscoveredFile(repoRoot, discovered, limits);
+    sources.set(abs, text);
     const language = langOf(rel);
     let imports = extractImports(text, language);
     let fns = extractFunctions(text, language);
@@ -717,12 +755,8 @@ function buildIndexFromDiscovered(
           });
         }
         for (const rf of richer.functions) {
-          calleesOf[rf.name] = [
-            ...new Set([...(calleesOf[rf.name] ?? []), ...rf.callees]),
-          ];
-          for (const c of rf.callees) {
-            callersOf[c] = [...new Set([...(callersOf[c] ?? []), rf.name])];
-          }
+          addCallees(rf.name, rf.callees);
+          for (const c of rf.callees) addCaller(c, rf.name);
         }
       } catch {
         /* keep heuristic */
@@ -745,7 +779,7 @@ function buildIndexFromDiscovered(
       const callees =
         fn.body && fn.body.length
           ? extractCallees(fn.body, fn.name)
-          : (calleesOf[fn.name] ?? []);
+          : [...(calleesSet[fn.name] ?? [])];
       functions.push({
         name: fn.name,
         filePath: rel,
@@ -753,10 +787,8 @@ function buildIndexFromDiscovered(
         lineEnd: fn.end,
         callees,
       });
-      calleesOf[fn.name] = [...new Set([...(calleesOf[fn.name] ?? []), ...callees])];
-      for (const c of callees) {
-        callersOf[c] = [...new Set([...(callersOf[c] ?? []), fn.name])];
-      }
+      addCallees(fn.name, callees);
+      for (const c of callees) addCaller(c, fn.name);
     }
 
     apiUsages.push(...extractApiUsages(rel, text, fns, sdkSets, fileReceivers));
@@ -785,7 +817,13 @@ function buildIndexFromDiscovered(
   }
 
   const callGraph =
-    opts?.callGraph ?? buildCallGraph(repoRoot, { algorithm: "hybrid" });
+    opts?.callGraph ?? buildCallGraph(repoRoot, { algorithm: "hybrid", sources });
+
+  // Materialize the accumulated edges to arrays (insertion order preserved).
+  const calleesOf: Record<string, string[]> = Object.create(null);
+  const callersOf: Record<string, string[]> = Object.create(null);
+  for (const name in calleesSet) calleesOf[name] = [...calleesSet[name]!];
+  for (const name in callersSet) callersOf[name] = [...callersSet[name]!];
 
   // Prefer graph-derived reverse edges when available (richer than name-only)
   const nameMaps = deriveNameMaps(callGraph);
@@ -872,15 +910,21 @@ function deriveNameMaps(callGraph: CallGraph): {
   callersOf: Record<string, string[]>;
   calleesOf: Record<string, string[]>;
 } {
-  const callersOf: Record<string, string[]> = Object.create(null);
-  const calleesOf: Record<string, string[]> = Object.create(null);
+  // Set accumulators keep adding an edge O(1); the previous per-edge
+  // `[...new Set([...prev, next])]` was O(K), i.e. O(K^2) for a hot name.
+  const callersSet: Record<string, Set<string>> = Object.create(null);
+  const calleesSet: Record<string, Set<string>> = Object.create(null);
   for (const edge of callGraph.edges) {
     const caller = callGraph.nodes[edge.callerId];
     const callee = callGraph.nodes[edge.calleeId];
     if (!caller || !callee) continue;
-    calleesOf[caller.name] = [...new Set([...(calleesOf[caller.name] ?? []), callee.name])];
-    callersOf[callee.name] = [...new Set([...(callersOf[callee.name] ?? []), caller.name])];
+    (calleesSet[caller.name] ??= new Set<string>()).add(callee.name);
+    (callersSet[callee.name] ??= new Set<string>()).add(caller.name);
   }
+  const callersOf: Record<string, string[]> = Object.create(null);
+  const calleesOf: Record<string, string[]> = Object.create(null);
+  for (const name in calleesSet) calleesOf[name] = [...calleesSet[name]!];
+  for (const name in callersSet) callersOf[name] = [...callersSet[name]!];
   return { callersOf, calleesOf };
 }
 

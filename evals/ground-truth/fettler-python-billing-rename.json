@@ -1,0 +1,58 @@
+{
+  "scenario_id": "fettler-python-billing-rename",
+  "repo_family": "python-service",
+  "difficulty": 3,
+  "difficulty_rationale": "Level 3: same cross-file field-rename as the TS control but in Python (FastAPI-style), so it also probes language support. The field threads models -> client -> two services -> settlement task -> fixtures/tests; audit `event_source` and build `source_map` sit inside affected files as distractors.",
+  "intended_product": [
+    "fettler"
+  ],
+  "dataset_split": "development",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "provider-field-rename",
+      "description": "Provider renamed the charge payment-instrument field `source` -> `payment_method` between API v1 and v2; consumer is on v1.",
+      "family": "api-field-rename"
+    }
+  ],
+  "expected_findings": [
+    "app/providers/payments_client.py",
+    "app/models/payment.py",
+    "app/models/charge.py",
+    "app/models/refund.py",
+    "app/services/charge_service.py",
+    "app/services/refund_service.py",
+    "app/tasks/settlement_task.py",
+    "tests/fixtures/charge_request.json",
+    "tests/fixtures/charge_response.json",
+    "tests/fixtures/refund_response.json",
+    "tests/conftest.py"
+  ],
+  "acceptable_findings": [
+    "tests/test_payments_client.py",
+    "tests/test_charge_service.py",
+    "tests/test_refund_service.py"
+  ],
+  "false_positive_traps": [
+    "app/build/assets.py",
+    "app/audit/events.py",
+    "app/importer/records.py",
+    "app/inventory/service.py",
+    "tests/test_audit_events.py",
+    "tests/test_importer.py"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 11,
+    "importChain": [
+      "app/providers/payments_client.py (wire source)",
+      "-> app/services/charge_service.py, refund_service.py",
+      "-> app/tasks/settlement_task.py"
+    ]
+  },
+  "tags": [
+    "python",
+    "field-rename",
+    "language-support",
+    "distractors"
+  ]
+}
