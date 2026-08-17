@@ -42,9 +42,12 @@ Enable the advanced AI application surface only after an approved external train
 
 | Name | Kind | Description |
 | --- | --- | --- |
-| POST /advanced-ai/training-jobs | API | Run or reconcile an external training job when enabled. |
-| POST /advanced-ai/post-trained-applications | API | Register an exact completed adapter lifecycle. |
-| POST /advanced-ai/post-trained-applications/:id/route | API | Evaluate router eligibility without invoking a model. |
+| POST /advanced-ai/post-trained/training-jobs | API | Run or reconcile an external training job when enabled. |
+| POST /advanced-ai/post-trained/evaluations | API | Evaluate an exact candidate against a disjoint holdout through an independent authority. |
+| POST /advanced-ai/post-trained/canaries | API | Run an evidence-bound shadow or bounded canary. |
+| POST /advanced-ai/post-trained/adapters | API | Register an exact completed adapter lifecycle after human approval. |
+| POST /advanced-ai/post-trained/adapters/:adapterId/route-dry-run | API | Evaluate router eligibility without invoking a model. |
+| POST /advanced-ai/post-trained/adapters/:adapterId/rollback | API | Remove a bound adapter from eligibility under human rollback authority. |
 | Authenticated trainer receipt | Artifact | Job, request, artifact, evaluation, canary, and receipt MAC binding. |
 
 ## Evidence and verification
