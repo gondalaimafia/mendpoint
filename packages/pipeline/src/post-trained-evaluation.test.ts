@@ -195,4 +195,13 @@ describe("independent post trained evaluation", () => {
     await expect(runPostTrainedIndependentEvaluation(db, deniedInput, deniedDependencies)).rejects.toThrow("post_trained_evaluation_dataset_unauthorized");
     expect(calls).toBe(1);
   });
+
+  it("rejects malformed signed evaluation failures before settlement", async () => {
+    const db = fixture();
+    const malformed = { status: "failed" as const, code: "", evidenceRefs: [], completedAt: "2026-08-14T21:00:00Z" };
+    await expect(runPostTrainedIndependentEvaluation(db, { ...input, evaluationId: "evaluation-malformed", idempotencyKey: "evaluation-malformed" }, dependencies({
+      evaluate: async (request) => ({ result: malformed, receipt: { evaluationId: request.evaluationId, authorityId: request.authorityId, requestDigest: request.requestDigest, outcome: malformed.status, resultDigest: postTrainedEvaluationResultDigest(malformed), observedAt: NOW, signature: "signed" } }),
+      reconcile: async () => { throw new Error("unexpected"); },
+    }))).rejects.toThrow("post_trained_evaluation_result_invalid");
+  });
 });

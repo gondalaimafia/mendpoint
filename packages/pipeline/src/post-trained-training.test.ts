@@ -79,6 +79,16 @@ describe("post trained training workflow", () => {
     }
   });
 
+  it("rejects malformed signed training failures before settlement", async () => {
+    const { db } = fixture();
+    const failed = { status: "failed" as const, code: "", evidenceRefs: [], completedAt: "2026-08-12T12:00:02Z" };
+    await expect(runPostTrainedTrainingJob(db, input, deps({
+      train: async (request: any) => exchange(request, failed),
+      reconcile: async () => { throw new Error("unexpected"); },
+    }))).rejects.toThrow("post_trained_training_result_invalid");
+    expect(getPostTrainedTrainingJob(db, "tenant", "job-1")?.status).toBe("submitted");
+  });
+
   it("allows only one dispatcher across two database handles", async () => {
     const { db, path } = fixture(); const second = createDb(path); dbs.push(second); let release!: (value: PostTrainedReconciliation) => void; let calls = 0;
     const held = new Promise<PostTrainedReconciliation>((resolve) => { release = resolve; });

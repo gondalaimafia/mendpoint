@@ -54,4 +54,12 @@ describe("post trained canary", () => {
     const failedInput = { ...input, canaryId: "canary-terminal-failure", idempotencyKey: "canary-terminal-failure" };
     await expect(runPostTrainedCanary(db, failedInput, dependencies({ run: async (request) => ({ result: failed, receipt: { canaryId: request.canaryId, authorityId: request.authorityId, requestDigest: request.requestDigest, outcome: failed.status, resultDigest: postTrainedCanaryResultDigest(failed), observedAt: NOW, signature: "signed" } }), reconcile: async () => { throw new Error("unexpected"); } }))).resolves.toMatchObject({ status: "failed" });
   });
+  it("rejects malformed signed canary failures before settlement", async () => {
+    const db = fixture();
+    const malformed = { status: "failed" as const, code: "", evidenceRefs: [], completedAt: "2026-08-14T22:00:00Z" };
+    await expect(runPostTrainedCanary(db, { ...input, canaryId: "canary-malformed", idempotencyKey: "canary-malformed" }, dependencies({
+      run: async (request) => ({ result: malformed, receipt: { canaryId: request.canaryId, authorityId: request.authorityId, requestDigest: request.requestDigest, outcome: malformed.status, resultDigest: postTrainedCanaryResultDigest(malformed), observedAt: NOW, signature: "signed" } }),
+      reconcile: async () => { throw new Error("unexpected"); },
+    }))).rejects.toThrow("post_trained_canary_result_invalid");
+  });
 });
