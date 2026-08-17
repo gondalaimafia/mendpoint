@@ -89,14 +89,14 @@ function isWithin(root: string, candidate: string): boolean {
  */
 function collectRepoWorkspace(
   repoRoot: string,
-): { ok: true; files: Record<string, string> } | { ok: false; error: string } {
+): { ok: true; files: Record<string, Buffer> } | { ok: false; error: string } {
   let root: string;
   try {
     root = realpathSync(resolve(repoRoot));
   } catch (e) {
     return { ok: false, error: `workspace root is unavailable: ${String(e)}` };
   }
-  const files: Record<string, string> = {};
+  const files: Record<string, Buffer> = {};
   let totalBytes = 0;
   let count = 0;
 
@@ -142,7 +142,11 @@ function collectRepoWorkspace(
         };
       }
       try {
-        files[rel] = readFileSync(abs, "utf8");
+        // Read as raw bytes, never as UTF-8 text. A binary file in a customer
+        // repo (image, compiled artifact, fixture, `.so`/`.dll`, PDF) would be
+        // silently corrupted by a UTF-8 decode/re-encode round-trip, and the
+        // sandbox would then verify a mangled workspace. Bytes transfer verbatim.
+        files[rel] = readFileSync(abs);
       } catch (e) {
         return { ok: false, error: `workspace file could not be read (${rel}): ${String(e)}` };
       }
