@@ -101,6 +101,36 @@ describe("P0: vendored third-party SDK copy is not an edit target", () => {
     // It is ordinary source: analysed and flagged, not excluded.
     expect(report.sites.map((s) => s.filePath)).toContain("vendor/payments/client.js");
   });
+
+  it("keeps a declared first-party workspace package editable when imported relatively", async () => {
+    const dir = makeRepo({
+      "package.json": JSON.stringify({
+        name: "customer-monorepo",
+        workspaces: ["apps/*", "packages/*"],
+      }),
+      "packages/payments/package.json": JSON.stringify({ name: "@customer/payments" }),
+      "packages/payments/src/client.js":
+        'import fetch from "node-fetch";\nexport function createCharge({ source }) {\n  return fetch("/v1/charges", { body: JSON.stringify({ source }) });\n}\n',
+      "apps/api/src/main.js":
+        'import { createCharge } from "../../../packages/payments/src/client.js";\nexport const pay = ({ source }) => createCharge({ source });\n',
+    });
+
+    const index = buildIndex(dir);
+    expect([...detectVendoredFiles(index)]).not.toContain(
+      "packages/payments/src/client.js",
+    );
+
+    const report = await analyzeImpact(dir, renameSurfaces(), {
+      useLlm: false,
+      minConfidence: "medium",
+    });
+    expect(report.sites.map((site) => site.filePath)).toContain(
+      "packages/payments/src/client.js",
+    );
+    expect(report.vendoredReferences?.map((site) => site.filePath) ?? []).not.toContain(
+      "packages/payments/src/client.js",
+    );
+  });
 });
 
 describe("P0: a field name inside a log string is not a call site", () => {
@@ -150,6 +180,44 @@ describe("P0: a field name inside a log string is not a call site", () => {
     expect(proseLow).toContain("bin/boot.js");
     // Silence the unused-binding lint on lowPaths for the first report.
     expect(Array.isArray(lowPaths)).toBe(true);
+  });
+
+  it("demotes a field mentioned only in a reachable block comment", async () => {
+    const dir = makeRepo({
+      "lib/paymentsClient.js":
+        'import { transport } from "./transport.js";\nexport function createCharge(p) {\n  return transport.post("/v1/charges", { source: p.source });\n}\n',
+      "lib/transport.js": "export const transport = { post: (u, b) => ({ u, b }) };\n",
+      "lib/boot.js":
+        'import { createCharge } from "./paymentsClient.js";\n/*\n * Diagnostic source selection is performed by the caller.\n */\nexport function boot(env) {\n  return createCharge({ token: env.token });\n}\n',
+    });
+
+    const report = await analyzeImpact(dir, renameSurfaces(), {
+      useLlm: false,
+      minConfidence: "medium",
+    });
+    expect(report.sites.map((site) => site.filePath)).not.toContain("lib/boot.js");
+    expect(report.lowConfidenceNotifications.map((site) => site.filePath)).toContain(
+      "lib/boot.js",
+    );
+  });
+});
+
+describe("P0: capitalized field references remain discoverable", () => {
+  it("finds a Go field even when the provider wire name is lowercase", async () => {
+    const dir = makeRepo({
+      "client.go":
+        'package client\n\nimport "acmepay"\n\ntype Payload struct {\n  Source string\n}\n\nfunc send(payload Payload) {\n  acmepay.CreateCharge(payload.Source)\n}\n',
+    });
+
+    const report = await analyzeImpact(dir, renameSurfaces(), {
+      useLlm: false,
+      minConfidence: "medium",
+    });
+    expect(report.sites).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ filePath: "client.go", symbol: "source" }),
+      ]),
+    );
   });
 });
 

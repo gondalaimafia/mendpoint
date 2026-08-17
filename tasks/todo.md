@@ -1988,3 +1988,14 @@ Review: red tests first failed at all four intended boundaries because only revi
 Acceptance: before a reviewer can approve, regenerate, or reject a newly generated Fettler candidate, the page displays the exact authenticated hypothesis, target symbol, source paths and digests, precondition, expected observation, postcondition, rollback, stop condition, risk, confidence, assessment source, and verifier evidence returned by the candidate API. Existing version one candidates remain readable.
 
 Review: the existing candidate page was statically limited to review evidence version one and omitted the newly authenticated precise edit fields. The new typed panel renders both versions, with every version two source and condition visible ahead of file diffs and the human decision controls. React performs all text escaping, arrays remain bounded by the authoritative shared schema, and no second evidence source was introduced. The focused test first failed because the panel did not exist. The final focused tests pass 4 of 4, full Web passes 166 of 166, all workspace typechecks pass, the 50-page production build passes, GA/spec/claims/names/action-pin gates pass, the production dependency audit reports zero vulnerabilities, and diff integrity is clean. The full repository suite had one Windows temporary-directory rename race while tests and typechecks ran concurrently; the complete Ops suite then passed 94 of 94 in isolation.
+
+## PR 140 strict integration review: 2026-08-17
+
+- [x] Rebase the review onto current main after PR 143.
+- [x] Reproduce first-party workspace code being misclassified as vendored third-party code.
+- [ ] Preserve declared workspace packages as editable first-party source.
+- [ ] Exclude block-comment-only field mentions from confident edit sites.
+- [ ] Preserve case-insensitive Go and Java field discovery.
+- [ ] Run focused tests, typechecks, full protected CI, and merge PR 140.
+
+Acceptance: vendored third-party copies remain update-only references, while declared first-party workspace packages and capitalized language-level field references remain eligible edit sites. Reachable block comments cannot create confident migration edits.
