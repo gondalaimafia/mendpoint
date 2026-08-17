@@ -171,6 +171,28 @@ describe("HttpGitLabDelivery", () => {
     });
   });
 
+  it("commits a deletion only when the exact GitLab source file exists", async () => {
+    const { fetchImpl, calls } = scriptedFetch([
+      {
+        method: "GET",
+        match: (u) => u.includes("/repository/files/") && u.includes("obsolete.ts"),
+        reply: { ok: true, status: 200, json: { file_path: "obsolete.ts" } },
+      },
+      {
+        method: "POST",
+        match: (u) => u.endsWith("/repository/commits"),
+        reply: { ok: true, status: 201, json: { id: "d".repeat(40) } },
+      },
+    ]);
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    await expect(delivery.commitFiles(NS, PROJECT, SOURCE, "Remove obsolete source", [
+      { path: "obsolete.ts", delete: true },
+    ])).resolves.toBe("d".repeat(40));
+    expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({
+      actions: [{ action: "delete", file_path: "obsolete.ts" }],
+    });
+  });
+
   it("opens a draft merge request with the target branch and Draft title", async () => {
     const { fetchImpl, calls } = scriptedFetch([
       {

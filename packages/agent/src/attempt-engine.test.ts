@@ -2,6 +2,7 @@ import {
   createHash,
 } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   lstatSync,
@@ -213,6 +214,58 @@ function planner(
         tool: "run_command",
         args: { command: "node check.mjs" },
         thought: "Verify the candidate",
+      },
+      usage: PER_CALL_USAGE,
+    };
+  };
+}
+
+function deletionPlanner(onDelete?: () => void): AgentPlanner {
+  return async (input) => {
+    const tools = input.recentSteps.map((step) => step.tool);
+    if (!tools.includes("read_file")) {
+      return {
+        call: {
+          tool: "read_file",
+          args: { path: "obsolete.js" },
+          thought: "Observe the complete obsolete file before removing it",
+        },
+        usage: PER_CALL_USAGE,
+      };
+    }
+    if (!tools.includes("delete_file")) {
+      const target = input.observedEvidenceDigests?.find((item) => item.path === "obsolete.js");
+      if (!target) throw new Error("planner did not receive the obsolete.js digest");
+      onDelete?.();
+      return {
+        call: {
+          tool: "delete_file",
+          args: { path: "obsolete.js" },
+          thought: "Remove only the fully observed obsolete file",
+          intent: {
+            schemaVersion: 1,
+            hypothesis: "The tracked obsolete module must be absent for the repository check to pass.",
+            targetPath: "obsolete.js",
+            targetSymbol: null,
+            targetDigest: target.digest,
+            evidenceRefs: [{ path: target.path, digest: target.digest }],
+            precondition: "The exact observed obsolete.js digest remains current.",
+            expectedObservation: "The tracked regular file becomes absent.",
+            postcondition: "The candidate omits obsolete.js and all configured checks pass.",
+            rollback: "Restore the exact observed bytes and file mode.",
+            confidence: 0.98,
+            risk: "high",
+            stopCondition: "Stop if the source digest changes or deletion is not exact.",
+          },
+        },
+        usage: PER_CALL_USAGE,
+      };
+    }
+    return {
+      call: {
+        tool: "run_command",
+        args: { command: "node check.mjs" },
+        thought: "Verify the exact absence and all configured checks",
       },
       usage: PER_CALL_USAGE,
     };
@@ -682,6 +735,63 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
     expect(plannerCalls).toBe(3);
     expect(reservations).toBe(3);
     expect(settlements).toBe(3);
+  }, 30_000);
+
+  it("replays a committed exact deletion after takeover and preserves review evidence", async () => {
+    const value = fixture("runtime-deletion-replay");
+    writeFileSync(join(value.sourceRoot, "obsolete.js"), "export const obsolete = true;\n", "utf8");
+    writeFileSync(join(value.sourceRoot, "check.mjs"), [
+      "import { existsSync } from 'node:fs';",
+      "if (existsSync(new URL('./obsolete.js', import.meta.url))) process.exit(1);",
+      "",
+    ].join("\n"), "utf8");
+    const journal = checkpointJournal();
+    let plannedDeletes = 0;
+    const deleteTask = task(deletionPlanner(() => { plannedDeletes++; }));
+    const firstInput = input(value, {
+      task: {
+        ...deleteTask,
+        goal: "Remove the fully observed obsolete module and verify the repository.",
+        errorLog: "The target check fails while obsolete.js remains tracked.",
+      },
+      limits: { ...LIMITS, allowedChangedPaths: ["obsolete.js"] },
+      runtime: {
+        jobId: "job-runtime-deletion-replay",
+        journal,
+        key: Buffer.alloc(32, 14),
+        writerLeaseGeneration: 1,
+        executorDigest: `sha256:${"e".repeat(64)}`,
+      },
+    });
+    journal.failReadAfterGeneration(21);
+
+    const interrupted = await runWardenAttempt(firstInput);
+    expect(interrupted).toMatchObject({
+      status: "rejected",
+      code: "warden_attempt_internal_error",
+      summary: "worker_crashed_after_checkpoint_commit",
+    });
+
+    journal.setLease(2);
+    const recovered = await runWardenAttempt({
+      ...firstInput,
+      runtime: { ...firstInput.runtime!, writerLeaseGeneration: 2 },
+    });
+    if (recovered.status === "rejected") {
+      throw new Error(`${recovered.code}: ${recovered.summary}`);
+    }
+    expect(recovered.changedPaths).toEqual(["obsolete.js"]);
+    expect(existsSync(join(recovered.artifacts.candidateWorkspace, "obsolete.js"))).toBe(false);
+    const evidence = JSON.parse(readFileSync(recovered.artifacts.evidence, "utf8")) as {
+      review: { edits: Array<{ path: string; sourceEvidence: Array<{ path: string }> }> };
+    };
+    expect(evidence.review.edits).toEqual([
+      expect.objectContaining({
+        path: "obsolete.js",
+        sourceEvidence: [expect.objectContaining({ path: "obsolete.js" })],
+      }),
+    ]);
+    expect(plannedDeletes).toBe(1);
   }, 30_000);
 
   it("replays a committed verifier result after takeover without running it twice", async () => {

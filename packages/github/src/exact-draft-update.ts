@@ -1,5 +1,5 @@
 import type { Octokit } from "@octokit/rest";
-import type { ExactDraftFileMode } from "./exact-draft.js";
+import type { ExactDraftFileChange } from "./exact-draft.js";
 
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
@@ -17,7 +17,7 @@ export type ExactDraftUpdateInput = Readonly<{
   expectedHeadSha: string;
   commitMessage: string;
   commitDate: string;
-  files: readonly Readonly<{ path: string; content: string; mode: ExactDraftFileMode }>[];
+  files: readonly ExactDraftFileChange[];
 }>;
 
 export type ExactDraftUpdateResult = Readonly<{
@@ -47,14 +47,18 @@ function validate(input: ExactDraftUpdateInput): void {
   let total = 0;
   const paths = new Set<string>();
   for (const file of input.files) {
+    const deletion = "delete" in file;
     if (!file.path || file.path.length > 1_000 || file.path.startsWith("/") || file.path.includes("\\") ||
         file.path.includes("//") || file.path.split("/").some((part: string) => !part || part === "." || part === "..") ||
-        paths.has(file.path) || typeof file.content !== "string" ||
-        (file.mode !== "100644" && file.mode !== "100755")) {
+        paths.has(file.path) || (deletion
+          ? file.delete !== true || Object.keys(file).sort().join(",") !== "delete,path"
+          : typeof file.content !== "string" ||
+            (file.mode !== "100644" && file.mode !== "100755") ||
+            Object.keys(file).some((key) => !["path", "content", "mode"].includes(key)))) {
       throw new Error("github_exact_draft_update_invalid");
     }
     paths.add(file.path);
-    total += Buffer.byteLength(file.content, "utf8");
+    if (!deletion) total += Buffer.byteLength(file.content, "utf8");
     if (total > MAX_TOTAL_BYTES) throw new Error("github_exact_draft_update_too_large");
   }
 }
@@ -97,6 +101,9 @@ export async function updateExactDraftWithOctokit(
     commit_sha: input.expectedHeadSha,
   });
   const tree = await Promise.all(input.files.map(async (file) => {
+    if ("delete" in file) {
+      return { path: file.path, mode: "100644" as const, type: "blob" as const, sha: null };
+    }
     const { data: blob } = await octokit.git.createBlob({
       owner: input.owner,
       repo: input.repo,
@@ -204,6 +211,13 @@ export async function reconcileExactDraftUpdateWithOctokit(
     const intended = new Map(input.files.map((file) => [file.path, file] as const));
     for (const file of input.files) {
       const next = candidateTree.get(file.path);
+      if ("delete" in file) {
+        const prior = baseTree.get(file.path);
+        if (next || !prior || prior.type !== "blob") {
+          return Object.freeze({ status: "unknown" as const });
+        }
+        continue;
+      }
       if (!next || next.type !== "blob" || next.mode !== file.mode || !SHA.test(next.sha!)) {
         return Object.freeze({ status: "unknown" as const });
       }

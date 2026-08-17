@@ -9,6 +9,7 @@ export type ToolName =
   | "search"
   | "write_file"
   | "replace_in_file"
+  | "delete_file"
   | "run_command"
   | "http_probe"
   | "finish";

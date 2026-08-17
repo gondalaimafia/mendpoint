@@ -87,6 +87,10 @@ function isAuthenticationError(error: unknown): boolean {
   );
 }
 
+function isNotFoundError(error: unknown): boolean {
+  return (error as { status?: unknown } | null)?.status === 404;
+}
+
 /** Create RS256 JWT for GitHub App authentication (10 min max). */
 export function createAppJwt(
   appId: string,
@@ -406,6 +410,21 @@ export class GitHubAppDelivery implements GitHubDelivery {
         files,
         GITHUB_FILE_CONCURRENCY,
         async (file) => {
+          if ("delete" in file) {
+            try {
+              await octokit.repos.getContent({
+                owner,
+                repo,
+                path: file.path.replace(/\\/g, "/"),
+                ref: branch,
+              });
+              return false;
+            } catch (error) {
+              if (isAuthenticationError(error)) throw error;
+              if (isNotFoundError(error)) return true;
+              throw error;
+            }
+          }
           const { data } = await octokit.repos.getContent({
             owner,
             repo,
@@ -498,6 +517,14 @@ export class GitHubAppDelivery implements GitHubDelivery {
       files,
       GITHUB_FILE_CONCURRENCY,
       async (f) => {
+        if ("delete" in f) {
+          return {
+            path: f.path.replace(/\\/g, "/"),
+            mode: "100644" as const,
+            type: "blob" as const,
+            sha: null,
+          };
+        }
         const { data: blob } = await o.git.createBlob({
           owner,
           repo,
