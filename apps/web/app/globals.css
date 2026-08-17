@@ -3446,7 +3446,7 @@ input:focus-visible {
   color: var(--foreground);
 }
 
-/* ------------------------------ AlertDialog ----------------------------- */
+/* -------------------------------- Dialog -------------------------------- */
 .ds-dialog__overlay {
   position: fixed;
   inset: 0;
@@ -3485,6 +3485,16 @@ input:focus-visible {
   justify-content: flex-end;
   gap: 0.75rem;
   margin-top: 1.5rem;
+}
+.ds-dialog .ds-field {
+  margin-top: 1.25rem;
+}
+.ds-dialog__error {
+  margin: 1rem 0 0;
+  font-family: var(--font);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--danger);
 }
 
 /* -------------------------------- Toast --------------------------------- */
