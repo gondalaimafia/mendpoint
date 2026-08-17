@@ -19,12 +19,35 @@ const SEVERITY_TONE: Record<Severity, BadgeTone> = {
 };
 
 export function ChangesView({ data }: { data: ChangesData | null }) {
-  if (!data || data.changes.length === 0) {
+  // `data` is null when the upstream change/provider fetch failed OR nothing is
+  // staged. Either way we do NOT know the spec is unchanged, so we must not print
+  // "No breaking changes": that certifies a fetch failure as a clean result. The
+  // absence of data is its own state, distinct from an analyzed-and-empty diff.
+  if (!data) {
     return (
       <div className="ds-view">
         <header className="ds-view__header ds-view__header--stack">
           <SectionLabel tone="warden">FETTLER</SectionLabel>
-          <h1 className="ds-view__title">{data?.target ?? "No breaking changes"}</h1>
+          <h1 className="ds-view__title">Changes unavailable</h1>
+        </header>
+        <section className="ds-panel">
+          <div className="ds-panel__head">
+            <span className="ds-panel__title">Spec diff</span>
+          </div>
+          <p className="ds-spec-row__note" style={{ padding: "1rem" }}>
+            No change is loaded. This is not a claim that the spec is unchanged:
+            retry, or confirm analysis has run for this provider.
+          </p>
+        </section>
+      </div>
+    );
+  }
+  if (data.changes.length === 0) {
+    return (
+      <div className="ds-view">
+        <header className="ds-view__header ds-view__header--stack">
+          <SectionLabel tone="warden">FETTLER</SectionLabel>
+          <h1 className="ds-view__title">{data.target}</h1>
         </header>
         <section className="ds-panel">
           <div className="ds-panel__head">

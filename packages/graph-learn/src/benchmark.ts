@@ -238,14 +238,30 @@ export const BENCH_CASES: BenchCase[] = [
   },
   {
     id: "q13",
-    name: "depends_on_path empty-ok",
+    name: "depends_on_path distinguishes clean from absent",
     run: (db) => {
-      const r = runScoped(db, {
+      // A node that IS in the graph but has no dependencies is "complete
+      // evidence of no dependency" — coverage complete. A node that has never
+      // been seen is "target_absent" — no evidence either way. Both return zero
+      // paths; asserting only "the summary mentions depends_on" (as the old case
+      // did) certifies the silent zero as a pass. Assert the two are told apart.
+      const present = runScoped(db, {
         op: "depends_on_path",
         nodeId: "change:ch1",
         maxHops: 3,
       });
-      return { ok: r.summary.includes("depends_on"), detail: r.summary };
+      const absent = runScoped(db, {
+        op: "depends_on_path",
+        nodeId: "change:never-ingested",
+        maxHops: 3,
+      });
+      const ok =
+        present.coverage?.basis !== "target_absent" &&
+        absent.coverage?.basis === "target_absent";
+      return {
+        ok,
+        detail: `present=${present.coverage?.basis}; absent=${absent.coverage?.basis}`,
+      };
     },
   },
   {

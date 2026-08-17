@@ -80,6 +80,41 @@ describe("complete dependency path query", () => {
     }
   });
 
+  it("distinguishes empty-because-clean from empty-because-absent", () => {
+    const db = openGraphLearnMemory();
+    try {
+      // A node that exists but depends on nothing: it enumerates its own single
+      // zero-hop leaf path and reports COMPLETE evidence of no dependencies.
+      addNode(db, "isolated", "tenant-x");
+      const clean = runGraphQuery(
+        db,
+        { op: "depends_on_path", nodeId: "isolated" },
+        { tenantId: "tenant-x" },
+      );
+      expect(clean.rows).toHaveLength(1);
+      expect(clean.edges).toHaveLength(0);
+      expect(clean.coverage?.basis).toBe("complete");
+
+      // A node the graph has never seen: zero paths. The old code reported
+      // truncated:false here, which falsely asserts completeness for a node it
+      // has never contained. Coverage now reports "target_absent" — no evidence
+      // either way, NOT "no dependencies".
+      const absent = runGraphQuery(
+        db,
+        { op: "depends_on_path", nodeId: "never-ingested" },
+        { tenantId: "tenant-x" },
+      );
+      expect(absent.rows ?? []).toHaveLength(0);
+      expect(absent.coverage?.basis).toBe("target_absent");
+
+      // The whole point: an empty enumeration ("never-ingested") is provably
+      // distinguished from a definitive one ("isolated").
+      expect(clean.coverage?.basis).not.toBe(absent.coverage?.basis);
+    } finally {
+      db.raw.close();
+    }
+  });
+
   it("records cycles as terminal evidence without revisiting them", () => {
     const db = openGraphLearnMemory();
     try {

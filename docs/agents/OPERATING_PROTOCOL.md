@@ -128,12 +128,10 @@ Product behavior is governed, in order, by:
 3. repository interfaces, schemas, and compatibility contracts
 4. task-specific acceptance criteria
 
-Two specification documents currently carry canonical authority, and they serve different roles:
+The single canonical specification is `docs/product/mendpoint-product-platform-specification.md` (the v2.0 platform specification). The owner resolved this on 2026-08-17, recorded in `docs/adr/0001-canonical-product-specification.md`:
 
-- `docs/product/mendpoint-product-platform-specification.md` (the v2.0 platform specification) is the forward-looking development baseline. New product and platform work should align to it.
-- `docs/FOUNDATIONAL_PRODUCT_SPEC.md`, together with `docs/PRODUCT_REQUIREMENTS.json`, remains the CI-enforced release contract. It is validated by the `npm run spec:check` gate and stays authoritative for release acceptance until an accepted ADR supersedes it.
-
-**Unresolved:** both documents declare canonical repository authority while CI enforces only the foundational specification. This needs an owner decision, recorded as an ADR, to name a single canonical release contract or to formally separate the development baseline from the release contract. Until then neither document is demoted: follow the v2.0 platform specification for new development and satisfy the `spec:check` release contract for merge.
+- `docs/product/mendpoint-product-platform-specification.md` (v2.0) is the canonical product and platform specification and the release contract. The requirement register `docs/PRODUCT_REQUIREMENTS.json` is pinned to it and validated by the `npm run spec:check` gate.
+- `docs/FOUNDATIONAL_PRODUCT_SPEC.md` (v1.0) is superseded. It is retained only as history and no longer carries repository authority.
 
 Accepted ADRs live in `docs/adr/`, following the numbering and status lifecycle described in `docs/adr/README.md`. New ADRs start from `docs/adr/0000-template.md`.
 

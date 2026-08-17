@@ -583,11 +583,86 @@ export const VendoredReferenceSchema = z.object({
 });
 export type VendoredReference = z.infer<typeof VendoredReferenceSchema>;
 
+/**
+ * Report-level confidence. Unlike per-site {@link ConfidenceSchema} (which is
+ * always high/medium/low because a site only exists once it has been confirmed),
+ * the overall confidence of a whole analysis MUST admit a fourth value:
+ * `unknown`. An empty result under incomplete coverage is not "low confidence
+ * that there is no impact" — it is the absence of evidence either way. Collapsing
+ * it into `low` is the §11.7 bug: it makes "we found nothing" and "we found weak
+ * evidence" indistinguishable. See {@link ImpactCoverageSchema}.
+ */
+export const OverallConfidenceSchema = z.enum(["high", "medium", "low", "unknown"]);
+export type OverallConfidence = z.infer<typeof OverallConfidenceSchema>;
+
+/** A typed reason some part of the codebase in scope was not covered by analysis. */
+export const CoverageGapReasonSchema = z.enum([
+  /** Source files whose language has no analysis front-end, so calls in them are unseen. */
+  "unsupported_language",
+  /** A directory pruned from traversal (dependency/cache/virtualenv tree). */
+  "skipped_directory",
+  /** The file-count cap was hit; not every in-scope file was inspected. */
+  "file_cap",
+  /** A byte cap was hit; not every in-scope file was inspected. */
+  "byte_cap",
+  /** A graph/dependency query stopped at a safety bound before enumerating everything. */
+  "query_truncated",
+]);
+export type CoverageGapReason = z.infer<typeof CoverageGapReasonSchema>;
+
+export const CoverageGapSchema = z.object({
+  reason: CoverageGapReasonSchema,
+  detail: z.string(),
+  /** Concrete count where the signal carries one (files/dirs/languages affected). */
+  count: z.number().int().nonnegative().optional(),
+});
+export type CoverageGap = z.infer<typeof CoverageGapSchema>;
+
+/**
+ * Whether — and how completely — the codebase was analyzed. This is the §11.7 /
+ * §12.4 discriminator: it lets a reader distinguish the three states the spec
+ * requires be kept apart, which an empty `sites` list alone cannot express:
+ *
+ *  - `analyzed`  — the repo was analyzed with full coverage. An empty `sites`
+ *    list here is COMPLETE EVIDENCE OF NO IMPACT (clean), not merely "nothing
+ *    found".
+ *  - `partial`   — the repo was analyzed but coverage has typed gaps (unsupported
+ *    languages present, caps hit, queries truncated). An empty `sites` list here
+ *    is "no KNOWN impact"; there may be impact in code we could not see.
+ *  - `not_analyzed` — no analysis ran against real code (repo never cloned, no
+ *    supported language present, discovery pruned to nothing). Absence of
+ *    findings carries no information at all.
+ */
+export const CoverageBasisSchema = z.enum(["analyzed", "partial", "not_analyzed"]);
+export type CoverageBasis = z.infer<typeof CoverageBasisSchema>;
+
+export const ImpactCoverageSchema = z.object({
+  basis: CoverageBasisSchema,
+  /** Human-readable why. Always present for `partial` / `not_analyzed`. */
+  reason: z.string().optional(),
+  /** Typed gaps that degraded coverage. Empty when `basis === "analyzed"`. */
+  gaps: z.array(CoverageGapSchema).default([]),
+  /** Files actually inspected vs files in analysis scope, where known. */
+  filesInspected: z.number().int().nonnegative().optional(),
+  filesInScope: z.number().int().nonnegative().optional(),
+  /** Languages the analysis front-end supports vs languages actually present. */
+  languagesSupported: z.array(z.string()).optional(),
+  languagesPresent: z.array(z.string()).optional(),
+});
+export type ImpactCoverage = z.infer<typeof ImpactCoverageSchema>;
+
 export const ImpactReportSchema = z.object({
   surfaces: z.array(ImpactableSurfaceSchema),
   sites: z.array(ConfirmedImpactSchema),
   overallRisk: ChangeRiskSchema,
-  overallConfidence: ConfidenceSchema,
+  overallConfidence: OverallConfidenceSchema,
+  /**
+   * Coverage/basis discriminator (§11.7, §12.4). Distinguishes a clean result
+   * (analyzed, no impact) from an unknown one (analysis was incomplete or never
+   * ran). Optional only for backward-compatibility with reports serialized
+   * before this channel existed; the analyzer always populates it.
+   */
+  coverage: ImpactCoverageSchema.optional(),
   strategySummary: z.string(),
   candidateCount: z.number().int().nonnegative(),
   confirmedCount: z.number().int().nonnegative(),
