@@ -26,6 +26,7 @@ import type { ImpactReport } from "@mendpoint/shared";
 import type { ScenarioConfig } from "../scenarios/index.js";
 import type { GroundTruth } from "../ground-truth/schema.js";
 import { gradeFettler } from "../graders/fettler-graders.js";
+import { stageRepo } from "./stage.js";
 import type { RunRecord } from "./types.js";
 
 const toPosix = (p: string): string => p.replace(/\\/g, "/");
@@ -35,7 +36,7 @@ export async function runFettler(
   gt: GroundTruth,
   ctx: { gitCommit: string; productVersion: string },
 ): Promise<RunRecord> {
-  const started = Date.now();
+  let started = Date.now();
   const base: Omit<RunRecord, "latency_ms"> = {
     run_id: randomUUID(),
     timestamp: new Date().toISOString(),
@@ -65,14 +66,19 @@ export async function runFettler(
     ],
   };
 
+  // Stage the repo into scratch WITHOUT its grading key so the product can never
+  // read its own answer key (matters the moment an LLM-enabled path is used).
+  // Latency is measured around the product call only, not the copy.
+  const stage = stageRepo(cfg.repoPath);
+  started = Date.now();
   try {
-    const oldSpecPath = join(cfg.repoPath, cfg.oldSpec ?? "spec/openapi-v1.json");
-    const newSpecPath = join(cfg.repoPath, cfg.newSpec ?? "spec/openapi-v2.json");
+    const oldSpecPath = join(stage.stagedPath, cfg.oldSpec ?? "spec/openapi-v1.json");
+    const newSpecPath = join(stage.stagedPath, cfg.newSpec ?? "spec/openapi-v2.json");
     const oldSpec = JSON.parse(readFileSync(oldSpecPath, "utf8"));
     const newSpec = JSON.parse(readFileSync(newSpecPath, "utf8"));
 
     const { surfaces } = normalizeChange(oldSpec, newSpec, { providerSlug: cfg.slug });
-    const report: ImpactReport = await analyzeImpact(cfg.repoPath, surfaces, {
+    const report: ImpactReport = await analyzeImpact(stage.stagedPath, surfaces, {
       useLlm: false,
       minConfidence: "medium",
     });
