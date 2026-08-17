@@ -74,6 +74,10 @@ export * from "./warden-campaign-executor.js";
 export * from "./software-attestation-operation.js";
 export * from "./post-trained-application.js";
 export * from "./post-trained-training.js";
+export * from "./post-trained-evaluation.js";
+export * from "./post-trained-canary.js";
+export * from "./learning-operations.js";
+export * from "./learning-event.js";
 import {
   getGraphLearnDb,
   ingestControlPlane,

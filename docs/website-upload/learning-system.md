@@ -40,10 +40,13 @@ Record one approved outcome with explicit tenant consent, residency, retention, 
 
 | Name | Kind | Description |
 | --- | --- | --- |
-| npm run learning:export-corpus | Command | Export a governed learning corpus. |
-| GET /learning/suppressed | API | Inspect suppressed learning records. |
+| POST /advanced-ai/learning/consents | API | Grant purpose-specific tenant learning consent. |
+| POST /advanced-ai/learning/consents/:consentId/revoke | API | Revoke one exact learning grant for future processing. |
+| GET /advanced-ai/learning/status | API | Read tenant-scoped learning, dataset, training, evaluation, canary, and adapter counts. |
+| POST /advanced-ai/learning/corpora | API | Seal eligible lessons and materialize deterministic train, validation, and holdout artifacts. |
+| npm run learning:export-corpus | Command | Export the earlier compatibility corpus format. |
 | Learning capture | Artifact | Outcome, consent, lineage, policy, and evidence references. |
-| Sealed corpus | Artifact | Purpose-bound deterministic eligible dataset. |
+| Sealed corpus | Artifact | Purpose-bound deterministic eligible dataset with a split manifest. |
 
 ## Evidence and verification
 

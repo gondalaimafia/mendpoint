@@ -306,6 +306,76 @@ describe("web credential proxy", () => {
     expect(upstream).toHaveBeenCalledTimes(2);
   });
 
+  it("allows only the exact advanced AI application routes", async () => {
+    const cookie = await sessionCookie();
+    process.env.MENDPOINT_API_KEY = "api-secret";
+    process.env.MENDPOINT_API_URL = "http://api.internal:3001";
+    const upstream = vi.fn(async () => Response.json({ ok: true }));
+    vi.stubGlobal("fetch", upstream);
+
+    const read = await GET(
+      new NextRequest("https://console.example/api/advanced-ai/post-trained/training-jobs/job-1", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["advanced-ai", "post-trained", "training-jobs", "job-1"] }) },
+    );
+    expect(read.status).toBe(200);
+
+    const write = await POST(
+      new NextRequest("https://console.example/api/advanced-ai/post-trained/evaluations", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "evaluation-1",
+        },
+        body: JSON.stringify({ evaluationId: "evaluation-1" }),
+      }),
+      { params: Promise.resolve({ path: ["advanced-ai", "post-trained", "evaluations"] }) },
+    );
+    expect(write.status).toBe(200);
+
+    const learningStatus = await GET(
+      new NextRequest("https://console.example/api/advanced-ai/learning/status", {
+        headers: { Cookie: cookie },
+      }),
+      { params: Promise.resolve({ path: ["advanced-ai", "learning", "status"] }) },
+    );
+    expect(learningStatus.status).toBe(200);
+
+    const consent = await POST(
+      new NextRequest("https://console.example/api/advanced-ai/learning/consents", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "consent-1",
+        },
+        body: JSON.stringify({ purpose: "fettler-api-engineering" }),
+      }),
+      { params: Promise.resolve({ path: ["advanced-ai", "learning", "consents"] }) },
+    );
+    expect(consent.status).toBe(200);
+
+    const denied = await POST(
+      new NextRequest("https://console.example/api/advanced-ai/internal/reset", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://console.example",
+          "Sec-Fetch-Site": "same-origin",
+        },
+      }),
+      { params: Promise.resolve({ path: ["advanced-ai", "internal", "reset"] }) },
+    );
+    expect(denied.status).toBe(404);
+    expect(upstream).toHaveBeenCalledTimes(4);
+  });
+
   it("allows authenticated same origin consumer creation", async () => {
     const cookie = await sessionCookie();
     process.env.MENDPOINT_API_KEY = "api-secret";

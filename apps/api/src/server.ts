@@ -308,9 +308,12 @@ import {
 import {
   advancedAiApplicationsEnabled,
   advancedAiAttestationCryptoFromEnv,
+  advancedAiCanaryRuntimeFromEnv,
+  advancedAiEvaluationRuntimeFromEnv,
   advancedAiTrainingRuntimeFromEnv,
   createDurableAttestationScopeAuthority,
   createDurablePostTrainedConsentReader,
+  createDurablePostTrainedEvidenceAuthority,
   createAdvancedAiApplicationRoutes,
 } from "./advanced-ai-applications.js";
 import { initializeApiRuntime } from "./api-runtime.js";
@@ -797,8 +800,12 @@ app.route("/advanced-ai", createAdvancedAiApplicationRoutes({
   enabled: advancedAiApplicationsEnabled(process.env),
   ...advancedAiAttestationCryptoFromEnv(process.env),
   ...advancedAiTrainingRuntimeFromEnv(db, process.env),
+  ...advancedAiEvaluationRuntimeFromEnv(db, process.env),
+  ...advancedAiCanaryRuntimeFromEnv(db, process.env),
   authorizeAttestationScope: createDurableAttestationScopeAuthority(),
   readConsent: createDurablePostTrainedConsentReader(db),
+  verifyEvidence: createDurablePostTrainedEvidenceAuthority(db),
+  authorizeHumanApprover: (tenantId, principalId) => Boolean(db.raw.prepare("SELECT 1 FROM principals WHERE tenant_id = ? AND id = ? AND kind = 'human' AND revoked_at IS NULL").get(tenantId, principalId)),
 }));
 
 registerTransformerControlPlaneRoutes(app, transformerCampaigns);

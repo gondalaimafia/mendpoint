@@ -8,21 +8,30 @@ import { getPostTrainedTrainingJob, postTrainedReconciliationResultDigest, runPo
 
 const dirs: string[] = []; const dbs: ReturnType<typeof createDb>[] = [];
 afterEach(() => { dbs.splice(0).forEach((db) => db.raw.close()); dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })); });
-function fixture() { const dir = mkdtempSync(join(tmpdir(), "post-trained-training-")); dirs.push(dir); const path = join(dir, "db.sqlite"); const db = createDb(path); dbs.push(db); insertPrincipal(db, { id: "actor", tenantId: "tenant", kind: "service", subject: "trainer", displayName: "Trainer", createdAt: "2026-08-12T12:00:00.000Z" }); const content = JSON.stringify({ tenantId: "tenant", datasetId: "dataset", samples: [{ input: "a", output: "b" }] }); const sha256 = createHash("sha256").update(content).digest("hex"); insertArtifactManifest(db, { id: "corpus", tenantId: "tenant", kind: "learning_dataset_corpus", schemaVersion: 1, sha256, mediaType: "application/json", sizeBytes: Buffer.byteLength(content), storageRef: "sqlite://corpus", content, producerPrincipalId: "actor", createdAt: "2026-08-12T12:00:00.000Z" }); return { db, path }; }
-const input = { tenantId: "tenant", jobId: "job-1", adapterId: "adapter-1", actorPrincipalId: "actor", idempotencyKey: "train-1", submittedAt: "2026-08-12T12:00:01.000Z", baseModelId: "base-1", datasetId: "dataset", purpose: "adapter_training", residencyRegion: "local", corpusArtifactIds: ["corpus"], recipe: { epochs: 1, maximumExamples: 10, seed: 7 } } as const;
-const completion = { status: "completed", adapterBase64: Buffer.from("local-adapter-weights").toString("base64"), evaluation: { passed: true, successRate: .95, regressionRate: .01, reportRef: "evaluation://job-1" }, canary: { passed: true, observedAt: "2026-08-12T12:00:02.000Z", evidenceRefs: ["canary://job-1"] }, evidenceRefs: ["training://job-1"], completedAt: "2026-08-12T12:00:02.000Z" } as const;
-function exchange(request: { tenantId: string; jobId: string; requestDigest: string; leaseGeneration: number }, result: PostTrainedTrainerResolution = completion): PostTrainedReconciliation { return { result, receipt: { tenantId: request.tenantId, jobId: request.jobId, requestDigest: request.requestDigest, leaseGeneration: request.leaseGeneration, outcome: result.status, resultDigest: postTrainedReconciliationResultDigest(result), observedAt: "2026-08-12T12:00:03.000Z", signature: "test-signature" } }; }
-function deps(trainer: any, workerId = "worker-1") { return { enabled: true as const, timeoutMs: 1000, leaseMs: 5000, workerId, verifyEvidence: () => true, authorizeDataset: () => true, verifyReconciliation: (receipt: { signature: string }) => receipt.signature === "test-signature", trainer }; }
+function fixture() { const dir = mkdtempSync(join(tmpdir(), "post-trained-training-")); dirs.push(dir); const path = join(dir, "db.sqlite"); const db = createDb(path); dbs.push(db); insertPrincipal(db, { id: "actor", tenantId: "tenant", kind: "service", subject: "trainer", displayName: "Trainer", createdAt: "2026-08-12T12:00:00.000Z" }); const add = (id: string, kind: string, split: string) => { const content = JSON.stringify({ tenantId: "tenant", datasetVersionId: "dataset", datasetSplit: split, splitManifestDigest: "a".repeat(64), examples: [{ sourceEventId: `${split}-event`, sourceEventDigest: "b".repeat(64), specialization: { splitGroupId: `${split}-group` }, datasetSplit: split }] }); const sha256 = createHash("sha256").update(content).digest("hex"); insertArtifactManifest(db, { id, tenantId: "tenant", kind, schemaVersion: 1, sha256, mediaType: "application/json", sizeBytes: Buffer.byteLength(content), storageRef: `sqlite://${id}`, content, producerPrincipalId: "actor", createdAt: "2026-08-12T12:00:00.000Z" }); }; add("corpus", "learning_dataset_corpus", "train"); add("validation", "learning_dataset_validation", "validation"); add("holdout", "learning_dataset_holdout", "holdout"); return { db, path }; }
+const input = { tenantId: "tenant", jobId: "job-1", adapterId: "adapter-1", actorPrincipalId: "actor", idempotencyKey: "train-1", submittedAt: "2026-08-12T12:00:01.000Z", baseModelId: "base-1", datasetId: "dataset", purpose: "adapter_training", residencyRegion: "local", trainingCorpusArtifactIds: ["corpus"], validationArtifactId: "validation", holdoutArtifactId: "holdout", splitManifestDigest: "a".repeat(64), recipe: { epochs: 1, maximumExamples: 10, seed: 7 } } as const;
+const completion = { status: "completed", adapterBase64: Buffer.from("local-adapter-weights").toString("base64"), evidenceRefs: ["training://job-1"], completedAt: "2026-08-12T12:00:02.000Z" } as const;
+function exchange(request: { tenantId: string; jobId: string; requestDigest: string; leaseGeneration: number; authorityId?: string }, result: PostTrainedTrainerResolution = completion): PostTrainedReconciliation { return { result, receipt: { tenantId: request.tenantId, jobId: request.jobId, requestDigest: request.requestDigest, leaseGeneration: request.leaseGeneration, authorityId: request.authorityId ?? "trainer-authority", outcome: result.status, resultDigest: postTrainedReconciliationResultDigest(result), observedAt: "2026-08-12T12:00:03.000Z", signature: "test-signature" } }; }
+function deps(trainer: any, workerId = "worker-1") { return { enabled: true as const, timeoutMs: 1000, leaseMs: 5000, workerId, processingBoundary: "tenant_local" as const, authorityId: "trainer-authority", authorizeDataset: () => true, verifyReconciliation: (receipt: { signature: string }) => receipt.signature === "test-signature", trainer }; }
 
 describe("post trained training workflow", () => {
   it("selects authoritative corpus, invokes the trainer once, and persists canonical decoded adapter bytes", async () => {
     const { db } = fixture(); let calls = 0;
-    const runtime = deps({ train: async (request: any) => { calls++; expect(request.corpus[0].content).toContain("samples"); return exchange(request); }, reconcile: async () => { throw new Error("unexpected_reconcile"); } });
+    const runtime = deps({ train: async (request: any) => { calls++; expect(request.corpus).toHaveLength(1); expect(request.corpus[0].artifactId).toBe("corpus"); expect(request.corpus[0].content).not.toContain("holdout-event"); return exchange(request); }, reconcile: async () => { throw new Error("unexpected_reconcile"); } });
     const result = await runPostTrainedTrainingJob(db, input, runtime);
-    expect(result.status).toBe("completed"); expect(calls).toBe(1);
+    expect(result.status).toBe("completed"); expect(result).not.toHaveProperty("evaluation"); expect(result).not.toHaveProperty("canary"); expect(calls).toBe(1);
     expect(await runPostTrainedTrainingJob(db, input, runtime)).toEqual(result); expect(calls).toBe(1);
     const artifact = db.raw.prepare("SELECT content_text, media_type FROM artifact_manifests WHERE id = ?").get(result.adapterArtifactId!) as { content_text: string; media_type: string };
     const stored = JSON.parse(artifact.content_text); expect(Buffer.from(stored.bytes, "base64").toString()).toBe("local-adapter-weights"); expect(stored.decodedSha256).toBe(result.adapterDigest); expect(artifact.media_type).toContain("adapter-bytes");
+  });
+
+  it("requires distinct nonempty validation and holdout authority", async () => {
+    const { db } = fixture();
+    const trainer = { train: async () => { throw new Error("unexpected"); }, reconcile: async () => { throw new Error("unexpected"); } };
+    await expect(runPostTrainedTrainingJob(db, { ...input, holdoutArtifactId: "corpus" }, deps(trainer)))
+      .rejects.toThrow("post_trained_training_input_invalid");
+    await expect(runPostTrainedTrainingJob(db, { ...input, holdoutArtifactId: "missing" }, deps(trainer)))
+      .rejects.toThrow("post_trained_training_holdout_not_authoritative");
   });
 
   it("is default off and rejects noncanonical adapter base64 before settlement", async () => {
@@ -44,6 +53,39 @@ describe("post trained training workflow", () => {
   it("rejects unauthenticated or incorrectly bound reconciliation claims", async () => {
     const { db } = fixture();
     await expect(runPostTrainedTrainingJob(db, input, deps({ train: async (request: any) => ({ ...exchange(request), receipt: { ...exchange(request).receipt, requestDigest: "wrong" } }), reconcile: async () => { throw new Error("unexpected"); } }))).rejects.toThrow("post_trained_training_receipt_invalid");
+    expect(getPostTrainedTrainingJob(db, "tenant", "job-1")?.status).toBe("submitted");
+  });
+
+  it("requires canonical UTC timestamps for requests, receipts, and terminal results", async () => {
+    {
+      const { db } = fixture(); let calls = 0;
+      await expect(runPostTrainedTrainingJob(db, { ...input, submittedAt: "2026-08-12T12:00:01Z" }, deps({ train: async () => { calls++; throw new Error("must_not_run"); }, reconcile: async () => { throw new Error("must_not_run"); } })))
+        .rejects.toThrow("post_trained_training_input_invalid");
+      expect(calls).toBe(0);
+    }
+    {
+      const { db } = fixture();
+      await expect(runPostTrainedTrainingJob(db, input, deps({
+        train: async (request: any) => ({ ...exchange(request), receipt: { ...exchange(request).receipt, observedAt: "2026-08-12T12:00:03Z" } }),
+        reconcile: async () => { throw new Error("unexpected"); },
+      }))).rejects.toThrow("post_trained_training_receipt_invalid");
+    }
+    {
+      const { db } = fixture();
+      await expect(runPostTrainedTrainingJob(db, input, deps({
+        train: async (request: any) => exchange(request, { ...completion, completedAt: "2026-08-12T12:00:02Z" }),
+        reconcile: async () => { throw new Error("unexpected"); },
+      }))).rejects.toThrow("post_trained_training_result_invalid");
+    }
+  });
+
+  it("rejects malformed signed training failures before settlement", async () => {
+    const { db } = fixture();
+    const failed = { status: "failed" as const, code: "", evidenceRefs: [], completedAt: "2026-08-12T12:00:02Z" };
+    await expect(runPostTrainedTrainingJob(db, input, deps({
+      train: async (request: any) => exchange(request, failed),
+      reconcile: async () => { throw new Error("unexpected"); },
+    }))).rejects.toThrow("post_trained_training_result_invalid");
     expect(getPostTrainedTrainingJob(db, "tenant", "job-1")?.status).toBe("submitted");
   });
 
