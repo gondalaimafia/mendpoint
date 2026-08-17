@@ -122,6 +122,14 @@ services:
       MENDPOINT_TENANT_ID: ${MENDPOINT_TENANT_ID:-tenant_default}
       MENDPOINT_BACKUP_FENCE_ROOT: ${MENDPOINT_BACKUP_FENCE_ROOT:-/app/data/.backup-fence}
       MENDPOINT_WORKER_HEARTBEAT_PATH: /app/data/worker-heartbeat.json
+      # Verification sandbox backend. Defaults to `local` (host execFile) because
+      # this compose stack has no Fly infrastructure. To route verification
+      # through ephemeral Fly Machines, set these in .env — MENDPOINT_SANDBOX_KIND
+      # =fly_machines fails closed without the app + token. See docs/SANDBOX_VERIFIER.md.
+      MENDPOINT_SANDBOX_KIND: ${MENDPOINT_SANDBOX_KIND:-local}
+      MENDPOINT_SANDBOX_FLY_APP: ${MENDPOINT_SANDBOX_FLY_APP:-}
+      MENDPOINT_SANDBOX_FLY_IMAGE: ${MENDPOINT_SANDBOX_FLY_IMAGE:-}
+      MENDPOINT_SANDBOX_FLY_TOKEN: ${MENDPOINT_SANDBOX_FLY_TOKEN:-}
       POLL_INTERVAL_MS: "5000"
       JOB_LEASE_MS: "900000"
     command: ["node", "--import", "tsx", "apps/worker/src/cli.ts", "run-service", "--interval", "5000"]
