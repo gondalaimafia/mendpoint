@@ -49,6 +49,8 @@ export type CheckRow = { name: string; state: string };
 
 /** Everything `/prs/[id]` (PrDetailView) renders, mapped from a live PR. */
 export type PrDetailData = {
+  /** The PR id used to record reviews; null when the PR is unavailable. */
+  id: string | null;
   repo: string;
   title: string;
   number: number | string | null;
@@ -225,6 +227,7 @@ export const PR_DETAIL_CHECKS: CheckRow[] = [
 
 /** Sample `PrDetailData` for view tests (mirrors the old static detail). */
 export const SAMPLE_PR_DETAIL: PrDetailData = {
+  id: "4821",
   repo: "acme/payments-sdk",
   title: "Migrate charge() → charges.create()",
   number: 4821,
