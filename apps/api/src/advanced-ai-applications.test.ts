@@ -2,7 +2,7 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendDomainEvent, createDb, insertArtifactManifest, insertEvidenceRecord, insertPrincipal, type AppDb } from "@mendpoint/db";
+import { appendDomainEvent, createDb, insertArtifactManifest, insertEvidenceRecord, insertPrincipal, insertTenant, type AppDb } from "@mendpoint/db";
 import { postTrainedCanaryResultDigest, postTrainedEvaluationResultDigest, postTrainedReconciliationResultDigest } from "@mendpoint/pipeline";
 import type { AdapterLifecycleRecord, ExecutorDescriptor, PostTrainedConsentSnapshot } from "@mendpoint/platform";
 import { Hono } from "hono";
@@ -21,6 +21,7 @@ function policy() { return { snapshotId: "policy-1", version: 1, capturedAt: "20
 function fixture(enabled = true) {
   const dir = mkdtempSync(join(tmpdir(), "advanced-ai-api-")); dirs.push(dir);
   const db = createDb(join(dir, "db.sqlite")); dbs.push(db);
+  insertTenant(db, { id: "tenant-a", slug: "tenant-a", name: "Tenant A", createdAt: now });
   insertPrincipal(db, { id: "actor", tenantId: "tenant-a", kind: "human", subject: "actor", displayName: "Actor", createdAt: now });
   insertPrincipal(db, { id: "evaluator", tenantId: "tenant-a", kind: "service", subject: "evaluator", displayName: "Evaluator", createdAt: now });
   insertPrincipal(db, { id: "canary", tenantId: "tenant-a", kind: "service", subject: "canary", displayName: "Canary", createdAt: now });
@@ -65,6 +66,68 @@ function add(db: AppDb, id: string, kind = id) { const split = kind === "learnin
 function addTrainingAuthority(db: AppDb, prefix: string) { add(db, `${prefix}-corpus`, "learning_dataset_corpus"); add(db, `${prefix}-validation`, "learning_dataset_validation"); add(db, `${prefix}-holdout`, "learning_dataset_holdout"); }
 
 describe("advanced AI applications API", () => {
+  it("governs learning consent, status, and corpus materialization without trusting caller identity", async () => {
+    const { app, db } = fixture();
+    const grant = await app.request("/advanced-ai/learning/consents", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "learning-consent-1" },
+      body: JSON.stringify({
+        id: "learning-consent-1",
+        tenantId: "attacker-tenant",
+        consentVersion: 1,
+        purpose: "fettler-api-engineering",
+        residencyRegion: "us-central",
+        effectiveAt: now,
+        reason: "Train only on reviewed and redacted outcomes.",
+      }),
+    });
+    expect(grant.status).toBe(201);
+    await expect(grant.json()).resolves.toMatchObject({
+      id: "learning-consent-1",
+      tenantId: "tenant-a",
+      action: "granted",
+      evidenceId: expect.stringMatching(/^evidence_/),
+    });
+    expect((db.raw.prepare("SELECT tenant_id FROM learning_consents WHERE id = ?").get("learning-consent-1") as { tenant_id: string }).tenant_id).toBe("tenant-a");
+
+    const status = await app.request("/advanced-ai/learning/status");
+    expect(status.status).toBe(200);
+    await expect(status.json()).resolves.toMatchObject({
+      tenantId: "tenant-a",
+      activeConsentCount: 1,
+      learningRecordCount: 0,
+      datasetCount: 0,
+    });
+
+    const emptyCorpus = await app.request("/advanced-ai/learning/corpora", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "empty-corpus" },
+      body: JSON.stringify({ purpose: "fettler-api-engineering", temporalCutoffAt: "2026-08-12T11:59:00.000Z" }),
+    });
+    expect(emptyCorpus.status).toBe(400);
+    await expect(emptyCorpus.json()).resolves.toEqual({ error: "learning_dataset_empty" });
+    expect((db.raw.prepare("SELECT COUNT(*) count FROM learning_dataset_versions").get() as { count: number }).count).toBe(0);
+
+    const revoke = await app.request("/advanced-ai/learning/consents/learning-consent-1/revoke", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "learning-consent-revoke-1" },
+      body: JSON.stringify({ id: "learning-consent-revocation-1", consentVersion: 2, reason: "Stop future model training." }),
+    });
+    expect(revoke.status).toBe(200);
+    await expect(revoke.json()).resolves.toMatchObject({ action: "revoked", supersedesConsentId: "learning-consent-1" });
+  });
+
+  it("keeps learning governance tenant admin only with zero writes on denial", async () => {
+    const { app, db } = fixture();
+    const response = await app.request("/advanced-ai/learning/consents", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "denied", "x-role": "viewer" },
+      body: JSON.stringify({ id: "denied", consentVersion: 1, purpose: "x", residencyRegion: "local", effectiveAt: now, reason: "Denied" }),
+    });
+    expect(response.status).toBe(403);
+    expect((db.raw.prepare("SELECT COUNT(*) count FROM learning_consents").get() as { count: number }).count).toBe(0);
+  });
+
   it("fails closed when durable attestation evidence cannot prove a passing post-edit verification", () => {
     const { db } = fixture();
     const authorized = createDurableAttestationScopeAuthority()(db, {
