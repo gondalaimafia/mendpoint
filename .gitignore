@@ -12,6 +12,15 @@ runs/
 .env
 .env.local
 .env.*.local
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets/
+.vscode/
+.idea/
+.claude/settings.local.json
 .api-agents/
 .mendpoint/
 coverage/

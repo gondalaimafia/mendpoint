@@ -2001,3 +2001,19 @@ Review: the existing candidate page was statically limited to review evidence ve
 Acceptance: vendored third-party copies remain update-only references, while declared first-party workspace packages and capitalized language-level field references remain eligible edit sites. Reachable block comments cannot create confident migration edits.
 
 Review: the first strict probe reproduced a declared npm workspace package being classified as vendored. Three red regressions then isolated that boundary, a multiline block-comment false positive, and a capitalized Go field miss. The implementation now recognizes root npm and pnpm workspace declarations before treating nested package boundaries as third party, scans comments and strings across the complete source instead of resetting at each line, and matches language-level fields without case sensitivity. The focused regression passes 7 of 7, full Code Impact passes 65 of 65, Shared passes 43 of 43, Eval passes 109 of 109, both relevant synthetic edge scenarios pass with 100 percent precision, and all affected package typechecks pass. Protected CI and final merge remain pending.
+
+## Dual agent engineering workflow: 2026-08-17
+
+- [x] Read the attached Codex, Claude, review, protocol, security, and definition of done instructions.
+- [x] Compare the setup package with current main, open work, and repository checks.
+- [x] Install the authoritative workflow files in an isolated Codex worktree.
+- [x] Protect main with the exact pull request checks without requiring an unavailable reviewer integration.
+- [x] Validate configuration syntax, links, secret boundaries, naming, specification integrity, and repository gates.
+- [x] Commit and push the isolated branch, open the dogfood pull request, and request Claude review.
+- [x] Record the attributable review response or the exact integration blocker.
+
+Acceptance: Codex and Claude have separate branch and worktree conventions, one shared issue and pull request protocol, conservative credential boundaries, actual current pull request checks, a review handoff contract, and an authoritative product specification. The setup itself is introduced through a protected pull request and is not self merged.
+
+Review: main now requires the current pull request checks `test`, `release-gates`, `container-builds`, and `deployment-e2e`, dismisses stale reviews, requires resolved conversations, applies to administrators, and rejects force pushes and deletion without locking the branch. Approval count remains zero until an attributable reviewer integration is proven, preventing a sole-maintainer lockout while the documented human merge boundary remains in force. Claude JSON and Codex TOML parse, all local Markdown links resolve, the setup contains no credential material, the Markdown specification digest is `sha256:a62e1b0a7569b9599cf8b155d6489a99c11f47a892885981ced61c3a573f74c9`, and the 73-page PDF contains the Fettler and ReGauge product identities. All workspace tests, all workspace typechecks, the 50-page production build, product contract, public claims, action pinning, and product naming gates pass.
+
+Dogfood evidence: commit `8cca909` is pushed on `codex/141-dual-agent-setup`, and pull request `#142` closes issue `#141` under the new main protection. The review request is recorded at `https://github.com/gondalaimafia/mendpoint/pull/142#issuecomment-5319134808`. The trigger produced no attributable Claude acknowledgement, comment, or review during the bounded verification window, so Claude review automation remains an exact external integration blocker rather than a claimed capability. The pull request remains open and unmerged for human control.

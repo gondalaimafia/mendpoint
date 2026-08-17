@@ -44,3 +44,8 @@
 **Mistake:** I continued sequencing the next autonomous agent capability after the production audit had already identified a more immediate activation evidence gap.
 **Correction:** Talal explicitly moved the next work to proving Regauge production activation, live model evaluation, real source control canary, and soak evidence.
 **Rule:** When Talal reprioritizes the next product outcome, stop the prior slice, preserve its state, and restate the new acceptance failures as executable evidence gates before changing code.
+
+### 2026-08-17 — Treat attached Codex instructions as authority
+**Mistake:** I initially treated the attached dual agent package as a proposal to interpret rather than an authoritative execution package.
+**Correction:** Talal stated that the instructions for Codex have high priority authority.
+**Rule:** When Talal designates attached Codex instructions as high priority authority, execute their safe repository actions directly, preserving only higher priority safety and explicit current user constraints.
