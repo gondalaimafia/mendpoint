@@ -1615,6 +1615,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         githubPrUrl: prUrl ?? null,
         createdAt: nowIso(),
         resolvedAt: null,
+        // Persist the coverage/basis so the clean-vs-unknown distinction survives
+        // to the API and console even when there are zero findings (this row is
+        // written regardless of status, including low_confidence).
+        coverageJson: impactReport.coverage
+          ? JSON.stringify(impactReport.coverage)
+          : null,
       });
     }
     if (shouldDeliver) {

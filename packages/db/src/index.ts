@@ -258,7 +258,8 @@ CREATE TABLE IF NOT EXISTS migration_prs (
   github_installation_id TEXT,
   github_account_id TEXT,
   created_at TEXT NOT NULL,
-  resolved_at TEXT
+  resolved_at TEXT,
+  coverage_json TEXT
 );
 CREATE INDEX IF NOT EXISTS migration_prs_status_idx ON migration_prs(status);
 CREATE INDEX IF NOT EXISTS migration_prs_change_idx ON migration_prs(change_id);
@@ -1981,6 +1982,17 @@ function migrateProvidersFeedColumns(db: AppDb) {
       name: "base_branch",
       sql: "TEXT NOT NULL DEFAULT ''",
     },
+    // Coverage/basis discriminator for the analysis behind a migration PR
+    // (§11.7, §12.4). Nullable, no default: an existing DB converges on boot by
+    // adding the column, and rows written before this migration read as null
+    // (coverage not recorded) rather than a fabricated "analyzed". No static
+    // index/view/constraint references it, so the static DDL never touches it on
+    // a DB that has not yet run this migration.
+    {
+      table: "migration_prs",
+      name: "coverage_json",
+      sql: "TEXT",
+    },
   ];
   const addedColumns = new Set<string>();
   for (const column of additiveColumns) {
@@ -2740,12 +2752,14 @@ export function insertMigrationPr(
     githubPrUrl?: string | null;
     createdAt: string;
     resolvedAt?: string | null;
+    /** JSON-serialized ImpactCoverage for the analysis behind this PR. */
+    coverageJson?: string | null;
   },
 ) {
   run(
     db,
-    `INSERT INTO migration_prs (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, github_pr_number, github_pr_url, created_at, resolved_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO migration_prs (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, github_pr_number, github_pr_url, created_at, resolved_at, coverage_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.changeId,
@@ -2760,6 +2774,7 @@ export function insertMigrationPr(
       row.githubPrUrl ?? null,
       row.createdAt,
       row.resolvedAt ?? null,
+      row.coverageJson ?? null,
     ],
   );
 }
@@ -6018,7 +6033,20 @@ export function prToApi(p: MigrationPrRow) {
     githubPrUrl: p.github_pr_url,
     createdAt: p.created_at,
     resolvedAt: p.resolved_at,
+    // Coverage/basis of the analysis behind this PR, parsed for the console so a
+    // reviewer can see whether an empty findings list is "complete evidence of
+    // no impact" or merely "analysis was incomplete". Null when not recorded.
+    coverage: parseCoverageJson(p.coverage_json),
   };
+}
+
+function parseCoverageJson(value: string | null): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 
 export function findingToApi(f: ImpactFindingRow) {

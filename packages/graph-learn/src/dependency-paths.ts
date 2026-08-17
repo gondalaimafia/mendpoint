@@ -23,11 +23,23 @@ export type DependencyPathTruncation = {
   omittedPathsAtLeast: number;
 };
 
+/**
+ * Coverage of a dependency enumeration:
+ *  - `complete`      — the seed node exists and every terminal path was enumerated.
+ *  - `partial`       — the seed exists but a safety bound truncated enumeration.
+ *  - `target_absent` — the seed node is not in the graph. An empty result then
+ *    means "never seen", not "no dependencies". Reporting this as `truncated:
+ *    false` (as the old code did) falsely asserts completeness for a node the
+ *    graph has never contained.
+ */
+export type DependencyPathCoverage = "complete" | "partial" | "target_absent";
+
 export type DependencyPathEnumeration = {
   paths: DependencyPath[];
   nodeIds: string[];
   edges: GlEdge[];
   truncation: DependencyPathTruncation;
+  coverage: DependencyPathCoverage;
 };
 
 const DEFAULT_MAX_HOPS = 8;
@@ -121,23 +133,31 @@ export function enumerateDependencyPaths(
     }
   };
 
-  if (getNode(db, nodeId)) visit(nodeId, [nodeId], []);
+  const nodePresent = Boolean(getNode(db, nodeId));
+  if (nodePresent) visit(nodeId, [nodeId], []);
 
   const nodeIds = [...new Set(paths.flatMap((path) => path.nodeIds))];
   const reasons: DependencyPathTruncation["reasons"] = [];
   if (depthLimitedPaths) reasons.push("max_hops");
   if (pathLimitReached) reasons.push("max_paths");
+  const truncated = reasons.length > 0;
+  const coverage: DependencyPathCoverage = !nodePresent
+    ? "target_absent"
+    : truncated
+      ? "partial"
+      : "complete";
   return {
     paths,
     nodeIds,
     edges: [...includedEdges.values()],
     truncation: {
-      truncated: reasons.length > 0,
+      truncated,
       reasons,
       maxHops,
       maxPaths,
       pathsReturned: paths.length,
       omittedPathsAtLeast: depthLimitedPaths + (pathLimitReached ? 1 : 0),
     },
+    coverage,
   };
 }

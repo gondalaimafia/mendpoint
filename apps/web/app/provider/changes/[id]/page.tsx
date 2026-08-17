@@ -157,6 +157,17 @@ export default async function ChangeDetailPage({
           <li key={p.id}>
             <Link href={`/consumer/prs/${p.id}`}>{p.title}</Link>{" "}
             <span className={`badge ${p.status}`}>{p.status}</span>
+            {p.coverage && (
+              <>
+                {" "}
+                <span className={`badge coverage-${p.coverage.basis}`}>
+                  coverage: {p.coverage.basis}
+                </span>
+                {p.coverage.basis !== "analyzed" && p.coverage.reason && (
+                  <span className="muted"> {p.coverage.reason}</span>
+                )}
+              </>
+            )}
           </li>
         ))}
       </ul>
