@@ -1993,9 +1993,11 @@ Review: the existing candidate page was statically limited to review evidence ve
 
 - [x] Rebase the review onto current main after PR 143.
 - [x] Reproduce first-party workspace code being misclassified as vendored third-party code.
-- [ ] Preserve declared workspace packages as editable first-party source.
-- [ ] Exclude block-comment-only field mentions from confident edit sites.
-- [ ] Preserve case-insensitive Go and Java field discovery.
+- [x] Preserve declared workspace packages as editable first-party source.
+- [x] Exclude block-comment-only field mentions from confident edit sites.
+- [x] Preserve case-insensitive Go and Java field discovery.
 - [ ] Run focused tests, typechecks, full protected CI, and merge PR 140.
 
 Acceptance: vendored third-party copies remain update-only references, while declared first-party workspace packages and capitalized language-level field references remain eligible edit sites. Reachable block comments cannot create confident migration edits.
+
+Review: the first strict probe reproduced a declared npm workspace package being classified as vendored. Three red regressions then isolated that boundary, a multiline block-comment false positive, and a capitalized Go field miss. The implementation now recognizes root npm and pnpm workspace declarations before treating nested package boundaries as third party, scans comments and strings across the complete source instead of resetting at each line, and matches language-level fields without case sensitivity. The focused regression passes 7 of 7, full Code Impact passes 65 of 65, Shared passes 43 of 43, Eval passes 109 of 109, both relevant synthetic edge scenarios pass with 100 percent precision, and all affected package typechecks pass. Protected CI and final merge remain pending.

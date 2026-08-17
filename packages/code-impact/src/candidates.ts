@@ -122,33 +122,52 @@ function isWordChar(c: string): boolean {
  * back-quote string. Getting this wrong reads a Javadoc `{@link #member}` as a
  * comment or a Python `//` floor-division as one, silently dropping real fields.
  */
-function fieldHasGenuineReference(
-  line: string,
+function sourceHasGenuineReference(
+  text: string,
   field: string,
   language: FileRecord["language"],
 ): boolean {
   const lower = field.toLowerCase();
   const matchesAt = (i: number): boolean =>
-    line.slice(i, i + field.length).toLowerCase() === lower;
+    text.slice(i, i + field.length).toLowerCase() === lower;
   const firstLower = lower[0]!;
-  const isPython = language === "python";
+  const hashComments = language === "python" || language === "ruby";
+  const slashComments = !hashComments;
   const backtickStrings =
     language === "javascript" || language === "typescript" || language === "go";
-  let inStr: string | null = null;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i]!;
-    if (inStr) {
+  const tripleQuoted = language === "python";
+  let inString: { quote: string; width: 1 | 3 } | null = null;
+  let inBlockComment = false;
+  let inLineComment = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (inLineComment) {
+      if (c === "\n") inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (c === "*" && text[i + 1] === "/") {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (inString) {
       if (c === "\\") {
         i++;
         continue;
       }
-      if (c === inStr) {
-        inStr = null;
+      if (
+        c === inString.quote &&
+        (inString.width === 1 || text.slice(i, i + 3) === inString.quote.repeat(3))
+      ) {
+        i += inString.width - 1;
+        inString = null;
         continue;
       }
       if (c.toLowerCase() === firstLower && matchesAt(i)) {
-        const before = line[i - 1] ?? "";
-        const after = line[i + field.length] ?? "";
+        const before = text[i - 1] ?? "";
+        const after = text[i + field.length] ?? "";
         if (!isWordChar(before) && !isWordChar(after)) {
           // Discrete quoted/structural token (wire key, tag, field id) is a real
           // reference; a token flanked by whitespace is a word in running text.
@@ -158,18 +177,29 @@ function fieldHasGenuineReference(
       }
       continue;
     }
-    if (c === '"' || c === "'" || (backtickStrings && c === "`")) {
-      inStr = c;
+    if (hashComments && c === "#") {
+      inLineComment = true;
       continue;
     }
-    if (isPython) {
-      if (c === "#") break; // python line comment
-    } else if (c === "/" && line[i + 1] === "/") {
-      break; // rest of line is a comment
+    if (slashComments && c === "/" && text[i + 1] === "/") {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (slashComments && c === "/" && text[i + 1] === "*") {
+      inBlockComment = true;
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'" || (backtickStrings && c === "`")) {
+      const width = tripleQuoted && text.slice(i, i + 3) === c.repeat(3) ? 3 : 1;
+      inString = { quote: c, width };
+      i += width - 1;
+      continue;
     }
     if (c.toLowerCase() === firstLower && matchesAt(i)) {
-      const before = i === 0 ? "" : line[i - 1]!;
-      const after = line[i + field.length] ?? "";
+      const before = i === 0 ? "" : text[i - 1]!;
+      const after = text[i + field.length] ?? "";
       if (!isWordChar(before) && !isWordChar(after)) return true; // code identifier
       i += field.length - 1;
     }
@@ -390,13 +420,13 @@ export function discoverCandidates(
       for (const field of fieldHints) {
         fileGenuine.set(
           field,
-          lines.some((line) => fieldHasGenuineReference(line, field, file.language)),
+          sourceHasGenuineReference(text, field, file.language),
         );
       }
       lines.forEach((line, idx) => {
         const lineNo = idx + 1;
         for (const field of fieldHints) {
-          if (!new RegExp(`\\b${escapeReg(field)}\\b`).test(line)) continue;
+          if (!new RegExp(`\\b${escapeReg(field)}\\b`, "i").test(line)) continue;
           // Promote to syntactic only on real provider-surface evidence: the file
           // already touches API surfaces, or the line references this surface's
           // actual path. The mere presence of "api"/"http"/"charge" is not

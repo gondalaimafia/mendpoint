@@ -28,6 +28,92 @@ import { join } from "node:path";
 import type { CodebaseIndex } from "@mendpoint/codebase-index";
 import { resolveRelativeImport } from "./provenance.js";
 
+type RootPackageMetadata = {
+  name?: string;
+  workspacePatterns: string[];
+};
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+/** Read the root package identity and every declared JavaScript workspace pattern. */
+function readRootPackageMetadata(repoRoot: string): RootPackageMetadata {
+  try {
+    const parsed = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+      name?: unknown;
+      workspaces?: unknown;
+    };
+    const workspacePatterns = Array.isArray(parsed.workspaces)
+      ? stringArray(parsed.workspaces)
+      : parsed.workspaces && typeof parsed.workspaces === "object"
+        ? stringArray((parsed.workspaces as { packages?: unknown }).packages)
+        : [];
+    return {
+      name: typeof parsed.name === "string" && parsed.name.length ? parsed.name : undefined,
+      workspacePatterns,
+    };
+  } catch {
+    return { workspacePatterns: [] };
+  }
+}
+
+/** Read pnpm workspace package patterns without accepting arbitrary YAML features. */
+function readPnpmWorkspacePatterns(repoRoot: string): string[] {
+  try {
+    const lines = readFileSync(join(repoRoot, "pnpm-workspace.yaml"), "utf8").split(/\r?\n/);
+    const patterns: string[] = [];
+    let inPackages = false;
+    for (const line of lines) {
+      if (/^packages\s*:\s*$/.test(line)) {
+        inPackages = true;
+        continue;
+      }
+      if (inPackages && /^\S/.test(line)) break;
+      if (!inPackages) continue;
+      const match = line.match(/^\s*-\s*['"]?([^'"#]+?)['"]?\s*(?:#.*)?$/);
+      if (match?.[1]?.trim()) patterns.push(match[1].trim());
+    }
+    return patterns;
+  } catch {
+    return [];
+  }
+}
+
+/** Convert the small workspace-glob subset (`*`, `**`, `?`) to a path regex. */
+function workspacePatternRegex(pattern: string): RegExp {
+  const normalized = pattern.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "");
+  let source = "^";
+  for (let i = 0; i < normalized.length; i++) {
+    const char = normalized[i]!;
+    if (char === "*" && normalized[i + 1] === "*") {
+      source += ".*";
+      i++;
+    } else if (char === "*") {
+      source += "[^/]*";
+    } else if (char === "?") {
+      source += "[^/]";
+    } else {
+      source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`${source}$`);
+}
+
+function isDeclaredWorkspace(dir: string, patterns: string[]): boolean {
+  let included = false;
+  for (const raw of patterns) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const excluded = trimmed.startsWith("!");
+    const pattern = excluded ? trimmed.slice(1) : trimmed;
+    if (pattern && workspacePatternRegex(pattern).test(dir)) included = !excluded;
+  }
+  return included;
+}
+
 /** Read the `name` field of a `package.json`, or undefined when absent/unparsable. */
 function readPackageName(repoRoot: string, dir: string): string | undefined {
   try {
@@ -63,7 +149,11 @@ function within(dir: string, filePath: string): boolean {
  */
 export function detectVendoredFiles(index: CodebaseIndex): Set<string> {
   const filePaths = new Set(index.files.map((f) => f.path));
-  const rootName = readPackageName(index.repoRoot, "");
+  const root = readRootPackageMetadata(index.repoRoot);
+  const workspacePatterns = [
+    ...root.workspacePatterns,
+    ...readPnpmWorkspacePatterns(index.repoRoot),
+  ];
 
   // Discover package boundaries: ancestor directories of indexed files that
   // carry their own package.json declaring a name distinct from the repo's own.
@@ -74,7 +164,9 @@ export function detectVendoredFiles(index: CodebaseIndex): Set<string> {
   const boundaries = new Map<string, string>(); // dir -> package name
   for (const dir of boundaryDirs) {
     const name = readPackageName(index.repoRoot, dir);
-    if (name && name !== rootName) boundaries.set(dir, name);
+    if (name && name !== root.name && !isDeclaredWorkspace(dir, workspacePatterns)) {
+      boundaries.set(dir, name);
+    }
   }
   if (!boundaries.size) return new Set();
 
