@@ -1,127 +1,110 @@
-# MendPoint Learning Flywheel Current State
+# Mendpoint Learning Flywheel Current State
 
-Verified against repository commit `1f83b4a` on 2026-08-14.
+Verified against `codex/learning-loop-production` on 2026-08-17.
 
-## Existing flow
+## What this branch implements
 
-ReGauge has the only production joined outcome producer. Successful adaptive draft delivery admits an approved structured outcome and, under a separate consent purpose, redacted accepted file content. Rejected adaptive reviews can admit a separately consented negative outcome. Admission is disabled unless `MENDPOINT_REGAUGE_LEARNING_ENABLED=1`, and missing consent, unsafe redaction, future observations, or incomplete evidence produce no learning record.
+The branch implements one governed backend path from an authenticated learning event to an eligible, reversible post-trained adapter. It is disabled unless the advanced AI application surface and all required external authorities are configured.
 
-The latest sealed ReGauge dataset can be read as bounded precedent by the adaptive planner. The planner never sees a draft dataset or an ineligible member.
+### Common event and lesson contract
 
-Fettler produces authenticated candidate, review, verification, delivery, and post pull request evidence, but it is not joined to the learning record system. There is no common Fettler and ReGauge learning event envelope today.
+`packages/pipeline/src/learning-event.ts` defines one versioned event for Fettler and ReGauge. The event binds the tenant, repository, mission, task, capability, specialization, model and adapter selection, router decision, input and action artifacts, prediction, observed result, verification, reviewer decision, correction, confidence, economics, residency, consent, source class, and split group. It rejects private reasoning fields, unknown fields, malformed timestamps, unbounded evidence, mutation aliases, and noncanonical data.
 
-There is no durable lesson entity or destination classifier. The current corpus parser turns a narrow approved or rejected ReGauge outcome document directly into examples. It cannot distinguish a parser defect, retrieval miss, graph defect, deterministic recipe opportunity, router policy error, calibration lesson, or true weight learning lesson.
+Lesson extraction classifies verified outcomes into model weights, router policy, retrieval, graph, parser, tooling, deterministic recipes, prompts, product logic, calibration, or no action. Model training requires a substantive correction, passed verification, active consent, and authoritative evidence. The persistence operation derives attribution and provenance from durable verification and source authority rather than trusting the caller's labels.
 
-The existing records preserve provenance digests and source object classes, but there is no canonical product level provenance enum that separates synthetic ground truth, design partner verified evidence, and production verified evidence. That separation must be present before Claude's synthetic scenarios can share the same pipeline safely.
+The common contract accepts Fettler, ReGauge, and synthetic ground-truth events. The current production Fettler and ReGauge mission paths do not automatically emit this common event yet; the joined integration test calls the governed admission operation directly.
 
-## Existing schemas and storage
+### Governance and corpus materialization
 
-The application uses SQLite and existing trust records rather than a separate learning database:
+The implementation reuses SQLite trust storage:
 
-- `learning_consents`: append only grant and revocation history by tenant, purpose, residency, effective time, expiry, and principal.
-- `learning_records`: append only admitted records bound to source and redacted artifacts, redaction evidence, verification evidence, contamination evidence, accepted review, consent, provenance digest, and observation time.
-- `learning_dataset_versions`: `draft` or `sealed` datasets with an exact temporal cutoff and content digest. Sealed rows cannot be changed or deleted.
-- `learning_dataset_members`: immutable content addressed membership.
-- `learning_deletion_events`: append only removal authority that makes a record ineligible without rewriting history.
-- `artifact_manifests`: corpus, adapter, evaluation, and other immutable content plus digest and storage reference.
-- `evidence_records`, `review_decisions`, and hash chained `domain_events`: provenance, human authority, and lifecycle evidence.
-- `post_trained_training_effects`: dynamically created durable training dispatch lease, generation, phase, and authenticated receipt state.
+- `learning_consents` retains purpose-specific grants and revocations.
+- `learning_records` binds source, redacted, verification, review, correction, consent, provenance, and content digests.
+- `learning_dataset_versions` and `learning_dataset_members` retain immutable dataset membership and cutoffs.
+- `learning_deletion_events` exclude records from future use without rewriting sealed history.
+- `artifact_manifests`, `evidence_records`, `review_decisions`, and hash-chained `domain_events` retain exact authority and lineage.
 
-There is no separate model registry table. A durable post trained adapter manifest is stored as an immutable artifact and registered by a hash chained domain event.
+Corpus materialization validates every artifact digest and relationship, recomputes current consent and deletion authority, uses an ambient-transaction savepoint, and produces immutable train, validation, holdout, and split-manifest artifacts. A stable `splitGroupId`, rather than event content, controls deterministic partitioning so related variants cannot move between training and holdout. Empty validation or holdout artifacts are inconclusive and cannot authorize candidate evaluation.
 
-## Existing APIs
+The corpus records whether every member may leave the tenant boundary. External training and evaluation reauthorize the exact sealed member set immediately before dispatch.
 
-All advanced AI routes are mounted below `/advanced-ai` and return 404 unless `MENDPOINT_ADVANCED_AI_APPLICATIONS_ENABLED=1`.
+### Training, independent evaluation, and canary
 
-Implemented post trained routes are:
+Training, evaluation, and canary execution each use a separate injected port, durable database-time lease, request digest, bounded timeout, authenticated receipt, response-loss reconciliation, and generation fence. Completed and failed results are validated for exact identity, canonical timestamps, bounded evidence, and artifact integrity before terminal settlement.
+
+Training receives only the training split. Independent evaluation receives the exact candidate plus a distinct nonempty holdout, checks zero split-group overlap, and persists a sealed report. Canary execution is separately configured and binds the adapter, evaluation artifact, serving revision, mode, allocation, policy, economics, and observed evidence.
+
+Production configuration rejects overlapping trainer, evaluator, and canary authority IDs. When HTTP providers are configured, it also rejects the same normalized endpoint or bearer credential being reused across authorities.
+
+### Registration, routing, and rollback
+
+Adapter registration requires the exact completed training event, adapter bytes and digest, dataset and split manifest, independent evaluation, canary evidence, current consent, infrastructure evidence, and an independent human approver. It rejects mismatched adapter, base model, dataset, evaluation, canary, or evidence subjects.
+
+Eligibility and route dry-run operations use the existing router and post-trained runtime admission. They recheck consent, lifecycle, monitoring, task, tenant, region, risk, quality, health, latency, cost, and evidence immediately before authorization. Human rollback appends durable authority and makes the adapter ineligible.
+
+No operation in this branch automatically promotes a model, merges code, deploys a model, or changes production traffic.
+
+## API surface
+
+All routes are below `/advanced-ai`, pass through the existing authenticated web proxy, and return 404 unless `MENDPOINT_ADVANCED_AI_APPLICATIONS_ENABLED=1`.
+
+Learning governance:
+
+- `POST /advanced-ai/learning/consents`
+- `POST /advanced-ai/learning/consents/:consentId/revoke`
+- `GET /advanced-ai/learning/status`
+- `POST /advanced-ai/learning/corpora`
+
+Post-trained operations:
 
 - `POST /advanced-ai/post-trained/training-jobs`
 - `GET /advanced-ai/post-trained/training-jobs/:jobId`
+- `POST /advanced-ai/post-trained/evaluations`
+- `GET /advanced-ai/post-trained/evaluations/:evaluationId`
+- `POST /advanced-ai/post-trained/canaries`
+- `GET /advanced-ai/post-trained/canaries/:canaryId`
 - `POST /advanced-ai/post-trained/adapters`
 - `GET /advanced-ai/post-trained/adapters/:adapterId`
 - `POST /advanced-ai/post-trained/adapters/:adapterId/eligibility`
 - `POST /advanced-ai/post-trained/adapters/:adapterId/route-dry-run`
+- `POST /advanced-ai/post-trained/adapters/:adapterId/rollback`
 
-The route layer requires an authenticated tenant principal, durable trust principal, tenant administration for mutations, idempotency keys, bounded request bodies, durable consent, and authoritative evidence. Training returns 503 unless every trainer dependency is configured.
+Mutations require the existing tenant administration or execution permission, a durable trust principal, and idempotency where an external or durable effect is created. Reads are tenant-scoped and return `Cache-Control: no-store`.
 
-There are no API routes for learning consent, learning event inspection, dataset sealing, corpus materialization, lifecycle transitions, canary allocation, rollback, or learning observability.
+## External configuration
 
-## Existing workers and jobs
+The server builds trainer, evaluator, and canary HTTP adapters only from complete, bounded configuration. Each authority has its own URL, bearer token, receipt secret, worker identity, principal, authority identity, timeout, and lease. Training and evaluation also require explicit processing-boundary approval before corpus content may leave the tenant boundary.
 
-ReGauge learning admission runs synchronously inside reviewed delivery and rejection flows. It is best effort and cannot make delivery fail.
+The checked-in Fly profiles do not prove that these external providers, model artifacts, or serving endpoints exist. Code-level support is not production activation evidence.
 
-Dataset sealing exists as `sealApprovedLearningOutcomes`, but it has no non-test scheduler or API call site. Corpus export exists as the read-only `buildLearningCorpus` function, but no production operation materializes that deterministic output as the authoritative `learning_dataset_corpus` artifact expected by training.
+## Joined proof
 
-Training dispatch is API initiated, not a queue job. It uses database time leases and an in-process active-effect guard, dispatches through an injected external trainer, authenticates reconciliation receipts, and prevents duplicate completion after crashes or response loss.
+`apps/api/src/advanced-ai-applications.test.ts` contains one joined in-process proof that:
 
-## Trainer contract
+1. grants consent;
+2. admits authoritative Fettler and ReGauge events;
+3. materializes disjoint train, validation, and holdout artifacts;
+4. dispatches and reconciles training;
+5. evaluates through a separate authority;
+6. runs a bounded canary;
+7. registers with human approval;
+8. becomes router eligible; and
+9. rolls back and becomes ineligible.
 
-The current trainer port supports `train` and `reconcile`. The HTTP adapter is configured by:
+Focused package tests additionally cover consent revocation, deletion after sealing, tampered artifacts, cross-tenant references, forged provenance, partition leakage, concurrent effects, stale leases, response loss, failed evaluation, failed canary, malformed terminal results, mismatched lifecycle evidence, and stale consent.
 
-- `MENDPOINT_POST_TRAINED_TRAINER_URL`
-- `MENDPOINT_POST_TRAINED_TRAINER_TOKEN`
-- `MENDPOINT_POST_TRAINED_RECEIPT_HMAC_SECRET`
-- `MENDPOINT_POST_TRAINED_WORKER_ID`
-- `MENDPOINT_POST_TRAINED_EXTERNAL_PROCESSING_APPROVED=1`
-- bounded timeout and lease configuration
+## Remaining links
 
-The trainer receives exact corpus artifacts, base model, adapter identity, recipe, request digest, and lease generation. A completed response must contain canonical adapter bytes, held out evaluation, canary evidence, and an authenticated exact receipt.
+1. Production Fettler and ReGauge completion paths do not automatically call common event admission.
+2. Router execution, canary observations, rollback results, and production outcomes do not automatically feed the next learning generation.
+3. Claude's synthetic harness is not imported. Its holdout cohort and candidate execution adapter remain a separately owned integration boundary.
+4. There is no live trainer, evaluator, canary provider, or post-trained serving endpoint proven by this repository.
+5. Route dry-run proves selection authority, not actual adapter invocation.
+6. Dataset threshold scheduling, operator cancellation, continuous monitoring, and automatic circuit breaking are not implemented by this branch.
+7. The status API reports durable counts, not a complete operations dashboard.
 
-The contract does not expose separate status, artifact fetch, or cancel operations. It also has no configured production implementation in this repository.
+These are explicit ship-readiness boundaries, not implicit capabilities. See `docs/learning/ship-readiness.md`.
 
-## Adapter lifecycle and router
+## Naming compatibility
 
-The lifecycle model already represents `registered`, `evaluated`, `shadow`, `canary`, `promoted`, `monitored`, `rolled_back`, and `retired`. Promotion validation requires dataset consent and sufficiency, evaluation thresholds, infrastructure approval, human approval, canary evidence, a serving revision, monitoring, and rollback.
-
-Durable adapter registration verifies the exact submitted training job, base model, adapter digest, decoded bytes, dataset, held out evaluation, canary result, and evidence subjects. Runtime admission rechecks consent, lifecycle, health, tenant, task, privacy, region, risk, quality, latency, cost, and executor bindings immediately before dispatch.
-
-The exposed router operation is a dry run. No production caller invokes an admitted adapter or allocates shadow or canary traffic. There is no durable canary percentage, observation accumulator, automatic stop, or rollback controller.
-
-## Evaluation boundary
-
-The stable `@mendpoint/eval` package exports agent scenario grading and a router value proof that compares paired baseline and candidate observations for a declared held out cohort. It does not prove that the cohort is absent from the training dataset.
-
-Claude's active evaluation worktree contains ground truth, scenario, Fettler and ReGauge grader, runner, and reporting interfaces. Its ground truth schema already has development, validation, and holdout split values. As inspected on 2026-08-14, all 21 scenarios are still development examples, the suite runner does not filter by split, candidate adapters are not exercised, and the uncommitted harness has no tests and does not typecheck under its current module configuration. It is therefore an active integration dependency, not current promotion evidence.
-
-The smallest stable join is a Codex owned evaluator port that consumes an exact candidate, baseline, training dataset manifest, and sealed holdout cohort. Its authoritative result must bind candidate digest, baseline revision, cohort revision and digest, grader version, subject repository revisions, and an explicit zero overlap proof. Trainer supplied evaluation remains diagnostic and cannot authorize promotion.
-
-## Existing feature flags and production configuration
-
-- ReGauge lesson capture: `MENDPOINT_REGAUGE_LEARNING_ENABLED=1`, with the legacy Transformer alias accepted.
-- Advanced AI routes: `MENDPOINT_ADVANCED_AI_APPLICATIONS_ENABLED=1`.
-- Trainer: the complete variables listed above.
-
-The checked in Fly profiles do not enable the advanced AI route group or learning capture. A live secret-name inspection on 2026-08-14 found no advanced AI or post trained trainer configuration on the main app. The code is fail closed in that state.
-
-## Existing verification
-
-A focused verification run passed 72 of 72 tests:
-
-- 16 database learning and corpus tests
-- 12 pipeline learning, training, and adapter application tests
-- 35 platform lifecycle, router, and admission tests
-- 9 advanced AI API tests
-
-These tests prove individual components and several crash or response loss boundaries. They do not prove a real Fettler outcome, complete corpus artifact, external trainer, held out benchmark, promoted adapter invocation, canary traffic, monitoring, rollback, and next-generation capture in one joined flow.
-
-## Missing links
-
-1. No common learning event envelope or Fettler producer.
-2. No automatic or operator-facing generic dataset sealing and corpus artifact operation.
-3. No task classification deciding weights, retrieval, prompt, router policy, deterministic tool, or product logic.
-4. Corpus output is not split into deterministic training and held out partitions by capability.
-5. No production trainer configuration or vendor-neutral status and cancellation surface.
-6. No joined synthetic holdout evaluation interface. Claude Code owns the benchmark implementation.
-7. No durable human lifecycle transition service; registration consumes a fully formed admissible lifecycle.
-8. No real adapter invocation, shadow traffic, canary allocator, monitoring controller, or automatic rollback.
-9. No continuous scheduler connecting thresholds to seal, corpus, training, and evaluation.
-10. No operator observability surface for capture, eligibility, datasets, training, evaluation, traffic, or rollback.
-11. Public documentation lists stale route names for training and adapter registration.
-12. No canonical provenance class, preference pair, model economics record, calibration record, or abstention outcome is produced by the learning flow.
-13. No deterministic lesson destination classifier prevents model training from compensating for parser, graph, retrieval, tooling, or product defects.
-14. No migration native dataset families or reproducible train, validation, and hidden holdout assignments exist.
-15. No durable human lifecycle transition, traffic allocation, canary observation, or rollback operation connects the current lifecycle model to serving.
-
-## Naming migration
-
-Customer facing vocabulary is Fettler and ReGauge. Stable database tables, job types, environment variables, API paths, cryptographic domains, and historical fixture identifiers still contain `warden` and `transformer`. Those identifiers are compatibility sensitive and must remain readable. New learning documents use canonical product values `fettler` and `regauge`, while adapters map old persisted values where required. Public documentation and operator copy should use Fettler and ReGauge without rewriting stable wire or storage identities.
+Customer-facing vocabulary is Fettler and ReGauge. Stable database tables, environment variables, API compatibility paths, cryptographic domains, historical events, and fixtures may still contain `warden` and `transformer`. Those machine identifiers remain readable until a versioned migration proves dual-read and rollback safety.

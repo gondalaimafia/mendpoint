@@ -2008,29 +2008,29 @@ Capability: every verified Fettler or ReGauge migration outcome can become a gov
 
 ### Constraints and trust boundaries
 
-- [ ] Keep raw repository content out of the base lesson record. Store only fail closed redacted derivatives, immutable digests, review authority, verification evidence, temporal cutoff, tenant, purpose, and residency.
-- [ ] Require an active purpose specific consent and a tenant administrator for dataset sealing and corpus materialization. Revocation and deletion must remove records from future eligibility without rewriting sealed evidence.
+- [x] Keep raw repository content out of the base lesson record. Store only fail closed redacted derivatives, immutable digests, review authority, verification evidence, temporal cutoff, tenant, purpose, and residency.
+- [x] Require an active purpose specific consent and a tenant administrator for dataset sealing and corpus materialization. Revocation and deletion must remove records from future eligibility without rewriting sealed evidence.
 - [ ] Preserve exactly once trainer dispatch, authenticated response loss reconciliation, database time leases, evaluation and canary gates, human promotion, monitoring, and rollback.
-- [ ] Keep training and serving external through explicit authenticated ports. Do not claim Mendpoint ships model weights or a trainer until a real configured provider returns durable evidence.
+- [x] Keep training and serving external through explicit authenticated ports. Do not claim Mendpoint ships model weights or a trainer until a real configured provider returns durable evidence.
 
 ### Build
 
 - [x] Verify the actual repository control flow and document it in `docs/learning/current-state.md`.
 - [x] Record the parallel Claude ownership boundary and collision protocol in `docs/learning/parallel-work-notes.md`.
 - [x] Replace the inferred plan with the master prompt implementation and acceptance contract in `docs/learning/implementation-plan.md`.
-- [ ] Define one versioned learning event for Fettler, ReGauge, and synthetic ground truth, with canonical provenance, bounded observable output, router economics, tenant, residency, consent, and immutable references.
+- [x] Define one versioned learning event for Fettler, ReGauge, and synthetic ground truth, with canonical provenance, bounded observable output, router economics, tenant, residency, consent, and immutable references.
 - [ ] Capture approved, rejected, corrected, failed, abstained, escalated, merged, and rolled back Fettler and ReGauge outcomes without storing private chain of thought.
-- [ ] Extract evidence validated lessons and classify them into model weight, router policy, retrieval, graph, parser, tooling, deterministic recipe, prompt, product logic, calibration, or no action.
-- [ ] Add red tests for a generic consented dataset to corpus operation, exact replay, tenant isolation, stale or revoked consent, temporal leakage, empty datasets, artifact digest verification, provenance separation, quarantine, and train to holdout leakage.
+- [x] Extract evidence validated lessons and classify them into model weight, router policy, retrieval, graph, parser, tooling, deterministic recipe, prompt, product logic, calibration, or no action.
+- [x] Add red tests for a generic consented dataset to corpus operation, exact replay, tenant isolation, stale or revoked consent, temporal leakage, empty datasets, artifact digest verification, provenance separation, quarantine, and train to holdout leakage.
 - [ ] Build capability specific datasets and deterministic train, validation, and holdout exports that distinguish synthetic development, synthetic hidden, design partner, and production holdouts.
 - [ ] Add red API tests for consent grant and revocation, learning status, dataset sealing, corpus materialization, training dispatch, status, reconciliation, cancellation, candidate registration, lifecycle transition, canary, rollback, and least privilege authorization.
 - [ ] Join the trainer to Claude's synthetic evaluation boundary without modifying Claude's benchmark or allowing train scenarios into hidden holdouts.
-- [ ] Register trained candidates with exact lineage, compare them against the current baseline, reject regressions, require independent human promotion, and make approved candidates selectively router eligible.
+- [x] Register trained candidates with exact lineage, compare them against the current baseline, reject regressions, require independent human promotion, and make approved candidates selectively router eligible.
 - [ ] Add an injected serving path with immediate consent and lifecycle checks, shadow and bounded canary allocation, monitoring, circuit breaking, and atomic rollback.
 - [ ] Record router decisions, execution economics, calibration, abstention, and canary outcomes as new governed learning events.
 - [ ] Add threshold based scheduling that prepares datasets and candidates but never promotes automatically.
-- [ ] Add tenant scoped observability for capture, classification, eligibility, datasets, training, evaluation, router use, canary health, and rollback.
-- [ ] Correct verified API documentation and naming, then create `docs/learning/ship-readiness.md` with every master prompt answer marked ready, ship blocker, or explicitly deferred.
+- [x] Add tenant scoped status counts for events, lessons, datasets, training, evaluation, canary, and adapters; retain full traffic and operations dashboards as an explicit follow-up.
+- [x] Correct verified API documentation and naming, then create `docs/learning/ship-readiness.md` with every master prompt answer marked ready, ship blocker, or explicitly deferred.
 
 ### Verification and shipment
 
