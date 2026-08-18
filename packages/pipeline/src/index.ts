@@ -52,6 +52,7 @@ import {
   type GitHubDelivery,
 } from "@mendpoint/github";
 import { evaluatePolicy, type PolicyConfig } from "@mendpoint/policy";
+import { filterRepairEdits } from "./repair-policy.js";
 import {
   applyBrandPack,
   ensureWardenFooter,
@@ -1232,14 +1233,25 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
               /* keep */
             }
           }
-          for (const re of repair.edits) {
-            if (!decision.allowedEdits.some((e) => e.path === re.filePath)) {
-              decision.allowedEdits.push({
-                path: re.filePath,
-                original: re.original,
-                updated: re.updated,
-              });
+          const filteredRepair = filterRepairEdits({
+            draft,
+            findings,
+            policy: policyOverrides,
+            edits: repair.edits,
+            existingPaths: decision.allowedEdits.map((edit) => edit.path),
+          });
+          for (const blockedPath of filteredRepair.blockedPaths) {
+            if (!decision.blockedFiles.includes(blockedPath)) {
+              decision.blockedFiles.push(blockedPath);
             }
+          }
+          if (!filteredRepair.fullyAuthorized) {
+            // The verifier observed a workspace containing edits that policy did
+            // not authorize. Removing those edits would invalidate that evidence,
+            // so the whole delivery fails closed rather than publishing a subset.
+            repairBlockedDelivery = true;
+          } else {
+            decision.allowedEdits.push(...filteredRepair.allowed);
           }
           // Delivery uses the captured edit payloads. Keep the checkout clean
           // regardless of later SCM success or failure.

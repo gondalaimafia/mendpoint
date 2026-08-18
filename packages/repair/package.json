@@ -17,6 +17,7 @@
     "@mendpoint/generation": "*",
     "@mendpoint/github": "*",
     "@mendpoint/platform": "*",
+    "@mendpoint/policy": "*",
     "@mendpoint/shared": "*"
   },
   "devDependencies": {

@@ -1,5 +1,6 @@
 import {
   mkdtempSync,
+  mkdirSync,
   existsSync,
   writeFileSync,
   readFileSync,
@@ -650,8 +651,10 @@ describe("repair filesystem policy", () => {
     dirs.push(repo);
     writeFileSync(join(repo, ".env"), "TOKEN=keep\n", "utf8");
     writeFileSync(join(repo, "package-lock.json"), "{\"keep\":true}\n", "utf8");
+    mkdirSync(join(repo, "terraform"));
+    writeFileSync(join(repo, "terraform", "main.tf"), "resource = \"keep\"\n", "utf8");
 
-    for (const filePath of [".env", "package-lock.json"]) {
+    for (const filePath of [".env", "package-lock.json", "terraform/main.tf"]) {
       expect(() =>
         applyActions(
           [
