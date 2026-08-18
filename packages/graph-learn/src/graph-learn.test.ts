@@ -339,14 +339,14 @@ describe("graph-learn substrate", () => {
         consumerId: "consumer-a",
         outcome: "merged",
         title: "safe a",
-      });
+      }, "tenant-a");
       labelPrOutcome(db, {
         prId: "pr-b",
         changeId: "change-b",
         consumerId: "consumer-b",
         outcome: "merged",
         title: "secret b",
-      });
+      }, "tenant-b");
 
       const scope = { tenantId: "tenant-a", consumerIds: ["consumer-a"] };
       const rates = runGraphQuery(
@@ -771,7 +771,7 @@ export function bar() { return 1; }
         outcome: i % 2 === 0 ? "merged" : "closed",
         title: "pat",
         experiment: "treatment",
-      });
+      }, "tenant-x");
       labelPrOutcome(db, {
         prId: `c${i}`,
         changeId: "ch",
@@ -779,7 +779,7 @@ export function bar() { return 1; }
         outcome: "closed",
         title: "pat",
         experiment: "control",
-      });
+      }, "tenant-x");
     }
     // untagged should not pollute arms
     labelPrOutcome(db, {
@@ -788,7 +788,7 @@ export function bar() { return 1; }
       consumerId: "c3",
       outcome: "merged",
       title: "pat",
-    });
+    }, "tenant-x");
     const ab = measureAbLift(db);
     expect(ab.taggedOnly).toBe(true);
     expect(ab.untaggedSkipped).toBeGreaterThanOrEqual(1);
@@ -807,7 +807,7 @@ export function bar() { return 1; }
       outcome: "merged",
       title: "x",
       experiment: "treatment",
-    });
+    }, "tenant-x");
     const emb = embedGraphNodes(db, { dim: 8 });
     expect(emb.nodes).toBeGreaterThan(0);
     expect(hashEmbedding("hello", 4)).toHaveLength(4);
