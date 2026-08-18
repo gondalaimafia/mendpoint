@@ -44,13 +44,16 @@ kill_timeout = 30
   MENDPOINT_SANDBOX_FLY_APP = "mendpoint-sandbox"
   # The sandbox image IS the isolation boundary, so it MUST be pinned to an
   # immutable digest, never a floating `:latest` tag (which can change with no
-  # review or reproducibility). Left empty on purpose: a missing pin FAILS CLOSED
-  # (Fly rejects an empty image) rather than silently resolving `:latest`. Before
-  # a customer app verifies, pin the immutable reference the sandbox image push
-  # printed by replacing "" below (reviewed here in config):
-  #   MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:<digest>"
+  # review or reproducibility). An unpinned or empty value FAILS CLOSED:
+  # packages/platform/src/fly-sandbox.ts refuses to run and never falls back to
+  # the host (sandbox_image_unresolved / sandbox_image_not_pinned).
+  # Pinned 2026-08-18 to the digest the sandbox image push printed, reviewed
+  # here in config so a change to the isolation boundary is diffable. Rotate by
+  # pushing a new image, capturing its digest, and editing the line below.
+  # NOTE: a MENDPOINT_SANDBOX_FLY_IMAGE Fly secret, if set, overrides this value
+  # and is invisible to review -- prefer the reviewed config here.
   # See docs/SANDBOX_IMAGE.md ("Pin production to an immutable reference").
-  MENDPOINT_SANDBOX_FLY_IMAGE = ""
+  MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:6eacb37b3a9a795d2fed6baf4b032ced118c639e6d4d523b2bc9db9ff1a95c88"
   AGENTIC_REPAIR = "1"
   POLL_LOCAL_ONLY = "0"
   MENDPOINT_FEED_POLLING_ENABLED = "1"
