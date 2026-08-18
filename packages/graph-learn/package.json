@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mendpoint/ops": "*",
     "@mendpoint/shared": "*",
     "zod": "^3.24.2"
   },

@@ -430,15 +430,38 @@ export function edgesByKindAt(
 }
 
 export function countStats(db: GraphLearnDb) {
-  const n = (
-    db.raw.prepare(`SELECT COUNT(*) as c FROM gl_nodes`).get() as { c: number }
-  ).c;
-  const e = (
-    db.raw.prepare(`SELECT COUNT(*) as c FROM gl_edges`).get() as { c: number }
-  ).c;
+  // Per-kind breakdown (spec v3 §22.4, "entities/edges by type"). Legacy raw
+  // kinds are folded into their v0 form so a dashboard sees one bucket per
+  // logical kind. Totals are summed from the same GROUP BY so they can never
+  // disagree with the breakdown. The "epistemic state" half of that metric is
+  // deliberately omitted: no epistemic-status column exists in the schema yet
+  // (see docs/GRAPH_OBSERVABILITY.md), so emitting it would be a fabricated
+  // zero rather than a measurement.
+  const nodeRows = db.raw
+    .prepare(`SELECT kind, COUNT(*) as c FROM gl_nodes GROUP BY kind`)
+    .all() as Array<{ kind: string; c: number }>;
+  const edgeRows = db.raw
+    .prepare(`SELECT kind, COUNT(*) as c FROM gl_edges GROUP BY kind`)
+    .all() as Array<{ kind: string; c: number }>;
+  const nodesByKind: Record<string, number> = {};
+  let n = 0;
+  for (const row of nodeRows) {
+    const kind = normalizeNodeKind(row.kind);
+    nodesByKind[kind] = (nodesByKind[kind] ?? 0) + row.c;
+    n += row.c;
+  }
+  const edgesByKind: Record<string, number> = {};
+  let e = 0;
+  for (const row of edgeRows) {
+    const kind = normalizeEdgeKind(row.kind);
+    edgesByKind[kind] = (edgesByKind[kind] ?? 0) + row.c;
+    e += row.c;
+  }
   return {
     nodes: n,
     edges: e,
+    nodesByKind,
+    edgesByKind,
     path: db.path,
     exists: db.path === ":memory:" || existsSync(db.path),
     schema: "v0",

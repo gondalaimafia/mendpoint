@@ -18,7 +18,18 @@ import {
 import type { PlanStep } from "@mendpoint/orchestrator";
 import type { SandboxHandle } from "@mendpoint/platform";
 
-export type ToolResult = { ok: boolean; output: string; error?: string };
+export type ToolResult = {
+  ok: boolean;
+  output: string;
+  error?: string;
+  /**
+   * Number of graph queries this tool actually executed. Counted per
+   * runGraphQuery invocation so the harness can persist a real graph-query
+   * count instead of a hardcoded zero. Absent means the tool makes no graph
+   * queries (a true zero, not an unmeasured value).
+   */
+  graphQueries?: number;
+};
 
 function parseJsonNotes(notes?: string): Record<string, unknown> {
   if (!notes) return {};
@@ -196,12 +207,14 @@ export function runSpecialistTool(
             requireConsumers && n === 0
               ? `no consumers for provider ${slug}`
               : undefined,
+          graphQueries: 1,
         };
       } catch (e) {
         return {
           ok: false,
           output: "",
           error: e instanceof Error ? e.message : String(e),
+          graphQueries: 1,
         };
       }
     }
@@ -209,7 +222,7 @@ export function runSpecialistTool(
     case "graph.stats": {
       if (!scope) return graphScopeRequired(step.action);
       const q = runGraphQuery(getGraphLearnDb(), { op: "stats" }, scope);
-      return { ok: true, output: JSON.stringify({ action: step.action, ...q.rows?.[0], summary: q.summary }) };
+      return { ok: true, output: JSON.stringify({ action: step.action, ...q.rows?.[0], summary: q.summary }), graphQueries: 1 };
     }
 
     case "graph.query": {
@@ -219,6 +232,7 @@ export function runSpecialistTool(
       return {
         ok: true,
         output: truncateGraphMarkdown(formatQueryForPlanner(q), 1200),
+        graphQueries: 1,
       };
     }
 

@@ -25,6 +25,9 @@ import {
   parseGitLog,
   backfillGitTemporal,
   resetLatencySamples,
+  recordLatency,
+  latencyForOp,
+  formatLatencyReport,
   checkSlos,
   latencyReport,
   percentile,
@@ -44,6 +47,10 @@ import {
   createTenantGraphView,
 } from "./index.js";
 import type { StructuralDiff, ImpactableSurface } from "@mendpoint/shared";
+import {
+  drainTelemetry,
+  resetTelemetry,
+} from "@mendpoint/ops/telemetry";
 import { writeFileSync, unlinkSync } from "node:fs";
 
 const graphLearnSourcePath = fileURLToPath(new URL(".", import.meta.url));
@@ -815,5 +822,95 @@ export function bar() { return 1; }
     expect(kz.ddl).toContain("CREATE");
     const script = exportSqliteToKuzuScript(db, { maxNodes: 50 });
     expect(script.nodeInserts.length).toBeGreaterThan(0);
+  });
+});
+
+describe("graph observability", () => {
+  it("breaks entity and edge counts down by kind, folding legacy kinds", () => {
+    const db = openGraphLearnMemory();
+    // Two Files, one PullRequest; a legacy "pr" row folds into PullRequest.
+    upsertNode(db, { id: "file:a.ts", kind: "File", label: "a.ts" });
+    upsertNode(db, { id: "file:b.ts", kind: "File", label: "b.ts" });
+    upsertNode(db, { id: "pr:1", kind: "PullRequest", label: "pr-1" });
+    upsertNode(db, { id: "pr:2", kind: "pr", label: "pr-2" });
+    upsertEdge(db, {
+      id: "e1",
+      kind: "CONTAINS",
+      source: "file:a.ts",
+      target: "file:b.ts",
+    });
+    // Legacy "calls" folds into CALLS.
+    upsertEdge(db, {
+      id: "e2",
+      kind: "calls",
+      source: "file:a.ts",
+      target: "pr:1",
+    });
+
+    const stats = countStats(db);
+    expect(stats.nodes).toBe(4);
+    expect(stats.edges).toBe(2);
+    expect(stats.nodesByKind.File).toBe(2);
+    // Legacy "pr" merged with v0 "PullRequest".
+    expect(stats.nodesByKind.PullRequest).toBe(2);
+    expect(stats.edgesByKind.CONTAINS).toBe(1);
+    expect(stats.edgesByKind.CALLS).toBe(1);
+    // A kind with zero rows is absent from the breakdown (a real zero, not a
+    // fabricated bucket): reads back as undefined, i.e. 0.
+    expect(stats.nodesByKind.Symbol).toBeUndefined();
+    expect(stats.edgesByKind.IMPORTS).toBeUndefined();
+    expect(stats.nodesByKind.Symbol ?? 0).toBe(0);
+  });
+
+  it("computes and renders p95 alongside p50 and p99", () => {
+    resetLatencySamples();
+    for (let i = 1; i <= 100; i++) recordLatency("stats", i);
+    const row = latencyForOp("stats");
+    expect(row).toBeDefined();
+    // p95 sits between p50 and p99 for a monotonic sample.
+    expect(row!.p50Ms).toBeLessThan(row!.p95Ms);
+    expect(row!.p95Ms).toBeLessThan(row!.p99Ms);
+    expect(row!.p95Ms).toBeCloseTo(percentile(
+      Array.from({ length: 100 }, (_, i) => i + 1),
+      95,
+    ));
+    expect(typeof row!.p95Ok).toBe("boolean");
+    expect(row!.target.p95Ms).toBeGreaterThan(0);
+    expect(formatLatencyReport(latencyReport())).toContain("p95=");
+  });
+
+  it("routes graph query latency to the telemetry sink only when a collector is configured", () => {
+    const priorEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    const db = openGraphLearnMemory();
+
+    // No endpoint configured: emission is a no-op.
+    delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    resetTelemetry();
+    runGraphQuery(db, { op: "stats" }, { tenantId: "tenant-x" });
+    const off = drainTelemetry();
+    expect(off.histograms).toHaveLength(0);
+    expect(off.counters).toHaveLength(0);
+
+    // Endpoint configured: the same query emits a duration histogram + counter.
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318";
+    resetTelemetry();
+    runGraphQuery(db, { op: "stats" }, { tenantId: "tenant-x" });
+    const on = drainTelemetry();
+    const hist = on.histograms.find(
+      (h) => h.name === "graph_query_duration_ms",
+    );
+    expect(hist).toBeDefined();
+    expect(hist!.attributes.op).toBe("stats");
+    expect(hist!.values.length).toBeGreaterThan(0);
+    const counter = on.counters.find((c) => c.name === "graph_query_total");
+    expect(counter).toBeDefined();
+    expect(counter!.attributes.op).toBe("stats");
+
+    if (priorEndpoint === undefined) {
+      delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    } else {
+      process.env.OTEL_EXPORTER_OTLP_ENDPOINT = priorEndpoint;
+    }
+    resetTelemetry();
   });
 });
