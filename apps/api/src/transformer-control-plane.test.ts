@@ -6,6 +6,12 @@ import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NODE_RUNTIME_18_TO_20_RECIPE } from "@mendpoint/transformer";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
+import {
+  createDb,
+  insertPrincipal,
+  resolveMissionForRegaugeCampaign,
+  type AppDb,
+} from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
 import {
   registerTransformerControlPlaneRoutes,
@@ -16,10 +22,12 @@ import {
 
 const dirs: string[] = [];
 const services: TransformerCampaignService[] = [];
+const appDatabases: AppDb[] = [];
 
 afterEach(() => {
   vi.restoreAllMocks();
   while (services.length) services.pop()?.close();
+  while (appDatabases.length) appDatabases.pop()?.raw.close();
   while (dirs.length) {
     const dir = dirs.pop();
     if (dir) rmSync(dir, { recursive: true, force: true });
@@ -157,6 +165,50 @@ function testApp(
     await next();
   });
   registerTransformerControlPlaneRoutes(app, service, gateRuntime);
+  return app;
+}
+
+function appDbWithTenant(): AppDb {
+  const dir = mkdtempSync(join(tmpdir(), "mendpoint-transformer-appdb-"));
+  dirs.push(dir);
+  const db = createDb(join(dir, "app.sqlite"));
+  appDatabases.push(db);
+  db.raw
+    .prepare(
+      `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES ('tenant-a','a','Tenant A','team','active',10,'2026-01-01T00:00:00.000Z')`,
+    )
+    .run();
+  insertPrincipal(db, {
+    id: "principal-a",
+    tenantId: "tenant-a",
+    kind: "human",
+    subject: "reviewer@example.com",
+    displayName: "Reviewer",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  return db;
+}
+
+function testAppWithMission(
+  service: TransformerCampaignService,
+  appDb: AppDb,
+  gateRuntime = { rawConfig: gateConfig(), environment: "test" },
+) {
+  const app = new Hono<ApiEnv>();
+  app.use("*", async (c, next) => {
+    c.set("requestId", c.req.header("x-request-id") ?? "request-route");
+    const tenantId = c.req.header("x-test-tenant");
+    const principalId = c.req.header("x-test-principal");
+    if (tenantId && principalId) {
+      c.set("principal", { id: principalId, tenantId, role: "owner" });
+      // The App-DB principal (assertPrincipal target) is trustPrincipalId, never
+      // the display principal id.
+      c.set("trustPrincipalId", "principal-a");
+    }
+    await next();
+  });
+  registerTransformerControlPlaneRoutes(app, service, gateRuntime, undefined, appDb);
   return app;
 }
 
@@ -645,5 +697,58 @@ describe("Regauge canonical paths mirror the legacy /transformer aliases", () =>
     expect(canonical.status).toBe(401);
     expect(legacy.status).toBe(401);
     expect(await canonical.json()).toEqual(await legacy.json());
+  });
+});
+
+describe("ReGauge campaign Mission wiring", () => {
+  it("creates and campaign-links a ReGauge Mission when a campaign is created", async () => {
+    const service = open();
+    const appDb = appDbWithTenant();
+    const app = testAppWithMission(service, appDb);
+
+    expect(resolveMissionForRegaugeCampaign(appDb, "tenant-a", "campaign-a")).toBeUndefined();
+
+    const response = await app.request("/transformer/control-plane/campaigns", {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify(bundle()),
+    });
+    expect(response.status).toBe(201);
+
+    const mission = resolveMissionForRegaugeCampaign(appDb, "tenant-a", "campaign-a");
+    expect(mission).toBeDefined();
+    expect(mission).toMatchObject({
+      product: "regauge",
+      state: "created",
+      regaugeCampaignId: "campaign-a",
+      ownerPrincipalId: "principal-a",
+    });
+  });
+
+  it("does not fail campaign creation when the Mission wiring cannot resolve a principal", async () => {
+    const service = open();
+    // App DB has no 'principal-a' row, so createMission's assertPrincipal fails;
+    // the campaign must still be created (Mission bookkeeping is best-effort).
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-transformer-appdb-empty-"));
+    dirs.push(dir);
+    const appDb = createDb(join(dir, "app.sqlite"));
+    appDatabases.push(appDb);
+    appDb.raw
+      .prepare(
+        `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+         VALUES ('tenant-a','a','Tenant A','team','active',10,'2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    const app = testAppWithMission(service, appDb);
+
+    const response = await app.request("/transformer/control-plane/campaigns", {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify(bundle()),
+    });
+    expect(response.status).toBe(201);
+    // The campaign exists in the control-plane store; the Mission was not created.
+    expect(service.get("tenant-a", "campaign-a")).toBeDefined();
+    expect(resolveMissionForRegaugeCampaign(appDb, "tenant-a", "campaign-a")).toBeUndefined();
   });
 });

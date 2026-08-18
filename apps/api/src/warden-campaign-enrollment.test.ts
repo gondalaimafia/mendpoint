@@ -16,6 +16,7 @@ import {
   insertRepositorySnapshot,
   listAudit,
   listWardenCampaignTargets,
+  resolveMissionForFettlerCampaign,
   upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
@@ -164,6 +165,26 @@ describe("Warden campaign org enrollment", () => {
     expect(body.enrolled).toHaveLength(0);
     expect(body.skipped.find((s) => s.remoteId === "200")?.reason).toBe("already_enrolled");
     expect(listWardenCampaignTargets(db, "tenant-a", "campaign-a")).toHaveLength(1);
+  });
+
+  it("creates and campaign-links a Fettler Mission on enrollment", async () => {
+    const { app, db } = fixture();
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toBeUndefined();
+
+    expect((await enroll(app)).status).toBe(200);
+
+    const mission = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a");
+    expect(mission).toBeDefined();
+    expect(mission).toMatchObject({
+      product: "fettler",
+      state: "created",
+      fettlerCampaignId: "campaign-a",
+      ownerPrincipalId: "principal:tenant-a",
+    });
+
+    // Idempotent: a second enrollment resolves the same Mission, not a new one.
+    expect((await enroll(app)).status).toBe(200);
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")?.id).toBe(mission!.id);
   });
 
   it("fails closed on unknown provider, missing connection, and wrong tenant", async () => {
