@@ -3022,7 +3022,7 @@ async function processJobsOnceUnfenced(
             });
           } catch (error) {
             console.error(
-              `  warden trajectory emit threw session=${sessionId}: ${
+              `  Fettler trajectory emit threw session=${sessionId}: ${
                 error instanceof Error ? error.message : String(error)
               }`,
             );
