@@ -12,6 +12,7 @@ export {
   normalizeNodeKind,
   normalizeEdgeKind,
   KUZU_DDL_V0,
+  GraphQuerySchema,
 } from "./schema.js";
 
 export {
