@@ -13,6 +13,16 @@ export type AdaptiveDeliveryStatus =
   | "delivered"
   | "delivery_failed";
 
+/**
+ * The delivered PR's real fate, recorded separately from the delivery-pipeline
+ * `status`. A row with `outcome === null` has NOT been decided yet (pending) and
+ * must never be read as a negative. `reverted` is modeled explicitly: a
+ * merged-then-reverted migration is a different outcome from a plain `merged`.
+ */
+export type AdaptiveDeliveryOutcome = "merged" | "closed_unmerged" | "reverted";
+
+const OUTCOMES: readonly AdaptiveDeliveryOutcome[] = ["merged", "closed_unmerged", "reverted"];
+
 export type TransformerAdaptiveDeliveryRecord = Readonly<{
   id: string;
   tenantId: string;
@@ -38,6 +48,9 @@ export type TransformerAdaptiveDeliveryRecord = Readonly<{
   deliveredAt: string | null;
   failedAt: string | null;
   lastErrorAt: string | null;
+  outcome: AdaptiveDeliveryOutcome | null;
+  outcomeAt: string | null;
+  outcomeSource: string | null;
   updatedAt: string;
 }>;
 
@@ -66,6 +79,9 @@ type DeliveryRow = {
   delivered_at: string | null;
   failed_at: string | null;
   last_error_at: string | null;
+  outcome: string | null;
+  outcome_at: string | null;
+  outcome_source: string | null;
   updated_at: string;
 };
 
@@ -159,6 +175,9 @@ function mapRow(row: DeliveryRow): TransformerAdaptiveDeliveryRecord {
   if (row.draft_pr !== null && row.draft_pr !== 1) {
     throw new Error("transformer_adaptive_delivery_corrupt");
   }
+  if (row.outcome !== null && !OUTCOMES.includes(row.outcome as AdaptiveDeliveryOutcome)) {
+    throw new Error("transformer_adaptive_delivery_corrupt");
+  }
   return Object.freeze({
     id: row.id,
     tenantId: row.tenant_id,
@@ -184,8 +203,33 @@ function mapRow(row: DeliveryRow): TransformerAdaptiveDeliveryRecord {
     deliveredAt: row.delivered_at,
     failedAt: row.failed_at,
     lastErrorAt: row.last_error_at,
+    outcome: row.outcome as AdaptiveDeliveryOutcome | null,
+    outcomeAt: row.outcome_at,
+    outcomeSource: row.outcome_source,
     updatedAt: row.updated_at,
   });
+}
+
+/**
+ * Legal outcome transitions. `null` (pending) is the start state. A closed PR
+ * can still be reopened and merged, so closed_unmerged -> merged is allowed. A
+ * revert is only meaningful after a merge, so it is reachable only from merged.
+ */
+function outcomeTransitionAllowed(
+  from: AdaptiveDeliveryOutcome | null,
+  to: AdaptiveDeliveryOutcome,
+): boolean {
+  if (from === to) return true;
+  switch (to) {
+    case "merged":
+      return from === null || from === "closed_unmerged";
+    case "closed_unmerged":
+      return from === null;
+    case "reverted":
+      return from === "merged";
+    default:
+      return false;
+  }
 }
 
 function loadRow(
@@ -691,5 +735,82 @@ export function recordAdaptiveDeliveryFailure(
       throw new Error("transformer_adaptive_delivery_failure_conflict");
     }
     return loadRow(db, fence.tenantId, fence.deliveryId)!;
+  });
+}
+
+/**
+ * Resolve a delivered Regauge adaptive delivery by the durable PR URL it recorded
+ * at delivery time. This is a deliberate cross-tenant read: a GitHub webhook
+ * carries no authenticated principal, so the tenant is derived from the matched
+ * row and used to scope the subsequent outcome write. Returns undefined when no
+ * delivered row (or more than one) owns the URL, so an ambiguous match never
+ * writes an outcome to the wrong lane.
+ */
+export function findAdaptiveDeliveryByPrUrl(
+  db: AppDb,
+  prUrl: string,
+): TransformerAdaptiveDeliveryRecord | undefined {
+  if (typeof prUrl !== "string" || !prUrl.trim()) return undefined;
+  const rows = db.raw
+    .prepare(
+      `SELECT * FROM regauge_adaptive_deliveries
+       WHERE draft_pr_url = ? AND status = 'delivered' AND draft_pr_number IS NOT NULL
+       ORDER BY requested_at DESC LIMIT 2`,
+    )
+    .all(prUrl) as DeliveryRow[];
+  return rows.length === 1 ? mapRow(rows[0]) : undefined;
+}
+
+export type RecordAdaptiveDeliveryOutcomeInput = Readonly<{
+  tenantId: string;
+  deliveryId: string;
+  outcome: AdaptiveDeliveryOutcome;
+  source: string;
+  observedAt: string;
+}>;
+
+/**
+ * Record the delivered PR's real fate against the delivery that produced it.
+ * Tenant-scoped from the caller's derived principal (never a request body), so a
+ * cross-tenant write matches no row and fails closed. Enforces the legal outcome
+ * transitions and is idempotent when the same outcome is re-delivered.
+ */
+export function recordAdaptiveDeliveryOutcome(
+  db: AppDb,
+  input: RecordAdaptiveDeliveryOutcomeInput,
+): TransformerAdaptiveDeliveryRecord {
+  const tenantId = requiredString(input.tenantId, "transformer_adaptive_delivery_tenant_invalid", 200);
+  const deliveryId = identifier(input.deliveryId, "transformer_adaptive_delivery_id_invalid");
+  if (!OUTCOMES.includes(input.outcome)) {
+    throw new Error("transformer_adaptive_delivery_outcome_invalid");
+  }
+  const source = requiredString(
+    input.source,
+    "transformer_adaptive_delivery_outcome_source_invalid",
+    500,
+  );
+  const observedAt = timestamp(input.observedAt, "transformer_adaptive_delivery_timestamp_invalid");
+
+  return inTransaction(db, () => {
+    const current = loadRow(db, tenantId, deliveryId);
+    if (!current) throw new Error("transformer_adaptive_delivery_outcome_not_found");
+    if (current.status !== "delivered" || current.draftPrNumber === null) {
+      throw new Error("transformer_adaptive_delivery_outcome_not_delivered");
+    }
+    if (current.outcome === input.outcome) return current;
+    if (!outcomeTransitionAllowed(current.outcome, input.outcome)) {
+      throw new Error("transformer_adaptive_delivery_outcome_transition_invalid");
+    }
+    const changed = db.raw
+      .prepare(
+        `UPDATE regauge_adaptive_deliveries
+         SET outcome = ?, outcome_at = ?, outcome_source = ?, updated_at = ?
+         WHERE id = ? AND tenant_id = ? AND status = 'delivered' AND outcome IS ?`,
+      )
+      .run(input.outcome, observedAt, source, observedAt, deliveryId, tenantId, current.outcome);
+    if (Number(changed.changes) !== 1) {
+      throw new Error("transformer_adaptive_delivery_outcome_conflict");
+    }
+    return loadRow(db, tenantId, deliveryId)!;
   });
 }
