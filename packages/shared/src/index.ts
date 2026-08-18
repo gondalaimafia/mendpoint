@@ -234,18 +234,65 @@ export function effectiveModelEndpointUrl(env: EnvLike = process.env): Effective
 }
 
 /**
+ * Model endpoints that carry repository content but are resolved OUTSIDE
+ * resolveAgentModelEndpoint / resolveProviderEndpoint, so effectiveModelEndpointUrl
+ * cannot see them. Boot validation must inspect these explicitly, otherwise
+ * local_only can be satisfied by the primary endpoint being private while a
+ * bespoke lane egresses to a public host (the LLM_AGENT_URL-private /
+ * LLM_REPAIR_URL-public exploit).
+ *
+ * Currently the repair planner resolves LLM_REPAIR_URL and code-impact live
+ * confirmation resolves OPENAI_API_BASE or XAI_API_BASE. These variable names
+ * are not part of the primary provider registry, so primary resolution cannot
+ * see them. This is a boot-time mirror, not the source of truth:
+ * resolve-time enforcement in the lane (enforceModelEndpointEgress at the fetch
+ * call site) is authoritative; this only lets boot validation report a would-be
+ * violation early.
+ */
+export function auxiliaryModelEgressEndpoints(env: EnvLike = process.env): string[] {
+  const endpoints = new Set<string>();
+  for (const key of [
+    "LLM_REPAIR_URL",
+    // The repair lane falls back to OPENAI_BASE_URL even when the selected
+    // primary provider has already chosen a higher-precedence LLM_AGENT_URL.
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "XAI_API_BASE",
+  ] as const) {
+    const endpoint = env[key]?.trim();
+    if (endpoint) endpoints.add(endpoint);
+  }
+  const confirmMode = env.LLM_CONFIRM_MODE?.trim().toLowerCase();
+  const confirmRequested =
+    confirmMode === "live" ||
+    env.LLM_CONFIRM === "1" ||
+    env.LLM_CONFIRM?.trim().toLowerCase() === "true";
+  if (confirmRequested) {
+    if (env.XAI_API_KEY?.trim()) {
+      endpoints.add(env.XAI_API_BASE?.trim() || "https://api.x.ai/v1");
+    } else if (env.OPENAI_API_KEY?.trim()) {
+      endpoints.add(env.OPENAI_API_BASE?.trim() || "https://api.openai.com/v1");
+    }
+  }
+  return [...endpoints];
+}
+
+/**
  * Assess the current model egress posture for boot validation and readiness.
- * When local_only is active, the endpoint the agent would actually call
- * (including a selected provider's resolved base URL or its hardcoded default)
- * must resolve to a private host; a missing endpoint is allowed (heuristic-only,
- * no egress), while a selected-but-unresolvable provider fails closed.
+ * When local_only is active, every endpoint the codebase would call for
+ * repository content must resolve to a private host: the primary endpoint the
+ * agent would use (including a selected provider's resolved base URL or its
+ * hardcoded default) and every auxiliary lane endpoint
+ * ({@link auxiliaryModelEgressEndpoints}, e.g. the repair planner's
+ * LLM_REPAIR_URL). A missing endpoint is allowed (heuristic-only, no egress),
+ * while a selected-but-unresolvable provider fails closed.
  */
 export function assessModelEgress(env: EnvLike = process.env): ModelEgressAssessment {
   const modeValid = isValidModelEgressMode(env.MENDPOINT_MODEL_EGRESS);
   const mode = modelEgressMode(env);
   const effective = effectiveModelEndpointUrl(env);
   const configured = effective.url;
-  const endpointConfigured = configured !== null;
+  let endpointConfigured = configured !== null;
   let endpointHost: string | null = null;
   let hostParseFailed = false;
   if (configured) {
@@ -261,6 +308,7 @@ export function assessModelEgress(env: EnvLike = process.env): ModelEgressAssess
   if (!modeValid) {
     violation = "model_egress_mode_invalid";
   } else if (mode === "local_only") {
+    const allowlist = parseModelLocalHosts(env.MENDPOINT_MODEL_LOCAL_HOSTS);
     if (!effective.determinable) {
       // A selected provider whose endpoint cannot be determined cannot be proven
       // to stay local, so it fails closed rather than passing.
@@ -270,14 +318,33 @@ export function assessModelEgress(env: EnvLike = process.env): ModelEgressAssess
       if (hostParseFailed) {
         violation = "warden_model_endpoint_invalid";
         localOnlySatisfied = false;
-      } else if (
-        !isPrivateModelHost(
-          endpointHost ?? "",
-          parseModelLocalHosts(env.MENDPOINT_MODEL_LOCAL_HOSTS),
-        )
-      ) {
+      } else if (!isPrivateModelHost(endpointHost ?? "", allowlist)) {
         violation = "model_egress_local_only_violation";
         localOnlySatisfied = false;
+      }
+    }
+    // Auxiliary lanes (e.g. the repair planner's LLM_REPAIR_URL) are resolved
+    // outside the primary endpoint, so check each one: a public auxiliary host
+    // is a violation even when the primary endpoint is private.
+    if (violation === null) {
+      for (const aux of auxiliaryModelEgressEndpoints(env)) {
+        let auxHost: string;
+        try {
+          auxHost = new URL(aux).hostname;
+        } catch {
+          violation = "warden_model_endpoint_invalid";
+          localOnlySatisfied = false;
+          break;
+        }
+        if (!isPrivateModelHost(auxHost, allowlist)) {
+          violation = "model_egress_local_only_violation";
+          localOnlySatisfied = false;
+          // Surface the offending auxiliary host so an operator sees which lane
+          // failed rather than only the (private) primary endpoint.
+          endpointHost = auxHost;
+          endpointConfigured = true;
+          break;
+        }
       }
     }
   }
@@ -639,10 +706,19 @@ export const HARD_MAX_PATHS = 1_000;
  * How a {@link GraphPath} walk ended. `anchor` — the walk reached a provider
  * anchor, so the path is complete. `cycle` / `max_hops` — the walk was stopped
  * by a safety bound (an import cycle, or the hop cap) and the emitted path is
- * truncated, never silently trimmed. The `cycle` / `max_hops` vocabulary
- * mirrors the dependency-path terminals in @mendpoint/graph-learn.
+ * truncated, never silently trimmed. `no_anchor` — the predecessor chain ran
+ * out before reaching an anchor (a reachable node with no predecessor, only
+ * possible on a malformed/detached predecessor map); the path is NOT complete
+ * and must never be reported as if it reached an anchor. The `cycle` /
+ * `max_hops` vocabulary mirrors the dependency-path terminals in
+ * @mendpoint/graph-learn.
  */
-export const GraphPathTerminalSchema = z.enum(["anchor", "cycle", "max_hops"]);
+export const GraphPathTerminalSchema = z.enum([
+  "anchor",
+  "cycle",
+  "max_hops",
+  "no_anchor",
+]);
 export type GraphPathTerminal = z.infer<typeof GraphPathTerminalSchema>;
 
 /**

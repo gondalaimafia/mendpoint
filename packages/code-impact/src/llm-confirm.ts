@@ -7,6 +7,7 @@
  * - Offline: LLM_CONFIRM_MODE=heuristic applies deterministic rules (CI / no keys).
  */
 import {
+  enforceModelEndpointEgress,
   fetchBoundedText,
   redactSourceForModel,
   type Confidence,
@@ -59,7 +60,10 @@ export function createBudget(max = Number(process.env.LLM_CONFIRM_MAX ?? 12)): L
 }
 
 function hasLlmKey(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(env.OPENAI_API_KEY || env.XAI_API_KEY || env.ANTHROPIC_API_KEY);
+  // This transport is OpenAI-compatible and implements only the OpenAI and xAI
+  // credential paths below. An Anthropic-only key cannot authorize either
+  // request and must not switch the lane to live mode.
+  return Boolean(env.OPENAI_API_KEY || env.XAI_API_KEY);
 }
 
 export function resolveLlmConfirmMode(
@@ -210,6 +214,13 @@ async function callOpenAiCompatible(
   ) {
     throw new Error("llm_confirm_endpoint_invalid");
   }
+  // Enforced no-egress mode: code slices may only reach a private, loopback,
+  // link-local, unique-local, or operator allowlisted model host. This lane
+  // builds its endpoint (including the hardcoded api.x.ai / api.openai.com
+  // defaults) outside resolveProviderEndpoint, so it must call the shared
+  // enforcement primitive itself. Under local_only a public default throws
+  // rather than silently egressing.
+  enforceModelEndpointEgress(endpoint.toString(), process.env);
   const configuredTimeout = Number(process.env.LLM_CONFIRM_TIMEOUT_MS ?? 30_000);
   const timeoutMs =
     Number.isSafeInteger(configuredTimeout) &&

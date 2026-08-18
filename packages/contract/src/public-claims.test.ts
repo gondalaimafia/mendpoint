@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   validatePublicClaimRegistry,
@@ -156,16 +158,41 @@ describe("public claim registry validation", () => {
     ).toBe(true);
   });
 
-  it("allows an explicitly typed proven guardrail to reference incomplete internal capability work", () => {
+  it("rejects a proven guardrail backed by incomplete or nonpublic requirements", () => {
     const input = registry();
     input.claims[0].state = "proven";
     input.claims[0].claimKind = "guardrail";
     input.claims[0].requiredQualifier = null;
-    expect(
-      validate(input, [
-        requirement({ implementationStatus: "partial", claimState: "internal_only" }),
+
+    const codes = validate(input, [
+      requirement({ implementationStatus: "partial", claimState: "internal_only" }),
+    ]).map((issue) => issue.code);
+    expect(codes).toEqual(
+      expect.arrayContaining([
+        "PROVEN_CAPABILITY_REQUIREMENT_INCOMPLETE",
+        "PROVEN_CAPABILITY_REQUIREMENT_NON_PUBLIC",
       ]),
-    ).toEqual([]);
+    );
+  });
+
+  it("does not apply the proven requirement gate to non-proven claims", () => {
+    for (const state of ["limited_availability", "preview", "roadmap"] as const) {
+      const input = registry();
+      input.claims[0].state = state;
+      input.claims[0].claimKind = "guardrail";
+      if (state === "roadmap") {
+        input.claims[0].requiredQualifier = null;
+        input.claims[0].wording = "Draft delivery guardrails are planned for supported repositories.";
+      } else {
+        input.claims[0].requiredQualifier = "supported repositories";
+        input.claims[0].wording = "On supported repositories, delivery stays draft only.";
+      }
+      const codes = validate(input, [
+        requirement({ implementationStatus: "partial", claimState: "experimental_only" }),
+      ]).map((issue) => issue.code);
+      expect(codes).not.toContain("PROVEN_CAPABILITY_REQUIREMENT_INCOMPLETE");
+      expect(codes).not.toContain("PROVEN_CAPABILITY_REQUIREMENT_NON_PUBLIC");
+    }
   });
 
   it("requires fresh live evidence bound to the exact audited revision", () => {
@@ -193,5 +220,30 @@ describe("public claim registry validation", () => {
     if (staleLive.type !== "live") throw new Error("expected live evidence");
     staleLive.freshUntil = "2026-08-02T11:59:59.000Z";
     expect(validate(stale).some((issue) => issue.code === "LIVE_EVIDENCE_STALE")).toBe(true);
+  });
+});
+
+describe("published no-auto-merge guardrail (CLM-006)", () => {
+  const repoRoot = resolve(import.meta.dirname, "../../..");
+  const publishedRegistry = JSON.parse(
+    readFileSync(resolve(repoRoot, "docs/PUBLIC_CLAIMS.json"), "utf8"),
+  ) as PublicClaimRegistry;
+
+  const clm006 = publishedRegistry.claims.find((entry) => entry.id === "CLM-006");
+
+  it("is a guardrail scoped to the availability its backing requirements support", () => {
+    expect(clm006).toBeDefined();
+    if (!clm006) throw new Error("CLM-006 is missing from the published registry");
+    expect(clm006.claimKind).toBe("guardrail");
+    // The guarantee is real, but its backing requirements (ME-WAR-004,
+    // ME-SCM-003) are still partial/experimental_only, so it cannot sit at
+    // "proven" under the corrected gate. It is published as limited_availability.
+    expect(clm006.state).not.toBe("proven");
+    expect(clm006.state).toBe("limited_availability");
+    expect(clm006.requiredQualifier).toBeTruthy();
+    expect(clm006.wording.toLowerCase()).toContain(
+      String(clm006.requiredQualifier).toLowerCase(),
+    );
+    expect(clm006.wording).toMatch(/does not merge/i);
   });
 });

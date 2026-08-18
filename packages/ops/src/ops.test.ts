@@ -445,8 +445,39 @@ describe("ops GA", () => {
     });
     expect(r.ok).toBe(false);
     expect(r.errors).toContain(
-      "MENDPOINT_MODEL_EGRESS=local_only forbids an external model endpoint; LLM_AGENT_URL must resolve to a private, loopback, link-local, or allowlisted host",
+      "MENDPOINT_MODEL_EGRESS=local_only forbids an external model endpoint; every configured model endpoint (LLM_AGENT_URL, LLM_REPAIR_URL, OPENAI_API_BASE, XAI_API_BASE, or the selected provider base URL) must resolve to a private, loopback, link-local, or allowlisted host",
     );
+  });
+
+  it("fails boot when a private LLM_AGENT_URL hides a public LLM_REPAIR_URL under local_only", () => {
+    // The repair lane resolves LLM_REPAIR_URL outside the primary endpoint, so a
+    // private agent URL must not let a public repair URL pass boot validation.
+    const r = validateApiEnv({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "http://127.0.0.1:8000",
+      LLM_REPAIR_URL: "https://public-model.invalid",
+      OPENAI_API_KEY: "test-key",
+    });
+    expect(r.ok).toBe(false);
+    expect(
+      r.errors.some((e) => e.includes("forbids an external model endpoint")),
+    ).toBe(true);
+  });
+
+  it("fails boot when a private primary model hides a public code-impact confirmation endpoint", () => {
+    for (const [name, value] of [
+      ["OPENAI_API_BASE", "https://openai-confirm.invalid/v1"],
+      ["XAI_API_BASE", "https://xai-confirm.invalid/v1"],
+    ] as const) {
+      const r = validateApiEnv({
+        MENDPOINT_MODEL_EGRESS: "local_only",
+        LLM_AGENT_URL: "http://127.0.0.1:8000",
+        [name]: value,
+      });
+      expect(r.ok).toBe(false);
+      expect(r.errors.some((error) => error.includes("forbids an external model endpoint")))
+        .toBe(true);
+    }
   });
 
   it("accepts a local model endpoint under local_only egress", () => {

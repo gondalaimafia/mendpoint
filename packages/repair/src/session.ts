@@ -21,7 +21,11 @@ import type {
   RepairSessionResult,
   VerifyResult,
 } from "./types.js";
-import { discoverVerificationCommands, runVerificationCommand } from "./verify.js";
+import {
+  discoverVerificationCommands,
+  runVerificationCommand,
+  verifierProtectedPaths,
+} from "./verify.js";
 
 const HARD_MAX_ATTEMPTS = 5;
 const HARD_MAX_ACTIONS_PER_ATTEMPT = 30;
@@ -200,9 +204,13 @@ export async function runRepairSession(
     input.verifyCommands?.length
       ? input.verifyCommands
       : discoverVerificationCommands(input.repoRoot);
-  const protectedVerifierPaths = verifyCommands
-    .map((command) => command.trim().match(/^node\s+(check\.(?:mjs|cjs|js))$/)?.[1])
-    .filter((path): path is string => Boolean(path));
+  const protectedVerifierPaths = [
+    ...new Set(
+      verifyCommands.flatMap((command) =>
+        verifierProtectedPaths(command, input.repoRoot),
+      ),
+    ),
+  ];
   const neverTouchPaths = [
     ...(input.neverTouchPaths ?? []),
     ...protectedVerifierPaths,

@@ -97,6 +97,84 @@ describe("model egress assessment", () => {
     expect(heuristicOnly.localOnlySatisfied).toBe(true);
   });
 
+  it("flags a public repair-lane LLM_REPAIR_URL even when the primary endpoint is private", () => {
+    // The exploiting configuration: a private agent URL passes the primary
+    // check, but the repair lane egresses to a public host that primary
+    // resolution never inspects.
+    const a = assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "http://127.0.0.1:8000",
+      LLM_REPAIR_URL: "https://public-model.invalid",
+    });
+    expect(a.violation).toBe("model_egress_local_only_violation");
+    expect(a.localOnlySatisfied).toBe(false);
+    expect(a.endpointHost).toBe("public-model.invalid");
+  });
+
+  it("flags public code-impact confirmation endpoints that primary provider resolution cannot see", () => {
+    for (const [name, value] of [
+      ["OPENAI_API_BASE", "https://openai-confirm.invalid/v1"],
+      ["XAI_API_BASE", "https://xai-confirm.invalid/v1"],
+    ] as const) {
+      const a = assessModelEgress({
+        MENDPOINT_MODEL_EGRESS: "local_only",
+        LLM_AGENT_URL: "http://127.0.0.1:8000",
+        [name]: value,
+      });
+      expect(a.violation).toBe("model_egress_local_only_violation");
+      expect(a.localOnlySatisfied).toBe(false);
+      expect(a.endpointHost).toBe(new URL(value).hostname);
+    }
+  });
+
+  it("flags a public OPENAI_BASE_URL hidden behind a private primary URL", () => {
+    const a = assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_PROVIDER: "muse-spark",
+      LLM_AGENT_URL: "http://127.0.0.1:8000",
+      OPENAI_BASE_URL: "https://repair-fallback.invalid/v1",
+      LLM_REPAIR_URL: "",
+    });
+    expect(a.violation).toBe("model_egress_local_only_violation");
+    expect(a.endpointHost).toBe("repair-fallback.invalid");
+  });
+
+  it("flags the public code-impact provider default when live confirmation is enabled", () => {
+    const a = assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "http://127.0.0.1:8000",
+      LLM_CONFIRM_MODE: "live",
+      OPENAI_API_KEY: "configured",
+    });
+    expect(a.violation).toBe("model_egress_local_only_violation");
+    expect(a.endpointHost).toBe("api.openai.com");
+  });
+
+  it("allows a private repair-lane LLM_REPAIR_URL under local_only", () => {
+    expect(assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "http://127.0.0.1:8000",
+      LLM_REPAIR_URL: "http://127.0.0.1:9000/v1",
+    }).violation).toBeNull();
+    expect(assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_REPAIR_URL: "https://repair.internal/v1",
+      MENDPOINT_MODEL_LOCAL_HOSTS: "repair.internal",
+    }).violation).toBeNull();
+  });
+
+  it("fails closed on an unparseable repair-lane endpoint under local_only", () => {
+    expect(assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_REPAIR_URL: "not a url",
+    }).violation).toBe("warden_model_endpoint_invalid");
+  });
+
+  it("ignores LLM_REPAIR_URL when external_allowed", () => {
+    expect(assessModelEgress({ LLM_REPAIR_URL: "https://public-model.invalid" }).violation)
+      .toBeNull();
+  });
+
   it("flags an invalid flag value and an unparseable endpoint", () => {
     expect(assessModelEgress({ MENDPOINT_MODEL_EGRESS: "on" }).violation)
       .toBe("model_egress_mode_invalid");

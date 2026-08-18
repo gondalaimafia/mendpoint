@@ -45,16 +45,21 @@ export type GenerateInput = {
  * provider->code import chain, provider anchor first. Compact by design — the
  * reviewer wants the reachability evidence, not a graph dump. A bounded path
  * (cycle / hop cap) is labelled so a truncated chain never reads as the whole
- * story; a zero-hop path is direct provider usage.
+ * story; only a zero-hop path that actually terminates at an anchor is direct
+ * provider usage.
  */
 function formatGraphPath(p: GraphPath): string {
   const chain = p.nodes.join(" → ");
-  if (p.nodes.length <= 1) return `path: \`${p.nodes[0] ?? "?"}\` (direct provider usage)`;
   const suffix = p.truncated
     ? p.terminal === "cycle"
       ? " _(truncated at an import cycle)_"
-      : ` _(truncated at the ${p.hops}-hop limit)_`
+      : p.terminal === "no_anchor"
+        ? " _(incomplete: no provider anchor reached)_"
+        : ` _(truncated at the ${p.hops}-hop limit)_`
     : "";
+  if (p.nodes.length <= 1 && !p.truncated) {
+    return `path: \`${p.nodes[0] ?? "?"}\` (direct provider usage)`;
+  }
   return `path: ${chain}${suffix}`;
 }
 
