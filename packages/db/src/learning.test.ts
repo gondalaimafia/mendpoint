@@ -19,6 +19,7 @@ import {
   deleteLearningRecord,
   grantLearningConsent,
   listEligibleLearningDatasetMembers,
+  listLearningRecordLineage,
   revokeLearningConsent,
   sealLearningDatasetVersion,
 } from "./learning.js";
@@ -580,6 +581,47 @@ describe("governed learning admission and deletion", () => {
     expect(() => db.raw.prepare("DELETE FROM learning_consents").run()).toThrow(
       "learning_consents_append_only",
     );
+  });
+
+  it("walks reverse lineage from a learning record to the datasets that consumed it", () => {
+    const db = setup();
+    grant(db);
+    const record = admit(db, "lineage", evidenceBundle(db, "tenant-a", "lineage"));
+    const version = dataset(db, "dataset-lineage");
+    addLearningDatasetMember(db, {
+      tenantId: "tenant-a",
+      datasetVersionId: version.id,
+      learningRecordId: record.id,
+      idempotencyKey: "member-lineage",
+      createdAt: later,
+    });
+
+    const lineage = listLearningRecordLineage(db, {
+      tenantId: "tenant-a",
+      learningRecordId: record.id,
+    });
+    expect(lineage.record.id).toBe(record.id);
+    expect(lineage.datasets.map((d) => d.id)).toEqual([version.id]);
+    expect(lineage.deleted).toBe(false);
+
+    // Fail-closed across tenants: the same record id is invisible to another tenant.
+    expect(() =>
+      listLearningRecordLineage(db, { tenantId: "tenant-b", learningRecordId: record.id }),
+    ).toThrow("learning_record_tenant_mismatch");
+
+    // After a deletion request the lineage still resolves but is flagged deleted.
+    deleteLearningRecord(db, {
+      id: "lineage-delete-event",
+      tenantId: "tenant-a",
+      learningRecordId: record.id,
+      reason: "Customer deletion request",
+      requestedByPrincipalId: "human-tenant-a",
+      idempotencyKey: "lineage-delete",
+      createdAt: later,
+    });
+    expect(
+      listLearningRecordLineage(db, { tenantId: "tenant-a", learningRecordId: record.id }).deleted,
+    ).toBe(true);
   });
 
   it("does not allow sealing when revocation makes a member ineligible", () => {

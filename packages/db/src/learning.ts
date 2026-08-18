@@ -975,6 +975,43 @@ export function getLearningRecord(
   );
 }
 
+export type LearningRecordLineage = {
+  record: LearningRecordRow;
+  datasets: LearningDatasetVersionRow[];
+  deleted: boolean;
+};
+
+/**
+ * Reverse lineage (spec §19.7): given a learning record, list the dataset
+ * versions that consumed it. Walks the `learning_dataset_members` join. Sealed
+ * dataset versions carry `dataset_sha256` — those are the trained artifacts /
+ * adapters derived from the record — so this is the surface an operator uses to
+ * identify what must be excluded or remediated when a record is revoked or
+ * deleted. Tenant-scoped and fail-closed: a record outside the caller's tenant
+ * is indistinguishable from a missing one (`learning_record_tenant_mismatch`).
+ */
+export function listLearningRecordLineage(
+  db: AppDb,
+  input: { tenantId: string; learningRecordId: string },
+): LearningRecordLineage {
+  const record = one<LearningRecordRow>(
+    db,
+    `SELECT * FROM learning_records WHERE id = ? AND tenant_id = ?`,
+    [input.learningRecordId, input.tenantId],
+  );
+  if (!record) throw new Error("learning_record_tenant_mismatch");
+  const datasets = many<LearningDatasetVersionRow>(
+    db,
+    `SELECT v.* FROM learning_dataset_members m
+       JOIN learning_dataset_versions v
+         ON v.id = m.dataset_version_id AND v.tenant_id = m.tenant_id
+      WHERE m.tenant_id = ? AND m.learning_record_id = ?
+      ORDER BY v.purpose, v.residency_region, v.version`,
+    [input.tenantId, input.learningRecordId],
+  );
+  return { record, datasets, deleted: recordDeleted(db, input.tenantId, record.id) };
+}
+
 function consentActiveAt(db: AppDb, consent: LearningConsentRow, atMs: number): boolean {
   if (consent.action !== "granted") return false;
   if (time(consent.effective_at, "learning_consent_effective_at") > atMs) return false;

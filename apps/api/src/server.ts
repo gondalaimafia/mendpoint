@@ -259,6 +259,8 @@ import {
   releaseBanner,
   featureMatrix,
   isProduction,
+  flushTelemetry,
+  isTelemetryEnabled,
 } from "@mendpoint/ops";
 import {
   requestIdMiddleware,
@@ -297,6 +299,7 @@ import { createWardenCampaignEnrollmentRoutes } from "./warden-campaign-enrollme
 import { createOutcomeMetricsRoutes } from "./outcome-metrics-routes.js";
 import { createDiagnosticsRoutes } from "./diagnostics-routes.js";
 import { createDashboardRoutes } from "./dashboard-routes.js";
+import { createLearningConsentRoutes } from "./learning-consent-routes.js";
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
@@ -855,6 +858,7 @@ app.route("/metrics/outcomes", createOutcomeMetricsRoutes({ db }));
 app.route("/diagnostics", createDiagnosticsRoutes({ db }));
 app.route("/metrics/dashboard", createDashboardRoutes({ db }));
 app.route("/platform/sandbox", createPlatformSandboxRoutes());
+app.route("/learning", createLearningConsentRoutes({ db }));
 
 // Persist alerts under data/
 try {
@@ -3699,29 +3703,55 @@ function closeDurableStores() {
   closeDefaultChangeSourceStore();
 }
 
+// Export buffered telemetry to OTLP on a fixed cadence so the module-level
+// buffers cannot grow unbounded between shutdowns. No-op (and no timer) when
+// telemetry is disabled; unref'd so it never keeps the process alive.
+const TELEMETRY_FLUSH_INTERVAL_MS = Math.max(
+  1_000,
+  Number(process.env.MENDPOINT_TELEMETRY_FLUSH_MS ?? 15_000),
+);
+const telemetryFlushTimer = isTelemetryEnabled()
+  ? setInterval(() => {
+      void flushTelemetry();
+    }, TELEMETRY_FLUSH_INTERVAL_MS)
+  : null;
+telemetryFlushTimer?.unref();
+
+let finalized = false;
+function finalizeAndExit() {
+  if (finalized) return;
+  finalized = true;
+  if (telemetryFlushTimer) clearInterval(telemetryFlushTimer);
+  // A final flush drains whatever accumulated since the last cadence tick.
+  // Safe when telemetry is disabled (resets buffers, never throws); the
+  // hard-cap timer in shutdown() guarantees exit even if the export stalls.
+  void flushTelemetry().finally(() => {
+    closeDurableStores();
+    process.exit(0);
+  });
+}
+
 function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[mendpoint] ${signal} — graceful shutdown`);
+  // Hard cap so a slow socket drain or telemetry export can never hang exit.
+  setTimeout(() => {
+    if (telemetryFlushTimer) clearInterval(telemetryFlushTimer);
+    closeDurableStores();
+    process.exit(0);
+  }, 5000).unref();
   try {
     // @hono/node-server Server
     const s = server as { close?: (cb?: () => void) => void };
     if (typeof s.close === "function") {
-      s.close(() => {
-        closeDurableStores();
-        process.exit(0);
-      });
-      setTimeout(() => {
-        closeDurableStores();
-        process.exit(0);
-      }, 5000).unref();
+      s.close(() => finalizeAndExit());
       return;
     }
   } catch {
     /* */
   }
-  closeDurableStores();
-  process.exit(0);
+  finalizeAndExit();
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
