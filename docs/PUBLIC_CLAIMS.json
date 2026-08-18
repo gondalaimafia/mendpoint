@@ -110,18 +110,18 @@
       "requirementIds": ["ME-WAR-004", "ME-SCM-003"],
       "surfaces": ["workflow", "security", "faq"],
       "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx", "apps/web/app/terms/page.tsx"],
-      "wording": "Draft pull requests require human review in GitHub. Mendpoint does not merge them.",
+      "wording": "On supported GitHub repositories, draft pull requests require human review, and Mendpoint does not merge them.",
       "owner": "warden",
       "evidenceOwner": "engineering",
-      "state": "proven",
+      "state": "limited_availability",
       "scope": "Current GitHub delivery runtime",
       "evidence": [
         { "id": "CLM-006-EV01", "type": "test", "locator": "packages/github/src/index.test.ts" },
         { "id": "CLM-006-EV02", "type": "document", "locator": "docs/PRODUCT_CONTRACT.md" }
       ],
       "limitations": ["Review and merge remain in GitHub"],
-      "requiredQualifier": null,
-      "lastVerifiedAt": "2026-08-01",
+      "requiredQualifier": "supported GitHub repositories",
+      "lastVerifiedAt": "2026-08-18",
       "expiresAt": null
     },
     {
