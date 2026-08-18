@@ -9,6 +9,16 @@ const BRANCH = /^(?!\/)(?!.*(?:\.\.|\/\/|@\{))[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}
 
 export type WardenCandidateDeliveryStatus = "delivery_pending" | "delivered" | "delivery_failed";
 
+/**
+ * The delivered PR's real fate, recorded separately from the delivery-pipeline
+ * `status`. A row with `outcome === null` has NOT been decided yet (pending) and
+ * must never be read as a negative. `reverted` is modeled explicitly: a
+ * merged-then-reverted migration is a different outcome from a plain `merged`.
+ */
+export type WardenCandidateDeliveryOutcome = "merged" | "closed_unmerged" | "reverted";
+
+const OUTCOMES: readonly WardenCandidateDeliveryOutcome[] = ["merged", "closed_unmerged", "reverted"];
+
 export type WardenCandidateDeliveryRecord = Readonly<{
   id: string;
   tenantId: string;
@@ -37,6 +47,9 @@ export type WardenCandidateDeliveryRecord = Readonly<{
   deliveredAt: string | null;
   failedAt: string | null;
   lastErrorAt: string | null;
+  outcome: WardenCandidateDeliveryOutcome | null;
+  outcomeAt: string | null;
+  outcomeSource: string | null;
   updatedAt: string;
 }>;
 
@@ -49,7 +62,8 @@ type Row = {
   draft_pr: number | null; draft_pr_number: number | null; draft_pr_url: string | null;
   error_code: string | null; error_message: string | null; requested_at: string;
   intent_bound_at: string | null; delivered_at: string | null; failed_at: string | null;
-  last_error_at: string | null; updated_at: string;
+  last_error_at: string | null; outcome: string | null; outcome_at: string | null;
+  outcome_source: string | null; updated_at: string;
 };
 
 function text(value: unknown, code: string, max = 2_000): string {
@@ -75,6 +89,9 @@ function map(row: Row): WardenCandidateDeliveryRecord {
   if (!["delivery_pending", "delivered", "delivery_failed"].includes(row.status)) {
     throw new Error("warden_candidate_delivery_corrupt");
   }
+  if (row.outcome !== null && !OUTCOMES.includes(row.outcome as WardenCandidateDeliveryOutcome)) {
+    throw new Error("warden_candidate_delivery_corrupt");
+  }
   return Object.freeze({
     id: row.id, tenantId: row.tenant_id, runId: row.run_id, jobId: row.job_id,
     status: row.status as WardenCandidateDeliveryStatus, repositoryId: row.repository_id,
@@ -87,8 +104,33 @@ function map(row: Row): WardenCandidateDeliveryRecord {
     draftPrUrl: row.draft_pr_url, errorCode: row.error_code, errorMessage: row.error_message,
     requestedAt: row.requested_at, intentBoundAt: row.intent_bound_at,
     deliveredAt: row.delivered_at, failedAt: row.failed_at,
-    lastErrorAt: row.last_error_at, updatedAt: row.updated_at,
+    lastErrorAt: row.last_error_at,
+    outcome: row.outcome as WardenCandidateDeliveryOutcome | null,
+    outcomeAt: row.outcome_at, outcomeSource: row.outcome_source,
+    updatedAt: row.updated_at,
   });
+}
+
+/**
+ * Legal outcome transitions. `null` (pending) is the start state. A closed PR
+ * can still be reopened and merged, so closed_unmerged -> merged is allowed. A
+ * revert is only meaningful after a merge, so it is reachable only from merged.
+ */
+function outcomeTransitionAllowed(
+  from: WardenCandidateDeliveryOutcome | null,
+  to: WardenCandidateDeliveryOutcome,
+): boolean {
+  if (from === to) return true;
+  switch (to) {
+    case "merged":
+      return from === null || from === "closed_unmerged";
+    case "closed_unmerged":
+      return from === null;
+    case "reverted":
+      return from === "merged";
+    default:
+      return false;
+  }
 }
 
 function ids(tenantId: string, runId: string) {
@@ -242,4 +284,74 @@ export function recordWardenCandidateDeliveryFailure(db: AppDb, input: {
   ).run(input.terminal ? 1 : 0, input.errorCode, input.errorMessage, input.terminal ? 1 : 0,
     input.observedAt, input.observedAt, input.observedAt, input.deliveryId, input.tenantId);
   return getWardenCandidateDelivery(db, input.tenantId, input.deliveryId)!;
+}
+
+/**
+ * Resolve a delivered Fettler candidate delivery by the durable PR URL it
+ * recorded at delivery time. This is a deliberate cross-tenant read: a GitHub
+ * webhook carries no authenticated principal, so the tenant is derived from the
+ * matched row and used to scope the subsequent outcome write. Returns undefined
+ * when no delivered row (or more than one) owns the URL, so an ambiguous match
+ * never writes an outcome to the wrong lane.
+ */
+export function findWardenCandidateDeliveryByPrUrl(
+  db: AppDb,
+  prUrl: string,
+): WardenCandidateDeliveryRecord | undefined {
+  if (typeof prUrl !== "string" || !prUrl.trim()) return undefined;
+  const rows = db.raw.prepare(
+    `SELECT * FROM fettler_candidate_deliveries
+     WHERE draft_pr_url = ? AND status = 'delivered' AND draft_pr_number IS NOT NULL
+     ORDER BY requested_at DESC LIMIT 2`,
+  ).all(prUrl) as Row[];
+  return rows.length === 1 ? map(rows[0]) : undefined;
+}
+
+/**
+ * Record the delivered PR's real fate against the delivery that produced it.
+ * Tenant-scoped from the caller's derived principal (never a request body), so a
+ * cross-tenant write matches no row and fails closed. Enforces the legal outcome
+ * transitions and is idempotent when the same outcome is re-delivered.
+ */
+export function recordWardenCandidateDeliveryOutcome(db: AppDb, input: {
+  tenantId: string; deliveryId: string; outcome: WardenCandidateDeliveryOutcome;
+  source: string; observedAt: string;
+}): WardenCandidateDeliveryRecord {
+  const tenantId = text(input.tenantId, "warden_candidate_delivery_tenant_invalid", 200);
+  const deliveryId = id(input.deliveryId, "warden_candidate_delivery_id_invalid");
+  if (!OUTCOMES.includes(input.outcome)) {
+    throw new Error("warden_candidate_delivery_outcome_invalid");
+  }
+  const source = text(input.source, "warden_candidate_delivery_outcome_source_invalid", 500);
+  const observedAt = timestamp(input.observedAt, "warden_candidate_delivery_timestamp_invalid");
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const current = getWardenCandidateDelivery(db, tenantId, deliveryId);
+    if (!current) throw new Error("warden_candidate_delivery_outcome_not_found");
+    if (current.status !== "delivered" || current.draftPrNumber === null) {
+      throw new Error("warden_candidate_delivery_outcome_not_delivered");
+    }
+    if (current.outcome === input.outcome) {
+      if (owns) db.raw.exec("COMMIT");
+      return current;
+    }
+    if (!outcomeTransitionAllowed(current.outcome, input.outcome)) {
+      throw new Error("warden_candidate_delivery_outcome_transition_invalid");
+    }
+    const changed = db.raw.prepare(
+      `UPDATE fettler_candidate_deliveries
+       SET outcome = ?, outcome_at = ?, outcome_source = ?, updated_at = ?
+       WHERE id = ? AND tenant_id = ? AND status = 'delivered' AND outcome IS ?`,
+    ).run(input.outcome, observedAt, source, observedAt, deliveryId, tenantId, current.outcome);
+    if (Number(changed.changes) !== 1) {
+      throw new Error("warden_candidate_delivery_outcome_conflict");
+    }
+    const updated = getWardenCandidateDelivery(db, tenantId, deliveryId)!;
+    if (owns) db.raw.exec("COMMIT");
+    return updated;
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }

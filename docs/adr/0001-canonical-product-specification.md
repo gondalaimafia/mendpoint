@@ -1,10 +1,10 @@
 # ADR-0001: Canonical product specification is the v2.0 platform specification
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0004
 - **Date:** 2026-08-17
 - **Author:** Claude Code
 - **Supersedes:** none
-- **Superseded by:** none
+- **Superseded by:** ADR-0004
 
 ## Context
 

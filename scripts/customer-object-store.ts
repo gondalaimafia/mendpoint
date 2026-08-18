@@ -164,15 +164,15 @@ async function runRclone(
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.on("error", rejectRun);
     child.on("exit", (code) => {
       clearTimeout(timer);
       if (code === 0) resolveRun(Buffer.concat(stdout));
       else rejectRun(new Error(`customer_backup_rclone_failed:${code ?? "signal"}:${Buffer.concat(stderr).toString("utf8").slice(0, 512)}`));
     });
-    if (stdin) child.stdin.end(stdin);
+    if (stdin) child.stdin?.end(stdin);
   });
 }
 
