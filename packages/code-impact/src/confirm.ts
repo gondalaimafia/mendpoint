@@ -16,9 +16,11 @@ import {
   createBudget,
   resolveLlmConfirmMode,
   type LlmConfirmBudget,
+  type LlmConfirmObserver,
 } from "./llm-confirm.js";
 
 export { createBudget, resolveLlmConfirmMode } from "./llm-confirm.js";
+export type { LlmCallObservation, LlmConfirmObserver } from "./llm-confirm.js";
 
 function impactTypeFor(
   ctx: ExpandedContext,
@@ -127,7 +129,12 @@ export async function llmConfirm(
 export async function confirmImpacts(
   contexts: ExpandedContext[],
   surfaces: ImpactableSurface[],
-  opts: { useLlm?: boolean; budget?: LlmConfirmBudget } = {},
+  opts: {
+    useLlm?: boolean;
+    budget?: LlmConfirmBudget;
+    /** Observer for each successful live model call (eval provenance lane). */
+    onLlmCall?: LlmConfirmObserver;
+  } = {},
 ): Promise<ConfirmedImpact[]> {
   const budget = opts.budget ?? createBudget();
   const confirmed: ConfirmedImpact[] = [];
@@ -136,7 +143,7 @@ export async function confirmImpacts(
   for (const ctx of contexts) {
     let result = staticConfirm(ctx, surfaces);
     if (useLlm && (result === null || result.confidence === "medium")) {
-      result = await confirmWithLlmBudget(ctx, surfaces, result, budget);
+      result = await confirmWithLlmBudget(ctx, surfaces, result, budget, opts.onLlmCall);
     }
     if (result) confirmed.push(result);
   }
