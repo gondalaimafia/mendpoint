@@ -105,6 +105,70 @@ function fettlerScorecard(scored: ScoredRun[], ev: ReadinessEvaluation, gates: R
   return lines.join("\n");
 }
 
+/** §29 block for the Fettler restraint (abstention / no-op) capability. */
+function fettlerAbstentionScorecard(scored: ScoredRun[], ev: ReadinessEvaluation, gates: ReadinessGatesConfig): string {
+  const cap = ev.capabilities.find((c) => c.capability === "fettler-abstention");
+  if (!cap) return "";
+  const rows = scored.filter(
+    (s) => s.record.product === "fettler" && (s.gt.correct_behavior === "abstain" || s.gt.correct_behavior === "no_op"),
+  );
+  const abstain = rows.filter((s) => s.gt.correct_behavior === "abstain");
+  const noOp = rows.filter((s) => s.gt.correct_behavior === "no_op");
+  const passed = rows.filter((s) => s.record.passed).length;
+  const { p0, p1 } = p0p1(rows);
+  const commit = rows[0]?.record.git_commit ?? "unknown";
+  const gate = gates.capabilities["fettler-abstention"] as { description?: string } | undefined;
+
+  const lines: string[] = [];
+  lines.push(`## Capability: Fettler — restraint (abstention / no-op)`);
+  lines.push("");
+  lines.push(`Readiness verdict: **${cap.verdict}** (policy ${ev.policy}).`);
+  lines.push("");
+  if (gate?.description) {
+    lines.push(gate.description);
+    lines.push("");
+  }
+  lines.push(`| criterion | measured | threshold | verdict |`);
+  lines.push(`| --- | --- | --- | --- |`);
+  for (const c of cap.criteria) {
+    const verdict = !c.measurable ? "NOT MEASURED" : c.passed ? "PASS" : "FAIL";
+    lines.push(`| ${c.name} | ${c.measured} | ${c.threshold} | ${verdict} |`);
+  }
+  lines.push("");
+  lines.push(`| field | value |`);
+  lines.push(`| --- | --- |`);
+  lines.push(field("Scenario count", `${rows.length} (abstain ${abstain.filter((s) => s.record.passed).length}/${abstain.length}, no_op ${noOp.filter((s) => s.record.passed).length}/${noOp.length}; ${passed}/${rows.length} correct)`));
+  lines.push(field("Known P0 / P1", `P0: ${p0.length ? p0.join("; ") : "none"} | P1: ${p1.length ? p1.join("; ") : "none"}`));
+  lines.push(field("Latency range", latencyRange(rows)));
+  lines.push(field("Cost range", NOT_MEASURED("LLM off on this path; no model called")));
+  lines.push(field("Required human review", "yes — an ambiguous rename is surfaced for a human decision, never auto-applied"));
+  lines.push(field("Owner", gates.owner));
+  lines.push(field("Last-validated commit", `\`${commit}\``));
+  lines.push("");
+  return lines.join("\n");
+}
+
+/** §29 block listing capabilities that have no measurable signal today. */
+function notMeasuredScorecard(gates: ReadinessGatesConfig): string {
+  const block = gates.not_measured;
+  if (!block || !block.capabilities.length) return "";
+  const out: string[] = [];
+  out.push(`## Capabilities not measured (Phase 2 gate-coverage backlog)`);
+  out.push("");
+  if (block.notes) {
+    out.push(block.notes);
+    out.push("");
+  }
+  out.push(`| capability | why not measured | experiment that would measure it | owner |`);
+  out.push(`| --- | --- | --- | --- |`);
+  for (const c of block.capabilities) {
+    const cell = (s: string): string => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
+    out.push(`| ${cell(c.capability)} | ${cell(c.reason)} | ${cell(c.experiment)} | ${cell(c.owner ?? "")} |`);
+  }
+  out.push("");
+  return out.join("\n");
+}
+
 /** One §29 block per ReGauge recipe family, scored against its own gate. */
 function regaugeFamilyScorecard(
   scored: ScoredRun[],
@@ -187,6 +251,8 @@ export function renderScorecard(
   );
   out.push("");
   out.push(fettlerScorecard(scored, ev, gates));
+  out.push(fettlerAbstentionScorecard(scored, ev, gates));
   out.push(regaugeFamilyScorecard(scored, ev, gates));
+  out.push(notMeasuredScorecard(gates));
   return out.join("\n") + "\n";
 }

@@ -119,8 +119,8 @@ export function validateDatasetRecord(value: unknown): string[] {
   if (!["positive", "negative", "coverage_gap"].includes(r.training_category as string)) {
     problems.push("training_category must be positive|negative|coverage_gap");
   }
-  if (!["development", "validation", "holdout"].includes(r.dataset_split as string)) {
-    problems.push("dataset_split must be development|validation|holdout");
+  if (!["development", "regression", "validation", "holdout"].includes(r.dataset_split as string)) {
+    problems.push("dataset_split must be development|regression|validation|holdout");
   }
   // CoT guard: forbid any field that could smuggle hidden reasoning.
   for (const banned of ["reasoning", "chain_of_thought", "thoughts", "scratchpad"]) {
