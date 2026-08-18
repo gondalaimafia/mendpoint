@@ -50,6 +50,20 @@
       "PaymentsClient (@JsonProperty source)",
       "-> ChargeService, SettlementService",
       "-> SettlementSweepJob (@Scheduled)"
+    ],
+    "importChainPaths": [
+      [
+        "src/main/java/com/acme/settlement/payments/PaymentsClient.java",
+        "src/main/java/com/acme/settlement/charge/ChargeService.java"
+      ],
+      [
+        "src/main/java/com/acme/settlement/payments/PaymentsClient.java",
+        "src/main/java/com/acme/settlement/settlement/SettlementService.java"
+      ],
+      [
+        "src/main/java/com/acme/settlement/payments/PaymentsClient.java",
+        "src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java"
+      ]
     ]
   },
   "tags": [

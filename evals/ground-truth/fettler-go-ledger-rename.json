@@ -48,6 +48,24 @@
       "internal/payments (ChargeRequest.Source json:\"source\")",
       "-> internal/ledger, internal/settlement, internal/worker",
       "-> cmd/ledger/main.go"
+    ],
+    "importChainPaths": [
+      [
+        "internal/payments/client.go",
+        "internal/ledger/ledger.go"
+      ],
+      [
+        "internal/payments/client.go",
+        "internal/settlement/settlement.go"
+      ],
+      [
+        "internal/payments/client.go",
+        "internal/worker/worker.go"
+      ],
+      [
+        "internal/payments/client.go",
+        "cmd/ledger/main.go"
+      ]
     ]
   },
   "tags": [

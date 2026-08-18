@@ -41,6 +41,25 @@
       "-> checkoutService.ts / subscriptionService.ts (build request)",
       "-> src/jobs/tasks.ts (SettlementTask.request: MeridianChargeRequest)",
       "-> src/jobs/settlementJob.ts (reads task.request.source)"
+    ],
+    "importChainPaths": [
+      [
+        "src/infra/providers/meridian/client.ts",
+        "src/services/checkoutService.ts"
+      ],
+      [
+        "src/infra/providers/meridian/client.ts",
+        "src/services/subscriptionService.ts"
+      ],
+      [
+        "src/infra/providers/meridian/client.ts",
+        "src/jobs/tasks.ts",
+        "src/jobs/settlementJob.ts"
+      ],
+      [
+        "src/infra/providers/meridian/client.ts",
+        "test/fixtures/charges.ts"
+      ]
     ]
   },
   "tags": [
