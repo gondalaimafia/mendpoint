@@ -38,6 +38,7 @@ const run = (over: Partial<RunRecord>): RunRecord => ({
   estimated_cost_usd: null,
   activity: { filesExamined: 5, candidateCount: 5, confirmedCount: 3 },
   findings: ["a.ts"],
+  findingGraphPaths: [],
   confidence: "high",
   produced_edit: false,
   grader_results: [{ dimension: "expected_findings_recall", passed: true, score: 1, detail: "" }],

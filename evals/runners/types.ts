@@ -9,8 +9,10 @@
  * We NEVER capture model chain-of-thought or hidden reasoning — only observable
  * inputs, outputs, tool/analysis interactions, and outcomes.
  */
+import type { GraphPath } from "@mendpoint/shared";
 import type { FailureCategory, Severity } from "../graders/taxonomy.js";
 import type { Product } from "../ground-truth/schema.js";
+import type { ImportChainGrade } from "../graders/import-chain-graders.js";
 
 /** One graded dimension result. */
 export interface GraderResult {
@@ -76,6 +78,16 @@ export interface RunRecord {
   activity: AnalysisActivity;
   /** Files the product flagged / would change (repo-relative, posix). */
   findings: string[];
+  /**
+   * Provider->code path behind each confident finding that carried one (FET-016,
+   * spec 8.8). The product emits a {@link GraphPath} per reachable finding; the
+   * runner used to map `report.sites` down to file paths only and DISCARD this,
+   * so the relationship evidence the product already computes never reached the
+   * persisted record. Now persisted, keyed by the finding's repo-relative posix
+   * `filePath`. A finding ABSENT from this list computed no path ("not computed",
+   * never "no path") — the importChain grader treats that as honest-absence.
+   */
+  findingGraphPaths: { filePath: string; graphPath: GraphPath }[];
   /** Overall confidence the product reported, when it reports one. */
   confidence: string | null;
   /** Whether the product produced/attempted an edit or PR (observable). */
@@ -88,6 +100,15 @@ export interface RunRecord {
   passed: boolean;
   /** Dimensions the harness could not measure for this scenario. */
   unmeasured_dimensions: string[];
+  /**
+   * Relationship-path grade for this run (importChain grader), when the scenario
+   * carries a structured `importChainPaths` key. STRICTLY ADDITIVE and
+   * NON-GATING: its results and classified disagreements live here only. They
+   * are never merged into {@link RunRecord.failures} or {@link RunRecord.passed},
+   * so readiness gates (which read findings, passed, and P0 failures) and every
+   * existing scenario verdict are unaffected. Absent when the scenario has no key.
+   */
+  importChainGrade?: ImportChainGrade;
   /** Set when the product invocation threw. */
   error?: string;
 }

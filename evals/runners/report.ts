@@ -165,6 +165,50 @@ export function renderLatestReport(scored: ScoredRun[]): string {
   }
   out.push("");
 
+  // Relationship-path accuracy (importChain grader). ADDITIVE and non-gating:
+  // read only from record.importChainGrade, which never feeds readiness gates or
+  // scenario verdicts. Absent paths are reported as such, never as wrong.
+  const icRows = fettler.filter((s) => s.record.importChainGrade?.applicable);
+  out.push(`## Relationship-path accuracy (importChain grader)`);
+  out.push("");
+  if (icRows.length === 0) {
+    out.push(
+      `No scenario in this run carries a structured \`importChainPaths\` key, so relationship-path accuracy is unmeasured here.`,
+    );
+  } else {
+    out.push(
+      `Grades the provider->code \`GraphPath\` the product emits per finding (exposed as of PR #200) against the hand-derived \`blast_radius_truth.importChainPaths\` key. An ABSENT path means "not computed" and is never scored as wrong; a \`cycle\`/\`max_hops\` path is a bounded answer graded against its permitted suffix. Small denominator by design — only ${icRows.length} scenario(s) carry a key.`,
+    );
+    out.push("");
+    out.push(`| scenario | paths | exact | wrong-route | wrong-anchor | self-anchor | bounded-ok | bounded-div | absent |`);
+    out.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
+    const tot = { expectedPaths: 0, exact: 0, reachedAnchorWrongRoute: 0, wrongAnchor: 0, selfAnchor: 0, boundedOk: 0, boundedDivergent: 0, absent: 0 };
+    for (const s of icRows) {
+      const m = s.record.importChainGrade!.summary;
+      tot.expectedPaths += m.expectedPaths;
+      tot.exact += m.exact;
+      tot.reachedAnchorWrongRoute += m.reachedAnchorWrongRoute;
+      tot.wrongAnchor += m.wrongAnchor;
+      tot.selfAnchor += m.selfAnchor;
+      tot.boundedOk += m.boundedOk;
+      tot.boundedDivergent += m.boundedDivergent;
+      tot.absent += m.absent;
+      out.push(
+        `| ${s.record.scenario_id} | ${m.expectedPaths} | ${m.exact} | ${m.reachedAnchorWrongRoute} | ${m.wrongAnchor} | ${m.selfAnchor} | ${m.boundedOk} | ${m.boundedDivergent} | ${m.absent} |`,
+      );
+    }
+    out.push(
+      `| **total** | ${tot.expectedPaths} | ${tot.exact} | ${tot.reachedAnchorWrongRoute} | ${tot.wrongAnchor} | ${tot.selfAnchor} | ${tot.boundedOk} | ${tot.boundedDivergent} | ${tot.absent} |`,
+    );
+    const traced = tot.expectedPaths - tot.absent - tot.selfAnchor;
+    const correct = tot.exact + tot.boundedOk;
+    out.push("");
+    out.push(
+      `Of ${tot.expectedPaths} expected path(s): ${tot.absent} absent (no path computed), ${tot.selfAnchor} self-anchor (single-node, finding treated as its own anchor) — neither traced a relationship; ${traced} were traced as multi-node paths, of which ${correct} matched the expected route (${pct(correct, traced)}). Absent and self-anchor are reported, never scored as wrong. This is a measurement channel only — it does not gate readiness.`,
+    );
+  }
+  out.push("");
+
   out.push(`## ReGauge`);
   out.push("");
   out.push(`Scenarios: ${regauge.length}, passed ${regauge.filter((s) => s.record.passed).length} (${pct(regauge.filter((s) => s.record.passed).length, regauge.length)})`);

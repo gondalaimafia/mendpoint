@@ -31,6 +31,7 @@ import type { ImpactReport } from "@mendpoint/shared";
 import type { ScenarioConfig } from "../scenarios/index.js";
 import type { GroundTruth } from "../ground-truth/schema.js";
 import { gradeFettler } from "../graders/fettler-graders.js";
+import { gradeImportChain, type ObservedFindingPath } from "../graders/import-chain-graders.js";
 import { stageRepo } from "./stage.js";
 import type { RunRecord } from "./types.js";
 
@@ -74,6 +75,7 @@ export async function runFettler(
     estimated_cost_usd: null,
     activity: { filesExamined: 0 },
     findings: [],
+    findingGraphPaths: [],
     confidence: null,
     produced_edit: false,
     grader_results: [],
@@ -128,6 +130,29 @@ export async function runFettler(
 
     const grade = gradeFettler(flagged, gt);
 
+    // Wire the provider->code paths the product computed into the record — they
+    // used to be discarded here (only file paths survived). Dedupe by posix
+    // filePath, preferring the site that carries a path. This is the raw evidence
+    // channel; the importChain grade below reads from it.
+    const pathByFile = new Map<string, ObservedFindingPath>();
+    for (const s of report.sites) {
+      const fp = toPosix(s.filePath);
+      const existing = pathByFile.get(fp);
+      if (!existing || (s.graphPath && !existing.graphPath)) {
+        pathByFile.set(fp, { filePath: fp, graphPath: s.graphPath });
+      }
+    }
+    const observedPaths = [...pathByFile.values()];
+    const findingGraphPaths = observedPaths
+      .filter((o): o is Required<ObservedFindingPath> => o.graphPath !== undefined)
+      .sort((a, b) => a.filePath.localeCompare(b.filePath));
+
+    // Relationship-path grade. STRICTLY ADDITIVE: its results are attached under
+    // `importChainGrade` and its (informational) grader_results are appended, but
+    // it never contributes to `passed` or to `failures`, so readiness gates and
+    // every existing scenario verdict are provably unaffected.
+    const importChainGrade = gradeImportChain(observedPaths, gt);
+
     return {
       ...base,
       latency_ms: Date.now() - started,
@@ -145,11 +170,15 @@ export async function runFettler(
         ],
       },
       findings: flagged,
+      findingGraphPaths,
       confidence: report.overallConfidence,
       produced_edit: false,
-      grader_results: grade.grader_results,
+      grader_results: importChainGrade.applicable
+        ? [...grade.grader_results, ...importChainGrade.grader_results]
+        : grade.grader_results,
       failures: grade.failures,
       passed: grade.passed,
+      ...(importChainGrade.applicable ? { importChainGrade } : {}),
     };
   } catch (err) {
     // A crash is itself a graded outcome (robustness), not a broken script.

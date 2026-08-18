@@ -147,6 +147,7 @@ function runIsolated(
     estimated_cost_usd: null,
     activity: { filesExamined: 0, notes: [timedOut ? `exceeded ${cfg.budgetMs}ms budget; hard-killed` : "child produced no record"] },
     findings: [],
+    findingGraphPaths: [],
     confidence: null,
     produced_edit: false,
     grader_results: [
