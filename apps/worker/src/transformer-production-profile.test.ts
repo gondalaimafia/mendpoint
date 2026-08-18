@@ -24,6 +24,12 @@ describe("Transformer production profile", () => {
     expect(manifest).toContain(
       '[experimental]\n  entrypoint = ["/app/scripts/start-transformer-entrypoint.sh"]',
     );
+    expect(manifest).toContain(
+      '[[vm]]\n  processes = ["coordinator"]\n  size = "shared-cpu-1x"\n  memory = "2gb"',
+    );
+    expect(manifest).not.toContain(
+      '[[vm]]\n  processes = ["coordinator"]\n  size = "shared-cpu-2x"',
+    );
   });
 
   it("accepts the exact coordinator and worker production boundaries", () => {

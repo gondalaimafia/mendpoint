@@ -71,7 +71,7 @@ kill_timeout = 45
 
 [[vm]]
   processes = ["coordinator"]
-  size = "shared-cpu-2x"
+  size = "shared-cpu-1x"
   memory = "2gb"
 
 [[vm]]

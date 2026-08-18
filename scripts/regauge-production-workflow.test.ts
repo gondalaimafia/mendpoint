@@ -188,6 +188,12 @@ describe("Regauge production workflow", () => {
     expect(coordinatorHealthIndex).toBeGreaterThan(coordinatorIndex);
     expect(workerIndex).toBeGreaterThan(coordinatorHealthIndex);
     expect(steps[coordinatorIndex].run).toContain("--process-groups coordinator");
+    expect(steps[coordinatorIndex].run).toContain("for attempt in 1 2 3");
+    expect(steps[coordinatorIndex].run).toContain('test "$attempt" -lt 3');
+    expect(steps[coordinatorIndex].run).toContain("sleep 15");
+    expect(steps[coordinatorIndex].run).toContain(
+      "insufficient resources to create new machine with existing volume",
+    );
     expect(steps[workerIndex].run).toContain("--process-groups worker");
     expect(steps[coordinatorHealthIndex].run).toContain(
       "https://mendpoint-transformer-pilot.fly.dev/version",
