@@ -149,6 +149,31 @@ describe("AgentVerifier", () => {
     expect(result.suggestedCandidateId).toBeNull();
     expect(result.effectiveCandidateId).toBe("candidate_a");
   });
+
+  it("fails closed on malformed backend scores and usage before recording a preference", async () => {
+    const malformed: VerifierBackend = {
+      descriptor: backend.descriptor,
+      score: async (input) => ({
+        requestId: input.requestId,
+        scores: Object.fromEntries(input.candidates.map((candidate) => [candidate.candidateId, Number.NaN])),
+        criterionId: input.criterion.id,
+        rawResponseDigest: digest("f"),
+        recognizedProbabilityMass: 1,
+        usage: { inputTokens: 10, cachedInputTokens: 11, outputTokens: 2, reasoningTokens: 0, totalTokens: 12 },
+        estimatedCostUsd: 0.001,
+        latencyMs: 10,
+      }),
+    };
+    const verifier = createAgentVerifier({ enabled: true, rolloutMode: "shadow", backend: malformed, evaluations: 1, pivots: 1, seed: 0, maximumCandidates: 5 });
+    const result = await verifier.verify(verifyInput());
+    expect(result).toMatchObject({
+      status: "failed",
+      suggestedCandidateId: null,
+      effectiveCandidateId: "candidate_a",
+      behaviorChanged: false,
+    });
+    expect(Object.keys(result.telemetry.candidateScores)).toHaveLength(0);
+  });
 });
 
 describe("verification policy", () => {

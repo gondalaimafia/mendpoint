@@ -189,4 +189,19 @@ describe("DeepSeek verifier backend", () => {
     const result = await backend.score(request());
     expect(result.scores.candidate_a).toBeLessThan(0.1);
   });
+
+  it("rejects a truncated score distribution with insufficient recognized probability mass", async () => {
+    const response = structuredClone(okResponse);
+    response.body.choices[0]!.logprobs.content[3]!.top_logprobs = [
+      { token: "A", logprob: -10 }, { token: "T", logprob: -10 },
+    ];
+    const backend = createDeepSeekVerifierBackend({
+      apiKey: "key", transport: { request: async () => response }, scoringMode: "nonthinking_logprobs",
+      timeoutMs: 1000, maximumRetries: 0,
+      pricing: { version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 },
+    });
+    await expect(backend.score(request())).rejects.toThrow(
+      "verifier_logprob_probability_mass_insufficient",
+    );
+  });
 });

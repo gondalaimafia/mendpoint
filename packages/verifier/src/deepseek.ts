@@ -24,6 +24,7 @@ import {
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const MAX_RESPONSE_BYTES = 1024 * 1024;
+const MIN_RECOGNIZED_SCORE_PROBABILITY_MASS = 0.5;
 
 export type DeepSeekVerifierBackendConfig = Readonly<{
   apiKey: string;
@@ -318,7 +319,11 @@ function extractScores(body: ParsedBody, input: VerifierBackendScoreInput): { va
     values[candidates[index]!.candidateId] = reward.value;
     masses.push(reward.recognizedProbabilityMass);
   }
-  return { values: Object.freeze(values), recognizedProbabilityMass: Math.min(...masses) };
+  const recognizedProbabilityMass = Math.min(...masses);
+  if (recognizedProbabilityMass < MIN_RECOGNIZED_SCORE_PROBABILITY_MASS) {
+    fail("verifier_logprob_probability_mass_insufficient");
+  }
+  return { values: Object.freeze(values), recognizedProbabilityMass };
 }
 
 function normalizeUsage(usage: ParsedBody["usage"]): VerifierUsage {

@@ -13,7 +13,7 @@ import type {
 } from "./types.js";
 import { filterDeterministicCandidates } from "./evidence.js";
 import { bradleyTerryWinProbability, buildPivotTournamentSchedule, verifierScoreIdentity } from "./tournament.js";
-import { canonicalJson, codeUnitCompare, deepFreeze, exactIso, fail, identifier, sha256 } from "./utils.js";
+import { canonicalJson, codeUnitCompare, deepFreeze, exactDigest, exactIso, fail, identifier, sha256 } from "./utils.js";
 
 export type AgentVerifierConfig = Readonly<{
   enabled: boolean;
@@ -228,11 +228,11 @@ async function scoreCandidates(
           signal,
         } as const;
         const cached = config.scoreCache?.get(requestId);
-        const response = cached ?? await config.backend.score(backendInput);
-        if (response.requestId !== requestId || response.criterionId !== criterion.id ||
-          slots.some((candidate) => response.scores[candidate.candidateId] === undefined)) {
-          fail("verifier_cache_or_backend_identity_mismatch");
-        }
+        const response = validateBackendScore(cached ?? await config.backend.score(backendInput), {
+          requestId,
+          criterionId: criterion.id,
+          candidateIds: slots.map(({ candidateId }) => candidateId),
+        });
         if (!cached) config.scoreCache?.put(requestId, deepFreeze(structuredClone(response)));
         accumulateTotals(totals, response);
         if (totals.cost > config.maximumCostUsd) fail("verifier_budget_exceeded");
@@ -264,6 +264,43 @@ async function scoreCandidates(
     for (const edge of complete.pivot) await scoreOnePair(byId.get(edge.candidateAId)!, byId.get(edge.candidateBId)!);
   }
   return Object.freeze(Object.fromEntries(Object.keys(scores).sort(codeUnitCompare).map((candidateId) => [candidateId, masses[candidateId]! ? scores[candidateId]! / masses[candidateId]! : 0])));
+}
+
+function validateBackendScore(
+  response: VerifierBackendScore,
+  expected: Readonly<{ requestId: string; criterionId: string; candidateIds: readonly string[] }>,
+): VerifierBackendScore {
+  if (!response || typeof response !== "object" || Array.isArray(response) ||
+    response.requestId !== expected.requestId || response.criterionId !== expected.criterionId) {
+    fail("verifier_cache_or_backend_identity_mismatch");
+  }
+  if (!response.scores || typeof response.scores !== "object" || Array.isArray(response.scores)) {
+    fail("verifier_backend_scores_invalid");
+  }
+  const scoreIds = Object.keys(response.scores).sort(codeUnitCompare);
+  const expectedIds = [...expected.candidateIds].sort(codeUnitCompare);
+  if (canonicalJson(scoreIds) !== canonicalJson(expectedIds) ||
+    scoreIds.some((candidateId) => {
+      const score = response.scores[candidateId];
+      return !Number.isFinite(score) || score! < 0 || score! > 1;
+    })) fail("verifier_backend_scores_invalid");
+  exactDigest(response.rawResponseDigest, "verifier_backend_response_digest_invalid");
+  if (!Number.isFinite(response.recognizedProbabilityMass) ||
+    response.recognizedProbabilityMass < 0.5 || response.recognizedProbabilityMass > 1.000001) {
+    fail("verifier_logprob_probability_mass_insufficient");
+  }
+  const usage = response.usage;
+  if (!usage || [usage.inputTokens, usage.cachedInputTokens, usage.outputTokens, usage.reasoningTokens, usage.totalTokens]
+    .some((value) => !Number.isSafeInteger(value) || value < 0) ||
+    usage.cachedInputTokens > usage.inputTokens || usage.reasoningTokens > usage.outputTokens ||
+    usage.totalTokens !== usage.inputTokens + usage.outputTokens) {
+    fail("verifier_backend_usage_invalid");
+  }
+  if (!Number.isFinite(response.estimatedCostUsd) || response.estimatedCostUsd < 0 ||
+    !Number.isFinite(response.latencyMs) || response.latencyMs < 0) {
+    fail("verifier_backend_accounting_invalid");
+  }
+  return deepFreeze(structuredClone(response));
 }
 
 function emptyTotals(): MutableTotals {
