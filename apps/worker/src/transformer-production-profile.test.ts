@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import {
@@ -9,6 +11,17 @@ const approval = `approval:regauge:tenant-a:campaign-a:repository:123456:revisio
 const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [approval] }] });
 
 describe("Transformer production profile", () => {
+  it("forces Fly to run the hardened transformer entrypoint", () => {
+    const manifest = readFileSync(
+      resolve(import.meta.dirname, "../../../fly.transformer.toml"),
+      "utf8",
+    ).replaceAll("\r\n", "\n");
+
+    expect(manifest).toContain(
+      '[experimental]\n  entrypoint = ["/app/scripts/start-transformer-entrypoint.sh"]',
+    );
+  });
+
   it("accepts the exact coordinator and worker production boundaries", () => {
     expect(validateTransformerProductionProfile(environment(), "coordinator")).toEqual({ role: "coordinator", tenantId: "tenant-a", campaignId: "campaign-a", environment: "production" });
     expect(validateTransformerProductionProfile(environment(), "worker")).toEqual({

@@ -200,6 +200,22 @@ describe("Regauge production workflow", () => {
     ).toBe(false);
   });
 
+  it("bounds every public deployment health request", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const steps = workflow.jobs.deploy.steps as Record<string, any>[];
+
+    for (const name of [
+      "Verify coordinator revision and health",
+      "Verify exact deployed revision and process health",
+    ]) {
+      const run = steps.find((step) => step.name === name)?.run as string;
+      expect(run).toBeDefined();
+      expect(run.match(/curl --fail --silent --max-time 10/g)).toHaveLength(2);
+    }
+  });
+
   it("keeps the readiness soak within the protected activation window", () => {
     const workflow = parse(
       readFileSync(".github/workflows/regauge-production.yml", "utf8"),

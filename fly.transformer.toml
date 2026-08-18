@@ -7,6 +7,9 @@ kill_timeout = 45
   dockerfile = "Dockerfile"
   target = "transformer"
 
+[experimental]
+  entrypoint = ["/app/scripts/start-transformer-entrypoint.sh"]
+
 [processes]
   coordinator = "node --import tsx scripts/start-transformer-role.mjs coordinator"
   worker = "node --import tsx scripts/start-transformer-role.mjs worker"
