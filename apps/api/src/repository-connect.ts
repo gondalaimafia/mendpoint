@@ -16,6 +16,7 @@
  * real GitHub credentials.
  */
 import { execFileSync } from "node:child_process";
+import { Buffer } from "node:buffer";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -82,21 +83,6 @@ function git(cwd: string, token: string | undefined, args: readonly string[]): s
   }
 }
 
-function gitClone(
-  token: string | undefined,
-  args: readonly string[],
-): void {
-  try {
-    execFileSync("git", ["clone", ...args], {
-      encoding: "utf8",
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch (cause) {
-    throw new Error(`repository_clone_git_failed:${scrubToken(gitErrorSummary(cause), token)}`);
-  }
-}
-
 function gitErrorSummary(cause: unknown): string {
   const stderr = (cause as { stderr?: unknown } | null)?.stderr;
   if (typeof stderr === "string" && stderr.trim()) return stderr.trim().split("\n")[0]!;
@@ -107,21 +93,71 @@ function scrubToken(message: string, token: string | undefined): string {
   return token ? message.split(token).join("***") : message;
 }
 
+function scrubSecrets(message: string, secrets: readonly string[]): string {
+  return secrets.reduce((scrubbed, secret) =>
+    secret ? scrubbed.split(secret).join("***") : scrubbed, message);
+}
+
 function cloneUrl(
   provider: ConnectProvider,
   owner: string,
   name: string,
-  token: string | undefined,
 ): string {
   if (provider === "github") {
-    const auth = token ? `x-access-token:${token}@` : "";
-    return `https://${auth}github.com/${owner}/${name}.git`;
+    return `https://github.com/${owner}/${name}.git`;
   }
   if (provider === "gitlab") {
-    const auth = token ? `oauth2:${token}@` : "";
-    return `https://${auth}gitlab.com/${owner}/${name}.git`;
+    return `https://gitlab.com/${owner}/${name}.git`;
   }
   throw new Error("local_git_clone_unsupported");
+}
+
+export type RepositoryGitExecutor = (input: Readonly<{
+  cwd?: string;
+  args: readonly string[];
+  env?: Readonly<Record<string, string>>;
+}>) => string;
+
+const executeRepositoryGit: RepositoryGitExecutor = (input) =>
+  execFileSync("git", [...input.args], {
+    cwd: input.cwd,
+    encoding: "utf8",
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: input.env ? { ...process.env, ...input.env } : process.env,
+  }).trim();
+
+function repositoryGit(
+  executor: RepositoryGitExecutor,
+  input: Parameters<RepositoryGitExecutor>[0],
+  secrets: readonly string[],
+): string {
+  try {
+    return executor(input);
+  } catch (cause) {
+    throw new Error(
+      `repository_clone_git_failed:${scrubSecrets(gitErrorSummary(cause), secrets)}`,
+    );
+  }
+}
+
+function repositoryGitAuth(
+  provider: ConnectProvider,
+  token: string,
+): Readonly<{ env: Readonly<Record<string, string>>; redactions: readonly string[] }> {
+  const user = provider === "github" ? "x-access-token" : "oauth2";
+  const encodedCredential = Buffer.from(`${user}:${token}`, "utf8").toString("base64");
+  const header = `Authorization: Basic ${encodedCredential}`;
+  return Object.freeze({
+    env: Object.freeze({
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "http.extraHeader",
+      GIT_CONFIG_VALUE_0: header,
+      GIT_TERMINAL_PROMPT: "0",
+      GCM_INTERACTIVE: "Never",
+    }),
+    redactions: Object.freeze([token, encodedCredential, header]),
+  });
 }
 
 /**
@@ -161,22 +197,49 @@ export const mockFixtureClone: RepositoryCheckoutCloner = async (request) => {
  * token. Code-complete; only runs when real GitHub App credentials are wired. The
  * token is scrubbed from the stored remote so it never persists on disk.
  */
-export const realGitClone: RepositoryCheckoutCloner = async (request) => {
-  const { destination, provider, owner, name, branch } = request;
-  const token = request.tokenProvider ? await request.tokenProvider() : undefined;
-  if (!token) throw new Error("repository_clone_token_required");
-  const authedUrl = cloneUrl(provider, owner, name, token);
-  const scrubbedUrl = cloneUrl(provider, owner, name, undefined);
-  if (existsSync(join(destination, ".git"))) {
-    git(destination, token, ["remote", "set-url", "origin", authedUrl]);
-    git(destination, token, ["fetch", "--depth", "1", "origin", branch]);
-    git(destination, token, ["checkout", "-B", branch, "FETCH_HEAD"]);
-  } else {
-    mkdirSync(dirname(destination), { recursive: true });
-    gitClone(token, ["--depth", "1", "--branch", branch, "--single-branch", authedUrl, destination]);
-  }
-  git(destination, token, ["remote", "set-url", "origin", scrubbedUrl]);
-};
+export function createRealGitClone(
+  executor: RepositoryGitExecutor = executeRepositoryGit,
+): RepositoryCheckoutCloner {
+  return async (request) => {
+    const { destination, provider, owner, name, branch } = request;
+    const token = request.tokenProvider ? await request.tokenProvider() : undefined;
+    if (!token) throw new Error("repository_clone_token_required");
+    const remoteUrl = cloneUrl(provider, owner, name);
+    const auth = repositoryGitAuth(provider, token);
+    if (existsSync(join(destination, ".git"))) {
+      repositoryGit(executor, {
+        cwd: destination,
+        args: ["remote", "set-url", "origin", remoteUrl],
+      }, auth.redactions);
+      repositoryGit(executor, {
+        cwd: destination,
+        args: ["fetch", "--depth", "1", "origin", branch],
+        env: auth.env,
+      }, auth.redactions);
+      repositoryGit(executor, {
+        cwd: destination,
+        args: ["checkout", "-B", branch, "FETCH_HEAD"],
+      }, auth.redactions);
+    } else {
+      mkdirSync(dirname(destination), { recursive: true });
+      repositoryGit(executor, {
+        args: [
+          "clone",
+          "--depth",
+          "1",
+          "--branch",
+          branch,
+          "--single-branch",
+          remoteUrl,
+          destination,
+        ],
+        env: auth.env,
+      }, auth.redactions);
+    }
+  };
+}
+
+export const realGitClone = createRealGitClone();
 
 export function defaultCheckoutCloner(
   env: NodeJS.ProcessEnv = process.env,
