@@ -198,6 +198,7 @@ function admitFettlerGoverned(db: AppDb, consentId: string, runId: string, repos
     outcome: { status: "corrected", summary: "The repair passed objective verification.", attribution: "model_behavior" },
     reviewerDecision: "accepted",
     correctionSubstantive: true,
+    contaminationFree: true,
     confidence: 0.9,
     verificationAuthority: { signalClass: "hard", producedBy: "sandbox_command", producerModelId: null },
     economics: { inputTokens: 100, outputTokens: 20, latencyMs: 500, costUsd: 0.01 },

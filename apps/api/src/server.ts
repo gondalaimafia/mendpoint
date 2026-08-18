@@ -216,7 +216,7 @@ import {
   type CiHarnessEvidence,
 } from "./ci-check.js";
 import { FeedbackOutcomeSchema, newId, nowIso, resolveRenamedEnv } from "@mendpoint/shared";
-import { notifyWardenEvent } from "@mendpoint/notify";
+import { notifyWardenEvent, pageReadiness } from "@mendpoint/notify";
 import {
   parseWardenRunInput,
   resolveWardenUseLlm,
@@ -893,6 +893,11 @@ app.get("/live", (c) => c.json(liveness()));
 
 app.get("/ready", (c) => {
   const r = apiReadiness();
+  // Best-effort page when readiness is failing. Fire-and-forget so a paging
+  // outage can never delay or break the probe response; no-op when the probe is
+  // healthy or no paging sink is configured. Fly polls /ready, so this is the
+  // unattended trigger a `readiness_fail` page needs.
+  void pageReadiness(r).catch(() => undefined);
   return c.json(r, r.status === "fail" ? 503 : 200);
 });
 
