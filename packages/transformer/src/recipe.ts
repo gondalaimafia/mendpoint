@@ -3498,9 +3498,7 @@ function preconditionState(
     };
   }
 
-  const majors = [...content.matchAll(/^\s*FROM\s+node:(\d+)(?=[.\-\s]|$)/gim)].map(
-    (match) => Number(match[1]),
-  );
+  const majors = dockerNodeMajors(content);
   if (!majors.length) return { state: "neutral" };
   if (majors.every((major) => major === precondition.major)) return { state: "source" };
   if (
@@ -3526,19 +3524,82 @@ function isDockerfileShapedPath(path: string): boolean {
   return /^Dockerfile(\..+)?$/i.test(base) || /\.Dockerfile$/i.test(base);
 }
 
+// Parse every `FROM node:<major>` base-image major in a Dockerfile. This is the
+// single shared parser for both the root-file precondition classification and the
+// whole-snapshot residual scan, so the two never drift. It understands the same
+// surface `RUNTIME_DECLARATIONS_SCRIPT` accepts: an optional build flag such as
+// `--platform=linux/amd64` between `FROM` and the image, and a trailing digest
+// pin `node:18@sha256:...` (the `@` is part of the terminating lookahead).
 function dockerNodeMajors(content: string): number[] {
-  return [...content.matchAll(/^\s*FROM\s+node:(\d+)(?=[.\-\s]|$)/gim)].map((match) =>
-    Number(match[1]),
-  );
+  return [
+    ...content.matchAll(/^\s*FROM(?:\s+--\S+)*\s+node:(\d+)(?=[.\-@\s]|$)/gim),
+  ].map((match) => Number(match[1]));
+}
+
+// Extract the Node major a runtime/engine selector pins to. Handles the bare
+// major (`18`), wildcard (`18.x`), caret/tilde/comparator ranges (`^18.0.0`,
+// `~18`, `>=18`, `>=18 <19`), a `v` prefix, and a full version (`18.20.4`) by
+// reading the first version number it contains. A selector with no version
+// number (`lts/hydrogen`, `*`) resolves to undefined and is treated as
+// out-of-scope rather than guessed at.
+function nodeSelectorMajor(value: string): number | undefined {
+  const match = value.match(/\d+/);
+  return match ? Number(match[0]) : undefined;
+}
+
+// The import forms of the removed `aws-sdk` package. Any file that still imports
+// it breaks once the manifest transform drops it from dependencies repo-wide, so
+// the presence of an import/require specifier — not a bare string mention in a
+// comment or lockfile — is the residual signal. The `@aws-sdk/*` v3 subpackages
+// never match: `aws-sdk` is bounded by a quote on both sides, so `"@aws-sdk/..."`
+// (a `@` after the opening quote) and `"aws-sdk-mock"` (no closing quote) are
+// excluded.
+const AWS_SDK_MODULE_IMPORT =
+  /require\(\s*["']aws-sdk["']\s*\)|from\s+["']aws-sdk["']/;
+
+// Installed dependencies, VCS internals, and lockfiles are not first-party source
+// the migration is responsible for: a lockfile naming `aws-sdk` is not an
+// un-migrated call site, and node_modules is generated. Everything else — test
+// files and fixtures included, since they would actually run against the migrated
+// manifest — is scanned, because over-refusing there is far safer than shipping a
+// repository that no longer installs.
+function isExcludedFromResidualScan(path: string): boolean {
+  if (
+    path === "package-lock.json" ||
+    path === "npm-shrinkwrap.json" ||
+    path === "yarn.lock" ||
+    path === "pnpm-lock.yaml"
+  ) {
+    return true;
+  }
+  const segments = path.split("/");
+  return segments.includes("node_modules") || segments.includes(".git");
 }
 
 // A residual site is a file the recipe did NOT list in `allowedPaths` but that
-// still matches the recipe's own source precondition — i.e. a place the recipe
-// would migrate if it reached it, left on the old version. Detection is scoped
-// to the version-declaration precondition kinds, the family whose target files
-// legitimately appear at variable locations (a CI Dockerfile, a nested workspace
-// package.json, an extra runtime pin). It never widens what the recipe EDITS; it
-// only reads the whole snapshot to decide whether an edit would be complete.
+// still carries the old surface the recipe migrates — a place the migration would
+// have to reach to be complete, left on the old version. There are two shapes of
+// blast radius, and residual detection covers both:
+//
+//   1. Path-limited transforms (the runtime family): edits touch only allowlisted
+//      config files, but the same version pin can appear at variable locations (a
+//      CI Dockerfile, a nested workspace package.json, an extra `.nvmrc`). A copy
+//      of the source pin outside the allowlist is residue.
+//   2. Repo-global transforms (the aws-sdk, stripe, googleapis and react-dom
+//      families): the manifest transform removes or bumps a dependency for the
+//      WHOLE repository, while applicability and verification are path-limited to
+//      the allowlisted sources. Any file — anywhere — that still imports the
+//      removed module or still uses the broken API is residue: the dependency
+//      moved out from under it and it will fail to install or run.
+//
+// Detection reads the whole snapshot but NEVER widens what the recipe EDITS; a
+// residual site is surfaced for a reviewer, never silently rewritten. The signal
+// for each source family is the recipe's own classifier reporting the file in the
+// `source` state (the exact old pattern it migrates) — so a file the recipe would
+// abstain on everywhere (an unsupported/out-of-scope variant) is not independently
+// guessed at, keeping the recipe's "refuse, don't guess" contract. The one
+// exception is aws-sdk: because the transform DELETES the package, any import of
+// it — even an import form the source rewrite does not recognize — is residue.
 function isResidualSite(
   precondition: RecipePrecondition,
   path: string,
@@ -3547,7 +3608,10 @@ function isResidualSite(
   if (precondition.kind === "optional_docker_node_major") {
     if (!isDockerfileShapedPath(path)) return false;
     const majors = dockerNodeMajors(content);
-    return majors.length > 0 && majors.every((major) => major === precondition.major);
+    // `some`, not `every`: a partially-migrated multi-stage Dockerfile (one stage
+    // already on the target major, another still pinned to the source) is residue
+    // too, even though every stage is not on the old major.
+    return majors.some((major) => major === precondition.major);
   }
   if (precondition.kind === "optional_node_version") {
     const base = basename(path);
@@ -3565,7 +3629,26 @@ function isResidualSite(
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
     const value = nodeEngineValue(parsed as Record<string, unknown>);
-    return typeof value === "string" && precondition.allowedValues.includes(value);
+    if (typeof value !== "string") return false;
+    // Match on the pinned major, not exact selector text: a nested manifest on
+    // `">=18"`, `"18.20.4"`, or `"^18"` pins the same source runtime as the
+    // recognized selectors and must block just as the root file does, even though
+    // the recipe only rewrites the exact selector forms it lists in allowedValues.
+    const sourceMajor = nodeSelectorMajor(precondition.allowedValues[0] ?? "");
+    return sourceMajor !== undefined && nodeSelectorMajor(value) === sourceMajor;
+  }
+  if (precondition.kind === "aws_sdk_v2_source") {
+    // The manifest transform removes `aws-sdk`; any surviving import of it breaks.
+    return AWS_SDK_MODULE_IMPORT.test(content);
+  }
+  if (precondition.kind === "stripe_v10_setter_source") {
+    return classifyStripeSource(content).state === "source";
+  }
+  if (precondition.kind === "googleapis_default_import_source") {
+    return classifyGoogleapisSource(content).state === "source";
+  }
+  if (precondition.kind === "react_dom_render_source") {
+    return classifyReactDomSource(content).state === "source";
   }
   return false;
 }
@@ -3577,7 +3660,7 @@ function residualSitePaths(
   const allowed = new Set(recipe.allowedPaths);
   const residual = new Set<string>();
   for (const [path, content] of Object.entries(files)) {
-    if (allowed.has(path)) continue;
+    if (allowed.has(path) || isExcludedFromResidualScan(path)) continue;
     for (const precondition of recipe.preconditions) {
       if (isResidualSite(precondition, path, content)) {
         residual.add(path);
