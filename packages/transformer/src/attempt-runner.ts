@@ -402,6 +402,16 @@ export type TransformerAttemptFailureEvidenceRecord = Readonly<{
     workspaceDiscarded: boolean;
   }>;
   completedEvidenceIds: readonly string[];
+  /**
+   * Present and true only when adaptive repair produced a usage tally that could
+   * not be trusted into the recorded accounting — for example a planner that
+   * threw before any usage checkpoint or accepted external-model reservation.
+   * The recorded accounting deliberately excludes that untrustworthy adaptive
+   * usage; this flag preserves the diagnostic that it was incomplete rather than
+   * silently dropping it. Absent on every path with complete (or no) adaptive
+   * usage, so those records are byte-for-byte unchanged.
+   */
+  adaptiveUsageAccountingIncomplete?: true;
 }>;
 
 export type TransformerAttemptFailureArtifact = Readonly<{
@@ -1219,6 +1229,7 @@ export function persistTransformerAttemptFailureEvidence(
   failureErrorCode: string,
   rollback: RecipeExecutionRollback | undefined,
   completedEvidenceIds: readonly string[],
+  adaptiveUsageAccountingIncomplete = false,
 ): TransformerAttemptFailureArtifact {
   assertObservedAt(observedAt);
   const directory = realpathSync(evidenceDirectory);
@@ -1253,6 +1264,7 @@ export function persistTransformerAttemptFailureEvidence(
       workspaceDiscarded: rollback?.workspaceDiscarded ?? true,
     }),
     completedEvidenceIds: Object.freeze([...new Set(completedEvidenceIds)].sort().slice(0, 32)),
+    ...(adaptiveUsageAccountingIncomplete ? { adaptiveUsageAccountingIncomplete: true as const } : {}),
   });
   const evidenceId = `tfev_${sha256(canonicalJson(recordBody)).slice("sha256:".length)}`;
   const record: TransformerAttemptFailureEvidenceRecord = Object.freeze({ ...recordBody, evidenceId });
@@ -2132,8 +2144,25 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
     try {
       const failureObservedAt = input.observedAt("failure");
       await assertCurrentFence(input.coordinator, lease, fence, failureObservedAt, heartbeat);
+      // Invariant: the failure-recording path must never abort on accounting.
+      // A unit whose failure is never recorded stays "running" until the lease
+      // expiry sweep a full leaseDurationMs later, on a terminal path with
+      // different bookkeeping; that is strictly worse than recording slightly
+      // coarser numbers now. Incomplete adaptive usage is information to record,
+      // not a reason to skip recording. It is reachable whenever adaptive repair
+      // produced a usage tally that never passed a durable checkpoint or an
+      // accepted external-model reservation — for example a planner that threw on
+      // its first iteration (before onUsageCheckpoint runs), or a coordinator
+      // that omits the optional reserve/settle model-accounting methods. In those
+      // states neither usageCheckpointFailed nor durableExternalAccounting is set,
+      // yet adaptiveSummary.usage.complete is false, so folding it into
+      // attemptAccounting would throw transformer_adaptive_usage_accounting_incomplete
+      // and be swallowed below, destroying the true recoveryCode along with it.
+      const adaptiveUsage = adaptiveSummary?.usage;
+      const adaptiveUsageAccountingIncomplete =
+        adaptiveUsage !== undefined && !adaptiveUsage.complete;
       let failureAccounting: TransformerAdaptiveAttemptAccounting;
-      if (usageCheckpointFailed || durableExternalAccounting) {
+      if (usageCheckpointFailed || durableExternalAccounting || adaptiveUsageAccountingIncomplete) {
         const fallback = lastAcceptedAccounting ?? attemptAccounting(
           lease,
           failureObservedAt,
@@ -2151,7 +2180,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
           lease,
           failureObservedAt,
           accountingExecutionCost(input, execution),
-          adaptiveSummary?.usage,
+          adaptiveUsage,
         );
       }
       if (!evidenceDirectory) {
@@ -2167,6 +2196,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
         classified.errorCode,
         classified.rollback,
         completedEvidenceIds,
+        adaptiveUsageAccountingIncomplete,
       );
       const failureKey = input.idempotencyKey("failure", attemptId);
       assertIdentifier(failureKey, "transformer_attempt_failure_idempotency_key_invalid");
