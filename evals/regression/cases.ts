@@ -20,9 +20,11 @@
  * the runtime-idiom and SDK/framework residual gaps. The `fixed` cases here are
  * the regression guards for that fix: each would report `applicable` (ship a
  * partial migration) on the pre-#174 engine and reports `incomplete` (refuse)
- * now. The `open` cases are the internal-API residual gap #174 did not cover;
- * they fail honestly and will flip green when internal-API residual detection
- * lands in `packages/transformer/src/recipe.ts`.
+ * now. PR #199 ("Detect residual sites in the internal-API rename family and
+ * fail closed on unhandled kinds") then closed the internal-API residual gap
+ * #174 did not cover: the internal-API case below was recorded `open` (it failed
+ * honestly, shipping a partial rename) and flipped to `fixed` the day #199's
+ * residual detection landed in `packages/transformer/src/recipe.ts`.
  *
  * Reproductions never touch the shared corpus and never contain an answer-key
  * file (the governance gate asserts both).
@@ -274,16 +276,17 @@ export const REGRESSION_CASES: readonly RegressionCase[] = [
       };
     },
   },
-  // --- Internal-API family (still OPEN; #174 did not cover the internal-api kinds) ---
+  // --- Internal-API family (CLOSED by #199; #174 did not cover the internal-api kinds) ---
   {
     id: "reg-regauge-internal-api-acme-residual",
     capability: "regauge-internal-api-migration",
     product: "regauge",
     provenance: ossProvenance(
-      "case 6: a residual src/reports.ts still calls the renamed-away `getUser` export outside the recipe's allowedPaths; internal-API residual detection is not implemented, so analyze returns applicable and the engine would ship a partial rename.",
+      "case 6: a residual src/reports.ts still calls the renamed-away `getUser` export outside the recipe's allowedPaths. Before #199 the internal-API kinds had no residual detection (isResidualSite fell through to `return false`), so analyze returned applicable and the engine would have shipped a partial rename; #199 adds that detection and the engine now refuses with status=incomplete.",
     ),
     governance: SYNTHETIC_GOVERNANCE,
-    status: "open",
+    status: "fixed",
+    fixedBy: "#199",
     build: () => {
       const before = loadFixture("internal-api-acme-user-rename", "before");
       const files = { ...before, "src/reports.ts": INTERNAL_ACME_RESIDUAL };
@@ -312,7 +315,7 @@ export const REGRESSION_CASES: readonly RegressionCase[] = [
             shippedRecipeId: "internal-api-acme-user-getuser-to-fetchuser",
           },
           notes:
-            "OPEN: internal-API residual detection is not implemented (isResidualSite returns false for internal_api kinds), so analyze reports status=applicable and this case FAILS P0 — the honest signal. Flips to PASS when the fix lands.",
+            "FIXED by #199: internal-API residual detection now flags src/reports.ts (isResidualSite classifies the internal_api_rename_source kind instead of falling through), so analyze reports status=incomplete and the engine refuses the partial rename. On the pre-#199 engine this reported status=applicable and FAILED P0 — the honest signal this case was recorded to catch.",
         },
       };
     },
