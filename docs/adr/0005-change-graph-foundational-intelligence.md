@@ -2,13 +2,15 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-17
-- **Author:** OpenAI Codex, approved by Talal Gondal
+- **Author:** OpenAI Codex
+- **Decision owner:** Talal Gondal
+- **Authority:** [`Mendpoint_CODEX_Change_Graph_Intelligence_Prompt.md`](../authority/Mendpoint_CODEX_Change_Graph_Intelligence_Prompt.md), SHA-256 `5a37d827a4a1126ea1323d41bde8cbc5aa6b7ffca843b21895f5f942da8c58cc`
 - **Supersedes:** none
 - **Superseded by:** none
 
 ## Context
 
-Issue [#185](https://github.com/gondalaimafia/mendpoint/issues/185) is governed by the owner supplied `Mendpoint_CODEX_Change_Graph_Intelligence_Prompt.md`, SHA-256 `5a37d827a4a1126ea1323d41bde8cbc5aa6b7ffca843b21895f5f942da8c58cc`. The owner explicitly designated that document as the authority for this initiative.
+Issue [#185](https://github.com/gondalaimafia/mendpoint/issues/185) is governed by the owner supplied [Change Graph intelligence authority](../authority/Mendpoint_CODEX_Change_Graph_Intelligence_Prompt.md). The repository gate verifies its exact SHA-256 digest, `5a37d827a4a1126ea1323d41bde8cbc5aa6b7ffca843b21895f5f942da8c58cc`. Accepted status records the owner's designation of that document as the initiative authority. It does not assert that any implementation, benchmark, pull request, or production activation has been approved.
 
 Mendpoint already has three useful graph layers, but they do not yet form one mission-bound intelligence architecture:
 
