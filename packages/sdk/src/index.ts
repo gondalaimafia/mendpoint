@@ -107,9 +107,12 @@ export type PlatformClient = {
   incremental: (repoPath: string, repoId?: string) => ReturnType<typeof incrementalReingest>;
   gnnExport: (outPath?: string) => { nodes: number; edges: number; path?: string };
   vmStatus: () => ReturnType<typeof vmStatusReport>;
-  createVm: (opts?: { backend?: "local" | "docker" | "firecracker"; cacheKey?: string }) => ReturnType<
-    typeof createVmSandbox
-  >;
+  createVm: (opts?: {
+    backend?: "local" | "docker" | "firecracker";
+    cacheKey?: string;
+    /** Required whenever cacheKey is set — the build cache is tenant-scoped. */
+    tenantId?: string;
+  }) => ReturnType<typeof createVmSandbox>;
   liveSandbox: () => ReturnType<typeof startLiveSandbox>;
   scmProviders: () => ReturnType<typeof listScmProviders>;
   alerts: () => ReturnType<typeof recentAlerts>;
@@ -242,10 +245,15 @@ export function createPlatform(scope: GraphTenantScope): PlatformClient {
       return vmStatusReport();
     },
     createVm(opts) {
-      return createVmSandbox({
-        backend: opts?.backend ?? "local",
-        cacheKey: opts?.cacheKey,
-      });
+      const backend = opts?.backend ?? "local";
+      if (opts?.cacheKey !== undefined) {
+        // Fail closed: a cache key without a tenant cannot be scoped, so refuse
+        // rather than key it globally across tenants.
+        const tenantId = opts.tenantId;
+        if (!tenantId) throw new Error("sandbox_tenant_scope_required");
+        return createVmSandbox({ backend, cacheKey: opts.cacheKey, tenantId });
+      }
+      return createVmSandbox({ backend });
     },
     liveSandbox() {
       return startLiveSandbox();

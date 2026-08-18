@@ -434,14 +434,16 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
   const flyOpts = opts.fly ?? {};
   const app = resolveApp(opts);
   const client = resolveFlyClient(opts, app);
-  // Fail-closed guard: fly_machines was explicitly selected, but the mock client
-  // was chosen only because no Fly token resolved (no injected client and mock
-  // mode not explicitly forced). Refuse to run rather than silently degrade to
-  // the no-op mock / host path.
-  const isolationUnavailable =
-    !opts.flyClient &&
-    process.env.MENDPOINT_SANDBOX_FLY_MODE !== "mock" &&
-    resolveFlySandboxToken(process.env) === undefined;
+  // Fail-closed guard: a mock client is NEVER real isolation. Its exec mints
+  // exit_code 0 without running the command, so a mock result is not evidence of
+  // anything. It is legitimate only as an explicitly injected test / dry-run
+  // double (opts.flyClient). Reached any other way — a forced
+  // MENDPOINT_SANDBOX_FLY_MODE=mock, or the credential fallback when no token
+  // resolves — verification refuses to run rather than mint a fabricated green
+  // (repro of #99). This holds regardless of NODE_ENV; the production env guard
+  // (packages/ops/src/env.ts) is the discoverable boot-time refusal on top.
+  const isolationUnavailable = !opts.flyClient && client.mode !== "live";
+  const mockModeForced = process.env.MENDPOINT_SANDBOX_FLY_MODE === "mock";
   const region =
     flyOpts.region ?? process.env.MENDPOINT_SANDBOX_FLY_REGION ?? FLY_SANDBOX_DEFAULTS.region;
   // Resolution chain terminates in undefined (no floating `:latest` default). The
@@ -496,13 +498,15 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
     }
 
     if (isolationUnavailable) {
-      // fail-closed: no sandbox Fly token resolved, so the mock client would only
-      // fake success. Refuse rather than silently skip real isolation.
+      // fail-closed: the resolved client is a mock, which would only fake
+      // success. Refuse rather than silently skip real isolation. A forced mock
+      // mode and a missing token surface distinct guidance, but both refuse.
       return {
         ok: false,
         stdout: "",
-        stderr:
-          "fly_machines: no sandbox Fly token resolved; set MENDPOINT_SANDBOX_FLY_TOKEN; refusing host fallback",
+        stderr: mockModeForced
+          ? "fly_machines: MENDPOINT_SANDBOX_FLY_MODE=mock cannot produce verification evidence; the mock reports a pass without running the command; refusing host fallback"
+          : "fly_machines: no sandbox Fly token resolved; set MENDPOINT_SANDBOX_FLY_TOKEN; refusing host fallback",
         exitCode: -1,
       };
     }

@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import {
   clearSandboxCache,
   createSandbox,
+  tenantScopedCacheKey,
   type CreateSandboxOpts,
   type SandboxHandle,
   type SandboxKind,
@@ -139,17 +140,24 @@ export function createVmSandbox(opts: VmSandboxOpts = {}): SandboxHandle & {
   const backend: VmBackend = want;
   const fallback = false;
 
+  // The build cache is keyed by the tenant-scoped composite, never the caller's
+  // raw cacheKey. Without this, cacheHit and the shared root leak across tenants:
+  // tenant B replaying tenant A's cacheKey would read a hit (an existence oracle)
+  // against tenant A's root. Fail-closed: a cacheKey without a tenant throws
+  // sandbox_tenant_scope_required before any cache lookup.
+  const scopedKey = tenantScopedCacheKey(opts);
+
   let cacheHit = false;
   if (
-    opts.cacheKey &&
-    buildCache.has(opts.cacheKey) &&
-    existsSync(buildCache.get(opts.cacheKey)!.root)
+    scopedKey &&
+    buildCache.has(scopedKey) &&
+    existsSync(buildCache.get(scopedKey)!.root)
   ) {
     cacheHit = true;
-    const e = buildCache.get(opts.cacheKey)!;
+    const e = buildCache.get(scopedKey)!;
     e.hits++;
-  } else if (opts.cacheKey) {
-    buildCache.delete(opts.cacheKey);
+  } else if (scopedKey) {
+    buildCache.delete(scopedKey);
   }
 
   const kind: SandboxKind = backend === "local" ? "local" : "vm";
@@ -160,8 +168,8 @@ export function createVmSandbox(opts: VmSandboxOpts = {}): SandboxHandle & {
     prefix: opts.prefix ?? `mendpoint-${backend}-`,
   });
 
-  if (opts.cacheKey && !buildCache.has(opts.cacheKey)) {
-    buildCache.set(opts.cacheKey, {
+  if (scopedKey && !buildCache.has(scopedKey)) {
+    buildCache.set(scopedKey, {
       root: base.root,
       hits: 0,
       createdAt: new Date().toISOString(),

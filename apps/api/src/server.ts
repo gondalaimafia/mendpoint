@@ -1370,11 +1370,17 @@ app.post("/platform/vm/sandbox", async (c) => {
     backend?: "local" | "docker" | "firecracker";
     cacheKey?: string;
   };
-  const sbx = createVmSandbox({
-    backend: body.backend ?? "local",
-    cacheKey: body.cacheKey,
-    files: { "README": "vm sandbox\n" },
-  });
+  // The build-cache identity is bound to the authenticated tenant, never trusted
+  // from the body. A body cacheKey is only a sub-key within that tenant's scope,
+  // so one tenant can never hit, seed, or probe another tenant's cached root by
+  // replaying its cacheKey.
+  const tenantId = requestTenantId(c);
+  const backend = body.backend ?? "local";
+  const files = { "README": "vm sandbox\n" };
+  const sbx =
+    body.cacheKey !== undefined
+      ? createVmSandbox({ backend, cacheKey: body.cacheKey, tenantId, files })
+      : createVmSandbox({ backend, tenantId, files });
   const out = {
     id: sbx.id,
     backend: sbx.backend,

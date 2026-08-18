@@ -127,13 +127,27 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
   }
 
   const ownsSandbox = !opts.sandbox;
+  // The persistent cache key must be tenant-scoped. When a tenant scope is
+  // present it owns the key; without one the run stays isolated (fresh mkdtemp)
+  // but uncached rather than falling back to a global, cross-tenant key. The
+  // per-run unique runId already made cross-run reuse impossible, so dropping the
+  // cache here preserves behaviour on the scope-less path.
+  const cacheTenantId = opts.scope?.tenantId;
   const sbx =
     opts.sandbox ??
-    createSandbox({
-      prefix: "harness-",
-      cacheKey: `harness-${runId}`,
-      files: { "README.sbx": "mendpoint harness sandbox\n" },
-    });
+    createSandbox(
+      cacheTenantId
+        ? {
+            prefix: "harness-",
+            cacheKey: `harness-${runId}`,
+            tenantId: cacheTenantId,
+            files: { "README.sbx": "mendpoint harness sandbox\n" },
+          }
+        : {
+            prefix: "harness-",
+            files: { "README.sbx": "mendpoint harness sandbox\n" },
+          },
+    );
 
   let stepsRun = 0;
   // Real graph-query count for this run, accumulated from the tools that

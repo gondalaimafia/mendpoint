@@ -52,6 +52,18 @@ export type SandboxHandle = {
   runIsolated?: (cmd: string, opts?: { timeoutMs?: number }) => Promise<SandboxRunResult>;
 };
 
+/**
+ * Cache identity is tenant-scoped by construction. A persistent `cacheKey` may
+ * only be supplied together with the `tenantId` that owns it: omitting the tenant
+ * on a cache-keyed sandbox is a compile error, not a runtime hope, so a build
+ * cache can never be keyed on the caller's string alone and shared across
+ * tenants. A `tenantId` with no `cacheKey` stays legal — it tags the isolated
+ * Machine without persisting a cache root.
+ */
+export type SandboxCacheScope =
+  | { cacheKey: string; tenantId: string }
+  | { cacheKey?: undefined; tenantId?: string };
+
 export type CreateSandboxOpts = {
   kind?: SandboxKind;
   prefix?: string;
@@ -66,27 +78,50 @@ export type CreateSandboxOpts = {
   mocks?: MockUpstream[];
   serviceBaseUrl?: string;
   runtime?: "node" | "python" | "jvm" | "dotnet" | "cobol";
-  /** Persistent cache dir key (Transformer multi-PR builds) */
-  cacheKey?: string;
-  /** Tenant identity — tags the isolated Machine; only this tenant's files upload. */
-  tenantId?: string;
   /** Per-tenant sandbox backend selection (overrides the global default). */
   tenantSandboxKind?: SandboxKind;
   /** Fly Machines backend configuration (kind === "fly_machines"). */
   fly?: FlySandboxOptions;
   /** Injected Fly client for tests / dry-run (bypasses credential resolution). */
   flyClient?: FlyMachineClient;
-};
+} & SandboxCacheScope;
+
+/**
+ * Namespace a caller-supplied cache key under its owning tenant so two tenants
+ * can never collide on the same key. Length-prefixing the tenant id makes the
+ * composite unforgeable: a plain `${tenantId}${cacheKey}` concatenation lets
+ * tenant `a` + key `1x` and tenant `a1` + key `x` both resolve to `a1x`; the
+ * `${tenantId.length}:` prefix pins each (tenantId, cacheKey) pair to exactly one
+ * scoped key. Fail-closed: a cache key with no tenant is refused (never keyed
+ * globally), the runtime twin of the compile-time {@link SandboxCacheScope}
+ * constraint.
+ */
+export function tenantScopedCacheKey(opts: {
+  cacheKey?: string;
+  tenantId?: string;
+}): string | undefined {
+  if (opts.cacheKey === undefined) return undefined;
+  if (!opts.tenantId) throw new Error("sandbox_tenant_scope_required");
+  return `${opts.tenantId.length}:${opts.tenantId}${opts.cacheKey}`;
+}
 
 type CacheEntry = {
   root: string;
+  /** Owning tenant — eviction and stats never cross this boundary. */
+  tenantId: string;
+  /** Caller-supplied key (unscoped), retained for stats and same-tenant eviction. */
+  cacheKey: string;
   createdAt: number;
   lastUsedAt: number;
   refs: number;
 };
 
+// Keyed by the tenant-scoped composite (see tenantScopedCacheKey), never by the
+// caller's raw cacheKey — so two tenants sharing a key resolve to distinct roots.
 const cacheRoots = new Map<string, CacheEntry>();
-const MAX_CACHE_ROOTS = 32;
+// Per-tenant cap. The cap and its eviction are scoped to a single tenant so one
+// tenant flooding unique keys can never evict (and rmSync) another tenant's root.
+const MAX_CACHE_ROOTS_PER_TENANT = 32;
 
 function isWithin(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -139,16 +174,26 @@ function seedPath(root: string, rel: string): string {
   return abs;
 }
 
-function evictOldestCache(): void {
-  if (cacheRoots.size < MAX_CACHE_ROOTS) return;
-  const oldest = [...cacheRoots.entries()]
+// Evict within a single tenant only: the cap counts that tenant's roots and the
+// LRU victim is drawn from that tenant's entries, so a flood of unique keys by
+// one tenant can never rmSync a different tenant's cached root.
+function evictOldestCache(tenantId: string): void {
+  const own = [...cacheRoots.entries()].filter(([, entry]) => entry.tenantId === tenantId);
+  if (own.length < MAX_CACHE_ROOTS_PER_TENANT) return;
+  const oldest = own
     .filter(([, entry]) => entry.refs === 0)
     .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt)[0];
   if (oldest) clearSandboxCache(oldest[0]);
 }
 
-export function clearSandboxCache(cacheKey?: string): void {
-  const keys = cacheKey ? [cacheKey] : [...cacheRoots.keys()];
+/**
+ * Clear cache roots. The argument is the tenant-scoped map key (as returned by
+ * {@link tenantScopedCacheKey} and surfaced as `scopedKey` in
+ * {@link getSandboxCacheStats}), never a raw cacheKey — so a caller can only ever
+ * clear a root it can name under its own tenant. No argument clears everything.
+ */
+export function clearSandboxCache(scopedKey?: string): void {
+  const keys = scopedKey ? [scopedKey] : [...cacheRoots.keys()];
   for (const key of keys) {
     const entry = cacheRoots.get(key);
     if (!entry) continue;
@@ -162,8 +207,10 @@ export function clearSandboxCache(cacheKey?: string): void {
 }
 
 export function getSandboxCacheStats() {
-  return [...cacheRoots.entries()].map(([cacheKey, entry]) => ({
-    cacheKey,
+  return [...cacheRoots.entries()].map(([scopedKey, entry]) => ({
+    cacheKey: entry.cacheKey,
+    tenantId: entry.tenantId,
+    scopedKey,
     root: entry.root,
     createdAt: new Date(entry.createdAt).toISOString(),
     lastUsedAt: new Date(entry.lastUsedAt).toISOString(),
@@ -205,19 +252,27 @@ export function createSandbox(opts: CreateSandboxOpts = {}): SandboxHandle {
  */
 export function createLocalSandbox(opts: CreateSandboxOpts = {}): SandboxHandle {
   let root: string;
-  const cached = opts.cacheKey ? cacheRoots.get(opts.cacheKey) : undefined;
+  // Tenant-scoped cache identity. A cacheKey without its owning tenant is refused
+  // here (sandbox_tenant_scope_required) rather than silently keyed globally, so
+  // one tenant's cached root can never be seeded, read, or evicted under another
+  // tenant's request. scopedKey is undefined when no cacheKey was supplied.
+  const scopedKey = tenantScopedCacheKey(opts);
+  const cached = scopedKey ? cacheRoots.get(scopedKey) : undefined;
   if (cached && existsSync(cached.root)) {
     root = cached.root;
     cached.lastUsedAt = Date.now();
     cached.refs++;
   } else {
-    if (cached && opts.cacheKey) cacheRoots.delete(opts.cacheKey);
-    if (opts.cacheKey) evictOldestCache();
+    if (cached && scopedKey) cacheRoots.delete(scopedKey);
+    // scopedKey defined ⟹ the SandboxCacheScope union guarantees tenantId is set.
+    if (scopedKey) evictOldestCache(opts.tenantId!);
     root = mkdtempSync(join(tmpdir(), opts.prefix ?? "mendpoint-sbx-"));
-    if (opts.cacheKey) {
+    if (scopedKey) {
       const now = Date.now();
-      cacheRoots.set(opts.cacheKey, {
+      cacheRoots.set(scopedKey, {
         root,
+        tenantId: opts.tenantId!,
+        cacheKey: opts.cacheKey!,
         createdAt: now,
         lastUsedAt: now,
         refs: 1,
@@ -234,7 +289,7 @@ export function createLocalSandbox(opts: CreateSandboxOpts = {}): SandboxHandle 
       writeFileSync(abs, content);
     }
   } catch (error) {
-    if (opts.cacheKey) clearSandboxCache(opts.cacheKey);
+    if (scopedKey) clearSandboxCache(scopedKey);
     else rmSync(root, { recursive: true, force: true });
     throw error;
   }
@@ -262,12 +317,13 @@ export function createLocalSandbox(opts: CreateSandboxOpts = {}): SandboxHandle 
       return () => {
         if (disposed) return;
         disposed = true;
-        if (opts.cacheKey) {
-          const entry = cacheRoots.get(opts.cacheKey);
+        if (scopedKey) {
+          const entry = cacheRoots.get(scopedKey);
           if (entry) {
             entry.refs = Math.max(0, entry.refs - 1);
             entry.lastUsedAt = Date.now();
-            if (cacheRoots.size > MAX_CACHE_ROOTS) evictOldestCache();
+            // Only ever evicts this tenant's own oldest idle root.
+            if (entry.refs === 0) evictOldestCache(entry.tenantId);
           }
           return;
         }
