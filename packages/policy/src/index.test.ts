@@ -156,3 +156,74 @@ describe("policy engine", () => {
     expect(f[0]!.symbol).toBe("y");
   });
 });
+
+describe("baseline denylist is enforced at evaluatePolicy regardless of the override", () => {
+  // The exact never_touch_paths row scripts/seed.ts writes for every seeded
+  // consumer — a 5-entry list. It must ADD to, never REPLACE, the baseline.
+  const SEEDED_NEVER_TOUCH = [
+    ".env",
+    ".env.production",
+    "secrets/",
+    "prod/",
+    "package-lock.json",
+  ];
+  const PROTECTED_BY_BASELINE = [
+    "terraform/main.tf",
+    "app/credentials",
+    "deploy/id_rsa",
+    "certs/server.pem",
+    ".env.local",
+    "Cargo.lock",
+    "k8s/prod/values.yaml",
+    "production/config.json",
+  ];
+
+  it("blocks baseline-protected paths under the seeded consumer configuration", () => {
+    const draft = {
+      ...baseDraft,
+      fileEdits: [
+        { path: "src/api.ts", original: "a", updated: "b" },
+        ...PROTECTED_BY_BASELINE.map((path) => ({ path, original: "x", updated: "y" })),
+      ],
+    };
+    const decision = evaluatePolicy(draft, [], {
+      policy: { neverTouchPaths: SEEDED_NEVER_TOUCH },
+    });
+    for (const path of PROTECTED_BY_BASELINE) {
+      expect(decision.blockedFiles).toContain(path);
+    }
+    // The one legitimate edit still survives the filter.
+    expect(decision.allowedEdits.map((e) => e.path)).toEqual(["src/api.ts"]);
+  });
+
+  it("blocks baseline-protected paths even when the override is []", () => {
+    const draft = {
+      ...baseDraft,
+      fileEdits: [{ path: "terraform/main.tf", original: "x", updated: "y" }],
+    };
+    const decision = evaluatePolicy(draft, [], { policy: { neverTouchPaths: [] } });
+    expect(decision.blockedFiles).toContain("terraform/main.tf");
+    expect(decision.allowedEdits).toHaveLength(0);
+  });
+
+  it("still blocks a baseline path when a resolved policy layer sets neverTouchPaths to a single custom entry", () => {
+    // Simulates a Warden branch layer resolving neverTouchPaths to ["branch-only/"].
+    // mergePolicy keeps replacement semantics for the layer reducers, but the
+    // baseline is unioned at enforcement, so a baseline path (terraform/) is still
+    // blocked AND the layer's own entry (branch-only/) is honored.
+    const draft = {
+      ...baseDraft,
+      fileEdits: [
+        { path: "terraform/main.tf", original: "x", updated: "y" },
+        { path: "branch-only/thing.ts", original: "a", updated: "b" },
+        { path: "src/api.ts", original: "a", updated: "b" },
+      ],
+    };
+    const decision = evaluatePolicy(draft, [], {
+      policy: { neverTouchPaths: ["branch-only/"] },
+    });
+    expect(decision.blockedFiles).toContain("terraform/main.tf");
+    expect(decision.blockedFiles).toContain("branch-only/thing.ts");
+    expect(decision.allowedEdits.map((e) => e.path)).toEqual(["src/api.ts"]);
+  });
+});

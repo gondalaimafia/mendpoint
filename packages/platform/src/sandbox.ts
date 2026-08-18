@@ -21,7 +21,17 @@ import {
   type FlySandboxOptions,
 } from "./fly-sandbox.js";
 
-export type SandboxKind = "local" | "vm" | "in_cluster" | "fly_machines";
+/** The recognized sandbox backends — single source of truth for validation. */
+export const SANDBOX_KINDS = ["local", "vm", "in_cluster", "fly_machines"] as const;
+export type SandboxKind = (typeof SANDBOX_KINDS)[number];
+
+/** True when the value is exactly one of the recognized sandbox backends. */
+export function isSandboxKind(value: unknown): value is SandboxKind {
+  return (
+    typeof value === "string" &&
+    (SANDBOX_KINDS as readonly string[]).includes(value)
+  );
+}
 
 export type MockUpstream = {
   name: string;
@@ -221,16 +231,23 @@ export function getSandboxCacheStats() {
 /**
  * Resolve the effective sandbox backend. Precedence: an explicit opts.kind, then
  * a per-tenant selection, then the MENDPOINT_SANDBOX_KIND global, else local.
- * With nothing configured the result is "local" — the default path is unchanged.
+ *
+ * Fails closed: an unset (or empty) global keeps the documented "local" default,
+ * but a value that is *set and unrecognized* — e.g. the typo "fly-machines" —
+ * THROWS rather than silently collapsing to "local", the least-isolated backend.
+ * A misconfiguration must refuse, never quietly route verification to the host.
  */
 export function resolveSandboxKind(opts: CreateSandboxOpts = {}): SandboxKind {
   if (opts.kind) return opts.kind;
   if (opts.tenantSandboxKind) return opts.tenantSandboxKind;
   const env = process.env.MENDPOINT_SANDBOX_KIND;
-  if (env === "fly_machines" || env === "local" || env === "vm" || env === "in_cluster") {
-    return env;
-  }
-  return "local";
+  if (!env) return "local";
+  if (isSandboxKind(env)) return env;
+  throw new Error(
+    `MENDPOINT_SANDBOX_KIND="${env}" is not a recognized sandbox kind ` +
+      `(expected one of: ${SANDBOX_KINDS.join(", ")}). ` +
+      `Refusing to fall back to an unisolated backend.`,
+  );
 }
 
 export function createSandbox(opts: CreateSandboxOpts = {}): SandboxHandle {

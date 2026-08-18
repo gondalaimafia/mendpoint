@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { DEFAULT_POLICY } from "@mendpoint/policy";
 import type { AppliedEdit, RepairAction } from "./types.js";
 
 const CODE_EXTS = new Set([
@@ -35,14 +36,12 @@ const HARD_MAX_FILES = 50;
  * unconditional: callers add to them through {@link ApplyOptions.neverTouchPaths}
  * but cannot replace or remove a baseline entry, so passing an empty list can
  * never silently disable secret and lockfile protection.
+ *
+ * Sourced from the single canonical denylist ({@link DEFAULT_POLICY.neverTouchPaths})
+ * rather than a re-declared local copy, so repair can never protect a narrower
+ * set of paths than the policy engine.
  */
-export const DEFAULT_NEVER_TOUCH = [
-  ".env",
-  "secrets/",
-  "package-lock.json",
-  "pnpm-lock.yaml",
-  "yarn.lock",
-];
+export const DEFAULT_NEVER_TOUCH = DEFAULT_POLICY.neverTouchPaths;
 
 export type PristineFile = {
   filePath: string;

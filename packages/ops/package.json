@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@mendpoint/github": "*",
+    "@mendpoint/platform": "*",
     "@mendpoint/shared": "*"
   },
   "devDependencies": {

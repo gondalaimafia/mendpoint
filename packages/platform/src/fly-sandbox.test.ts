@@ -240,6 +240,18 @@ describe("fly machines selection + default-safe routing", () => {
     expect(resolveSandboxKind({ tenantSandboxKind: "fly_machines" })).toBe("fly_machines");
   });
 
+  it("throws on a set-but-unrecognized value instead of collapsing to local", () => {
+    // A one-character typo must fail closed, not silently route verification to
+    // the least-isolated backend.
+    vi.stubEnv("MENDPOINT_SANDBOX_KIND", "fly-machines");
+    expect(() => resolveSandboxKind()).toThrow(/not a recognized sandbox kind/);
+  });
+
+  it("throws on an arbitrary unrecognized value", () => {
+    vi.stubEnv("MENDPOINT_SANDBOX_KIND", "Fly_Machines");
+    expect(() => resolveSandboxKind()).toThrow(/MENDPOINT_SANDBOX_KIND/);
+  });
+
   it("routes createSandbox to fly_machines when configured", async () => {
     vi.stubEnv("MENDPOINT_SANDBOX_KIND", "fly_machines");
     vi.stubEnv("MENDPOINT_SANDBOX_FLY_APP", "mendpoint-sandbox");

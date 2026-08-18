@@ -324,6 +324,7 @@ import {
   createAdvancedAiApplicationRoutes,
 } from "./advanced-ai-applications.js";
 import { initializeApiRuntime } from "./api-runtime.js";
+import { sandboxStatus } from "./sandbox-status.js";
 import {
   internalErrorResponse,
   mappedErrorResponse,
@@ -914,6 +915,7 @@ app.get("/status", (c) => {
   const r = apiReadiness();
   return c.json({
     ...r,
+    sandbox: sandboxStatus(),
     ga: {
       version: RELEASE.version,
       channel: RELEASE.channel,

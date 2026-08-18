@@ -51,7 +51,8 @@ import {
   resolveGitHubTenantAccountBinding,
   type GitHubDelivery,
 } from "@mendpoint/github";
-import { evaluatePolicy, type PolicyConfig } from "@mendpoint/policy";
+import { DEFAULT_POLICY, evaluatePolicy, type PolicyConfig } from "@mendpoint/policy";
+import { filterRepairEdits } from "./repair-policy.js";
 import {
   applyBrandPack,
   ensureWardenFooter,
@@ -1081,6 +1082,18 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       risk: draft.risk,
     });
 
+    // Defence in depth: the writer and the repair loop union the baseline denylist
+    // into the tenant override (which may be [] or a short list) before they run.
+    // evaluatePolicy already enforces the baseline at the point of use; these
+    // sites hold the same invariant one layer out so a raw override can never be
+    // handed to applyActions or the repair session.
+    const effectiveNeverTouchPaths = [
+      ...new Set([
+        ...DEFAULT_POLICY.neverTouchPaths,
+        ...(policyOverrides.neverTouchPaths ?? []),
+      ]),
+    ];
+
     const allLabels = [...new Set([...decision.labels, ...brandLabels])];
 
     recordAudit(db, {
@@ -1176,7 +1189,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         })),
         {
           repoRoot: repo.local_path,
-          neverTouchPaths: policyOverrides.neverTouchPaths,
+          neverTouchPaths: effectiveNeverTouchPaths,
           maxActions: decision.allowedEdits.length,
           maxFilesChanged: decision.allowedEdits.length,
           pristineFiles,
@@ -1208,7 +1221,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           maxAttempts: Number(process.env.AGENTIC_REPAIR_ATTEMPTS ?? 3),
           verifyCommands: input.repairVerifyCommands ?? [],
           useLlm: process.env.LLM_REPAIR === "1",
-          neverTouchPaths: policyOverrides.neverTouchPaths,
+          neverTouchPaths: effectiveNeverTouchPaths,
           allowBroadSearch: false,
           shouldContinue: input.shouldContinue,
         });
@@ -1232,13 +1245,25 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
               /* keep */
             }
           }
-          for (const re of repair.edits) {
-            if (!decision.allowedEdits.some((e) => e.path === re.filePath)) {
-              decision.allowedEdits.push({
-                path: re.filePath,
-                original: re.original,
-                updated: re.updated,
-              });
+          // Repair may produce edits the migration draft never touched. They
+          // are subject to the SAME policy filter as the original draft —
+          // pathBlocked + minConfidenceForEdit — so a repair edit can never be
+          // delivered past a denylist or confidence gate that would have
+          // rejected it as a draft edit. (Previously these were pushed straight
+          // onto decision.allowedEdits, bypassing evaluatePolicy entirely.)
+          const filteredRepair = filterRepairEdits({
+            draft,
+            findings,
+            policy: policyOverrides,
+            edits: repair.edits,
+            existingPaths: decision.allowedEdits.map((e) => e.path),
+          });
+          for (const edit of filteredRepair.allowed) {
+            decision.allowedEdits.push(edit);
+          }
+          for (const blocked of filteredRepair.blocked) {
+            if (!decision.blockedFiles.includes(blocked)) {
+              decision.blockedFiles.push(blocked);
             }
           }
           // Delivery uses the captured edit payloads. Keep the checkout clean

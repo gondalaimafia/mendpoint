@@ -130,8 +130,20 @@ export function evaluatePolicy(
   const confRank = { low: 0, medium: 1, high: 2 };
   const minR = confRank[policy.minConfidenceForEdit];
 
+  // Enforcement invariant: the baseline denylist is applied here, at the point
+  // pathBlocked actually runs — not at each configuration site. No override,
+  // policy layer, or future caller can obtain an allowed-edit set without the
+  // baseline having been unioned in, so an empty or short `neverTouchPaths`
+  // (e.g. the seeded 5-entry list, or `[]`) can never shrink protection below
+  // baseline. mergePolicy keeps its replacement semantics for the layer reducers
+  // that depend on them (warden-policy, transformer agent-config); the union
+  // lives here so it holds for every path that reaches enforcement.
+  const enforcedNeverTouch = [
+    ...new Set([...DEFAULT_POLICY.neverTouchPaths, ...(policy.neverTouchPaths ?? [])]),
+  ];
+
   const allowedEdits = draft.fileEdits.filter((e) => {
-    if (pathBlocked(e.path, policy.neverTouchPaths)) {
+    if (pathBlocked(e.path, enforcedNeverTouch)) {
       blockedFiles.push(e.path);
       return false;
     }

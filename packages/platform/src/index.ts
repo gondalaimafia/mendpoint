@@ -19,6 +19,8 @@ export {
   createSandbox,
   createLocalSandbox,
   resolveSandboxKind,
+  isSandboxKind,
+  SANDBOX_KINDS,
   clearSandboxCache,
   getSandboxCacheStats,
   tenantScopedCacheKey,

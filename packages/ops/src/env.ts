@@ -8,6 +8,7 @@ import {
   parseGitHubAccountTenantBindings,
 } from "@mendpoint/github";
 import { assessModelEgress } from "@mendpoint/shared";
+import { isSandboxKind, SANDBOX_KINDS } from "@mendpoint/platform";
 import { customerBackupInputFromEnv } from "./disaster-recovery.js";
 
 export type EnvReport = {
@@ -71,6 +72,7 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     LLM_AGENT_URL: env.LLM_AGENT_URL,
     MENDPOINT_DEPLOYMENT_PROFILE: env.MENDPOINT_DEPLOYMENT_PROFILE,
     MENDPOINT_DEPLOYMENT_CLASS: env.MENDPOINT_DEPLOYMENT_CLASS,
+    MENDPOINT_SANDBOX_KIND: env.MENDPOINT_SANDBOX_KIND ?? "local (default)",
     MENDPOINT_SANDBOX_FLY_MODE: env.MENDPOINT_SANDBOX_FLY_MODE,
     MENDPOINT_FEED_POLLING_ENABLED: env.MENDPOINT_FEED_POLLING_ENABLED,
     POLL_LOCAL_ONLY: env.POLL_LOCAL_ONLY,
@@ -111,6 +113,17 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
   } else if (egress.violation === "warden_model_endpoint_invalid") {
     errors.push(
       "Each configured model endpoint (LLM_AGENT_URL, LLM_REPAIR_URL, OPENAI_API_BASE, XAI_API_BASE) must be a valid URL when MENDPOINT_MODEL_EGRESS=local_only",
+    );
+  }
+
+  // Verification isolation backend. Fail closed at boot on a set-but-unrecognized
+  // value (e.g. the typo "fly-machines") so a misconfiguration is caught before
+  // the first verification instead of silently routing it to the unisolated host.
+  // Unset keeps the documented "local" default.
+  const sandboxKind = env.MENDPOINT_SANDBOX_KIND;
+  if (sandboxKind && !isSandboxKind(sandboxKind)) {
+    errors.push(
+      `MENDPOINT_SANDBOX_KIND must be exactly one of ${SANDBOX_KINDS.join(", ")}`,
     );
   }
 
