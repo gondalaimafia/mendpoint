@@ -19,7 +19,7 @@ import { CORPUS_ROOT, SCENARIOS, type ScenarioConfig } from "../scenarios/index.
 import { resolveScenarios, type RunnableScenario } from "../scenarios/resolve.js";
 import { loadGroundTruth } from "../ground-truth/load.js";
 import type { GroundTruth } from "../ground-truth/schema.js";
-import { runFettler } from "./fettler-runner.js";
+import { runFettler, runFettlerDirectDeterministic } from "./fettler-runner.js";
 import { runRegauge } from "./regauge-runner.js";
 import { renderLatestReport, renderFailuresBacklog, type ScoredRun } from "./report.js";
 import { assertCorpusIsolation } from "./isolation.js";
@@ -57,6 +57,7 @@ function parseArgs(argv: string[]): {
   record: boolean;
   generatedOnly: boolean;
   enforceReadiness: boolean;
+  directDeterministicRepo?: string;
 } {
   const out = {
     only: undefined as string | undefined,
@@ -65,6 +66,7 @@ function parseArgs(argv: string[]): {
     record: false,
     generatedOnly: false,
     enforceReadiness: false,
+    directDeterministicRepo: undefined as string | undefined,
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--only") out.only = argv[++i];
@@ -73,6 +75,7 @@ function parseArgs(argv: string[]): {
     else if (argv[i] === "--record") out.record = true;
     else if (argv[i] === "--generated-only") out.generatedOnly = true;
     else if (argv[i] === "--enforce-readiness") out.enforceReadiness = true;
+    else if (argv[i] === "--direct-deterministic-repo") out.directDeterministicRepo = argv[++i];
   }
   return out;
 }
@@ -112,14 +115,30 @@ function runIsolated(
   cfg: ScenarioConfig,
   ctx: { gitCommit: string; productVersion: string },
 ): RunRecord {
+  if (cfg.product !== "fettler") {
+    throw new Error("isolated_prepared_runner_product_unsupported");
+  }
   const self = fileURLToPath(import.meta.url);
   const started = Date.now();
+  // The deterministic scale lane has no model or repository tool. It reads the
+  // original corpus only after proving every grading key is outside the exact
+  // codebase-index extension boundary, so the hard timeout measures the product
+  // rather than a fresh-copy filesystem scan.
   const res = spawnSync(
     process.execPath,
-    ["--import", "tsx", self, "--only", cfg.scenario_id, "--record"],
+    [
+      "--import",
+      "tsx",
+      self,
+      "--only",
+      cfg.scenario_id,
+      "--record",
+      "--direct-deterministic-repo",
+      cfg.repoPath,
+    ],
     { cwd: REPO_ROOT, timeout: cfg.budgetMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, killSignal: "SIGKILL" },
   );
-  const out = res.stdout ?? "";
+  const out = (res.stdout ?? "").toString();
   const start = out.indexOf(RECORD_START);
   const end = out.indexOf(RECORD_END);
   if (!res.error && start >= 0 && end > start) {
@@ -180,7 +199,22 @@ async function main(): Promise<void> {
     if (!args.only) throw new Error("--record requires --only <scenario_id>");
     const cfg = SCENARIOS.find((s) => s.scenario_id === args.only);
     if (!cfg) throw new Error(`unknown scenario: ${args.only}`);
-    const record = await runOne(cfg, loadGroundTruth(cfg.scenario_id), ctx);
+    if (
+      args.directDeterministicRepo &&
+      (cfg.product !== "fettler" ||
+        cfg.budgetMs === undefined ||
+        resolve(args.directDeterministicRepo) !== resolve(cfg.repoPath))
+    ) {
+      throw new Error("direct_deterministic_repo_scope_invalid");
+    }
+    const groundTruth = loadGroundTruth(cfg.scenario_id);
+    const record = args.directDeterministicRepo
+      ? await runFettlerDirectDeterministic(
+          { ...cfg, repoPath: args.directDeterministicRepo },
+          groundTruth,
+          ctx,
+        )
+      : await runOne(cfg, groundTruth, ctx);
     process.stdout.write(`\n${RECORD_START}${JSON.stringify(record)}${RECORD_END}\n`);
     return;
   }

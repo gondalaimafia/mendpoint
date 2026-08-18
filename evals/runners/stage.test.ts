@@ -3,7 +3,13 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { isAnswerKeyFile, listFilesRecursive, stageRepo } from "./stage.js";
+import {
+  assertDirectDeterministicRepoSafe,
+  isAnswerKeyFile,
+  listFilesRecursive,
+  stageRepo,
+  withStagedRepo,
+} from "./stage.js";
 import { SCENARIOS } from "../scenarios/index.js";
 
 /** Build a throwaway repo on disk and return its path + a cleanup. */
@@ -38,6 +44,41 @@ describe("isAnswerKeyFile", () => {
 });
 
 describe("stageRepo (hermetic)", () => {
+  it("allows a non-indexable Markdown key but rejects an indexable JSON key", () => {
+    const safe = makeRepo({ "EXPECTED.md": "grading key", "src/a.ts": "export const x = 1;" });
+    const unsafe = makeRepo({ "GROUND_TRUTH.json": "{}", "src/a.ts": "export const x = 1;" });
+    try {
+      expect(() => assertDirectDeterministicRepoSafe(safe.root)).not.toThrow();
+      expect(() => assertDirectDeterministicRepoSafe(unsafe.root)).toThrow(
+        "direct_repo_indexable_answer_key:GROUND_TRUTH.json",
+      );
+    } finally {
+      safe.cleanup();
+      unsafe.cleanup();
+    }
+  });
+
+  it("always removes the staged tree when the product operation throws", async () => {
+    const { root, cleanup } = makeRepo({
+      "EXPECTED.md": "grading key",
+      "src/a.ts": "export const x = 1;",
+    });
+    let stagedPath = "";
+    try {
+      await expect(
+        withStagedRepo(root, async (staged) => {
+          stagedPath = staged.stagedPath;
+          expect(existsSync(stagedPath)).toBe(true);
+          throw new Error("product_failed");
+        }),
+      ).rejects.toThrow("product_failed");
+      expect(stagedPath).not.toBe("");
+      expect(existsSync(stagedPath)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("excludes answer-key files but preserves ordinary content", () => {
     const { root, cleanup } = makeRepo({
       "EXPECTED.md": "# grading key — payment_method",

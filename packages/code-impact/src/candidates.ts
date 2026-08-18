@@ -210,6 +210,38 @@ function sourceHasGenuineReference(
 
 type Acc = Map<string, CandidateSite>;
 
+export type CandidateDiscoveryOptions = Readonly<{
+  /** Testable source reader; production defaults to bounded indexed files. */
+  readFile?: (absolutePath: string) => string;
+}>;
+
+function isStructuredPayloadFixture(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").toLowerCase();
+  if (!normalized.endsWith(".json")) return false;
+  const name = normalized.split("/").at(-1) ?? "";
+  if (/^(?:package(?:-lock)?|tsconfig|openapi|swagger)(?:\.[^.]+)*\.json$/.test(name)) {
+    return false;
+  }
+  return /(^|\/)(?:fixtures?|__fixtures__|testdata|resources|snapshots?|mocks?|examples?)(\/|$)/.test(
+    normalized,
+  );
+}
+
+function structuredKeyEvidence(
+  text: string,
+  field: string,
+): { line: number; evidence: string } | null {
+  try {
+    JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const key = new RegExp(`"${escapeReg(field)}"\\s*:`, "i");
+  const lines = text.split(/\r?\n/);
+  const index = lines.findIndex((line) => key.test(line));
+  return index < 0 ? null : { line: index + 1, evidence: lines[index]!.trim() };
+}
+
 function keyOf(file: string, line: number, symbol: string) {
   return `${file}:${line}:${symbol}`;
 }
@@ -347,8 +379,28 @@ export function discoverCandidates(
   index: CodebaseIndex,
   allSurfaces: ImpactableSurface[],
   providerReach?: ProviderReachability,
+  options: CandidateDiscoveryOptions = {},
 ): CandidateSite[] {
   const acc: Acc = new Map();
+  const sourceReader = options.readFile ?? ((absolutePath: string) => readFileSync(absolutePath, "utf8"));
+  const sourceCache = new Map<string, string | null>();
+  const readIndexedFile = (filePath: string): string | null => {
+    if (sourceCache.has(filePath)) return sourceCache.get(filePath) ?? null;
+    try {
+      const text = sourceReader(join(index.repoRoot, filePath));
+      sourceCache.set(filePath, text);
+      return text;
+    } catch {
+      sourceCache.set(filePath, null);
+      return null;
+    }
+  };
+  const functionsByFile = new Map<string, typeof index.functions>();
+  for (const fn of index.functions) {
+    const functions = functionsByFile.get(fn.filePath) ?? [];
+    functions.push(fn);
+    functionsByFile.set(fn.filePath, functions);
+  }
   // Ambiguous field changes have more than one plausible successor. The tool
   // abstains on them: they never drive confident candidate discovery or edits.
   // They are surfaced separately as a human-decision outcome.
@@ -451,12 +503,8 @@ export function discoverCandidates(
     // Always scan all code files for field renames — precise token match
     for (const file of index.files) {
       if (file.isTest && fieldHints.length === 0) continue;
-      let text: string;
-      try {
-        text = readFileSync(join(index.repoRoot, file.path), "utf8");
-      } catch {
-        continue;
-      }
+      const text = readIndexedFile(file.path);
+      if (text === null) continue;
       const lines = text.split(/\r?\n/);
       // Per-field: does this file reference the field as real code / a wire token
       // anywhere, or only ever mention the word in prose? A provider-reachable
@@ -500,9 +548,9 @@ export function discoverCandidates(
             lineStart: lineNo,
             lineEnd: lineNo,
             symbol: field,
-            functionName: index.functions.find(
-              (f) => f.filePath === file.path && lineNo >= f.lineStart && lineNo <= f.lineEnd,
-            )?.name,
+            functionName: functionsByFile
+              .get(file.path)
+              ?.find((f) => lineNo >= f.lineStart && lineNo <= f.lineEnd)?.name,
             evidence: line.trim(),
             source: g.source,
             surfaceId: surface.id,
@@ -530,6 +578,29 @@ export function discoverCandidates(
           });
         }
       });
+    }
+
+    // JSON request/response fixtures are executable contract evidence even
+    // though they have no import edge. Keep this channel deliberately narrow:
+    // valid JSON, a fixture/test-data path, and an exact changed wire key.
+    for (const file of index.structuredFiles ?? []) {
+      if (!isStructuredPayloadFixture(file.path)) continue;
+      const text = readIndexedFile(file.path);
+      if (text === null) continue;
+      for (const field of fieldHints) {
+        const hit = structuredKeyEvidence(text, field);
+        if (!hit) continue;
+        add(acc, {
+          filePath: file.path,
+          lineStart: hit.line,
+          lineEnd: hit.line,
+          symbol: field,
+          evidence: hit.evidence,
+          source: "string_heuristic",
+          surfaceId: surface.id,
+          confidence: "medium",
+        });
+      }
     }
   }
 
