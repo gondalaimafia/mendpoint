@@ -2,21 +2,7 @@
 
 One entry per unresolved failure or coverage gap surfaced by the suite. Never silently discarded. Generated from the latest run; re-run the suite to refresh.
 
-## FAIL-001 — fettler-edge-huge-monorepo (completes_within_budget)
-
-- Scenario: fettler-edge-huge-monorepo
-- Product: fettler
-- Severity: P1
-- Failure category: SCALE_FAILURE
-- Observed behavior: analysis did not finish within the 120000ms budget on this repository
-- Expected behavior: complete analysis within the budget
-- Root cause: to be diagnosed (Phase 7); classify from the category above
-- Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
-- Status: OPEN
-- Regression test: this scenario (fettler-edge-huge-monorepo) becomes the permanent regression once fixed
-- Owner: unassigned
-
-## FAIL-002 — fettler-ts-payments-rename (precision)
+## FAIL-001 — fettler-ts-payments-rename (precision)
 
 - Scenario: fettler-ts-payments-rename
 - Product: fettler
@@ -30,41 +16,13 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-ts-payments-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-003 — fettler-python-billing-rename (expected_findings_recall)
-
-- Scenario: fettler-python-billing-rename
-- Product: fettler
-- Severity: P2
-- Failure category: FALSE_NEGATIVE
-- Observed behavior: flagged 8/11; missed: tests/fixtures/charge_request.json, tests/fixtures/charge_response.json, tests/fixtures/refund_response.json
-- Expected behavior: all 11 expected files
-- Root cause: to be diagnosed (Phase 7); classify from the category above
-- Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
-- Status: OPEN
-- Regression test: this scenario (fettler-python-billing-rename) becomes the permanent regression once fixed
-- Owner: unassigned
-
-## FAIL-004 — fettler-go-ledger-rename (expected_findings_recall)
-
-- Scenario: fettler-go-ledger-rename
-- Product: fettler
-- Severity: P2
-- Failure category: FALSE_NEGATIVE
-- Observed behavior: flagged 12/17; missed: internal/payments/testdata/charge_request.json, internal/payments/testdata/charge_response.json, internal/ledger/testdata/entry.json, internal/settlement/testdata/settlement.json, internal/worker/testdata/items.json
-- Expected behavior: all 17 expected files
-- Root cause: to be diagnosed (Phase 7); classify from the category above
-- Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
-- Status: OPEN
-- Regression test: this scenario (fettler-go-ledger-rename) becomes the permanent regression once fixed
-- Owner: unassigned
-
-## FAIL-005 — fettler-java-settlement-rename (expected_findings_recall)
+## FAIL-002 — fettler-java-settlement-rename (expected_findings_recall)
 
 - Scenario: fettler-java-settlement-rename
 - Product: fettler
 - Severity: P2
 - Failure category: FALSE_NEGATIVE
-- Observed behavior: flagged 8/13; missed: src/main/java/com/acme/settlement/payments/PaymentsClient.java, src/main/java/com/acme/settlement/charge/Charge.java, src/test/resources/payment-request.json, src/test/resources/payment-response.json, src/test/resources/settlement-batch.json
+- Observed behavior: flagged 11/13; missed: src/main/java/com/acme/settlement/payments/PaymentsClient.java, src/main/java/com/acme/settlement/charge/Charge.java
 - Expected behavior: all 13 expected files
 - Root cause: to be diagnosed (Phase 7); classify from the category above
 - Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
@@ -72,7 +30,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-java-settlement-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-006 — fettler-java-settlement-rename (precision)
+## FAIL-003 — fettler-java-settlement-rename (precision)
 
 - Scenario: fettler-java-settlement-rename
 - Product: fettler
@@ -86,13 +44,13 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-java-settlement-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-007 — fettler-node-cjs-rename (expected_findings_recall)
+## FAIL-004 — fettler-node-cjs-rename (expected_findings_recall)
 
 - Scenario: fettler-node-cjs-rename
 - Product: fettler
 - Severity: P2
 - Failure category: FALSE_NEGATIVE
-- Observed behavior: flagged 1/7; missed: lib/chargeService.js, lib/refundService.js, lib/tasks/settlementTask.js, test/fixtures/charge.v1.json, test/fixtures/refund.v1.json, test/fixtures/settlement.batch.json
+- Observed behavior: flagged 4/7; missed: lib/chargeService.js, lib/refundService.js, lib/tasks/settlementTask.js
 - Expected behavior: all 7 expected files
 - Root cause: to be diagnosed (Phase 7); classify from the category above
 - Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
@@ -100,21 +58,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-node-cjs-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-008 — fettler-ts-monorepo-rename (expected_findings_recall)
-
-- Scenario: fettler-ts-monorepo-rename
-- Product: fettler
-- Severity: P2
-- Failure category: FALSE_NEGATIVE
-- Observed behavior: flagged 5/8; missed: packages/payments/src/__fixtures__/charge.json, packages/payments/src/__fixtures__/refund.json, packages/payments/src/__fixtures__/settlementBatch.json
-- Expected behavior: all 8 expected files
-- Root cause: to be diagnosed (Phase 7); classify from the category above
-- Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
-- Status: OPEN
-- Regression test: this scenario (fettler-ts-monorepo-rename) becomes the permanent regression once fixed
-- Owner: unassigned
-
-## FAIL-009 — regauge-runtime-upgrade (recipe_residual)
+## FAIL-005 — regauge-runtime-upgrade (recipe_residual)
 
 - Scenario: regauge-runtime-upgrade
 - Product: regauge
@@ -128,7 +72,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-runtime-upgrade) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-010 — regauge-sdk-upgrade (family_coverage)
+## FAIL-006 — regauge-sdk-upgrade (family_coverage)
 
 - Scenario: regauge-sdk-upgrade
 - Product: regauge
@@ -142,7 +86,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-sdk-upgrade) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-011 — regauge-framework-upgrade (family_coverage)
+## FAIL-007 — regauge-framework-upgrade (family_coverage)
 
 - Scenario: regauge-framework-upgrade
 - Product: regauge
@@ -156,7 +100,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-framework-upgrade) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-012 — regauge-internal-api-rename (family_coverage)
+## FAIL-008 — regauge-internal-api-rename (family_coverage)
 
 - Scenario: regauge-internal-api-rename
 - Product: regauge
@@ -170,7 +114,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-internal-api-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-013 — regauge-partial-campaign (family_coverage)
+## FAIL-009 — regauge-partial-campaign (family_coverage)
 
 - Scenario: regauge-partial-campaign
 - Product: regauge
@@ -184,7 +128,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-partial-campaign) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-014 — gen-regauge-runtime-unsupported-21-23 (family_coverage)
+## FAIL-010 — gen-regauge-runtime-unsupported-21-23 (family_coverage)
 
 - Scenario: gen-regauge-runtime-unsupported-21-23
 - Product: regauge
