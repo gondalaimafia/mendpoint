@@ -52,8 +52,11 @@ describe("verification sandbox routing", () => {
     expect(client.created).toHaveLength(1);
     expect(client.execed).toHaveLength(1);
     expect(client.destroyed).toEqual([client.created[0]!.id]);
-    // The command reached the Machine, wrapped to run in the uploaded workspace.
-    expect(result.stdout).toContain("SANDBOX_RAN:/bin/sh -c cd /workspace && npm test");
+    // The command reached the Machine, dropped to the image's node user, and
+    // then ran in the uploaded workspace.
+    expect(result.stdout).toContain(
+      "SANDBOX_RAN:/usr/sbin/runuser -u node -- /bin/sh -c cd /workspace && npm test",
+    );
     // Only the tenant's workspace files were uploaded, tagged with the tenant.
     const config = client.created[0]!.config;
     const paths = (config.files ?? []).map((f) => f.guest_path).sort();

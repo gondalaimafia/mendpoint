@@ -235,7 +235,13 @@ function clip(s: string, max: number): string {
 }
 
 function toCommand(cmd: string): string[] {
-  return ["/bin/sh", "-c", cmd];
+  // Fly's Machines /exec endpoint starts as root even when the OCI image has a
+  // non-root USER. The sandbox image includes util-linux's runuser and the
+  // unprivileged node account (uid 1000), so make the privilege drop part of
+  // every remotely executed verification command. Keeping this in the command
+  // envelope makes the invariant apply to both the REST client and injected
+  // clients, rather than relying on an unsupported /exec `user` field.
+  return ["/usr/sbin/runuser", "-u", "node", "--", "/bin/sh", "-c", cmd];
 }
 
 function posixJoin(base: string, rel: string): string {
