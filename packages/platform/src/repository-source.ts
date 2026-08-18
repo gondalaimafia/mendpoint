@@ -1132,11 +1132,12 @@ export async function createGitHubRepositorySource(input: {
     );
     const id = String(body.id ?? "");
     const fullName = requiredString(body, "full_name");
-    const permissions = jsonRecord(body.permissions);
+    // GitHub returns user-oriented repository permission flags as all false for
+    // repository-scoped installation tokens. The authenticated 200 response,
+    // exact numeric ID, and exact full name are the installation read proof.
     if (
       id !== input.repositoryId ||
-      fullName.toLowerCase() !== `${input.owner}/${input.name}`.toLowerCase() ||
-      permissions?.pull !== true
+      fullName.toLowerCase() !== `${input.owner}/${input.name}`.toLowerCase()
     ) {
       throw new RepositorySourceError(
         "REPOSITORY_NOT_AUTHORIZED",
