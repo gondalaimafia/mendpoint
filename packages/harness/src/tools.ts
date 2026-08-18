@@ -120,7 +120,7 @@ export function runSpecialistTool(
                 requiredKeys: [],
               },
             ],
-        securityScanAttested: meta.securityScanAttested !== false,
+        securityScanAttested: meta.securityScanAttested === true,
       });
       return {
         ok: gates.ok,
