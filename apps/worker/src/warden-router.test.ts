@@ -202,6 +202,18 @@ describe("warden routing runtime", () => {
       .toEqual(expect.arrayContaining(["warden.repair", "warden.feature"]));
   });
 
+  it("emits an honest token estimate and a risk-adjusted quality floor", () => {
+    const spec = request().task;
+    // No longer pinned to the inert values that disabled the hard-limit and
+    // quality gates: tokens are derived from the seed, quality from the risk.
+    expect(spec.context.estimatedInputTokens).toBeGreaterThan(0);
+    expect(spec.quality.minimumScore).toBe(0.7); // medium default
+    expect(request({ risk: "high" }).task.quality.minimumScore).toBe(0.8);
+    // A caller-supplied estimate is honoured verbatim.
+    expect(request({ estimatedInputTokens: 4_096 }).task.context.estimatedInputTokens)
+      .toBe(4_096);
+  });
+
   it("hands off an external model before planner execution when processing is denied", async () => {
     const db = freshDb();
     const runtime = createWardenRoutingRuntime({

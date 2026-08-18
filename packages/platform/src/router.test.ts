@@ -482,4 +482,155 @@ describe("Gate 7 policy router", () => {
       }),
     ).toThrow("Task verification policy is invalid");
   });
+
+  const escalationBase = () => ({
+    policy: policy(),
+    registry: registry(executor("executor-a", { maximumRisk: "critical" })),
+    circuitBreaker: new ExecutorCircuitBreaker(),
+    remainingBudgetUsd: 5,
+    decidedAt,
+  });
+
+  it("escalates high-risk work to a human when graph coverage is incomplete", () => {
+    for (const basis of ["partial", "not_analyzed"] as const) {
+      const outcome = routeTask({
+        ...escalationBase(),
+        task: task({ risk: "high", coverage: { basis, gaps: [] } }),
+      });
+      expect(outcome.action).toBe("human_handoff");
+      if (outcome.action !== "human_handoff") throw new Error("expected handoff");
+      expect(outcome.handoff.reason).toBe("graph_coverage_incomplete");
+    }
+  });
+
+  it("keeps the high_risk reason when high-risk coverage is complete or absent", () => {
+    const complete = routeTask({
+      ...escalationBase(),
+      task: task({ risk: "high", coverage: { basis: "analyzed", gaps: [] } }),
+    });
+    expect(complete.action).toBe("human_handoff");
+    if (complete.action !== "human_handoff") throw new Error("expected handoff");
+    expect(complete.handoff.reason).toBe("high_risk");
+
+    const absent = routeTask({ ...escalationBase(), task: task({ risk: "high" }) });
+    expect(absent.action).toBe("human_handoff");
+    if (absent.action !== "human_handoff") throw new Error("expected handoff");
+    expect(absent.handoff.reason).toBe("high_risk");
+  });
+
+  it("does not escalate incomplete coverage below high risk", () => {
+    const outcome = routeTask({
+      task: task({ risk: "medium", coverage: { basis: "not_analyzed", gaps: [] } }),
+      policy: policy(),
+      registry: registry(executor("executor-a")),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    expect(outcome.action).toBe("execute");
+  });
+
+  it("trips the hard limit when estimated input tokens exceed an executor window", () => {
+    const outcome = routeTask({
+      task: task({
+        context: { estimatedInputTokens: 200_000, maximumOutputTokens: 4_000 },
+      }),
+      policy: policy(),
+      registry: registry(
+        executor("small-window", {
+          limits: {
+            maximumInputTokens: 128_000,
+            maximumOutputTokens: 16_000,
+            maximumConcurrentTasks: 10,
+          },
+        }),
+      ),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    expect(outcome.action).toBe("human_handoff");
+    if (outcome.action !== "human_handoff") throw new Error("expected handoff");
+    expect(outcome.handoff.reason).toBe("no_eligible_executor");
+    const evaluation = outcome.decision.evaluations.find(
+      (candidate) => candidate.executorId === "small-window",
+    );
+    expect(evaluation?.reasons).toContain("hard_limit_exceeded");
+  });
+
+  it("keeps routing deterministic and replayable with the new TaskSpec fields", () => {
+    const base = {
+      policy: policy(),
+      registry: registry(executor("executor-a")),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    };
+    const enriched = task({
+      product: "warden",
+      blastRadius: { impactedFiles: 12, impactedSurfaces: 3, repositoryCount: 1 },
+      coverage: { basis: "analyzed", gaps: [] },
+    });
+    const first = routeTask({ ...base, task: enriched });
+    const second = routeTask({ ...base, task: enriched });
+    expect(first.action).toBe("execute");
+    expect(first.decision.decisionId).toBe(second.decision.decisionId);
+
+    // Coverage participates in the fingerprint (both bases execute at medium risk).
+    const analyzed = routeTask({
+      ...base,
+      task: task({ coverage: { basis: "analyzed", gaps: [] } }),
+    });
+    const partial = routeTask({
+      ...base,
+      task: task({ coverage: { basis: "partial", gaps: [] } }),
+    });
+    expect(analyzed.decision.decisionId).not.toBe(partial.decision.decisionId);
+
+    // Undefined new fields are filtered from the fingerprint (backward compat).
+    const bare = routeTask({ ...base, task: task() });
+    const explicitlyUndefined = routeTask({
+      ...base,
+      task: task({ product: undefined, blastRadius: undefined, coverage: undefined }),
+    });
+    expect(bare.decision.decisionId).toBe(explicitlyUndefined.decision.decisionId);
+  });
+
+  it("rejects invalid new TaskSpec fields", () => {
+    const base = {
+      policy: policy(),
+      registry: registry(executor("executor-a")),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    };
+    expect(() =>
+      routeTask({
+        ...base,
+        task: task({
+          coverage: { basis: "bogus" } as unknown as RouterTaskSpec["coverage"],
+        }),
+      }),
+    ).toThrow("Task coverage is invalid");
+    expect(() =>
+      routeTask({
+        ...base,
+        task: task({
+          blastRadius: {
+            impactedFiles: -1,
+            impactedSurfaces: 0,
+            repositoryCount: 0,
+          },
+        }),
+      }),
+    ).toThrow("task blast radius files is invalid");
+    expect(() =>
+      routeTask({
+        ...base,
+        task: task({
+          product: "bogus" as unknown as RouterTaskSpec["product"],
+        }),
+      }),
+    ).toThrow("Task product is invalid");
+  });
 });
