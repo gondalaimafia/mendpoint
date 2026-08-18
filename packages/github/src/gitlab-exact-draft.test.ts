@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExactDraftDeliveryInput } from "./exact-draft.js";
-import type { FileEdit } from "./index.js";
 import { MockGitLabDelivery, type GitLabDelivery, type MergeRequestResult } from "./gitlab.js";
 import { gitlabAsExactDraftDelivery } from "./gitlab-exact-draft.js";
 
@@ -36,6 +35,7 @@ function recordingGitLab(
 ): GitLabDelivery & {
   calls: {
     resolveBranchSha: unknown[][];
+    verifyExactCommit: unknown[][];
     createBranch: unknown[][];
     commitFiles: unknown[][];
     openDraftMergeRequest: unknown[][];
@@ -43,6 +43,7 @@ function recordingGitLab(
 } {
   const calls = {
     resolveBranchSha: [] as unknown[][],
+    verifyExactCommit: [] as unknown[][],
     createBranch: [] as unknown[][],
     commitFiles: [] as unknown[][],
     openDraftMergeRequest: [] as unknown[][],
@@ -51,7 +52,11 @@ function recordingGitLab(
     calls,
     async resolveBranchSha(namespace, project, branch) {
       calls.resolveBranchSha.push([namespace, project, branch]);
-      return observedBaseSha;
+      return branch === "main" ? observedBaseSha : undefined;
+    },
+    async verifyExactCommit(namespace, project, branch, input) {
+      calls.verifyExactCommit.push([namespace, project, branch, input]);
+      return false;
     },
     async createBranch(namespace, project, branch, fromBranch) {
       calls.createBranch.push([namespace, project, branch, fromBranch]);
@@ -79,9 +84,10 @@ describe("gitlabAsExactDraftDelivery", () => {
     const gitlab = recordingGitLab();
     const result = await gitlabAsExactDraftDelivery(gitlab).deliverExactDraft(intent());
 
-    // Branch is created from the approved base, files are committed without the
-    // exact-draft mode field, and the MR targets the base branch.
-    expect(gitlab.calls.createBranch).toEqual([["acme", "customer", "mendpoint/transformer-abc123", "main"]]);
+    // Branch creation is pinned to the immutable revision that was observed and
+    // approved, not the mutable base-branch name. If main moves after the read,
+    // GitLab still creates the source branch from this exact commit.
+    expect(gitlab.calls.createBranch).toEqual([["acme", "customer", "mendpoint/transformer-abc123", BASE_SHA]]);
     const committed = gitlab.calls.commitFiles[0]!;
     expect(committed.slice(0, 4)).toEqual([
       "acme",
@@ -90,9 +96,9 @@ describe("gitlabAsExactDraftDelivery", () => {
       "Apply approved Transformer candidate",
     ]);
     expect(committed[4]).toEqual([
-      { path: "package.json", content: "{\"name\":\"customer\"}\n" },
-      { path: "src/client.ts", content: "export const migrated = true;\n" },
-    ] satisfies FileEdit[]);
+      { path: "package.json", content: "{\"name\":\"customer\"}\n", mode: "100644" },
+      { path: "src/client.ts", content: "export const migrated = true;\n", mode: "100755" },
+    ]);
     expect(gitlab.calls.openDraftMergeRequest).toEqual([
       [
         "acme",
@@ -127,7 +133,7 @@ describe("gitlabAsExactDraftDelivery", () => {
     }));
     expect(gitlab.calls.commitFiles[0]![4]).toEqual([
       { path: "src/obsolete.ts", delete: true },
-    ] satisfies FileEdit[]);
+    ]);
   });
 
   it("fails closed when the base branch has drifted from the approved revision", async () => {
@@ -139,7 +145,10 @@ describe("gitlabAsExactDraftDelivery", () => {
       gitlabAsExactDraftDelivery(gitlab).deliverExactDraft(intent()),
     ).rejects.toThrow("gitlab_exact_draft_base_revision_drift");
     // The base was observed and, on drift, nothing was created or committed.
-    expect(gitlab.calls.resolveBranchSha).toEqual([["acme", "customer", "main"]]);
+    expect(gitlab.calls.resolveBranchSha).toEqual([
+      ["acme", "customer", "mendpoint/transformer-abc123"],
+      ["acme", "customer", "main"],
+    ]);
     expect(gitlab.calls.createBranch).toEqual([]);
     expect(gitlab.calls.commitFiles).toEqual([]);
     expect(gitlab.calls.openDraftMergeRequest).toEqual([]);
@@ -192,6 +201,7 @@ describe("gitlabAsExactDraftDelivery", () => {
 
   it("delivers through the deterministic MockGitLabDelivery and dedupes on replay", async () => {
     const mock = new MockGitLabDelivery();
+    const commitSpy = vi.spyOn(mock, "commitFiles");
     const delivery = gitlabAsExactDraftDelivery(mock);
     const first = await delivery.deliverExactDraft(intent());
     expect(first).toMatchObject({
@@ -208,5 +218,68 @@ describe("gitlabAsExactDraftDelivery", () => {
     const replay = await delivery.deliverExactDraft(intent());
     expect(replay.number).toBe(first.number);
     expect(replay.commitSha).toBe(first.commitSha);
+    // A lost response may replay the sealed delivery. The remote commit is an
+    // externally visible side effect and must be reconciled, not emitted again
+    // on top of the first commit.
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles an exact commit after the commit response is lost", async () => {
+    const backing = new MockGitLabDelivery();
+    let commitCalls = 0;
+    const responseLoss: GitLabDelivery = {
+      createBranch: (...args) => backing.createBranch(...args),
+      resolveBranchSha: (...args) => backing.resolveBranchSha(...args),
+      verifyExactCommit: (...args) => backing.verifyExactCommit(...args),
+      openDraftMergeRequest: (...args) => backing.openDraftMergeRequest(...args),
+      async commitFiles(...args) {
+        commitCalls++;
+        await backing.commitFiles(...args);
+        throw new Error("simulated response loss");
+      },
+    };
+
+    const result = await gitlabAsExactDraftDelivery(responseLoss).deliverExactDraft(intent());
+
+    expect(result.commitSha).toMatch(/^[a-f0-9]{40}$/);
+    expect(result.draft).toBe(true);
+    expect(commitCalls).toBe(1);
+  });
+
+  it("reconciles an exact commit when another worker wins the branch-creation race", async () => {
+    const backing = new MockGitLabDelivery();
+    let createCalls = 0;
+    let commitCalls = 0;
+    const raced: GitLabDelivery = {
+      resolveBranchSha: (...args) => backing.resolveBranchSha(...args),
+      verifyExactCommit: (...args) => backing.verifyExactCommit(...args),
+      openDraftMergeRequest: (...args) => backing.openDraftMergeRequest(...args),
+      async createBranch(namespace, project, branch, fromBranch) {
+        createCalls++;
+        await backing.createBranch(namespace, project, branch, fromBranch);
+        await backing.commitFiles(
+          namespace,
+          project,
+          branch,
+          intent().commitMessage,
+          [
+            { path: "package.json", content: "{\"name\":\"customer\"}\n", mode: "100644" },
+            { path: "src/client.ts", content: "export const migrated = true;\n", mode: "100755" },
+          ],
+        );
+        throw new Error("simulated concurrent branch winner");
+      },
+      async commitFiles(...args) {
+        commitCalls++;
+        return backing.commitFiles(...args);
+      },
+    };
+
+    const result = await gitlabAsExactDraftDelivery(raced).deliverExactDraft(intent());
+
+    expect(result.commitSha).toMatch(/^[a-f0-9]{40}$/);
+    expect(result.draft).toBe(true);
+    expect(createCalls).toBe(1);
+    expect(commitCalls).toBe(0);
   });
 });

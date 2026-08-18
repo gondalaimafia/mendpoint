@@ -3,8 +3,10 @@ import {
   type ExactDraftDeliveryInput,
   type ExactDraftDeliveryResult,
 } from "./exact-draft.js";
-import type { FileEdit } from "./index.js";
-import { type GitLabDelivery } from "./gitlab.js";
+import {
+  type GitLabCommitFile,
+  type GitLabDelivery,
+} from "./gitlab.js";
 
 /**
  * The single-method exact-draft delivery contract Transformer's approved
@@ -39,25 +41,83 @@ export function gitlabAsExactDraftDelivery(delivery: GitLabDelivery): ExactDraft
       // branch to the commit it currently points at and fail closed if it has
       // moved off the approved base, exactly as the GitHub exact-draft path
       // throws github_exact_draft_base_revision_drift.
-      const observedBaseSha = await delivery.resolveBranchSha(
-        input.owner,
-        input.repo,
-        input.baseBranch,
-      );
-      if (observedBaseSha !== input.expectedBaseSha) {
-        throw new Error("gitlab_exact_draft_base_revision_drift");
-      }
-      const files: FileEdit[] = input.files.map((file) => "delete" in file
-        ? { path: file.path, delete: true }
-        : { path: file.path, content: file.content });
-      await delivery.createBranch(input.owner, input.repo, input.branch, input.baseBranch);
-      const committedSha = await delivery.commitFiles(
+      const files: GitLabCommitFile[] = input.files.map((file) => "delete" in file
+        ? { path: file.path, delete: true as const }
+        : { path: file.path, content: file.content, mode: file.mode });
+      const reconcileExactHead = async (
+        candidateHead?: string,
+      ): Promise<string | undefined> => {
+        const head = candidateHead ?? await delivery.resolveBranchSha(
+          input.owner,
+          input.repo,
+          input.branch,
+        );
+        if (!head) return undefined;
+        const exact = await delivery.verifyExactCommit(
+          input.owner,
+          input.repo,
+          input.branch,
+          {
+            commitSha: head,
+            parentSha: input.expectedBaseSha,
+            message: input.commitMessage,
+            files,
+          },
+        );
+        return exact ? head : undefined;
+      };
+      let committedSha: string | undefined;
+      const existingHead = await delivery.resolveBranchSha(
         input.owner,
         input.repo,
         input.branch,
-        input.commitMessage,
-        files,
       );
+      if (existingHead) {
+        committedSha = await reconcileExactHead(existingHead);
+        if (!committedSha) throw new Error("gitlab_exact_draft_branch_diverged");
+      } else {
+        const observedBaseSha = await delivery.resolveBranchSha(
+          input.owner,
+          input.repo,
+          input.baseBranch,
+        );
+        if (observedBaseSha !== input.expectedBaseSha) {
+          throw new Error("gitlab_exact_draft_base_revision_drift");
+        }
+        // GitLab accepts a commit SHA as the branch-creation ref. Pin creation
+        // to the exact revision just observed, rather than rereading the mutable
+        // base branch name after the drift check.
+        try {
+          await delivery.createBranch(input.owner, input.repo, input.branch, observedBaseSha);
+        } catch (error) {
+          // A concurrent worker can create and commit this deterministic branch
+          // between our initial absence read and branch POST. Adopt it only when
+          // read-only reconciliation proves the complete sealed commit; otherwise
+          // preserve the branch-creation failure and perform no further mutation.
+          committedSha = await reconcileExactHead();
+          if (!committedSha) throw error;
+        }
+        if (!committedSha) {
+          try {
+            committedSha = await delivery.commitFiles(
+              input.owner,
+              input.repo,
+              input.branch,
+              input.commitMessage,
+              files,
+            );
+          } catch (error) {
+            // A lost create-commit response is uncertain. Reconcile read-only from
+            // the branch head and accept it only when GitLab proves the exact sole
+            // parent, message, paths, modes, and bytes. Never issue a second commit.
+            committedSha = await reconcileExactHead();
+            if (!committedSha) throw error;
+          }
+        }
+      }
+      if (committedSha === undefined) {
+        throw new Error("gitlab_exact_draft_commit_sha_missing");
+      }
       const mergeRequest = await delivery.openDraftMergeRequest(
         input.owner,
         input.repo,
@@ -65,6 +125,7 @@ export function gitlabAsExactDraftDelivery(delivery: GitLabDelivery): ExactDraft
         input.title,
         input.body,
         input.baseBranch,
+        committedSha,
       );
       if (mergeRequest.draft !== true) {
         throw new Error("gitlab_exact_draft_not_draft");
@@ -76,8 +137,9 @@ export function gitlabAsExactDraftDelivery(delivery: GitLabDelivery): ExactDraft
         title: input.title,
         draft: true,
         baseBranch: input.baseBranch,
-        // The observed base revision, verified equal to the approved base above.
-        baseSha: observedBaseSha,
+        // Recovery is anchored to a commit whose sole parent is this approved
+        // revision, even if the mutable base branch moved after first delivery.
+        baseSha: input.expectedBaseSha,
         // The commit id GitLab actually returned, unshaped. GitLab omitting it
         // yields an empty string, which the worker's delivery-evidence check
         // (40-hex required, matching Warden) rejects rather than accepting a

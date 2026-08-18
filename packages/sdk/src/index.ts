@@ -110,8 +110,6 @@ export type PlatformClient = {
   createVm: (opts?: {
     backend?: "local" | "docker" | "firecracker";
     cacheKey?: string;
-    /** Required whenever cacheKey is set — the build cache is tenant-scoped. */
-    tenantId?: string;
   }) => ReturnType<typeof createVmSandbox>;
   liveSandbox: () => ReturnType<typeof startLiveSandbox>;
   scmProviders: () => ReturnType<typeof listScmProviders>;
@@ -247,13 +245,16 @@ export function createPlatform(scope: GraphTenantScope): PlatformClient {
     createVm(opts) {
       const backend = opts?.backend ?? "local";
       if (opts?.cacheKey !== undefined) {
-        // Fail closed: a cache key without a tenant cannot be scoped, so refuse
-        // rather than key it globally across tenants.
-        const tenantId = opts.tenantId;
-        if (!tenantId) throw new Error("sandbox_tenant_scope_required");
-        return createVmSandbox({ backend, cacheKey: opts.cacheKey, tenantId });
+        // The client is already tenant-bound. Derive cache authority from that
+        // immutable scope instead of accepting a second caller-controlled tenant
+        // that could redirect cache reads into another tenant's namespace.
+        return createVmSandbox({
+          backend,
+          cacheKey: opts.cacheKey,
+          tenantId: scope.tenantId,
+        });
       }
-      return createVmSandbox({ backend });
+      return createVmSandbox({ backend, tenantId: scope.tenantId });
     },
     liveSandbox() {
       return startLiveSandbox();

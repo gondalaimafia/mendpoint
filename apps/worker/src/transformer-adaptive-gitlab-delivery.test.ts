@@ -240,9 +240,10 @@ describe("Transformer adaptive GitLab draft delivery", () => {
   it("fails closed and does not deliver when GitLab returns a non-draft merge request", async () => {
     const value = fixture();
     const nonDraft: GitLabDelivery = {
-      async resolveBranchSha() {
-        return BASE_SHA;
+      async resolveBranchSha(_namespace, _project, branch) {
+        return branch === "main" ? BASE_SHA : undefined;
       },
+      async verifyExactCommit() { return false; },
       async createBranch() {},
       async commitFiles() {
         return "f".repeat(40);
@@ -276,9 +277,10 @@ describe("Transformer adaptive GitLab draft delivery", () => {
     const drifted: GitLabDelivery = {
       // The base branch has moved to a different commit than the sealed candidate
       // was approved against, exactly as the GitHub path would detect.
-      async resolveBranchSha() {
-        return "d".repeat(40);
+      async resolveBranchSha(_namespace, _project, branch) {
+        return branch === "main" ? "d".repeat(40) : undefined;
       },
+      async verifyExactCommit() { return false; },
       async createBranch() {
         throw new Error("createBranch must not run once base drift is detected");
       },
@@ -306,9 +308,10 @@ describe("Transformer adaptive GitLab draft delivery", () => {
   it("fails closed when GitLab omits the commit id — no fabricated SHA is persisted", async () => {
     const value = fixture();
     const noCommitId: GitLabDelivery = {
-      async resolveBranchSha() {
-        return BASE_SHA;
+      async resolveBranchSha(_namespace, _project, branch) {
+        return branch === "main" ? BASE_SHA : undefined;
       },
+      async verifyExactCommit() { return false; },
       async createBranch() {},
       // GitLab omitted the commit id. The adapter returns it unshaped (empty),
       // and the worker's evidence assertion rejects it: both lanes require a

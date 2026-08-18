@@ -6,6 +6,7 @@
  * Build cache keyed by cacheKey across PR units.
  */
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -252,7 +253,10 @@ export function createVmSandbox(opts: VmSandboxOpts = {}): SandboxHandle & {
 export function vmStatusReport() {
   return {
     capabilities: detectVmCapabilities(),
-    buildCache: getBuildCacheStats(),
+    // Cache roots, tenant-scoped keys, and hit counts are process-internal
+    // isolation metadata. The status report is exposed to any authenticated
+    // graph reader, so returning the process-wide cache map would disclose one
+    // tenant's cache existence and host paths to another tenant.
     env: {
       MENDPOINT_VM_BACKEND: process.env.MENDPOINT_VM_BACKEND ?? "local",
       FIRECRACKER_BIN: process.env.FIRECRACKER_BIN ?? null,
@@ -260,16 +264,20 @@ export function vmStatusReport() {
   };
 }
 
-/** Ensure a named cache dir under tmp for transformer multi-PR builds */
-export function ensureBuildCacheDir(cacheKey: string): string {
+/** Ensure a tenant-scoped cache dir under tmp for Transformer multi-PR builds. */
+export function ensureBuildCacheDir(tenantId: string, cacheKey: string): string {
   if (!/^[A-Za-z0-9._-]{1,128}$/.test(cacheKey)) {
     throw new Error("Build cache key must use 1 to 128 safe characters");
   }
+  const scopedKey = tenantScopedCacheKey({ tenantId, cacheKey })!;
   pruneMissingBuildCacheEntries();
-  const root = join(tmpdir(), "mendpoint-build-cache", cacheKey);
+  // The filesystem name is content addressed from the unambiguous tenant and
+  // cache-key pair. Tenant identifiers never become path components.
+  const directoryKey = createHash("sha256").update(scopedKey, "utf8").digest("hex");
+  const root = join(tmpdir(), "mendpoint-build-cache", directoryKey);
   mkdirSync(root, { recursive: true });
-  if (!buildCache.has(cacheKey)) {
-    buildCache.set(cacheKey, {
+  if (!buildCache.has(scopedKey)) {
+    buildCache.set(scopedKey, {
       root,
       hits: 0,
       createdAt: new Date().toISOString(),

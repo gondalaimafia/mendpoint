@@ -102,6 +102,18 @@ export interface GitLabDelivery {
     branch: string,
   ): Promise<string | undefined>;
   /**
+   * Prove that an existing source-branch head is exactly the one commit this
+   * delivery intended: sole parent, message, changed paths, modes, and bytes.
+   * This is the response-loss reconciliation boundary. A false result is never
+   * permission to mutate the branch again.
+   */
+  verifyExactCommit(
+    namespace: string,
+    project: string,
+    branch: string,
+    input: GitLabExactCommitIntent,
+  ): Promise<boolean>;
+  /**
    * Commit the exact files onto the source branch and return the created
    * commit's SHA (GitLab reports a 40-hex SHA-1 as `id`). Returns an empty
    * string only if GitLab omits the id; callers fall back accordingly.
@@ -111,7 +123,7 @@ export interface GitLabDelivery {
     project: string,
     branch: string,
     message: string,
-    files: FileEdit[],
+    files: GitLabCommitFile[],
   ): Promise<string>;
   openDraftMergeRequest(
     namespace: string,
@@ -120,8 +132,20 @@ export interface GitLabDelivery {
     title: string,
     body: string,
     targetBranch?: string,
+    expectedHeadSha?: string,
   ): Promise<MergeRequestResult>;
 }
+
+export type GitLabCommitFile =
+  | { path: string; content: string; mode?: "100644" | "100755" }
+  | { path: string; delete: true };
+
+export type GitLabExactCommitIntent = Readonly<{
+  commitSha: string;
+  parentSha: string;
+  message: string;
+  files: readonly GitLabCommitFile[];
+}>;
 
 export type GitLabDeliveryOperation =
   | "createBranch"
@@ -148,19 +172,36 @@ export class GitLabDeliveryError extends Error {
 export type GitLabFetch = (
   url: string,
   init?: RequestInit,
-) => Promise<{ ok: boolean; status: number; json: unknown }>;
+) => Promise<{
+  ok: boolean;
+  status: number;
+  json: unknown;
+  headers?: Readonly<Record<string, string>>;
+}>;
 
 async function defaultGitLabFetch(
   url: string,
   init?: RequestInit,
-): Promise<{ ok: boolean; status: number; json: unknown }> {
+): Promise<{
+  ok: boolean;
+  status: number;
+  json: unknown;
+  headers?: Readonly<Record<string, string>>;
+}> {
   try {
     const res = await fetch(url, {
       ...init,
       signal: init?.signal ?? AbortSignal.timeout(GITLAB_REQUEST_TIMEOUT_MS),
     });
     const json = await res.json().catch(() => ({}));
-    return { ok: res.ok, status: res.status, json };
+    return {
+      ok: res.ok,
+      status: res.status,
+      json,
+      headers: {
+        "x-next-page": res.headers.get("x-next-page") ?? "",
+      },
+    };
   } catch (error) {
     return { ok: false, status: 0, json: { error: String(error) } };
   }
@@ -195,6 +236,12 @@ function mergeRequestFromJson(
   status: number,
   json: unknown,
   sourceBranch: string,
+  expected?: {
+    targetBranch: string;
+    title: string;
+    body: string;
+    headSha?: string;
+  },
 ): MergeRequestResult {
   const mr = json as {
     iid?: unknown;
@@ -202,6 +249,11 @@ function mergeRequestFromJson(
     title?: unknown;
     draft?: unknown;
     work_in_progress?: unknown;
+    source_branch?: unknown;
+    target_branch?: unknown;
+    description?: unknown;
+    sha?: unknown;
+    diff_refs?: { head_sha?: unknown } | null;
   };
   const iid = mr?.iid;
   if (typeof iid !== "number" || !Number.isFinite(iid) || iid <= 0) {
@@ -222,6 +274,26 @@ function mergeRequestFromJson(
       status,
       json,
       "merge request is not a draft",
+    );
+  }
+  if (
+    expected &&
+    (
+      mr.source_branch !== sourceBranch ||
+      mr.target_branch !== expected.targetBranch ||
+      title !== draftTitle(expected.title) ||
+      mr.description !== expected.body ||
+      (expected.headSha !== undefined &&
+        (typeof (mr.sha ?? mr.diff_refs?.head_sha) !== "string" ||
+          String(mr.sha ?? mr.diff_refs?.head_sha).toLowerCase() !==
+            expected.headSha.toLowerCase()))
+    )
+  ) {
+    throw new GitLabDeliveryError(
+      operation,
+      status,
+      json,
+      "merge request evidence diverged",
     );
   }
   return { number: iid, url, branch: sourceBranch, title, draft: true };
@@ -287,7 +359,28 @@ export class HttpGitLabDelivery implements GitLabDelivery {
       `${this.api}/projects/${id}/repository/branches/${encodeURIComponent(branch)}`,
       { headers: this.headers() },
     );
-    if (existing.ok) return;
+    if (existing.ok) {
+      // Exact-draft callers create from an immutable SHA. An existing
+      // deterministic branch is replay-safe only while it still points at that
+      // exact commit. Continuing from an arbitrary head would let an old,
+      // collided, or externally moved branch receive the approved mutation.
+      if (GITLAB_HEAD_SHA.test(fromBranch)) {
+        const existingHead = (existing.json as { commit?: { id?: unknown } } | null)?.commit?.id;
+        if (
+          typeof existingHead !== "string" ||
+          !GITLAB_HEAD_SHA.test(existingHead) ||
+          existingHead.toLowerCase() !== fromBranch.toLowerCase()
+        ) {
+          throw new GitLabDeliveryError(
+            "createBranch",
+            existing.status,
+            existing.json,
+            "existing branch head drift",
+          );
+        }
+      }
+      return;
+    }
     throw new GitLabDeliveryError("createBranch", created.status, created.json);
   }
 
@@ -319,18 +412,153 @@ export class HttpGitLabDelivery implements GitLabDelivery {
     return sha.toLowerCase();
   }
 
+  async verifyExactCommit(
+    namespace: string,
+    project: string,
+    branch: string,
+    input: GitLabExactCommitIntent,
+  ): Promise<boolean> {
+    assertBranch(branch);
+    if (!GITLAB_HEAD_SHA.test(input.commitSha) || !GITLAB_HEAD_SHA.test(input.parentSha)) {
+      return false;
+    }
+    const id = this.projectId(namespace, project);
+    const commitSha = input.commitSha.toLowerCase();
+    const commit = await this.fetchImpl(
+      `${this.api}/projects/${id}/repository/commits/${encodeURIComponent(commitSha)}`,
+      { headers: this.headers() },
+    );
+    if (!commit.ok) return false;
+    const metadata = commit.json as {
+      id?: unknown;
+      parent_ids?: unknown;
+      message?: unknown;
+    } | null;
+    if (
+      typeof metadata?.id !== "string" ||
+      metadata.id.toLowerCase() !== commitSha ||
+      !Array.isArray(metadata.parent_ids) ||
+      metadata.parent_ids.length !== 1 ||
+      typeof metadata.parent_ids[0] !== "string" ||
+      metadata.parent_ids[0].toLowerCase() !== input.parentSha.toLowerCase() ||
+      metadata.message !== input.message
+    ) {
+      return false;
+    }
+
+    const diffs: Array<{
+      old_path?: unknown;
+      new_path?: unknown;
+      new_file?: unknown;
+      deleted_file?: unknown;
+      renamed_file?: unknown;
+      a_mode?: unknown;
+      b_mode?: unknown;
+    }> = [];
+    const perPage = 100;
+    for (let page = 1; page <= 10; page++) {
+      const response = await this.fetchImpl(
+        `${this.api}/projects/${id}/repository/commits/${encodeURIComponent(commitSha)}/diff?per_page=${perPage}&page=${page}`,
+        { headers: this.headers() },
+      );
+      if (!response.ok || !Array.isArray(response.json)) return false;
+      diffs.push(...response.json);
+      if (diffs.length > 1_000) return false;
+      const nextPage = response.headers?.["x-next-page"];
+      if (nextPage === undefined) {
+        // A full page without pagination evidence is incomplete authority.
+        if (response.json.length >= perPage) return false;
+        break;
+      }
+      if (nextPage === "") break;
+      if (nextPage !== String(page + 1)) return false;
+      if (page === 10) return false;
+    }
+    if (diffs.length !== input.files.length) return false;
+
+    const byPath = new Map<string, (typeof diffs)[number]>();
+    for (const diff of diffs) {
+      if (
+        typeof diff.new_path !== "string" ||
+        typeof diff.old_path !== "string" ||
+        diff.renamed_file === true ||
+        byPath.has(diff.new_path)
+      ) {
+        return false;
+      }
+      byPath.set(diff.new_path, diff);
+    }
+
+    for (const file of input.files) {
+      const filePath = normalizePath(file.path);
+      const diff = byPath.get(filePath);
+      if (!diff || diff.old_path !== filePath) return false;
+      const encodedPath = encodeURIComponent(filePath);
+      const remote = await this.fetchImpl(
+        `${this.api}/projects/${id}/repository/files/${encodedPath}?ref=${encodeURIComponent(commitSha)}`,
+        { headers: this.headers() },
+      );
+      if ("delete" in file) {
+        if (diff.deleted_file !== true || remote.status !== 404) return false;
+        continue;
+      }
+      if (diff.deleted_file === true || !remote.ok) return false;
+      const observed = remote.json as {
+        content?: unknown;
+        encoding?: unknown;
+        file_mode?: unknown;
+        commit_id?: unknown;
+      } | null;
+      if (
+        observed?.encoding !== "base64" ||
+        typeof observed.content !== "string" ||
+        typeof observed.commit_id !== "string" ||
+        observed.commit_id.toLowerCase() !== commitSha ||
+        (file.mode !== undefined && observed.file_mode !== file.mode) ||
+        (file.mode !== undefined && diff.b_mode !== file.mode)
+      ) {
+        return false;
+      }
+      const encoded = observed.content.replace(/\s/g, "");
+      let decoded: Buffer;
+      try {
+        decoded = Buffer.from(encoded, "base64");
+      } catch {
+        return false;
+      }
+      if (
+        decoded.toString("base64") !== encoded ||
+        !decoded.equals(Buffer.from(file.content, "utf8"))
+      ) {
+        return false;
+      }
+    }
+    // Re-read the mutable source ref after every metadata, diff, and blob read.
+    // If it moved during reconciliation, the prior commit may be exact but it is
+    // no longer the branch GitLab would put behind the merge request.
+    return (
+      (await this.resolveBranchSha(namespace, project, branch))?.toLowerCase() ===
+      commitSha
+    );
+  }
+
   async commitFiles(
     namespace: string,
     project: string,
     branch: string,
     message: string,
-    files: FileEdit[],
+    files: GitLabCommitFile[],
   ): Promise<string> {
     if (!files.length) return "";
     assertBranch(branch);
     const id = this.projectId(namespace, project);
     const actions: Array<
-      { action: "create" | "update"; file_path: string; content: string } |
+      {
+        action: "create" | "update";
+        file_path: string;
+        content: string;
+        execute_filemode?: boolean;
+      } |
       { action: "delete"; file_path: string }
     > = [];
     for (const file of files) {
@@ -347,6 +575,9 @@ export class HttpGitLabDelivery implements GitLabDelivery {
           action: head.ok ? "update" : "create",
           file_path: filePath,
           content: file.content,
+          ...(file.mode !== undefined
+            ? { execute_filemode: file.mode === "100755" }
+            : {}),
         });
       }
     }
@@ -377,23 +608,49 @@ export class HttpGitLabDelivery implements GitLabDelivery {
     title: string,
     body: string,
     targetBranch = "main",
+    expectedHeadSha?: string,
   ): Promise<MergeRequestResult> {
     assertBranch(sourceBranch);
     assertBranch(targetBranch);
     const id = this.projectId(namespace, project);
-    // Reuse an existing open MR for the same source/target to avoid duplicates.
-    const existing = await this.fetchImpl(
-      `${this.api}/projects/${id}/merge_requests?source_branch=${encodeURIComponent(sourceBranch)}&target_branch=${encodeURIComponent(targetBranch)}&state=opened`,
-      { headers: this.headers() },
-    );
-    if (existing.ok && Array.isArray(existing.json) && existing.json.length > 0) {
+    if (expectedHeadSha !== undefined && !GITLAB_HEAD_SHA.test(expectedHeadSha)) {
+      throw new Error("gitlab_branch_head_invalid");
+    }
+    const expected = { targetBranch, title, body, headSha: expectedHeadSha };
+    const readExisting = async (): Promise<MergeRequestResult | undefined> => {
+      const existing = await this.fetchImpl(
+        `${this.api}/projects/${id}/merge_requests?source_branch=${encodeURIComponent(sourceBranch)}&target_branch=${encodeURIComponent(targetBranch)}&state=opened`,
+        { headers: this.headers() },
+      );
+      if (!existing.ok || !Array.isArray(existing.json)) {
+        throw new GitLabDeliveryError(
+          "openDraftMergeRequest",
+          existing.status,
+          existing.json,
+          "existing merge request authority unavailable",
+        );
+      }
+      if (existing.json.length === 0) return undefined;
+      if (existing.json.length !== 1) {
+        throw new GitLabDeliveryError(
+          "openDraftMergeRequest",
+          existing.status,
+          existing.json,
+          "merge request evidence diverged",
+        );
+      }
       return mergeRequestFromJson(
         "openDraftMergeRequest",
         existing.status,
         existing.json[0],
         sourceBranch,
+        expected,
       );
-    }
+    };
+    // Reuse an existing open MR only when its complete mutable evidence matches
+    // the sealed intent. A failed read is not permission to create another MR.
+    const existing = await readExisting();
+    if (existing) return existing;
     const created = await this.fetchImpl(
       `${this.api}/projects/${id}/merge_requests`,
       {
@@ -408,6 +665,15 @@ export class HttpGitLabDelivery implements GitLabDelivery {
       },
     );
     if (!created.ok) {
+      // The POST may have committed remotely even when its response was lost.
+      // Reconcile with a read only lookup; never issue a second mutation here.
+      try {
+        const recovered = await readExisting();
+        if (recovered) return recovered;
+      } catch {
+        // Preserve the original POST failure below; either way the operation is
+        // fail closed and no second merge request is attempted.
+      }
       throw new GitLabDeliveryError("openDraftMergeRequest", created.status, created.json);
     }
     return mergeRequestFromJson(
@@ -415,6 +681,7 @@ export class HttpGitLabDelivery implements GitLabDelivery {
       created.status,
       created.json,
       sourceBranch,
+      expected,
     );
   }
 }
@@ -423,6 +690,7 @@ type MockProject = {
   branches: Map<string, Map<string, string>>;
   /** Head commit SHA per branch, so a base revision can be observed and drift detected. */
   heads: Map<string, string>;
+  commits: Map<string, GitLabExactCommitIntent>;
   mergeRequests: Map<
     number,
     MergeRequestResult & { sourceBranch: string; targetBranch: string; body: string }
@@ -445,15 +713,22 @@ export class MockGitLabDelivery implements GitLabDelivery {
     const key = `${namespace}/${project}`;
     let existing = this.#projects.get(key);
     if (!existing) {
-      existing = { branches: new Map(), heads: new Map(), mergeRequests: new Map(), nextIid: 1 };
+      existing = {
+        branches: new Map(),
+        heads: new Map(),
+        commits: new Map(),
+        mergeRequests: new Map(),
+        nextIid: 1,
+      };
       this.#projects.set(key, existing);
     }
     return existing;
   }
 
-  /** The head an un-advanced branch reports: its tracked head, else the genesis default. */
-  #head(proj: MockProject, branch: string): string {
-    return proj.heads.get(branch) ?? MOCK_GITLAB_BASE_REVISION;
+  /** Resolve a tracked branch or immutable SHA in the deterministic mock. */
+  #head(proj: MockProject, branch: string): string | undefined {
+    if (GITLAB_HEAD_SHA.test(branch)) return branch.toLowerCase();
+    return proj.heads.get(branch) ?? (branch === "main" ? MOCK_GITLAB_BASE_REVISION : undefined);
   }
 
   /**
@@ -475,6 +750,23 @@ export class MockGitLabDelivery implements GitLabDelivery {
     return this.#head(this.#project(namespace, project), branch);
   }
 
+  async verifyExactCommit(
+    namespace: string,
+    project: string,
+    branch: string,
+    input: GitLabExactCommitIntent,
+  ): Promise<boolean> {
+    assertBranch(branch);
+    const projectState = this.#project(namespace, project);
+    const head = projectState.heads.get(branch);
+    const recorded = head ? projectState.commits.get(head) : undefined;
+    return (
+      head === input.commitSha &&
+      recorded !== undefined &&
+      JSON.stringify(recorded) === JSON.stringify(input)
+    );
+  }
+
   async createBranch(
     namespace: string,
     project: string,
@@ -488,7 +780,9 @@ export class MockGitLabDelivery implements GitLabDelivery {
       const base = proj.branches.get(fromBranch) ?? new Map<string, string>();
       proj.branches.set(branch, new Map(base));
       // A new branch points at the same commit as the branch it was cut from.
-      proj.heads.set(branch, this.#head(proj, fromBranch));
+      const fromHead = this.#head(proj, fromBranch);
+      if (!fromHead) throw new Error("gitlab_source_branch_missing");
+      proj.heads.set(branch, fromHead);
     }
   }
 
@@ -497,10 +791,12 @@ export class MockGitLabDelivery implements GitLabDelivery {
     project: string,
     branch: string,
     message: string,
-    files: FileEdit[],
+    files: GitLabCommitFile[],
   ): Promise<string> {
     assertBranch(branch);
     const proj = this.#project(namespace, project);
+    const parentSha = this.#head(proj, branch);
+    if (!parentSha) throw new Error("gitlab_source_branch_missing");
     const contents = proj.branches.get(branch) ?? new Map<string, string>();
     for (const file of files) {
       const path = normalizePath(file.path);
@@ -528,6 +824,12 @@ export class MockGitLabDelivery implements GitLabDelivery {
       )
       .digest("hex");
     proj.heads.set(branch, sha);
+    proj.commits.set(sha, {
+      commitSha: sha,
+      parentSha,
+      message,
+      files: files.map((file) => ({ ...file })),
+    });
     return sha;
   }
 
@@ -538,10 +840,17 @@ export class MockGitLabDelivery implements GitLabDelivery {
     title: string,
     body: string,
     targetBranch = "main",
+    expectedHeadSha?: string,
   ): Promise<MergeRequestResult> {
     assertBranch(sourceBranch);
     assertBranch(targetBranch);
     const proj = this.#project(namespace, project);
+    if (
+      expectedHeadSha !== undefined &&
+      this.#head(proj, sourceBranch)?.toLowerCase() !== expectedHeadSha.toLowerCase()
+    ) {
+      throw new Error("gitlab_exact_draft_branch_diverged");
+    }
     for (const mr of proj.mergeRequests.values()) {
       if (mr.sourceBranch === sourceBranch && mr.targetBranch === targetBranch) {
         return { number: mr.number, url: mr.url, branch: mr.branch, title: mr.title, draft: true };

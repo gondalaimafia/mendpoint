@@ -185,6 +185,25 @@ describe("evaluateSecurityAttestation tiers", () => {
     expect(out.verified).toBe(false);
   });
 
+  it("fails closed when the platform evidence resolver throws", () => {
+    const out = evaluateSecurityAttestation({
+      attestation: scanner({ principal: "ci-bot" }),
+      expectedSubjectDigest: SUBJECT,
+      policy: securityAttestationPolicyFromEnv({
+        MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+      }),
+      expectedPrincipal: "ci-bot",
+      verifyEvidence: () => {
+        throw new Error("evidence store unavailable");
+      },
+      now: NOW,
+    });
+
+    expect(out.satisfied).toBe(false);
+    expect(out.verified).toBe(false);
+    expect(out.code).toBe("policy_insufficient");
+  });
+
   it("rejects a scanner attestation missing tool identity as malformed", () => {
     const bad = scanner({ tool: undefined as never });
     const out = evaluateSecurityAttestation({
@@ -353,6 +372,25 @@ describe("evaluatePrGates security policy integration", () => {
     // The reviewer must see plainly that a weaker tier was accepted under override.
     expect(r.reportMarkdown).toMatch(/operator override/i);
     expect(r.gates.find((g) => g.id === "security-scan")?.detail).toMatch(
+      /accepted under operator override/i,
+    );
+  });
+
+  it("records the operator downgrade when an unverified scanner assertion is accepted", () => {
+    const r = evaluatePrGates({
+      ...gateInput,
+      securityScanAttestation: scanner(),
+      securityAttestationPolicy: securityAttestationPolicyFromEnv({
+        MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+        MENDPOINT_SECURITY_ATTESTATION_ALLOW_UNVERIFIED: "1",
+      }),
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.attestation.verified).toBe(false);
+    expect(r.attestation.downgradeApplied).toBe(true);
+    expect(r.reportMarkdown).toMatch(/operator override/i);
+    expect(r.gates.find((gate) => gate.id === "security-scan")?.detail).toMatch(
       /accepted under operator override/i,
     );
   });

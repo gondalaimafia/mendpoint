@@ -462,17 +462,28 @@ export function evaluateSecurityAttestation(input: {
     // the authenticated principal AND the platform dereferences its evidenceRef
     // and confirms the durable evidence. With neither wired (today), `verified`
     // is always false — so no request body alone can produce a verified gate.
-    const verified =
+    let verified = false;
+    if (
       tier === "scanner" &&
       input.expectedPrincipal !== undefined &&
       principal === input.expectedPrincipal &&
-      input.verifyEvidence !== undefined &&
-      input.verifyEvidence({
-        evidenceRef: (scannerFields as { evidenceRef: string }).evidenceRef,
-        subjectDigest,
-        principal,
-        tool: (scannerFields as { tool: { name: string; version: string } }).tool,
-      }) === true;
+      input.verifyEvidence !== undefined
+    ) {
+      try {
+        verified =
+          input.verifyEvidence({
+            evidenceRef: (scannerFields as { evidenceRef: string }).evidenceRef,
+            subjectDigest,
+            principal,
+            tool: (scannerFields as { tool: { name: string; version: string } }).tool,
+          }) === true;
+      } catch {
+        // Evidence authority failure is not proof. Treat the result as
+        // unverified so require-verified deployments block without converting a
+        // transient evidence-store failure into a request crash.
+        verified = false;
+      }
+    }
 
     // Policy — a require-verified deployment (customer profile / require-verified
     // flag) is satisfied ONLY by a platform-verified scanner result. A claim
@@ -499,17 +510,18 @@ export function evaluateSecurityAttestation(input: {
         tool: { name: string; version: string };
         evidenceRef: string;
       };
+      const downgradeApplied = policy.downgradeApplied && !verified;
       return {
         ...common,
         tier,
         verified,
         satisfied: true,
         unattributed: false,
-        downgradeApplied: false,
+        downgradeApplied,
         code: "valid_scanner",
         detail: verified
           ? `verified by ${tool.name}@${tool.version} for change ${subjectDigest.slice(0, 12)} (evidence ${evidenceRef}), attested by ${principal} at ${attestedAt}`
-          : `scanner result asserted by ${principal} at ${attestedAt} for change ${subjectDigest.slice(0, 12)} (evidence ${evidenceRef}) — NOT independently verified by this pipeline`,
+          : `scanner result asserted by ${principal} at ${attestedAt} for change ${subjectDigest.slice(0, 12)} (evidence ${evidenceRef}) — NOT independently verified by this pipeline${downgradeSuffix}`,
       };
     }
     return {

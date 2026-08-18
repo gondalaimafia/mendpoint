@@ -64,4 +64,25 @@ describe("platform SDK", () => {
     expect(dog.markdown).toMatch(/Dogfood/);
     expect(typeof dog.reportPath).toBe("string");
   });
+
+  it("derives VM build-cache authority from the client tenant scope", () => {
+    const tenantA = createPlatform({ tenantId: "sdk-vm-tenant-a" });
+    const tenantB = createPlatform({ tenantId: "sdk-vm-tenant-b" });
+
+    const firstA = tenantA.createVm({ cacheKey: "shared-build" });
+    const secondA = tenantA.createVm({ cacheKey: "shared-build" });
+    const firstB = tenantB.createVm({ cacheKey: "shared-build" });
+
+    try {
+      expect(firstA.cacheHit).toBe(false);
+      expect(secondA.cacheHit).toBe(true);
+      expect(secondA.root).toBe(firstA.root);
+      expect(firstB.cacheHit).toBe(false);
+      expect(firstB.root).not.toBe(firstA.root);
+    } finally {
+      firstA.dispose();
+      secondA.dispose();
+      firstB.dispose();
+    }
+  });
 });
