@@ -1,0 +1,5 @@
+app = "mendpoint-sandbox"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.sandbox"

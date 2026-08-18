@@ -16,6 +16,8 @@ import { fileURLToPath } from "node:url";
 import { runChangePipeline, type PipelineReport } from "@mendpoint/pipeline";
 import {
   resolveFanoutSettlementMcuMicros,
+  sandboxEgressAuthorityFromEnv,
+  verifySandboxEgressAttestation,
   type FanoutRunMeterSignals,
 } from "@mendpoint/platform";
 import {
@@ -1622,6 +1624,20 @@ export function validateWorkerProductionEnv(
   }
   if (env.GITHUB_MODE !== "mock" && env.GITHUB_MODE !== "real") {
     errors.push("GITHUB_MODE must be explicitly set to mock or real");
+  }
+  if (env.MENDPOINT_SANDBOX_KIND?.trim() === "fly_machines") {
+    try {
+      verifySandboxEgressAttestation({
+        ...sandboxEgressAuthorityFromEnv(env),
+        expectedApp: env.MENDPOINT_SANDBOX_FLY_APP?.trim() ?? "",
+        expectedImage: env.MENDPOINT_SANDBOX_FLY_IMAGE?.trim() ?? "",
+        observedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      errors.push(
+        `Sandbox egress authority invalid: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
   const verifierEnabled = env.DEEPSEEK_VERIFIER_ENABLED?.trim();
   if (verifierEnabled && verifierEnabled !== "true" && verifierEnabled !== "false") {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Buffer } from "node:buffer";
+import { generateKeyPairSync, sign } from "node:crypto";
 import {
   collectWorkspaceFiles,
   createFlyMachinesSandbox,
@@ -15,6 +16,11 @@ import {
   withFlyRetry,
   type MockFlyClient,
 } from "./fly-sandbox.js";
+import {
+  SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
+  sandboxEgressAttestationPayloadBytes,
+} from "./sandbox-egress-attestation.js";
 import {
   createSandbox,
   resolveSandboxKind,
@@ -36,6 +42,34 @@ function flyOpts(
     flyClient: client,
     fly: { app: "mendpoint-sandbox-test", ...(extra.fly ?? {}) },
     ...extra,
+  };
+}
+
+function signedEgressAuthority(app: string, image: string) {
+  const keys = generateKeyPairSync("ed25519");
+  const policyDigest = `sha256:${"b".repeat(64)}`;
+  const payload = {
+    schemaVersion: "2026-08-18.v1" as const,
+    app,
+    image,
+    policyDigest,
+    testedAt: "2026-08-18T19:55:00.000Z",
+    expiresAt: "2026-08-18T20:55:00.000Z",
+    forbiddenOutbound: { url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL, blocked: true as const },
+    allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true as const },
+    evidenceRefs: ["evidence://protected-egress-acceptance/1"],
+  };
+  const payloadBytes = sandboxEgressAttestationPayloadBytes(payload);
+  const envelope = {
+    payload: payloadBytes.toString("base64"),
+    signatures: [{ keyId: "sandbox-egress-key-1", signature: sign(null, payloadBytes, keys.privateKey).toString("base64") }],
+  };
+  return {
+    attestationBase64: Buffer.from(JSON.stringify(envelope), "utf8").toString("base64"),
+    publicKeySpkiBase64: keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+    expectedKeyId: "sandbox-egress-key-1",
+    expectedPolicyDigest: policyDigest,
+    now: () => "2026-08-18T20:00:00.000Z",
   };
 }
 
@@ -553,7 +587,13 @@ describe("sandbox image must be an immutable digest pin (fail-closed isolation b
     vi.stubEnv("MENDPOINT_SANDBOX_FLY_IMAGE", undefined);
     const client = liveMock();
     const sbx = createFlyMachinesSandbox(
-      flyOpts(client, { fly: { app: "mendpoint-sandbox-test", image: DIGEST } }),
+      flyOpts(client, {
+        fly: {
+          app: "mendpoint-sandbox-test",
+          image: DIGEST,
+          egressAuthority: signedEgressAuthority("mendpoint-sandbox-test", DIGEST),
+        },
+      }),
     );
     try {
       const result = await sbx.runIsolated("echo ready");
@@ -567,7 +607,7 @@ describe("sandbox image must be an immutable digest pin (fail-closed isolation b
     }
   });
 
-  it("runIsolated honors the explicit escape hatch for an unpinned image (dev only)", async () => {
+  it("runIsolated still requires immutable egress authority when the image pin escape hatch is used", async () => {
     vi.stubEnv("MENDPOINT_SANDBOX_FLY_IMAGE", undefined);
     vi.stubEnv("MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE", "1");
     const client = liveMock();
@@ -578,9 +618,92 @@ describe("sandbox image must be an immutable digest pin (fail-closed isolation b
     );
     try {
       const result = await sbx.runIsolated("echo ready");
-      expect(result.ok).toBe(true);
-      expect(client.created).toHaveLength(1);
-      expect(client.created[0]!.config.image).toBe("registry.fly.io/mendpoint-sandbox:latest");
+      expect(result.ok).toBe(false);
+      expect(result.stderr).toContain("sandbox_egress_attestation_required");
+      expect(client.created).toHaveLength(0);
+    } finally {
+      await sbx.destroy();
+    }
+  });
+});
+
+describe("production default-deny egress authority", () => {
+  const DIGEST = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
+  const APP = "mendpoint-sandbox-test";
+
+  function liveClient(behavior?: Parameters<typeof createMockFlyClient>[0]): MockFlyClient {
+    return { ...createMockFlyClient(behavior), mode: "live" as const };
+  }
+
+  it("refuses before Machine creation when the signed egress authority is missing", async () => {
+    const client = liveClient();
+    const sbx = createFlyMachinesSandbox(
+      flyOpts(client, { fly: { app: APP, image: DIGEST } }),
+    );
+    try {
+      const result = await sbx.runIsolated("npm test");
+      expect(result).toMatchObject({ ok: false, exitCode: -1 });
+      expect(result.stderr).toContain("sandbox_egress_attestation_required");
+      expect(client.created).toHaveLength(0);
+    } finally {
+      await sbx.destroy();
+    }
+  });
+
+  it("never runs the customer command when the forbidden outbound probe succeeds", async () => {
+    const commands: string[] = [];
+    const client = liveClient({
+      exec(input) {
+        commands.push(input.command.join(" "));
+        return { exit_code: 42, stdout: "outbound reachable", stderr: "" };
+      },
+    });
+    const sbx = createFlyMachinesSandbox(
+      flyOpts(client, {
+        fly: {
+          app: APP,
+          image: DIGEST,
+          egressAuthority: signedEgressAuthority(APP, DIGEST),
+        },
+      }),
+    );
+    try {
+      const result = await sbx.runIsolated("CUSTOMER_COMMAND_MUST_NOT_RUN");
+      expect(result).toMatchObject({ ok: false, exitCode: -1 });
+      expect(result.stderr).toContain("sandbox_egress_policy_unverified");
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).toContain(SANDBOX_EGRESS_FORBIDDEN_PROBE_URL);
+      expect(commands[0]).not.toContain("CUSTOMER_COMMAND_MUST_NOT_RUN");
+    } finally {
+      await sbx.destroy();
+    }
+  });
+
+  it("revalidates signed authority and both acceptance probes immediately before execution", async () => {
+    const commands: string[] = [];
+    const client = liveClient({
+      exec(input) {
+        const command = input.command.join(" ");
+        commands.push(command);
+        if (commands.length <= 2) return { exit_code: 0, stdout: "", stderr: "" };
+        return { exit_code: 0, stdout: "customer verified", stderr: "" };
+      },
+    });
+    const sbx = createFlyMachinesSandbox(
+      flyOpts(client, {
+        fly: {
+          app: APP,
+          image: DIGEST,
+          egressAuthority: signedEgressAuthority(APP, DIGEST),
+        },
+      }),
+    );
+    try {
+      const result = await sbx.runIsolated("CUSTOMER_VERIFICATION");
+      expect(result).toMatchObject({ ok: true, exitCode: 0, stdout: "customer verified" });
+      expect(commands).toHaveLength(3);
+      expect(commands[0]).toContain(SANDBOX_EGRESS_FORBIDDEN_PROBE_URL);
+      expect(commands[2]).toContain("CUSTOMER_VERIFICATION");
     } finally {
       await sbx.destroy();
     }

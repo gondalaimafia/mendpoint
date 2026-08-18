@@ -1,0 +1,211 @@
+name: Sandbox egress acceptance
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type SANDBOX_EGRESS_ACCEPTED to authorize one proof and receipt rotation
+        required: true
+        type: string
+
+jobs:
+  accept:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: sandbox-production
+    concurrency:
+      group: sandbox-egress-production
+      cancel-in-progress: false
+    env:
+      SANDBOX_FLY_API_TOKEN: ${{ secrets.SANDBOX_FLY_API_TOKEN }}
+      VERIFYING_FLY_API_TOKEN: ${{ secrets.VERIFYING_FLY_API_TOKEN }}
+      MENDPOINT_SANDBOX_EGRESS_SIGNING_KEY_PKCS8_BASE64: ${{ secrets.MENDPOINT_SANDBOX_EGRESS_SIGNING_KEY_PKCS8_BASE64 }}
+      MENDPOINT_SANDBOX_EGRESS_APP: ${{ vars.SANDBOX_FLY_APP }}
+      MENDPOINT_SANDBOX_EGRESS_IMAGE: ${{ vars.SANDBOX_IMAGE_DIGEST }}
+      MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: ${{ vars.SANDBOX_EGRESS_POLICY_DIGEST }}
+      MENDPOINT_SANDBOX_EGRESS_KEY_ID: ${{ vars.SANDBOX_EGRESS_KEY_ID }}
+      SANDBOX_IMAGE_TAG: ${{ vars.SANDBOX_IMAGE_TAG }}
+      SANDBOX_VERIFYING_APP: ${{ vars.SANDBOX_VERIFYING_APP }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        with:
+          version: "0.4.79"
+      - name: Validate protected authority
+        shell: bash
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = "SANDBOX_EGRESS_ACCEPTED"
+          required=(
+            SANDBOX_FLY_API_TOKEN VERIFYING_FLY_API_TOKEN
+            MENDPOINT_SANDBOX_EGRESS_SIGNING_KEY_PKCS8_BASE64
+            MENDPOINT_SANDBOX_EGRESS_APP MENDPOINT_SANDBOX_EGRESS_IMAGE
+            MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST MENDPOINT_SANDBOX_EGRESS_KEY_ID
+            SANDBOX_IMAGE_TAG SANDBOX_VERIFYING_APP
+          )
+          for name in "${required[@]}"; do
+            test -n "${!name:-}" || { echo "Missing sandbox production authority: $name"; exit 1; }
+          done
+          [[ "$MENDPOINT_SANDBOX_EGRESS_IMAGE" =~ ^registry\.fly\.io/mendpoint-sandbox@sha256:[a-f0-9]{64}$ ]]
+          [[ "$SANDBOX_IMAGE_TAG" =~ ^registry\.fly\.io/mendpoint-sandbox:[A-Za-z0-9._-]+$ ]]
+          [[ "$MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          actual_policy_digest="sha256:$(sha256sum scripts/start-sandbox-entrypoint.sh | cut -d' ' -f1)"
+          test "$actual_policy_digest" = "$MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST"
+          mkdir -p test-results/sandbox-egress
+      - name: Install receipt producer
+        run: npm ci
+      - name: Prove default deny and local execution
+        id: acceptance
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ env.SANDBOX_FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          machine_name="egress-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          machine_id=""
+          cleanup() {
+            cleanup_id="$machine_id"
+            if test -z "$cleanup_id"; then
+              cleanup_id="$(flyctl machine list --app "$MENDPOINT_SANDBOX_EGRESS_APP" --json \
+                | jq -r --arg name "$machine_name" '.[] | select(.name == $name) | .id' | head -n 1)"
+            fi
+            if test -z "$cleanup_id"; then
+              return 0
+            fi
+            if ! flyctl machine destroy --force --app "$MENDPOINT_SANDBOX_EGRESS_APP" "$cleanup_id"; then
+              echo "sandbox_machine_not_destroyed: $cleanup_id"
+              return 1
+            fi
+            if ! flyctl machine list --app "$MENDPOINT_SANDBOX_EGRESS_APP" --json \
+              | jq -e --arg id "$cleanup_id" 'all(.[]; .id != $id)' >/dev/null; then
+              echo "sandbox_machine_not_destroyed: $cleanup_id"
+              return 1
+            fi
+            machine_id=""
+          }
+          trap 'cleanup || true' EXIT
+          launch_output="$(flyctl machine run "$SANDBOX_IMAGE_TAG" \
+            --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
+            --region iad \
+            --name "$machine_name" \
+            --detach \
+            --restart no \
+            --vm-cpu-kind shared \
+            --vm-cpus 1 \
+            --vm-memory 512 \
+            --autostop=off)"
+          machine_id="$(printf '%s\n' "$launch_output" | awk '/Machine ID:/ {print $3; exit}')"
+          test -n "$machine_id"
+          flyctl machine status "$machine_id" \
+            --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
+            --display-config \
+            >test-results/sandbox-egress/machine-config.json
+          expected_digest="${MENDPOINT_SANDBOX_EGRESS_IMAGE#*@}"
+          jq -e --arg digest "$expected_digest" \
+            '.image | endswith("@" + $digest)' \
+            test-results/sandbox-egress/machine-config.json >/dev/null
+          flyctl machine exec "$machine_id" \
+            --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
+            --json "iptables -S OUTPUT" \
+            >test-results/sandbox-egress/ipv4-policy.json
+          flyctl machine exec "$machine_id" \
+            --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
+            --json "ip6tables -S OUTPUT" \
+            >test-results/sandbox-egress/ipv6-policy.json
+          for policy in ipv4-policy ipv6-policy; do
+            jq -e '.stdout == "-P OUTPUT DROP\n-A OUTPUT -o lo -j ACCEPT\n"' \
+              "test-results/sandbox-egress/${policy}.json" >/dev/null
+          done
+          flyctl machine exec "$machine_id" \
+            --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
+            --json "runuser -u node -- /bin/true" \
+            >test-results/sandbox-egress/allowed-local.json
+          jq -e '(.exit_code // 0) == 0' \
+            test-results/sandbox-egress/allowed-local.json >/dev/null
+          flyctl machine exec "$machine_id" \
+            --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
+            --json "runuser -u node -- node -e fetch(process.argv[1]).then(()=>process.exit(42),()=>process.stdout.write(Buffer.from([98,108,111,99,107,101,100]))) https://example.com/" \
+            >test-results/sandbox-egress/forbidden-outbound.json
+          jq -e '.stdout == "blocked" and ((.exit_code // 0) == 0)' \
+            test-results/sandbox-egress/forbidden-outbound.json >/dev/null
+          tested_at="$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')"
+          expires_at="$(date -u -d '+23 hours' '+%Y-%m-%dT%H:%M:%S.000Z')"
+          {
+            echo "machine_id=$machine_id"
+            echo "MENDPOINT_SANDBOX_EGRESS_TESTED_AT=$tested_at"
+            echo "MENDPOINT_SANDBOX_EGRESS_EXPIRES_AT=$expires_at"
+            echo "MENDPOINT_SANDBOX_EGRESS_EVIDENCE_REFS=evidence://github/actions/run/${GITHUB_RUN_ID}/attempt/${GITHUB_RUN_ATTEMPT},evidence://fly/app/${MENDPOINT_SANDBOX_EGRESS_APP}/machine/${machine_id}"
+          } >>"$GITHUB_OUTPUT"
+          {
+            echo "MENDPOINT_SANDBOX_EGRESS_TESTED_AT=$tested_at"
+            echo "MENDPOINT_SANDBOX_EGRESS_EXPIRES_AT=$expires_at"
+            echo "MENDPOINT_SANDBOX_EGRESS_EVIDENCE_REFS=evidence://github/actions/run/${GITHUB_RUN_ID}/attempt/${GITHUB_RUN_ATTEMPT},evidence://fly/app/${MENDPOINT_SANDBOX_EGRESS_APP}/machine/${machine_id}"
+          } >>"$GITHUB_ENV"
+          cleanup
+          trap - EXIT
+      - name: Sign and verify the acceptance receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import tsx scripts/create-sandbox-egress-attestation.ts \
+            >test-results/sandbox-egress/receipt.json
+          node --import tsx --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { verifySandboxEgressAttestation } from "@mendpoint/platform";
+            const receipt = JSON.parse(readFileSync("test-results/sandbox-egress/receipt.json", "utf8"));
+            verifySandboxEgressAttestation({
+              attestationBase64: receipt.attestationBase64,
+              publicKeySpkiBase64: receipt.publicKeySpkiBase64,
+              expectedKeyId: receipt.keyId,
+              expectedPolicyDigest: receipt.policyDigest,
+              expectedApp: process.env.MENDPOINT_SANDBOX_EGRESS_APP,
+              expectedImage: process.env.MENDPOINT_SANDBOX_EGRESS_IMAGE,
+              observedAt: new Date().toISOString(),
+            });
+          '
+      - name: Rotate the verifying app authority
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ env.VERIFYING_FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          attestation="$(jq -r '.attestationBase64' test-results/sandbox-egress/receipt.json)"
+          public_key="$(jq -r '.publicKeySpkiBase64' test-results/sandbox-egress/receipt.json)"
+          key_id="$(jq -r '.keyId' test-results/sandbox-egress/receipt.json)"
+          policy_digest="$(jq -r '.policyDigest' test-results/sandbox-egress/receipt.json)"
+          flyctl secrets set --app "$SANDBOX_VERIFYING_APP" \
+            MENDPOINT_SANDBOX_FLY_IMAGE="$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
+            MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" \
+            MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64="$public_key" \
+            MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
+            MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest"
+          for attempt in $(seq 1 24); do
+            if curl --silent --show-error --fail --max-time 10 \
+              "https://${SANDBOX_VERIFYING_APP}.fly.dev/livez" \
+              >test-results/sandbox-egress/livez.json \
+              && curl --silent --show-error --fail --max-time 10 \
+                "https://${SANDBOX_VERIFYING_APP}.fly.dev/healthz" \
+                >test-results/sandbox-egress/healthz.json; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "The verifying app did not become healthy after receipt rotation"
+          exit 1
+      - name: Upload sandbox acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: sandbox-egress-${{ github.sha }}-${{ github.run_attempt }}
+          path: test-results/sandbox-egress/
+          if-no-files-found: error
+          retention-days: 90
