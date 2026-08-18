@@ -29,6 +29,7 @@ import {
   type SyntheticRepo,
 } from "../mutations/engine.js";
 import { tsPaymentsService } from "./templates.js";
+import { recipeFamilyScenarios } from "./recipe-families.js";
 import type { GeneratedScenario } from "./types.js";
 
 interface ScenarioMeta {
@@ -406,6 +407,10 @@ export function generateAllScenarios(): GeneratedScenario[] {
     runtimeScenario("unsupported-21-23", 4003, "validation"),
     runtimeScenario("already-migrated", 4004, "development"),
   ];
+  // ReGauge recipe-family scenarios (runtime / SDK / framework / internal-API):
+  // positive + residual + abstention per family, materialized from the committed
+  // consumer fixtures so the per-family readiness gate has data to score.
+  scenarios.push(...recipeFamilyScenarios());
   // Holdout: unseen procedural variations.
   scenarios.push(...holdoutRefVariations(4));
   return scenarios;
