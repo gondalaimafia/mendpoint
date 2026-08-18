@@ -1,6 +1,6 @@
 # Mendpoint Product Specification
 
-**Repository authority:** Superseded on 2026-08-17 by [`docs/product/mendpoint-product-platform-specification.md`](./product/mendpoint-product-platform-specification.md) (v2.0), which the owner named the single canonical specification because it carries the complete platform contracts this compressed document omits. Retained as history; see [`docs/adr/0001-canonical-product-specification.md`](./adr/0001-canonical-product-specification.md). The requirement register below now pins the v2.0 document.  
+**Repository authority:** Superseded on 2026-08-17 by [`docs/product/mendpoint-product-platform-specification.md`](./product/mendpoint-product-platform-specification.md) (v2.0), which in turn was superseded on 2026-08-18 by [`docs/product/mendpoint-product-platform-specification-v3.md`](./product/mendpoint-product-platform-specification-v3.md) (v3.0), now the single canonical specification. Retained as history; see [`docs/adr/0001-canonical-product-specification.md`](./adr/0001-canonical-product-specification.md) and [`docs/adr/0004-canonical-product-specification-v3.md`](./adr/0004-canonical-product-specification-v3.md). The requirement register below now pins the v3.0 document.  
 **Canonicalized:** 2026-08-01 (v1.0)  
 **Source:** `C:\Users\Talal\Downloads\mendpoint_product_spec.md`  
 **Requirement register:** [`PRODUCT_REQUIREMENTS.json`](./PRODUCT_REQUIREMENTS.json)  
