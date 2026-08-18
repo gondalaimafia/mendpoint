@@ -81,7 +81,8 @@ function addRelationship(
     sourceId: string;
     targetId: string;
     evidenceRefs: string[];
-    confidence: number;
+    derivation: SoftwareGraphRelationshipV1["derivation"];
+    confidenceBasis: SoftwareGraphRelationshipV1["confidenceBasis"];
     validFrom: string;
   },
 ): void {
@@ -93,7 +94,8 @@ function addRelationship(
     targetId: input.targetId,
     evidenceRefs: [...input.evidenceRefs].sort(compareCodeUnits),
     extractor: EXTRACTOR,
-    confidence: input.confidence,
+    derivation: input.derivation,
+    confidenceBasis: input.confidenceBasis,
     status: "active",
     validFrom: input.validFrom,
   });
@@ -124,7 +126,8 @@ export function materializeFettlerSoftwareGraph(
     scope: "provider",
     evidenceRefs: input.endpoint.evidenceRefs,
     extractor: EXTRACTOR,
-    confidence: 1,
+    derivation: "provider_spec",
+    confidenceBasis: "deterministic_exact",
     status: "active",
     validFrom: input.observedAt,
   });
@@ -136,6 +139,7 @@ export function materializeFettlerSoftwareGraph(
 
   const graph = input.index.callGraph;
   const graphEdgeById = new Map(graph.edges.map((edge) => [edge.id, edge]));
+  let unattributedUsages = 0;
   for (const { usage, sdkMethod } of matchedUsages) {
     const providerSdkId = digestId(
       "provider-sdk-method",
@@ -153,7 +157,8 @@ export function materializeFettlerSoftwareGraph(
         `provider-sdk:${input.providerSdkPackage}@${input.providerSdkVersion}:${sdkMethod}`,
       ],
       extractor: EXTRACTOR,
-      confidence: 1,
+      derivation: "provider_sdk_binding",
+      confidenceBasis: "deterministic_exact",
       status: "active",
       validFrom: input.observedAt,
     });
@@ -162,7 +167,8 @@ export function materializeFettlerSoftwareGraph(
       sourceId: providerSdkId,
       targetId: endpointId,
       evidenceRefs: input.endpoint.evidenceRefs,
-      confidence: 1,
+      derivation: "provider_sdk_binding",
+      confidenceBasis: "deterministic_exact",
       validFrom: input.observedAt,
     });
 
@@ -173,19 +179,23 @@ export function materializeFettlerSoftwareGraph(
         (!usage.functionName || node.name === usage.functionName),
       )
       .sort((a, b) => compareCodeUnits(a.id, b.id))[0];
-    if (!seed) continue;
+    if (!seed) {
+      unattributedUsages += 1;
+      continue;
+    }
     const seedKey = `${seed.filePath.replace(/\\/g, "/")}::${seed.enclosingType ?? ""}::${seed.name}`;
     const seedEntityId = digestId("internal-sdk-method", `${input.repositorySnapshotId}\0${seedKey}`);
     addEntity(entities, {
       id: seedEntityId,
       kind: "internal_sdk_method",
-      canonicalKey: seedKey,
+      canonicalKey: `internal_sdk_method:${seedKey}`,
       aliases: [seed.name],
       label: seed.name,
       scope: "repository",
       evidenceRefs: [sourceRef(seed.filePath, usage.line)],
       extractor: EXTRACTOR,
-      confidence: 1,
+      derivation: "repository_usage",
+      confidenceBasis: "deterministic_exact",
       status: "active",
       validFrom: input.observedAt,
     });
@@ -194,7 +204,8 @@ export function materializeFettlerSoftwareGraph(
       sourceId: seedEntityId,
       targetId: providerSdkId,
       evidenceRefs: [sourceRef(usage.filePath, usage.line)],
-      confidence: 1,
+      derivation: "repository_usage",
+      confidenceBasis: "deterministic_exact",
       validFrom: input.observedAt,
     });
 
@@ -218,25 +229,35 @@ export function materializeFettlerSoftwareGraph(
         addEntity(entities, {
           id: callerEntityId,
           kind: callerKind,
-          canonicalKey: callerKey,
+          canonicalKey: `${callerKind}:${callerKey}`,
           aliases: [caller.name],
           label: caller.name,
           scope: "repository",
           evidenceRefs: [sourceRef(caller.filePath, caller.lineStart)],
           extractor: EXTRACTOR,
-          confidence: 1,
+          derivation: "call_graph",
+          confidenceBasis: "deterministic_exact",
           status: "active",
           validFrom: input.observedAt,
         });
         runtimeToEntity.set(caller.id, callerEntityId);
         const targetEntityId = runtimeToEntity.get(current.nodeId);
         if (!targetEntityId) throw new Error("software_graph_materializer_target_missing");
+        const targetKind = entities.get(targetEntityId)?.kind;
+        if (!targetKind) throw new Error("software_graph_materializer_target_missing");
         addRelationship(relationships, {
-          kind: caller.isTest ? "tests" : current.depth === 0 ? "wraps" : "calls",
+          kind: callerKind === "test"
+            ? targetKind === "test" ? "calls" : "tests"
+            : current.depth === 0 ? "wraps" : "calls",
           sourceId: callerEntityId,
           targetId: targetEntityId,
           evidenceRefs: [sourceRef(edge.callSiteFile, edge.callSiteLine)],
-          confidence: edge.confidence === "high" ? 1 : edge.confidence === "medium" ? 0.75 : 0.5,
+          derivation: "call_graph",
+          confidenceBasis: edge.confidence === "high"
+            ? "static_analysis_high"
+            : edge.confidence === "medium"
+              ? "static_analysis_medium"
+              : "static_analysis_low",
           validFrom: input.observedAt,
         });
         const priorDepth = visited.get(caller.id);
@@ -248,27 +269,38 @@ export function materializeFettlerSoftwareGraph(
     }
   }
 
-  const unsupported = input.index.callGraph.diagnostics?.unsupportedLanguageFiles ?? [];
+  const diagnostics = input.index.callGraph.diagnostics;
+  const unsupported = diagnostics?.unsupportedLanguageFiles ?? [];
   const unsupportedReasons = unsupported.length
     ? [...new Set(unsupported.map((file) => `unsupported:${file.language}`))]
         .sort(compareCodeUnits)
-    : undefined;
+    : [];
+  const skippedDirectories = input.index.skippedDirectories;
+  const discoveryReasons = [...new Set(skippedDirectories.map(
+    (entry) => `skipped_directory:${entry.reason}`,
+  ))].sort(compareCodeUnits).slice(0, 32);
+  const callReasons = [...unsupportedReasons];
+  if (unattributedUsages > 0) callReasons.push("sdk_usage_not_attributed_to_function");
+  const diagnosticsUnavailable = ["call_graph_diagnostics_unavailable"];
   const coverage: SoftwareGraphCoverageStageV1[] = [
     {
       extractor: EXTRACTOR,
       stage: "repository_discovery",
-      basis: "complete",
+      basis: skippedDirectories.length ? "partial" : "complete",
       analyzed: input.index.files.length,
-      omitted: 0,
+      omitted: skippedDirectories.length,
+      reasons: skippedDirectories.length ? discoveryReasons : undefined,
       evidenceRefs: [`repository-snapshot:${input.repositorySnapshotId}`],
     },
     {
       extractor: EXTRACTOR,
       stage: "language_parsing",
-      basis: unsupported.length ? "partial" : "complete",
-      analyzed: input.index.files.length - unsupported.length,
-      omitted: unsupported.length,
-      reasons: unsupportedReasons,
+      basis: diagnostics ? unsupported.length ? "partial" : "complete" : "not_analyzed",
+      analyzed: diagnostics ? input.index.files.length - unsupported.length : 0,
+      omitted: diagnostics ? unsupported.length : input.index.files.length,
+      reasons: diagnostics
+        ? unsupported.length ? unsupportedReasons : undefined
+        : diagnosticsUnavailable,
       evidenceRefs: [`code-index:${input.repositorySnapshotId}`],
     },
     {
@@ -294,19 +326,25 @@ export function materializeFettlerSoftwareGraph(
     {
       extractor: EXTRACTOR,
       stage: "call_resolution",
-      basis: unsupported.length ? "partial" : "complete",
-      analyzed: graph.edges.length,
-      omitted: unsupported.length,
-      reasons: unsupportedReasons,
+      basis: diagnostics
+        ? callReasons.length ? "partial" : "complete"
+        : "not_analyzed",
+      analyzed: diagnostics ? graph.edges.length : 0,
+      omitted: diagnostics ? unsupported.length + unattributedUsages : Math.max(1, matchedUsages.length),
+      reasons: diagnostics
+        ? callReasons.length ? callReasons : undefined
+        : diagnosticsUnavailable,
       evidenceRefs: [`call-graph:${input.repositorySnapshotId}`],
     },
     {
       extractor: EXTRACTOR,
       stage: "test_resolution",
-      basis: unsupported.length ? "partial" : "complete",
-      analyzed: Object.values(graph.nodes).filter((node) => node.isTest).length,
-      omitted: unsupported.length,
-      reasons: unsupportedReasons,
+      basis: diagnostics ? unsupported.length ? "partial" : "complete" : "not_analyzed",
+      analyzed: diagnostics ? Object.values(graph.nodes).filter((node) => node.isTest).length : 0,
+      omitted: diagnostics ? unsupported.length : Math.max(1, input.index.files.filter((file) => file.isTest).length),
+      reasons: diagnostics
+        ? unsupported.length ? unsupportedReasons : undefined
+        : diagnosticsUnavailable,
       evidenceRefs: [`call-graph:${input.repositorySnapshotId}:tests`],
     },
   ];

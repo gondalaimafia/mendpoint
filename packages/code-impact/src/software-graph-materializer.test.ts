@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { buildIndex } from "@mendpoint/codebase-index";
 import {
@@ -43,6 +43,48 @@ function makeRepository(): string {
   return dir;
 }
 
+function makeRepositoryFromFiles(files: Readonly<Record<string, string>>): string {
+  const dir = mkdtempSync(join(tmpdir(), "fettler-software-graph-adversarial-"));
+  dirs.push(dir);
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({ name: "consumer", dependencies: { twilio: "4.0.0" } }),
+  );
+  for (const [path, content] of Object.entries(files)) {
+    const destination = join(dir, ...path.split("/"));
+    mkdirSync(dirname(destination), { recursive: true });
+    writeFileSync(destination, content);
+  }
+  return dir;
+}
+
+function materialize(repoRoot: string, index = buildIndex(repoRoot, {
+  sdkContext: sdkContextFromSurfaces([surface]),
+})) {
+  return materializeFettlerSoftwareGraph({
+    index,
+    tenantId: "tenant-a",
+    repositoryId: "repo-a",
+    repositorySnapshotId: "snapshot-a",
+    repositoryRevision: "a".repeat(40),
+    providerId: "twilio",
+    providerSnapshotId: "twilio-openapi-2026-08-17",
+    providerRevision: "2026-08-17",
+    providerSdkPackage: "twilio",
+    providerSdkVersion: "4.0.0",
+    providerEndpointSurfaceCount: 1,
+    endpoint: {
+      canonicalKey: "POST /v1/messages",
+      method: "POST",
+      path: "/v1/messages",
+      sdkMethodPaths: [],
+      evidenceRefs: ["artifact:twilio-openapi:2026-08-17"],
+    },
+    observedAt: "2026-08-17T12:00:00.000Z",
+    maxCallerHops: 4,
+  });
+}
+
 const surface: ImpactableSurface = {
   id: "surface-message",
   canonicalId: "twilio.POST./v1/messages.request_field_renamed.Body.body",
@@ -60,6 +102,101 @@ const surface: ImpactableSurface = {
 };
 
 describe("Fettler software graph materializer", () => {
+  it("publishes a function that is both a direct SDK user and an indirect caller without canonical-key collision", () => {
+    const repoRoot = makeRepositoryFromFiles({
+      "src/client.ts": [
+        'import twilio from "twilio";',
+        "export async function sendMessage(to: string) {",
+        '  return twilio.messages.create({ to, Body: "hello" });',
+        "}",
+      ].join("\n"),
+      "src/notifications.ts": [
+        'import twilio from "twilio";',
+        'import { sendMessage } from "./client";',
+        "export async function notifyUser(to: string) {",
+        "  await sendMessage(to);",
+        '  return twilio.messages.create({ to, Body: "again" });',
+        "}",
+      ].join("\n"),
+    });
+
+    const publication = materialize(repoRoot);
+    const db = openGraphLearnMemory();
+    expect(() => publishSoftwareGraphVersion(db, publication)).not.toThrow();
+    const notify = publication.entities.filter((entity) => entity.label === "notifyUser");
+    expect(notify.map((entity) => entity.kind).sort()).toEqual([
+      "function",
+      "internal_sdk_method",
+    ]);
+    expect(new Set(notify.map((entity) => entity.canonicalKey)).size).toBe(2);
+    db.raw.close();
+  });
+
+  it("models a test helper calling another test helper as a call rather than an invalid tests edge", () => {
+    const repoRoot = makeRepositoryFromFiles({
+      "src/client.ts": [
+        'import twilio from "twilio";',
+        "export async function sendMessage(to: string) {",
+        '  return twilio.messages.create({ to, Body: "hello" });',
+        "}",
+      ].join("\n"),
+      "test/helpers.ts": [
+        'import { sendMessage } from "../src/client";',
+        "export async function sendFixture() { return sendMessage(\"+15555550123\"); }",
+      ].join("\n"),
+      "test/messages.test.ts": [
+        'import { sendFixture } from "./helpers";',
+        "export async function testSend() { return sendFixture(); }",
+      ].join("\n"),
+    });
+
+    const publication = materialize(repoRoot);
+    const db = openGraphLearnMemory();
+    expect(() => publishSoftwareGraphVersion(db, publication)).not.toThrow();
+    expect(publication.relationships.some((edge) => edge.kind === "calls")).toBe(true);
+    db.raw.close();
+  });
+
+  it("reports unattributed module-scope SDK usages as incomplete call resolution", () => {
+    const repoRoot = makeRepositoryFromFiles({
+      "src/client.ts": [
+        'import twilio from "twilio";',
+        'export const welcome = twilio.messages.create({ to: "+15555550123", Body: "hello" });',
+      ].join("\n"),
+    });
+
+    const publication = materialize(repoRoot);
+    const callResolution = publication.coverage.find((stage) => stage.stage === "call_resolution");
+    expect(callResolution).toMatchObject({
+      basis: "partial",
+      reasons: expect.arrayContaining(["sdk_usage_not_attributed_to_function"]),
+    });
+    expect(callResolution?.omitted).toBeGreaterThanOrEqual(1);
+  });
+
+  it("never treats absent incremental diagnostics or skipped discovery directories as complete coverage", () => {
+    const repoRoot = makeRepository();
+    const complete = buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces([surface]) });
+    const index = {
+      ...complete,
+      callGraph: { ...complete.callGraph, diagnostics: undefined },
+      skippedDirectories: [{ path: "generated", reason: "policy_skip" }],
+    };
+
+    const publication = materialize(repoRoot, index);
+    expect(publication.coverage.find((stage) => stage.stage === "repository_discovery")).toMatchObject({
+      basis: "partial",
+      omitted: 1,
+    });
+    for (const stage of ["language_parsing", "call_resolution", "test_resolution"] as const) {
+      expect(publication.coverage.find((candidate) => candidate.stage === stage)).toMatchObject({
+        basis: "not_analyzed",
+        analyzed: 0,
+        reasons: expect.arrayContaining(["call_graph_diagnostics_unavailable"]),
+      });
+    }
+  });
+
   it("publishes an indirect provider endpoint to consumer test chain from a real code index", () => {
     const repoRoot = makeRepository();
     const index = buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces([surface]) });

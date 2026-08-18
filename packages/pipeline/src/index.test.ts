@@ -282,6 +282,40 @@ describe("pipeline", () => {
     ).toBe(true);
   });
 
+  it("falls back to deterministic impact analysis when the shadow graph analyzer fails", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop });
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-graph-fail-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(deliveryRoot),
+      persistIndex: false,
+      softwareGraphAnalyzer: async () => {
+        throw new Error("software_graph_materializer_entity_collision");
+      },
+      contractCases: [
+        { id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } },
+      ],
+      securityScanAttested: true,
+    });
+
+    expect(report.consumers[0]?.prStatus).toBe("draft");
+    expect(report.consumers[0]?.graphVersionId).toBeUndefined();
+    const shadowFailure = listAudit(db).find((event) => event.action === "graph.shadow_failed");
+    expect(shadowFailure).toBeDefined();
+    expect(JSON.parse(shadowFailure!.metadata_json!)).toEqual({
+      code: "software_graph_materializer_entity_collision",
+    });
+  });
+
   it("fails closed before SCM delivery when reviewer ownership is incomplete", async () => {
     const db = seedProviderVersions();
     const provider = db.raw

@@ -177,6 +177,8 @@ export type PipelineInput = {
   consumerIds?: string[];
   db?: AppDb;
   graphDb?: GraphLearnDb;
+  /** Optional bounded graph analyzer dependency. The graph remains shadow evidence. */
+  softwareGraphAnalyzer?: typeof analyzeImpactWithSoftwareGraph;
   github?: GitHubDelivery;
   persistIndex?: boolean;
   /** First-party brand pack id, or true to auto-pick by provider */
@@ -854,7 +856,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     let impactReport: ImpactReport;
     const endpointSurface = surfaces.find((surface) => surface.path);
     if (endpointSurface) {
-      const graphAnalysis = await analyzeImpactWithSoftwareGraph(repo.local_path, surfaces, {
+      try {
+      const graphAnalysis = await (input.softwareGraphAnalyzer ?? analyzeImpactWithSoftwareGraph)(repo.local_path, surfaces, {
         graphDb: gldb,
         tenantId: input.tenantId,
         repositoryId: repo.connected_repository_id ?? repo.id,
@@ -931,6 +934,26 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         },
         createdAt: graphObservedAt,
       });
+      } catch (error) {
+        impactReport = await analyzeImpact(repo.local_path, surfaces, {
+          persistIndex: input.persistIndex ?? true,
+        });
+        const code = error instanceof Error && /^[a-z0-9._:-]{1,160}$/i.test(error.message)
+          ? error.message
+          : "change_graph_shadow_failed";
+        try {
+          recordAudit(db, {
+            tenantId: input.tenantId,
+            actor: "pipeline",
+            action: "graph.shadow_failed",
+            resourceType: "consumer",
+            resourceId: consumer.id,
+            metadata: { code },
+          });
+        } catch {
+          // Shadow evidence must never become delivery authority.
+        }
+      }
     } else {
       impactReport = await analyzeImpact(repo.local_path, surfaces, {
         persistIndex: input.persistIndex ?? true,

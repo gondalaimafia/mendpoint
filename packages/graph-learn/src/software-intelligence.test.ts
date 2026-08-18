@@ -20,10 +20,13 @@ const extractor = Object.freeze({
 });
 const entityProvenance = Object.freeze({
   extractor,
-  confidence: 1,
+  derivation: "repository_usage" as const,
+  confidenceBasis: "deterministic_exact" as const,
   validFrom: "2026-08-17T12:00:00.000Z",
 });
 const relationshipValidity = Object.freeze({
+  derivation: "call_graph" as const,
+  confidenceBasis: "static_analysis_high" as const,
   validFrom: "2026-08-17T12:00:00.000Z",
 });
 
@@ -104,7 +107,6 @@ function publication(snapshotId = "snapshot-1"): SoftwareGraphPublicationV1 {
         targetId: "endpoint:charges-create",
         evidenceRefs: ["artifact:sdk-map:1"],
         extractor,
-        confidence: 1,
         status: "active",
       },
       {
@@ -115,7 +117,6 @@ function publication(snapshotId = "snapshot-1"): SoftwareGraphPublicationV1 {
         targetId: "provider-sdk:charges-create",
         evidenceRefs: ["source:src/payments/client.ts:12"],
         extractor,
-        confidence: 1,
         status: "active",
       },
       {
@@ -126,7 +127,6 @@ function publication(snapshotId = "snapshot-1"): SoftwareGraphPublicationV1 {
         targetId: "internal-sdk:create-charge",
         evidenceRefs: ["call:src/billing.ts:22"],
         extractor,
-        confidence: 0.98,
         status: "active",
       },
       {
@@ -137,7 +137,6 @@ function publication(snapshotId = "snapshot-1"): SoftwareGraphPublicationV1 {
         targetId: "function:bill-customer",
         evidenceRefs: ["call:test/billing.test.ts:10"],
         extractor,
-        confidence: 0.95,
         status: "active",
       },
     ],
@@ -195,6 +194,17 @@ function publication(snapshotId = "snapshot-1"): SoftwareGraphPublicationV1 {
 }
 
 describe("foundational software intelligence graph", () => {
+  it("creates software graph storage during the central graph migration", () => {
+    const db = openGraphLearnMemory();
+    const tables = (db.raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+    ).all() as Array<{ name: string }>).map((row) => row.name);
+    expect(tables).toEqual(expect.arrayContaining([
+      "gl_nodes", "gl_edges", "gl_software_versions_v1", "gl_software_heads_v1",
+    ]));
+    db.raw.close();
+  });
+
   it("distinguishes exact, alias, ambiguous, unresolved, and collision resolution", () => {
     const entities = publication().entities;
     expect(resolveSoftwareEntity(entities, "POST /v1/charges").status).toBe("exact");
@@ -425,10 +435,11 @@ describe("foundational software intelligence graph", () => {
     );
   });
 
-  it("requires entity extractor, confidence, and validity provenance", () => {
+  it("requires entity extractor, derivation, confidence basis, and validity provenance", () => {
     for (const [field, code] of [
       ["extractor", "software_graph_entity_extractor_invalid"],
-      ["confidence", "software_graph_entity_confidence_invalid"],
+      ["derivation", "software_graph_entity_derivation_invalid"],
+      ["confidenceBasis", "software_graph_entity_confidence_basis_invalid"],
       ["validFrom", "software_graph_entity_validity_invalid"],
     ] as const) {
       const db = openGraphLearnMemory();
@@ -436,6 +447,14 @@ describe("foundational software intelligence graph", () => {
       delete (invalid.entities[0] as unknown as Record<string, unknown>)[field];
       expect(() => publishSoftwareGraphVersion(db, invalid)).toThrow(code);
     }
+    const fabricatedProbability = publication();
+    fabricatedProbability.entities[0] = {
+      ...fabricatedProbability.entities[0]!, confidence: 1,
+    };
+    const probabilityDb = openGraphLearnMemory();
+    expect(() => publishSoftwareGraphVersion(probabilityDb, fabricatedProbability)).toThrow(
+      "software_graph_entity_confidence_invalid",
+    );
     const db = openGraphLearnMemory();
     const invalidRelationship = publication();
     delete (invalidRelationship.relationships[0] as unknown as Record<string, unknown>).validFrom;

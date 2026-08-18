@@ -4,6 +4,13 @@ import type { GraphLearnDb } from "./store.js";
 export type SoftwareEntityKind = "endpoint" | "provider_sdk_method" | "internal_sdk_method" | "function" | "test";
 export type SoftwareRelationshipKind = "uses_endpoint" | "uses_sdk_method" | "wraps" | "calls" | "tests";
 export type SoftwareGraphStatus = "active" | "stale" | "conflicted" | "superseded";
+export type SoftwareGraphDerivation = "provider_spec" | "provider_sdk_binding" | "repository_usage" | "call_graph";
+export type SoftwareGraphConfidenceBasis =
+  | "deterministic_exact"
+  | "static_analysis_high"
+  | "static_analysis_medium"
+  | "static_analysis_low"
+  | "calibrated_probability";
 
 export type SoftwareGraphEntityV1 = {
   id: string;
@@ -14,7 +21,9 @@ export type SoftwareGraphEntityV1 = {
   scope: "provider" | "repository";
   evidenceRefs: string[];
   extractor: SoftwareGraphExtractorV1;
-  confidence: number;
+  derivation: SoftwareGraphDerivation;
+  confidenceBasis: SoftwareGraphConfidenceBasis;
+  confidence?: number;
   status: SoftwareGraphStatus;
   validFrom: string;
   validTo?: string;
@@ -28,7 +37,9 @@ export type SoftwareGraphRelationshipV1 = {
   targetId: string;
   evidenceRefs: string[];
   extractor: SoftwareGraphExtractorV1;
-  confidence: number;
+  derivation: SoftwareGraphDerivation;
+  confidenceBasis: SoftwareGraphConfidenceBasis;
+  confidence?: number;
   status: SoftwareGraphStatus;
   validFrom: string;
   validTo?: string;
@@ -64,25 +75,6 @@ export type SoftwareEntityResolution =
   | { status: "ambiguous" | "collision"; candidates: SoftwareGraphEntityV1[] }
   | { status: "unresolved"; candidates: [] };
 
-const VERSION_DDL = `
-CREATE TABLE IF NOT EXISTS gl_software_versions_v1 (
-  version_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, repository_id TEXT NOT NULL,
-  repository_snapshot_id TEXT NOT NULL, repository_revision TEXT NOT NULL,
-  parent_version_id TEXT, content_digest TEXT NOT NULL, content_json TEXT NOT NULL,
-  observed_at TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS gl_software_versions_v1_digest_idx
-  ON gl_software_versions_v1(tenant_id, repository_id, content_digest);
-CREATE INDEX IF NOT EXISTS gl_software_versions_v1_scope_idx
-  ON gl_software_versions_v1(tenant_id, repository_id, observed_at);
-CREATE TABLE IF NOT EXISTS gl_software_heads_v1 (
-  tenant_id TEXT NOT NULL, repository_id TEXT NOT NULL, provider_id TEXT NOT NULL,
-  version_id TEXT NOT NULL,
-  content_digest TEXT NOT NULL, updated_at TEXT NOT NULL,
-  PRIMARY KEY(tenant_id, repository_id, provider_id),
-  FOREIGN KEY(version_id) REFERENCES gl_software_versions_v1(version_id)
-);`;
-
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:@/ -]{0,511}$/;
 const REVISION_RE = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
@@ -105,6 +97,13 @@ const GRAPH_STATUSES = new Set<SoftwareGraphStatus>([
   "stale",
   "conflicted",
   "superseded",
+]);
+const DERIVATIONS = new Set<SoftwareGraphDerivation>([
+  "provider_spec", "provider_sdk_binding", "repository_usage", "call_graph",
+]);
+const CONFIDENCE_BASES = new Set<SoftwareGraphConfidenceBasis>([
+  "deterministic_exact", "static_analysis_high", "static_analysis_medium",
+  "static_analysis_low", "calibrated_probability",
 ]);
 const COVERAGE_STAGES = new Set<SoftwareGraphCoverageStageV1["stage"]>([
   "repository_discovery",
@@ -184,7 +183,7 @@ function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraph
   const entities = input.entities.map((entity) => {
     onlyKeys(entity, [
       "id", "kind", "canonicalKey", "aliases", "label", "scope", "evidenceRefs",
-      "extractor", "confidence", "status", "validFrom", "validTo", "conflictRefs",
+      "extractor", "derivation", "confidenceBasis", "confidence", "status", "validFrom", "validTo", "conflictRefs",
     ], "software_graph_entity_shape_invalid");
     if (!ID_RE.test(entity.id)) throw new Error("software_graph_entity_id_invalid");
     if (entityIds.has(entity.id)) throw new Error("software_graph_entity_id_duplicate");
@@ -215,9 +214,14 @@ function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraph
     if (!DIGEST_RE.test(entity.extractor.digest)) {
       throw new Error("software_graph_entity_extractor_invalid");
     }
-    if (!Number.isFinite(entity.confidence) || entity.confidence < 0 || entity.confidence > 1) {
-      throw new Error("software_graph_entity_confidence_invalid");
-    }
+    if (!DERIVATIONS.has(entity.derivation)) throw new Error("software_graph_entity_derivation_invalid");
+    if (!CONFIDENCE_BASES.has(entity.confidenceBasis)) throw new Error("software_graph_entity_confidence_basis_invalid");
+    if (entity.confidence === undefined) {
+      if (entity.confidenceBasis === "calibrated_probability") throw new Error("software_graph_entity_confidence_invalid");
+    } else if (
+      entity.confidenceBasis !== "calibrated_probability" ||
+      !Number.isFinite(entity.confidence) || entity.confidence < 0 || entity.confidence > 1
+    ) throw new Error("software_graph_entity_confidence_invalid");
     if (!entity.validFrom) throw new Error("software_graph_entity_validity_invalid");
     exactUtc(entity.validFrom, "software_graph_entity_validity_invalid");
     if (entity.validFrom > input.observedAt) {
@@ -246,7 +250,7 @@ function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraph
   const relationships = input.relationships.map((relationship) => {
     onlyKeys(relationship, [
       "id", "kind", "sourceId", "targetId", "evidenceRefs", "extractor",
-      "confidence", "status", "validFrom", "validTo", "conflictRefs",
+      "derivation", "confidenceBasis", "confidence", "status", "validFrom", "validTo", "conflictRefs",
     ], "software_graph_relationship_shape_invalid");
     if (!ID_RE.test(relationship.id)) throw new Error("software_graph_relationship_id_invalid");
     if (relationshipIds.has(relationship.id)) throw new Error("software_graph_relationship_id_duplicate");
@@ -261,10 +265,19 @@ function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraph
       (relationship.kind === "uses_endpoint" && sourceKind === "provider_sdk_method" && targetKind === "endpoint") ||
       (relationship.kind === "uses_sdk_method" && sourceKind === "internal_sdk_method" && targetKind === "provider_sdk_method") ||
       (relationship.kind === "wraps" && sourceKind === "function" && (targetKind === "function" || targetKind === "internal_sdk_method")) ||
-      (relationship.kind === "calls" && sourceKind === "function" && (targetKind === "function" || targetKind === "internal_sdk_method")) ||
+      (relationship.kind === "calls" &&
+        (sourceKind === "function" || sourceKind === "test") &&
+        (targetKind === "function" || targetKind === "internal_sdk_method" || targetKind === "test")) ||
       (relationship.kind === "tests" && sourceKind === "test" && (targetKind === "function" || targetKind === "internal_sdk_method"));
     if (!semanticPairIsValid) throw new Error("software_graph_relationship_semantics_invalid");
-    if (!Number.isFinite(relationship.confidence) || relationship.confidence < 0 || relationship.confidence > 1) throw new Error("software_graph_relationship_confidence_invalid");
+    if (!DERIVATIONS.has(relationship.derivation)) throw new Error("software_graph_relationship_derivation_invalid");
+    if (!CONFIDENCE_BASES.has(relationship.confidenceBasis)) throw new Error("software_graph_relationship_confidence_basis_invalid");
+    if (relationship.confidence === undefined) {
+      if (relationship.confidenceBasis === "calibrated_probability") throw new Error("software_graph_relationship_confidence_invalid");
+    } else if (
+      relationship.confidenceBasis !== "calibrated_probability" ||
+      !Number.isFinite(relationship.confidence) || relationship.confidence < 0 || relationship.confidence > 1
+    ) throw new Error("software_graph_relationship_confidence_invalid");
     validateEvidence(relationship.evidenceRefs, "software_graph_relationship_evidence_invalid");
     onlyKeys(relationship.extractor, ["id", "version", "digest"], "software_graph_extractor_invalid");
     boundedString(relationship.extractor.id, "software_graph_extractor_invalid");
@@ -322,8 +335,6 @@ function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraph
   return { ...input, entities, relationships, coverage };
 }
 
-const ensureSchema = (db: GraphLearnDb) => db.raw.exec(VERSION_DDL);
-
 export function resolveSoftwareEntity(entities: readonly SoftwareGraphEntityV1[], key: string): SoftwareEntityResolution {
   const exact = entities.filter((entity) => entity.canonicalKey === key);
   if (exact.length === 1) return { status: "exact", entity: structuredClone(exact[0]!) };
@@ -342,13 +353,11 @@ export function getSoftwareGraphHead(
   repositoryId: string,
   providerId: string,
 ): { versionId: string; contentDigest: string } | undefined {
-  ensureSchema(db);
   const row = db.raw.prepare(`SELECT version_id, content_digest FROM gl_software_heads_v1 WHERE tenant_id = ? AND repository_id = ? AND provider_id = ?`).get(tenantId, repositoryId, providerId) as { version_id: string; content_digest: string } | undefined;
   return row ? { versionId: row.version_id, contentDigest: row.content_digest } : undefined;
 }
 
 export function publishSoftwareGraphVersion(db: GraphLearnDb, input: SoftwareGraphPublicationV1): { versionId: string; contentDigest: string; replayed: boolean } {
-  ensureSchema(db);
   const normalized = normalizedPublication(structuredClone(input));
   const contentJson = canonicalJson(normalized);
   const contentDigest = sha256(contentJson);
@@ -397,7 +406,6 @@ export function publishSoftwareGraphVersion(db: GraphLearnDb, input: SoftwareGra
 }
 
 export function readSoftwareGraphVersion(db: GraphLearnDb, tenantId: string, repositoryId: string, versionId: string): PublishedSoftwareGraphVersionV1 {
-  ensureSchema(db);
   const row = db.raw.prepare(`SELECT version_id, tenant_id, repository_id, content_digest, content_json FROM gl_software_versions_v1 WHERE version_id = ? AND tenant_id = ? AND repository_id = ?`).get(versionId, tenantId, repositoryId) as VersionRow | undefined;
   if (!row) throw new Error("software_graph_version_not_found");
   if (sha256(row.content_json) !== row.content_digest) throw new Error("software_graph_version_integrity_failed");
@@ -574,7 +582,9 @@ export function compileFettlerImpactContext(result: FettlerEndpointImpactResult,
       via: edge.kind,
       kind: entity.kind,
       label: entity.label,
-      confidence: edge.confidence,
+      derivation: edge.derivation,
+      confidenceBasis: edge.confidenceBasis,
+      ...(edge.confidence === undefined ? {} : { confidence: edge.confidence }),
       evidenceRefs: [...new Set([...entity.evidenceRefs, ...edge.evidenceRefs])]
         .sort(compareCodeUnits),
     };
