@@ -32,6 +32,7 @@
     "@mendpoint/repair": "*",
     "@mendpoint/db": "*",
     "@mendpoint/github": "*",
+    "@mendpoint/notify": "*",
     "@mendpoint/ops": "*",
     "@mendpoint/platform": "*",
     "@mendpoint/transformer": "*",

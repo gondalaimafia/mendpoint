@@ -69,6 +69,7 @@ import {
   runFeedSchedules,
 } from "@mendpoint/catalog";
 import { assessFeedFreshness, nowIso, resolveRenamedEnv } from "@mendpoint/shared";
+import { pageWorkerHeartbeat } from "@mendpoint/notify";
 import {
   createAppDelivery,
   createGitLabDelivery,
@@ -3516,6 +3517,7 @@ async function runService(intervalMs: number) {
         pollStartedAt: feedPollStartedAt,
       });
       const recovery = getJobRecoverySummary(heartbeatDb, configuredTenantId);
+      const heartbeatFeedOk = feedPollOk && (!customerProfile || feedFreshness.ok);
       writeWorkerHeartbeat(heartbeatPath, {
         ok: true,
         workerId: WORKER_ID,
@@ -3532,7 +3534,7 @@ async function runService(intervalMs: number) {
         },
         transformer,
         feedPollingEnabled,
-        feedPollOk: feedPollOk && (!customerProfile || feedFreshness.ok),
+        feedPollOk: heartbeatFeedOk,
         feedScheduleCount: feedEvidence.scheduleCount,
         ...(feedEvidence.lastSuccessAt
           ? { feedLastSuccessAt: feedEvidence.lastSuccessAt }
@@ -3542,6 +3544,18 @@ async function runService(intervalMs: number) {
           : {}),
         ...(feedPollStartedAt ? { feedPollStartedAt } : {}),
       });
+      // Best-effort page for the conditions this heartbeat already measures: a
+      // degraded/stale worker, expired leases with uncertain side effects, or a
+      // growing dead-letter queue. Fire-and-forget after the write, so a paging
+      // outage can never abort the heartbeat; deduped downstream (default 5min)
+      // so a persisting condition pages once per window rather than every tick.
+      void pageWorkerHeartbeat({
+        workerId: WORKER_ID,
+        ok: heartbeatFeedOk,
+        stale: customerProfile && !feedFreshness.ok,
+        deadLetter: recovery.deadLetter,
+        expiredLeases: recovery.expiredLeases,
+      }).catch(() => undefined);
     } catch (error) {
       console.error(error);
     }
