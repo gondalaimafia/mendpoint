@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  adaptiveHistoryEmptyStateVisible,
   adaptiveReviewActionEnabled,
   organizeAdaptiveCandidates,
   candidateLifecycle,
@@ -300,5 +301,31 @@ describe("Transformer adaptive candidate review model", () => {
 
     expect(mergeAdaptiveCandidateHistory(first, second).map((candidate) => candidate.id))
       .toEqual(["history-3", "history-2", "history-1"]);
+  });
+});
+
+describe("adaptiveHistoryEmptyStateVisible", () => {
+  it("shows the empty state only for a settled, non-error, genuinely empty history", () => {
+    expect(
+      adaptiveHistoryEmptyStateVisible({ error: false, loading: false, historyCount: 0 }),
+    ).toBe(true);
+  });
+
+  it("suppresses the empty state on a failed fetch so a rejection is not read as no reviews", () => {
+    // The history list is empty because the fetch failed, not because there are
+    // no completed reviews. Rendering "No completed adaptive reviews yet." here
+    // would certify a load failure as an authoritative negative.
+    expect(
+      adaptiveHistoryEmptyStateVisible({ error: true, loading: false, historyCount: 0 }),
+    ).toBe(false);
+  });
+
+  it("suppresses the empty state while still loading, and when records exist", () => {
+    expect(
+      adaptiveHistoryEmptyStateVisible({ error: false, loading: true, historyCount: 0 }),
+    ).toBe(false);
+    expect(
+      adaptiveHistoryEmptyStateVisible({ error: false, loading: false, historyCount: 3 }),
+    ).toBe(false);
   });
 });

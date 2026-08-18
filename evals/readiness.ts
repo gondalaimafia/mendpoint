@@ -26,12 +26,46 @@ export interface ScoredRun {
   gt: GroundTruth;
 }
 
-export interface CapabilityThresholds {
+/**
+ * Fettler impact-analysis capability thresholds. `kind` is optional so the
+ * shipped config's untagged entry (and the hand-built test fixtures) still parse
+ * as this shape.
+ */
+export interface FettlerImpactThresholds {
+  kind?: "fettler-impact";
   description?: string;
   impact_precision_min: number;
   impact_recall_min: number;
   max_open_p0: number;
   holdout_dev_gap_max_pp: number;
+}
+
+/**
+ * ReGauge migration-recipe family thresholds. A family aggregates every ReGauge
+ * scenario whose `recipe_expectation.family` matches `family`, and is scored on
+ * three behaviours plus open-P0. Each `*_min` is a pass RATE over that family's
+ * scenarios of the relevant kind (small n by design — precision-first).
+ */
+export interface RegaugeFamilyThresholds {
+  kind: "regauge-family";
+  description?: string;
+  notes?: string;
+  /** The `recipe_expectation.family` string this capability aggregates. */
+  family: string;
+  /** Min pass rate over apply_recipe scenarios (correct application in scope). */
+  apply_correctness_min: number;
+  /** Min pass rate over refuse_partial scenarios (refusal on residual repos). */
+  refusal_correctness_min: number;
+  /** Min pass rate over abstain/coverage_gap/no_op scenarios (out-of-scope). */
+  abstention_correctness_min: number;
+  /** Max unsafe (non-coverage-gap, non-harness) P0 failures across the family. */
+  max_open_p0: number;
+}
+
+export type CapabilityThresholds = FettlerImpactThresholds | RegaugeFamilyThresholds;
+
+function isRegaugeFamily(t: CapabilityThresholds): t is RegaugeFamilyThresholds {
+  return (t as RegaugeFamilyThresholds).kind === "regauge-family";
 }
 
 export interface ReadinessGatesConfig {
@@ -60,11 +94,31 @@ export function loadReadinessGates(path: string = DEFAULT_GATES_PATH): Readiness
   if (!cfg.capabilities || typeof cfg.capabilities !== "object") {
     throw new Error("readiness-gates: capabilities must be an object");
   }
-  for (const [name, t] of Object.entries(cfg.capabilities)) {
-    for (const k of ["impact_precision_min", "impact_recall_min", "max_open_p0", "holdout_dev_gap_max_pp"] as const) {
-      if (typeof t[k] !== "number") {
+  const numeric = (name: string, t: CapabilityThresholds, keys: readonly string[]): void => {
+    for (const k of keys) {
+      if (typeof (t as unknown as Record<string, unknown>)[k] !== "number") {
         throw new Error(`readiness-gates: capability ${name}.${k} must be a number`);
       }
+    }
+  };
+  for (const [name, t] of Object.entries(cfg.capabilities)) {
+    if (isRegaugeFamily(t)) {
+      if (typeof t.family !== "string" || t.family.length === 0) {
+        throw new Error(`readiness-gates: capability ${name}.family must be a non-empty string`);
+      }
+      numeric(name, t, [
+        "apply_correctness_min",
+        "refusal_correctness_min",
+        "abstention_correctness_min",
+        "max_open_p0",
+      ]);
+    } else {
+      numeric(name, t, [
+        "impact_precision_min",
+        "impact_recall_min",
+        "max_open_p0",
+        "holdout_dev_gap_max_pp",
+      ]);
     }
   }
   return cfg;
@@ -84,6 +138,19 @@ export interface CriterionResult {
   detail: string;
 }
 
+/** Per-behaviour pass counts for a ReGauge family capability. */
+export interface RegaugeFamilyMetrics {
+  family: string;
+  applyTotal: number;
+  applyPassed: number;
+  refuseTotal: number;
+  refusePassed: number;
+  abstainTotal: number;
+  abstainPassed: number;
+  openP0: number;
+  scenarioCount: number;
+}
+
 export interface CapabilityReadiness {
   capability: string;
   verdict: "PASS" | "FAIL";
@@ -100,6 +167,8 @@ export interface CapabilityReadiness {
     developmentPassRate: number | null;
     holdoutPassRate: number | null;
   };
+  /** Present only for regauge-family capabilities. */
+  familyMetrics?: RegaugeFamilyMetrics;
 }
 
 export interface ReadinessEvaluation {
@@ -159,7 +228,7 @@ const asPct = (n: number): string => `${(n * 100).toFixed(1)}%`;
 /** Evaluate the Fettler impact-analysis capability against its thresholds. */
 function evaluateFettlerImpact(
   scored: ScoredRun[],
-  t: CapabilityThresholds,
+  t: FettlerImpactThresholds,
 ): CapabilityReadiness {
   const { tp, fp, fn, scenarioCount } = fettlerMicroStats(scored);
   const precision = tp + fp > 0 ? tp / (tp + fp) : null;
@@ -231,6 +300,109 @@ function evaluateFettlerImpact(
   };
 }
 
+const REGAUGE_APPLY = new Set(["apply_recipe"]);
+const REGAUGE_REFUSE = new Set(["refuse_partial"]);
+const REGAUGE_ABSTAIN = new Set(["abstain", "coverage_gap", "no_op"]);
+
+/** ReGauge scenarios in a run whose recipe family matches `family`. */
+function familyScenarios(scored: ScoredRun[], family: string): ScoredRun[] {
+  return scored.filter(
+    (s) => s.record.product === "regauge" && (s.gt.recipe_expectation?.family ?? "") === family,
+  );
+}
+
+const pctInt = (n: number): string => `${(n * 100).toFixed(0)}%`;
+const fracPct = (passed: number, total: number): string =>
+  `${total ? ((passed / total) * 100).toFixed(1) : "0.0"}% (${passed}/${total})`;
+
+/** Evaluate one ReGauge migration-recipe family against its thresholds. */
+function evaluateRegaugeFamily(
+  capability: string,
+  scored: ScoredRun[],
+  t: RegaugeFamilyThresholds,
+): CapabilityReadiness {
+  const rows = familyScenarios(scored, t.family);
+  const apply = rows.filter((s) => REGAUGE_APPLY.has(s.gt.correct_behavior));
+  const refuse = rows.filter((s) => REGAUGE_REFUSE.has(s.gt.correct_behavior));
+  const abstain = rows.filter((s) => REGAUGE_ABSTAIN.has(s.gt.correct_behavior));
+  const applyPassed = apply.filter((s) => s.record.passed).length;
+  const refusePassed = refuse.filter((s) => s.record.passed).length;
+  const abstainPassed = abstain.filter((s) => s.record.passed).length;
+  const openP0 = openP0Count(rows, "regauge");
+
+  const rate = (passed: number, total: number): number | null =>
+    total === 0 ? null : passed / total;
+  const applyRate = rate(applyPassed, apply.length);
+  const refuseRate = rate(refusePassed, refuse.length);
+  const abstainRate = rate(abstainPassed, abstain.length);
+
+  const criteria: CriterionResult[] = [
+    {
+      name: "apply_correctness",
+      measurable: applyRate !== null,
+      passed: applyRate !== null && applyRate >= t.apply_correctness_min,
+      measured: applyRate !== null ? fracPct(applyPassed, apply.length) : "not measured (no in-scope apply scenarios)",
+      threshold: `>= ${pctInt(t.apply_correctness_min)} pass`,
+      detail: "shipped recipe recognizes and (would) apply cleanly on in-scope repos",
+    },
+    {
+      name: "residual_refusal",
+      measurable: refuseRate !== null,
+      passed: refuseRate !== null && refuseRate >= t.refusal_correctness_min,
+      measured: refuseRate !== null ? fracPct(refusePassed, refuse.length) : "not measured (no residual scenarios)",
+      threshold: `>= ${pctInt(t.refusal_correctness_min)} refuse`,
+      detail: "a residual site outside allowedPaths must force status=incomplete (refuse to ship a partial migration)",
+    },
+    {
+      name: "out_of_scope_abstention",
+      measurable: abstainRate !== null,
+      passed: abstainRate !== null && abstainRate >= t.abstention_correctness_min,
+      measured: abstainRate !== null ? fracPct(abstainPassed, abstain.length) : "not measured (no abstention scenarios)",
+      threshold: `>= ${pctInt(t.abstention_correctness_min)} abstain`,
+      detail: "out-of-scope / no-shipped-recipe repos must not match (abstain by absence)",
+    },
+    {
+      name: "open_p0",
+      measurable: true,
+      passed: openP0 <= t.max_open_p0,
+      measured: String(openP0),
+      threshold: `<= ${t.max_open_p0}`,
+      detail: "unsafe P0 failures across the family (partial-migration application, distractor hit); coverage gaps excluded",
+    },
+  ];
+
+  // A not-measurable criterion cannot demonstrate readiness, so it does not pass.
+  const verdict: "PASS" | "FAIL" = criteria.every((c) => c.measurable && c.passed) ? "PASS" : "FAIL";
+
+  return {
+    capability,
+    verdict,
+    criteria,
+    metrics: {
+      precision: null,
+      recall: null,
+      truePositives: 0,
+      falsePositives: 0,
+      falseNegatives: 0,
+      openP0,
+      scenarioCount: rows.length,
+      developmentPassRate: null,
+      holdoutPassRate: null,
+    },
+    familyMetrics: {
+      family: t.family,
+      applyTotal: apply.length,
+      applyPassed,
+      refuseTotal: refuse.length,
+      refusePassed,
+      abstainTotal: abstain.length,
+      abstainPassed,
+      openP0,
+      scenarioCount: rows.length,
+    },
+  };
+}
+
 /** Evaluate a scored run against the versioned gates config. */
 export function evaluateReadiness(
   scored: ScoredRun[],
@@ -239,12 +411,13 @@ export function evaluateReadiness(
 ): ReadinessEvaluation {
   const capabilities: CapabilityReadiness[] = [];
   for (const [name, thresholds] of Object.entries(gates.capabilities)) {
-    if (name === "fettler-impact-analysis") {
+    if (isRegaugeFamily(thresholds)) {
+      capabilities.push(evaluateRegaugeFamily(name, scored, thresholds));
+    } else if (name === "fettler-impact-analysis") {
       capabilities.push(evaluateFettlerImpact(scored, thresholds));
     }
-    // Additional capabilities gain their own evaluator here as thresholds are
-    // authored for them; an unknown capability name is intentionally not scored
-    // rather than scored with a placeholder that could read as a pass.
+    // An unknown capability name/shape is intentionally not scored rather than
+    // scored with a placeholder that could read as a pass.
   }
   const overall: "PASS" | "FAIL" = capabilities.length > 0 && capabilities.every((c) => c.verdict === "PASS") ? "PASS" : "FAIL";
   return {

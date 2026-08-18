@@ -145,40 +145,49 @@ export default async function ChangesPage() {
       provider ? apiGet<ProviderDetail>(`/providers/${provider.slug}`) : Promise.resolve(null),
     ]);
 
-    const detail = detailResult.status === "fulfilled" ? detailResult.value : null;
-    const providerDetail =
-      providerDetailResult.status === "fulfilled" ? providerDetailResult.value : null;
+    // A rejected change-detail fetch is an unknown, not an empty diff. Falling
+    // through with `detail = null` would build a non-null ChangesData with
+    // `changes: []`, which ChangesView renders as "No structural change is
+    // staged yet" — certifying a failed fetch as a clean, zero-impact result.
+    // Only map the view when the detail fetch actually resolved; otherwise leave
+    // `data` null so the honest "Changes unavailable" state renders (mirroring
+    // the `/changes` list handling above).
+    if (detailResult.status === "fulfilled") {
+      const detail = detailResult.value;
+      const providerDetail =
+        providerDetailResult.status === "fulfilled" ? providerDetailResult.value : null;
 
-    const entries = detail?.diff.entries ?? [];
-    const findings = detail?.findings ?? [];
-    const prs = detail?.prs ?? [];
+      const entries = detail.diff.entries ?? [];
+      const findings = detail.findings ?? [];
+      const prs = detail.prs ?? [];
 
-    const breakingCount = entries.filter((e) => e.breaking).length;
-    const reposAffected = new Set(findings.map((f) => f.consumerId)).size;
+      const breakingCount = entries.filter((e) => e.breaking).length;
+      const reposAffected = new Set(findings.map((f) => f.consumerId)).size;
 
-    const stats: Stat[] = [
-      { label: "Breaking changes", value: String(breakingCount), tone: "amber" },
-      { label: "Repositories affected", value: String(reposAffected), tone: "cyan" },
-      { label: "Call sites resolved", value: String(findings.length), tone: "cyan" },
-      { label: "PRs staged", value: String(prs.length), tone: "indigo" },
-    ];
+      const stats: Stat[] = [
+        { label: "Breaking changes", value: String(breakingCount), tone: "amber" },
+        { label: "Repositories affected", value: String(reposAffected), tone: "cyan" },
+        { label: "Call sites resolved", value: String(findings.length), tone: "cyan" },
+        { label: "PRs staged", value: String(prs.length), tone: "indigo" },
+      ];
 
-    const specChanges: SpecChange[] = entries.map((entry) => {
-      const matched = matchFindings(entry, findings);
-      return {
-        severity: severityFor(entry),
-        endpoint: endpointFor(entry),
-        note: noteFor(entry),
-        repos: new Set(matched.map((f) => f.consumerId)).size,
-        calls: matched.length,
+      const specChanges: SpecChange[] = entries.map((entry) => {
+        const matched = matchFindings(entry, findings);
+        return {
+          severity: severityFor(entry),
+          endpoint: endpointFor(entry),
+          note: noteFor(entry),
+          repos: new Set(matched.map((f) => f.consumerId)).size,
+          calls: matched.length,
+        };
+      });
+
+      data = {
+        target: buildTarget(selected, provider, providerDetail),
+        stats,
+        changes: specChanges,
       };
-    });
-
-    data = {
-      target: buildTarget(selected, provider, providerDetail),
-      stats,
-      changes: specChanges,
-    };
+    }
   }
 
   return <ChangesView data={data} />;

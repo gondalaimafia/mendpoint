@@ -136,7 +136,11 @@ export function evaluatePolicy(
       return false;
     }
     // Keep edit if any finding on this file meets confidence, or no findings mapped
-    const fileFindings = findings.filter((f) => e.path.endsWith(f.filePath) || f.filePath.endsWith(e.path));
+    // Anchor on a path separator so an edit to `src/notauth.ts` does not match a finding for `auth.ts`.
+    // Prefixing both sides with "/" keeps the deliberate relative-vs-absolute tolerance.
+    const fileFindings = findings.filter(
+      (f) => ("/" + e.path).endsWith("/" + f.filePath) || ("/" + f.filePath).endsWith("/" + e.path),
+    );
     if (!fileFindings.length) return true;
     return fileFindings.some((f) => confRank[f.confidence] >= minR);
   });
