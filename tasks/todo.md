@@ -2139,10 +2139,14 @@ Objective: review Claude's broader intelligence implementation as one release un
 - [x] Prove the deployed provider and exact model identity without exposing credentials.
 - [x] Make Muse-specific evaluations fail closed unless requested and echoed provider/model identity match the approved binding.
 - [x] Rebase and repair the sandbox demo and customer profile changes with the immutable image digest, app, policy, and token prerequisites already proven.
-- [ ] Run focused graph, eval, verifier, sandbox, typecheck, build, and release gates on the combined candidate.
-- [ ] Perform a final security and regression review before pushing one coherent pull request.
+- [x] Run focused graph, eval, verifier, sandbox, typecheck, build, and release gates on the combined candidate.
+- [x] Perform a final security and regression review before pushing one coherent pull request.
 
 Acceptance: no architectural approval depends on an absent local file, no metric labeled Muse can be produced by an implicit fallback model, and no sandbox profile is merged until the checked-in app, image, default-deny policy, and scoped token contracts match live evidence.
+
+Review: the release unit is Claude's larger intelligence implementation, not the sandbox prerequisite. The Change Graph authority is checked in byte-for-byte at SHA-256 `5a37d827a4a1126ea1323d41bde8cbc5aa6b7ffca843b21895f5f942da8c58cc`, ADR-0005 records owner authority without inventing approval, and production configuration pins `muse-spark-1.2-contributor` for generation and evaluation identity. DeepSeek remains default-off and shadow-only; deterministic evidence remains authoritative. The review fixed invalid probability fixtures exposed by strict backend accounting, preserved the authority file against Windows line-ending conversion, and admitted real production corpus examples through repository-bound evaluation identities while retaining synthetic scenario identities for generated examples.
+
+Verification: all workspace typechecks; production web build with 50 pages; Worker 334 of 334; Pipeline 89 of 89; Verifier 47 of 47; synthetic eval 161 of 161; GA, architecture, model, claims, names, action-pin, docs, and Fly configuration gates; zero production dependency vulnerabilities; import side-effect probe; secret scan; and API `/health` plus `/ready` 200 passed. One unchanged repository materialization test exceeded its 15-second budget during the fully loaded monorepo rerun; the exact file then passed 14 of 14 without changing a production timeout, and the complete API suite had already passed 392 of 392 earlier in the same review. The larger learning flywheel still does not automatically join every Fettler and Regauge terminal outcome into the next governed training generation, and the synthetic corpus still lacks a genuine held-out partition; those remain explicit follow-up product gaps rather than being represented as sandbox work or shipped capability.
 
 ## Foundational Change Graph intelligence architecture: 2026-08-17
 

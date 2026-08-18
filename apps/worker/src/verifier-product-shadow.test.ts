@@ -32,7 +32,7 @@ describe("product verifier shadow adapter", () => {
     };
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: { id: "response_a", model: "deepseek-v4-flash", system_fingerprint: "fp", choices: [{ finish_reason: "stop", message: { content: "<score>A</score>" }, logprobs: { content: [
       { token: "<score>", logprob: -0.1, top_logprobs: [{ token: "<score>", logprob: -0.1 }] },
-      { token: "A", logprob: -0.1, top_logprobs: [{ token: "A", logprob: -0.1 }, { token: "T", logprob: -2 }] },
+      { token: "A", logprob: -0.2, top_logprobs: [{ token: "A", logprob: -0.2 }, { token: "T", logprob: -2 }] },
       { token: "</score>", logprob: -0.1, top_logprobs: [{ token: "</score>", logprob: -0.1 }] },
     ] } }], usage: { prompt_tokens: 10, completion_tokens: 1 } } }));
     const request = {
