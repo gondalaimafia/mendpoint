@@ -427,4 +427,71 @@ describe("harness", () => {
     const result = await executePlan({ baseDir: base, plan, sandbox });
     expect(result.ok).toBe(true);
   });
+
+  it("records the real graph-query count, not a hardcoded zero", async () => {
+    // A run with no graph steps: graphQueries is a measured zero.
+    const base0 = mkdtempSync(join(tmpdir(), "harness-gq0-"));
+    dirs.push(base0);
+    const noGraph = await helloWorldRun(base0);
+    expect(noGraph.score.graphQueries).toBe(0);
+
+    // A run with two graph.stats steps: graphQueries is the real count (2),
+    // proving the value is threaded from execution rather than fabricated.
+    const dbDir = mkdtempSync(join(tmpdir(), "harness-gq-"));
+    dirs.push(dbDir);
+    const prevDbPath = process.env.GRAPH_LEARN_DB;
+    process.env.GRAPH_LEARN_DB = join(dbDir, "graph-learn.sqlite");
+    resetGraphLearnDbForTests();
+    try {
+      const tenantId = "tenant-gq";
+      ingestControlPlane(
+        getGraphLearnDb(),
+        {
+          provider: { id: "p1", slug: "acme", name: "Acme" },
+          consumers: [{ id: "c1", name: "Shop", githubOwner: "o", githubRepo: "s" }],
+          monitors: [{ consumerId: "c1", providerId: "p1" }],
+        },
+        tenantId,
+      );
+      const scope = { tenantId, consumerIds: ["c1"] };
+      const sandbox: SandboxHandle = {
+        id: "gq",
+        kind: "local",
+        root: dbDir,
+        mocks: [],
+        dispose: () => undefined,
+        run: () => ({ ok: true, stdout: "", stderr: "" }),
+      };
+      let plan = emptyPlan({
+        kind: "generic",
+        title: "graph queries",
+        goal: "count graph queries",
+        agent: "shared",
+      });
+      plan = addStep(plan, {
+        title: "stats 1",
+        action: "graph.stats",
+        successCriteria: ["output contains nodes"],
+        notes: "",
+      });
+      plan = addStep(plan, {
+        title: "stats 2",
+        action: "graph.stats",
+        successCriteria: ["output contains nodes"],
+        notes: "",
+      });
+      const base = mkdtempSync(join(tmpdir(), "harness-gqrun-"));
+      dirs.push(base);
+      const result = await executePlan({ baseDir: base, plan, scope });
+      expect(result.ok).toBe(true);
+      expect(result.score.graphQueries).toBe(2);
+      // The persisted score file carries the same measured count.
+      const persisted = JSON.parse(readFileSync(result.paths.scorePath, "utf8"));
+      expect(persisted.graphQueries).toBe(2);
+    } finally {
+      resetGraphLearnDbForTests();
+      if (prevDbPath === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = prevDbPath;
+    }
+  });
 });

@@ -78,6 +78,7 @@ function runTool(
       ok: false,
       output: result.output,
       error: "success criteria missing",
+      graphQueries: result.graphQueries,
     };
   }
   const evidence = result.output.trim();
@@ -93,6 +94,7 @@ function runTool(
         ok: false,
         output: result.output,
         error: `success criterion not met: ${criterion}`,
+        graphQueries: result.graphQueries,
       };
     }
   }
@@ -134,6 +136,10 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
     });
 
   let stepsRun = 0;
+  // Real graph-query count for this run, accumulated from the tools that
+  // actually execute graph queries. Replaces a hardcoded zero so the run score
+  // and dogfood ledger record a measured value, never a fabricated one.
+  let graphQueries = 0;
   const maxSteps = opts.maxSteps ?? 50;
 
   try {
@@ -151,6 +157,7 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
       });
 
       const result = runTool(step, sbx, inject, opts.scope);
+      graphQueries += result.graphQueries ?? 0;
       // only inject once
       if (inject && step.action === inject) inject = undefined;
 
@@ -200,7 +207,6 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
     promptChars: (plan.goal?.length ?? 0) + (plan.title?.length ?? 0),
   });
   const sandboxMinutes = durationMs / 60_000;
-  const graphQueries = 0;
   const cost = estimateCost({ tokensEst, sandboxMinutes, graphQueries, durationMs });
   const score: RunScore = {
     runId,

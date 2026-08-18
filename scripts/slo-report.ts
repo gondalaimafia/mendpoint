@@ -1,5 +1,5 @@
 /**
- * Graph-RAG latency SLO report — warms queries then prints p50/p99.
+ * Graph-RAG latency SLO report — warms queries then prints p50/p95/p99.
  * Usage: npm run graph:slo
  */
 import {
