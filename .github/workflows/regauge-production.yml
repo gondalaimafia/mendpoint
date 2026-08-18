@@ -249,10 +249,22 @@ jobs:
             GITHUB_WEBHOOK_SECRET="$GITHUB_WEBHOOK_SECRET" \
             GITHUB_APP_ACCOUNT_TENANT_BINDINGS="$GITHUB_APP_ACCOUNT_TENANT_BINDINGS"
       - name: Deploy coordinator
-        run: >-
-          flyctl deploy --remote-only --ha=false --app mendpoint-transformer-pilot
-          --config fly.transformer.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
-          --process-groups coordinator
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if output="$(flyctl deploy --remote-only --ha=false --app mendpoint-transformer-pilot \
+              --config fly.transformer.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }} \
+              --process-groups coordinator 2>&1)"; then
+              printf '%s\n' "$output"
+              exit 0
+            fi
+            printf '%s\n' "$output" >&2
+            grep -q "insufficient resources to create new machine with existing volume" <<<"$output" \
+              || exit 1
+            test "$attempt" -lt 3
+            sleep 15
+          done
       - name: Verify coordinator revision and health
         shell: bash
         run: |
