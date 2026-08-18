@@ -61,17 +61,27 @@ function resolveDedupeKey(event: PagingEvent): string {
   return event.dedupeKey?.trim() || `${event.type}:${event.summary}`;
 }
 
-function isDuplicate(key: string, now: number, windowMs: number): boolean {
+/**
+ * Read-only check: has this key already been *successfully* paged within the
+ * window? Unlike a check-and-set, this never stamps the key, so a page that
+ * fails to deliver cannot suppress its own retry.
+ */
+function wasRecentlyPaged(key: string, now: number, windowMs: number): boolean {
   const previous = dedupeSeen.get(key);
-  if (previous !== undefined && now - previous < windowMs) return true;
+  return previous !== undefined && now - previous < windowMs;
+}
+
+/**
+ * Stamp a key as delivered now. Called only after at least one sink accepted the
+ * page. Opportunistically prunes expired entries so the map cannot grow unbounded.
+ */
+function markPaged(key: string, now: number, windowMs: number): void {
   dedupeSeen.set(key, now);
-  // Opportunistic prune so the map cannot grow without bound.
   if (dedupeSeen.size > 1000) {
     for (const [existingKey, seenAt] of dedupeSeen) {
       if (now - seenAt >= windowMs) dedupeSeen.delete(existingKey);
     }
   }
-  return false;
 }
 
 function pagerDutyPayload(event: PagingEvent, dedupeKey: string): Record<string, unknown> {
@@ -131,7 +141,9 @@ export async function notifyPaging(event: PagingEvent): Promise<NotifyPagingResu
   }
 
   const dedupeKey = resolveDedupeKey(event);
-  if (isDuplicate(dedupeKey, Date.now(), dedupeWindowMs())) {
+  const now = Date.now();
+  const windowMs = dedupeWindowMs();
+  if (wasRecentlyPaged(dedupeKey, now, windowMs)) {
     return { ok: true, skipped: true, reason: "deduped" };
   }
 
@@ -142,6 +154,14 @@ export async function notifyPaging(event: PagingEvent): Promise<NotifyPagingResu
   }
   if (webhookUrl) {
     deliveries.push(await post("webhook", webhookUrl, webhookPayload(event, dedupeKey, ts)));
+  }
+  // Stamp the dedupe key only after a page actually reached a sink. A partial
+  // success (one sink delivered, another failed) still stamps: a human was
+  // paged, so re-firing through the working sink would double-page for a single
+  // event. On total failure we leave the key unset so the next call (e.g. the
+  // 30s retry) tries again instead of returning a phantom "deduped" success.
+  if (deliveries.some((delivery) => delivery.ok)) {
+    markPaged(dedupeKey, now, windowMs);
   }
   return { ok: deliveries.every((delivery) => delivery.ok), deliveries };
 }
@@ -206,4 +226,35 @@ export function pagingEventForWorkerHeartbeat(input: {
     };
   }
   return null;
+}
+
+/**
+ * Best-effort page for a readiness probe result. Fires a `readiness_fail` page
+ * when the probe is failing and returns null (no page) otherwise. Never throws:
+ * `notifyPaging` is fail-open, so a paging outage cannot break the probe path
+ * that calls this.
+ */
+export async function pageReadiness(probe: {
+  status: string;
+  checks: ReadonlyArray<{ name: string; ok: boolean }>;
+}): Promise<NotifyPagingResult | null> {
+  const event = pagingEventForReadiness(probe);
+  return event ? notifyPaging(event) : null;
+}
+
+/**
+ * Best-effort page for a worker heartbeat snapshot. Fires the matching page
+ * (`worker_heartbeat_stale`, `expired_lease_uncertain_side_effect`, or
+ * `dead_letter_growth`) when the snapshot is unhealthy and returns null
+ * otherwise. Never throws, for the same reason as `pageReadiness`.
+ */
+export async function pageWorkerHeartbeat(input: {
+  workerId: string;
+  ok: boolean;
+  stale: boolean;
+  deadLetter?: number;
+  expiredLeases?: number;
+}): Promise<NotifyPagingResult | null> {
+  const event = pagingEventForWorkerHeartbeat(input);
+  return event ? notifyPaging(event) : null;
 }

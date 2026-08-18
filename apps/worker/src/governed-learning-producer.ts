@@ -93,6 +93,17 @@ export type GovernedLearningOutcomeFacts = Readonly<{
   }>;
   reviewerDecision: "accepted" | "modified" | "merged";
   correctionSubstantive: boolean;
+  /**
+   * Whether this outcome is free of training/eval contamination, attested by the
+   * PRODUCER from what it genuinely determined rather than asserted as a literal.
+   * The admission gate ({@link admitGovernedLearningEvent}) refuses any outcome
+   * that is not `true`, so a producer that cannot establish contamination-freedom
+   * passes `false` and fails closed. The determination a producer can make today
+   * is temporal (the outcome was observed before admission, so no future signal
+   * leaked into it — see {@link temporalContaminationFree}); a real eval/holdout
+   * overlap check for synthetic corpora belongs to the corpus pipeline.
+   */
+  contaminationFree: boolean;
   confidence: number | null;
   economics: Readonly<{
     inputTokens: number;
@@ -118,6 +129,19 @@ export type GovernedLearningOutcomeFacts = Readonly<{
 
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/**
+ * The one contamination determination this producer layer can genuinely make: the
+ * outcome was observed no later than admission time, so no future signal leaked
+ * into it. A malformed or future-dated timestamp yields `false` (fail closed). A
+ * real eval/holdout-overlap check for synthetic corpora is a corpus-pipeline
+ * concern owned elsewhere; a producer that cannot attest freedom passes `false`.
+ */
+export function temporalContaminationFree(observedAt: string, now: string): boolean {
+  const observed = Date.parse(observedAt);
+  const admitted = Date.parse(now);
+  return Number.isFinite(observed) && Number.isFinite(admitted) && observed <= admitted;
 }
 
 /**
@@ -162,9 +186,20 @@ export function admitGovernedLearningOutcome(
   try {
     // Honest temporal / contamination attestation: the outcome must have been
     // observed no later than admission time (no future leakage).
-    if (!(Date.parse(facts.observedAt) <= Date.parse(facts.now))) {
+    if (!temporalContaminationFree(facts.observedAt, facts.now)) {
       return Object.freeze({ admitted: false, reason: "contamination_temporal" });
     }
+
+    // Derive the verification verdict from the recorded authority's signal class
+    // rather than asserting a literal: a soft (model-verifier) authority yields
+    // `inconclusive`, never `passed`, so `strength()` classifies the lesson as
+    // insufficient and it can never train weights. Only a hard authority
+    // (deterministic test/compiler/sandbox, graph invariant, runtime evidence, or
+    // human correction) yields `passed`. Both the event field and the resolve
+    // authority take this one derived value, so the admission binding check that
+    // requires them to match holds by construction.
+    const verificationVerdict: GovernedLearningEventV1["verification"]["verdict"] =
+      facts.verificationAuthority.signalClass === "hard" ? "passed" : "inconclusive";
 
     const eventId = `governed_learning_${sha256Hex(`${facts.tenantId}\0${facts.sourceObjectType}\0${facts.sourceObjectId}`)}`;
     const ids = governedLearningAdmissionIds(facts.tenantId, eventId);
@@ -217,7 +252,7 @@ export function admitGovernedLearningOutcome(
         evidenceRefs: [ids.verificationEvidenceId],
       },
       verification: {
-        verdict: "passed",
+        verdict: verificationVerdict,
         evidenceRefs: [ids.verificationEvidenceId],
         authority: facts.verificationAuthority,
       },
@@ -251,13 +286,13 @@ export function admitGovernedLearningOutcome(
         scenarioId: facts.scenarioId,
         syntheticFamilyId: facts.syntheticFamilyId,
         outcomeAttribution: facts.outcome.attribution,
-        verificationVerdict: "passed",
+        verificationVerdict,
         sourceClass: facts.sourceClass,
         provenanceQualifiers: facts.provenanceQualifiers,
         correctionSubstantive: facts.correctionSubstantive,
         reviewerPrincipalId: facts.reviewerPrincipalId,
         reviewRationale: facts.reviewRationale,
-        contaminationFree: true,
+        contaminationFree: facts.contaminationFree,
       }),
       redact: redactEventDocument,
     };
