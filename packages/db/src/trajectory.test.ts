@@ -15,6 +15,7 @@ import {
   createMission,
   finalizeTrajectory,
   getTrajectory,
+  getTrajectoryByRun,
   getTrajectoryStepPair,
   insertPrincipal,
   listTrajectories,
@@ -310,6 +311,34 @@ describe("trajectory capture", () => {
     expect(() =>
       finalizeTrajectory(db, { tenantId: "t2", trajectoryId: "traj-1", finalOutcome: "x" }),
     ).toThrow("trajectory_not_found");
+  });
+
+  it("resolves a trajectory by run id, tenant-scoped, distinct from a missing run", () => {
+    const { db } = fixture();
+    openTrajectory(db, { runId: "run-1" }); // tenant t1, run-1
+
+    const resolved = getTrajectoryByRun(db, "t1", "run-1");
+    expect(resolved?.id).toBe("traj-1");
+    expect(resolved?.runId).toBe("run-1");
+
+    // A run with no trajectory resolves to undefined — the caller reads this as
+    // "not recorded", never as "nothing was supplied".
+    expect(getTrajectoryByRun(db, "t1", "run-unknown")).toBeUndefined();
+
+    // Tenant scoping: t2 cannot resolve t1's run even by the same run id. Seed a
+    // t2 trajectory under the SAME run id to prove the scope, not the id, isolates.
+    recordTrajectory(db, {
+      id: "traj-2",
+      tenantId: "t2",
+      product: "fettler",
+      taskKind: "warden.repair",
+      taskSummary: "another tenant, same run id",
+      runId: "run-1",
+      createdAt: T0,
+    });
+    expect(getTrajectoryByRun(db, "t2", "run-1")?.id).toBe("traj-2");
+    // t1 still resolves only its own row, never t2's.
+    expect(getTrajectoryByRun(db, "t1", "run-1")?.id).toBe("traj-1");
   });
 
   it("rejects linking a mission owned by another tenant", () => {

@@ -2,8 +2,11 @@ import { createHash } from "node:crypto";
 import {
   findActiveLearningConsent,
   getAgentRunMeter,
+  getTrajectoryByRun,
+  recordAudit,
   type AgentRunRow,
   type AppDb,
+  type Trajectory,
   type WardenCandidateDeliveryRecord,
 } from "@mendpoint/db";
 import type { CandidateReviewEvidence } from "@mendpoint/shared";
@@ -87,6 +90,103 @@ export function deriveWardenVerificationAuthority(review: CandidateReviewEvidenc
 }
 
 /**
+ * Which of the three states an event's `references.graphContextArtifactId: null`
+ * actually means. The stored field is a single null carrying two facts about the
+ * world that must not be conflated (spec 17.4.2): a missed relationship cannot be
+ * blamed on the model until Mendpoint has confirmed the relationship "was supplied
+ * to the model", and a null reference alone cannot tell "no graph context was
+ * supplied" from "we captured nothing about this run".
+ *
+ *   - `recorded_absent`  — a trajectory for the run WAS captured and it carries no
+ *     graph-context reference. The null is a FACT: this run supplied no graph
+ *     context to the model. (The common case today: the Fettler agent has no graph
+ *     tool, so no run supplies graph context — see this file's PR / the graph-
+ *     context finding in docs.)
+ *   - `recorded_present` — a trajectory was captured AND it carries a graph-context
+ *     reference, yet the event's field is null. That is the context-compiler
+ *     failure mode: context reached the run but was never threaded onto the event.
+ *     It cannot occur on the Fettler path today; the classifier reports it honestly
+ *     if it ever does, rather than silently reading as "absent".
+ *   - `unrecorded`       — no trajectory for the run could be resolved. The null is
+ *     NOT a fact about what was supplied; it is missing observation. A reader must
+ *     not attribute a missed relationship to the model from this state.
+ */
+export type GraphContextDelivery = "recorded_absent" | "recorded_present" | "unrecorded";
+
+/**
+ * A trajectory context ref self-identifies as graph context with `kind:
+ * "graph_context"`. No such ref is produced on the Fettler path today (the agent
+ * has no graph tool), so this is forward-compatible: it recognizes the shape a
+ * future graph-wired agent would record without inventing one now.
+ */
+function hasGraphContextRef(contextRefs: readonly unknown[]): boolean {
+  return contextRefs.some(
+    (ref) =>
+      typeof ref === "object" &&
+      ref !== null &&
+      (ref as { kind?: unknown }).kind === "graph_context",
+  );
+}
+
+/**
+ * Classify what a null `graphContextArtifactId` means for a run, from the run's
+ * captured trajectory (or its absence). Pure; the caller resolves the trajectory.
+ */
+export function classifyGraphContextDelivery(
+  trajectory: Trajectory | undefined,
+): GraphContextDelivery {
+  if (!trajectory) return "unrecorded";
+  return hasGraphContextRef(trajectory.contextRefs) ? "recorded_present" : "recorded_absent";
+}
+
+/**
+ * Make an admitted event's null `graphContextArtifactId` interpretable by
+ * resolving the run's trajectory and recording, durably and idempotently, which of
+ * the three {@link GraphContextDelivery} states the null represents — WITHOUT
+ * populating the field itself (there is no graph context to reference) and WITHOUT
+ * inventing a placeholder id.
+ *
+ * Strictly best-effort: it never throws and never affects admission. A failure to
+ * resolve the trajectory or write the audit is logged with enough context to
+ * diagnose and swallowed. The audit id is deterministic on the event id, so a
+ * re-admission (idempotent upstream) records the same attribution once.
+ */
+function recordGraphContextAttribution(
+  db: AppDb,
+  input: Readonly<{ tenantId: string; runId: string; eventId: string; requesterPrincipalId: string }>,
+): void {
+  try {
+    const trajectory = getTrajectoryByRun(db, input.tenantId, input.runId);
+    const delivery = classifyGraphContextDelivery(trajectory);
+    recordAudit(db, {
+      id: `audit-learning-graphctx-${input.eventId}`,
+      tenantId: input.tenantId,
+      actor: "worker",
+      principalId: input.requesterPrincipalId,
+      action: "learning.graph_context_attribution",
+      resourceType: "learning_event",
+      resourceId: input.eventId,
+      metadata: {
+        eventId: input.eventId,
+        runId: input.runId,
+        // The trajectory the run was resolved to, or null when none was captured.
+        // A reader tells "no graph context supplied" (recorded_absent, non-null
+        // trajectoryId) from "not recorded" (unrecorded, null trajectoryId).
+        trajectoryId: trajectory?.id ?? null,
+        graphContextDelivery: delivery,
+        // The event field stays null; this record only interprets that null.
+        graphContextArtifactId: null,
+      },
+    });
+  } catch (error) {
+    console.error(
+      `warden graph-context attribution failed tenant=${input.tenantId} run=${input.runId} ` +
+        `event=${input.eventId}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
  * Admit a delivered, human-approved, deterministically verified Warden (Fettler)
  * repair as a governed learning event. This runs at the delivery-success seam,
  * where an approved candidate has become a real draft pull request, so the outcome
@@ -140,7 +240,7 @@ export function admitWardenGovernedLearningEvent(
       ? ["deterministically_verified", "reviewer_accepted"]
       : ["reviewer_accepted"];
 
-    return admitGovernedLearningOutcome({
+    const admission = admitGovernedLearningOutcome({
       db,
       tenantId: delivery.tenantId,
       consentId: consent.id,
@@ -193,6 +293,20 @@ export function admitWardenGovernedLearningEvent(
       observedAt: delivery.requestedAt,
       now: input.now,
     });
+
+    // Make the admitted event's null graphContextArtifactId interpretable: record,
+    // durably, whether the run was captured and carried no graph context vs. was
+    // never captured at all. Best-effort and isolated — it never alters admission.
+    if (admission.admitted && admission.eventId) {
+      recordGraphContextAttribution(db, {
+        tenantId: delivery.tenantId,
+        runId: run.id,
+        eventId: admission.eventId,
+        requesterPrincipalId: delivery.requesterPrincipalId,
+      });
+    }
+
+    return admission;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Object.freeze({ admitted: false, reason: `error:${message}` });
