@@ -102,7 +102,20 @@ export function createAgentVerifier(input: AgentVerifierConfig): AgentVerifier {
         const effectiveCandidateId = canChange ? suggestedCandidateId : request.incumbentCandidateId;
         const behaviorChanged = effectiveCandidateId !== request.incumbentCandidateId;
         const highest = scores[suggestedCandidateId] ?? 0;
-        const recommendation: VerifierRecommendation = highest >= 0.75 ? "ready_for_review" : highest >= 0.55 ? "request_more_evidence" : "resample";
+        // A confident verdict (ready_for_review) requires that the pack actually
+        // showed the verifier substantive, reviewable change evidence: a
+        // repository excerpt, graph impact, or retrieval source. Packs carrying
+        // only a templated summary plus verification and owner references (for
+        // example the current product completion shadow lane) contain no
+        // evidence the model can independently check, so their score, however
+        // high, may not surface as ready_for_review. It is capped at
+        // request_more_evidence, which names the actual gap, keeps the signal
+        // soft, and makes the missing evidence pack visible in telemetry rather
+        // than silently inert. This never overrides a higher-precedence signal;
+        // it only makes the verifier's own soft signal more conservative.
+        const recommendation: VerifierRecommendation = highest >= 0.75 && packHasSubstantiveEvidence(request.pack)
+          ? "ready_for_review"
+          : highest >= 0.55 ? "request_more_evidence" : "resample";
         return resultFor({
           status: "verified", pack: request.pack, config, incumbentCandidateId: request.incumbentCandidateId,
           filtered, scores, suggestedCandidateId, effectiveCandidateId, recommendation, behaviorChanged, totals,
@@ -121,6 +134,20 @@ export function createAgentVerifier(input: AgentVerifierConfig): AgentVerifier {
       }
     },
   });
+}
+
+// Kinds that carry actual reviewable change or impact content the verifier can
+// score against. Verification, owner, and human sources are authority and check
+// references, not a substitute for the model seeing the candidate's real change,
+// so they do not by themselves make a confident verdict admissible.
+const SUBSTANTIVE_EVIDENCE_KINDS: ReadonlySet<VerifierEvidencePack["sources"][number]["kind"]> = new Set([
+  "repository_excerpt",
+  "graph",
+  "retrieval",
+]);
+
+function packHasSubstantiveEvidence(pack: VerifierEvidencePack): boolean {
+  return pack.sources.some((source) => SUBSTANTIVE_EVIDENCE_KINDS.has(source.kind));
 }
 
 function normalizeBehaviorChangeAuthority(authority: AgentVerifierConfig["behaviorChangeAuthority"]): AgentVerifierConfig["behaviorChangeAuthority"] {

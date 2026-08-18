@@ -27,7 +27,7 @@ describe("product verifier shadow adapter", () => {
       MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
       DEEPSEEK_API_KEY: "secret",
       MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID: "worker_a",
-      MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant_a", products: ["fettler"], dataClassification: "confidential", requiredRegion: "us", processingRegion: "us", consentId: "consent_a", evidenceRef: "approval:verifier-a" }] }),
+      MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant_a", products: ["fettler"], dataClassification: "confidential", requiredRegion: "us", processingRegion: "us", consentId: "consent_a", evidenceRef: "approval:verifier-a", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
       MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "deepseek-2026-08-17", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0.3, cachedInputPerMillion: 0.03, outputPerMillion: 2.5 }),
     };
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: { id: "response_a", model: "deepseek-v4-flash", system_fingerprint: "fp", choices: [{ finish_reason: "stop", message: { content: "<score>A</score>" }, logprobs: { content: [
@@ -58,5 +58,37 @@ describe("product verifier shadow adapter", () => {
     const db = setup();
     await expect(observeProductCompletionInShadow({ db, env: { DEEPSEEK_VERIFIER_ENABLED: "true", DEEPSEEK_API_KEY: "secret", MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 }) }, completion: completion() }))
       .rejects.toThrow("verifier_governance_configuration_required");
+  });
+
+  it("refuses external verification when tenant governance withholds the egress authority", async () => {
+    const db = setup();
+    const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
+    const env = {
+      DEEPSEEK_VERIFIER_ENABLED: "true",
+      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+      DEEPSEEK_API_KEY: "secret",
+      MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID: "worker_a",
+      MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant_a", products: ["fettler"], dataClassification: "confidential", requiredRegion: "us", processingRegion: "us", consentId: "consent_a", evidenceRef: "approval:verifier-a", externalModelAllowed: false, mayLeaveTenantBoundary: true, consentActive: true }] }),
+      MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 }),
+    };
+    await expect(observeProductCompletionInShadow({ db, env, completion: completion(), transport: { request: transport } }))
+      .rejects.toThrow("verifier_governance_external_model_denied");
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("refuses to externally verify restricted classification content on the egress path", async () => {
+    const db = setup();
+    const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
+    const env = {
+      DEEPSEEK_VERIFIER_ENABLED: "true",
+      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+      DEEPSEEK_API_KEY: "secret",
+      MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID: "worker_a",
+      MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant_a", products: ["fettler"], dataClassification: "restricted", requiredRegion: "us", processingRegion: "us", consentId: "consent_a", evidenceRef: "approval:verifier-a", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
+      MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 }),
+    };
+    await expect(observeProductCompletionInShadow({ db, env, completion: completion(), transport: { request: transport } }))
+      .rejects.toThrow("verifier_governance_restricted_egress_denied");
+    expect(transport).not.toHaveBeenCalled();
   });
 });

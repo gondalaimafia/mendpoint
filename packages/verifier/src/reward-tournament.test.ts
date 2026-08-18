@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  bradleyTerryWinProbability,
   buildPivotTournamentSchedule,
   decodeFineGrainedReward,
   verifierScoreIdentity,
+  VERIFIER_SCORE_SCALE,
 } from "./index.js";
 
 describe("fine grained verifier reward", () => {
@@ -20,6 +22,29 @@ describe("fine grained verifier reward", () => {
   it("fails closed when score token probability evidence is absent", () => {
     expect(() => decodeFineGrainedReward([{ token: "the", logprob: -0.1 }]))
       .toThrow("verifier_logprob_score_tokens_missing");
+  });
+});
+
+describe("bradley-terry win probability", () => {
+  it("is symmetric around a 0.5 tie and complements across the pair", () => {
+    expect(bradleyTerryWinProbability(0.5, 0.5)).toBeCloseTo(0.5, 12);
+    expect(bradleyTerryWinProbability(0.8, 0.3) + bradleyTerryWinProbability(0.3, 0.8)).toBeCloseTo(1, 12);
+  });
+
+  it("spans past the 0.75 ready_for_review threshold at a decisive separation", () => {
+    // The unscaled sigmoid saturated near 0.731 for a full [0,1] separation, so
+    // the 0.75 threshold was unreachable. With the domain-derived scale a
+    // decisively separated candidate crosses it, and the crossover margin is a
+    // real ~0.317 raw-score lead rather than the whole range.
+    expect(bradleyTerryWinProbability(1, 0)).toBeGreaterThan(0.75);
+    expect(bradleyTerryWinProbability(0.5 + VERIFIER_SCORE_SCALE * Math.log(3) / 2, 0.5 - VERIFIER_SCORE_SCALE * Math.log(3) / 2)).toBeCloseTo(0.75, 6);
+    expect(VERIFIER_SCORE_SCALE).toBeCloseTo(Math.sqrt(1 / 12), 12);
+  });
+
+  it("validates score bounds and a positive scale", () => {
+    expect(() => bradleyTerryWinProbability(1.1, 0)).toThrow("verifier_score_invalid");
+    expect(() => bradleyTerryWinProbability(1, 0, 0)).toThrow("verifier_score_scale_invalid");
+    expect(() => bradleyTerryWinProbability(1, 0, Number.NaN)).toThrow("verifier_score_scale_invalid");
   });
 });
 

@@ -50,10 +50,10 @@ export async function observeProductCompletionInShadow(input: Readonly<{
       dataClassification: governance.dataClassification,
       requiredRegion: governance.requiredRegion,
       processingRegion: governance.processingRegion,
-      externalModelAllowed: true,
-      mayLeaveTenantBoundary: true,
+      externalModelAllowed: governance.externalModelAllowed,
+      mayLeaveTenantBoundary: governance.mayLeaveTenantBoundary,
       consentId: governance.consentId,
-      consentActive: true,
+      consentActive: governance.consentActive,
     },
     governanceEvidenceRef: governance.evidenceRef,
     assembledAt: input.completion.observedAt,
@@ -97,7 +97,7 @@ export async function observeProductCompletionInShadow(input: Readonly<{
   });
 }
 
-function resolveGovernance(env: Readonly<Record<string, string | undefined>>, tenantId: string, product: VerifierProduct): Readonly<{ dataClassification: VerifierDataClassification; requiredRegion: string; processingRegion: string; consentId: string; evidenceRef: string }> {
+function resolveGovernance(env: Readonly<Record<string, string | undefined>>, tenantId: string, product: VerifierProduct): Readonly<{ dataClassification: VerifierDataClassification; requiredRegion: string; processingRegion: string; consentId: string; evidenceRef: string; externalModelAllowed: boolean; mayLeaveTenantBoundary: boolean; consentActive: boolean }> {
   const raw = env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON?.trim();
   if (!raw) fail("verifier_governance_configuration_required");
   let parsed: unknown;
@@ -107,11 +107,16 @@ function resolveGovernance(env: Readonly<Record<string, string | undefined>>, te
   const matches = entries.filter((entry) => record(entry) && entry.tenantId === tenantId && Array.isArray(entry.products) && entry.products.includes(product));
   if (matches.length !== 1) fail("verifier_governance_authority_missing");
   const entry = matches[0] as Record<string, unknown>;
-  const keys = ["tenantId", "products", "dataClassification", "requiredRegion", "processingRegion", "consentId", "evidenceRef"];
+  // The external-processing authority booleans come from tenant governance
+  // configuration, not a code constant, so the evidence-pack governance gate can
+  // actually refuse a tenant that has not authorized external egress, consent,
+  // or a tenant-boundary crossing for this verifier.
+  const keys = ["tenantId", "products", "dataClassification", "requiredRegion", "processingRegion", "consentId", "evidenceRef", "externalModelAllowed", "mayLeaveTenantBoundary", "consentActive"];
   if (Object.keys(entry).some((key) => !keys.includes(key)) || keys.some((key) => !(key in entry))) fail("verifier_governance_configuration_invalid");
   if (!Array.isArray(entry.products) || entry.products.some((value) => value !== "fettler" && value !== "regauge") || new Set(entry.products).size !== entry.products.length) fail("verifier_governance_configuration_invalid");
   if (!["public", "internal", "confidential", "restricted"].includes(String(entry.dataClassification)) || !text(entry.requiredRegion) || !text(entry.processingRegion) || entry.requiredRegion !== entry.processingRegion || !text(entry.consentId) || !text(entry.evidenceRef)) fail("verifier_governance_configuration_invalid");
-  return Object.freeze({ dataClassification: entry.dataClassification as VerifierDataClassification, requiredRegion: entry.requiredRegion as string, processingRegion: entry.processingRegion as string, consentId: entry.consentId as string, evidenceRef: entry.evidenceRef as string });
+  if (typeof entry.externalModelAllowed !== "boolean" || typeof entry.mayLeaveTenantBoundary !== "boolean" || typeof entry.consentActive !== "boolean") fail("verifier_governance_configuration_invalid");
+  return Object.freeze({ dataClassification: entry.dataClassification as VerifierDataClassification, requiredRegion: entry.requiredRegion as string, processingRegion: entry.processingRegion as string, consentId: entry.consentId as string, evidenceRef: entry.evidenceRef as string, externalModelAllowed: entry.externalModelAllowed, mayLeaveTenantBoundary: entry.mayLeaveTenantBoundary, consentActive: entry.consentActive });
 }
 
 function resolvePricing(env: Readonly<Record<string, string | undefined>>): VerifierPricing {

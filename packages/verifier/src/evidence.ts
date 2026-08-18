@@ -46,6 +46,12 @@ export function createVerifierEvidencePack(raw: VerifierEvidencePackInput): Veri
   }
   if (!governance.consentActive || !governance.consentId) fail("verifier_governance_consent_inactive");
   if (governance.requiredRegion !== governance.processingRegion) fail("verifier_governance_region_mismatch");
+  // The verifier is an external-model egress path. A restricted classification
+  // must not leave the tenant boundary, so it is refused here rather than
+  // egressing on the same path as public or internal data. This is the evidence
+  // side of the local_only network control: even when an operator authorizes
+  // external egress in general, restricted content is held back.
+  if (governance.dataClassification === "restricted") fail("verifier_governance_restricted_egress_denied");
 
   const allowedChangedPaths = [...new Set(input.allowedChangedPaths.map(normalizePath))].sort(codeUnitCompare);
   if (!allowedChangedPaths.length || allowedChangedPaths.length !== input.allowedChangedPaths.length) {

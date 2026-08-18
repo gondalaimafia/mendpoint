@@ -143,6 +143,41 @@ describe("DeepSeek verifier backend", () => {
     }
   });
 
+  it("refuses the public verifier endpoint under local_only egress and never calls the transport", async () => {
+    const transport = vi.fn(async () => okResponse);
+    expect(() => createDeepSeekVerifierBackend({
+      apiKey: "key", transport: { request: transport }, scoringMode: "nonthinking_logprobs", timeoutMs: 1000, maximumRetries: 0,
+      pricing: { version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 },
+      env: { MENDPOINT_MODEL_EGRESS: "local_only" },
+    })).toThrow("model_egress_local_only_violation");
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("permits a private or operator allowlisted verifier endpoint under local_only egress", async () => {
+    const calls: VerifierHttpRequest[] = [];
+    const backend = createDeepSeekVerifierBackend({
+      apiKey: "key", transport: { request: async (input) => { calls.push(input); return okResponse; } },
+      scoringMode: "nonthinking_logprobs", timeoutMs: 1000, maximumRetries: 0,
+      pricing: { version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 },
+      baseUrl: "http://localhost:8000", env: { MENDPOINT_MODEL_EGRESS: "local_only" },
+    });
+    await backend.score(request());
+    expect(calls[0]?.url).toBe("http://localhost:8000/chat/completions");
+  });
+
+  it("routes a configured private mirror through the allowlist under local_only egress", async () => {
+    const calls: VerifierHttpRequest[] = [];
+    const backend = createDeepSeekVerifierBackend({
+      apiKey: "key", transport: { request: async (input) => { calls.push(input); return okResponse; } },
+      scoringMode: "nonthinking_logprobs", timeoutMs: 1000, maximumRetries: 0,
+      pricing: { version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 },
+      baseUrl: "https://deepseek.internal.example/v1",
+      env: { MENDPOINT_MODEL_EGRESS: "local_only", MENDPOINT_MODEL_LOCAL_HOSTS: "deepseek.internal.example" },
+    });
+    await backend.score(request());
+    expect(calls[0]?.url).toBe("https://deepseek.internal.example/v1/chat/completions");
+  });
+
   it("binds score log probabilities to the value position instead of a matching tag token", async () => {
     const response = structuredClone(okResponse);
     response.body.choices[0]!.logprobs.content[3]!.top_logprobs = [{ token: "T", logprob: -0.01 }, { token: "A", logprob: -4.6 }];

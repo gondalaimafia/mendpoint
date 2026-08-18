@@ -9,6 +9,7 @@ import type {
   VerifierScoringMode,
   VerifierUsage,
 } from "./types.js";
+import { enforceModelEndpointEgress } from "@mendpoint/shared";
 import { decodeFineGrainedReward, type LogProbabilityAlternative } from "./reward.js";
 import {
   boundedText,
@@ -20,7 +21,7 @@ import {
   sha256,
 } from "./utils.js";
 
-const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
+const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 
@@ -31,7 +32,35 @@ export type DeepSeekVerifierBackendConfig = Readonly<{
   timeoutMs: number;
   maximumRetries: number;
   pricing: VerifierPricing;
+  // Provider base origin (no path); defaults to the hosted DeepSeek endpoint.
+  // Configurable for model neutrality (spec 13.8) and so an operator can point
+  // the verifier at a private mirror under local_only egress.
+  baseUrl?: string;
+  // Environment the egress control reads. The resolved endpoint is validated
+  // against MENDPOINT_MODEL_EGRESS: under local_only a non-private host is
+  // refused with model_egress_local_only_violation before any request is made.
+  env?: Readonly<Record<string, string | undefined>>;
 }>;
+
+function resolveDeepSeekEndpoint(baseUrl: string | undefined, env: Readonly<Record<string, string | undefined>>): string {
+  const raw = (baseUrl ?? DEFAULT_DEEPSEEK_BASE_URL).trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    fail("verifier_backend_base_url_invalid");
+  }
+  if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    fail("verifier_backend_base_url_invalid");
+  }
+  const basePath = parsed.pathname.replace(/\/+$/, "");
+  parsed.pathname = `${basePath}/chat/completions`;
+  const endpoint = parsed.toString();
+  // Route through the shared egress control every other model path uses, so
+  // local_only actually blocks the verifier instead of the URL bypassing it.
+  enforceModelEndpointEgress(endpoint, env);
+  return endpoint;
+}
 
 type ParsedBody = {
   id: string;
@@ -67,6 +96,7 @@ function validateConfig(config: DeepSeekVerifierBackendConfig) {
     outputPerMillion: nonnegative(config.pricing.outputPerMillion, "verifier_pricing_output_invalid"),
   } as const;
   if (pricing.currency !== "USD") fail("verifier_pricing_currency_invalid");
+  const endpoint = resolveDeepSeekEndpoint(config.baseUrl, config.env ?? process.env);
   return Object.freeze({
     apiKey,
     transport: config.transport,
@@ -74,6 +104,7 @@ function validateConfig(config: DeepSeekVerifierBackendConfig) {
     timeoutMs: config.timeoutMs,
     maximumRetries: config.maximumRetries,
     pricing,
+    endpoint,
   });
 }
 
@@ -103,7 +134,7 @@ export function createDeepSeekVerifierBackend(configInput: DeepSeekVerifierBacke
       let response: VerifierHttpResponse | undefined;
       for (let attempt = 0; attempt <= config.maximumRetries; attempt++) {
         response = await boundedRequest(request, {
-          url: DEEPSEEK_URL,
+          url: config.endpoint,
           method: "POST",
           headers: Object.freeze({
             authorization: `Bearer ${config.apiKey}`,

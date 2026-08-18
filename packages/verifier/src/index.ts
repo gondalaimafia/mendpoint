@@ -36,6 +36,7 @@ export {
   bradleyTerryWinProbability,
   buildPivotTournamentSchedule,
   verifierScoreIdentity,
+  VERIFIER_SCORE_SCALE,
   type PivotTournamentSchedule,
   type TournamentComparison,
   type VerifierScoreIdentityInput,
