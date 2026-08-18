@@ -258,6 +258,8 @@ export type WardenRoutingRequestInput = Readonly<{
   modelSource?: WardenModelRoutingProfile;
   externalProcessingAllowed?: boolean;
   maxOutputTokens?: number;
+  /** Optional caller-supplied token estimate. Defaults to a seed estimate. */
+  estimatedInputTokens?: number;
   risk?: TaskRisk;
   classification?: DataClassification;
   budgetUsd?: number;
@@ -272,9 +274,49 @@ export type WardenRoutingRequest = Readonly<{
   decidedAt: Date;
 }>;
 
+/**
+ * Honest lower-bound estimate of the prompt-seed input tokens available AT the
+ * routing call (the task goal, verification command, and artifact identifiers).
+ * This is a seed estimate, not a full-context measurement — the repository
+ * context size is unknown until the attempt runs — but it is a real,
+ * input-derived value rather than a hardcoded zero, so the router's
+ * `hard_limit_exceeded` gate can fire when a seed already exceeds a specialized
+ * executor's input window. Approximated at ~4 characters per token.
+ */
+export function estimateSeedInputTokens(
+  parts: readonly (string | undefined)[],
+): number {
+  const chars = parts.reduce((sum, part) => sum + (part?.length ?? 0), 0);
+  return Math.max(1, Math.ceil(chars / 4));
+}
+
+/**
+ * Risk-adjusted minimum quality floor (§13.4: quality gates override cost, and
+ * higher-risk work demands stronger results). Replaces the inert
+ * `minimumScore: 0` so the router's `quality_below_minimum` gate can fire.
+ */
+export function riskQualityFloor(risk: TaskRisk): number {
+  switch (risk) {
+    case "low":
+      return 0.6;
+    case "medium":
+      return 0.7;
+    case "high":
+      return 0.8;
+    case "critical":
+      return 0.9;
+  }
+}
+
 function buildTaskSpec(input: WardenRoutingRequestInput): RouterTaskSpec {
   const budgetUsd = input.budgetUsd ?? 25;
   const sourceArtifactId = input.sourceArtifactId ?? input.policySnapshotId ?? "";
+  // No honest change-risk signal exists at this call site: blast radius and
+  // impact coverage are produced by the attempt (after routing), and the
+  // repository data-classification is a privacy axis (§12.4), not change risk
+  // (§12.3). Risk therefore stays caller-supplied or the medium default — a
+  // deliberate under-claim, not a fabricated derivation.
+  const risk: TaskRisk = input.risk ?? "medium";
   return {
     taskId: input.taskId,
     tenantId: input.tenantId,
@@ -287,7 +329,9 @@ function buildTaskSpec(input: WardenRoutingRequestInput): RouterTaskSpec {
     requiredCapabilities: [input.taskMode === "feature" ? "warden.feature" : "warden.repair"],
     allowedTools: [],
     context: {
-      estimatedInputTokens: 0,
+      estimatedInputTokens:
+        input.estimatedInputTokens ??
+        estimateSeedInputTokens([input.goal, input.verifyCommand, sourceArtifactId]),
       maximumOutputTokens: input.maxOutputTokens ?? 8_192,
     },
     verification: {
@@ -303,8 +347,8 @@ function buildTaskSpec(input: WardenRoutingRequestInput): RouterTaskSpec {
       fallbackFailures: ["provider_unavailable", "executor_unavailable"],
     },
     privacy: { classification: input.classification ?? "restricted" },
-    risk: input.risk ?? "medium",
-    quality: { minimumScore: 0 },
+    risk,
+    quality: { minimumScore: riskQualityFloor(risk) },
     latency: { maximumMs: input.maximumLatencyMs ?? 3_600_000 },
     budget: { maximumUsd: budgetUsd },
   };
@@ -332,7 +376,10 @@ function buildPolicySnapshot(
       allowedExecutionRegions: [input.modelSource?.region ?? WARDEN_ROUTING_REGION],
     },
     risk: { maximumAutonomousRisk: "medium", humanReviewAtOrAbove: "high" },
-    quality: { minimumScore: 0 },
+    // Baseline policy quality floor (§13.4). The effective minimum is the max of
+    // this and the risk-adjusted task floor, so no executor below the baseline is
+    // ever eligible and the `quality_below_minimum` gate can fire.
+    quality: { minimumScore: 0.6 },
     latency: { maximumMs: input.maximumLatencyMs ?? 3_600_000 },
     budget: { maximumUsd: input.budgetUsd ?? 25 },
   };
