@@ -229,3 +229,96 @@ describe("evaluateReadiness", () => {
     expect(ev.overall).toBe("FAIL");
   });
 });
+
+describe("fettler-abstention capability (Phase 2 gate coverage)", () => {
+  const gates: ReadinessGatesConfig = {
+    schema_version: 1,
+    policy: "precision-first",
+    owner: "Talal",
+    decided_at: "2026-08-17",
+    capabilities: {
+      "fettler-abstention": {
+        kind: "fettler-abstention",
+        abstention_correctness_min: 1.0,
+        max_open_p0: 0,
+      },
+    },
+  };
+
+  it("PASSES when every abstain/no_op scenario correctly produced nothing", () => {
+    const scored: ScoredRun[] = [
+      { gt: gt({ scenario_id: "amb", correct_behavior: "abstain" }), record: rec({ scenario_id: "amb", passed: true }) },
+      { gt: gt({ scenario_id: "mig", correct_behavior: "no_op" }), record: rec({ scenario_id: "mig", passed: true }) },
+    ];
+    const ev = evaluateReadiness(scored, gates);
+    const cap = ev.capabilities.find((c) => c.capability === "fettler-abstention")!;
+    expect(cap.verdict).toBe("PASS");
+    expect(cap.metrics.scenarioCount).toBe(2);
+  });
+
+  it("FAILS (P0) when the product acts confidently where it must abstain", () => {
+    const p0: RunFailure = {
+      category: "ABSTENTION_FAILURE",
+      severity: "P0",
+      dimension: "abstention_correctness",
+      observed: "confident findings on an ambiguous rename",
+      expected: "nothing (abstain)",
+    };
+    const scored: ScoredRun[] = [
+      { gt: gt({ scenario_id: "amb", correct_behavior: "abstain" }), record: rec({ scenario_id: "amb", passed: false, failures: [p0] }) },
+    ];
+    const ev = evaluateReadiness(scored, gates);
+    const cap = ev.capabilities.find((c) => c.capability === "fettler-abstention")!;
+    expect(cap.verdict).toBe("FAIL");
+    expect(cap.metrics.openP0).toBe(1);
+    expect(cap.criteria.find((c) => c.name === "abstention_correctness")!.passed).toBe(false);
+  });
+
+  it("does not pool flag_files scenarios into the abstention gate", () => {
+    const scored: ScoredRun[] = [
+      { gt: gt({ scenario_id: "amb", correct_behavior: "abstain" }), record: rec({ scenario_id: "amb", passed: true }) },
+      { gt: gt({ scenario_id: "flag", correct_behavior: "flag_files", expected_findings: ["src/a.ts"] }), record: rec({ scenario_id: "flag", findings: [], passed: false }) },
+    ];
+    const ev = evaluateReadiness(scored, gates);
+    const cap = ev.capabilities.find((c) => c.capability === "fettler-abstention")!;
+    // Only the abstain scenario counts; the failing flag_files scenario is elsewhere.
+    expect(cap.metrics.scenarioCount).toBe(1);
+    expect(cap.verdict).toBe("PASS");
+  });
+
+  it("is marked not measurable when there are no abstain/no_op scenarios", () => {
+    const scored: ScoredRun[] = [
+      { gt: gt({ scenario_id: "flag", correct_behavior: "flag_files", expected_findings: ["src/a.ts"] }), record: rec({ scenario_id: "flag", findings: ["src/a.ts"], passed: true }) },
+    ];
+    const ev = evaluateReadiness(scored, gates);
+    const cap = ev.capabilities.find((c) => c.capability === "fettler-abstention")!;
+    const crit = cap.criteria.find((c) => c.name === "abstention_correctness")!;
+    expect(crit.measurable).toBe(false);
+    expect(cap.verdict).toBe("FAIL");
+  });
+});
+
+describe("shipped readiness-gates.json coverage (Phase 2)", () => {
+  it("gates fettler-abstention and the four ReGauge families alongside fettler-impact-analysis", () => {
+    const cfg = loadReadinessGates(DEFAULT_GATES_PATH);
+    expect(Object.keys(cfg.capabilities).sort()).toEqual([
+      "fettler-abstention",
+      "fettler-impact-analysis",
+      "regauge-framework-migration",
+      "regauge-internal-api-migration",
+      "regauge-runtime-migration",
+      "regauge-sdk-migration",
+    ]);
+  });
+
+  it("records not-measured capabilities with an experiment (no invented thresholds)", () => {
+    const cfg = loadReadinessGates(DEFAULT_GATES_PATH);
+    expect(cfg.not_measured).toBeDefined();
+    expect(cfg.not_measured!.capabilities.length).toBeGreaterThan(0);
+    for (const c of cfg.not_measured!.capabilities) {
+      expect(c.capability.length, c.capability).toBeGreaterThan(0);
+      expect(c.reason.length, c.capability).toBeGreaterThan(0);
+      expect(c.experiment.length, c.capability).toBeGreaterThan(0);
+    }
+  });
+});
