@@ -14,10 +14,11 @@ workspace and then get destroyed.
 
 Per run, the adapter (`fly-sandbox.ts`):
 
-1. `createMachine` from the configured image (`MENDPOINT_SANDBOX_FLY_IMAGE`, else
-   `FLY_SANDBOX_DEFAULTS.image` = `registry.fly.io/mendpoint-sandbox:latest`),
-   with `auto_destroy: true`, uploading **only the caller tenant's** workspace
-   files to `/workspace` (`collectWorkspaceFiles`).
+1. `createMachine` from the configured image (`MENDPOINT_SANDBOX_FLY_IMAGE`, or
+   `fly.image`), with `auto_destroy: true`, uploading **only the caller tenant's**
+   workspace files to `/workspace` (`collectWorkspaceFiles`). There is **no default
+   image**: on the live path the image must be present and digest-pinned
+   (`name@sha256:<64 hex>`) or the run fails closed (see below).
 2. `waitForState "started"` — the image's `CMD ["sleep", "infinity"]` keeps the
    Machine's main process alive so an exec can attach.
 3. `exec` the verification command as `/bin/sh -c "<command>"`.
@@ -25,8 +26,11 @@ Per run, the adapter (`fly-sandbox.ts`):
    failure and on the wall-clock cap.
 
 The adapter is fail-closed: if a Machine cannot be created or started, the run
-errors and never falls back to the shared host. None of that behavior is changed
-by this image work.
+errors and never falls back to the shared host. The same discipline applies to the
+image itself — the artifact enforcing isolation. On the live path an unset or
+tag-based (non-digest-pinned) image is refused before any Machine is created
+(`resolveSandboxImage` in `fly-sandbox.ts`); there is no floating `:latest`
+default that could silently supply an unreviewed, mutable artifact.
 
 ## What is in the image, and why
 
@@ -104,11 +108,12 @@ identical image definition always yields the same immutable tag. On `--push`, th
 script runs `flyctl auth docker`, pushes both the immutable tag and `:latest`,
 then prints the resolved `@sha256:…` digest so you can pin production to it.
 
-### Pin production to an immutable reference
+### Pin the deployment to an immutable digest (required)
 
-`FLY_SANDBOX_DEFAULTS.image` stays `registry.fly.io/mendpoint-sandbox:latest` (the
-current sandbox image). For reproducible production runs, pin the deployment to
-the immutable digest the push printed:
+There is **no default image**. The live sandbox path requires
+`MENDPOINT_SANDBOX_FLY_IMAGE` (or `fly.image`) to be set to a **digest-pinned**
+reference; an unset image or a mutable tag (`:latest`, `:v1`, ...) is refused and
+the run fails closed. Pin the deployment to the immutable digest the push printed:
 
 ```sh
 fly secrets set \
@@ -116,9 +121,18 @@ fly secrets set \
   --app <mendpoint-app>
 ```
 
-`MENDPOINT_SANDBOX_FLY_IMAGE` always overrides the default, so this pins without
-touching code. Once the real image is pushed, remove any stopgap override that
-points at the public `node:22-bookworm-slim` image.
+This is the reviewed, reproducible, auditable form: the exact artifact enforcing
+isolation is fixed and cannot change without a config change that goes through
+review.
+
+#### Local/dev escape hatch (explicit, dev only)
+
+For local runs against a dev image that is not yet digest-pinned, set the loud,
+explicit opt-out `MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE=1`. It relaxes **only**
+the digest-pin requirement (a tag becomes acceptable); it never permits an absent
+image and never enables host fallback. It defaults off and must never be set in
+production. The deterministic mock client (an injected client, or an explicitly
+forced mock mode) never pulls a real image, so it does not require a pin.
 
 ## Rollback
 

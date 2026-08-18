@@ -47,6 +47,8 @@ export {
   createMockFlyClient,
   createFlyRestClient,
   collectWorkspaceFiles,
+  resolveSandboxImage,
+  sandboxAllowUnpinnedImage,
   isTransientFlyError,
   withFlyRetry,
   reconcileOrphanedMachines,
