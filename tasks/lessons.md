@@ -84,3 +84,13 @@
 **Mistake:** Faced with a requirement register that rejected new entries, an unattended worker that could not satisfy `assertPrincipal`, and a writer type that rejected legacy literals, the immediate fix in each case was to relax the check.
 **Correction:** Each check was correct. The register count is an integrity check on a provenance claim; the principal requirement is why unattended paths cannot mutate missions; the strict writer type is what stopped pre-migration drift from returning.
 **Rule:** Before weakening a check, name the property it protects and ask whether the blockage is that property doing its job. If so, do the smaller correct work instead, and record in the change why the check must stay — otherwise the next person removes it.
+
+### 2026-08-18 — Review the complete parallel implementation
+**Mistake:** I narrowed a review of Claude's larger Change Graph and Muse implementation to the sandbox prerequisite because the latest concrete work had provisioned that dependency.
+**Correction:** Talal clarified that the sandbox is not the implementation under review; it is one gate inside the larger Claude workstream.
+**Rule:** When a parallel implementation spans architecture, models, evaluation, and infrastructure, review and integrate the whole dependency chain. Treat infrastructure prerequisites as gates, not as substitutes for the product implementation.
+
+### 2026-08-17 — Treat the Change Graph intelligence prompt as the initiative authority
+**Mistake:** I initially described the attached Change Graph prompt as technical input to reconcile beneath existing product documents.
+**Correction:** Talal stated that the attached Change Graph prompt is the authority document.
+**Rule:** For issue 185 and subsequent Change Graph intelligence work, treat `Mendpoint_CODEX_Change_Graph_Intelligence_Prompt.md` as the governing architecture and acceptance contract. Reconcile existing interfaces for compatibility, but do not narrow or override the prompt's representation, evidence, benchmark, security, learning, and completion requirements.

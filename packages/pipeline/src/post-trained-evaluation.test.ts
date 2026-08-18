@@ -16,12 +16,24 @@ const dbs: AppDb[] = [];
 const NOW = "2026-08-14T21:00:00.000Z";
 const CANDIDATE_BYTES = Buffer.from("candidate-adapter");
 const CANDIDATE_DIGEST = `sha256:${createHash("sha256").update(CANDIDATE_BYTES).digest("hex")}`;
-const HOLDOUT_CONTENT = JSON.stringify({
-  datasetSplit: "holdout", splitManifestDigest: "a".repeat(64), examples: [{
-    sourceEventId: "holdout-event", task: { scenarioId: "scenario-holdout", sourceRevision: "3".repeat(40), sourceDigest: `sha256:${"4".repeat(64)}` },
-  }],
-});
+function corpusContent(split: "train" | "holdout", scenarioId: string | null): string {
+  const isTrain = split === "train";
+  return JSON.stringify({
+    datasetSplit: split, splitManifestDigest: "a".repeat(64), examples: [{
+      sourceEventId: isTrain ? "train-event" : "holdout-event",
+      task: {
+        repositoryId: "repository-a",
+        scenarioId,
+        sourceRevision: (isTrain ? "1" : "3").repeat(40),
+        sourceDigest: `sha256:${(isTrain ? "2" : "4").repeat(64)}`,
+      },
+    }],
+  });
+}
+const HOLDOUT_CONTENT = corpusContent("holdout", "scenario-holdout");
 const HOLDOUT_SHA = createHash("sha256").update(HOLDOUT_CONTENT).digest("hex");
+const PRODUCTION_HOLDOUT_CONTENT = corpusContent("holdout", null);
+const PRODUCTION_HOLDOUT_SHA = createHash("sha256").update(PRODUCTION_HOLDOUT_CONTENT).digest("hex");
 const VALIDATION_CONTENT = JSON.stringify({
   datasetSplit: "validation", splitManifestDigest: "a".repeat(64), examples: [],
 });
@@ -43,7 +55,7 @@ function artifact(db: AppDb, id: string, kind: string, content: string) {
   }).row;
 }
 
-function fixture() {
+function fixture(production = false) {
   const root = mkdtempSync(join(tmpdir(), "post-trained-independent-eval-"));
   roots.push(root);
   const db = createDb(join(root, "app.sqlite"));
@@ -51,13 +63,9 @@ function fixture() {
   insertPrincipal(db, { id: "actor", tenantId: "tenant-a", kind: "service", subject: "eval", displayName: "Evaluator", createdAt: NOW });
   insertPrincipal(db, { id: "evaluator", tenantId: "tenant-a", kind: "service", subject: "independent-eval", displayName: "Independent Evaluator", createdAt: NOW });
   const adapter = artifact(db, "adapter-artifact", "post_trained_adapter_artifact", JSON.stringify({ encoding: "base64", bytes: CANDIDATE_BYTES.toString("base64"), decodedSha256: CANDIDATE_DIGEST }));
-  const train = artifact(db, "train-artifact", "learning_dataset_corpus", JSON.stringify({
-    datasetSplit: "train", splitManifestDigest: "a".repeat(64), examples: [{
-      sourceEventId: "train-event", task: { scenarioId: "scenario-train", sourceRevision: "1".repeat(40), sourceDigest: `sha256:${"2".repeat(64)}` },
-    }],
-  }));
+  const train = artifact(db, "train-artifact", "learning_dataset_corpus", corpusContent("train", production ? null : "scenario-train"));
   const validation = artifact(db, "validation-artifact", "learning_dataset_validation", VALIDATION_CONTENT);
-  const holdout = artifact(db, "holdout-artifact", "learning_dataset_holdout", HOLDOUT_CONTENT);
+  const holdout = artifact(db, "holdout-artifact", "learning_dataset_holdout", production ? PRODUCTION_HOLDOUT_CONTENT : HOLDOUT_CONTENT);
   appendDomainEvent(db, {
     id: "training-submitted", tenantId: "tenant-a", schemaVersion: 1,
     eventType: "post_trained_training.submitted", aggregateType: "post_trained_training_job", aggregateId: "job-a",
@@ -83,13 +91,13 @@ const input: PostTrainedEvaluationInput = {
   policy: { minimumSuccessRate: 0.9, maximumRegressionRate: 0.02, maximumSecurityRegressions: 0 },
 };
 
-function result(overlapCount = 0): Extract<PostTrainedEvaluationResult, { status: "completed" }> {
+function result(overlapCount = 0, holdoutSha = HOLDOUT_SHA): Extract<PostTrainedEvaluationResult, { status: "completed" }> {
   return {
     status: "completed",
     report: {
       candidateAdapterId: "adapter-a", candidateArtifactDigest: CANDIDATE_DIGEST,
       baselineExecutorId: "baseline-a", baselineRevision: "7".repeat(40),
-      cohortId: "holdout-artifact", cohortRevision: HOLDOUT_SHA.slice(0, 40), cohortDigest: `sha256:${HOLDOUT_SHA}`,
+      cohortId: "holdout-artifact", cohortRevision: holdoutSha.slice(0, 40), cohortDigest: `sha256:${holdoutSha}`,
       split: "holdout", harnessVersion: "harness-v1", graderVersion: "grader-v1",
       trainingDatasetId: "dataset-a", trainingSplitManifestDigest: "a".repeat(64),
       taskCount: 1, successRate: 1, regressionRate: 0, securityRegressionCount: 0,
@@ -134,6 +142,35 @@ describe("independent post trained evaluation", () => {
     expect(output).toMatchObject({ status: "passed", successRate: 1, regressionRate: 0, overlapCount: 0 });
     expect(calls).toBe(1);
     expect((await runPostTrainedIndependentEvaluation(db, input, dependencies({ evaluate: async () => { throw new Error("duplicate"); }, reconcile: async () => { throw new Error("duplicate"); } })))).toEqual(output);
+  });
+
+  it("evaluates production verified corpus examples without synthetic scenario identifiers", async () => {
+    const db = fixture(true);
+    let calls = 0;
+    await expect(runPostTrainedIndependentEvaluation(db, {
+      ...input,
+      evaluationId: "evaluation-production",
+      idempotencyKey: "evaluation-production",
+    }, dependencies({
+      evaluate: async (request) => {
+        calls++;
+        const value = result(0, PRODUCTION_HOLDOUT_SHA);
+        return {
+          result: value,
+          receipt: {
+            evaluationId: request.evaluationId,
+            authorityId: request.authorityId,
+            requestDigest: request.requestDigest,
+            outcome: value.status,
+            resultDigest: postTrainedEvaluationResultDigest(value),
+            observedAt: NOW,
+            signature: "signed",
+          },
+        };
+      },
+      reconcile: async () => { throw new Error("unexpected_reconcile"); },
+    }))).resolves.toMatchObject({ status: "passed" });
+    expect(calls).toBe(1);
   });
 
   it("rejects trainer overlap and forged candidate bindings before lifecycle admission", async () => {

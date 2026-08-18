@@ -16,6 +16,7 @@
     "@mendpoint/call-graph": "*",
     "@mendpoint/change-intel": "*",
     "@mendpoint/codebase-index": "*",
+    "@mendpoint/graph-learn": "*",
     "@mendpoint/shared": "*"
   },
 

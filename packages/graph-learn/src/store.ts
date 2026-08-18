@@ -49,6 +49,29 @@ CREATE TABLE IF NOT EXISTS gl_edges (
   label REAL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS gl_software_versions_v1 (
+  version_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  repository_id TEXT NOT NULL,
+  repository_snapshot_id TEXT NOT NULL,
+  repository_revision TEXT NOT NULL,
+  parent_version_id TEXT,
+  content_digest TEXT NOT NULL,
+  content_json TEXT NOT NULL,
+  observed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gl_software_heads_v1 (
+  tenant_id TEXT NOT NULL,
+  repository_id TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  version_id TEXT NOT NULL,
+  content_digest TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id, repository_id, provider_id),
+  FOREIGN KEY(version_id) REFERENCES gl_software_versions_v1(version_id)
+);
 `;
 
 const DDL_INDEXES = `
@@ -59,6 +82,10 @@ CREATE INDEX IF NOT EXISTS gl_edges_source_idx ON gl_edges(source);
 CREATE INDEX IF NOT EXISTS gl_edges_target_idx ON gl_edges(target);
 CREATE INDEX IF NOT EXISTS gl_edges_kind_idx ON gl_edges(kind);
 CREATE INDEX IF NOT EXISTS gl_edges_valid_from_idx ON gl_edges(valid_from);
+CREATE UNIQUE INDEX IF NOT EXISTS gl_software_versions_v1_digest_idx
+  ON gl_software_versions_v1(tenant_id, repository_id, content_digest);
+CREATE INDEX IF NOT EXISTS gl_software_versions_v1_scope_idx
+  ON gl_software_versions_v1(tenant_id, repository_id, observed_at);
 `;
 
 function migrate(raw: DatabaseSync): void {

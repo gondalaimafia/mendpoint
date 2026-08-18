@@ -296,8 +296,21 @@ function readArtifact(db: AppDb, tenantId: string, artifactId: string, kind: str
     const task = (value as Record<string, unknown>).task;
     if (!task || typeof task !== "object" || Array.isArray(task)) return [];
     const item = task as Record<string, unknown>;
-    const fields = [item.scenarioId, item.sourceRevision, item.sourceDigest];
-    if (!fields.every((entry): entry is string => typeof entry === "string" && entry.length > 0)) return [];
+    const revision = item.sourceRevision;
+    const digest = item.sourceDigest;
+    if (
+      typeof revision !== "string"
+      || !/^[a-f0-9]{40,64}$/u.test(revision)
+      || typeof digest !== "string"
+      || !/^sha256:[a-f0-9]{64}$/u.test(digest)
+    ) return [];
+    const subject = typeof item.scenarioId === "string" && item.scenarioId.length > 0
+      ? `scenario:${item.scenarioId}`
+      : item.scenarioId === null && typeof item.repositoryId === "string" && item.repositoryId.length > 0
+        ? `repository:${item.repositoryId}`
+        : undefined;
+    if (!subject) return [];
+    const fields = [subject, revision, digest];
     return [fields.map((entry) => `${entry.length}:${entry}`).join("")];
   });
   return deepFreeze({ artifactId: row.id, sha256: row.sha256, content: row.content_text, identities, exampleCount: examples.length });

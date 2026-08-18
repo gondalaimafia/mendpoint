@@ -518,6 +518,14 @@ export type TransformerAttemptRunResult = Readonly<{
   failureEvidence?: TransformerAttemptFailureArtifact;
   /** Present only when adaptive repair was configured and engaged. */
   adaptive?: TransformerAdaptiveSummary;
+  verifierShadowError?: "transformer_verifier_shadow_failed";
+}>;
+
+export type TransformerVerifiedCandidateCompletion = Readonly<{
+  lease: TransformerExecutableAttemptLease;
+  execution: RecipeWorkspaceExecutionResult;
+  artifact: TransformerCandidateArtifact;
+  observedAt: string;
 }>;
 
 export type RunTransformerAttemptInput = Readonly<{
@@ -544,6 +552,8 @@ export type RunTransformerAttemptInput = Readonly<{
    * review. A persistence failure fails the fenced attempt as a worker crash.
    */
   onAdaptiveCandidateConverged?(input: TransformerAdaptiveCandidateHandoff): MaybePromise<void>;
+  /** Advisory verifier observer invoked only after authoritative completion. */
+  onVerifiedCandidateCompleted?(input: TransformerVerifiedCandidateCompletion): MaybePromise<void>;
 }>;
 
 class AttemptRunnerError extends Error {
@@ -1870,6 +1880,19 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
         gateConfig: input.gateConfig,
       });
     }
+    let verifierShadowError: "transformer_verifier_shadow_failed" | undefined;
+    if (input.onVerifiedCandidateCompleted) {
+      try {
+        await input.onVerifiedCandidateCompleted({
+          lease,
+          execution,
+          artifact,
+          observedAt: completionObservedAt,
+        });
+      } catch {
+        verifierShadowError = "transformer_verifier_shadow_failed";
+      }
+    }
     return Object.freeze({
       status: "completed",
       summary: artifact.reused
@@ -1877,6 +1900,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
         : "Transformer candidate verified and durably persisted",
       nextActions: Object.freeze(["Review the durable candidate before draft delivery"]),
       artifacts: Object.freeze([artifact]),
+      ...(verifierShadowError ? { verifierShadowError } : {}),
     });
   } catch (error) {
     if (isStale(error) || !fence) {

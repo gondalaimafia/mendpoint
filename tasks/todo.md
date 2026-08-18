@@ -2128,3 +2128,127 @@ Objective: publish the exact sandbox runtime image, retain its immutable registr
 - [x] Record the final image, policy, app, secret, and health evidence below.
 
 Review: the exact image source commit was `3eb2724df86d99e339c557fc75dc036161a2ebbc`. The remote builder published `registry.fly.io/mendpoint-sandbox:sha-c1f0ccb583e8`, resolved by the live canary to `registry.fly.io/mendpoint-sandbox@sha256:6eacb37b3a9a795d2fed6baf4b032ced118c639e6d4d523b2bc9db9ff1a95c88`. The existing empty `mendpoint-sandbox` app was retained and converged. Network policy `01KZC4JJ74H8XMAYKZ2XQMTQFC` selects all Machines and permits only the API-required TCP port-0 sentinel, so all usable outbound ports are denied. A live direct-IP connection to `1.1.1.1:443` returned `EGRESS_BLOCKED:TimeoutError`. The canary also exposed that Fly's `/exec` endpoint ignores the OCI image user and starts as root; a red-first adapter regression now requires every verification command to execute through `/usr/sbin/runuser -u node`, and the live image proved `uid=1000(node)`. The full Platform suite passes 196/196, the joined Repair sandbox suite passes 6/6, the API sandbox suite passes 6/6, full repository typecheck passes, and the production build passes. A 90-day app-scoped token expiring 2026-11-16 was installed as deployed secret `MENDPOINT_SANDBOX_FLY_TOKEN` on `mendpoint-talal`. Its rolling restart reached one passing health check, and both `/healthz` and `/livez` returned HTTP 200. The canary was destroyed; the sandbox app retains no Machines and no public IPs.
+
+## Change Graph, Muse, verifier, and sandbox release integration: 2026-08-18
+
+Objective: review Claude's broader intelligence implementation as one release unit, make its architecture authority reproducible, prove the exact model behind every Muse result, and integrate the already-provisioned sandbox controls into the open deployment changes.
+
+- [x] Inventory every unique commit and dirty change in PRs 202, 182, 190, 164, and 165 against current main.
+- [x] Check the exact governing Change Graph authority document into the repository and verify its SHA-256 from a repository gate.
+- [x] Remove any unsupported ADR approval assertion and bind ADR-0005 to separately recorded owner authority.
+- [x] Prove the deployed provider and exact model identity without exposing credentials.
+- [x] Make Muse-specific evaluations fail closed unless requested and echoed provider/model identity match the approved binding.
+- [x] Rebase and repair the sandbox demo and customer profile changes with the immutable image digest, app, policy, and token prerequisites already proven.
+- [x] Run focused graph, eval, verifier, sandbox, typecheck, build, and release gates on the combined candidate.
+- [x] Perform a final security and regression review before pushing one coherent pull request.
+
+Acceptance: no architectural approval depends on an absent local file, no metric labeled Muse can be produced by an implicit fallback model, and no sandbox profile is merged until the checked-in app, image, default-deny policy, and scoped token contracts match live evidence.
+
+Review: the release unit is Claude's larger intelligence implementation, not the sandbox prerequisite. The Change Graph authority is checked in byte-for-byte at SHA-256 `5a37d827a4a1126ea1323d41bde8cbc5aa6b7ffca843b21895f5f942da8c58cc`, ADR-0005 records owner authority without inventing approval, and production configuration pins `muse-spark-1.2-contributor` for generation and evaluation identity. DeepSeek remains default-off and shadow-only; deterministic evidence remains authoritative. The review fixed invalid probability fixtures exposed by strict backend accounting, preserved the authority file against Windows line-ending conversion, and admitted real production corpus examples through repository-bound evaluation identities while retaining synthetic scenario identities for generated examples.
+
+Verification: all workspace typechecks; production web build with 50 pages; Worker 334 of 334; Pipeline 89 of 89; Verifier 47 of 47; synthetic eval 161 of 161; GA, architecture, model, claims, names, action-pin, docs, and Fly configuration gates; zero production dependency vulnerabilities; import side-effect probe; secret scan; and API `/health` plus `/ready` 200 passed. One unchanged repository materialization test exceeded its 15-second budget during the fully loaded monorepo rerun; the exact file then passed 14 of 14 without changing a production timeout, and the complete API suite had already passed 392 of 392 earlier in the same review. The larger learning flywheel still does not automatically join every Fettler and Regauge terminal outcome into the next governed training generation, and the synthetic corpus still lacks a genuine held-out partition; those remain explicit follow-up product gaps rather than being represented as sandbox work or shipped capability.
+
+## Foundational Change Graph intelligence architecture: 2026-08-17
+
+Authority: `C:\Users\Talal\Downloads\Mendpoint_CODEX_Change_Graph_Intelligence_Prompt.md` governs this initiative. Existing product specifications, ADRs, schemas, and APIs are compatibility constraints, not authority to narrow this contract.
+
+### Coordination and archaeology
+
+- [x] Read the complete authority document, repository instructions, review standard, and dual-agent operating protocol.
+- [x] Fetch current `origin/main`, create issue 185, claim `codex/185-change-graph-intelligence`, and isolate the worktree.
+- [x] Inspect open PRs 180 to 184 and record non-overlap with Claude-owned intelligence, trajectory, and evaluation files.
+- [x] Read the security boundaries, canonical product specification Change Graph sections, accepted ADRs, existing graph documents, and relevant implementations end to end.
+- [x] Record what is real, partial, seeded, duplicated, or dormant in `docs/graph/CURRENT_STATE.md`.
+
+### Architecture and contracts
+
+- [x] Record an accepted ADR making the Change Graph Mendpoint's versioned, evidenced software-relationship memory while retaining the existing relational persistence substrate for the first proof.
+- [x] Define the smallest versioned entity, edge, provenance, temporal, coverage, conflict, and failure contracts required by the first indirect Fettler question.
+- [x] Preserve canonical identity, tenant scope, repository/provider snapshots, deterministic serialization, immutable mission graph versions, and explicit ambiguity.
+- [x] Define bounded query and context-compiler contracts that retain evidence while excluding irrelevant graph state.
+- [x] Document ontology, provenance, coverage, storage, query, incremental build, and benchmark methodology without duplicating equivalent documents.
+
+### Red-first vertical slice
+
+- [x] Add red tests for exact, alias, ambiguous, unresolved, and colliding entity resolution.
+- [x] Add red tests for provider endpoint to SDK method to internal wrapper to indirect symbol to relevant test materialization with resolvable provenance.
+- [x] Add red tests for immutable graph versions, incremental invalidation, historical mission reads, stale/conflicting evidence, partial coverage, and failed publication retaining the previous valid graph.
+- [x] Add red tests for bounded indirect impact traversal, compact context compilation, no-impact versus unknown-impact distinction, and graph failure destination classification.
+- [x] Add red tests proving tenant isolation and provider-snapshot-bound facts inside each tenant graph.
+- [x] Implement the smallest coherent entity resolver, materializer, version publisher, query layer, and Fettler impact/context integration on existing persistence and graph packages.
+
+### Representation benchmark and learning
+
+- [x] Build development, validation, and hidden-holdout synthetic cases with at least half requiring indirect relationships and answer keys isolated from runtime inputs.
+- [x] Compare raw retrieval and graph representation with the same task, model contract, grader, and acceptance criteria; record correctness, retrieval calls, context size, tokens, latency, cost, abstention, and failure categories.
+- [x] Integrate DeepSeek verification only through an explicit compatible boundary; it remains soft and cannot rescue deterministic failure. Do not copy unmerged PR 182 code.
+- [x] Route missing or wrong relationships to graph, entity, parser, runtime, query, or context fixes before model-learning eligibility.
+- [x] Emit graph coverage and failure telemetry plus a governed learning event reference without exposing chain of thought or admitting representation failures to model training.
+
+### Verification and publication
+
+- [x] Run focused red and green suites, complete affected package suites, all workspace typechecks, full tests, production build, release gates, dependency audit, and diff integrity.
+- [x] Inspect the complete diff for tenant, provenance, temporal, compatibility, performance, failure-recovery, and rollback defects.
+- [ ] Commit scoped changes, sync with current main, push the issue branch, open the PR, and request attributable Claude peer review.
+- [ ] Resolve P0 and P1 findings red first, require protected CI, and leave merge to the protected human decision unless explicitly delegated.
+
+Acceptance: issue 185 demonstrates one real indirect Fettler relationship chain as versioned, tenant-safe, evidence-backed graph state; Fettler traverses it deterministically into a compact impact pack; uncertainty and coverage remain explicit; incremental publication preserves historical mission meaning; controlled raw-versus-graph evidence distinguishes representation gains from model gains; DeepSeek remains a soft optional reviewer; and graph failures improve the representation layer instead of becoming model training data by default.
+
+Review: the bounded first slice is implemented on top of the existing SQLite and TypeScript graph substrate. It publishes immutable content-addressed software graph versions with exact tenant, repository, provider, snapshot, extractor, temporal, confidence, status, conflict, and coverage bindings. It resolves exact, alias, ambiguous, unresolved, and collision cases; preserves independent provider heads and historical reads; materializes the first provider endpoint to SDK to repository wrapper to test chain from a real code index; distinguishes no impact from unknown coverage; compiles a bounded evidence-bearing Fettler context; and records graph-representation learning evidence as ineligible for model-weight training.
+
+The current-schema live benchmark used `muse-spark-1.2-contributor` on six programmatically materialized repositories across development, validation, and holdout splits. Raw and graph arms both scored 6 of 6. The graph arm was 6.2 percent faster but used 71.9 percent more input tokens and cost 1.7 percent more, so graph-first retrieval remains shadow-only. Arm C was not run because no approved DeepSeek credential was configured.
+
+Verification: Graph Learn 101 of 101, Code Impact 77 of 77, Pipeline 81 of 81, Eval 132 of 132, all workspace and script typechecks, the 50-page production build, GA/spec 3.0/claims/names/action-pin gates, production dependency audit, and diff integrity pass. The unconstrained monorepo test command saturated Windows filesystem timing budgets in unrelated API and worker cases; every timed-out case passed in its complete file or exact isolated rerun. No product timeout was widened and no source behavior was weakened. Commit, protected CI, and attributable peer review remain pending.
+## Issue 172: Muse 1.2 plus DeepSeek V4 Flash verification layer: 2026-08-17
+
+Objective: keep Muse 1.2 as the sole primary reasoning and code generation model, add DeepSeek V4 Flash as an independent, evidence constrained verifier and scorer, prove whether it improves Fettler and ReGauge candidate selection, and stop at shadow behavior unless retained benchmark evidence supports a narrower rollout.
+
+### Authority and architecture
+
+- [x] Create issue 172, claim the scope, and isolate the work on `codex/172-muse-deepseek-verifier`, then rebase before implementation when PR 169 advanced exact main to `1d3ae5a`.
+- [x] Read the canonical product specification, operating protocol, applicable ADRs, repository lessons, and the complete attached master prompt.
+- [x] Inspect `llm-as-a-verifier` and TurboAgent at exact upstream revisions, record license and algorithm semantics, and decide explicitly between direct dependency, adapter, or TypeScript implementation.
+- [x] Audit current Fettler, ReGauge, router, verification, evaluation, telemetry, security, and governed learning seams. Reconcile any parallel Claude work before every commit.
+- [x] Add proposed ADR 0004 for evidence constrained model verification, deterministic precedence, rollout authority, data egress, and rollback.
+- [x] Write `docs/agents/MUSE_DEEPSEEK_VERIFIER_DESIGN.md` with the trust hierarchy, threat model, evidence pack, criteria, model roles, execution modes, config schema, rollout stages, kill switch, economics, and compatibility decision.
+
+### Core implementation, red first
+
+- [x] Create `@mendpoint/verifier` as a TypeScript package with a versioned `AgentVerifier` contract, immutable observable trajectories, evidence packs, criteria, hard evidence, soft scores, cost and latency, typed failures, and deterministic digests.
+- [x] Reject private chain of thought, unredacted secrets, unsafe controls, oversized inputs, prompt injection authority confusion, tenant or artifact mismatches, unsupported residency, absent consent, and external model ineligible tasks before any model call.
+- [x] Implement deterministic candidate filtering so failed required checks, explicit acceptance misses, scope violations, unsafe edits, or contradictory hard evidence can never be rescued by a model score.
+- [x] Implement fine grained A to T expected reward extraction from logprobs, repeated criterion scoring, pairwise comparison, deterministic seeded Probabilistic Pivot Tournament selection, stable tie handling, and progress tracking.
+- [x] Implement versioned policy routing for pass through, Muse self verification control, DeepSeek verification, Muse Best of N plus DeepSeek, human escalation, and the exact OFF, OFFLINE, SHADOW, ADVISORY, SELECTIVE, AUTOMATED stages.
+- [x] Implement the global kill switch `DEEPSEEK_VERIFIER_ENABLED=false`, per tenant and per capability gates, budget ceilings, timeouts, cancellation, fail closed response parsing, and no silent fallback that changes an action.
+- [x] Implement secure OpenAI compatible DeepSeek V4 Flash transport with exact model binding, `thinking.type=disabled`, `logprobs=true`, `top_logprobs=20`, bounded JSON output, request digesting, no credential logging, and observable usage only.
+- [x] Implement a Muse self verifier backend only as a controlled comparison arm. Muse remains the generator and ordinary generation is never routed to DeepSeek.
+
+### Product integration
+
+- [x] Add a shared evidence assembler for Fettler and ReGauge that binds task, snapshot, acceptance criteria, observable plan or patch, graph and retrieval evidence, deterministic checks, changed paths, blast radius, and verification artifacts without private reasoning.
+- [x] Add Fettler criteria for semantic migration correctness, blast radius correctness, evidence quality, scope discipline, verification strength, and safety.
+- [x] Add ReGauge criteria for architecture correctness, staged migration safety, behavior preservation, rollback, scope discipline, and verification strength.
+- [x] Integrate default off and shadow only hooks at the actual Fettler and ReGauge generation boundaries. Shadow scores must not change candidates, PRs, approvals, routing, or execution.
+- [x] Persist bounded verifier telemetry and disagreement signals with exact model, config, evidence, criteria, candidate, cost, latency, decision, and deterministic outcome digests.
+- [x] Emit verifier reward, disagreement, calibration, and selection data only as soft governed learning signals. Deterministic verification and human outcomes remain hard signals and eligibility rules remain authoritative.
+
+### Evaluation and rollout evidence
+
+- [x] Build the canonical experiment for Muse Pass at 1, Muse self selected Best of N, DeepSeek selected Best of N, and oracle Best of N across Fettler and ReGauge synthetic tasks.
+- [x] Measure Pass at N, selection accuracy, oracle gap, misranking, false confidence, disagreement, error correlation, calibration, tokens, verifier cost, generation cost, latency, and accepted output economics for N equals 1, 2, 3, and 5 where the cohort supports it.
+- [x] Add hard negative scenarios for deterministic failure with a high model score, prompt injection, secret bearing evidence, cross tenant input, revoked consent, unsupported residency, malformed or missing logprobs, timeouts, score ties, positional bias, stochastic reproducibility, and kill switch activation.
+- [x] Add offline fixture tests for every production path. Live DeepSeek calls may occur only in an explicitly marked opt in evaluation with an available protected `DEEPSEEK_API_KEY`; absence must produce an honest skipped or blocked result, never a mock success.
+- [x] Write `docs/agents/MUSE_DEEPSEEK_BENCHMARK.md` from retained artifacts and answer whether DeepSeek measurably improves Muse 1.2, for which risk classes and candidate counts, and at what incremental cost.
+- [x] Keep rollout at SHADOW unless the held out comparison clears exact quality, safety, calibration, and economic gates. Do not claim selective or automated rollout from fixture evidence.
+
+### Verification, review, and shipment
+
+- [x] Run focused verifier, agent, platform, worker, pipeline, and eval tests; all affected package suites and typechecks; complete workspace tests and typechecks; production build; GA, spec, claims, names, action pin, dependency audit, and diff integrity gates.
+- [x] Compare exact behavior with main, verify imports have no side effects, and inspect telemetry and evidence artifacts for secrets, private reasoning, mutable aliases, noncanonical ordering, and cross tenant leakage.
+- [ ] Obtain reciprocal Claude review under the operating protocol, address every P0 and P1 red first, and retain the attributable review evidence.
+- [ ] Commit by logical slice, push issue 172 branch, open a protected pull request, and merge only after protected CI and human authority permit it.
+- [ ] If merged, verify the exact deployed revision and shadow health. Do not enable DeepSeek traffic or copy credentials without a separate explicit activation authority and a green protected preflight.
+
+Acceptance: Muse 1.2 remains the generator. DeepSeek V4 Flash can only judge bounded redacted observable evidence after deterministic filters. Hard evidence always outranks model reward. The independent and self verifier arms, Best of N plan and implementation selection, progress tracking, Pivot Tournament, policy routing, costs, calibration, disagreement, failure taxonomy, telemetry, learning capture, and kill switch are implemented and tested. Fettler and ReGauge have real default off shadow integration. A retained benchmark establishes where independent verification improves or harms selection. No private reasoning, secret material, ineligible tenant data, failed deterministic candidate, unreviewed verifier preference, missing credential, or unproven rollout stage can change production behavior.
+
+Review: the branch now contains a provider neutral verifier contract, exact DeepSeek V4 Flash transport, Muse self control, deterministic survivor filtering, content addressed and position balanced tournament scoring, progress and completion evidence, conservative request cost reservation, an at most once durable shadow dispatch claim, immutable unknown verdict telemetry, and soft learning signals that remain training ineligible without a later deterministic or human label. Fettler observes only after its job and terminal evidence commit. ReGauge observes only after its authoritative attempt completion. Both hooks preserve the incumbent and swallow advisory failures. The canonical four arm holdout benchmark is implemented and its deterministic fixture proves the calculations, but no protected `DEEPSEEK_API_KEY` is available, so real model quality and economics remain blocked and selective rollout stays rejected. The complete workspace test command is green, including 323 Agent, 440 Transformer, 389 API, 315 Worker, and 36 Verifier tests. All workspace typechecks, the 50 page production build, synthetic evaluation checks, GA/spec/claims/names/action pin checks, docs consistency, the production dependency audit, import side effect probe, secret scan, and diff integrity are green.

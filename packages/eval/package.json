@@ -19,9 +19,11 @@
     "@mendpoint/code-impact": "*",
     "@mendpoint/db": "*",
     "@mendpoint/generation": "*",
+    "@mendpoint/graph-learn": "*",
     "@mendpoint/ops": "*",
     "@mendpoint/shared": "*",
     "@mendpoint/transformer": "*",
+    "@mendpoint/verifier": "*",
     "@mendpoint/worker": "*"
   },
   "devDependencies": {

@@ -1687,6 +1687,19 @@ describe("worker runtime", () => {
     expect(ports.adaptivePlannerAdapterForTenant("tenant-b")).toBeUndefined();
   });
 
+  it("fails production startup on incomplete or behavior changing verifier configuration", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-verifier-env-"));
+    dirs.push(root);
+    const base = { NODE_ENV: "production", MENDPOINT_DEPLOYMENT_PROFILE: "demo", GITHUB_MODE: "mock", MENDPOINT_DATA_DIR: root, MENDPOINT_REPOS_DIR: root, DEEPSEEK_VERIFIER_ENABLED: "true" };
+    expect(validateWorkerProductionEnv(base)).toEqual(expect.arrayContaining([
+      expect.stringContaining("DEEPSEEK_API_KEY"),
+      expect.stringContaining("MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON"),
+      expect.stringContaining("MENDPOINT_AGENT_VERIFIER_PRICING_JSON"),
+    ]));
+    expect(validateWorkerProductionEnv({ ...base, DEEPSEEK_API_KEY: "configured", MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "{}", MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "selective" }))
+      .toContain("The first verifier release permits only offline or shadow rollout");
+  });
+
   it("requires an App for customer delivery and allows PAT only for a disposable canary", () => {
     const repos = mkdtempSync(join(tmpdir(), "mendpoint-worker-repos-"));
     dirs.push(repos);
