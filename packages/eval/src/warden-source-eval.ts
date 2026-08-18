@@ -14,6 +14,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   runWarden,
+  readWardenApprovalArtifact,
   type AgentPlanner,
   type AgentPlannerInput,
   type AgentPlannerOutput,
@@ -23,21 +24,32 @@ import {
 } from "@mendpoint/agent";
 import {
   bindConsumerRepoSnapshot,
+  claimNextJob,
   createDb,
   enqueueJob,
+  enqueueWardenCandidateDelivery,
   getAgentRun,
   getJob,
   getRoutingLedgerForJob,
+  getWardenCandidateDeliveryByRun,
   insertConnectedRepository,
   insertAgentRun,
   insertConsumer,
   insertConsumerRepo,
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
+  listTrajectories,
   upsertScmConnection,
 } from "@mendpoint/db";
+import {
+  MockGitHubDelivery,
+  type ExactDraftDeliveryInput,
+  type ExactDraftDeliveryResult,
+  type GitHubDelivery,
+} from "@mendpoint/github";
 import { nowIso } from "@mendpoint/shared";
 import { processJobsOnce } from "@mendpoint/worker/job-runner";
+import { runWardenCandidateDelivery } from "@mendpoint/worker/warden-candidate-delivery";
 import {
   agentEvalDigest,
   evalGrade,
@@ -59,6 +71,7 @@ const GOAL =
 const ERROR_LOG =
   "A retried payment POST creates a second charge. The regression suite identifies an integration contract failure.";
 const TENANT_ID = "tenant_warden_source_eval";
+const DELIVERY_OWNER = "mendpoint-eval";
 
 const SOURCE_BUDGET = Object.freeze({
   maxFileBytes: 4_096,
@@ -98,6 +111,23 @@ export type WardenSourceEvalTrial = Readonly<{
   toolCalls: number;
   modelCalls: number;
   stoppedReason: string;
+}>;
+
+export type FettlerDelegationDeliveryEvidence = Readonly<{
+  delivered: boolean;
+  draftOnly: boolean;
+  exactFiles: boolean;
+  evidenceLinked: boolean;
+  identicalReplay: boolean;
+  baseDriftBlocked: boolean;
+  divergenceBlocked: boolean;
+  tamperBlocked: boolean;
+  pullRequestCount: number;
+  result: ExactDraftDeliveryResult | null;
+}>;
+
+export type FettlerDelegationEvalTrial = WardenSourceEvalTrial & Readonly<{
+  delivery: FettlerDelegationDeliveryEvidence;
 }>;
 
 export type WardenSourceEvalReport = Readonly<{
@@ -716,7 +746,240 @@ type PersistedWorkerResult = Readonly<{
   }>;
 }>;
 
-async function runQueuedWorkerTrial(trial: number): Promise<WardenSourceEvalTrial> {
+function prefixedDigest(bytes: Buffer): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function sealScriptedApproval(input: Readonly<{
+  dataRoot: string;
+  persisted: PersistedWorkerResult;
+  before: Readonly<Record<string, string>>;
+  after: Readonly<Record<string, string>>;
+  reviewerPrincipalId: string;
+  rationale: string;
+}>): Readonly<{ path: string; sha256: string; bytes: Buffer }> {
+  const source = input.persisted.source;
+  const artifacts = input.persisted.artifacts;
+  if (!source?.repositoryId || !source.snapshotId || !source.revision ||
+    !artifacts?.candidateManifest || !artifacts.evidence ||
+    !artifacts.sourceDigest || !artifacts.candidateDigest) {
+    throw new Error("fettler_delegation_candidate_binding_missing");
+  }
+  const manifest = JSON.parse(readFileSync(artifacts.candidateManifest, "utf8")) as {
+    candidate?: { entries?: unknown };
+  };
+  const evidence = JSON.parse(readFileSync(artifacts.evidence, "utf8")) as {
+    review?: { schemaVersion?: unknown; edits?: readonly { path?: unknown }[] };
+  };
+  const reviewEvidence = evidence.review;
+  const changedPaths = input.persisted.changedPaths ?? [];
+  if ((reviewEvidence?.schemaVersion !== 1 && reviewEvidence?.schemaVersion !== 2) ||
+    !Array.isArray(reviewEvidence.edits) ||
+    JSON.stringify(reviewEvidence.edits.map((edit) => edit.path)) !== JSON.stringify(changedPaths) ||
+    !Array.isArray(manifest.candidate?.entries)) {
+    throw new Error("fettler_delegation_review_evidence_invalid");
+  }
+  const files = changedPaths.map((path) => {
+    const before = Object.hasOwn(input.before, path) ? Buffer.from(input.before[path]!, "utf8") : null;
+    const after = Object.hasOwn(input.after, path) ? Buffer.from(input.after[path]!, "utf8") : null;
+    return Object.freeze({
+      path,
+      before: before?.toString("base64") ?? null,
+      after: after?.toString("base64") ?? null,
+      beforeSha256: before ? prefixedDigest(before) : null,
+      afterSha256: after ? prefixedDigest(after) : null,
+    });
+  });
+  const artifact = Object.freeze({
+    schemaVersion: reviewEvidence.schemaVersion === 2 ? 4 : 3,
+    tenantId: TENANT_ID,
+    repositoryId: source.repositoryId,
+    snapshotId: source.snapshotId,
+    baseBranch: "main",
+    expectedBaseRevision: source.revision,
+    reviewerPrincipalId: input.reviewerPrincipalId,
+    rationale: input.rationale,
+    reviewEvidence,
+    changedPaths,
+    sourceDigest: artifacts.sourceDigest,
+    candidate: Object.freeze({
+      digest: artifacts.candidateDigest,
+      entries: manifest.candidate.entries,
+    }),
+    files: Object.freeze(files),
+  });
+  const bytes = Buffer.from(JSON.stringify(artifact), "utf8");
+  const sha256 = prefixedDigest(bytes);
+  const approvals = join(input.dataRoot, "warden-evidence", TENANT_ID, "approvals");
+  mkdirSync(approvals, { recursive: true });
+  const path = join(approvals, `${sha256.slice("sha256:".length)}.json`);
+  writeFileSync(path, bytes, { flag: "wx", mode: 0o600 });
+  return Object.freeze({ path, sha256, bytes });
+}
+
+async function deliverScriptedCandidate(input: Readonly<{
+  db: ReturnType<typeof createDb>;
+  dataRoot: string;
+  caseRoot: string;
+  runId: string;
+  repositoryId: string;
+  snapshotId: string;
+  revision: string;
+  persisted: PersistedWorkerResult;
+  before: Readonly<Record<string, string>>;
+  after: Readonly<Record<string, string>>;
+  reviewedAt: string;
+}>): Promise<FettlerDelegationDeliveryEvidence> {
+  const reviewerPrincipalId = "human:fettler-delegation-reviewer";
+  const rationale = "Approved the exact source-bound candidate after independent target, regression, and security verification.";
+  const seal = sealScriptedApproval({
+    dataRoot: input.dataRoot,
+    persisted: input.persisted,
+    before: input.before,
+    after: input.after,
+    reviewerPrincipalId,
+    rationale,
+  });
+  const reviewedResult = {
+    ...input.persisted,
+    review: {
+      decision: "approve",
+      rationale,
+      reviewedAt: input.reviewedAt,
+      reviewerPrincipalId,
+    },
+    artifacts: {
+      ...input.persisted.artifacts,
+      approval: { path: seal.path, sha256: seal.sha256 },
+    },
+  };
+  const updated = input.db.raw.prepare(
+    `UPDATE agent_runs SET status = 'candidate_approved', result_json = ?, finished_at = ?
+     WHERE id = ? AND tenant_id = ? AND status = 'candidate_ready'`,
+  ).run(JSON.stringify(reviewedResult), input.reviewedAt, input.runId, TENANT_ID);
+  if (Number(updated.changes) !== 1) throw new Error("fettler_delegation_review_conflict");
+  const delivery = enqueueWardenCandidateDelivery(input.db, {
+    tenantId: TENANT_ID,
+    runId: input.runId,
+    repositoryId: input.repositoryId,
+    snapshotId: input.snapshotId,
+    baseBranch: "main",
+    expectedBaseRevision: input.revision,
+    sealedPath: seal.path,
+    sealedSha256: seal.sha256,
+    requesterPrincipalId: reviewerPrincipalId,
+    rationale,
+    now: input.reviewedAt,
+  });
+  const job = claimNextJob(input.db, ["warden.candidate.deliver"], {
+    tenantId: TENANT_ID,
+    workerId: "worker-fettler-delegation-delivery",
+    leaseMs: 60_000,
+    now: input.reviewedAt,
+  });
+  if (!job || job.id !== delivery.jobId) throw new Error("fettler_delegation_delivery_job_missing");
+
+  const mockRoot = join(input.caseRoot, "exact-draft-remote");
+  const delegate = new MockGitHubDelivery(mockRoot);
+  const calls: ExactDraftDeliveryInput[] = [];
+  const exactResults: ExactDraftDeliveryResult[] = [];
+  const github: GitHubDelivery = {
+    deliverExactDraft: async (intent) => {
+      calls.push(intent);
+      const result = await delegate.deliverExactDraft(intent);
+      exactResults.push(result);
+      return result;
+    },
+    createBranch: delegate.createBranch.bind(delegate),
+    commitFiles: delegate.commitFiles.bind(delegate),
+    openPullRequest: delegate.openPullRequest.bind(delegate),
+  };
+  const workerResult = await runWardenCandidateDelivery({
+    db: input.db,
+    job,
+    github,
+    artifactEnv: { MENDPOINT_DATA_DIR: input.dataRoot },
+    now: () => new Date(Date.parse(input.reviewedAt) + 1_000).toISOString(),
+    resolveRepository: () => Object.freeze({
+      owner: DELIVERY_OWNER,
+      repo: "payment-consumer",
+      baseBranch: "main",
+    }),
+  });
+  const intent = calls[0];
+  const result = exactResults[0] ?? null;
+  if (!intent || !result) {
+    throw new Error(`fettler_delegation_exact_draft_missing:${JSON.stringify({
+      workerResult,
+      delivery: getWardenCandidateDeliveryByRun(input.db, TENANT_ID, input.runId),
+      job: getJob(input.db, job.id, TENANT_ID),
+    })}`);
+  }
+  const replay = await delegate.deliverExactDraft(intent);
+
+  let baseDriftBlocked = false;
+  try {
+    await delegate.deliverExactDraft({ ...intent, expectedBaseSha: "c".repeat(40) });
+  } catch (error) {
+    baseDriftBlocked = error instanceof Error && error.message === "github_exact_draft_base_revision_drift";
+  }
+  let divergenceBlocked = false;
+  try {
+    await delegate.deliverExactDraft({
+      ...intent,
+      files: intent.files.map((file, index) => index === 0 && !("delete" in file)
+        ? { ...file, content: `${file.content}\n// divergent` }
+        : file),
+    });
+  } catch (error) {
+    divergenceBlocked = error instanceof Error && error.message === "github_exact_draft_branch_diverged";
+  }
+
+  writeFileSync(seal.path, Buffer.concat([seal.bytes, Buffer.from("\n")]));
+  let tamperBlocked = false;
+  try {
+    readWardenApprovalArtifact({
+      tenantId: TENANT_ID,
+      path: seal.path,
+      sha256: seal.sha256,
+      env: { MENDPOINT_DATA_DIR: input.dataRoot },
+    });
+  } catch (error) {
+    tamperBlocked = error instanceof Error && error.message === "warden_candidate_approval_digest_mismatch";
+  } finally {
+    writeFileSync(seal.path, seal.bytes);
+  }
+
+  const pullDir = join(mockRoot, DELIVERY_OWNER, "payment-consumer", "pulls");
+  const pullRequestCount = existsSync(pullDir)
+    ? readdirSync(pullDir).filter((name) => /^[1-9][0-9]*\.json$/.test(name)).length
+    : 0;
+  const delivered = getWardenCandidateDeliveryByRun(input.db, TENANT_ID, input.runId);
+  const expectedFiles = (input.persisted.changedPaths ?? []).map((path) => Object.freeze({
+    path,
+    content: input.after[path],
+    mode: "100644",
+  }));
+  return Object.freeze({
+    delivered: workerResult.status === "delivered" && delivered?.status === "delivered",
+    draftOnly: result.draft === true && intent.body.includes("This pull request is a draft") &&
+      !/auto(?:matic)? merge:\s*enabled|auto(?:matic)? deployment:\s*enabled/i.test(intent.body),
+    exactFiles: JSON.stringify(intent.files) === JSON.stringify(expectedFiles),
+    evidenceLinked: intent.body.includes("Reviewed change evidence") &&
+      intent.body.includes("Objective verification") && intent.body.includes(rationale),
+    identicalReplay: JSON.stringify(replay) === JSON.stringify(result),
+    baseDriftBlocked,
+    divergenceBlocked,
+    tamperBlocked,
+    pullRequestCount,
+    result,
+  });
+}
+
+async function runQueuedWorkerTrial(
+  trial: number,
+  options: Readonly<{ deliver?: boolean }> = {},
+): Promise<WardenSourceEvalTrial | FettlerDelegationEvalTrial> {
   const caseRoot = mkdtempSync(join(tmpdir(), `mendpoint-warden-worker-source-${trial}-`));
   const repositoriesRoot = join(caseRoot, "repositories");
   const repoRoot = join(repositoriesRoot, TENANT_ID, "snapshot");
@@ -741,6 +1004,10 @@ async function runQueuedWorkerTrial(trial: number): Promise<WardenSourceEvalTria
     const sessionId = `session-warden-worker-${trial}`;
     const jobId = `job-warden-worker-${trial}`;
     db = createDb(join(caseRoot, "worker.sqlite"));
+    db.raw.prepare(
+      `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES (?, ?, ?, 'team', 'active', 10, ?)`,
+    ).run(TENANT_ID, TENANT_ID, "Fettler delegation evaluation", at);
     const connection = upsertScmConnection(db, {
       id: `connection-warden-worker-${trial}`,
       tenantId: TENANT_ID,
@@ -928,6 +1195,7 @@ async function runQueuedWorkerTrial(trial: number): Promise<WardenSourceEvalTria
     );
     const digests = context?.evidenceDigests ?? [];
     const routingLedger = getRoutingLedgerForJob(db, jobId, TENANT_ID);
+    const trajectories = listTrajectories(db, TENANT_ID, { limit: 10 });
     const routing = routingLedger[0];
     const routingOutcomeApplications = db.raw
       .prepare(
@@ -940,6 +1208,21 @@ async function runQueuedWorkerTrial(trial: number): Promise<WardenSourceEvalTria
     const evidenceDigestsReplay = [TARGET_PATH, CONTRACT_PATH].every((path) =>
       digestMap.get(path) === stableDigest(before[path] ?? ""),
     );
+    const deliveryEvidence = options.deliver
+      ? await deliverScriptedCandidate({
+          db,
+          dataRoot,
+          caseRoot,
+          runId: sessionId,
+          repositoryId,
+          snapshotId,
+          revision,
+          persisted,
+          before,
+          after: candidateAfter,
+          reviewedAt: "2026-08-18T18:00:00.000Z",
+        })
+      : undefined;
     const grades = Object.freeze([
       grade("lane.queued_worker", drain.claimed === 1 && drain.succeeded === 1 && drain.failed === 0,
         { claimed: 1, succeeded: 1, failed: 0 }, drain),
@@ -1025,6 +1308,42 @@ async function runQueuedWorkerTrial(trial: number): Promise<WardenSourceEvalTria
           evidenceExists: Boolean(evidencePath && existsSync(evidencePath)),
           artifactsInsideTenantRoot,
         }),
+      ...(deliveryEvidence ? [
+        grade("worker.candidate_ready", run?.status === "candidate_ready" && run.ok === 1,
+          { status: "candidate_ready", ok: 1 }, { status: run?.status, ok: run?.ok }),
+        grade("trajectory.persisted", trajectories.length === 1 &&
+          trajectories[0]?.runId === sessionId && trajectories[0]?.finalOutcome === "candidate_ready",
+          { count: 1, runId: sessionId, finalOutcome: "candidate_ready" },
+          { count: trajectories.length, runId: trajectories[0]?.runId,
+            finalOutcome: trajectories[0]?.finalOutcome }),
+        grade("verification.fail_to_pass", !failToPassBefore.ok && failToPassAfter.ok,
+          { before: "failed", after: "passed" },
+          { before: failToPassBefore.ok ? "passed" : "failed", after: failToPassAfter.ok ? "passed" : "failed" }),
+        grade("verification.pass_to_pass", passToPassBefore.ok && passToPassAfter.ok,
+          { before: "passed", after: "passed" },
+          { before: passToPassBefore.ok ? "passed" : "failed", after: passToPassAfter.ok ? "passed" : "failed" }),
+        grade("repository.immutable_source", JSON.stringify(sourceAfter) === JSON.stringify(before),
+          "unchanged", JSON.stringify(sourceAfter) === JSON.stringify(before) ? "unchanged" : "changed"),
+        grade("repository.exact_allowed_diff", JSON.stringify(changed) === JSON.stringify([TARGET_PATH]),
+          [TARGET_PATH], changed),
+        grade("approval.exact_seal", deliveryEvidence.tamperBlocked,
+          "content-addressed seal rejects changed bytes", deliveryEvidence.tamperBlocked),
+        grade("delivery.production_worker", deliveryEvidence.delivered,
+          "delivered by production worker", deliveryEvidence.delivered),
+        grade("delivery.draft_only", deliveryEvidence.draftOnly,
+          "draft with merge and deployment disabled", deliveryEvidence.draftOnly),
+        grade("delivery.exact_files", deliveryEvidence.exactFiles,
+          [TARGET_PATH], deliveryEvidence.exactFiles),
+        grade("delivery.evidence_linked", deliveryEvidence.evidenceLinked,
+          "review and objective verification evidence", deliveryEvidence.evidenceLinked),
+        grade("delivery.idempotent_replay", deliveryEvidence.identicalReplay && deliveryEvidence.pullRequestCount === 1,
+          { identical: true, pullRequestCount: 1 },
+          { identical: deliveryEvidence.identicalReplay, pullRequestCount: deliveryEvidence.pullRequestCount }),
+        grade("delivery.base_drift_blocked", deliveryEvidence.baseDriftBlocked,
+          "blocked", deliveryEvidence.baseDriftBlocked ? "blocked" : "accepted"),
+        grade("delivery.divergence_blocked", deliveryEvidence.divergenceBlocked,
+          "blocked", deliveryEvidence.divergenceBlocked ? "blocked" : "accepted"),
+      ] : []),
     ]);
     return Object.freeze({
       trial,
@@ -1039,11 +1358,20 @@ async function runQueuedWorkerTrial(trial: number): Promise<WardenSourceEvalTria
       toolCalls: persisted.agent?.toolCalls ?? 0,
       modelCalls: persisted.agent?.modelCalls ?? 0,
       stoppedReason: persisted.agent?.stoppedReason ?? run?.status ?? "missing",
+      ...(deliveryEvidence ? { delivery: deliveryEvidence } : {}),
     });
   } finally {
     db?.raw.close();
     rmSync(caseRoot, { recursive: true, force: true });
   }
+}
+
+export async function runFettlerDelegationEvalTrial(
+  trial: number,
+): Promise<FettlerDelegationEvalTrial> {
+  const result = await runQueuedWorkerTrial(trial, { deliver: true });
+  if (!("delivery" in result)) throw new Error("fettler_delegation_delivery_evidence_missing");
+  return result;
 }
 
 export const WARDEN_SOURCE_EVAL_SCENARIO: AgentEvalScenario = Object.freeze({
