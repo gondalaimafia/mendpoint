@@ -292,7 +292,7 @@ jobs:
       - name: Install
         run: npm ci
       - name: Install browser
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
       - name: Build production image
         run: docker build --target fly -t mendpoint-fly:e2e .
       - name: Production journey and crash recovery

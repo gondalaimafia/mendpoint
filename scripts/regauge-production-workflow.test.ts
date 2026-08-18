@@ -171,6 +171,35 @@ describe("Regauge production workflow", () => {
     expect(uploadIndex).toBeGreaterThan(containmentIndex);
   });
 
+  it("deploys and proves the coordinator before starting a dependent worker", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const steps = workflow.jobs.deploy.steps as Record<string, any>[];
+    const coordinatorIndex = steps.findIndex(
+      (step) => step.name === "Deploy coordinator",
+    );
+    const coordinatorHealthIndex = steps.findIndex(
+      (step) => step.name === "Verify coordinator revision and health",
+    );
+    const workerIndex = steps.findIndex((step) => step.name === "Deploy worker");
+
+    expect(coordinatorIndex).toBeGreaterThan(-1);
+    expect(coordinatorHealthIndex).toBeGreaterThan(coordinatorIndex);
+    expect(workerIndex).toBeGreaterThan(coordinatorHealthIndex);
+    expect(steps[coordinatorIndex].run).toContain("--process-groups coordinator");
+    expect(steps[workerIndex].run).toContain("--process-groups worker");
+    expect(steps[coordinatorHealthIndex].run).toContain(
+      "https://mendpoint-transformer-pilot.fly.dev/version",
+    );
+    expect(steps[coordinatorHealthIndex].run).toContain(
+      "https://mendpoint-transformer-pilot.fly.dev/ready",
+    );
+    expect(
+      steps.some((step) => step.name === "Deploy one coordinator and one worker"),
+    ).toBe(false);
+  });
+
   it("keeps the readiness soak within the protected activation window", () => {
     const workflow = parse(
       readFileSync(".github/workflows/regauge-production.yml", "utf8"),
