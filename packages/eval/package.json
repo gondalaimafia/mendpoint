@@ -23,6 +23,7 @@
     "@mendpoint/ops": "*",
     "@mendpoint/shared": "*",
     "@mendpoint/transformer": "*",
+    "@mendpoint/verifier": "*",
     "@mendpoint/worker": "*"
   },
   "devDependencies": {

@@ -18,6 +18,7 @@ import {
   type ReviewTierPolicy,
   type TransformerAttemptCheckpointConfig,
   type TransformerAttemptCoordinatorPort,
+  type TransformerVerifiedCandidateCompletion,
   type TransformerPilotExecutionStore,
 } from "@mendpoint/transformer";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
@@ -135,6 +136,8 @@ export type RunTransformerPilotLaneInput = Readonly<{
   }>): TransformerAttemptCheckpointConfig | undefined | PromiseLike<
     TransformerAttemptCheckpointConfig | undefined
   >;
+  /** Optional advisory observer. It cannot change attempt completion. */
+  onVerifiedCandidateCompleted?(input: TransformerVerifiedCandidateCompletion): void | Promise<void>;
 }>;
 
 const ERROR_CODE = /^[A-Za-z0-9][A-Za-z0-9._,:-]{0,499}$/;
@@ -986,6 +989,9 @@ export async function runTransformerPilotLaneOnce(
               throw error;
             }
           },
+          ...(input.onVerifiedCandidateCompleted
+            ? { onVerifiedCandidateCompleted: input.onVerifiedCandidateCompleted }
+            : {}),
         }),
     });
     if (routed.status === "handoff") {
@@ -994,7 +1000,10 @@ export async function runTransformerPilotLaneOnce(
       continue;
     }
     if (routed.status !== "idle") attempted++;
-    if (routed.status === "completed") completed++;
+    if (routed.status === "completed") {
+      completed++;
+      if (routed.result?.verifierShadowError) errors.push(routed.result.verifierShadowError);
+    }
     else if (routed.status === "failed") {
       failed++;
       if (routed.errorCode) errors.push(routed.errorCode);

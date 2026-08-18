@@ -237,6 +237,32 @@ describe("Transformer production attempt runner", () => {
     expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
   });
 
+  it("runs the advisory verifier observer only after authoritative completion", async () => {
+    const { input, spies } = harness();
+    const observer = vi.fn(async () => {
+      expect(spies.completeAttempt).toHaveBeenCalledTimes(1);
+    });
+    const result = await runTransformerAttempt({ ...input, onVerifiedCandidateCompleted: observer });
+    expect(result.status).toBe("completed");
+    expect(observer).toHaveBeenCalledWith(expect.objectContaining({
+      lease: expect.objectContaining({ campaignId: "campaign-a" }),
+      execution: expect.objectContaining({ outputDigest: APPLICATION.outputDigest }),
+      artifact: expect.objectContaining({ outputDigest: APPLICATION.outputDigest }),
+    }));
+    expect(result.verifierShadowError).toBeUndefined();
+  });
+
+  it("keeps a completed attempt authoritative when the advisory observer fails", async () => {
+    const { input, spies } = harness();
+    const result = await runTransformerAttempt({
+      ...input,
+      onVerifiedCandidateCompleted: async () => { throw new Error("observer unavailable"); },
+    });
+    expect(result).toMatchObject({ status: "completed", verifierShadowError: "transformer_verifier_shadow_failed" });
+    expect(spies.completeAttempt).toHaveBeenCalledTimes(1);
+    expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
   it("replays an authenticated verifier prefix and delegates atomic checkpoint completion", async () => {
     const commandRunner = vi.fn(async () => ({ exitCode: 0, stdout: "suffix ok", stderr: "" }));
     const checkpointComplete = vi.fn(async () => undefined);

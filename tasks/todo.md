@@ -2195,3 +2195,56 @@ Review: the bounded first slice is implemented on top of the existing SQLite and
 The current-schema live benchmark used `muse-spark-1.2-contributor` on six programmatically materialized repositories across development, validation, and holdout splits. Raw and graph arms both scored 6 of 6. The graph arm was 6.2 percent faster but used 71.9 percent more input tokens and cost 1.7 percent more, so graph-first retrieval remains shadow-only. Arm C was not run because no approved DeepSeek credential was configured.
 
 Verification: Graph Learn 101 of 101, Code Impact 77 of 77, Pipeline 81 of 81, Eval 132 of 132, all workspace and script typechecks, the 50-page production build, GA/spec 3.0/claims/names/action-pin gates, production dependency audit, and diff integrity pass. The unconstrained monorepo test command saturated Windows filesystem timing budgets in unrelated API and worker cases; every timed-out case passed in its complete file or exact isolated rerun. No product timeout was widened and no source behavior was weakened. Commit, protected CI, and attributable peer review remain pending.
+## Issue 172: Muse 1.2 plus DeepSeek V4 Flash verification layer: 2026-08-17
+
+Objective: keep Muse 1.2 as the sole primary reasoning and code generation model, add DeepSeek V4 Flash as an independent, evidence constrained verifier and scorer, prove whether it improves Fettler and ReGauge candidate selection, and stop at shadow behavior unless retained benchmark evidence supports a narrower rollout.
+
+### Authority and architecture
+
+- [x] Create issue 172, claim the scope, and isolate the work on `codex/172-muse-deepseek-verifier`, then rebase before implementation when PR 169 advanced exact main to `1d3ae5a`.
+- [x] Read the canonical product specification, operating protocol, applicable ADRs, repository lessons, and the complete attached master prompt.
+- [x] Inspect `llm-as-a-verifier` and TurboAgent at exact upstream revisions, record license and algorithm semantics, and decide explicitly between direct dependency, adapter, or TypeScript implementation.
+- [x] Audit current Fettler, ReGauge, router, verification, evaluation, telemetry, security, and governed learning seams. Reconcile any parallel Claude work before every commit.
+- [x] Add proposed ADR 0004 for evidence constrained model verification, deterministic precedence, rollout authority, data egress, and rollback.
+- [x] Write `docs/agents/MUSE_DEEPSEEK_VERIFIER_DESIGN.md` with the trust hierarchy, threat model, evidence pack, criteria, model roles, execution modes, config schema, rollout stages, kill switch, economics, and compatibility decision.
+
+### Core implementation, red first
+
+- [x] Create `@mendpoint/verifier` as a TypeScript package with a versioned `AgentVerifier` contract, immutable observable trajectories, evidence packs, criteria, hard evidence, soft scores, cost and latency, typed failures, and deterministic digests.
+- [x] Reject private chain of thought, unredacted secrets, unsafe controls, oversized inputs, prompt injection authority confusion, tenant or artifact mismatches, unsupported residency, absent consent, and external model ineligible tasks before any model call.
+- [x] Implement deterministic candidate filtering so failed required checks, explicit acceptance misses, scope violations, unsafe edits, or contradictory hard evidence can never be rescued by a model score.
+- [x] Implement fine grained A to T expected reward extraction from logprobs, repeated criterion scoring, pairwise comparison, deterministic seeded Probabilistic Pivot Tournament selection, stable tie handling, and progress tracking.
+- [x] Implement versioned policy routing for pass through, Muse self verification control, DeepSeek verification, Muse Best of N plus DeepSeek, human escalation, and the exact OFF, OFFLINE, SHADOW, ADVISORY, SELECTIVE, AUTOMATED stages.
+- [x] Implement the global kill switch `DEEPSEEK_VERIFIER_ENABLED=false`, per tenant and per capability gates, budget ceilings, timeouts, cancellation, fail closed response parsing, and no silent fallback that changes an action.
+- [x] Implement secure OpenAI compatible DeepSeek V4 Flash transport with exact model binding, `thinking.type=disabled`, `logprobs=true`, `top_logprobs=20`, bounded JSON output, request digesting, no credential logging, and observable usage only.
+- [x] Implement a Muse self verifier backend only as a controlled comparison arm. Muse remains the generator and ordinary generation is never routed to DeepSeek.
+
+### Product integration
+
+- [x] Add a shared evidence assembler for Fettler and ReGauge that binds task, snapshot, acceptance criteria, observable plan or patch, graph and retrieval evidence, deterministic checks, changed paths, blast radius, and verification artifacts without private reasoning.
+- [x] Add Fettler criteria for semantic migration correctness, blast radius correctness, evidence quality, scope discipline, verification strength, and safety.
+- [x] Add ReGauge criteria for architecture correctness, staged migration safety, behavior preservation, rollback, scope discipline, and verification strength.
+- [x] Integrate default off and shadow only hooks at the actual Fettler and ReGauge generation boundaries. Shadow scores must not change candidates, PRs, approvals, routing, or execution.
+- [x] Persist bounded verifier telemetry and disagreement signals with exact model, config, evidence, criteria, candidate, cost, latency, decision, and deterministic outcome digests.
+- [x] Emit verifier reward, disagreement, calibration, and selection data only as soft governed learning signals. Deterministic verification and human outcomes remain hard signals and eligibility rules remain authoritative.
+
+### Evaluation and rollout evidence
+
+- [x] Build the canonical experiment for Muse Pass at 1, Muse self selected Best of N, DeepSeek selected Best of N, and oracle Best of N across Fettler and ReGauge synthetic tasks.
+- [x] Measure Pass at N, selection accuracy, oracle gap, misranking, false confidence, disagreement, error correlation, calibration, tokens, verifier cost, generation cost, latency, and accepted output economics for N equals 1, 2, 3, and 5 where the cohort supports it.
+- [x] Add hard negative scenarios for deterministic failure with a high model score, prompt injection, secret bearing evidence, cross tenant input, revoked consent, unsupported residency, malformed or missing logprobs, timeouts, score ties, positional bias, stochastic reproducibility, and kill switch activation.
+- [x] Add offline fixture tests for every production path. Live DeepSeek calls may occur only in an explicitly marked opt in evaluation with an available protected `DEEPSEEK_API_KEY`; absence must produce an honest skipped or blocked result, never a mock success.
+- [x] Write `docs/agents/MUSE_DEEPSEEK_BENCHMARK.md` from retained artifacts and answer whether DeepSeek measurably improves Muse 1.2, for which risk classes and candidate counts, and at what incremental cost.
+- [x] Keep rollout at SHADOW unless the held out comparison clears exact quality, safety, calibration, and economic gates. Do not claim selective or automated rollout from fixture evidence.
+
+### Verification, review, and shipment
+
+- [x] Run focused verifier, agent, platform, worker, pipeline, and eval tests; all affected package suites and typechecks; complete workspace tests and typechecks; production build; GA, spec, claims, names, action pin, dependency audit, and diff integrity gates.
+- [x] Compare exact behavior with main, verify imports have no side effects, and inspect telemetry and evidence artifacts for secrets, private reasoning, mutable aliases, noncanonical ordering, and cross tenant leakage.
+- [ ] Obtain reciprocal Claude review under the operating protocol, address every P0 and P1 red first, and retain the attributable review evidence.
+- [ ] Commit by logical slice, push issue 172 branch, open a protected pull request, and merge only after protected CI and human authority permit it.
+- [ ] If merged, verify the exact deployed revision and shadow health. Do not enable DeepSeek traffic or copy credentials without a separate explicit activation authority and a green protected preflight.
+
+Acceptance: Muse 1.2 remains the generator. DeepSeek V4 Flash can only judge bounded redacted observable evidence after deterministic filters. Hard evidence always outranks model reward. The independent and self verifier arms, Best of N plan and implementation selection, progress tracking, Pivot Tournament, policy routing, costs, calibration, disagreement, failure taxonomy, telemetry, learning capture, and kill switch are implemented and tested. Fettler and ReGauge have real default off shadow integration. A retained benchmark establishes where independent verification improves or harms selection. No private reasoning, secret material, ineligible tenant data, failed deterministic candidate, unreviewed verifier preference, missing credential, or unproven rollout stage can change production behavior.
+
+Review: the branch now contains a provider neutral verifier contract, exact DeepSeek V4 Flash transport, Muse self control, deterministic survivor filtering, content addressed and position balanced tournament scoring, progress and completion evidence, conservative request cost reservation, an at most once durable shadow dispatch claim, immutable unknown verdict telemetry, and soft learning signals that remain training ineligible without a later deterministic or human label. Fettler observes only after its job and terminal evidence commit. ReGauge observes only after its authoritative attempt completion. Both hooks preserve the incumbent and swallow advisory failures. The canonical four arm holdout benchmark is implemented and its deterministic fixture proves the calculations, but no protected `DEEPSEEK_API_KEY` is available, so real model quality and economics remain blocked and selective rollout stays rejected. The complete workspace test command is green, including 323 Agent, 440 Transformer, 389 API, 315 Worker, and 36 Verifier tests. All workspace typechecks, the 50 page production build, synthetic evaluation checks, GA/spec/claims/names/action pin checks, docs consistency, the production dependency audit, import side effect probe, secret scan, and diff integrity are green.
