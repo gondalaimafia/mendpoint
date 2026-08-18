@@ -1,7 +1,7 @@
 # MendPoint design-partner readiness scorecard (spec §29)
 
-- Generated: 2026-08-18T07:13:52.463Z
-- Git commit: `40a8249`
+- Generated: 2026-08-18T09:52:50.981Z
+- Git commit: `da10e8c`
 - Readiness policy: precision-first (owner Talal, decided 2026-08-17)
 - Overall readiness: **FAIL**
 
@@ -24,13 +24,13 @@ Readiness verdict: **FAIL** (policy precision-first).
 | Patch verification rate | not measured (generation + sandbox verification path not exercised by the analysis-only runner) |
 | False-positive rate | 3.6% of confident findings (4/111) |
 | Known P0 / P1 | P0: gen-fettler-genvendor-both (FALSE_POSITIVE); gen-fettler-genvendor-vendored-only (FALSE_POSITIVE) | P1: fettler-edge-huge-monorepo (SCALE_FAILURE) |
-| Latency range | 33ms min, 90ms median, 120078ms max (n=33) |
+| Latency range | 11ms min, 31ms median, 120045ms max (n=33) |
 | Cost range | not measured (LLM off on this path; no model called, so token cost is genuinely zero rather than estimated) |
 | Required human review | yes — ambiguous renames and low-confidence notifications are surfaced for human decision, never auto-applied |
 | Rollback behaviour | not measured (PR delivery + apply path not exercised; rollback is a delivery-layer property) |
 | Security limitations | answer-key isolation is enforced (corpus staged with grading keys stripped, corpus root asserted outside the repo); product-side security limits (secret handling, sandbox escape) are not measured (full pipeline not exercised) |
 | Owner | Talal |
-| Last-validated commit | `40a8249` |
+| Last-validated commit | `da10e8c` |
 
 ## Capability: Fettler — restraint (abstention / no-op)
 
@@ -47,11 +47,11 @@ Fettler restraint: on an ambiguous rename (>=2 plausible successors) or an alrea
 | --- | --- |
 | Scenario count | 6 (abstain 4/4, no_op 2/2; 6/6 correct) |
 | Known P0 / P1 | P0: none | P1: none |
-| Latency range | 33ms min, 55ms median, 99ms max (n=6) |
+| Latency range | 11ms min, 15ms median, 85ms max (n=6) |
 | Cost range | not measured (LLM off on this path; no model called) |
 | Required human review | yes — an ambiguous rename is surfaced for a human decision, never auto-applied |
 | Owner | Talal |
-| Last-validated commit | `40a8249` |
+| Last-validated commit | `da10e8c` |
 
 ## Capability: ReGauge — migration recipe engine (per family)
 
@@ -73,11 +73,11 @@ ReGauge runtime family (node-runtime-18-to-20, node-runtime-20-to-22). The refer
 | Scenario count | 9 (apply 3/3, residual-refusal 4/4, abstention 2/2) |
 | Known P0 / P1 | P0: none | P1: none |
 | Patch verification rate | not measured (recipe apply + verification gate not exercised (analyze-only)) |
-| Latency range | 5ms min, 19ms median, 102ms max (n=9) |
+| Latency range | 1ms min, 20ms median, 36ms max (n=9) |
 | Cost range | not measured (deterministic recipe engine; no model called) |
 | Required human review | yes — recipe application produces a draft PR for human review; nothing auto-merges |
 | Rollback behaviour | not measured (inverse/rollback path not exercised) |
-| Last-validated commit | `40a8249` |
+| Last-validated commit | `da10e8c` |
 
 ### Family: sdk-upgrade (regauge-sdk-migration) — **PASS**
 
@@ -95,11 +95,11 @@ ReGauge SDK family (aws-sdk-js-v2-to-v3, stripe-node-v10-to-v11, googleapis-v25-
 | Scenario count | 13 (apply 3/3, residual-refusal 4/4, abstention 6/6) |
 | Known P0 / P1 | P0: none | P1: none |
 | Patch verification rate | not measured (recipe apply + verification gate not exercised (analyze-only)) |
-| Latency range | 5ms min, 26ms median, 124ms max (n=13) |
+| Latency range | 18ms min, 30ms median, 41ms max (n=13) |
 | Cost range | not measured (deterministic recipe engine; no model called) |
 | Required human review | yes — recipe application produces a draft PR for human review; nothing auto-merges |
 | Rollback behaviour | not measured (inverse/rollback path not exercised) |
-| Last-validated commit | `40a8249` |
+| Last-validated commit | `da10e8c` |
 
 ### Family: framework-upgrade (regauge-framework-migration) — **PASS**
 
@@ -117,11 +117,11 @@ ReGauge framework family (react-dom-17-to-18). Migrates render/hydrate call site
 | Scenario count | 4 (apply 1/1, residual-refusal 1/1, abstention 2/2) |
 | Known P0 / P1 | P0: none | P1: none |
 | Patch verification rate | not measured (recipe apply + verification gate not exercised (analyze-only)) |
-| Latency range | 5ms min, 15ms median, 84ms max (n=4) |
+| Latency range | 2ms min, 11ms median, 25ms max (n=4) |
 | Cost range | not measured (deterministic recipe engine; no model called) |
 | Required human review | yes — recipe application produces a draft PR for human review; nothing auto-merges |
 | Rollback behaviour | not measured (inverse/rollback path not exercised) |
-| Last-validated commit | `40a8249` |
+| Last-validated commit | `da10e8c` |
 
 ### Family: internal-api-rename (regauge-internal-api-migration) — **PASS**
 
@@ -139,11 +139,11 @@ ReGauge internal-API family (internal-api-acme-user-rename and the registry rena
 | Scenario count | 5 (apply 1/1, residual-refusal 2/2, abstention 2/2) |
 | Known P0 / P1 | P0: none | P1: none |
 | Patch verification rate | not measured (recipe apply + verification gate not exercised (analyze-only)) |
-| Latency range | 5ms min, 11ms median, 78ms max (n=5) |
+| Latency range | 2ms min, 3ms median, 25ms max (n=5) |
 | Cost range | not measured (deterministic recipe engine; no model called) |
 | Required human review | yes — recipe application produces a draft PR for human review; nothing auto-merges |
 | Rollback behaviour | not measured (inverse/rollback path not exercised) |
-| Last-validated commit | `40a8249` |
+| Last-validated commit | `da10e8c` |
 
 | Owner | Talal |
 

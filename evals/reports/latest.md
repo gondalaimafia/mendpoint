@@ -1,7 +1,7 @@
 # MendPoint synthetic-repo evaluation — latest run
 
-- Generated: 2026-08-18T07:13:52.456Z
-- Git commit: `40a8249`
+- Generated: 2026-08-18T09:52:50.979Z
+- Git commit: `da10e8c`
 - Invocation: deterministic analysis core (Fettler: change-intel -> code-impact, LLM off; ReGauge: analyzeRecipe over shipped registry, analyze-only)
 
 This corpus is built to make MendPoint fail, not to flatter it. "Pass" means the product did the SAFE, correct thing for the CURRENT shipped engine (found the impacted files without touching a distractor, or correctly abstained). Coverage gaps and dimensions the harness cannot yet observe are listed separately and do NOT count as passes.
@@ -156,6 +156,21 @@ Scenarios: 33, passed 24 (73%)
 | gen-fettler-ref-nested2-holdout-2 | 4 | flag_files | 100% | 100% | no | yes |
 | gen-fettler-ref-allOf-holdout-3 | 4 | flag_files | 100% | 100% | no | yes |
 
+## Relationship-path accuracy (importChain grader)
+
+Grades the provider->code `GraphPath` the product emits per finding (exposed as of PR #200) against the hand-derived `blast_radius_truth.importChainPaths` key. An ABSENT path means "not computed" and is never scored as wrong; a `cycle`/`max_hops` path is a bounded answer graded against its permitted suffix. Small denominator by design — only 5 scenario(s) carry a key.
+
+| scenario | paths | exact | wrong-route | wrong-anchor | self-anchor | bounded-ok | bounded-div | absent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| fettler-ts-payments-rename | 4 | 4 | 0 | 0 | 0 | 0 | 0 | 0 |
+| fettler-python-billing-rename | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 |
+| fettler-go-ledger-rename | 4 | 4 | 0 | 0 | 0 | 0 | 0 | 0 |
+| fettler-java-settlement-rename | 3 | 0 | 0 | 0 | 3 | 0 | 0 | 0 |
+| fettler-edge-deep-indirection | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+| **total** | 15 | 11 | 0 | 0 | 3 | 0 | 0 | 1 |
+
+Of 15 expected path(s): 1 absent (no path computed), 3 self-anchor (single-node, finding treated as its own anchor) — neither traced a relationship; 11 were traced as multi-node paths, of which 11 matched the expected route (100%). Absent and self-anchor are reported, never scored as wrong. This is a measurement channel only — it does not gate readiness.
+
 ## ReGauge
 
 Scenarios: 31, passed 31 (100%)
@@ -207,8 +222,8 @@ Scenarios: 31, passed 31 (100%)
 
 | product | scenarios | min | median | p90 | max |
 | --- | --- | --- | --- | --- | --- |
-| fettler | 33 | 33ms | 90ms | 3914ms | 120078ms |
-| regauge | 31 | 5ms | 19ms | 78ms | 124ms |
+| fettler | 33 | 11ms | 31ms | 497ms | 120045ms |
+| regauge | 31 | 1ms | 21ms | 34ms | 41ms |
 
 Note: the largest-repo scenario runs under a hard wall-clock budget in an isolated child; a budget overrun is recorded as a SCALE_FAILURE (see Top remaining risks), and its max latency above reflects that budget ceiling, not a completed analysis. Files-scanned per run is in the raw records (`activity.filesExamined`) — plot latency against it to read scale behaviour.
 

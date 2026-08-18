@@ -1,10 +1,10 @@
 [
   {
-    "run_id": "8abd9df4-6f60-4f3a-9d27-a82475050861",
-    "timestamp": "2026-08-18T07:11:29.682Z",
-    "git_commit": "40a8249",
+    "run_id": "11939b2f-d8fd-47b4-80ef-a31f52e676f3",
+    "timestamp": "2026-08-18T09:50:44.878Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "fettler-ts-payments-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -34,6 +34,85 @@
       "test/fixtures/charges.ts",
       "test/meridianClient.test.ts"
     ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/providers/meridian/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/providers/meridian/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/jobs/settlementJob.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/providers/meridian/client.ts",
+            "src/jobs/tasks.ts",
+            "src/jobs/settlementJob.ts"
+          ],
+          "hops": 2,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/providers/meridian/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/subscriptionService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/providers/meridian/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/providers/meridian/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/meridianClient.test.ts",
+        "graphPath": {
+          "nodes": [
+            "test/meridianClient.test.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -54,6 +133,12 @@
         "passed": false,
         "score": 0.8333333333333334,
         "detail": "precision 83%; extra flags: test/meridianClient.test.ts"
+      },
+      {
+        "dimension": "import_chain_route",
+        "passed": true,
+        "score": 1,
+        "detail": "4/4 traced path(s) correct (exact 4, bounded-ok 0); wrong-route 0, wrong-anchor 0, bounded-divergent 0; not traced: absent 0, self-anchor 0"
       }
     ],
     "failures": [
@@ -72,14 +157,100 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 4854
+    "latency_ms": 426,
+    "importChainGrade": {
+      "applicable": true,
+      "grader_results": [
+        {
+          "dimension": "import_chain_route",
+          "passed": true,
+          "score": 1,
+          "detail": "4/4 traced path(s) correct (exact 4, bounded-ok 0); wrong-route 0, wrong-anchor 0, bounded-divergent 0; not traced: absent 0, self-anchor 0"
+        }
+      ],
+      "failures": [],
+      "results": [
+        {
+          "terminal": "src/services/checkoutService.ts",
+          "anchor": "src/infra/providers/meridian/client.ts",
+          "expected": [
+            "src/infra/providers/meridian/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "observed": [
+            "src/infra/providers/meridian/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "exact",
+          "detail": "exact match (2 nodes, 1 hops)"
+        },
+        {
+          "terminal": "src/services/subscriptionService.ts",
+          "anchor": "src/infra/providers/meridian/client.ts",
+          "expected": [
+            "src/infra/providers/meridian/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "observed": [
+            "src/infra/providers/meridian/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "exact",
+          "detail": "exact match (2 nodes, 1 hops)"
+        },
+        {
+          "terminal": "src/jobs/settlementJob.ts",
+          "anchor": "src/infra/providers/meridian/client.ts",
+          "expected": [
+            "src/infra/providers/meridian/client.ts",
+            "src/jobs/tasks.ts",
+            "src/jobs/settlementJob.ts"
+          ],
+          "observed": [
+            "src/infra/providers/meridian/client.ts",
+            "src/jobs/tasks.ts",
+            "src/jobs/settlementJob.ts"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "exact",
+          "detail": "exact match (3 nodes, 2 hops)"
+        },
+        {
+          "terminal": "test/fixtures/charges.ts",
+          "anchor": "src/infra/providers/meridian/client.ts",
+          "expected": [
+            "src/infra/providers/meridian/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "observed": [
+            "src/infra/providers/meridian/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "exact",
+          "detail": "exact match (2 nodes, 1 hops)"
+        }
+      ],
+      "summary": {
+        "expectedPaths": 4,
+        "exact": 4,
+        "reachedAnchorWrongRoute": 0,
+        "wrongAnchor": 0,
+        "selfAnchor": 0,
+        "boundedOk": 0,
+        "boundedDivergent": 0,
+        "absent": 0
+      }
+    }
   },
   {
-    "run_id": "a78ae81b-ce42-450d-9ee7-52d7b47ae5f0",
-    "timestamp": "2026-08-18T07:11:35.004Z",
-    "git_commit": "40a8249",
+    "run_id": "f26bcab9-965a-483d-bf53-03669f311ff3",
+    "timestamp": "2026-08-18T09:50:45.387Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "fettler-python-billing-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -113,6 +284,140 @@
       "tests/test_charge_service.py",
       "tests/test_refund_service.py"
     ],
+    "findingGraphPaths": [
+      {
+        "filePath": "app/models/charge.py",
+        "graphPath": {
+          "nodes": [
+            "app/providers/payments_client.py",
+            "app/routers/charges.py",
+            "app/models/charge.py"
+          ],
+          "hops": 2,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "app/models/payment.py",
+        "graphPath": {
+          "nodes": [
+            "app/providers/payments_client.py",
+            "app/models/payment.py"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "app/models/refund.py",
+        "graphPath": {
+          "nodes": [
+            "app/providers/payments_client.py",
+            "app/routers/refunds.py",
+            "app/models/refund.py"
+          ],
+          "hops": 2,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "app/providers/payments_client.py",
+        "graphPath": {
+          "nodes": [
+            "app/providers/payments_client.py"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "app/services/charge_service.py",
+        "graphPath": {
+          "nodes": [
+            "app/providers/payments_client.py",
+            "app/services/charge_service.py"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "app/services/refund_service.py",
+        "graphPath": {
+          "nodes": [
+            "app/providers/payments_client.py",
+            "app/services/refund_service.py"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "app/tasks/settlement_task.py",
+        "graphPath": {
+          "nodes": [
+            "app/providers/payments_client.py",
+            "app/tasks/settlement_task.py"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "tests/conftest.py",
+        "graphPath": {
+          "nodes": [
+            "tests/conftest.py"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "tests/test_charge_service.py",
+        "graphPath": {
+          "nodes": [
+            "app/providers/payments_client.py",
+            "app/services/charge_service.py",
+            "tests/test_charge_service.py"
+          ],
+          "hops": 2,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "tests/test_refund_service.py",
+        "graphPath": {
+          "nodes": [
+            "app/providers/payments_client.py",
+            "app/services/refund_service.py",
+            "tests/test_refund_service.py"
+          ],
+          "hops": 2,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -133,6 +438,12 @@
         "passed": true,
         "score": 1,
         "detail": "precision 100%"
+      },
+      {
+        "dimension": "import_chain_route",
+        "passed": true,
+        "score": 1,
+        "detail": "3/3 traced path(s) correct (exact 3, bounded-ok 0); wrong-route 0, wrong-anchor 0, bounded-divergent 0; not traced: absent 0, self-anchor 0"
       }
     ],
     "failures": [
@@ -151,14 +462,83 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 3914
+    "latency_ms": 476,
+    "importChainGrade": {
+      "applicable": true,
+      "grader_results": [
+        {
+          "dimension": "import_chain_route",
+          "passed": true,
+          "score": 1,
+          "detail": "3/3 traced path(s) correct (exact 3, bounded-ok 0); wrong-route 0, wrong-anchor 0, bounded-divergent 0; not traced: absent 0, self-anchor 0"
+        }
+      ],
+      "failures": [],
+      "results": [
+        {
+          "terminal": "app/services/charge_service.py",
+          "anchor": "app/providers/payments_client.py",
+          "expected": [
+            "app/providers/payments_client.py",
+            "app/services/charge_service.py"
+          ],
+          "observed": [
+            "app/providers/payments_client.py",
+            "app/services/charge_service.py"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "exact",
+          "detail": "exact match (2 nodes, 1 hops)"
+        },
+        {
+          "terminal": "app/services/refund_service.py",
+          "anchor": "app/providers/payments_client.py",
+          "expected": [
+            "app/providers/payments_client.py",
+            "app/services/refund_service.py"
+          ],
+          "observed": [
+            "app/providers/payments_client.py",
+            "app/services/refund_service.py"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "exact",
+          "detail": "exact match (2 nodes, 1 hops)"
+        },
+        {
+          "terminal": "app/tasks/settlement_task.py",
+          "anchor": "app/providers/payments_client.py",
+          "expected": [
+            "app/providers/payments_client.py",
+            "app/tasks/settlement_task.py"
+          ],
+          "observed": [
+            "app/providers/payments_client.py",
+            "app/tasks/settlement_task.py"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "exact",
+          "detail": "exact match (2 nodes, 1 hops)"
+        }
+      ],
+      "summary": {
+        "expectedPaths": 3,
+        "exact": 3,
+        "reachedAnchorWrongRoute": 0,
+        "wrongAnchor": 0,
+        "selfAnchor": 0,
+        "boundedOk": 0,
+        "boundedDivergent": 0,
+        "absent": 0
+      }
+    }
   },
   {
-    "run_id": "e9cbff93-64be-4dc8-b661-e1c37c2bc932",
-    "timestamp": "2026-08-18T07:11:39.159Z",
-    "git_commit": "40a8249",
+    "run_id": "dfd05491-e1dd-418d-aa74-4cdfb02a9ab2",
+    "timestamp": "2026-08-18T09:50:45.905Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "fettler-go-ledger-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -194,6 +574,165 @@
       "internal/worker/worker.go",
       "internal/worker/worker_test.go"
     ],
+    "findingGraphPaths": [
+      {
+        "filePath": "cmd/ledger/main.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go",
+            "cmd/ledger/main.go"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "internal/ledger/entry.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go",
+            "internal/ledger/ledger.go",
+            "internal/ledger/entry.go"
+          ],
+          "hops": 2,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "internal/ledger/ledger_test.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go",
+            "internal/ledger/ledger_test.go"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "internal/ledger/ledger.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go",
+            "internal/ledger/ledger.go"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "internal/payments/client_test.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go",
+            "internal/payments/client_test.go"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "internal/payments/client.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "internal/payments/types.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go",
+            "internal/payments/types.go"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "internal/settlement/batch.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go",
+            "internal/settlement/settlement.go",
+            "internal/settlement/batch.go"
+          ],
+          "hops": 2,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "internal/settlement/settlement_test.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go",
+            "internal/settlement/settlement_test.go"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "internal/settlement/settlement.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go",
+            "internal/settlement/settlement.go"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "internal/worker/worker_test.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go",
+            "internal/worker/worker_test.go"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "internal/worker/worker.go",
+        "graphPath": {
+          "nodes": [
+            "internal/payments/client.go",
+            "internal/worker/worker.go"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -214,6 +753,12 @@
         "passed": true,
         "score": 1,
         "detail": "precision 100%"
+      },
+      {
+        "dimension": "import_chain_route",
+        "passed": true,
+        "score": 1,
+        "detail": "4/4 traced path(s) correct (exact 4, bounded-ok 0); wrong-route 0, wrong-anchor 0, bounded-divergent 0; not traced: absent 0, self-anchor 0"
       }
     ],
     "failures": [
@@ -232,14 +777,98 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 898
+    "latency_ms": 250,
+    "importChainGrade": {
+      "applicable": true,
+      "grader_results": [
+        {
+          "dimension": "import_chain_route",
+          "passed": true,
+          "score": 1,
+          "detail": "4/4 traced path(s) correct (exact 4, bounded-ok 0); wrong-route 0, wrong-anchor 0, bounded-divergent 0; not traced: absent 0, self-anchor 0"
+        }
+      ],
+      "failures": [],
+      "results": [
+        {
+          "terminal": "internal/ledger/ledger.go",
+          "anchor": "internal/payments/client.go",
+          "expected": [
+            "internal/payments/client.go",
+            "internal/ledger/ledger.go"
+          ],
+          "observed": [
+            "internal/payments/client.go",
+            "internal/ledger/ledger.go"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "exact",
+          "detail": "exact match (2 nodes, 1 hops)"
+        },
+        {
+          "terminal": "internal/settlement/settlement.go",
+          "anchor": "internal/payments/client.go",
+          "expected": [
+            "internal/payments/client.go",
+            "internal/settlement/settlement.go"
+          ],
+          "observed": [
+            "internal/payments/client.go",
+            "internal/settlement/settlement.go"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "exact",
+          "detail": "exact match (2 nodes, 1 hops)"
+        },
+        {
+          "terminal": "internal/worker/worker.go",
+          "anchor": "internal/payments/client.go",
+          "expected": [
+            "internal/payments/client.go",
+            "internal/worker/worker.go"
+          ],
+          "observed": [
+            "internal/payments/client.go",
+            "internal/worker/worker.go"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "exact",
+          "detail": "exact match (2 nodes, 1 hops)"
+        },
+        {
+          "terminal": "cmd/ledger/main.go",
+          "anchor": "internal/payments/client.go",
+          "expected": [
+            "internal/payments/client.go",
+            "cmd/ledger/main.go"
+          ],
+          "observed": [
+            "internal/payments/client.go",
+            "cmd/ledger/main.go"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "exact",
+          "detail": "exact match (2 nodes, 1 hops)"
+        }
+      ],
+      "summary": {
+        "expectedPaths": 4,
+        "exact": 4,
+        "reachedAnchorWrongRoute": 0,
+        "wrongAnchor": 0,
+        "selfAnchor": 0,
+        "boundedOk": 0,
+        "boundedDivergent": 0,
+        "absent": 0
+      }
+    }
   },
   {
-    "run_id": "6b8b85db-ad8e-4992-872e-da123184927b",
-    "timestamp": "2026-08-18T07:11:40.212Z",
-    "git_commit": "40a8249",
+    "run_id": "45333396-a829-4de8-9ccf-0806f67fa5aa",
+    "timestamp": "2026-08-18T09:50:46.199Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "fettler-java-settlement-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -273,6 +902,131 @@
       "src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java",
       "src/test/java/com/acme/settlement/payments/PaymentsClientTest.java"
     ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/main/java/com/acme/settlement/charge/ChargeController.java",
+        "graphPath": {
+          "nodes": [
+            "src/main/java/com/acme/settlement/charge/ChargeController.java"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/main/java/com/acme/settlement/charge/ChargeService.java",
+        "graphPath": {
+          "nodes": [
+            "src/main/java/com/acme/settlement/charge/ChargeService.java"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/main/java/com/acme/settlement/payments/PaymentRequest.java",
+        "graphPath": {
+          "nodes": [
+            "src/main/java/com/acme/settlement/payments/PaymentResponse.java",
+            "src/main/java/com/acme/settlement/payments/PaymentRequest.java"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/main/java/com/acme/settlement/payments/PaymentResponse.java",
+        "graphPath": {
+          "nodes": [
+            "src/main/java/com/acme/settlement/payments/PaymentResponse.java"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/main/java/com/acme/settlement/reporting/RevenueReport.java",
+        "graphPath": {
+          "nodes": [
+            "src/main/java/com/acme/settlement/reporting/ReportController.java",
+            "src/main/java/com/acme/settlement/reporting/RevenueReport.java"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/main/java/com/acme/settlement/settlement/SettlementController.java",
+        "graphPath": {
+          "nodes": [
+            "src/main/java/com/acme/settlement/settlement/SettlementController.java"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/main/java/com/acme/settlement/settlement/SettlementLine.java",
+        "graphPath": {
+          "nodes": [
+            "src/main/java/com/acme/settlement/settlement/SettlementController.java",
+            "src/main/java/com/acme/settlement/settlement/SettlementLine.java"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/main/java/com/acme/settlement/settlement/SettlementService.java",
+        "graphPath": {
+          "nodes": [
+            "src/main/java/com/acme/settlement/settlement/SettlementService.java"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java",
+        "graphPath": {
+          "nodes": [
+            "src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/test/java/com/acme/settlement/payments/PaymentsClientTest.java",
+        "graphPath": {
+          "nodes": [
+            "src/test/java/com/acme/settlement/payments/PaymentsClientTest.java"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -293,6 +1047,12 @@
         "passed": false,
         "score": 0.8888888888888888,
         "detail": "precision 89%; extra flags: src/main/java/com/acme/settlement/reporting/RevenueReport.java"
+      },
+      {
+        "dimension": "import_chain_route",
+        "passed": true,
+        "score": 0,
+        "detail": "3 expected path(s); none traced as a relationship (absent 0, self-anchor 3) — unmeasured"
       }
     ],
     "failures": [
@@ -318,14 +1078,80 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 1271
+    "latency_ms": 497,
+    "importChainGrade": {
+      "applicable": true,
+      "grader_results": [
+        {
+          "dimension": "import_chain_route",
+          "passed": true,
+          "score": 0,
+          "detail": "3 expected path(s); none traced as a relationship (absent 0, self-anchor 3) — unmeasured"
+        }
+      ],
+      "failures": [],
+      "results": [
+        {
+          "terminal": "src/main/java/com/acme/settlement/charge/ChargeService.java",
+          "anchor": "src/main/java/com/acme/settlement/payments/PaymentsClient.java",
+          "expected": [
+            "src/main/java/com/acme/settlement/payments/PaymentsClient.java",
+            "src/main/java/com/acme/settlement/charge/ChargeService.java"
+          ],
+          "observed": [
+            "src/main/java/com/acme/settlement/charge/ChargeService.java"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "self_anchor",
+          "detail": "single-node path [src/main/java/com/acme/settlement/charge/ChargeService.java]: finding treated as its own anchor, no upstream path traced"
+        },
+        {
+          "terminal": "src/main/java/com/acme/settlement/settlement/SettlementService.java",
+          "anchor": "src/main/java/com/acme/settlement/payments/PaymentsClient.java",
+          "expected": [
+            "src/main/java/com/acme/settlement/payments/PaymentsClient.java",
+            "src/main/java/com/acme/settlement/settlement/SettlementService.java"
+          ],
+          "observed": [
+            "src/main/java/com/acme/settlement/settlement/SettlementService.java"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "self_anchor",
+          "detail": "single-node path [src/main/java/com/acme/settlement/settlement/SettlementService.java]: finding treated as its own anchor, no upstream path traced"
+        },
+        {
+          "terminal": "src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java",
+          "anchor": "src/main/java/com/acme/settlement/payments/PaymentsClient.java",
+          "expected": [
+            "src/main/java/com/acme/settlement/payments/PaymentsClient.java",
+            "src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java"
+          ],
+          "observed": [
+            "src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java"
+          ],
+          "terminalKind": "anchor",
+          "outcome": "self_anchor",
+          "detail": "single-node path [src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java]: finding treated as its own anchor, no upstream path traced"
+        }
+      ],
+      "summary": {
+        "expectedPaths": 3,
+        "exact": 0,
+        "reachedAnchorWrongRoute": 0,
+        "wrongAnchor": 0,
+        "selfAnchor": 3,
+        "boundedOk": 0,
+        "boundedDivergent": 0,
+        "absent": 0
+      }
+    }
   },
   {
-    "run_id": "90642af5-0306-4033-8fc2-2a425c6a57e8",
-    "timestamp": "2026-08-18T07:11:41.679Z",
-    "git_commit": "40a8249",
+    "run_id": "c7b4a837-2266-4681-b6e9-016cfeb688e7",
+    "timestamp": "2026-08-18T09:50:46.762Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "fettler-node-cjs-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -353,6 +1179,70 @@
       "test/paymentsClient.test.js",
       "test/refundService.test.js",
       "test/settlementTask.test.js"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "lib/paymentsClient.js",
+        "graphPath": {
+          "nodes": [
+            "lib/paymentsClient.js"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/chargeService.test.js",
+        "graphPath": {
+          "nodes": [
+            "lib/paymentsClient.js",
+            "test/chargeService.test.js"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/paymentsClient.test.js",
+        "graphPath": {
+          "nodes": [
+            "test/paymentsClient.test.js"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/refundService.test.js",
+        "graphPath": {
+          "nodes": [
+            "test/refundService.test.js"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/settlementTask.test.js",
+        "graphPath": {
+          "nodes": [
+            "lib/paymentsClient.js",
+            "test/settlementTask.test.js"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -392,14 +1282,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 1302
+    "latency_ms": 1137
   },
   {
-    "run_id": "53ca68d9-d429-419b-b0b3-3e493ddbc314",
-    "timestamp": "2026-08-18T07:11:43.116Z",
-    "git_commit": "40a8249",
+    "run_id": "5371fde1-ff3a-47e1-95fc-1def6a32ff3e",
+    "timestamp": "2026-08-18T09:50:47.951Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "fettler-ts-monorepo-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -430,6 +1320,110 @@
       "packages/payments/src/refundService.ts",
       "packages/payments/src/settlementWorker.ts",
       "packages/payments/src/types.ts"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "packages/payments/src/__tests__/charge.test.ts",
+        "graphPath": {
+          "nodes": [
+            "packages/payments/src/paymentsClient.ts",
+            "packages/payments/src/__tests__/charge.test.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "packages/payments/src/__tests__/refund.test.ts",
+        "graphPath": {
+          "nodes": [
+            "packages/payments/src/paymentsClient.ts",
+            "packages/payments/src/__tests__/refund.test.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "packages/payments/src/__tests__/settlement.test.ts",
+        "graphPath": {
+          "nodes": [
+            "packages/payments/src/paymentsClient.ts",
+            "packages/payments/src/__tests__/settlement.test.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "packages/payments/src/chargeService.ts",
+        "graphPath": {
+          "nodes": [
+            "packages/payments/src/paymentsClient.ts",
+            "packages/payments/src/chargeService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "packages/payments/src/paymentsClient.ts",
+        "graphPath": {
+          "nodes": [
+            "packages/payments/src/paymentsClient.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "packages/payments/src/refundService.ts",
+        "graphPath": {
+          "nodes": [
+            "packages/payments/src/paymentsClient.ts",
+            "packages/payments/src/refundService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "packages/payments/src/settlementWorker.ts",
+        "graphPath": {
+          "nodes": [
+            "packages/payments/src/paymentsClient.ts",
+            "packages/payments/src/settlementWorker.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "packages/payments/src/types.ts",
+        "graphPath": {
+          "nodes": [
+            "packages/payments/src/types.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -469,14 +1463,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 4075
+    "latency_ms": 638
   },
   {
-    "run_id": "05737921-fec0-400e-9a91-c77ed1375d8e",
-    "timestamp": "2026-08-18T07:11:47.415Z",
-    "git_commit": "40a8249",
+    "run_id": "c97beff8-9fe6-4a00-8c49-1b6a3f621d2a",
+    "timestamp": "2026-08-18T09:50:48.655Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "fettler-edge-already-migrated",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -499,6 +1493,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": "high",
     "produced_edit": false,
     "grader_results": [
@@ -517,14 +1512,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 99
+    "latency_ms": 70
   },
   {
-    "run_id": "8199f745-13aa-4169-91cf-7d82ed5bc272",
-    "timestamp": "2026-08-18T07:11:47.542Z",
-    "git_commit": "40a8249",
+    "run_id": "9964bb8b-d61a-4a5e-82e4-ebf3c1b8131a",
+    "timestamp": "2026-08-18T09:50:48.738Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "fettler-edge-ambiguous",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -547,6 +1542,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": "high",
     "produced_edit": false,
     "grader_results": [
@@ -565,14 +1561,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 83
+    "latency_ms": 85
   },
   {
-    "run_id": "d455dc7f-b277-4dda-9ab9-e39c2f546743",
-    "timestamp": "2026-08-18T07:11:47.663Z",
-    "git_commit": "40a8249",
+    "run_id": "607b51e0-9e64-46a9-95d6-cd61e61f75c8",
+    "timestamp": "2026-08-18T09:50:48.835Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "fettler-edge-binary-encoding",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -599,308 +1595,7 @@
       "src/charge.bom.js",
       "src/charge.js"
     ],
-    "confidence": "medium",
-    "produced_edit": false,
-    "grader_results": [
-      {
-        "dimension": "expected_findings_recall",
-        "passed": true,
-        "score": 1,
-        "detail": "1/1 expected files flagged"
-      },
-      {
-        "dimension": "false_positive_traps",
-        "passed": true,
-        "score": 1,
-        "detail": "no distractor flagged"
-      },
-      {
-        "dimension": "precision",
-        "passed": true,
-        "score": 1,
-        "detail": "precision 100%"
-      }
-    ],
-    "failures": [],
-    "passed": true,
-    "unmeasured_dimensions": [
-      "migration_patch_correctness (generation path not exercised)",
-      "verification_honesty (sandbox/verification path not exercised)",
-      "pr_delivery (GitHub delivery not exercised)",
-      "token_cost / model_routing (LLM off; no model called)"
-    ],
-    "latency_ms": 184
-  },
-  {
-    "run_id": "d99a7b91-6da2-44c6-b718-3c35530efb4b",
-    "timestamp": "2026-08-18T07:11:47.883Z",
-    "git_commit": "40a8249",
-    "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
-    "scenario_id": "fettler-edge-deep-indirection",
-    "scenario_version": "1",
-    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
-    "model": null,
-    "model_provider": null,
-    "routing_decisions": [],
-    "tokens": null,
-    "estimated_cost_usd": null,
-    "activity": {
-      "filesExamined": 5,
-      "candidateCount": 15,
-      "confirmedCount": 13,
-      "lowConfidenceCount": 0,
-      "notes": [
-        "files_scanned=5",
-        "surfaces=5",
-        "candidates=15",
-        "confident_sites=5",
-        "low_confidence=none"
-      ]
-    },
-    "findings": [
-      "check.mjs",
-      "src/app/order.js",
-      "src/shared/http-client.js",
-      "src/shared/payments-facade.js",
-      "src/vendor-sdk/acmepay.js"
-    ],
-    "confidence": "medium",
-    "produced_edit": false,
-    "grader_results": [
-      {
-        "dimension": "expected_findings_recall",
-        "passed": true,
-        "score": 1,
-        "detail": "5/5 expected files flagged"
-      },
-      {
-        "dimension": "false_positive_traps",
-        "passed": true,
-        "score": 1,
-        "detail": "no distractor flagged"
-      },
-      {
-        "dimension": "precision",
-        "passed": true,
-        "score": 1,
-        "detail": "precision 100%"
-      }
-    ],
-    "failures": [],
-    "passed": true,
-    "unmeasured_dimensions": [
-      "migration_patch_correctness (generation path not exercised)",
-      "verification_honesty (sandbox/verification path not exercised)",
-      "pr_delivery (GitHub delivery not exercised)",
-      "token_cost / model_routing (LLM off; no model called)"
-    ],
-    "latency_ms": 202
-  },
-  {
-    "run_id": "c958bd8d-8750-40dd-9e17-4dad07451f17",
-    "timestamp": "2026-08-18T07:11:48.129Z",
-    "git_commit": "40a8249",
-    "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
-    "scenario_id": "fettler-edge-generated-code",
-    "scenario_version": "1",
-    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
-    "model": null,
-    "model_provider": null,
-    "routing_decisions": [],
-    "tokens": null,
-    "estimated_cost_usd": null,
-    "activity": {
-      "filesExamined": 5,
-      "candidateCount": 12,
-      "confirmedCount": 10,
-      "lowConfidenceCount": 0,
-      "notes": [
-        "files_scanned=5",
-        "surfaces=5",
-        "candidates=12",
-        "confident_sites=2",
-        "low_confidence=none"
-      ]
-    },
-    "findings": [
-      "check.mjs",
-      "src/handwritten/charges.js"
-    ],
-    "confidence": "medium",
-    "produced_edit": false,
-    "grader_results": [
-      {
-        "dimension": "expected_findings_recall",
-        "passed": true,
-        "score": 1,
-        "detail": "2/2 expected files flagged"
-      },
-      {
-        "dimension": "false_positive_traps",
-        "passed": true,
-        "score": 1,
-        "detail": "no distractor flagged"
-      },
-      {
-        "dimension": "precision",
-        "passed": true,
-        "score": 1,
-        "detail": "precision 100%"
-      }
-    ],
-    "failures": [],
-    "passed": true,
-    "unmeasured_dimensions": [
-      "migration_patch_correctness (generation path not exercised)",
-      "verification_honesty (sandbox/verification path not exercised)",
-      "pr_delivery (GitHub delivery not exercised)",
-      "token_cost / model_routing (LLM off; no model called)"
-    ],
-    "latency_ms": 202
-  },
-  {
-    "run_id": "861dc79d-e88c-48b9-8a08-2fa1a0f1776a",
-    "timestamp": "2026-08-18T07:13:48.470Z",
-    "git_commit": "40a8249",
-    "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
-    "scenario_id": "fettler-edge-huge-monorepo",
-    "scenario_version": "1",
-    "invocation_path": "isolated child process, budget 120000ms",
-    "model": null,
-    "model_provider": null,
-    "routing_decisions": [],
-    "tokens": null,
-    "latency_ms": 120078,
-    "estimated_cost_usd": null,
-    "activity": {
-      "filesExamined": 0,
-      "notes": [
-        "exceeded 120000ms budget; hard-killed"
-      ]
-    },
-    "findings": [],
-    "confidence": null,
-    "produced_edit": false,
-    "grader_results": [
-      {
-        "dimension": "completes_within_budget",
-        "passed": false,
-        "score": 0,
-        "detail": "did not complete within 120000ms"
-      }
-    ],
-    "failures": [
-      {
-        "category": "SCALE_FAILURE",
-        "severity": "P1",
-        "dimension": "completes_within_budget",
-        "observed": "analysis did not finish within the 120000ms budget on this repository",
-        "expected": "complete analysis within the budget"
-      }
-    ],
-    "passed": false,
-    "unmeasured_dimensions": [
-      "impact findings (analysis did not complete within budget)"
-    ],
-    "error": "ETIMEDOUT"
-  },
-  {
-    "run_id": "181710ba-16a3-48c5-bb8f-081b4f11c058",
-    "timestamp": "2026-08-18T07:13:48.470Z",
-    "git_commit": "40a8249",
-    "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
-    "scenario_id": "fettler-edge-no-test-command",
-    "scenario_version": "1",
-    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
-    "model": null,
-    "model_provider": null,
-    "routing_decisions": [],
-    "tokens": null,
-    "estimated_cost_usd": null,
-    "activity": {
-      "filesExamined": 3,
-      "candidateCount": 4,
-      "confirmedCount": 4,
-      "lowConfidenceCount": 0,
-      "notes": [
-        "files_scanned=3",
-        "surfaces=5",
-        "candidates=4",
-        "confident_sites=2",
-        "low_confidence=none"
-      ]
-    },
-    "findings": [
-      "src/charge.js",
-      "weird-test-command/src/charge.js"
-    ],
-    "confidence": "medium",
-    "produced_edit": false,
-    "grader_results": [
-      {
-        "dimension": "expected_findings_recall",
-        "passed": true,
-        "score": 1,
-        "detail": "1/1 expected files flagged"
-      },
-      {
-        "dimension": "false_positive_traps",
-        "passed": true,
-        "score": 1,
-        "detail": "no distractor flagged"
-      },
-      {
-        "dimension": "precision",
-        "passed": true,
-        "score": 1,
-        "detail": "precision 100%"
-      }
-    ],
-    "failures": [],
-    "passed": true,
-    "unmeasured_dimensions": [
-      "migration_patch_correctness (generation path not exercised)",
-      "verification_honesty (sandbox/verification path not exercised)",
-      "pr_delivery (GitHub delivery not exercised)",
-      "token_cost / model_routing (LLM off; no model called)"
-    ],
-    "latency_ms": 86
-  },
-  {
-    "run_id": "b56ec096-2f0d-42c3-b798-21d79e0fe0b3",
-    "timestamp": "2026-08-18T07:13:48.587Z",
-    "git_commit": "40a8249",
-    "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
-    "scenario_id": "fettler-edge-pnpm-workspace",
-    "scenario_version": "1",
-    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
-    "model": null,
-    "model_provider": null,
-    "routing_decisions": [],
-    "tokens": null,
-    "estimated_cost_usd": null,
-    "activity": {
-      "filesExamined": 3,
-      "candidateCount": 8,
-      "confirmedCount": 7,
-      "lowConfidenceCount": 0,
-      "notes": [
-        "files_scanned=3",
-        "surfaces=5",
-        "candidates=8",
-        "confident_sites=2",
-        "low_confidence=none"
-      ]
-    },
-    "findings": [
-      "check.mjs",
-      "packages/payments/src/index.js"
-    ],
+    "findingGraphPaths": [],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -934,12 +1629,235 @@
     "latency_ms": 88
   },
   {
-    "run_id": "cf258ffc-f370-46fd-bbce-9a74d388b7d8",
-    "timestamp": "2026-08-18T07:13:48.713Z",
-    "git_commit": "40a8249",
+    "run_id": "e1cc0f16-89ff-4a95-b804-b1f71bdd4d14",
+    "timestamp": "2026-08-18T09:50:48.940Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
-    "scenario_id": "fettler-edge-vendored-sdk",
+    "product_version": "mendpoint@1.0.0+da10e8c",
+    "scenario_id": "fettler-edge-deep-indirection",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 5,
+      "candidateCount": 15,
+      "confirmedCount": 13,
+      "lowConfidenceCount": 0,
+      "notes": [
+        "files_scanned=5",
+        "surfaces=5",
+        "candidates=15",
+        "confident_sites=5",
+        "low_confidence=none"
+      ]
+    },
+    "findings": [
+      "check.mjs",
+      "src/app/order.js",
+      "src/shared/http-client.js",
+      "src/shared/payments-facade.js",
+      "src/vendor-sdk/acmepay.js"
+    ],
+    "findingGraphPaths": [],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "5/5 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      },
+      {
+        "dimension": "import_chain_route",
+        "passed": true,
+        "score": 0,
+        "detail": "1 expected path(s); none traced as a relationship (absent 1, self-anchor 0) — unmeasured"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 120,
+    "importChainGrade": {
+      "applicable": true,
+      "grader_results": [
+        {
+          "dimension": "import_chain_route",
+          "passed": true,
+          "score": 0,
+          "detail": "1 expected path(s); none traced as a relationship (absent 1, self-anchor 0) — unmeasured"
+        }
+      ],
+      "failures": [],
+      "results": [
+        {
+          "terminal": "src/app/order.js",
+          "anchor": "src/vendor-sdk/acmepay.js",
+          "expected": [
+            "src/vendor-sdk/acmepay.js",
+            "src/shared/http-client.js",
+            "src/shared/payments-facade.js",
+            "src/app/order.js"
+          ],
+          "observed": null,
+          "terminalKind": null,
+          "outcome": "absent",
+          "detail": "finding flagged but no graphPath computed (not computed, not wrong)"
+        }
+      ],
+      "summary": {
+        "expectedPaths": 1,
+        "exact": 0,
+        "reachedAnchorWrongRoute": 0,
+        "wrongAnchor": 0,
+        "selfAnchor": 0,
+        "boundedOk": 0,
+        "boundedDivergent": 0,
+        "absent": 1
+      }
+    }
+  },
+  {
+    "run_id": "786a5f71-5525-42fd-9846-79c258355443",
+    "timestamp": "2026-08-18T09:50:49.075Z",
+    "git_commit": "da10e8c",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+da10e8c",
+    "scenario_id": "fettler-edge-generated-code",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 5,
+      "candidateCount": 12,
+      "confirmedCount": 10,
+      "lowConfidenceCount": 0,
+      "notes": [
+        "files_scanned=5",
+        "surfaces=5",
+        "candidates=12",
+        "confident_sites=2",
+        "low_confidence=none"
+      ]
+    },
+    "findings": [
+      "check.mjs",
+      "src/handwritten/charges.js"
+    ],
+    "findingGraphPaths": [],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "2/2 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 122
+  },
+  {
+    "run_id": "00a7e54f-0503-48f3-89fd-b529374ef1ce",
+    "timestamp": "2026-08-18T09:52:49.259Z",
+    "git_commit": "da10e8c",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+da10e8c",
+    "scenario_id": "fettler-edge-huge-monorepo",
+    "scenario_version": "1",
+    "invocation_path": "isolated child process, budget 120000ms",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "latency_ms": 120045,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 0,
+      "notes": [
+        "exceeded 120000ms budget; hard-killed"
+      ]
+    },
+    "findings": [],
+    "findingGraphPaths": [],
+    "confidence": null,
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "completes_within_budget",
+        "passed": false,
+        "score": 0,
+        "detail": "did not complete within 120000ms"
+      }
+    ],
+    "failures": [
+      {
+        "category": "SCALE_FAILURE",
+        "severity": "P1",
+        "dimension": "completes_within_budget",
+        "observed": "analysis did not finish within the 120000ms budget on this repository",
+        "expected": "complete analysis within the budget"
+      }
+    ],
+    "passed": false,
+    "unmeasured_dimensions": [
+      "impact findings (analysis did not complete within budget)"
+    ],
+    "error": "ETIMEDOUT"
+  },
+  {
+    "run_id": "b7e62d78-04ff-4b1c-8352-a867d6950d63",
+    "timestamp": "2026-08-18T09:52:49.259Z",
+    "git_commit": "da10e8c",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+da10e8c",
+    "scenario_id": "fettler-edge-no-test-command",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
     "model": null,
@@ -949,21 +1867,22 @@
     "estimated_cost_usd": null,
     "activity": {
       "filesExamined": 3,
-      "candidateCount": 9,
-      "confirmedCount": 9,
+      "candidateCount": 4,
+      "confirmedCount": 4,
       "lowConfidenceCount": 0,
       "notes": [
         "files_scanned=3",
         "surfaces=5",
-        "candidates=9",
+        "candidates=4",
         "confident_sites=2",
         "low_confidence=none"
       ]
     },
     "findings": [
-      "check.mjs",
-      "src/pay.js"
+      "src/charge.js",
+      "weird-test-command/src/charge.js"
     ],
+    "findingGraphPaths": [],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -994,14 +1913,142 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 110
+    "latency_ms": 105
   },
   {
-    "run_id": "aaeb35f9-9362-4896-bed7-02bc125b9801",
-    "timestamp": "2026-08-18T07:13:48.858Z",
-    "git_commit": "40a8249",
+    "run_id": "3af2c6ee-f746-4def-ab77-4025fa8c452e",
+    "timestamp": "2026-08-18T09:52:49.378Z",
+    "git_commit": "da10e8c",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+da10e8c",
+    "scenario_id": "fettler-edge-pnpm-workspace",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 3,
+      "candidateCount": 8,
+      "confirmedCount": 7,
+      "lowConfidenceCount": 0,
+      "notes": [
+        "files_scanned=3",
+        "surfaces=5",
+        "candidates=8",
+        "confident_sites=2",
+        "low_confidence=none"
+      ]
+    },
+    "findings": [
+      "check.mjs",
+      "packages/payments/src/index.js"
+    ],
+    "findingGraphPaths": [],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "1/1 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 93
+  },
+  {
+    "run_id": "d6ac5e38-c2da-4f58-bc9f-5eadcbff2be5",
+    "timestamp": "2026-08-18T09:52:49.490Z",
+    "git_commit": "da10e8c",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+da10e8c",
+    "scenario_id": "fettler-edge-vendored-sdk",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 3,
+      "candidateCount": 9,
+      "confirmedCount": 9,
+      "lowConfidenceCount": 0,
+      "notes": [
+        "files_scanned=3",
+        "surfaces=5",
+        "candidates=9",
+        "confident_sites=2",
+        "low_confidence=none"
+      ]
+    },
+    "findings": [
+      "check.mjs",
+      "src/pay.js"
+    ],
+    "findingGraphPaths": [],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "1/1 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 116
+  },
+  {
+    "run_id": "c409e6d1-1144-4c7d-a61e-fc263449815b",
+    "timestamp": "2026-08-18T09:52:49.617Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "regauge-runtime-upgrade",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1025,6 +2072,7 @@
       "Dockerfile",
       "package.json"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -1057,14 +2105,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 102
+    "latency_ms": 36
   },
   {
-    "run_id": "f6715ffc-4f17-4b24-8e51-cf8eef1d0ba7",
-    "timestamp": "2026-08-18T07:13:48.960Z",
-    "git_commit": "40a8249",
+    "run_id": "c7544a31-0b24-49f5-be27-b0ff76569267",
+    "timestamp": "2026-08-18T09:52:49.652Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "regauge-sdk-upgrade",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1083,6 +2131,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -1109,14 +2158,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 73
+    "latency_ms": 21
   },
   {
-    "run_id": "d757c688-136b-4a87-aa9e-4a14f6f9fedb",
-    "timestamp": "2026-08-18T07:13:49.033Z",
-    "git_commit": "40a8249",
+    "run_id": "19a84fbe-8ebe-4bcb-b5cb-ad63f089e428",
+    "timestamp": "2026-08-18T09:52:49.673Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "regauge-framework-upgrade",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1135,6 +2184,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -1161,14 +2211,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 84
+    "latency_ms": 25
   },
   {
-    "run_id": "447b1ab6-a1a6-4527-b823-4e8d41392356",
-    "timestamp": "2026-08-18T07:13:49.117Z",
-    "git_commit": "40a8249",
+    "run_id": "3ee70612-e750-42ae-88ce-f31b20892202",
+    "timestamp": "2026-08-18T09:52:49.698Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "regauge-internal-api-rename",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1187,6 +2237,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -1213,14 +2264,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 78
+    "latency_ms": 25
   },
   {
-    "run_id": "5fb3b121-cfd9-40e3-8636-23c5d3623c25",
-    "timestamp": "2026-08-18T07:13:49.195Z",
-    "git_commit": "40a8249",
+    "run_id": "2d0202b9-8f87-4a76-b386-29db391a1eeb",
+    "timestamp": "2026-08-18T09:52:49.723Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "regauge-partial-campaign",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1239,6 +2290,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -1265,14 +2317,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 76
+    "latency_ms": 18
   },
   {
-    "run_id": "420f1873-c389-4ea0-8d4e-be47bb0cb0ca",
-    "timestamp": "2026-08-18T07:13:49.271Z",
-    "git_commit": "40a8249",
+    "run_id": "18942042-4eca-42bb-84ac-0e529aa73cfb",
+    "timestamp": "2026-08-18T09:52:49.741Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "regauge-should-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1291,6 +2343,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -1309,14 +2362,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 124
+    "latency_ms": 25
   },
   {
-    "run_id": "200dda7a-6e1d-45dd-b8d2-9a285ea61b24",
-    "timestamp": "2026-08-18T07:13:49.412Z",
-    "git_commit": "40a8249",
+    "run_id": "da36303d-a445-4469-935a-9bb9a6d53cdf",
+    "timestamp": "2026-08-18T09:52:49.771Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ref-flat",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1342,6 +2395,46 @@
       "src/infra/provider/client.ts",
       "src/services/checkoutService.ts",
       "test/fixtures/charges.ts"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -1373,14 +2466,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 66
+    "latency_ms": 29
   },
   {
-    "run_id": "ab20ba8f-7778-480a-ab00-47e8f221eb97",
-    "timestamp": "2026-08-18T07:13:49.537Z",
-    "git_commit": "40a8249",
+    "run_id": "a5251437-46d6-4d70-8a0e-4225e610e8c1",
+    "timestamp": "2026-08-18T09:52:49.816Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ref-ref",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1408,6 +2501,59 @@
       "src/services/subscriptionService.ts",
       "test/fixtures/charges.ts"
     ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/subscriptionService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -1438,14 +2584,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 154
+    "latency_ms": 23
   },
   {
-    "run_id": "56c23c2f-14de-4479-ae3e-dcdb887d90fa",
-    "timestamp": "2026-08-18T07:13:49.776Z",
-    "git_commit": "40a8249",
+    "run_id": "c92fb54b-d46f-48cb-8f80-436ca4029bdf",
+    "timestamp": "2026-08-18T09:52:49.857Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ref-allOf",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1473,6 +2619,59 @@
       "src/services/subscriptionService.ts",
       "test/fixtures/charges.ts"
     ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/subscriptionService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -1503,14 +2702,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 75
+    "latency_ms": 21
   },
   {
-    "run_id": "9b7971e7-d4a1-46b1-b0c8-8a04fc6dae18",
-    "timestamp": "2026-08-18T07:13:49.917Z",
-    "git_commit": "40a8249",
+    "run_id": "8ab77cf8-7788-4d07-b24d-02cf1e2db4b8",
+    "timestamp": "2026-08-18T09:52:49.896Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ref-nested2",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1536,6 +2735,46 @@
       "src/infra/provider/client.ts",
       "src/services/checkoutService.ts",
       "test/fixtures/charges.ts"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -1567,14 +2806,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 54
+    "latency_ms": 15
   },
   {
-    "run_id": "b9b18622-3e5c-4615-a510-fdf5ce3ba32e",
-    "timestamp": "2026-08-18T07:13:50.021Z",
-    "git_commit": "40a8249",
+    "run_id": "71516e05-42ab-4672-8cae-cf5065a72c7b",
+    "timestamp": "2026-08-18T09:52:49.926Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ref-refToRef",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1601,6 +2840,59 @@
       "src/services/checkoutService.ts",
       "src/services/subscriptionService.ts",
       "test/fixtures/charges.ts"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/subscriptionService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -1632,14 +2924,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 184
+    "latency_ms": 21
   },
   {
-    "run_id": "d2291de6-17c2-4c94-96ed-d9e4f8ed32be",
-    "timestamp": "2026-08-18T07:13:50.276Z",
-    "git_commit": "40a8249",
+    "run_id": "e4990aed-c5c1-4aa1-99d3-fcac9f586cf5",
+    "timestamp": "2026-08-18T09:52:49.964Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ref-counterfactual",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1662,6 +2954,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": "high",
     "produced_edit": false,
     "grader_results": [
@@ -1680,14 +2973,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 33
+    "latency_ms": 11
   },
   {
-    "run_id": "a6316434-759b-4a60-b4b1-b9a43a42a150",
-    "timestamp": "2026-08-18T07:13:50.365Z",
-    "git_commit": "40a8249",
+    "run_id": "075ab0ac-e000-4067-b060-a338a4a34e82",
+    "timestamp": "2026-08-18T09:52:49.990Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ref-nested2-regression",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1716,6 +3009,72 @@
       "src/services/subscriptionService.ts",
       "test/fixtures/charges.ts"
     ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/settlementService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/settlementService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/subscriptionService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -1746,14 +3105,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 85
+    "latency_ms": 17
   },
   {
-    "run_id": "be833dd5-8b2a-42fc-b4c5-24d74f0595c0",
-    "timestamp": "2026-08-18T07:13:50.511Z",
-    "git_commit": "40a8249",
+    "run_id": "d3c918ec-ae58-4d74-8d6c-ca335c028b2b",
+    "timestamp": "2026-08-18T09:52:50.025Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ambiguous-two",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1776,6 +3135,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": "high",
     "produced_edit": false,
     "grader_results": [
@@ -1794,14 +3154,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 39
+    "latency_ms": 12
   },
   {
-    "run_id": "b7dfea17-5a71-468f-ac97-582dd59f0ef7",
-    "timestamp": "2026-08-18T07:13:50.611Z",
-    "git_commit": "40a8249",
+    "run_id": "08bfc9ca-16f7-4d2a-8713-7fd1cc5b296c",
+    "timestamp": "2026-08-18T09:52:50.055Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ambiguous-three",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1824,6 +3184,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": "high",
     "produced_edit": false,
     "grader_results": [
@@ -1842,14 +3203,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 55
+    "latency_ms": 11
   },
   {
-    "run_id": "adbe6340-20a7-407f-a35e-a20e16e819c9",
-    "timestamp": "2026-08-18T07:13:50.735Z",
-    "git_commit": "40a8249",
+    "run_id": "204ea9e0-6f32-411b-b8c0-15645a063488",
+    "timestamp": "2026-08-18T09:52:50.083Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ambiguous-two-decoy",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1872,6 +3233,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": "high",
     "produced_edit": false,
     "grader_results": [
@@ -1890,14 +3252,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 49
+    "latency_ms": 15
   },
   {
-    "run_id": "58ee8fa6-b99f-4d63-af88-348009e4c6c3",
-    "timestamp": "2026-08-18T07:13:50.876Z",
-    "git_commit": "40a8249",
+    "run_id": "2bd28e86-0c0c-49ff-9ea4-a3f25c855e88",
+    "timestamp": "2026-08-18T09:52:50.115Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-genvendor-generated-only",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1926,6 +3288,72 @@
       "src/services/subscriptionService.ts",
       "test/fixtures/charges.ts"
     ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/settlementService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/settlementService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/subscriptionService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -1956,14 +3384,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 90
+    "latency_ms": 30
   },
   {
-    "run_id": "c1c4a3be-4e2a-4d84-85b7-dfc18447c628",
-    "timestamp": "2026-08-18T07:13:51.037Z",
-    "git_commit": "40a8249",
+    "run_id": "178ed475-4f98-4cc4-92a0-e6c17d20adda",
+    "timestamp": "2026-08-18T09:52:50.170Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-genvendor-vendored-only",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1992,6 +3420,71 @@
       "test/fixtures/charges.ts",
       "vendor/provider-sdk/index.ts"
     ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/subscriptionService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "vendor/provider-sdk/index.ts",
+        "graphPath": {
+          "nodes": [
+            "vendor/provider-sdk/index.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -2030,14 +3523,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 95
+    "latency_ms": 34
   },
   {
-    "run_id": "2a96a3b6-c919-434c-9ab2-287e56573366",
-    "timestamp": "2026-08-18T07:13:51.196Z",
-    "git_commit": "40a8249",
+    "run_id": "e2e23ce8-1160-4cb7-ab6b-706c9bbcbb91",
+    "timestamp": "2026-08-18T09:52:50.229Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-genvendor-both",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -2066,6 +3559,71 @@
       "test/fixtures/charges.ts",
       "vendor/provider-sdk/index.ts"
     ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/subscriptionService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "vendor/provider-sdk/index.ts",
+        "graphPath": {
+          "nodes": [
+            "vendor/provider-sdk/index.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
     "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
@@ -2104,14 +3662,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 68
+    "latency_ms": 23
   },
   {
-    "run_id": "63e22456-3f87-4dd4-be75-71b1f7dce826",
-    "timestamp": "2026-08-18T07:13:51.324Z",
-    "git_commit": "40a8249",
+    "run_id": "36ba0c37-65b7-4db2-ad8c-56af1e056a48",
+    "timestamp": "2026-08-18T09:52:50.272Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-genvendor-looks-generated",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -2140,6 +3698,85 @@
       "src/services/settlementService.ts",
       "src/services/subscriptionService.ts",
       "test/fixtures/charges.ts"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/generated/handMaintained.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/generated/handMaintained.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/settlementService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/settlementService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/subscriptionService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -2171,14 +3808,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 91
+    "latency_ms": 31
   },
   {
-    "run_id": "b19bd855-05be-471f-9c89-df39c554f361",
-    "timestamp": "2026-08-18T07:13:51.471Z",
-    "git_commit": "40a8249",
+    "run_id": "84f338d1-f0c8-42f7-a2f5-0ef73f5f3b35",
+    "timestamp": "2026-08-18T09:52:50.318Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-runtime-supported-18-20",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2200,6 +3837,7 @@
       ".nvmrc",
       "package.json"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2227,11 +3865,11 @@
     "latency_ms": 24
   },
   {
-    "run_id": "bfa166b5-ee39-42b1-acd4-36ace61619aa",
-    "timestamp": "2026-08-18T07:13:51.506Z",
-    "git_commit": "40a8249",
+    "run_id": "49641c5c-29a9-4baf-9c42-cd51b753e473",
+    "timestamp": "2026-08-18T09:52:50.345Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-runtime-supported-20-22",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2253,6 +3891,7 @@
       ".nvmrc",
       "package.json"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2277,14 +3916,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 20
+    "latency_ms": 22
   },
   {
-    "run_id": "410cb279-9afa-4706-9c4e-071f9f0aa927",
-    "timestamp": "2026-08-18T07:13:51.532Z",
-    "git_commit": "40a8249",
+    "run_id": "4c6d8af1-6e40-4645-95f3-42c196e9e2ad",
+    "timestamp": "2026-08-18T09:52:50.369Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-runtime-unsupported-21-23",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2303,6 +3942,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2329,14 +3969,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 22
+    "latency_ms": 17
   },
   {
-    "run_id": "cc511998-ce3e-4112-9bde-71e4f26e2f56",
-    "timestamp": "2026-08-18T07:13:51.560Z",
-    "git_commit": "40a8249",
+    "run_id": "46197ddf-707b-4c3e-8354-0771863a110f",
+    "timestamp": "2026-08-18T09:52:50.389Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-runtime-already-migrated",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2355,6 +3995,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2373,14 +4014,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 19
+    "latency_ms": 20
   },
   {
-    "run_id": "e3300bb8-a6f4-4b2c-a178-fa95cee4d045",
-    "timestamp": "2026-08-18T07:13:51.587Z",
-    "git_commit": "40a8249",
+    "run_id": "d919b603-85c1-4c2e-972b-5259d0e7f10a",
+    "timestamp": "2026-08-18T09:52:50.410Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-aws-apply",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2403,6 +4044,7 @@
       "src/dynamo.js",
       "src/s3.js"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2427,14 +4069,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 10
+    "latency_ms": 34
   },
   {
-    "run_id": "ff1f9b17-bd0d-4366-96a1-5064b3cf1d11",
-    "timestamp": "2026-08-18T07:13:51.607Z",
-    "git_commit": "40a8249",
+    "run_id": "faa0e71f-c5bb-48e5-9f29-baa1346e9d54",
+    "timestamp": "2026-08-18T09:52:50.446Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-aws-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2457,6 +4099,7 @@
       "src/dynamo.js",
       "src/s3.js"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2475,14 +4118,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 27
+    "latency_ms": 30
   },
   {
-    "run_id": "ece73cbe-1651-47e6-93f5-ab4005e34ea4",
-    "timestamp": "2026-08-18T07:13:51.642Z",
-    "git_commit": "40a8249",
+    "run_id": "89c02433-b3a1-432d-9cdc-4c6d6ee91750",
+    "timestamp": "2026-08-18T09:52:50.478Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-aws-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2501,6 +4144,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2519,14 +4163,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 29
+    "latency_ms": 30
   },
   {
-    "run_id": "a1fe7c0b-e861-40b2-bd3c-c9ac036f90ae",
-    "timestamp": "2026-08-18T07:13:51.675Z",
-    "git_commit": "40a8249",
+    "run_id": "9685fbe5-7cf1-45b6-a8d5-5d294f0d2ac4",
+    "timestamp": "2026-08-18T09:52:50.513Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-stripe-apply",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2548,6 +4192,7 @@
       "package.json",
       "src/payments.js"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2572,14 +4217,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 20
+    "latency_ms": 22
   },
   {
-    "run_id": "357ded74-8c38-4d98-a007-e38593702f4f",
-    "timestamp": "2026-08-18T07:13:51.700Z",
-    "git_commit": "40a8249",
+    "run_id": "b907c024-e30f-498c-a469-918564df8000",
+    "timestamp": "2026-08-18T09:52:50.537Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-stripe-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2601,6 +4246,7 @@
       "package.json",
       "src/payments.js"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2619,14 +4265,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 26
+    "latency_ms": 31
   },
   {
-    "run_id": "8827d82f-1c72-464d-a835-a0b655181235",
-    "timestamp": "2026-08-18T07:13:51.738Z",
-    "git_commit": "40a8249",
+    "run_id": "63bb320c-2285-4aba-8671-075bb4a22979",
+    "timestamp": "2026-08-18T09:52:50.571Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-stripe-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2645,6 +4291,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2663,14 +4310,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 25
+    "latency_ms": 33
   },
   {
-    "run_id": "424b5aa6-8137-42d5-a52a-2987d044406e",
-    "timestamp": "2026-08-18T07:13:51.771Z",
-    "git_commit": "40a8249",
+    "run_id": "00560789-461b-4aad-958d-6b1957c731e5",
+    "timestamp": "2026-08-18T09:52:50.606Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-googleapis-apply",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2692,6 +4339,7 @@
       "package.json",
       "src/client.js"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2716,14 +4364,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 18
+    "latency_ms": 41
   },
   {
-    "run_id": "6db9bdc2-7ee9-478a-9eac-40fe3c00db72",
-    "timestamp": "2026-08-18T07:13:51.795Z",
-    "git_commit": "40a8249",
+    "run_id": "91af0404-589a-4aa3-b94c-77e943946581",
+    "timestamp": "2026-08-18T09:52:50.649Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-googleapis-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2745,6 +4393,7 @@
       "package.json",
       "src/client.js"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2763,14 +4412,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 26
+    "latency_ms": 35
   },
   {
-    "run_id": "7a82b215-2823-47ac-86f8-568d1b7882f6",
-    "timestamp": "2026-08-18T07:13:51.826Z",
-    "git_commit": "40a8249",
+    "run_id": "b6c5193a-7c81-4755-9fd2-6ff4d4daeb4d",
+    "timestamp": "2026-08-18T09:52:50.686Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-googleapis-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2789,6 +4438,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2807,14 +4457,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 18
+    "latency_ms": 20
   },
   {
-    "run_id": "3e2e5882-2585-44bd-85c3-261594e0f48e",
-    "timestamp": "2026-08-18T07:13:51.849Z",
-    "git_commit": "40a8249",
+    "run_id": "42997a45-fc27-4bae-8583-4364241f1e19",
+    "timestamp": "2026-08-18T09:52:50.707Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-react-dom-apply",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2836,6 +4486,7 @@
       "package.json",
       "src/index.jsx"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2860,14 +4511,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 6
+    "latency_ms": 11
   },
   {
-    "run_id": "98c15c5b-4b13-47ff-b00d-8ef02a4acf71",
-    "timestamp": "2026-08-18T07:13:51.861Z",
-    "git_commit": "40a8249",
+    "run_id": "1a343a42-ce9e-4643-8682-5afb1f8fd459",
+    "timestamp": "2026-08-18T09:52:50.720Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-react-dom-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2889,6 +4540,7 @@
       "package.json",
       "src/index.jsx"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2907,14 +4559,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 5
+    "latency_ms": 4
   },
   {
-    "run_id": "e54968f5-cf84-4157-896c-1f12d4d4f91d",
-    "timestamp": "2026-08-18T07:13:51.871Z",
-    "git_commit": "40a8249",
+    "run_id": "0f613d0e-fcfd-43fd-abc5-2dc5b9293f31",
+    "timestamp": "2026-08-18T09:52:50.725Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-react-dom-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2933,6 +4585,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -2951,14 +4604,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 15
+    "latency_ms": 2
   },
   {
-    "run_id": "cd50a4f4-bc4a-4d43-b67e-af772655f22e",
-    "timestamp": "2026-08-18T07:13:51.890Z",
-    "git_commit": "40a8249",
+    "run_id": "c1768aa0-38e7-4059-ae92-f147cd53e444",
+    "timestamp": "2026-08-18T09:52:50.728Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-acme-user-apply",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2980,6 +4633,7 @@
       "src/profile.ts",
       "src/settings.ts"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -3004,14 +4658,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 11
+    "latency_ms": 4
   },
   {
-    "run_id": "6d02d244-91f6-423a-8af0-8ccdfbea0067",
-    "timestamp": "2026-08-18T07:13:51.907Z",
-    "git_commit": "40a8249",
+    "run_id": "338957de-505f-49a9-b8c8-e1e5e5168a28",
+    "timestamp": "2026-08-18T09:52:50.734Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-acme-user-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3033,6 +4687,7 @@
       "src/profile.ts",
       "src/settings.ts"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -3051,14 +4706,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 18
+    "latency_ms": 3
   },
   {
-    "run_id": "d3f2f071-bd3d-490c-a58b-b66af7ea2840",
-    "timestamp": "2026-08-18T07:13:51.931Z",
-    "git_commit": "40a8249",
+    "run_id": "cb7223b3-b412-47c6-912e-b19eab4fce1e",
+    "timestamp": "2026-08-18T09:52:50.738Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-acme-user-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3077,6 +4732,7 @@
       ]
     },
     "findings": [],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -3095,14 +4751,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 5
+    "latency_ms": 2
   },
   {
-    "run_id": "a7957864-bfde-4ebb-a42a-9d21d603300d",
-    "timestamp": "2026-08-18T07:13:51.943Z",
-    "git_commit": "40a8249",
+    "run_id": "c8d596fa-62e3-48aa-95ad-295b2d871838",
+    "timestamp": "2026-08-18T09:52:50.743Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-regauge-runtime-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3126,6 +4782,7 @@
       "Dockerfile",
       "package.json"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -3144,14 +4801,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 7
+    "latency_ms": 20
   },
   {
-    "run_id": "febba522-b63d-4870-8d94-cd3025638ee3",
-    "timestamp": "2026-08-18T07:13:51.957Z",
-    "git_commit": "40a8249",
+    "run_id": "4e74b8af-2b42-49bd-9803-3c2f9a608002",
+    "timestamp": "2026-08-18T09:52:50.767Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "reg-regauge-runtime-platform-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3175,6 +4832,7 @@
       "Dockerfile",
       "package.json"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -3193,14 +4851,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 5
+    "latency_ms": 4
   },
   {
-    "run_id": "412a33aa-64ef-40c6-b315-72dcfff15b39",
-    "timestamp": "2026-08-18T07:13:51.971Z",
-    "git_commit": "40a8249",
+    "run_id": "cd8e457c-8816-4938-970a-e71497749f3d",
+    "timestamp": "2026-08-18T09:52:50.774Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "reg-regauge-runtime-digest-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3224,6 +4882,7 @@
       "Dockerfile",
       "package.json"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -3242,14 +4901,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 6
+    "latency_ms": 1
   },
   {
-    "run_id": "e0a445c6-505c-4990-8b0e-b704242909ba",
-    "timestamp": "2026-08-18T07:13:51.987Z",
-    "git_commit": "40a8249",
+    "run_id": "51a51b7a-854d-4c24-8f2a-04d93473208e",
+    "timestamp": "2026-08-18T09:52:50.778Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "reg-regauge-runtime-nested-engine-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3273,6 +4932,7 @@
       "Dockerfile",
       "package.json"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -3291,14 +4951,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 6
+    "latency_ms": 2
   },
   {
-    "run_id": "54d27c86-3aa7-4cc9-8aba-60d086a5b07a",
-    "timestamp": "2026-08-18T07:13:52.000Z",
-    "git_commit": "40a8249",
+    "run_id": "9b509019-218f-4cbc-982f-c437f5a5283f",
+    "timestamp": "2026-08-18T09:52:50.783Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "reg-regauge-aws-vendored-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3321,6 +4981,7 @@
       "src/dynamo.js",
       "src/s3.js"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -3339,14 +5000,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 5
+    "latency_ms": 29
   },
   {
-    "run_id": "de71cd00-36f2-445b-82d9-690c0524849c",
-    "timestamp": "2026-08-18T07:13:52.011Z",
-    "git_commit": "40a8249",
+    "run_id": "f4bfa157-c763-42ce-99ca-8fbaf21a7784",
+    "timestamp": "2026-08-18T09:52:50.814Z",
+    "git_commit": "da10e8c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "reg-regauge-internal-api-acme-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3368,6 +5029,7 @@
       "src/profile.ts",
       "src/settings.ts"
     ],
+    "findingGraphPaths": [],
     "confidence": null,
     "produced_edit": false,
     "grader_results": [
@@ -3386,14 +5048,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 8
+    "latency_ms": 3
   },
   {
-    "run_id": "a7cea7c3-16fb-4580-975c-39ffba07f147",
-    "timestamp": "2026-08-18T07:13:52.036Z",
-    "git_commit": "40a8249",
+    "run_id": "86ef0903-1835-4b48-8543-e1cee1b01f38",
+    "timestamp": "2026-08-18T09:52:50.823Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ref-flat-holdout-0",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3419,6 +5081,46 @@
       "src/infra/provider/client.ts",
       "src/services/checkoutService.ts",
       "test/fixtures/charges.ts"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -3450,14 +5152,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 57
+    "latency_ms": 21
   },
   {
-    "run_id": "00c81792-4cc2-40a6-824e-ee6108b6bdf4",
-    "timestamp": "2026-08-18T07:13:52.148Z",
-    "git_commit": "40a8249",
+    "run_id": "99251029-a3c3-4a21-8e1d-c8116b3c210e",
+    "timestamp": "2026-08-18T09:52:50.864Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ref-ref-holdout-1",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3485,6 +5187,72 @@
       "src/services/settlementService.ts",
       "src/services/subscriptionService.ts",
       "test/fixtures/charges.ts"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/settlementService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/settlementService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/subscriptionService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -3516,14 +5284,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 85
+    "latency_ms": 25
   },
   {
-    "run_id": "5e56bdc5-b46b-45c1-b583-91d1d2c9a0f3",
-    "timestamp": "2026-08-18T07:13:52.284Z",
-    "git_commit": "40a8249",
+    "run_id": "802ad657-aa09-4c40-9772-b10acde718ba",
+    "timestamp": "2026-08-18T09:52:50.909Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ref-nested2-holdout-2",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3549,6 +5317,46 @@
       "src/infra/provider/client.ts",
       "src/services/checkoutService.ts",
       "test/fixtures/charges.ts"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -3580,14 +5388,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 42
+    "latency_ms": 16
   },
   {
-    "run_id": "361c8e78-f131-448a-97d7-952d9579b55d",
-    "timestamp": "2026-08-18T07:13:52.365Z",
-    "git_commit": "40a8249",
+    "run_id": "a216b0de-37c0-437d-ac74-016e582e9f63",
+    "timestamp": "2026-08-18T09:52:50.940Z",
+    "git_commit": "da10e8c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+40a8249",
+    "product_version": "mendpoint@1.0.0+da10e8c",
     "scenario_id": "gen-fettler-ref-allOf-holdout-3",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3614,6 +5422,59 @@
       "src/services/checkoutService.ts",
       "src/services/subscriptionService.ts",
       "test/fixtures/charges.ts"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/subscriptionService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/subscriptionService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "test/fixtures/charges.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "test/fixtures/charges.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -3645,6 +5506,6 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 51
+    "latency_ms": 23
   }
 ]
