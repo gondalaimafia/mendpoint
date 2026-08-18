@@ -120,16 +120,88 @@ describe("evaluateSecurityAttestation tiers", () => {
     expect(out.tier).toBe("claim");
   });
 
-  it("a scanner result with tool identity is verified", () => {
+  it("a caller-supplied scanner result is recorded but NOT verified without a platform check", () => {
     const out = evaluateSecurityAttestation({
       attestation: scanner(),
       expectedSubjectDigest: SUBJECT,
       now: NOW,
     });
-    expect(out.verified).toBe(true);
+    // Under a claim-tier (default) policy it satisfies the gate, but `verified`
+    // reflects a platform check that did not happen — the tier label alone can
+    // never produce it.
+    expect(out.satisfied).toBe(true);
+    expect(out.verified).toBe(false);
     expect(out.tier).toBe("scanner");
     expect(out.tool).toEqual({ name: "scanalot", version: "3.2.1" });
     expect(out.evidenceRef).toBe("s3://evidence/scan-123.json");
+    expect(out.detail).toMatch(/NOT independently verified/i);
+  });
+
+  it("no request body alone can produce verified: true — a matching principal without an evidence check is not enough", () => {
+    const out = evaluateSecurityAttestation({
+      attestation: scanner({ principal: "ci-bot" }),
+      expectedSubjectDigest: SUBJECT,
+      // The platform bound the principal but no evidence dereference is wired.
+      expectedPrincipal: "ci-bot",
+      now: NOW,
+    });
+    expect(out.verified).toBe(false);
+  });
+
+  it("a scanner result the platform verifies (principal-bound + evidence dereferenced) IS verified", () => {
+    const seen: unknown[] = [];
+    const out = evaluateSecurityAttestation({
+      attestation: scanner({ principal: "ci-bot" }),
+      expectedSubjectDigest: SUBJECT,
+      expectedPrincipal: "ci-bot",
+      verifyEvidence: (verifyInput) => {
+        seen.push(verifyInput);
+        return verifyInput.evidenceRef === "s3://evidence/scan-123.json";
+      },
+      now: NOW,
+    });
+    expect(out.verified).toBe(true);
+    expect(out.satisfied).toBe(true);
+    expect(out.code).toBe("valid_scanner");
+    // The platform hook received the exact evidence reference and subject binding.
+    expect(seen).toEqual([
+      {
+        evidenceRef: "s3://evidence/scan-123.json",
+        subjectDigest: SUBJECT,
+        principal: "ci-bot",
+        tool: { name: "scanalot", version: "3.2.1" },
+      },
+    ]);
+  });
+
+  it("a scanner result minted in a principal the request was not authenticated as is not verified", () => {
+    const out = evaluateSecurityAttestation({
+      attestation: scanner({ principal: "attacker" }),
+      expectedSubjectDigest: SUBJECT,
+      expectedPrincipal: "ci-bot",
+      verifyEvidence: () => true,
+      now: NOW,
+    });
+    expect(out.verified).toBe(false);
+  });
+
+  it("fails closed when the platform evidence resolver throws", () => {
+    const out = evaluateSecurityAttestation({
+      attestation: scanner({ principal: "ci-bot" }),
+      expectedSubjectDigest: SUBJECT,
+      policy: securityAttestationPolicyFromEnv({
+        MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+      }),
+      expectedPrincipal: "ci-bot",
+      verifyEvidence: () => {
+        throw new Error("evidence store unavailable");
+      },
+      now: NOW,
+    });
+
+    expect(out.satisfied).toBe(false);
+    expect(out.verified).toBe(false);
+    expect(out.code).toBe("policy_insufficient");
   });
 
   it("rejects a scanner attestation missing tool identity as malformed", () => {
@@ -250,7 +322,10 @@ describe("evaluatePrGates security policy integration", () => {
     expect(r.gates.find((g) => g.id === "security-scan")?.ok).toBe(false);
   });
 
-  it("policy requiring verified PASSES a scanner-backed result", () => {
+  it("the customer-profile require-verified policy cannot be satisfied by a caller-supplied scanner string", () => {
+    // A well-formed, subject-bound scanner attestation typed into the request
+    // body does NOT satisfy require-verified, because the pipeline never
+    // dereferenced its evidence — it fails closed, unverified.
     const r = evaluatePrGates({
       ...gateInput,
       securityScanAttestation: scanner(),
@@ -258,10 +333,28 @@ describe("evaluatePrGates security policy integration", () => {
         MENDPOINT_DEPLOYMENT_PROFILE: "customer",
       }),
     });
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
     const sec = r.gates.find((g) => g.id === "security-scan");
-    expect(sec?.ok).toBe(true);
-    expect(sec?.verified).toBe(true);
+    expect(sec?.ok).toBe(false);
+    expect(sec?.verified).toBe(false);
+    expect(r.attestation.code).toBe("policy_insufficient");
+    expect(sec?.detail).toMatch(/not independently verified/i);
+  });
+
+  it("the require-verified policy is satisfied only by a platform-verified scanner result", () => {
+    // Same policy, but the platform verifies the scanner result directly (the
+    // gate does not thread a verifier, so this is asserted at the evaluator).
+    const out = evaluateSecurityAttestation({
+      attestation: scanner({ principal: "ci-bot" }),
+      expectedSubjectDigest: SUBJECT,
+      policy: securityAttestationPolicyFromEnv({ MENDPOINT_DEPLOYMENT_PROFILE: "customer" }),
+      expectedPrincipal: "ci-bot",
+      verifyEvidence: () => true,
+      now: NOW,
+    });
+    expect(out.satisfied).toBe(true);
+    expect(out.verified).toBe(true);
+    expect(out.code).toBe("valid_scanner");
   });
 
   it("customer profile + operator override accepts a bare claim and records the downgrade in evidence", () => {
@@ -279,6 +372,25 @@ describe("evaluatePrGates security policy integration", () => {
     // The reviewer must see plainly that a weaker tier was accepted under override.
     expect(r.reportMarkdown).toMatch(/operator override/i);
     expect(r.gates.find((g) => g.id === "security-scan")?.detail).toMatch(
+      /accepted under operator override/i,
+    );
+  });
+
+  it("records the operator downgrade when an unverified scanner assertion is accepted", () => {
+    const r = evaluatePrGates({
+      ...gateInput,
+      securityScanAttestation: scanner(),
+      securityAttestationPolicy: securityAttestationPolicyFromEnv({
+        MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+        MENDPOINT_SECURITY_ATTESTATION_ALLOW_UNVERIFIED: "1",
+      }),
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.attestation.verified).toBe(false);
+    expect(r.attestation.downgradeApplied).toBe(true);
+    expect(r.reportMarkdown).toMatch(/operator override/i);
+    expect(r.gates.find((gate) => gate.id === "security-scan")?.detail).toMatch(
       /accepted under operator override/i,
     );
   });

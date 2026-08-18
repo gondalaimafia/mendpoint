@@ -12,6 +12,7 @@ import {
   createVmSandbox,
   detectVmCapabilities,
   ensureBuildCacheDir,
+  vmStatusReport,
 } from "./vm.js";
 
 describe("vm backend isolation", () => {
@@ -84,10 +85,34 @@ describe("vm backend isolation", () => {
   });
 
   it("rejects cache key path traversal and clears cached roots", () => {
-    expect(() => ensureBuildCacheDir("../escape")).toThrow(/safe characters/i);
+    expect(() => ensureBuildCacheDir("tenant-a", "../escape")).toThrow(/safe characters/i);
+    expect(ensureBuildCacheDir("tenant-a", "first")).not.toBe(
+      ensureBuildCacheDir("tenant-a", "second"),
+    );
+    expect(ensureBuildCacheDir("tenant-a", "shared")).not.toBe(
+      ensureBuildCacheDir("tenant-b", "shared"),
+    );
     const key = `vm-test-${Date.now()}`;
-    const sbx = createVmSandbox({ backend: "local", cacheKey: key });
+    const sbx = createVmSandbox({ backend: "local", cacheKey: key, tenantId: "tenant-a" });
     sbx.dispose();
-    expect(() => clearBuildCache(key)).not.toThrow();
+    expect(() => clearBuildCache()).not.toThrow();
+  });
+
+  it("does not expose process-wide tenant cache metadata in the VM status report", () => {
+    const first = createVmSandbox({
+      backend: "local",
+      cacheKey: "shared-key",
+      tenantId: "tenant-a",
+    });
+    const second = createVmSandbox({
+      backend: "local",
+      cacheKey: "shared-key",
+      tenantId: "tenant-b",
+    });
+    first.dispose();
+    second.dispose();
+
+    expect(vmStatusReport()).not.toHaveProperty("buildCache");
+    clearBuildCache();
   });
 });

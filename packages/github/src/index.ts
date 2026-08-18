@@ -752,6 +752,7 @@ export {
   MockGitLabDelivery,
   HttpGitLabDelivery,
   GitLabDeliveryError,
+  MOCK_GITLAB_BASE_REVISION,
   createGitLabDelivery,
   gitlabAsReviewableChangeDelivery,
   type GitLabDelivery,

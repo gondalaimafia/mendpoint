@@ -107,9 +107,10 @@ export type PlatformClient = {
   incremental: (repoPath: string, repoId?: string) => ReturnType<typeof incrementalReingest>;
   gnnExport: (outPath?: string) => { nodes: number; edges: number; path?: string };
   vmStatus: () => ReturnType<typeof vmStatusReport>;
-  createVm: (opts?: { backend?: "local" | "docker" | "firecracker"; cacheKey?: string }) => ReturnType<
-    typeof createVmSandbox
-  >;
+  createVm: (opts?: {
+    backend?: "local" | "docker" | "firecracker";
+    cacheKey?: string;
+  }) => ReturnType<typeof createVmSandbox>;
   liveSandbox: () => ReturnType<typeof startLiveSandbox>;
   scmProviders: () => ReturnType<typeof listScmProviders>;
   alerts: () => ReturnType<typeof recentAlerts>;
@@ -242,10 +243,18 @@ export function createPlatform(scope: GraphTenantScope): PlatformClient {
       return vmStatusReport();
     },
     createVm(opts) {
-      return createVmSandbox({
-        backend: opts?.backend ?? "local",
-        cacheKey: opts?.cacheKey,
-      });
+      const backend = opts?.backend ?? "local";
+      if (opts?.cacheKey !== undefined) {
+        // The client is already tenant-bound. Derive cache authority from that
+        // immutable scope instead of accepting a second caller-controlled tenant
+        // that could redirect cache reads into another tenant's namespace.
+        return createVmSandbox({
+          backend,
+          cacheKey: opts.cacheKey,
+          tenantId: scope.tenantId,
+        });
+      }
+      return createVmSandbox({ backend, tenantId: scope.tenantId });
     },
     liveSandbox() {
       return startLiveSandbox();

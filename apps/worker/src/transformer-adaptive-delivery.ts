@@ -283,7 +283,7 @@ function buildDeliveryIntent(
     `- Output digest: \`${artifact.review.verification.outputDigest}\`.`,
     `- Adaptive repair converged on candidate digest \`${candidate.candidateDigest}\`.`,
     `- Triggering failed check: \`${triggeringCheck}\`.`,
-    "- Delivery reverified the seal SHA, candidate digest, base revision, paths, contents, and file modes before creating this draft.",
+    "- Delivery reverified the seal SHA, candidate digest, base revision, paths, and contents before creating this draft.",
   ].join("\n");
   return Object.freeze({
     owner: repository.owner,
@@ -341,7 +341,11 @@ function assertDeliveryEvidence(
     result.branch !== expected.branch ||
     result.title !== expected.title ||
     result.baseBranch !== expected.baseBranch ||
-    result.baseSha !== expected.expectedBaseSha
+    result.baseSha !== expected.expectedBaseSha ||
+    // Require a real 40-hex commit id, matching Warden's assertEvidence, so an
+    // absent or fabricated commit SHA fails closed instead of being persisted
+    // as a delivered success.
+    !/^[a-f0-9]{40}$/.test(result.commitSha)
   ) {
     throw new Error("transformer_adaptive_delivery_evidence_mismatch");
   }

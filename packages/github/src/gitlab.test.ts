@@ -130,6 +130,105 @@ describe("HttpGitLabDelivery", () => {
     expect(calls[0]!.url).toContain(`ref=${encodeURIComponent(TARGET)}`);
   });
 
+  it("rejects an existing deterministic branch that is not at the requested commit", async () => {
+    const requested = "a".repeat(40);
+    const moved = "b".repeat(40);
+    const { fetchImpl } = scriptedFetch([
+      {
+        method: "POST",
+        match: (u) => u.includes("/repository/branches?"),
+        reply: { ok: false, status: 400, json: { message: "Branch already exists" } },
+      },
+      {
+        method: "GET",
+        match: (u) => u.includes(`/repository/branches/${encodeURIComponent(SOURCE)}`),
+        reply: { ok: true, status: 200, json: { name: SOURCE, commit: { id: moved } } },
+      },
+    ]);
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+
+    await expect(delivery.createBranch(NS, PROJECT, SOURCE, requested)).rejects.toThrow(
+      /existing branch head drift/i,
+    );
+  });
+
+  it("verifies an existing exact commit from its parent, diff, mode, and bytes", async () => {
+    const commitSha = "c".repeat(40);
+    const parentSha = "a".repeat(40);
+    const content = "export const migrated = true;\n";
+    const { fetchImpl } = scriptedFetch([
+      {
+        method: "GET",
+        match: (u) => u.endsWith(`/repository/commits/${commitSha}`),
+        reply: {
+          ok: true,
+          status: 200,
+          json: { id: commitSha, parent_ids: [parentSha], message: "Apply migration" },
+        },
+      },
+      {
+        method: "GET",
+        match: (u) => u.includes(`/repository/commits/${commitSha}/diff?`),
+        reply: {
+          ok: true,
+          status: 200,
+          json: [
+            {
+              old_path: "src/client.ts",
+              new_path: "src/client.ts",
+              new_file: false,
+              deleted_file: false,
+              renamed_file: false,
+              a_mode: "100644",
+              b_mode: "100755",
+            },
+          ],
+        },
+      },
+      {
+        method: "GET",
+        match: (u) => u.includes("/repository/files/src%2Fclient.ts?"),
+        reply: {
+          ok: true,
+          status: 200,
+          json: {
+            encoding: "base64",
+            content: Buffer.from(content, "utf8").toString("base64"),
+            file_mode: "100755",
+            commit_id: commitSha,
+          },
+        },
+      },
+      {
+        method: "GET",
+        match: (u) => u.includes(`/repository/branches/${encodeURIComponent(SOURCE)}`),
+        reply: {
+          ok: true,
+          status: 200,
+          json: { name: SOURCE, commit: { id: commitSha } },
+        },
+      },
+    ]);
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+
+    await expect(
+      delivery.verifyExactCommit(NS, PROJECT, SOURCE, {
+        commitSha,
+        parentSha,
+        message: "Apply migration",
+        files: [{ path: "src/client.ts", content, mode: "100755" }],
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      delivery.verifyExactCommit(NS, PROJECT, SOURCE, {
+        commitSha,
+        parentSha,
+        message: "Apply migration",
+        files: [{ path: "src/client.ts", content: "tampered\n", mode: "100755" }],
+      }),
+    ).resolves.toBe(false);
+  });
+
   it("commits with create/update actions decided by file existence", async () => {
     const { fetchImpl, calls } = scriptedFetch([
       // existing file -> update
@@ -211,6 +310,10 @@ describe("HttpGitLabDelivery", () => {
             web_url: `https://gitlab.com/${NS}/${PROJECT}/-/merge_requests/7`,
             title: "Draft: Stripe migration",
             draft: true,
+            source_branch: SOURCE,
+            target_branch: TARGET,
+            description: "Human review required.",
+            sha: "c".repeat(40),
           },
         },
       },
@@ -223,6 +326,7 @@ describe("HttpGitLabDelivery", () => {
       "Stripe migration",
       "Human review required.",
       TARGET,
+      "c".repeat(40),
     );
     expect(mr).toEqual({
       number: 7,
@@ -253,8 +357,11 @@ describe("HttpGitLabDelivery", () => {
             {
               iid: 3,
               web_url: "https://gitlab.com/acme/shop/-/merge_requests/3",
-              title: "Draft: existing",
+              title: "Draft: new",
               draft: true,
+              source_branch: SOURCE,
+              target_branch: TARGET,
+              description: "b",
             },
           ],
         },
@@ -264,6 +371,84 @@ describe("HttpGitLabDelivery", () => {
     const mr = await delivery.openDraftMergeRequest(NS, PROJECT, SOURCE, "new", "b", TARGET);
     expect(mr.number).toBe(3);
     expect(calls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  it("rejects an existing merge request whose exact delivery evidence diverges", async () => {
+    const { fetchImpl } = scriptedFetch([
+      {
+        method: "GET",
+        match: (u) => u.includes("/merge_requests?"),
+        reply: {
+          ok: true,
+          status: 200,
+          json: [
+            {
+              iid: 3,
+              web_url: "https://gitlab.com/acme/shop/-/merge_requests/3",
+              title: "Draft: new",
+              draft: true,
+              source_branch: SOURCE,
+              target_branch: TARGET,
+              description: "different body",
+            },
+          ],
+        },
+      },
+    ]);
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+
+    await expect(
+      delivery.openDraftMergeRequest(NS, PROJECT, SOURCE, "new", "b", TARGET),
+    ).rejects.toThrow(/merge request evidence diverged/i);
+  });
+
+  it("reconciles a lost merge-request response without a second POST", async () => {
+    let reads = 0;
+    let posts = 0;
+    const fetchImpl: GitLabFetch = async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "GET" && url.includes("/merge_requests?")) {
+        reads++;
+        return reads === 1
+          ? { ok: true, status: 200, json: [] }
+          : {
+              ok: true,
+              status: 200,
+              json: [
+                {
+                  iid: 7,
+                  web_url: `https://gitlab.com/${NS}/${PROJECT}/-/merge_requests/7`,
+                  title: "Draft: Stripe migration",
+                  draft: true,
+                  source_branch: SOURCE,
+                  target_branch: TARGET,
+                  description: "Human review required.",
+                  sha: "c".repeat(40),
+                },
+              ],
+            };
+      }
+      if (method === "POST" && url.endsWith("/merge_requests")) {
+        posts++;
+        return { ok: false, status: 0, json: { error: "response lost" } };
+      }
+      return { ok: false, status: 404, json: {} };
+    };
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+
+    const result = await delivery.openDraftMergeRequest(
+      NS,
+      PROJECT,
+      SOURCE,
+      "Stripe migration",
+      "Human review required.",
+      TARGET,
+      "c".repeat(40),
+    );
+
+    expect(result.number).toBe(7);
+    expect(posts).toBe(1);
+    expect(reads).toBe(2);
   });
 
   it("fails closed when the merge request API rejects the request", async () => {

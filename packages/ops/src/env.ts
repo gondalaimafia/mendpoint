@@ -71,6 +71,7 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     LLM_AGENT_URL: env.LLM_AGENT_URL,
     MENDPOINT_DEPLOYMENT_PROFILE: env.MENDPOINT_DEPLOYMENT_PROFILE,
     MENDPOINT_DEPLOYMENT_CLASS: env.MENDPOINT_DEPLOYMENT_CLASS,
+    MENDPOINT_SANDBOX_FLY_MODE: env.MENDPOINT_SANDBOX_FLY_MODE,
     MENDPOINT_FEED_POLLING_ENABLED: env.MENDPOINT_FEED_POLLING_ENABLED,
     POLL_LOCAL_ONLY: env.POLL_LOCAL_ONLY,
     MENDPOINT_PILOT_SEED: env.MENDPOINT_PILOT_SEED,
@@ -257,6 +258,16 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
           );
         }
       }
+    }
+    // Sandbox mock mode fabricates a passing verification: the mock Fly client
+    // mints exit_code 0 without ever running the command, so it must never reach
+    // a real deployment. Refused here — alongside the other production-mode
+    // guards, so it is discoverable at boot and not only at the sandbox call
+    // site. Mirrors the fail-closed shape used for GITHUB_MODE above.
+    if (env.MENDPOINT_SANDBOX_FLY_MODE === "mock") {
+      errors.push(
+        "MENDPOINT_SANDBOX_FLY_MODE=mock is forbidden in production; the mock sandbox reports a passing verification without executing the command; unset it and wire a real Fly sandbox token",
+      );
     }
     if (!env.CORS_ORIGINS && !env.WEB_URL) {
       warnings.push("CORS_ORIGINS / WEB_URL unset — defaulting to localhost origins");

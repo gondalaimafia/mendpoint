@@ -167,6 +167,10 @@ describe("Warden candidate GitLab draft delivery", () => {
   it("fails closed and does not deliver when GitLab returns a non-draft merge request", async () => {
     const { db, dataRoot, delivery, job } = fixture();
     const nonDraft: GitLabDelivery = {
+      async resolveBranchSha(_namespace, _project, branch) {
+        return branch === "main" ? "a".repeat(40) : undefined;
+      },
+      async verifyExactCommit() { return false; },
       async createBranch() {},
       async commitFiles() {
         return "f".repeat(40);

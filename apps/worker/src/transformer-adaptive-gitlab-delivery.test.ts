@@ -240,6 +240,10 @@ describe("Transformer adaptive GitLab draft delivery", () => {
   it("fails closed and does not deliver when GitLab returns a non-draft merge request", async () => {
     const value = fixture();
     const nonDraft: GitLabDelivery = {
+      async resolveBranchSha(_namespace, _project, branch) {
+        return branch === "main" ? BASE_SHA : undefined;
+      },
+      async verifyExactCommit() { return false; },
       async createBranch() {},
       async commitFiles() {
         return "f".repeat(40);
@@ -266,6 +270,81 @@ describe("Transformer adaptive GitLab draft delivery", () => {
       status: "delivery_failed",
       commitSha: null,
     });
+  });
+
+  it("fails closed and does not deliver when the base branch has drifted since the seal", async () => {
+    const value = fixture();
+    const drifted: GitLabDelivery = {
+      // The base branch has moved to a different commit than the sealed candidate
+      // was approved against, exactly as the GitHub path would detect.
+      async resolveBranchSha(_namespace, _project, branch) {
+        return branch === "main" ? "d".repeat(40) : undefined;
+      },
+      async verifyExactCommit() { return false; },
+      async createBranch() {
+        throw new Error("createBranch must not run once base drift is detected");
+      },
+      async commitFiles() {
+        throw new Error("commitFiles must not run once base drift is detected");
+      },
+      async openDraftMergeRequest() {
+        throw new Error("openDraftMergeRequest must not run once base drift is detected");
+      },
+    };
+
+    const result = await runTransformerAdaptiveDelivery(workerInput(value, gitlabGithub(drifted)));
+
+    expect(result).toMatchObject({
+      status: "delivery_failed",
+      errorCode: "transformer_adaptive_delivery_terminal",
+    });
+    expect(getAdaptiveCandidate(value.db, TENANT_ID, value.candidateId)?.status).toBe("approved");
+    expect(getAdaptiveDeliveryByCandidate(value.db, TENANT_ID, value.candidateId)).toMatchObject({
+      status: "delivery_failed",
+      commitSha: null,
+    });
+  });
+
+  it("fails closed when GitLab omits the commit id — no fabricated SHA is persisted", async () => {
+    const value = fixture();
+    const noCommitId: GitLabDelivery = {
+      async resolveBranchSha(_namespace, _project, branch) {
+        return branch === "main" ? BASE_SHA : undefined;
+      },
+      async verifyExactCommit() { return false; },
+      async createBranch() {},
+      // GitLab omitted the commit id. The adapter returns it unshaped (empty),
+      // and the worker's evidence assertion rejects it: both lanes require a
+      // real 40-hex id, so no green delivery record is written.
+      async commitFiles() {
+        return "";
+      },
+      async openDraftMergeRequest(namespace, project, sourceBranch, title) {
+        return {
+          number: 9,
+          url: `https://gitlab.com/${namespace}/${project}/-/merge_requests/9`,
+          branch: sourceBranch,
+          title,
+          draft: true,
+        } as MergeRequestResult;
+      },
+    };
+
+    const result = await runTransformerAdaptiveDelivery(workerInput(value, gitlabGithub(noCommitId)));
+
+    // The evidence assertion rejects the absent commit id after the draft MR was
+    // already opened remotely, so this is treated as a remote-side-effect-
+    // uncertain retry — never a delivered success. No commit SHA is persisted
+    // and the candidate stays approved: no green record with a fabricated or
+    // absent commit is ever written.
+    expect(result).toMatchObject({
+      status: "retry_scheduled",
+      errorCode: "transformer_adaptive_delivery_remote_side_effect_uncertain",
+    });
+    expect(getAdaptiveCandidate(value.db, TENANT_ID, value.candidateId)?.status).toBe("approved");
+    const persisted = getAdaptiveDeliveryByCandidate(value.db, TENANT_ID, value.candidateId)!;
+    expect(persisted.status).not.toBe("delivered");
+    expect(persisted.commitSha).toBeNull();
   });
 
   it("selects GitHub delivery when SCM_PROVIDER is unset and GitLab when it is gitlab", async () => {

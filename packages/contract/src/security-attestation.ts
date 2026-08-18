@@ -7,8 +7,15 @@
  * that (a) names the attesting principal, (b) is bound to the exact change it
  * covers via a subject digest so it cannot be replayed onto a different change,
  * (c) may carry an expiry, and (d) distinguishes a bare human claim from a
- * scanner result carrying tool identity and an evidence reference. Only the
- * latter tier can ever reach `verified: true`.
+ * scanner result carrying tool identity and an evidence reference.
+ *
+ * `verified: true` is NOT a property the caller can assert. Only a scanner-tier
+ * result is eligible, and it becomes verified only when the platform itself
+ * checks it — binds it to the authenticated principal and dereferences its
+ * evidence (the `expectedPrincipal` / `verifyEvidence` seam below). With neither
+ * wired today, a scanner tier is recorded and can satisfy a claim-tier policy,
+ * but is never `verified`, and a require-verified policy fails closed. So typing
+ * `"tier":"scanner"` into a request body can never produce a verified gate.
  *
  * The type is a discriminated union on `tier`, so the two tiers are structurally
  * different, not a string convention.
@@ -50,8 +57,10 @@ export type SecurityScanClaim = SecurityAttestationBase & {
 
 /**
  * Tier 2 — a scanner result. Carries the identity of the tool that produced it
- * and a reference to durable evidence. This is the only tier that can be
- * `verified`.
+ * and a reference to durable evidence. This is the only tier eligible to be
+ * `verified`, but eligibility is not verification: it is verified only once the
+ * platform binds it to the authenticated principal and dereferences its
+ * evidence.
  */
 export type SecurityScanResult = SecurityAttestationBase & {
   tier: "scanner";
@@ -200,7 +209,11 @@ export type SecurityAttestationOutcome = {
   present: boolean;
   /** Effective tier; "none" when absent or rejected before a tier is decided. */
   tier: "none" | SecurityAttestationTier;
-  /** True only for a valid, unexpired, subject-bound scanner result. */
+  /**
+   * True only for a valid, unexpired, subject-bound scanner result that the
+   * PLATFORM verified (principal-bound and evidence dereferenced) — never from
+   * the caller's tier label alone.
+   */
   verified: boolean;
   /** Did the attestation satisfy the gate under the active policy? */
   satisfied: boolean;
@@ -327,6 +340,30 @@ export function evaluateSecurityAttestation(input: {
   policy?: SecurityAttestationPolicy;
   /** Evaluation clock (ISO-8601); defaults to now. */
   now?: string;
+  /**
+   * The authenticated principal the platform observed for this request. A
+   * scanner result is only VERIFIED when it is bound to this principal — a
+   * caller cannot mint a verified attestation in someone else's name. Absent
+   * (today's wiring: the gate does not yet pass an authenticated principal down)
+   * means no scanner result can be verified.
+   */
+  expectedPrincipal?: string;
+  /**
+   * Platform-side dereference of a scanner result's evidenceRef. `verified` is
+   * true ONLY when this hook is supplied AND returns true for the referenced
+   * evidence — never from the caller's `tier` label alone. Absent (today's
+   * wiring: no scanner or durable evidence store is connected) means a
+   * scanner-tier attestation is at most `satisfied` under a claim-tier policy,
+   * never `verified`, and a require-verified policy fails closed. Wiring real
+   * verification means implementing this to fetch the durable scan artifact and
+   * confirm it is authentic and covers this subject.
+   */
+  verifyEvidence?: (input: {
+    evidenceRef: string;
+    subjectDigest: string;
+    principal: string;
+    tool: { name: string; version: string };
+  }) => boolean;
 }): SecurityAttestationOutcome {
   const policy = input.policy ?? DEFAULT_SECURITY_ATTESTATION_POLICY;
   const requiredTier = policy.requiredTier;
@@ -420,10 +457,39 @@ export function evaluateSecurityAttestation(input: {
     }
 
     const tier = attestation.tier;
-    const verified = tier === "scanner";
+    // `verified` must reflect something the platform checked, never the caller's
+    // `tier` label alone. A scanner result is verified ONLY when it is bound to
+    // the authenticated principal AND the platform dereferences its evidenceRef
+    // and confirms the durable evidence. With neither wired (today), `verified`
+    // is always false — so no request body alone can produce a verified gate.
+    let verified = false;
+    if (
+      tier === "scanner" &&
+      input.expectedPrincipal !== undefined &&
+      principal === input.expectedPrincipal &&
+      input.verifyEvidence !== undefined
+    ) {
+      try {
+        verified =
+          input.verifyEvidence({
+            evidenceRef: (scannerFields as { evidenceRef: string }).evidenceRef,
+            subjectDigest,
+            principal,
+            tool: (scannerFields as { tool: { name: string; version: string } }).tool,
+          }) === true;
+      } catch {
+        // Evidence authority failure is not proof. Treat the result as
+        // unverified so require-verified deployments block without converting a
+        // transient evidence-store failure into a request crash.
+        verified = false;
+      }
+    }
 
-    // Policy — fail closed when the supplied tier is below the required tier.
-    if (TIER_RANK[tier] < TIER_RANK[requiredTier]) {
+    // Policy — a require-verified deployment (customer profile / require-verified
+    // flag) is satisfied ONLY by a platform-verified scanner result. A claim
+    // tier, or a scanner tier the platform did not independently verify, fails
+    // closed: a caller-supplied string can never satisfy require-verified.
+    if (requiredTier === "scanner" && !verified) {
       return {
         ...common,
         tier,
@@ -432,7 +498,10 @@ export function evaluateSecurityAttestation(input: {
         unattributed: false,
         downgradeApplied: false,
         code: "policy_insufficient",
-        detail: `policy requires a verified scanner result; supplied tier '${tier}' is insufficient — rejected`,
+        detail:
+          tier === "scanner"
+            ? `policy requires a verified scanner result; supplied scanner attestation was not independently verified by this pipeline — rejected`
+            : `policy requires a verified scanner result; supplied tier '${tier}' is insufficient — rejected`,
       };
     }
 
@@ -441,15 +510,18 @@ export function evaluateSecurityAttestation(input: {
         tool: { name: string; version: string };
         evidenceRef: string;
       };
+      const downgradeApplied = policy.downgradeApplied && !verified;
       return {
         ...common,
         tier,
         verified,
         satisfied: true,
         unattributed: false,
-        downgradeApplied: false,
+        downgradeApplied,
         code: "valid_scanner",
-        detail: `verified by ${tool.name}@${tool.version} for change ${subjectDigest.slice(0, 12)} (evidence ${evidenceRef}), attested by ${principal} at ${attestedAt}`,
+        detail: verified
+          ? `verified by ${tool.name}@${tool.version} for change ${subjectDigest.slice(0, 12)} (evidence ${evidenceRef}), attested by ${principal} at ${attestedAt}`
+          : `scanner result asserted by ${principal} at ${attestedAt} for change ${subjectDigest.slice(0, 12)} (evidence ${evidenceRef}) — NOT independently verified by this pipeline${downgradeSuffix}`,
       };
     }
     return {
