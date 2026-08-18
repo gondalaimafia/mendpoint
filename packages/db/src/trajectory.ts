@@ -737,6 +737,28 @@ export function getTrajectory(
   return row ? trajectory(row) : undefined;
 }
 
+/**
+ * Resolve the trajectory recorded for one run, tenant-scoped, using the
+ * (tenant_id, run_id) index. Read-only. A run may in principle have more than one
+ * trajectory row (e.g. a re-attempt); the most recent is returned. Returns
+ * undefined when no trajectory was captured for the run — the caller MUST treat
+ * that absence as "not recorded", never as "nothing was supplied": the two are
+ * different facts and only one is knowable from a missing row.
+ */
+export function getTrajectoryByRun(
+  db: AppDb,
+  tenantId: string,
+  runId: string,
+): Trajectory | undefined {
+  const row = one<TrajectoryRow>(
+    db,
+    `SELECT * FROM trajectories WHERE tenant_id = ? AND run_id = ?
+     ORDER BY created_at DESC LIMIT 1`,
+    [tenantId, runId],
+  );
+  return row ? trajectory(row) : undefined;
+}
+
 export function listTrajectorySteps(
   db: AppDb,
   tenantId: string,

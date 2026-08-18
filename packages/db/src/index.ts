@@ -3611,6 +3611,7 @@ export {
   MAX_TRAJECTORY_BLOB_CHARS,
   finalizeTrajectory,
   getTrajectory,
+  getTrajectoryByRun,
   getTrajectoryStepPair,
   listTrajectories,
   listTrajectorySteps,
