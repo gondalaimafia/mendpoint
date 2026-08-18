@@ -772,6 +772,43 @@ CREATE TABLE IF NOT EXISTS fettler_rollout_decisions (
 CREATE INDEX IF NOT EXISTS fettler_rollout_decisions_campaign_idx
   ON fettler_rollout_decisions(tenant_id, campaign_id, campaign_revision, created_at);
 
+-- Mission: the shared, tenant-scoped execution primitive (spec 6.1, 8.6). The
+-- single join point across the two previously disjoint execution stacks. Both
+-- linkages are carried here, on this new table, so neither stack is
+-- restructured. Fettler/Warden campaigns are referenced by a same-database
+-- foreign key (fettler_campaign_id); ReGauge/Transformer campaigns live in a
+-- separate database (TransformerControlPlaneStore) and are projected here by
+-- reference (regauge_campaign_id, no cross-database foreign key). Spec 6.1
+-- composition fields are held by reference (repository/snapshot scope and the
+-- linked execution record) rather than duplicated: migration tasks, evidence,
+-- execution history, verification results, and learning provenance are reachable
+-- through the linked records. As a brand-new table this converges on fresh and
+-- pre-change databases purely through CREATE TABLE/INDEX IF NOT EXISTS, with no
+-- ALTER and no shape change to any existing table.
+CREATE TABLE IF NOT EXISTS mission (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  product TEXT NOT NULL CHECK (product IN ('fettler', 'regauge')),
+  state TEXT NOT NULL CHECK (state IN ('created', 'discovering', 'scoped', 'planning', 'executing', 'verifying', 'awaiting_review', 'accepted', 'rejected', 'partial', 'failed', 'cancelled')),
+  trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('provider_change', 'migration_objective')),
+  objective TEXT NOT NULL,
+  repository_id TEXT REFERENCES connected_repositories(id),
+  snapshot_id TEXT REFERENCES repository_snapshots(id),
+  fettler_campaign_id TEXT REFERENCES fettler_campaigns(id),
+  regauge_campaign_id TEXT,
+  owner_principal_id TEXT NOT NULL REFERENCES principals(id),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS mission_tenant_state_idx
+  ON mission(tenant_id, state, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS mission_fettler_campaign_uidx
+  ON mission(tenant_id, fettler_campaign_id) WHERE fettler_campaign_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS mission_regauge_campaign_uidx
+  ON mission(tenant_id, regauge_campaign_id) WHERE regauge_campaign_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS learning_consents (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -3387,6 +3424,21 @@ export {
   transitionWardenCampaign,
   transitionWardenTarget,
 } from "./warden-campaign.js";
+export {
+  createMission,
+  getMission,
+  linkFettlerCampaignToMission,
+  linkRegaugeCampaignToMission,
+  resolveMissionForFettlerCampaign,
+  resolveMissionForRegaugeCampaign,
+  transitionMission,
+} from "./mission.js";
+export type {
+  Mission,
+  MissionProduct,
+  MissionState,
+  MissionTriggerKind,
+} from "./mission.js";
 export {
   createUsagePriceVersion,
   getUsagePriceVersion,

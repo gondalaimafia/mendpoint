@@ -595,6 +595,89 @@ describe("db", () => {
     expect(meter.durationMs).toBe(5000);
   });
 
+  it("boots a pre-mission schema (no mission table) and converges with a fresh DB", () => {
+    // Pre-change production shape: fettler_campaigns exists and the shared
+    // mission table does not exist at all. Booting createDb must create the
+    // mission table (static DDL) and converge byte-for-byte with a fresh
+    // database, while leaving the already-populated fettler_campaigns table
+    // untouched (the mission primitive restructures neither stack). Validates
+    // startup from the predecessor schema, not merely a fresh install.
+    const legacyDir = mkdtempSync(join(tmpdir(), "mendpoint-db-mission-legacy-"));
+    dirs.push(legacyDir);
+    const legacyPath = join(legacyDir, "legacy.sqlite");
+    const legacy = new DatabaseSync(legacyPath);
+    // Standalone pre-change fettler_campaigns shape (copied from origin/main).
+    // No REFERENCES clauses so the legacy fixture needs no tenants/principals
+    // rows; createDb creates the mission table and every other table via DDL.
+    legacy.exec(`
+      CREATE TABLE fettler_campaigns (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('draft', 'running', 'paused', 'cancelling', 'cancelled', 'completed', 'failed', 'rolling_back', 'rolled_back')),
+        owner_principal_id TEXT NOT NULL,
+        concurrency_limit INTEGER NOT NULL CHECK (concurrency_limit > 0),
+        completion_policy TEXT NOT NULL CHECK (completion_policy IN ('all', 'continue_on_failure')),
+        revision INTEGER NOT NULL CHECK (revision > 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (tenant_id, id)
+      );
+      CREATE INDEX IF NOT EXISTS fettler_campaigns_tenant_status_idx
+        ON fettler_campaigns(tenant_id, status, updated_at);
+      INSERT INTO fettler_campaigns
+        (id, tenant_id, name, status, owner_principal_id, concurrency_limit, completion_policy, revision, created_at, updated_at)
+        VALUES ('legacy-campaign', 't1', 'Legacy', 'draft', 'p1', 1, 'all', 1,
+          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    // The mission table does not exist in the pre-change volume.
+    const before = new DatabaseSync(legacyPath);
+    const missionBefore = before.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mission'",
+    ).get();
+    before.close();
+    expect(missionBefore).toBeUndefined();
+
+    const migrated = createDb(legacyPath);
+    dbs.push(migrated);
+
+    const freshDir = mkdtempSync(join(tmpdir(), "mendpoint-db-mission-fresh-"));
+    dirs.push(freshDir);
+    const fresh = createDb(join(freshDir, "fresh.sqlite"));
+    dbs.push(fresh);
+
+    const columnsOf = (db: { raw: DatabaseSync }, table: string) =>
+      (db.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+        .map((c) => c.name)
+        .sort();
+    const indexesOf = (db: { raw: DatabaseSync }, table: string) =>
+      (db.raw.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string }>)
+        .map((i) => i.name)
+        .sort();
+
+    // The shared mission table is created on the pre-change database and
+    // converges byte-for-byte with a fresh DB, including its linkage columns and
+    // partial unique indexes.
+    expect(columnsOf(migrated, "mission")).toEqual(columnsOf(fresh, "mission"));
+    expect(columnsOf(fresh, "mission")).toContain("fettler_campaign_id");
+    expect(columnsOf(fresh, "mission")).toContain("regauge_campaign_id");
+    expect(indexesOf(migrated, "mission")).toEqual(indexesOf(fresh, "mission"));
+    expect(indexesOf(fresh, "mission")).toContain("mission_fettler_campaign_uidx");
+    expect(indexesOf(fresh, "mission")).toContain("mission_regauge_campaign_uidx");
+
+    // The existing stack table is untouched and still converges with fresh.
+    expect(columnsOf(migrated, "fettler_campaigns")).toEqual(columnsOf(fresh, "fettler_campaigns"));
+    expect(indexesOf(migrated, "fettler_campaigns")).toEqual(indexesOf(fresh, "fettler_campaigns"));
+
+    // The pre-existing campaign row survived the boot intact.
+    const legacyRow = migrated.raw
+      .prepare("SELECT id FROM fettler_campaigns WHERE id = 'legacy-campaign'")
+      .get() as { id: string } | undefined;
+    expect(legacyRow?.id).toBe("legacy-campaign");
+  });
+
   it("creates tables and records audit", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-"));
     dirs.push(dir);
