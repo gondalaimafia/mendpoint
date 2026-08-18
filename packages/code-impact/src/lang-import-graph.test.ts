@@ -257,6 +257,45 @@ describe("buildProviderReachability", () => {
     ]);
   });
 
+  it("resolves a src-layout absolute import to root the same as flat layout (A/B)", () => {
+    // Byte-identical Python source; the ONLY variable is the directory layout.
+    // Flat layout (`app/...`) and src layout (`src/app/...`) must agree: an
+    // absolute `app.client` import resolves in both, so provider provenance
+    // reaches the same importer. The bug this fixes was that src-layout derived
+    // `src` as the only first-party root, classing `app.client` as third-party
+    // and building no edge, which silently demoted the importer and *raised*
+    // overall confidence.
+    const layout = (prefix: string): F[] => [
+      py(`${prefix}app/__init__.py`, []),
+      py(`${prefix}app/client.py`, []), // provider client = anchor
+      py(`${prefix}app/orders.py`, ["app.client"]), // real edit site: imports the client
+    ];
+
+    // Direct resolution: the src-layout absolute import resolves to the client.
+    const srcMaps = buildPythonModuleMaps(layout("src/"));
+    const resolved = resolvePythonImport(
+      "src/app/orders.py",
+      "app.client",
+      srcMaps.moduleToFile,
+      srcMaps.firstPartyRoots,
+      srcMaps.fileToModule,
+    );
+    expect(resolved.targets).toEqual(["src/app/client.py"]);
+    expect(srcMaps.firstPartyRoots.has("app")).toBe(true);
+
+    // Reachability agrees across layouts (module names are layout-independent).
+    const flat = buildProviderReachability(layout(""), "/repo", ["app/client.py"]);
+    const src = buildProviderReachability(layout("src/"), "/repo", ["src/app/client.py"]);
+    const strip = (s: Set<string>) =>
+      new Set([...s].map((p) => p.replace(/^src\//, "")));
+    expect(strip(src.reachable)).toEqual(flat.reachable);
+    expect(flat.reachable.has("app/orders.py")).toBe(true); // importer reached
+    expect(src.reachable.has("src/app/orders.py")).toBe(true); // importer reached
+    // Neither layout leaves the resolved first-party import recorded as unresolved.
+    expect(flat.unresolved).toEqual([]);
+    expect(src.unresolved).toEqual([]);
+  });
+
   it("builds no import edges into a vendored / site-packages directory", () => {
     // Even if a dependency directory leaked into the file list, a bare
     // third-party specifier must not resolve to it.
