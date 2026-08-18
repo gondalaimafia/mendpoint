@@ -1933,7 +1933,10 @@ function migrateRepositorySnapshotIdentity(db: AppDb): void {
       CREATE UNIQUE INDEX repository_snapshots_id_tenant_uidx
         ON repository_snapshots(id, tenant_id);
     `);
-    const violations = db.raw.prepare("PRAGMA foreign_key_check").all();
+    // Scope the check to the only table this migration rewrites. A bare `foreign_key_check` inspects
+    // every table, so a dangling row in an unrelated table would permanently block boot even though
+    // this migration never touched it.
+    const violations = db.raw.prepare("PRAGMA foreign_key_check(repository_snapshots)").all();
     if (violations.length) throw new Error("repository_snapshot_migration_foreign_key_invalid");
     db.raw.exec("COMMIT");
   } catch (error) {
