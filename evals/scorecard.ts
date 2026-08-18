@@ -1,0 +1,176 @@
+/**
+ * Design-partner readiness scorecard (spec §29).
+ *
+ * One block per capability, populated ONLY from real run data plus the versioned
+ * readiness evaluation. A field the analysis-only path cannot measure (patch
+ * verification, cost, rollback, product-side security limits) is emitted as an
+ * explicit "not measured (<why>)" — never blanked and never guessed — following
+ * the precedent the latest report already sets for unmeasured dimensions.
+ */
+import type { ReadinessEvaluation, ReadinessGatesConfig, ScoredRun } from "./readiness.js";
+
+const NOT_MEASURED = (why: string): string => `not measured (${why})`;
+
+/** Tags that label provenance/split, not a repo pattern; excluded from the pattern list. */
+const NON_PATTERN_TAGS = new Set([
+  "development",
+  "regression",
+  "validation",
+  "holdout",
+  "fettler",
+  "regauge",
+  "generated",
+]);
+
+function uniqueSorted(values: Iterable<string>): string[] {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+
+function latencyRange(rows: ScoredRun[]): string {
+  const ms = rows.map((r) => r.record.latency_ms).filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+  if (ms.length === 0) return NOT_MEASURED("no runs");
+  const p50 = ms[Math.floor(ms.length / 2)]!;
+  return `${ms[0]}ms min, ${p50}ms median, ${ms[ms.length - 1]}ms max (n=${ms.length})`;
+}
+
+function p0p1(rows: ScoredRun[]): { p0: string[]; p1: string[] } {
+  const safe = new Set(["COVERAGE_GAP", "HARNESS_LIMITATION"]);
+  const p0: string[] = [];
+  const p1: string[] = [];
+  for (const s of rows) {
+    for (const f of s.record.failures) {
+      if (safe.has(f.category)) continue;
+      if (f.severity === "P0") p0.push(`${s.record.scenario_id} (${f.category})`);
+      else if (f.severity === "P1") p1.push(`${s.record.scenario_id} (${f.category})`);
+    }
+  }
+  return { p0: uniqueSorted(p0), p1: uniqueSorted(p1) };
+}
+
+function field(label: string, value: string): string {
+  return `| ${label} | ${value} |`;
+}
+
+function fettlerScorecard(scored: ScoredRun[], ev: ReadinessEvaluation, gates: ReadinessGatesConfig): string {
+  const rows = scored.filter((s) => s.record.product === "fettler");
+  const flagFiles = rows.filter((s) => s.gt.correct_behavior === "flag_files");
+  const passedFlag = flagFiles.filter((s) => s.record.passed);
+  const failedFlag = flagFiles.filter((s) => !s.record.passed);
+  const cap = ev.capabilities.find((c) => c.capability === "fettler-impact-analysis");
+  const holdout = rows.filter((s) => s.gt.dataset_split === "holdout");
+  const holdoutPass = holdout.filter((s) => s.record.passed).length;
+
+  const supportedFamilies = uniqueSorted(passedFlag.map((s) => s.gt.repo_family));
+  const unsupportedFamilies = uniqueSorted(
+    failedFlag
+      .filter((s) => s.record.grader_results.some((g) => g.dimension === "expected_findings_recall" && !g.passed))
+      .map((s) => s.gt.repo_family),
+  );
+  const abstainScenarios = rows.filter((s) => s.gt.correct_behavior === "abstain");
+  const { p0, p1 } = p0p1(rows);
+  const commit = rows[0]?.record.git_commit ?? "unknown";
+
+  const precision = cap?.metrics.precision;
+  const recall = cap?.metrics.recall;
+  const fp = cap?.metrics.falsePositives ?? 0;
+  const tp = cap?.metrics.truePositives ?? 0;
+  const fpRate = tp + fp > 0 ? `${((fp / (tp + fp)) * 100).toFixed(1)}% of confident findings (${fp}/${tp + fp})` : NOT_MEASURED("no findings");
+
+  const lines: string[] = [];
+  lines.push(`## Capability: Fettler — API-change impact analysis`);
+  lines.push("");
+  lines.push(`Readiness verdict: **${cap?.verdict ?? "unknown"}** (policy ${ev.policy}).`);
+  lines.push("");
+  lines.push(`| field | value |`);
+  lines.push(`| --- | --- |`);
+  lines.push(field("Capability", "Given a structured OpenAPI v1->v2 change, flag exactly the impacted source files."));
+  lines.push(field("Supported languages / stacks", supportedFamilies.length ? supportedFamilies.join("; ") : NOT_MEASURED("no flag_files scenario passed")));
+  lines.push(field("Supported repo patterns", uniqueSorted(passedFlag.flatMap((s) => s.gt.tags).filter((t) => !NON_PATTERN_TAGS.has(t))).join(", ") || NOT_MEASURED("no passing scenario")));
+  lines.push(field("Supported providers", "provider-agnostic (driven by the OpenAPI diff, not a provider allowlist); exercised only against synthetic providers"));
+  lines.push(field("Known unsupported patterns", unsupportedFamilies.length ? `recall collapses on: ${unsupportedFamilies.join("; ")}` : "none surfaced by this run"));
+  lines.push(field("Scenario count", `${rows.length} Fettler scenarios (${flagFiles.length} flag_files, ${abstainScenarios.length} abstain, ${rows.length - flagFiles.length - abstainScenarios.length} other)`));
+  lines.push(field("Hidden-holdout status", holdout.length ? `${holdout.length} procedurally-generated holdout scenarios, never inspected while fixing; ${holdoutPass}/${holdout.length} passed` : NOT_MEASURED("no holdout scenarios in this run")));
+  lines.push(field("Precision / recall", precision !== null && precision !== undefined && recall !== null && recall !== undefined ? `precision ${(precision * 100).toFixed(1)}%, recall ${(recall * 100).toFixed(1)}% (micro-averaged over ${cap?.metrics.scenarioCount} flag_files scenarios)` : NOT_MEASURED("no findings to pool")));
+  lines.push(field("Patch verification rate", NOT_MEASURED("generation + sandbox verification path not exercised by the analysis-only runner")));
+  lines.push(field("False-positive rate", fpRate));
+  lines.push(field("Known P0 / P1", `P0: ${p0.length ? p0.join("; ") : "none"} | P1: ${p1.length ? p1.join("; ") : "none"}`));
+  lines.push(field("Latency range", latencyRange(rows)));
+  lines.push(field("Cost range", NOT_MEASURED("LLM off on this path; no model called, so token cost is genuinely zero rather than estimated")));
+  lines.push(field("Required human review", abstainScenarios.length ? "yes — ambiguous renames and low-confidence notifications are surfaced for human decision, never auto-applied" : NOT_MEASURED("no abstain scenario in this run")));
+  lines.push(field("Rollback behaviour", NOT_MEASURED("PR delivery + apply path not exercised; rollback is a delivery-layer property")));
+  lines.push(field("Security limitations", "answer-key isolation is enforced (corpus staged with grading keys stripped, corpus root asserted outside the repo); product-side security limits (secret handling, sandbox escape) are " + NOT_MEASURED("full pipeline not exercised")));
+  lines.push(field("Owner", gates.owner));
+  lines.push(field("Last-validated commit", `\`${commit}\``));
+  lines.push("");
+  return lines.join("\n");
+}
+
+function regaugeScorecard(scored: ScoredRun[], ev: ReadinessEvaluation, gates: ReadinessGatesConfig): string {
+  const rows = scored.filter((s) => s.record.product === "regauge");
+  const passed = rows.filter((s) => s.record.passed);
+  const coverageGaps = rows.filter((s) => s.record.failures.some((f) => f.category === "COVERAGE_GAP"));
+  // A family is "supported" only where a scenario the engine should ACT on
+  // passed (apply_recipe). Coverage-gap families (correct behaviour is
+  // abstention-by-absence) are the unsupported list, never the supported one.
+  const matchedFamilies = uniqueSorted(
+    passed
+      .filter((s) => s.gt.correct_behavior === "apply_recipe")
+      .map((s) => s.gt.recipe_expectation?.family ?? s.gt.repo_family),
+  );
+  const gapFamilies = uniqueSorted(coverageGaps.map((s) => s.gt.recipe_expectation?.family ?? s.gt.repo_family));
+  const { p0, p1 } = p0p1(rows);
+  const commit = rows[0]?.record.git_commit ?? "unknown";
+
+  const lines: string[] = [];
+  lines.push(`## Capability: ReGauge — migration recipe engine`);
+  lines.push("");
+  lines.push(`Readiness verdict: **not gated** (the owner's precision/recall bar is authored for Fettler impact; ReGauge readiness is reported as coverage, not scored against a precision gate yet).`);
+  lines.push("");
+  lines.push(`| field | value |`);
+  lines.push(`| --- | --- |`);
+  lines.push(field("Capability", "Recognize a migration family and (would) apply a deterministic recipe; abstain by absence when no shipped recipe matches."));
+  lines.push(field("Supported languages / stacks", "Node / JavaScript / TypeScript (the shipped recipe families)"));
+  lines.push(field("Supported repo patterns", matchedFamilies.length ? `families with a shipped recipe: ${matchedFamilies.join("; ")}` : NOT_MEASURED("no applicable recipe matched in this run")));
+  lines.push(field("Supported providers", "recipe-scoped (runtime bumps, SDK/framework/internal-API renames); driven by the shipped recipe registry"));
+  lines.push(field("Known unsupported patterns", gapFamilies.length ? `coverage gaps (correct abstention today): ${gapFamilies.join("; ")}` : "none surfaced by this run"));
+  lines.push(field("Scenario count", `${rows.length} ReGauge scenarios (${coverageGaps.length} coverage-gap)`));
+  lines.push(field("Hidden-holdout status", NOT_MEASURED("holdout generation currently targets Fettler ref-rename families only")));
+  lines.push(field("Precision / recall", `${passed.length}/${rows.length} scenarios correct (engine decision: match or abstain-by-absence); site-level precision/recall ${NOT_MEASURED("apply path not exercised")}`));
+  lines.push(field("Patch verification rate", NOT_MEASURED("recipe apply + verification gate not exercised (analyze-only)")));
+  lines.push(field("False-positive rate", `${p0.length + p1.length} unsafe recipe matches on non-matching repos in this run`));
+  lines.push(field("Known P0 / P1", `P0: ${p0.length ? p0.join("; ") : "none"} | P1: ${p1.length ? p1.join("; ") : "none"}`));
+  lines.push(field("Latency range", latencyRange(rows)));
+  lines.push(field("Cost range", NOT_MEASURED("deterministic recipe engine; no model called")));
+  lines.push(field("Required human review", "yes — recipe application produces a draft PR for human review; nothing auto-merges"));
+  lines.push(field("Rollback behaviour", NOT_MEASURED("inverse/rollback path not exercised")));
+  lines.push(field("Security limitations", NOT_MEASURED("apply + sandbox path not exercised")));
+  lines.push(field("Owner", gates.owner));
+  lines.push(field("Last-validated commit", `\`${commit}\``));
+  lines.push("");
+  return lines.join("\n");
+}
+
+/** Render the full readiness scorecard document. */
+export function renderScorecard(
+  scored: ScoredRun[],
+  ev: ReadinessEvaluation,
+  gates: ReadinessGatesConfig,
+): string {
+  const now = new Date().toISOString();
+  const commit = scored[0]?.record.git_commit ?? "unknown";
+  const out: string[] = [];
+  out.push(`# MendPoint design-partner readiness scorecard (spec §29)`);
+  out.push("");
+  out.push(`- Generated: ${now}`);
+  out.push(`- Git commit: \`${commit}\``);
+  out.push(`- Readiness policy: ${ev.policy} (owner ${ev.owner}, decided ${ev.decided_at})`);
+  out.push(`- Overall readiness: **${ev.overall}**`);
+  out.push("");
+  out.push(
+    `Every field below is populated from the latest run's real records or the versioned readiness evaluation. Fields the analysis-only path cannot measure are marked "not measured (<why>)" rather than left blank or estimated.`,
+  );
+  out.push("");
+  out.push(fettlerScorecard(scored, ev, gates));
+  out.push(regaugeScorecard(scored, ev, gates));
+  return out.join("\n") + "\n";
+}

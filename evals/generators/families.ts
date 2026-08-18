@@ -383,6 +383,12 @@ export function generateAllScenarios(): GeneratedScenario[] {
     refRenameScenario("refToRef", 1005, "validation"),
     refCounterfactual(1006, "development"),
 
+    // Regression tier (spec §18.9): a previously-discovered-and-fixed defect kept
+    // as a permanent guard. `$ref` two-deep indirection blindness was a real
+    // finding; this scenario re-checks it on every run so a re-introduced
+    // regression is caught. Distinct seed/id from the validation nested2 case.
+    refRenameScenario("nested2", 5001, "regression", "-regression"),
+
     // Ambiguity family.
     ambiguityScenario("two", 2001, "development"),
     ambiguityScenario("three", 2002, "validation"),

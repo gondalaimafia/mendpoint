@@ -21,7 +21,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { normalizeChange } from "@mendpoint/change-intel";
-import { analyzeImpact } from "@mendpoint/code-impact";
+import { analyzeImpact, sdkContextFromSurfaces } from "@mendpoint/code-impact";
+import { buildIndexIncremental } from "@mendpoint/codebase-index";
 import type { ImpactReport } from "@mendpoint/shared";
 import type { ScenarioConfig } from "../scenarios/index.js";
 import type { GroundTruth } from "../ground-truth/schema.js";
@@ -78,9 +79,19 @@ export async function runFettler(
     const newSpec = JSON.parse(readFileSync(newSpecPath, "utf8"));
 
     const { surfaces } = normalizeChange(oldSpec, newSpec, { providerSlug: cfg.slug });
+    // Build the index explicitly so we can record how many files the scanner
+    // actually examined (the real size independent variable — spec §21.3), then
+    // hand that same index to analyzeImpact so nothing is scanned twice and the
+    // production path is exercised unchanged. `index.files` is the set of source
+    // files the walker indexed after pruning dependency/VCS trees.
+    const index = buildIndexIncremental(stage.stagedPath, null, {
+      sdkContext: sdkContextFromSurfaces(surfaces),
+    });
+    const filesScanned = index.files.length;
     const report: ImpactReport = await analyzeImpact(stage.stagedPath, surfaces, {
       useLlm: false,
       minConfidence: "medium",
+      index,
     });
 
     const flagged = [...new Set(report.sites.map((s) => toPosix(s.filePath)))].sort();
@@ -94,12 +105,14 @@ export async function runFettler(
       ...base,
       latency_ms: Date.now() - started,
       activity: {
-        filesExamined: report.candidateCount,
+        filesExamined: filesScanned,
         candidateCount: report.candidateCount,
         confirmedCount: report.confirmedCount,
         lowConfidenceCount: lowConfidence.length,
         notes: [
+          `files_scanned=${filesScanned}`,
           `surfaces=${surfaces.length}`,
+          `candidates=${report.candidateCount}`,
           `confident_sites=${flagged.length}`,
           lowConfidence.length ? `low_confidence=${lowConfidence.join(", ")}` : "low_confidence=none",
         ],

@@ -48,11 +48,20 @@ describe("generateScenarios", () => {
     expect(scenarios.some((s) => s.gt.tags.includes("counterfactual"))).toBe(true);
   });
 
-  it("assigns all three dataset splits, including holdout", () => {
+  it("assigns every dataset tier, including the regression and holdout tiers", () => {
     const splits = new Set(scenarios.map((s) => s.gt.dataset_split));
     expect(splits.has("development")).toBe(true);
+    expect(splits.has("regression")).toBe(true); // spec §18.9 middle tier
     expect(splits.has("validation")).toBe(true);
     expect(splits.has("holdout")).toBe(true);
+  });
+
+  it("the regression tier is a real, valid, previously-fixed-defect guard", () => {
+    const regression = scenarios.filter((s) => s.gt.dataset_split === "regression");
+    expect(regression.length).toBeGreaterThan(0);
+    for (const s of regression) {
+      expect(validateGroundTruth(s.gt), s.scenario_id).toEqual([]);
+    }
   });
 });
 

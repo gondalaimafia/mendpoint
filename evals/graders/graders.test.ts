@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { gradeFettler } from "./fettler-graders.js";
+import { gradeFettler, countFettlerFindings } from "./fettler-graders.js";
 import { gradeRegauge, type ObservedRecipe } from "./regauge-graders.js";
 import { classifyOutcome, FAILURE_CATEGORIES } from "./taxonomy.js";
 import { validateGroundTruth, type GroundTruth } from "../ground-truth/schema.js";
@@ -59,6 +59,14 @@ describe("gradeFettler", () => {
     const g = gradeFettler(["a.ts"], flagFilesGt());
     expect(g.recall).toBe(0.5);
     expect(g.failures.some((f) => f.category === "FALSE_NEGATIVE")).toBe(true);
+  });
+
+  it("countFettlerFindings exposes the raw confusion matrix used for micro-averaging", () => {
+    const c = countFettlerFindings(["a.ts", "trap.ts", "extra.ts"], flagFilesGt());
+    expect(c.expectedHits).toEqual(["a.ts"]);
+    expect(c.missed).toEqual(["b.ts"]);
+    expect(c.trapHits).toEqual(["trap.ts"]);
+    expect(c.extras).toEqual(["extra.ts"]);
   });
 
   it("abstain: any confident finding is a P0 abstention failure", () => {

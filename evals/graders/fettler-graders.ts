@@ -27,7 +27,7 @@ export interface FettlerGrade {
   extras: string[];
 }
 
-function matches(path: string, entry: string): boolean {
+export function matches(path: string, entry: string): boolean {
   if (entry.endsWith("/")) return path === entry.slice(0, -1) || path.startsWith(entry);
   return path === entry;
 }
@@ -37,19 +37,43 @@ function inAny(path: string, entries: readonly string[]): boolean {
 }
 
 /**
+ * The raw confusion-matrix pieces for one Fettler run, computed exactly once so
+ * per-scenario grading and suite-level micro-averaging (readiness gates) can
+ * never disagree about what counts as a hit, a false positive, or a miss.
+ */
+export interface FettlerFindingCounts {
+  /** Expected files the run flagged (true positives). */
+  expectedHits: string[];
+  /** Distractor files the run flagged (false positives, P0 class). */
+  trapHits: string[];
+  /** Flagged files that are neither expected, acceptable, nor a trap. */
+  extras: string[];
+  /** Expected files the run missed (false negatives). */
+  missed: string[];
+}
+
+export function countFettlerFindings(
+  flagged: readonly string[],
+  gt: GroundTruth,
+): FettlerFindingCounts {
+  const { expected_findings: expected, acceptable_findings: acceptable, false_positive_traps: traps } = gt;
+  const expectedHits = expected.filter((e) => flagged.some((f) => matches(f, e)));
+  const missed = expected.filter((e) => !flagged.some((f) => matches(f, e)));
+  const trapHits = flagged.filter((f) => inAny(f, traps));
+  const extras = flagged.filter(
+    (f) => !inAny(f, expected) && !inAny(f, acceptable) && !inAny(f, traps),
+  );
+  return { expectedHits, trapHits, extras, missed };
+}
+
+/**
  * `flagged` — repo-relative posix paths the product CONFIDENTLY flagged
  * (medium+). Low-confidence notifications are graded separately by the caller.
  */
 export function gradeFettler(flagged: readonly string[], gt: GroundTruth): FettlerGrade {
   const expected = gt.expected_findings;
-  const acceptable = gt.acceptable_findings;
-  const traps = gt.false_positive_traps;
 
-  const expectedHits = expected.filter((e) => flagged.some((f) => matches(f, e)));
-  const trapHits = flagged.filter((f) => inAny(f, traps));
-  const extras = flagged.filter(
-    (f) => !inAny(f, expected) && !inAny(f, acceptable) && !inAny(f, traps),
-  );
+  const { expectedHits, trapHits, extras } = countFettlerFindings(flagged, gt);
 
   const falsePositives = trapHits.length + extras.length;
   const recall = expected.length ? expectedHits.length / expected.length : 1;

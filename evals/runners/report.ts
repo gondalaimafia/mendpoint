@@ -8,13 +8,15 @@
  * Everything here is derived from real run numbers. Nothing is fabricated; a
  * dimension the runner could not measure is reported as such, never scored.
  */
-import type { GroundTruth } from "../ground-truth/schema.js";
 import type { RunRecord, RunFailure } from "./types.js";
+import {
+  evaluateReadiness,
+  loadReadinessGates,
+  renderReadinessSection,
+  type ScoredRun,
+} from "../readiness.js";
 
-export interface ScoredRun {
-  record: RunRecord;
-  gt: GroundTruth;
-}
+export type { ScoredRun } from "../readiness.js";
 
 const SAFE_NOTE_CATEGORIES = new Set(["COVERAGE_GAP", "HARNESS_LIMITATION"]);
 
@@ -86,6 +88,19 @@ export function renderLatestReport(scored: ScoredRun[]): string {
   out.push(`- P0 failures (dangerous / materially incorrect): ${allUnsafe.filter((x) => x.f.severity === "P0").length}`);
   out.push("");
 
+  // Readiness gates (spec §33.5): evaluate the run against the owner's versioned
+  // acceptance criteria BEFORE the per-slice breakdowns, so the headline is the
+  // honest PASS/FAIL, not a pile of green sub-tables. The thresholds are read
+  // from evals/readiness-gates.json, never hard-coded here.
+  const gates = loadReadinessGates();
+  const readiness = evaluateReadiness(scored, gates);
+  out.push(renderReadinessSection(readiness));
+  out.push("");
+  out.push(
+    `The one-page per-capability readiness scorecard (spec §29) is written alongside this report at \`evals/reports/readiness-scorecard.md\`.`,
+  );
+  out.push("");
+
   // Phase 8: development / validation / holdout, presented SEPARATELY. A number
   // computed on development scenarios (seen during fixing) tells us the benchmark
   // improved; the holdout number is the honest measure of whether the PRODUCT
@@ -96,7 +111,7 @@ export function renderLatestReport(scored: ScoredRun[]): string {
     `Holdout scenarios are procedurally generated from scenario families and are NEVER inspected while fixing. Read the holdout row as the honest product-quality signal; development/validation can be inflated by fixing to the benchmark.`,
   );
   out.push("");
-  const splitOrder = ["development", "validation", "holdout"] as const;
+  const splitOrder = ["development", "regression", "validation", "holdout"] as const;
   out.push(`| split | scenarios | passed | pass rate |`);
   out.push(`| --- | --- | --- | --- |`);
   for (const split of splitOrder) {
@@ -167,6 +182,28 @@ export function renderLatestReport(scored: ScoredRun[]): string {
       `| ${s.record.scenario_id} | ${s.gt.difficulty} | ${s.gt.correct_behavior} | ${matched} | ${s.record.passed ? "yes" : "NO"} | ${gap ? "coverage gap" : s.record.error ? "CRASH" : ""} |`,
     );
   }
+  out.push("");
+
+  // Latency IS captured per run (RunRecord.latency_ms) — surface it here rather
+  // than leaving it only in the raw JSON. Wall-clock of the product invocation
+  // (index build + analysis), not the harness copy/stage.
+  out.push(`## Latency (observed wall-clock of the analysis path)`);
+  out.push("");
+  out.push(`| product | scenarios | min | median | p90 | max |`);
+  out.push(`| --- | --- | --- | --- | --- | --- |`);
+  for (const [label, rows] of [["fettler", fettler], ["regauge", regauge]] as const) {
+    const ms = rows.map((s) => s.record.latency_ms).filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+    if (ms.length === 0) {
+      out.push(`| ${label} | 0 | n/a | n/a | n/a | n/a |`);
+      continue;
+    }
+    const at = (q: number): number => ms[Math.min(ms.length - 1, Math.floor(q * ms.length))]!;
+    out.push(`| ${label} | ${ms.length} | ${ms[0]}ms | ${at(0.5)}ms | ${at(0.9)}ms | ${ms[ms.length - 1]}ms |`);
+  }
+  out.push("");
+  out.push(
+    `Note: the largest-repo scenario runs under a hard wall-clock budget in an isolated child; a budget overrun is recorded as a SCALE_FAILURE (see Top remaining risks), and its max latency above reflects that budget ceiling, not a completed analysis. Files-scanned per run is in the raw records (\`activity.filesExamined\`) — plot latency against it to read scale behaviour.`,
+  );
   out.push("");
 
   out.push(`## Model economics`);
