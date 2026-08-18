@@ -140,6 +140,91 @@ describe("AgentVerifier", () => {
     expect(result.recommendation).toBe("request_more_evidence");
   });
 
+  function substantiveEvidencePack() {
+    const withEvidence = packInput();
+    withEvidence.sources = [{ id: "excerpt", kind: "repository_excerpt", digest: digest("b"), locator: "package.json:1", content: "{ \"name\": \"pkg\" }" }];
+    withEvidence.candidates.forEach((candidate) => { candidate.evidenceRefs = ["excerpt"]; });
+    return createVerifierEvidencePack(withEvidence);
+  }
+
+  const massBackend = (mass: unknown): VerifierBackend => ({
+    descriptor: backend.descriptor,
+    score: vi.fn(async (input: VerifierBackendScoreInput) => ({
+      requestId: input.requestId,
+      scores: Object.fromEntries(input.candidates.map((candidate) => [candidate.candidateId, candidate.candidateId.endsWith("b") ? 1 : 0])),
+      criterionId: input.criterion.id,
+      rawResponseDigest: digest("f"),
+      recognizedProbabilityMass: mass as number,
+      usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 2, reasoningTokens: 0, totalTokens: 12 },
+      estimatedCostUsd: 0.001,
+      latencyMs: 10,
+    })),
+  });
+
+  it("downgrades a high score to escalate when its recognized probability mass is below the floor", async () => {
+    // Decisive score (candidate_b at 1), but the recognized mass is a
+    // vanishing 0.0000061: the model put almost none of the score position's
+    // probability on an A-T token, so the reward is not a confident signal.
+    const verifier = createAgentVerifier({ enabled: true, rolloutMode: "shadow", backend: massBackend(0.0000061), evaluations: 2, pivots: 1, seed: 0, maximumCandidates: 5 });
+    const result = await verifier.verify(verifyInput(substantiveEvidencePack()));
+    expect(result.telemetry.candidateScores.candidate_b).toBeGreaterThanOrEqual(0.75);
+    expect(result.recommendation).not.toBe("ready_for_review");
+    expect(result.recommendation).toBe("escalate");
+    expect(result.failureCode).toBe("verifier_uncalibrated");
+    expect(result.telemetry.recognizedProbabilityMassBelowFloor).toBe(true);
+    expect(result.telemetry.recognizedProbabilityMass).toBeLessThan(result.telemetry.recognizedProbabilityMassFloor);
+  });
+
+  it("does not change selection on a below floor signal even in selective mode with authority", async () => {
+    const verifier = createAgentVerifier({
+      enabled: true, rolloutMode: "selective", backend: massBackend(0.0000061), evaluations: 2, pivots: 1, seed: 0, maximumCandidates: 5,
+      behaviorChangeAuthority: { tenantIds: ["tenant_a"], products: ["regauge"] },
+    });
+    const result = await verifier.verify(verifyInput(substantiveEvidencePack()));
+    expect(result.suggestedCandidateId).toBe("candidate_b");
+    expect(result.effectiveCandidateId).toBe("candidate_a");
+    expect(result.behaviorChanged).toBe(false);
+    expect(result.recommendation).toBe("escalate");
+  });
+
+  it("leaves the verdict untouched when the recognized probability mass is at or above the floor", async () => {
+    const verifier = createAgentVerifier({ enabled: true, rolloutMode: "shadow", backend: massBackend(1), evaluations: 2, pivots: 1, seed: 0, maximumCandidates: 5 });
+    const result = await verifier.verify(verifyInput(substantiveEvidencePack()));
+    expect(result.recommendation).toBe("ready_for_review");
+    expect(result.failureCode).toBeNull();
+    expect(result.telemetry.recognizedProbabilityMassBelowFloor).toBe(false);
+    expect(result.telemetry.recognizedProbabilityMass).toBe(1);
+  });
+
+  it("treats an absent or unparseable recognized probability mass as below the floor", async () => {
+    for (const mass of [undefined, Number.NaN, "1" as unknown]) {
+      const verifier = createAgentVerifier({ enabled: true, rolloutMode: "shadow", backend: massBackend(mass), evaluations: 2, pivots: 1, seed: 0, maximumCandidates: 5 });
+      const result = await verifier.verify(verifyInput(substantiveEvidencePack()));
+      expect(result.recommendation).toBe("escalate");
+      expect(result.telemetry.recognizedProbabilityMassBelowFloor).toBe(true);
+    }
+  });
+
+  it("never lets a deterministically failed candidate win, even when the backend scores it highest", async () => {
+    // candidate_b is the backend's favourite (it scores anything ending in "b"
+    // at 0.9), but a candidate specific check fails it deterministically. The
+    // deterministic filter must exclude it before scoring, so it can never be
+    // suggested or become effective at any model score. This is the package's
+    // single most important property.
+    const raw = packInput();
+    raw.checks.push({ id: "candidate_b_security", status: "failed", evidenceRefs: ["candidate_b_security_evidence"], candidateIds: ["candidate_b"] });
+    raw.candidates[1]!.deterministicCheckIds.push("candidate_b_security");
+    const verifier = createAgentVerifier({
+      enabled: true, rolloutMode: "selective", backend, evaluations: 2, pivots: 1, seed: 0, maximumCandidates: 5,
+      behaviorChangeAuthority: { tenantIds: ["tenant_a"], products: ["regauge"] },
+    });
+    const result = await verifier.verify(verifyInput(createVerifierEvidencePack(raw)));
+    expect(result.suggestedCandidateId).toBe("candidate_a");
+    expect(result.effectiveCandidateId).not.toBe("candidate_b");
+    expect(result.telemetry.eligibleCandidateIds).toEqual(["candidate_a"]);
+    expect(result.telemetry.rejectedCandidates.map(({ candidateId }) => candidateId)).toContain("candidate_b");
+  });
+
   it("fails closed when no deterministic candidate survives", async () => {
     const input = packInput();
     input.checks[0] = { id: "tests", status: "failed", evidenceRefs: ["test_evidence"], candidateIds: null };

@@ -15,6 +15,13 @@ import { filterDeterministicCandidates } from "./evidence.js";
 import { bradleyTerryWinProbability, buildPivotTournamentSchedule, verifierScoreIdentity } from "./tournament.js";
 import { canonicalJson, codeUnitCompare, deepFreeze, exactIso, fail, identifier, sha256 } from "./utils.js";
 
+// Minimum share of the score position's probability that must land on the
+// A through T score tokens for the resulting reward to count as a confident
+// signal. Below this floor the decode can report a maximal reward off a
+// vanishingly small recognized mass (for example a 99.9994% not-an-answer
+// distribution), so the verdict is downgraded to escalate instead of trusted.
+const DEFAULT_MINIMUM_RECOGNIZED_PROBABILITY_MASS = 0.2;
+
 export type AgentVerifierConfig = Readonly<{
   enabled: boolean;
   rolloutMode: VerifierRolloutMode;
@@ -24,6 +31,7 @@ export type AgentVerifierConfig = Readonly<{
   seed: number;
   maximumCandidates: number;
   maximumCostUsd?: number;
+  minimumRecognizedProbabilityMass?: number;
   behaviorChangeAuthority?: Readonly<{ tenantIds: readonly string[]; products: readonly ("fettler" | "regauge")[] }>;
   scoreCache?: VerifierScoreCache;
 }>;
@@ -37,7 +45,7 @@ export interface AgentVerifier {
   verify(input: Readonly<{ pack: VerifierEvidencePack; incumbentCandidateId: string; verificationAttemptId: string; observedAt: string; signal?: AbortSignal }>): Promise<AgentVerifierResult>;
 }
 
-type NormalizedAgentVerifierConfig = Readonly<Omit<AgentVerifierConfig, "maximumCostUsd"> & { maximumCostUsd: number }>;
+type NormalizedAgentVerifierConfig = Readonly<Omit<AgentVerifierConfig, "maximumCostUsd" | "minimumRecognizedProbabilityMass"> & { maximumCostUsd: number; minimumRecognizedProbabilityMass: number }>;
 
 type MutableTotals = { inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningTokens: number; totalTokens: number; cost: number; latency: number; responseDigests: Set<string> };
 
@@ -51,6 +59,8 @@ export function createAgentVerifier(input: AgentVerifierConfig): AgentVerifier {
   if (!Number.isSafeInteger(input.maximumCandidates) || input.maximumCandidates < 1 || input.maximumCandidates > 20) fail("verifier_maximum_candidates_invalid");
   const maximumCostUsd = input.maximumCostUsd ?? 0.25;
   if (!Number.isFinite(maximumCostUsd) || maximumCostUsd <= 0 || maximumCostUsd > 100) fail("verifier_maximum_cost_invalid");
+  const minimumRecognizedProbabilityMass = input.minimumRecognizedProbabilityMass ?? DEFAULT_MINIMUM_RECOGNIZED_PROBABILITY_MASS;
+  if (!Number.isFinite(minimumRecognizedProbabilityMass) || minimumRecognizedProbabilityMass < 0 || minimumRecognizedProbabilityMass > 1) fail("verifier_minimum_recognized_mass_invalid");
   const behaviorChangeAuthority = normalizeBehaviorChangeAuthority(input.behaviorChangeAuthority);
   const config = Object.freeze({
     enabled: input.enabled,
@@ -61,6 +71,7 @@ export function createAgentVerifier(input: AgentVerifierConfig): AgentVerifier {
     seed: input.seed,
     maximumCandidates: input.maximumCandidates,
     maximumCostUsd,
+    minimumRecognizedProbabilityMass,
     behaviorChangeAuthority,
     scoreCache: input.scoreCache ? Object.freeze({ get: input.scoreCache.get.bind(input.scoreCache), put: input.scoreCache.put.bind(input.scoreCache) }) : undefined,
   });
@@ -79,6 +90,7 @@ export function createAgentVerifier(input: AgentVerifierConfig): AgentVerifier {
           recommendation: "continue", behaviorChanged: false, totals: emptyTotals(),
           verificationAttemptId, observedAt,
           failureCode: null,
+          recognizedProbabilityMass: null, recognizedProbabilityMassBelowFloor: false,
         });
       }
       if (filtered.eligible.length === 0) {
@@ -88,15 +100,24 @@ export function createAgentVerifier(input: AgentVerifierConfig): AgentVerifier {
           recommendation: "escalate", behaviorChanged: false, totals: emptyTotals(),
           verificationAttemptId, observedAt,
           failureCode: "evidence_missing",
+          recognizedProbabilityMass: null, recognizedProbabilityMassBelowFloor: false,
         });
       }
       if (filtered.eligible.length > config.maximumCandidates) fail("verifier_candidate_limit_exceeded");
       const totals = emptyTotals();
       try {
-        const scores = await scoreCandidates(config, request.pack, filtered.eligible, totals, request.signal);
+        const { scores, recognizedMass } = await scoreCandidates(config, request.pack, filtered.eligible, totals, request.signal);
         const suggestedCandidateId = [...filtered.eligible]
           .sort((left, right) => (scores[right.candidateId] ?? 0) - (scores[left.candidateId] ?? 0) || codeUnitCompare(left.candidateId, right.candidateId))[0]!.candidateId;
-        const canChange = config.rolloutMode === "selective" &&
+        // Fail closed on recognized probability mass. A score is a confident
+        // signal only when the score position put at least the configured floor
+        // of its probability on the A through T score tokens. A missing or
+        // non-finite mass, or a candidate that was never scored, is treated as
+        // below the floor, never above it. Below the floor the reward is not
+        // trusted: selection cannot change and the verdict is escalate.
+        const suggestedMass = recognizedMass[suggestedCandidateId];
+        const massConfident = Number.isFinite(suggestedMass) && suggestedMass! >= config.minimumRecognizedProbabilityMass;
+        const canChange = massConfident && config.rolloutMode === "selective" &&
           config.behaviorChangeAuthority?.tenantIds.includes(request.pack.tenantId) === true &&
           config.behaviorChangeAuthority.products.includes(request.pack.product);
         const effectiveCandidateId = canChange ? suggestedCandidateId : request.incumbentCandidateId;
@@ -113,13 +134,17 @@ export function createAgentVerifier(input: AgentVerifierConfig): AgentVerifier {
         // soft, and makes the missing evidence pack visible in telemetry rather
         // than silently inert. This never overrides a higher-precedence signal;
         // it only makes the verifier's own soft signal more conservative.
-        const recommendation: VerifierRecommendation = highest >= 0.75 && packHasSubstantiveEvidence(request.pack)
-          ? "ready_for_review"
-          : highest >= 0.55 ? "request_more_evidence" : "resample";
+        const recommendation: VerifierRecommendation = massConfident
+          ? (highest >= 0.75 && packHasSubstantiveEvidence(request.pack)
+              ? "ready_for_review"
+              : highest >= 0.55 ? "request_more_evidence" : "resample")
+          : "escalate";
         return resultFor({
           status: "verified", pack: request.pack, config, incumbentCandidateId: request.incumbentCandidateId,
           filtered, scores, suggestedCandidateId, effectiveCandidateId, recommendation, behaviorChanged, totals,
-          verificationAttemptId, observedAt, failureCode: null,
+          verificationAttemptId, observedAt, failureCode: massConfident ? null : "verifier_uncalibrated",
+          recognizedProbabilityMass: Number.isFinite(suggestedMass) ? suggestedMass! : null,
+          recognizedProbabilityMassBelowFloor: !massConfident,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "verifier_backend_unknown";
@@ -130,6 +155,7 @@ export function createAgentVerifier(input: AgentVerifierConfig): AgentVerifier {
           recommendation: "escalate", behaviorChanged: false, totals,
           verificationAttemptId, observedAt,
           failureCode,
+          recognizedProbabilityMass: null, recognizedProbabilityMassBelowFloor: false,
         });
       }
     },
@@ -177,9 +203,14 @@ async function scoreCandidates(
   candidates: readonly VerifierCandidate[],
   totals: MutableTotals,
   signal?: AbortSignal,
-): Promise<Readonly<Record<string, number>>> {
+): Promise<Readonly<{ scores: Readonly<Record<string, number>>; recognizedMass: Readonly<Record<string, number>> }>> {
   const scores: Record<string, number> = Object.fromEntries(candidates.map((candidate) => [candidate.candidateId, 0]));
   const masses: Record<string, number> = Object.fromEntries(candidates.map((candidate) => [candidate.candidateId, 0]));
+  // Running minimum recognized probability mass observed for each candidate
+  // across every backend response it appeared in. Starts at +Infinity so a
+  // candidate that is never scored stays non-finite and is treated as below the
+  // floor by the caller (fail closed), rather than defaulting to a passing mass.
+  const recognizedMass: Record<string, number> = Object.fromEntries(candidates.map((candidate) => [candidate.candidateId, Number.POSITIVE_INFINITY]));
   const byId = new Map(candidates.map((candidate) => [candidate.candidateId, candidate]));
   const trustedEvidence = canonicalJson({
     sources: pack.sources.map(({ id, kind, digest, locator, content }) => ({ id, kind, digest, locator, content })),
@@ -236,6 +267,12 @@ async function scoreCandidates(
         if (!cached) config.scoreCache?.put(requestId, deepFreeze(structuredClone(response)));
         accumulateTotals(totals, response);
         if (totals.cost > config.maximumCostUsd) fail("verifier_budget_exceeded");
+        // A missing or non-finite recognized mass counts as zero (below any
+        // floor), so a backend that omits it cannot launder a low-recognition
+        // response into a confident one.
+        const responseMass = Number.isFinite(response.recognizedProbabilityMass) ? response.recognizedProbabilityMass : 0;
+        recognizedMass[candidateA.candidateId] = Math.min(recognizedMass[candidateA.candidateId]!, responseMass);
+        if (candidateB) recognizedMass[candidateB.candidateId] = Math.min(recognizedMass[candidateB.candidateId]!, responseMass);
         const scoreA = response.scores[candidateA.candidateId];
         if (scoreA === undefined) fail("verifier_backend_candidate_score_missing");
         if (!candidateB) {
@@ -263,7 +300,10 @@ async function scoreCandidates(
     const complete = buildPivotTournamentSchedule(candidates.map(({ candidateId }) => candidateId), Math.min(config.pivots, candidates.length), config.seed, ringScores);
     for (const edge of complete.pivot) await scoreOnePair(byId.get(edge.candidateAId)!, byId.get(edge.candidateBId)!);
   }
-  return Object.freeze(Object.fromEntries(Object.keys(scores).sort(codeUnitCompare).map((candidateId) => [candidateId, masses[candidateId]! ? scores[candidateId]! / masses[candidateId]! : 0])));
+  return Object.freeze({
+    scores: Object.freeze(Object.fromEntries(Object.keys(scores).sort(codeUnitCompare).map((candidateId) => [candidateId, masses[candidateId]! ? scores[candidateId]! / masses[candidateId]! : 0]))),
+    recognizedMass: Object.freeze({ ...recognizedMass }),
+  });
 }
 
 function emptyTotals(): MutableTotals {
@@ -296,6 +336,8 @@ function resultFor(input: {
   verificationAttemptId: string;
   observedAt: string;
   failureCode: VerifierTelemetry["failureCode"];
+  recognizedProbabilityMass: number | null;
+  recognizedProbabilityMassBelowFloor: boolean;
 }): AgentVerifierResult {
   const usage: VerifierUsage = Object.freeze({
     inputTokens: input.totals.inputTokens,
@@ -319,6 +361,9 @@ function resultFor(input: {
     eligibleCandidateIds: input.filtered.eligible.map(({ candidateId }) => candidateId),
     rejectedCandidates: input.filtered.rejected,
     candidateScores: input.scores,
+    recognizedProbabilityMass: input.recognizedProbabilityMass,
+    recognizedProbabilityMassFloor: input.config.minimumRecognizedProbabilityMass ?? DEFAULT_MINIMUM_RECOGNIZED_PROBABILITY_MASS,
+    recognizedProbabilityMassBelowFloor: input.recognizedProbabilityMassBelowFloor,
     suggestedCandidateId: input.suggestedCandidateId,
     effectiveCandidateId: input.effectiveCandidateId,
     behaviorChanged: input.behaviorChanged,

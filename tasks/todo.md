@@ -2124,7 +2124,7 @@ Objective: keep Muse 1.2 as the sole primary reasoning and code generation model
 - [x] Read the canonical product specification, operating protocol, applicable ADRs, repository lessons, and the complete attached master prompt.
 - [x] Inspect `llm-as-a-verifier` and TurboAgent at exact upstream revisions, record license and algorithm semantics, and decide explicitly between direct dependency, adapter, or TypeScript implementation.
 - [x] Audit current Fettler, ReGauge, router, verification, evaluation, telemetry, security, and governed learning seams. Reconcile any parallel Claude work before every commit.
-- [x] Add proposed ADR 0004 for evidence constrained model verification, deterministic precedence, rollout authority, data egress, and rollback.
+- [x] Add proposed ADR 0006 for evidence constrained model verification, deterministic precedence, rollout authority, data egress, and rollback.
 - [x] Write `docs/agents/MUSE_DEEPSEEK_VERIFIER_DESIGN.md` with the trust hierarchy, threat model, evidence pack, criteria, model roles, execution modes, config schema, rollout stages, kill switch, economics, and compatibility decision.
 
 ### Core implementation, red first

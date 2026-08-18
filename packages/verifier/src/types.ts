@@ -245,6 +245,9 @@ export type VerifierTelemetry = Readonly<{
   eligibleCandidateIds: readonly string[];
   rejectedCandidates: readonly Readonly<{ candidateId: string; reasons: readonly string[] }>[];
   candidateScores: Readonly<Record<string, number>>;
+  recognizedProbabilityMass: number | null;
+  recognizedProbabilityMassFloor: number;
+  recognizedProbabilityMassBelowFloor: boolean;
   suggestedCandidateId: string | null;
   effectiveCandidateId: string;
   behaviorChanged: boolean;

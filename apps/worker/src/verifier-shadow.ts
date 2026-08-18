@@ -81,6 +81,7 @@ export function createVerifierShadowRuntime(input: Readonly<{
         seed: 0,
         maximumCandidates: config.maximumCandidates,
         maximumCostUsd: config.maximumCostUsd,
+        minimumRecognizedProbabilityMass: config.minimumRecognizedProbabilityMass,
       });
       const result = await verifier.verify({ ...request, pack });
       await persistTelemetry(result.telemetry);

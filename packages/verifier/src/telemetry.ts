@@ -30,6 +30,18 @@ export function verifyVerifierTelemetry(input: VerifierTelemetry): VerifierTelem
   for (const [candidateId, score] of Object.entries(telemetry.candidateScores)) {
     if (!eligible.has(candidateId) || !Number.isFinite(score) || score < 0 || score > 1) fail("verifier_telemetry_score_invalid");
   }
+  if (!Number.isFinite(telemetry.recognizedProbabilityMassFloor) || telemetry.recognizedProbabilityMassFloor < 0 || telemetry.recognizedProbabilityMassFloor > 1) {
+    fail("verifier_telemetry_recognized_mass_floor_invalid");
+  }
+  // The recognized mass is a sum of per-token probabilities that reward
+  // decoding only guarantees to be finite and non-negative (degenerate or mock
+  // logprob distributions can push it above 1), so it is not bounded above
+  // here. The floor it is compared against is what is constrained to [0, 1].
+  if (telemetry.recognizedProbabilityMass !== null &&
+    (!Number.isFinite(telemetry.recognizedProbabilityMass) || telemetry.recognizedProbabilityMass < 0)) {
+    fail("verifier_telemetry_recognized_mass_invalid");
+  }
+  if (typeof telemetry.recognizedProbabilityMassBelowFloor !== "boolean") fail("verifier_telemetry_recognized_mass_flag_invalid");
   if (telemetry.scoreEvidenceDigests.some((digest) => !/^sha256:[a-f0-9]{64}$/.test(digest))) fail("verifier_telemetry_score_evidence_invalid");
   const { telemetryDigest, ...base } = telemetry;
   if (sha256(canonicalJson(base)) !== telemetryDigest) fail("verifier_telemetry_digest_mismatch");

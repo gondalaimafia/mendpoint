@@ -15,6 +15,7 @@ export type EnabledVerifierRuntimeConfig = Readonly<{
   scoringMode: Exclude<VerifierScoringMode, "muse_self">;
   maximumCandidates: number;
   maximumCostUsd: number;
+  minimumRecognizedProbabilityMass: number;
   timeoutMs: number;
   maximumRetries: number;
 }>;
@@ -70,6 +71,7 @@ export function resolveVerifierRuntimeConfig(env: Readonly<Record<string, string
     scoringMode,
     maximumCandidates: integer(env, "MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES", 5, 1, 20),
     maximumCostUsd: decimal(env, "MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD", 0.25, 0.000001, 100),
+    minimumRecognizedProbabilityMass: decimal(env, "MENDPOINT_AGENT_VERIFIER_MINIMUM_RECOGNIZED_PROBABILITY_MASS", 0.2, 0, 1),
     timeoutMs: integer(env, "MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS", 30_000, 1, 120_000),
     maximumRetries: integer(env, "MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES", 1, 0, 3),
   });
