@@ -2409,3 +2409,17 @@ Review before publication: authenticated repository clones now keep the public r
 Live proof before publication: `mendpoint-sandbox` ran image `registry.fly.io/mendpoint-sandbox@sha256:58a68f6680467330d10a4f76308a0bd12356d219a027fc4a4e482166c44e6684`; Machine `8654535a641de8` reported exact IPv4 and IPv6 `OUTPUT DROP` rules, executed the local probe as uid 1000, returned `blocked` for public HTTPS, and was destroyed. The app then listed zero Machines. The protected `sandbox-production` environment holds the scoped app credentials, signing authority, exact image and policy bindings, and required reviewer. The matching verifier receipt is staged on `mendpoint-talal` but has not been activated yet.
 
 Local verification before publication: repository API tests pass 14 of 14, Platform passes 215 of 215, Worker passes 340 of 340, Ops passes 99 of 99, and all 53 scripts tests pass. The second complete repository test command is green after correcting two customer-launcher fixtures for the new mandatory authority. Every workspace and scripts typecheck, the 50-page production build, GA specification, claims, action-pin, architecture, model, and naming checks, all three Fly profile validations, the production dependency audit with zero vulnerabilities, and diff integrity pass.
+
+## Live browser accessibility correction: 2026-08-18
+
+Objective: close the keyboard-accessibility failure found during the required post-deploy desktop and mobile browser review without changing the documentation content or navigation contract.
+
+- [x] Reproduce the failure against live production with Chromium and Axe at the 375 by 812 mobile viewport.
+- [x] Make the interfaces table keyboard focusable with an exact accessible name.
+- [x] Extend the protected deployment journey so mobile pages receive the same blocking accessibility scan as desktop pages.
+- [x] Run focused web tests, typecheck, production build, GA checks, and the live desktop and mobile browser matrix.
+- [ ] Publish through a protected pull request, verify the exact deployed revision, and record screenshots and live health evidence.
+
+Acceptance: all public pages under the browser matrix return HTTP 200, have no horizontal overflow, no console errors, no failed requests, and no serious or critical accessibility violations at desktop and mobile widths; the documentation table can receive keyboard focus; and the exact deployed revision remains healthy.
+
+Review before publication: the live 375 by 812 Chromium scan reproduced one serious `scrollable-region-focusable` violation on the Fettler interfaces table. The table now has an exact page-specific accessible name and participates in keyboard focus order. The protected deployment journey now runs its serious and critical Axe scan after every public route is resized to mobile, closing the coverage gap that allowed the defect through desktop-only checks. The complete Web suite passes 192 of 192 tests, Web typecheck passes, the 50-page optimized build passes, and all GA specification, claims, action-pin, architecture, model, naming, and readiness checks pass. A local production build passed the eight-page desktop and mobile browser matrix with HTTP 200, zero horizontal overflow, zero console errors, zero failed requests, and zero serious or critical accessibility violations; desktop and mobile screenshots were visually reviewed without clipping or broken navigation.
