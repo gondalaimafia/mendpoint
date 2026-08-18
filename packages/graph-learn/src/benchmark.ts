@@ -172,21 +172,33 @@ export const BENCH_CASES: BenchCase[] = [
   },
   {
     id: "q07",
-    name: "outcomes_for_pattern amount",
+    name: "outcomes_for_pattern amount finds the seeded rename",
     run: (db) => {
+      // The fixture seeds an "amount" rename with merged/closed PR outcomes, so
+      // this must return real hits with complete coverage — not merely "ok:true"
+      // regardless of what the op does (the old tautology).
       const r = runScoped(db, {
         op: "outcomes_for_pattern",
         pattern: "amount",
       });
-      return { ok: true, detail: r.summary };
+      const ok = (r.rows?.length ?? 0) >= 1 && r.coverage.basis === "complete";
+      return { ok, detail: `${r.summary} [coverage=${r.coverage.basis}]` };
     },
   },
   {
     id: "q08",
-    name: "pattern_success_rates",
+    name: "pattern_success_rates reports a real success rate",
     run: (db) => {
+      // The fixture has labelled outcomes, so this must surface at least one
+      // pattern with a numeric success rate and complete coverage, rather than
+      // passing on any array (the old tautology).
       const r = runScoped(db, { op: "pattern_success_rates", minSamples: 1 });
-      return { ok: Array.isArray(r.rows), detail: r.summary };
+      const rows = r.rows ?? [];
+      const ok =
+        rows.length >= 1 &&
+        rows.every((row) => typeof (row as { successRate?: unknown }).successRate === "number") &&
+        r.coverage.basis === "complete";
+      return { ok, detail: `${r.summary} [coverage=${r.coverage.basis}]` };
     },
   },
   {
@@ -266,24 +278,37 @@ export const BENCH_CASES: BenchCase[] = [
   },
   {
     id: "q14",
-    name: "migration_ready_units empty campaign",
+    name: "migration_ready_units fails closed (DEPENDS_ON unpopulated)",
     run: (db) => {
+      // Readiness is derived from DEPENDS_ON, which no ingest path writes, so a
+      // zero/vacuous "ready" list must NOT read as complete. Assert the op fails
+      // closed rather than certifying the silent emptiness (the old case only
+      // checked rows.length === 0, which passed on the vacuous result).
       const r = runScoped(db, {
         op: "migration_ready_units",
         campaignId: "camp-missing",
       });
-      return { ok: (r.rows?.length ?? 0) === 0, detail: r.summary };
+      return {
+        ok: r.coverage.basis === "target_absent",
+        detail: `${r.summary} [coverage=${r.coverage.basis}]`,
+      };
     },
   },
   {
     id: "q15",
-    name: "invariants_for_symbol empty-ok",
+    name: "invariants_for_symbol fails closed (PRESERVES_INVARIANT unpopulated)",
     run: (db) => {
+      // No ingest path writes PRESERVES_INVARIANT, so `0 invariant(s)` is not
+      // evidence the symbol preserves nothing. Assert the op fails closed
+      // instead of certifying the silent zero.
       const r = runScoped(db, {
         op: "invariants_for_symbol",
         qualifiedName: "com.acme.Charge",
       });
-      return { ok: (r.rows?.length ?? 0) === 0, detail: r.summary };
+      return {
+        ok: r.coverage.basis === "target_absent",
+        detail: `${r.summary} [coverage=${r.coverage.basis}]`,
+      };
     },
   },
   {

@@ -53,7 +53,9 @@ function formatGraphPath(p: GraphPath): string {
   const suffix = p.truncated
     ? p.terminal === "cycle"
       ? " _(truncated at an import cycle)_"
-      : ` _(truncated at the ${p.hops}-hop limit)_`
+      : p.terminal === "no_anchor"
+        ? " _(incomplete: no provider anchor reached)_"
+        : ` _(truncated at the ${p.hops}-hop limit)_`
     : "";
   return `path: ${chain}${suffix}`;
 }

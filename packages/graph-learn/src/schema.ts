@@ -332,11 +332,16 @@ export const GraphQuerySchema = z.discriminatedUnion("op", [
  *  - `complete`      — the result enumerates everything within the query's scope.
  *  - `partial`       — a safety bound (max hops/paths) stopped enumeration early;
  *    there may be more than what is returned.
- *  - `target_absent` — the queried node/entity is not in the (tenant) graph, so
- *    an empty result means "we have never seen it", NOT "it has no relationships".
+ *  - `target_absent` — the queried node/entity is not in the (tenant) graph, or
+ *    the relation the answer is derived from is not populated by any ingest path,
+ *    so an empty result means "we have no evidence either way", NOT "it has no
+ *    relationships".
+ *  - `unknown`       — the op could not assess its own coverage (e.g. an
+ *    unrecognized query op reaching the dispatcher's default branch). Fail
+ *    closed: a caller must never read this as `complete`.
  */
 export type GraphQueryCoverage = {
-  basis: "complete" | "partial" | "target_absent";
+  basis: "complete" | "partial" | "target_absent" | "unknown";
   reason?: string;
 };
 
@@ -347,11 +352,11 @@ export type GraphQueryResult = {
   summary: string;
   rows?: Array<Record<string, unknown>>;
   /**
-   * Coverage of this result. Optional only for backward-compatibility with
-   * results built before this field existed; {@link runGraphQuery} normalizes
-   * every returned result to carry one (defaulting to `complete`).
+   * Coverage of this result. Required: every op declares one so a missing
+   * assessment can never be silently read as `complete`. {@link runGraphQuery}
+   * returns each op's own coverage untouched — there is no default fallback.
    */
-  coverage?: GraphQueryCoverage;
+  coverage: GraphQueryCoverage;
   truncation?: {
     truncated: boolean;
     reasons: Array<"max_hops" | "max_paths">;

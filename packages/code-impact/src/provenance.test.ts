@@ -245,6 +245,26 @@ describe("traverseFromAnchors / anchorPathTo (FET-016 graph_path)", () => {
     expect(path!.coverage).toBe("partial");
   });
 
+  it("marks a chain that ends without an anchor as no_anchor, never anchor/complete", () => {
+    // Defensive guarantee: a reachable node whose predecessor chain runs out
+    // before an anchor must NOT be reported as if it reached one. BFS never
+    // produces this detached map, so it is exercised directly.
+    const walk = {
+      reachable: new Set(["x", "y"]),
+      anchors: new Set(["anchor"]),
+      // "y" has no predecessor entry, so the walk from "x" runs out at "y",
+      // which is not an anchor.
+      predecessors: new Map([["x", "y"]]),
+    };
+    const path = anchorPathTo("x", walk);
+    expect(path).toBeDefined();
+    expect(path!.terminal).toBe("no_anchor");
+    expect(path!.terminal).not.toBe("anchor");
+    expect(path!.truncated).toBe(true);
+    expect(path!.coverage).toBe("partial");
+    expect(path!.coverage).not.toBe("complete");
+  });
+
   it("marks a path exceeding the hop bound as truncated (max_hops), not silently cut", () => {
     // A chain longer than HARD_MAX_HOPS: n0 (anchor) <- n1 <- ... <- n{HARD+5}.
     const len = HARD_MAX_HOPS + 5;
