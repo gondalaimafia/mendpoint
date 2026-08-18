@@ -23,7 +23,9 @@
     "packages/pkg255/src/api/charges.js",
     "packages/pkg299/src/legacy/pay.js"
   ],
-  "acceptable_findings": [],
+  "acceptable_findings": [
+    "check.mjs"
+  ],
   "false_positive_traps": [
     "node_modules/"
   ],

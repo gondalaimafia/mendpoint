@@ -1,0 +1,108 @@
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
+import { buildIndex } from "@mendpoint/codebase-index";
+import type { ImpactableSurface } from "@mendpoint/shared";
+import { computeProviderReachability, discoverCandidates, sdkContextFromSurfaces } from "./index.js";
+
+const tmpDirs: string[] = [];
+
+function makeRepo(files: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), "fettler-structured-payload-"));
+  tmpDirs.push(dir);
+  for (const [relativePath, content] of Object.entries(files)) {
+    const absolutePath = join(dir, relativePath);
+    mkdirSync(join(absolutePath, ".."), { recursive: true });
+    writeFileSync(absolutePath, content, "utf8");
+  }
+  return dir;
+}
+
+afterAll(() => {
+  for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
+});
+
+function surfaces(): ImpactableSurface[] {
+  const base = {
+    canonicalId: "meridian.POST./v1/charges.request_field_renamed.source.payment_method",
+    kind: "request_field" as const,
+    op: "request_field_renamed" as const,
+    path: "/v1/charges",
+    method: "post",
+    fromField: "source",
+    toField: "payment_method",
+    severity: "breaking" as const,
+    migrationStrategy: "Rename source to payment_method",
+    explanation: "Provider wire field renamed",
+    searchTokens: ["/v1/charges", "charges", "source", "payment_method"],
+  };
+  return [
+    { ...base, id: "request-source" },
+    { ...base, id: "response-source", kind: "response_field", op: "response_field_removed" },
+  ];
+}
+
+describe("structured payload discovery", () => {
+  it("finds exact renamed keys in bounded JSON fixtures without promoting unrelated JSON", () => {
+    const repo = makeRepo({
+      "package.json": JSON.stringify({ name: "consumer" }),
+      "src/payments.ts": [
+        'import meridian from "meridian";',
+        'export const endpoint = "/v1/charges";',
+        "export const charge = (source: string) => meridian.charges.create({ source });",
+      ].join("\n"),
+      "tests/fixtures/charge.json": JSON.stringify({ id: "ch_1", source: "tok_1" }, null, 2),
+      "tests/fixtures/nested-response.json": JSON.stringify({ data: [{ source: "tok_2" }] }, null, 2),
+      "tests/fixtures/malformed.json": '{ "source": ',
+      "config/source.json": JSON.stringify({ source: "operator" }, null, 2),
+      "spec/openapi.json": JSON.stringify({ openapi: "3.1.0", source: "schema" }, null, 2),
+    });
+    const changeSurfaces = surfaces();
+    const index = buildIndex(repo, { sdkContext: sdkContextFromSurfaces(changeSurfaces) });
+    const candidates = discoverCandidates(
+      index,
+      changeSurfaces,
+      computeProviderReachability(index, changeSurfaces),
+    );
+    const promotable = candidates
+      .filter((candidate) => candidate.initialConfidence !== "low")
+      .map((candidate) => candidate.filePath);
+
+    expect(promotable).toContain("tests/fixtures/charge.json");
+    expect(promotable).toContain("tests/fixtures/nested-response.json");
+    expect(promotable).not.toContain("tests/fixtures/malformed.json");
+    expect(promotable).not.toContain("config/source.json");
+    expect(promotable).not.toContain("spec/openapi.json");
+  });
+
+  it("reads each indexed file at most once across multiple surfaces", () => {
+    const repo = makeRepo({
+      "package.json": JSON.stringify({ name: "consumer" }),
+      "src/payments.ts": [
+        'import meridian from "meridian";',
+        'export const endpoint = "/v1/charges";',
+        "export const charge = (source: string) => meridian.charges.create({ source });",
+      ].join("\n"),
+      "src/service.ts": "export const payload = { source: 'tok_1' };",
+      "tests/fixtures/charge.json": JSON.stringify({ source: "tok_1" }),
+    });
+    const changeSurfaces = surfaces();
+    const index = buildIndex(repo, { sdkContext: sdkContextFromSurfaces(changeSurfaces) });
+    const reads = new Map<string, number>();
+    discoverCandidates(
+      index,
+      changeSurfaces,
+      computeProviderReachability(index, changeSurfaces),
+      {
+        readFile: (absolutePath) => {
+          reads.set(absolutePath, (reads.get(absolutePath) ?? 0) + 1);
+          return readFileSync(absolutePath, "utf8");
+        },
+      },
+    );
+
+    expect(reads.size).toBeGreaterThan(0);
+    expect(Math.max(...reads.values())).toBe(1);
+  });
+});

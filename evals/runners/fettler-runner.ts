@@ -32,7 +32,10 @@ import type { ScenarioConfig } from "../scenarios/index.js";
 import type { GroundTruth } from "../ground-truth/schema.js";
 import { gradeFettler } from "../graders/fettler-graders.js";
 import { gradeImportChain, type ObservedFindingPath } from "../graders/import-chain-graders.js";
-import { stageRepo } from "./stage.js";
+import {
+  assertDirectDeterministicRepoSafe,
+  withStagedRepo,
+} from "./stage.js";
 import type { RunRecord } from "./types.js";
 
 const toPosix = (p: string): string => p.replace(/\\/g, "/");
@@ -50,6 +53,36 @@ export interface FettlerLaneOptions {
 }
 
 export async function runFettler(
+  cfg: ScenarioConfig,
+  gt: GroundTruth,
+  ctx: { gitCommit: string; productVersion: string },
+  lane?: FettlerLaneOptions,
+): Promise<RunRecord> {
+  return withStagedRepo(cfg.repoPath, (staged) =>
+    runFettlerOnPreparedRepository(
+      { ...cfg, repoPath: staged.stagedPath },
+      gt,
+      ctx,
+      lane,
+    ),
+  );
+}
+
+/**
+ * Deterministic scale lane only: no model, repository tool, mutation, or raw
+ * Markdown reader is present. The authoritative extension check rejects a
+ * corpus whose answer key could enter the index.
+ */
+export async function runFettlerDirectDeterministic(
+  cfg: ScenarioConfig,
+  gt: GroundTruth,
+  ctx: { gitCommit: string; productVersion: string },
+): Promise<RunRecord> {
+  assertDirectDeterministicRepoSafe(cfg.repoPath);
+  return runFettlerOnPreparedRepository(cfg, gt, ctx);
+}
+
+async function runFettlerOnPreparedRepository(
   cfg: ScenarioConfig,
   gt: GroundTruth,
   ctx: { gitCommit: string; productVersion: string },
@@ -95,14 +128,13 @@ export async function runFettler(
         ],
   };
 
-  // Stage the repo into scratch WITHOUT its grading key so the product can never
-  // read its own answer key (matters the moment an LLM-enabled path is used).
-  // Latency is measured around the product call only, not the copy.
-  const stage = stageRepo(cfg.repoPath);
+  // The public entrypoint staged the repo before entering this function. Product
+  // latency therefore excludes copying while every analysis still sees only the
+  // answer-key-safe tree.
   started = Date.now();
   try {
-    const oldSpecPath = join(stage.stagedPath, cfg.oldSpec ?? "spec/openapi-v1.json");
-    const newSpecPath = join(stage.stagedPath, cfg.newSpec ?? "spec/openapi-v2.json");
+    const oldSpecPath = join(cfg.repoPath, cfg.oldSpec ?? "spec/openapi-v1.json");
+    const newSpecPath = join(cfg.repoPath, cfg.newSpec ?? "spec/openapi-v2.json");
     const oldSpec = JSON.parse(readFileSync(oldSpecPath, "utf8"));
     const newSpec = JSON.parse(readFileSync(newSpecPath, "utf8"));
 
@@ -112,11 +144,11 @@ export async function runFettler(
     // hand that same index to analyzeImpact so nothing is scanned twice and the
     // production path is exercised unchanged. `index.files` is the set of source
     // files the walker indexed after pruning dependency/VCS trees.
-    const index = buildIndexIncremental(stage.stagedPath, null, {
+    const index = buildIndexIncremental(cfg.repoPath, null, {
       sdkContext: sdkContextFromSurfaces(surfaces),
     });
-    const filesScanned = index.files.length;
-    const report: ImpactReport = await analyzeImpact(stage.stagedPath, surfaces, {
+    const filesScanned = index.files.length + (index.structuredFiles?.length ?? 0);
+    const report: ImpactReport = await analyzeImpact(cfg.repoPath, surfaces, {
       useLlm: live,
       minConfidence: "medium",
       index,

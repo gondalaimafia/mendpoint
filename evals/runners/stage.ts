@@ -24,6 +24,7 @@ import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { classifyDependencyDirectory } from "@mendpoint/shared";
+import { isCodebaseIndexPath } from "@mendpoint/codebase-index";
 
 /**
  * Filename patterns that are grading keys, not repository content. Deliberately
@@ -133,4 +134,36 @@ export function stageRepo(repoPath: string): StagedRepo {
   };
 
   return { stagedPath, excludedAnswerKeys: excludedAnswerKeys.sort(), cleanup };
+}
+
+/**
+ * Run one operation against an answer-key-safe staged repository and always
+ * remove the scratch tree, including when the operation rejects. Keeping the
+ * ownership boundary here prevents individual runners from forgetting cleanup.
+ */
+export async function withStagedRepo<T>(
+  repoPath: string,
+  operation: (staged: StagedRepo) => Promise<T>,
+): Promise<T> {
+  const staged = stageRepo(repoPath);
+  try {
+    return await operation(staged);
+  } finally {
+    staged.cleanup();
+  }
+}
+
+/**
+ * Permit the deterministic, tool-free scale lane to read a corpus repository
+ * directly only when no grading key is in the codebase index's authoritative
+ * extension set. This avoids charging Windows copy-on-scan overhead to product
+ * latency without exposing answer material to the index or to a model.
+ */
+export function assertDirectDeterministicRepoSafe(repoPath: string): void {
+  const indexedAnswerKeys = listFilesRecursive(repoPath).filter(
+    (path) => isAnswerKeyFile(path) && isCodebaseIndexPath(path),
+  );
+  if (indexedAnswerKeys.length) {
+    throw new Error(`direct_repo_indexable_answer_key:${indexedAnswerKeys.sort().join(",")}`);
+  }
 }

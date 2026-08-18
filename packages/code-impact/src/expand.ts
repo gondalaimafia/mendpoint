@@ -38,7 +38,9 @@ export function expandContexts(
   const graph = index.callGraph;
 
   for (const candidate of candidates) {
-    const fileMeta = index.files.find((f) => f.path === candidate.filePath);
+    const fileMeta =
+      index.files.find((f) => f.path === candidate.filePath) ??
+      index.structuredFiles?.find((f) => f.path === candidate.filePath);
     const fn =
       functionAt(index, candidate.filePath, candidate.lineStart) ??
       (candidate.functionName

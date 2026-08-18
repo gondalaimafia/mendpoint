@@ -8,7 +8,7 @@
  */
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, lstatSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, relative, dirname, basename } from "node:path";
+import { join, relative, dirname, basename, extname } from "node:path";
 import {
   buildCallGraph,
   buildCallGraphIncremental,
@@ -45,6 +45,13 @@ const CODE_EXTS = new Set([
   ".rb",
   ".kt",
 ]);
+const STRUCTURED_EXTS = new Set([".json"]);
+const INDEX_EXTS = new Set([...CODE_EXTS, ...STRUCTURED_EXTS]);
+
+/** Whether the deterministic index can read a path during source discovery. */
+export function isCodebaseIndexPath(path: string): boolean {
+  return INDEX_EXTS.has(extname(path).toLowerCase());
+}
 
 export type IndexedFunction = {
   name: string;
@@ -85,6 +92,14 @@ export type FileRecord = {
   lineCount: number;
 };
 
+export type StructuredFileRecord = {
+  path: string;
+  format: "json";
+  isTest: boolean;
+  contentHash: string;
+  lineCount: number;
+};
+
 /** A directory pruned during discovery, recorded so the skip is auditable. */
 export type SkippedDirectory = {
   /** Repo-relative path of the skipped directory. */
@@ -97,6 +112,12 @@ export type CodebaseIndex = {
   repoRoot: string;
   builtAt: string;
   files: FileRecord[];
+  /**
+   * Bounded structured payloads are indexed separately from executable source.
+   * Optional preserves compatibility with persisted indexes written before the
+   * structured-payload channel existed.
+   */
+  structuredFiles?: StructuredFileRecord[];
   functions: IndexedFunction[];
   /** name → functions that call it (legacy name-only reverse edges) */
   callersOf: Record<string, string[]>;
@@ -316,7 +337,7 @@ function walk(
       walk(repoRoot, p, limits, usage, skipped, nextDepth, out);
     } else if (st.isFile()) {
       const ext = name.includes(".") ? `.${name.split(".").pop()}` : "";
-      if (CODE_EXTS.has(ext)) {
+      if (INDEX_EXTS.has(ext)) {
         accountFile(repoRoot, p, st.size, limits, usage);
         out.push({ abs: p, rel: relativePath(repoRoot, p), size: st.size });
       }
@@ -339,9 +360,11 @@ function discoverFiles(
   const usage: DiscoveryUsage = { files: 0, totalBytes: 0 };
   const skipped: SkippedDirectory[] = [];
   const files = walk(repoRoot, repoRoot, limits, usage, skipped);
+  const discoveredPaths = new Set(files.map((file) => file.abs));
   for (const manifest of ["package.json", "requirements.txt", "go.mod", "Gemfile"]) {
     const path = join(repoRoot, manifest);
     if (!existsSync(path)) continue;
+    if (discoveredPaths.has(path)) continue;
     const size = assertRegularFile(repoRoot, path, undefined, limits);
     accountFile(repoRoot, path, size, limits, usage);
   }
@@ -357,6 +380,33 @@ function langOf(file: string): FileRecord["language"] {
   if (file.endsWith(".js") || file.endsWith(".jsx") || file.endsWith(".mjs") || file.endsWith(".cjs"))
     return "javascript";
   return "other";
+}
+
+function shouldRunTypescriptFrontend(
+  file: string,
+  text: string,
+  context: SdkDetectionContext | undefined,
+): boolean {
+  if (!isTypescriptFile(file)) return false;
+  if (/\.tsx?$/i.test(file) || !context) return true;
+  // JavaScript repositories can contain tens of thousands of simple modules.
+  // The heuristic frontend already captures their imports, functions, and call
+  // edges. Invoke the compiler frontend only where a provider signal or module
+  // edge can add richer evidence for this exact impact question.
+  if (/\bimport\s|\brequire\s*\(|\bfetch\s*\(|\baxios\b|https?:\/\//i.test(text)) {
+    return true;
+  }
+  const lower = text.toLowerCase();
+  const hints = [
+    ...(context.receivers ?? []),
+    ...(context.methodPaths ?? []),
+    ...(context.methods ?? []),
+    ...(context.fields ?? []),
+    ...(context.importHints ?? []),
+  ]
+    .map((value) => value.toLowerCase())
+    .filter((value) => value.length >= 3);
+  return hints.some((hint) => lower.includes(hint));
 }
 
 function isTestPath(rel: string): boolean {
@@ -684,6 +734,7 @@ function buildIndexFromDiscovered(
   skippedDirectories: SkippedDirectory[] = [],
 ): CodebaseIndex {
   const files: FileRecord[] = [];
+  const structuredFiles: StructuredFileRecord[] = [];
   const functions: IndexedFunction[] = [];
   const apiUsages: ApiUsageRecord[] = [];
   const packageImports = new Set<string>();
@@ -715,6 +766,17 @@ function buildIndexFromDiscovered(
     const abs = discovered.abs;
     const rel = discovered.rel;
     const text = discovered.text ?? readDiscoveredFile(repoRoot, discovered, limits);
+    if (STRUCTURED_EXTS.has(extname(rel).toLowerCase())) {
+      structuredFiles.push({
+        path: rel,
+        format: "json",
+        isTest: isTestPath(rel),
+        contentHash:
+          discovered.contentHash ?? createHash("sha256").update(text).digest("hex").slice(0, 16),
+        lineCount: text.split(/\r?\n/).length,
+      });
+      continue;
+    }
     sources.set(abs, text);
     const language = langOf(rel);
     let imports = extractImports(text, language);
@@ -724,7 +786,7 @@ function buildIndexFromDiscovered(
     const fileReceivers = providerBindingsForFile(text, language, sdkSets.importHints);
 
     // Phase B: prefer TypeScript compiler API for .ts/.tsx/.js when available
-    if (tsApi && isTypescriptFile(rel)) {
+    if (tsApi && shouldRunTypescriptFrontend(rel, text, opts.sdkContext)) {
       try {
         const richer = extractWithTypescript(repoRoot, abs, tsApi, text, {
           sets: sdkSets,
@@ -834,6 +896,7 @@ function buildIndexFromDiscovered(
     repoRoot,
     builtAt: new Date().toISOString(),
     files,
+    structuredFiles,
     functions,
     callersOf,
     calleesOf,
@@ -852,7 +915,8 @@ export function writeIndex(index: CodebaseIndex, outPath: string): void {
 }
 
 export function loadIndex(path: string): CodebaseIndex {
-  return JSON.parse(readFileSync(path, "utf8")) as CodebaseIndex;
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as CodebaseIndex;
+  return { ...parsed, structuredFiles: parsed.structuredFiles ?? [] };
 }
 
 /**
@@ -879,21 +943,28 @@ export function buildIndexIncremental(
     file.contentHash = contentHash;
     currentHashes.set(file.rel, contentHash);
   }
-  const prevMap = new Map(previous.files.map((f) => [f.path, f.contentHash]));
+  const prevMap = new Map(
+    [...previous.files, ...(previous.structuredFiles ?? [])].map((f) => [f.path, f.contentHash]),
+  );
   const changedFiles = [...currentHashes.entries()]
     .filter(([path, hash]) => prevMap.get(path) !== hash)
     .map(([path]) => path);
-  const deleted = previous.files
+  const deleted = [...previous.files, ...(previous.structuredFiles ?? [])]
     .filter((f) => !currentHashes.has(f.path))
     .map((f) => f.path);
   const allChanged = [...new Set([...changedFiles, ...deleted])];
 
   if (!allChanged.length) return previous;
 
-  const callGraph = buildCallGraphIncremental(repoRoot, previous.callGraph, allChanged, {
-    algorithm: "hybrid",
-    strategy: "hybrid",
-  });
+  const changedCodeFiles = allChanged.filter(
+    (path) => !STRUCTURED_EXTS.has(extname(path).toLowerCase()),
+  );
+  const callGraph = changedCodeFiles.length
+    ? buildCallGraphIncremental(repoRoot, previous.callGraph, changedCodeFiles, {
+        algorithm: "hybrid",
+        strategy: "hybrid",
+      })
+    : previous.callGraph;
 
   // Single metadata pass, inject incremental graph (no second full graph build)
   return buildIndexFromDiscovered(
