@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   assessModelEgress,
+  effectiveModelEndpointUrl,
+  enforceModelEndpointEgress,
   isPrivateModelHost,
   isValidModelEgressMode,
   modelEgressMode,
@@ -102,5 +104,99 @@ describe("model egress assessment", () => {
       MENDPOINT_MODEL_EGRESS: "local_only",
       LLM_AGENT_URL: "not a url",
     }).violation).toBe("warden_model_endpoint_invalid");
+  });
+});
+
+describe("model egress assessment across named providers", () => {
+  it("flags a named provider's hardcoded public default under local_only (no base-URL env)", () => {
+    for (const [provider, host] of [
+      ["openai", "api.openai.com"],
+      ["xai", "api.x.ai"],
+      ["anthropic", "api.anthropic.com"],
+      ["gemini", "generativelanguage.googleapis.com"],
+    ] as const) {
+      const a = assessModelEgress({
+        MENDPOINT_MODEL_EGRESS: "local_only",
+        MENDPOINT_MODEL_PROVIDER: provider,
+      });
+      expect(a.violation).toBe("model_egress_local_only_violation");
+      expect(a.endpointHost).toBe(host);
+      expect(a.localOnlySatisfied).toBe(false);
+    }
+  });
+
+  it("flags a named provider pointed at a public base-URL env under local_only", () => {
+    const a = assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_PROVIDER: "openai-gateway",
+      LLM_AGENT_URL: "https://gateway.public.example/v1",
+    });
+    expect(a.violation).toBe("model_egress_local_only_violation");
+  });
+
+  it("allows a private, loopback, or allowlisted host for a named provider under local_only", () => {
+    expect(assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_PROVIDER: "anthropic",
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:8000",
+    }).violation).toBeNull();
+    expect(assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_PROVIDER: "gemini",
+      GEMINI_BASE_URL: "https://gemini.internal",
+      MENDPOINT_MODEL_LOCAL_HOSTS: "gemini.internal",
+    }).violation).toBeNull();
+  });
+
+  it("treats a base-URL-less provider (no default) as no egress under local_only", () => {
+    const a = assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_PROVIDER: "muse-spark",
+    });
+    expect(a.violation).toBeNull();
+    expect(a.endpointConfigured).toBe(false);
+    expect(a.localOnlySatisfied).toBe(true);
+  });
+
+  it("fails closed on an unrecognized provider id under local_only", () => {
+    const a = assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_PROVIDER: "some-unmirrored-provider",
+    });
+    expect(a.violation).toBe("model_egress_local_only_violation");
+    expect(a.localOnlySatisfied).toBe(false);
+    expect(effectiveModelEndpointUrl({ MENDPOINT_MODEL_PROVIDER: "some-unmirrored-provider" }).determinable)
+      .toBe(false);
+  });
+
+  it("does not check the host when external_allowed, even for a public provider default", () => {
+    const a = assessModelEgress({ MENDPOINT_MODEL_PROVIDER: "openai" });
+    expect(a.violation).toBeNull();
+    expect(a.endpointHost).toBe("api.openai.com");
+    expect(a.endpointConfigured).toBe(true);
+  });
+});
+
+describe("enforceModelEndpointEgress", () => {
+  it("is a no-op under external_allowed", () => {
+    expect(() => enforceModelEndpointEgress("https://api.meta.ai/v1/chat/completions", {})).not.toThrow();
+  });
+
+  it("permits a private or allowlisted host and refuses a public one under local_only", () => {
+    expect(() => enforceModelEndpointEgress("http://127.0.0.1:8000/v1/messages", {
+      MENDPOINT_MODEL_EGRESS: "local_only",
+    })).not.toThrow();
+    expect(() => enforceModelEndpointEgress("https://model.internal/v1", {
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_LOCAL_HOSTS: "model.internal",
+    })).not.toThrow();
+    expect(() => enforceModelEndpointEgress("https://api.meta.ai/v1", {
+      MENDPOINT_MODEL_EGRESS: "local_only",
+    })).toThrow("model_egress_local_only_violation");
+  });
+
+  it("fails closed on an unparseable URL under local_only", () => {
+    expect(() => enforceModelEndpointEgress("not a url", { MENDPOINT_MODEL_EGRESS: "local_only" }))
+      .toThrow("warden_model_endpoint_invalid");
   });
 });
