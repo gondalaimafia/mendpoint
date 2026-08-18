@@ -11,12 +11,16 @@ const approval = `approval:regauge:tenant-a:campaign-a:repository:123456:revisio
 const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [approval] }] });
 
 describe("Transformer production profile", () => {
-  it("forces Fly to run the hardened transformer entrypoint", () => {
+  it("builds and runs the hardened transformer image stage", () => {
     const manifest = readFileSync(
       resolve(import.meta.dirname, "../../../fly.transformer.toml"),
       "utf8",
     ).replaceAll("\r\n", "\n");
 
+    expect(manifest).toContain(
+      '[build]\n  dockerfile = "Dockerfile"\n  build-target = "transformer"',
+    );
+    expect(manifest).not.toMatch(/^\s*target\s*=/m);
     expect(manifest).toContain(
       '[experimental]\n  entrypoint = ["/app/scripts/start-transformer-entrypoint.sh"]',
     );
