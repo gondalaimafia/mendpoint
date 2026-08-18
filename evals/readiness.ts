@@ -62,10 +62,53 @@ export interface RegaugeFamilyThresholds {
   max_open_p0: number;
 }
 
-export type CapabilityThresholds = FettlerImpactThresholds | RegaugeFamilyThresholds;
+/**
+ * Fettler restraint (abstention / no-op) thresholds. A DISTINCT capability from
+ * impact analysis: `fettler-impact-analysis` scores recall/precision on
+ * `flag_files` scenarios; this scores whether the product correctly does NOTHING
+ * on the scenarios where nothing is the right answer — an ambiguous rename with
+ * two plausible successors (abstain) or an already-migrated repo (no_op). Acting
+ * confidently on either is a P0. Pooled over the abstain/no_op Fettler scenarios,
+ * which the impact-analysis gate deliberately excludes.
+ */
+export interface FettlerAbstentionThresholds {
+  kind: "fettler-abstention";
+  description?: string;
+  notes?: string;
+  /** Min pass rate over abstain + no_op Fettler scenarios. */
+  abstention_correctness_min: number;
+  /** Max unsafe (non-coverage-gap, non-harness) P0 failures across them. */
+  max_open_p0: number;
+}
+
+export type CapabilityThresholds =
+  | FettlerImpactThresholds
+  | RegaugeFamilyThresholds
+  | FettlerAbstentionThresholds;
 
 function isRegaugeFamily(t: CapabilityThresholds): t is RegaugeFamilyThresholds {
   return (t as RegaugeFamilyThresholds).kind === "regauge-family";
+}
+
+function isFettlerAbstention(t: CapabilityThresholds): t is FettlerAbstentionThresholds {
+  return (t as FettlerAbstentionThresholds).kind === "fettler-abstention";
+}
+
+/**
+ * A capability the product HAS but the eval substrate cannot score yet. Recorded
+ * so gate coverage is honest: never gated on an invented threshold, always paired
+ * with the experiment that would make it measurable.
+ */
+export interface NotMeasuredCapability {
+  capability: string;
+  reason: string;
+  experiment: string;
+  owner?: string;
+}
+
+export interface NotMeasuredBlock {
+  notes?: string;
+  capabilities: NotMeasuredCapability[];
 }
 
 export interface ReadinessGatesConfig {
@@ -75,6 +118,8 @@ export interface ReadinessGatesConfig {
   decided_at: string;
   notes?: string;
   capabilities: Record<string, CapabilityThresholds>;
+  /** Capabilities with no measurable signal today; documented, not gated. */
+  not_measured?: NotMeasuredBlock;
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -112,6 +157,8 @@ export function loadReadinessGates(path: string = DEFAULT_GATES_PATH): Readiness
         "abstention_correctness_min",
         "max_open_p0",
       ]);
+    } else if (isFettlerAbstention(t)) {
+      numeric(name, t, ["abstention_correctness_min", "max_open_p0"]);
     } else {
       numeric(name, t, [
         "impact_precision_min",
@@ -300,6 +347,66 @@ function evaluateFettlerImpact(
   };
 }
 
+const FETTLER_RESTRAINT = new Set(["abstain", "no_op"]);
+
+/** Fettler abstain + no_op scenarios in a run. */
+function fettlerRestraintScenarios(scored: ScoredRun[]): ScoredRun[] {
+  return scored.filter(
+    (s) => s.record.product === "fettler" && FETTLER_RESTRAINT.has(s.gt.correct_behavior),
+  );
+}
+
+/** Evaluate the Fettler restraint (abstention / no-op) capability. */
+function evaluateFettlerAbstention(
+  capability: string,
+  scored: ScoredRun[],
+  t: FettlerAbstentionThresholds,
+): CapabilityReadiness {
+  const rows = fettlerRestraintScenarios(scored);
+  const passed = rows.filter((s) => s.record.passed).length;
+  const rate = rows.length === 0 ? null : passed / rows.length;
+  const openP0 = openP0Count(rows, "fettler");
+
+  const criteria: CriterionResult[] = [
+    {
+      name: "abstention_correctness",
+      measurable: rate !== null,
+      passed: rate !== null && rate >= t.abstention_correctness_min,
+      measured: rate !== null ? fracPct(passed, rows.length) : "not measured (no abstain/no_op scenarios)",
+      threshold: `>= ${pctInt(t.abstention_correctness_min)} correct`,
+      detail:
+        "an ambiguous rename (>=2 plausible successors) or an already-migrated repo must produce NO confident finding",
+    },
+    {
+      name: "open_p0",
+      measurable: true,
+      passed: openP0 <= t.max_open_p0,
+      measured: String(openP0),
+      threshold: `<= ${t.max_open_p0}`,
+      detail: "unsafe P0 failures (acted confidently where abstention was required); coverage gaps excluded",
+    },
+  ];
+
+  const verdict: "PASS" | "FAIL" = criteria.every((c) => c.measurable && c.passed) ? "PASS" : "FAIL";
+
+  return {
+    capability,
+    verdict,
+    criteria,
+    metrics: {
+      precision: null,
+      recall: null,
+      truePositives: 0,
+      falsePositives: 0,
+      falseNegatives: 0,
+      openP0,
+      scenarioCount: rows.length,
+      developmentPassRate: null,
+      holdoutPassRate: null,
+    },
+  };
+}
+
 const REGAUGE_APPLY = new Set(["apply_recipe"]);
 const REGAUGE_REFUSE = new Set(["refuse_partial"]);
 const REGAUGE_ABSTAIN = new Set(["abstain", "coverage_gap", "no_op"]);
@@ -413,6 +520,8 @@ export function evaluateReadiness(
   for (const [name, thresholds] of Object.entries(gates.capabilities)) {
     if (isRegaugeFamily(thresholds)) {
       capabilities.push(evaluateRegaugeFamily(name, scored, thresholds));
+    } else if (isFettlerAbstention(thresholds)) {
+      capabilities.push(evaluateFettlerAbstention(name, scored, thresholds));
     } else if (name === "fettler-impact-analysis") {
       capabilities.push(evaluateFettlerImpact(scored, thresholds));
     }

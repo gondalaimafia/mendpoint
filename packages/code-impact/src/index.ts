@@ -37,6 +37,7 @@ import {
 import type { UnresolvedImport } from "./lang-import-graph.js";
 import { expandContexts } from "./expand.js";
 import { confirmImpacts, partitionByConfidence } from "./confirm.js";
+import type { LlmConfirmObserver } from "./confirm.js";
 import { detectGeneratedFiles } from "./generated.js";
 import { detectVendoredFiles } from "./vendored.js";
 
@@ -54,6 +55,8 @@ export {
 } from "./provenance.js";
 export { expandContexts } from "./expand.js";
 export { confirmImpacts, partitionByConfidence } from "./confirm.js";
+export { resolveLlmConfirmMode, createBudget } from "./confirm.js";
+export type { LlmCallObservation, LlmConfirmObserver } from "./confirm.js";
 export {
   analyzeCapabilityAdoption,
   assessConsumerAdoption,
@@ -68,6 +71,12 @@ export type AnalyzeOptions = {
   useLlm?: boolean;
   surfaces?: ImpactableSurface[];
   sdkHints?: string[];
+  /**
+   * Observer for each successful live model call made during confirmation.
+   * Only fires when `useLlm` is true and the confirm mode resolves to live.
+   * Used by the eval live-model lane to attribute provenance to the call.
+   */
+  onLlmCall?: LlmConfirmObserver;
 };
 
 /**
@@ -490,7 +499,10 @@ export async function analyzeImpact(
   const provider: ProviderReachability = computeProviderReachability(index, surfaces);
   const candidates = discoverCandidates(index, surfaces, provider);
   const expanded = expandContexts(index, candidates);
-  const confirmed = await confirmImpacts(expanded, surfaces, { useLlm: options.useLlm });
+  const confirmed = await confirmImpacts(expanded, surfaces, {
+    useLlm: options.useLlm,
+    onLlmCall: options.onLlmCall,
+  });
   return buildReport(
     surfaces,
     candidates.length,
