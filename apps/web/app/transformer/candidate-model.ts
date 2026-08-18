@@ -295,6 +295,20 @@ export function adaptiveReviewActionEnabled(input: Readonly<{
     : input.readiness.canReject;
 }
 
+/**
+ * Whether the "No completed adaptive reviews yet." history empty state may show.
+ * A failed fetch (`error`) leaves `history` empty for an unknown reason, so the
+ * empty state must be suppressed on error exactly as the attention empty state
+ * is — otherwise a rejected fetch is certified as an authoritative "no reviews".
+ */
+export function adaptiveHistoryEmptyStateVisible(input: Readonly<{
+  error: boolean;
+  loading: boolean;
+  historyCount: number;
+}>): boolean {
+  return !input.error && !input.loading && input.historyCount === 0;
+}
+
 export function formatCandidateBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "Unavailable";
   if (bytes < 1_024) return `${bytes} B`;

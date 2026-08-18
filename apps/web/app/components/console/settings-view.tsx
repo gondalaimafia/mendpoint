@@ -1,6 +1,5 @@
 "use client";
 
-import React from "react";
 import { CheckIcon, ChevronDownIcon, SectionLabel } from "../ds/index.js";
 import type { SettingsData } from "./fixtures.js";
 
@@ -9,16 +8,13 @@ import type { SettingsData } from "./fixtures.js";
  * (`SettingsData`) read in the page: spec-source URL + target version from the
  * provider, and the PR-policy toggles from `/policies/defaults`. Two cards: spec
  * source (a mono URL input and a target-version select) and pull requests (a
- * "drafts" checkbox with its consequence line and two switches). Cancel is a
- * ghost button in the footer. Reads are live; there is no settings-persistence
- * endpoint yet, so the console shows no "Save" action rather than a control that
- * claims to save when it does not.
+ * "drafts" checkbox with its consequence line and two switches). Reads are live;
+ * there is no settings-persistence endpoint yet, so the PR-policy controls are
+ * read-only reflections of the current server policy — disabled, with their
+ * accessible state (`aria-checked`) matching the server value — rather than
+ * interactive toggles that flip locally and silently persist nothing.
  */
 export function SettingsView({ data }: { data: SettingsData }) {
-  const [drafts, setDrafts] = React.useState(data.drafts);
-  const [autoOpen, setAutoOpen] = React.useState(data.autoOpen);
-  const [notifySlack, setNotifySlack] = React.useState(data.notifySlack);
-
   const versionOptions =
     data.versionOptions.length > 0
       ? data.versionOptions
@@ -79,12 +75,13 @@ export function SettingsView({ data }: { data: SettingsData }) {
           <button
             type="button"
             role="checkbox"
-            aria-checked={drafts}
-            className={`ds-check ${drafts ? "ds-check--on" : ""}`.trim()}
-            onClick={() => setDrafts((v) => !v)}
+            aria-checked={data.drafts}
+            aria-readonly
+            disabled
+            className={`ds-check ${data.drafts ? "ds-check--on" : ""}`.trim()}
           >
             <span className="ds-check__box" aria-hidden>
-              {drafts && <CheckIcon size={11} />}
+              {data.drafts && <CheckIcon size={11} />}
             </span>
             <span className="ds-check__text">
               <span className="ds-check__label">Open PRs as drafts</span>
@@ -97,9 +94,10 @@ export function SettingsView({ data }: { data: SettingsData }) {
           <button
             type="button"
             role="switch"
-            aria-checked={autoOpen}
-            className={`ds-switch ${autoOpen ? "ds-switch--on" : ""}`.trim()}
-            onClick={() => setAutoOpen((v) => !v)}
+            aria-checked={data.autoOpen}
+            aria-readonly
+            disabled
+            className={`ds-switch ${data.autoOpen ? "ds-switch--on" : ""}`.trim()}
           >
             <span className="ds-switch__track" aria-hidden>
               <span className="ds-switch__thumb" />
@@ -110,20 +108,15 @@ export function SettingsView({ data }: { data: SettingsData }) {
           <button
             type="button"
             role="switch"
-            aria-checked={notifySlack}
-            className={`ds-switch ${notifySlack ? "ds-switch--on" : ""}`.trim()}
-            onClick={() => setNotifySlack((v) => !v)}
+            aria-checked={data.notifySlack}
+            aria-readonly
+            disabled
+            className={`ds-switch ${data.notifySlack ? "ds-switch--on" : ""}`.trim()}
           >
             <span className="ds-switch__track" aria-hidden>
               <span className="ds-switch__thumb" />
             </span>
             <span className="ds-switch__label">Notify in Slack</span>
-          </button>
-        </div>
-
-        <div className="ds-form-foot">
-          <button type="button" className="ds-btn ds-btn--ghost">
-            Cancel
           </button>
         </div>
       </section>

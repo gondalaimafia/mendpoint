@@ -22,6 +22,23 @@ type Installation = {
   accountLogin: string;
 };
 
+type InstallUrlResponse = { url: string; mock: boolean; state: string };
+
+/**
+ * Fetch the GitHub App install URL. Every failure mode of this path returns a
+ * parseable JSON error body (401 `web_session_required`, 503
+ * `proxy_api_key_not_configured`, 504 `upstream_timeout`), so `res.json()`
+ * succeeds even on failure. Without the `res.ok` guard the wizard would treat an
+ * error body as a success payload, advance to step 2, and render a dead install
+ * link. Mirror `completeMockInstall`, which already checks `res.ok`.
+ */
+export async function fetchInstallUrlData(apiUrl: string): Promise<InstallUrlResponse> {
+  const res = await fetch(`${apiUrl}/github/app/install-url`);
+  const data = (await res.json()) as InstallUrlResponse & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? res.statusText);
+  return data;
+}
+
 export function InstallWizard({
   config,
   initialInstallations,
@@ -43,8 +60,7 @@ export function InstallWizard({
     setMsg(null);
     setError(null);
     try {
-      const res = await fetch(`${API_URL}/github/app/install-url`);
-      const data = (await res.json()) as { url: string; mock: boolean; state: string };
+      const data = await fetchInstallUrlData(API_URL);
       setInstallUrl(data.url);
       setInstallState(data.state);
       setStep(2);

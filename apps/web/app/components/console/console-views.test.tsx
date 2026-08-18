@@ -144,16 +144,19 @@ describe("DS3 console views — content fidelity", () => {
     expect(screen).not.toContain("Approve &amp; merge");
   });
 
-  it("renders the settings form with both cards and a ghost Cancel; there is no fabricated Save action", () => {
+  it("renders the settings form with both cards and no fabricated Save or dead Cancel action", () => {
     const view = renderToStaticMarkup(<SettingsView data={SAMPLE_SETTINGS} />);
     expect(view).toContain("SPEC SOURCE");
     expect(view).toContain("PULL REQUESTS");
     expect(view).toContain("Open PRs as drafts");
-    expect(view).toContain("Cancel");
     expect(countGlow(view)).toBe(0);
-    // No settings-persistence endpoint exists, so no "Save" control is shown.
+    // No settings-persistence endpoint exists, so no "Save" control is shown, and
+    // the previously dead (no-onClick) "Cancel" control was removed rather than
+    // left as a button that looks actionable but does nothing.
+    expect(view).not.toContain(">Cancel<");
     const screen = renderScreen("/settings", <SettingsView data={SAMPLE_SETTINGS} />);
     expect(screen).not.toContain(">Save<");
+    expect(screen).not.toContain(">Cancel<");
   });
 });
 
@@ -186,6 +189,35 @@ describe("DS console views — honest empty states", () => {
     for (const label of ["All", "Needs review", "Failing", "Merged"]) {
       expect(html).toContain(label);
     }
+  });
+
+  it("renders a distinct unavailable state when the PR feed fetch failed, not the empty copy", () => {
+    // `unavailable` (the `/prs` fetch rejected) is unknown, not known-empty. The
+    // view must not print "No pull requests staged yet." — that would certify a
+    // failed fetch as an authoritative "none are staged" — nor zero-count tabs
+    // that imply an analyzed-and-empty feed.
+    const html = renderToStaticMarkup(<PrsView prs={[]} unavailable />);
+    expect(html).toContain("Pull requests unavailable");
+    expect(html).toContain("not a claim that none are staged");
+    expect(html).not.toContain("No pull requests staged yet.");
+    expect(html).not.toContain("ds-tab__count");
+  });
+
+  it("renders the PR-policy settings as read-only reflections of server state, not interactive toggles", () => {
+    // No settings-persistence endpoint exists, so each policy control is disabled
+    // and driven directly by the server value. An interactive toggle would flip
+    // locally and show a change the server never records — the same lie class.
+    const html = renderToStaticMarkup(<SettingsView data={SAMPLE_SETTINGS} />);
+    const controls = html.match(/role="(?:checkbox|switch)"[^>]*>/g) ?? [];
+    expect(controls).toHaveLength(3);
+    for (const control of controls) {
+      expect(control).toContain("disabled");
+      expect(control).toContain("aria-readonly");
+    }
+    // Accessible checked-state mirrors the server values (drafts + autoOpen on,
+    // notifySlack off), not a fabricated default.
+    expect(html).toContain('aria-checked="true"');
+    expect(html).toContain('aria-checked="false"');
   });
 
   it("derives PR tab counts from the injected list, not a constant", () => {
