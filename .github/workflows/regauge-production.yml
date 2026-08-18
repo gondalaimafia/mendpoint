@@ -258,8 +258,8 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in {1..60}; do
-            revision="$(curl --fail --silent https://mendpoint-transformer-pilot.fly.dev/version | jq -r '.revision')" || true
-            ready="$(curl --fail --silent https://mendpoint-transformer-pilot.fly.dev/ready | jq -r '.status')" || true
+            revision="$(curl --fail --silent --max-time 10 https://mendpoint-transformer-pilot.fly.dev/version | jq -r '.revision')" || true
+            ready="$(curl --fail --silent --max-time 10 https://mendpoint-transformer-pilot.fly.dev/ready | jq -r '.status')" || true
             if test "$revision" = "$GITHUB_SHA" && test "$ready" = "ok"; then exit 0; fi
             test "$attempt" -lt 60
             sleep 2
@@ -276,8 +276,8 @@ jobs:
           flyctl status --app mendpoint-transformer-pilot --json | tee test-results/regauge-production/fly-status.json
           flyctl scale count coordinator=1 worker=1 --app mendpoint-transformer-pilot --yes
           for attempt in {1..60}; do
-            revision="$(curl --fail --silent https://mendpoint-transformer-pilot.fly.dev/version | jq -r '.revision')" || true
-            ready="$(curl --fail --silent https://mendpoint-transformer-pilot.fly.dev/ready | jq -r '.status')" || true
+            revision="$(curl --fail --silent --max-time 10 https://mendpoint-transformer-pilot.fly.dev/version | jq -r '.revision')" || true
+            ready="$(curl --fail --silent --max-time 10 https://mendpoint-transformer-pilot.fly.dev/ready | jq -r '.status')" || true
             if test "$revision" = "$GITHUB_SHA" && test "$ready" = "ok"; then break; fi
             test "$attempt" -lt 60
             sleep 2
