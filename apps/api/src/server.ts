@@ -14,6 +14,10 @@ import {
   listPrsForChange,
   getPr,
   findPrByGitHubIdentityAndNumber,
+  findWardenCandidateDeliveryByPrUrl,
+  recordWardenCandidateDeliveryOutcome,
+  findAdaptiveDeliveryByPrUrl,
+  recordAdaptiveDeliveryOutcome,
   listAudit,
   listFindingsForChange,
   listVersionsForProvider,
@@ -2519,10 +2523,12 @@ app.post("/webhooks/github", async (c) => {
 
   if (event.type === "pull_request") {
     const outcome = prFeedbackFromWebhook(event);
-    if (outcome) {
-      if (!event.repositoryId || !event.installationId || !event.accountId) {
-        return c.json({ error: "webhook_pull_request_identity_required" }, 400);
-      }
+    if (!outcome) {
+      return c.json({ ok: true, ignored: event.action });
+    }
+    // Lane 1: the legacy migration_prs path, keyed on the GitHub numeric identity
+    // it stores. Only attempted when that identity is present on the event.
+    if (event.repositoryId && event.installationId && event.accountId) {
       const match = findPrByGitHubIdentityAndNumber(db, {
         repositoryId: String(event.repositoryId),
         installationId: String(event.installationId),
@@ -2570,9 +2576,73 @@ app.post("/webhooks/github", async (c) => {
           note: "experiment/plan taken from PR body tags if present",
         });
       }
-      return c.json({ ok: true, applied: null, reason: "no matching migration PR" });
     }
-    return c.json({ ok: true, ignored: event.action });
+    // Lanes 2 and 3: the candidate-delivery lanes that actually ship PRs today.
+    // These tables carry no GitHub numeric identity, so the PR is resolved by the
+    // durable draft PR URL each lane recorded when it opened the PR. As with the
+    // migration_prs path, the webhook has no authenticated principal, so the
+    // tenant is derived from the matched delivery row and used to scope the write.
+    // 'closed' (unmerged) is recorded distinctly from 'merged'; a null outcome
+    // (no webhook yet) is never touched, so it stays pending, not negative.
+    const deliveryOutcome = outcome === "merged" ? "merged" : "closed_unmerged";
+    const prUrl = event.htmlUrl;
+    const auditDeliveryOutcome = (tenantId: string, deliveryId: string, resourceType: string) => {
+      recordAudit(db, {
+        id: wh.delivery
+          ? `webhook_${createHash("sha256")
+              .update(`${wh.delivery}\0delivery.${deliveryOutcome}\0${deliveryId}`)
+              .digest("hex")}`
+          : undefined,
+        tenantId,
+        actor: "github_webhook",
+        action: `delivery.${deliveryOutcome}`,
+        resourceType,
+        resourceId: deliveryId,
+        requestId: c.get("requestId"),
+        metadata: {
+          delivery: wh.delivery,
+          owner: event.owner,
+          repo: event.repo,
+          number: event.number,
+          htmlUrl: prUrl,
+        },
+      });
+    };
+    const fettlerDelivery = prUrl ? findWardenCandidateDeliveryByPrUrl(db, prUrl) : undefined;
+    if (fettlerDelivery) {
+      const updated = recordWardenCandidateDeliveryOutcome(db, {
+        tenantId: fettlerDelivery.tenantId,
+        deliveryId: fettlerDelivery.id,
+        outcome: deliveryOutcome,
+        source: "github_webhook",
+        observedAt: nowIso(),
+      });
+      auditDeliveryOutcome(fettlerDelivery.tenantId, fettlerDelivery.id, "fettler_candidate_delivery");
+      return c.json({
+        ok: true,
+        applied: updated.outcome,
+        deliveryId: updated.id,
+        lane: "fettler_candidate_delivery",
+      });
+    }
+    const regaugeDelivery = prUrl ? findAdaptiveDeliveryByPrUrl(db, prUrl) : undefined;
+    if (regaugeDelivery) {
+      const updated = recordAdaptiveDeliveryOutcome(db, {
+        tenantId: regaugeDelivery.tenantId,
+        deliveryId: regaugeDelivery.id,
+        outcome: deliveryOutcome,
+        source: "github_webhook",
+        observedAt: nowIso(),
+      });
+      auditDeliveryOutcome(regaugeDelivery.tenantId, regaugeDelivery.id, "regauge_adaptive_delivery");
+      return c.json({
+        ok: true,
+        applied: updated.outcome,
+        deliveryId: updated.id,
+        lane: "regauge_adaptive_delivery",
+      });
+    }
+    return c.json({ ok: true, applied: null, reason: "no matching migration PR or delivery" });
   }
 
   return c.json({ ok: true, type: event.type });

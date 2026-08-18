@@ -60,4 +60,37 @@ describe("LLM repair planning transport", () => {
     expect(body).not.toContain(secretUrl);
     expect(body).toContain("[REDACTED_DATABASE_URL]");
   });
+
+  it("accounts for the call: records the model that answered and its token usage", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.LLM_REPAIR_URL = "https://repair.example.com/v1";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      // The provider echoes the model it actually served, not the one requested.
+      model: "gpt-4o-mini-2024-07-18",
+      usage: { prompt_tokens: 321, completion_tokens: 44, total_tokens: 365 },
+      choices: [{ message: { content: JSON.stringify({
+        actions: [{
+          type: "replace_in_file",
+          filePath: "src/a.ts",
+          from: "old",
+          to: "new",
+          reason: "bounded test",
+        }],
+      }) } }],
+    }))));
+
+    const result = await planRepairsWithLlm(
+      [{ kind: "test_assert", message: "failed", raw: "old" }],
+      [{ filePath: "src/a.ts", content: "old" }],
+      { attempt: 1 },
+    );
+    expect(result?.strategy).toBe("llm");
+    expect(result?.modelProvenance).toBeDefined();
+    expect(result?.modelProvenance?.model).toBe("gpt-4o-mini-2024-07-18");
+    expect(result?.modelProvenance?.host).toBe("repair.example.com");
+    expect(result?.modelProvenance?.promptTokens).toBe(321);
+    expect(result?.modelProvenance?.completionTokens).toBe(44);
+    expect(result?.modelProvenance?.totalTokens).toBe(365);
+    expect(result?.modelProvenance?.measured).toBe(true);
+  });
 });

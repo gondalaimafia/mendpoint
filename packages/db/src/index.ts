@@ -1405,6 +1405,17 @@ CREATE TABLE IF NOT EXISTS regauge_adaptive_deliveries (
   delivered_at TEXT,
   failed_at TEXT,
   last_error_at TEXT,
+  -- Post-delivery acceptance signal (the PR real fate), orthogonal to the
+  -- delivery-pipeline status. NULL means "no outcome received yet" (pending),
+  -- which must never read as a negative. Populated later, once GitHub reports the
+  -- PR merged/closed/reverted. Nullable, no default: an existing DB converges on
+  -- boot via the additive column list and legacy rows read NULL. Validated in the
+  -- mapper (values: merged, closed_unmerged, reverted); no static
+  -- index/view/constraint references it, so the static DDL never touches it on a
+  -- DB that has not yet run the migration.
+  outcome TEXT,
+  outcome_at TEXT,
+  outcome_source TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE (tenant_id, candidate_id)
 );
@@ -1441,6 +1452,17 @@ CREATE TABLE IF NOT EXISTS fettler_candidate_deliveries (
   delivered_at TEXT,
   failed_at TEXT,
   last_error_at TEXT,
+  -- Post-delivery acceptance signal (the PR real fate), orthogonal to the
+  -- delivery-pipeline status. NULL means "no outcome received yet" (pending),
+  -- which must never read as a negative. Populated later, once GitHub reports the
+  -- PR merged/closed/reverted. Nullable, no default: an existing DB converges on
+  -- boot via the additive column list and legacy rows read NULL. Validated in the
+  -- mapper (values: merged, closed_unmerged, reverted); no static
+  -- index/view/constraint references it, so the static DDL never touches it on a
+  -- DB that has not yet run the migration.
+  outcome TEXT,
+  outcome_at TEXT,
+  outcome_source TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE (tenant_id, run_id)
 );
@@ -1691,6 +1713,17 @@ function migrateWardenTransformerTableNames(db: AppDb): void {
       name: "base_branch",
       sql: "TEXT NOT NULL DEFAULT ''",
     },
+    // Post-delivery acceptance outcome columns on the pre-rename delivery tables.
+    // A pre-rename volume must gain these on the OLD table before the rename
+    // compatibility assertion, so the old and new shapes match column-for-column
+    // and the merge/drop can proceed. Mirrors the new-name entries in
+    // migrateProvidersFeedColumns' additive list. Nullable, no default.
+    { table: "warden_candidate_deliveries", name: "outcome", sql: "TEXT" },
+    { table: "warden_candidate_deliveries", name: "outcome_at", sql: "TEXT" },
+    { table: "warden_candidate_deliveries", name: "outcome_source", sql: "TEXT" },
+    { table: "transformer_adaptive_deliveries", name: "outcome", sql: "TEXT" },
+    { table: "transformer_adaptive_deliveries", name: "outcome_at", sql: "TEXT" },
+    { table: "transformer_adaptive_deliveries", name: "outcome_source", sql: "TEXT" },
   ];
 
   if (db.raw.isTransaction) {
@@ -2114,6 +2147,21 @@ function migrateProvidersFeedColumns(db: AppDb) {
       name: "base_branch",
       sql: "TEXT NOT NULL DEFAULT ''",
     },
+    // Post-delivery acceptance outcome (the PR's real fate) on both candidate-
+    // delivery lanes. Nullable, no default: an existing DB converges on boot by
+    // adding the column, and rows written before this migration read as null
+    // (pending / no outcome received) rather than a fabricated negative. No
+    // static index/view/constraint references these, so the static DDL never
+    // touches them on a DB that has not yet run this migration. Both tables are
+    // in the warden->fettler / transformer->regauge rename sets, so the same
+    // columns are mirrored into legacyAdditions (old names) so a pre-rename
+    // volume upgrades the old table before the rename compatibility assertion.
+    { table: "regauge_adaptive_deliveries", name: "outcome", sql: "TEXT" },
+    { table: "regauge_adaptive_deliveries", name: "outcome_at", sql: "TEXT" },
+    { table: "regauge_adaptive_deliveries", name: "outcome_source", sql: "TEXT" },
+    { table: "fettler_candidate_deliveries", name: "outcome", sql: "TEXT" },
+    { table: "fettler_candidate_deliveries", name: "outcome_at", sql: "TEXT" },
+    { table: "fettler_candidate_deliveries", name: "outcome_source", sql: "TEXT" },
     // Coverage/basis discriminator for the analysis behind a migration PR
     // (§11.7, §12.4). Nullable, no default: an existing DB converges on boot by
     // adding the column, and rows written before this migration read as null
@@ -3421,12 +3469,16 @@ export {
   bindAdaptiveDeliveryIntent,
   recordAdaptiveDeliverySuccess,
   recordAdaptiveDeliveryFailure,
+  findAdaptiveDeliveryByPrUrl,
+  recordAdaptiveDeliveryOutcome,
   type AdaptiveDeliveryStatus,
+  type AdaptiveDeliveryOutcome,
   type TransformerAdaptiveDeliveryRecord,
   type EnqueueAdaptiveDeliveryInput,
   type BindAdaptiveDeliveryIntentInput,
   type RecordAdaptiveDeliverySuccessInput,
   type RecordAdaptiveDeliveryFailureInput,
+  type RecordAdaptiveDeliveryOutcomeInput,
 } from "./transformer-adaptive-delivery.js";
 
 export {
@@ -3436,7 +3488,10 @@ export {
   bindWardenCandidateDeliveryIntent,
   recordWardenCandidateDeliverySuccess,
   recordWardenCandidateDeliveryFailure,
+  findWardenCandidateDeliveryByPrUrl,
+  recordWardenCandidateDeliveryOutcome,
   type WardenCandidateDeliveryStatus,
+  type WardenCandidateDeliveryOutcome,
   type WardenCandidateDeliveryRecord,
   type EnqueueWardenCandidateDeliveryInput,
 } from "./warden-candidate-delivery.js";
