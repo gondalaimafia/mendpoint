@@ -559,7 +559,10 @@ function execute(
       tool: BUILTIN_COLLECTOR.id,
       toolVersion: BUILTIN_COLLECTOR.version,
       commitSha: snapshot.resolved_sha,
-      verdict: "passed",
+      // Graph extraction runs no verification, so its honest verdict is "unknown":
+      // this record attests that the graph artifact was produced, not that it
+      // passed any check. Asserting "passed" here would be a verdict never computed.
+      verdict: "unknown",
       createdAt: input.now,
     });
     insertEvidenceRecord(db, {
@@ -573,7 +576,10 @@ function execute(
       tool: "mendpoint.behavior-documentation",
       toolVersion: "1.0.0",
       commitSha: snapshot.resolved_sha,
-      verdict: "passed",
+      // The documentation draft is unverified generated prose, so its honest
+      // verdict is "unknown": the record attests the draft was produced, not that
+      // it was checked. Asserting "passed" would claim a verdict never computed.
+      verdict: "unknown",
       createdAt: input.now,
     });
     const payload: PersistedRunPayload = Object.freeze({
@@ -692,19 +698,23 @@ function retrieve(db: AppDb, tenantId: string, runId: string) {
     .find((record) => record.id === payload.graphEvidenceRecordId);
   const docsEvidence = listEvidenceRecords(db, tenantId, "legacy_behavior_graph", payload.graphId)
     .find((record) => record.id === payload.documentationEvidenceRecordId);
+  // Extraction and draft evidence run no verification, so replay must confirm the
+  // honest "unknown" verdict was persisted, not "passed". Any other value (a
+  // "passed" claimed for output that was never checked, or a rewritten verdict) is
+  // the corruption this integrity check exists to catch, so it fails closed.
   if (!graphEvidence || graphEvidence.artifact_id !== graphArtifact.id ||
     graphEvidence.input_artifact_id !== payload.snapshotEvidenceArtifactId ||
     graphEvidence.producer_principal_id !== event.actor_principal_id ||
     graphEvidence.tool !== BUILTIN_COLLECTOR.id ||
     graphEvidence.tool_version !== BUILTIN_COLLECTOR.version ||
     graphEvidence.commit_sha !== payload.revision ||
-    graphEvidence.verdict !== "passed" || !docsEvidence ||
+    graphEvidence.verdict !== "unknown" || !docsEvidence ||
     docsEvidence.artifact_id !== documentationArtifact.id ||
     docsEvidence.input_artifact_id !== graphArtifact.id ||
     docsEvidence.producer_principal_id !== event.actor_principal_id ||
     docsEvidence.tool !== "mendpoint.behavior-documentation" ||
     docsEvidence.tool_version !== "1.0.0" || docsEvidence.commit_sha !== payload.revision ||
-    docsEvidence.verdict !== "passed") {
+    docsEvidence.verdict !== "unknown") {
     fail("legacy_behavior_persisted_artifact_corrupt", 409);
   }
   return runResponse(payload, documentationArtifact.content_text!, graph);
