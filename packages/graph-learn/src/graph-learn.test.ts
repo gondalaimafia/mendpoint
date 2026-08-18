@@ -17,6 +17,8 @@ import {
   KUZU_DDL_V0,
   normalizeNodeKind,
   normalizeEdgeKind,
+  type GlNodeKind,
+  type GlEdgeKind,
   upsertNode,
   upsertEdge,
   getNode,
@@ -828,11 +830,17 @@ export function bar() { return 1; }
 describe("graph observability", () => {
   it("breaks entity and edge counts down by kind, folding legacy kinds", () => {
     const db = openGraphLearnMemory();
+    // The "pr" and "calls" casts below are deliberate: they simulate legacy
+    // pre-v0 rows that real persisted data still contains. upsertNode/upsertEdge
+    // bind `kind` raw at runtime, and the read path (normalizeNodeKind /
+    // normalizeEdgeKind, exercised by the breakdown) folds them into their v0
+    // form. The type forbids these on purpose — new writers must use canonical
+    // kinds — so this test bypasses that enforcement to cover the fold path.
     // Two Files, one PullRequest; a legacy "pr" row folds into PullRequest.
     upsertNode(db, { id: "file:a.ts", kind: "File", label: "a.ts" });
     upsertNode(db, { id: "file:b.ts", kind: "File", label: "b.ts" });
     upsertNode(db, { id: "pr:1", kind: "PullRequest", label: "pr-1" });
-    upsertNode(db, { id: "pr:2", kind: "pr", label: "pr-2" });
+    upsertNode(db, { id: "pr:2", kind: "pr" as GlNodeKind, label: "pr-2" });
     upsertEdge(db, {
       id: "e1",
       kind: "CONTAINS",
@@ -842,7 +850,7 @@ describe("graph observability", () => {
     // Legacy "calls" folds into CALLS.
     upsertEdge(db, {
       id: "e2",
-      kind: "calls",
+      kind: "calls" as GlEdgeKind,
       source: "file:a.ts",
       target: "pr:1",
     });
@@ -851,10 +859,21 @@ describe("graph observability", () => {
     expect(stats.nodes).toBe(4);
     expect(stats.edges).toBe(2);
     expect(stats.nodesByKind.File).toBe(2);
-    // Legacy "pr" merged with v0 "PullRequest".
+    // Legacy "pr" merged with v0 "PullRequest" — folded into the canonical
+    // bucket, never left under a separate lowercase key.
     expect(stats.nodesByKind.PullRequest).toBe(2);
+    expect(stats.nodesByKind.pr).toBeUndefined();
     expect(stats.edgesByKind.CONTAINS).toBe(1);
     expect(stats.edgesByKind.CALLS).toBe(1);
+    expect(
+      stats.edgesByKind.calls,
+    ).toBeUndefined();
+    // The breakdown neither drops nor double-counts: the per-kind buckets sum
+    // back to the totals.
+    const nodeSum = Object.values(stats.nodesByKind).reduce((a, b) => a + b, 0);
+    const edgeSum = Object.values(stats.edgesByKind).reduce((a, b) => a + b, 0);
+    expect(nodeSum).toBe(stats.nodes);
+    expect(edgeSum).toBe(stats.edges);
     // A kind with zero rows is absent from the breakdown (a real zero, not a
     // fabricated bucket): reads back as undefined, i.e. 0.
     expect(stats.nodesByKind.Symbol).toBeUndefined();
