@@ -3600,75 +3600,156 @@ function isExcludedFromResidualScan(path: string): boolean {
 // guessed at, keeping the recipe's "refuse, don't guess" contract. The one
 // exception is aws-sdk: because the transform DELETES the package, any import of
 // it — even an import form the source rewrite does not recognize — is residue.
+// The three states residual detection can be in for one (precondition, file)
+// pair. "clean" and "unresolved" are DIFFERENT answers: "clean" means the file
+// was inspected and does not carry the old surface; "unresolved" means the kind
+// could not be inspected at all (an unhandled precondition kind), which must fail
+// closed rather than masquerade as "clean". Collapsing the two is the defect this
+// module guards against.
+type ResidualCheck = "residual" | "clean" | "unresolved";
+
+// The whole-snapshot residual scan result: paths carrying old surface outside the
+// allowlist, plus any coverage gaps where a precondition kind could not be
+// resolved. `unresolved` entries are reason strings the caller surfaces as an
+// explicit exception instead of upgrading the recipe to `applicable`.
+type ResidualScan = Readonly<{
+  residual: readonly string[];
+  unresolved: readonly string[];
+}>;
+
 function isResidualSite(
   precondition: RecipePrecondition,
   path: string,
   content: string,
-): boolean {
+): ResidualCheck {
   if (precondition.kind === "optional_docker_node_major") {
-    if (!isDockerfileShapedPath(path)) return false;
+    if (!isDockerfileShapedPath(path)) return "clean";
     const majors = dockerNodeMajors(content);
     // `some`, not `every`: a partially-migrated multi-stage Dockerfile (one stage
     // already on the target major, another still pinned to the source) is residue
     // too, even though every stage is not on the old major.
-    return majors.some((major) => major === precondition.major);
+    return majors.some((major) => major === precondition.major) ? "residual" : "clean";
   }
   if (precondition.kind === "optional_node_version") {
     const base = basename(path);
-    if (base !== ".nvmrc" && base !== ".node-version") return false;
+    if (base !== ".nvmrc" && base !== ".node-version") return "clean";
     const major = content.trim().replace(/^v/, "").split(".")[0];
-    return major === String(precondition.major);
+    return major === String(precondition.major) ? "residual" : "clean";
   }
   if (precondition.kind === "json_string_in") {
-    if (basename(path) !== "package.json") return false;
+    if (basename(path) !== "package.json") return "clean";
     let parsed: unknown;
     try {
       parsed = JSON.parse(content);
     } catch {
-      return false;
+      return "clean";
     }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "clean";
     const value = nodeEngineValue(parsed as Record<string, unknown>);
-    if (typeof value !== "string") return false;
+    if (typeof value !== "string") return "clean";
     // Match on the pinned major, not exact selector text: a nested manifest on
     // `">=18"`, `"18.20.4"`, or `"^18"` pins the same source runtime as the
     // recognized selectors and must block just as the root file does, even though
     // the recipe only rewrites the exact selector forms it lists in allowedValues.
     const sourceMajor = nodeSelectorMajor(precondition.allowedValues[0] ?? "");
-    return sourceMajor !== undefined && nodeSelectorMajor(value) === sourceMajor;
+    return sourceMajor !== undefined && nodeSelectorMajor(value) === sourceMajor
+      ? "residual"
+      : "clean";
   }
   if (precondition.kind === "aws_sdk_v2_source") {
     // The manifest transform removes `aws-sdk`; any surviving import of it breaks.
-    return AWS_SDK_MODULE_IMPORT.test(content);
+    return AWS_SDK_MODULE_IMPORT.test(content) ? "residual" : "clean";
   }
   if (precondition.kind === "stripe_v10_setter_source") {
-    return classifyStripeSource(content).state === "source";
+    return classifyStripeSource(content).state === "source" ? "residual" : "clean";
   }
   if (precondition.kind === "googleapis_default_import_source") {
-    return classifyGoogleapisSource(content).state === "source";
+    return classifyGoogleapisSource(content).state === "source" ? "residual" : "clean";
   }
   if (precondition.kind === "react_dom_render_source") {
-    return classifyReactDomSource(content).state === "source";
+    return classifyReactDomSource(content).state === "source" ? "residual" : "clean";
   }
-  return false;
+  // Internal-API consumer sources (value and type renames). A file outside
+  // allowedPaths that still imports the old name from the recipe's module and
+  // uses it on the migrated surface is residue exactly like the manifest
+  // families: the producer moved out from under it. The classifier reporting the
+  // file in the `source` state is the same "refuse, don't guess" signal used for
+  // stripe/googleapis/react-dom above.
+  if (precondition.kind === "internal_api_rename_source") {
+    return classifyInternalApiRenameSource(
+      content,
+      precondition.module,
+      precondition.from,
+      precondition.to,
+    ).state === "source"
+      ? "residual"
+      : "clean";
+  }
+  if (precondition.kind === "internal_api_type_rename_source") {
+    return classifyInternalApiTypeConsumerRename(
+      content,
+      precondition.module,
+      precondition.from,
+      precondition.to,
+    ).state === "source"
+      ? "residual"
+      : "clean";
+  }
+  // Companion preconditions whose residual signal is carried by the family's
+  // SOURCE precondition above, never by themselves. This is a DELIBERATE
+  // not-residual decision, not an unhandled fallthrough:
+  //   - json_dependency_present / json_dependency_version pin the repo-global
+  //     manifest edit; the accompanying `*_source` precondition (aws_sdk_v2_source,
+  //     stripe/googleapis/react-dom source) is what flags an unconverted call site.
+  //     Treating a stray manifest as residue here would false-alarm every one of
+  //     those recipes, since the allowlisted root manifest is itself in `source`.
+  //   - internal_api_rename_declaration / internal_api_type_rename_declaration pin
+  //     the author-designated producer path, always inside allowedPaths. A stray
+  //     old-name declaration only breaks a build once something imports it, and
+  //     that importer is caught as an `internal_api_*_rename_source` residual; an
+  //     unimported one is inert. So they carry no independent residual signal.
+  // The exhaustiveness guard below forces any NEW kind to be classified here
+  // explicitly rather than silently defaulting to a clean success.
+  if (
+    precondition.kind === "json_dependency_present" ||
+    precondition.kind === "json_dependency_version" ||
+    precondition.kind === "internal_api_rename_declaration" ||
+    precondition.kind === "internal_api_type_rename_declaration"
+  ) {
+    return "clean";
+  }
+  // Fail CLOSED. An unhandled precondition kind is a coverage gap, never a clean
+  // absence: reporting "not residual" here is exactly the fault that let a partial
+  // migration read as a verified success. The `never` binding makes a newly added
+  // kind a compile error until it is classified above; the runtime `"unresolved"`
+  // is a backstop that keeps any kind that still slips through out of the
+  // `applicable` path (the caller surfaces it as an explicit exception instead).
+  const unhandledKind: never = precondition;
+  void unhandledKind;
+  return "unresolved";
 }
 
 function residualSitePaths(
   recipe: MigrationRecipeContract,
   files: Record<string, string>,
-): string[] {
+): ResidualScan {
   const allowed = new Set(recipe.allowedPaths);
   const residual = new Set<string>();
+  const unresolved = new Set<string>();
   for (const [path, content] of Object.entries(files)) {
     if (allowed.has(path) || isExcludedFromResidualScan(path)) continue;
     for (const precondition of recipe.preconditions) {
-      if (isResidualSite(precondition, path, content)) {
+      const check = isResidualSite(precondition, path, content);
+      if (check === "residual") {
         residual.add(path);
         break;
       }
+      if (check === "unresolved") {
+        unresolved.add(`recipe_residual_unresolved:${precondition.kind}:${path}`);
+      }
     }
   }
-  return [...residual].sort();
+  return { residual: [...residual].sort(), unresolved: [...unresolved].sort() };
 }
 
 function analyzeRecipeUncached(
@@ -3698,14 +3779,22 @@ function analyzeRecipeUncached(
   // Un-migrated sites outside the allowlist turn a would-be clean success into an
   // explicit incomplete outcome. A precondition failure (`reasons`) still wins:
   // an unsupported source never reaches the apply path at all.
-  const residualPaths = reasons.length ? [] : residualSitePaths(recipe, files);
-  const status: RecipeApplicability = reasons.length
-    ? "unsupported"
-    : residualPaths.length
-      ? "incomplete"
-      : hasSource
-        ? "applicable"
-        : "already_applied";
+  const scan: ResidualScan = reasons.length
+    ? { residual: [], unresolved: [] }
+    : residualSitePaths(recipe, files);
+  // A precondition kind residual detection could not resolve is a coverage gap,
+  // not an absence: fail closed to `unsupported` (an explicit exception) so the
+  // recipe is never upgraded to `applicable` on the strength of not having looked.
+  const unresolved = scan.unresolved;
+  const residualPaths = reasons.length || unresolved.length ? [] : scan.residual;
+  const status: RecipeApplicability =
+    reasons.length || unresolved.length
+      ? "unsupported"
+      : residualPaths.length
+        ? "incomplete"
+        : hasSource
+          ? "applicable"
+          : "already_applied";
   const surfaced = status === "applicable" || status === "incomplete";
   return deepFreeze({
     recipe: recipeReference(recipe),
@@ -3716,7 +3805,9 @@ function analyzeRecipeUncached(
     reasons:
       status === "incomplete"
         ? residualPaths.map((path) => `recipe_incomplete_residual:${path}`)
-        : reasons,
+        : reasons.length
+          ? reasons
+          : [...unresolved],
     residualPaths,
     cacheHit: false,
   });

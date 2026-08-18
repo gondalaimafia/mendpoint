@@ -4,11 +4,14 @@ import { describe, expect, it } from "vitest";
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
   GOOGLEAPIS_V25_TO_V26_RECIPE,
+  INTERNAL_API_ACME_USER_RENAME_RECIPE,
+  INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE,
   NODE_RUNTIME_18_TO_20_RECIPE,
   REACT_DOM_17_TO_18_RECIPE,
   STRIPE_NODE_V10_TO_V11_RECIPE,
   analyzeRecipe,
   applyRecipe,
+  getRecipe,
   recipeReference,
   type MigrationRecipeContract,
   type RecipeFiles,
@@ -249,5 +252,133 @@ describe("node runtime residual detection (previously missed forms)", () => {
       "packages/a/package.json": `${JSON.stringify({ engines: { node: ">=20 <21" } }, null, 2)}\n`,
     };
     expectApplicable(recipe, input);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Internal-API rename family (the sixth family, previously missed entirely).
+// The consumer-source preconditions (`internal_api_rename_source` and
+// `internal_api_type_rename_source`) fell through the residual dispatch's bare
+// `return false`, so a call site left on the old name outside allowedPaths made a
+// partial rename read as a verified, applicable success. Both the value rename and
+// the type rename are covered here, each with a clean-repo no-false-alarm case.
+// ---------------------------------------------------------------------------
+
+describe("internal-api value rename residual detection (consumer source)", () => {
+  const ACME_PATHS = ["src/profile.ts", "src/settings.ts"] as const;
+
+  it("refuses when a file outside allowedPaths still imports and calls the old name", () => {
+    const input: RecipeFiles = {
+      ...loadBefore("internal-api-acme-user-rename", ACME_PATHS),
+      // The demonstrated regression: the rename lands in the two allowlisted
+      // consumers, but this out-of-scope module still imports `getUser` from the
+      // same package and calls it, so the workspace is only partially migrated.
+      "src/legacy-report.ts":
+        'import { getUser } from "@acme/user-service";\n\n' +
+        "export async function report(id: string): Promise<string> {\n" +
+        "  const user = await getUser(id);\n" +
+        "  return String(user);\n" +
+        "}\n",
+    };
+    expectIncomplete(INTERNAL_API_ACME_USER_RENAME_RECIPE, input, ["src/legacy-report.ts"]);
+  });
+
+  it("does not flag a file already on the renamed fetchUser call (no false alarm)", () => {
+    const input: RecipeFiles = {
+      ...loadBefore("internal-api-acme-user-rename", ACME_PATHS),
+      "src/report.ts":
+        'import { fetchUser } from "@acme/user-service";\n\n' +
+        "export async function report(id: string): Promise<string> {\n" +
+        "  const user = await fetchUser(id);\n" +
+        "  return String(user);\n" +
+        "}\n",
+    };
+    expectApplicable(INTERNAL_API_ACME_USER_RENAME_RECIPE, input);
+  });
+
+  it("does not flag a same-named import from a different module (recipe abstains)", () => {
+    const input: RecipeFiles = {
+      ...loadBefore("internal-api-acme-user-rename", ACME_PATHS),
+      // `getUser` here comes from an unrelated package, so the classifier abstains
+      // rather than guess: it is not the surface this recipe migrates.
+      "src/other.ts":
+        'import { getUser } from "@other/directory";\n\n' +
+        "export const lookup = (id: string) => getUser(id);\n",
+    };
+    expectApplicable(INTERNAL_API_ACME_USER_RENAME_RECIPE, input);
+  });
+});
+
+describe("internal-api type rename residual detection (consumer source)", () => {
+  // The registered OrderRecord -> OrderRow interface rename. Its producer and the
+  // two consumers form the applicable base; only the extra out-of-scope file varies.
+  const ORDER_TYPE = getRecipe("internal-api-order-record-to-order-row", 1);
+  const ORDER_BASE = (): RecipeFiles => ({
+    "src/order-types.ts": "export interface OrderRecord {\n  id: string;\n  total: number;\n}\n",
+    "src/order-service.ts":
+      'import type { OrderRecord } from "./order-types.js";\n' +
+      "export function total(order: OrderRecord): number {\n  return order.total;\n}\n",
+    "src/order-view.ts":
+      'import type { OrderRecord } from "./order-types.js";\n' +
+      "export function render(order: OrderRecord): string {\n  return order.id;\n}\n",
+  });
+
+  it("refuses when a file outside allowedPaths still uses the old type name", () => {
+    const input: RecipeFiles = {
+      ...ORDER_BASE(),
+      "src/order-report.ts":
+        'import type { OrderRecord } from "./order-types.js";\n' +
+        "export function summarize(order: OrderRecord): string {\n  return order.id;\n}\n",
+    };
+    expectIncomplete(ORDER_TYPE, input, ["src/order-report.ts"]);
+  });
+
+  it("does not flag a file already on the renamed OrderRow type (no false alarm)", () => {
+    const input: RecipeFiles = {
+      ...ORDER_BASE(),
+      "src/order-report.ts":
+        'import type { OrderRow } from "./order-types.js";\n' +
+        "export function summarize(order: OrderRow): string {\n  return order.id;\n}\n",
+    };
+    expectApplicable(ORDER_TYPE, input);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fail-closed contract: residual detection must classify EVERY precondition kind
+// a shipped recipe emits. An unhandled kind now resolves to "unresolved" and
+// surfaces as an explicit `recipe_residual_unresolved:` exception instead of a
+// silent clean success. This locks the dispatch against a new kind being added
+// (to a recipe) without residual handling — the compile-time `never` guard is the
+// primary enforcement; this is its runtime counterpart. The recipe set below
+// collectively exercises all thirteen precondition kinds.
+// ---------------------------------------------------------------------------
+
+describe("residual detection covers every shipped precondition kind (fail closed)", () => {
+  const ALL_FAMILY_RECIPES: readonly MigrationRecipeContract[] = [
+    NODE_RUNTIME_18_TO_20_RECIPE,
+    AWS_SDK_JS_V2_TO_V3_RECIPE,
+    STRIPE_NODE_V10_TO_V11_RECIPE,
+    GOOGLEAPIS_V25_TO_V26_RECIPE,
+    REACT_DOM_17_TO_18_RECIPE,
+    INTERNAL_API_ACME_USER_RENAME_RECIPE,
+    INTERNAL_API_LEDGER_BALANCE_RENAME_RECIPE,
+    getRecipe("internal-api-order-record-to-order-row", 1),
+  ];
+
+  it("never reports an unresolved coverage gap for a handled kind", () => {
+    // A single out-of-allowlist probe file forces the whole-snapshot scan to run
+    // every one of each recipe's preconditions through `isResidualSite`. With all
+    // files for the recipe's own preconditions absent (neutral), no precondition
+    // failure short-circuits the scan, so any kind that returned "unresolved"
+    // would surface here.
+    const probe: RecipeFiles = { "residual-scope-probe/marker.md": "probe\n" };
+    for (const recipe of ALL_FAMILY_RECIPES) {
+      const analysis = analyzeRecipe(recipeReference(recipe), probe);
+      const gaps = analysis.reasons.filter((reason) =>
+        reason.startsWith("recipe_residual_unresolved:"),
+      );
+      expect(gaps).toEqual([]);
+    }
   });
 });
