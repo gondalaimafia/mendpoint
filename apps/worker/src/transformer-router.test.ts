@@ -149,6 +149,18 @@ describe("transformer routing runtime", () => {
     expect(warden?.reasons).toContain("capability_missing");
   });
 
+  it("emits an honest token estimate and a risk-adjusted quality floor", () => {
+    const spec = transformerRequest("campaign-est", new Date(CHECKED_AT)).task;
+    // No longer pinned to the inert values that disabled the hard-limit and
+    // quality gates: tokens are derived from the seed, quality from the risk.
+    expect(spec.context.estimatedInputTokens).toBeGreaterThan(0);
+    expect(spec.quality.minimumScore).toBe(0.7); // medium default
+    expect(
+      transformerRequest("campaign-high", new Date(CHECKED_AT), "high").task.quality
+        .minimumScore,
+    ).toBe(0.8);
+  });
+
   it("records a deterministic failure without poisoning the availability breaker", async () => {
     const db = freshDb();
     const registry = buildRoutedExecutorRegistry(CHECKED_AT);
