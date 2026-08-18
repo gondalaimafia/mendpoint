@@ -217,6 +217,94 @@ describe("db", () => {
     ).run()).toThrow("repository_snapshots_append_only");
   });
 
+  it("boots the snapshot migration despite a dangling foreign key in an unrelated table", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-snapshot-fk-"));
+    dirs.push(dir);
+    const path = join(dir, "legacy-snapshots-fk.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE scm_connections (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        credential_ref TEXT NOT NULL,
+        external_account_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revoked_at TEXT
+      );
+      CREATE TABLE connected_repositories (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        connection_id TEXT NOT NULL REFERENCES scm_connections(id),
+        remote_id TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        name TEXT NOT NULL,
+        default_branch TEXT NOT NULL,
+        selected_branch TEXT NOT NULL,
+        environment TEXT NOT NULL,
+        retention_days INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE repository_snapshots (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        repository_id TEXT NOT NULL REFERENCES connected_repositories(id),
+        requested_ref TEXT NOT NULL,
+        resolved_sha TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        storage_path TEXT NOT NULL,
+        submodules_policy TEXT NOT NULL,
+        lfs_policy TEXT NOT NULL,
+        sparse_paths_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        UNIQUE (tenant_id, repository_id, resolved_sha, manifest_sha256)
+      );
+      CREATE UNIQUE INDEX repository_snapshots_id_tenant_uidx
+        ON repository_snapshots(id, tenant_id);
+      INSERT INTO scm_connections VALUES (
+        'connection-a', 'tenant-a', 'local_git', 'env://LOCAL_GIT_TEST', 'local-a',
+        'Local A', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', NULL
+      );
+      INSERT INTO connected_repositories VALUES (
+        'repository-a', 'tenant-a', 'connection-a', 'owner/repo', 'owner', 'repo',
+        'main', 'main', 'production', 14, 'ready',
+        '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
+      );
+      INSERT INTO repository_snapshots VALUES (
+        'snapshot-main', 'tenant-a', 'repository-a', 'main', '${"a".repeat(40)}',
+        '${"b".repeat(64)}', '${join(dir, "snapshot-main").replaceAll("'", "''")}',
+        'reject', 'reject', '[]', '2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z'
+      );
+      -- An unrelated table with a dangling foreign key. A bare PRAGMA foreign_key_check would report
+      -- this and (before the fix) permanently block the snapshot migration from booting the app.
+      CREATE TABLE probe_orphans (
+        id TEXT PRIMARY KEY,
+        parent_id TEXT NOT NULL REFERENCES connected_repositories(id)
+      );
+      INSERT INTO probe_orphans VALUES ('orphan-1', 'missing-repository');
+    `);
+    legacy.close();
+
+    // The snapshot chain itself is valid, so boot must succeed even though an unrelated table has a
+    // dangling foreign key. The migration only checks the table it rewrites.
+    const db = createDb(path);
+    dbs.push(db);
+    expect(
+      db.raw.prepare(
+        "SELECT file_manifest_version FROM repository_snapshots WHERE id = 'snapshot-main'",
+      ).get(),
+    ).toEqual({ file_manifest_version: 0 });
+    // The unrelated violation is still present — proving the bare check would have blocked boot.
+    expect((db.raw.prepare("PRAGMA foreign_key_check").all()).length).toBeGreaterThan(0);
+    expect(db.raw.prepare("PRAGMA foreign_key_check(repository_snapshots)").all()).toEqual([]);
+  });
+
   it("upgrades a prior jobs schema before creating tenant indexes", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-upgrade-"));
     dirs.push(dir);

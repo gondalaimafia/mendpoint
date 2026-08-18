@@ -192,10 +192,18 @@ export function bindWardenCandidateDeliveryIntent(db: AppDb, input: {
   if (current.intentDigest && (current.intentDigest !== input.intentDigest || current.branchName !== input.branchName)) {
     throw new Error("warden_candidate_delivery_intent_conflict");
   }
-  db.raw.prepare(
+  // Idempotent: the same intent is already bound. Safe to return without re-writing.
+  if (current.intentDigest === input.intentDigest && current.branchName === input.branchName) {
+    return current;
+  }
+  // Fail closed: the intent fence must only bind against a delivery that is still pending. A row that
+  // has already gone terminal (e.g. delivery_failed after an exhausted-and-retried job) must not have
+  // its intent silently discarded while the caller believes the binding persisted.
+  const changed = db.raw.prepare(
     `UPDATE fettler_candidate_deliveries SET intent_digest = ?, branch_name = ?, intent_bound_at = COALESCE(intent_bound_at, ?), updated_at = ?
      WHERE id = ? AND tenant_id = ? AND status = 'delivery_pending'`,
   ).run(input.intentDigest, input.branchName, input.observedAt, input.observedAt, input.deliveryId, input.tenantId);
+  if (Number(changed.changes) !== 1) throw new Error("warden_candidate_delivery_not_pending");
   return getWardenCandidateDelivery(db, input.tenantId, input.deliveryId)!;
 }
 
@@ -203,12 +211,24 @@ export function recordWardenCandidateDeliverySuccess(db: AppDb, input: {
   tenantId: string; deliveryId: string; branchName: string; baseRevision: string; commitSha: string;
   draftPrNumber: number; draftPrUrl: string; observedAt: string;
 }) {
-  db.raw.prepare(
+  const changed = db.raw.prepare(
     `UPDATE fettler_candidate_deliveries SET status = 'delivered', branch_name = ?, base_revision = ?, commit_sha = ?,
        draft_pr = 1, draft_pr_number = ?, draft_pr_url = ?, delivered_at = ?, updated_at = ?, error_code = NULL, error_message = NULL
      WHERE id = ? AND tenant_id = ? AND status = 'delivery_pending'`,
   ).run(input.branchName, input.baseRevision, input.commitSha, input.draftPrNumber, input.draftPrUrl,
     input.observedAt, input.observedAt, input.deliveryId, input.tenantId);
+  if (Number(changed.changes) !== 1) {
+    // Idempotent: the identical PR was already recorded as delivered. Anything else must fail closed —
+    // a success write against a terminal (e.g. delivery_failed) row must not be silently discarded and
+    // then reported as success. A retried job that produced a real PR surfaces the inconsistency here
+    // instead of leaving the row denying the PR exists.
+    const existing = getWardenCandidateDelivery(db, input.tenantId, input.deliveryId);
+    if (existing && existing.status === "delivered" &&
+      existing.draftPrNumber === input.draftPrNumber && existing.commitSha === input.commitSha) {
+      return existing;
+    }
+    throw new Error("warden_candidate_delivery_not_pending");
+  }
   return getWardenCandidateDelivery(db, input.tenantId, input.deliveryId)!;
 }
 
