@@ -158,7 +158,6 @@ import {
   seedMemoryForAgent,
   createMemory,
   memoryForPlanner,
-  evaluateCanary,
   createVmSandbox,
   vmStatusReport,
   startLiveSandbox,
@@ -283,6 +282,7 @@ import {
 import {
   registerTransformerControlPlaneRoutes,
 } from "./transformer-control-plane.js";
+import { registerPlatformCanaryRoutes } from "./platform-canary.js";
 import {
   registerTransformerPilotExecutionRoutes,
 } from "./transformer-pilot-executions.js";
@@ -811,8 +811,8 @@ app.route("/advanced-ai", createAdvancedAiApplicationRoutes({
   authorizeHumanApprover: (tenantId, principalId) => Boolean(db.raw.prepare("SELECT 1 FROM principals WHERE tenant_id = ? AND id = ? AND kind = 'human' AND revoked_at IS NULL").get(tenantId, principalId)),
 }));
 
-registerTransformerControlPlaneRoutes(app, transformerCampaigns);
-registerTransformerPilotExecutionRoutes(app, transformerExecutions);
+registerTransformerControlPlaneRoutes(app, transformerCampaigns, {}, requestAudit);
+registerTransformerPilotExecutionRoutes(app, transformerExecutions, requestAudit);
 // Canonical (Regauge) mounts plus their legacy /transformer aliases; both point
 // at the same route instance, so external/legacy callers keep working forever.
 app.route("/regauge/missions", transformerMissionRoutes);
@@ -1139,14 +1139,11 @@ app.get("/platform/memory/seed", (c) => {
   });
 });
 
-/** Canary decision (hooks only — no auto production deploy) */
-app.post("/platform/canary/evaluate", async (c) => {
-  const body = await c.req.json().catch(() => ({})) as {
-    humanApproved?: boolean;
-    observedErrorRate?: number;
-  };
-  return c.json(evaluateCanary(body));
-});
+/**
+ * Canary decision (hooks only — no auto production deploy). Registered via a
+ * small registrar so rollback decisions route through the canonical audit sink.
+ */
+registerPlatformCanaryRoutes(app, requestAudit);
 
 /** Dimension 6 — Graph learning / graph-RAG */
 app.get("/graph-learn/stats", (c) => {
@@ -1201,6 +1198,16 @@ app.post("/graph-learn/promote-patterns", (c) => {
     {},
     requestGraphTenantScope(c),
   );
+  // Graph-update audit at the mutation entry point (not per node/edge): one
+  // event per promotion sweep records who promoted patterns and how many, which
+  // is the security- and migration-relevant fact (spec 19.8 graph updates).
+  requestAudit(c, {
+    actor: "api",
+    action: "graph.patterns_promoted",
+    resourceType: "graph",
+    resourceId: null,
+    metadata: { count: promotions.length },
+  });
   return c.json({ count: promotions.length, promotions });
 });
 
@@ -1228,6 +1235,13 @@ app.post("/graph-learn/ast-ingest", async (c) => {
     repoId: `${tenantId}:${consumer.id}`,
     maxFiles: Math.min(Math.max(body.maxFiles ?? 100, 1), 500),
   });
+  requestAudit(c, {
+    actor: "api",
+    action: "graph.updated",
+    resourceType: "graph",
+    resourceId: consumer.id,
+    metadata: { source: "ast", consumerId: consumer.id, files: r.files, symbols: r.symbols, calls: r.calls },
+  });
   return c.json(r);
 });
 
@@ -1243,6 +1257,13 @@ app.post("/graph-learn/lsp-ingest", async (c) => {
   const r = ingestLspSymbols(getGraphLearnDb(), {
     repoPath: repo.local_path,
     repoId: `${tenantId}:${consumer.id}`,
+  });
+  requestAudit(c, {
+    actor: "api",
+    action: "graph.updated",
+    resourceType: "graph",
+    resourceId: consumer.id,
+    metadata: { source: "lsp", consumerId: consumer.id, symbols: r.symbols },
   });
   return c.json(r);
 });
@@ -1260,6 +1281,20 @@ app.post("/graph-learn/incremental", async (c) => {
     repoPath: repo.local_path,
     repoId: `${tenantId}:${consumer.id}`,
     maxFiles: 150,
+  });
+  requestAudit(c, {
+    actor: "api",
+    action: "graph.updated",
+    resourceType: "graph",
+    resourceId: consumer.id,
+    metadata: {
+      source: "incremental",
+      consumerId: consumer.id,
+      changed: r.changed.length,
+      removed: r.removed.length,
+      unchanged: r.unchanged,
+      fullRebuild: r.fullRebuild,
+    },
   });
   return c.json(r);
 });

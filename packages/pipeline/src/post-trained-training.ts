@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { appendDomainEvent, insertArtifactManifest, insertEvidenceRecord, type AppDb } from "@mendpoint/db";
+import { appendDomainEvent, insertArtifactManifest, insertEvidenceRecord, recordAudit, type AppDb } from "@mendpoint/db";
 
 export type PostTrainedTrainingInput = Readonly<{
   tenantId: string; jobId: string; adapterId: string; actorPrincipalId: string;
@@ -81,6 +81,28 @@ async function runPostTrainedTrainingJobOwned(db: AppDb, input: PostTrainedTrain
   if (!current) {
     appendDomainEvent(db, { id: `event_${sha256(`${input.jobId}\0submitted`)}`, tenantId: input.tenantId, schemaVersion: 1, eventType: "post_trained_training.submitted", aggregateType: "post_trained_training_job", aggregateId: input.jobId, actorPrincipalId: input.actorPrincipalId, correlationId: input.idempotencyKey, idempotencyKey: `post-trained-training:${input.idempotencyKey}:submitted`, payload: { requestDigest, authorityId: deps.authorityId, adapterId: input.adapterId, submittedAt: input.submittedAt, datasetId: input.datasetId, purpose: input.purpose, residencyRegion: input.residencyRegion, trainingCorpus: corpus.map(({ artifactId, sha256 }) => ({ artifactId, sha256 })), validation: { artifactId: authority.validation.artifactId, sha256: authority.validation.sha256 }, holdout: { artifactId: authority.holdout.artifactId, sha256: authority.holdout.sha256 }, splitManifestDigest: input.splitManifestDigest, baseModelId: input.baseModelId, recipe: input.recipe }, createdAt: input.submittedAt });
     current = getPostTrainedTrainingJob(db, input.tenantId, input.jobId)!;
+    // Training dataset inclusion is a first-class auditable action (spec 19.8).
+    // Previously the corpus membership only existed as a payload field inside the
+    // post_trained_training.submitted domain event; this records it as a distinct
+    // action in the canonical hash-chained audit_events log. Only validated
+    // identifiers and the corpus size reach the export — never the corpus content.
+    recordAudit(db, {
+      id: `audit-training-dataset-${input.tenantId}-${input.jobId}`,
+      tenantId: input.tenantId,
+      actor: "post_trained_training",
+      principalId: input.actorPrincipalId,
+      action: "training.dataset_included",
+      resourceType: "training_dataset",
+      resourceId: input.datasetId,
+      metadata: {
+        jobId: input.jobId,
+        adapterId: input.adapterId,
+        datasetId: input.datasetId,
+        purpose: input.purpose,
+        residencyRegion: input.residencyRegion,
+        corpusArtifactCount: corpus.length,
+      },
+    });
   }
   const claim = claimEffect(db, input.tenantId, input.jobId, requestDigest, effectOwnerId, deps.leaseMs);
   if (!claim.owned) throw new Error("post_trained_training_lease_held");
