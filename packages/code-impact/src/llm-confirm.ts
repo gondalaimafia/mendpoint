@@ -28,23 +28,51 @@ export type LlmConfirmBudget = {
   used: number;
 };
 
+/**
+ * A single successful live model call, as observed on the wire. Emitted through
+ * the optional confirm observer so an eval lane can build machine-verifiable
+ * provenance (echoed model, tokens, host) without this package depending on the
+ * agent's provenance builder.
+ */
+export type LlmCallObservation = Readonly<{
+  /** Endpoint URL actually contacted. */
+  url: string;
+  /** `x-request-id` response header, or null when the provider omits it. */
+  headerRequestId: string | null;
+  /** Response body fields needed to attribute the call. */
+  body: Readonly<{
+    id?: unknown;
+    model?: unknown;
+    usage?: Readonly<{
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      total_tokens?: number;
+    }>;
+  }>;
+}>;
+
+/** Observer invoked once per successful live model call. */
+export type LlmConfirmObserver = (observation: LlmCallObservation) => void;
+
 export function createBudget(max = Number(process.env.LLM_CONFIRM_MAX ?? 12)): LlmConfirmBudget {
   return { maxCalls: max, used: 0 };
 }
 
-function hasLlmKey(): boolean {
-  return Boolean(process.env.OPENAI_API_KEY || process.env.XAI_API_KEY || process.env.ANTHROPIC_API_KEY);
+function hasLlmKey(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.OPENAI_API_KEY || env.XAI_API_KEY || env.ANTHROPIC_API_KEY);
 }
 
-export function resolveLlmConfirmMode(): "off" | "heuristic" | "live" {
-  const mode = (process.env.LLM_CONFIRM_MODE ?? "").toLowerCase();
+export function resolveLlmConfirmMode(
+  env: NodeJS.ProcessEnv = process.env,
+): "off" | "heuristic" | "live" {
+  const mode = (env.LLM_CONFIRM_MODE ?? "").toLowerCase();
   if (mode === "off") return "off";
   if (mode === "heuristic") return "heuristic";
-  if (mode === "live") return hasLlmKey() ? "live" : "heuristic";
+  if (mode === "live") return hasLlmKey(env) ? "live" : "heuristic";
   // Opt-in only: a live external call requires an explicit LLM_CONFIRM opt-in.
   // The mere presence of an API key must never enable egress of source slices.
-  if (process.env.LLM_CONFIRM === "1" || process.env.LLM_CONFIRM === "true") {
-    return hasLlmKey() ? "live" : "heuristic";
+  if (env.LLM_CONFIRM === "1" || env.LLM_CONFIRM === "true") {
+    return hasLlmKey(env) ? "live" : "heuristic";
   }
   return "off";
 }
@@ -156,6 +184,7 @@ export function heuristicConfirm(
 async function callOpenAiCompatible(
   system: string,
   user: string,
+  onCall?: LlmConfirmObserver,
 ): Promise<string> {
   const xai = process.env.XAI_API_KEY;
   const oai = process.env.OPENAI_API_KEY;
@@ -216,8 +245,23 @@ async function callOpenAiCompatible(
     throw new Error(`LLM confirm HTTP ${res.status}: ${text.slice(0, 200)}`);
   }
   const json = JSON.parse(text) as {
+    id?: unknown;
+    model?: unknown;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     choices?: Array<{ message?: { content?: string } }>;
   };
+  // Record what actually answered on the wire (echoed id/model/usage + request
+  // id) before returning the content. Fires only on a successful response, so a
+  // provenance record always corresponds to a real, billable call.
+  if (onCall) {
+    onCall(
+      Object.freeze({
+        url: endpoint.toString(),
+        headerRequestId: res.headers.get("x-request-id"),
+        body: Object.freeze({ id: json.id, model: json.model, usage: json.usage }),
+      }),
+    );
+  }
   return json.choices?.[0]?.message?.content ?? "";
 }
 
@@ -226,6 +270,7 @@ export async function llmConfirmLive(
   surfaces: ImpactableSurface[],
   staticResult: ConfirmedImpact | null,
   budget: LlmConfirmBudget,
+  onCall?: LlmConfirmObserver,
 ): Promise<ConfirmedImpact | null> {
   if (budget.used >= budget.maxCalls) return staticResult;
 
@@ -241,7 +286,7 @@ export async function llmConfirmLive(
 
   budget.used++;
   try {
-    const raw = await callOpenAiCompatible(system, redaction.text);
+    const raw = await callOpenAiCompatible(system, redaction.text, onCall);
     const decision = parseDecision(raw);
     if (!decision) return staticResult;
     if (!decision.affected) {
@@ -284,6 +329,7 @@ export async function confirmWithLlmBudget(
   surfaces: ImpactableSurface[],
   staticResult: ConfirmedImpact | null,
   budget: LlmConfirmBudget,
+  onCall?: LlmConfirmObserver,
 ): Promise<ConfirmedImpact | null> {
   const mode = resolveLlmConfirmMode();
   if (mode === "off") return staticResult;
@@ -294,5 +340,5 @@ export async function confirmWithLlmBudget(
   if (mode === "heuristic") {
     return heuristicConfirm(ctx, surfaces, staticResult);
   }
-  return llmConfirmLive(ctx, surfaces, staticResult, budget);
+  return llmConfirmLive(ctx, surfaces, staticResult, budget, onCall);
 }
