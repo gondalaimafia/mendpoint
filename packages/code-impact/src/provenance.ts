@@ -21,6 +21,7 @@
  * absence of a locatable surface degrades precision, never recall.
  */
 import type { FileRecord } from "@mendpoint/codebase-index";
+import { HARD_MAX_HOPS, type GraphPath } from "@mendpoint/shared";
 
 const MODULE_EXTENSIONS = [
   "",
@@ -112,25 +113,113 @@ export function buildImporterGraph(
 }
 
 /**
- * Files that transitively import any anchor (anchors included). BFS over the
- * reverse-import graph.
+ * A reachability walk from provider anchors: the reachable set plus the
+ * predecessor tree that records, for each reached non-anchor file, the neighbour
+ * one hop closer to an anchor (the module it imports through which it was first
+ * reached). The predecessor tree is what lets us reconstruct the provider->code
+ * path behind a finding without re-walking the graph.
  */
-export function reachableFromAnchors(
+export type ReachabilityWalk = {
+  reachable: Set<string>;
+  /** reached file -> the module it imports that is one hop closer to an anchor. */
+  predecessors: Map<string, string>;
+  /** The anchor set the walk started from (path roots). */
+  anchors: Set<string>;
+};
+
+/**
+ * Files that transitively import any anchor (anchors included), together with a
+ * BFS predecessor tree. BFS over the reverse-import graph. BFS gives the
+ * shortest anchor->file path, so the predecessor tree is acyclic even when the
+ * import graph contains cycles: a cyclic graph terminates here, it never loops.
+ */
+export function traverseFromAnchors(
   anchors: Iterable<string>,
   importerGraph: Map<string, Set<string>>,
-): Set<string> {
-  const reachable = new Set<string>(anchors);
+): ReachabilityWalk {
+  const anchorSet = new Set<string>(anchors);
+  const reachable = new Set<string>(anchorSet);
+  const predecessors = new Map<string, string>();
+  // FIFO for genuine shortest paths (breadth-first layers).
   const queue = [...reachable];
-  while (queue.length) {
-    const node = queue.pop()!;
+  let head = 0;
+  while (head < queue.length) {
+    const node = queue[head++];
     const importers = importerGraph.get(node);
     if (!importers) continue;
     for (const importer of importers) {
       if (!reachable.has(importer)) {
         reachable.add(importer);
+        // `importer` imports `node`, so `node` is one hop closer to the anchor.
+        predecessors.set(importer, node);
         queue.push(importer);
       }
     }
   }
-  return reachable;
+  return { reachable, predecessors, anchors: anchorSet };
+}
+
+/**
+ * Files that transitively import any anchor (anchors included). BFS over the
+ * reverse-import graph. Thin wrapper over {@link traverseFromAnchors} that keeps
+ * the original Set-only contract for callers that only gate on membership.
+ */
+export function reachableFromAnchors(
+  anchors: Iterable<string>,
+  importerGraph: Map<string, Set<string>>,
+): Set<string> {
+  return traverseFromAnchors(anchors, importerGraph).reachable;
+}
+
+/**
+ * Reconstruct the provider->code path for one reached file by walking the
+ * predecessor tree from the file back to its anchor, then orienting the result
+ * anchor-first. Returns `undefined` when the file is not reachable (no path was
+ * computed — "not computed", distinct from an empty path).
+ *
+ * The walk is bounded and cycle-guarded so it always terminates and always
+ * reports HOW it ended rather than trimming silently:
+ *  - reaching an anchor yields terminal `anchor`, coverage `complete`;
+ *  - exceeding {@link HARD_MAX_HOPS} yields terminal `max_hops`, `truncated`;
+ *  - revisiting a node (only possible on a malformed/cyclic predecessor map, a
+ *    defensive guarantee since BFS predecessors are acyclic) yields terminal
+ *    `cycle`, `truncated`.
+ */
+export function anchorPathTo(
+  target: string,
+  walk: Pick<ReachabilityWalk, "predecessors" | "anchors" | "reachable">,
+  maxHops: number = HARD_MAX_HOPS,
+): GraphPath | undefined {
+  if (!walk.reachable.has(target)) return undefined;
+  // Build target-first, then reverse to anchor-first for display.
+  const chain: string[] = [target];
+  const seen = new Set<string>([target]);
+  let current = target;
+  let terminal: GraphPath["terminal"] = "anchor";
+  let truncated = false;
+  while (!walk.anchors.has(current)) {
+    if (chain.length - 1 >= maxHops) {
+      terminal = "max_hops";
+      truncated = true;
+      break;
+    }
+    const next = walk.predecessors.get(current);
+    if (next === undefined) break; // reachable non-anchor without a predecessor: treat as complete.
+    if (seen.has(next)) {
+      terminal = "cycle";
+      truncated = true;
+      break;
+    }
+    chain.push(next);
+    seen.add(next);
+    current = next;
+  }
+  const nodes = chain.reverse();
+  return {
+    nodes,
+    hops: nodes.length - 1,
+    terminal,
+    truncated,
+    coverage: truncated ? "partial" : "complete",
+  };
 }

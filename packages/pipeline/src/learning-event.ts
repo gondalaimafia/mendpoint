@@ -10,6 +10,24 @@ export type LearningProvenanceQualifier =
   | "deterministically_verified"
   | "reviewer_accepted"
   | "merged_and_verified";
+// Precedence class for a verification verdict, ported from the observation layer
+// (`TrajectorySignalClass` in packages/db/src/trajectory.ts): a deterministic
+// test/compiler/sandbox result, a graph invariant, runtime evidence, or a human
+// correction is HARD; a model verifier's opinion is SOFT and must never acquire
+// the authority of a hard signal. Kept as a local union (not imported) so this
+// schema module stays dependency-free; learning-signal-class-sync.test.ts asserts
+// the two unions never drift.
+export type LearningSignalClass = "hard" | "soft";
+// What actually produced a verification verdict. The first five and the human
+// reviewer are hard producers; only a model verifier is soft.
+export type LearningVerificationProducer =
+  | "test_runner"
+  | "compiler"
+  | "sandbox_command"
+  | "graph_invariant"
+  | "runtime_evidence"
+  | "human_reviewer"
+  | "model_verifier";
 export type LearningOutcomeStatus =
   | "succeeded"
   | "failed"
@@ -81,6 +99,16 @@ export type GovernedLearningEventV1 = Readonly<{
   verification: Readonly<{
     verdict: "passed" | "failed" | "inconclusive";
     evidenceRefs: readonly string[];
+    // Optional for dual-read (docs/learning/implementation-plan.md prescribes
+    // dual-read, not cut-over): events stored before this field existed load
+    // without it and are treated as soft/unknown by every consumer, never as
+    // hard. Present on every event produced after this change. `producerModelId`
+    // carries a model+version only for a `model_verifier`; it is null otherwise.
+    authority?: Readonly<{
+      signalClass: LearningSignalClass;
+      producedBy: LearningVerificationProducer;
+      producerModelId: string | null;
+    }>;
   }>;
   reviewerDecision: Readonly<{
     decision: "accepted" | "rejected" | "modified" | "regenerated" | "merged" | "abandoned";
@@ -157,6 +185,16 @@ const ATTRIBUTIONS = new Set<LearningOutcomeAttribution>([
   "none",
 ]);
 const VERDICTS = new Set(["passed", "failed", "inconclusive"]);
+const SIGNAL_CLASSES = new Set<LearningSignalClass>(["hard", "soft"]);
+const VERIFICATION_PRODUCERS = new Set<LearningVerificationProducer>([
+  "test_runner",
+  "compiler",
+  "sandbox_command",
+  "graph_invariant",
+  "runtime_evidence",
+  "human_reviewer",
+  "model_verifier",
+]);
 const REVIEW_DECISIONS = new Set([
   "accepted",
   "rejected",
@@ -198,7 +236,14 @@ export function createGovernedLearningEvent(input: unknown): GovernedLearningEve
   const outcome = record(value.observedOutcome, "learning_event_outcome_invalid");
   exactKeys(outcome, ["status", "summary", "attribution", "evidenceRefs"], "learning_event_outcome");
   const verification = record(value.verification, "learning_event_verification_invalid");
-  exactKeys(verification, ["verdict", "evidenceRefs"], "learning_event_verification");
+  // `authority` is optional for dual-read; `verdict` and `evidenceRefs` are
+  // required. Reject any other key, keeping the strict-shape guarantee.
+  if (Object.keys(verification).some((key) => key !== "verdict" && key !== "evidenceRefs" && key !== "authority")) {
+    fail("learning_event_verification_field_invalid");
+  }
+  if (!("verdict" in verification) || !("evidenceRefs" in verification)) {
+    fail("learning_event_verification_field_missing");
+  }
   const economics = record(value.economics, "learning_event_economics_invalid");
   exactKeys(economics, ["inputTokens", "outputTokens", "latencyMs", "costUsd"], "learning_event_economics");
   const governance = record(value.governance, "learning_event_governance_invalid");
@@ -261,6 +306,7 @@ export function createGovernedLearningEvent(input: unknown): GovernedLearningEve
     verification: {
       verdict,
       evidenceRefs: refs(verification.evidenceRefs, "learning_event_verification_evidence_invalid"),
+      ...normalizeVerificationAuthority(verification),
     },
     reviewerDecision,
     correction,
@@ -300,6 +346,9 @@ export function extractGovernedLesson(input: GovernedLearningEvent): GovernedLea
     : classify(event);
   const eligibleForModelTraining = destinations.some(({ destination }) => destination === "model_weight")
     && event.verification.verdict === "passed"
+    // Fail closed: an event whose verdict is soft or has no recorded authority
+    // never trains weights, regardless of provenance qualifiers or consent.
+    && event.verification.authority?.signalClass === "hard"
     && event.governance.consentId !== null;
   return deepFreeze({
     schemaVersion: 1 as const,
@@ -338,12 +387,37 @@ function classify(event: GovernedLearningEventV1): Array<Readonly<{ destination:
 
 function strength(event: GovernedLearningEventV1): GovernedLearningLesson["evidenceStrength"] {
   if (event.verification.verdict !== "passed" || event.verification.evidenceRefs.length === 0) return "insufficient";
+  // Derive the strongest tier from the recorded verification authority, not from
+  // the caller-asserted provenance qualifiers. Fail closed: only a HARD verdict
+  // (deterministic test/compiler/sandbox, graph invariant, runtime evidence, or
+  // human correction) can reach "high". A soft verdict (model verifier) or an
+  // absent authority is capped below "high" no matter what qualifiers are passed.
+  const hard = event.verification.authority?.signalClass === "hard";
   if (event.governance.sourceClass === "synthetic_ground_truth") {
-    return event.governance.provenanceQualifiers.includes("deterministically_verified") ? "high" : "medium";
+    return hard && event.governance.provenanceQualifiers.includes("deterministically_verified") ? "high" : "medium";
   }
-  if (event.governance.provenanceQualifiers.some((value) =>
+  if (hard && event.governance.provenanceQualifiers.some((value) =>
     value === "human_corrected" || value === "reviewer_accepted" || value === "merged_and_verified")) return "high";
   return "medium";
+}
+
+function normalizeVerificationAuthority(
+  verification: Record<string, unknown>,
+): Readonly<{ authority?: NonNullable<GovernedLearningEventV1["verification"]["authority"]> }> {
+  // Dual-read fail-closed: an absent authority key stays absent, so a pre-change
+  // event keeps its exact digest and every consumer treats it as soft/unknown.
+  // We never inject a "hard" default. When present it must be a complete, valid
+  // authority object; a null or malformed value is rejected, not coerced.
+  if (!("authority" in verification)) return {};
+  const authority = record(verification.authority, "learning_event_verification_authority_invalid");
+  exactKeys(authority, ["signalClass", "producedBy", "producerModelId"], "learning_event_verification_authority");
+  return {
+    authority: {
+      signalClass: member(authority.signalClass, SIGNAL_CLASSES, "learning_event_verification_signal_class_invalid"),
+      producedBy: member(authority.producedBy, VERIFICATION_PRODUCERS, "learning_event_verification_producer_invalid"),
+      producerModelId: nullableText(authority.producerModelId, "learning_event_verification_producer_model_invalid"),
+    },
+  };
 }
 
 function normalizeReviewerDecision(value: Record<string, unknown>): GovernedLearningEventV1["reviewerDecision"] {

@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { newId, nowIso } from "@mendpoint/shared";
+import { newId, nowIso, GraphPathSchema, type GraphPath } from "@mendpoint/shared";
 import { computeProductMetrics } from "./metrics.js";
 import { settleExpiredWardenModelReservations } from "./warden-model-accounting.js";
 import { assertTenantScope } from "./tenant-scope.js";
@@ -239,7 +239,13 @@ CREATE TABLE IF NOT EXISTS impact_findings (
   line_end INTEGER NOT NULL,
   symbol TEXT NOT NULL,
   confidence TEXT NOT NULL,
-  evidence_json TEXT NOT NULL
+  evidence_json TEXT NOT NULL,
+  -- Provider->code path behind this finding (FET-016). Nullable, no default:
+  -- rows written before this column existed read NULL ("not computed"), which is
+  -- distinct from a computed path. Added to the additive migration list below so
+  -- a pre-change DB converges on the identical shape. No static
+  -- index/view/constraint references it.
+  graph_path_json TEXT
 );
 CREATE INDEX IF NOT EXISTS impact_findings_change_idx ON impact_findings(change_id);
 CREATE TABLE IF NOT EXISTS migration_prs (
@@ -2173,6 +2179,15 @@ function migrateProvidersFeedColumns(db: AppDb) {
       name: "coverage_json",
       sql: "TEXT",
     },
+    // Provider->code path behind an impact finding (FET-016, spec 8.8). Nullable,
+    // no default: an existing DB converges by adding the column, and findings
+    // written before this migration read as null ("not computed") rather than a
+    // fabricated empty path. No static index/view/constraint references it.
+    {
+      table: "impact_findings",
+      name: "graph_path_json",
+      sql: "TEXT",
+    },
   ];
   const addedColumns = new Set<string>();
   for (const column of additiveColumns) {
@@ -2896,12 +2911,14 @@ export function insertImpactFinding(
     symbol: string;
     confidence: string;
     evidenceJson: string;
+    /** Serialized GraphPath (FET-016); null when no path was computed. */
+    graphPathJson?: string | null;
   },
 ) {
   run(
     db,
-    `INSERT INTO impact_findings (id, change_id, consumer_id, file_path, line_start, line_end, symbol, confidence, evidence_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO impact_findings (id, change_id, consumer_id, file_path, line_start, line_end, symbol, confidence, evidence_json, graph_path_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.changeId,
@@ -2912,6 +2929,7 @@ export function insertImpactFinding(
       row.symbol,
       row.confidence,
       row.evidenceJson,
+      row.graphPathJson ?? null,
     ],
   );
 }
@@ -6290,7 +6308,21 @@ export function findingToApi(f: ImpactFindingRow) {
     symbol: f.symbol,
     confidence: f.confidence,
     evidenceJson: f.evidence_json,
+    // FET-016 provider->code path. null (not computed) is projected as-is so the
+    // console can distinguish "not computed" from a present path.
+    graphPath: parseGraphPathJson(f.graph_path_json),
   };
+}
+
+/** Parse a stored GraphPath, tolerating legacy/absent/corrupt values as null. */
+function parseGraphPathJson(value: string | null): GraphPath | null {
+  if (!value) return null;
+  try {
+    const parsed = GraphPathSchema.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 export function auditToApi(a: AuditEvent) {

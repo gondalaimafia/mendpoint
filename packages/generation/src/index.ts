@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
   Confidence,
+  GraphPath,
   ImpactFinding,
   ImpactReport,
   MigrationDraft,
@@ -38,6 +39,24 @@ export type GenerateInput = {
   /** Structured impact brief from hybrid analysis (preferred). */
   impactReport?: ImpactReport;
 };
+
+/**
+ * One-line "why this file is affected" for a PR reviewer (FET-016): the
+ * provider->code import chain, provider anchor first. Compact by design — the
+ * reviewer wants the reachability evidence, not a graph dump. A bounded path
+ * (cycle / hop cap) is labelled so a truncated chain never reads as the whole
+ * story; a zero-hop path is direct provider usage.
+ */
+function formatGraphPath(p: GraphPath): string {
+  const chain = p.nodes.join(" → ");
+  if (p.nodes.length <= 1) return `path: \`${p.nodes[0] ?? "?"}\` (direct provider usage)`;
+  const suffix = p.truncated
+    ? p.terminal === "cycle"
+      ? " _(truncated at an import cycle)_"
+      : ` _(truncated at the ${p.hops}-hop limit)_`
+    : "";
+  return `path: ${chain}${suffix}`;
+}
 
 function overallConfidence(findings: ImpactFinding[]): Confidence {
   if (findings.length === 0) return "low";
@@ -454,7 +473,7 @@ export function generateMigration(input: GenerateInput): MigrationDraft {
     "### Evidence",
     ...findings.slice(0, 20).map(
       (f) =>
-        `- \`${f.filePath}:${f.lineStart}\` **${f.symbol}** (${f.confidence}${f.impactType ? `, ${f.impactType}` : ""}) — \`${f.evidence.slice(0, 100)}\`${f.fixHint ? `\n  - fix: ${f.fixHint}` : ""}`,
+        `- \`${f.filePath}:${f.lineStart}\` **${f.symbol}** (${f.confidence}${f.impactType ? `, ${f.impactType}` : ""}) — \`${f.evidence.slice(0, 100)}\`${f.fixHint ? `\n  - fix: ${f.fixHint}` : ""}${f.graphPath ? `\n  - ${formatGraphPath(f.graphPath)}` : ""}`,
     ),
     "",
     "### What changed in the patch",

@@ -87,6 +87,49 @@ describe("hybrid impact pipeline", () => {
     expect(findings.every((f) => f.confidence !== "low")).toBe(true);
   });
 
+  it("attaches a provider->code graph_path additively without changing the finding set (FET-016)", () => {
+    const { diff, surfaces } = loadSurfaces();
+    const findings = analyzeRepo(consumerDir, diff, { surfaces });
+    expect(findings.length).toBeGreaterThan(0);
+
+    // The path is purely additive: removing graphPath must leave a finding whose
+    // keys are exactly the pre-existing ImpactFinding shape — graphPath is the
+    // ONLY new field. Combined with the reachable-set identity test in
+    // provenance.test.ts (the gate that decides WHICH findings exist is
+    // unchanged), this proves the finding set is identical, only now carrying a
+    // path.
+    const allowedKeys = new Set([
+      "filePath",
+      "lineStart",
+      "lineEnd",
+      "symbol",
+      "confidence",
+      "evidence",
+      "relatedOps",
+      "impactType",
+      "fixHint",
+      "surfaceIds",
+      "graphPath",
+    ]);
+    for (const f of findings) {
+      for (const key of Object.keys(f)) {
+        expect(allowedKeys.has(key)).toBe(true);
+      }
+    }
+
+    // At least one confident finding carries a computed path, and it ends at the
+    // finding's own file, having started at a provider anchor.
+    const withPath = findings.filter((f) => f.graphPath);
+    expect(withPath.length).toBeGreaterThan(0);
+    for (const f of withPath) {
+      const p = f.graphPath!;
+      expect(p.nodes.length).toBeGreaterThan(0);
+      expect(p.nodes[p.nodes.length - 1]).toBe(f.filePath);
+      expect(p.hops).toBe(p.nodes.length - 1);
+      if (!p.truncated) expect(p.coverage).toBe("complete");
+    }
+  });
+
   it("analyzeImpact returns full ImpactReport contract", async () => {
     const { surfaces } = loadSurfaces();
     const report = await analyzeImpact(consumerDir, surfaces);

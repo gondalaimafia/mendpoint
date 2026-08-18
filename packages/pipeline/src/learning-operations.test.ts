@@ -99,6 +99,7 @@ function admitReviewedOutcome(
     migrationFamily?: string;
     outcomeAttribution?: "model_behavior" | "parser";
     authoritativeAttribution?: "model_behavior" | "parser";
+    signalClass?: "hard" | "soft";
   }> = {},
 ): void {
   const suffix = options.suffix ?? "a";
@@ -157,7 +158,7 @@ function admitReviewedOutcome(
       attribution: options.outcomeAttribution ?? "model_behavior",
       evidenceRefs: [verificationEvidenceId],
     },
-    verification: { verdict: "passed", evidenceRefs: [verificationEvidenceId] },
+    verification: { verdict: "passed", evidenceRefs: [verificationEvidenceId], authority: { signalClass: options.signalClass ?? "hard", producedBy: options.signalClass === "soft" ? "model_verifier" : "test_runner", producerModelId: null } },
     reviewerDecision: { decision: "modified", evidenceRefs: [reviewId] },
     correction: { artifactId: redactedId, substantive: true },
     confidence: 0.94,
@@ -250,7 +251,7 @@ describe("governed learning operations", () => {
       references: { graphContextArtifactId: null, inputArtifactId: ids.sourceArtifactId, proposedActionArtifactId: ids.redactedArtifactId },
       prediction: { summary: "Use the replacement API field.", evidenceRefs: [ids.redactionEvidenceId] },
       observedOutcome: { status: "corrected", summary: "The reviewer corrected the field and tests passed.", attribution: "model_behavior", evidenceRefs: [ids.verificationEvidenceId] },
-      verification: { verdict: "passed", evidenceRefs: [ids.verificationEvidenceId] },
+      verification: { verdict: "passed", evidenceRefs: [ids.verificationEvidenceId], authority: { signalClass: "hard", producedBy: "test_runner", producerModelId: null } },
       reviewerDecision: { decision: "modified", evidenceRefs: [ids.reviewDecisionId] },
       correction: { artifactId: ids.redactedArtifactId, substantive: true }, confidence: 0.91,
       economics: { inputTokens: 1000, outputTokens: 200, latencyMs: 1200, costUsd: 0.01 },
@@ -279,7 +280,7 @@ describe("governed learning operations", () => {
       schemaVersion: 1, eventId: "event-forged", product: "fettler", missionId: "run-forged", repositoryId: "repository-a", taskType: "api_remediation", capability: "remediation_generation",
       specialization: { provider: "stripe", framework: null, language: "typescript", runtime: "node-20", migrationFamily: "field-replacement", riskClass: "low", splitGroupId: "repository-a:field-replacement" },
       execution: { modelId: "model-a", adapterId: null, routerDecisionId: "router-a", fallback: false }, references: { graphContextArtifactId: null, inputArtifactId: ids.sourceArtifactId, proposedActionArtifactId: ids.redactedArtifactId },
-      prediction: { summary: "Replace field.", evidenceRefs: [ids.redactionEvidenceId] }, observedOutcome: { status: "corrected", summary: "Parser missed the field.", attribution: "model_behavior", evidenceRefs: [ids.verificationEvidenceId] }, verification: { verdict: "passed", evidenceRefs: [ids.verificationEvidenceId] },
+      prediction: { summary: "Replace field.", evidenceRefs: [ids.redactionEvidenceId] }, observedOutcome: { status: "corrected", summary: "Parser missed the field.", attribution: "model_behavior", evidenceRefs: [ids.verificationEvidenceId] }, verification: { verdict: "passed", evidenceRefs: [ids.verificationEvidenceId], authority: { signalClass: "hard", producedBy: "test_runner", producerModelId: null } },
       reviewerDecision: { decision: "modified", evidenceRefs: [ids.reviewDecisionId] }, correction: { artifactId: ids.redactedArtifactId, substantive: true }, confidence: 0.8,
       economics: { inputTokens: 1, outputTokens: 1, latencyMs: 1, costUsd: 0 }, governance: { tenantId: "tenant-a", residencyRegion: "us-central", consentId: "consent-forged", sourceClass: "production_verified", provenanceQualifiers: ["human_corrected"], mayLeaveTenantBoundary: false }, createdAt: OBSERVED_AT,
     } as const;
@@ -353,6 +354,33 @@ describe("governed learning operations", () => {
       }],
       externalProcessingAllowed: false,
     });
+  });
+
+  it("rejects a soft-only event from the weight-training corpus by the existing gate", () => {
+    const db = fixture();
+    // A genuinely hard record and a soft (model-verifier) record, identical in
+    // every other respect. Both admit, but only the hard one is authoritative
+    // enough for the weight-training corpus; the soft one is filtered by the same
+    // eligibility gate that filters an ineligible destination.
+    admitReviewedOutcome(db, { suffix: "hard", eventId: "learning-event-hard" });
+    admitReviewedOutcome(db, { suffix: "soft", eventId: "learning-event-soft", signalClass: "soft" });
+
+    const result = materializeGovernedLearningCorpus(db, {
+      tenantId: "tenant-a",
+      purpose: PURPOSE,
+      temporalCutoffAt: CUTOFF_AT,
+      actorPrincipalId: "human-a",
+      idempotencyKey: "corpus-soft-gate",
+      createdAt: CREATED_AT,
+    });
+
+    // Exactly one member: the soft event never enters the corpus.
+    expect(result.memberCount).toBe(1);
+    expect(result.exampleCount).toBe(1);
+    const members = db.raw
+      .prepare("SELECT learning_record_id AS id FROM learning_dataset_members WHERE tenant_id = ? AND dataset_version_id = ?")
+      .all("tenant-a", result.datasetVersionId) as Array<{ id: string }>;
+    expect(members.map((row) => row.id)).toEqual(["record-hard"]);
   });
 
   it("assigns every variant in an immutable split group to one partition", () => {

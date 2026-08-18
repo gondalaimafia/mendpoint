@@ -697,7 +697,16 @@ function readEligibleDocument(
   if (canonicalJson(value.lesson) !== canonicalJson(lesson)) {
     throw new Error("learning_corpus_lesson_digest_mismatch");
   }
-  if (!lesson.eligibleForModelTraining || !lesson.destinations.some(({ destination }) => destination === "model_weight")) {
+  // Admission gate for the weight-training corpus. `eligibleForModelTraining`
+  // already encodes the hard-authority requirement; the explicit signal-class
+  // check keeps the rejection self-documenting and fail-closed (an absent or soft
+  // authority is `!== "hard"`), so a model verifier's opinion can never enter the
+  // corpus labelled as deterministic verification.
+  if (
+    !lesson.eligibleForModelTraining
+    || !lesson.destinations.some(({ destination }) => destination === "model_weight")
+    || governed.event.verification.authority?.signalClass !== "hard"
+  ) {
     return undefined;
   }
   if (
