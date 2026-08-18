@@ -276,15 +276,18 @@ export function deleteFileSubgraph(
   db: GraphLearnDb,
   fileId: string,
 ): { nodes: number; edges: number } {
-  const outEdges = edgesFrom(db, fileId);
+  // Deletion must reach every incident edge, including ones already closed with
+  // a past valid_to, so invalidated rows are not orphaned behind the deleted node.
+  const allHistory: EdgeQueryOptions = { includeInvalidated: true };
+  const outEdges = edgesFrom(db, fileId, undefined, allHistory);
   let nodes = 0;
   let edges = 0;
   for (const e of outEdges) {
     if (e.kind === "DEFINES" || e.kind === "DECLARES") {
       // remove symbol and its outbound CALLS
       const symEdges = [
-        ...edgesFrom(db, e.target),
-        ...edgesTo(db, e.target),
+        ...edgesFrom(db, e.target, undefined, allHistory),
+        ...edgesTo(db, e.target, undefined, allHistory),
       ];
       for (const se of symEdges) {
         deleteEdge(db, se.id);
@@ -297,7 +300,7 @@ export function deleteFileSubgraph(
       edges++;
     }
   }
-  for (const e of edgesTo(db, fileId)) {
+  for (const e of edgesTo(db, fileId, undefined, allHistory)) {
     deleteEdge(db, e.id);
     edges++;
   }
@@ -323,11 +326,39 @@ export function listNodesByKind(db: GraphLearnDb, kind: GlNodeKind): GlNode[] {
 
 type SqlParam = string | number | null | bigint;
 
+export type EdgeQueryOptions = {
+  /**
+   * Point-in-time filter: return only edges whose validity window contains this
+   * instant (`valid_from <= at < valid_to`). Used by time-travel ops.
+   */
+  at?: string;
+  /**
+   * Return every edge ever recorded, including ones whose `valid_to` has already
+   * passed. Opt-in for ingest, export, and deletion paths that must operate on
+   * the full stored graph rather than the currently-valid slice. Ignored when
+   * `at` is set.
+   */
+  includeInvalidated?: boolean;
+};
+
+/**
+ * Resolve the instant a temporal filter is evaluated at. An explicit `at` wins
+ * (point-in-time). Otherwise the default is *now*, so reads see only currently
+ * valid edges: an edge closed with a past `valid_to`, or one whose `valid_from`
+ * is still in the future, is not a current fact. `includeInvalidated` opts out
+ * of the filter entirely, returning all history.
+ */
+function temporalInstant(opts: EdgeQueryOptions): string | undefined {
+  if (opts.at) return opts.at;
+  if (opts.includeInvalidated) return undefined;
+  return now();
+}
+
 export function edgesFrom(
   db: GraphLearnDb,
   source: string,
   kinds?: GlEdgeKind[],
-  atTime?: string,
+  opts: EdgeQueryOptions = {},
 ): GlEdge[] {
   let sql = `SELECT * FROM gl_edges WHERE source = ?`;
   const params: SqlParam[] = [source];
@@ -337,9 +368,10 @@ export function edgesFrom(
     sql += ` AND kind IN (${expanded.map(() => "?").join(",")})`;
     params.push(...expanded);
   }
-  if (atTime) {
+  const instant = temporalInstant(opts);
+  if (instant) {
     sql += ` AND (valid_from IS NULL OR valid_from <= ?) AND (valid_to IS NULL OR valid_to > ?)`;
-    params.push(atTime, atTime);
+    params.push(instant, instant);
   }
   const rows = db.raw.prepare(sql).all(...params) as EdgeRow[];
   return rows.map(rowToEdge);
@@ -349,7 +381,7 @@ export function edgesTo(
   db: GraphLearnDb,
   target: string,
   kinds?: GlEdgeKind[],
-  atTime?: string,
+  opts: EdgeQueryOptions = {},
 ): GlEdge[] {
   let sql = `SELECT * FROM gl_edges WHERE target = ?`;
   const params: SqlParam[] = [target];
@@ -358,9 +390,10 @@ export function edgesTo(
     sql += ` AND kind IN (${expanded.map(() => "?").join(",")})`;
     params.push(...expanded);
   }
-  if (atTime) {
+  const instant = temporalInstant(opts);
+  if (instant) {
     sql += ` AND (valid_from IS NULL OR valid_from <= ?) AND (valid_to IS NULL OR valid_to > ?)`;
-    params.push(atTime, atTime);
+    params.push(instant, instant);
   }
   const rows = db.raw.prepare(sql).all(...params) as EdgeRow[];
   return rows.map(rowToEdge);
