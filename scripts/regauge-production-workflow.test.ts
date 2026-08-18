@@ -155,7 +155,7 @@ describe("Regauge production workflow", () => {
     const steps = workflow.jobs.deploy.steps as Record<string, any>[];
     const containment = steps.find(
       (step) => step.name === "Contain one-draft activation",
-    );
+    )!;
     const uploadIndex = steps.findIndex(
       (step) => step.name === "Upload Regauge production evidence",
     );
@@ -222,7 +222,7 @@ describe("Regauge production workflow", () => {
     ) as Record<string, any>;
     const validation = (workflow.jobs.deploy.steps as Record<string, any>[]).find(
       (step) => step.name === "Validate exact authority before mutation",
-    ).run as string;
+    )!.run as string;
 
     expect(workflow.jobs.deploy["timeout-minutes"]).toBe(60);
     expect(validation).toContain('test "$READINESS_SOAK_SECONDS" -le 1800');
