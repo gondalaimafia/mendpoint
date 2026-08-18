@@ -248,10 +248,27 @@ jobs:
             GITHUB_APP_PRIVATE_KEY="$GITHUB_APP_PRIVATE_KEY" \
             GITHUB_WEBHOOK_SECRET="$GITHUB_WEBHOOK_SECRET" \
             GITHUB_APP_ACCOUNT_TENANT_BINDINGS="$GITHUB_APP_ACCOUNT_TENANT_BINDINGS"
-      - name: Deploy one coordinator and one worker
+      - name: Deploy coordinator
         run: >-
           flyctl deploy --remote-only --ha=false --app mendpoint-transformer-pilot
           --config fly.transformer.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
+          --process-groups coordinator
+      - name: Verify coordinator revision and health
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..60}; do
+            revision="$(curl --fail --silent https://mendpoint-transformer-pilot.fly.dev/version | jq -r '.revision')" || true
+            ready="$(curl --fail --silent https://mendpoint-transformer-pilot.fly.dev/ready | jq -r '.status')" || true
+            if test "$revision" = "$GITHUB_SHA" && test "$ready" = "ok"; then exit 0; fi
+            test "$attempt" -lt 60
+            sleep 2
+          done
+      - name: Deploy worker
+        run: >-
+          flyctl deploy --remote-only --ha=false --app mendpoint-transformer-pilot
+          --config fly.transformer.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
+          --process-groups worker
       - name: Verify exact deployed revision and process health
         shell: bash
         run: |
