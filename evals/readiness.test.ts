@@ -3,6 +3,7 @@ import {
   evaluateReadiness,
   loadReadinessGates,
   DEFAULT_GATES_PATH,
+  type FettlerImpactThresholds,
   type ReadinessGatesConfig,
   type ScoredRun,
 } from "./readiness.js";
@@ -76,7 +77,9 @@ describe("loadReadinessGates", () => {
     const cfg = loadReadinessGates(DEFAULT_GATES_PATH);
     expect(cfg.schema_version).toBe(1);
     expect(cfg.policy).toBe("precision-first");
-    expect(cfg.capabilities["fettler-impact-analysis"].impact_precision_min).toBe(0.9);
+    expect(
+      (cfg.capabilities["fettler-impact-analysis"] as FettlerImpactThresholds).impact_precision_min,
+    ).toBe(0.9);
   });
 });
 
@@ -147,6 +150,72 @@ describe("evaluateReadiness", () => {
     ];
     const ev = evaluateReadiness(scored, GATES);
     expect(ev.capabilities[0].metrics.openP0).toBe(0);
+  });
+
+  it("scores a regauge family: apply/abstain pass but a residual that does not refuse fails the family on refusal + P0", () => {
+    const familyGates: ReadinessGatesConfig = {
+      ...GATES,
+      capabilities: {
+        "regauge-sdk-migration": {
+          kind: "regauge-family",
+          family: "sdk-upgrade",
+          apply_correctness_min: 1,
+          refusal_correctness_min: 1,
+          abstention_correctness_min: 1,
+          max_open_p0: 0,
+        },
+      },
+    };
+    const rg = (over: Partial<GroundTruth>): GroundTruth =>
+      gt({ intended_product: ["regauge"], recipe_expectation: { family: "sdk-upgrade", shippedRecipeId: "aws-sdk-js-v2-to-v3" }, ...over });
+    const p0: RunFailure = {
+      category: "ABSTENTION_FAILURE",
+      severity: "P0",
+      dimension: "residual_refusal",
+      observed: "status=applicable",
+      expected: "status=incomplete",
+    };
+    const scored: ScoredRun[] = [
+      { gt: rg({ scenario_id: "apply", correct_behavior: "apply_recipe", expected_findings: ["package.json"] }), record: rec({ scenario_id: "apply", product: "regauge", passed: true }) },
+      { gt: rg({ scenario_id: "abstain", correct_behavior: "abstain" }), record: rec({ scenario_id: "abstain", product: "regauge", passed: true }) },
+      { gt: rg({ scenario_id: "residual", correct_behavior: "refuse_partial", expected_findings: ["package.json"] }), record: rec({ scenario_id: "residual", product: "regauge", passed: false, failures: [p0] }) },
+    ];
+    const ev = evaluateReadiness(scored, familyGates);
+    const cap = ev.capabilities.find((c) => c.capability === "regauge-sdk-migration")!;
+    expect(cap.verdict).toBe("FAIL");
+    expect(cap.criteria.find((c) => c.name === "apply_correctness")!.passed).toBe(true);
+    expect(cap.criteria.find((c) => c.name === "out_of_scope_abstention")!.passed).toBe(true);
+    expect(cap.criteria.find((c) => c.name === "residual_refusal")!.passed).toBe(false);
+    expect(cap.criteria.find((c) => c.name === "open_p0")!.passed).toBe(false);
+    expect(cap.familyMetrics?.openP0).toBe(1);
+    expect(ev.overall).toBe("FAIL");
+  });
+
+  it("a regauge family with every residual refusing and no P0 passes", () => {
+    const familyGates: ReadinessGatesConfig = {
+      ...GATES,
+      capabilities: {
+        "regauge-runtime-migration": {
+          kind: "regauge-family",
+          family: "runtime-upgrade",
+          apply_correctness_min: 1,
+          refusal_correctness_min: 1,
+          abstention_correctness_min: 1,
+          max_open_p0: 0,
+        },
+      },
+    };
+    const rg = (over: Partial<GroundTruth>): GroundTruth =>
+      gt({ intended_product: ["regauge"], recipe_expectation: { family: "runtime-upgrade", shippedRecipeId: "node-runtime-20-to-22" }, ...over });
+    const scored: ScoredRun[] = [
+      { gt: rg({ scenario_id: "a", correct_behavior: "apply_recipe", expected_findings: ["package.json"] }), record: rec({ scenario_id: "a", product: "regauge", passed: true }) },
+      { gt: rg({ scenario_id: "r", correct_behavior: "refuse_partial", expected_findings: ["package.json"] }), record: rec({ scenario_id: "r", product: "regauge", passed: true }) },
+      { gt: rg({ scenario_id: "o", correct_behavior: "abstain" }), record: rec({ scenario_id: "o", product: "regauge", passed: true }) },
+    ];
+    const ev = evaluateReadiness(scored, familyGates);
+    const cap = ev.capabilities.find((c) => c.capability === "regauge-runtime-migration")!;
+    expect(cap.verdict).toBe("PASS");
+    expect(ev.overall).toBe("PASS");
   });
 
   it("marks the holdout-gap criterion not measurable when a split is empty", () => {

@@ -4,8 +4,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDb, getJob, insertAgentRun, type AppDb } from "./index.js";
 import {
+  bindWardenCandidateDeliveryIntent,
   enqueueWardenCandidateDelivery,
+  getWardenCandidateDelivery,
   getWardenCandidateDeliveryByRun,
+  recordWardenCandidateDeliveryFailure,
+  recordWardenCandidateDeliverySuccess,
 } from "./warden-candidate-delivery.js";
 
 const NOW = "2026-08-06T12:00:00.000Z";
@@ -110,5 +114,85 @@ describe("Warden candidate delivery outbox", () => {
     enqueueWardenCandidateDelivery(db, base);
     expect(() => enqueueWardenCandidateDelivery(db, { ...base, baseBranch: "release" }))
       .toThrow("warden_candidate_delivery_conflict");
+  });
+
+  const deliveryInput = {
+    tenantId: "tenant-a",
+    runId: "warden-run-1",
+    repositoryId: "repo-1",
+    snapshotId: "snapshot-1",
+    baseBranch: "main",
+    expectedBaseRevision: "a".repeat(40),
+    sealedPath: "C:\\data\\warden-evidence\\tenant-a\\approvals\\seal.json",
+    sealedSha256: `sha256:${"b".repeat(64)}`,
+    requesterPrincipalId: "human:reviewer@example.com",
+    rationale: "The target and regression checks pass.",
+    now: NOW,
+  } as const;
+
+  it("binds intent and records one draft delivery, idempotently", () => {
+    const db = fixture();
+    const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
+
+    const bound = bindWardenCandidateDeliveryIntent(db, {
+      tenantId: "tenant-a", deliveryId: delivery.id, intentDigest: `sha256:${"c".repeat(64)}`,
+      branchName: "mendpoint/warden-run-1", observedAt: NOW,
+    });
+    expect(bound.intentDigest).toBe(`sha256:${"c".repeat(64)}`);
+    expect(bindWardenCandidateDeliveryIntent(db, {
+      tenantId: "tenant-a", deliveryId: delivery.id, intentDigest: `sha256:${"c".repeat(64)}`,
+      branchName: "mendpoint/warden-run-1", observedAt: NOW,
+    })).toEqual(bound);
+
+    const delivered = recordWardenCandidateDeliverySuccess(db, {
+      tenantId: "tenant-a", deliveryId: delivery.id, branchName: "mendpoint/warden-run-1",
+      baseRevision: "a".repeat(40), commitSha: "d".repeat(40), draftPrNumber: 42,
+      draftPrUrl: "https://github.com/acme/service/pull/42", observedAt: NOW,
+    });
+    expect(delivered.status).toBe("delivered");
+    expect(delivered.draftPrNumber).toBe(42);
+    // Replaying the identical PR is idempotent.
+    expect(recordWardenCandidateDeliverySuccess(db, {
+      tenantId: "tenant-a", deliveryId: delivery.id, branchName: "mendpoint/warden-run-1",
+      baseRevision: "a".repeat(40), commitSha: "d".repeat(40), draftPrNumber: 42,
+      draftPrUrl: "https://github.com/acme/service/pull/42", observedAt: NOW,
+    })).toEqual(delivered);
+    // A different PR against an already-delivered row must fail closed, not overwrite silently.
+    expect(() => recordWardenCandidateDeliverySuccess(db, {
+      tenantId: "tenant-a", deliveryId: delivery.id, branchName: "mendpoint/warden-run-1",
+      baseRevision: "a".repeat(40), commitSha: "e".repeat(40), draftPrNumber: 99,
+      draftPrUrl: "https://github.com/acme/service/pull/99", observedAt: NOW,
+    })).toThrow("warden_candidate_delivery_not_pending");
+  });
+
+  it("fails closed when a retried job succeeds against a terminal delivery_failed row", () => {
+    const db = fixture();
+    const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
+    // Attempt 1 exhausts its retries and dead-letters: the delivery goes terminal.
+    const failed = recordWardenCandidateDeliveryFailure(db, {
+      tenantId: "tenant-a", deliveryId: delivery.id, errorCode: "github_pr_failed",
+      errorMessage: "draft PR creation failed", terminal: true, observedAt: NOW,
+    });
+    expect(failed.status).toBe("delivery_failed");
+
+    // An operator retries the dead-lettered job; attempt 2 creates a REAL draft PR and reports back.
+    // Both the intent bind and the success write must refuse the terminal row loudly rather than
+    // silently discard the write and return a fake success.
+    expect(() => bindWardenCandidateDeliveryIntent(db, {
+      tenantId: "tenant-a", deliveryId: delivery.id, intentDigest: `sha256:${"c".repeat(64)}`,
+      branchName: "mendpoint/warden-run-1", observedAt: NOW,
+    })).toThrow("warden_candidate_delivery_not_pending");
+    expect(() => recordWardenCandidateDeliverySuccess(db, {
+      tenantId: "tenant-a", deliveryId: delivery.id, branchName: "mendpoint/warden-run-1",
+      baseRevision: "a".repeat(40), commitSha: "d".repeat(40), draftPrNumber: 42,
+      draftPrUrl: "https://github.com/acme/service/pull/42", observedAt: NOW,
+    })).toThrow("warden_candidate_delivery_not_pending");
+
+    // The terminal row is untouched: it never claims a delivery it did not persist, and the intent
+    // fence never bound.
+    const after = getWardenCandidateDelivery(db, "tenant-a", delivery.id)!;
+    expect(after.status).toBe("delivery_failed");
+    expect(after.intentDigest).toBeNull();
+    expect(after.draftPrNumber).toBeNull();
   });
 });

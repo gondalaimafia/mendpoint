@@ -299,11 +299,23 @@ export function recordWardenCiObservation(db: AppDb, input: Readonly<{
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
+    // Re-validate under the write lock: the cycle was read at :279 outside the transaction and
+    // another worker (completeWardenCiUpdate) may have moved current_head_sha since. Re-reading
+    // inside BEGIN IMMEDIATE is the durable fix; the `changes` check on the UPDATE is the backstop.
+    const fresh = getWardenCiCycle(db, current.tenantId, cycleId);
+    if (!fresh) throw new Error("warden_ci_cycle_not_found");
+    if (fresh.status === "paused" || fresh.status === "succeeded" || fresh.status === "exhausted") throw new Error("warden_ci_cycle_terminal");
+    if (fresh.currentHeadSha !== headSha) throw new Error("warden_ci_head_drift");
     db.raw.prepare(`INSERT INTO fettler_ci_observations
       (id, tenant_id, cycle_id, head_sha, verdict, observation_digest, evidence_artifact_id, evidence_digest, observed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(observationId, current.tenantId, cycleId, headSha, input.verdict, observationDigest,
         evidenceArtifactId, evidenceDigest, observedAt);
+    const advanced = db.raw.prepare(`UPDATE fettler_ci_cycles SET status = ?, current_observation_digest = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND current_head_sha = ?`)
+      .run(nextStatus, observationDigest, observedAt, cycleId, current.tenantId, headSha);
+    if (Number(advanced.changes) !== 1) throw new Error("warden_ci_head_drift");
+    // Only enqueue the repair job once the state transition is known to have applied.
     if (input.verdict === "failure") {
       const repairDispatchJobId = stableId("wardencirepairdispatch", current.tenantId, cycleId, headSha, observationDigest);
       db.raw.prepare(`INSERT INTO jobs
@@ -313,9 +325,6 @@ export function recordWardenCiObservation(db: AppDb, input: Readonly<{
         .run(repairDispatchJobId, current.tenantId,
           JSON.stringify({ cycleId, observationId, observationDigest }), observedAt, observedAt);
     }
-    db.raw.prepare(`UPDATE fettler_ci_cycles SET status = ?, current_observation_digest = ?, updated_at = ?
-      WHERE id = ? AND tenant_id = ? AND current_head_sha = ?`)
-      .run(nextStatus, observationDigest, observedAt, cycleId, current.tenantId, headSha);
     if (owns) db.raw.exec("COMMIT");
   } catch (error) {
     if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");

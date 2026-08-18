@@ -64,7 +64,10 @@ export default async function PullRequestDetailPage({
       repo: "unknown",
       title: "Pull request unavailable",
       number: null,
-      status: "failing",
+      // The PR failed to load, so its real status is unknown. "failing" would be
+      // a fabricated red negative; "pending" (amber, indeterminate) reflects that
+      // we could not determine the status rather than asserting the PR is broken.
+      status: "pending",
       githubUrl: null,
       alert: null,
       diffs: [],

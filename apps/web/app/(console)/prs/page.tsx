@@ -14,6 +14,9 @@ export default async function PullRequestsPage() {
     apiGet<Consumer[]>("/consumers"),
   ]);
 
+  // A rejected `/prs` fetch is unknown, not empty: surface an explicit
+  // unavailable state rather than the "No pull requests staged yet." empty copy.
+  const prsUnavailable = prsResult.status === "rejected";
   const prs = prsResult.status === "fulfilled" ? prsResult.value : [];
   const consumers = consumersResult.status === "fulfilled" ? consumersResult.value : [];
   const repoByConsumer = new Map(
@@ -35,5 +38,5 @@ export default async function PullRequestsPage() {
     };
   });
 
-  return <PrsView prs={rows} />;
+  return <PrsView prs={rows} unavailable={prsUnavailable} />;
 }

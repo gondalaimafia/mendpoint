@@ -17,10 +17,37 @@ import {
  * DS2 `PullRequestCard` staggered on mount and routes to the detail by PR id.
  * No indigo CTA lives here — the console frame owns the single one.
  */
-export function PrsView({ prs }: { prs: PullRequest[] }) {
+export function PrsView({
+  prs,
+  unavailable = false,
+}: {
+  prs: PullRequest[];
+  unavailable?: boolean;
+}) {
   const router = useRouter();
   const [tab, setTab] = React.useState<PrTab>("all");
   const visible = filterPullRequests(prs, tab);
+
+  // `unavailable` means the `/prs` feed failed to load. An empty list (prs.length
+  // === 0) is a known-empty result; a failed fetch is unknown. We must not render
+  // "No pull requests staged yet." or zero-count tabs for a failure, because that
+  // certifies a rejected fetch as an authoritative "none are staged".
+  if (unavailable) {
+    return (
+      <div className="ds-view">
+        <header className="ds-view__header ds-view__header--stack">
+          <SectionLabel tone="muted">REGAUGE</SectionLabel>
+          <h1 className="ds-view__title">Pull requests unavailable</h1>
+        </header>
+        <div className="ds-pr-list">
+          <p className="ds-pr-card__repo" style={{ padding: "1rem" }}>
+            The pull request feed did not load. This is not a claim that none are
+            staged: retry, or confirm the API is reachable.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="ds-view">
