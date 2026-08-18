@@ -39,19 +39,26 @@ export {
 
 export {
   canonicalTextSha256,
+  FOUNDATIONAL_REGISTER_SET,
   FOUNDATIONAL_REQUIREMENT_IDS,
+  PRODUCT_REGISTER_SETS,
+  V3_PLATFORM_REGISTER_SET,
+  V3_PLATFORM_REQUIREMENT_IDS,
   validateProductRequirements,
   type ProductAcceptance,
   type ProductAvailability,
   type ProductClaimState,
+  type ProductClosurePlan,
   type ProductEvidence,
   type ProductEvidenceType,
   type ProductImplementationStatus,
+  type ProductRegisterSet,
   type ProductRequirement,
   type ProductRequirementIssue,
   type ProductRequirementManifest,
   type ProductRequirementValidationOptions,
   type ProductTargetRelease,
+  type RegisterSetDefinition,
 } from "./product-requirements.js";
 
 export {
