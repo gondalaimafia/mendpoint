@@ -12,6 +12,13 @@
       "max_open_p0": 0,
       "holdout_dev_gap_max_pp": 10
     },
+    "fettler-abstention": {
+      "kind": "fettler-abstention",
+      "description": "Fettler restraint: on an ambiguous rename (>=2 plausible successors) or an already-migrated repo, the correct output is NO confident finding. A distinct capability from impact analysis (which is scored on flag_files recall/precision); this is the precision-first 'do not guess' guard, pooled over the abstain + no_op Fettler scenarios the impact gate excludes.",
+      "abstention_correctness_min": 1.0,
+      "max_open_p0": 0,
+      "notes": "abstention_correctness_min=1.0: a single confident finding on an ambiguous or already-migrated repo is an unsafe automated action (it applies a rename a human never approved), so precision-first admits no partial credit. max_open_p0=0: acting where abstention was required is a P0. This gate has real measured signal today (4 abstain + 2 no_op scenarios in the current suite) and passes; it is included so a future regression that makes the product act on ambiguity fails the gate immediately. It is deliberately separate from fettler-impact-analysis so restraint cannot be traded off against recall."
+    },
     "regauge-runtime-migration": {
       "kind": "regauge-family",
       "family": "runtime-upgrade",
@@ -52,5 +59,52 @@
       "max_open_p0": 0,
       "notes": "Same precision-first rationale. Whether the residual criterion passes depends on residual detection reaching the internal_api precondition kinds in recipe.ts; reported honestly per run. Thresholds are pass rates over this family's scenarios."
     }
+  },
+  "not_measured": {
+    "notes": "Capabilities the product HAS but the current eval substrate cannot score. Recorded here (not silently omitted) so gate coverage is honest: a capability is either gated on a real measured dimension above, or listed here with the experiment that would make it measurable. NONE of these is gated on an invented threshold. This list is the Phase 2 backlog: each entry names the smallest change that would move it into 'capabilities'. Ownership tags (Claude/Codex/Shared) follow the Phase 0 blocker assignment.",
+    "capabilities": [
+      {
+        "capability": "regauge-apply-verification",
+        "reason": "Both runners are analyze-only (evals/runners/regauge-runner.ts calls analyzeRecipe and stops; fettler-runner.ts sets useLlm:false and calls analyzeImpact only). Nothing applies a recipe, installs dependencies, compiles, or runs the subject repo's tests, so 'the migration is complete and the repo still installs/compiles' is unobservable. The gated ReGauge families measure the analyze DECISION (refuse vs apply), not a verified applied result.",
+        "experiment": "An apply-and-verify harness that runs applyRecipe/executeRecipeInWorkspace in a fenced sandbox, installs and builds the migrated tree, and grades an independent fail-to-pass/pass-to-pass judge. Gate on post-apply verification pass rate. (Phase 2 blocker #5, Claude.)",
+        "owner": "Claude"
+      },
+      {
+        "capability": "fettler-migration-generation-and-delivery",
+        "reason": "The Fettler runner exercises impact analysis only; migration-patch generation, the agentic repair loop, and GitHub PR delivery are not invoked (they need a seeded DB, a sandbox, and GitHub credentials). Recorded per run as unmeasured_dimensions, never scored.",
+        "experiment": "A seeded-DB + sandbox + delivery integration harness that drives the generation/repair/delivery lane on a synthetic repo and grades patch correctness and delivery honesty. Gate on generated-patch correctness once it exists.",
+        "owner": "Shared"
+      },
+      {
+        "capability": "model-routing-cost-and-tokens",
+        "reason": "Both runners run the deterministic path with the model off (useLlm:false / analyzeRecipe), so model, provider, tokens, and cost are genuinely null (no model was called) rather than measured. There is no routing decision to score because no model path runs.",
+        "experiment": "A live-model eval lane (the one .github/workflows/regauge-production.yml already runs) feeding routing decisions, token counts, and measured cost into the run record. Gate on cost-per-outcome and routing-decision quality once a second executor is genuinely eligible.",
+        "owner": "Shared"
+      },
+      {
+        "capability": "retrieval-quality",
+        "reason": "recall@k for the retrieval layer has a numerator on at most one path and no denominator anywhere; the harness cannot see which files the model was shown, so 'the required file was never retrieved' is undiagnosable. Fine-tuning to compensate for a retrieval defect is the failure mode spec 17.4 warns against, so this must be measured before any training targets it.",
+        "experiment": "A retrieval benchmark that records the candidate set the product examined and scores it against the ground-truth impacted files (recall@k with a real denominator). (Phase 2 blocker #10, Claude.)",
+        "owner": "Claude"
+      },
+      {
+        "capability": "change-graph-completeness-and-confidence-calibration",
+        "reason": "gl_edges.confidence is assigned by fiat at write time and never validated against an outcome; there is no graph-completeness measure and no graph-gated decision in production. The harness scores product findings, not the graph the findings came from.",
+        "experiment": "Wire the already-written, zero-caller runImpactBenchmark and evaluateConfidenceCalibration (packages/graph-learn) into a scored eval so a confidence:0.7 edge can be checked to be right ~70% of the time. Gate on calibration error once it reports.",
+        "owner": "Codex"
+      },
+      {
+        "capability": "verification-honesty",
+        "reason": "In deployed config, production verification refuses with exit 126 for essentially every real repo command, and a refusal is indistinguishable downstream from a genuine test failure; the sandbox backend that ran is recorded nowhere. The analyze-only harness never reaches verification, so 'verified' cannot be validated as a trustworthy label here.",
+        "experiment": "Capture per-check exit codes and the sandbox backend that actually ran, and grade a refusal distinctly from a failure. Gate on verifier-refusal rate and backend provenance once captured. (Phase 2 blocker #7, Shared.)",
+        "owner": "Shared"
+      },
+      {
+        "capability": "fettler-scale-latency",
+        "reason": "completes_within_budget IS measured (the huge-monorepo scenario runs under a hard 120s budget and records a SCALE_FAILURE if it blows it), but n=1: there is exactly one large-repo data point. Gating latency on a single scenario would require inventing a budget threshold that one run cannot justify, so it is measured-but-not-gated rather than gated on a fabricated number.",
+        "experiment": "A scale ladder (several repo sizes across the file-count axis in AnalysisActivity.filesExamined) that plots latency against repo size; set a budget threshold from the measured curve. Gate on p95 latency at a defined repo size.",
+        "owner": "Claude"
+      }
+    ]
   }
 }
