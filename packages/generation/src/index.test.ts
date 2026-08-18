@@ -57,6 +57,31 @@ describe("generation", () => {
   });
 });
 
+describe("generation — FET-016 provider path in PR body", () => {
+  it("renders a compact provider->code path per finding and never claims 'no path' when absent", () => {
+    const v1 = JSON.parse(readFileSync(join(providerDir, "openapi-v1.json"), "utf8"));
+    const v2 = JSON.parse(readFileSync(join(providerDir, "openapi-v2.json"), "utf8"));
+    const change = diffOpenApi(v1, v2);
+    const findings = analyzeRepo(consumerDir, change);
+    // The fixture consumer reaches the provider surface, so at least one finding
+    // carries a computed path.
+    expect(findings.some((f) => f.graphPath)).toBe(true);
+
+    const draft = generateMigration({
+      providerName: "Acme Payments",
+      providerSlug: "acme-payments",
+      change,
+      findings,
+      repoRoot: consumerDir,
+    });
+
+    // Compact, one-line-per-finding path rendered under the Evidence bullet.
+    expect(draft.body).toMatch(/\n {2}- path: /);
+    // Absence is never dressed up as an assertion that no path exists.
+    expect(draft.body).not.toMatch(/no path/i);
+  });
+});
+
 describe("unifiedDiff", () => {
   it("emits a small hunk with correct line numbers for a one-line change in a large file", () => {
     const original = Array.from({ length: 2000 }, (_, i) => `line ${i + 1}`).join("\n");

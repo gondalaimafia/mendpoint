@@ -876,6 +876,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         symbol: f.symbol,
         confidence: f.confidence,
         evidenceJson: JSON.stringify(f),
+        // FET-016: the provider->code path lands in its own column so the API
+        // projection and console read it without parsing evidence_json. null
+        // when the finding carries no computed path ("not computed").
+        graphPathJson: f.graphPath ? JSON.stringify(f.graphPath) : null,
       });
       findingKeys.add(findingKey);
     }

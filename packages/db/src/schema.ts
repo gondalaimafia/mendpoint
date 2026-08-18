@@ -301,6 +301,8 @@ export type ImpactFindingRow = {
   symbol: string;
   confidence: string;
   evidence_json: string;
+  /** Serialized GraphPath (FET-016). NULL when no path was computed. */
+  graph_path_json: string | null;
 };
 
 export type MigrationPrRow = {

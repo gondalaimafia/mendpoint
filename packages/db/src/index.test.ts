@@ -54,6 +54,8 @@ import {
   insertSuppressedPattern,
   listSuppressedPatterns,
   listFindingsForChange,
+  insertImpactFinding,
+  findingToApi,
   createGitHubInstallState,
   consumeGitHubInstallState,
   completeGitHubInstallState,
@@ -2612,6 +2614,116 @@ describe("db", () => {
         expiresAt: "2099-01-01T00:00:00.000Z",
       }),
     ).not.toThrow();
+  });
+
+  it("boots a pre-graph_path impact_findings schema and converges to the fresh shape (FET-016)", () => {
+    // Pre-change production shape: impact_findings created before the FET-016
+    // graph_path column existed. createDb runs the static DDL (CREATE TABLE IF
+    // NOT EXISTS) — the table already exists, so the column can only arrive via
+    // the additive migration. Booting must add it and converge byte-for-byte
+    // with a fresh install; this proves upgrade convergence, not merely fresh.
+    const legacyDir = mkdtempSync(join(tmpdir(), "mendpoint-db-graphpath-legacy-"));
+    dirs.push(legacyDir);
+    const legacyPath = join(legacyDir, "legacy.sqlite");
+    const legacy = new DatabaseSync(legacyPath);
+    legacy.exec(`
+      CREATE TABLE impact_findings (
+        id TEXT PRIMARY KEY,
+        change_id TEXT NOT NULL,
+        consumer_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        line_start INTEGER NOT NULL,
+        line_end INTEGER NOT NULL,
+        symbol TEXT NOT NULL,
+        confidence TEXT NOT NULL,
+        evidence_json TEXT NOT NULL
+      );
+      INSERT INTO impact_findings
+        (id, change_id, consumer_id, file_path, line_start, line_end, symbol, confidence, evidence_json)
+        VALUES ('legacy-finding', 'change-1', 'consumer-1', 'legacy.ts', 1, 1, 'source', 'high', '{}');
+    `);
+    legacy.close();
+
+    const migrated = createDb(legacyPath);
+    dbs.push(migrated);
+
+    const freshDir = mkdtempSync(join(tmpdir(), "mendpoint-db-graphpath-fresh-"));
+    dirs.push(freshDir);
+    const fresh = createDb(join(freshDir, "fresh.sqlite"));
+    dbs.push(fresh);
+
+    const columnsOf = (db: { raw: DatabaseSync }, table: string) =>
+      (db.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+        .map((c) => c.name)
+        .sort();
+    const indexesOf = (db: { raw: DatabaseSync }, table: string) =>
+      (db.raw.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string }>)
+        .map((i) => i.name)
+        .sort();
+
+    expect(columnsOf(migrated, "impact_findings")).toEqual(columnsOf(fresh, "impact_findings"));
+    expect(indexesOf(migrated, "impact_findings")).toEqual(indexesOf(fresh, "impact_findings"));
+    expect(columnsOf(migrated, "impact_findings")).toContain("graph_path_json");
+
+    // The legacy row survives and reads as "not computed" (null), never a
+    // fabricated empty path.
+    const legacyRow = migrated.raw
+      .prepare(`SELECT graph_path_json FROM impact_findings WHERE id = 'legacy-finding'`)
+      .get() as { graph_path_json: string | null };
+    expect(legacyRow.graph_path_json).toBeNull();
+  });
+
+  it("round-trips a finding graph_path through insert and the API projection (FET-016)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-graphpath-roundtrip-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    const at = nowIso();
+    db.raw
+      .prepare(
+        `INSERT INTO consumers (id, name, github_owner, github_repo, tenant_id, created_at)
+         VALUES ('consumer-rt', 'rt', 'owner', 'repo', 'tenant-rt', ?)`,
+      )
+      .run(at);
+
+    const graphPath = {
+      nodes: ["client.ts", "wrapper.ts", "app.ts"],
+      hops: 2,
+      terminal: "anchor" as const,
+      truncated: false,
+      coverage: "complete" as const,
+    };
+    insertImpactFinding(db, {
+      id: newId(),
+      changeId: "change-rt",
+      consumerId: "consumer-rt",
+      filePath: "app.ts",
+      lineStart: 10,
+      lineEnd: 10,
+      symbol: "source",
+      confidence: "high",
+      evidenceJson: "{}",
+      graphPathJson: JSON.stringify(graphPath),
+    });
+    // A second finding with no computed path stays null and projects as null.
+    insertImpactFinding(db, {
+      id: newId(),
+      changeId: "change-rt",
+      consumerId: "consumer-rt",
+      filePath: "loose.ts",
+      lineStart: 3,
+      lineEnd: 3,
+      symbol: "source",
+      confidence: "low",
+      evidenceJson: "{}",
+    });
+
+    const projected = listFindingsForChange(db, "change-rt").map(findingToApi);
+    const app = projected.find((f) => f.filePath === "app.ts")!;
+    const loose = projected.find((f) => f.filePath === "loose.ts")!;
+    expect(app.graphPath).toEqual(graphPath);
+    expect(loose.graphPath).toBeNull();
   });
 
   it("upgrades existing adaptive rows and backfills the immutable base branch", () => {

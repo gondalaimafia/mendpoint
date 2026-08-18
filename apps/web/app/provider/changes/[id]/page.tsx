@@ -17,9 +17,44 @@ type ChangeDetail = {
     lineStart: number;
     symbol: string;
     confidence: string;
+    // Provider->code path behind the finding (FET-016). null = not computed.
+    graphPath: {
+      nodes: string[];
+      hops: number;
+      terminal: "anchor" | "cycle" | "max_hops";
+      truncated: boolean;
+      coverage: "complete" | "partial";
+    } | null;
   }>;
   prs: MigrationPr[];
 };
+
+type FindingGraphPath = ChangeDetail["findings"][number]["graphPath"];
+
+/**
+ * Render the provider->code reachability path for a finding (FET-016): the
+ * import chain, provider anchor first. An absent path reads as "not computed"
+ * (no locatable provider anchor), which is distinct from a short computed path.
+ */
+function renderGraphPath(graphPath: FindingGraphPath) {
+  if (!graphPath) return <span className="muted">not computed</span>;
+  if (graphPath.nodes.length <= 1) {
+    return (
+      <code title="Direct provider usage">{graphPath.nodes[0] ?? "?"}</code>
+    );
+  }
+  const suffix = graphPath.truncated
+    ? graphPath.terminal === "cycle"
+      ? " (truncated at an import cycle)"
+      : ` (truncated at the ${graphPath.hops}-hop limit)`
+    : "";
+  return (
+    <code>
+      {graphPath.nodes.join(" → ")}
+      {suffix}
+    </code>
+  );
+}
 
 function changeLoadMessage(error: unknown): string {
   if (!(error instanceof ApiRequestError)) {
@@ -127,6 +162,7 @@ export default async function ChangeDetailPage({
             <th>File</th>
             <th>Symbol</th>
             <th>Confidence</th>
+            <th>Why (provider path)</th>
           </tr>
         </thead>
         <tbody>
@@ -139,11 +175,12 @@ export default async function ChangeDetailPage({
               </td>
               <td>{f.symbol}</td>
               <td className="muted">{f.confidence}</td>
+              <td>{renderGraphPath(f.graphPath)}</td>
             </tr>
           ))}
           {data.findings.length === 0 && (
             <tr>
-              <td colSpan={3} className="muted">
+              <td colSpan={4} className="muted">
                 No impact findings are recorded. Confirm pipeline completion before treating this as no impact.
               </td>
             </tr>

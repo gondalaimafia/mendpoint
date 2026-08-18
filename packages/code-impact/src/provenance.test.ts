@@ -8,8 +8,11 @@ import type { ImpactableSurface } from "@mendpoint/shared";
 import {
   buildImporterGraph,
   reachableFromAnchors,
+  traverseFromAnchors,
+  anchorPathTo,
   resolveRelativeImport,
 } from "./provenance.js";
+import { HARD_MAX_HOPS } from "@mendpoint/shared";
 import { discoverCandidates, sdkContextFromSurfaces } from "./index.js";
 
 const tmpDirs: string[] = [];
@@ -122,6 +125,158 @@ describe("provider reachability", () => {
     const importers = buildImporterGraph([file("a.ts", []), file("b.ts", [])]);
     const reachable = reachableFromAnchors(["a.ts"], importers);
     expect([...reachable]).toEqual(["a.ts"]);
+  });
+});
+
+describe("traverseFromAnchors / anchorPathTo (FET-016 graph_path)", () => {
+  // Reference implementation of the ORIGINAL Set-only reachability, inlined so a
+  // test proves the predecessor-carrying walk keeps identical reachability
+  // semantics — the finding gate reads this set unchanged.
+  function referenceReachable(
+    anchors: Iterable<string>,
+    importerGraph: Map<string, Set<string>>,
+  ): Set<string> {
+    const reachable = new Set<string>(anchors);
+    const queue = [...reachable];
+    while (queue.length) {
+      const node = queue.pop()!;
+      const importers = importerGraph.get(node);
+      if (!importers) continue;
+      for (const importer of importers) {
+        if (!reachable.has(importer)) {
+          reachable.add(importer);
+          queue.push(importer);
+        }
+      }
+    }
+    return reachable;
+  }
+
+  const sorted = (s: Iterable<string>) => [...s].sort();
+
+  it("reachable set is byte-identical to the original algorithm (plain, wrapper, cyclic, deep)", () => {
+    const graphs: Array<[Array<Pick<FileRecord, "path" | "imports">>, string[]]> = [
+      [
+        [
+          file("client.ts", []),
+          file("wrapper.ts", ["./client"]),
+          file("app.ts", ["./wrapper"]),
+          file("unrelated.ts", ["./util"]),
+        ],
+        ["client.ts"],
+      ],
+      // Cyclic import graph: a <-> b, and b imports the anchor.
+      [
+        [
+          file("anchor.ts", []),
+          file("b.ts", ["./anchor", "./a"]),
+          file("a.ts", ["./b"]),
+        ],
+        ["anchor.ts"],
+      ],
+      // Deep chain.
+      [
+        Array.from({ length: 40 }, (_, i) =>
+          file(`n${i}.ts`, i === 0 ? [] : [`./n${i - 1}`]),
+        ),
+        ["n0.ts"],
+      ],
+    ];
+    for (const [files, anchors] of graphs) {
+      const importers = buildImporterGraph(files);
+      const walk = traverseFromAnchors(anchors, importers);
+      expect(sorted(walk.reachable)).toEqual(sorted(referenceReachable(anchors, importers)));
+    }
+  });
+
+  it("a finding reached through a two-hop wrapper carries both hops in order", () => {
+    // app -> wrapper -> client(anchor). Path is anchor-first, each node imported
+    // by the next.
+    const files = [
+      file("client.ts", []),
+      file("wrapper.ts", ["./client"]),
+      file("app.ts", ["./wrapper"]),
+    ];
+    const walk = traverseFromAnchors(["client.ts"], buildImporterGraph(files));
+    const path = anchorPathTo("app.ts", walk);
+    expect(path).toBeDefined();
+    expect(path!.nodes).toEqual(["client.ts", "wrapper.ts", "app.ts"]);
+    expect(path!.hops).toBe(2);
+    expect(path!.terminal).toBe("anchor");
+    expect(path!.truncated).toBe(false);
+    expect(path!.coverage).toBe("complete");
+  });
+
+  it("a cyclic import graph terminates and yields a simple anchor-terminated path", () => {
+    // a <-> b cycle; b imports the anchor. The reachable node still gets a
+    // finite, simple path to the anchor rather than looping.
+    const files = [
+      file("anchor.ts", []),
+      file("b.ts", ["./anchor", "./a"]),
+      file("a.ts", ["./b"]),
+    ];
+    const walk = traverseFromAnchors(["anchor.ts"], buildImporterGraph(files));
+    const path = anchorPathTo("a.ts", walk);
+    expect(path).toBeDefined();
+    expect(path!.nodes[0]).toBe("anchor.ts");
+    expect(path!.nodes[path!.nodes.length - 1]).toBe("a.ts");
+    // Simple path: no node repeats.
+    expect(new Set(path!.nodes).size).toBe(path!.nodes.length);
+    expect(path!.terminal).toBe("anchor");
+  });
+
+  it("marks a cycle (not silent truncation, not an infinite loop) when the predecessor chain cycles", () => {
+    // Defensive guarantee: a malformed/cyclic predecessor map still terminates
+    // and is reported as a cycle. BFS never produces this, so it is exercised
+    // directly.
+    const walk = {
+      reachable: new Set(["x", "y", "z"]),
+      anchors: new Set(["anchor"]),
+      predecessors: new Map([
+        ["x", "y"],
+        ["y", "z"],
+        ["z", "x"],
+      ]),
+    };
+    const path = anchorPathTo("x", walk);
+    expect(path).toBeDefined();
+    expect(path!.terminal).toBe("cycle");
+    expect(path!.truncated).toBe(true);
+    expect(path!.coverage).toBe("partial");
+  });
+
+  it("marks a path exceeding the hop bound as truncated (max_hops), not silently cut", () => {
+    // A chain longer than HARD_MAX_HOPS: n0 (anchor) <- n1 <- ... <- n{HARD+5}.
+    const len = HARD_MAX_HOPS + 5;
+    const files = Array.from({ length: len + 1 }, (_, i) =>
+      file(`n${i}.ts`, i === 0 ? [] : [`./n${i - 1}`]),
+    );
+    const walk = traverseFromAnchors(["n0.ts"], buildImporterGraph(files));
+    const deepest = `n${len}.ts`;
+    expect(walk.reachable.has(deepest)).toBe(true);
+    const path = anchorPathTo(deepest, walk);
+    expect(path).toBeDefined();
+    expect(path!.terminal).toBe("max_hops");
+    expect(path!.truncated).toBe(true);
+    expect(path!.coverage).toBe("partial");
+    expect(path!.hops).toBe(HARD_MAX_HOPS);
+    expect(path!.nodes.length).toBe(HARD_MAX_HOPS + 1);
+  });
+
+  it("returns undefined for an unreachable file (not computed, not an empty path)", () => {
+    const files = [file("anchor.ts", []), file("island.ts", ["./other"])];
+    const walk = traverseFromAnchors(["anchor.ts"], buildImporterGraph(files));
+    expect(anchorPathTo("island.ts", walk)).toBeUndefined();
+  });
+
+  it("a finding on the anchor file itself is a zero-hop direct usage path", () => {
+    const files = [file("anchor.ts", [])];
+    const walk = traverseFromAnchors(["anchor.ts"], buildImporterGraph(files));
+    const path = anchorPathTo("anchor.ts", walk);
+    expect(path).toBeDefined();
+    expect(path!.nodes).toEqual(["anchor.ts"]);
+    expect(path!.hops).toBe(0);
+    expect(path!.terminal).toBe("anchor");
   });
 });
 

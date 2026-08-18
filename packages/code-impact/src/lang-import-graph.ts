@@ -33,7 +33,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FileRecord } from "@mendpoint/codebase-index";
-import { resolveRelativeImport, reachableFromAnchors } from "./provenance.js";
+import {
+  resolveRelativeImport,
+  traverseFromAnchors,
+  anchorPathTo,
+} from "./provenance.js";
+import type { GraphPath } from "@mendpoint/shared";
 
 /** An import specifier that looked first-party but resolved to no indexed file. */
 export type UnresolvedImport = {
@@ -442,11 +447,16 @@ export function buildProviderReachability(
   repoRoot: string,
   anchors: Iterable<string>,
   opts: { includeDependencies?: boolean } = {},
-): { reachable: Set<string>; unresolved: UnresolvedImport[] } {
+): {
+  reachable: Set<string>;
+  unresolved: UnresolvedImport[];
+  graphPaths: Map<string, GraphPath>;
+} {
   const includeDependencies = opts.includeDependencies ?? true;
   const { forward, reverse, unresolved } = buildLanguageGraphs(files, repoRoot);
-  const importers = reachableFromAnchors(anchors, reverse);
-  const reachable = new Set<string>(importers);
+  const walk = traverseFromAnchors(anchors, reverse);
+  const reachable = new Set<string>(walk.reachable);
+  const predecessors = new Map<string, string>(walk.predecessors);
   // One-hop terminal dependency inclusion. Applied for Python, whose wire-DTO
   // modules live in a separate module the client imports (upstream of the
   // anchor) and are otherwise unreachable — a reachable file's directly imported
@@ -457,12 +467,27 @@ export function buildProviderReachability(
   // and dependency packages, so it is not applied.
   if (includeDependencies) {
     const langOf = new Map(files.map((f) => [f.path, f.language]));
-    for (const file of importers) {
+    for (const file of walk.reachable) {
       if (langOf.get(file) !== "python") continue;
       const deps = forward.get(file);
       if (!deps) continue;
-      for (const dep of deps) reachable.add(dep);
+      for (const dep of deps) {
+        const isNew = !reachable.has(dep);
+        reachable.add(dep);
+        // A dep pulled in only via this one-hop rule has no importer-graph
+        // predecessor; record the importer that included it so its path reads
+        // anchor -> ... -> importer -> dep (its wire-DTO owner).
+        if (isNew && !predecessors.has(dep)) predecessors.set(dep, file);
+      }
     }
   }
-  return { reachable, unresolved };
+  // Emit one shortest provider->code path per reachable file (FET-016). Keyed by
+  // file; a file absent from this map is "not computed", never "no path".
+  const graphPaths = new Map<string, GraphPath>();
+  const pathWalk = { reachable, predecessors, anchors: walk.anchors };
+  for (const file of reachable) {
+    const path = anchorPathTo(file, pathWalk);
+    if (path) graphPaths.set(file, path);
+  }
+  return { reachable, unresolved, graphPaths };
 }

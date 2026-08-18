@@ -1,3 +1,4 @@
+import { HARD_MAX_HOPS, HARD_MAX_PATHS } from "@mendpoint/shared";
 import type { GlEdge } from "./schema.js";
 import { edgesFrom, getNode, type GraphLearnDb } from "./store.js";
 
@@ -44,10 +45,13 @@ export type DependencyPathEnumeration = {
 
 const DEFAULT_MAX_HOPS = 8;
 const DEFAULT_MAX_PATHS = 100;
-/** Shared traversal safety ceilings — reused by every bounded graph op so the
- *  engine speaks one limit vocabulary regardless of caller-supplied bounds. */
-export const HARD_MAX_HOPS = 32;
-export const HARD_MAX_PATHS = 1_000;
+// Shared traversal safety ceilings — reused by every bounded graph op so the
+// engine speaks one limit vocabulary regardless of caller-supplied bounds. The
+// canonical values live in @mendpoint/shared so the query layer, dependency-path
+// enumeration, and impact graph-path emission converge on one exported pair (no
+// parallel limits, per #196). Re-exported here so in-package consumers
+// (query.ts) keep importing them from this module unchanged.
+export { HARD_MAX_HOPS, HARD_MAX_PATHS };
 
 function boundedInt(
   value: number | undefined,
