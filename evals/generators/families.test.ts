@@ -108,4 +108,17 @@ describe("tsPaymentsService template", () => {
     // The anchor imports the provider so the provenance gate is enabled.
     expect(t.repo.files["src/infra/provider/client.ts"]).toContain('from "meridian"');
   });
+
+  it("models a vendored trap with a foreign package boundary reached from first-party code", () => {
+    const t = tsPaymentsService({ seed: 124, slug: "meridian", withVendored: true });
+    const manifest = JSON.parse(t.repo.files["vendor/provider-sdk/package.json"] ?? "null") as {
+      name?: string;
+    } | null;
+
+    expect(manifest?.name).toBe("provider-sdk-copy");
+    expect(t.repo.files["src/vendorProvider.ts"]).toContain(
+      'from "../vendor/provider-sdk/index.js"',
+    );
+    expect(t.roles.vendored).toEqual(["vendor/provider-sdk/index.ts"]);
+  });
 });

@@ -49,7 +49,7 @@ export interface TemplateOptions {
   field?: string;
   /** Include a header-marked generated file that carries the field (a trap). */
   withGenerated?: boolean;
-  /** Include a vendored SDK file that carries the field (a trap the product trips today). */
+  /** Include a provenance-backed vendored SDK file that carries the field. */
   withVendored?: boolean;
   /** Include a looks-generated-but-hand-written file that carries the field (must be flagged). */
   withLooksGenerated?: boolean;
@@ -164,12 +164,20 @@ export interface GeneratedChargeRequest {
 
   if (opts.withVendored) {
     const p = "vendor/provider-sdk/index.ts";
+    files["vendor/provider-sdk/package.json"] =
+      JSON.stringify(
+        { name: "provider-sdk-copy", version: "1.0.0", private: false },
+        null,
+        2,
+      ) + "\n";
     files[p] = `import { ${ProviderClass} } from "${slug}";
 // Vendored copy of the provider SDK. Regenerated from upstream; not ours to edit.
 export function charge(client: ${ProviderClass}, amount: number, ${field}: string) {
   return client.charges.create({ amount, ${field} });
 }
 `;
+    files["src/vendorProvider.ts"] =
+      'export { charge as vendoredCharge } from "../vendor/provider-sdk/index.js";\n';
     vendored.push(p);
   }
 
