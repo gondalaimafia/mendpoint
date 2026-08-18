@@ -162,6 +162,65 @@ describe("gradeRegauge", () => {
     expect(g.passed).toBe(false);
     expect(g.failures.some((f) => f.category === "FALSE_POSITIVE")).toBe(true);
   });
+
+  it("apply_recipe: an expected root file missing from matchedPaths flips pass/fail (recipe_path_coverage can fail)", () => {
+    const gt = regaugeGt({
+      correct_behavior: "apply_recipe",
+      expected_findings: ["package.json", ".nvmrc"],
+      recipe_expectation: { family: "runtime-upgrade", shippedRecipeId: "node-runtime-18-to-20" },
+    });
+    const g = gradeRegauge(
+      [rec({ recipeId: "node-runtime-18-to-20", status: "applicable", matchedPaths: ["package.json"] })],
+      gt,
+    );
+    const cov = g.grader_results.find((r) => r.dimension === "recipe_path_coverage")!;
+    expect(cov.passed).toBe(false);
+    expect(g.failures.some((f) => f.dimension === "recipe_path_coverage" && f.category === "FALSE_NEGATIVE")).toBe(true);
+    expect(g.passed).toBe(false);
+  });
+
+  it("refuse_partial: status=incomplete is the safe refusal and passes", () => {
+    const gt = regaugeGt({
+      correct_behavior: "refuse_partial",
+      expected_findings: ["package.json", "src/s3.js"],
+      recipe_expectation: { family: "sdk-upgrade", shippedRecipeId: "aws-sdk-js-v2-to-v3" },
+    });
+    const g = gradeRegauge(
+      [rec({ recipeId: "aws-sdk-js-v2-to-v3", status: "incomplete", matchedPaths: ["package.json", "src/s3.js"], residualPaths: ["src/upload.js"] })],
+      gt,
+    );
+    expect(g.passed).toBe(true);
+    expect(g.grader_results.find((r) => r.dimension === "residual_refusal")!.passed).toBe(true);
+  });
+
+  it("refuse_partial: status=applicable despite a residual is a P0 partial-migration application", () => {
+    const gt = regaugeGt({
+      correct_behavior: "refuse_partial",
+      expected_findings: ["package.json", "src/s3.js"],
+      recipe_expectation: { family: "sdk-upgrade", shippedRecipeId: "aws-sdk-js-v2-to-v3" },
+    });
+    const g = gradeRegauge(
+      [rec({ recipeId: "aws-sdk-js-v2-to-v3", status: "applicable", matchedPaths: ["package.json", "src/s3.js"], residualPaths: [] })],
+      gt,
+    );
+    expect(g.passed).toBe(false);
+    const f = g.failures.find((x) => x.dimension === "residual_refusal")!;
+    expect(f.category).toBe("ABSTENTION_FAILURE");
+    expect(f.severity).toBe("P0");
+  });
+
+  it("refuse_partial: a recipe that does not recognize the repo is a P1 miss, not a P0", () => {
+    const gt = regaugeGt({
+      correct_behavior: "refuse_partial",
+      expected_findings: ["package.json", "src/s3.js"],
+      recipe_expectation: { family: "sdk-upgrade", shippedRecipeId: "aws-sdk-js-v2-to-v3" },
+    });
+    const g = gradeRegauge([rec({ recipeId: "aws-sdk-js-v2-to-v3", status: "unsupported" })], gt);
+    expect(g.passed).toBe(false);
+    const f = g.failures.find((x) => x.dimension === "residual_refusal")!;
+    expect(f.category).toBe("ABSTENTION_FAILURE");
+    expect(f.severity).toBe("P1");
+  });
 });
 
 describe("taxonomy", () => {

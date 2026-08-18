@@ -105,49 +105,65 @@ function fettlerScorecard(scored: ScoredRun[], ev: ReadinessEvaluation, gates: R
   return lines.join("\n");
 }
 
-function regaugeScorecard(scored: ScoredRun[], ev: ReadinessEvaluation, gates: ReadinessGatesConfig): string {
-  const rows = scored.filter((s) => s.record.product === "regauge");
-  const passed = rows.filter((s) => s.record.passed);
-  const coverageGaps = rows.filter((s) => s.record.failures.some((f) => f.category === "COVERAGE_GAP"));
-  // A family is "supported" only where a scenario the engine should ACT on
-  // passed (apply_recipe). Coverage-gap families (correct behaviour is
-  // abstention-by-absence) are the unsupported list, never the supported one.
-  const matchedFamilies = uniqueSorted(
-    passed
-      .filter((s) => s.gt.correct_behavior === "apply_recipe")
-      .map((s) => s.gt.recipe_expectation?.family ?? s.gt.repo_family),
-  );
-  const gapFamilies = uniqueSorted(coverageGaps.map((s) => s.gt.recipe_expectation?.family ?? s.gt.repo_family));
-  const { p0, p1 } = p0p1(rows);
-  const commit = rows[0]?.record.git_commit ?? "unknown";
+/** One §29 block per ReGauge recipe family, scored against its own gate. */
+function regaugeFamilyScorecard(
+  scored: ScoredRun[],
+  ev: ReadinessEvaluation,
+  gates: ReadinessGatesConfig,
+): string {
+  const allRegauge = scored.filter((s) => s.record.product === "regauge");
+  const commit = allRegauge[0]?.record.git_commit ?? "unknown";
+  const familyCaps = ev.capabilities.filter((c) => c.familyMetrics);
 
-  const lines: string[] = [];
-  lines.push(`## Capability: ReGauge — migration recipe engine`);
-  lines.push("");
-  lines.push(`Readiness verdict: **not gated** (the owner's precision/recall bar is authored for Fettler impact; ReGauge readiness is reported as coverage, not scored against a precision gate yet).`);
-  lines.push("");
-  lines.push(`| field | value |`);
-  lines.push(`| --- | --- |`);
-  lines.push(field("Capability", "Recognize a migration family and (would) apply a deterministic recipe; abstain by absence when no shipped recipe matches."));
-  lines.push(field("Supported languages / stacks", "Node / JavaScript / TypeScript (the shipped recipe families)"));
-  lines.push(field("Supported repo patterns", matchedFamilies.length ? `families with a shipped recipe: ${matchedFamilies.join("; ")}` : NOT_MEASURED("no applicable recipe matched in this run")));
-  lines.push(field("Supported providers", "recipe-scoped (runtime bumps, SDK/framework/internal-API renames); driven by the shipped recipe registry"));
-  lines.push(field("Known unsupported patterns", gapFamilies.length ? `coverage gaps (correct abstention today): ${gapFamilies.join("; ")}` : "none surfaced by this run"));
-  lines.push(field("Scenario count", `${rows.length} ReGauge scenarios (${coverageGaps.length} coverage-gap)`));
-  lines.push(field("Hidden-holdout status", NOT_MEASURED("holdout generation currently targets Fettler ref-rename families only")));
-  lines.push(field("Precision / recall", `${passed.length}/${rows.length} scenarios correct (engine decision: match or abstain-by-absence); site-level precision/recall ${NOT_MEASURED("apply path not exercised")}`));
-  lines.push(field("Patch verification rate", NOT_MEASURED("recipe apply + verification gate not exercised (analyze-only)")));
-  lines.push(field("False-positive rate", `${p0.length + p1.length} unsafe recipe matches on non-matching repos in this run`));
-  lines.push(field("Known P0 / P1", `P0: ${p0.length ? p0.join("; ") : "none"} | P1: ${p1.length ? p1.join("; ") : "none"}`));
-  lines.push(field("Latency range", latencyRange(rows)));
-  lines.push(field("Cost range", NOT_MEASURED("deterministic recipe engine; no model called")));
-  lines.push(field("Required human review", "yes — recipe application produces a draft PR for human review; nothing auto-merges"));
-  lines.push(field("Rollback behaviour", NOT_MEASURED("inverse/rollback path not exercised")));
-  lines.push(field("Security limitations", NOT_MEASURED("apply + sandbox path not exercised")));
-  lines.push(field("Owner", gates.owner));
-  lines.push(field("Last-validated commit", `\`${commit}\``));
-  lines.push("");
-  return lines.join("\n");
+  const out: string[] = [];
+  out.push(`## Capability: ReGauge — migration recipe engine (per family)`);
+  out.push("");
+  out.push(
+    `Each recipe family is scored against its own gate in \`readiness-gates.json\`: correct application on in-scope repos, refusal on partial-migration repos (a residual consumer outside the recipe's allowedPaths), abstention on out-of-scope repos, and zero open P0. Analyze-only fields (apply + verification, cost, rollback) are marked "not measured".`,
+  );
+  out.push("");
+
+  if (familyCaps.length === 0) {
+    out.push(NOT_MEASURED("no regauge-family capabilities are configured in readiness-gates.json"));
+    out.push("");
+    return out.join("\n");
+  }
+
+  for (const cap of familyCaps) {
+    const fm = cap.familyMetrics!;
+    const rows = allRegauge.filter((s) => (s.gt.recipe_expectation?.family ?? "") === fm.family);
+    const { p0, p1 } = p0p1(rows);
+    const gate = gates.capabilities[cap.capability];
+    const description = (gate as { description?: string })?.description ?? "";
+
+    out.push(`### Family: ${fm.family} (${cap.capability}) — **${cap.verdict}**`);
+    out.push("");
+    if (description) {
+      out.push(description);
+      out.push("");
+    }
+    out.push(`| criterion | measured | threshold | verdict |`);
+    out.push(`| --- | --- | --- | --- |`);
+    for (const c of cap.criteria) {
+      const verdict = !c.measurable ? "NOT MEASURED" : c.passed ? "PASS" : "FAIL";
+      out.push(`| ${c.name} | ${c.measured} | ${c.threshold} | ${verdict} |`);
+    }
+    out.push("");
+    out.push(`| field | value |`);
+    out.push(`| --- | --- |`);
+    out.push(field("Scenario count", `${fm.scenarioCount} (apply ${fm.applyPassed}/${fm.applyTotal}, residual-refusal ${fm.refusePassed}/${fm.refuseTotal}, abstention ${fm.abstainPassed}/${fm.abstainTotal})`));
+    out.push(field("Known P0 / P1", `P0: ${p0.length ? p0.join("; ") : "none"} | P1: ${p1.length ? p1.join("; ") : "none"}`));
+    out.push(field("Patch verification rate", NOT_MEASURED("recipe apply + verification gate not exercised (analyze-only)")));
+    out.push(field("Latency range", latencyRange(rows)));
+    out.push(field("Cost range", NOT_MEASURED("deterministic recipe engine; no model called")));
+    out.push(field("Required human review", "yes — recipe application produces a draft PR for human review; nothing auto-merges"));
+    out.push(field("Rollback behaviour", NOT_MEASURED("inverse/rollback path not exercised")));
+    out.push(field("Last-validated commit", `\`${commit}\``));
+    out.push("");
+  }
+  out.push(field("Owner", gates.owner));
+  out.push("");
+  return out.join("\n");
 }
 
 /** Render the full readiness scorecard document. */
@@ -171,6 +187,6 @@ export function renderScorecard(
   );
   out.push("");
   out.push(fettlerScorecard(scored, ev, gates));
-  out.push(regaugeScorecard(scored, ev, gates));
+  out.push(regaugeFamilyScorecard(scored, ev, gates));
   return out.join("\n") + "\n";
 }
