@@ -31,20 +31,28 @@ function intent(overrides: Partial<ExactDraftDeliveryInput> = {}): ExactDraftDel
 function recordingGitLab(
   mrOverrides: Partial<MergeRequestResult> = {},
   commitSha: string = COMMIT_SHA,
+  /** Base revision the recorder observes for the base branch (defaults to the approved base). */
+  observedBaseSha: string = BASE_SHA,
 ): GitLabDelivery & {
   calls: {
+    resolveBranchSha: unknown[][];
     createBranch: unknown[][];
     commitFiles: unknown[][];
     openDraftMergeRequest: unknown[][];
   };
 } {
   const calls = {
+    resolveBranchSha: [] as unknown[][],
     createBranch: [] as unknown[][],
     commitFiles: [] as unknown[][],
     openDraftMergeRequest: [] as unknown[][],
   };
   return {
     calls,
+    async resolveBranchSha(namespace, project, branch) {
+      calls.resolveBranchSha.push([namespace, project, branch]);
+      return observedBaseSha;
+    },
     async createBranch(namespace, project, branch, fromBranch) {
       calls.createBranch.push([namespace, project, branch, fromBranch]);
     },
@@ -122,22 +130,47 @@ describe("gitlabAsExactDraftDelivery", () => {
     ] satisfies FileEdit[]);
   });
 
-  it("falls back to a deterministic synthesized commit id when GitLab omits the SHA", async () => {
-    const first = await gitlabAsExactDraftDelivery(recordingGitLab({}, "")).deliverExactDraft(intent());
-    const second = await gitlabAsExactDraftDelivery(recordingGitLab({}, "")).deliverExactDraft(intent());
-    // No real commit id, so the labeled 64-hex fallback is used, deterministic
-    // per sealed intent.
-    expect(first.commitSha).toMatch(/^[a-f0-9]{64}$/);
-    expect(second.commitSha).toBe(first.commitSha);
+  it("fails closed when the base branch has drifted from the approved revision", async () => {
+    // The base branch now points at a different commit than the sealed intent
+    // was approved against. Delivery must refuse rather than build onto it.
+    const moved = "b".repeat(40);
+    const gitlab = recordingGitLab({}, COMMIT_SHA, moved);
+    await expect(
+      gitlabAsExactDraftDelivery(gitlab).deliverExactDraft(intent()),
+    ).rejects.toThrow("gitlab_exact_draft_base_revision_drift");
+    // The base was observed and, on drift, nothing was created or committed.
+    expect(gitlab.calls.resolveBranchSha).toEqual([["acme", "customer", "main"]]);
+    expect(gitlab.calls.createBranch).toEqual([]);
+    expect(gitlab.calls.commitFiles).toEqual([]);
+    expect(gitlab.calls.openDraftMergeRequest).toEqual([]);
+  });
 
-    const changed = await gitlabAsExactDraftDelivery(recordingGitLab({}, "")).deliverExactDraft(
-      intent({
-        files: Object.freeze([
-          { path: "package.json", content: "{\"name\":\"other\"}\n", mode: "100644" as const },
-        ]),
-      }),
-    );
-    expect(changed.commitSha).not.toBe(first.commitSha);
+  it("reports the observed base revision, not the intent's own input", async () => {
+    // Two deliveries whose base branch is observed at different revisions each
+    // report the value they OBSERVED. Because delivery fails closed on drift,
+    // the observed value equals the approved base on success — so it is exactly
+    // the drift case above (observed differs -> rejected) that proves the base
+    // is observed rather than echoed straight from the intent.
+    const firstBase = "a".repeat(40);
+    const secondBase = "c".repeat(40);
+    const first = await gitlabAsExactDraftDelivery(
+      recordingGitLab({}, COMMIT_SHA, firstBase),
+    ).deliverExactDraft(intent({ expectedBaseSha: firstBase }));
+    const second = await gitlabAsExactDraftDelivery(
+      recordingGitLab({}, COMMIT_SHA, secondBase),
+    ).deliverExactDraft(intent({ expectedBaseSha: secondBase }));
+    expect(first.baseSha).toBe(firstBase);
+    expect(second.baseSha).toBe(secondBase);
+    expect(first.baseSha).not.toBe(second.baseSha);
+  });
+
+  it("returns an honest empty commit id when GitLab omits the SHA — no fabricated digest", async () => {
+    // GitLab omitted the commit id. The adapter returns the empty observed value
+    // unshaped; it never synthesizes a 64-hex id to satisfy a validator. The
+    // worker's evidence assertions require a real 40-hex id and reject this.
+    const result = await gitlabAsExactDraftDelivery(recordingGitLab({}, "")).deliverExactDraft(intent());
+    expect(result.commitSha).toBe("");
+    expect(result.commitSha).not.toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("fails closed when GitLab does not confirm a draft merge request", async () => {
