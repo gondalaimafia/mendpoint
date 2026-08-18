@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import {
+  adaptiveHistoryEmptyStateVisible,
   candidateLifecycle,
   mergeAdaptiveCandidateHistory,
   pendingAdaptiveCandidates,
@@ -213,7 +214,11 @@ export function AdaptiveCandidateInbox() {
           )}
         </div>
       </div>
-      {!loading && history.length === 0 ? (
+      {adaptiveHistoryEmptyStateVisible({
+        error: error !== null,
+        loading,
+        historyCount: history.length,
+      }) ? (
         <div className="empty-state compact" role="status">
           <p>No completed adaptive reviews yet.</p>
         </div>
