@@ -194,7 +194,7 @@ import {
   embedGraphNodes,
   kuzuStatus,
   exportSqliteToKuzuScript,
-  type GraphQuery,
+  GraphQuerySchema,
   type GraphTenantScope,
 } from "@mendpoint/graph-learn";
 import {
@@ -1157,11 +1157,20 @@ app.get("/graph-learn/stats", (c) => {
 
 app.post("/graph-learn/query", async (c) => {
   try {
-    const body = (await c.req.json()) as GraphQuery;
-    if (!body?.op) return c.json({ error: "op required" }, 400);
+    // Validate the untrusted body against a schema instead of casting: a
+    // malformed query (missing op, wrong field types) is rejected with 400 here
+    // rather than reaching the engine. Oversized traversal bounds are accepted
+    // and clamped by the engine, which owns the hard ceilings.
+    const parsed = GraphQuerySchema.safeParse(await c.req.json());
+    if (!parsed.success) {
+      return c.json(
+        { error: "invalid graph query", issues: parsed.error.issues },
+        400,
+      );
+    }
     const result = runGraphQuery(
       getGraphLearnDb(),
-      body,
+      parsed.data,
       requestGraphTenantScope(c),
     );
     return c.json({
