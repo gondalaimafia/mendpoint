@@ -809,6 +809,98 @@ CREATE UNIQUE INDEX IF NOT EXISTS mission_fettler_campaign_uidx
 CREATE UNIQUE INDEX IF NOT EXISTS mission_regauge_campaign_uidx
   ON mission(tenant_id, regauge_campaign_id) WHERE regauge_campaign_id IS NOT NULL;
 
+-- Trajectory capture (Intelligence Ownership Phases 4 + 7). The OBSERVATION layer
+-- that closes Phase 0 blocker #1 (persist the input -> output pair) and blocker #4
+-- (persist tool calls). It is NOT a learning-event store: learning-event
+-- architecture, corpus, and pipeline are Codex-owned. A trajectory references a
+-- learning event, router decision, or model reservation by id/digest only; it
+-- never duplicates their fields. All three tables are brand-new, so — like the
+-- mission table above — they converge on fresh AND pre-change databases purely
+-- through CREATE TABLE/INDEX IF NOT EXISTS, with no ALTER and no shape change to
+-- any existing table. trajectory_blobs and trajectory_steps are append-only.
+--
+-- trajectory_blobs is a per-tenant, content-addressed store of REDACTED text. It
+-- is keyed by the digest of the ORIGINAL bytes (joinable to existing digests such
+-- as fettler_model_reservations.request_digest), while content_text holds only the
+-- redacted form. When redaction falls closed (redaction_excluded = 1), content_text
+-- is NULL and only the digest + reason survive, so raw secret material is never
+-- stored. Hidden chain-of-thought is never written (spec 8.12): callers pass only
+-- observable request/response text.
+CREATE TABLE IF NOT EXISTS trajectory_blobs (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  content_text TEXT,
+  byte_length INTEGER NOT NULL CHECK (byte_length >= 0),
+  redaction_applied INTEGER NOT NULL DEFAULT 1 CHECK (redaction_applied IN (0, 1)),
+  redaction_excluded INTEGER NOT NULL DEFAULT 0 CHECK (redaction_excluded IN (0, 1)),
+  redaction_reason TEXT,
+  truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, content_sha256),
+  CHECK (redaction_excluded = 0 OR content_text IS NULL)
+);
+
+CREATE TABLE IF NOT EXISTS trajectories (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT REFERENCES mission(id),
+  product TEXT NOT NULL CHECK (product IN ('fettler', 'regauge')),
+  task_kind TEXT NOT NULL,
+  task_summary TEXT NOT NULL,
+  run_id TEXT,
+  job_id TEXT,
+  context_refs_json TEXT NOT NULL DEFAULT '[]',
+  available_tools_json TEXT NOT NULL DEFAULT '[]',
+  sandbox_backend TEXT,
+  final_outcome TEXT,
+  accepted TEXT,
+  cost_usd REAL,
+  cost_measured INTEGER NOT NULL DEFAULT 0 CHECK (cost_measured IN (0, 1)),
+  latency_ms INTEGER,
+  provenance_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS trajectories_tenant_created_idx
+  ON trajectories(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS trajectories_mission_idx
+  ON trajectories(tenant_id, mission_id) WHERE mission_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS trajectories_run_idx
+  ON trajectories(tenant_id, run_id) WHERE run_id IS NOT NULL;
+
+-- One append-only row per observable step. input_blob_sha256/output_blob_sha256
+-- reference trajectory_blobs by digest (the (input -> output) pair, stored once and
+-- deduplicated). model_id records whatever the call actually used (provider echo),
+-- never a hardcoded model name. router_decision_ref, reservation_ref, and
+-- learning_event_ref are cross-boundary references by id only.
+CREATE TABLE IF NOT EXISTS trajectory_steps (
+  id TEXT PRIMARY KEY,
+  trajectory_id TEXT NOT NULL REFERENCES trajectories(id),
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  step_index INTEGER NOT NULL CHECK (step_index >= 0),
+  step_kind TEXT NOT NULL CHECK (step_kind IN
+    ('model_call', 'tool_call', 'router_decision', 'verification', 'retrieval', 'review', 'edit')),
+  tool_name TEXT,
+  planner_source TEXT,
+  input_blob_sha256 TEXT,
+  output_blob_sha256 TEXT,
+  model_id TEXT,
+  reservation_ref TEXT,
+  router_decision_ref TEXT,
+  learning_event_ref TEXT,
+  verification_json TEXT,
+  ok INTEGER CHECK (ok IN (0, 1)),
+  error TEXT,
+  cost_usd REAL,
+  latency_ms INTEGER,
+  started_at TEXT,
+  ended_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, trajectory_id, step_index)
+);
+CREATE INDEX IF NOT EXISTS trajectory_steps_trajectory_idx
+  ON trajectory_steps(tenant_id, trajectory_id, step_index);
+
 CREATE TABLE IF NOT EXISTS learning_consents (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -3442,6 +3534,32 @@ export type {
   MissionState,
   MissionTriggerKind,
 } from "./mission.js";
+export {
+  MAX_TRAJECTORY_BLOB_CHARS,
+  finalizeTrajectory,
+  getTrajectory,
+  getTrajectoryStepPair,
+  listTrajectories,
+  listTrajectorySteps,
+  putTrajectoryBlob,
+  readTrajectoryBlob,
+  recordModelCall,
+  recordRouterDecisionStep,
+  recordToolCall,
+  recordTrajectory,
+  recordVerificationStep,
+} from "./trajectory.js";
+export type {
+  Trajectory,
+  TrajectoryBlob,
+  TrajectoryBlobRef,
+  TrajectoryProduct,
+  TrajectorySignalClass,
+  TrajectoryStep,
+  TrajectoryStepKind,
+  TrajectoryStepPair,
+  TrajectoryVerification,
+} from "./trajectory.js";
 export {
   createUsagePriceVersion,
   getUsagePriceVersion,
