@@ -29,7 +29,12 @@ import type {
   VendoredReference,
 } from "@mendpoint/shared";
 import { CONF_RANK, confirmedToFinding } from "@mendpoint/shared";
-import { discoverCandidates } from "./candidates.js";
+import {
+  discoverCandidates,
+  computeProviderReachability,
+  type ProviderReachability,
+} from "./candidates.js";
+import type { UnresolvedImport } from "./lang-import-graph.js";
 import { expandContexts } from "./expand.js";
 import { confirmImpacts, partitionByConfidence } from "./confirm.js";
 import { detectGeneratedFiles } from "./generated.js";
@@ -37,7 +42,11 @@ import { detectVendoredFiles } from "./vendored.js";
 
 export { detectGeneratedFiles, isGeneratedFile } from "./generated.js";
 export { detectVendoredFiles } from "./vendored.js";
-export { discoverCandidates } from "./candidates.js";
+export {
+  discoverCandidates,
+  computeProviderReachability,
+  type ProviderReachability,
+} from "./candidates.js";
 export {
   buildImporterGraph,
   reachableFromAnchors,
@@ -190,8 +199,17 @@ function overallConfidence(
  * File/byte caps throw during indexing rather than truncate, so a successfully
  * built index never carries a cap gap; the pipeline records that on the failure
  * path instead.
+ *
+ * `providerUnresolved` carries first-party import specifiers that provider
+ * provenance could not resolve to indexed files. When non-empty the reachable
+ * set is incomplete, so a match demoted for being unreachable may be a false
+ * demote — that is a real coverage gap, and it is exactly what keeps a
+ * demoted-to-zero provenance result from reporting `analyzed` with no gaps.
  */
-function computeCoverage(index: CodebaseIndex): ImpactCoverage {
+function computeCoverage(
+  index: CodebaseIndex,
+  providerUnresolved: readonly UnresolvedImport[] = [],
+): ImpactCoverage {
   const gaps: CoverageGap[] = [];
   const filesInspected = index.files.length;
   const languagesPresent = [...new Set(index.files.map((f) => f.language))].sort();
@@ -207,6 +225,15 @@ function computeCoverage(index: CodebaseIndex): ImpactCoverage {
       reason: "unsupported_language",
       detail: `${unsupported.length} in-scope source file(s) in language(s) with no analysis front-end: ${langs.join(", ")}`,
       count: unsupported.length,
+    });
+  }
+
+  if (providerUnresolved.length) {
+    const langs = [...new Set(providerUnresolved.map((u) => u.language))].sort();
+    gaps.push({
+      reason: "query_truncated",
+      detail: `${providerUnresolved.length} first-party import(s) could not be resolved to indexed files, so provider provenance is incomplete and some findings may be under-attributed (languages: ${langs.join(", ")})`,
+      count: providerUnresolved.length,
     });
   }
 
@@ -460,7 +487,8 @@ export async function analyzeImpact(
     writeIndex(index, defaultIndexPath(repoRoot));
   }
 
-  const candidates = discoverCandidates(index, surfaces);
+  const provider: ProviderReachability = computeProviderReachability(index, surfaces);
+  const candidates = discoverCandidates(index, surfaces, provider);
   const expanded = expandContexts(index, candidates);
   const confirmed = await confirmImpacts(expanded, surfaces, { useLlm: options.useLlm });
   return buildReport(
@@ -468,7 +496,7 @@ export async function analyzeImpact(
     candidates.length,
     confirmed,
     options.minConfidence ?? "medium",
-    computeCoverage(index),
+    computeCoverage(index, provider.unresolved),
     detectGeneratedFiles(index),
     detectVendoredFiles(index),
   );
@@ -487,7 +515,8 @@ export function analyzeRepo(
   const index =
     options.index ??
     buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces(surfaces, options.sdkHints) });
-  const candidates = discoverCandidates(index, surfaces);
+  const provider: ProviderReachability = computeProviderReachability(index, surfaces);
+  const candidates = discoverCandidates(index, surfaces, provider);
   const expanded = expandContexts(index, candidates);
   const confirmed = staticConfirmAll(expanded, surfaces);
   const report = buildReport(
@@ -495,7 +524,7 @@ export function analyzeRepo(
     candidates.length,
     confirmed,
     options.minConfidence ?? "medium",
-    computeCoverage(index),
+    computeCoverage(index, provider.unresolved),
     detectGeneratedFiles(index),
     detectVendoredFiles(index),
   );
