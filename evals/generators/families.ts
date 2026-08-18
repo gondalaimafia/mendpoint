@@ -30,6 +30,7 @@ import {
 } from "../mutations/engine.js";
 import { tsPaymentsService } from "./templates.js";
 import { recipeFamilyScenarios } from "./recipe-families.js";
+import { regressionScenarios } from "../regression/build.js";
 import type { GeneratedScenario } from "./types.js";
 
 interface ScenarioMeta {
@@ -411,6 +412,11 @@ export function generateAllScenarios(): GeneratedScenario[] {
   // positive + residual + abstention per family, materialized from the committed
   // consumer fixtures so the per-family readiness gate has data to score.
   scenarios.push(...recipeFamilyScenarios());
+  // Regression tier (spec §18.9): validated failures converted to permanent
+  // guards via the failure -> eval path (evals/regression). The #174-fixed
+  // residual idioms guard against re-introduction; the open internal-API residual
+  // case fails honestly until the fix lands.
+  scenarios.push(...regressionScenarios());
   // Holdout: unseen procedural variations.
   scenarios.push(...holdoutRefVariations(4));
   return scenarios;
