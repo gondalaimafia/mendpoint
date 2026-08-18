@@ -1,8 +1,6 @@
 import {
   configuredModelEndpointUrl,
-  isPrivateModelHost,
-  modelEgressMode,
-  parseModelLocalHosts,
+  enforceModelEndpointEgress,
 } from "@mendpoint/shared";
 
 export function resolveAgentModelEndpoint(
@@ -29,16 +27,9 @@ export function resolveAgentModelEndpoint(
     throw new Error("warden_model_endpoint_https_required");
   }
   // Enforced no-egress mode: repository content may only reach a private,
-  // loopback, link-local, or operator allowlisted model host.
-  if (
-    modelEgressMode(env) === "local_only" &&
-    !isPrivateModelHost(
-      parsed.hostname,
-      parseModelLocalHosts(env.MENDPOINT_MODEL_LOCAL_HOSTS),
-    )
-  ) {
-    throw new Error("model_egress_local_only_violation");
-  }
+  // loopback, link-local, or operator allowlisted model host. Same policy and
+  // implementation as every other model path (provider gateway, verifier).
+  enforceModelEndpointEgress(configured, env);
   const basePath = parsed.pathname.replace(/\/+$/, "");
   parsed.pathname = basePath.endsWith("/v1")
     ? `${basePath}/chat/completions`
