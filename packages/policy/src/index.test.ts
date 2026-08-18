@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_POLICY, evaluatePolicy, filterFindingsByPolicy } from "./index.js";
+import { DEFAULT_POLICY, evaluatePolicy, filterFindingsByPolicy, mergePolicy } from "./index.js";
 
 const baseDraft = {
   title: "t",
@@ -20,6 +20,19 @@ afterEach(() => {
 });
 
 describe("policy engine", () => {
+  it("keeps the baseline denylist when an override is empty or additive", () => {
+    expect(mergePolicy({ neverTouchPaths: [] }).neverTouchPaths).toEqual(
+      DEFAULT_POLICY.neverTouchPaths,
+    );
+
+    expect(mergePolicy({
+      neverTouchPaths: ["tenant-only/", ".env", "tenant-only/"],
+    }).neverTouchPaths).toEqual([
+      ...DEFAULT_POLICY.neverTouchPaths,
+      "tenant-only/",
+    ]);
+  });
+
   it("defaults never auto-merge", () => {
     expect(DEFAULT_POLICY.autoMergeLowRisk).toBe(false);
     const d = evaluatePolicy(baseDraft, []);

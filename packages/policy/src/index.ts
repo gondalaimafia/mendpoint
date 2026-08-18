@@ -66,8 +66,11 @@ export function mergePolicy(
   return {
     ...DEFAULT_POLICY,
     ...o,
-    // never clobber arrays/flags with explicit undefined from partial maps
-    neverTouchPaths: o.neverTouchPaths ?? DEFAULT_POLICY.neverTouchPaths,
+    // Baseline path protections are immutable; an override may only add rules.
+    neverTouchPaths: [...new Set([
+      ...DEFAULT_POLICY.neverTouchPaths,
+      ...(o.neverTouchPaths ?? []),
+    ])],
     autoMergeLowRisk: o.autoMergeLowRisk ?? DEFAULT_POLICY.autoMergeLowRisk,
     requireTwoReviewersForAuth:
       o.requireTwoReviewersForAuth ?? DEFAULT_POLICY.requireTwoReviewersForAuth,
