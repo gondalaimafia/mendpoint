@@ -318,14 +318,21 @@ export function reconcileAstCallTargets(
   )) {
     const matches = definitions.get(unresolved.label) ?? [];
     if (matches.length !== 1) continue;
-    const incoming = edgesTo(db, unresolved.id, ["CALLS"]);
+    // Ingest reconciliation operates on the full stored graph: an unresolved
+    // symbol may only be referenced by edges that are already closed, and those
+    // must be repointed / counted rather than silently skipped as non-current.
+    const incoming = edgesTo(db, unresolved.id, ["CALLS"], {
+      includeInvalidated: true,
+    });
     for (const edge of incoming) {
       upsertEdge(db, { ...edge, target: matches[0]! });
       reconciled++;
     }
     if (
-      edgesTo(db, unresolved.id).length === 0 &&
-      edgesFrom(db, unresolved.id).length === 0
+      edgesTo(db, unresolved.id, undefined, { includeInvalidated: true })
+        .length === 0 &&
+      edgesFrom(db, unresolved.id, undefined, { includeInvalidated: true })
+        .length === 0
     ) {
       deleteNode(db, unresolved.id);
     }
