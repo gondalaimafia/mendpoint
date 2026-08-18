@@ -181,3 +181,84 @@ describe("multi-provider gateway: fail-closed and pricing", () => {
     ]);
   });
 });
+
+describe("multi-provider gateway: local_only egress enforcement on the provider path", () => {
+  // Auth env per provider so resolution reaches endpoint construction rather
+  // than returning null on a missing key.
+  const authFor: Record<string, Record<string, string>> = {
+    "muse-spark": { OPENAI_API_KEY: "k" },
+    openai: { OPENAI_API_KEY: "k" },
+    xai: { XAI_API_KEY: "k" },
+    "openai-gateway": { OPENAI_API_KEY: "k" },
+    anthropic: { ANTHROPIC_API_KEY: "k" },
+    gemini: { GEMINI_API_KEY: "k" },
+  };
+  // Providers that ship a hardcoded public default base URL: naming them under
+  // local_only WITHOUT a base-URL env var must still be refused (the default is
+  // exercised and is a public host).
+  const publicDefaultProviders = ["openai", "xai", "anthropic", "gemini"] as const;
+  // Providers with no default base URL: they need an explicit base URL to reach
+  // a host, so a public one is supplied to exercise the same enforcement.
+  const baseUrlRequiredProviders = ["muse-spark", "openai-gateway"] as const;
+
+  it("refuses every named provider's public host under local_only via model_egress_local_only_violation", () => {
+    for (const id of publicDefaultProviders) {
+      expect(() => resolveModelBackend({
+        MENDPOINT_MODEL_EGRESS: "local_only",
+        MENDPOINT_MODEL_PROVIDER: id,
+        ...authFor[id],
+      })).toThrow("model_egress_local_only_violation");
+    }
+    for (const id of baseUrlRequiredProviders) {
+      expect(() => resolveModelBackend({
+        MENDPOINT_MODEL_EGRESS: "local_only",
+        MENDPOINT_MODEL_PROVIDER: id,
+        LLM_AGENT_URL: "https://api.public.example/v1",
+        ...authFor[id],
+      })).toThrow("model_egress_local_only_violation");
+    }
+  });
+
+  it("still resolves a private, loopback, or allowlisted host for a named provider under local_only", () => {
+    // Private/loopback base URL for a public-default provider (Anthropic).
+    const anthropic = resolveModelBackend({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_PROVIDER: "anthropic",
+      ANTHROPIC_BASE_URL: "http://localhost:8000",
+      ANTHROPIC_API_KEY: "k",
+    });
+    expect(anthropic!.endpoint).toBe("http://localhost:8000/v1/messages");
+
+    // Operator allowlist works identically on the provider path (Gemini).
+    const gemini = resolveModelBackend({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_PROVIDER: "gemini",
+      GEMINI_BASE_URL: "https://gemini.internal/v1beta",
+      MENDPOINT_MODEL_LOCAL_HOSTS: "gemini.internal",
+      GEMINI_API_KEY: "k",
+    });
+    expect(gemini!.endpoint).toBe(
+      "https://gemini.internal/v1beta/models/gemini-1.5-flash:generateContent",
+    );
+
+    // Self-hosted OpenAI-compatible gateway on a private host.
+    const gateway = resolveModelBackend({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_PROVIDER: "openai-gateway",
+      LLM_AGENT_URL: "http://127.0.0.1:11434/v1",
+      OPENAI_API_KEY: "k",
+    });
+    expect(gateway!.endpoint).toBe("http://127.0.0.1:11434/v1/chat/completions");
+  });
+
+  it("leaves external_allowed (the default) reaching a named provider's public host unchanged", () => {
+    const openai = resolveModelBackend({ MENDPOINT_MODEL_PROVIDER: "openai", OPENAI_API_KEY: "k" });
+    expect(openai!.endpoint).toBe("https://api.openai.com/v1/chat/completions");
+    const anthropic = resolveModelBackend({
+      MENDPOINT_MODEL_EGRESS: "external_allowed",
+      MENDPOINT_MODEL_PROVIDER: "anthropic",
+      ANTHROPIC_API_KEY: "k",
+    });
+    expect(anthropic!.endpoint).toBe("https://api.anthropic.com/v1/messages");
+  });
+});
