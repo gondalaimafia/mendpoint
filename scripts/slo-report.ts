@@ -12,20 +12,26 @@ import {
   latencyReport,
 } from "@mendpoint/graph-learn";
 
+// Dedicated operator scope for the latency harness. Like the graph benchmark's
+// own scope, this exercises the fail-closed tenant read path under an explicit,
+// named tenant rather than the global cross-tenant graph; the SLO gate measures
+// query latency, not any customer's data.
+const SLO_SCOPE = { tenantId: "slo-report" };
+
 function main() {
   resetLatencySamples();
   const db = getGraphLearnDb();
 
   // Warm common ops
   for (let i = 0; i < 8; i++) {
-    runGraphQuery(db, { op: "stats" });
-    runGraphQuery(db, { op: "who_consumes_provider", providerSlug: "acme" });
+    runGraphQuery(db, { op: "stats" }, SLO_SCOPE);
+    runGraphQuery(db, { op: "who_consumes_provider", providerSlug: "acme" }, SLO_SCOPE);
     runGraphQuery(db, {
       op: "blast_radius",
       nodeId: "change:ch1",
       maxHops: 2,
-    });
-    runGraphQuery(db, { op: "pattern_success_rates", minSamples: 1 });
+    }, SLO_SCOPE);
+    runGraphQuery(db, { op: "pattern_success_rates", minSamples: 1 }, SLO_SCOPE);
   }
 
   // Bench also exercises ops

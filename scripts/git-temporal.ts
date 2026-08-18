@@ -38,7 +38,12 @@ async function main() {
   });
   console.log(JSON.stringify(result, null, 2));
 
-  const stats = runGraphQuery(db, { op: "stats" });
+  // Scope the read-back to the repo we just backfilled: every ingested node
+  // carries repo_id === result.repoId, so this tenant view counts exactly the
+  // history written above rather than the global cross-tenant graph.
+  const scope = { tenantId: result.repoId };
+
+  const stats = runGraphQuery(db, { op: "stats" }, scope);
   console.log("graph:", stats.summary);
 
   const now = new Date().toISOString();
@@ -46,7 +51,7 @@ async function main() {
     op: "time_travel_modifies",
     at: now,
     repoId: result.repoId,
-  });
+  }, scope);
   console.log("time_travel_modifies now:", tt.summary);
 }
 
