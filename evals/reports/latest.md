@@ -1,7 +1,7 @@
 # MendPoint synthetic-repo evaluation — latest run
 
-- Generated: 2026-08-18T04:14:07.339Z
-- Git commit: `80bf1d2`
+- Generated: 2026-08-18T07:13:52.456Z
+- Git commit: `40a8249`
 - Invocation: deterministic analysis core (Fettler: change-intel -> code-impact, LLM off; ReGauge: analyzeRecipe over shipped registry, analyze-only)
 
 This corpus is built to make MendPoint fail, not to flatter it. "Pass" means the product did the SAFE, correct thing for the CURRENT shipped engine (found the impacted files without touching a distractor, or correctly abstained). Coverage gaps and dimensions the harness cannot yet observe are listed separately and do NOT count as passes.
@@ -9,10 +9,10 @@ This corpus is built to make MendPoint fail, not to flatter it. "Pass" means the
 ## Overall
 
 - Total scenarios: 64
-- Passed (safe + correct for shipped engine): 53 (83%)
-- Unsafe/incorrect failures: 12
+- Passed (safe + correct for shipped engine): 55 (86%)
+- Unsafe/incorrect failures: 10
 - Coverage gaps recorded: 6
-- P0 failures (dangerous / materially incorrect): 4
+- P0 failures (dangerous / materially incorrect): 2
 
 ## Readiness gates (spec §33.5 — versioned acceptance criteria)
 
@@ -63,14 +63,14 @@ Policy: **precision-first**, owner Talal, decided 2026-08-17 (schema v1). Thresh
 | out_of_scope_abstention | 100.0% (2/2) | >= 100% abstain | PASS |
 | open_p0 | 0 | <= 0 | PASS |
 
-### regauge-internal-api-migration — FAIL
+### regauge-internal-api-migration — PASS
 
 | criterion | measured | threshold | verdict |
 | --- | --- | --- | --- |
 | apply_correctness | 100.0% (1/1) | >= 100% pass | PASS |
-| residual_refusal | 0.0% (0/2) | >= 100% refuse | FAIL |
+| residual_refusal | 100.0% (2/2) | >= 100% refuse | PASS |
 | out_of_scope_abstention | 100.0% (2/2) | >= 100% abstain | PASS |
-| open_p0 | 2 | <= 0 | FAIL |
+| open_p0 | 0 | <= 0 | PASS |
 
 
 The one-page per-capability readiness scorecard (spec §29) is written alongside this report at `evals/reports/readiness-scorecard.md`.
@@ -81,8 +81,8 @@ Holdout scenarios are procedurally generated from scenario families and are NEVE
 
 | split | scenarios | passed | pass rate |
 | --- | --- | --- | --- |
-| development | 45 | 37 | 82% |
-| regression | 6 | 5 | 83% |
+| development | 45 | 38 | 84% |
+| regression | 6 | 6 | 100% |
 | validation | 9 | 7 | 78% |
 | holdout | 4 | 4 | 100% |
 
@@ -158,13 +158,13 @@ Scenarios: 33, passed 24 (73%)
 
 ## ReGauge
 
-Scenarios: 31, passed 29 (94%)
+Scenarios: 31, passed 31 (100%)
 
 ### By migration family
 | family | scenarios | passed | pass rate |
 | --- | --- | --- | --- |
 | framework-upgrade | 4 | 4 | 100% |
-| internal-api-rename | 5 | 3 | 60% |
+| internal-api-rename | 5 | 5 | 100% |
 | runtime-upgrade | 9 | 9 | 100% |
 | sdk-upgrade | 13 | 13 | 100% |
 
@@ -194,21 +194,21 @@ Scenarios: 31, passed 29 (94%)
 | gen-regauge-react-dom-residual | 5 | refuse_partial | react-dom-17-to-18@1(incomplete) | yes |  |
 | gen-regauge-react-dom-abstain | 4 | abstain | none | yes |  |
 | gen-regauge-acme-user-apply | 4 | apply_recipe | internal-api-acme-user-getuser-to-fetchuser@1(applicable) | yes |  |
-| gen-regauge-acme-user-residual | 5 | refuse_partial | internal-api-acme-user-getuser-to-fetchuser@1(applicable) | NO |  |
+| gen-regauge-acme-user-residual | 5 | refuse_partial | internal-api-acme-user-getuser-to-fetchuser@1(incomplete) | yes |  |
 | gen-regauge-acme-user-abstain | 4 | abstain | none | yes |  |
 | gen-regauge-runtime-residual | 4 | refuse_partial | node-runtime-20-to-22@1(incomplete) | yes |  |
 | reg-regauge-runtime-platform-residual | 5 | refuse_partial | node-runtime-20-to-22@1(incomplete) | yes |  |
 | reg-regauge-runtime-digest-residual | 5 | refuse_partial | node-runtime-20-to-22@1(incomplete) | yes |  |
 | reg-regauge-runtime-nested-engine-residual | 5 | refuse_partial | node-runtime-20-to-22@1(incomplete) | yes |  |
 | reg-regauge-aws-vendored-residual | 5 | refuse_partial | aws-sdk-js-v2-to-v3@1(incomplete) | yes |  |
-| reg-regauge-internal-api-acme-residual | 5 | refuse_partial | internal-api-acme-user-getuser-to-fetchuser@1(applicable) | NO |  |
+| reg-regauge-internal-api-acme-residual | 5 | refuse_partial | internal-api-acme-user-getuser-to-fetchuser@1(incomplete) | yes |  |
 
 ## Latency (observed wall-clock of the analysis path)
 
 | product | scenarios | min | median | p90 | max |
 | --- | --- | --- | --- | --- | --- |
-| fettler | 33 | 18ms | 56ms | 729ms | 120037ms |
-| regauge | 31 | 3ms | 20ms | 42ms | 57ms |
+| fettler | 33 | 33ms | 90ms | 3914ms | 120078ms |
+| regauge | 31 | 5ms | 19ms | 78ms | 124ms |
 
 Note: the largest-repo scenario runs under a hard wall-clock budget in an isolated child; a budget overrun is recorded as a SCALE_FAILURE (see Top remaining risks), and its max latency above reflects that budget ceiling, not a completed analysis. Files-scanned per run is in the raw records (`activity.filesExamined`) — plot latency against it to read scale behaviour.
 
@@ -220,12 +220,12 @@ Not measured in this slice. The deterministic analysis path the runner exercises
 
 - **[P0] FALSE_POSITIVE** — gen-fettler-genvendor-vendored-only (false_positive_traps): flagged distractors: vendor/provider-sdk/index.ts
 - **[P0] FALSE_POSITIVE** — gen-fettler-genvendor-both (false_positive_traps): flagged distractors: vendor/provider-sdk/index.ts
-- **[P0] ABSTENTION_FAILURE** — gen-regauge-acme-user-residual (residual_refusal): status=applicable; residualPaths=none
-- **[P0] ABSTENTION_FAILURE** — reg-regauge-internal-api-acme-residual (residual_refusal): status=applicable; residualPaths=none
 - **[P1] SCALE_FAILURE** — fettler-edge-huge-monorepo (completes_within_budget): analysis did not finish within the 120000ms budget on this repository
 - **[P2] FALSE_POSITIVE** — fettler-ts-payments-rename (precision): flagged non-expected files: test/meridianClient.test.ts
 - **[P2] FALSE_NEGATIVE** — fettler-python-billing-rename (expected_findings_recall): flagged 8/11; missed: tests/fixtures/charge_request.json, tests/fixtures/charge_response.json, tests/fixtures/refund_response.json
 - **[P2] FALSE_NEGATIVE** — fettler-go-ledger-rename (expected_findings_recall): flagged 12/17; missed: internal/payments/testdata/charge_request.json, internal/payments/testdata/charge_response.json, internal/ledger/testdata/entry.json, internal/settlement/testdata/settlement.json, internal/worker/testdata/items.json
+- **[P2] FALSE_NEGATIVE** — fettler-java-settlement-rename (expected_findings_recall): flagged 8/13; missed: src/main/java/com/acme/settlement/payments/PaymentsClient.java, src/main/java/com/acme/settlement/charge/Charge.java, src/test/resources/payment-request.json, src/test/resources/payment-response.json, src/test/resources/settlement-batch.json
+- **[P2] FALSE_POSITIVE** — fettler-java-settlement-rename (precision): flagged non-expected files: src/main/java/com/acme/settlement/reporting/RevenueReport.java
 
 ## Coverage gaps (correct abstention today; capability not yet shipped)
 
@@ -254,5 +254,5 @@ Not measured in this slice. The deterministic analysis path the runner exercises
 
 **What we should NOT yet accept.** Repositories in languages where recall collapsed (python-service, go-service, java-service). Repositories that require any ReGauge migration family other than the Node runtime bump — SDK major upgrades, framework upgrades, and internal-API renames are coverage gaps today (the engine correctly abstains, but delivers no value). Any repository whose correct answer is a judgement call (ambiguous renames) unless a human is in the loop.
 
-**What remains fragile.** 4 P0 issue(s) where the product acted when it should have abstained or touched a distractor — see Top remaining risks. Verification honesty, large-repo scale limits, and binary/encoding/symlink robustness are only partially observable through the analysis-only path and need the full generation+verification pipeline to grade end to end.
+**What remains fragile.** 2 P0 issue(s) where the product acted when it should have abstained or touched a distractor — see Top remaining risks. Verification honesty, large-repo scale limits, and binary/encoding/symlink robustness are only partially observable through the analysis-only path and need the full generation+verification pipeline to grade end to end.
 
