@@ -62,32 +62,83 @@ function dirOf(path: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Map every indexed Python file to its dotted module name, and record the set
- * of top-level first-party packages (a directory holding `__init__.py`, or the
- * first segment of any module). `__init__.py` maps to the package name itself so
- * a package import (`from app.models import x` → spec `app.models`) resolves.
+ * Directory names that mark a dependency / virtualenv / vendored tree. A file
+ * under one of these never defines a first-party module: `requests` living in
+ * `.venv/lib/site-packages/requests` must stay third-party even if the tree
+ * leaked into the file list, so we never treat such a directory as a strippable
+ * source-layout root (which would promote the vendored package to a first-party
+ * root). Real discovery prunes these trees; this is defence in depth.
+ */
+const PY_DEPENDENCY_DIR_MARKERS = new Set([
+  "site-packages",
+  "dist-packages",
+  ".venv",
+  "venv",
+  "__pypackages__",
+  ".tox",
+  "node_modules",
+]);
+
+/**
+ * Map every indexed Python file to its dotted module name, and record the set of
+ * top-level first-party packages.
+ *
+ * The module name is taken *relative to its source root*, not from the raw path.
+ * A source root is a leading directory that is not itself a package but contains
+ * one — the `src/` of a src-layout project (`src/app/client.py` is imported as
+ * `app.client`, not `src.app.client`). We derive it from real package structure:
+ * a directory is a package when it holds an `__init__.py`. For a file we find the
+ * shallowest ancestor directory that is a package (its top-level package) and
+ * strip everything above it. Flat layout (`app/client.py`) has no prefix to
+ * strip, so both layouts yield the same module names and the same provider
+ * provenance — the bug this fixes was that `src` was treated as the only root, so
+ * an absolute `app.client` import looked third-party and built no edge.
+ *
+ * When no ancestor is a package (namespace-package / script layouts, or repos
+ * with no `__init__.py`) we fall back to the full dotted path. We never strip a
+ * prefix that crosses a dependency-tree marker, so a leaked vendored package is
+ * not promoted to a first-party root.
  */
 export function buildPythonModuleMaps(files: readonly Pick<FileRecord, "path">[]): {
   moduleToFile: Map<string, string>;
+  fileToModule: Map<string, string>;
   firstPartyRoots: Set<string>;
 } {
   const moduleToFile = new Map<string, string>();
+  const fileToModule = new Map<string, string>();
   const firstPartyRoots = new Set<string>();
+  const paths = new Set(files.map((f) => f.path));
+  const isPackageDir = (dir: string): boolean =>
+    paths.has(dir ? `${dir}/__init__.py` : "__init__.py");
+
   for (const f of files) {
     if (!f.path.endsWith(".py")) continue;
     const noExt = f.path.slice(0, -3);
     const segs = noExt.split("/").filter(Boolean);
     if (!segs.length) continue;
-    if (segs[segs.length - 1] === "__init__") {
-      const pkg = segs.slice(0, -1);
-      if (pkg.length) moduleToFile.set(pkg.join("."), f.path);
-      if (pkg[0]) firstPartyRoots.add(pkg[0]);
-    } else {
-      moduleToFile.set(segs.join("."), f.path);
-      if (segs[0]) firstPartyRoots.add(segs[0]);
+    const isInit = segs[segs.length - 1] === "__init__";
+    const dirSegs = segs.slice(0, -1);
+    // Locate the shallowest ancestor directory that is a package; strip the
+    // source-root prefix above it unless that prefix crosses a dependency marker.
+    let startIdx = 0;
+    for (let i = 0; i < dirSegs.length; i++) {
+      if (!isPackageDir(dirSegs.slice(0, i + 1).join("/"))) continue;
+      const prefix = dirSegs.slice(0, i);
+      if (prefix.length && !prefix.some((p) => PY_DEPENDENCY_DIR_MARKERS.has(p))) {
+        startIdx = i;
+      }
+      break;
     }
+    const moduleSegs = isInit
+      ? dirSegs.slice(startIdx)
+      : [...dirSegs.slice(startIdx), segs[segs.length - 1]!];
+    if (!moduleSegs.length) continue;
+    const dotted = moduleSegs.join(".");
+    moduleToFile.set(dotted, f.path);
+    fileToModule.set(f.path, dotted);
+    firstPartyRoots.add(moduleSegs[0]!);
   }
-  return { moduleToFile, firstPartyRoots };
+  return { moduleToFile, fileToModule, firstPartyRoots };
 }
 
 /**
@@ -95,13 +146,22 @@ export function buildPythonModuleMaps(files: readonly Pick<FileRecord, "path">[]
  * name after `from`/`import`, leading dots preserved for relative imports) onto
  * an indexed module file. Relative specifiers resolve against the importing
  * file's package; absolute ones against the module map. Stdlib / third-party
- * names (not under a first-party root) are skipped, never recorded.
+ * names (not under a first-party root) are skipped, never recorded. A
+ * first-party specifier that resolves to no indexed file is recorded as
+ * `unresolved` rather than dropped — a silent zero edge is the defect family
+ * this module exists to prevent.
+ *
+ * `fileToModule` (when provided) supplies the importing file's *module* name so
+ * relative imports resolve in module space even under a stripped src-layout
+ * root; without it, relative resolution falls back to the raw path (correct for
+ * flat layouts).
  */
 export function resolvePythonImport(
   fromFile: string,
   spec: string,
   moduleToFile: Map<string, string>,
   firstPartyRoots: ReadonlySet<string>,
+  fileToModule?: ReadonlyMap<string, string>,
 ): ResolveResult {
   const none = { targets: [], unresolved: false } as ResolveResult;
   let dotted = spec;
@@ -110,8 +170,10 @@ export function resolvePythonImport(
     let dots = 0;
     while (dots < spec.length && spec[dots] === ".") dots++;
     const tail = spec.slice(dots);
-    const fromSegs = fromFile.slice(0, -3).split("/").filter(Boolean); // drop .py
-    const pkgSegs = fromSegs.slice(0, -1); // package of the importing module
+    const mod = fileToModule?.get(fromFile);
+    const pkgSegs = mod
+      ? mod.split(".").slice(0, -1) // package of the importing module
+      : fromFile.slice(0, -3).split("/").filter(Boolean).slice(0, -1);
     const up = dots - 1; // one dot stays in current package
     if (up > pkgSegs.length) return none; // escapes the tree — unresolvable but not first-party
     const base = pkgSegs.slice(0, pkgSegs.length - up);
@@ -313,7 +375,13 @@ export function buildLanguageGraphs(
     for (const spec of f.imports) {
       let res: ResolveResult;
       if (f.language === "python") {
-        res = resolvePythonImport(f.path, spec, py.moduleToFile, py.firstPartyRoots);
+        res = resolvePythonImport(
+          f.path,
+          spec,
+          py.moduleToFile,
+          py.firstPartyRoots,
+          py.fileToModule,
+        );
       } else if (f.language === "go") {
         res = resolveGoImport(spec, goModule, goDirs);
       } else if (f.language === "java") {
