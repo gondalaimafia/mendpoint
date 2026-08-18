@@ -881,6 +881,59 @@ describe("Transformer production attempt runner", () => {
     expect(spies.recordAttemptFailure).toHaveBeenCalledWith(expect.objectContaining({ code: "verification_failed" }));
   });
 
+  it("records the verification failure when the adaptive planner throws before any usage checkpoint", async () => {
+    // A planner that throws on its first iteration leaves usage.complete === false
+    // while neither a usage checkpoint nor an external-model reservation was ever
+    // accepted (the default coordinator omits reserve/settle). The failure path
+    // must still reach recordAttemptFailure and must not launder the genuine
+    // verification failure into a worker_crash.
+    const planner = vi.fn<AdaptiveRepairPlanner>(async () => {
+      throw new Error("adaptive planner backend unreachable");
+    });
+    const gate: AdaptiveGate = async (): Promise<AdaptiveVerifierResult> => ({
+      passed: false,
+      failingCommandId: "engine-check",
+      output: "engine-check: still failing",
+      implicatedPaths: ["package.json"],
+    });
+    const { input, spies } = harness({
+      commandRunner: async () => ({ exitCode: 9, stdout: "", stderr: "verifier failed" }),
+    });
+
+    const result = await runTransformerAttempt({ ...input, adaptiveRepair: { planner, gate } });
+
+    expect(planner).toHaveBeenCalledTimes(1);
+    // The true recovery code survives: the operator is told to review the
+    // verification evidence, not to resolve worker health.
+    expect(result).toMatchObject({
+      status: "failed",
+      recoveryCode: "verification_failed",
+    });
+    expect(result.errorCode).toContain("recipe_execution_verification_failed");
+    expect(result.errorCode).not.toContain("usage_accounting_incomplete");
+    // The unit's failure is durably recorded rather than left running until the
+    // lease-expiry sweep. The recorded accounting excludes the untrustworthy
+    // incomplete adaptive usage (it falls back to the execution cost only).
+    expect(spies.recordAttemptFailure).toHaveBeenCalledTimes(1);
+    expect(spies.recordAttemptFailure).toHaveBeenCalledWith(expect.objectContaining({
+      code: "verification_failed",
+      accounting: expect.objectContaining({ actualCostUsd: 0.12 }),
+    }));
+    // Durable failure evidence is written and preserves the incomplete-usage
+    // diagnostic instead of silently dropping it.
+    const failureEvidence = result.failureEvidence!;
+    expect(failureEvidence).toBeDefined();
+    const persisted = readFileSync(failureEvidence.path, "utf8");
+    expect(sha256(persisted)).toBe(failureEvidence.digest);
+    expect(JSON.parse(persisted)).toMatchObject({
+      kind: "transformer.attempt.failure",
+      recoveryCode: "verification_failed",
+      adaptiveUsageAccountingIncomplete: true,
+    });
+    // The incomplete-usage fact also survives on the returned adaptive summary.
+    expect(result.adaptive).toMatchObject({ usage: { complete: false } });
+  });
+
   it("aborts adaptive planner work when lease renewal authority becomes uncertain", async () => {
     vi.useFakeTimers();
     let markPlannerStarted!: () => void;
