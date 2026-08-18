@@ -11,6 +11,7 @@ import type {
   CandidateSite,
   CandidateSource,
   Confidence,
+  GraphPath,
   ImpactableSurface,
 } from "@mendpoint/shared";
 import type { CodebaseIndex, FileRecord } from "@mendpoint/codebase-index";
@@ -311,6 +312,12 @@ export type ProviderReachability = {
   unresolved: UnresolvedImport[];
   /** Whether any provider anchor was locatable (the gate only bites when true). */
   gateEnabled: boolean;
+  /**
+   * Provider->code path per reachable file (FET-016). A file absent from this
+   * map has no computed path ("not computed"), which is why a finding on a file
+   * with no locatable anchor carries no graphPath.
+   */
+  graphPaths: Map<string, GraphPath>;
 };
 
 /**
@@ -328,12 +335,12 @@ export function computeProviderReachability(
       s.op !== "request_field_ambiguous" && s.op !== "response_field_ambiguous",
   );
   const anchors = providerAnchors(index, surfaces);
-  const { reachable, unresolved } = buildProviderReachability(
+  const { reachable, unresolved, graphPaths } = buildProviderReachability(
     index.files,
     index.repoRoot,
     anchors,
   );
-  return { reachable, unresolved, gateEnabled: anchors.size > 0 };
+  return { reachable, unresolved, gateEnabled: anchors.size > 0, graphPaths };
 }
 
 export function discoverCandidates(

@@ -623,6 +623,46 @@ export const ExpandedContextSchema = z.object({
 export type ExpandedContext = z.infer<typeof ExpandedContextSchema>;
 
 
+/**
+ * Safety bounds for graph-path emission. Centralized here so this layer and
+ * @mendpoint/graph-learn's dependency-path enumeration (which imports the same
+ * two constants) can never drift into parallel limits. `HARD_MAX_HOPS` caps the
+ * length of an emitted provider->code path; `HARD_MAX_PATHS` caps multi-path
+ * enumeration (used by dependency-path walking — an impact finding emits a
+ * single shortest path per file, so it does not bind here, but the bound is
+ * shared to keep one source of truth).
+ */
+export const HARD_MAX_HOPS = 32;
+export const HARD_MAX_PATHS = 1_000;
+
+/**
+ * How a {@link GraphPath} walk ended. `anchor` — the walk reached a provider
+ * anchor, so the path is complete. `cycle` / `max_hops` — the walk was stopped
+ * by a safety bound (an import cycle, or the hop cap) and the emitted path is
+ * truncated, never silently trimmed. The `cycle` / `max_hops` vocabulary
+ * mirrors the dependency-path terminals in @mendpoint/graph-learn.
+ */
+export const GraphPathTerminalSchema = z.enum(["anchor", "cycle", "max_hops"]);
+export type GraphPathTerminal = z.infer<typeof GraphPathTerminalSchema>;
+
+/**
+ * The provider->code dependency path behind a material impact finding (FET-016,
+ * spec 8.8): the evidence for why the tool believes a file is affected. `nodes`
+ * runs from the provider anchor to the affected file inclusive, each entry
+ * importing the one before it. `partial` coverage (with a `cycle` / `max_hops`
+ * terminal) means the path was bounded and the real chain is longer than shown.
+ * The ABSENCE of a GraphPath on a finding means "not computed" (no provider
+ * anchor was locatable), which is distinct from a computed path that is short.
+ */
+export const GraphPathSchema = z.object({
+  nodes: z.array(z.string()),
+  hops: z.number().int().nonnegative(),
+  terminal: GraphPathTerminalSchema,
+  truncated: z.boolean(),
+  coverage: z.enum(["complete", "partial"]),
+});
+export type GraphPath = z.infer<typeof GraphPathSchema>;
+
 export const ConfirmedImpactSchema = z.object({
   filePath: z.string(),
   lineStart: z.number().int().positive(),
@@ -635,6 +675,8 @@ export const ConfirmedImpactSchema = z.object({
   relatedOps: z.array(DiffOpSchema).default([]),
   fixHint: z.string().optional(),
   confirmationPath: z.enum(["static", "hybrid_llm", "heuristic"]),
+  /** Provider->code path proving this file's reachability (FET-016). */
+  graphPath: GraphPathSchema.optional(),
 });
 export type ConfirmedImpact = z.infer<typeof ConfirmedImpactSchema>;
 
@@ -790,6 +832,12 @@ export const ImpactFindingSchema = z.object({
   impactType: ImpactTypeSchema.optional(),
   fixHint: z.string().optional(),
   surfaceIds: z.array(z.string()).optional(),
+  /**
+   * Provider->code path behind this finding (FET-016, spec 8.8). Optional and
+   * nullable-by-absence: existing findings carry no path, and an absent value
+   * reads as "not computed" (no locatable provider anchor), never "no path".
+   */
+  graphPath: GraphPathSchema.optional(),
 });
 export type ImpactFinding = z.infer<typeof ImpactFindingSchema>;
 
@@ -865,5 +913,6 @@ export function confirmedToFinding(c: ConfirmedImpact): ImpactFinding {
     impactType: c.impactType,
     fixHint: c.fixHint,
     surfaceIds: c.surfaceIds,
+    ...(c.graphPath ? { graphPath: c.graphPath } : {}),
   };
 }

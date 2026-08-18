@@ -19,6 +19,7 @@ import type {
   DiffOp,
   ExpandedContext,
   GeneratedReference,
+  GraphPath,
   ImpactCoverage,
   ImpactFinding,
   ImpactReport,
@@ -51,6 +52,9 @@ export {
 export {
   buildImporterGraph,
   reachableFromAnchors,
+  traverseFromAnchors,
+  anchorPathTo,
+  type ReachabilityWalk,
   resolveRelativeImport,
 } from "./provenance.js";
 export { expandContexts } from "./expand.js";
@@ -428,7 +432,17 @@ function buildReport(
   coverage: ImpactCoverage,
   generatedFiles: Set<string> = new Set(),
   vendoredFiles: Set<string> = new Set(),
+  graphPaths: Map<string, GraphPath> = new Map(),
 ): ImpactReport {
+  // FET-016: attach the provider->code path to each confirmed site by file. This
+  // is a pure post-hoc lookup keyed on filePath — it never adds, drops, or
+  // reorders sites, so the finding set is identical to the pre-change output,
+  // only now carrying a path. A file with no computed path stays path-less
+  // ("not computed").
+  confirmed = confirmed.map((c) => {
+    const path = graphPaths.get(c.filePath);
+    return path ? { ...c, graphPath: path } : c;
+  });
   const generatedReferences = generatedReferencesFrom(confirmed, generatedFiles);
   const vendoredReferences = vendoredReferencesFrom(
     confirmed.filter((c) => !generatedFiles.has(c.filePath)),
@@ -511,6 +525,7 @@ export async function analyzeImpact(
     computeCoverage(index, provider.unresolved),
     detectGeneratedFiles(index),
     detectVendoredFiles(index),
+    provider.graphPaths,
   );
 }
 
@@ -539,6 +554,7 @@ export function analyzeRepo(
     computeCoverage(index, provider.unresolved),
     detectGeneratedFiles(index),
     detectVendoredFiles(index),
+    provider.graphPaths,
   );
   return report.sites.map(confirmedToFinding);
 }
