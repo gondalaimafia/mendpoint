@@ -77,6 +77,35 @@ describe("stageRepo (hermetic)", () => {
     }
   });
 
+  it("keeps a holdout answer key — including its importChain — out of the staged tree", () => {
+    // The task-family classifier reads blast_radius_truth.importChain to place a
+    // scenario on the reference-vs-relationship axis. That chain is an ANSWER KEY:
+    // if it reached the repo a product sees, a holdout scenario would leak the
+    // very relationship the experiment is testing. Staging must strip it.
+    const { root, cleanup } = makeRepo({
+      "EXPECTED.md": "importChain: wrapper.ts -> core.ts -> sink.ts\nexpected: src/sink.ts",
+      "SYNTHETIC_REPO_NOTES.md": "holdout: relationship-heavy; answer traverses the wrapper chain",
+      "src/wrapper.ts": "export const w = 1;",
+      "src/core.ts": "export const c = 1;",
+      "src/sink.ts": "export const s = 1;",
+    });
+    try {
+      const staged = stageRepo(root);
+      const files = listFilesRecursive(staged.stagedPath);
+      // No answer-key file survives, so the chain it encodes cannot be read on disk.
+      expect(files.filter((f) => isAnswerKeyFile(f))).toEqual([]);
+      // The ordinary source the chain traverses is preserved for the product.
+      expect(files).toContain("src/wrapper.ts");
+      expect(files).toContain("src/sink.ts");
+      // The keys are recorded as excluded, not silently dropped.
+      expect(staged.excludedAnswerKeys).toContain("EXPECTED.md");
+      expect(staged.excludedAnswerKeys).toContain("SYNTHETIC_REPO_NOTES.md");
+      staged.cleanup();
+    } finally {
+      cleanup();
+    }
+  });
+
   it("never mutates the source repo", () => {
     const { root, cleanup } = makeRepo({ "EXPECTED.md": "key", "src/a.ts": "x" });
     try {
