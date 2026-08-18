@@ -93,6 +93,7 @@ async function expectPublicWebsite(page: Page, request: APIRequestContext): Prom
       ),
       `${route.path} should not overflow a mobile viewport horizontally`,
     ).toBeLessThanOrEqual(1);
+    await expectNoBlockingAccessibilityViolations(page);
   }
   await page.setViewportSize({ width: 1440, height: 900 });
 

@@ -52,7 +52,7 @@ export default async function ProductDocumentationPage({ params }: PageInput) {
         </DocSection>
         <DocSection id="interfaces" title="Interfaces">
           <div className="docs-table-wrap">
-            <table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead>
+            <table aria-label={`${page.title} interfaces`} tabIndex={0}><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead>
               <tbody>{page.interfaces.map((item) => <tr key={`${item.kind}:${item.name}`}><td><code>{item.name}</code></td><td>{item.kind}</td><td>{item.detail}</td></tr>)}</tbody>
             </table>
           </div>
