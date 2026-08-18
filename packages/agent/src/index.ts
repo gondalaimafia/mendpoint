@@ -116,6 +116,14 @@ export {
   type WardenAttemptRuntime,
   type WardenAttemptResult,
 } from "./attempt-engine.js";
+export {
+  buildWardenAttemptCapture,
+  wardenAvailableTools,
+  type WardenAttemptCapture,
+  type WardenCaptureModelProvenanceRecord,
+  type WardenCaptureToolStep,
+  type WardenCaptureVerification,
+} from "./trajectory-capture.js";
 export type {
   WardenCheckpointBinding,
   WardenCheckpointEnvelope,

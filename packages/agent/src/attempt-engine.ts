@@ -23,10 +23,17 @@ import {
   sep,
 } from "node:path";
 import {
+  configuredSandboxKind,
   runVerificationCommand,
   validateVerificationCommands,
   type VerificationExecution,
 } from "@mendpoint/repair";
+import {
+  buildWardenAttemptCapture,
+  wardenAvailableTools,
+  type WardenAttemptCapture,
+  type WardenCaptureVerification,
+} from "./trajectory-capture.js";
 import type { CandidateReviewEvidenceV2 } from "@mendpoint/shared";
 import {
   ABSENT_FILE_EVIDENCE_DIGEST,
@@ -161,6 +168,14 @@ export type WardenAttemptResult =
       agent: WardenAttemptAgentSummary;
       artifacts: AttemptArtifacts;
       finalizeTerminal?: () => Promise<WardenRuntimeTerminalEvidence>;
+      /**
+       * Serializable observation of the run (Intelligence Ownership Phases 4+7).
+       * Carries the observable (input -> output) pair, tool calls, model
+       * provenance, and verification so the worker can persist a trajectory.
+       * Present whenever the agent actually ran; the agent package never
+       * persists it (it cannot import `@mendpoint/db`).
+       */
+      capture?: WardenAttemptCapture;
     }>
   | Readonly<{
       status: "rejected";
@@ -170,6 +185,7 @@ export type WardenAttemptResult =
       changedPaths: readonly string[];
       agent?: WardenAttemptAgentSummary;
       artifacts: EmptyAttemptArtifacts;
+      capture?: WardenAttemptCapture;
     }>;
 
 type ManifestEntry = Readonly<{
@@ -274,6 +290,7 @@ function freezeResult<T extends WardenAttemptResult>(value: T): T {
     Object.freeze(value.agent.filesChanged);
     Object.freeze(value.agent);
   }
+  if (value.capture) Object.freeze(value.capture);
   return Object.freeze(value);
 }
 
@@ -282,6 +299,7 @@ function reject(
   summary: string,
   digests: { sourceDigest?: string; candidateDigest?: string } = {},
   agent?: WardenAttemptAgentSummary,
+  capture?: WardenAttemptCapture,
 ): WardenAttemptResult {
   return freezeResult({
     status: "rejected",
@@ -290,6 +308,7 @@ function reject(
     nextActions: Object.freeze(["Review the rejection code and submit a new bounded attempt."]),
     changedPaths: Object.freeze([]),
     ...(agent ? { agent } : {}),
+    ...(capture ? { capture } : {}),
     artifacts: Object.freeze({
       candidateWorkspace: null,
       candidateManifest: null,
@@ -301,6 +320,32 @@ function reject(
 
 function fail(code: string, message: string): never {
   throw new AttemptError(code, message);
+}
+
+/**
+ * Read the exact produced bytes of the changed candidate files for the observable
+ * trajectory output. Best-effort and bounded: it never throws, skips a file that
+ * exceeds the changed-file byte limit, and the store redacts and truncates every
+ * payload before it is persisted. Raw bytes stay in-process; only the redacted
+ * form ever reaches storage.
+ */
+function readChangedFiles(
+  workspace: string,
+  changedPaths: readonly string[],
+  limits: WardenAttemptLimits,
+): { path: string; content: string }[] {
+  const files: { path: string; content: string }[] = [];
+  for (const path of changedPaths) {
+    try {
+      const absolute = join(workspace, path);
+      if (statSync(absolute).size > limits.maxChangedFileBytes) continue;
+      files.push({ path, content: readFileSync(absolute, "utf8") });
+    } catch {
+      // A file that cannot be read (deleted, binary, gone) is simply omitted;
+      // its path still appears in `changedPaths` on the output packet.
+    }
+  }
+  return files;
 }
 
 function assertAttemptContinues(input: WardenAttemptInput): void {
@@ -920,8 +965,21 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
   let agentSummary: WardenAttemptAgentSummary | undefined;
   let createdArtifacts: { candidateManifest: string; evidence: string } | undefined;
   let runtimeExecution: WardenRuntimeExecution | undefined;
+  // Observable trajectory capture. The live agent result and the resolved task
+  // mode are hoisted so a rejection AFTER execution (thrown from any `fail`)
+  // still carries the trajectory to the worker; the success path builds the
+  // enriched capture (verification records + exact changed-file bytes). The
+  // builder never throws, so capture can never break the attempt hot path.
+  let agentResult: AgentRunResult | undefined;
+  let capture: WardenAttemptCapture | undefined;
+  let resolvedMode: AgentTaskMode = input.mode ?? input.task.taskMode ?? "repair";
+  const captureAvailableTools = wardenAvailableTools({
+    allowNetwork: false,
+    dryRun: input.task.dryRun,
+  });
   try {
     const validated = validateInput(input);
+    resolvedMode = validated.mode;
     assertAttemptContinues(input);
     const commands = [
       input.verification.targetCommand,
@@ -1109,6 +1167,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
     }
     assertAttemptContinues(input);
     agentSummary = agentEvidence(agent, input.task);
+    agentResult = agent;
 
     const sourceAfterAgent = scanTree(
       validated.sourceRoot,
@@ -1300,6 +1359,32 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
             await execution.finalize(outcome);
         })()
       : undefined;
+    const sandboxBackend = configuredSandboxKind();
+    const verifications: WardenCaptureVerification[] = [
+      target.record,
+      ...regression.records,
+      ...security.records,
+    ].map((record) => ({
+      verdict: record.ok ? "passed" : "failed",
+      exitCode: record.exitCode,
+      command: record.command,
+      sandboxBackend,
+    }));
+    capture = buildWardenAttemptCapture({
+      agent,
+      goal: input.task.goal,
+      taskMode: validated.mode,
+      errorLog: input.task.errorLog ?? null,
+      verifyCommand: input.verification.targetCommand,
+      availableTools: captureAvailableTools,
+      runId: input.task.sessionId ?? null,
+      sandboxBackend,
+      status: "succeeded",
+      changedPaths: difference.changedPaths,
+      candidateDigest: candidateManifest.digest,
+      changedFiles: readChangedFiles(workspace, difference.changedPaths, input.limits),
+      verifications,
+    });
     const result = freezeResult({
       status: "succeeded",
       summary: "Warden produced a source bound candidate that passed independent verification.",
@@ -1316,6 +1401,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
         evidenceSha256,
       }),
       ...(finalizeTerminal ? { finalizeTerminal } : {}),
+      ...(capture ? { capture } : {}),
     });
     workspace = undefined;
     createdArtifacts = undefined;
@@ -1326,8 +1412,33 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       rmSync(createdArtifacts.candidateManifest, { force: true });
       rmSync(createdArtifacts.evidence, { force: true });
     }
+    const rejectionCode =
+      error instanceof AttemptError ? error.code : "warden_attempt_internal_error";
+    // A rejection AFTER the agent ran still produced an observable trajectory
+    // (tools called, model used). Capture it so the worker can persist it; a
+    // rejection BEFORE execution (agentResult undefined) has no trajectory.
+    const rejectCapture = agentResult
+      ? buildWardenAttemptCapture({
+          agent: agentResult,
+          goal: input.task.goal,
+          taskMode: resolvedMode,
+          errorLog: input.task.errorLog ?? null,
+          verifyCommand: input.verification.targetCommand,
+          availableTools: captureAvailableTools,
+          runId: input.task.sessionId ?? null,
+          sandboxBackend: configuredSandboxKind(),
+          status: "rejected",
+          code: rejectionCode,
+        })
+      : undefined;
     if (error instanceof AttemptError) {
-      return reject(error.code, error.message, { sourceDigest, candidateDigest }, agentSummary);
+      return reject(
+        error.code,
+        error.message,
+        { sourceDigest, candidateDigest },
+        agentSummary,
+        rejectCapture,
+      );
     }
     const message = error instanceof Error ? error.message : "Unknown attempt engine failure.";
     return reject(
@@ -1335,6 +1446,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       message,
       { sourceDigest, candidateDigest },
       agentSummary,
+      rejectCapture,
     );
   }
 }
