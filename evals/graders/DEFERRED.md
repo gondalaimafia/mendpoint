@@ -27,14 +27,41 @@ are deferred for a concrete reason, recorded here rather than faked.
 - Note: this is exactly what the `partial-campaign` idempotency check needs
   (apply, assert green, re-apply, assert zero diff).
 
-## Expected-graph-edges grader — deferred (product does not expose the graph)
+## Expected-graph-edges / relationship-path grader — SHIPPED (was: product does not expose the graph)
 
-- Why: `analyzeImpact` returns an `ImpactReport` (confirmed sites), not the raw
-  call/import graph it built. `ExpandedContext` carries `graphCallers`/`wrappers`
-  internally but is not surfaced in the report. Grading expected edges (from
-  `blast_radius_truth.importChain`) requires the product to expose its
-  constructed graph, or the runner to call `@mendpoint/call-graph` directly.
-- Deterministic: yes, once the edges are observable.
+- Status: implemented in `import-chain-graders.ts` (`gradeImportChain`). The
+  blocker recorded here is gone.
+- What unblocked it: PR #200 added `GraphPath` to `ImpactFindingSchema` /
+  `ConfirmedImpactSchema` (`@mendpoint/shared`) — the provider->code path
+  (`nodes` anchor-first, `terminal` ∈ anchor|cycle|max_hops, `coverage`
+  complete|partial) behind each material finding. `analyzeImpact` populates it
+  (`buildProviderReachability` -> `anchorPathTo`), so the path IS in the report
+  now. The eval runner previously mapped `report.sites` down to file paths and
+  discarded the path; it now persists it on `RunRecord.findingGraphPaths`.
+- The other half of the blocker (not previously recorded): the prose
+  `blast_radius_truth.importChain` was never a gradable key. It is deliberately
+  prose of inconsistent granularity (directories, basenames, class names, whole
+  sentences) and inconsistent orientation, read only for its hop COUNT by
+  `task-family.ts`. Parsing file identities out of it would contradict that
+  module's deliberate choice. So a NEW structured key was added alongside it —
+  `blast_radius_truth.importChainPaths` (anchor-first full posix paths,
+  hand-derived from fixture source, never from product output) — and the grader
+  compares emitted `GraphPath.nodes` to it.
+- What it grades: does the emitted path reach the expected ANCHOR; are the
+  intermediate hops correct and IN ORDER (right file by the wrong route is not a
+  correct explanation); is a path emitted at all where the key expects one.
+- Honest absence / bounded: a finding with NO `graphPath` is `absent`
+  ("not computed"), never graded as wrong; a `cycle`/`max_hops` path is graded
+  against the suffix its bound permits, never treated as a false result.
+- Non-gating: disagreements are classified into the existing taxonomy
+  (`GRAPH_CONSTRUCTION_FAILURE`, never P0) but kept out of the gating
+  `passed`/`failures` channels, so readiness gates and existing verdicts are
+  unaffected. It is a measurement channel, reported in `reports/latest.md`.
+- Coverage today: only 5 of 21 scenarios carry a structured key (the multi-file
+  rename fixtures); `node-cjs` is intentionally unkeyed because its cross-file
+  relationship is runtime dependency injection, not a static import chain, so no
+  linear import path exists to grade. A small denominator by design.
+- Deterministic: yes.
 
 ## Verification-honesty grader — deferred (path not exercised)
 

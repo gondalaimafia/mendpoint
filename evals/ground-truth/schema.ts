@@ -108,6 +108,28 @@ export interface BlastRadiusTruth {
   untouchedSubsystems?: string[];
   /** Import/call chain a correct trace should follow (prose, for reports). */
   importChain?: string[];
+  /**
+   * Structured, machine-gradable provider->code import paths — the answer key
+   * the prose `importChain` above cannot be (it is deliberately prose, read only
+   * for its hop COUNT by `task-family.ts`). Each entry is ONE shortest import
+   * path, anchor-first, as an ordered list of full repo-relative POSIX file
+   * paths: element 0 is the provider anchor (the client file that serializes the
+   * changed wire field), each subsequent element imports the one before it, and
+   * the last element is the affected file the path explains. This mirrors the
+   * orientation and node vocabulary of the product's `GraphPath.nodes`
+   * (@mendpoint/shared), so the importChain grader can compare emitted paths to
+   * expected ones without parsing prose.
+   *
+   * ANSWER-KEY ISOLATION: every path here is hand-derived from the fixture
+   * repository's own import/require statements, NEVER from `analyzeImpact`,
+   * `anchorPathTo`, or any product output — a key generated from the thing it
+   * grades measures nothing. Only paths whose shortest route is UNIQUELY
+   * determined by the source imports are encoded; a scenario whose cross-file
+   * relationship is runtime wiring (e.g. dependency injection) rather than a
+   * static import has no linear import path and is intentionally left unset,
+   * which the grader treats as "not gradable here", never as a product failure.
+   */
+  importChainPaths?: string[][];
 }
 
 export interface GroundTruth {
@@ -226,6 +248,25 @@ export function validateGroundTruth(value: unknown): string[] {
     problems.push("blast_radius_truth must be an object");
   } else if (typeof g.blast_radius_truth.affectedFiles !== "number") {
     problems.push("blast_radius_truth.affectedFiles must be a number");
+  }
+
+  // importChainPaths, when present, is the structured gradable key: an array of
+  // paths, each an ordered list of >=2 non-empty file paths (anchor .. affected).
+  const paths = g.blast_radius_truth?.importChainPaths;
+  if (paths !== undefined) {
+    if (
+      !Array.isArray(paths) ||
+      !paths.every(
+        (p) =>
+          Array.isArray(p) &&
+          p.length >= 2 &&
+          p.every((n) => typeof n === "string" && n.length > 0),
+      )
+    ) {
+      problems.push(
+        "blast_radius_truth.importChainPaths must be an array of paths, each an array of >=2 non-empty file-path strings",
+      );
+    }
   }
 
   // Cross-field consistency: abstain / no_op must have no expected findings.

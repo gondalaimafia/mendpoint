@@ -162,6 +162,7 @@ export async function runRegauge(
     estimated_cost_usd: null,
     activity: { filesExamined: 0 },
     findings: [],
+    findingGraphPaths: [],
     confidence: null,
     produced_edit: false,
     grader_results: [],

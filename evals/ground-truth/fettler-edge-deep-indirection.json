@@ -28,6 +28,14 @@
     "affectedFiles": 5,
     "importChain": [
       "order.js -> payments-facade.js -> http-client.js -> vendor-sdk/acmepay.js"
+    ],
+    "importChainPaths": [
+      [
+        "src/vendor-sdk/acmepay.js",
+        "src/shared/http-client.js",
+        "src/shared/payments-facade.js",
+        "src/app/order.js"
+      ]
     ]
   },
   "tags": [

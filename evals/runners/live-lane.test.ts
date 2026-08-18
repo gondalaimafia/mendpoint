@@ -50,6 +50,7 @@ function record(findings: string[], latency = 100): RunRecord {
     estimated_cost_usd: null,
     activity: { filesExamined: 3 },
     findings,
+    findingGraphPaths: [],
     confidence: "medium",
     produced_edit: false,
     grader_results: [],

@@ -47,6 +47,20 @@
       "app/providers/payments_client.py (wire source)",
       "-> app/services/charge_service.py, refund_service.py",
       "-> app/tasks/settlement_task.py"
+    ],
+    "importChainPaths": [
+      [
+        "app/providers/payments_client.py",
+        "app/services/charge_service.py"
+      ],
+      [
+        "app/providers/payments_client.py",
+        "app/services/refund_service.py"
+      ],
+      [
+        "app/providers/payments_client.py",
+        "app/tasks/settlement_task.py"
+      ]
     ]
   },
   "tags": [
