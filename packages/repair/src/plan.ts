@@ -2,7 +2,16 @@
  * Build a repair plan from observations (deterministic first, optional LLM later).
  */
 import { fetchBoundedText, redactSourceForModel } from "@mendpoint/shared";
-import type { FailureObservation, RepairAction, RepairPlan } from "./types.js";
+import type {
+  FailureObservation,
+  RepairAction,
+  RepairModelProvenance,
+  RepairPlan,
+} from "./types.js";
+
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
 
 export function planRepairs(
   observations: FailureObservation[],
@@ -204,6 +213,8 @@ Only edit provided slices. Never invent secrets. Max 8 actions.`;
     );
     if (!res.ok) return null;
     const data = JSON.parse(responseText) as {
+      model?: unknown;
+      usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown };
       choices?: Array<{ message?: { content?: string } }>;
     };
     const text = data.choices?.[0]?.message?.content ?? "";
@@ -214,12 +225,27 @@ Only edit provided slices. Never invent secrets. Max 8 actions.`;
       (a) => a && a.type === "replace_in_file" && "from" in a && "to" in a,
     );
     if (!actions.length) return null;
+    // Account for the call: record the model that ACTUALLY answered (provider
+    // echo) and its token usage, rather than discarding them. This is the
+    // repair-lane equivalent of the agent's live-model provenance.
+    const promptTokens = finiteOrNull(data.usage?.prompt_tokens);
+    const completionTokens = finiteOrNull(data.usage?.completion_tokens);
+    const totalTokens = finiteOrNull(data.usage?.total_tokens);
+    const modelProvenance: RepairModelProvenance = {
+      model: typeof data.model === "string" && data.model ? data.model : null,
+      host: target.host,
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      measured: promptTokens !== null || completionTokens !== null || totalTokens !== null,
+    };
     return {
       attempt: opts.attempt,
       observations,
       actions: actions.slice(0, 8),
       strategy: "llm",
       summary: `LLM proposed ${actions.length} action(s)`,
+      modelProvenance,
     };
   } catch {
     return null;
