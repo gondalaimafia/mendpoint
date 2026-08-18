@@ -58,6 +58,33 @@ describe("fly machines sandbox lifecycle", () => {
     }
   });
 
+  it("drops Fly exec privileges to the image node user", async () => {
+    let observedCommand: string[] | undefined;
+    const client = createMockFlyClient({
+      exec(input) {
+        observedCommand = input.command;
+        return { exit_code: 0, stdout: "", stderr: "" };
+      },
+    });
+    const sbx = createFlyMachinesSandbox(flyOpts(client));
+    try {
+      const result = await sbx.runIsolated("id -u");
+
+      expect(result.ok).toBe(true);
+      expect(observedCommand).toEqual([
+        "/usr/sbin/runuser",
+        "-u",
+        "node",
+        "--",
+        "/bin/sh",
+        "-c",
+        "id -u",
+      ]);
+    } finally {
+      await sbx.destroy();
+    }
+  });
+
   it("tears the Machine down even when the command fails", async () => {
     const client = createMockFlyClient({
       exec: () => ({ exit_code: 7, stdout: "", stderr: "boom" }),
