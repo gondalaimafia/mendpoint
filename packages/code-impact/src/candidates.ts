@@ -16,7 +16,7 @@ import type {
 import type { CodebaseIndex, FileRecord } from "@mendpoint/codebase-index";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildProviderReachability } from "./lang-import-graph.js";
+import { buildProviderReachability, type UnresolvedImport } from "./lang-import-graph.js";
 
 function confFromSource(source: CandidateSource, breaking: boolean): Confidence {
   if (source === "sdk_graph") return breaking ? "high" : "medium";
@@ -297,9 +297,49 @@ function providerAnchors(
   return anchors;
 }
 
+/** Provider provenance shared between candidate gating and coverage. */
+export type ProviderReachability = {
+  /** Files that can reach a provider anchor through imports. */
+  reachable: Set<string>;
+  /**
+   * First-party import specifiers that looked reachable but resolved to no
+   * indexed file, so the reachable set may be incomplete. A non-empty list means
+   * a match this run demoted for being unreachable may in fact be a false demote
+   * — it is surfaced as a coverage gap so an incomplete graph never masquerades
+   * as full coverage.
+   */
+  unresolved: UnresolvedImport[];
+  /** Whether any provider anchor was locatable (the gate only bites when true). */
+  gateEnabled: boolean;
+};
+
+/**
+ * Compute provider provenance for a change once, so candidate gating and
+ * coverage read the same reachable set and the same unresolved-import list.
+ * Ambiguous surfaces are excluded from anchoring exactly as candidate discovery
+ * excludes them.
+ */
+export function computeProviderReachability(
+  index: CodebaseIndex,
+  allSurfaces: ImpactableSurface[],
+): ProviderReachability {
+  const surfaces = allSurfaces.filter(
+    (s) =>
+      s.op !== "request_field_ambiguous" && s.op !== "response_field_ambiguous",
+  );
+  const anchors = providerAnchors(index, surfaces);
+  const { reachable, unresolved } = buildProviderReachability(
+    index.files,
+    index.repoRoot,
+    anchors,
+  );
+  return { reachable, unresolved, gateEnabled: anchors.size > 0 };
+}
+
 export function discoverCandidates(
   index: CodebaseIndex,
   allSurfaces: ImpactableSurface[],
+  providerReach?: ProviderReachability,
 ): CandidateSite[] {
   const acc: Acc = new Map();
   // Ambiguous field changes have more than one plausible successor. The tool
@@ -315,10 +355,10 @@ export function discoverCandidates(
   // tier when the file can reach the provider surface through imports. Anchors
   // that we cannot locate (no HTTP path, no vendor package) leave `gateEnabled`
   // false, so confidence falls back to the token match — absence of a locatable
-  // surface degrades precision, never recall.
-  const anchors = providerAnchors(index, surfaces);
-  const { reachable } = buildProviderReachability(index.files, index.repoRoot, anchors);
-  const gateEnabled = anchors.size > 0;
+  // surface degrades precision, never recall. Reachability is computed here (or
+  // supplied by the caller, which also feeds the unresolved list into coverage).
+  const { reachable, gateEnabled } =
+    providerReach ?? computeProviderReachability(index, allSurfaces);
   const gate = (
     filePath: string,
     source: CandidateSource,

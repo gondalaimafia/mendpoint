@@ -159,12 +159,45 @@ function requestBodySchema(operation: unknown, resolver: SchemaResolver): unknow
   return schema ?? op.requestBody;
 }
 
+/**
+ * Pick the representative success response out of an OpenAPI `responses` map.
+ * OpenAPI 3.x allows the whole 2xx space plus the `2XX` range wildcard, and
+ * `202`/`203`/`206` are ordinary success codes — reading only `200`/`201`
+ * missed them, so a field removed from a `202` body looked like no change, and a
+ * `200`→`2XX` renumbering read as the removal of every field.
+ *
+ * Precedence (deterministic, so old and new specs pick equivalent statuses and a
+ * pure renumbering does not read as a removal): `200`, then `201`, then any other
+ * explicit 2xx numeric code in ascending order, then the `2XX`/`2xx` range
+ * wildcard, then `default` as the last-resort catch-all. Old and new are each
+ * reduced to their single success representative, so `200`→`2XX` compares body to
+ * body rather than body to nothing.
+ */
+function pickSuccessResponse(responses: Json): unknown {
+  const keys = Object.keys(responses);
+  const has = (k: string) => responses[k] !== undefined;
+  const numeric2xx = keys
+    .filter((k) => /^2\d\d$/.test(k) && k !== "200" && k !== "201")
+    .sort((a, b) => Number(a) - Number(b));
+  const range2xx = keys.filter((k) => /^2xx$/i.test(k));
+  const order = [
+    ...(has("200") ? ["200"] : []),
+    ...(has("201") ? ["201"] : []),
+    ...numeric2xx,
+    ...range2xx,
+    ...(has("default") ? ["default"] : []),
+  ];
+  for (const k of order) {
+    if (responses[k] !== undefined) return responses[k];
+  }
+  return undefined;
+}
+
 /** The success response schema for an operation, dereferencing the response wrapper. */
 function responseSchema(operation: unknown, resolver: SchemaResolver): unknown {
   const op = asObj(operation);
   const responses = asObj(op.responses);
-  const success =
-    responses["200"] ?? responses["201"] ?? responses["default"] ?? {};
+  const success = pickSuccessResponse(responses) ?? {};
   return pickContentSchema(asObj(asObj(resolver.deref(success)).content));
 }
 
@@ -190,13 +223,51 @@ function sharedExample(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * Length-normalized lexical proximity. A flat `levenshtein <= 3` mints a
+ * "rename" between any two unrelated short fields (`iso` -> `tag` is distance 3),
+ * so require the distance to stay within roughly one edit per three characters
+ * of the SHORTER name, capped at the previous ceiling of 3. Short names must be
+ * near-identical (<=1 edit for 3-5 chars, exact for 1-2 chars) while long names
+ * keep their tolerance.
+ */
+function lexicallyClose(a: string, b: string): boolean {
+  const minLen = Math.min(a.length, b.length);
+  const allowed = Math.min(3, Math.floor(minLen / 3));
+  return levenshtein(a, b) <= allowed;
+}
+
+/**
+ * Whether `needle` appears inside `haystack` as a whole `_` / `.` / `-` /
+ * camelCase delimited token, so `source` matches `payment_source` and `amount`
+ * matches `amountCents`, but `at` never matches `format`. A raw substring test
+ * fires on coincidental infixes; a deliberate rename leaves a whole-token trace.
+ */
+function containsToken(haystack: string, needle: string): boolean {
+  if (!needle) return false;
+  const tokens = haystack
+    .split(/[_.-]|(?<=[a-z0-9])(?=[A-Z])/)
+    .map((t) => t.toLowerCase())
+    .filter(Boolean);
+  return tokens.includes(needle.toLowerCase());
+}
+
+/**
+ * A schema carrying more than a bare primitive `type` — distinctive enough that
+ * structural equality is real evidence two fields are the same one, not the
+ * accident of two `{ type: "string" }` fields matching.
+ */
+function isDistinctiveSchema(schema: unknown): boolean {
+  return Object.keys(asObj(schema)).some((k) => k !== "type");
+}
+
+/**
  * Whether an added field is a plausible successor of a removed field. Broader
  * than a confident rename on purpose: it is the predicate that *counts*
  * successors, so it must catch every candidate a human would consider. Names
- * that are lexically close, schemas that are structurally identical, or
- * type-compatible fields that carry the same example value all qualify — a
- * copied example strongly implies the same underlying field even when names and
- * descriptions diverge.
+ * that are lexically close (length-normalized), schemas that are structurally
+ * identical, or type-compatible fields that carry the same example value all
+ * qualify — a copied example strongly implies the same underlying field even when
+ * names and descriptions diverge.
  */
 function isPlausibleSuccessor(
   from: string,
@@ -209,9 +280,40 @@ function isPlausibleSuccessor(
     to.includes(from) ||
     from.replace(/_cents$/, "") === to ||
     to.replace(/_cents$/, "") === from ||
-    levenshtein(from, to) <= 3;
+    lexicallyClose(from, to);
   if (lexical) return true;
   if (schemaDeepEqual(fromSchema, toSchema)) return true;
+  if (typeCompatible(fromSchema, toSchema) && sharedExample(fromSchema, toSchema)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a *lone* candidate is strong enough to assert as a confident rename.
+ * The ambiguity machinery only fires with two or more candidates, so a single
+ * candidate would otherwise become a confident rename however weak the link — and
+ * a bogus rename drives a destructive whole-file token rewrite downstream.
+ * Require a non-coincidental signal: a `_cents` derivation, a whole-token
+ * containment, near-identical spelling, structural identity on a distinctive
+ * schema, or a copied example. A candidate that qualified only by a coincidental
+ * infix or a bare `{ type }` match abstains — over-abstaining is far safer than
+ * over-renaming.
+ */
+function isConfidentSuccessor(
+  from: string,
+  fromSchema: unknown,
+  to: string,
+  toSchema: unknown,
+): boolean {
+  if (from.replace(/_cents$/, "") === to || to.replace(/_cents$/, "") === from) {
+    return true;
+  }
+  if (containsToken(from, to) || containsToken(to, from)) return true;
+  if (lexicallyClose(from, to)) return true;
+  if (isDistinctiveSchema(fromSchema) && schemaDeepEqual(fromSchema, toSchema)) {
+    return true;
+  }
   if (typeCompatible(fromSchema, toSchema) && sharedExample(fromSchema, toSchema)) {
     return true;
   }
@@ -251,8 +353,15 @@ function detectFieldChanges(
         isPlausibleSuccessor(from, oldProps.get(from), to, newProps.get(to)),
     );
     if (candidates.length === 1) {
-      renames.push({ from, to: candidates[0]! });
-      usedTo.add(candidates[0]!);
+      const to = candidates[0]!;
+      // A single plausible candidate is asserted as a rename only when the link
+      // is strong. A weak lone candidate abstains: `from` stays a removal and
+      // `to` a plain addition, so no confident rename (and no destructive token
+      // rewrite) is minted from a coincidental match.
+      if (isConfidentSuccessor(from, oldProps.get(from), to, newProps.get(to))) {
+        renames.push({ from, to });
+        usedTo.add(to);
+      }
     } else if (candidates.length > 1) {
       ambiguities.push({ from, candidates });
     }
