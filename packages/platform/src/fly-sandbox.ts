@@ -103,10 +103,14 @@ export type FlySandboxOptions = {
 };
 
 export const FLY_SANDBOX_DEFAULTS = {
-  // Built from Dockerfile.sandbox and pushed by scripts/build-sandbox-image.mjs.
-  // `:latest` tracks the current sandbox image; production pins an immutable tag
-  // via MENDPOINT_SANDBOX_FLY_IMAGE. See docs/SANDBOX_IMAGE.md.
-  image: "registry.fly.io/mendpoint-sandbox:latest",
+  // Deliberately NO default image. The sandbox image IS the isolation boundary,
+  // so it must be an immutable, reviewed, digest-pinned reference supplied via
+  // MENDPOINT_SANDBOX_FLY_IMAGE (or fly.image). A floating `:latest` default here
+  // would be fail-OPEN: the artifact enforcing the isolation guarantee could
+  // change with no review, no reproducibility, and nothing to audit. When no
+  // pinned image resolves the live path fails closed (see resolveSandboxImage).
+  // Built from Dockerfile.sandbox and pushed by scripts/build-sandbox-image.mjs;
+  // see docs/SANDBOX_IMAGE.md.
   region: "iad",
   cpuKind: "shared",
   cpus: 1,
@@ -334,6 +338,72 @@ export function resolveFlySandboxToken(env: NodeJS.ProcessEnv = process.env): st
 }
 
 /**
+ * An immutable, digest-pinned image reference: `<name>@sha256:<64 lowercase hex>`.
+ * A mutable tag (`:latest`, `:v1`, any tag) is refused because the pulled artifact
+ * behind a tag can change with no review — and that artifact IS the isolation
+ * boundary. Digests are canonical lowercase hex (docker/OCI), so the match is
+ * case-sensitive on purpose.
+ */
+const DIGEST_PINNED_IMAGE = /@sha256:[0-9a-f]{64}$/;
+
+/**
+ * Explicit, LOUD escape hatch for local/dev use ONLY: allow a non-digest-pinned
+ * (tag-based) sandbox image on the live path. Its name is deliberately alarming so
+ * that enabling it is a conscious act, never a silent default. Production never
+ * sets it; the strict digest-pin requirement is the default. It only relaxes the
+ * pin — it never permits an absent image and never enables host fallback.
+ */
+export function sandboxAllowUnpinnedImage(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE?.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+/**
+ * Resolve and validate the sandbox image, fail-closed. The resolution chain that
+ * feeds this (`fly.image` -> MENDPOINT_SANDBOX_FLY_IMAGE) has NO floating default,
+ * so an unset image arrives here as undefined rather than silently becoming
+ * `:latest`.
+ *
+ * On the live path the image is the artifact actually pulled to enforce isolation,
+ * so it MUST be present and digest-pinned; an absent or tag-based image is refused
+ * (the `allowUnpinned` dev escape hatch relaxes only the pin, never presence).
+ *
+ * The mock client is a deterministic in-memory dry-run that never pulls an image,
+ * so on that path the image string is not the isolation boundary and is not
+ * validated. The mock client can only be reached deliberately (an injected client,
+ * or an explicitly forced mock mode); a live selection that falls back to mock for
+ * a missing token already fails closed upstream (see the isolationUnavailable
+ * guard), so this exemption cannot become a silent host/mock bypass.
+ */
+export function resolveSandboxImage(input: {
+  image: string | undefined;
+  mode: "live" | "mock";
+  allowUnpinned?: boolean;
+}): { ok: true; image: string } | { ok: false; stderr: string } {
+  const image = input.image?.trim();
+  if (input.mode === "mock") {
+    // Never pulled; value is cosmetic on the mock path.
+    return { ok: true, image: image && image.length > 0 ? image : "mock" };
+  }
+  if (!image) {
+    return {
+      ok: false,
+      stderr:
+        "fly_machines: sandbox_image_unresolved: no sandbox image configured; set MENDPOINT_SANDBOX_FLY_IMAGE to a digest-pinned image (registry.fly.io/mendpoint-sandbox@sha256:<64 hex>); refusing host fallback",
+    };
+  }
+  if (!DIGEST_PINNED_IMAGE.test(image)) {
+    if (input.allowUnpinned) return { ok: true, image };
+    return {
+      ok: false,
+      stderr:
+        "fly_machines: sandbox_image_not_pinned: sandbox image must be digest-pinned (name@sha256:<64 hex>), not a mutable tag; push the image, capture its digest, and pin it in the reviewed config (see docs/SANDBOX_IMAGE.md); set MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE=1 to allow an unpinned image for local dev only; refusing host fallback",
+    };
+  }
+  return { ok: true, image };
+}
+
+/**
  * Pick the Fly client. Injected client wins (tests / explicit dry-run). Otherwise
  * live only when a sandbox token + a target app are present and mock mode is not
  * forced; else a deterministic in-memory mock (no network).
@@ -368,8 +438,16 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
     resolveFlySandboxToken(process.env) === undefined;
   const region =
     flyOpts.region ?? process.env.MENDPOINT_SANDBOX_FLY_REGION ?? FLY_SANDBOX_DEFAULTS.region;
-  const image =
-    flyOpts.image ?? process.env.MENDPOINT_SANDBOX_FLY_IMAGE ?? FLY_SANDBOX_DEFAULTS.image;
+  // Resolution chain terminates in undefined (no floating `:latest` default). The
+  // image is validated fail-closed: an unset or tag-based image is refused on the
+  // live path so an unreviewed, mutable artifact can never become the isolation
+  // boundary. Computed once here (mirrors the isolationUnavailable guard) and
+  // surfaced as a fail-closed run result in runIsolated below.
+  const imageResolution = resolveSandboxImage({
+    image: flyOpts.image ?? process.env.MENDPOINT_SANDBOX_FLY_IMAGE,
+    mode: client.mode,
+    allowUnpinned: sandboxAllowUnpinnedImage(process.env),
+  });
   const guest: FlyGuest = {
     cpu_kind: flyOpts.resources?.cpuKind ?? FLY_SANDBOX_DEFAULTS.cpuKind,
     cpus: flyOpts.resources?.cpus ?? FLY_SANDBOX_DEFAULTS.cpus,
@@ -422,6 +500,19 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
         exitCode: -1,
       };
     }
+
+    if (!imageResolution.ok) {
+      // fail-closed: the sandbox image is the isolation boundary. An unset or
+      // tag-based image is refused so no Machine is created from an unreviewed,
+      // mutable artifact and the run never degrades to the shared host.
+      return {
+        ok: false,
+        stdout: "",
+        stderr: imageResolution.stderr,
+        exitCode: -1,
+      };
+    }
+    const image = imageResolution.image;
 
     let machine: FlyMachine;
     try {
