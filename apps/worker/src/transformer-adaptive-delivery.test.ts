@@ -342,7 +342,7 @@ describe("Transformer adaptive draft delivery worker", () => {
       `- Output digest: \`sha256:${createHash("sha256").update("passed").digest("hex")}\`.`,
       `- Adaptive repair converged on candidate digest \`${deliveredCandidate.candidateDigest}\`.`,
       "- Triggering failed check: `verify-tests`.",
-      "- Delivery reverified the seal SHA, candidate digest, base revision, paths, contents, and file modes before creating this draft.",
+      "- Delivery reverified the seal SHA, candidate digest, base revision, paths, and contents before creating this draft.",
     ].join("\n"));
     expect(getAdaptiveCandidate(value.db, TENANT_ID, value.candidateId)?.status).toBe("promoted");
     expect(getAdaptiveDeliveryByCandidate(value.db, TENANT_ID, value.candidateId)).toMatchObject({

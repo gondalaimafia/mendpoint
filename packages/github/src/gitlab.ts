@@ -18,6 +18,8 @@ const GITLAB_BRANCH =
 // GitLab namespaces may contain subgroups, so the namespace may include "/".
 const GITLAB_NAMESPACE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/;
 const GITLAB_PROJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+/** GitLab commit ids are 40-hex SHA-1 object names. */
+const GITLAB_HEAD_SHA = /^[a-f0-9]{40}$/i;
 const GITLAB_REQUEST_TIMEOUT_MS = 15_000;
 
 export type MergeRequestResult = {
@@ -71,6 +73,16 @@ export interface ReviewableChangeDelivery {
 
 export type ScmDeliveryProvider = "github" | "gitlab";
 
+/**
+ * Default revision the deterministic in-memory mock reports for a base branch
+ * that no commit has advanced. Real GitLab reports a branch's actual head; the
+ * mock has no repository history, so it treats an untouched base branch as
+ * sitting at this fixed genesis revision. A delivery whose base has moved off it
+ * (advance it with commitFiles, or seed it with seedBranchHead) fails closed as
+ * base-revision drift, exactly as the real path does.
+ */
+export const MOCK_GITLAB_BASE_REVISION = "a".repeat(40);
+
 export interface GitLabDelivery {
   createBranch(
     namespace: string,
@@ -78,6 +90,17 @@ export interface GitLabDelivery {
     branch: string,
     fromBranch?: string,
   ): Promise<void>;
+  /**
+   * Resolve a branch to the commit SHA it currently points at, or undefined if
+   * the branch does not exist. Used to OBSERVE the base revision at delivery
+   * time instead of assuming it, so exact-draft delivery can fail closed when
+   * the base has drifted away from the approved revision.
+   */
+  resolveBranchSha(
+    namespace: string,
+    project: string,
+    branch: string,
+  ): Promise<string | undefined>;
   /**
    * Commit the exact files onto the source branch and return the created
    * commit's SHA (GitLab reports a 40-hex SHA-1 as `id`). Returns an empty
@@ -102,6 +125,7 @@ export interface GitLabDelivery {
 
 export type GitLabDeliveryOperation =
   | "createBranch"
+  | "resolveBranchSha"
   | "commitFiles"
   | "openDraftMergeRequest";
 
@@ -267,6 +291,34 @@ export class HttpGitLabDelivery implements GitLabDelivery {
     throw new GitLabDeliveryError("createBranch", created.status, created.json);
   }
 
+  async resolveBranchSha(
+    namespace: string,
+    project: string,
+    branch: string,
+  ): Promise<string | undefined> {
+    assertBranch(branch);
+    const id = this.projectId(namespace, project);
+    const resolved = await this.fetchImpl(
+      `${this.api}/projects/${id}/repository/branches/${encodeURIComponent(branch)}`,
+      { headers: this.headers() },
+    );
+    if (resolved.status === 404) return undefined;
+    if (!resolved.ok) {
+      throw new GitLabDeliveryError("resolveBranchSha", resolved.status, resolved.json);
+    }
+    // GitLab reports the branch head as `commit.id`, a 40-hex SHA-1 object name.
+    const sha = (resolved.json as { commit?: { id?: unknown } } | null)?.commit?.id;
+    if (typeof sha !== "string" || !GITLAB_HEAD_SHA.test(sha)) {
+      throw new GitLabDeliveryError(
+        "resolveBranchSha",
+        resolved.status,
+        resolved.json,
+        "missing or malformed branch head sha",
+      );
+    }
+    return sha.toLowerCase();
+  }
+
   async commitFiles(
     namespace: string,
     project: string,
@@ -369,6 +421,8 @@ export class HttpGitLabDelivery implements GitLabDelivery {
 
 type MockProject = {
   branches: Map<string, Map<string, string>>;
+  /** Head commit SHA per branch, so a base revision can be observed and drift detected. */
+  heads: Map<string, string>;
   mergeRequests: Map<
     number,
     MergeRequestResult & { sourceBranch: string; targetBranch: string; body: string }
@@ -391,10 +445,34 @@ export class MockGitLabDelivery implements GitLabDelivery {
     const key = `${namespace}/${project}`;
     let existing = this.#projects.get(key);
     if (!existing) {
-      existing = { branches: new Map(), mergeRequests: new Map(), nextIid: 1 };
+      existing = { branches: new Map(), heads: new Map(), mergeRequests: new Map(), nextIid: 1 };
       this.#projects.set(key, existing);
     }
     return existing;
+  }
+
+  /** The head an un-advanced branch reports: its tracked head, else the genesis default. */
+  #head(proj: MockProject, branch: string): string {
+    return proj.heads.get(branch) ?? MOCK_GITLAB_BASE_REVISION;
+  }
+
+  /**
+   * Seed a branch head so a test can model a base branch sitting at a specific
+   * revision (or move it to simulate drift). Advancing the base off the revision
+   * a delivery was approved against makes that delivery fail closed.
+   */
+  seedBranchHead(namespace: string, project: string, branch: string, sha: string): void {
+    assertBranch(branch);
+    this.#project(namespace, project).heads.set(branch, sha);
+  }
+
+  async resolveBranchSha(
+    namespace: string,
+    project: string,
+    branch: string,
+  ): Promise<string | undefined> {
+    assertBranch(branch);
+    return this.#head(this.#project(namespace, project), branch);
   }
 
   async createBranch(
@@ -409,6 +487,8 @@ export class MockGitLabDelivery implements GitLabDelivery {
     if (!proj.branches.has(branch)) {
       const base = proj.branches.get(fromBranch) ?? new Map<string, string>();
       proj.branches.set(branch, new Map(base));
+      // A new branch points at the same commit as the branch it was cut from.
+      proj.heads.set(branch, this.#head(proj, fromBranch));
     }
   }
 
@@ -434,7 +514,7 @@ export class MockGitLabDelivery implements GitLabDelivery {
     // A deterministic 40-hex SHA-1 over the commit inputs, mirroring a real
     // GitLab commit id: stable across replay of the same commit, so exact-draft
     // evidence threads it through unchanged.
-    return createHash("sha1")
+    const sha = createHash("sha1")
       .update(
         JSON.stringify({
           namespace,
@@ -447,6 +527,8 @@ export class MockGitLabDelivery implements GitLabDelivery {
         }),
       )
       .digest("hex");
+    proj.heads.set(branch, sha);
+    return sha;
   }
 
   async openDraftMergeRequest(

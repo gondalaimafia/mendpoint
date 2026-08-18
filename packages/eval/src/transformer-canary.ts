@@ -13,7 +13,7 @@ import {
   recordAdaptiveCandidate,
   reviewAdaptiveCandidate,
 } from "@mendpoint/db";
-import { MockGitHubDelivery } from "@mendpoint/github";
+import { MockGitHubDelivery, MOCK_GITLAB_BASE_REVISION } from "@mendpoint/github";
 import { assessTransformerGate } from "@mendpoint/ops";
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
@@ -248,7 +248,11 @@ const CATALOG_NOW = "2026-08-11T00:00:00.000Z";
 const RECORDED_AT = "2026-08-11T00:01:00.000Z";
 const REVIEWED_AT = "2026-08-11T00:02:00.000Z";
 const CANARY_EXPIRES_AT = "2026-09-11T00:00:00.000Z";
-const BASE_REVISION = "b".repeat(40);
+// The GitLab lane delivers through the in-memory MockGitLabDelivery, which now
+// observes the base revision and fails closed on drift. It reports an untouched
+// base branch as sitting at MOCK_GITLAB_BASE_REVISION, so the canary anchors its
+// approved base there; the GitHub lane accepts any 40-hex base on first delivery.
+const BASE_REVISION = MOCK_GITLAB_BASE_REVISION;
 
 function loadFixture(dir: string, sub: string, paths: readonly string[]): RecipeFiles {
   const files: Record<string, string> = {};

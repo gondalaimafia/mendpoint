@@ -807,7 +807,10 @@ describe("pipeline", () => {
     expect(record).toBeDefined();
     const payload = JSON.parse(record!.payload_json) as Record<string, unknown>;
     expect(payload.tier).toBe("scanner");
-    expect(payload.verified).toBe(true);
+    // The pipeline dereferences no scanner evidence, so a caller-supplied scanner
+    // attestation is recorded and satisfies the default (claim-tier) gate, but is
+    // never independently verified.
+    expect(payload.verified).toBe(false);
     expect(payload.satisfied).toBe(true);
     expect(payload.attestingPrincipal).toBe("ci-scanner@acme");
     expect(payload.attestedAt).toBe("2026-07-02T00:00:00.000Z");
