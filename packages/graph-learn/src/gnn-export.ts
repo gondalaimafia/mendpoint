@@ -105,7 +105,9 @@ export function exportGnnFeatures(
           ...embPad.slice(0, 8),
         ],
       });
-      for (const e of edgesFrom(db, n.id)) {
+      // Feature export mirrors the full stored graph, including invalidated
+      // edges, so temporal structure is preserved for training.
+      for (const e of edgesFrom(db, n.id, undefined, { includeInvalidated: true })) {
         candidateEdges.push({
           source: e.source,
           target: e.target,

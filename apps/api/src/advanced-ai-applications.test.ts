@@ -87,7 +87,7 @@ function admitFlywheelEvent(db: AppDb, input: Readonly<{
     references: { graphContextArtifactId: null, inputArtifactId: ids.sourceArtifactId, proposedActionArtifactId: ids.redactedArtifactId },
     prediction: { summary: "Apply the evidence-bound migration.", evidenceRefs: [ids.redactionEvidenceId] },
     observedOutcome: { status: "corrected", summary: "The corrected migration passed deterministic verification.", attribution: "model_behavior", evidenceRefs: [ids.verificationEvidenceId] },
-    verification: { verdict: "passed", evidenceRefs: [ids.verificationEvidenceId] },
+    verification: { verdict: "passed", evidenceRefs: [ids.verificationEvidenceId], authority: { signalClass: "hard", producedBy: "test_runner", producerModelId: null } },
     reviewerDecision: { decision: "modified", evidenceRefs: [ids.reviewDecisionId] },
     correction: { artifactId: ids.redactedArtifactId, substantive: true },
     confidence: 0.9,

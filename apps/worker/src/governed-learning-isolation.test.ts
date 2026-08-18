@@ -199,6 +199,7 @@ function admitFettlerGoverned(db: AppDb, consentId: string, runId: string, repos
     reviewerDecision: "accepted",
     correctionSubstantive: true,
     confidence: 0.9,
+    verificationAuthority: { signalClass: "hard", producedBy: "sandbox_command", producerModelId: null },
     economics: { inputTokens: 100, outputTokens: 20, latencyMs: 500, costUsd: 0.01 },
     sourceClass: "design_partner_verified",
     provenanceQualifiers: ["deterministically_verified", "reviewer_accepted"],
@@ -261,6 +262,8 @@ describe("legacy and governed learning corpora stay isolated", () => {
       tenantId: TENANT,
       candidate: candidate("regauge-cand-1"),
       artifact: artifact(),
+      // Merged terminal outcome: the producer refuses to admit any other state.
+      deliveryOutcome: "merged",
       now: NOW,
       env: ON,
     });

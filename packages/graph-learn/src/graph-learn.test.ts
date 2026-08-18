@@ -68,6 +68,73 @@ describe("graph-learn substrate", () => {
     expect(formatQueryForPlanner(r)).toContain("Graph-RAG");
   });
 
+  it("target_absent renders as never-observed, not as absence of impact", () => {
+    const md = formatQueryForPlanner({
+      op: "depends_on_path",
+      nodes: [],
+      edges: [],
+      summary: "depends_on 0 terminal path(s) from change:ghost; node not in graph (no evidence either way)",
+      rows: [],
+      coverage: { basis: "target_absent", reason: "node change:ghost is not in the graph" },
+    });
+    // A reader must not be able to conclude "no impact exists".
+    expect(md).toContain("TARGET ABSENT");
+    expect(md).toContain("never observed in the graph");
+    expect(md).toContain("no evidence either way");
+    expect(md).toContain("NOT that the entity has no relationships");
+    expect(md).not.toContain("Coverage: complete");
+  });
+
+  it("partial surfaces the safety bound and omittedPathsAtLeast", () => {
+    const md = formatQueryForPlanner({
+      op: "depends_on_path",
+      nodes: [],
+      edges: [],
+      summary: "depends_on 5 terminal path(s) from change:x; truncated by max_paths",
+      rows: [{ path: "a" }],
+      coverage: { basis: "partial", reason: "truncated by max_paths" },
+      truncation: {
+        truncated: true,
+        reasons: ["max_paths"],
+        maxHops: 2,
+        maxPaths: 5,
+        pathsReturned: 5,
+        omittedPathsAtLeast: 7,
+      },
+    });
+    expect(md).toContain("PARTIAL");
+    expect(md).toContain("safety bound");
+    expect(md).toContain("At least 7 more path(s)");
+    expect(md).not.toContain("Coverage: complete");
+  });
+
+  it("states how many rows were omitted past the render limit", () => {
+    const rows = Array.from({ length: 20 }, (_, i) => ({ i }));
+    const md = formatQueryForPlanner({
+      op: "who_consumes_provider",
+      nodes: [],
+      edges: [],
+      summary: "20 consumers",
+      rows,
+      coverage: { basis: "complete" },
+    });
+    expect(md).toContain("(8 more row(s) not shown here)");
+  });
+
+  it("absent coverage renders as UNKNOWN, never as complete", () => {
+    const md = formatQueryForPlanner({
+      op: "who_consumes_provider",
+      nodes: [],
+      edges: [],
+      summary: "legacy result built before coverage existed",
+      rows: [],
+      // coverage intentionally omitted
+    });
+    expect(md).toContain("Coverage: UNKNOWN");
+    expect(md).toContain("must not be read as complete");
+    expect(md).not.toContain("Coverage: complete");
+  });
+
   it("ingests spec surfaces and blast radius", () => {
     const db = openGraphLearnMemory();
     const diff: StructuralDiff = {
@@ -272,14 +339,14 @@ describe("graph-learn substrate", () => {
         consumerId: "consumer-a",
         outcome: "merged",
         title: "safe a",
-      });
+      }, "tenant-a");
       labelPrOutcome(db, {
         prId: "pr-b",
         changeId: "change-b",
         consumerId: "consumer-b",
         outcome: "merged",
         title: "secret b",
-      });
+      }, "tenant-b");
 
       const scope = { tenantId: "tenant-a", consumerIds: ["consumer-a"] };
       const rates = runGraphQuery(
@@ -704,7 +771,7 @@ export function bar() { return 1; }
         outcome: i % 2 === 0 ? "merged" : "closed",
         title: "pat",
         experiment: "treatment",
-      });
+      }, "tenant-x");
       labelPrOutcome(db, {
         prId: `c${i}`,
         changeId: "ch",
@@ -712,7 +779,7 @@ export function bar() { return 1; }
         outcome: "closed",
         title: "pat",
         experiment: "control",
-      });
+      }, "tenant-x");
     }
     // untagged should not pollute arms
     labelPrOutcome(db, {
@@ -721,7 +788,7 @@ export function bar() { return 1; }
       consumerId: "c3",
       outcome: "merged",
       title: "pat",
-    });
+    }, "tenant-x");
     const ab = measureAbLift(db);
     expect(ab.taggedOnly).toBe(true);
     expect(ab.untaggedSkipped).toBeGreaterThanOrEqual(1);
@@ -740,7 +807,7 @@ export function bar() { return 1; }
       outcome: "merged",
       title: "x",
       experiment: "treatment",
-    });
+    }, "tenant-x");
     const emb = embedGraphNodes(db, { dim: 8 });
     expect(emb.nodes).toBeGreaterThan(0);
     expect(hashEmbedding("hello", 4)).toHaveLength(4);

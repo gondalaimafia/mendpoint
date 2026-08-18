@@ -1,19 +1,30 @@
 # Mendpoint Product and Platform Specification
 
-**Repository authority:** Superseded on 2026-08-18 by [`docs/product/mendpoint-product-platform-specification-v3.md`](./mendpoint-product-platform-specification-v3.md) (v3.0), which the owner named the single canonical product and platform specification because it carries the representation-first Change Graph, graph-epistemics, intelligence-ownership, and independent-verification contracts this document omits. Retained unchanged as history; see [`docs/adr/0004-canonical-product-specification-v3.md`](../adr/0004-canonical-product-specification-v3.md). The requirement register [`PRODUCT_REQUIREMENTS.json`](../PRODUCT_REQUIREMENTS.json) now pins the v3.0 document.
-
 ## Development foundation
 
-**Product:** Mendpoint
-**Canonical products:** Fettler and ReGauge
-**Document type:** Product requirements document, platform specification, technical architecture baseline, and development contract
-**Version:** 2.0
-**Status:** Development foundation
-**Last updated:** 2026-08-14
-**Primary audience:** Founder, product, engineering, design, forward deployed engineering, security, GTM, design partners, and future technical diligence
-**Supersedes:** `mendpoint_product_spec_updated.md` as the development baseline, and `docs/FOUNDATIONAL_PRODUCT_SPEC.md` (v1.0) as the canonical repository authority (see `docs/adr/0001-canonical-product-specification.md`, 2026-08-17)
-**Requirement register:** [`PRODUCT_REQUIREMENTS.json`](../PRODUCT_REQUIREMENTS.json)
-**Release contract:** [`PRODUCT_CONTRACT.md`](../PRODUCT_CONTRACT.md)
+**Product:** Mendpoint  
+**Canonical products:** Fettler and ReGauge  
+**Document type:** Product requirements document, platform specification, technical architecture baseline, and development contract  
+**Version:** 3.0  
+**Status:** Development foundation  
+**Last updated:** 2026-08-17  
+**Primary audience:** Founder, product, engineering, design, forward deployed engineering, security, GTM, design partners, and future technical diligence  
+**Supersedes:** Mendpoint Product and Platform Specification v2.0 as the development baseline
+
+
+---
+
+## Version 3.0 architectural refinement
+
+Version 3.0 preserves the v2 product boundaries and strengthens the architecture around five decisions that now form the development baseline:
+
+1. **Representation-first intelligence.** The Mendpoint Change Graph is the canonical durable representation of software relationships. Models SHOULD reason over bounded graph projections rather than repeatedly reconstructing known relationships from raw files, schemas, search results, or long prompts.
+2. **Resolve once, traverse many times.** High-value relationships SHOULD be entity-resolved and materialized during offline or incremental graph construction when they can be validated, versioned, and reused safely.
+3. **Explicit epistemic state.** Graph edges, coverage, staleness, conflict, and provenance are first-class product data. `NO IMPACT FOUND` and `NO IMPACT FOUND WITH INSUFFICIENT COVERAGE` are different product outcomes.
+4. **Selective intelligence ownership.** Mendpoint SHOULD own migration-specific intelligence where proprietary data, quality, latency, or economics justify it while retaining rented general reasoning where external models remain superior.
+5. **Independent soft verification.** Deterministic verification remains authoritative. Probabilistic model-based verification MAY improve selection and calibration but MUST remain a soft signal beneath tests, graph invariants, runtime evidence, and human decisions.
+
+These refinements are informed by external empirical work on graph-based agentic retrieval, but external benchmark results are not Mendpoint product claims. Mendpoint MUST validate the representation thesis on its own synthetic and production-like migration benchmarks before relying on it for support or economic claims.
 
 ---
 
@@ -21,9 +32,7 @@
 
 This document is the canonical product and platform specification for future Mendpoint development unless superseded by an approved architecture decision record, product decision, or newer version of this specification.
 
-The machine-checked requirement register is [`PRODUCT_REQUIREMENTS.json`](../PRODUCT_REQUIREMENTS.json), pinned to this document and enforced by the `npm run spec:check` gate. The release acceptance contract derived from these requirements is [`PRODUCT_CONTRACT.md`](../PRODUCT_CONTRACT.md).
-
-The previous product specification established the core thesis, the Fettler/ReGauge product split, graph-scoped reasoning, review-first execution, hybrid model orchestration, migration data as a compounding asset, and the land-and-expand product strategy. This revision preserves those decisions and formalizes the missing contracts required to build, evaluate, operate, and evolve the platform coherently.
+The previous product specification established the core thesis, the Fettler/ReGauge product split, graph-scoped reasoning, review-first execution, hybrid model orchestration, migration data as a compounding asset, and the land-and-expand product strategy. Version 3.0 preserves those decisions and further formalizes the representation, graph epistemics, intelligence-ownership, and independent-verification contracts required to build, evaluate, operate, and evolve the platform coherently.
 
 Where this document introduces detail that was not explicit in the previous draft, it should be treated as a **development baseline**, not as a claim about what is already implemented. Existing production behavior remains the implementation source of truth until intentionally migrated.
 
@@ -58,6 +67,8 @@ These invariants define Mendpoint more strongly than any individual feature:
 8. **Governed learning.** Customer and synthetic outcomes MAY improve Mendpoint, but learning MUST respect provenance, consent, tenant isolation, residency, evaluation holdouts, and promotion controls.
 9. **No benchmark gaming.** Evaluation failures MUST drive generalized capability fixes rather than scenario-specific exceptions.
 10. **Economic discipline.** Quality is the primary constraint, but latency, model cost, verification cost, and frontier-model escalation are first-class product metrics.
+11. **Representation-first.** High-cardinality, dynamic instance relationships SHOULD live in the Change Graph or another governed data layer, not in prompts or model memory. Models MUST NOT be expected to infer missing instance relationships that the platform could resolve and materialize deterministically or evidentially.
+12. **Selective intelligence ownership.** Mendpoint SHOULD own migration-specific intelligence when evals demonstrate a quality, latency, privacy, control, or economic advantage and SHOULD rent general intelligence when renting remains superior.
 
 ---
 
@@ -110,9 +121,9 @@ Fettler and ReGauge share one intelligence and execution platform:
 ```text
 integrations
 + change normalization
-+ Mendpoint Change Graph
-+ evidence model
-+ task decomposition
++ Mendpoint Change Graph and entity-resolution layer
++ evidence, provenance, coverage, and temporal model
++ context compiler and task decomposition
 + model/router layer
 + deterministic tools and recipes
 + code execution and verification
@@ -464,25 +475,39 @@ Responsibilities:
 
 The normalization layer MUST NOT discard raw source evidence needed for later review.
 
-## 7.3 Layer C — Mendpoint Change Graph
+## 7.3 Layer C — Mendpoint Change Graph and representation layer
 
 Responsibilities:
 
+- normalize canonical software/provider entities across heterogeneous sources;
+- entity-resolve aliases, wrappers, generated clients, service names, provider objects, and runtime identities where evidence permits;
+- materialize high-value software relationships as typed edges;
 - represent providers, contracts, repositories, code structures, dependencies, runtime relationships, tests, owners, migrations, and verification;
-- version graph facts over time;
-- support blast-radius and dependency-order queries;
-- preserve evidence on graph edges;
-- expose uncertainty rather than silently converting incomplete evidence into certainty.
+- version entities and edges over time and by repository/provider snapshot;
+- preserve provenance, derivation method, freshness, and epistemic status on material relationships;
+- expose graph coverage, ambiguity, conflict, and staleness;
+- support bounded blast-radius, dependency-order, verification-coverage, ownership, and migration-path queries;
+- generate compact mission-specific graph projections for downstream reasoning.
 
-The Change Graph is the primary shared intelligence substrate for Fettler and ReGauge.
+The Change Graph is the primary shared intelligence substrate for Fettler and ReGauge and the durable memory of software relationships across missions.
+
+The graph layer SHOULD distinguish three logical partitions even if they share physical storage:
+
+```text
+Global Provider Graph
++ Tenant Software Graph
+→ Mission Graph Projection
+```
+
+The representation layer MUST NOT imply a particular database technology. A relational edge store, graph database, virtual ontology, materialized view layer, or hybrid implementation is acceptable if it satisfies the semantic, temporal, provenance, isolation, and query contracts in Section 11.
 
 ## 7.4 Layer D — Mission orchestration and routing
 
 Responsibilities:
 
 - decompose missions into structured tasks;
-- construct context packs;
-- choose deterministic tools, recipes, specialized models, open models, or frontier models;
+- query the Change Graph and compile bounded evidence/context packs;
+- choose deterministic tools, recipes, owned/specialized models, rented general models, or verification paths;
 - enforce policy;
 - manage retries and fallbacks;
 - track task-level cost, latency, confidence, and outcome.
@@ -795,6 +820,82 @@ Suggested shape:
 
 Private chain-of-thought MUST NOT be stored as learning data.
 
+
+## 8.13 GraphEntity
+
+A canonical typed entity in the Change Graph.
+
+Required logical fields:
+
+```text
+entity_id
+tenant/global scope
+entity_type
+canonical_key
+attributes
+snapshot/version context
+source references
+temporal validity
+```
+
+An entity MAY represent a provider-global object, such as an endpoint, or a tenant-private object, such as a repository symbol. Canonical identity MUST NOT collapse unrelated tenant entities.
+
+## 8.14 GraphEdge
+
+A typed relationship between graph entities.
+
+Required logical fields:
+
+```text
+edge_id
+source entity
+target entity
+relationship type
+derivation method
+evidence references
+epistemic status
+freshness/version context
+temporal validity
+tenant/global scope
+```
+
+A graph edge is a product artifact, not merely an implementation detail. Material migration decisions SHOULD be explainable through the edges that support them.
+
+## 8.15 GraphCoverage
+
+A structured description of what the current graph projection knows and does not know for a mission.
+
+Coverage SHOULD capture, where relevant:
+
+```text
+static-analysis coverage
+runtime-evidence availability
+dynamic/reflection risk
+test-coverage availability
+staleness
+conflicts
+unresolved entities
+known unsupported constructs
+```
+
+Coverage MUST remain distinct from model confidence.
+
+## 8.16 MissionGraphProjection
+
+A bounded, versioned subgraph compiled for one Mission or MigrationTask.
+
+It SHOULD include:
+
+- changed/target entities;
+- relevant impact/dependency paths;
+- evidence-bearing edges;
+- coverage state;
+- conflicts and stale facts;
+- relevant tests and owners;
+- explicit graph version and repository/provider snapshots.
+
+Models SHOULD receive a MissionGraphProjection or equivalent structured context rather than an unbounded dump of the tenant graph.
+
 ---
 
 # 9. Fettler product specification
@@ -861,6 +962,8 @@ Classification MUST preserve ambiguity. Unknown or conflicting evidence SHOULD b
 
 ### Stage F3 — Candidate impact discovery
 
+Fettler SHOULD resolve changed provider entities into the Global Provider Graph, traverse direct and indirect usage relationships into the tenant software graph, and surface unresolved mappings rather than relying on repeated raw-code inference.
+
 - query provider-to-code graph relationships;
 - search repository references;
 - inspect SDK usage;
@@ -868,6 +971,8 @@ Classification MUST preserve ambiguity. Unknown or conflicting evidence SHOULD b
 - identify dynamic or ambiguous paths requiring deeper analysis.
 
 ### Stage F4 — Blast-radius analysis
+
+Blast radius SHOULD be expressed as evidence-backed graph paths and SHOULD distinguish direct, transitive, runtime-observed, inferred, stale, and unresolved impact.
 
 For every candidate finding, determine:
 
@@ -989,6 +1094,22 @@ Fettler MUST surface graph or repository coverage gaps rather than reporting com
 
 Every material inference, model/tool execution, edit, verification action, and review decision MUST be auditable.
 
+### FET-015 — Relationship materialization
+
+For supported providers/stacks, Fettler SHOULD materialize stable provider-to-code relationships that are repeatedly useful for impact analysis rather than asking the reasoning model to rediscover them per mission.
+
+### FET-016 — Impact-path explainability
+
+Every material impact finding SHOULD be able to expose a path from the provider change to the affected code and relevant verification evidence.
+
+### FET-017 — Coverage-aware no-impact result
+
+Fettler MUST distinguish a verified no-impact result from a no-known-impact result produced under partial or unknown graph coverage.
+
+### FET-018 — Raw-retrieval fallback
+
+When graph coverage is insufficient, Fettler MAY perform targeted raw retrieval or model exploration. Stable relationships discovered through fallback SHOULD be eligible for validated graph materialization in a subsequent graph version.
+
 ## 9.6 Fettler user experience
 
 Primary screens:
@@ -1071,6 +1192,8 @@ Capture:
 
 ### Stage R2 — Discovery
 
+ReGauge SHOULD combine static structure with available runtime, configuration, database, job, deployment, and test evidence to reconstruct relationships that are not visible from imports alone. The discovery result MUST expose coverage and blind spots.
+
 Build or refresh:
 
 - repository topology;
@@ -1099,6 +1222,8 @@ Identify:
 - ambiguous areas requiring human confirmation.
 
 ### Stage R4 — Migration graph
+
+The migration graph SHOULD distinguish observed software dependencies from proposed migration constraints. Stable software facts belong in the Change Graph; planning hypotheses MUST remain provisional until supported by evidence or approval.
 
 Create a graph of migration units and ordering constraints.
 
@@ -1206,6 +1331,22 @@ ReGauge SHOULD detect when the codebase changes materially relative to the snaps
 
 Large campaigns SHOULD produce a concise status view for engineering leadership in addition to developer-level detail.
 
+### REG-015 — Hybrid relationship discovery
+
+ReGauge SHOULD support relationship evidence from static analysis, runtime observation, configuration, database logic, background jobs, messaging, and tests where available and permitted.
+
+### REG-016 — Migration-constraint provenance
+
+Ordering relationships such as `MUST_PRECEDE`, `BLOCKS`, or `REQUIRES_COMPATIBILITY_WITH` MUST distinguish deterministic/observed constraints from model-inferred planning hypotheses.
+
+### REG-017 — Unknown vs absent dependency
+
+ReGauge MUST NOT represent an unobserved dependency as absent when graph coverage is insufficient to support that conclusion.
+
+### REG-018 — Graph-backed planning
+
+Supported ReGauge planning flows SHOULD consume a MissionGraphProjection containing topology, runtime dependencies, shared state, tests, conflicts, and coverage before broad raw-code exploration.
+
 ## 10.5 ReGauge user experience
 
 Primary surfaces:
@@ -1231,189 +1372,620 @@ The main UX question is:
 
 ## 11.1 Purpose
 
-The Change Graph is the shared representation Mendpoint uses to connect:
+The Change Graph is Mendpoint's canonical durable representation of software relationships.
+
+It connects:
 
 ```text
-change
-→ code
-→ dependency
-→ runtime path
+provider change
+→ provider entity
+→ API/SDK/schema relationship
+→ tenant code
+→ dependency/runtime path
 → test
 → owner
-→ migration
+→ migration task
 → verification
 → outcome
 ```
 
-The graph is not only a code graph. It is a migration knowledge graph.
+The graph is not only a code graph. It is a **migration knowledge graph and relationship memory** shared by Fettler, ReGauge, routing, verification, evaluation, and learning.
 
-## 11.2 Core entity classes
+The design principle is:
 
-The graph SHOULD support at least:
+> **Do not pay a model to rediscover a relationship on every mission when Mendpoint can resolve that relationship once, preserve its evidence, version it, test it, and traverse it safely thereafter.**
 
-### External entities
+## 11.2 Representation-first intelligence
 
-- provider;
-- API;
-- endpoint;
-- schema;
-- field;
-- webhook;
-- SDK;
-- SDK method;
-- provider version;
-- changelog item;
-- deprecation.
+Mendpoint MUST treat data representation as an independent source of product quality.
 
-### Code entities
+A model can reason only over relationships that are either:
 
-- organization;
-- repository;
-- branch/snapshot;
-- service;
-- package/module;
-- file;
-- class;
-- function/method;
-- call site;
-- configuration object;
-- database/table where discoverable;
-- job/worker;
-- test;
-- CI workflow.
+1. explicitly represented and retrieved;
+2. inferable from the supplied context;
+3. discovered through tools during the mission.
 
-### Organizational entities
+More model compute MUST NOT be treated as a substitute for missing instance-level relationships.
 
-- team;
-- owner;
-- environment;
-- policy;
-- migration campaign.
+For relationship-heavy tasks, Mendpoint SHOULD prefer:
 
-### Migration entities
+```text
+raw data
+→ entity resolution
+→ relationship materialization
+→ bounded graph traversal
+→ model reasoning
+```
 
-- change;
-- objective;
-- mission;
-- task;
-- finding;
-- candidate edit;
-- verification result;
-- PR;
-- review decision;
-- learning event;
-- recipe;
-- model/adapter.
+over:
 
-## 11.3 Edge classes
+```text
+raw data
+→ repeated broad retrieval
+→ model repeatedly reconstructs relationships
+```
+
+The second path remains a fallback for novel, ambiguous, or not-yet-materialized relationships.
+
+## 11.3 Ontology vs instance facts
+
+The graph architecture MUST distinguish type-level knowledge from instance-level facts.
+
+### Type-level knowledge
+
+The ontology defines what kinds of things and relationships can exist.
 
 Examples:
 
 ```text
-CALLS
-IMPORTS
-DEPENDS_ON
-IMPLEMENTS
-WRAPS
-USES_ENDPOINT
-USES_SDK_METHOD
-PRODUCES
-CONSUMES
-READS
-WRITES
-DEPLOYS_TO
-OWNED_BY
-TESTED_BY
-DEPRECATED_BY
-REPLACED_BY
-IMPACTED_BY
-MIGRATED_BY
-VERIFIED_BY
-REVIEWED_BY
-DERIVED_FROM
-BLOCKS
-PRECEDES
+Function can USES_SDK_METHOD SdkMethod
+Service can DEPENDS_ON Service
+Test can COVERED_BY_TEST RuntimePath
+MigrationStage can MUST_PRECEDE MigrationStage
 ```
 
-Edges SHOULD carry:
+### Instance-level knowledge
 
-- source;
-- timestamp/version;
-- confidence;
-- evidence reference;
-- extraction method;
-- tenant.
+The graph stores which relationship actually exists in a specific provider/repository/snapshot.
 
-## 11.4 Temporal versioning
+Example:
 
-The graph MUST support reasoning about change over time.
+```text
+checkout.createPayment
+USES_SDK_METHOD
+stripe.paymentIntents.create
+```
 
-At minimum Mendpoint must be able to distinguish:
+High-cardinality, dynamic instance facts MUST NOT use system prompts, agent instruction files, or model weights as their primary source of truth.
 
-- graph state when a mission was created;
-- graph state when a candidate edit was generated;
-- graph state after repository changes;
-- provider contract version before/after a change.
+## 11.4 Logical graph partitions
 
-## 11.5 Evidence-backed edges
+The Change Graph SHOULD distinguish three logical layers.
 
-An edge SHOULD NOT be treated as equally trustworthy regardless of origin.
+### Global Provider Graph
+
+May contain non-tenant-specific provider intelligence such as:
+
+- providers;
+- API versions;
+- endpoints;
+- schemas/fields;
+- SDK versions/methods;
+- changelog/deprecation events;
+- provider migrations and replacements.
+
+### Tenant Software Graph
+
+Contains customer-private software facts such as:
+
+- repositories/snapshots;
+- files/symbols;
+- services;
+- internal wrappers;
+- runtime dependencies;
+- databases/queues/jobs;
+- tests;
+- owners;
+- organization-specific conventions.
+
+### Mission Graph Projection
+
+A bounded, immutable-enough view joining only the relevant provider and tenant graph state for one mission/task.
+
+Cross-tenant repository relationships are prohibited. Provider-global entities MAY be shared only through an explicit safe global layer.
+
+## 11.5 Core entity classes
+
+The graph SHOULD support entity classes based on real product questions rather than theoretical completeness.
+
+### External/provider entities
+
+- Provider;
+- ProviderVersion;
+- API/ApiSpec;
+- ApiVersion;
+- Endpoint;
+- Schema;
+- SchemaField;
+- Webhook;
+- SDK;
+- SDKVersion;
+- SDKMethod;
+- ProviderChange;
+- ChangelogItem;
+- Deprecation.
+
+### Repository/code entities
+
+- Organization;
+- Repository;
+- RepositorySnapshot;
+- Branch;
+- Package;
+- Module;
+- File;
+- Symbol;
+- Function/Method;
+- Class/Interface;
+- Configuration;
+- FeatureFlag.
+
+### Runtime/infrastructure entities
+
+- Service;
+- Runtime;
+- Environment;
+- Deployment;
+- Database;
+- Table;
+- Queue/Topic;
+- Job/Cron;
+- RuntimePath.
+
+### Verification entities
+
+- Test;
+- TestSuite;
+- CIJob;
+- VerificationRun;
+- PolicyCheck.
+
+### Workflow/migration entities
+
+- Team/Owner;
+- Mission;
+- MigrationTask;
+- ImpactFinding;
+- CandidateEdit;
+- PullRequest;
+- MigrationStage;
+- ReviewDecision;
+- LearningEvent;
+- Recipe;
+- Model/Adapter.
+
+## 11.6 Relationship ontology
+
+Stable relationship types SHOULD be semantically specific.
+
+### Structural
+
+```text
+CONTAINS
+DECLARES
+IMPORTS
+CALLS
+IMPLEMENTS
+EXTENDS
+DEPENDS_ON
+WRAPS
+```
+
+### Provider/API
+
+```text
+USES_PROVIDER
+USES_API_VERSION
+USES_ENDPOINT
+USES_SDK
+USES_SDK_METHOD
+READS_SCHEMA
+WRITES_SCHEMA
+DEPRECATED_BY
+REPLACED_BY
+AFFECTED_BY_CHANGE
+```
+
+### Runtime/data
+
+```text
+EXECUTES_AS
+OBSERVED_CALLING
+OBSERVED_AT_RUNTIME
+READS_FROM
+WRITES_TO
+PUBLISHES_TO
+CONSUMES_FROM
+DEPLOYED_WITH
+SHARES_STATE_WITH
+```
+
+### Test/verification
+
+```text
+COVERED_BY_TEST
+VERIFIED_BY
+FAILED_VERIFICATION
+PASSED_VERIFICATION
+```
+
+### Ownership/review
+
+```text
+OWNED_BY
+REVIEWED_BY
+```
+
+### Migration
+
+```text
+MIGRATES_TO
+MUST_PRECEDE
+BLOCKS
+REQUIRES_COMPATIBILITY_WITH
+REQUIRES_STAGE
+PRESERVES_CONTRACT
+REMEDIATED_BY
+```
+
+The ontology MUST remain extensible without requiring broad schema redesign for every new relation type.
+
+## 11.7 Entity resolution
+
+Entity resolution is a first-class graph capability, distinct from retrieval and model reasoning.
+
+Mendpoint SHOULD resolve identities such as:
+
+- package aliases;
+- renamed services;
+- generated clients vs canonical provider APIs;
+- internal SDK wrappers vs provider SDK methods;
+- runtime service names vs repository modules;
+- schemas/contracts represented differently across sources.
+
+Resolution SHOULD use multiple signals when simple identifiers are insufficient, including static metadata, source location, package identity, OpenAPI operation IDs, SDK metadata, runtime telemetry, configuration, build graphs, and historical verified migration evidence.
+
+Ambiguous mappings MUST remain ambiguous rather than being forced into one identity.
+
+Suggested resolution states:
+
+```text
+RESOLVED
+PROBABLE
+AMBIGUOUS
+UNRESOLVED
+CONFLICTING
+```
+
+## 11.8 Relationship materialization
+
+High-value relationships that are repeatedly useful SHOULD move from query-time inference into offline or incremental graph construction when they can be validated.
 
 Examples:
 
-- direct parsed import → high deterministic confidence;
-- model-inferred architectural relation → probabilistic;
-- runtime trace → high observed confidence for that execution context;
-- reviewer-confirmed relation → human-verified;
-- stale repository snapshot → degraded temporal confidence.
+```text
+Function
+→ WRAPS
+→ InternalSdkMethod
+→ USES_SDK_METHOD
+→ ProviderSdkMethod
+→ USES_ENDPOINT
+→ Endpoint
+```
 
-## 11.6 Required query primitives
+and:
 
-The graph layer SHOULD expose stable query capabilities for:
+```text
+Function
+→ COVERED_BY_TEST
+→ IntegrationTest
+```
+
+Materialization SHOULD reduce repeated model search/reconstruction while creating a persistent, testable artifact.
+
+Query-time discovery remains necessary for novel relationships. Stable discoveries SHOULD be eligible for validated materialization in later graph versions.
+
+## 11.9 Edge provenance and epistemic status
+
+Every material edge SHOULD carry sufficient provenance to answer:
+
+> Why does Mendpoint believe this relationship exists?
+
+At minimum, important edges SHOULD preserve:
+
+- evidence references;
+- derivation method;
+- source/snapshot/version;
+- extractor or rule version;
+- first/last observation;
+- validity window where relevant;
+- tenant/global scope;
+- epistemic status.
+
+Suggested derivation classes:
+
+```text
+STATIC_ANALYSIS
+SPEC_ANALYSIS
+RUNTIME_OBSERVATION
+TEST_OBSERVATION
+DETERMINISTIC_RULE
+HUMAN_VERIFIED
+MODEL_INFERRED
+MIGRATION_OUTCOME
+```
+
+Suggested epistemic states:
+
+```text
+DETERMINISTIC
+OBSERVED
+INFERRED
+CORROBORATED
+HUMAN_VERIFIED
+CONFLICTING
+STALE
+INVALIDATED
+```
+
+Numeric confidence MUST NOT be fabricated where no calibrated probability exists.
+
+## 11.10 Temporal versioning
+
+The graph MUST support reasoning about change over time.
+
+Mendpoint MUST be able to distinguish:
+
+- repository graph state by immutable repository snapshot;
+- provider contract/API/SDK version before and after change;
+- graph version when a mission was created;
+- graph version when an edit was generated;
+- graph version after repository/provider updates;
+- runtime observations and test evidence by time/environment.
+
+A running mission SHOULD reference explicit graph and repository/provider versions. A graph update MUST NOT silently change the semantics of an in-flight mission.
+
+## 11.11 Incremental graph build and publication
+
+Where safe, graph construction SHOULD be incremental:
+
+```text
+repository/provider event
+→ determine affected entities
+→ invalidate impacted graph region
+→ re-resolve affected identities
+→ re-materialize impacted edges
+→ validate graph invariants
+→ publish new graph version
+```
+
+If graph publication fails, the system SHOULD preserve the last valid graph version and surface staleness rather than publish partially corrupt state.
+
+## 11.12 Graph completeness and coverage
+
+Graph incompleteness is a first-class product state.
+
+Mendpoint MUST distinguish:
+
+```text
+NO_IMPACT_VERIFIED
+NO_KNOWN_IMPACT_PARTIAL_COVERAGE
+IMPACT_FOUND
+IMPACT_UNKNOWN
+CONFLICTING_EVIDENCE
+```
+
+Coverage SHOULD consider the evidence sources relevant to the task, including:
+
+- static analysis;
+- dynamic/reflection risk;
+- generated code;
+- configuration/feature flags;
+- runtime telemetry;
+- database procedures;
+- jobs/cron/shell scripts;
+- messaging;
+- tests;
+- external services.
+
+Coverage MUST remain separate from model confidence and migration risk.
+
+## 11.13 Required query primitives
+
+The graph layer SHOULD expose stable bounded query capabilities for:
 
 ### Blast radius
 
-"What depends directly or transitively on X?"
+"What depends directly or transitively on X, and through what path?"
 
 ### Provider usage
 
-"Where is provider object X used, including wrappers?"
+"Where is provider object X used, including SDK wrappers and indirect consumers?"
 
 ### Verification coverage
 
-"What tests or checks cover this affected path?"
+"What tests/checks cover this affected path, and how strong is that relationship?"
 
 ### Migration order
 
-"What must change before Y?"
+"What must change before Y, and what evidence establishes that constraint?"
 
 ### Constraint discovery
 
-"What cycles or shared dependencies block this migration?"
+"What cycles, shared state, runtime dependencies, or compatibility constraints block this migration?"
 
 ### Ownership
 
 "Who owns affected components?"
 
-### Confidence
+### Coverage/conflict
 
-"What important graph relationships remain uncertain?"
+"What important relationships are unresolved, stale, or conflicting?"
 
-## 11.7 Graph completeness
+Queries MUST be bounded by tenant, repository/provider versions, and mission scope.
 
-Mendpoint MUST distinguish:
+## 11.14 Context compiler
 
-```text
-no known impact
-```
+The graph SHOULD feed a Context Compiler that converts query results into a small, typed, evidence-bearing model input.
 
-from:
+A MissionGraphProjection MAY contain:
 
 ```text
-complete evidence of no impact
+mission/task
+changed or target entities
+impact/dependency paths
+relevant edges
+evidence refs
+coverage state
+conflicts
+stale facts
+relevant tests
+owners
+snapshot/version identifiers
 ```
 
-Graph incompleteness is a first-class state.
+The objective is **minimum sufficient structured context**, not maximum retrieval volume.
+
+The product SHOULD measure whether graph-backed context reduces:
+
+- repeated retrieval calls;
+- files examined;
+- model input tokens;
+- latency;
+- inference cost;
+
+without degrading quality.
+
+## 11.15 Hybrid static and runtime evidence
+
+Static analysis alone is insufficient for some software systems, especially ReGauge targets.
+
+The graph SHOULD be able to combine permitted evidence from:
+
+- AST/import/symbol/call analysis;
+- build/dependency metadata;
+- provider specs/SDK mappings;
+- configuration;
+- CI/test execution;
+- runtime traces/APM;
+- deployment metadata;
+- database access;
+- queues/topics;
+- cron/jobs/shell scripts.
+
+Dynamic imports, reflection, generated code, ORM indirection, stored procedures, shared databases, background jobs, and feature-flagged behavior SHOULD be treated as explicit coverage risks.
+
+## 11.16 Test and verification graph
+
+Mendpoint SHOULD model meaningful verification relationships rather than merely listing test files.
+
+Examples:
+
+```text
+Test COVERED_BY_TEST Symbol
+Test VERIFIED_BY RuntimePath
+VerificationRun PASSED_VERIFICATION MigrationTask
+```
+
+Actual relation direction MAY differ by implementation, but the semantics MUST support selecting the smallest meaningful verification set for an affected path.
+
+The graph SHOULD distinguish static test association from observed/runtime coverage where possible.
+
+## 11.17 Migration constraint graph
+
+ReGauge SHOULD represent migration constraints with explicit provenance.
+
+Potential relationships include:
+
+```text
+MUST_PRECEDE
+BLOCKS
+SHARES_STATE_WITH
+REQUIRES_COMPATIBILITY_WITH
+REQUIRES_DUAL_WRITE
+PRESERVES_CONTRACT
+```
+
+Observed/deterministic software facts MUST remain distinguishable from proposed planning constraints inferred by a model.
+
+## 11.18 Conflict, staleness, and invalidation
+
+When evidence sources disagree, the graph MUST preserve the disagreement or resolve it through explicit policy rather than silently discarding one source.
+
+Example:
+
+```text
+static analysis: no declared service dependency
+runtime observation: service A called service B
+```
+
+These facts may justify different relation types instead of one overriding the other.
+
+Edges that can become obsolete MUST have freshness/invalidation semantics tied to relevant repository, provider, deployment, runtime, test, or ownership changes.
+
+## 11.19 Graph invariants
+
+Graph publication SHOULD enforce deterministic invariants such as:
+
+- edge endpoints exist;
+- tenant scopes are compatible;
+- forbidden cross-tenant edges do not exist;
+- snapshot/version boundaries are valid;
+- temporal ranges are sane;
+- invalidated entities are not returned as current;
+- provider versions are coherent;
+- evidence references are resolvable where required.
+
+Violating an invariant MUST block publication of the affected graph version.
+
+## 11.20 Storage abstraction
+
+The Change Graph is a semantic representation requirement, not a mandate to use a graph-native database.
+
+Architecture decisions SHOULD compare:
+
+- existing relational representation;
+- typed edge tables;
+- materialized graph views;
+- graph databases;
+- virtual ontologies;
+- hybrid approaches.
+
+Selection criteria include query expressiveness, snapshot/version semantics, tenant isolation, incremental updates, operational burden, performance, scale, and migration cost.
+
+## 11.21 Representation benchmark
+
+Mendpoint MUST maintain an evaluation path that can compare representation strategies on the same task/model/harness.
+
+At minimum, for selected task families compare:
+
+```text
+A. existing/raw retrieval + Muse
+B. Change Graph projection + Muse
+C. Change Graph projection + Muse + independent verifier where justified
+```
+
+Task families SHOULD distinguish:
+
+### Direct/reference tasks
+
+Questions answerable through explicit local references, such as direct imports or installed versions.
+
+### Relationship-heavy tasks
+
+Questions requiring indirect wrappers, transitive blast radius, hidden runtime dependencies, test-path relationships, shared state, or migration ordering.
+
+The graph SHOULD earn its complexity through measurable quality, context, latency, cost, or trust improvements on Mendpoint tasks.
 
 ---
 
@@ -1459,6 +2031,14 @@ Coverage answers:
 > How much of the relevant system did Mendpoint actually inspect or understand?
 
 A high-confidence result with low coverage MUST NOT be presented as equivalent to a fully scoped result.
+
+## 12.4.1 Graph epistemic status
+
+Graph edge status is distinct from model confidence.
+
+A deterministic import edge, runtime-observed service call, stale model-inferred dependency, and unresolved mapping may all appear in one mission graph projection. The context compiler and UI SHOULD preserve those distinctions so that downstream reasoning can be risk-aware.
+
+The platform MUST NOT compress graph uncertainty, model confidence, migration risk, and verification coverage into one universal score.
 
 ## 12.5 Suggested confidence object
 
@@ -1516,7 +2096,9 @@ The router may choose:
 4. specialized open model;
 5. post-trained vendor/framework/general migration adapter;
 6. stronger general model;
-7. frontier model.
+7. rented general reasoning model;
+8. independent probabilistic verifier;
+9. human escalation.
 
 A task MAY use multiple paths sequentially.
 
@@ -1538,6 +2120,8 @@ The router SHOULD learn from:
 - repository size;
 - context size;
 - graph complexity;
+- graph coverage, staleness, conflict, and relation epistemic state;
+- representation path (raw retrieval vs graph projection);
 - risk;
 - blast radius;
 - historical model accuracy;
@@ -1577,6 +2161,40 @@ Escalation SHOULD occur when:
 ## 13.8 Model neutrality
 
 The product specification MUST NOT depend on specific model vendors or model names. Model choices are operational configuration governed by evaluation evidence, licensing, cost, latency, and capability.
+
+
+## 13.9 Current operational model baseline
+
+Model neutrality is a product invariant, but the current operating configuration MAY identify concrete defaults.
+
+As of this specification version, the intended baseline is:
+
+```text
+Primary generation/reasoning: Muse 1.2
+Independent low-cost verifier: DeepSeek V4 Flash
+```
+
+This is an operational baseline, not a permanent architectural dependency.
+
+Muse 1.2 is the primary rented reasoning/generation path until owned/specialized intelligence demonstrates superior risk-adjusted performance on the same eval harness.
+
+DeepSeek V4 Flash is an independent **soft verifier** for candidate ranking, completion/progress verification, and selective test-time scaling where benchmark evidence justifies the additional inference. Its judgment MUST NOT override deterministic tests, graph invariants, runtime evidence, policy, or human review.
+
+## 13.10 Intelligence ownership strategy
+
+The router SHOULD support execution strategies corresponding to:
+
+```text
+DETERMINISTIC
+RECIPE
+OWNED_INTELLIGENCE
+RENTED_GENERAL_INTELLIGENCE
+RENTED_BEST_OF_N
+INDEPENDENT_VERIFICATION
+HUMAN_ESCALATION
+```
+
+A migration capability SHOULD move toward owned intelligence only when evals show a meaningful advantage in quality, latency, privacy/control, or economics. Reducing external-model usage is not itself a success metric.
 
 ---
 
@@ -1693,6 +2311,54 @@ Code execution SHOULD occur in isolated environments with:
 - timeouts;
 - captured logs;
 - reproducible environment metadata where practical.
+
+
+## 15.7 Independent probabilistic verification
+
+Mendpoint MAY use a separate model-based verifier to rank plausible candidates or estimate progress/completion probability.
+
+The verifier is a **soft signal** beneath deterministic evidence.
+
+A safe candidate-selection pipeline is:
+
+```text
+candidate generation
+→ deterministic eligibility filters
+→ verifier ranks eligible candidates
+→ selected candidate
+→ final deterministic verification
+→ review
+```
+
+A candidate that fails a required deterministic check MUST NOT win because a verifier assigns it a high score.
+
+Verifier outputs SHOULD record:
+
+- model/version;
+- criteria/version;
+- score/ranking;
+- evidence supplied;
+- cost/latency;
+- later ground-truth or reviewer outcome where available.
+
+The platform SHOULD measure verifier calibration and disagreement with Muse, deterministic graders, and human review.
+
+## 15.8 Test-time scaling policy
+
+Additional inference SHOULD be risk-adaptive.
+
+Preferred order for expensive work is:
+
+```text
+single Muse attempt
+→ optional alternative plans
+→ deterministic filtering
+→ independent ranking/verification
+→ additional full patch candidates only when expected value justifies cost
+```
+
+Best-of-N plan selection SHOULD generally precede Best-of-N full implementations because plans are cheaper to generate and isolate.
+
 
 ---
 
@@ -1844,6 +2510,66 @@ Examples:
 - provider-specific remediation pattern repeatedly verifies → `MODEL_WEIGHT` and/or `DETERMINISTIC_RECIPE`.
 
 Mendpoint SHOULD NOT fine-tune models to compensate for deterministic engineering defects.
+
+## 17.4.1 Hard vs soft learning signals
+
+Mendpoint MUST distinguish authoritative or high-confidence outcomes from probabilistic signals.
+
+### Hard / higher-authority evidence
+
+Examples:
+
+```text
+synthetic ground truth
+compiler/build result
+test result
+contract/runtime verification
+human substantive correction
+merge outcome
+post-merge health
+```
+
+### Soft evidence
+
+Examples:
+
+```text
+Muse confidence
+DeepSeek verifier score
+model preference
+progress estimate
+model-inferred graph relation
+```
+
+Soft evidence MAY become a feature, ranking signal, curriculum signal, or preference candidate after validation. It MUST NOT silently become ground truth.
+
+## 17.4.2 Graph learning
+
+Graph failures are a first-class learning destination.
+
+Examples:
+
+```text
+missed wrapper → entity-resolution or relationship-materialization lesson
+runtime-only dependency missed → runtime evidence ingestion lesson
+correct edge existed but context omitted it → graph query/context compiler lesson
+stale edge caused false impact → freshness/invalidation lesson
+```
+
+A missing relationship SHOULD NOT be classified as a model-training problem until Mendpoint verifies that the relationship existed, was current, was retrievable, and was supplied to the model.
+
+## 17.4.3 Experience decomposition
+
+Production experience SHOULD be decomposed into the appropriate durable form:
+
+```text
+fact / relationship → graph or retrieval
+repeated deterministic transformation → recipe
+specialized behavioral skill → post-training
+organization-specific convention → tenant-private graph/rules/context
+routing evidence → router policy
+verification disagreement → verifier calibration/eval
+```
 
 ## 17.5 Dataset lifecycle
 
@@ -1997,6 +2723,25 @@ escalation
 
 The router should improve from this evidence.
 
+## 17.13 Own vs rent intelligence
+
+Mendpoint SHOULD maintain an evidence-backed classification for important model-mediated capabilities:
+
+```text
+DETERMINISTIC
+RECIPE
+OWN_NOW
+OWN_LATER
+RENT
+UNKNOWN
+```
+
+The decision SHOULD consider task volume, eval quality, proprietary-data advantage, latency sensitivity, Muse quality/cost, risk, label quality, and the potential for deterministic or specialized execution.
+
+The first owned-intelligence slices SHOULD be narrow and measurable rather than an attempt to replace general reasoning across Fettler and ReGauge.
+
+The Change Graph, entity-resolution system, evaluation benchmark, trajectories, migration recipes, router outcomes, and specialized weights together constitute Mendpoint's intelligence asset. Model weights alone are not the moat.
+
 ---
 
 # 18. Synthetic evaluation and pre-design-partner hardening
@@ -2108,6 +2853,34 @@ Measure:
 - confidence calibration;
 - latency/cost.
 
+## 18.6.1 Representation benchmark
+
+The synthetic evaluation system SHOULD explicitly compare raw/current retrieval against graph-backed context on identical tasks.
+
+At minimum measure:
+
+```text
+A. Muse + current/raw retrieval
+B. Muse + Change Graph MissionGraphProjection
+C. Muse + Change Graph + DeepSeek verifier where appropriate
+```
+
+Use the same task, model, tools, grader, and acceptance criteria wherever possible so that the representation change is isolated.
+
+Separate direct/reference tasks from relationship-heavy tasks. The graph is expected to create the most value on indirect wrappers, transitive impact, runtime dependencies, test-path relationships, shared state, and migration ordering; this MUST be proven rather than assumed.
+
+Measure:
+
+- correctness;
+- impact/dependency precision and recall;
+- model/tool calls;
+- files/context items inspected;
+- input/output tokens;
+- latency;
+- cost;
+- false confidence;
+- correct abstention/coverage disclosure.
+
 ## 18.7 Failure taxonomy
 
 Evaluation failures SHOULD map into a reusable taxonomy such as:
@@ -2118,6 +2891,14 @@ LANGUAGE_SUPPORT_FAILURE
 REPOSITORY_MAPPING_FAILURE
 ARCHITECTURE_INFERENCE_FAILURE
 GRAPH_CONSTRUCTION_FAILURE
+ENTITY_RESOLUTION_FAILURE
+MISSING_GRAPH_EDGE
+INCORRECT_GRAPH_EDGE
+STALE_GRAPH_EDGE
+CONFLICTING_GRAPH_EVIDENCE
+GRAPH_COVERAGE_FAILURE
+GRAPH_QUERY_FAILURE
+CONTEXT_COMPILER_FAILURE
 DEPENDENCY_DISCOVERY_FAILURE
 RETRIEVAL_FAILURE
 CONTEXT_SELECTION_FAILURE
@@ -2199,6 +2980,9 @@ Tenant boundaries MUST be enforced across:
 - exports.
 
 A tenant-isolation failure is a release-blocking defect.
+
+
+Provider-global graph knowledge and tenant-private software graphs MUST remain logically separated. A shared provider entity MAY be referenced from many tenants, but tenant-private code/dependency/ownership/runtime relationships MUST NOT be merged across customers.
 
 ## 19.2 Least privilege
 
@@ -2316,6 +3100,14 @@ When a subsystem is unavailable:
 - provider source unavailable → preserve last known state and surface staleness;
 - trainer unavailable → learning pipeline queues or fails without affecting core migration delivery.
 
+## 20.8 Graph publication and rollback
+
+Graph rebuilds and extractor changes MUST fail safely.
+
+If a new graph version cannot satisfy required invariants, Mendpoint SHOULD preserve the last valid version and mark new evidence as pending/stale rather than publishing partial corrupt state.
+
+Extractor/entity-resolution changes that cause quality regressions MUST be rollbackable. Mission traces MUST retain the graph version used so prior decisions remain reproducible.
+
 ---
 
 # 21. Performance and scale
@@ -2348,6 +3140,22 @@ coverage percentage
 remaining scope
 known unknowns
 ```
+
+## 21.2.1 Graph build and retrieval budgets
+
+Mendpoint SHOULD measure separately:
+
+```text
+full graph build time
+incremental graph update time
+graph publication time
+graph query P50/P95
+context compilation time
+mission subgraph size
+raw retrieval fallback rate
+```
+
+Graph-backed execution SHOULD also track context-token and tool-call savings against raw/current retrieval on comparable tasks.
 
 ## 21.3 Repository scale
 
@@ -2425,13 +3233,20 @@ Track:
 
 Track:
 
-- index freshness;
-- graph coverage;
-- extraction failures;
-- ambiguous edges;
+- entities/edges by type and epistemic state;
+- graph/index freshness;
+- graph coverage by task/repository class;
+- entity-resolution failures and ambiguity;
+- extraction/materialization failures;
+- stale/conflicting edges;
 - hidden-dependency discoveries;
-- stale graph usage;
-- query latency.
+- graph-induced false positives/false negatives;
+- raw-retrieval fallback rate;
+- graph query latency;
+- context compilation latency;
+- context tokens with/without graph representation;
+- percentage of Fettler/ReGauge findings supported by explicit evidence paths;
+- graph version used per mission.
 
 ## 22.5 Learning metrics
 
@@ -2521,6 +3336,23 @@ Risk
 Recommended action
 Verification
 ```
+
+## 23.3.1 Graph-path UX
+
+When a material finding is graph-derived, the review experience SHOULD allow the user to inspect a concise evidence path such as:
+
+```text
+ProviderChange
+→ AFFECTS Endpoint
+→ USED_BY SdkMethod
+→ WRAPPED_BY InternalClient
+→ CALLED_BY checkout.createPayment
+→ COVERED_BY_TEST checkoutIntegrationTest
+```
+
+The UI SHOULD distinguish deterministic/observed/inferred/stale/conflicting relationships and MUST disclose incomplete graph coverage for high-impact conclusions.
+
+A giant graph visualization is not a product requirement. The graph should be surfaced when it improves a decision.
 
 ## 23.4 Confidence UI
 
@@ -2662,7 +3494,9 @@ Required:
 
 - shared Mission semantics;
 - reliable repository snapshots;
-- baseline Change Graph;
+- versioned, evidence-bearing Change Graph baseline;
+- entity resolution and at least one materialized indirect relationship;
+- raw-vs-graph representation benchmark;
 - Fettler end-to-end path;
 - ReGauge planning path;
 - synthetic repo/evaluation harness;
@@ -2741,7 +3575,10 @@ Required:
 - shadow/canary;
 - rollback;
 - recipe extraction;
-- router learning.
+- router learning;
+- own-vs-rent capability matrix;
+- shadow evaluation of selected owned-intelligence candidates;
+- graph-assisted intelligence cost measurement.
 
 ---
 
@@ -2760,6 +3597,22 @@ A production-grade mission MUST:
 - stop safely on policy failure;
 - preserve review state;
 - capture outcome.
+
+## 28.1.1 Change Graph acceptance criteria
+
+The Change Graph is production-grade for a supported capability when:
+
+- entity identity is canonical within the declared scope;
+- important edges have evidence/provenance;
+- graph versions are tied to repository/provider snapshots;
+- tenant boundaries are enforced;
+- graph coverage/unknowns are explicit;
+- stale/conflicting evidence is represented;
+- required query primitives are bounded and reproducible;
+- a MissionGraphProjection can be generated;
+- invalid graph versions fail publication safely;
+- hidden holdout evaluation supports claimed relationship coverage;
+- graph-vs-raw benchmark results are available for the supported capability.
 
 ## 28.2 Fettler acceptance criteria
 
@@ -2823,6 +3676,11 @@ Supported languages/stacks
 Supported repository patterns
 Supported providers/frameworks
 Known unsupported patterns
+Supported graph relationship types
+Graph coverage class and runtime-evidence availability
+Known dynamic/reflection blind spots
+Entity-resolution quality where measurable
+Stale/conflicting edge rate where measurable
 Evaluation scenario count
 Hidden holdout status
 Impact precision/recall where measurable
@@ -2847,6 +3705,9 @@ A capability MUST NOT be represented as broadly supported if the scorecard shows
 | Risk | Failure mode | Required mitigation |
 |---|---|---|
 | Incomplete graph | Hidden usage missed | Evidence-backed coverage, hybrid static/runtime data, uncertainty state, human escalation |
+| Incorrect graph relationship | False impact or unsafe migration ordering | Provenance, edge epistemic state, deterministic invariants, regression evals, rollbackable graph versions |
+| Entity resolution error | Wrong provider/code/runtime identity merged or missed | Multi-signal resolution, ambiguity states, collision tests, human verification for high-risk mappings |
+| Stale graph state | Mission reasons over obsolete software/provider relationships | Snapshot/version pinning, invalidation, freshness policy, explicit staleness in UI/router |
 | False confidence | Plausible but wrong migration | Calibration, verification, risk policy, holdouts |
 | Low trust | Engineers refuse AI-generated PRs | Review-first UX, source evidence, small PRs, visible verification |
 | Frontier cost | Poor gross margin | Router, recipes, specialized models, cost telemetry |
@@ -2906,6 +3767,16 @@ Do not hide coverage gaps behind prose confidence.
 
 Campaigns, repository analysis, training jobs, and external verification should be durable and reconcilable.
 
+## 31.6.1 Prefer representation over repeated inference
+
+If an important relationship is stable enough to resolve, validate, version, and reuse, Mendpoint SHOULD represent it explicitly rather than paying a model to rediscover it every mission.
+
+Missing instance relationships SHOULD be fixed in entity resolution, graph construction, runtime evidence, or context compilation before model post-training is considered.
+
+## 31.6.2 Keep ontology and instance knowledge separate
+
+Prompts and instructions MAY define semantic types and operating rules. Dynamic tenant/provider instance relationships belong in governed data structures.
+
 ## 31.7 Avoid duplicate platforms
 
 There should be one canonical implementation for:
@@ -2926,6 +3797,9 @@ New modules should extend these rather than create parallel substitutes.
 Changes to the following SHOULD require an ADR or equivalent explicit decision:
 
 - canonical Mission state machine;
+- Change Graph storage architecture or graph partitioning;
+- Change Graph ontology compatibility contracts;
+- entity-resolution identity rules with persistence implications;
 - Change Graph schema primitives;
 - tenant isolation model;
 - evidence/confidence semantics;
@@ -2987,7 +3861,23 @@ What customer consent and contractual model will govern use of verified producti
 
 When should organization-specific behavior live in retrieval/recipes versus private adapters?
 
-## 33.8 Provider-side product
+## 33.8 Change Graph storage architecture
+
+Decide, based on measured requirements, whether the production representation should remain relational/virtual, move to a graph-native store, or use a hybrid. This MUST be an evidence-driven operational choice rather than a product-brand decision.
+
+## 33.9 Runtime evidence depth
+
+Determine which runtime sources are required for design-partner claims by language/architecture class and how long observations remain fresh enough to influence coverage.
+
+## 33.10 Graph edge admission policy
+
+Define which relation types may be published from deterministic analysis, runtime observation, model inference, corroboration, or human verification, and which high-risk relations require multiple signals.
+
+## 33.11 Intelligence ownership threshold
+
+Define the quantitative/qualitative gates for moving a capability from rented Muse reasoning to owned/specialized intelligence, including quality, latency, cost, data maturity, and rollback requirements.
+
+## 33.12 Provider-side product
 
 When should provider-sponsored migration campaigns become a first-class commercial product rather than an FDE workflow?
 
@@ -3003,11 +3893,23 @@ When should provider-sponsored migration campaigns become a first-class commerci
 
 **Candidate Edit** — A proposed code change that has not yet been accepted.
 
-**Change Graph** — Mendpoint's versioned graph connecting provider changes, code, dependencies, tests, owners, migrations, and outcomes.
+**Change Graph** — Mendpoint's versioned, evidence-bearing representation of provider, code, runtime, verification, migration, and outcome relationships.
+
+**Context Compiler** — The component that converts bounded Change Graph query results and supporting evidence into the minimum sufficient structured context for a Mission or MigrationTask.
 
 **Coverage** — The degree to which Mendpoint has inspected and represented the relevant system scope.
 
+**Entity Resolution** — Mapping heterogeneous aliases, wrappers, source objects, and runtime identities to canonical Change Graph entities using evidence.
+
+**Epistemic Status** — How a graph fact is known or trusted, such as deterministic, observed, inferred, corroborated, stale, or conflicting.
+
 **Evidence** — A source or observation supporting a finding, recommendation, graph edge, or verification result.
+
+**Graph Coverage** — The declared completeness/unknown state of graph relationships relevant to a task; distinct from model confidence and migration risk.
+
+**MissionGraphProjection** — A bounded, versioned, evidence-bearing Change Graph view compiled for one mission or task.
+
+**Relationship Materialization** — Resolving and storing a useful relationship during graph build/update so future missions can traverse it instead of re-inferring it.
 
 **Fettler** — Mendpoint's external-change remediation product.
 
@@ -3179,9 +4081,13 @@ The capability has adversarial synthetic coverage, regression tests, and hidden 
 
 Known support boundaries are explicit, review/rollback works, security controls are in place, and the capability can withstand realistic customer variation.
 
+At this level, supported graph relationship coverage, blind spots, hidden holdout performance, and evidence-path behavior are documented for the design-partner capability.
+
 ## Level 4 — Production reliable
 
 The capability demonstrates durable verification, low severe-regression rates, operational observability, and safe failure behavior across real customer use.
+
+At this level, graph versioning, invalidation, rollback, tenant isolation, and representation-aware routing are operationally reliable.
 
 ## Level 5 — Compounding
 
@@ -3191,9 +4097,31 @@ The long-term objective is not simply autonomous migration. It is **trusted, com
 
 ---
 
+
+# 36.1 Research-informed representation validation
+
+The representation-first architecture is informed in part by Rox's August 16, 2026 research article, *Empirical Analysis of Agentic Retrieval: Knowledge Graphs vs. Relational Schemas in CRM Workflows*, which compares agent retrieval over relational schemas with knowledge-graph representations. That research reported that direct/keyed questions can perform similarly while relationship-heavy questions can diverge sharply when the required instance relationships are absent from the raw schema; additional reasoning compute did not recover relationships that were not represented.
+
+Mendpoint treats these results as a **hypothesis generator**, not proof that the same gains will occur in software migration.
+
+Therefore Mendpoint MUST validate the thesis with its own controlled experiments on:
+
+- direct vs relationship-heavy migration tasks;
+- identical Muse 1.2 baselines under raw vs graph context;
+- hidden holdouts;
+- graph-induced false positives/negatives;
+- context/token/tool-call efficiency;
+- latency and cost;
+- static-only vs hybrid static/runtime coverage;
+- effect of independent DeepSeek V4 Flash verification.
+
+No external benchmark result SHOULD be used as a Mendpoint customer or investor performance claim without Mendpoint-specific evidence.
+
+---
+
 # 37. Final product statement
 
-Mendpoint is building the migration layer for software.
+Mendpoint is building the migration layer for software, with the Change Graph as its durable relationship memory and representation substrate.
 
 **Fettler** turns external provider change into graph-scoped, evidence-backed, verified, reviewable remediation.
 

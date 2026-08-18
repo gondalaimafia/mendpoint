@@ -79,3 +79,87 @@ describe("/prs/[id] page — an unloadable PR has unknown status, not a false 'f
     expect(html).not.toContain("ds-status--pending");
   });
 });
+
+describe("/prs/[id] page — coverage keeps a clean result distinct from an unanalyzed one", () => {
+  beforeEach(() => {
+    apiGet.mockReset();
+  });
+
+  async function renderWith(prOverrides: Record<string, unknown>): Promise<string> {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/prs/pr-1") return { ...PR, ...prOverrides };
+      if (path === "/consumers") {
+        return [{ id: "con1", name: "acme", githubOwner: "acme", githubRepo: "payments-sdk" }];
+      }
+      if (path === "/changes/chg1") {
+        return { id: "chg1", risk: "safe", summary: "", diff: { entries: [], risk: "safe", summary: "" } };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    return renderToStaticMarkup(
+      await PullRequestDetailPage({ params: Promise.resolve({ id: "pr-1" }) }),
+    );
+  }
+
+  it("renders an analyzed + zero-findings PR as a positive result, never as failing", async () => {
+    const html = await renderWith({
+      status: "low_confidence",
+      risk: "safe",
+      coverage: { basis: "analyzed", gaps: [], filesInspected: 42, filesInScope: 42 },
+    });
+    // A verified-clean result is positive, not a red failure.
+    expect(html).not.toContain("ds-status--failing");
+    expect(html).toContain("ds-status--open");
+    expect(html).toContain("No impact — verified");
+    expect(html).toContain("complete evidence of no impact");
+    expect(html).toContain("42 of 42 files inspected");
+    // And it must not read like an unanalyzed result.
+    expect(html).not.toContain("not a clean result");
+  });
+
+  it("renders a not_analyzed PR as no-basis, never as clean", async () => {
+    const html = await renderWith({
+      status: "low_confidence",
+      risk: "safe",
+      coverage: { basis: "not_analyzed", reason: "No supported language present.", gaps: [] },
+    });
+    expect(html).toContain("Not analyzed");
+    expect(html).toContain("not a clean result");
+    // Must not borrow the clean result's evidence-of-safety language.
+    expect(html).not.toContain("complete evidence of no impact");
+    // Genuinely weak -> amber pending, not a fabricated red.
+    expect(html).toContain("ds-status--pending");
+    expect(html).not.toContain("ds-status--failing");
+  });
+
+  it("surfaces the typed gap reasons of a partial-coverage PR", async () => {
+    const html = await renderWith({
+      status: "low_confidence",
+      risk: "safe",
+      coverage: {
+        basis: "partial",
+        reason: "Some files were not analyzed.",
+        gaps: [
+          { reason: "unsupported_language", detail: "3 .rb files were not analyzed", count: 3 },
+          { reason: "file_cap", detail: "cap of 5000 files reached", count: 5000 },
+        ],
+      },
+    });
+    expect(html).toContain("partial coverage");
+    expect(html).toContain("Unsupported language");
+    expect(html).toContain("3 .rb files were not analyzed");
+    expect(html).toContain("File-count cap reached");
+    expect(html).toContain("ds-status--pending");
+    expect(html).not.toContain("ds-status--failing");
+  });
+
+  it("renders a PR with no coverage field as unknown, and does not crash", async () => {
+    const html = await renderWith({ status: "low_confidence", risk: "safe" });
+    expect(html).toContain("Coverage not recorded");
+    expect(html).toContain("unverified");
+    expect(html).not.toContain("complete evidence of no impact");
+    // Absent coverage is unknown, never clean or failing.
+    expect(html).toContain("ds-status--pending");
+    expect(html).not.toContain("ds-status--failing");
+  });
+});

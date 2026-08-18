@@ -29,7 +29,11 @@ import {
   tenantPatternSuccessRows,
   type GraphTenantScope,
 } from "./tenant-scope.js";
-import { enumerateDependencyPaths } from "./dependency-paths.js";
+import {
+  enumerateDependencyPaths,
+  HARD_MAX_HOPS,
+  HARD_MAX_PATHS,
+} from "./dependency-paths.js";
 
 function collectNodes(db: GraphLearnDb, ids: Iterable<string>): GlNode[] {
   const out: GlNode[] = [];
@@ -40,16 +44,41 @@ function collectNodes(db: GraphLearnDb, ids: Iterable<string>): GlNode[] {
   return out;
 }
 
-/** BFS multi-hop neighborhood. */
+/**
+ * Clamp a caller-supplied hop/size bound to a hard ceiling, reporting whether the
+ * ceiling actually bound. A bound that binds must downgrade a result's coverage
+ * to `partial` so a clamped traversal is never labelled `complete`. Mirrors the
+ * boundedInt shape in dependency-paths.ts and reuses its HARD_MAX_* vocabulary.
+ */
+function clampBound(
+  value: number | undefined,
+  fallback: number,
+  hardMax: number,
+): { value: number; clamped: boolean } {
+  if (value === undefined || !Number.isFinite(value)) {
+    return { value: fallback, clamped: false };
+  }
+  const floored = Math.max(0, Math.floor(value));
+  const bounded = Math.min(floored, hardMax);
+  return { value: bounded, clamped: bounded < floored };
+}
+
+/**
+ * BFS multi-hop neighborhood. Depth is bounded by `maxHops` and total breadth by
+ * `maxNodes`; when the node cap stops expansion the result is flagged `truncated`
+ * so the caller can report `partial` coverage rather than a false `complete`.
+ */
 export function blastRadius(
   db: GraphLearnDb,
   nodeId: string,
   maxHops = 2,
-): { nodes: GlNode[]; edges: GlEdge[] } {
+  maxNodes = HARD_MAX_PATHS,
+): { nodes: GlNode[]; edges: GlEdge[]; truncated: boolean } {
   const seen = new Set<string>([nodeId]);
   const seenEdges = new Set<string>();
   const edgeAcc: GlEdge[] = [];
   let frontier = [nodeId];
+  let truncated = false;
   for (let h = 0; h < maxHops; h++) {
     const next: string[] = [];
     for (const id of frontier) {
@@ -60,6 +89,10 @@ export function blastRadius(
         }
         const other = e.source === id ? e.target : e.source;
         if (!seen.has(other)) {
+          if (seen.size >= maxNodes) {
+            truncated = true;
+            continue;
+          }
           seen.add(other);
           next.push(other);
         }
@@ -68,7 +101,7 @@ export function blastRadius(
     frontier = next;
     if (!frontier.length) break;
   }
-  return { nodes: collectNodes(db, seen), edges: edgeAcc };
+  return { nodes: collectNodes(db, seen), edges: edgeAcc, truncated };
 }
 
 /**
@@ -287,15 +320,24 @@ function runGraphQueryInner(
     }
     case "blast_radius": {
       const present = Boolean(getNode(db, q.nodeId));
-      const r = blastRadius(db, q.nodeId, q.maxHops ?? 2);
+      const hops = clampBound(q.maxHops, 2, HARD_MAX_HOPS);
+      const r = blastRadius(db, q.nodeId, hops.value);
+      const coverage: GraphQueryCoverage = !present
+        ? { basis: "target_absent", reason: `node ${q.nodeId} is not in the graph` }
+        : hops.clamped || r.truncated
+          ? {
+              basis: "partial",
+              reason: hops.clamped
+                ? `maxHops clamped to ${HARD_MAX_HOPS}`
+                : `result capped at ${HARD_MAX_PATHS} nodes`,
+            }
+          : { basis: "complete" };
       return {
         op: q.op,
         nodes: r.nodes,
         edges: r.edges,
         summary: `blast radius from ${q.nodeId}: ${r.nodes.length} nodes, ${r.edges.length} edges`,
-        coverage: present
-          ? { basis: "complete" }
-          : { basis: "target_absent", reason: `node ${q.nodeId} is not in the graph` },
+        coverage,
       };
     }
     case "neighbors": {
@@ -377,7 +419,8 @@ function runGraphQueryInner(
       // BFS path from → to
       const fromPresent = Boolean(getNode(db, q.fromId));
       const toPresent = Boolean(getNode(db, q.toId));
-      const maxHops = q.maxHops ?? 6;
+      const hops = clampBound(q.maxHops, 6, HARD_MAX_HOPS);
+      const maxHops = hops.value;
       const prev = new Map<string, { id: string; edge?: GlEdge }>();
       prev.set(q.fromId, { id: q.fromId });
       let frontier = [q.fromId];
@@ -400,17 +443,24 @@ function runGraphQueryInner(
       }
       if (!found) {
         const absent = !fromPresent || !toPresent;
+        const coverage: GraphQueryCoverage = absent
+          ? {
+              basis: "target_absent",
+              reason: `${!fromPresent ? q.fromId : q.toId} is not in the graph`,
+            }
+          : hops.clamped
+            ? {
+                // Search stopped at the clamped depth; a longer path may exist.
+                basis: "partial",
+                reason: `maxHops clamped to ${HARD_MAX_HOPS}`,
+              }
+            : { basis: "complete" };
         return {
           op: q.op,
           nodes: [],
           edges: [],
           summary: `no path ${q.fromId} → ${q.toId}${absent ? " (endpoint not in graph)" : ""}`,
-          coverage: absent
-            ? {
-                basis: "target_absent",
-                reason: `${!fromPresent ? q.fromId : q.toId} is not in the graph`,
-              }
-            : { basis: "complete" },
+          coverage,
         };
       }
       const pathIds: string[] = [];
@@ -547,6 +597,14 @@ function runGraphQueryInner(
       }
 
       const endpointIds = new Set<string>();
+      // The path/method fan-out compares every schema against every Endpoint, so
+      // a field shared by many schemas could otherwise drive an unbounded
+      // O(schemas × endpoints) scan. Materialize the endpoint set once and cap
+      // total comparisons at the shared result ceiling; if the cap binds, the
+      // op reports `partial` coverage rather than a false `complete`.
+      const allEndpoints = listNodesByKind(db, "Endpoint");
+      let endpointScanBudget = HARD_MAX_PATHS;
+      let endpointScanTruncated = false;
       for (const schemaId of schemaIds) {
         for (const edge of edgesTo(db, schemaId, ["HAS_SCHEMA"])) {
           edges.push(edge);
@@ -557,7 +615,11 @@ function runGraphQueryInner(
         const path = String(schema?.props?.path ?? "");
         const method = String(schema?.props?.method ?? "").toUpperCase();
         if (path) {
-          for (const endpoint of listNodesByKind(db, "Endpoint")) {
+          for (const endpoint of allEndpoints) {
+            if (endpointScanBudget-- <= 0) {
+              endpointScanTruncated = true;
+              break;
+            }
             if (
               String(endpoint.props?.path) === path &&
               (!method || String(endpoint.props?.method).toUpperCase() === method)
@@ -567,6 +629,7 @@ function runGraphQueryInner(
             }
           }
         }
+        if (endpointScanTruncated) break;
       }
 
       const providerIds = new Set<string>();
@@ -595,6 +658,12 @@ function runGraphQueryInner(
         nodes: collectNodes(db, nodeIds),
         edges,
         summary: `field ${q.schemaName}.${q.fieldName}: ${consumerIds.size} consumer(s)`,
+        coverage: endpointScanTruncated
+          ? {
+              basis: "partial",
+              reason: `endpoint scan capped at ${HARD_MAX_PATHS}`,
+            }
+          : { basis: "complete" },
         rows: [...consumerIds].map((id) => ({
           consumerId: id.replace(/^consumer:/, ""),
           schemaName: q.schemaName,
@@ -707,7 +776,7 @@ function runGraphQueryInner(
       const symbols = listNodesByKind(db, "Symbol");
       const edges: GlEdge[] = [];
       for (const s of symbols) {
-        for (const e of edgesFrom(db, s.id, ["CALLS"], q.at)) {
+        for (const e of edgesFrom(db, s.id, ["CALLS"], { at: q.at })) {
           edges.push(e);
         }
       }
@@ -788,18 +857,74 @@ export const GRAPH_RAG_TOOLS = [
   "stats",
 ] as const;
 
+/** How many rows/nodes {@link formatQueryForPlanner} renders inline. */
+const PLANNER_ROW_LIMIT = 12;
+
+/**
+ * Render the coverage banner for a graph result. This is the honesty boundary:
+ * a `partial` or `target_absent` result must never read as a definitive answer,
+ * and a missing assessment is reported as UNKNOWN rather than assumed complete.
+ * There is deliberately no `?? "complete"` fallback — an absent coverage field
+ * is the one case that must fail closed, not open.
+ */
+function formatCoverageForPlanner(r: GraphQueryResult): string {
+  const reason = r.coverage?.reason?.trim();
+  const suffix = reason ? ` (${reason})` : "";
+  switch (r.coverage?.basis) {
+    case "complete":
+      return `Coverage: complete. This result enumerates everything within the query's scope${suffix}.`;
+    case "partial": {
+      const omitted = r.truncation?.omittedPathsAtLeast;
+      const omittedNote =
+        typeof omitted === "number" && omitted > 0
+          ? ` At least ${omitted} more path(s) exist beyond what is shown.`
+          : "";
+      return `Coverage: PARTIAL. Enumeration stopped at a safety bound, so more may exist than is shown${suffix}.${omittedNote}`;
+    }
+    case "target_absent":
+      return `Coverage: TARGET ABSENT. This entity was never observed in the graph${suffix}; an empty result means there is no evidence either way, NOT that the entity has no relationships.`;
+    default:
+      return `Coverage: UNKNOWN. This result did not report coverage and must not be read as complete.`;
+  }
+}
+
+/**
+ * Render the inline rows/nodes, stating how many were omitted rather than
+ * silently cutting at {@link PLANNER_ROW_LIMIT}.
+ */
+function formatRowsForPlanner(r: GraphQueryResult): string {
+  if (r.rows?.length) {
+    const lines = r.rows
+      .slice(0, PLANNER_ROW_LIMIT)
+      .map((row) => `- ${JSON.stringify(row)}`);
+    const omitted = r.rows.length - PLANNER_ROW_LIMIT;
+    if (omitted > 0) lines.push(`- (${omitted} more row(s) not shown here)`);
+    return lines.join("\n");
+  }
+  const nodes = r.nodes ?? [];
+  if (nodes.length) {
+    const lines = nodes
+      .slice(0, PLANNER_ROW_LIMIT)
+      .map((n) => `- (${n.kind}) ${n.label} \`${n.id}\``);
+    const omitted = nodes.length - PLANNER_ROW_LIMIT;
+    if (omitted > 0) lines.push(`- (${omitted} more node(s) not shown here)`);
+    return lines.join("\n");
+  }
+  return "";
+}
+
+/**
+ * Format a graph result for a planner model and, downstream, the customer PR
+ * body. Coverage is rendered directly after the summary — before the row list —
+ * so it survives any head-truncation a caller applies to the string.
+ */
 export function formatQueryForPlanner(r: GraphQueryResult): string {
   return [
     `### Graph-RAG: ${r.op}`,
     r.summary,
-    r.rows?.length
-      ? r.rows
-          .slice(0, 12)
-          .map((row) => `- ${JSON.stringify(row)}`)
-          .join("\n")
-      : r.nodes
-          .slice(0, 12)
-          .map((n) => `- (${n.kind}) ${n.label} \`${n.id}\``)
-          .join("\n"),
-  ].join("\n");
+    formatCoverageForPlanner(r),
+    formatRowsForPlanner(r),
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
 }

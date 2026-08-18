@@ -44,8 +44,10 @@ export type DependencyPathEnumeration = {
 
 const DEFAULT_MAX_HOPS = 8;
 const DEFAULT_MAX_PATHS = 100;
-const HARD_MAX_HOPS = 32;
-const HARD_MAX_PATHS = 1_000;
+/** Shared traversal safety ceilings — reused by every bounded graph op so the
+ *  engine speaks one limit vocabulary regardless of caller-supplied bounds. */
+export const HARD_MAX_HOPS = 32;
+export const HARD_MAX_PATHS = 1_000;
 
 function boundedInt(
   value: number | undefined,

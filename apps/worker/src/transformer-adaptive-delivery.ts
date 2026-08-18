@@ -600,11 +600,19 @@ export async function runTransformerAdaptiveDelivery(
           tenantId: input.job.tenant_id,
           candidate,
           artifact,
+          // At the delivery seam the outcome is always null (pending); the producer
+          // refuses to admit until it resolves to "merged".
+          deliveryOutcome: delivery.outcome,
           now: completedAt,
           env: input.artifactEnv ?? process.env,
         });
-      } catch {
-        /* best-effort: governed learning admission never affects delivery */
+      } catch (error) {
+        // Best-effort: governed learning admission never affects delivery, but a
+        // swallowed failure must still be diagnosable.
+        console.error(
+          `governed learning admission failed candidate=${candidate.id} delivery=${delivery.id}`,
+          error instanceof Error ? error.message : error,
+        );
       }
       return delivered;
     } catch (error) {

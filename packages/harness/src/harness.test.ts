@@ -26,6 +26,11 @@ import {
   getPlan,
 } from "./index.js";
 import { runSpecialistTool } from "./tools.js";
+import {
+  getGraphLearnDb,
+  ingestControlPlane,
+  resetGraphLearnDbForTests,
+} from "@mendpoint/graph-learn";
 import type { SandboxHandle } from "@mendpoint/platform";
 
 const dirs: string[] = [];
@@ -257,6 +262,95 @@ describe("harness", () => {
     // Only an explicit boolean attestation satisfies the security gate.
     const attested = securityGate(JSON.stringify({ securityScanAttested: true }));
     expect(attested.gate?.ok).toBe(true);
+  });
+
+  it("keeps the graph coverage statement inside the tool truncation limits", () => {
+    // Seed the process-wide graph DB in a temp file so the harness tools, which
+    // read the singleton, see enough rows that formatQueryForPlanner's output
+    // overruns both the 600- and 1200-char tool caps.
+    const dbDir = mkdtempSync(join(tmpdir(), "harness-graph-"));
+    dirs.push(dbDir);
+    const prevDbPath = process.env.GRAPH_LEARN_DB;
+    process.env.GRAPH_LEARN_DB = join(dbDir, "graph-learn.sqlite");
+    resetGraphLearnDbForTests();
+    try {
+      const tenantId = "tenant-trunc";
+      // Long consumer ids guarantee each rendered row is wide.
+      const consumerIds = Array.from(
+        { length: 15 },
+        (_, i) => `consumer-${"x".repeat(90)}-${i}`,
+      );
+      ingestControlPlane(
+        getGraphLearnDb(),
+        {
+          provider: { id: "p1", slug: "acme", name: "Acme" },
+          consumers: consumerIds.map((id, i) => ({
+            id,
+            name: `Consumer ${i}`,
+            githubOwner: "o",
+            githubRepo: `r${i}`,
+          })),
+          monitors: consumerIds.map((id) => ({ consumerId: id, providerId: "p1" })),
+        },
+        tenantId,
+      );
+      const scope = { tenantId, consumerIds };
+      const sandbox: SandboxHandle = {
+        id: "trunc",
+        kind: "local",
+        root: dbDir,
+        mocks: [],
+        dispose: () => undefined,
+        run: () => ({ ok: true, stdout: "", stderr: "" }),
+      };
+
+      const stepFor = (action: string, notes: string) => {
+        let plan = emptyPlan({
+          kind: "generic",
+          title: action,
+          goal: "render graph result",
+          agent: "shared",
+        });
+        plan = addStep(plan, {
+          title: action,
+          action,
+          successCriteria: ["ok"],
+          notes,
+        });
+        return plan.steps[0]!;
+      };
+
+      // Site 1: impact.fanout_prs truncates the markdown field to 600 chars.
+      const fanout = runSpecialistTool(
+        stepFor("impact.fanout_prs", JSON.stringify({ providerSlug: "acme" })),
+        sandbox,
+        scope,
+      );
+      const fanoutMd = (JSON.parse(fanout.output) as { markdown: string }).markdown;
+      expect(fanoutMd).toContain("Coverage:");
+      expect(fanoutMd).toContain("truncated for tool output");
+
+      // Site 2: graph.query truncates the whole formatted output to 1200 chars.
+      const query = runSpecialistTool(
+        stepFor(
+          "graph.query",
+          JSON.stringify({
+            query: { op: "who_consumes_provider", providerSlug: "acme" },
+          }),
+        ),
+        sandbox,
+        scope,
+      );
+      // The marker is only appended when the formatted output overran the cap,
+      // so its presence proves truncation happened without dropping coverage.
+      expect(query.output).toContain("Coverage:");
+      expect(query.output).toContain("truncated for tool output");
+      expect(query.output.length).toBeLessThanOrEqual(1200);
+    } finally {
+      resetGraphLearnDbForTests();
+      if (prevDbPath === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = prevDbPath;
+    }
   });
 
   it("fails unknown actions and unmet success criteria", async () => {

@@ -3,7 +3,12 @@ import { apiGet, type Consumer, type MigrationPr } from "../../../lib/api";
 import { PrsView } from "../../components/console/prs-view";
 import type { PullRequest } from "../../components/console/fixtures";
 import type { Status } from "../../components/ds/index";
-import { mapPrStatus, patchStats, relativeTime } from "../../components/console/pr-map";
+import {
+  coverageSummary,
+  mapPrStatus,
+  patchStats,
+  relativeTime,
+} from "../../components/console/pr-map";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Pull requests" };
@@ -30,11 +35,15 @@ export default async function PullRequestsPage() {
       repo: repoByConsumer.get(pr.consumerId) ?? pr.branchName ?? "unknown",
       number: pr.githubPrNumber,
       title: pr.title,
-      status: mapPrStatus(pr.status) as Status,
+      status: mapPrStatus(pr.status, pr.coverage) as Status,
       additions,
       deletions,
       files,
       time: relativeTime(pr.createdAt),
+      // Carry the coverage state so the row can distinguish a verified-clean
+      // result from an unanalyzed one — a distinction the status pill alone
+      // cannot make. Defaults to unknown when the channel is absent.
+      coverage: coverageSummary(pr.status, pr.coverage),
     };
   });
 
