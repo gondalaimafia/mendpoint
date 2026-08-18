@@ -154,6 +154,41 @@ describe("Warden CI reentry authority", () => {
     })).toThrow("warden_ci_repair_conflict");
   });
 
+  it("fails closed when another worker moves the head between the read and the observation write", () => {
+    const db = database();
+    const cycle = enqueueWardenCiCycle(db, cycleInput);
+    const movedHead = sha("9");
+    // Reproduce the race: recordWardenCiObservation reads the cycle outside the transaction, so a
+    // concurrent completeWardenCiUpdate can move current_head_sha in the window before BEGIN IMMEDIATE.
+    // Fire that move exactly as the transaction opens.
+    const realExec = db.raw.exec.bind(db.raw);
+    let fired = false;
+    (db.raw as unknown as { exec: (sql: string) => unknown }).exec = (sql: string) => {
+      if (!fired && sql === "BEGIN IMMEDIATE") {
+        fired = true;
+        db.raw.prepare("UPDATE fettler_ci_cycles SET current_head_sha = ? WHERE id = ? AND tenant_id = ?")
+          .run(movedHead, cycle.id, "tenant-a");
+      }
+      return realExec(sql);
+    };
+    try {
+      expect(() => recordWardenCiObservation(db, {
+        tenantId: "tenant-a", cycleId: cycle.id, headSha: sha("d"), verdict: "failure",
+        observationDigest: digest("e"), evidenceArtifactId: "artifact-race-a",
+        evidenceDigest: digest("f"), observedAt: "2026-08-13T12:02:00.000Z",
+      })).toThrow("warden_ci_head_drift");
+    } finally {
+      (db.raw as unknown as { exec: typeof realExec }).exec = realExec;
+    }
+    // Nothing was persisted: no observation row, no repair job, and the cycle keeps its null digest.
+    expect(listWardenCiObservations(db, "tenant-a", cycle.id)).toHaveLength(0);
+    expect(listJobs(db, 20, "tenant-a").filter((job) => job.type === "warden.candidate.repair")).toHaveLength(0);
+    const after = getWardenCiCycle(db, "tenant-a", cycle.id);
+    expect(after?.currentHeadSha).toBe(movedHead);
+    expect(after?.status).toBe("observation_pending");
+    expect(after?.currentObservationDigest).toBeNull();
+  });
+
   it("honors a human pause before reserving repair authority", () => {
     const db = database();
     const cycle = enqueueWardenCiCycle(db, cycleInput);
