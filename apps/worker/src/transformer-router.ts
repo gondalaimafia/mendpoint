@@ -18,7 +18,12 @@ import type {
   TransformerAttemptRunResult,
   TransformerPendingRoutingSettlement,
 } from "@mendpoint/transformer";
-import { createWardenRoutingRuntime, wardenExecutorDescriptor } from "./warden-router.js";
+import {
+  createWardenRoutingRuntime,
+  estimateSeedInputTokens,
+  riskQualityFloor,
+  wardenExecutorDescriptor,
+} from "./warden-router.js";
 
 /**
  * Durable policy-routed execution for the production Transformer attempt path.
@@ -148,6 +153,8 @@ export type TransformerRoutingRequestInput = Readonly<{
   goal?: string;
   verifyCommand?: string;
   maxOutputTokens?: number;
+  /** Optional caller-supplied token estimate. Defaults to a seed estimate. */
+  estimatedInputTokens?: number;
   risk?: TaskRisk;
   classification?: DataClassification;
   budgetUsd?: number;
@@ -166,17 +173,29 @@ export type TransformerRoutingRequest = Readonly<{
 
 function buildTaskSpec(input: TransformerRoutingRequestInput): RouterTaskSpec {
   const budgetUsd = input.budgetUsd ?? 25;
+  const goal = input.goal ?? `Regauge recipe migration for ${input.campaignId}`;
+  // No honest change-risk signal exists at this call site: the runnable campaign
+  // carries no blast radius or impact coverage (both are produced by the attempt,
+  // after routing). Risk stays caller-supplied or the medium default — a
+  // deliberate under-claim, not a fabricated derivation.
+  const risk: TaskRisk = input.risk ?? "medium";
   return {
     taskId: input.taskId,
     tenantId: input.tenantId,
     kind: TRANSFORMER_TASK_KIND,
-    goal: input.goal ?? `Regauge recipe migration for ${input.campaignId}`,
+    goal,
     idempotencyKey: input.idempotencyKey,
     inputArtifactIds: [...input.sourceArtifactIds],
     requiredCapabilities: [TRANSFORMER_CAPABILITY],
     allowedTools: [],
     context: {
-      estimatedInputTokens: 0,
+      estimatedInputTokens:
+        input.estimatedInputTokens ??
+        estimateSeedInputTokens([
+          goal,
+          input.verifyCommand,
+          ...input.sourceArtifactIds,
+        ]),
       maximumOutputTokens: input.maxOutputTokens ?? 8_192,
     },
     verification: {
@@ -192,8 +211,8 @@ function buildTaskSpec(input: TransformerRoutingRequestInput): RouterTaskSpec {
       fallbackFailures: ["provider_unavailable", "executor_unavailable"],
     },
     privacy: { classification: input.classification ?? "confidential" },
-    risk: input.risk ?? "medium",
-    quality: { minimumScore: 0 },
+    risk,
+    quality: { minimumScore: riskQualityFloor(risk) },
     latency: { maximumMs: input.maximumLatencyMs ?? 3_600_000 },
     budget: { maximumUsd: budgetUsd },
   };
@@ -217,7 +236,10 @@ function buildPolicySnapshot(
       allowedExecutionRegions: [input.allowedExecutionRegion ?? TRANSFORMER_ROUTING_REGION],
     },
     risk: { maximumAutonomousRisk: "medium", humanReviewAtOrAbove: "high" },
-    quality: { minimumScore: 0 },
+    // Baseline policy quality floor (§13.4). The effective minimum is the max of
+    // this and the risk-adjusted task floor, so no executor below the baseline is
+    // ever eligible and the `quality_below_minimum` gate can fire.
+    quality: { minimumScore: 0.6 },
     latency: { maximumMs: input.maximumLatencyMs ?? 3_600_000 },
     budget: { maximumUsd: input.budgetUsd ?? 25 },
   };
