@@ -68,6 +68,25 @@ export interface ProductRequirement {
   externalBlockers: string[] | null;
 }
 
+export interface ProductClosurePlan {
+  source: string;
+  auditedRevision: string;
+  requirementCount: number;
+}
+
+/**
+ * A supplemental register set enrolled alongside the foundational requirements.
+ * Each set carries its own provenance (`closurePlan.source`/`auditedRevision`)
+ * and its own accepted-identifier set, so a reviewer can answer "which audit
+ * produced this requirement, at which revision" for any row without conflating
+ * it with the foundational audit.
+ */
+export interface ProductRegisterSet {
+  key: string;
+  closurePlan: ProductClosurePlan;
+  requirements: ProductRequirement[];
+}
+
 export interface ProductRequirementManifest {
   schemaVersion: number;
   spec: {
@@ -75,13 +94,10 @@ export interface ProductRequirementManifest {
     version: string;
     sha256: string;
   };
-  closurePlan: {
-    source: string;
-    auditedRevision: string;
-    requirementCount: number;
-  };
+  closurePlan: ProductClosurePlan;
   closureWorkstreams: Array<{ id: string; title: string }>;
   requirements: ProductRequirement[];
+  additionalRegisterSets?: ProductRegisterSet[];
 }
 
 export interface ProductRequirementIssue {
@@ -92,6 +108,23 @@ export interface ProductRequirementIssue {
 
 export interface ProductRequirementValidationOptions {
   expectedIds?: readonly string[];
+  registerSets?: readonly RegisterSetDefinition[];
+}
+
+/**
+ * The authoritative definition of one register set: which identifiers it
+ * accepts and how their identifier and gap-analysis tokens are shaped. The
+ * accepted-identifier set (and therefore the required count) lives in code, not
+ * in the manifest, so `closurePlan.requirementCount` remains an integrity check
+ * on a provenance claim rather than a value the manifest can assert about
+ * itself.
+ */
+export interface RegisterSetDefinition {
+  key: string;
+  title: string;
+  requirementIdPattern: RegExp;
+  gapIdPattern: RegExp;
+  expectedIds: readonly string[];
 }
 
 const DOMAIN_COUNTS = {
@@ -120,6 +153,60 @@ const REQUIREMENT_ID = /^ME-(FND|ING|SCM|GRF|WAR|TRN|RTR|ENT|COM|GTM)-[0-9]{3}$/
 const GAP_ID = /^(SPEC|ING|SCM|GRF|WRD|TRN|RTR|ENT|COM|GTM)-[0-9]{2}$/;
 const WORKSTREAM_ID = /^FC-(0[0-9]|10)$/;
 const SHA256 = /^[a-f0-9]{64}$/;
+
+/**
+ * The v3.0 platform baseline register set: the eight new functional
+ * requirements added by the v3.0 specification (FET-015..018, REG-015..018)
+ * plus the §28.1.1 Change Graph acceptance criteria (enrolled as ME-CGR-001).
+ * These identifiers are non-sequential relative to the foundational set and
+ * derive from a different audit, so they are listed explicitly rather than
+ * generated from a domain-count table.
+ */
+export const V3_PLATFORM_REQUIREMENT_IDS = [
+  "ME-FET-015",
+  "ME-FET-016",
+  "ME-FET-017",
+  "ME-FET-018",
+  "ME-REG-015",
+  "ME-REG-016",
+  "ME-REG-017",
+  "ME-REG-018",
+  "ME-CGR-001",
+].sort();
+
+const V3_REQUIREMENT_ID = /^ME-(FET|REG|CGR)-[0-9]{3}$/;
+const V3_GAP_ID = /^(FET|REG|CGR)-[0-9]{3}$/;
+
+/**
+ * The foundational register set. Its accepted identifiers, identifier shape,
+ * and gap-analysis token shape are exactly what the register enforced before
+ * multi-set validation existed; nothing here changes the foundational contract.
+ */
+export const FOUNDATIONAL_REGISTER_SET: RegisterSetDefinition = {
+  key: "foundational",
+  title: "Foundational requirements (2026-08-01 gap analysis)",
+  requirementIdPattern: REQUIREMENT_ID,
+  gapIdPattern: GAP_ID,
+  expectedIds: FOUNDATIONAL_REQUIREMENT_IDS,
+};
+
+export const V3_PLATFORM_REGISTER_SET: RegisterSetDefinition = {
+  key: "v3-platform",
+  title: "v3.0 platform baseline requirements",
+  requirementIdPattern: V3_REQUIREMENT_ID,
+  gapIdPattern: V3_GAP_ID,
+  expectedIds: V3_PLATFORM_REQUIREMENT_IDS,
+};
+
+/**
+ * The register sets enforced by default. The foundational set is validated
+ * against the manifest's top-level `requirements`/`closurePlan`; every other
+ * set is validated against a keyed entry in `additionalRegisterSets`.
+ */
+export const PRODUCT_REGISTER_SETS: readonly RegisterSetDefinition[] = [
+  FOUNDATIONAL_REGISTER_SET,
+  V3_PLATFORM_REGISTER_SET,
+];
 
 const TARGET_RELEASES = new Set<ProductTargetRelease>([
   "warden-pilot",
@@ -196,76 +283,74 @@ function externalEvidenceBlockerNames(locator: string): string[] {
     .filter((item) => item.length > 0);
 }
 
-export function validateProductRequirements(
-  input: unknown,
-  options: ProductRequirementValidationOptions = {},
-): ProductRequirementIssue[] {
-  const issues: ProductRequirementIssue[] = [];
-  if (!isRecord(input)) {
-    return [{ code: "MANIFEST_TYPE", subject: "manifest", message: "must be an object" }];
-  }
+/**
+ * Shared, cross-set state for one validation pass. Identifier-uniqueness sets
+ * are shared across every register set so a requirement, acceptance, or
+ * evidence identifier reused between sets still fails closed; the workstream
+ * set is shared because workstreams are declared once at the manifest level.
+ */
+interface RegisterSetContext {
+  issues: ProductRequirementIssue[];
+  workstreamIds: Set<string>;
+  requirementIds: Set<string>;
+  acceptanceIds: Set<string>;
+  evidenceIds: Set<string>;
+}
 
-  if (input.schemaVersion !== 1) {
-    addIssue(issues, "SCHEMA_VERSION", "manifest", "schemaVersion must equal 1");
-  }
-  if (!isRecord(input.spec)) {
-    addIssue(issues, "SPEC_RECORD", "manifest", "spec must be an object");
+/**
+ * Validate one register set against its own definition. `requirements` and
+ * `closurePlan` are the set's rows and provenance; `subject` labels the set in
+ * manifest-scoped issues. Missing/unexpected/count checks are scoped to this
+ * set's own accepted identifiers, so an unknown row in one set never masks or
+ * pollutes another.
+ */
+function validateRegisterSet(
+  context: RegisterSetContext,
+  def: RegisterSetDefinition,
+  requirements: unknown,
+  closurePlan: unknown,
+  subject: string,
+) {
+  const { issues, workstreamIds, requirementIds, acceptanceIds, evidenceIds } = context;
+
+  if (isRecord(closurePlan)) {
+    if (typeof closurePlan.source !== "string" || closurePlan.source.trim().length === 0) {
+      addIssue(issues, "CLOSURE_SOURCE", subject, "closure plan source is required");
+    }
+    if (
+      typeof closurePlan.auditedRevision !== "string" ||
+      closurePlan.auditedRevision.trim().length === 0
+    ) {
+      addIssue(issues, "CLOSURE_REVISION", subject, "closure plan auditedRevision is required");
+    }
   } else {
-    if (typeof input.spec.path !== "string" || input.spec.path.length === 0) {
-      addIssue(issues, "SPEC_PATH", "manifest", "spec.path is required");
-    }
-    if (typeof input.spec.version !== "string" || input.spec.version.length === 0) {
-      addIssue(issues, "SPEC_VERSION", "manifest", "spec.version is required");
-    }
-    if (typeof input.spec.sha256 !== "string" || !SHA256.test(input.spec.sha256)) {
-      addIssue(issues, "SPEC_HASH", "manifest", "spec.sha256 must be a lowercase SHA-256 digest");
-    }
+    addIssue(issues, "CLOSURE_PLAN", subject, "closurePlan must be an object");
   }
 
-  const workstreamIds = new Set<string>();
-  if (!Array.isArray(input.closureWorkstreams)) {
-    addIssue(issues, "WORKSTREAMS_TYPE", "manifest", "closureWorkstreams must be an array");
-  } else {
-    for (const item of input.closureWorkstreams) {
-      if (!isRecord(item) || typeof item.id !== "string" || !WORKSTREAM_ID.test(item.id)) {
-        addIssue(issues, "WORKSTREAM_ID", "manifest", "every workstream needs a valid FC-00 to FC-10 ID");
-        continue;
-      }
-      if (workstreamIds.has(item.id)) {
-        addIssue(issues, "WORKSTREAM_DUPLICATE", item.id, "workstream ID is duplicated");
-      }
-      workstreamIds.add(item.id);
-      if (typeof item.title !== "string" || item.title.trim().length === 0) {
-        addIssue(issues, "WORKSTREAM_TITLE", item.id, "workstream title is required");
-      }
-    }
+  if (!Array.isArray(requirements)) {
+    addIssue(issues, "REQUIREMENTS_TYPE", subject, "requirements must be an array");
+    return;
   }
 
-  if (!Array.isArray(input.requirements)) {
-    addIssue(issues, "REQUIREMENTS_TYPE", "manifest", "requirements must be an array");
-    return issues.sort(compareIssues);
-  }
+  const expectedIds = [...def.expectedIds].sort();
+  const setRequirementIds = new Set<string>();
 
-  const expectedIds = [...(options.expectedIds ?? FOUNDATIONAL_REQUIREMENT_IDS)].sort();
-  const requirementIds = new Set<string>();
-  const acceptanceIds = new Set<string>();
-  const evidenceIds = new Set<string>();
-
-  for (const raw of input.requirements) {
+  for (const raw of requirements) {
     if (!isRecord(raw)) {
-      addIssue(issues, "REQUIREMENT_TYPE", "manifest", "each requirement must be an object");
+      addIssue(issues, "REQUIREMENT_TYPE", subject, "each requirement must be an object");
       continue;
     }
     const id = typeof raw.id === "string" ? raw.id : "unknown";
-    if (!REQUIREMENT_ID.test(id)) {
+    if (!def.requirementIdPattern.test(id)) {
       addIssue(issues, "REQUIREMENT_ID", id, "requirement ID is invalid");
     }
     if (requirementIds.has(id)) {
       addIssue(issues, "REQUIREMENT_DUPLICATE", id, "requirement ID is duplicated");
     }
     requirementIds.add(id);
+    setRequirementIds.add(id);
 
-    if (typeof raw.closureGapId !== "string" || !GAP_ID.test(raw.closureGapId)) {
+    if (typeof raw.closureGapId !== "string" || !def.gapIdPattern.test(raw.closureGapId)) {
       addIssue(issues, "GAP_ID", id, "closureGapId is invalid");
     }
     for (const [field, value] of [
@@ -445,7 +530,94 @@ export function validateProductRequirements(
     }
   }
 
-  const actualIds = [...requirementIds].sort();
+  const actualIds = [...setRequirementIds].sort();
+  for (const missing of expectedIds.filter((id) => !setRequirementIds.has(id))) {
+    addIssue(issues, "REQUIREMENT_MISSING", missing, `${def.key} requirement is missing`);
+  }
+  for (const unexpected of actualIds.filter((id) => !expectedIds.includes(id))) {
+    addIssue(issues, "REQUIREMENT_UNEXPECTED", unexpected, `requirement is not in the ${def.key} register`);
+  }
+
+  if (isRecord(closurePlan) && closurePlan.requirementCount !== expectedIds.length) {
+    addIssue(issues, "REQUIREMENT_COUNT", subject, `closure plan count must equal ${expectedIds.length}`);
+  }
+}
+
+export function validateProductRequirements(
+  input: unknown,
+  options: ProductRequirementValidationOptions = {},
+): ProductRequirementIssue[] {
+  const issues: ProductRequirementIssue[] = [];
+  if (!isRecord(input)) {
+    return [{ code: "MANIFEST_TYPE", subject: "manifest", message: "must be an object" }];
+  }
+
+  if (input.schemaVersion !== 1) {
+    addIssue(issues, "SCHEMA_VERSION", "manifest", "schemaVersion must equal 1");
+  }
+  if (!isRecord(input.spec)) {
+    addIssue(issues, "SPEC_RECORD", "manifest", "spec must be an object");
+  } else {
+    if (typeof input.spec.path !== "string" || input.spec.path.length === 0) {
+      addIssue(issues, "SPEC_PATH", "manifest", "spec.path is required");
+    }
+    if (typeof input.spec.version !== "string" || input.spec.version.length === 0) {
+      addIssue(issues, "SPEC_VERSION", "manifest", "spec.version is required");
+    }
+    if (typeof input.spec.sha256 !== "string" || !SHA256.test(input.spec.sha256)) {
+      addIssue(issues, "SPEC_HASH", "manifest", "spec.sha256 must be a lowercase SHA-256 digest");
+    }
+  }
+
+  const workstreamIds = new Set<string>();
+  if (!Array.isArray(input.closureWorkstreams)) {
+    addIssue(issues, "WORKSTREAMS_TYPE", "manifest", "closureWorkstreams must be an array");
+  } else {
+    for (const item of input.closureWorkstreams) {
+      if (!isRecord(item) || typeof item.id !== "string" || !WORKSTREAM_ID.test(item.id)) {
+        addIssue(issues, "WORKSTREAM_ID", "manifest", "every workstream needs a valid FC-00 to FC-10 ID");
+        continue;
+      }
+      if (workstreamIds.has(item.id)) {
+        addIssue(issues, "WORKSTREAM_DUPLICATE", item.id, "workstream ID is duplicated");
+      }
+      workstreamIds.add(item.id);
+      if (typeof item.title !== "string" || item.title.trim().length === 0) {
+        addIssue(issues, "WORKSTREAM_TITLE", item.id, "workstream title is required");
+      }
+    }
+  }
+
+  // A caller-supplied `expectedIds` selects the legacy single-set mode: only the
+  // top-level foundational set is validated, against those identifiers. Absent
+  // that override the default is the full multi-set contract, whose foundational
+  // set is the top-level `requirements`/`closurePlan` and whose every other set
+  // must appear, keyed, in `additionalRegisterSets`.
+  const registerSets: readonly RegisterSetDefinition[] = options.registerSets
+    ? options.registerSets
+    : options.expectedIds
+      ? [{ ...FOUNDATIONAL_REGISTER_SET, expectedIds: [...options.expectedIds] }]
+      : PRODUCT_REGISTER_SETS;
+
+  const foundationalDef =
+    registerSets.find((set) => set.key === FOUNDATIONAL_REGISTER_SET.key) ?? registerSets[0];
+  const additionalDefs = registerSets.filter((set) => set !== foundationalDef);
+
+  if (!Array.isArray(input.requirements)) {
+    addIssue(issues, "REQUIREMENTS_TYPE", "manifest", "requirements must be an array");
+    return issues.sort(compareIssues);
+  }
+
+  const context: RegisterSetContext = {
+    issues,
+    workstreamIds,
+    requirementIds: new Set<string>(),
+    acceptanceIds: new Set<string>(),
+    evidenceIds: new Set<string>(),
+  };
+
+  validateRegisterSet(context, foundationalDef, input.requirements, input.closurePlan, "manifest");
+
   for (const workstreamId of workstreamIds) {
     const ownsRequirement = input.requirements.some(
       (requirement) => isRecord(requirement) && requirement.closureWorkstream === workstreamId,
@@ -459,15 +631,39 @@ export function validateProductRequirements(
       );
     }
   }
-  for (const missing of expectedIds.filter((id) => !requirementIds.has(id))) {
-    addIssue(issues, "REQUIREMENT_MISSING", missing, "foundational requirement is missing");
-  }
-  for (const unexpected of actualIds.filter((id) => !expectedIds.includes(id))) {
-    addIssue(issues, "REQUIREMENT_UNEXPECTED", unexpected, "requirement is not in the foundational register");
-  }
 
-  if (isRecord(input.closurePlan) && input.closurePlan.requirementCount !== expectedIds.length) {
-    addIssue(issues, "REQUIREMENT_COUNT", "manifest", `closure plan count must equal ${expectedIds.length}`);
+  const manifestAdditional = Array.isArray(input.additionalRegisterSets)
+    ? input.additionalRegisterSets
+    : [];
+  const knownKeys = new Set(additionalDefs.map((set) => set.key));
+  const seenKeys = new Set<string>();
+  for (const entry of manifestAdditional) {
+    if (!isRecord(entry) || typeof entry.key !== "string" || entry.key.length === 0) {
+      addIssue(issues, "REGISTER_SET_KEY", "additionalRegisterSets", "each register set needs a string key");
+      continue;
+    }
+    if (!knownKeys.has(entry.key)) {
+      addIssue(issues, "REGISTER_SET_UNKNOWN", entry.key, "register set key is not recognized");
+      continue;
+    }
+    if (seenKeys.has(entry.key)) {
+      addIssue(issues, "REGISTER_SET_DUPLICATE", entry.key, "register set key is duplicated");
+      continue;
+    }
+    seenKeys.add(entry.key);
+    const def = additionalDefs.find((set) => set.key === entry.key)!;
+    validateRegisterSet(
+      context,
+      def,
+      entry.requirements,
+      entry.closurePlan,
+      `additionalRegisterSets:${entry.key}`,
+    );
+  }
+  for (const def of additionalDefs) {
+    if (!seenKeys.has(def.key)) {
+      addIssue(issues, "REGISTER_SET_MISSING", def.key, "declared register set is absent from the manifest");
+    }
   }
 
   return issues.sort(compareIssues);

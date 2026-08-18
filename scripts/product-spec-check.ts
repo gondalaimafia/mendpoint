@@ -2,7 +2,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
   canonicalTextSha256,
+  FOUNDATIONAL_REGISTER_SET,
+  PRODUCT_REGISTER_SETS,
   validateProductRequirements,
+  type ProductRegisterSet,
+  type ProductRequirement,
   type ProductRequirementManifest,
 } from "@mendpoint/contract";
 
@@ -47,7 +51,12 @@ function main() {
     }
   }
 
-  for (const requirement of manifest.requirements) {
+  const additionalSets: ProductRegisterSet[] = manifest.additionalRegisterSets ?? [];
+  const allRequirements: ProductRequirement[] = [
+    ...manifest.requirements,
+    ...additionalSets.flatMap((set) => set.requirements),
+  ];
+  for (const requirement of allRequirements) {
     for (const criterion of requirement.acceptance) {
       for (const evidence of criterion.evidence) {
         if (["planned", "external", "live"].includes(evidence.type)) continue;
@@ -76,18 +85,44 @@ function main() {
     fail(`${issues.length} issue${issues.length === 1 ? "" : "s"}`);
   }
 
-  const statusCounts = new Map<string, number>();
-  for (const requirement of manifest.requirements) {
-    statusCounts.set(
-      requirement.implementationStatus,
-      (statusCounts.get(requirement.implementationStatus) ?? 0) + 1,
+  const registerTitle = (key: string) =>
+    PRODUCT_REGISTER_SETS.find((set) => set.key === key)?.title ?? key;
+
+  const reportSet = (
+    key: string,
+    source: string,
+    auditedRevision: string,
+    requirements: ProductRequirement[],
+  ) => {
+    console.log(
+      `  ${key} (${registerTitle(key)}): ${requirements.length} requirements`,
     );
-  }
+    console.log(`    provenance: ${source} @ ${auditedRevision}`);
+    const statusCounts = new Map<string, number>();
+    for (const requirement of requirements) {
+      statusCounts.set(
+        requirement.implementationStatus,
+        (statusCounts.get(requirement.implementationStatus) ?? 0) + 1,
+      );
+    }
+    for (const [status, count] of [...statusCounts.entries()].sort()) {
+      console.log(`    ${status}: ${count}`);
+    }
+  };
+
   console.log(
-    `PRODUCT CONTRACT PASS: ${manifest.requirements.length} requirements, spec ${manifest.spec.version}`,
+    `PRODUCT CONTRACT PASS: ${allRequirements.length} requirements across ${
+      additionalSets.length + 1
+    } register sets, spec ${manifest.spec.version}`,
   );
-  for (const [status, count] of [...statusCounts.entries()].sort()) {
-    console.log(`  ${status}: ${count}`);
+  reportSet(
+    FOUNDATIONAL_REGISTER_SET.key,
+    manifest.closurePlan.source,
+    manifest.closurePlan.auditedRevision,
+    manifest.requirements,
+  );
+  for (const set of additionalSets) {
+    reportSet(set.key, set.closurePlan.source, set.closurePlan.auditedRevision, set.requirements);
   }
 }
 
