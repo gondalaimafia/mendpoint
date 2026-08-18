@@ -23,6 +23,7 @@ import {
   CandidateReviewEvidenceSchema,
   type CandidateReviewEvidence,
 } from "@mendpoint/shared";
+import { admitWardenGovernedLearningEvent } from "./warden-learning-producer.js";
 
 const JOB_TYPE = "warden.candidate.deliver";
 
@@ -313,6 +314,21 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
       } catch (error) {
         if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
         throw error;
+      }
+      // Governed learning admission runs after the delivery is durably committed
+      // and is strictly best-effort: it never throws and default-off it does
+      // nothing, so the delivered result and all durable state are unchanged.
+      try {
+        admitWardenGovernedLearningEvent({
+          db: input.db,
+          delivery,
+          run,
+          reviewEvidence: reviewedChanges,
+          now: completedAt,
+          env: input.artifactEnv ?? process.env,
+        });
+      } catch {
+        /* best-effort: governed learning admission never affects delivery */
       }
       return Object.freeze({ status: "delivered" as const, runId: delivery.runId, deliveryId: delivery.id,
         pullRequestNumber: remote.number, pullRequestUrl: remote.url, commitSha: remote.commitSha });
