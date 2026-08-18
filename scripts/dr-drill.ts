@@ -17,6 +17,7 @@ import {
   verifyMeasuredDrillResult,
   type DrillCanaryResult,
 } from "@mendpoint/ops";
+import { notifyPaging } from "@mendpoint/notify";
 
 const BACKUP_KEY = Buffer.alloc(32, 0x5a);
 const BACKUP_KEY_ID = "dr-drill-key-v1";
@@ -57,7 +58,7 @@ function canaryRowSurvives(targetRoot: string): DrillCanaryResult {
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-dr-drill-"));
   const source = join(root, "source");
   mkdirSync(source, { recursive: true });
@@ -108,10 +109,31 @@ function main(): void {
     console.log(`  outcome:            ${pass ? "PASS" : "FAIL"}`);
     if (!pass) {
       process.exitCode = 1;
+      // Best-effort page: a measured drill that misses its targets means the
+      // restore path is not proven. Awaited (not fire-and-forget) because this
+      // is a short-lived CLI, so the delivery must complete before it exits;
+      // no-op unless a paging sink is configured. notifyPaging is fail-open, so
+      // a paging outage never changes the drill's own PASS/FAIL exit code.
+      await notifyPaging({
+        type: "dr_drill_fail",
+        severity: "critical",
+        summary: `DR drill ${result.drillId} failed its recovery targets`,
+        dedupeKey: `dr_drill_fail:${result.drillId}`,
+        details: {
+          outcome: result.outcome,
+          rtoMet: result.rtoMet,
+          rpoMet: result.rpoMet,
+          canaryOk: result.canary.ok,
+          verified: verifyMeasuredDrillResult(result),
+        },
+      });
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

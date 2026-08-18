@@ -102,6 +102,8 @@ export {
   clearPagingDedupe,
   pagingEventForReadiness,
   pagingEventForWorkerHeartbeat,
+  pageReadiness,
+  pageWorkerHeartbeat,
   type PagingEvent,
   type PagingEventType,
   type PagingSeverity,

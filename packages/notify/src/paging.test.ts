@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearPagingDedupe,
   notifyPaging,
+  pageReadiness,
+  pageWorkerHeartbeat,
   pagingEventForReadiness,
   pagingEventForWorkerHeartbeat,
 } from "./index.js";
@@ -109,6 +111,51 @@ describe("notifyPaging", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it("does not stamp the dedupe key on total failure, so the next call retries", async () => {
+    // Reproduces the defect: a transient 502 used to burn the dedupe key, so the
+    // 30s retry returned {skipped:true, reason:"deduped"} and nobody was paged.
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 502 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const first = await notifyPaging({ type: "readiness_fail", summary: "down" });
+    const second = await notifyPaging({ type: "readiness_fail", summary: "down" });
+
+    if (first.skipped) throw new Error("expected a delivery attempt");
+    expect(first.ok).toBe(false);
+    if (second.skipped) throw new Error("retry must not be deduped after a failed page");
+    expect(second.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("stamps after a partial success so a working sink is not re-paged", async () => {
+    // Decision: at least one sink delivering means a human was paged, so the
+    // event is deduped even though the other sink failed.
+    process.env.PAGERDUTY_ROUTING_KEY = "R0UT1NGKEY";
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi.fn((url: string) =>
+      Promise.resolve(
+        String(url).includes("pagerduty")
+          ? { ok: true, status: 202 }
+          : { ok: false, status: 500 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const first = await notifyPaging({ type: "readiness_fail", summary: "down" });
+    const second = await notifyPaging({ type: "readiness_fail", summary: "down" });
+
+    if (first.skipped) throw new Error("expected a delivery attempt");
+    expect(first.ok).toBe(false);
+    expect(second).toEqual({ ok: true, skipped: true, reason: "deduped" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("fails open when the transport rejects", async () => {
     process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
     const fetchMock = vi.fn().mockRejectedValue(new Error("network down"));
@@ -185,5 +232,80 @@ describe("paging adapters", () => {
     expect(
       pagingEventForWorkerHeartbeat({ workerId: "w1", ok: true, stale: false }),
     ).toBeNull();
+  });
+});
+
+describe("paging best-effort wiring", () => {
+  it("pages when a worker heartbeat snapshot is stale (the real emitHeartbeat path)", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await pageWorkerHeartbeat({
+      workerId: "w1",
+      ok: false,
+      stale: true,
+      deadLetter: 4,
+    });
+    if (!res || res.skipped) throw new Error("expected a delivered page");
+    expect(res.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.type).toBe("worker_heartbeat_stale");
+  });
+
+  it("does not page for a healthy worker heartbeat", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await pageWorkerHeartbeat({ workerId: "w1", ok: true, stale: false });
+    expect(res).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("pages when the readiness probe is failing (the real /ready path)", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await pageReadiness({
+      status: "fail",
+      checks: [
+        { name: "env", ok: true },
+        { name: "db_ping", ok: false },
+      ],
+    });
+    if (!res || res.skipped) throw new Error("expected a delivered page");
+    expect(res.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.type).toBe("readiness_fail");
+  });
+
+  it("does not page when the readiness probe is ok", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await pageReadiness({ status: "ok", checks: [{ name: "env", ok: true }] });
+    expect(res).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never throws when the sink rejects, so the observed path is not aborted", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Both wrappers resolve (never reject) on transport failure. This is what
+    // lets emitHeartbeat / the /ready handler fire them fire-and-forget without
+    // a paging outage interrupting the heartbeat write or the probe response.
+    const heartbeat = await pageWorkerHeartbeat({ workerId: "w1", ok: false, stale: true });
+    if (!heartbeat || heartbeat.skipped) throw new Error("expected a delivery attempt");
+    expect(heartbeat.ok).toBe(false);
+
+    const readiness = await pageReadiness({
+      status: "fail",
+      checks: [{ name: "db_ping", ok: false }],
+    });
+    if (!readiness || readiness.skipped) throw new Error("expected a delivery attempt");
+    expect(readiness.ok).toBe(false);
   });
 });
