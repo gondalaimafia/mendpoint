@@ -386,6 +386,47 @@ describe("fly_machines fail-closed on missing credential", () => {
   });
 });
 
+describe("forced mock mode cannot produce verification evidence (fail-closed)", () => {
+  it("refuses to run when MENDPOINT_SANDBOX_FLY_MODE=mock even with a token (no fake green)", async () => {
+    // A token is present, so this is NOT the missing-credential path: the mock is
+    // reached only because mock mode was explicitly forced. It must still refuse
+    // rather than mint the mock's exit_code 0 as a passing verification.
+    vi.stubEnv("MENDPOINT_SANDBOX_KIND", "fly_machines");
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_APP", "mendpoint-sandbox");
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_TOKEN", "sentinel-token");
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_MODE", "mock");
+    // No injected flyClient — the env decides, and env-forced mock is not evidence.
+    const sbx = createSandbox({ tenantId: "t1" });
+    try {
+      const result = await sbx.runIsolated!("npm test");
+      expect(result.ok).toBe(false);
+      expect(result.exitCode).toBe(-1);
+      expect(result.stderr).toMatch(/mock/i);
+      expect(result.stderr).toMatch(/refusing host fallback/i);
+      // Did NOT run: the mock's "mock exec: ..." stdout never leaked through.
+      expect(result.stdout).toBe("");
+    } finally {
+      sbx.dispose();
+    }
+  });
+
+  it("still runs an explicitly injected mock (the legitimate test / dry-run seam)", async () => {
+    // The injected-client seam is untouched: a deliberate double still executes.
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_MODE", "mock");
+    const client = createMockFlyClient({
+      exec: () => ({ exit_code: 0, stdout: "INJECTED_RAN", stderr: "" }),
+    });
+    const sbx = createFlyMachinesSandbox(flyOpts(client));
+    try {
+      const result = await sbx.runIsolated!("npm test");
+      expect(result.ok).toBe(true);
+      expect(result.stdout).toContain("INJECTED_RAN");
+    } finally {
+      sbx.dispose();
+    }
+  });
+});
+
 describe("sandbox image must be an immutable digest pin (fail-closed isolation boundary)", () => {
   const DIGEST = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
 

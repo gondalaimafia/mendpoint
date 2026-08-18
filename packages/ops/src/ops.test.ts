@@ -122,6 +122,29 @@ describe("ops GA", () => {
     expect(r.ok).toBe(true);
   });
 
+  it("refuses MENDPOINT_SANDBOX_FLY_MODE=mock in production (fabricated verification)", () => {
+    const r = validateApiEnv({
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      API_AUTH: "required",
+      GITHUB_MODE: "mock",
+      MENDPOINT_SANDBOX_FLY_MODE: "mock",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.includes("MENDPOINT_SANDBOX_FLY_MODE=mock"))).toBe(true);
+  });
+
+  it("permits MENDPOINT_SANDBOX_FLY_MODE=mock outside production", () => {
+    const r = validateApiEnv({
+      NODE_ENV: "development",
+      MENDPOINT_SANDBOX_FLY_MODE: "mock",
+    });
+    expect(r.errors.some((e) => e.includes("MENDPOINT_SANDBOX_FLY_MODE"))).toBe(false);
+  });
+
   it("accepts the dedicated Transformer pilot with customer class GitHub App delivery", () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const report = validateApiEnv({

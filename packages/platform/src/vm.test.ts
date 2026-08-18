@@ -86,8 +86,8 @@ describe("vm backend isolation", () => {
   it("rejects cache key path traversal and clears cached roots", () => {
     expect(() => ensureBuildCacheDir("../escape")).toThrow(/safe characters/i);
     const key = `vm-test-${Date.now()}`;
-    const sbx = createVmSandbox({ backend: "local", cacheKey: key });
+    const sbx = createVmSandbox({ backend: "local", cacheKey: key, tenantId: "tenant-a" });
     sbx.dispose();
-    expect(() => clearBuildCache(key)).not.toThrow();
+    expect(() => clearBuildCache()).not.toThrow();
   });
 });

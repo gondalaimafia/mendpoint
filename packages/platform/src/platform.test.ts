@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   createMemory,
   createSandbox,
   clearSandboxCache,
+  clearBuildCache,
   getSandboxCacheStats,
+  tenantScopedCacheKey,
   evaluateCanary,
   memoryForPlanner,
   planCrossPrRollback,
@@ -21,6 +25,7 @@ import {
   clearAlerts,
   startLiveSandbox,
   permissionForRoute,
+  type CreateSandboxOpts,
 } from "./index.js";
 
 describe("platform memory", () => {
@@ -87,7 +92,7 @@ describe("vm + cost + rbac + scm + alerts", () => {
   it("creates vm sandbox with local backend", () => {
     const caps = detectVmCapabilities();
     expect(caps.some((c) => c.backend === "local" && c.available)).toBe(true);
-    const sbx = createVmSandbox({ backend: "local", cacheKey: "t1" });
+    const sbx = createVmSandbox({ backend: "local", cacheKey: "t1", tenantId: "tenant-a" });
     try {
       expect(sbx.backend).toBe("local");
       const r = sbx.run("node -e \"console.log(1)\"");
@@ -240,13 +245,146 @@ describe("vm + cost + rbac + scm + alerts", () => {
 
   it("provides explicit lifecycle control for persistent cache roots", () => {
     const key = `platform-test-${Date.now()}`;
-    const sbx = createSandbox({ cacheKey: key, files: { "cached.txt": "ok" } });
+    const tenantId = "tenant-lifecycle";
+    const sbx = createSandbox({ cacheKey: key, tenantId, files: { "cached.txt": "ok" } });
     const root = sbx.root;
     sbx.dispose();
-    expect(getSandboxCacheStats().some((entry) => entry.cacheKey === key)).toBe(true);
-    clearSandboxCache(key);
-    expect(getSandboxCacheStats().some((entry) => entry.cacheKey === key)).toBe(false);
+    const present = getSandboxCacheStats().find(
+      (entry) => entry.cacheKey === key && entry.tenantId === tenantId,
+    );
+    expect(present).toBeDefined();
+    // Clearing is by the tenant-scoped map key, surfaced as scopedKey in stats.
+    clearSandboxCache(present!.scopedKey);
+    expect(
+      getSandboxCacheStats().some(
+        (entry) => entry.cacheKey === key && entry.tenantId === tenantId,
+      ),
+    ).toBe(false);
     expect(() => createSandbox({ kind: "in_cluster" })).toThrow(/unavailable/i);
     expect(root).toBeTruthy();
+  });
+});
+
+describe("sandbox build cache is tenant-scoped (defect: cross-tenant cache)", () => {
+  // Test fixtures only — never a real tenant's source. Nothing here is logged.
+  afterAll(() => {
+    clearSandboxCache();
+    clearBuildCache();
+  });
+
+  it("length-prefixes the scoped key so no two tenant/key pairs can collide", () => {
+    // The classic forgeable-concatenation collision: (a, 1x) and (a1, x) both
+    // concatenate to a1x. Length-prefixing separates them.
+    const forgeA = tenantScopedCacheKey({ tenantId: "a", cacheKey: "1x" });
+    const forgeB = tenantScopedCacheKey({ tenantId: "a1", cacheKey: "x" });
+    expect(forgeA).not.toBe(forgeB);
+  });
+
+  it("refuses a cache-keyed sandbox with no tenant (fail closed, no global key)", () => {
+    // The pairing is a compile error; force the invalid shape to prove the
+    // runtime twin also refuses rather than falling back to a shared key.
+    expect(() =>
+      createSandbox({ cacheKey: "orphan-key" } as unknown as CreateSandboxOpts),
+    ).toThrow(/sandbox_tenant_scope_required/);
+    expect(() => tenantScopedCacheKey({ cacheKey: "orphan-key" })).toThrow(
+      /sandbox_tenant_scope_required/,
+    );
+  });
+
+  it("gives two tenants distinct roots for one shared cacheKey and no cross-read", () => {
+    const key = `shared-${Date.now()}`;
+    const a = createSandbox({
+      cacheKey: key,
+      tenantId: "tenant-a",
+      files: { "secret.txt": "tenant-a-private" },
+    });
+    const b = createSandbox({
+      cacheKey: key,
+      tenantId: "tenant-b",
+      files: { "secret.txt": "tenant-b-private" },
+    });
+    try {
+      // Distinct roots by construction — not the same directory reused.
+      expect(a.root).not.toBe(b.root);
+      // Each root holds only its own tenant's content: reading tenant B's handle
+      // never yields tenant A's file, and vice versa. Isolation asserted directly.
+      expect(readFileSync(join(a.root, "secret.txt"), "utf8")).toBe("tenant-a-private");
+      expect(readFileSync(join(b.root, "secret.txt"), "utf8")).toBe("tenant-b-private");
+    } finally {
+      a.dispose();
+      b.dispose();
+    }
+  });
+
+  it("reuses one tenant's cached root on a repeat (working path unbroken)", () => {
+    const key = `reuse-${Date.now()}`;
+    const first = createSandbox({ cacheKey: key, tenantId: "tenant-a", files: { "x.txt": "1" } });
+    const firstRoot = first.root;
+    first.dispose();
+    const second = createSandbox({ cacheKey: key, tenantId: "tenant-a" });
+    try {
+      expect(second.root).toBe(firstRoot);
+    } finally {
+      second.dispose();
+    }
+  });
+
+  it("scopes eviction to the flooding tenant and never removes another tenant's root", () => {
+    const aKey = `evict-a-${Date.now()}`;
+    const a = createSandbox({ cacheKey: aKey, tenantId: "tenant-a", files: { "a.txt": "a" } });
+    const aRoot = a.root;
+    a.dispose(); // refs -> 0, evictable only within tenant-a
+    const aScoped = tenantScopedCacheKey({ cacheKey: aKey, tenantId: "tenant-a" })!;
+
+    // Flood tenant-b past its per-tenant cap (32) with unique keys.
+    for (let i = 0; i < 40; i++) {
+      const s = createSandbox({
+        cacheKey: `evict-b-${Date.now()}-${i}`,
+        tenantId: "tenant-b",
+        files: { "b.txt": "b" },
+      });
+      s.dispose();
+    }
+
+    // Tenant A's cached root survived tenant B's flood — its map entry and its
+    // on-disk directory are both intact.
+    expect(getSandboxCacheStats().some((e) => e.scopedKey === aScoped)).toBe(true);
+    expect(existsSync(aRoot)).toBe(true);
+  });
+
+  it("binds the vm build cache to the tenant so a replayed cacheKey never hits", () => {
+    // Mirrors what POST /platform/vm/sandbox now does: the cacheKey is scoped to
+    // the authenticated tenant. A hostile tenant replaying another tenant's key
+    // gets neither a cache hit (the existence oracle) nor a shared root.
+    const key = `vm-shared-${Date.now()}`;
+    const a = createVmSandbox({
+      backend: "local",
+      cacheKey: key,
+      tenantId: "tenant-a",
+      files: { "s.txt": "a" },
+    });
+    expect(a.cacheHit).toBe(false);
+    const aRoot = a.root;
+    a.dispose();
+
+    // Same tenant, same key: the working cache path still hits.
+    const a2 = createVmSandbox({ backend: "local", cacheKey: key, tenantId: "tenant-a" });
+    expect(a2.cacheHit).toBe(true);
+    expect(a2.root).toBe(aRoot);
+    a2.dispose();
+
+    // Different tenant replaying the identical key: no hit, no shared root.
+    const b = createVmSandbox({
+      backend: "local",
+      cacheKey: key,
+      tenantId: "tenant-b",
+      files: { "s.txt": "b" },
+    });
+    try {
+      expect(b.cacheHit).toBe(false);
+      expect(b.root).not.toBe(aRoot);
+    } finally {
+      b.dispose();
+    }
   });
 });

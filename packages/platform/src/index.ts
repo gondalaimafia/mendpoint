@@ -13,6 +13,7 @@ export type {
   SandboxHandle,
   SandboxRunResult,
   CreateSandboxOpts,
+  SandboxCacheScope,
 } from "./sandbox.js";
 export {
   createSandbox,
@@ -20,6 +21,7 @@ export {
   resolveSandboxKind,
   clearSandboxCache,
   getSandboxCacheStats,
+  tenantScopedCacheKey,
   sandboxManifest,
   RUNTIME_MATRIX,
 } from "./sandbox.js";
