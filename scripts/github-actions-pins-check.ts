@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isAlias, isScalar, LineCounter, parseDocument, visit } from "yaml";
+import { isAlias, isNode, isScalar, LineCounter, parseDocument, visit } from "yaml";
 
 export type MutableActionReference = Readonly<{
   file: string;
@@ -50,7 +50,7 @@ export function findMutableActionReferences(
       if (!containsExpression && reference.startsWith("./")) return;
       if (IMMUTABLE_GITHUB_ACTION.test(reference)) return;
 
-      const offset = pair.key.range?.[0] ?? 0;
+      const offset = isNode(pair.key) ? pair.key.range?.[0] ?? 0 : 0;
       findings.push(Object.freeze({
         file,
         line: lineCounter.linePos(offset).line,

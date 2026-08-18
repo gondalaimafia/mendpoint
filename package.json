@@ -11,7 +11,7 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "e2e:deployment": "playwright test tests/e2e/deployment.spec.ts",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p scripts/tsconfig.json --noEmit",
     "dev:api": "npm run dev -w @mendpoint/api",
     "dev:web": "npm run dev -w @mendpoint/web",
     "demo": "tsx scripts/demo.ts",

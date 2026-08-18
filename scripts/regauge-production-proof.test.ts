@@ -81,7 +81,7 @@ describe("Regauge production proof", () => {
 
   it("runs a bounded read only readiness soak against the exact deployment revision", async () => {
     let now = 0;
-    const fetchImpl = vi.fn(async (url: string | URL | Request) => new Response(JSON.stringify(
+    const fetchImpl = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify(
       String(url).endsWith("/version")
         ? { revision: "a".repeat(40) }
         : { status: "ok", checks: [{ name: "env", ok: true }] },
@@ -104,7 +104,7 @@ describe("Regauge production proof", () => {
 
   it("fails the soak when readiness or immutable revision drifts", async () => {
     let now = 0;
-    const fetchImpl = vi.fn(async (url: string | URL | Request) => new Response(JSON.stringify(
+    const fetchImpl = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify(
       String(url).endsWith("/version")
         ? { revision: "b".repeat(40) }
         : { status: "degraded", checks: [{ name: "storage", ok: false }] },
