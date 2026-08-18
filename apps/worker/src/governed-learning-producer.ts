@@ -10,7 +10,9 @@ import {
   type LearningProduct,
   type LearningProvenanceQualifier,
   type LearningRiskClass,
+  type LearningSignalClass,
   type LearningSourceClass,
+  type LearningVerificationProducer,
 } from "@mendpoint/pipeline";
 import { redactSourceForModel } from "@mendpoint/shared";
 
@@ -76,6 +78,18 @@ export type GovernedLearningOutcomeFacts = Readonly<{
     status: LearningOutcomeStatus;
     summary: string;
     attribution: LearningOutcomeAttribution;
+  }>;
+  /**
+   * Provenance of the verification VERDICT, derived by the product producer from
+   * what actually ran (a deterministic command, a compiler, a human reviewer, or
+   * a model verifier). Recorded verbatim on the event so `strength()` and the
+   * weight-training admission gate can enforce hard-over-soft precedence instead
+   * of trusting the caller-asserted provenance qualifiers.
+   */
+  verificationAuthority: Readonly<{
+    signalClass: LearningSignalClass;
+    producedBy: LearningVerificationProducer;
+    producerModelId: string | null;
   }>;
   reviewerDecision: "accepted" | "modified" | "merged";
   correctionSubstantive: boolean;
@@ -205,6 +219,7 @@ export function admitGovernedLearningOutcome(
       verification: {
         verdict: "passed",
         evidenceRefs: [ids.verificationEvidenceId],
+        authority: facts.verificationAuthority,
       },
       reviewerDecision: {
         decision: facts.reviewerDecision,

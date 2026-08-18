@@ -48,6 +48,11 @@ function eventInput(overrides: Record<string, unknown> = {}) {
     verification: {
       verdict: "passed" as const,
       evidenceRefs: ["evidence-verification-1"],
+      authority: {
+        signalClass: "hard" as const,
+        producedBy: "test_runner" as const,
+        producerModelId: null,
+      },
     },
     reviewerDecision: {
       decision: "modified" as const,
@@ -150,6 +155,77 @@ describe("governed learning events", () => {
       destinations: [{ destination: "no_action", rationale: "verification_not_authoritative" }],
       eligibleForModelTraining: false,
     });
+  });
+
+  it("caps a soft model-verifier verdict below the strongest tier regardless of qualifiers", () => {
+    const soft = createGovernedLearningEvent(eventInput({
+      verification: {
+        verdict: "passed",
+        evidenceRefs: ["evidence-verification-1"],
+        authority: { signalClass: "soft", producedBy: "model_verifier", producerModelId: "muse-spark-1.2" },
+      },
+    }));
+
+    const lesson = extractGovernedLesson(soft);
+    // Every high-granting qualifier is present, but a soft verdict can never reach
+    // "high" or become weight-training eligible.
+    expect(lesson.evidenceStrength).toBe("medium");
+    expect(lesson.eligibleForModelTraining).toBe(false);
+  });
+
+  it("treats an event with no recorded authority as soft, never hard (dual-read)", () => {
+    // A pre-change event: `verification` carries only verdict and evidenceRefs.
+    const legacyInput = eventInput();
+    const withoutAuthority = {
+      ...legacyInput,
+      verification: { verdict: "passed" as const, evidenceRefs: ["evidence-verification-1"] },
+    };
+
+    const event = createGovernedLearningEvent(withoutAuthority);
+    // It loads without throwing and the field stays absent (digest-stable).
+    expect(event.event.verification.authority).toBeUndefined();
+
+    const lesson = extractGovernedLesson(event);
+    expect(lesson.evidenceStrength).toBe("medium");
+    expect(lesson.eligibleForModelTraining).toBe(false);
+  });
+
+  it("round-trips a stored pre-change event and rejects malformed authority", () => {
+    // The digest of a pre-change (no-authority) event is unchanged by this change:
+    // the normalizer never injects the field, so extraction validates cleanly.
+    const legacy = createGovernedLearningEvent({
+      ...eventInput(),
+      verification: { verdict: "passed" as const, evidenceRefs: ["evidence-verification-1"] },
+    });
+    expect(() => extractGovernedLesson(legacy)).not.toThrow();
+
+    // A present-but-malformed authority is rejected, not coerced to a default.
+    expect(() => createGovernedLearningEvent(eventInput({
+      verification: {
+        verdict: "passed",
+        evidenceRefs: ["evidence-verification-1"],
+        authority: { signalClass: "hard", producedBy: "test_runner" },
+      },
+    }))).toThrow("learning_event_verification_authority_field_missing");
+    expect(() => createGovernedLearningEvent(eventInput({
+      verification: {
+        verdict: "passed",
+        evidenceRefs: ["evidence-verification-1"],
+        authority: { signalClass: "authoritative", producedBy: "test_runner", producerModelId: null },
+      },
+    }))).toThrow("learning_event_verification_signal_class_invalid");
+  });
+
+  it("keeps a genuinely hard verdict at the strongest tier and eligible", () => {
+    const hard = createGovernedLearningEvent(eventInput());
+    const lesson = extractGovernedLesson(hard);
+    expect(hard.event.verification.authority).toEqual({
+      signalClass: "hard",
+      producedBy: "test_runner",
+      producerModelId: null,
+    });
+    expect(lesson.evidenceStrength).toBe("high");
+    expect(lesson.eligibleForModelTraining).toBe(true);
   });
 
   it("rejects private reasoning fields and noncanonical timestamps", () => {
