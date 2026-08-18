@@ -26,6 +26,26 @@ kill_timeout = 30
   MENDPOINT_PILOT_SEED = "1"
   MENDPOINT_VERIFY_FIRST = "1"
   MENDPOINT_APPROVED_VERIFIER_SHA256S = "644da6b3198cc32ca95595c7a3af09c9a8444cedd27917a03c3d3bcc775a4a7d"
+  # Route verification through an ephemeral Fly Machine instead of host execFile
+  # in the worker container. Fail-closed: if the sandbox app or its token is not
+  # provisioned, verification FAILS (it never degrades to host execution). The
+  # credential is a secret and lives in `fly secrets`, never here:
+  #   fly secrets set MENDPOINT_SANDBOX_FLY_TOKEN=... --app mendpoint-talal
+  # See docs/SANDBOX_VERIFIER.md for the operator checklist and egress policy.
+  MENDPOINT_SANDBOX_KIND = "fly_machines"
+  MENDPOINT_SANDBOX_FLY_APP = "mendpoint-sandbox"
+  # The sandbox image IS the isolation boundary, so it MUST be pinned to an
+  # immutable digest, never a floating `:latest` tag (which can change with no
+  # review or reproducibility). An unpinned or empty value FAILS CLOSED:
+  # packages/platform/src/fly-sandbox.ts refuses to run and never falls back to
+  # the host (sandbox_image_unresolved / sandbox_image_not_pinned).
+  # Pinned 2026-08-18 to the digest the sandbox image push printed, reviewed
+  # here in config so a change to the isolation boundary is diffable. Rotate by
+  # pushing a new image, capturing its digest, and editing the line below.
+  # NOTE: a MENDPOINT_SANDBOX_FLY_IMAGE Fly secret, if set, overrides this value
+  # and is invisible to review -- prefer the reviewed config here.
+  # See docs/SANDBOX_IMAGE.md ("Pin production to an immutable reference").
+  MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:6eacb37b3a9a795d2fed6baf4b032ced118c639e6d4d523b2bc9db9ff1a95c88"
   AGENTIC_REPAIR = "1"
   POLL_LOCAL_ONLY = "1"
   MENDPOINT_FEED_POLLING_ENABLED = "0"
