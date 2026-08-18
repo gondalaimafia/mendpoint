@@ -186,23 +186,26 @@ jobs:
             test -n "${!name:-}" || { echo "Missing required Regauge production authority: $name"; exit 1; }
           done
           mkdir -p test-results/regauge-production
-      - name: Provision dedicated app and coordinator volume
+      - name: Verify dedicated app and coordinator volume
         shell: bash
         run: |
           set -euo pipefail
-          if ! flyctl status --app mendpoint-transformer-pilot >/dev/null 2>&1; then
-            flyctl apps create mendpoint-transformer-pilot --org "$FLY_ORG"
-          fi
+          flyctl status --app mendpoint-transformer-pilot >/dev/null 2>&1 \
+            || { echo "regauge_fly_app_bootstrap_required"; exit 1; }
           if ! flyctl volumes list --app mendpoint-transformer-pilot --json | jq -e '.[] | select(.name == "mendpoint_transformer_data")' >/dev/null; then
             flyctl volumes create mendpoint_transformer_data --app mendpoint-transformer-pilot --region sjc --size 20 --yes
           fi
-      - name: Provision private checkpoint storage
+      - name: Verify private checkpoint storage
         shell: bash
         run: |
           set -euo pipefail
-          if ! flyctl storage status --app mendpoint-transformer-pilot >/dev/null 2>&1; then
-            flyctl storage create --app mendpoint-transformer-pilot --org "$FLY_ORG" --yes >/dev/null
-          fi
+          storage_secrets="$(flyctl secrets list --app mendpoint-transformer-pilot --json)"
+          for name in AWS_ENDPOINT_URL_S3 AWS_REGION BUCKET_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            jq -e --arg name "$name" \
+              '.[] | select(.name == $name and (.status == "Staged" or .status == "Deployed"))' \
+              <<<"$storage_secrets" >/dev/null \
+              || { echo "regauge_storage_bootstrap_required:$name"; exit 1; }
+          done
       - name: Stage production secrets
         shell: bash
         run: |
@@ -303,8 +306,12 @@ jobs:
           contained=true
           if flyctl status --app mendpoint-transformer-pilot >/dev/null 2>&1; then
             app_exists=true
-            if ! flyctl scale count coordinator=1 worker=0 --app mendpoint-transformer-pilot --yes; then
+            if ! machines="$(flyctl machines list --app mendpoint-transformer-pilot --json)"; then
               contained=false
+            elif ! jq -e "length == 0" <<<"$machines" >/dev/null; then
+              if ! flyctl scale count coordinator=1 worker=0 --app mendpoint-transformer-pilot --yes; then
+                contained=false
+              fi
             fi
           fi
           jq -n \

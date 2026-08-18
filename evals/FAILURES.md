@@ -2,35 +2,7 @@
 
 One entry per unresolved failure or coverage gap surfaced by the suite. Never silently discarded. Generated from the latest run; re-run the suite to refresh.
 
-## FAIL-001 — fettler-node-cjs-rename (false_positive_traps)
-
-- Scenario: fettler-node-cjs-rename
-- Product: fettler
-- Severity: P0
-- Failure category: FALSE_POSITIVE
-- Observed behavior: flagged distractors: bin/server.js
-- Expected behavior: no distractor flagged
-- Root cause: to be diagnosed (Phase 7); classify from the category above
-- Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
-- Status: OPEN
-- Regression test: this scenario (fettler-node-cjs-rename) becomes the permanent regression once fixed
-- Owner: unassigned
-
-## FAIL-002 — fettler-edge-vendored-sdk (false_positive_traps)
-
-- Scenario: fettler-edge-vendored-sdk
-- Product: fettler
-- Severity: P0
-- Failure category: FALSE_POSITIVE
-- Observed behavior: flagged distractors: vendor/acmepay-sdk/index.js
-- Expected behavior: no distractor flagged
-- Root cause: to be diagnosed (Phase 7); classify from the category above
-- Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
-- Status: OPEN
-- Regression test: this scenario (fettler-edge-vendored-sdk) becomes the permanent regression once fixed
-- Owner: unassigned
-
-## FAIL-003 — gen-fettler-genvendor-vendored-only (false_positive_traps)
+## FAIL-001 — gen-fettler-genvendor-vendored-only (false_positive_traps)
 
 - Scenario: gen-fettler-genvendor-vendored-only
 - Product: fettler
@@ -44,7 +16,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (gen-fettler-genvendor-vendored-only) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-004 — gen-fettler-genvendor-both (false_positive_traps)
+## FAIL-002 — gen-fettler-genvendor-both (false_positive_traps)
 
 - Scenario: gen-fettler-genvendor-both
 - Product: fettler
@@ -58,7 +30,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (gen-fettler-genvendor-both) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-005 — fettler-edge-huge-monorepo (completes_within_budget)
+## FAIL-003 — fettler-edge-huge-monorepo (completes_within_budget)
 
 - Scenario: fettler-edge-huge-monorepo
 - Product: fettler
@@ -72,7 +44,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-edge-huge-monorepo) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-006 — fettler-ts-payments-rename (precision)
+## FAIL-004 — fettler-ts-payments-rename (precision)
 
 - Scenario: fettler-ts-payments-rename
 - Product: fettler
@@ -86,13 +58,13 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-ts-payments-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-007 — fettler-python-billing-rename (expected_findings_recall)
+## FAIL-005 — fettler-python-billing-rename (expected_findings_recall)
 
 - Scenario: fettler-python-billing-rename
 - Product: fettler
 - Severity: P2
 - Failure category: FALSE_NEGATIVE
-- Observed behavior: flagged 2/11; missed: app/models/payment.py, app/models/charge.py, app/models/refund.py, app/services/charge_service.py, app/services/refund_service.py, app/tasks/settlement_task.py, tests/fixtures/charge_request.json, tests/fixtures/charge_response.json, tests/fixtures/refund_response.json
+- Observed behavior: flagged 8/11; missed: tests/fixtures/charge_request.json, tests/fixtures/charge_response.json, tests/fixtures/refund_response.json
 - Expected behavior: all 11 expected files
 - Root cause: to be diagnosed (Phase 7); classify from the category above
 - Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
@@ -100,13 +72,13 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-python-billing-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-008 — fettler-go-ledger-rename (expected_findings_recall)
+## FAIL-006 — fettler-go-ledger-rename (expected_findings_recall)
 
 - Scenario: fettler-go-ledger-rename
 - Product: fettler
 - Severity: P2
 - Failure category: FALSE_NEGATIVE
-- Observed behavior: flagged 1/17; missed: internal/payments/types.go, internal/payments/client_test.go, internal/payments/testdata/charge_request.json, internal/payments/testdata/charge_response.json, internal/ledger/ledger.go, internal/ledger/entry.go, internal/ledger/ledger_test.go, internal/ledger/testdata/entry.json, internal/settlement/settlement.go, internal/settlement/batch.go, internal/settlement/settlement_test.go, internal/settlement/testdata/settlement.json, internal/worker/worker.go, internal/worker/worker_test.go, internal/worker/testdata/items.json, cmd/ledger/main.go
+- Observed behavior: flagged 12/17; missed: internal/payments/testdata/charge_request.json, internal/payments/testdata/charge_response.json, internal/ledger/testdata/entry.json, internal/settlement/testdata/settlement.json, internal/worker/testdata/items.json
 - Expected behavior: all 17 expected files
 - Root cause: to be diagnosed (Phase 7); classify from the category above
 - Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
@@ -114,13 +86,13 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-go-ledger-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-009 — fettler-java-settlement-rename (expected_findings_recall)
+## FAIL-007 — fettler-java-settlement-rename (expected_findings_recall)
 
 - Scenario: fettler-java-settlement-rename
 - Product: fettler
 - Severity: P2
 - Failure category: FALSE_NEGATIVE
-- Observed behavior: flagged 1/13; missed: src/main/java/com/acme/settlement/payments/PaymentRequest.java, src/main/java/com/acme/settlement/payments/PaymentsClient.java, src/main/java/com/acme/settlement/charge/ChargeService.java, src/main/java/com/acme/settlement/charge/Charge.java, src/main/java/com/acme/settlement/charge/ChargeController.java, src/main/java/com/acme/settlement/settlement/SettlementService.java, src/main/java/com/acme/settlement/settlement/SettlementLine.java, src/main/java/com/acme/settlement/settlement/SettlementController.java, src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java, src/test/resources/payment-request.json, src/test/resources/payment-response.json, src/test/resources/settlement-batch.json
+- Observed behavior: flagged 8/13; missed: src/main/java/com/acme/settlement/payments/PaymentsClient.java, src/main/java/com/acme/settlement/charge/Charge.java, src/test/resources/payment-request.json, src/test/resources/payment-response.json, src/test/resources/settlement-batch.json
 - Expected behavior: all 13 expected files
 - Root cause: to be diagnosed (Phase 7); classify from the category above
 - Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
@@ -128,7 +100,21 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-java-settlement-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-010 — fettler-node-cjs-rename (expected_findings_recall)
+## FAIL-008 — fettler-java-settlement-rename (precision)
+
+- Scenario: fettler-java-settlement-rename
+- Product: fettler
+- Severity: P2
+- Failure category: FALSE_POSITIVE
+- Observed behavior: flagged non-expected files: src/main/java/com/acme/settlement/reporting/RevenueReport.java
+- Expected behavior: only expected/acceptable files
+- Root cause: to be diagnosed (Phase 7); classify from the category above
+- Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
+- Status: OPEN
+- Regression test: this scenario (fettler-java-settlement-rename) becomes the permanent regression once fixed
+- Owner: unassigned
+
+## FAIL-009 — fettler-node-cjs-rename (expected_findings_recall)
 
 - Scenario: fettler-node-cjs-rename
 - Product: fettler
@@ -142,7 +128,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-node-cjs-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-011 — fettler-ts-monorepo-rename (expected_findings_recall)
+## FAIL-010 — fettler-ts-monorepo-rename (expected_findings_recall)
 
 - Scenario: fettler-ts-monorepo-rename
 - Product: fettler
@@ -156,7 +142,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-ts-monorepo-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-012 — regauge-runtime-upgrade (recipe_residual)
+## FAIL-011 — regauge-runtime-upgrade (recipe_residual)
 
 - Scenario: regauge-runtime-upgrade
 - Product: regauge
@@ -170,7 +156,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-runtime-upgrade) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-013 — regauge-sdk-upgrade (family_coverage)
+## FAIL-012 — regauge-sdk-upgrade (family_coverage)
 
 - Scenario: regauge-sdk-upgrade
 - Product: regauge
@@ -184,7 +170,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-sdk-upgrade) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-014 — regauge-framework-upgrade (family_coverage)
+## FAIL-013 — regauge-framework-upgrade (family_coverage)
 
 - Scenario: regauge-framework-upgrade
 - Product: regauge
@@ -198,7 +184,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-framework-upgrade) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-015 — regauge-internal-api-rename (family_coverage)
+## FAIL-014 — regauge-internal-api-rename (family_coverage)
 
 - Scenario: regauge-internal-api-rename
 - Product: regauge
@@ -212,7 +198,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-internal-api-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-016 — regauge-partial-campaign (family_coverage)
+## FAIL-015 — regauge-partial-campaign (family_coverage)
 
 - Scenario: regauge-partial-campaign
 - Product: regauge
@@ -226,7 +212,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-partial-campaign) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-017 — gen-regauge-runtime-unsupported-21-23 (family_coverage)
+## FAIL-016 — gen-regauge-runtime-unsupported-21-23 (family_coverage)
 
 - Scenario: gen-regauge-runtime-unsupported-21-23
 - Product: regauge

@@ -3339,6 +3339,7 @@ export type {
   LearningDatasetMemberRow,
   LearningDatasetVersionRow,
   LearningDeletionEventRow,
+  LearningRecordLineage,
   LearningRecordRow,
 } from "./learning.js";
 export {
@@ -3356,6 +3357,7 @@ export {
   grantLearningConsent,
   listAdmittableLearningRecords,
   listEligibleLearningDatasetMembers,
+  listLearningRecordLineage,
   revokeLearningConsent,
   sealLearningDatasetVersion,
 } from "./learning.js";

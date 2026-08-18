@@ -33,6 +33,32 @@ jobs:
           path: test-results/agent-evals/report.json
           if-no-files-found: error
           retention-days: 30
+      # Synthetic adversarial suite (evals/). Per-PR this runs the GENERATED
+      # families only — deterministic, seeded, self-contained, needs no external
+      # corpus. It typechecks and unit-tests evals/, then runs the suite, which
+      # writes the readiness verdict + scorecard. The 21 hand-authored corpus
+      # scenarios (incl. the 30k-file scale case and the language-support cases
+      # that drive the honest recall failure) require MENDPOINT_CORPUS_ROOT and
+      # run locally / on a self-hosted nightly runner that has the corpus; on a
+      # GitHub-hosted runner they are absent and are cleanly skipped, not failed.
+      # The readiness gate is an instrument: it reports PASS/FAIL and does not
+      # block CI (a corpus built to make the product fail cannot gate CI green).
+      - name: Synthetic eval suite (evals/)
+        run: |
+          npm run eval:synthetic:check
+          npm run eval:synthetic
+      - name: Upload synthetic eval evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: synthetic-eval-evidence
+          path: |
+            evals/reports/latest.md
+            evals/reports/readiness-scorecard.md
+            evals/reports/latest-runs.json
+            evals/FAILURES.md
+          if-no-files-found: error
+          retention-days: 30
       - name: GA preflight
         shell: bash
         run: |

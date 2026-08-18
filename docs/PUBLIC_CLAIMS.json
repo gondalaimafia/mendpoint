@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "website": "https://www.mendpoint.ai/",
   "websiteStatus": "replacement_candidate",
-  "auditedRevision": "b608a07da331218be99181a0eda2726878b3b0f4",
+  "auditedRevision": "cdef477ab39f15174f474990e0915f051201abdf",
   "claims": [
     {
       "id": "CLM-001",
@@ -16,12 +16,12 @@
       "state": "preview",
       "scope": "Approved private pilot teams",
       "evidence": [
-        { "id": "CLM-001-EV01", "type": "live", "locator": "https://mendpoint-talal.fly.dev/livez", "observedAt": "2026-08-10T23:39:27.061Z", "freshUntil": "2026-08-17T23:39:27.061Z", "revision": "b608a07da331218be99181a0eda2726878b3b0f4" },
+        { "id": "CLM-001-EV01", "type": "live", "locator": "https://mendpoint-talal.fly.dev/livez", "observedAt": "2026-08-17T23:43:02.000Z", "freshUntil": "2026-08-24T23:43:02.000Z", "revision": "cdef477ab39f15174f474990e0915f051201abdf" },
         { "id": "CLM-001-EV02", "type": "document", "locator": "docs/PRODUCT_CONTRACT.md" }
       ],
       "limitations": ["Public signup is not available", "Pilot access is approved manually"],
       "requiredQualifier": "Private Design Partner Preview",
-      "lastVerifiedAt": "2026-08-01",
+      "lastVerifiedAt": "2026-08-17",
       "expiresAt": null
     },
     {
@@ -253,12 +253,12 @@
       "state": "limited_availability",
       "scope": "Fly pilot deployment",
       "evidence": [
-        { "id": "CLM-013-EV01", "type": "live", "locator": "https://mendpoint-talal.fly.dev/access", "observedAt": "2026-08-10T23:39:27.061Z", "freshUntil": "2026-08-17T23:39:27.061Z", "revision": "b608a07da331218be99181a0eda2726878b3b0f4" },
-        { "id": "CLM-013-EV02", "type": "live", "locator": "https://mendpoint-talal.fly.dev/healthz", "observedAt": "2026-08-10T23:39:37.549Z", "freshUntil": "2026-08-17T23:39:37.549Z", "revision": "b608a07da331218be99181a0eda2726878b3b0f4" }
+        { "id": "CLM-013-EV01", "type": "live", "locator": "https://mendpoint-talal.fly.dev/access", "observedAt": "2026-08-17T23:43:02.000Z", "freshUntil": "2026-08-24T23:43:02.000Z", "revision": "cdef477ab39f15174f474990e0915f051201abdf" },
+        { "id": "CLM-013-EV02", "type": "live", "locator": "https://mendpoint-talal.fly.dev/healthz", "observedAt": "2026-08-17T23:43:02.000Z", "freshUntil": "2026-08-24T23:43:02.000Z", "revision": "cdef477ab39f15174f474990e0915f051201abdf" }
       ],
       "limitations": ["Workspace access requires an approved operator credential", "Health reports degraded while recovery work requires operator review"],
       "requiredQualifier": "Fly pilot deployment",
-      "lastVerifiedAt": "2026-08-01",
+      "lastVerifiedAt": "2026-08-17",
       "expiresAt": null
     },
     {
