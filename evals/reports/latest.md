@@ -1,18 +1,18 @@
 # MendPoint synthetic-repo evaluation — latest run
 
-- Generated: 2026-08-17T22:52:06.877Z
-- Git commit: `ae8e17f`
+- Generated: 2026-08-18T03:02:05.699Z
+- Git commit: `1d3ae5a`
 - Invocation: deterministic analysis core (Fettler: change-intel -> code-impact, LLM off; ReGauge: analyzeRecipe over shipped registry, analyze-only)
 
 This corpus is built to make MendPoint fail, not to flatter it. "Pass" means the product did the SAFE, correct thing for the CURRENT shipped engine (found the impacted files without touching a distractor, or correctly abstained). Coverage gaps and dimensions the harness cannot yet observe are listed separately and do NOT count as passes.
 
 ## Overall
 
-- Total scenarios: 43
-- Passed (safe + correct for shipped engine): 34 (79%)
-- Unsafe/incorrect failures: 10
+- Total scenarios: 59
+- Passed (safe + correct for shipped engine): 45 (76%)
+- Unsafe/incorrect failures: 15
 - Coverage gaps recorded: 6
-- P0 failures (dangerous / materially incorrect): 2
+- P0 failures (dangerous / materially incorrect): 7
 
 ## Readiness gates (spec §33.5 — versioned acceptance criteria)
 
@@ -29,6 +29,42 @@ Policy: **precision-first**, owner Talal, decided 2026-08-17 (schema v1). Thresh
 | open_p0 | 2 | <= 0 | FAIL |
 | holdout_within_dev | +33.3pp vs dev | holdout within 10pp of development | PASS |
 
+### regauge-runtime-migration — PASS
+
+| criterion | measured | threshold | verdict |
+| --- | --- | --- | --- |
+| apply_correctness | 100.0% (3/3) | >= 100% pass | PASS |
+| residual_refusal | 100.0% (1/1) | >= 100% refuse | PASS |
+| out_of_scope_abstention | 100.0% (2/2) | >= 100% abstain | PASS |
+| open_p0 | 0 | <= 0 | PASS |
+
+### regauge-sdk-migration — FAIL
+
+| criterion | measured | threshold | verdict |
+| --- | --- | --- | --- |
+| apply_correctness | 100.0% (3/3) | >= 100% pass | PASS |
+| residual_refusal | 0.0% (0/3) | >= 100% refuse | FAIL |
+| out_of_scope_abstention | 100.0% (6/6) | >= 100% abstain | PASS |
+| open_p0 | 3 | <= 0 | FAIL |
+
+### regauge-framework-migration — FAIL
+
+| criterion | measured | threshold | verdict |
+| --- | --- | --- | --- |
+| apply_correctness | 100.0% (1/1) | >= 100% pass | PASS |
+| residual_refusal | 0.0% (0/1) | >= 100% refuse | FAIL |
+| out_of_scope_abstention | 100.0% (2/2) | >= 100% abstain | PASS |
+| open_p0 | 1 | <= 0 | FAIL |
+
+### regauge-internal-api-migration — FAIL
+
+| criterion | measured | threshold | verdict |
+| --- | --- | --- | --- |
+| apply_correctness | 100.0% (1/1) | >= 100% pass | PASS |
+| residual_refusal | 0.0% (0/1) | >= 100% refuse | FAIL |
+| out_of_scope_abstention | 100.0% (2/2) | >= 100% abstain | PASS |
+| open_p0 | 1 | <= 0 | FAIL |
+
 
 The one-page per-capability readiness scorecard (spec §29) is written alongside this report at `evals/reports/readiness-scorecard.md`.
 
@@ -38,7 +74,7 @@ Holdout scenarios are procedurally generated from scenario families and are NEVE
 
 | split | scenarios | passed | pass rate |
 | --- | --- | --- | --- |
-| development | 29 | 22 | 76% |
+| development | 45 | 33 | 73% |
 | regression | 1 | 1 | 100% |
 | validation | 9 | 7 | 78% |
 | holdout | 4 | 4 | 100% |
@@ -115,15 +151,15 @@ Scenarios: 33, passed 24 (73%)
 
 ## ReGauge
 
-Scenarios: 10, passed 10 (100%)
+Scenarios: 26, passed 21 (81%)
 
 ### By migration family
 | family | scenarios | passed | pass rate |
 | --- | --- | --- | --- |
-| framework-upgrade | 1 | 1 | 100% |
-| internal-api-rename | 1 | 1 | 100% |
-| runtime-upgrade | 5 | 5 | 100% |
-| sdk-upgrade | 3 | 3 | 100% |
+| framework-upgrade | 4 | 3 | 75% |
+| internal-api-rename | 4 | 3 | 75% |
+| runtime-upgrade | 6 | 6 | 100% |
+| sdk-upgrade | 12 | 9 | 75% |
 
 ### Per scenario (engine decision)
 | scenario | L | expected | matched recipes | passed | note |
@@ -138,13 +174,29 @@ Scenarios: 10, passed 10 (100%)
 | gen-regauge-runtime-supported-20-22 | 2 | apply_recipe | node-runtime-20-to-22@1(applicable) | yes |  |
 | gen-regauge-runtime-unsupported-21-23 | 4 | coverage_gap | none | yes | coverage gap |
 | gen-regauge-runtime-already-migrated | 3 | no_op | none | yes |  |
+| gen-regauge-aws-apply | 3 | apply_recipe | aws-sdk-js-v2-to-v3@1(applicable) | yes |  |
+| gen-regauge-aws-residual | 5 | refuse_partial | aws-sdk-js-v2-to-v3@1(applicable) | NO |  |
+| gen-regauge-aws-abstain | 4 | abstain | none | yes |  |
+| gen-regauge-stripe-apply | 3 | apply_recipe | stripe-node-v10-to-v11@1(applicable) | yes |  |
+| gen-regauge-stripe-residual | 5 | refuse_partial | stripe-node-v10-to-v11@1(applicable) | NO |  |
+| gen-regauge-stripe-abstain | 4 | abstain | none | yes |  |
+| gen-regauge-googleapis-apply | 3 | apply_recipe | googleapis-v25-to-v26@1(applicable) | yes |  |
+| gen-regauge-googleapis-residual | 5 | refuse_partial | googleapis-v25-to-v26@1(applicable) | NO |  |
+| gen-regauge-googleapis-abstain | 4 | abstain | none | yes |  |
+| gen-regauge-react-dom-apply | 3 | apply_recipe | react-dom-17-to-18@1(applicable) | yes |  |
+| gen-regauge-react-dom-residual | 5 | refuse_partial | react-dom-17-to-18@1(applicable) | NO |  |
+| gen-regauge-react-dom-abstain | 4 | abstain | none | yes |  |
+| gen-regauge-acme-user-apply | 4 | apply_recipe | internal-api-acme-user-getuser-to-fetchuser@1(applicable) | yes |  |
+| gen-regauge-acme-user-residual | 5 | refuse_partial | internal-api-acme-user-getuser-to-fetchuser@1(applicable) | NO |  |
+| gen-regauge-acme-user-abstain | 4 | abstain | none | yes |  |
+| gen-regauge-runtime-residual | 4 | refuse_partial | node-runtime-20-to-22@1(incomplete) | yes |  |
 
 ## Latency (observed wall-clock of the analysis path)
 
 | product | scenarios | min | median | p90 | max |
 | --- | --- | --- | --- | --- | --- |
-| fettler | 33 | 21ms | 63ms | 1773ms | 120032ms |
-| regauge | 10 | 5ms | 134ms | 189ms | 189ms |
+| fettler | 33 | 31ms | 75ms | 2096ms | 120048ms |
+| regauge | 26 | 3ms | 22ms | 89ms | 100ms |
 
 Note: the largest-repo scenario runs under a hard wall-clock budget in an isolated child; a budget overrun is recorded as a SCALE_FAILURE (see Top remaining risks), and its max latency above reflects that budget ceiling, not a completed analysis. Files-scanned per run is in the raw records (`activity.filesExamined`) — plot latency against it to read scale behaviour.
 
@@ -156,12 +208,12 @@ Not measured in this slice. The deterministic analysis path the runner exercises
 
 - **[P0] FALSE_POSITIVE** — gen-fettler-genvendor-vendored-only (false_positive_traps): flagged distractors: vendor/provider-sdk/index.ts
 - **[P0] FALSE_POSITIVE** — gen-fettler-genvendor-both (false_positive_traps): flagged distractors: vendor/provider-sdk/index.ts
+- **[P0] ABSTENTION_FAILURE** — gen-regauge-aws-residual (residual_refusal): status=applicable; residualPaths=none
+- **[P0] ABSTENTION_FAILURE** — gen-regauge-stripe-residual (residual_refusal): status=applicable; residualPaths=none
+- **[P0] ABSTENTION_FAILURE** — gen-regauge-googleapis-residual (residual_refusal): status=applicable; residualPaths=none
+- **[P0] ABSTENTION_FAILURE** — gen-regauge-react-dom-residual (residual_refusal): status=applicable; residualPaths=none
+- **[P0] ABSTENTION_FAILURE** — gen-regauge-acme-user-residual (residual_refusal): status=applicable; residualPaths=none
 - **[P1] SCALE_FAILURE** — fettler-edge-huge-monorepo (completes_within_budget): analysis did not finish within the 120000ms budget on this repository
-- **[P2] FALSE_POSITIVE** — fettler-ts-payments-rename (precision): flagged non-expected files: test/meridianClient.test.ts
-- **[P2] FALSE_NEGATIVE** — fettler-python-billing-rename (expected_findings_recall): flagged 8/11; missed: tests/fixtures/charge_request.json, tests/fixtures/charge_response.json, tests/fixtures/refund_response.json
-- **[P2] FALSE_NEGATIVE** — fettler-go-ledger-rename (expected_findings_recall): flagged 12/17; missed: internal/payments/testdata/charge_request.json, internal/payments/testdata/charge_response.json, internal/ledger/testdata/entry.json, internal/settlement/testdata/settlement.json, internal/worker/testdata/items.json
-- **[P2] FALSE_NEGATIVE** — fettler-java-settlement-rename (expected_findings_recall): flagged 8/13; missed: src/main/java/com/acme/settlement/payments/PaymentsClient.java, src/main/java/com/acme/settlement/charge/Charge.java, src/test/resources/payment-request.json, src/test/resources/payment-response.json, src/test/resources/settlement-batch.json
-- **[P2] FALSE_POSITIVE** — fettler-java-settlement-rename (precision): flagged non-expected files: src/main/java/com/acme/settlement/reporting/RevenueReport.java
 
 ## Coverage gaps (correct abstention today; capability not yet shipped)
 
@@ -190,5 +242,5 @@ Not measured in this slice. The deterministic analysis path the runner exercises
 
 **What we should NOT yet accept.** Repositories in languages where recall collapsed (python-service, go-service, java-service). Repositories that require any ReGauge migration family other than the Node runtime bump — SDK major upgrades, framework upgrades, and internal-API renames are coverage gaps today (the engine correctly abstains, but delivers no value). Any repository whose correct answer is a judgement call (ambiguous renames) unless a human is in the loop.
 
-**What remains fragile.** 2 P0 issue(s) where the product acted when it should have abstained or touched a distractor — see Top remaining risks. Verification honesty, large-repo scale limits, and binary/encoding/symlink robustness are only partially observable through the analysis-only path and need the full generation+verification pipeline to grade end to end.
+**What remains fragile.** 7 P0 issue(s) where the product acted when it should have abstained or touched a distractor — see Top remaining risks. Verification honesty, large-repo scale limits, and binary/encoding/symlink robustness are only partially observable through the analysis-only path and need the full generation+verification pipeline to grade end to end.
 

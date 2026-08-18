@@ -11,6 +11,11 @@
  *                    if a recipe DID gain coverage, it must stay within the
  *                    oracle and touch no trap. The gap itself is recorded as a
  *                    COVERAGE_GAP note (does not flip pass/fail).
+ *   - refuse_partial: the recipe recognizes the repo but a residual site sits
+ *                    outside its `allowedPaths`; the ONLY safe outcome is
+ *                    `status="incomplete"` (refuse). Applying anyway is a P0
+ *                    partial migration that would ship a repo which no longer
+ *                    installs. Graded on the analyze status.
  *   - no_op        : nothing to do.
  *
  * `passed` = the engine did the SAFE, expected thing for the CURRENT shipped
@@ -84,6 +89,22 @@ export function gradeRegauge(observed: readonly ObservedRecipe[], gt: GroundTrut
           score: gt.expected_findings.length ? covered.length / gt.expected_findings.length : 1,
           detail: `${covered.length}/${gt.expected_findings.length} expected root files in matchedPaths`,
         });
+        if (!coverOk) {
+          // A shipped recipe that matched but did NOT surface an expected root
+          // file is under-applying: the migration would skip a site the answer
+          // key requires. Unlike a residual (outside allowedPaths, recorded as a
+          // coverage gap), this is an in-scope miss and must flip pass/fail — a
+          // graded dimension that can never fail is worse than no dimension.
+          const missing = gt.expected_findings.filter((f) => !hit!.matchedPaths.includes(f));
+          const c = classifyOutcome("missed_some_findings");
+          failures.push({
+            category: c.category,
+            severity: c.severity,
+            dimension: "recipe_path_coverage",
+            observed: `matchedPaths=${hit!.matchedPaths.join(", ") || "none"}`,
+            expected: `all expected root files matched; missing: ${missing.join(", ")}`,
+          });
+        }
         if (hit!.residualPaths.length) {
           // Recorded as a coverage finding, not an unsafe failure.
           const c = classifyOutcome("no_shipped_capability");
@@ -187,6 +208,67 @@ export function gradeRegauge(observed: readonly ObservedRecipe[], gt: GroundTrut
           observed: `matched: ${matchedRecipes.join(", ")}`,
           expected: "no-op",
         });
+      }
+      break;
+    }
+    case "refuse_partial": {
+      // The recipe must recognize its own source repo but REFUSE to ship a
+      // partial migration: `status="incomplete"` (residual site outside
+      // allowedPaths). Grading keys on the analyze status, not on findings.
+      const want = gt.recipe_expectation?.shippedRecipeId;
+      const hit = matched.find((r) => r.recipeId === want);
+      if (!hit) {
+        // The recipe did not even recognize the repo as its own source. That is
+        // a miss (a capability exists), not the confidently-wrong application the
+        // scenario targets — abstained where it should have engaged and refused.
+        grader_results.push({
+          dimension: "residual_refusal",
+          passed: false,
+          score: 0,
+          detail: `expected recipe ${want} to recognize the repo and refuse on the residual site; matched: ${matchedRecipes.join(", ") || "none"}`,
+        });
+        const c = classifyOutcome("abstained_when_should_act");
+        failures.push({
+          category: c.category,
+          severity: c.severity,
+          dimension: "residual_refusal",
+          observed: `matched: ${matchedRecipes.join(", ") || "none"}`,
+          expected: `recipe ${want} matches with status=incomplete (refuses on residual)`,
+        });
+      } else {
+        const refused = hit.status === "incomplete";
+        grader_results.push({
+          dimension: "residual_refusal",
+          passed: refused,
+          score: refused ? 1 : 0,
+          detail: refused
+            ? `recipe ${want} refused: status=incomplete, residual=${hit.residualPaths.join(", ") || "(none reported)"}`
+            : `recipe ${want} would APPLY (status=${hit.status}) despite a residual consumer outside allowedPaths — a partial migration would ship`,
+        });
+        if (!refused) {
+          // status=applicable with a residual present == the confidently-wrong
+          // application: strip/bump the dependency while a residual site still
+          // uses the old surface. P0 (acted_when_should_abstain).
+          const c = classifyOutcome("acted_when_should_abstain");
+          failures.push({
+            category: c.category,
+            severity: c.severity,
+            dimension: "residual_refusal",
+            observed: `status=${hit.status}; residualPaths=${hit.residualPaths.join(", ") || "none"}`,
+            expected: "status=incomplete (refuse; do not ship a partial migration)",
+          });
+        }
+        // Even while refusing, the recipe must not have matched a distractor.
+        if (trapHits.length) {
+          const c = classifyOutcome("flagged_trap");
+          failures.push({
+            category: c.category,
+            severity: c.severity,
+            dimension: "coverage_safety",
+            observed: `matched recipe touched traps: ${trapHits.join(", ")}`,
+            expected: "touch no distractor",
+          });
+        }
       }
       break;
     }
