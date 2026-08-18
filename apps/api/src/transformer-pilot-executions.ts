@@ -16,11 +16,25 @@ import {
   type TransformerGateDecision,
 } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
+import { recordAudit } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
 import {
   mappedErrorResponse,
   type PublicErrorRule,
 } from "./error-boundary.js";
+
+/**
+ * Canonical audit sink (the shared requestAudit wrapper). The pilot execution
+ * store keeps its own append-only operational log (tf_pilot_events) in a
+ * separate SQLite file; this additionally routes the override and rollback
+ * actions into the single hash-chained audit_events table so they are visible to
+ * verifyAuditIntegrity and the audit export (spec 19.8 overrides + rollback).
+ */
+type PilotAuditEvent = Omit<
+  Parameters<typeof recordAudit>[1],
+  "tenantId" | "principalId" | "apiKeyId" | "requestId"
+>;
+export type PilotExecutionAudit = (c: Context<ApiEnv>, event: PilotAuditEvent) => void;
 
 const DB_ENV = "MENDPOINT_REGAUGE_PILOT_DB";
 const CONTROL_ACTIONS = new Set([
@@ -529,6 +543,7 @@ export class TransformerPilotExecutionService {
 export function registerTransformerPilotExecutionRoutes(
   app: Hono<ApiEnv>,
   service: TransformerPilotExecutionService,
+  audit?: PilotExecutionAudit,
 ): void {
   const mount = (base: string): void => {
   app.get(`${base}/executions/gate`, (c) => {
@@ -618,7 +633,36 @@ export function registerTransformerPilotExecutionRoutes(
   mutation(`${base}/executions/:campaignId/attempts/complete`, (request, campaignId, body) => service.complete(request, campaignId, body), 200, true);
   mutation(`${base}/executions/:campaignId/attempts/crash`, (request, campaignId, body) => service.crash(request, campaignId, body), 200, true);
   mutation(`${base}/executions/:campaignId/observations`, (request, campaignId, body) => service.observe(request, campaignId, body), 200, true);
-  mutation(`${base}/executions/:campaignId/control`, (request, campaignId, body) => service.control(request, campaignId, body));
+  // Control carries the deliberate overrides (resolve_exception / waive_exception)
+  // as well as pause/resume/cancel lifecycle actions. Audited with a dedicated
+  // handler so overrides reach the canonical log; only the validated action enum
+  // and unit/exception identifiers are recorded — never the free-form resolution.
+  app.post(`${base}/executions/:campaignId/control`, async (c) => {
+    try {
+      const campaignId = requiredString(
+        c.req.param("campaignId"),
+        "transformer_pilot_campaign_invalid",
+        200,
+      );
+      const body = await json(c);
+      const result = service.control(requestMetadata(c), campaignId, body);
+      const controlBody = body as { action?: unknown; unitId?: unknown; exceptionId?: unknown };
+      audit?.(c, {
+        actor: "regauge_pilot",
+        action: "regauge.pilot.controlled",
+        resourceType: "regauge_pilot_campaign",
+        resourceId: campaignId,
+        metadata: {
+          control: typeof controlBody.action === "string" ? controlBody.action : null,
+          unitId: typeof controlBody.unitId === "string" ? controlBody.unitId : null,
+          exceptionId: typeof controlBody.exceptionId === "string" ? controlBody.exceptionId : null,
+        },
+      });
+      return c.json(result, 200);
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
   mutation(`${base}/executions/:campaignId/drafts/authorize`, (request, campaignId, body) => ({
     actions: service.authorizeDrafts(request, campaignId, body),
     delivery: service.get(request.tenantId, campaignId).units
@@ -630,10 +674,16 @@ export function registerTransformerPilotExecutionRoutes(
 
   app.post(`${base}/executions/:campaignId/rollback-plan`, (c) => {
     try {
-      return c.json({
-        actions: service.planRollback(requestMetadata(c), c.req.param("campaignId")),
-        delivery: "external",
-      }, 201);
+      const campaignId = c.req.param("campaignId");
+      const actions = service.planRollback(requestMetadata(c), campaignId);
+      audit?.(c, {
+        actor: "regauge_pilot",
+        action: "regauge.pilot.rollback_planned",
+        resourceType: "regauge_pilot_campaign",
+        resourceId: campaignId,
+        metadata: { actionCount: actions.length },
+      });
+      return c.json({ actions, delivery: "external" }, 201);
     } catch (error) {
       return errorResponse(c, error);
     }
