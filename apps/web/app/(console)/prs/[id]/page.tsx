@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { apiGet, type Consumer, type MigrationPr } from "../../../../lib/api";
 import { PrDetailView } from "../../../components/console/pr-detail-view";
 import type { PrDetailData } from "../../../components/console/fixtures";
-import { mapPrStatus, parseUnifiedDiff } from "../../../components/console/pr-map";
+import { coverageSummary, mapPrStatus, parseUnifiedDiff } from "../../../components/console/pr-map";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Pull request review" };
@@ -97,9 +97,14 @@ export default async function PullRequestDetailPage({
     repo: consumer ? `${consumer.githubOwner}/${consumer.githubRepo}` : pr.branchName || "unknown",
     title: pr.title,
     number: pr.githubPrNumber,
-    status: mapPrStatus(pr.status),
+    status: mapPrStatus(pr.status, pr.coverage),
     githubUrl: pr.githubPrUrl,
     alert: buildAlert(change),
+    // Coverage is the §11.7 discriminator: an empty result under full coverage
+    // (clean) must read differently from one under partial/absent coverage. It
+    // is derived from the raw status + coverage channel, defaulting to unknown
+    // when the channel is absent — never to "analyzed".
+    coverage: coverageSummary(pr.status, pr.coverage),
     diffs,
     // No CI-check GET endpoint exists; surface the real review gates (status +
     // risk) as the nearest available signal.
