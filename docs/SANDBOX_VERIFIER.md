@@ -101,8 +101,9 @@ over intact) verification FAILS and never falls back to host execution.
 - `MENDPOINT_SANDBOX_FLY_TOKEN` (preferred, narrower blast radius) or
   `FLY_API_TOKEN` — the credential. Without a resolvable token the run fails
   closed rather than degrading to the no-op mock or host path.
-- `MENDPOINT_SANDBOX_FLY_IMAGE` — pin an immutable sandbox image tag
-  (see `docs/SANDBOX_IMAGE.md`); defaults to `:latest`.
+- `MENDPOINT_SANDBOX_FLY_IMAGE` — the digest-pinned sandbox image
+  (`name@sha256:<64 hex>`; see `docs/SANDBOX_IMAGE.md`). Required on the live path:
+  there is no default, and an unset or tag-based image fails closed.
 - The existing approval gates remain required in production
   (`MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION` and/or
   `MENDPOINT_APPROVED_VERIFIER_SHA256S`).

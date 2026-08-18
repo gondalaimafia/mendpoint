@@ -10,6 +10,8 @@ import {
   reconcileOrphanedMachines,
   resolveFlyClient,
   resolveFlySandboxToken,
+  resolveSandboxImage,
+  sandboxAllowUnpinnedImage,
   withFlyRetry,
   type MockFlyClient,
 } from "./fly-sandbox.js";
@@ -353,6 +355,161 @@ describe("fly_machines fail-closed on missing credential", () => {
       expect(result.stdout).toBe("");
     } finally {
       sbx.dispose();
+    }
+  });
+});
+
+describe("sandbox image must be an immutable digest pin (fail-closed isolation boundary)", () => {
+  const DIGEST = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
+
+  // A deterministic in-memory client that reports mode "live", so the image
+  // validation (which is skipped on the mock path) actually engages. No network.
+  function liveMock(behavior?: Parameters<typeof createMockFlyClient>[0]): MockFlyClient {
+    return { ...createMockFlyClient(behavior), mode: "live" as const };
+  }
+
+  it("resolveSandboxImage: unset image is refused on the live path (no default fills in)", () => {
+    const r = resolveSandboxImage({ image: undefined, mode: "live" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.stderr).toMatch(/sandbox_image_unresolved/);
+      expect(r.stderr).toMatch(/refusing host fallback/i);
+    }
+  });
+
+  it("resolveSandboxImage: a mutable tag (:latest) is refused on the live path", () => {
+    const r = resolveSandboxImage({
+      image: "registry.fly.io/mendpoint-sandbox:latest",
+      mode: "live",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.stderr).toMatch(/sandbox_image_not_pinned/);
+      expect(r.stderr).toMatch(/refusing host fallback/i);
+    }
+  });
+
+  it("resolveSandboxImage: a digest-pinned image is accepted on the live path", () => {
+    const r = resolveSandboxImage({ image: DIGEST, mode: "live" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.image).toBe(DIGEST);
+  });
+
+  it("resolveSandboxImage: the explicit escape hatch permits an unpinned tag (dev only)", () => {
+    const r = resolveSandboxImage({
+      image: "registry.fly.io/mendpoint-sandbox:latest",
+      mode: "live",
+      allowUnpinned: true,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.image).toBe("registry.fly.io/mendpoint-sandbox:latest");
+  });
+
+  it("resolveSandboxImage: the escape hatch never permits an ABSENT image", () => {
+    const r = resolveSandboxImage({ image: undefined, mode: "live", allowUnpinned: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.stderr).toMatch(/sandbox_image_unresolved/);
+  });
+
+  it("resolveSandboxImage: the mock path is exempt (image never pulled there)", () => {
+    expect(resolveSandboxImage({ image: undefined, mode: "mock" })).toEqual({
+      ok: true,
+      image: "mock",
+    });
+    expect(resolveSandboxImage({ image: "anything:latest", mode: "mock" })).toEqual({
+      ok: true,
+      image: "anything:latest",
+    });
+  });
+
+  it("sandboxAllowUnpinnedImage: defaults to false; only explicit truthy strings enable it", () => {
+    expect(sandboxAllowUnpinnedImage({} as NodeJS.ProcessEnv)).toBe(false);
+    expect(
+      sandboxAllowUnpinnedImage({ MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE: "0" } as NodeJS.ProcessEnv),
+    ).toBe(false);
+    expect(
+      sandboxAllowUnpinnedImage({ MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE: "1" } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      sandboxAllowUnpinnedImage({
+        MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE: "true",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+  });
+
+  it("runIsolated fails closed when the image is unset (never defaults, no host exec)", async () => {
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_IMAGE", undefined);
+    const client = liveMock();
+    const sbx = createFlyMachinesSandbox(flyOpts(client)); // no fly.image
+    try {
+      const result = await sbx.runIsolated("echo pwned");
+      expect(result.ok).toBe(false);
+      expect(result.exitCode).toBe(-1);
+      expect(result.stderr).toMatch(/sandbox_image_unresolved/);
+      expect(result.stderr).toMatch(/refusing host fallback/i);
+      // No Machine created and nothing executed -> no host fallback path taken.
+      expect(client.created).toHaveLength(0);
+      expect(result.stdout).toBe("");
+    } finally {
+      await sbx.destroy();
+    }
+  });
+
+  it("runIsolated fails closed when the image is a mutable tag (:latest rejected)", async () => {
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_IMAGE", undefined);
+    const client = liveMock();
+    const sbx = createFlyMachinesSandbox(
+      flyOpts(client, {
+        fly: { app: "mendpoint-sandbox-test", image: "registry.fly.io/mendpoint-sandbox:latest" },
+      }),
+    );
+    try {
+      const result = await sbx.runIsolated("echo pwned");
+      expect(result.ok).toBe(false);
+      expect(result.exitCode).toBe(-1);
+      expect(result.stderr).toMatch(/sandbox_image_not_pinned/);
+      expect(result.stderr).toMatch(/refusing host fallback/i);
+      expect(client.created).toHaveLength(0);
+      expect(result.stdout).toBe("");
+    } finally {
+      await sbx.destroy();
+    }
+  });
+
+  it("runIsolated accepts a digest-pinned image and runs isolated", async () => {
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_IMAGE", undefined);
+    const client = liveMock();
+    const sbx = createFlyMachinesSandbox(
+      flyOpts(client, { fly: { app: "mendpoint-sandbox-test", image: DIGEST } }),
+    );
+    try {
+      const result = await sbx.runIsolated("echo ready");
+      expect(result.ok).toBe(true);
+      expect(result.exitCode).toBe(0);
+      expect(client.created).toHaveLength(1);
+      expect(client.created[0]!.config.image).toBe(DIGEST);
+      expect(client.destroyed).toEqual([client.created[0]!.id]);
+    } finally {
+      await sbx.destroy();
+    }
+  });
+
+  it("runIsolated honors the explicit escape hatch for an unpinned image (dev only)", async () => {
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_IMAGE", undefined);
+    vi.stubEnv("MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE", "1");
+    const client = liveMock();
+    const sbx = createFlyMachinesSandbox(
+      flyOpts(client, {
+        fly: { app: "mendpoint-sandbox-test", image: "registry.fly.io/mendpoint-sandbox:latest" },
+      }),
+    );
+    try {
+      const result = await sbx.runIsolated("echo ready");
+      expect(result.ok).toBe(true);
+      expect(client.created).toHaveLength(1);
+      expect(client.created[0]!.config.image).toBe("registry.fly.io/mendpoint-sandbox:latest");
+    } finally {
+      await sbx.destroy();
     }
   });
 });
