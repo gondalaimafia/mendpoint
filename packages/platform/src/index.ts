@@ -56,6 +56,21 @@ export {
   reconcileOrphanedMachines,
 } from "./fly-sandbox.js";
 
+export type {
+  SandboxEgressAttestationPayload,
+  SandboxEgressAuthorityConfig,
+} from "./sandbox-egress-attestation.js";
+export {
+  SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND,
+  SANDBOX_EGRESS_ALLOWED_PROBE_COMMAND,
+  SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
+  sandboxEgressAttestationPayloadBytes,
+  verifySandboxEgressAttestation,
+  sandboxEgressAuthorityFromEnv,
+} from "./sandbox-egress-attestation.js";
+
 export type { KnowledgeDoc } from "./knowledge.js";
 export {
   DEFAULT_API_STYLE_GUIDE,

@@ -10,7 +10,7 @@
  *   node scripts/build-sandbox-image.mjs --dry-run   # print the commands, run nothing
  *   node scripts/build-sandbox-image.mjs --tag=v3    # override the tag
  *
- * The tag defaults to a content hash of Dockerfile.sandbox, so an identical
+ * The tag defaults to a content hash of every local image input, so an identical
  * image definition always produces the same immutable tag. `:latest` is pushed
  * alongside the immutable tag. Pushing requires the explicit --push flag.
  *
@@ -24,6 +24,10 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dockerfile = resolve(repoRoot, "Dockerfile.sandbox");
+const imageInputs = [
+  dockerfile,
+  resolve(repoRoot, "scripts/start-sandbox-entrypoint.sh"),
+];
 const IMAGE = "registry.fly.io/mendpoint-sandbox";
 
 const argv = process.argv.slice(2);
@@ -33,7 +37,13 @@ const push = has("--push");
 const tagArg = argv.find((a) => a.startsWith("--tag="));
 
 function contentTag() {
-  const digest = createHash("sha256").update(readFileSync(dockerfile)).digest("hex");
+  const hash = createHash("sha256");
+  for (const path of imageInputs) {
+    const content = readFileSync(path);
+    hash.update(`${content.byteLength}:`);
+    hash.update(content);
+  }
+  const digest = hash.digest("hex");
   return `sha-${digest.slice(0, 12)}`;
 }
 

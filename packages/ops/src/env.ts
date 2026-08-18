@@ -269,6 +269,35 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
         "MENDPOINT_SANDBOX_FLY_MODE=mock is forbidden in production; the mock sandbox reports a passing verification without executing the command; unset it and wire a real Fly sandbox token",
       );
     }
+    if (env.MENDPOINT_SANDBOX_KIND?.trim() === "fly_machines") {
+      const requiredSandboxAuthority = [
+        "MENDPOINT_SANDBOX_FLY_APP",
+        "MENDPOINT_SANDBOX_FLY_TOKEN",
+        "MENDPOINT_SANDBOX_FLY_IMAGE",
+        "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64",
+        "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64",
+        "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID",
+        "MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST",
+      ] as const;
+      for (const name of requiredSandboxAuthority) {
+        if (!env[name]?.trim()) errors.push(`${name} is required when MENDPOINT_SANDBOX_KIND=fly_machines in production`);
+      }
+      if (
+        env.MENDPOINT_SANDBOX_FLY_IMAGE?.trim() &&
+        !/^[a-z0-9][a-z0-9./_-]{1,300}@sha256:[a-f0-9]{64}$/u.test(env.MENDPOINT_SANDBOX_FLY_IMAGE.trim())
+      ) {
+        errors.push("MENDPOINT_SANDBOX_FLY_IMAGE must be an immutable digest-pinned image in production");
+      }
+      if (
+        env.MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST?.trim() &&
+        !/^sha256:[a-f0-9]{64}$/u.test(env.MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST.trim())
+      ) {
+        errors.push("MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST must be a sha256 digest");
+      }
+      if (env.MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE === "1" || env.MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE === "true") {
+        errors.push("MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE is forbidden in production");
+      }
+    }
     if (!env.CORS_ORIGINS && !env.WEB_URL) {
       warnings.push("CORS_ORIGINS / WEB_URL unset — defaulting to localhost origins");
     }

@@ -19,10 +19,15 @@ Per run, the adapter (`fly-sandbox.ts`):
    workspace files to `/workspace` (`collectWorkspaceFiles`). There is **no default
    image**: on the live path the image must be present and digest-pinned
    (`name@sha256:<64 hex>`) or the run fails closed (see below).
-2. `waitForState "started"` — the image's `CMD ["sleep", "infinity"]` keeps the
-   Machine's main process alive so an exec can attach.
-3. `exec` the verification command as `/bin/sh -c "<command>"`.
-4. `destroyMachine` in a `finally` — **always torn down**, including on command
+2. `waitForState "started"` — the image entrypoint installs IPv4 and IPv6
+   default-deny output policies, verifies them, drops to uid 1000, and keeps the
+   Machine alive so an exec can attach.
+3. Revalidate the signed app-and-image-bound egress receipt, then execute a fixed
+   denied-outbound probe and a fixed allowed local probe. The tenant verification
+   command starts only if both observations match the receipt.
+4. `exec` the verification command as uid 1000 through
+   `/usr/sbin/runuser -u node -- /bin/sh -c "<command>"`.
+5. `destroyMachine` in a `finally` — **always torn down**, including on command
    failure and on the wall-clock cap.
 
 The adapter is fail-closed: if a Machine cannot be created or started, the run
@@ -52,6 +57,8 @@ speculatively:
 | **python3-pip** | Package installs inside a venv. |
 | **ca-certificates** | TLS trust for npm registry / PyPI fetches during verify — the slim base does not ship CA certs. |
 | **`python` symlink** | Verifiers that invoke the unversioned `python` name. |
+| **iptables** | PID 1 installs and verifies the IPv4 and IPv6 default-deny output policy before any tenant command can run. |
+| **util-linux** | `runuser` drops the long-lived process and every verification command to the unprivileged `node` account. |
 
 ### Deliberately NOT included
 
@@ -103,8 +110,9 @@ node scripts/build-sandbox-image.mjs --dry-run
 node scripts/build-sandbox-image.mjs --tag=v3 --push
 ```
 
-The tag defaults to `sha-<first-12-of-sha256(Dockerfile.sandbox)>`, so an
-identical image definition always yields the same immutable tag. On `--push`, the
+The tag defaults to the first 12 hexadecimal characters of a length-delimited
+SHA-256 over `Dockerfile.sandbox` and `scripts/start-sandbox-entrypoint.sh`, so
+changing either reviewed image input changes the tag. On `--push`, the
 script runs `flyctl auth docker`, pushes both the immutable tag and `:latest`,
 then prints the resolved `@sha256:…` digest so you can pin production to it.
 
@@ -139,9 +147,9 @@ forced mock mode) never pulls a real image, so it does not require a pin.
 The env var is the rollback lever — no redeploy of the app image is needed:
 
 ```sh
-# Point back at a previous known-good tag or digest:
+# Point back at a previous known-good digest:
 fly secrets set \
-  MENDPOINT_SANDBOX_FLY_IMAGE=registry.fly.io/mendpoint-sandbox:sha-<previous> \
+  MENDPOINT_SANDBOX_FLY_IMAGE=registry.fly.io/mendpoint-sandbox@sha256:<previous> \
   --app <mendpoint-app>
 ```
 
@@ -151,8 +159,10 @@ it from the registry) until a new one is proven in production.
 
 ## Security posture
 
-- **Non-root.** The image drops to the unprivileged `node` user (uid 1000);
-  `/workspace` is owned by that user. `USER node` is the final instruction.
+- **Default-deny before unprivileged execution.** PID 1 starts as root only to
+  install and verify IPv4 and IPv6 output-drop rules. It then runs the long-lived
+  process as the unprivileged `node` user, and the adapter wraps every remote
+  command with the same uid 1000 boundary.
 - **No baked secrets or network credentials.** No tokens, keys, or registry
   credentials are in the image. `flyctl auth docker` uses the operator's own
   session at push time; the build script reads and writes no credentials.
@@ -165,7 +175,9 @@ it from the registry) until a new one is proven in production.
 - **Tenant-scoped uploads.** Only the caller tenant's workspace files are
   uploaded (`collectWorkspaceFiles`); no host process or other tenant's data
   enters the Machine.
-- **Egress caveat (unchanged).** As documented in `docs/SANDBOX_VERIFIER.md`, the
-  verification command itself is not network-isolated by the Node runtime; egress
-  control is an infrastructure-layer concern (Fly network policy). This image does
-  not add egress isolation and does not weaken it.
+- **Code-enforced and observed egress control.** The image installs the
+  empty-allowlist output policy. Production also requires a fresh Ed25519 receipt
+  bound to the exact app, image digest, policy digest, and protected evidence.
+  Immediately before every tenant command the worker proves that public HTTPS is
+  blocked and local execution still passes. Any mismatch refuses the tenant
+  command and destroys the Machine.

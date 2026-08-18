@@ -1,4 +1,5 @@
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { Buffer } from "node:buffer";
 import {
   existsSync,
   lstatSync,
@@ -54,6 +55,11 @@ import {
   type GitHubDelivery,
 } from "@mendpoint/github";
 import { recipeFilesDigest, sealAdaptiveCandidate } from "@mendpoint/transformer";
+import {
+  SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
+  sandboxEgressAttestationPayloadBytes,
+} from "@mendpoint/platform";
 import {
   parseArgs,
   parseIntervalMs,
@@ -1698,6 +1704,62 @@ describe("worker runtime", () => {
     ]));
     expect(validateWorkerProductionEnv({ ...base, DEEPSEEK_API_KEY: "configured", MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "{}", MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "selective" }))
       .toContain("The first verifier release permits only offline or shadow rollout");
+  });
+
+  it("cryptographically validates Fly sandbox egress authority during production startup", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-sandbox-authority-"));
+    dirs.push(root);
+    const image = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
+    const policyDigest = `sha256:${"b".repeat(64)}`;
+    const testedAt = new Date(Date.now() - 60_000).toISOString();
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    const keys = generateKeyPairSync("ed25519");
+    const payloadBytes = sandboxEgressAttestationPayloadBytes({
+      schemaVersion: "2026-08-18.v1",
+      app: "mendpoint-sandbox",
+      image,
+      policyDigest,
+      testedAt,
+      expiresAt,
+      forbiddenOutbound: { url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL, blocked: true },
+      allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
+      evidenceRefs: ["evidence://protected-egress-acceptance/startup"],
+    });
+    const envelope = Buffer.from(JSON.stringify({
+      payload: payloadBytes.toString("base64"),
+      signatures: [{
+        keyId: "sandbox-egress-key-1",
+        signature: sign(null, payloadBytes, keys.privateKey).toString("base64"),
+      }],
+    }), "utf8").toString("base64");
+    const base = {
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: root,
+      MENDPOINT_REPOS_DIR: root,
+      MENDPOINT_SANDBOX_KIND: "fly_machines",
+      MENDPOINT_SANDBOX_FLY_APP: "mendpoint-sandbox",
+      MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-token",
+      MENDPOINT_SANDBOX_FLY_IMAGE: image,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: envelope,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64:
+        keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
+      MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: policyDigest,
+    };
+
+    expect(validateWorkerProductionEnv(base)).toEqual([]);
+    expect(validateWorkerProductionEnv({
+      ...base,
+      MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: `sha256:${"c".repeat(64)}`,
+    })).toContain("Sandbox egress authority invalid: sandbox_egress_attestation_scope_mismatch");
+    expect(validateWorkerProductionEnv({
+      ...base,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: "dGFtcGVyZWQ=",
+    })).toEqual(expect.arrayContaining([
+      expect.stringContaining("Sandbox egress authority invalid"),
+    ]));
   });
 
   it("requires an App for customer delivery and allows PAT only for a disposable canary", () => {

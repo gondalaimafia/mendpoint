@@ -37,38 +37,24 @@ documented rather than implicit.
   commands. The local sandbox in `packages/platform/src/sandbox.ts` applies the
   same scrub to every command it runs.
 
-## Residual risk: no network isolation (egress)
+## Network isolation and its remaining boundary
 
-**Verification runs WITHOUT network isolation.** The Node permission model
-restricts filesystem reads and writes, but it does **not** restrict outbound
-network access. Consequences:
+The Node permission model does not restrict network access, so production does
+not rely on it for egress control. The Fly sandbox image installs IPv4 and IPv6
+default-deny output policies before it drops privileges. No tenant verification
+command starts until the worker has also:
 
-- An approved-but-malicious verifier command — or a compromised dependency /
-  toolchain that a legitimate verifier invokes — can open outbound connections
-  and exfiltrate repository contents, environment values, or other data it can
-  read.
-- The filesystem allowlist does not help here: reading is permitted inside the
-  repo root, and egress is the exfiltration channel.
+1. verified a fresh Ed25519 acceptance receipt bound to the exact Fly app,
+   immutable image digest, policy digest, and protected evidence;
+2. observed that a fixed public HTTPS probe is blocked; and
+3. observed that a fixed local command still succeeds.
 
-**Egress must be gated at the infrastructure layer**, not in application code.
-The Node runtime cannot enforce a network policy on itself. Acceptable controls:
-
-- Linux network namespaces (`netns`) with no default route.
-- Host / container firewall (`iptables` / `nftables`) with a default-deny egress
-  policy and an explicit allowlist.
-- Fly Machines network policy on the sandbox backend, so the verifier machine
-  has no outbound path except to approved endpoints.
-
-The Fly Machines sandbox backend is the intended place to carry the egress gate.
-The concrete default-deny policy the sandbox app must run under is specified in
-"Default-deny egress policy for the sandbox app" below. Until that policy is
-provisioned on the `mendpoint-sandbox` app, treat verification as
-network-reachable and do not run unreviewed verifier content against sensitive
-repositories.
-
-The in-code marker for this residual risk lives in
-`packages/repair/src/verify.ts` (search for `network isolation` / `egress`) so
-the disclosure cannot silently regress.
+The worker repeats receipt verification and both probes immediately before every
+tenant command. Missing, expired, tampered, cross-app, cross-image, or
+cross-policy evidence fails closed before Machine creation or execution. The
+remaining boundary is operational availability: if the firewall cannot be
+installed, the receipt expires, or the probes cannot produce authoritative
+results, verification is unavailable rather than network-reachable.
 
 ## Wiring: verification runs inside the sandbox when one is configured
 
@@ -114,26 +100,29 @@ over intact) verification FAILS and never falls back to host execution.
 - The existing approval gates remain required in production
   (`MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION` and/or
   `MENDPOINT_APPROVED_VERIFIER_SHA256S`).
+- `MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64` — the canonical signed receipt.
+- `MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64` — the exact
+  Ed25519 verification key.
+- `MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID` — the trusted key identity.
+- `MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST` — SHA-256 of the reviewed image
+  entrypoint policy. Production startup cryptographically validates these four
+  values and the worker revalidates them immediately before every command.
 
 ### What still runs in the worker container after this change
 
 - All verification when no sandbox is configured (the default `local` backend).
 - Workspace enumeration and the approval-gate checks themselves (reading the repo
   tree and hashing `node-check` files) run in the worker before dispatch.
-- The residual egress gate is carried by the Fly Machine's network policy: this
-  change puts execution inside a microVM, and the default-deny egress policy on
-  the sandbox app specified in the next section must be provisioned for full
-  network containment.
+- The immutable sandbox image and signed acceptance authority carry the egress
+  gate. The shared worker never executes the tenant command as a fallback.
 
 ## Default-deny egress policy for the sandbox app
 
 Selecting `MENDPOINT_SANDBOX_KIND=fly_machines` moves verification into a
 per-run, force-destroyed Machine on a dedicated Fly app (`MENDPOINT_SANDBOX_FLY_APP`,
-e.g. `mendpoint-sandbox`). That relocation buys process and filesystem isolation
-but NOT egress containment: Fly grants outbound network by default and the public
-Machines API cannot disable it through Machine config. The egress gate is
-therefore an app-level control an operator provisions once on the sandbox app; it
-is not something application code can turn on for itself.
+e.g. `mendpoint-sandbox`). Fly grants outbound network by default and the public
+Machines API cannot disable it through Machine config, so the immutable image
+installs the policy before it runs the unprivileged workload.
 
 The policy the sandbox app MUST run under:
 
@@ -150,31 +139,27 @@ The policy the sandbox app MUST run under:
   dependencies into the sandbox image (`Dockerfile.sandbox`, see
   `docs/SANDBOX_IMAGE.md`) so the allowlist can stay empty.
 
-How to provision it depends on the Fly org's networking controls (org-level
-egress rules / firewall on the `mendpoint-sandbox` app, or a Machine image whose
-entrypoint drops outbound routes before running the verifier). Whichever
-mechanism is used, the acceptance test has two halves that must BOTH hold:
+`scripts/start-sandbox-entrypoint.sh` is the reviewed policy source. The protected
+`.github/workflows/sandbox-egress-acceptance.yml` workflow proves the exact image
+and has two mandatory observations:
 
 1. a verifier Machine's attempt to open an outbound connection to an address
    **outside** the allowlist **FAILS**, and
 2. a normal, in-allowlist verification **COMPLETES** inside the Machine.
 
-This default-deny egress policy is a **HARD PREREQUISITE**, not a follow-up.
-The security benefit of routing verification into a Machine comes from this
-policy, not from the Machine boundary itself: enabling
-`MENDPOINT_SANDBOX_KIND=fly_machines` without it merely relocates the
-exfiltration channel into the sandbox app rather than removing it. Until the
-acceptance test passes, the exfiltration channel described under "Residual risk"
-remains open even though execution is inside a microVM.
+This default-deny egress policy is a **HARD PREREQUISITE**, not a follow-up. The
+workflow signs the two observations with the protected Ed25519 authority and
+rotates the exact receipt onto the verifying app. The receipt is valid for less
+than 24 hours, so stale evidence makes verification unavailable rather than
+silently weakening isolation.
 
 ### Operator checklist to enable the sandbox
 
-1. Build and push the sandbox image (`npm run sandbox:image:push`) and pin the
-   immutable `@sha256:` digest it prints in `MENDPOINT_SANDBOX_FLY_IMAGE`. The
-   deployment configs ship this value EMPTY so a missing pin fails closed; never
-   leave it as `:latest`.
-2. Create the dedicated `mendpoint-sandbox` Fly app and provision the default-deny
-   egress policy above on it.
+1. Build and push the sandbox image using `fly.sandbox.toml`, and pin the
+   immutable `@sha256:` digest in both deployment configs and the protected
+   `SANDBOX_IMAGE_DIGEST` environment variable. Never leave it as `:latest`.
+2. Create the dedicated `mendpoint-sandbox` Fly app. The reviewed image entrypoint
+   is the default-deny enforcement boundary.
 3. Set the sandbox credential as a secret on each app that verifies (never in
    `fly.toml`): `fly secrets set MENDPOINT_SANDBOX_FLY_TOKEN=... --app <app>`.
    A scoped `MENDPOINT_SANDBOX_FLY_TOKEN` is preferred over a broad `FLY_API_TOKEN`.
@@ -182,9 +167,10 @@ remains open even though execution is inside a microVM.
    are present in the deployment config (wired in `fly.toml` and
    `fly.customer-warden.toml`), and that `MENDPOINT_SANDBOX_FLY_IMAGE` has been
    pinned to a digest (step 1) rather than left empty.
-5. Run the egress acceptance test (both halves above) and confirm it passes
-   before treating the sandbox as live.
+5. Run the protected `Sandbox egress acceptance` workflow with confirmation
+   `SANDBOX_EGRESS_ACCEPTED`. It starts one bounded Machine, verifies the exact
+   image and both probes, destroys the Machine, signs the receipt, rotates the
+   verifying app secrets, and requires `/livez` and `/healthz` to recover.
 
 Because the fly_machines backend fails closed, verification refuses rather than
-degrading to host execution if steps 1-4 are incomplete, so provision the
-sandbox app, pinned image, and token before deploying the config that selects it.
+degrading to host execution if any authority is incomplete, invalid, or expired.

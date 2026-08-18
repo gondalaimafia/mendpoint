@@ -145,6 +145,39 @@ describe("ops GA", () => {
     expect(r.errors.some((e) => e.includes("MENDPOINT_SANDBOX_FLY_MODE"))).toBe(false);
   });
 
+  it("requires complete immutable egress authority when production selects Fly Machines", () => {
+    const base = {
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      API_AUTH: "required",
+      GITHUB_MODE: "mock",
+      MENDPOINT_SANDBOX_KIND: "fly_machines",
+      MENDPOINT_SANDBOX_FLY_APP: "mendpoint-sandbox",
+      MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-token",
+      MENDPOINT_SANDBOX_FLY_IMAGE: `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`,
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    };
+    const missing = validateApiEnv(base);
+    expect(missing.ok).toBe(false);
+    expect(missing.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64"),
+      expect.stringContaining("MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64"),
+      expect.stringContaining("MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID"),
+      expect.stringContaining("MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST"),
+    ]));
+
+    const complete = validateApiEnv({
+      ...base,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: "YXR0ZXN0YXRpb24=",
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64: "cHVibGljLWtleQ==",
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
+      MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: `sha256:${"b".repeat(64)}`,
+    });
+    expect(complete.errors.filter((error) => error.includes("SANDBOX"))).toEqual([]);
+  });
+
   it("accepts the dedicated Transformer pilot with customer class GitHub App delivery", () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const report = validateApiEnv({

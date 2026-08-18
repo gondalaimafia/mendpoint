@@ -65,6 +65,7 @@
     "ga:check": "npm run spec:check && npm run claims:check && npm run actions:check && npm run architecture:check && npm run model:check && npm run names:check && tsx scripts/ga-check.ts",
     "sandbox:image": "node scripts/build-sandbox-image.mjs",
     "sandbox:image:push": "node scripts/build-sandbox-image.mjs --push",
+    "sandbox:egress:receipt": "tsx scripts/create-sandbox-egress-attestation.ts",
     "auth:bootstrap": "tsx scripts/bootstrap-key.ts",
     "start:api": "npm run start -w @mendpoint/api"
   },

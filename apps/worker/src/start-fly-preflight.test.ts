@@ -42,6 +42,11 @@ const CUSTOMER_WARDEN_ENV = {
   LLM_AGENT_MODEL: "test-model",
   LLM_AGENT_URL: "https://models.example/v1",
   OPENAI_API_KEY: "preflight-test-model-key",
+  MENDPOINT_SANDBOX_FLY_TOKEN: "preflight-test-sandbox-token",
+  MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: "preflight-test-attestation",
+  MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64: "preflight-test-public-key",
+  MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "preflight-test-key-id",
+  MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: `sha256:${"a".repeat(64)}`,
 } satisfies NodeJS.ProcessEnv;
 
 afterEach(() => {

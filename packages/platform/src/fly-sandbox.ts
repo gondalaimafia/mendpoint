@@ -21,6 +21,13 @@ import {
   type SandboxHandle,
   type SandboxRunResult,
 } from "./sandbox.js";
+import {
+  SANDBOX_EGRESS_ALLOWED_PROBE_COMMAND,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND,
+  sandboxEgressAuthorityFromEnv,
+  verifySandboxEgressAttestation,
+  type SandboxEgressAuthorityConfig,
+} from "./sandbox-egress-attestation.js";
 
 /** Fly Machines guest sizing (subset of the REST `config.guest` shape). */
 export type FlyGuest = { cpu_kind: string; cpus: number; memory_mb: number };
@@ -100,6 +107,8 @@ export type FlySandboxOptions = {
   execTimeoutMs?: number;
   /** Bounded-backoff policy for transient (429/5xx) Fly API failures. */
   retry?: FlyRetryOptions;
+  /** Signed production authority for the app-level default-deny egress policy. */
+  egressAuthority?: SandboxEgressAuthorityConfig;
 };
 
 export const FLY_SANDBOX_DEFAULTS = {
@@ -465,6 +474,30 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
   const startTimeoutMs = flyOpts.startTimeoutMs ?? FLY_SANDBOX_DEFAULTS.startTimeoutMs;
   const execTimeoutMs = flyOpts.execTimeoutMs ?? FLY_SANDBOX_DEFAULTS.execTimeoutMs;
   const retryOptions = flyOpts.retry;
+  const configuredEgressAuthority = flyOpts.egressAuthority ?? sandboxEgressAuthorityFromEnv();
+  const egressAuthority = Object.freeze({
+    attestationBase64: configuredEgressAuthority.attestationBase64,
+    publicKeySpkiBase64: configuredEgressAuthority.publicKeySpkiBase64,
+    expectedKeyId: configuredEgressAuthority.expectedKeyId,
+    expectedPolicyDigest: configuredEgressAuthority.expectedPolicyDigest,
+    now: configuredEgressAuthority.now,
+  });
+
+  const validateEgressAuthority = (image: string): string | undefined => {
+    if (client.mode !== "live") return undefined;
+    try {
+      const observedAt = egressAuthority.now?.() ?? new Date().toISOString();
+      verifySandboxEgressAttestation({
+        ...egressAuthority,
+        expectedApp: app ?? "",
+        expectedImage: image,
+        observedAt,
+      });
+      return undefined;
+    } catch (error) {
+      return errMsg(error);
+    }
+  };
 
   // Local workspace root reuses the path-safe seeding of the local backend so the
   // uploaded workspace holds ONLY this tenant's files. It does NOT expose host exec.
@@ -524,6 +557,16 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
     }
     const image = imageResolution.image;
 
+    const initialEgressError = validateEgressAuthority(image);
+    if (initialEgressError) {
+      return {
+        ok: false,
+        stdout: "",
+        stderr: `fly_machines: ${initialEgressError}; refusing host fallback`,
+        exitCode: -1,
+      };
+    }
+
     let machine: FlyMachine;
     try {
       // Transient (429/5xx) create failures back off and retry; a deterministic
@@ -558,7 +601,7 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
 
     activeMachines.add(machine.id);
     const timeoutMs = Math.min(runOpts?.timeoutMs ?? execTimeoutMs, capMs);
-    let result: SandboxRunResult;
+    let result: SandboxRunResult | undefined;
     try {
       await withFlyRetry(
         () =>
@@ -571,28 +614,77 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
         retryOptions,
       );
 
-      const capped = await withCap(
-        // exec is intentionally single-shot (not retried): re-running a customer
-        // verification command on a transient response could double its effects.
-        client.exec({ app, id: machine.id, command: toCommand(cmd), timeoutMs }),
-        capMs,
-      );
-      if (capped.timedOut) {
+      const currentEgressError = validateEgressAuthority(image);
+      if (currentEgressError) {
         result = {
           ok: false,
           stdout: "",
-          stderr: `fly_machines: run exceeded cap ${capMs}ms; Machine ${machine.id} killed`,
-          exitCode: 124,
-          timedOut: true,
+          stderr: `fly_machines: ${currentEgressError}; refusing host fallback`,
+          exitCode: -1,
         };
-      } else {
-        const exec = capped.value;
-        result = {
-          ok: exec.exit_code === 0,
-          stdout: clip(exec.stdout, 8000),
-          stderr: clip(exec.stderr, 4000),
-          exitCode: exec.exit_code,
-        };
+      } else if (client.mode === "live") {
+        const probeTimeoutMs = Math.min(5_000, timeoutMs);
+        const forbiddenProbe = await withCap(
+          client.exec({
+            app,
+            id: machine.id,
+            command: toCommand(SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND),
+            timeoutMs: probeTimeoutMs,
+          }),
+          probeTimeoutMs,
+        );
+        if (forbiddenProbe.timedOut || forbiddenProbe.value.exit_code !== 0) {
+          result = {
+            ok: false,
+            stdout: "",
+            stderr: "fly_machines: sandbox_egress_policy_unverified: forbidden outbound access was reachable or could not be proven blocked; refusing customer command",
+            exitCode: -1,
+          };
+        } else {
+          const allowedProbe = await withCap(
+            client.exec({
+              app,
+              id: machine.id,
+              command: toCommand(SANDBOX_EGRESS_ALLOWED_PROBE_COMMAND),
+              timeoutMs: probeTimeoutMs,
+            }),
+            probeTimeoutMs,
+          );
+          if (allowedProbe.timedOut || allowedProbe.value.exit_code !== 0) {
+            result = {
+              ok: false,
+              stdout: "",
+              stderr: "fly_machines: sandbox_egress_policy_unverified: allowed local verification probe did not pass; refusing customer command",
+              exitCode: -1,
+            };
+          }
+        }
+      }
+
+      if (!result) {
+        const capped = await withCap(
+          // exec is intentionally single-shot (not retried): re-running a customer
+          // verification command on a transient response could double its effects.
+          client.exec({ app, id: machine.id, command: toCommand(cmd), timeoutMs }),
+          capMs,
+        );
+        if (capped.timedOut) {
+          result = {
+            ok: false,
+            stdout: "",
+            stderr: `fly_machines: run exceeded cap ${capMs}ms; Machine ${machine.id} killed`,
+            exitCode: 124,
+            timedOut: true,
+          };
+        } else {
+          const exec = capped.value;
+          result = {
+            ok: exec.exit_code === 0,
+            stdout: clip(exec.stdout, 8000),
+            stderr: clip(exec.stderr, 4000),
+            exitCode: exec.exit_code,
+          };
+        }
       }
     } catch (e) {
       // fail-closed on wait/exec failure: error, never run on the shared host.
@@ -620,7 +712,12 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
         };
       }
     }
-    return result;
+    return result ?? {
+      ok: false,
+      stdout: "",
+      stderr: "fly_machines: sandbox execution ended without an authoritative result; refusing host fallback",
+      exitCode: -1,
+    };
   };
 
   return {

@@ -4,9 +4,12 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,9 +21,11 @@ import type { ApiEnv } from "./auth.js";
 import { resolveRepoKey } from "./repo-path.js";
 import {
   connectRepositoryCheckout,
+  createRealGitClone,
   createSelfServeConnectRoutes,
   mockFixtureClone,
   selfServeConnectEnabled,
+  type RepositoryGitExecutor,
   type RepositoryCheckoutCloner,
 } from "./repository-connect.js";
 
@@ -391,5 +396,107 @@ describe("cloner contract", () => {
     });
     expect(git(destination, "rev-parse", "--is-inside-work-tree")).toBe("true");
     expect(existsSync(join(destination, "package.json"))).toBe(true);
+  });
+
+  it("never persists an installation token when an authenticated fetch fails", async () => {
+    const root = reposRoot();
+    const destination = join(root, "existing-repo");
+    const token = "ghs_sensitive_fetch_token";
+    mkdirSync(join(destination, ".git"), { recursive: true });
+    writeFileSync(
+      join(destination, ".git", "config"),
+      '[remote "origin"]\n\turl = https://github.com/acme/widget.git\n',
+    );
+    const calls: Parameters<RepositoryGitExecutor>[0][] = [];
+    const executor: RepositoryGitExecutor = (input) => {
+      calls.push(structuredClone(input));
+      if (input.args[0] === "fetch") {
+        throw Object.assign(new Error(`fetch failed for ${token}`), {
+          stderr: `fatal: fetch failed for ${token}`,
+        });
+      }
+      return "";
+    };
+
+    await expect(
+      createRealGitClone(executor)({
+        provider: "github",
+        owner: "acme",
+        name: "widget",
+        branch: "main",
+        destination,
+        tokenProvider: async () => token,
+      }),
+    ).rejects.toThrow("repository_clone_git_failed:fatal: fetch failed for ***");
+
+    expect(JSON.stringify(calls)).not.toContain(token);
+    expect(readFileSync(join(destination, ".git", "config"), "utf8")).not.toContain(token);
+  });
+
+  it("never persists an installation token when checkout fails after an authenticated fetch", async () => {
+    const root = reposRoot();
+    const destination = join(root, "checkout-failure-repo");
+    const token = "ghs_sensitive_checkout_token";
+    mkdirSync(join(destination, ".git"), { recursive: true });
+    writeFileSync(
+      join(destination, ".git", "config"),
+      '[remote "origin"]\n\turl = https://github.com/acme/widget.git\n',
+    );
+    const calls: Parameters<RepositoryGitExecutor>[0][] = [];
+    const executor: RepositoryGitExecutor = (input) => {
+      calls.push(structuredClone(input));
+      if (input.args[0] === "checkout") {
+        throw Object.assign(new Error(`checkout failed for ${token}`), {
+          stderr: `fatal: checkout failed for ${token}`,
+        });
+      }
+      return "";
+    };
+
+    await expect(
+      createRealGitClone(executor)({
+        provider: "github",
+        owner: "acme",
+        name: "widget",
+        branch: "main",
+        destination,
+        tokenProvider: async () => token,
+      }),
+    ).rejects.toThrow("repository_clone_git_failed:fatal: checkout failed for ***");
+
+    expect(JSON.stringify(calls)).not.toContain(token);
+    expect(readFileSync(join(destination, ".git", "config"), "utf8")).not.toContain(token);
+  });
+
+  it("uses a public remote URL even when a new authenticated clone fails after creating .git", async () => {
+    const root = reposRoot();
+    const destination = join(root, "new-repo");
+    const token = "ghs_sensitive_clone_token";
+    const executor: RepositoryGitExecutor = (input) => {
+      if (input.args[0] === "clone") {
+        const remoteUrl = input.args.at(-2)!;
+        mkdirSync(join(destination, ".git"), { recursive: true });
+        writeFileSync(join(destination, ".git", "config"), `[remote "origin"]\n\turl = ${remoteUrl}\n`);
+        throw Object.assign(new Error(`clone failed for ${token}`), {
+          stderr: `fatal: clone failed for ${token}`,
+        });
+      }
+      return "";
+    };
+
+    await expect(
+      createRealGitClone(executor)({
+        provider: "github",
+        owner: "acme",
+        name: "widget",
+        branch: "main",
+        destination,
+        tokenProvider: async () => token,
+      }),
+    ).rejects.toThrow("repository_clone_git_failed:fatal: clone failed for ***");
+
+    const config = readFileSync(join(destination, ".git", "config"), "utf8");
+    expect(config).toContain("https://github.com/acme/widget.git");
+    expect(config).not.toContain(token);
   });
 });

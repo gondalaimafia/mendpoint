@@ -45,7 +45,7 @@ kill_timeout = 30
   # NOTE: a MENDPOINT_SANDBOX_FLY_IMAGE Fly secret, if set, overrides this value
   # and is invisible to review -- prefer the reviewed config here.
   # See docs/SANDBOX_IMAGE.md ("Pin production to an immutable reference").
-  MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:6eacb37b3a9a795d2fed6baf4b032ced118c639e6d4d523b2bc9db9ff1a95c88"
+  MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:58a68f6680467330d10a4f76308a0bd12356d219a027fc4a4e482166c44e6684"
   AGENTIC_REPAIR = "1"
   MENDPOINT_MODEL_PROVIDER = "muse-spark"
   LLM_AGENT_MODEL = "muse-spark-1.2-contributor"
