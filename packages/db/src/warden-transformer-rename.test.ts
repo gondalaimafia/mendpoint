@@ -403,6 +403,54 @@ describe("Fettler/Regauge logical database names", () => {
     }
   });
 
+  it("converges the acceptance-outcome columns from a genuine pre-change delivery schema", () => {
+    // Reflecting the current schema and reversing names yields old delivery tables
+    // that already carry the outcome columns, so drop them to reproduce a true
+    // pre-change volume that predates the acceptance-outcome release. The rename
+    // must still converge byte-for-byte with a fresh database, and legacy rows
+    // must read the outcome as pending (NULL), never a fabricated negative.
+    const shapes = [
+      { label: "outcome-old-only", oldNames: new Set(NEW_TABLES) },
+      {
+        label: "outcome-partial",
+        oldNames: new Set([
+          "fettler_candidate_deliveries",
+          "regauge_adaptive_deliveries",
+        ]),
+      },
+    ];
+    for (const shape of shapes) {
+      const path = join(newDir(`rename-${shape.label}`), `${shape.label}.sqlite`);
+      buildVolume(path, shape.oldNames);
+      const legacy = new DatabaseSync(path);
+      legacy.exec(`
+        ALTER TABLE warden_candidate_deliveries DROP COLUMN outcome;
+        ALTER TABLE warden_candidate_deliveries DROP COLUMN outcome_at;
+        ALTER TABLE warden_candidate_deliveries DROP COLUMN outcome_source;
+        ALTER TABLE transformer_adaptive_deliveries DROP COLUMN outcome;
+        ALTER TABLE transformer_adaptive_deliveries DROP COLUMN outcome_at;
+        ALTER TABLE transformer_adaptive_deliveries DROP COLUMN outcome_source;
+      `);
+      legacy.close();
+
+      const migrated = boot(path);
+      const fresh = boot(join(newDir(`rename-${shape.label}-fresh`), "fresh.sqlite"));
+      expect(dumpSchema(migrated)).toEqual(dumpSchema(fresh));
+      expect(tableExists(migrated, "warden_candidate_deliveries")).toBe(false);
+      expect(tableExists(migrated, "transformer_adaptive_deliveries")).toBe(false);
+      expect(
+        migrated.raw
+          .prepare("SELECT outcome, outcome_at, outcome_source FROM fettler_candidate_deliveries WHERE id = 'del1'")
+          .get(),
+      ).toEqual({ outcome: null, outcome_at: null, outcome_source: null });
+      expect(
+        migrated.raw
+          .prepare("SELECT outcome, outcome_at, outcome_source FROM regauge_adaptive_deliveries WHERE id = 'adel1'")
+          .get(),
+      ).toEqual({ outcome: null, outcome_at: null, outcome_source: null });
+    }
+  });
+
   it("leaves the exact current predecessor rename startup with no pending old tables", () => {
     const path = join(newDir("rename-predecessor-rollback"), "rollback.sqlite");
     buildVolume(path, new Set(NEW_TABLES));
