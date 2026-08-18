@@ -79,6 +79,49 @@ describe("policy engine", () => {
     expect(d.labels).toContain("needs-two-reviewers");
   });
 
+  it("does not map an auth.ts finding onto an unrelated notauth.ts edit", () => {
+    const draft = {
+      ...baseDraft,
+      fileEdits: [{ path: "src/notauth.ts", original: "a", updated: "b" }],
+    };
+    const d = evaluatePolicy(draft, [
+      {
+        filePath: "auth.ts",
+        lineStart: 1,
+        lineEnd: 1,
+        symbol: "config",
+        confidence: "low",
+        evidence: "unrelated",
+        relatedOps: [],
+      },
+    ]);
+    // The edit has no finding of its own; the low-confidence auth.ts finding must not be mapped
+    // onto src/notauth.ts (which merely ends in "auth.ts") and suppress it below minConfidenceForEdit.
+    expect(d.allowedEdits.map((e) => e.path)).toEqual(["src/notauth.ts"]);
+    expect(d.allowPr).toBe(true);
+  });
+
+  it("still maps a genuinely matching finding by path-segment suffix", () => {
+    const draft = {
+      ...baseDraft,
+      fileEdits: [{ path: "src/auth.ts", original: "a", updated: "b" }],
+    };
+    const d = evaluatePolicy(draft, [
+      {
+        filePath: "auth.ts",
+        lineStart: 1,
+        lineEnd: 1,
+        symbol: "config",
+        confidence: "low",
+        evidence: "unrelated",
+        relatedOps: [],
+      },
+    ]);
+    // Relative-vs-absolute tolerance preserved: a low-confidence finding on this very file
+    // (auth.ts vs src/auth.ts) still maps and suppresses the edit.
+    expect(d.allowedEdits).toHaveLength(0);
+  });
+
   it("filterFindingsByPolicy drops low confidence and blocked paths", () => {
     const f = filterFindingsByPolicy([
       {

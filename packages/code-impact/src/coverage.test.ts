@@ -74,6 +74,26 @@ describe("evidence coverage channel — clean vs gaps vs not-analyzed", () => {
     expect(report.overallConfidence).toBe("unknown");
   });
 
+  it("partial (unresolved first-party import) + empty = provenance gap, unknown", async () => {
+    // A genuinely-unresolvable first-party Python import means the provider
+    // reachability graph is missing edges, so a match demoted for being
+    // unreachable may be a false demote. That is a real coverage gap: an empty
+    // result here must read as "no KNOWN impact" (unknown), never as the
+    // confident "no impact" a demoted-to-zero provenance result would otherwise
+    // report with `basis: analyzed` and no gaps.
+    const dir = tempRepo({
+      "app/__init__.py": "",
+      "app/main.py": "from app.missing import thing\n\n\ndef run():\n    return thing\n",
+    });
+    const report = await analyzeImpact(dir, UNMATCHED_SURFACE, {
+      index: buildIndex(dir),
+    });
+    expect(report.sites).toHaveLength(0);
+    expect(report.coverage?.basis).toBe("partial");
+    expect(report.coverage?.gaps.map((g) => g.reason)).toContain("query_truncated");
+    expect(report.overallConfidence).toBe("unknown");
+  });
+
   it("not_analyzed (no analyzable source) + empty = no information at all (unknown)", async () => {
     const dir = tempRepo({ "README.md": "# docs only, no code\n" });
     const report = await analyzeImpact(dir, UNMATCHED_SURFACE, {
