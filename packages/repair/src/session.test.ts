@@ -323,8 +323,11 @@ describe("repair session", () => {
       });
 
       expect(result.ok).toBe(false);
-      // The protected write is silently skipped, so the attempt yields no edits.
-      expect(result.stopReason).toBe("no_edits");
+      // The injection targets .env, which was never shown to the model as a
+      // slice, so slice-scoping rejects it at the plan boundary: the proposal
+      // yields no grounded action (the apply-layer denylist remains as a second
+      // line of defense). Either way, no edit is ever produced.
+      expect(result.stopReason).toBe("no_actions");
       expect(result.edits).toEqual([]);
       // The protected file is untouched: original preserved, injection absent.
       const envAfter = readFileSync(join(dir, ".env"), "utf8");

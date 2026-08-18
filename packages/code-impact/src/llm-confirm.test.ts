@@ -154,6 +154,53 @@ describe("llm confirm", () => {
     expect(body).toContain("[REDACTED_DATABASE_URL]");
   });
 
+  it("does not egress to the public OpenAI default under local_only", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.MENDPOINT_MODEL_EGRESS = "local_only";
+    delete process.env.OPENAI_API_BASE;
+    delete process.env.XAI_API_KEY;
+    const staticResult: ConfirmedImpact = {
+      filePath: "src/a.ts",
+      lineStart: 1,
+      lineEnd: 1,
+      symbol: "amount_cents",
+      confidence: "medium",
+      evidence: "amount_cents",
+      impactType: "field_access",
+      surfaceIds: ["s1"],
+      relatedOps: ["request_field_renamed"],
+      confirmationPath: "static",
+    };
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    // The public api.openai.com default fails the egress check; the lane fails
+    // closed to the static result without sending any slice.
+    const result = await llmConfirmLive(ctx({}), surfaces, staticResult, createBudget(1));
+    expect(result).toEqual(staticResult);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("still calls a loopback base URL under local_only", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.MENDPOINT_MODEL_EGRESS = "local_only";
+    process.env.OPENAI_API_BASE = "http://127.0.0.1:9000/v1";
+    delete process.env.XAI_API_KEY;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        affected: true,
+        confidence: "high",
+        impactType: "field_access",
+        rationale: "affected",
+      }) } }],
+    })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await llmConfirmLive(ctx({}), surfaces, null, createBudget(1));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result?.confirmationPath).toBe("hybrid_llm");
+  });
+
   it("settles a noncooperative provider call at the configured timeout", async () => {
     process.env.OPENAI_API_KEY = "test-key";
     process.env.LLM_CONFIRM_TIMEOUT_MS = "10";

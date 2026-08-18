@@ -105,11 +105,11 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     );
   } else if (egress.violation === "model_egress_local_only_violation") {
     errors.push(
-      "MENDPOINT_MODEL_EGRESS=local_only forbids an external model endpoint; LLM_AGENT_URL must resolve to a private, loopback, link-local, or allowlisted host",
+      "MENDPOINT_MODEL_EGRESS=local_only forbids an external model endpoint; every configured model endpoint (LLM_AGENT_URL, LLM_REPAIR_URL, or the selected provider base URL) must resolve to a private, loopback, link-local, or allowlisted host",
     );
   } else if (egress.violation === "warden_model_endpoint_invalid") {
     errors.push(
-      "LLM_AGENT_URL must be a valid URL when MENDPOINT_MODEL_EGRESS=local_only",
+      "Each configured model endpoint (LLM_AGENT_URL, LLM_REPAIR_URL) must be a valid URL when MENDPOINT_MODEL_EGRESS=local_only",
     );
   }
 

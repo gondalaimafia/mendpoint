@@ -221,6 +221,56 @@ export function parseVerificationCommand(
   return undefined;
 }
 
+/**
+ * The config/manifest surface each verification profile trusts. A repair action
+ * that rewrites one of these could make a session verify its own unrelated edits
+ * (the sharp case: rewriting package.json's "test" script so any change
+ * "passes"), so the session marks them never-touch for the active profiles.
+ */
+const VERIFIER_PROFILE_PROTECTED_PATHS: Readonly<
+  Record<VerificationInvocation["profile"], readonly string[]>
+> = {
+  "npm-test": ["package.json"],
+  "npm-build": ["package.json"],
+  "npm-typecheck": ["package.json"],
+  "npm-lint": ["package.json"],
+  // node-check protects the discovered check file itself, resolved below.
+  "node-check": [],
+  pytest: ["pytest.ini", "conftest.py", "setup.cfg", "pyproject.toml", "tox.ini"],
+  "go-test": ["go.mod", "go.sum"],
+  "cargo-test": ["Cargo.toml", "Cargo.lock"],
+  "maven-test": ["pom.xml"],
+  "gradle-test": [
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "settings.gradle.kts",
+    "gradlew",
+    "gradlew.bat",
+  ],
+  rspec: [".rspec", "Gemfile", "Gemfile.lock", "spec/spec_helper.rb", "spec/rails_helper.rb"],
+};
+
+/**
+ * Repo-relative paths whose integrity a verification command depends on, so a
+ * repair session can refuse to let a proposed edit rewrite the file that defines
+ * its own verification and thereby pass on unrelated changes. Covers every
+ * supported verification profile: node-check protects the discovered check file;
+ * every other profile protects its config/manifest surface. An unrecognized
+ * command contributes nothing (the never-touch set is only augmented here, never
+ * relaxed).
+ */
+export function verifierProtectedPaths(command: string, repoRoot: string): string[] {
+  const nodeCheck = command
+    .trim()
+    .replace(/\s+/g, " ")
+    .match(/^node (check\.(?:mjs|cjs|js))$/);
+  if (nodeCheck) return [nodeCheck[1]!];
+  const invocation = parseVerificationCommand(command, repoRoot);
+  if (!invocation) return [];
+  return [...VERIFIER_PROFILE_PROTECTED_PATHS[invocation.profile]];
+}
+
 export function validateVerificationCommands(
   commands: string[],
   repoRoot: string,
