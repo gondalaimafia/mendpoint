@@ -30,6 +30,18 @@ function parseJsonNotes(notes?: string): Record<string, unknown> {
 }
 
 /**
+ * Truncate a formatted graph result for tool output without silently dropping
+ * the coverage statement. formatQueryForPlanner renders coverage directly under
+ * the summary, so a head-truncation keeps it; when the body is cut we append an
+ * explicit marker so a caller can never mistake a clipped result for a full one.
+ */
+function truncateGraphMarkdown(md: string, limit: number): string {
+  if (md.length <= limit) return md;
+  const marker = "\n[graph result truncated for tool output; coverage shown above]";
+  return md.slice(0, Math.max(0, limit - marker.length)) + marker;
+}
+
+/**
  * Graph-backed tools fail closed without a tenant scope: rather than read the
  * global cross-tenant graph, they refuse and surface a structured error.
  */
@@ -178,7 +190,7 @@ export function runSpecialistTool(
             action: step.action,
             providerSlug: slug,
             consumers: n,
-            markdown: formatQueryForPlanner(q).slice(0, 600),
+            markdown: truncateGraphMarkdown(formatQueryForPlanner(q), 600),
           }),
           error:
             requireConsumers && n === 0
@@ -206,7 +218,7 @@ export function runSpecialistTool(
       const q = runGraphQuery(getGraphLearnDb(), (meta.query as never) ?? { op }, scope);
       return {
         ok: true,
-        output: formatQueryForPlanner(q).slice(0, 1200),
+        output: truncateGraphMarkdown(formatQueryForPlanner(q), 1200),
       };
     }
 
