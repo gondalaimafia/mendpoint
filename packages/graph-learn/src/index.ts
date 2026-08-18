@@ -197,3 +197,6 @@ export {
   type AbReport,
   type AbArm,
 } from "./ab.js";
+
+export * from "./software-intelligence.js";
+export * from "./software-intelligence-benchmark.js";

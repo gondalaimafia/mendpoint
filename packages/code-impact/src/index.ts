@@ -11,6 +11,14 @@ import {
   writeIndex,
   defaultIndexPath,
 } from "@mendpoint/codebase-index";
+import { createHash } from "node:crypto";
+import {
+  compileFettlerImpactContext,
+  getSoftwareGraphHead,
+  publishSoftwareGraphVersion,
+  queryFettlerEndpointImpact,
+  type GraphLearnDb,
+} from "@mendpoint/graph-learn";
 import type {
   AmbiguousChange,
   Confidence,
@@ -41,6 +49,10 @@ import { confirmImpacts, partitionByConfidence } from "./confirm.js";
 import type { LlmConfirmObserver } from "./confirm.js";
 import { detectGeneratedFiles } from "./generated.js";
 import { detectVendoredFiles } from "./vendored.js";
+import {
+  materializeFettlerSoftwareGraph,
+  type FettlerSoftwareGraphMaterializationInput,
+} from "./software-graph-materializer.js";
 
 export { detectGeneratedFiles, isGeneratedFile } from "./generated.js";
 export { detectVendoredFiles } from "./vendored.js";
@@ -571,3 +583,87 @@ export async function analyzeRepoAsync(
 export function reportToFindings(report: ImpactReport): ImpactFinding[] {
   return report.sites.map(confirmedToFinding);
 }
+
+export type AnalyzeImpactWithSoftwareGraphOptions = Omit<
+  FettlerSoftwareGraphMaterializationInput,
+  "index" | "endpoint" | "parentVersionId" | "providerEndpointSurfaceCount" |
+  "repositoryRevision" | "repositorySnapshotId"
+> & {
+  graphDb: GraphLearnDb;
+  repositoryRevision?: string;
+  repositorySnapshotId?: string;
+  providerEvidenceRefs?: string[];
+  maxContextBytes: number;
+  impact?: AnalyzeOptions;
+};
+
+/**
+ * Build one repository index, preserve the existing ImpactReport behavior, and
+ * publish the relationship evidence needed to answer the same Fettler question
+ * from one immutable graph version.
+ */
+export async function analyzeImpactWithSoftwareGraph(
+  repoRoot: string,
+  surfaces: ImpactableSurface[],
+  options: AnalyzeImpactWithSoftwareGraphOptions,
+) {
+  const endpointSurfaces = surfaces.filter((surface) => surface.path);
+  const endpointSurface = endpointSurfaces[0];
+  if (!endpointSurface?.path) throw new Error("software_graph_endpoint_surface_required");
+  const sdkContext = sdkContextFromSurfaces(surfaces, options.impact?.sdkHints);
+  const index = buildIndexIncremental(repoRoot, null, { sdkContext });
+  if (options.impact?.persistIndex) writeIndex(index, defaultIndexPath(repoRoot));
+  const impactReport = await analyzeImpact(repoRoot, surfaces, {
+    ...options.impact,
+    index,
+    persistIndex: false,
+  });
+  const repositoryRevision = options.repositoryRevision ?? createHash("sha256")
+    .update(
+      index.files
+        .map((file) => `${file.path}\0${file.contentHash}`)
+        .sort()
+        .join("\n"),
+      "utf8",
+    )
+    .digest("hex");
+  const repositorySnapshotId = options.repositorySnapshotId ?? `repository-snapshot:${repositoryRevision}`;
+  const head = getSoftwareGraphHead(
+    options.graphDb,
+    options.tenantId,
+    options.repositoryId,
+    options.providerId,
+  );
+  const method = (endpointSurface.method ?? "ANY").toUpperCase();
+  const publication = materializeFettlerSoftwareGraph({
+    ...options,
+    index,
+    repositoryRevision,
+    repositorySnapshotId,
+    parentVersionId: head?.versionId,
+    providerEndpointSurfaceCount: endpointSurfaces.length,
+    endpoint: {
+      canonicalKey: `${method} ${endpointSurface.path}`,
+      method,
+      path: endpointSurface.path,
+      sdkMethodPaths: [...sdkContext.methodPaths],
+      evidenceRefs: options.providerEvidenceRefs?.length
+        ? options.providerEvidenceRefs
+        : [`provider-snapshot:${options.providerSnapshotId}:surface:${endpointSurface.id}`],
+    },
+  });
+  const graphVersion = publishSoftwareGraphVersion(options.graphDb, publication);
+  const graphImpact = queryFettlerEndpointImpact(options.graphDb, {
+    tenantId: options.tenantId,
+    repositoryId: options.repositoryId,
+    graphVersionId: graphVersion.versionId,
+    endpointKey: publication.entities.find((entity) => entity.kind === "endpoint")!.canonicalKey,
+    maxHops: Math.min(12, options.maxCallerHops + 2),
+    maxEntities: 500,
+    maxRelationships: 1_000,
+  });
+  const context = compileFettlerImpactContext(graphImpact, { maxBytes: options.maxContextBytes });
+  return { impactReport, graphVersion, graphImpact, context };
+}
+
+export * from "./software-graph-materializer.js";
