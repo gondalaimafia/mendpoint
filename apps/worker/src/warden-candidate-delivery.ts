@@ -327,8 +327,13 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
           now: completedAt,
           env: input.artifactEnv ?? process.env,
         });
-      } catch {
-        /* best-effort: governed learning admission never affects delivery */
+      } catch (error) {
+        // Best-effort: governed learning admission never affects delivery, but a
+        // swallowed failure must still be diagnosable.
+        console.error(
+          `governed learning admission failed delivery=${delivery.id} run=${delivery.runId}`,
+          error instanceof Error ? error.message : error,
+        );
       }
       return Object.freeze({ status: "delivered" as const, runId: delivery.runId, deliveryId: delivery.id,
         pullRequestNumber: remote.number, pullRequestUrl: remote.url, commitSha: remote.commitSha });
