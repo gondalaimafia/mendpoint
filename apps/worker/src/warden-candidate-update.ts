@@ -53,10 +53,22 @@ function files(artifact: Record<string, unknown>): ExactDraftUpdateInput["files"
   return Object.freeze(artifact.files.map((raw) => {
     if (!raw || typeof raw !== "object") throw new Error("warden_ci_update_artifact_invalid");
     const file = raw as Record<string, unknown>;
-    if (typeof file.path !== "string" || typeof file.after !== "string" || typeof file.afterSha256 !== "string") {
-      throw new Error("warden_ci_update_file_deletion_unsupported");
-    }
+    if (typeof file.path !== "string") throw new Error("warden_ci_update_artifact_invalid");
     const entry = byPath.get(file.path);
+    if (file.after === null && file.afterSha256 === null) {
+      if (entry || typeof file.before !== "string" || typeof file.beforeSha256 !== "string") {
+        throw new Error("warden_ci_update_artifact_invalid");
+      }
+      const before = Buffer.from(file.before, "base64");
+      const beforeDigest = `sha256:${createHash("sha256").update(before).digest("hex")}`;
+      if (before.toString("base64") !== file.before || beforeDigest !== file.beforeSha256 || before.includes(0)) {
+        throw new Error("warden_ci_update_artifact_digest_mismatch");
+      }
+      return Object.freeze({ path: file.path, delete: true as const });
+    }
+    if (typeof file.after !== "string" || typeof file.afterSha256 !== "string") {
+      throw new Error("warden_ci_update_artifact_invalid");
+    }
     const bytes = Buffer.from(file.after, "base64");
     const actual = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
     if (!entry || actual !== file.afterSha256 || actual !== entry.sha256 || bytes.byteLength !== entry.size ||

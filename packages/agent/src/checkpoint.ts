@@ -273,6 +273,7 @@ function validateStep(value: WardenCheckpointStep): void {
     "search",
     "write_file",
     "replace_in_file",
+    "delete_file",
     "run_command",
     "http_probe",
     "finish",
@@ -809,7 +810,8 @@ function advanceWardenCheckpointEnvelope(
   }
   const appendedSteps = nextPayload.steps.slice(current.steps.length);
   const successfulMutations = appendedSteps.filter((step) =>
-    step.ok && (step.tool === "write_file" || step.tool === "replace_in_file")
+    step.ok && (step.tool === "write_file" || step.tool === "replace_in_file" ||
+      step.tool === "delete_file")
   );
   const modelCallDelta = nextPayload.counters.modelCalls - current.counters.modelCalls;
   const modelSuccessDelta = nextPayload.counters.modelSuccessfulCalls -

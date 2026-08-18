@@ -259,6 +259,38 @@ describe("github app runtime", () => {
     expect(createBlob).not.toHaveBeenCalled();
   });
 
+  it("does not mistake a failed App deletion read for an applied recovery", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const delivery = new GitHubAppDelivery(
+      { appId: "99", privateKeyPem: pem },
+      42,
+    );
+    const createBlob = vi.fn();
+    const fakeOctokit = {
+      git: {
+        getRef: async () => ({ data: { object: { sha: "base" } } }),
+        createRef: async () => {
+          throw new Error("Reference already exists");
+        },
+        createBlob,
+      },
+      repos: {
+        getContent: async () => {
+          throw Object.assign(new Error("service unavailable"), { status: 503 });
+        },
+      },
+    };
+    (delivery as unknown as { octokit: () => Promise<typeof fakeOctokit> }).octokit =
+      async () => fakeOctokit;
+
+    await delivery.createBranch("acme", "shop", "mendpoint/change", "trunk");
+    await expect(delivery.commitFiles("acme", "shop", "mendpoint/change", "Fix", [
+      { path: "src/obsolete.ts", delete: true },
+    ])).rejects.toThrow(/human reconciliation required/);
+    expect(createBlob).not.toHaveBeenCalled();
+  });
+
   it("uses installation authentication for exact draft delivery evidence", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();

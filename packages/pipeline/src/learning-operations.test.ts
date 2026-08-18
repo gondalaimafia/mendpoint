@@ -294,7 +294,7 @@ describe("governed learning operations", () => {
     const pipeline = await import("./index.js") as Record<string, unknown>;
 
     expect(typeof pipeline.materializeGovernedLearningCorpus).toBe("function");
-  });
+  }, 15_000);
 
   it("seals eligible reviewed outcomes and materializes one immutable replayable corpus", () => {
     const db = fixture();

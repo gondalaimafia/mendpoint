@@ -37,8 +37,10 @@ function exactDraftCommitSha(input: ExactDraftDeliveryInput): string {
         message: input.commitMessage,
         date: input.commitDate,
         tree: [...input.files]
-          .map((file) => ({ path: file.path, content: file.content, mode: file.mode }))
-          .sort((a, b) => a.path.localeCompare(b.path)),
+          .map((file) => "delete" in file
+            ? { path: file.path, delete: true }
+            : { path: file.path, content: file.content, mode: file.mode })
+          .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
       }),
       "utf8",
     )
@@ -61,10 +63,9 @@ export function gitlabAsExactDraftDelivery(delivery: GitLabDelivery): ExactDraft
   return {
     async deliverExactDraft(rawInput: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult> {
       const input = validateExactDraftDeliveryInput(rawInput);
-      const files: FileEdit[] = input.files.map((file) => ({
-        path: file.path,
-        content: file.content,
-      }));
+      const files: FileEdit[] = input.files.map((file) => "delete" in file
+        ? { path: file.path, delete: true }
+        : { path: file.path, content: file.content });
       await delivery.createBranch(input.owner, input.repo, input.branch, input.baseBranch);
       const committedSha = await delivery.commitFiles(
         input.owner,

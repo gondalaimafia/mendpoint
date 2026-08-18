@@ -284,6 +284,42 @@ describe("octokit real delivery", () => {
     expect(createBlob).not.toHaveBeenCalled();
   });
 
+  it("does not mistake a failed deletion read for an applied recovery", async () => {
+    const delivery = new OctokitGitHubDelivery("test-token");
+    const createBlob = vi.fn();
+    (
+      delivery as unknown as {
+        octokit: {
+          git: {
+            getRef: () => Promise<{ data: { object: { sha: string } } }>;
+            createRef: () => Promise<never>;
+            createBlob: typeof createBlob;
+          };
+          repos: { getContent: () => Promise<never> };
+        };
+      }
+    ).octokit = {
+      git: {
+        getRef: async () => ({ data: { object: { sha: "base" } } }),
+        createRef: async () => {
+          throw new Error("Reference already exists");
+        },
+        createBlob,
+      },
+      repos: {
+        getContent: async () => {
+          throw Object.assign(new Error("service unavailable"), { status: 503 });
+        },
+      },
+    };
+
+    await delivery.createBranch("acme", "shop", "mendpoint/change");
+    await expect(delivery.commitFiles("acme", "shop", "mendpoint/change", "Fix", [
+      { path: "src/obsolete.ts", delete: true },
+    ])).rejects.toThrow(/human reconciliation required/);
+    expect(createBlob).not.toHaveBeenCalled();
+  });
+
   it("continues a lost delivery when the existing branch already has the intended patch", async () => {
     const delivery = new OctokitGitHubDelivery("test-token");
     const createBlob = vi.fn();
@@ -383,6 +419,22 @@ describe("octokit real delivery", () => {
 
     expect(octokit.git.createTree).toHaveBeenCalledWith(expect.objectContaining({
       tree: [expect.objectContaining({ path: "bin/check", mode: "100755", type: "blob" })],
+    }));
+  });
+
+  it("deletes an approved tracked file with an exact null tree entry", async () => {
+    const delivery = new OctokitGitHubDelivery("test-token");
+    const octokit = exactOctokit();
+    (delivery as unknown as { octokit: typeof octokit }).octokit = octokit;
+
+    await delivery.deliverExactDraft({
+      ...EXACT_DRAFT,
+      files: [{ path: "src/obsolete.ts", delete: true } as never],
+    });
+
+    expect(octokit.git.createBlob).not.toHaveBeenCalled();
+    expect(octokit.git.createTree).toHaveBeenCalledWith(expect.objectContaining({
+      tree: [{ path: "src/obsolete.ts", mode: "100644", type: "blob", sha: null }],
     }));
   });
 

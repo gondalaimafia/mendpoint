@@ -22,7 +22,7 @@ afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-function fixture() {
+function fixture(deleted = false) {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-warden-candidate-api-"));
   roots.push(root);
   const source = join(root, "source");
@@ -31,7 +31,7 @@ function fixture() {
   mkdirSync(source, { recursive: true });
   mkdirSync(candidate, { recursive: true });
   writeFileSync(join(source, "client.js"), "export const path = '/old';\n");
-  writeFileSync(join(candidate, "client.js"), "export const path = '/new';\n");
+  if (!deleted) writeFileSync(join(candidate, "client.js"), "export const path = '/new';\n");
   const evidenceRoot = join(root, "data", "warden-evidence", "tenant-a");
   mkdirSync(evidenceRoot, { recursive: true });
   const entry = (tree: string) => {
@@ -43,11 +43,11 @@ function fixture() {
       executable: (lstatSync(join(tree, "client.js")).mode & 0o111) !== 0,
     };
   };
-  const treeDigest = (value: ReturnType<typeof entry>) => `sha256:${createHash("sha256")
-    .update(JSON.stringify([{ executable: value.executable, path: value.path, sha256: value.sha256, size: value.size }]))
+  const treeDigest = (value: ReturnType<typeof entry> | null) => `sha256:${createHash("sha256")
+    .update(JSON.stringify(value ? [{ executable: value.executable, path: value.path, sha256: value.sha256, size: value.size }] : []))
     .digest("hex")}`;
   const sourceEntry = entry(source);
-  const candidateEntry = entry(candidate);
+  const candidateEntry = deleted ? null : entry(candidate);
   const sourceDigest = treeDigest(sourceEntry);
   const candidateDigest = treeDigest(candidateEntry);
   const manifest = join(tenantRoot, "manifest.json");
@@ -55,7 +55,7 @@ function fixture() {
   writeFileSync(manifest, JSON.stringify({
     schemaVersion: 1,
     source: { digest: sourceDigest },
-    candidate: { digest: candidateDigest, entries: [candidateEntry] },
+    candidate: { digest: candidateDigest, entries: candidateEntry ? [candidateEntry] : [] },
     changedPaths: ["client.js"],
   }));
   writeFileSync(evidence, JSON.stringify({
@@ -300,6 +300,31 @@ describe("Warden approval sealing", () => {
       tenantId: "tenant-a", path: sealed.path, sha256: sealed.sha256,
       env: { MENDPOINT_DATA_DIR: join(value.root, "data") },
     })).toMatchObject({ schemaVersion: 4, reviewEvidence: { schemaVersion: 2 } });
+  });
+
+  it("returns and seals an exact approved deletion with an absent post-state", async () => {
+    const value = fixture(true);
+    const env = { MENDPOINT_DATA_DIR: join(value.root, "data") };
+    const result = await readWardenCandidate({
+      tenantId: "tenant-a", repoPath: value.source, status: "candidate_ready",
+      resultJson: value.resultJson, env,
+    });
+    expect(result.files).toEqual([expect.objectContaining({
+      path: "client.js", before: expect.stringContaining("/old"), after: null,
+      beforeSha256: expect.stringMatching(/^[a-f0-9]{64}$/), afterSha256: null,
+    })]);
+    const seal = await sealWardenCandidateApproval({
+      tenantId: "tenant-a", repoPath: value.source, status: "candidate_ready",
+      resultJson: value.resultJson, env, ...REVIEW_BINDING,
+    });
+    const approval = readWardenApprovalArtifact({
+      tenantId: "tenant-a", path: seal.path, sha256: seal.sha256, env,
+    });
+    expect(approval.files).toEqual([expect.objectContaining({
+      path: "client.js", before: expect.any(String), after: null,
+      beforeSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/), afterSha256: null,
+    })]);
+    expect(approval.candidate).toMatchObject({ entries: [] });
   });
 
   it("rejects rewritten version two edit authority even when its JSON remains valid", async () => {

@@ -21,7 +21,7 @@ const opened: Array<{ db: AppDb; root: string }> = [];
 const sha = (value: string) => value.repeat(40);
 const digest = (value: string) => `sha256:${value.repeat(64)}`;
 
-function fixture(expectedFeedbackDigest: string | null = null) {
+function fixture(expectedFeedbackDigest: string | null = null, deleted = false) {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-warden-update-"));
   const db = createDb(join(root, "worker.sqlite"));
   opened.push({ db, root });
@@ -49,9 +49,14 @@ function fixture(expectedFeedbackDigest: string | null = null) {
   const afterSha256 = `sha256:${createHash("sha256").update("x").digest("hex")}`;
   const artifact = { tenantId: "tenant-a", repositoryId: "repo-a", snapshotId: "snapshot-repair-a",
     baseBranch: "main", expectedBaseRevision: sha("d"), reviewerPrincipalId: "principal-a",
-    rationale: "Approve CI repair", candidate: { entries: [{ path: "src/a.ts", sha256: afterSha256,
-      executable: false, size: 1 }] }, files: [{ path: "src/a.ts", after: Buffer.from("x").toString("base64"),
-      afterSha256 }] };
+    rationale: "Approve CI repair", candidate: { entries: deleted ? [] : [{ path: "src/a.ts", sha256: afterSha256,
+      executable: false, size: 1 }] }, files: [{ path: "src/a.ts", after: deleted
+        ? null
+        : Buffer.from("x").toString("base64"), afterSha256: deleted ? null : afterSha256,
+      ...(deleted ? {
+        before: Buffer.from("old").toString("base64"),
+        beforeSha256: `sha256:${createHash("sha256").update("old").digest("hex")}`,
+      } : {}) }] };
   return { db, root, update, job, artifact };
 }
 
@@ -107,6 +112,20 @@ describe("Warden candidate exact draft update", () => {
       resolveRepository: async () => ({ owner: "acme", repo: "service" }),
       now: () => "2026-08-13T12:05:00.000Z" })).rejects.toThrow("warden_ci_update_not_authorized");
     expect(updateExactDraft).not.toHaveBeenCalled();
+  });
+
+  it("updates the same draft with an exact approved file deletion", async () => {
+    const { db, job, artifact } = fixture(null, true);
+    const updateExactDraft = vi.fn(async () => ({ number: 17, url: "https://github.com/acme/service/pull/17",
+      branch: "mendpoint/warden-a", previousHeadSha: sha("d"), commitSha: sha("f"), draft: true as const }));
+
+    await expect(runWardenCandidateUpdate({ db, job, updateExactDraft,
+      reconcileExactDraftUpdate: vi.fn(), readApprovalArtifact: () => artifact,
+      resolveRepository: async () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:05:00.000Z" })).resolves.toMatchObject({ status: "updated" });
+    expect(updateExactDraft).toHaveBeenCalledWith(expect.objectContaining({
+      expectedHeadSha: sha("d"), files: [{ path: "src/a.ts", delete: true }],
+    }));
   });
 
   it("reobserves and rejects edited or dismissed review feedback before the branch mutation", async () => {

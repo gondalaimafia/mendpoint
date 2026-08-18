@@ -1853,9 +1853,9 @@ Hosted preflight review: workflow run `31824565761` passed on exact revision `24
 - [x] Run focused tests, affected workspace tests and typechecks, workflow validation, dependency audit, and diff integrity.
 - [ ] Merge through protected checks and rerun the read only Fly preflight before any activation mutation.
 
-Acceptance: the protected activation workflow can provision private checkpoint storage inside Fly and the Regauge runtime accepts Fly's standard Tigris secret names. Conflicting custom and standard aliases fail closed. No S3 credential is copied through GitHub, printed, or stored outside Fly.
+Acceptance: an organization-authorized bootstrap can provision private checkpoint storage directly into the dedicated Fly app, while the protected activation workflow verifies the exact staged or deployed Tigris secret names using only an app-scoped token. The Regauge runtime accepts Fly's standard Tigris aliases, conflicting custom and standard aliases fail closed, and no S3 credential is copied through GitHub.
 
-Review: official Fly documentation and the installed CLI confirm `fly storage create --app ... --org ... --yes` provisions private Tigris object storage and injects `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, `BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` directly into the app. The runtime now resolves those standard variables through one immutable configuration shared by production validation and execution; any conflicting custom alias fails closed. Full Worker tests pass 285 of 285, the workflow suite passes 3 of 3, Worker typecheck and the 50-page production build pass, every Actions dependency is pinned, the production dependency audit reports zero vulnerabilities, Fly configuration validation passes, and diff integrity is clean.
+Review: official Fly documentation and the installed CLI confirm `fly storage create --app ... --org ... --yes` provisions private Tigris object storage and injects `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, `BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` directly into the app. The protected workflow does not receive organization-wide add-on authority; it verifies those five secret names through the app-scoped Fly API before deployment. The runtime resolves the standard variables through one immutable configuration shared by production validation and execution, and any conflicting custom alias fails closed. Full Worker tests pass 285 of 285, the workflow suite passes 3 of 3, Worker typecheck and the 50-page production build pass, every Actions dependency is pinned, the production dependency audit reports zero vulnerabilities, Fly configuration validation passes, and diff integrity is clean.
 
 ### Catalog feed poll release hotfix: 2026-08-14
 
@@ -1994,14 +1994,16 @@ Review: the existing candidate page was statically limited to review evidence ve
 
 Objective: let Fettler remove an obsolete tracked source file as one evidence-bound mutation and deliver that deletion in the same human-reviewed, replay-safe draft workflow as file writes.
 
-- [ ] Add red tests for source-observed deletion, protected-path rejection, rollback restoration, runtime replay, and stale-fence rejection.
-- [ ] Add red tests proving candidate manifests and approval artifacts retain the deleted file preimage, absent post-state, precise intent, and verifier evidence.
-- [ ] Add red tests for initial GitHub draft deletion, review-feedback update deletion, exact response-loss reconciliation, and omitted or extra tree changes failing closed.
-- [ ] Implement the smallest end-to-end delete-file operation without widening path, model, network, merge, or deploy authority.
-- [ ] Run focused suites, every workspace test and typecheck, the production build, GA gates, dependency audit, diff integrity, and independent P0/P1 review.
+- [x] Add red tests for source-observed deletion, protected-path rejection, rollback restoration, runtime replay, and stale-fence rejection.
+- [x] Add red tests proving candidate manifests and approval artifacts retain the deleted file preimage, absent post-state, precise intent, and verifier evidence.
+- [x] Add red tests for initial GitHub draft deletion, review-feedback update deletion, exact response-loss reconciliation, and omitted or extra tree changes failing closed.
+- [x] Implement the smallest end-to-end delete-file operation without widening path, model, network, merge, or deploy authority.
+- [x] Run focused suites, every workspace test and typecheck, the production build, GA gates, dependency audit, diff integrity, and independent P0/P1 review.
 - [ ] Merge through protected CI and verify the exact production revision.
 
 Acceptance: a model or deterministic planner may delete only an allowed, fully observed regular file with an authenticated version-one mutation intent bound to its exact digest. The checkpoint journal records the pre-state and authenticated absent post-state, takeover does not repeat an already-completed deletion, rollback restores the exact bytes and mode, review evidence states why the deletion is safe, and GitHub draft creation or update removes exactly that leaf while preserving every other tracked leaf. Human approval remains mandatory, and Fettler still cannot merge or deploy.
+
+Review: the operation now shares Fettler's existing containment, symlink, protected-path, observation, change-budget, intent, lease, checkpoint, verification, review, approval, and delivery authorities. Durable takeover replays the authenticated absent state without repeating the tool effect, and rollback retains the original bytes and executable mode. GitHub and GitLab initial drafts and same-draft review updates express deletion as an exact tree operation. A strict review found and closed two additional fail-closed boundaries: durable planning now uses the same path resolver as tool execution, and response-loss recovery treats only an authoritative 404 as proof of deletion rather than accepting transport or provider failures. Full affected Agent, GitHub, Worker, API, Eval, Pipeline, and ReGauge suites pass at bounded concurrency; every workspace typechecks; the production build, GA gates, production dependency audit, and diff integrity pass. The unconstrained Windows workspace run saturated process and filesystem timing budgets in unrelated tests; every reported case passed in its complete package or isolated bounded rerun.
 
 ## Governed model learning and post training: 2026-08-14
 
@@ -2083,3 +2085,19 @@ Acceptance: Codex and Claude have separate branch and worktree conventions, one 
 Review: main now requires the current pull request checks `test`, `release-gates`, `container-builds`, and `deployment-e2e`, dismisses stale reviews, requires resolved conversations, applies to administrators, and rejects force pushes and deletion without locking the branch. Approval count remains zero until an attributable reviewer integration is proven, preventing a sole-maintainer lockout while the documented human merge boundary remains in force. Claude JSON and Codex TOML parse, all local Markdown links resolve, the setup contains no credential material, the Markdown specification digest is `sha256:a62e1b0a7569b9599cf8b155d6489a99c11f47a892885981ced61c3a573f74c9`, and the 73-page PDF contains the Fettler and ReGauge product identities. All workspace tests, all workspace typechecks, the 50-page production build, product contract, public claims, action pinning, and product naming gates pass.
 
 Dogfood evidence: commit `8cca909` is pushed on `codex/141-dual-agent-setup`, and pull request `#142` closes issue `#141` under the new main protection. The review request is recorded at `https://github.com/gondalaimafia/mendpoint/pull/142#issuecomment-5319134808`. The trigger produced no attributable Claude acknowledgement, comment, or review during the bounded verification window, so Claude review automation remains an exact external integration blocker rather than a claimed capability. The pull request remains open and unmerged for human control.
+
+## Regauge protected production activation execution: 2026-08-17
+
+Objective: activate the dedicated Regauge pilot only for the previously authorized tenant, campaign, private repository, exact source revision, independent reviewer, and one draft pull request, then retain live model, readiness, recovery, soak, and containment evidence tied to the deployed source revision.
+
+- [x] Start from exact deployed main and verify the protected workflow source.
+- [x] Verify both authorized GitHub credentials are present by secret name without reading their values.
+- [x] Verify every required tenant, campaign, repository, installation, reviewer, model routing, region, classification, and cost binding from authoritative GitHub environment or repository state.
+- [x] Revalidate private repository ID `1319732323`, branch `codex/regauge-canary-baseline`, and revision `1f6b21665d68541c9f3c9dda81642485a66a6baa` immediately before activation.
+- [ ] Run the protected workflow with `REGAUGE_DRAFT_ONLY`, three live model repetitions, and a 300 second read only soak.
+- [ ] Prove one healthy coordinator and one uniquely identified worker on the exact workflow revision, with encrypted shared checkpoint storage ready.
+- [ ] Prove exactly one real GitHub draft against the authorized repository, no merge, no deployment, and no mutation outside the approved branch and repository.
+- [ ] Prove worker containment, restart or takeover recovery, bounded live model cost, readiness soak, and retained workflow artifacts.
+- [ ] Update requirement and public claim states only where retained production evidence is exact, then merge any evidence-only repository update through protected checks.
+
+Acceptance: no activation begins until the protected environment is complete and the read-only authority audit passes. Success requires the dedicated hostname to resolve, the exact source revision to be healthy, the live model lane to pass within budget, the authorized canary to create exactly one draft pull request, and the workflow to contain the worker after the evidence run. Any missing authority, source drift, reviewer mismatch, provider error, uncertain source-control result, or readiness failure must leave the run failed and mutation authority contained.
