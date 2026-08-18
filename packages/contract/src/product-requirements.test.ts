@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   canonicalTextSha256,
+  FOUNDATIONAL_REGISTER_SET,
   validateProductRequirements,
+  type RegisterSetDefinition,
 } from "./product-requirements.js";
 
 const ID = "ME-FND-001";
@@ -210,6 +212,161 @@ describe("product requirement validation", () => {
       code: "WORKSTREAM_EMPTY",
       subject: "FC-08",
       message: "declared workstream must own at least one requirement",
+    });
+  });
+});
+
+const SECOND_SET_ID = "ME-FET-015";
+
+const FIRST_SET: RegisterSetDefinition = {
+  ...FOUNDATIONAL_REGISTER_SET,
+  expectedIds: [ID],
+};
+
+const SECOND_SET: RegisterSetDefinition = {
+  key: "v3-platform",
+  title: "v3.0 platform baseline requirements",
+  requirementIdPattern: /^ME-(FET|REG|CGR)-[0-9]{3}$/,
+  gapIdPattern: /^(FET|REG|CGR)-[0-9]{3}$/,
+  expectedIds: [SECOND_SET_ID],
+};
+
+const TWO_SETS = [FIRST_SET, SECOND_SET];
+
+function secondSetRequirement() {
+  return {
+    id: SECOND_SET_ID,
+    closureGapId: "FET-015",
+    title: "Relationship materialization",
+    owner: "graph",
+    targetRelease: "warden-ga",
+    availability: "planned",
+    implementationStatus: "unimplemented",
+    claimState: "roadmap_only",
+    closureWorkstream: "FC-00",
+    acceptance: [
+      {
+        id: `${SECOND_SET_ID}-AC01`,
+        assertion: "Materialize stable provider to code relationships.",
+        evidence: [
+          {
+            id: `${SECOND_SET_ID}-AC01-EV01`,
+            type: "planned",
+            locator: `planned:${SECOND_SET_ID}`,
+          },
+        ],
+      },
+    ],
+    externalBlockers: null,
+  };
+}
+
+function multiSetManifest() {
+  const manifest = validManifest() as any;
+  manifest.additionalRegisterSets = [
+    {
+      key: "v3-platform",
+      closurePlan: {
+        source: "spec-v3.md",
+        auditedRevision: "abc1234",
+        requirementCount: 1,
+      },
+      requirements: [secondSetRequirement()],
+    },
+  ];
+  return manifest;
+}
+
+describe("multi-set product requirement validation", () => {
+  it("accepts a manifest whose additional register set is complete and keyed", () => {
+    expect(
+      validateProductRequirements(multiSetManifest(), { registerSets: TWO_SETS }),
+    ).toEqual([]);
+  });
+
+  it("leaves the foundational set unchanged: an unexpected foundational ID still fails closed", () => {
+    const manifest = multiSetManifest();
+    manifest.requirements.push({
+      ...structuredClone(manifest.requirements[0]),
+      id: "ME-FND-999",
+    });
+    const issues = validateProductRequirements(manifest, { registerSets: TWO_SETS });
+    expect(issues).toContainEqual({
+      code: "REQUIREMENT_UNEXPECTED",
+      subject: "ME-FND-999",
+      message: "requirement is not in the foundational register",
+    });
+  });
+
+  it("fails closed on an unknown ID inside the additional register set", () => {
+    const manifest = multiSetManifest();
+    manifest.additionalRegisterSets[0].requirements.push({
+      ...structuredClone(manifest.additionalRegisterSets[0].requirements[0]),
+      id: "ME-FET-999",
+      acceptance: [
+        {
+          id: "ME-FET-999-AC01",
+          assertion: "Unknown row.",
+          evidence: [{ id: "ME-FET-999-AC01-EV01", type: "planned", locator: "planned:x" }],
+        },
+      ],
+    });
+    manifest.additionalRegisterSets[0].closurePlan.requirementCount = 2;
+    const issues = validateProductRequirements(manifest, { registerSets: TWO_SETS });
+    expect(issues).toContainEqual({
+      code: "REQUIREMENT_UNEXPECTED",
+      subject: "ME-FET-999",
+      message: "requirement is not in the v3-platform register",
+    });
+  });
+
+  it("fails closed when a declared additional register set is absent", () => {
+    const manifest = multiSetManifest();
+    delete manifest.additionalRegisterSets;
+    const issues = validateProductRequirements(manifest, { registerSets: TWO_SETS });
+    expect(issues).toContainEqual({
+      code: "REGISTER_SET_MISSING",
+      subject: "v3-platform",
+      message: "declared register set is absent from the manifest",
+    });
+  });
+
+  it("rejects an additional register set whose key is not recognized", () => {
+    const manifest = multiSetManifest();
+    manifest.additionalRegisterSets[0].key = "made-up";
+    const issues = validateProductRequirements(manifest, { registerSets: TWO_SETS });
+    expect(issues).toContainEqual({
+      code: "REGISTER_SET_UNKNOWN",
+      subject: "made-up",
+      message: "register set key is not recognized",
+    });
+  });
+
+  it("requires provenance on every register set", () => {
+    const manifest = multiSetManifest();
+    manifest.additionalRegisterSets[0].closurePlan.source = "";
+    manifest.additionalRegisterSets[0].closurePlan.auditedRevision = "";
+    const issues = validateProductRequirements(manifest, { registerSets: TWO_SETS });
+    expect(issues).toContainEqual({
+      code: "CLOSURE_SOURCE",
+      subject: "additionalRegisterSets:v3-platform",
+      message: "closure plan source is required",
+    });
+    expect(issues).toContainEqual({
+      code: "CLOSURE_REVISION",
+      subject: "additionalRegisterSets:v3-platform",
+      message: "closure plan auditedRevision is required",
+    });
+  });
+
+  it("fails closed on a wrong count in the additional register set", () => {
+    const manifest = multiSetManifest();
+    manifest.additionalRegisterSets[0].closurePlan.requirementCount = 5;
+    const issues = validateProductRequirements(manifest, { registerSets: TWO_SETS });
+    expect(issues).toContainEqual({
+      code: "REQUIREMENT_COUNT",
+      subject: "additionalRegisterSets:v3-platform",
+      message: "closure plan count must equal 1",
     });
   });
 });

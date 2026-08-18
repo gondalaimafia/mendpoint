@@ -2,7 +2,7 @@
 
 Phase 1 of the Intelligence Ownership program. Analysis only; this document changes no code.
 
-- Canonical spec: `docs/product/mendpoint-product-platform-specification.md` (v2.0, ADR-0001). `npm run spec:check` reports `PRODUCT CONTRACT PASS: 84 requirements, spec 2.0`.
+- Canonical spec: `docs/product/mendpoint-product-platform-specification-v3.md` (v3.0, ADR-0004). `npm run spec:check` reports `PRODUCT CONTRACT PASS: 84 requirements, spec 2.0`.
 - Worktree analysed: `origin/main` at `fcec22e`.
 - Corpus of external evidence: `C:\Users\Talal\dev\oss-kinked\VALIDATION-REPORT.md` (35 kinked-clone cases against `1d3ae5a`).
 
