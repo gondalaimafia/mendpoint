@@ -47,6 +47,11 @@ kill_timeout = 30
   # See docs/SANDBOX_IMAGE.md ("Pin production to an immutable reference").
   MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:6eacb37b3a9a795d2fed6baf4b032ced118c639e6d4d523b2bc9db9ff1a95c88"
   AGENTIC_REPAIR = "1"
+  MENDPOINT_MODEL_PROVIDER = "muse-spark"
+  LLM_AGENT_MODEL = "muse-spark-1.2-contributor"
+  LLM_CONFIRM_MODEL = "muse-spark-1.2-contributor"
+  MENDPOINT_LIVE_APPROVED_MODEL = "muse-spark-1.2-contributor"
+  MENDPOINT_CHANGE_GRAPH_BENCHMARK_APPROVED_MODEL = "muse-spark-1.2-contributor"
   POLL_LOCAL_ONLY = "1"
   MENDPOINT_FEED_POLLING_ENABLED = "0"
   POLL_INTERVAL_MS = "5000"
