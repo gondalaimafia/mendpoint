@@ -2133,12 +2133,12 @@ Review: the exact image source commit was `3eb2724df86d99e339c557fc75dc036161a2e
 
 Objective: review Claude's broader intelligence implementation as one release unit, make its architecture authority reproducible, prove the exact model behind every Muse result, and integrate the already-provisioned sandbox controls into the open deployment changes.
 
-- [ ] Inventory every unique commit and dirty change in PRs 202, 182, 190, 164, and 165 against current main.
-- [ ] Check the exact governing Change Graph authority document into the repository and verify its SHA-256 from a repository gate.
-- [ ] Remove any unsupported ADR approval assertion and bind ADR-0005 to separately recorded owner authority.
-- [ ] Prove the deployed provider and exact model identity without exposing credentials.
-- [ ] Make Muse-specific evaluations fail closed unless requested and echoed provider/model identity match the approved binding.
-- [ ] Rebase and repair the sandbox demo and customer profile changes with the immutable image digest, app, policy, and token prerequisites already proven.
+- [x] Inventory every unique commit and dirty change in PRs 202, 182, 190, 164, and 165 against current main.
+- [x] Check the exact governing Change Graph authority document into the repository and verify its SHA-256 from a repository gate.
+- [x] Remove any unsupported ADR approval assertion and bind ADR-0005 to separately recorded owner authority.
+- [x] Prove the deployed provider and exact model identity without exposing credentials.
+- [x] Make Muse-specific evaluations fail closed unless requested and echoed provider/model identity match the approved binding.
+- [x] Rebase and repair the sandbox demo and customer profile changes with the immutable image digest, app, policy, and token prerequisites already proven.
 - [ ] Run focused graph, eval, verifier, sandbox, typecheck, build, and release gates on the combined candidate.
 - [ ] Perform a final security and regression review before pushing one coherent pull request.
 
