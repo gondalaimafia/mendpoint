@@ -30,6 +30,20 @@ const CODE_EXTS = new Set([
 const HARD_MAX_ACTIONS = 30;
 const HARD_MAX_FILES = 50;
 
+/**
+ * Baseline paths a repair action may never write. These protections are
+ * unconditional: callers add to them through {@link ApplyOptions.neverTouchPaths}
+ * but cannot replace or remove a baseline entry, so passing an empty list can
+ * never silently disable secret and lockfile protection.
+ */
+export const DEFAULT_NEVER_TOUCH = [
+  ".env",
+  "secrets/",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+];
+
 export type PristineFile = {
   filePath: string;
   absolutePath: string;
@@ -161,6 +175,7 @@ function boundedInteger(value: number | undefined, fallback: number, hardMax: nu
 export type ApplyOptions = {
   repoRoot: string;
   dryRun?: boolean;
+  /** Additional never-touch rules, merged with (never replacing) {@link DEFAULT_NEVER_TOUCH}. */
   neverTouchPaths?: string[];
   maxActions?: number;
   maxFilesChanged?: number;
@@ -173,13 +188,9 @@ export function applyActions(
   opts: ApplyOptions,
 ): AppliedEdit[] {
   const root = canonicalRoot(opts.repoRoot);
-  const neverTouch = opts.neverTouchPaths ?? [
-    ".env",
-    "secrets/",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-  ];
+  // Baseline protections are unconditional and merged with any caller additions.
+  // An empty (or absent) caller list can never disable secret/lockfile blocking.
+  const neverTouch = [...DEFAULT_NEVER_TOUCH, ...(opts.neverTouchPaths ?? [])];
   const actionBudget = boundedInteger(opts.maxActions, HARD_MAX_ACTIONS, HARD_MAX_ACTIONS);
   const fileBudget = boundedInteger(opts.maxFilesChanged, 20, HARD_MAX_FILES);
   if (actions.length > actionBudget) {
