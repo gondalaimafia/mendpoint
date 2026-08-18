@@ -26,7 +26,8 @@
     "@mendpoint/orchestrator": "*",
     "@mendpoint/policy": "*",
     "@mendpoint/repair": "*",
-    "@mendpoint/shared": "*"
+    "@mendpoint/shared": "*",
+    "@mendpoint/verifier": "*"
   },
 
   "devDependencies": {

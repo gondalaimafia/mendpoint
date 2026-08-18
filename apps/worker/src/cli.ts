@@ -158,6 +158,13 @@ import {
 } from "./warden-model-accounting.js";
 import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
+import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
+
+function verifierDigest(value: string): string {
+  if (/^sha256:[a-f0-9]{64}$/.test(value)) return value;
+  if (/^[a-f0-9]{64}$/.test(value)) return `sha256:${value}`;
+  throw new Error("verifier_completion_digest_invalid");
+}
 import { runWardenCandidateObservation } from "./warden-candidate-observation.js";
 import { runWardenCiRepairDispatch } from "./warden-ci-repair-dispatch.js";
 import { runWardenCandidateUpdate } from "./warden-candidate-update.js";
@@ -1613,6 +1620,19 @@ export function validateWorkerProductionEnv(
   }
   if (env.GITHUB_MODE !== "mock" && env.GITHUB_MODE !== "real") {
     errors.push("GITHUB_MODE must be explicitly set to mock or real");
+  }
+  const verifierEnabled = env.DEEPSEEK_VERIFIER_ENABLED?.trim();
+  if (verifierEnabled && verifierEnabled !== "true" && verifierEnabled !== "false") {
+    errors.push("DEEPSEEK_VERIFIER_ENABLED must be exactly true or false");
+  }
+  if (verifierEnabled === "true") {
+    const rollout = env.MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE?.trim() || "shadow";
+    if (rollout !== "shadow" && rollout !== "offline") {
+      errors.push("The first verifier release permits only offline or shadow rollout");
+    }
+    if (!env.DEEPSEEK_API_KEY?.trim()) errors.push("DEEPSEEK_API_KEY is required when independent verification is enabled");
+    if (!env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON?.trim()) errors.push("MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON is required when independent verification is enabled");
+    if (!env.MENDPOINT_AGENT_VERIFIER_PRICING_JSON?.trim()) errors.push("MENDPOINT_AGENT_VERIFIER_PRICING_JSON is required when independent verification is enabled");
   }
   const hasAnyAppCredential = Boolean(
     env.GITHUB_APP_ID?.trim() ||
@@ -3107,6 +3127,37 @@ async function processJobsOnceUnfenced(
           discardWardenAttempt(attempt, candidateRoot, evidenceRoot);
           throw error;
         }
+        if (attempt.status === "succeeded") {
+          try {
+            await observeProductCompletionInShadow({
+              db,
+              env: workerEnv,
+              completion: {
+                tenantId: job.tenant_id,
+                missionId: sessionId,
+                taskId: job.id,
+                product: "fettler",
+                repositoryId: binding.repositoryId,
+                snapshotDigest: verifierDigest(binding.manifestSha256),
+                objective: executionGoal,
+                risk: payload.ciFailure ? "high" : "medium",
+                allowedChangedPaths,
+                candidateId: `fettler_${createHash("sha256").update(job.id, "utf8").digest("hex").slice(0, 32)}`,
+                candidateDigest: verifierDigest(attempt.artifacts.candidateDigest),
+                changedPaths: attempt.changedPaths,
+                observableSummary: `The source bound candidate changed ${attempt.changedPaths.length} authorized paths and passed target, regression, and security verification.`,
+                deterministicEvidenceDigest: verifierDigest(attempt.artifacts.evidenceSha256),
+                deterministicEvidenceRefs: Object.freeze([
+                  attempt.artifacts.candidateManifestSha256,
+                  attempt.artifacts.evidenceSha256,
+                ]),
+                observedAt: nowIso(),
+              },
+            });
+          } catch {
+            console.error("verifier_shadow_failed:fettler");
+          }
+        }
         result.succeeded++;
         console.log(`  Fettler ${attempt.status === "succeeded" ? "candidate ready" : "no action"} session=${sessionId}`);
         continue;
@@ -3694,6 +3745,30 @@ async function runService(intervalMs: number) {
           ),
           shouldContinue: () => !shutdown.signal.aborted,
           adaptiveCandidateDataRoot: dataRoot,
+          onVerifiedCandidateCompleted: async ({ lease, execution, artifact, observedAt }) => {
+            await observeProductCompletionInShadow({
+              db: transformerDb,
+              env: process.env,
+              completion: {
+                tenantId: lease.tenantId,
+                missionId: lease.campaignId,
+                taskId: `${lease.campaignId}:${lease.unitId}`,
+                product: "regauge",
+                repositoryId: lease.snapshot.repositoryId,
+                snapshotDigest: verifierDigest(lease.snapshot.digest),
+                objective: `Execute the bound ${lease.recipe.id} migration for unit ${lease.unitId}.`,
+                risk: "high",
+                allowedChangedPaths: lease.changedPaths,
+                candidateId: `regauge_${createHash("sha256").update([lease.campaignId, lease.unitId, String(lease.attemptNumber)].join("\0"), "utf8").digest("hex").slice(0, 32)}`,
+                candidateDigest: verifierDigest(artifact.outputDigest),
+                changedPaths: lease.changedPaths,
+                observableSummary: `The bound recipe completed ${execution.operations.length} operations and ${execution.commands.length} verification commands on the exact snapshot.`,
+                deterministicEvidenceDigest: verifierDigest(execution.evidence.digest),
+                deterministicEvidenceRefs: artifact.evidenceRefs,
+                observedAt,
+              },
+            });
+          },
           ...transformerAdaptiveProductionPorts(process.env, transformerDb),
         });
         transformer = transformerPilotHeartbeatAfterResult(transformer, result, nowIso());

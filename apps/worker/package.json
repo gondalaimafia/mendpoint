@@ -18,7 +18,9 @@
     "./transformer-multinode-service": "./src/transformer-multinode-service.ts",
     "./transformer-snapshot-loader": "./src/transformer-snapshot-loader.ts",
     "./transformer-s3-transport": "./src/transformer-s3-transport.ts",
-    "./transformer-production-profile": "./src/transformer-production-profile.ts"
+    "./transformer-production-profile": "./src/transformer-production-profile.ts",
+    "./verifier-shadow": "./src/verifier-shadow.ts",
+    "./verifier-product-shadow": "./src/verifier-product-shadow.ts"
   },
   "scripts": {
     "start": "tsx src/cli.ts",
@@ -35,6 +37,7 @@
     "@mendpoint/ops": "*",
     "@mendpoint/platform": "*",
     "@mendpoint/transformer": "*",
+    "@mendpoint/verifier": "*",
     "@mendpoint/shared": "*"
   },
   "devDependencies": {

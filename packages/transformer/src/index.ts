@@ -248,6 +248,7 @@ export {
   type TransformerAttemptRunResult,
   type TransformerAttemptScope,
   type TransformerCandidateArtifact,
+  type TransformerVerifiedCandidateCompletion,
   type TransformerCandidateFileManifest,
   type TransformerCandidateManifest,
   type TransformerCurrentAttemptFence,

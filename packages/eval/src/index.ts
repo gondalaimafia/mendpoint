@@ -153,3 +153,4 @@ export {
   type WardenMetricsInput,
   type WardenMetricsReport,
 } from "./warden-metrics.js";
+export * from "./muse-deepseek-verifier.js";
