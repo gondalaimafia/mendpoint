@@ -362,6 +362,54 @@ describe("legacy behavior API", () => {
     expect(await retrieval.json()).toEqual({ error: "legacy_behavior_persisted_artifact_corrupt" });
   });
 
+  it("records the honest unknown verdict for unverified extraction and draft evidence, and replays it", async () => {
+    const { app, db, root } = fixture(true);
+    seedSnapshot(db, root);
+    const response = await app.request("/transformer/legacy-behavior/extractions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-Tenant": "tenant-a" },
+      body: JSON.stringify(requestBody),
+    });
+    expect(response.status).toBe(201);
+    const created = await response.json() as any;
+
+    // Neither the graph extraction nor the documentation draft runs verification, so
+    // both evidence records carry "unknown" — never a "passed" that was never computed.
+    const graphEvidence = listEvidenceRecords(db, "tenant-a", "repository_snapshot", "snapshot-a");
+    const docsEvidence = listEvidenceRecords(db, "tenant-a", "legacy_behavior_graph", created.graph.id);
+    expect(graphEvidence.map((record) => record.verdict)).toEqual(["unknown"]);
+    expect(docsEvidence.map((record) => record.verdict)).toEqual(["unknown"]);
+
+    // Replay treats "unknown" as the valid persisted state and succeeds.
+    const retrieval = await app.request(`/transformer/legacy-behavior/extractions/${created.id}`, {
+      headers: { "X-Test-Tenant": "tenant-a" },
+    });
+    expect(retrieval.status).toBe(200);
+  });
+
+  it("rejects an extraction whose evidence verdict was rewritten to a value it never earned", async () => {
+    const { app, db, root } = fixture(true);
+    seedSnapshot(db, root);
+    const response = await app.request("/transformer/legacy-behavior/extractions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-Tenant": "tenant-a" },
+      body: JSON.stringify(requestBody),
+    });
+    expect(response.status).toBe(201);
+    const created = await response.json() as any;
+    // Forge a "passed" verdict onto extraction evidence that ran no verification.
+    db.raw.exec("DROP TRIGGER evidence_records_append_only_update");
+    db.raw.prepare(
+      "UPDATE evidence_records SET verdict = 'passed' WHERE id = ?",
+    ).run(created.evidence.graphEvidenceRecordId);
+
+    const retrieval = await app.request(`/transformer/legacy-behavior/extractions/${created.id}`, {
+      headers: { "X-Test-Tenant": "tenant-a" },
+    });
+    expect(retrieval.status).toBe(409);
+    expect(await retrieval.json()).toEqual({ error: "legacy_behavior_persisted_artifact_corrupt" });
+  });
+
   it("rejects rewritten evidence authority during retrieval", async () => {
     const { app, db, root } = fixture(true);
     seedSnapshot(db, root);
