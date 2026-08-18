@@ -157,6 +157,7 @@ import {
   createWardenModelAccountingRuntime,
 } from "./warden-model-accounting.js";
 import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
+import { persistWardenTrajectory } from "./warden-trajectory.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
 import { runWardenCandidateObservation } from "./warden-candidate-observation.js";
 import { runWardenCiRepairDispatch } from "./warden-ci-repair-dispatch.js";
@@ -3004,6 +3005,29 @@ async function processJobsOnceUnfenced(
           continue;
         }
         const attempt = capturedAttempt!;
+        // Observation capture (Intelligence Ownership Phases 4+7). Best-effort and
+        // fully isolated from the hot path: a trajectory write must never fail the
+        // attempt. `attempt.capture` is present only when the agent actually ran;
+        // the persister records a capture failure rather than swallowing silently,
+        // so an empty trajectory is distinguishable from a task that never ran.
+        // Tenant is the authenticated job principal, never a request body.
+        if (attempt.capture) {
+          try {
+            persistWardenTrajectory(db, {
+              tenantId: job.tenant_id,
+              capture: attempt.capture,
+              jobId: job.id,
+              runId: sessionId,
+              createdAt: nowIso(),
+            });
+          } catch (error) {
+            console.error(
+              `  Fettler trajectory emit threw session=${sessionId}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
         const noAction = attempt.status === "rejected" &&
           attempt.code === "warden_attempt_baseline_target_green";
         const ok = attempt.status === "succeeded" || noAction;

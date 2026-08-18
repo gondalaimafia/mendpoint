@@ -54,12 +54,34 @@ export type RepairAction =
       reason: string;
     };
 
+/**
+ * Accounting record for a repair model call. `planRepairsWithLlm` egresses to a
+ * model outside the agent's reserve/settle boundary (repair cannot import
+ * `@mendpoint/agent` without a dependency cycle), so the previously discarded
+ * facts of the call — the model that ACTUALLY answered (provider echo) and its
+ * token usage — are captured here and carried on the plan. This makes the call
+ * observable and accountable in the persisted repair session result instead of a
+ * silent, unmetered egress.
+ */
+export type RepairModelProvenance = {
+  /** Exact `model` echoed by the response body, never the requested id. */
+  model: string | null;
+  host: string;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+  /** True when the response reported usage (never a fabricated measured zero). */
+  measured: boolean;
+};
+
 export type RepairPlan = {
   attempt: number;
   observations: FailureObservation[];
   actions: RepairAction[];
   strategy: "deterministic" | "llm" | "hybrid";
   summary: string;
+  /** Present only for LLM/hybrid plans that made a model call (accounting). */
+  modelProvenance?: RepairModelProvenance;
 };
 
 export type AppliedEdit = {

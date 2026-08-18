@@ -1,0 +1,6 @@
+{
+  "name": "@mendpoint/scripts",
+  "private": true,
+  "type": "module",
+  "description": "Operator, release, and governance scripts (not a workspace; run via tsx)."
+}
