@@ -56,13 +56,24 @@ export type DatasetSplit =
  *                the correct *shipped* behaviour is abstention-by-absence. The
  *                grader records both: whether the shipped engine correctly
  *                abstained, and the distance to the human-authored oracle.
+ * - refuse_partial The recipe recognizes the repo as its own source, but the
+ *                same pattern it migrates ALSO survives at a path outside the
+ *                recipe's `allowedPaths` (a residual site). A correct engine
+ *                REFUSES — analysis reports `status="incomplete"`, applyRecipe
+ *                does not ship a partial migration. Applying anyway
+ *                (`status="applicable"`) would strip/bump a dependency repo-wide
+ *                while leaving a residual consumer on the old surface, and sign
+ *                an evidence record for a repo that no longer installs. That is a
+ *                P0 confidently-wrong application, so the grader keys on the
+ *                analyze status, not on findings.
  */
 export type CorrectBehavior =
   | "flag_files"
   | "abstain"
   | "no_op"
   | "apply_recipe"
-  | "coverage_gap";
+  | "coverage_gap"
+  | "refuse_partial";
 
 /** A single injected/known fault, kept human-readable for reports. */
 export interface Fault {
@@ -152,6 +163,7 @@ const BEHAVIORS: ReadonlySet<string> = new Set([
   "no_op",
   "apply_recipe",
   "coverage_gap",
+  "refuse_partial",
 ]);
 const SPLITS: ReadonlySet<string> = new Set([
   "development",
@@ -199,7 +211,7 @@ export function validateGroundTruth(value: unknown): string[] {
   }
   if (typeof g.correct_behavior !== "string" || !BEHAVIORS.has(g.correct_behavior)) {
     problems.push(
-      "correct_behavior must be flag_files|abstain|no_op|apply_recipe|coverage_gap",
+      "correct_behavior must be flag_files|abstain|no_op|apply_recipe|coverage_gap|refuse_partial",
     );
   }
   if (!Array.isArray(g.faults)) problems.push("faults must be an array");

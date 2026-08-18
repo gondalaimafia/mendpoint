@@ -3,7 +3,7 @@
   "policy": "precision-first",
   "owner": "Talal",
   "decided_at": "2026-08-17",
-  "notes": "Owner-decided acceptance gates (spec §33.5). Versioned so the thresholds live in one place instead of scattered literals across graders. Precision-first: we would rather ship narrow and correct than broad and wrong. These are the bar for calling a capability design-partner ready; the eval report evaluates each run against them and emits PASS/FAIL per capability. A capability that does not clear every criterion is NOT ready, regardless of how green the rest of the suite looks.",
+  "notes": "Owner-decided acceptance gates (spec §33.5). Versioned so the thresholds live in one place instead of scattered literals across graders. Precision-first: we would rather ship narrow and correct than broad and wrong. These are the bar for calling a capability design-partner ready; the eval report evaluates each run against them and emits PASS/FAIL per capability. A capability that does not clear every criterion is NOT ready, regardless of how green the rest of the suite looks. Two capability shapes exist: 'fettler-impact' (untagged, kept for back-compat) scores precision/recall on flag_files scenarios; 'regauge-family' scores a migration-recipe family on three behaviours (apply on in-scope repos, refuse on partial-migration repos, abstain on out-of-scope repos) plus open-P0. Recipe families are graded per-scenario pass/fail, so the family thresholds are pass RATES over that family's scenarios; the scenario set is small and hand/procedurally authored, so a single failure fails the gate (that is the intended precision-first behaviour, not an accident of small n).",
   "capabilities": {
     "fettler-impact-analysis": {
       "description": "Fettler impact analysis: given a structured API change, flag exactly the impacted source files (precision/recall on flag_files scenarios; abstain/no_op scenarios are graded elsewhere).",
@@ -11,6 +11,46 @@
       "impact_recall_min": 0.85,
       "max_open_p0": 0,
       "holdout_dev_gap_max_pp": 10
+    },
+    "regauge-runtime-migration": {
+      "kind": "regauge-family",
+      "family": "runtime-upgrade",
+      "description": "ReGauge runtime family (node-runtime-18-to-20, node-runtime-20-to-22). The reference standard: this family already detects residual runtime pins (a CI Dockerfile or extra .nvmrc left on the old major), so it is expected to clear its gate. It is gated anyway as a positive control — a family that always passes proves the gate can distinguish a ready family from an unready one.",
+      "apply_correctness_min": 1.0,
+      "refusal_correctness_min": 1.0,
+      "abstention_correctness_min": 1.0,
+      "max_open_p0": 0,
+      "notes": "apply_correctness_min=1.0: a shipped recipe must correctly recognize and (would) apply on every in-scope repo; precision-first admits no partial credit for a config-only bump. refusal_correctness_min=1.0: every partial-migration repo (residual pin outside allowedPaths) must return status=incomplete; a single false 'applicable' ships a divergent runtime. abstention_correctness_min=1.0: an already-migrated or unsupported-major repo must not match. max_open_p0=0: no confidently-wrong application. Thresholds are pass rates over this family's scenarios."
+    },
+    "regauge-sdk-migration": {
+      "kind": "regauge-family",
+      "family": "sdk-upgrade",
+      "description": "ReGauge SDK family (aws-sdk-js-v2-to-v3, stripe-node-v10-to-v11, googleapis-v25-to-v26). These recipes swap or bump a dependency repo-wide while editing only their two allowlisted source files, and their verifiers check only those files. The residual scenarios prove that a third consumer left on the old surface must force a refusal, not a signed evidence record for a repo that no longer installs.",
+      "apply_correctness_min": 1.0,
+      "refusal_correctness_min": 1.0,
+      "abstention_correctness_min": 1.0,
+      "max_open_p0": 0,
+      "notes": "Same precision-first rationale as the runtime family. refusal_correctness_min=1.0 is the load-bearing gate here: until residual detection covers the SDK precondition kinds (a fix landing in packages/transformer/src/recipe.ts), the residual scenarios report status=applicable and this criterion fails at 0.0 — the correct, honest signal, not a threshold to tune away. Thresholds are pass rates over this family's scenarios."
+    },
+    "regauge-framework-migration": {
+      "kind": "regauge-family",
+      "family": "framework-upgrade",
+      "description": "ReGauge framework family (react-dom-17-to-18). Migrates render/hydrate call sites in the allowlisted entrypoints; a residual entrypoint still calling the legacy ReactDOM.render outside allowedPaths must force a refusal.",
+      "apply_correctness_min": 1.0,
+      "refusal_correctness_min": 1.0,
+      "abstention_correctness_min": 1.0,
+      "max_open_p0": 0,
+      "notes": "Same precision-first rationale. Whether the residual criterion passes depends on residual detection reaching the react precondition kind in recipe.ts; reported honestly per run. Thresholds are pass rates over this family's scenarios."
+    },
+    "regauge-internal-api-migration": {
+      "kind": "regauge-family",
+      "family": "internal-api-rename",
+      "description": "ReGauge internal-API family (internal-api-acme-user-rename and the registry rename recipes). Renames an exported symbol across allowlisted consumers; a residual consumer outside allowedPaths still calling the old name must force a refusal.",
+      "apply_correctness_min": 1.0,
+      "refusal_correctness_min": 1.0,
+      "abstention_correctness_min": 1.0,
+      "max_open_p0": 0,
+      "notes": "Same precision-first rationale. Whether the residual criterion passes depends on residual detection reaching the internal_api precondition kinds in recipe.ts; reported honestly per run. Thresholds are pass rates over this family's scenarios."
     }
   }
 }

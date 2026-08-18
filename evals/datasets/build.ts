@@ -52,7 +52,12 @@ function classify(
 ): { outcome: DatasetOutcome; category: TrainingCategory; failureType: string } {
   const unsafe = run.failures.filter((f) => !SAFE_NOTE_CATEGORIES.has(f.category));
   const coverageGap = run.failures.some((f) => f.category === "COVERAGE_GAP");
-  const abstains = gt.correct_behavior === "abstain" || gt.correct_behavior === "no_op";
+  // A correct refusal on a partial-migration repo is a refusal, not an action:
+  // group it with the abstention-shaped positives.
+  const abstains =
+    gt.correct_behavior === "abstain" ||
+    gt.correct_behavior === "no_op" ||
+    gt.correct_behavior === "refuse_partial";
 
   if (run.passed) {
     if (coverageGap) {
@@ -126,7 +131,9 @@ export function buildDatasetRecords(
     // same-input preference pair (bad product output vs. correct label).
     if (category === "negative") {
       record.corrected_output =
-        gt.correct_behavior === "abstain" || gt.correct_behavior === "no_op"
+        gt.correct_behavior === "abstain" ||
+        gt.correct_behavior === "no_op" ||
+        gt.correct_behavior === "refuse_partial"
           ? []
           : gt.expected_findings;
       record.preference_explanation =
