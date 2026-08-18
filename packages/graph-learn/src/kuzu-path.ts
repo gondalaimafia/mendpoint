@@ -88,7 +88,9 @@ export function exportSqliteToKuzuScript(
   }
 
   for (const source of allowedNodeIds) {
-    for (const e of edgesFrom(db, source)) {
+    // Escape-hatch export mirrors the complete stored graph, including
+    // invalidated edges.
+    for (const e of edgesFrom(db, source, undefined, { includeInvalidated: true })) {
       if (!allowedNodeIds.has(e.target)) continue;
       edgeInserts.push(
         `MATCH (a:Node {id: '${e.source.replace(/'/g, "''")}'}), (b:Node {id: '${e.target.replace(/'/g, "''")}'}) CREATE (a)-[:Edge {kind: '${e.kind}', confidence: ${e.confidence ?? 1}}]->(b);`,

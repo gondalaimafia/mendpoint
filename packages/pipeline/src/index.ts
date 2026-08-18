@@ -1914,17 +1914,30 @@ export async function applyPrFeedback(
   // Dimension 6: label outcome edges with experiment + plan attribution
   if (pr && (outcome === "merged" || outcome === "closed")) {
     try {
-      labelPrOutcome(graphDb, {
-        prId,
-        changeId: pr.change_id,
-        consumerId: pr.consumer_id,
-        outcome: outcome === "merged" ? "merged" : "closed",
-        title: pr.title,
-        experiment,
-        planId,
-      });
-    } catch {
-      /* non-fatal */
+      labelPrOutcome(
+        graphDb,
+        {
+          prId,
+          changeId: pr.change_id,
+          consumerId: pr.consumer_id,
+          outcome: outcome === "merged" ? "merged" : "closed",
+          title: pr.title,
+          experiment,
+          planId,
+        },
+        opts.tenantId,
+      );
+    } catch (error) {
+      // Non-fatal: the PR status and audit trail are already persisted, and the
+      // webhook caller must not fail the whole GitHub delivery over a learning
+      // write (GitHub would retry the entire delivery). But the failure must be
+      // visible, not swallowed — a silent catch here is what hid the missing
+      // tenant that made outcome edges unreachable through the scoped view.
+      console.error(
+        `pr outcome graph write failed pr=${prId} tenant=${opts.tenantId} outcome=${outcome}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 
@@ -1943,18 +1956,30 @@ export async function applyPrFeedback(
           createdAt: nowIso(),
         });
       }
+      let graphLabeled = false;
       try {
-        labelPrOutcome(graphDb, {
-          prId,
-          changeId: pr.change_id,
-          consumerId: pr.consumer_id,
-          outcome: "broke",
-          title: pr.title,
-          experiment,
-          planId,
-        });
-      } catch {
-        /* */
+        labelPrOutcome(
+          graphDb,
+          {
+            prId,
+            changeId: pr.change_id,
+            consumerId: pr.consumer_id,
+            outcome: "broke",
+            title: pr.title,
+            experiment,
+            planId,
+          },
+          opts.tenantId,
+        );
+        graphLabeled = true;
+      } catch (error) {
+        // Non-fatal, but never claim the graph write happened: graphLabeled
+        // below reflects the real outcome, and the failure is logged.
+        console.error(
+          `pr broke-outcome graph write failed pr=${prId} tenant=${opts.tenantId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
       }
       recordAudit(db, {
         id: replayId("patterns_suppressed"),
@@ -1966,7 +1991,7 @@ export async function applyPrFeedback(
         metadata: {
           patterns,
           count: patterns.length,
-          graphLabeled: true,
+          graphLabeled,
           experiment,
           planId,
         },

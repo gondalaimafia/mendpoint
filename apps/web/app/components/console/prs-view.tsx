@@ -9,6 +9,7 @@ import {
   type PrTab,
   type PullRequest,
 } from "./fixtures.js";
+import { CoverageBadge } from "./coverage.js";
 
 /**
  * `/prs` — Transformer's pull-request list, driven by the live `/prs` feed. A
@@ -103,7 +104,9 @@ export function PrsView({
               checks={pr.checks}
               time={pr.time}
               onClick={() => router.push(`/prs/${pr.id}`)}
-            />
+            >
+              {pr.coverage && <CoverageBadge summary={pr.coverage} />}
+            </PullRequestCard>
           </div>
         ))}
       </div>

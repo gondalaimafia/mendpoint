@@ -41,6 +41,7 @@ import {
   submitPrReview,
 } from "./interactions";
 import { reviewDialogStore, openReviewDialog } from "./review-dialog-store";
+import { coverageSummary } from "./pr-map";
 
 function countGlow(markup: string): number {
   return markup.match(/indigo-glow/g)?.length ?? 0;
@@ -218,6 +219,42 @@ describe("DS console views — honest empty states", () => {
     // notifySlack off), not a fabricated default.
     expect(html).toContain('aria-checked="true"');
     expect(html).toContain('aria-checked="false"');
+  });
+
+  it("labels each list row's coverage so clean and unanalyzed rows do not read alike", () => {
+    const rows: typeof PULL_REQUESTS = [
+      {
+        id: "clean-1",
+        repo: "acme/clean",
+        number: 1,
+        title: "No impact after analysis",
+        status: "open",
+        additions: 0,
+        deletions: 0,
+        files: 0,
+        time: "1m ago",
+        coverage: coverageSummary("low_confidence", { basis: "analyzed", gaps: [] }),
+      },
+      {
+        id: "unknown-1",
+        repo: "acme/legacy",
+        number: 2,
+        title: "Recorded before coverage tracking",
+        status: "pending",
+        additions: 0,
+        deletions: 0,
+        files: 0,
+        time: "2m ago",
+        coverage: coverageSummary("low_confidence", null),
+      },
+    ];
+    const html = renderToStaticMarkup(<PrsView prs={rows} />);
+    // The clean row wears an emerald "no impact" badge; the unanalyzed row a
+    // neutral "coverage unknown" one — visibly and textually different.
+    expect(html).toContain("no impact");
+    expect(html).toContain("coverage unknown");
+    expect(html).toContain("ds-badge--emerald");
+    expect(html).toContain("ds-badge--neutral");
   });
 
   it("derives PR tab counts from the injected list, not a constant", () => {

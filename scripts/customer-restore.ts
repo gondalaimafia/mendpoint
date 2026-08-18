@@ -54,7 +54,12 @@ await downloadCommittedCustomerBackup({
 }, transport);
 const restoreParent = safePaths.targetParent;
 mkdirSync(restoreParent, { recursive: true, mode: 0o700 });
-if (typeof process.getuid === "function" && process.getuid() === 0) {
+if (
+  typeof process.getuid === "function" &&
+  typeof process.setgid === "function" &&
+  typeof process.setuid === "function" &&
+  process.getuid() === 0
+) {
   const chownTree = (path: string): void => {
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) throw new Error("customer_restore_staging_symlink_rejected");

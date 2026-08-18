@@ -188,14 +188,14 @@ describe("GA review regressions", () => {
       consumerId: "consumer",
       outcome: "closed",
       experiment: "treatment",
-    });
+    }, "tenant-x");
     labelPrOutcome(db, {
       prId: "42",
       changeId: "change",
       consumerId: "consumer",
       outcome: "merged",
       experiment: "treatment",
-    });
+    }, "tenant-x");
 
     const outcomes = edgesFrom(db, "consumer:consumer", [
       "OUTCOME_MERGED",
@@ -432,7 +432,7 @@ describe("GA review regressions", () => {
       consumerId: "consumer",
       outcome: "merged",
       planId: "excluded-plan",
-    });
+    }, "tenant-x");
     const exported = exportGnnFeatures(db);
     const ids = new Set(exported.nodes.map((node) => node.id));
     expect(exported.edges.every((edge) => ids.has(edge.source))).toBe(true);
@@ -518,7 +518,7 @@ describe("GA review regressions", () => {
           consumerId: arm,
           outcome: i < 2 ? "merged" : "closed",
           experiment: arm,
-        });
+        }, "tenant-x");
       }
     }
     const report = measureAbLift(db);

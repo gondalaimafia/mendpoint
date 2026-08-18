@@ -1,4 +1,5 @@
 import type { DiffHunk, Status } from "../ds/index.js";
+import type { CoverageSummary } from "./pr-map.js";
 
 /**
  * Typed shapes for the DS console views, plus reference fixtures. The views are
@@ -41,6 +42,8 @@ export type PullRequest = {
   files: number;
   checks?: "passing" | "failing" | "running";
   time: string;
+  /** Impact-coverage view-model; absent for rows recorded before the channel existed. */
+  coverage?: CoverageSummary;
 };
 
 export type PrTab = "all" | "review" | "failing" | "merged";
@@ -64,6 +67,8 @@ export type PrDetailData = {
     deletions: number;
   }>;
   checks: CheckRow[];
+  /** Impact-coverage view-model; absent when the PR is unavailable. */
+  coverage?: CoverageSummary;
 };
 
 /** Everything `/settings` (SettingsView) seeds from, mapped from live config. */

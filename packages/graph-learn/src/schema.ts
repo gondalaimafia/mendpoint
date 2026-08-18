@@ -3,6 +3,7 @@
  * Node labels: PascalCase · Edge types: SCREAMING_SNAKE · props: snake_case
  * SQLite store; Kùzu-native naming for future migration.
  */
+import { z } from "zod";
 
 /** Universal node properties (plus kind-specific props in `props`). */
 export type GlNode = {
@@ -229,6 +230,100 @@ export type GraphQuery =
       limit?: number;
     }
   | { op: "stats" };
+
+/**
+ * Runtime validator for {@link GraphQuery}. The POST /graph-learn/query route
+ * parses request bodies through this instead of casting an untrusted body, so a
+ * malformed query is rejected with 400 at the boundary rather than reaching the
+ * engine and failing with 500. It validates the op discriminant and each field's
+ * shape; numeric traversal bounds are accepted here (oversized values are clamped
+ * by the engine, which owns the hard ceilings) but must be the correct type.
+ */
+export const GraphQuerySchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("who_consumes_provider"), providerSlug: z.string() }),
+  z.object({
+    op: z.literal("who_consumes_endpoint"),
+    providerSlug: z.string(),
+    path: z.string(),
+    method: z.string().optional(),
+  }),
+  z.object({
+    op: z.literal("blast_radius"),
+    nodeId: z.string(),
+    maxHops: z.number().optional(),
+  }),
+  z.object({
+    op: z.literal("neighbors"),
+    nodeId: z.string(),
+    edgeKinds: z.array(z.custom<GlEdgeKind>()).optional(),
+    direction: z.enum(["out", "in", "both"]).optional(),
+  }),
+  z.object({
+    op: z.literal("neighborhood"),
+    nodeId: z.string(),
+    k: z.number().optional(),
+  }),
+  z.object({
+    op: z.literal("callers"),
+    symbolId: z.string(),
+    maxHops: z.number().optional(),
+  }),
+  z.object({
+    op: z.literal("path"),
+    fromId: z.string(),
+    toId: z.string(),
+    maxHops: z.number().optional(),
+  }),
+  z.object({
+    op: z.literal("depends_on_path"),
+    nodeId: z.string(),
+    maxHops: z.number().optional(),
+    maxPaths: z.number().optional(),
+  }),
+  z.object({ op: z.literal("outcomes_for_pattern"), pattern: z.string() }),
+  z.object({
+    op: z.literal("pattern_success_rates"),
+    minSamples: z.number().optional(),
+  }),
+  z.object({
+    op: z.literal("consumers_of_field"),
+    schemaName: z.string(),
+    fieldName: z.string(),
+  }),
+  z.object({ op: z.literal("broke_modes_for_endpoint"), operationId: z.string() }),
+  z.object({
+    op: z.literal("migration_ready_units"),
+    campaignId: z.string(),
+    batchSize: z.number().optional(),
+  }),
+  z.object({ op: z.literal("invariants_for_symbol"), qualifiedName: z.string() }),
+  z.object({ op: z.literal("time_travel_calls"), at: z.string() }),
+  z.object({
+    op: z.literal("time_travel_modifies"),
+    at: z.string(),
+    repoId: z.string().optional(),
+  }),
+  z.object({ op: z.literal("latency_stats") }),
+  z.object({
+    op: z.literal("repository_evidence"),
+    repositoryId: z.string(),
+    snapshotId: z.string().optional(),
+    evidenceTypes: z
+      .array(
+        z.enum([
+          "runtime_trace",
+          "test_coverage",
+          "codeowners",
+          "ci",
+          "deployment",
+          "collector",
+        ]),
+      )
+      .optional(),
+    limit: z.number().optional(),
+  }),
+  z.object({ op: z.literal("stats") }),
+]);
 
 /**
  * Coverage assessment for a graph query result. Every op carries one so a caller

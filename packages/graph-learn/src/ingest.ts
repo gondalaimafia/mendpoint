@@ -272,7 +272,7 @@ export function labelPrOutcome(
     /** A/B experiment arm */
     experiment?: "control" | "treatment" | string;
   },
-  tenantId?: string,
+  tenantId: string,
 ): void {
   const prNode = `pr:${input.prId}`;
   const consumerNode = `consumer:${input.consumerId}`;

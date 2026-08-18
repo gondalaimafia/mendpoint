@@ -25,6 +25,7 @@
  * vendor providers ship with empty price tables (operator-configured) except
  * `muse-spark`, which carries this deployment's known contributor-tier rates.
  */
+import { enforceModelEndpointEgress } from "@mendpoint/shared";
 import {
   resolveAgentModelEndpoint,
   resolveAgentModelName,
@@ -261,7 +262,12 @@ export function resolveProviderEndpoint(
       ? `${basePath}/models/${encodedModel}:generateContent`
       : `${basePath}/v1beta/models/${encodedModel}:generateContent`;
   }
-  return parsed.toString();
+  const endpoint = parsed.toString();
+  // Apply the same local_only egress control the default path enforces, so a
+  // named provider cannot ship repository content to a public host that the
+  // agent-path check would have refused. External_allowed leaves this a no-op.
+  enforceModelEndpointEgress(endpoint, env);
+  return endpoint;
 }
 
 /**

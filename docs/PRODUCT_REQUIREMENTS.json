@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "spec": {
-    "path": "docs/product/mendpoint-product-platform-specification.md",
-    "version": "2.0",
-    "sha256": "f9598930855aa61ca227e1d1d2c427dc3bda6c165aacb5ea0073b2b388dea80e"
+    "path": "docs/product/mendpoint-product-platform-specification-v3.md",
+    "version": "3.0",
+    "sha256": "726854e51599c5da71272cdb6b187b11f3f8a1f21e1252c1d866e0fc4900f951"
   },
   "closurePlan": {
     "source": "mendpoint-foundational-spec-gap-analysis-and-plan-2026-08-01.md",

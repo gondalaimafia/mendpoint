@@ -10,7 +10,7 @@ describe("CI workflow", () => {
     >;
     const installBrowser = (workflow.jobs["deployment-e2e"].steps as Record<string, any>[]).find(
       (step) => step.name === "Install browser",
-    );
+    )!;
 
     expect(installBrowser).toBeDefined();
     expect(installBrowser.run).toBe("npx playwright install chromium");
