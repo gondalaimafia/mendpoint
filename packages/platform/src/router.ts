@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ImpactCoverage } from "@mendpoint/shared";
 import {
   adaptiveAggregateKey,
   effectiveRoutingMetrics,
@@ -36,6 +37,28 @@ export type ExecutorKind =
   | "open_model"
   | "frontier_model";
 
+/**
+ * Product discriminator (§13.2). The orchestrator that owns the mission —
+ * `warden` (repair) or `transformer` (recipe migration). Optional on the
+ * TaskSpec; no production caller supplies it yet.
+ */
+export const ROUTER_PRODUCTS = Object.freeze([
+  "warden",
+  "transformer",
+] as const);
+export type RouterProduct = (typeof ROUTER_PRODUCTS)[number];
+
+/**
+ * Change blast radius (§12.3, §13.2). A structured measure of how far a change
+ * reaches, used as a risk input. Not available at either production routing call
+ * site today (impact analysis runs after routing), so this is optional.
+ */
+export type RouterBlastRadius = Readonly<{
+  impactedFiles: number;
+  impactedSurfaces: number;
+  repositoryCount: number;
+}>;
+
 export type RouterTaskSpec = Readonly<{
   taskId: string;
   tenantId: string;
@@ -69,6 +92,25 @@ export type RouterTaskSpec = Readonly<{
   quality: Readonly<{ minimumScore: number }>;
   latency: Readonly<{ maximumMs: number }>;
   budget: Readonly<{ maximumUsd: number }>;
+  /**
+   * Product discriminator (§13.2). Optional; no production caller supplies it
+   * yet. When present it becomes part of the deterministic decision fingerprint.
+   */
+  product?: RouterProduct;
+  /**
+   * Change blast radius (§12.3, §13.2). Optional; not available pre-routing
+   * today. When present it becomes part of the deterministic decision
+   * fingerprint.
+   */
+  blastRadius?: RouterBlastRadius;
+  /**
+   * Graph/impact coverage (§11.7, §12.4, §13.2). Optional: the router runs
+   * before impact analysis exists today, so no production caller supplies it
+   * yet. When present and incomplete on high-risk work it drives
+   * `graph_coverage_incomplete` escalation (§13.7). When present it becomes part
+   * of the deterministic decision fingerprint.
+   */
+  coverage?: ImpactCoverage;
 }>;
 
 export type RouterPolicySnapshot = Readonly<{
@@ -324,6 +366,7 @@ export type RoutingPlan = Readonly<{
 
 export type HumanHandoffReason =
   | "high_risk"
+  | "graph_coverage_incomplete"
   | "no_eligible_executor"
   | "budget_exhausted"
   | "fallback_exhausted"
@@ -418,6 +461,29 @@ export function routeTask(input: RouteTaskInput): RoutingOutcome {
     input.policy.budget.maximumUsd,
     input.remainingBudgetUsd,
   );
+
+  // §13.7 escalation: high-risk work must not proceed on thin evidence. This
+  // fires only when coverage is EXPLICITLY present and shows incompleteness
+  // (basis !== "analyzed"); absent coverage falls through to the risk-policy
+  // human-review gate below, preserving existing behaviour. It is checked before
+  // that gate so the more specific coverage reason wins over "high_risk".
+  // NOTE: no production caller supplies `coverage` yet (the router runs before
+  // impact analysis exists), so this is a tested mechanism, not a live
+  // production trigger. Closing that gap requires a pre-routing coverage
+  // estimate or two-phase routing and is an ADR-gated design decision.
+  if (
+    riskRank(input.task.risk) >= riskRank("high") &&
+    coverageIsIncomplete(input.task.coverage)
+  ) {
+    return handoffOutcome(
+      input,
+      policyFingerprint,
+      [],
+      "graph_coverage_incomplete",
+      "Graph coverage is incomplete for high-risk work",
+    );
+  }
+
   const requiresHuman =
     riskRank(input.task.risk) >=
     Math.min(riskRank("high"), riskRank(input.policy.risk.humanReviewAtOrAbove));
@@ -838,6 +904,61 @@ function validateTask(task: RouterTaskSpec): void {
   validateScore(task.quality.minimumScore, "task quality");
   validateNonNegative(task.latency.maximumMs, "task latency");
   validateNonNegative(task.budget.maximumUsd, "task budget");
+  validateProduct(task.product);
+  validateBlastRadius(task.blastRadius);
+  validateCoverage(task.coverage);
+}
+
+function validateProduct(product: RouterProduct | undefined): void {
+  if (product !== undefined && !ROUTER_PRODUCTS.includes(product)) {
+    throw new Error("Task product is invalid");
+  }
+}
+
+function validateBlastRadius(blastRadius: RouterBlastRadius | undefined): void {
+  if (blastRadius === undefined) return;
+  if (typeof blastRadius !== "object" || blastRadius === null) {
+    throw new Error("Task blast radius is invalid");
+  }
+  validatePositiveInteger(blastRadius.impactedFiles, "task blast radius files", true);
+  validatePositiveInteger(
+    blastRadius.impactedSurfaces,
+    "task blast radius surfaces",
+    true,
+  );
+  validatePositiveInteger(
+    blastRadius.repositoryCount,
+    "task blast radius repositories",
+    true,
+  );
+}
+
+const COVERAGE_BASES = Object.freeze([
+  "analyzed",
+  "partial",
+  "not_analyzed",
+] as const);
+
+function validateCoverage(coverage: ImpactCoverage | undefined): void {
+  if (coverage === undefined) return;
+  if (
+    typeof coverage !== "object" ||
+    coverage === null ||
+    !COVERAGE_BASES.includes(coverage.basis)
+  ) {
+    throw new Error("Task coverage is invalid");
+  }
+}
+
+/**
+ * Coverage is "incomplete" when it is explicitly present and its basis is not
+ * `analyzed` (i.e. `partial` or `not_analyzed`, the §11.7 "no known impact" vs
+ * "complete evidence of no impact" distinction). Absent coverage is NOT treated
+ * as incomplete here, so callers that do not supply coverage keep their existing
+ * risk-policy escalation behaviour unchanged.
+ */
+function coverageIsIncomplete(coverage: ImpactCoverage | undefined): boolean {
+  return coverage !== undefined && coverage.basis !== "analyzed";
 }
 
 function validatePolicy(policy: RouterPolicySnapshot): void {

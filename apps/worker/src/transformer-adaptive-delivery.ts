@@ -22,6 +22,7 @@ import {
   admitApprovedOutcomeContentLearningRecord,
   admitApprovedOutcomeLearningRecord,
 } from "./transformer-learning-producer.js";
+import { admitTransformerGovernedLearningEvent } from "./transformer-governed-learning-producer.js";
 import type {
   ExactDraftDeliveryInput,
   ExactDraftDeliveryResult,
@@ -589,6 +590,21 @@ export async function runTransformerAdaptiveDelivery(
         });
       } catch {
         /* best-effort: after-content admission never affects delivery */
+      }
+      // Additive governed-flywheel emission under the governed consent purpose. A
+      // SECOND, parallel record distinct from the legacy admits above; the legacy
+      // path is unchanged. Best-effort and default-off, so delivery is untouched.
+      try {
+        admitTransformerGovernedLearningEvent({
+          db: input.db,
+          tenantId: input.job.tenant_id,
+          candidate,
+          artifact,
+          now: completedAt,
+          env: input.artifactEnv ?? process.env,
+        });
+      } catch {
+        /* best-effort: governed learning admission never affects delivery */
       }
       return delivered;
     } catch (error) {
