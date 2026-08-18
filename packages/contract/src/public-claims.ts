@@ -215,7 +215,7 @@ export function validatePublicClaimRegistry(
             add(issues, "REQUIREMENT_REFERENCE", id, `${rawRequirementId} is not registered`);
             continue;
           }
-          if (rawClaim.state === "proven" && rawClaim.claimKind === "capability") {
+          if (rawClaim.state === "proven") {
             if (requirement.implementationStatus !== "verified") {
               add(
                 issues,
