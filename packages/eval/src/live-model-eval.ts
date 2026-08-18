@@ -1,4 +1,8 @@
-import type { LiveModelProvenanceRecord } from "@mendpoint/agent";
+import { buildLiveModelProvenance, type LiveModelProvenanceRecord } from "@mendpoint/agent";
+import {
+  resolveLlmConfirmMode,
+  type LlmCallObservation,
+} from "@mendpoint/code-impact";
 
 export const LIVE_MODEL_EVIDENCE_VERSION = "2026-08-05.v1" as const;
 
@@ -24,6 +28,84 @@ export type LiveModelApprovedConfig = Readonly<{
   /** Approved exact model id, matched against the echoed model. */
   model: string;
 }>;
+
+/**
+ * The live lane is READY (a real, paid model call can and should be made) only
+ * when every precondition is satisfied. Otherwise it is SKIPPED with a stated
+ * reason and the lane is recorded as "not measured" — the harness never quietly
+ * runs the deterministic/heuristic path and reports its numbers as live.
+ */
+export type LiveLaneReadyConfig = Readonly<{
+  status: "ready";
+  /** Identity the run's provenance must match exactly. */
+  approved: LiveModelApprovedConfig;
+  /** Model id the confirm path will request (LLM_CONFIRM_MODEL), if set. */
+  requestedModel: string | null;
+}>;
+
+export type LiveLaneSkip = Readonly<{
+  status: "skipped";
+  reason: string;
+}>;
+
+export type LiveLaneConfig = LiveLaneReadyConfig | LiveLaneSkip;
+
+/**
+ * Decide whether the live-model lane can run from configuration alone (no
+ * network). Fails honestly: any missing precondition returns a skip with a
+ * stated reason rather than allowing a run that would silently measure the
+ * deterministic path.
+ *
+ * Preconditions:
+ *  - MENDPOINT_LIVE_APPROVED_HOST pins the endpoint host the provenance must match.
+ *  - The impact confirm path resolves to LIVE mode (LLM_CONFIRM_MODE=live or
+ *    LLM_CONFIRM=1) AND an API key is present — otherwise the confirm path would
+ *    run the offline heuristic and never call a model.
+ */
+export function resolveLiveLaneConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): LiveLaneConfig {
+  const model = resolveApprovedLiveModel(env);
+  const host = env.MENDPOINT_LIVE_APPROVED_HOST?.trim();
+  if (!host) {
+    return {
+      status: "skipped",
+      reason:
+        "MENDPOINT_LIVE_APPROVED_HOST is not set; the approved endpoint host must be pinned before a live run (not measured)",
+    };
+  }
+  const mode = resolveLlmConfirmMode(env);
+  if (mode !== "live") {
+    return {
+      status: "skipped",
+      reason:
+        `impact confirm live mode is not active (resolved '${mode}'): set LLM_CONFIRM_MODE=live ` +
+        "(or LLM_CONFIRM=1) and provide an API key (OPENAI_API_KEY or XAI_API_KEY). Refusing to run " +
+        "the offline heuristic path and report it as live (not measured)",
+    };
+  }
+  const requestedModel = env.LLM_CONFIRM_MODEL?.trim() || null;
+  return { status: "ready", approved: { host, model }, requestedModel };
+}
+
+/**
+ * Build a machine-verifiable provenance record from a single observed live
+ * call. Delegates to the agent's `buildLiveModelProvenance` so the eval lane and
+ * the production path attribute calls identically (echoed model, tokens, host,
+ * cost, request id).
+ */
+export function liveModelRecordFromObservation(
+  observation: LlmCallObservation,
+  priceTable?: Parameters<typeof buildLiveModelProvenance>[0]["priceTable"],
+): LiveModelProvenanceRecord {
+  return buildLiveModelProvenance({
+    url: observation.url,
+    headerRequestId: observation.headerRequestId,
+    providerId: null,
+    body: observation.body,
+    ...(priceTable ? { priceTable } : {}),
+  });
+}
 
 export type LiveModelGrade = Readonly<{
   id: string;

@@ -21,7 +21,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { normalizeChange } from "@mendpoint/change-intel";
-import { analyzeImpact, sdkContextFromSurfaces } from "@mendpoint/code-impact";
+import {
+  analyzeImpact,
+  sdkContextFromSurfaces,
+  type LlmConfirmObserver,
+} from "@mendpoint/code-impact";
 import { buildIndexIncremental } from "@mendpoint/codebase-index";
 import type { ImpactReport } from "@mendpoint/shared";
 import type { ScenarioConfig } from "../scenarios/index.js";
@@ -32,11 +36,25 @@ import type { RunRecord } from "./types.js";
 
 const toPosix = (p: string): string => p.replace(/\\/g, "/");
 
+/**
+ * Live-lane options. Presence switches the runner to the LIVE lane
+ * (`useLlm:true`, exercising the impact-confirm model path) and routes each
+ * successful model call to `onLlmCall` so the caller can attribute provenance.
+ * Absent → the DETERMINISTIC lane (`useLlm:false`), unchanged from before. The
+ * two lanes are identical apart from this switch — same staging, same index,
+ * same surfaces, same grader.
+ */
+export interface FettlerLaneOptions {
+  onLlmCall: LlmConfirmObserver;
+}
+
 export async function runFettler(
   cfg: ScenarioConfig,
   gt: GroundTruth,
   ctx: { gitCommit: string; productVersion: string },
+  lane?: FettlerLaneOptions,
 ): Promise<RunRecord> {
+  const live = lane !== undefined;
   let started = Date.now();
   const base: Omit<RunRecord, "latency_ms"> = {
     run_id: randomUUID(),
@@ -46,7 +64,9 @@ export async function runFettler(
     product_version: ctx.productVersion,
     scenario_id: cfg.scenario_id,
     scenario_version: "1",
-    invocation_path: "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    invocation_path: live
+      ? "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:true, LLM confirm live, minConfidence:medium)"
+      : "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
     model: null,
     model_provider: null,
     routing_decisions: [],
@@ -59,12 +79,18 @@ export async function runFettler(
     grader_results: [],
     failures: [],
     passed: false,
-    unmeasured_dimensions: [
-      "migration_patch_correctness (generation path not exercised)",
-      "verification_honesty (sandbox/verification path not exercised)",
-      "pr_delivery (GitHub delivery not exercised)",
-      "token_cost / model_routing (LLM off; no model called)",
-    ],
+    unmeasured_dimensions: live
+      ? [
+          "migration_patch_correctness (generation path not exercised)",
+          "verification_honesty (sandbox/verification path not exercised)",
+          "pr_delivery (GitHub delivery not exercised)",
+        ]
+      : [
+          "migration_patch_correctness (generation path not exercised)",
+          "verification_honesty (sandbox/verification path not exercised)",
+          "pr_delivery (GitHub delivery not exercised)",
+          "token_cost / model_routing (LLM off; no model called)",
+        ],
   };
 
   // Stage the repo into scratch WITHOUT its grading key so the product can never
@@ -89,9 +115,10 @@ export async function runFettler(
     });
     const filesScanned = index.files.length;
     const report: ImpactReport = await analyzeImpact(stage.stagedPath, surfaces, {
-      useLlm: false,
+      useLlm: live,
       minConfidence: "medium",
       index,
+      ...(live ? { onLlmCall: lane!.onLlmCall } : {}),
     });
 
     const flagged = [...new Set(report.sites.map((s) => toPosix(s.filePath)))].sort();
