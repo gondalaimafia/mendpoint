@@ -33,6 +33,24 @@ kill_timeout = 30
   MENDPOINT_API_URL = "http://127.0.0.1:3001"
   MENDPOINT_PILOT_SEED = "0"
   MENDPOINT_VERIFY_FIRST = "1"
+  # Verification runs inside an ephemeral Fly Machine, never via host execFile in
+  # the customer worker container. Fail-closed: without the sandbox app and its
+  # token, verification FAILS rather than falling back to host execution. The
+  # token is a per-customer Fly secret (see scripts/customer-warden-profile.ts),
+  # injected at provisioning, never stored here:
+  #   fly secrets set MENDPOINT_SANDBOX_FLY_TOKEN=... --app <customer-app>
+  # See docs/SANDBOX_VERIFIER.md for the operator checklist and egress policy.
+  MENDPOINT_SANDBOX_KIND = "fly_machines"
+  MENDPOINT_SANDBOX_FLY_APP = "mendpoint-sandbox"
+  # The sandbox image IS the isolation boundary, so it MUST be pinned to an
+  # immutable digest, never a floating `:latest` tag (which can change with no
+  # review or reproducibility). Left empty on purpose: a missing pin FAILS CLOSED
+  # (Fly rejects an empty image) rather than silently resolving `:latest`. Before
+  # a customer app verifies, pin the immutable reference the sandbox image push
+  # printed by replacing "" below (reviewed here in config):
+  #   MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:<digest>"
+  # See docs/SANDBOX_IMAGE.md ("Pin production to an immutable reference").
+  MENDPOINT_SANDBOX_FLY_IMAGE = ""
   AGENTIC_REPAIR = "1"
   POLL_LOCAL_ONLY = "0"
   MENDPOINT_FEED_POLLING_ENABLED = "1"
