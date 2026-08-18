@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "policy": "precision-first",
+  "owner": "Talal",
+  "decided_at": "2026-08-17",
+  "notes": "Owner-decided acceptance gates (spec §33.5). Versioned so the thresholds live in one place instead of scattered literals across graders. Precision-first: we would rather ship narrow and correct than broad and wrong. These are the bar for calling a capability design-partner ready; the eval report evaluates each run against them and emits PASS/FAIL per capability. A capability that does not clear every criterion is NOT ready, regardless of how green the rest of the suite looks.",
+  "capabilities": {
+    "fettler-impact-analysis": {
+      "description": "Fettler impact analysis: given a structured API change, flag exactly the impacted source files (precision/recall on flag_files scenarios; abstain/no_op scenarios are graded elsewhere).",
+      "impact_precision_min": 0.9,
+      "impact_recall_min": 0.85,
+      "max_open_p0": 0,
+      "holdout_dev_gap_max_pp": 10
+    }
+  }
+}

@@ -1,10 +1,10 @@
 [
   {
-    "run_id": "7731fe82-dff3-46f4-b1e5-368d24cd7c63",
-    "timestamp": "2026-08-15T04:12:51.719Z",
-    "git_commit": "a5ddda8",
+    "run_id": "1e3a9984-894f-4b06-8263-5074933f13b3",
+    "timestamp": "2026-08-17T22:49:50.159Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-ts-payments-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -14,12 +14,14 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 90,
-      "candidateCount": 90,
-      "confirmedCount": 61,
+      "filesExamined": 88,
+      "candidateCount": 89,
+      "confirmedCount": 60,
       "lowConfidenceCount": 14,
       "notes": [
+        "files_scanned=88",
         "surfaces=3",
+        "candidates=89",
         "confident_sites=6",
         "low_confidence=src/analytics/tracker.ts, src/config/constants.ts, src/config/env.ts, src/domain/events.ts, src/http/routes/webhooks.ts, src/infra/providers/meridian/client.ts, src/jobs/reconciliationJob.ts, src/jobs/settlementJob.ts, src/legacy/oldBillingClient.ts, src/lib/logger.ts, src/services/checkoutService.ts, src/services/notificationService.ts, src/services/subscriptionService.ts, test/fixtures/charges.ts"
       ]
@@ -70,14 +72,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 312
+    "latency_ms": 1235
   },
   {
-    "run_id": "7f33c2ad-ac17-4151-9649-748dcec4d29e",
-    "timestamp": "2026-08-15T04:12:52.032Z",
-    "git_commit": "a5ddda8",
+    "run_id": "4e933fa7-78cf-4984-b49b-1eeb900ec024",
+    "timestamp": "2026-08-17T22:49:51.613Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-python-billing-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -87,19 +89,29 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 22,
-      "candidateCount": 22,
-      "confirmedCount": 15,
-      "lowConfidenceCount": 2,
+      "filesExamined": 44,
+      "candidateCount": 84,
+      "confirmedCount": 75,
+      "lowConfidenceCount": 13,
       "notes": [
-        "surfaces=8",
-        "confident_sites=2",
-        "low_confidence=app/config.py, app/main.py"
+        "files_scanned=44",
+        "surfaces=22",
+        "candidates=84",
+        "confident_sites=10",
+        "low_confidence=app/build/assets.py, app/config.py, app/importer/records.py, app/inventory/repository.py, app/inventory/service.py, app/main.py, app/providers/payments_client.py, app/routers/charges.py, app/routers/health.py, app/routers/refunds.py, tests/test_health.py, tests/test_importer.py, tests/test_payments_client.py"
       ]
     },
     "findings": [
+      "app/models/charge.py",
+      "app/models/payment.py",
+      "app/models/refund.py",
       "app/providers/payments_client.py",
-      "tests/conftest.py"
+      "app/services/charge_service.py",
+      "app/services/refund_service.py",
+      "app/tasks/settlement_task.py",
+      "tests/conftest.py",
+      "tests/test_charge_service.py",
+      "tests/test_refund_service.py"
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -107,8 +119,8 @@
       {
         "dimension": "expected_findings_recall",
         "passed": false,
-        "score": 0.18181818181818182,
-        "detail": "2/11 expected files flagged"
+        "score": 0.7272727272727273,
+        "detail": "8/11 expected files flagged"
       },
       {
         "dimension": "false_positive_traps",
@@ -128,7 +140,7 @@
         "category": "FALSE_NEGATIVE",
         "severity": "P2",
         "dimension": "expected_findings_recall",
-        "observed": "flagged 2/11; missed: app/models/payment.py, app/models/charge.py, app/models/refund.py, app/services/charge_service.py, app/services/refund_service.py, app/tasks/settlement_task.py, tests/fixtures/charge_request.json, tests/fixtures/charge_response.json, tests/fixtures/refund_response.json",
+        "observed": "flagged 8/11; missed: tests/fixtures/charge_request.json, tests/fixtures/charge_response.json, tests/fixtures/refund_response.json",
         "expected": "all 11 expected files"
       }
     ],
@@ -139,14 +151,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 112
+    "latency_ms": 1773
   },
   {
-    "run_id": "609e61ad-e0ae-4581-9bc1-22b9d1b6c659",
-    "timestamp": "2026-08-15T04:12:52.147Z",
-    "git_commit": "a5ddda8",
+    "run_id": "d7bd4d44-28c3-4cde-985f-c5986fbef89e",
+    "timestamp": "2026-08-17T22:49:53.542Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-go-ledger-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -156,27 +168,40 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 8,
-      "candidateCount": 8,
-      "confirmedCount": 8,
-      "lowConfidenceCount": 2,
+      "filesExamined": 40,
+      "candidateCount": 96,
+      "confirmedCount": 89,
+      "lowConfidenceCount": 7,
       "notes": [
-        "surfaces=6",
-        "confident_sites=1",
-        "low_confidence=internal/config/config.go, internal/config/config_test.go"
+        "files_scanned=40",
+        "surfaces=11",
+        "candidates=96",
+        "confident_sites=12",
+        "low_confidence=internal/build/assets.go, internal/build/assets_test.go, internal/config/config.go, internal/config/config_test.go, internal/reporting/aggregate.go, internal/reporting/report.go, internal/reporting/report_test.go"
       ]
     },
     "findings": [
-      "internal/payments/client.go"
+      "cmd/ledger/main.go",
+      "internal/ledger/entry.go",
+      "internal/ledger/ledger.go",
+      "internal/ledger/ledger_test.go",
+      "internal/payments/client.go",
+      "internal/payments/client_test.go",
+      "internal/payments/types.go",
+      "internal/settlement/batch.go",
+      "internal/settlement/settlement.go",
+      "internal/settlement/settlement_test.go",
+      "internal/worker/worker.go",
+      "internal/worker/worker_test.go"
     ],
-    "confidence": "high",
+    "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
       {
         "dimension": "expected_findings_recall",
         "passed": false,
-        "score": 0.058823529411764705,
-        "detail": "1/17 expected files flagged"
+        "score": 0.7058823529411765,
+        "detail": "12/17 expected files flagged"
       },
       {
         "dimension": "false_positive_traps",
@@ -196,7 +221,7 @@
         "category": "FALSE_NEGATIVE",
         "severity": "P2",
         "dimension": "expected_findings_recall",
-        "observed": "flagged 1/17; missed: internal/payments/types.go, internal/payments/client_test.go, internal/payments/testdata/charge_request.json, internal/payments/testdata/charge_response.json, internal/ledger/ledger.go, internal/ledger/entry.go, internal/ledger/ledger_test.go, internal/ledger/testdata/entry.json, internal/settlement/settlement.go, internal/settlement/batch.go, internal/settlement/settlement_test.go, internal/settlement/testdata/settlement.json, internal/worker/worker.go, internal/worker/worker_test.go, internal/worker/testdata/items.json, cmd/ledger/main.go",
+        "observed": "flagged 12/17; missed: internal/payments/testdata/charge_request.json, internal/payments/testdata/charge_response.json, internal/ledger/testdata/entry.json, internal/settlement/testdata/settlement.json, internal/worker/testdata/items.json",
         "expected": "all 17 expected files"
       }
     ],
@@ -207,14 +232,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 349
+    "latency_ms": 835
   },
   {
-    "run_id": "1fab109b-5d2a-4bb7-a28a-468ace8f4a60",
-    "timestamp": "2026-08-15T04:12:52.498Z",
-    "git_commit": "a5ddda8",
+    "run_id": "c3e682b1-3d8e-406a-84c9-c390087f430e",
+    "timestamp": "2026-08-17T22:49:54.498Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-java-settlement-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -224,18 +249,28 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 128,
-      "candidateCount": 128,
-      "confirmedCount": 128,
-      "lowConfidenceCount": 25,
+      "filesExamined": 46,
+      "candidateCount": 114,
+      "confirmedCount": 102,
+      "lowConfidenceCount": 16,
       "notes": [
+        "files_scanned=46",
         "surfaces=11",
-        "confident_sites=2",
-        "low_confidence=src/main/java/com/acme/settlement/SettlementApplication.java, src/main/java/com/acme/settlement/asset/AssetManifest.java, src/main/java/com/acme/settlement/asset/AssetService.java, src/main/java/com/acme/settlement/audit/AuditEvent.java, src/main/java/com/acme/settlement/charge/Charge.java, src/main/java/com/acme/settlement/charge/ChargeController.java, src/main/java/com/acme/settlement/charge/ChargeService.java, src/main/java/com/acme/settlement/importlog/ImportLogService.java, src/main/java/com/acme/settlement/importlog/ImportRecord.java, src/main/java/com/acme/settlement/inventory/InventoryRepository.java, src/main/java/com/acme/settlement/inventory/WarehouseRepository.java, src/main/java/com/acme/settlement/payments/PaymentRequest.java, src/main/java/com/acme/settlement/payments/PaymentStatus.java, src/main/java/com/acme/settlement/payments/PaymentsClient.java, src/main/java/com/acme/settlement/payments/RefundRequest.java, src/main/java/com/acme/settlement/reporting/ReportService.java, src/main/java/com/acme/settlement/reporting/RevenueReport.java, src/main/java/com/acme/settlement/settlement/SettlementController.java, src/main/java/com/acme/settlement/settlement/SettlementLine.java, src/main/java/com/acme/settlement/settlement/SettlementRepository.java, src/main/java/com/acme/settlement/settlement/SettlementService.java, src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java, src/test/java/com/acme/settlement/charge/ChargeServiceTest.java, src/test/java/com/acme/settlement/settlement/SettlementServiceTest.java, src/test/java/com/acme/settlement/sweep/SettlementSweepJobTest.java"
+        "candidates=114",
+        "confident_sites=10",
+        "low_confidence=src/main/java/com/acme/settlement/SettlementApplication.java, src/main/java/com/acme/settlement/asset/AssetManifest.java, src/main/java/com/acme/settlement/asset/AssetService.java, src/main/java/com/acme/settlement/audit/AuditEvent.java, src/main/java/com/acme/settlement/charge/Charge.java, src/main/java/com/acme/settlement/importlog/ImportLogService.java, src/main/java/com/acme/settlement/importlog/ImportRecord.java, src/main/java/com/acme/settlement/inventory/InventoryRepository.java, src/main/java/com/acme/settlement/inventory/WarehouseRepository.java, src/main/java/com/acme/settlement/payments/PaymentsClient.java, src/main/java/com/acme/settlement/reporting/ReportService.java, src/main/java/com/acme/settlement/settlement/SettlementRepository.java, src/test/java/com/acme/settlement/charge/ChargeServiceTest.java, src/test/java/com/acme/settlement/payments/PaymentsClientTest.java, src/test/java/com/acme/settlement/settlement/SettlementServiceTest.java, src/test/java/com/acme/settlement/sweep/SettlementSweepJobTest.java"
       ]
     },
     "findings": [
+      "src/main/java/com/acme/settlement/charge/ChargeController.java",
+      "src/main/java/com/acme/settlement/charge/ChargeService.java",
+      "src/main/java/com/acme/settlement/payments/PaymentRequest.java",
       "src/main/java/com/acme/settlement/payments/PaymentResponse.java",
+      "src/main/java/com/acme/settlement/reporting/RevenueReport.java",
+      "src/main/java/com/acme/settlement/settlement/SettlementController.java",
+      "src/main/java/com/acme/settlement/settlement/SettlementLine.java",
+      "src/main/java/com/acme/settlement/settlement/SettlementService.java",
+      "src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java",
       "src/test/java/com/acme/settlement/payments/PaymentsClientTest.java"
     ],
     "confidence": "medium",
@@ -244,8 +279,8 @@
       {
         "dimension": "expected_findings_recall",
         "passed": false,
-        "score": 0.07692307692307693,
-        "detail": "1/13 expected files flagged"
+        "score": 0.6153846153846154,
+        "detail": "8/13 expected files flagged"
       },
       {
         "dimension": "false_positive_traps",
@@ -255,9 +290,9 @@
       },
       {
         "dimension": "precision",
-        "passed": true,
-        "score": 1,
-        "detail": "precision 100%"
+        "passed": false,
+        "score": 0.8888888888888888,
+        "detail": "precision 89%; extra flags: src/main/java/com/acme/settlement/reporting/RevenueReport.java"
       }
     ],
     "failures": [
@@ -265,8 +300,15 @@
         "category": "FALSE_NEGATIVE",
         "severity": "P2",
         "dimension": "expected_findings_recall",
-        "observed": "flagged 1/13; missed: src/main/java/com/acme/settlement/payments/PaymentRequest.java, src/main/java/com/acme/settlement/payments/PaymentsClient.java, src/main/java/com/acme/settlement/charge/ChargeService.java, src/main/java/com/acme/settlement/charge/Charge.java, src/main/java/com/acme/settlement/charge/ChargeController.java, src/main/java/com/acme/settlement/settlement/SettlementService.java, src/main/java/com/acme/settlement/settlement/SettlementLine.java, src/main/java/com/acme/settlement/settlement/SettlementController.java, src/main/java/com/acme/settlement/sweep/SettlementSweepJob.java, src/test/resources/payment-request.json, src/test/resources/payment-response.json, src/test/resources/settlement-batch.json",
+        "observed": "flagged 8/13; missed: src/main/java/com/acme/settlement/payments/PaymentsClient.java, src/main/java/com/acme/settlement/charge/Charge.java, src/test/resources/payment-request.json, src/test/resources/payment-response.json, src/test/resources/settlement-batch.json",
         "expected": "all 13 expected files"
+      },
+      {
+        "category": "FALSE_POSITIVE",
+        "severity": "P2",
+        "dimension": "precision",
+        "observed": "flagged non-expected files: src/main/java/com/acme/settlement/reporting/RevenueReport.java",
+        "expected": "only expected/acceptable files"
       }
     ],
     "passed": false,
@@ -276,14 +318,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 344
+    "latency_ms": 1270
   },
   {
-    "run_id": "cf6b9081-ba55-4292-b385-5dac0df8355e",
-    "timestamp": "2026-08-15T04:12:52.844Z",
-    "git_commit": "a5ddda8",
+    "run_id": "723d10d0-7edc-446a-b95e-362316983c6b",
+    "timestamp": "2026-08-17T22:49:55.917Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-node-cjs-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -293,18 +335,19 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 117,
-      "candidateCount": 117,
-      "confirmedCount": 108,
-      "lowConfidenceCount": 16,
+      "filesExamined": 42,
+      "candidateCount": 111,
+      "confirmedCount": 102,
+      "lowConfidenceCount": 17,
       "notes": [
+        "files_scanned=42",
         "surfaces=13",
-        "confident_sites=6",
-        "low_confidence=config/defaultConfig.js, lib/build/assetManifest.js, lib/chargeService.js, lib/events/auditLog.js, lib/importer/csvImporter.js, lib/importer/importRecord.js, lib/index.js, lib/inventory/reservation.js, lib/inventory/warehouse.js, lib/paymentsClient.js, lib/refundService.js, lib/tasks/settlementTask.js, lib/util/logger.js, test/chargeService.test.js, test/inventory.test.js, test/paymentsClient.test.js"
+        "candidates=111",
+        "confident_sites=5",
+        "low_confidence=bin/server.js, config/defaultConfig.js, lib/build/assetManifest.js, lib/chargeService.js, lib/events/auditLog.js, lib/importer/csvImporter.js, lib/importer/importRecord.js, lib/index.js, lib/inventory/reservation.js, lib/inventory/warehouse.js, lib/paymentsClient.js, lib/refundService.js, lib/tasks/settlementTask.js, lib/util/logger.js, test/chargeService.test.js, test/inventory.test.js, test/paymentsClient.test.js"
       ]
     },
     "findings": [
-      "bin/server.js",
       "lib/paymentsClient.js",
       "test/chargeService.test.js",
       "test/paymentsClient.test.js",
@@ -322,15 +365,15 @@
       },
       {
         "dimension": "false_positive_traps",
-        "passed": false,
-        "score": 0,
-        "detail": "flagged traps: bin/server.js"
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
       },
       {
         "dimension": "precision",
         "passed": true,
-        "score": 0.5,
-        "detail": "precision 50%"
+        "score": 1,
+        "detail": "precision 100%"
       }
     ],
     "failures": [
@@ -340,13 +383,6 @@
         "dimension": "expected_findings_recall",
         "observed": "flagged 1/7; missed: lib/chargeService.js, lib/refundService.js, lib/tasks/settlementTask.js, test/fixtures/charge.v1.json, test/fixtures/refund.v1.json, test/fixtures/settlement.batch.json",
         "expected": "all 7 expected files"
-      },
-      {
-        "category": "FALSE_POSITIVE",
-        "severity": "P0",
-        "dimension": "false_positive_traps",
-        "observed": "flagged distractors: bin/server.js",
-        "expected": "no distractor flagged"
       }
     ],
     "passed": false,
@@ -356,14 +392,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 301
+    "latency_ms": 3328
   },
   {
-    "run_id": "58b1591e-e302-46ad-b6c0-758624875050",
-    "timestamp": "2026-08-15T04:12:53.147Z",
-    "git_commit": "a5ddda8",
+    "run_id": "cbbbddd9-0eca-4580-a9f5-a54e2f3f884b",
+    "timestamp": "2026-08-17T22:49:59.364Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-ts-monorepo-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -373,12 +409,14 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 100,
-      "candidateCount": 100,
-      "confirmedCount": 92,
+      "filesExamined": 47,
+      "candidateCount": 96,
+      "confirmedCount": 88,
       "lowConfidenceCount": 14,
       "notes": [
+        "files_scanned=47",
         "surfaces=12",
+        "candidates=96",
         "confident_sites=8",
         "low_confidence=packages/config/src/__tests__/config.test.ts, packages/config/src/buildConfig.ts, packages/config/src/loader.ts, packages/inventory/src/__tests__/inventory.test.ts, packages/inventory/src/importRecord.ts, packages/inventory/src/warehouse.ts, packages/logger/src/logger.ts, packages/payments/src/__tests__/charge.test.ts, packages/payments/src/__tests__/settlement.test.ts, packages/payments/src/chargeService.ts, packages/payments/src/idempotency.ts, packages/payments/src/paymentsClient.ts, packages/payments/src/refundService.ts, packages/payments/src/settlementWorker.ts"
       ]
@@ -431,14 +469,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 1365
+    "latency_ms": 2028
   },
   {
-    "run_id": "f4bb1371-df92-4eac-b014-4eb6ab93a53f",
-    "timestamp": "2026-08-15T04:12:54.515Z",
-    "git_commit": "a5ddda8",
+    "run_id": "befb52bb-9184-4687-87da-5f7a9e4b4889",
+    "timestamp": "2026-08-17T22:50:01.684Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-edge-already-migrated",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -448,12 +486,14 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 0,
+      "filesExamined": 4,
       "candidateCount": 0,
       "confirmedCount": 0,
       "lowConfidenceCount": 0,
       "notes": [
+        "files_scanned=4",
         "surfaces=0",
+        "candidates=0",
         "confident_sites=0",
         "low_confidence=none"
       ]
@@ -477,14 +517,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 13
+    "latency_ms": 256
   },
   {
-    "run_id": "63324847-00b3-4957-8e2f-5a89a81bcf45",
-    "timestamp": "2026-08-15T04:12:54.532Z",
-    "git_commit": "a5ddda8",
+    "run_id": "daf7ce64-87cd-4539-a87f-a6564ba741cd",
+    "timestamp": "2026-08-17T22:50:02.001Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-edge-ambiguous",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -494,12 +534,14 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 0,
+      "filesExamined": 3,
       "candidateCount": 0,
       "confirmedCount": 0,
       "lowConfidenceCount": 0,
       "notes": [
+        "files_scanned=3",
         "surfaces=3",
+        "candidates=0",
         "confident_sites=0",
         "low_confidence=none"
       ]
@@ -523,14 +565,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 12
+    "latency_ms": 83
   },
   {
-    "run_id": "a4736898-277f-4b73-bd41-eb29552cb521",
-    "timestamp": "2026-08-15T04:12:54.551Z",
-    "git_commit": "a5ddda8",
+    "run_id": "bae0fce7-ec50-4d62-abd8-405335b55270",
+    "timestamp": "2026-08-17T22:50:02.136Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-edge-binary-encoding",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -540,12 +582,14 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 6,
+      "filesExamined": 4,
       "candidateCount": 6,
       "confirmedCount": 6,
       "lowConfidenceCount": 0,
       "notes": [
+        "files_scanned=4",
         "surfaces=5",
+        "candidates=6",
         "confident_sites=3",
         "low_confidence=none"
       ]
@@ -585,14 +629,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 23
+    "latency_ms": 520
   },
   {
-    "run_id": "ae40097f-074b-44cf-8cc9-410751199f83",
-    "timestamp": "2026-08-15T04:12:54.575Z",
-    "git_commit": "a5ddda8",
+    "run_id": "c6846be4-40dc-44fb-8cb8-62a97b25e08f",
+    "timestamp": "2026-08-17T22:50:02.693Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-edge-deep-indirection",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -602,12 +646,14 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 15,
+      "filesExamined": 5,
       "candidateCount": 15,
       "confirmedCount": 13,
       "lowConfidenceCount": 0,
       "notes": [
+        "files_scanned=5",
         "surfaces=5",
+        "candidates=15",
         "confident_sites=5",
         "low_confidence=none"
       ]
@@ -649,14 +695,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 34
+    "latency_ms": 438
   },
   {
-    "run_id": "8578c7ca-0620-4d7a-9c8f-1477cffb1e41",
-    "timestamp": "2026-08-15T04:12:54.611Z",
-    "git_commit": "a5ddda8",
+    "run_id": "8ba93889-b6cb-4fd2-9ba3-694f37eb3f3c",
+    "timestamp": "2026-08-17T22:50:03.235Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-edge-generated-code",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -666,12 +712,14 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 13,
-      "candidateCount": 13,
-      "confirmedCount": 11,
+      "filesExamined": 5,
+      "candidateCount": 12,
+      "confirmedCount": 10,
       "lowConfidenceCount": 0,
       "notes": [
+        "files_scanned=5",
         "surfaces=5",
+        "candidates=12",
         "confident_sites=2",
         "low_confidence=none"
       ]
@@ -680,7 +728,7 @@
       "check.mjs",
       "src/handwritten/charges.js"
     ],
-    "confidence": "high",
+    "confidence": "medium",
     "produced_edit": false,
     "grader_results": [
       {
@@ -710,14 +758,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 34
+    "latency_ms": 454
   },
   {
-    "run_id": "92fdee6e-7903-46b1-b13c-c477b06efedb",
-    "timestamp": "2026-08-15T04:14:54.696Z",
-    "git_commit": "a5ddda8",
+    "run_id": "c4387a16-ccd7-40ca-a673-6c0db9c57942",
+    "timestamp": "2026-08-17T22:52:03.818Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-edge-huge-monorepo",
     "scenario_version": "1",
     "invocation_path": "isolated child process, budget 120000ms",
@@ -725,7 +773,7 @@
     "model_provider": null,
     "routing_decisions": [],
     "tokens": null,
-    "latency_ms": 120049,
+    "latency_ms": 120032,
     "estimated_cost_usd": null,
     "activity": {
       "filesExamined": 0,
@@ -760,11 +808,11 @@
     "error": "ETIMEDOUT"
   },
   {
-    "run_id": "5aafb8bd-9e0d-4a8b-b859-e55fb6b0973e",
-    "timestamp": "2026-08-15T04:14:54.699Z",
-    "git_commit": "a5ddda8",
+    "run_id": "f90d25d8-f9b4-4763-8ada-fea2ddbc6b10",
+    "timestamp": "2026-08-17T22:52:03.818Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-edge-no-test-command",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -774,12 +822,14 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 4,
+      "filesExamined": 3,
       "candidateCount": 4,
       "confirmedCount": 4,
       "lowConfidenceCount": 0,
       "notes": [
+        "files_scanned=3",
         "surfaces=5",
+        "candidates=4",
         "confident_sites=2",
         "low_confidence=none"
       ]
@@ -818,14 +868,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 8
+    "latency_ms": 143
   },
   {
-    "run_id": "67d328b7-bed3-4c3a-8220-0b059696f4e0",
-    "timestamp": "2026-08-15T04:14:54.709Z",
-    "git_commit": "a5ddda8",
+    "run_id": "fecab1a9-3747-4038-bc7d-40e66ea31842",
+    "timestamp": "2026-08-17T22:52:03.990Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-edge-pnpm-workspace",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -835,12 +885,14 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 8,
+      "filesExamined": 3,
       "candidateCount": 8,
       "confirmedCount": 7,
       "lowConfidenceCount": 0,
       "notes": [
+        "files_scanned=3",
         "surfaces=5",
+        "candidates=8",
         "confident_sites=2",
         "low_confidence=none"
       ]
@@ -879,14 +931,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 19
+    "latency_ms": 158
   },
   {
-    "run_id": "cf11b30b-b546-406d-84c1-f65f097055db",
-    "timestamp": "2026-08-15T04:14:54.729Z",
-    "git_commit": "a5ddda8",
+    "run_id": "32621771-3f7c-477e-8aeb-100486191049",
+    "timestamp": "2026-08-17T22:52:04.180Z",
+    "git_commit": "ae8e17f",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "fettler-edge-vendored-sdk",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -896,20 +948,21 @@
     "tokens": null,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 9,
+      "filesExamined": 3,
       "candidateCount": 9,
       "confirmedCount": 9,
       "lowConfidenceCount": 0,
       "notes": [
+        "files_scanned=3",
         "surfaces=5",
-        "confident_sites=3",
+        "candidates=9",
+        "confident_sites=2",
         "low_confidence=none"
       ]
     },
     "findings": [
       "check.mjs",
-      "src/pay.js",
-      "vendor/acmepay-sdk/index.js"
+      "src/pay.js"
     ],
     "confidence": "medium",
     "produced_edit": false,
@@ -922,41 +975,33 @@
       },
       {
         "dimension": "false_positive_traps",
-        "passed": false,
-        "score": 0,
-        "detail": "flagged traps: vendor/acmepay-sdk/index.js"
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
       },
       {
         "dimension": "precision",
         "passed": true,
-        "score": 0.5,
-        "detail": "precision 50%"
+        "score": 1,
+        "detail": "precision 100%"
       }
     ],
-    "failures": [
-      {
-        "category": "FALSE_POSITIVE",
-        "severity": "P0",
-        "dimension": "false_positive_traps",
-        "observed": "flagged distractors: vendor/acmepay-sdk/index.js",
-        "expected": "no distractor flagged"
-      }
-    ],
-    "passed": false,
+    "failures": [],
+    "passed": true,
     "unmeasured_dimensions": [
       "migration_patch_correctness (generation path not exercised)",
       "verification_honesty (sandbox/verification path not exercised)",
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 21
+    "latency_ms": 149
   },
   {
-    "run_id": "8e021248-c4ec-4e01-bbdc-615901f59258",
-    "timestamp": "2026-08-15T04:14:54.752Z",
-    "git_commit": "a5ddda8",
+    "run_id": "e1f776b3-8bfd-406f-9474-75cd645d6de3",
+    "timestamp": "2026-08-17T22:52:04.358Z",
+    "git_commit": "ae8e17f",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "regauge-runtime-upgrade",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1012,14 +1057,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 99
+    "latency_ms": 149
   },
   {
-    "run_id": "a4e71c94-d7d2-4813-afd2-d7496596b709",
-    "timestamp": "2026-08-15T04:14:54.853Z",
-    "git_commit": "a5ddda8",
+    "run_id": "77fe0ede-f908-496c-8597-65edc307c87f",
+    "timestamp": "2026-08-17T22:52:04.507Z",
+    "git_commit": "ae8e17f",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "regauge-sdk-upgrade",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1064,14 +1109,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 56
+    "latency_ms": 134
   },
   {
-    "run_id": "6cfa5dbe-ed1e-4273-8e03-2b4bbb955fbb",
-    "timestamp": "2026-08-15T04:14:54.910Z",
-    "git_commit": "a5ddda8",
+    "run_id": "1306e11f-72d1-4c12-947f-5bb1a5fee17f",
+    "timestamp": "2026-08-17T22:52:04.641Z",
+    "git_commit": "ae8e17f",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "regauge-framework-upgrade",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1116,14 +1161,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 60
+    "latency_ms": 154
   },
   {
-    "run_id": "0b33a350-b7e3-43c3-b841-13d46b24e6cd",
-    "timestamp": "2026-08-15T04:14:54.972Z",
-    "git_commit": "a5ddda8",
+    "run_id": "3948868b-f496-4c85-90c8-e9c57cd3edd3",
+    "timestamp": "2026-08-17T22:52:04.795Z",
+    "git_commit": "ae8e17f",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "regauge-internal-api-rename",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1168,14 +1213,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 50
+    "latency_ms": 189
   },
   {
-    "run_id": "8f20aa1e-f7b3-4472-9ba9-da63a0448804",
-    "timestamp": "2026-08-15T04:14:55.024Z",
-    "git_commit": "a5ddda8",
+    "run_id": "c1d83e51-a312-4211-beed-c0722857d923",
+    "timestamp": "2026-08-17T22:52:04.984Z",
+    "git_commit": "ae8e17f",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "regauge-partial-campaign",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1220,14 +1265,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 48
+    "latency_ms": 95
   },
   {
-    "run_id": "4176aa2f-77d7-4c02-ae91-5a38943887ce",
-    "timestamp": "2026-08-15T04:14:55.074Z",
-    "git_commit": "a5ddda8",
+    "run_id": "c24ba5e6-87e8-4601-b2de-194b3ed6a50a",
+    "timestamp": "2026-08-17T22:52:05.079Z",
+    "git_commit": "ae8e17f",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a5ddda8",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
     "scenario_id": "regauge-should-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -1264,6 +1309,1329 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 65
+    "latency_ms": 135
+  },
+  {
+    "run_id": "a7247bb2-2b91-45e6-8397-d5b70ac555c4",
+    "timestamp": "2026-08-17T22:52:05.223Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ref-flat",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 5,
+      "candidateCount": 15,
+      "confirmedCount": 13,
+      "lowConfidenceCount": 4,
+      "notes": [
+        "files_scanned=5",
+        "surfaces=1",
+        "candidates=15",
+        "confident_sites=3",
+        "low_confidence=src/config/constants.ts, src/importer/records.ts, src/infra/provider/client.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "3/3 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 43
+  },
+  {
+    "run_id": "68e0b742-e455-4c85-8aa8-d5b0b0ad29cf",
+    "timestamp": "2026-08-17T22:52:05.303Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ref-ref",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 7,
+      "candidateCount": 20,
+      "confirmedCount": 17,
+      "lowConfidenceCount": 5,
+      "notes": [
+        "files_scanned=7",
+        "surfaces=1",
+        "candidates=20",
+        "confident_sites=4",
+        "low_confidence=src/config/constants.ts, src/importer/records.ts, src/infra/provider/client.ts, src/inventory/service.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "src/services/subscriptionService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "4/4 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 55
+  },
+  {
+    "run_id": "31875760-8d90-4396-a1f4-611c1049b90e",
+    "timestamp": "2026-08-17T22:52:05.401Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ref-allOf",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 6,
+      "candidateCount": 18,
+      "confirmedCount": 15,
+      "lowConfidenceCount": 4,
+      "notes": [
+        "files_scanned=6",
+        "surfaces=1",
+        "candidates=18",
+        "confident_sites=4",
+        "low_confidence=src/analytics/tracker.ts, src/config/constants.ts, src/infra/provider/client.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "src/services/subscriptionService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "4/4 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 47
+  },
+  {
+    "run_id": "b09218b0-b83a-4781-aa38-673e5b1d4231",
+    "timestamp": "2026-08-17T22:52:05.485Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ref-nested2",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 5,
+      "candidateCount": 15,
+      "confirmedCount": 13,
+      "lowConfidenceCount": 4,
+      "notes": [
+        "files_scanned=5",
+        "surfaces=1",
+        "candidates=15",
+        "confident_sites=3",
+        "low_confidence=src/config/constants.ts, src/infra/provider/client.ts, src/inventory/service.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "3/3 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 37
+  },
+  {
+    "run_id": "b08a6934-f04c-469d-9706-c54c2998a810",
+    "timestamp": "2026-08-17T22:52:05.559Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ref-refToRef",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 8,
+      "candidateCount": 22,
+      "confirmedCount": 19,
+      "lowConfidenceCount": 6,
+      "notes": [
+        "files_scanned=8",
+        "surfaces=1",
+        "candidates=22",
+        "confident_sites=4",
+        "low_confidence=src/analytics/tracker.ts, src/config/constants.ts, src/importer/records.ts, src/infra/provider/client.ts, src/inventory/service.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "src/services/subscriptionService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "4/4 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 63
+  },
+  {
+    "run_id": "41fad3c1-f41c-4b24-928a-c56abc9ee77a",
+    "timestamp": "2026-08-17T22:52:05.671Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ref-counterfactual",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 6,
+      "candidateCount": 0,
+      "confirmedCount": 0,
+      "lowConfidenceCount": 0,
+      "notes": [
+        "files_scanned=6",
+        "surfaces=0",
+        "candidates=0",
+        "confident_sites=0",
+        "low_confidence=none"
+      ]
+    },
+    "findings": [],
+    "confidence": "low",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "no_op_correctness",
+        "passed": true,
+        "score": 1,
+        "detail": "correctly produced no confident finding (no_op)"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 21
+  },
+  {
+    "run_id": "b4f1db49-485d-4f83-8a02-ae94f2b4b990",
+    "timestamp": "2026-08-17T22:52:05.730Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ref-nested2-regression",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 7,
+      "candidateCount": 21,
+      "confirmedCount": 17,
+      "lowConfidenceCount": 4,
+      "notes": [
+        "files_scanned=7",
+        "surfaces=1",
+        "candidates=21",
+        "confident_sites=5",
+        "low_confidence=src/config/constants.ts, src/infra/provider/client.ts, src/inventory/service.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "src/services/settlementService.ts",
+      "src/services/subscriptionService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "5/5 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 53
+  },
+  {
+    "run_id": "3e3e98a4-a3a4-4415-ba88-643881c493f9",
+    "timestamp": "2026-08-17T22:52:05.821Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ambiguous-two",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 6,
+      "candidateCount": 0,
+      "confirmedCount": 0,
+      "lowConfidenceCount": 0,
+      "notes": [
+        "files_scanned=6",
+        "surfaces=1",
+        "candidates=0",
+        "confident_sites=0",
+        "low_confidence=none"
+      ]
+    },
+    "findings": [],
+    "confidence": "low",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "abstention_correctness",
+        "passed": true,
+        "score": 1,
+        "detail": "correctly produced no confident finding (abstain)"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 27
+  },
+  {
+    "run_id": "e27cf7de-5672-43d9-9f46-b4d28d3216e7",
+    "timestamp": "2026-08-17T22:52:05.889Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ambiguous-three",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 7,
+      "candidateCount": 0,
+      "confirmedCount": 0,
+      "lowConfidenceCount": 0,
+      "notes": [
+        "files_scanned=7",
+        "surfaces=1",
+        "candidates=0",
+        "confident_sites=0",
+        "low_confidence=none"
+      ]
+    },
+    "findings": [],
+    "confidence": "low",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "abstention_correctness",
+        "passed": true,
+        "score": 1,
+        "detail": "correctly produced no confident finding (abstain)"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 25
+  },
+  {
+    "run_id": "c8f90c04-13d7-413b-8918-cfc5ce995f53",
+    "timestamp": "2026-08-17T22:52:05.955Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ambiguous-two-decoy",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 8,
+      "candidateCount": 0,
+      "confirmedCount": 0,
+      "lowConfidenceCount": 0,
+      "notes": [
+        "files_scanned=8",
+        "surfaces=1",
+        "candidates=0",
+        "confident_sites=0",
+        "low_confidence=none"
+      ]
+    },
+    "findings": [],
+    "confidence": "low",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "abstention_correctness",
+        "passed": true,
+        "score": 1,
+        "detail": "correctly produced no confident finding (abstain)"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 32
+  },
+  {
+    "run_id": "2c5effe3-bef6-482a-a4ab-0a1db5415d32",
+    "timestamp": "2026-08-17T22:52:06.031Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-genvendor-generated-only",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 9,
+      "candidateCount": 24,
+      "confirmedCount": 20,
+      "lowConfidenceCount": 5,
+      "notes": [
+        "files_scanned=9",
+        "surfaces=1",
+        "candidates=24",
+        "confident_sites=5",
+        "low_confidence=src/config/constants.ts, src/importer/records.ts, src/infra/provider/client.ts, src/inventory/service.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "src/services/settlementService.ts",
+      "src/services/subscriptionService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "5/5 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 61
+  },
+  {
+    "run_id": "14bcc7f7-2b0e-44bb-8b6b-37e6d5dc41c4",
+    "timestamp": "2026-08-17T22:52:06.137Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-genvendor-vendored-only",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 9,
+      "candidateCount": 25,
+      "confirmedCount": 22,
+      "lowConfidenceCount": 6,
+      "notes": [
+        "files_scanned=9",
+        "surfaces=1",
+        "candidates=25",
+        "confident_sites=5",
+        "low_confidence=src/analytics/tracker.ts, src/config/constants.ts, src/importer/records.ts, src/infra/provider/client.ts, src/inventory/service.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "src/services/subscriptionService.ts",
+      "test/fixtures/charges.ts",
+      "vendor/provider-sdk/index.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "4/4 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": false,
+        "score": 0,
+        "detail": "flagged traps: vendor/provider-sdk/index.ts"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 0.8,
+        "detail": "precision 80%"
+      }
+    ],
+    "failures": [
+      {
+        "category": "FALSE_POSITIVE",
+        "severity": "P0",
+        "dimension": "false_positive_traps",
+        "observed": "flagged distractors: vendor/provider-sdk/index.ts",
+        "expected": "no distractor flagged"
+      }
+    ],
+    "passed": false,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 70
+  },
+  {
+    "run_id": "d178fc93-aeb2-4167-a7d7-066f502ba929",
+    "timestamp": "2026-08-17T22:52:06.253Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-genvendor-both",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 8,
+      "candidateCount": 22,
+      "confirmedCount": 19,
+      "lowConfidenceCount": 4,
+      "notes": [
+        "files_scanned=8",
+        "surfaces=1",
+        "candidates=22",
+        "confident_sites=5",
+        "low_confidence=src/analytics/tracker.ts, src/config/constants.ts, src/infra/provider/client.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "src/services/subscriptionService.ts",
+      "test/fixtures/charges.ts",
+      "vendor/provider-sdk/index.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "4/4 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": false,
+        "score": 0,
+        "detail": "flagged traps: vendor/provider-sdk/index.ts"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 0.8,
+        "detail": "precision 80%"
+      }
+    ],
+    "failures": [
+      {
+        "category": "FALSE_POSITIVE",
+        "severity": "P0",
+        "dimension": "false_positive_traps",
+        "observed": "flagged distractors: vendor/provider-sdk/index.ts",
+        "expected": "no distractor flagged"
+      }
+    ],
+    "passed": false,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 58
+  },
+  {
+    "run_id": "b472df46-90bd-47cb-9eb2-ea65940ae878",
+    "timestamp": "2026-08-17T22:52:06.354Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-genvendor-looks-generated",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 9,
+      "candidateCount": 26,
+      "confirmedCount": 21,
+      "lowConfidenceCount": 5,
+      "notes": [
+        "files_scanned=9",
+        "surfaces=1",
+        "candidates=26",
+        "confident_sites=6",
+        "low_confidence=src/analytics/tracker.ts, src/config/constants.ts, src/importer/records.ts, src/infra/provider/client.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/generated/handMaintained.ts",
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "src/services/settlementService.ts",
+      "src/services/subscriptionService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "6/6 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 56
+  },
+  {
+    "run_id": "3f77386c-f767-4552-b69f-14432c6699d6",
+    "timestamp": "2026-08-17T22:52:06.454Z",
+    "git_commit": "ae8e17f",
+    "product": "regauge",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-regauge-runtime-supported-18-20",
+    "scenario_version": "1",
+    "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 4,
+      "recipesEvaluated": 12,
+      "notes": [
+        "snapshot_files=4",
+        "skipped_binary_or_large=0",
+        "matched=node-runtime-18-to-20@2(applicable)"
+      ]
+    },
+    "findings": [
+      ".nvmrc",
+      "package.json"
+    ],
+    "confidence": null,
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "recipe_match",
+        "passed": true,
+        "score": 1,
+        "detail": "shipped recipe node-runtime-18-to-20 matched (status=applicable)"
+      },
+      {
+        "dimension": "recipe_path_coverage",
+        "passed": true,
+        "score": 1,
+        "detail": "2/2 expected root files in matchedPaths"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "recipe_apply + verification_gate (analyze-only)",
+      "idempotency (apply-then-reapply not run)",
+      "inverse/rollback (not run)",
+      "adaptive_repair token_cost / model_routing (LLM path not exercised)"
+    ],
+    "latency_ms": 5
+  },
+  {
+    "run_id": "bb8c25cb-482e-4504-8e48-c02318984a02",
+    "timestamp": "2026-08-17T22:52:06.465Z",
+    "git_commit": "ae8e17f",
+    "product": "regauge",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-regauge-runtime-supported-20-22",
+    "scenario_version": "1",
+    "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 4,
+      "recipesEvaluated": 12,
+      "notes": [
+        "snapshot_files=4",
+        "skipped_binary_or_large=0",
+        "matched=node-runtime-20-to-22@1(applicable)"
+      ]
+    },
+    "findings": [
+      ".nvmrc",
+      "package.json"
+    ],
+    "confidence": null,
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "recipe_match",
+        "passed": true,
+        "score": 1,
+        "detail": "shipped recipe node-runtime-20-to-22 matched (status=applicable)"
+      },
+      {
+        "dimension": "recipe_path_coverage",
+        "passed": true,
+        "score": 1,
+        "detail": "2/2 expected root files in matchedPaths"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "recipe_apply + verification_gate (analyze-only)",
+      "idempotency (apply-then-reapply not run)",
+      "inverse/rollback (not run)",
+      "adaptive_repair token_cost / model_routing (LLM path not exercised)"
+    ],
+    "latency_ms": 5
+  },
+  {
+    "run_id": "b73068bb-cfcf-4478-bd73-2695e7de6e7e",
+    "timestamp": "2026-08-17T22:52:06.475Z",
+    "git_commit": "ae8e17f",
+    "product": "regauge",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-regauge-runtime-unsupported-21-23",
+    "scenario_version": "1",
+    "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 4,
+      "recipesEvaluated": 12,
+      "notes": [
+        "snapshot_files=4",
+        "skipped_binary_or_large=0",
+        "matched=none"
+      ]
+    },
+    "findings": [],
+    "confidence": null,
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "abstention_by_absence",
+        "passed": true,
+        "score": 1,
+        "detail": "no shipped recipe matches the family — correct abstention-by-absence"
+      }
+    ],
+    "failures": [
+      {
+        "category": "COVERAGE_GAP",
+        "severity": "P1",
+        "dimension": "family_coverage",
+        "observed": "no shipped recipe covers this migration family",
+        "expected": "a recipe for family 'runtime-upgrade'"
+      }
+    ],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "recipe_apply + verification_gate (analyze-only)",
+      "idempotency (apply-then-reapply not run)",
+      "inverse/rollback (not run)",
+      "adaptive_repair token_cost / model_routing (LLM path not exercised)"
+    ],
+    "latency_ms": 5
+  },
+  {
+    "run_id": "183f31d1-f447-4bc4-97f2-15914f6e4946",
+    "timestamp": "2026-08-17T22:52:06.484Z",
+    "git_commit": "ae8e17f",
+    "product": "regauge",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-regauge-runtime-already-migrated",
+    "scenario_version": "1",
+    "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 4,
+      "recipesEvaluated": 12,
+      "notes": [
+        "snapshot_files=4",
+        "skipped_binary_or_large=0",
+        "matched=none"
+      ]
+    },
+    "findings": [],
+    "confidence": null,
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "no_op_correctness",
+        "passed": true,
+        "score": 1,
+        "detail": "no recipe matched — nothing to do"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "recipe_apply + verification_gate (analyze-only)",
+      "idempotency (apply-then-reapply not run)",
+      "inverse/rollback (not run)",
+      "adaptive_repair token_cost / model_routing (LLM path not exercised)"
+    ],
+    "latency_ms": 66
+  },
+  {
+    "run_id": "bc82c9bf-193a-4d68-bf31-4dd0f040e3c9",
+    "timestamp": "2026-08-17T22:52:06.560Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ref-flat-holdout-0",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 5,
+      "candidateCount": 14,
+      "confirmedCount": 12,
+      "lowConfidenceCount": 4,
+      "notes": [
+        "files_scanned=5",
+        "surfaces=1",
+        "candidates=14",
+        "confident_sites=3",
+        "low_confidence=src/analytics/tracker.ts, src/infra/provider/client.ts, src/inventory/service.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "3/3 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 42
+  },
+  {
+    "run_id": "6e5c35ce-6510-45b6-b833-f69b493e4679",
+    "timestamp": "2026-08-17T22:52:06.634Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ref-ref-holdout-1",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 9,
+      "candidateCount": 25,
+      "confirmedCount": 21,
+      "lowConfidenceCount": 6,
+      "notes": [
+        "files_scanned=9",
+        "surfaces=1",
+        "candidates=25",
+        "confident_sites=5",
+        "low_confidence=src/analytics/tracker.ts, src/config/constants.ts, src/importer/records.ts, src/infra/provider/client.ts, src/inventory/service.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "src/services/settlementService.ts",
+      "src/services/subscriptionService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "5/5 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 58
+  },
+  {
+    "run_id": "02287eaf-84f0-4a93-a780-8eb7f3b8425b",
+    "timestamp": "2026-08-17T22:52:06.730Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ref-nested2-holdout-2",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 5,
+      "candidateCount": 15,
+      "confirmedCount": 13,
+      "lowConfidenceCount": 4,
+      "notes": [
+        "files_scanned=5",
+        "surfaces=1",
+        "candidates=15",
+        "confident_sites=3",
+        "low_confidence=src/config/constants.ts, src/importer/records.ts, src/infra/provider/client.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "3/3 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 33
+  },
+  {
+    "run_id": "78420ec9-63ce-4d0b-81a3-d1e397dff1f7",
+    "timestamp": "2026-08-17T22:52:06.798Z",
+    "git_commit": "ae8e17f",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+ae8e17f",
+    "scenario_id": "gen-fettler-ref-allOf-holdout-3",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 7,
+      "candidateCount": 20,
+      "confirmedCount": 17,
+      "lowConfidenceCount": 5,
+      "notes": [
+        "files_scanned=7",
+        "surfaces=1",
+        "candidates=20",
+        "confident_sites=4",
+        "low_confidence=src/analytics/tracker.ts, src/config/constants.ts, src/infra/provider/client.ts, src/inventory/service.ts, test/fixtures/charges.ts"
+      ]
+    },
+    "findings": [
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "src/services/subscriptionService.ts",
+      "test/fixtures/charges.ts"
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "4/4 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 48
   }
 ]

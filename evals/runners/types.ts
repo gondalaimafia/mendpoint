@@ -32,7 +32,12 @@ export interface RunFailure {
 
 /** Observable analysis activity (the "tools/graph/retrieval" telemetry). */
 export interface AnalysisActivity {
-  /** Files the scanner actually examined (count; large repos report count only). */
+  /**
+   * Files the scanner actually examined — the repo size independent variable
+   * (spec §21.3). This is the number of source files the index/snapshot layer
+   * walked and indexed after pruning dependency/VCS/cache trees, NOT the number
+   * of impact findings. Plot scale degradation against this.
+   */
   filesExamined: number;
   /** Candidate sites discovered before confirmation (Fettler). */
   candidateCount?: number;
