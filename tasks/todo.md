@@ -2114,3 +2114,55 @@ Protected CI review: pull request run `32085792187` proved the coordinator-first
 Runtime activation review: pull request 166 merged as `5ea1e6bd8866b4b20d6706c7254c0eb5800ec7ac`, and exact-main run `32089123504` passed tests, release gates, container builds, deployment E2E, deploy, and production health. Protected activation run `32089435387` then passed authority, application, volume, object storage secret-name, and protected credential staging checks. Its coordinator failed closed before listening because Fly invoked the image's base entrypoint and the fresh mounted volume did not yet contain `/data/repos`; the worker was never deployed, and no model or SCM operation began. The health loop also lacked a per-request timeout, so an unavailable proxy could consume the job-level timeout. The run was canceled after the exact failure was retained. Red-first regressions now require the checked-in Fly profile to invoke `/app/scripts/start-transformer-entrypoint.sh` for both roles and require every public revision/readiness request to terminate after ten seconds. Both focused suites, the Actions policy check, worker typecheck, Fly manifest validation, and diff integrity pass locally. Protected CI, merge, and activation retry remain pending.
 
 Image-stage review: pull request 170 merged as `6488ab21b2ec1e2aaa0223ced7eead7779e7fa16`, and exact-main run `32090477234` passed tests, agent and synthetic evals, release gates, the production build, API smoke, every container build and runtime start, the deployment journey, deploy, and production health. Protected run `32090908515` proved the Fly entrypoint override reached the coordinator, then failed closed because `[build].target` is not Fly's multistage key. The API stage therefore supplied a present but non-executable script. The worker, live model evaluation, draft canary, and soak were skipped, containment succeeded, and the crash-looping coordinator was scaled to zero. The official Fly configuration contract requires `[build].build-target`; a red regression now distinguishes that exact key from the ignored spelling before the one-line manifest correction.
+
+## Foundational Change Graph intelligence architecture: 2026-08-17
+
+Authority: `C:\Users\Talal\Downloads\Mendpoint_CODEX_Change_Graph_Intelligence_Prompt.md` governs this initiative. Existing product specifications, ADRs, schemas, and APIs are compatibility constraints, not authority to narrow this contract.
+
+### Coordination and archaeology
+
+- [x] Read the complete authority document, repository instructions, review standard, and dual-agent operating protocol.
+- [x] Fetch current `origin/main`, create issue 185, claim `codex/185-change-graph-intelligence`, and isolate the worktree.
+- [x] Inspect open PRs 180 to 184 and record non-overlap with Claude-owned intelligence, trajectory, and evaluation files.
+- [x] Read the security boundaries, canonical product specification Change Graph sections, accepted ADRs, existing graph documents, and relevant implementations end to end.
+- [x] Record what is real, partial, seeded, duplicated, or dormant in `docs/graph/CURRENT_STATE.md`.
+
+### Architecture and contracts
+
+- [x] Record an accepted ADR making the Change Graph Mendpoint's versioned, evidenced software-relationship memory while retaining the existing relational persistence substrate for the first proof.
+- [x] Define the smallest versioned entity, edge, provenance, temporal, coverage, conflict, and failure contracts required by the first indirect Fettler question.
+- [x] Preserve canonical identity, tenant scope, repository/provider snapshots, deterministic serialization, immutable mission graph versions, and explicit ambiguity.
+- [x] Define bounded query and context-compiler contracts that retain evidence while excluding irrelevant graph state.
+- [x] Document ontology, provenance, coverage, storage, query, incremental build, and benchmark methodology without duplicating equivalent documents.
+
+### Red-first vertical slice
+
+- [x] Add red tests for exact, alias, ambiguous, unresolved, and colliding entity resolution.
+- [x] Add red tests for provider endpoint to SDK method to internal wrapper to indirect symbol to relevant test materialization with resolvable provenance.
+- [x] Add red tests for immutable graph versions, incremental invalidation, historical mission reads, stale/conflicting evidence, partial coverage, and failed publication retaining the previous valid graph.
+- [x] Add red tests for bounded indirect impact traversal, compact context compilation, no-impact versus unknown-impact distinction, and graph failure destination classification.
+- [x] Add red tests proving tenant isolation and provider-snapshot-bound facts inside each tenant graph.
+- [x] Implement the smallest coherent entity resolver, materializer, version publisher, query layer, and Fettler impact/context integration on existing persistence and graph packages.
+
+### Representation benchmark and learning
+
+- [x] Build development, validation, and hidden-holdout synthetic cases with at least half requiring indirect relationships and answer keys isolated from runtime inputs.
+- [x] Compare raw retrieval and graph representation with the same task, model contract, grader, and acceptance criteria; record correctness, retrieval calls, context size, tokens, latency, cost, abstention, and failure categories.
+- [x] Integrate DeepSeek verification only through an explicit compatible boundary; it remains soft and cannot rescue deterministic failure. Do not copy unmerged PR 182 code.
+- [x] Route missing or wrong relationships to graph, entity, parser, runtime, query, or context fixes before model-learning eligibility.
+- [x] Emit graph coverage and failure telemetry plus a governed learning event reference without exposing chain of thought or admitting representation failures to model training.
+
+### Verification and publication
+
+- [x] Run focused red and green suites, complete affected package suites, all workspace typechecks, full tests, production build, release gates, dependency audit, and diff integrity.
+- [x] Inspect the complete diff for tenant, provenance, temporal, compatibility, performance, failure-recovery, and rollback defects.
+- [ ] Commit scoped changes, sync with current main, push the issue branch, open the PR, and request attributable Claude peer review.
+- [ ] Resolve P0 and P1 findings red first, require protected CI, and leave merge to the protected human decision unless explicitly delegated.
+
+Acceptance: issue 185 demonstrates one real indirect Fettler relationship chain as versioned, tenant-safe, evidence-backed graph state; Fettler traverses it deterministically into a compact impact pack; uncertainty and coverage remain explicit; incremental publication preserves historical mission meaning; controlled raw-versus-graph evidence distinguishes representation gains from model gains; DeepSeek remains a soft optional reviewer; and graph failures improve the representation layer instead of becoming model training data by default.
+
+Review: the bounded first slice is implemented on top of the existing SQLite and TypeScript graph substrate. It publishes immutable content-addressed software graph versions with exact tenant, repository, provider, snapshot, extractor, temporal, confidence, status, conflict, and coverage bindings. It resolves exact, alias, ambiguous, unresolved, and collision cases; preserves independent provider heads and historical reads; materializes the first provider endpoint to SDK to repository wrapper to test chain from a real code index; distinguishes no impact from unknown coverage; compiles a bounded evidence-bearing Fettler context; and records graph-representation learning evidence as ineligible for model-weight training.
+
+The current-schema live benchmark used `muse-spark-1.2-contributor` on six programmatically materialized repositories across development, validation, and holdout splits. Raw and graph arms both scored 6 of 6. The graph arm was 6.2 percent faster but used 71.9 percent more input tokens and cost 1.7 percent more, so graph-first retrieval remains shadow-only. Arm C was not run because no approved DeepSeek credential was configured.
+
+Verification: Graph Learn 101 of 101, Code Impact 77 of 77, Pipeline 81 of 81, Eval 132 of 132, all workspace and script typechecks, the 50-page production build, GA/spec 3.0/claims/names/action-pin gates, production dependency audit, and diff integrity pass. The unconstrained monorepo test command saturated Windows filesystem timing budgets in unrelated API and worker cases; every timed-out case passed in its complete file or exact isolated rerun. No product timeout was widened and no source behavior was weakened. Commit, protected CI, and attributable peer review remain pending.

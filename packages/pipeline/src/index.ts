@@ -35,7 +35,12 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
 import { normalizeChange } from "@mendpoint/change-intel";
-import { analyzeCapabilityAdoption, analyzeImpact, reportToFindings } from "@mendpoint/code-impact";
+import {
+  analyzeCapabilityAdoption,
+  analyzeImpact,
+  analyzeImpactWithSoftwareGraph,
+  reportToFindings,
+} from "@mendpoint/code-impact";
 import { notifyCapabilityAdoptionOpportunity } from "@mendpoint/notify";
 import { generateMigration } from "@mendpoint/generation";
 import {
@@ -230,6 +235,8 @@ export type PipelineReport = {
     prUrl?: string;
     deliveryError?: string;
     impactReport?: ImpactReport;
+    graphVersionId?: string;
+    graphContextArtifactId?: string;
     repair?: {
       sessionId: string;
       ok: boolean;
@@ -712,13 +719,13 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   );
   const graphRagMd = formatQueryForPlanner(blast);
 
-  // Graph-update audit at the ingest entry point. ingestControlPlane +
-  // ingestSpecDiff upsert many nodes/edges per change; auditing every edge write
-  // would drown the compliance log, so one event per ingest records the actor,
-  // tenant, provider, and magnitude — the security- and migration-relevant facts
-  // (spec 19.8 graph updates). Deterministic id keeps it idempotent on replay.
+  // Graph-update audit at the ingest entry point. Keep the replay identity and
+  // metadata derived only from the immutable spec change. Blast-radius counts
+  // include impact edges added later in the same pipeline and therefore are not
+  // stable across crash recovery. The v2 identity lets installations that have
+  // already written the old count-bearing audit converge without conflict.
   recordAudit(db, {
-    id: `audit-graph-updated-${input.tenantId}-${changeId}`,
+    id: `audit-graph-updated-v2-${input.tenantId}-${changeId}`,
     tenantId: input.tenantId,
     actor: "pipeline",
     action: "graph.updated",
@@ -729,8 +736,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       changeId,
       providerSlug: graphProviderSlug,
       surfaces: surfaces.length,
-      graphNodes: blast.nodes.length,
-      graphEdges: blast.edges.length,
+      endpointSurfaces: surfaces.filter((surface) => Boolean(surface.path)).length,
+      fieldSurfaces: surfaces.filter((surface) => Boolean(surface.field || surface.fromField))
+        .length,
     },
   });
 
@@ -833,10 +841,101 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       continue;
     }
 
-    // Stages 2–6: Index → Candidates → Expand → Confirm → ImpactReport
-    const impactReport = await analyzeImpact(repo.local_path, surfaces, {
-      persistIndex: input.persistIndex ?? true,
-    });
+    // Stages 2–6: Index → Candidates → Expand → Confirm → ImpactReport.
+    // When an endpoint surface exists, the same index also publishes the first
+    // immutable endpoint-to-test software relationship version. This remains a
+    // shadow evidence path until the graph benchmark clears its authority gate.
+    // Bind publication to the durable change observation. A retry after graph
+    // persistence but before delivery must replay the exact graph version.
+    const graphObservedAt = changeResult.change.created_at;
+    let graphVersionId: string | undefined;
+    let graphContextArtifactId: string | undefined;
+    let graphContextContent: string | undefined;
+    let impactReport: ImpactReport;
+    const endpointSurface = surfaces.find((surface) => surface.path);
+    if (endpointSurface) {
+      const graphAnalysis = await analyzeImpactWithSoftwareGraph(repo.local_path, surfaces, {
+        graphDb: gldb,
+        tenantId: input.tenantId,
+        repositoryId: repo.connected_repository_id ?? repo.id,
+        providerId: provider.id,
+        providerSnapshotId: to.id,
+        providerRevision: to.version_label,
+        providerSdkPackage: provider.slug,
+        providerSdkVersion: to.version_label,
+        providerEvidenceRefs: [sourceArtifacts[1]!.id],
+        observedAt: graphObservedAt,
+        maxCallerHops: 4,
+        maxContextBytes: 32_768,
+        impact: { persistIndex: input.persistIndex ?? true },
+      });
+      impactReport = graphAnalysis.impactReport;
+      graphVersionId = graphAnalysis.graphVersion.versionId;
+      graphContextContent = graphAnalysis.context.content;
+      const graphArtifact = persistJsonArtifact(db, {
+        tenantId: input.tenantId,
+        kind: "fettler-change-graph-context",
+        mediaType: "application/vnd.mendpoint.fettler-change-graph-context+json",
+        value: JSON.parse(graphAnalysis.context.content),
+        producerPrincipalId: pipelinePrincipal.id,
+        createdAt: graphObservedAt,
+      });
+      graphContextArtifactId = graphArtifact.id;
+      insertEvidenceRecord(db, {
+        id: trustId("evidence", input.tenantId, consumer.id, graphVersionId, graphArtifact.id),
+        tenantId: input.tenantId,
+        subjectType: "api_change",
+        subjectId: changeId,
+        artifactId: graphArtifact.id,
+        inputArtifactId: sourceArtifacts[1]!.id,
+        producerPrincipalId: pipelinePrincipal.id,
+        tool: "mendpoint-change-graph",
+        toolVersion: "1",
+        verdict: graphAnalysis.graphImpact.coverage.basis === "complete" ? "passed" : "failed",
+        createdAt: graphObservedAt,
+      });
+      recordAudit(db, {
+        tenantId: input.tenantId,
+        actor: "pipeline",
+        action: "graph.software_version_published",
+        resourceType: "consumer",
+        resourceId: consumer.id,
+        metadata: {
+          graphVersionId,
+          graphContextArtifactId,
+          impact: graphAnalysis.graphImpact.impact,
+          coverage: graphAnalysis.graphImpact.coverage,
+        },
+      });
+      appendDomainEvent(db, {
+        id: trustId("event", input.tenantId, changeId, consumer.id, graphVersionId),
+        tenantId: input.tenantId,
+        schemaVersion: 1,
+        eventType: "change_graph.context_recorded",
+        aggregateType: "api_change",
+        aggregateId: changeId,
+        actorPrincipalId: pipelinePrincipal.id,
+        correlationId: changeId,
+        causationId: trustId("event", input.tenantId, changeId, "normalized"),
+        idempotencyKey: `api_change:${changeId}:change_graph:${consumer.id}:${graphVersionId}`,
+        payload: {
+          consumerId: consumer.id,
+          graphVersionId,
+          graphContentDigest: graphAnalysis.graphImpact.graphContentDigest,
+          contextArtifactId: graphContextArtifactId,
+          contextDigest: graphAnalysis.context.contentDigest,
+          impact: graphAnalysis.graphImpact.impact,
+          coverage: graphAnalysis.graphImpact.coverage,
+          learningDestination: "graph_representation",
+          modelWeightEligible: false,
+        },
+        createdAt: graphObservedAt,
+      });
+    } else {
+      impactReport = await analyzeImpact(repo.local_path, surfaces, {
+        persistIndex: input.persistIndex ?? true,
+      });
+    }
     assertActive();
 
     const rawFindings = reportToFindings(impactReport);
@@ -984,6 +1083,17 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       registryMd,
       "",
       graphRagMd,
+      graphContextContent
+        ? [
+            "### Change Graph evidence",
+            `- Graph version: \`${graphVersionId}\``,
+            `- Context artifact: \`${graphContextArtifactId}\``,
+            "",
+            "```json",
+            graphContextContent,
+            "```",
+          ].join("\n")
+        : "",
       "",
       gates.reportMarkdown,
       "",
@@ -1771,6 +1881,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       prUrl,
       deliveryError,
       impactReport,
+      graphVersionId,
+      graphContextArtifactId,
       repair: repairMeta,
     });
   }

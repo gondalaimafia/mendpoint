@@ -11,6 +11,7 @@ import {
   insertConsumerRepo,
   insertMonitoredApi,
   insertPolicy,
+  getConsumerRepo,
   listCapabilityAdoptionOpportunities,
   listPrs,
   listChanges,
@@ -32,7 +33,9 @@ import {
 } from "@mendpoint/contract";
 import { applyPrFeedback, runChangePipeline } from "./index.js";
 import {
+  getSoftwareGraphHead,
   openGraphLearnMemory,
+  readSoftwareGraphVersion,
   resetGraphLearnDbForTests,
   type GraphLearnDb,
 } from "@mendpoint/graph-learn";
@@ -354,8 +357,9 @@ describe("pipeline", () => {
       tenantId: "tenant_default",
       createdAt: nowIso(),
     });
+    const consumerRepoId = newId();
     insertConsumerRepo(db, {
-      id: newId(),
+      id: consumerRepoId,
       consumerId,
       localPath: shop,
       defaultBranch: "main",
@@ -415,6 +419,14 @@ describe("pipeline", () => {
     expect(report.consumers.length).toBe(1);
     expect(report.consumers[0].findings).toBeGreaterThan(0);
     expect(report.consumers[0].candidates).toBeGreaterThan(0);
+    expect(report.consumers[0].graphVersionId).toMatch(/^sgv1:[a-f0-9]{64}$/);
+    expect(readSoftwareGraphVersion(
+      graphDb,
+      "tenant_default",
+      consumerRepoId,
+      report.consumers[0].graphVersionId!,
+    ).repositoryId).toBe(consumerRepoId);
+    expect(report.consumers[0].graphContextArtifactId).toMatch(/^artifact_/);
     expect(report.consumers[0].prStatus).toBe("draft");
     expect(listPrs(db).length).toBe(1);
     expect(listAudit(db).some((a) => a.action === "change.normalized")).toBe(true);
@@ -428,6 +440,7 @@ describe("pipeline", () => {
         "candidate-edit",
         "verification-result",
         "structured-pr-package",
+        "fettler-change-graph-context",
       ]),
     );
     expect(artifacts.every((artifact) => artifact.content_text)).toBe(true);
@@ -445,6 +458,11 @@ describe("pipeline", () => {
     expect(evidence).toHaveLength(1);
     expect(evidence[0].verdict).toBe("passed");
     expect(listArtifactManifests(db, "tenant_other")).toEqual([]);
+    expect(
+      listDomainEvents(db, "tenant_default", "api_change", report.changeId).map(
+        (event) => event.event_type,
+      ),
+    ).toContain("change_graph.context_recorded");
     expect(listDomainEvents(db, "tenant_default", "migration_pr", prId).map((event) => event.event_type)).toEqual([
       "migration_pr.candidate_recorded",
       "migration_pr.package_recorded",
@@ -459,6 +477,8 @@ describe("pipeline", () => {
     expect(delivered.body).toContain("#### Verification results");
     expect(delivered.body).toContain("Automatic merge: disabled");
     expect(delivered.body).toContain("Automatic deployment: disabled");
+    expect(delivered.body).toContain("### Change Graph evidence");
+    expect(delivered.body).toContain(report.consumers[0].graphVersionId!);
     // Gap 2 provenance: the caller-attested security scan reaches the PR evidence
     // labelled as an attestation, never as an independently verified result.
     expect(delivered.body).toContain("**security-scan** _(attested, not verified)_");
@@ -867,11 +887,16 @@ describe("pipeline", () => {
       repo: "a-shop",
       localPath: shop,
     });
-    addMonitoredConsumer(db, provider.id, {
+    const retryingConsumerId = addMonitoredConsumer(db, provider.id, {
       name: "B Shop",
       repo: "b-shop",
       localPath: shop,
     });
+    const retryingRepositoryId = getConsumerRepo(
+      db,
+      retryingConsumerId,
+      "tenant_default",
+    )!.id;
 
     class SelectiveFailureDelivery extends MockGitHubDelivery {
       readonly opened: string[] = [];
@@ -908,7 +933,8 @@ describe("pipeline", () => {
       securityScanAttested: true,
     };
 
-    const first = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    const graphDb = testGraphDb();
+    const first = await runChangePipeline({ ...common, graphDb });
     expect(first.consumers.map((consumer) => consumer.prStatus)).toEqual([
       "draft",
       "delivery_failed",
@@ -921,8 +947,15 @@ describe("pipeline", () => {
       first.changeId,
       "tenant_default",
     ).length;
+    const firstGraphHead = getSoftwareGraphHead(
+      graphDb,
+      "tenant_default",
+      retryingRepositoryId,
+      provider.id,
+    );
+    expect(firstGraphHead).toBeDefined();
 
-    const second = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    const second = await runChangePipeline({ ...common, graphDb });
     expect(second.changeId).toBe(first.changeId);
     expect(second.consumers.map((consumer) => consumer.prStatus)).toEqual([
       "draft",
@@ -934,5 +967,13 @@ describe("pipeline", () => {
     expect(
       listFindingsForChange(db, first.changeId, "tenant_default"),
     ).toHaveLength(findingsAfterFirst);
+    expect(
+      getSoftwareGraphHead(
+        graphDb,
+        "tenant_default",
+        retryingRepositoryId,
+        provider.id,
+      ),
+    ).toEqual(firstGraphHead);
   });
 });

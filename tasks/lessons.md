@@ -59,3 +59,8 @@
 **Mistake:** I initially treated the attached dual agent package as a proposal to interpret rather than an authoritative execution package.
 **Correction:** Talal stated that the instructions for Codex have high priority authority.
 **Rule:** When Talal designates attached Codex instructions as high priority authority, execute their safe repository actions directly, preserving only higher priority safety and explicit current user constraints.
+
+### 2026-08-17 — Treat the Change Graph intelligence prompt as the initiative authority
+**Mistake:** I initially described the attached Change Graph prompt as technical input to reconcile beneath existing product documents.
+**Correction:** Talal stated that the attached Change Graph prompt is the authority document.
+**Rule:** For issue 185 and subsequent Change Graph intelligence work, treat `Mendpoint_CODEX_Change_Graph_Intelligence_Prompt.md` as the governing architecture and acceptance contract. Reconcile existing interfaces for compatibility, but do not narrow or override the prompt's representation, evidence, benchmark, security, learning, and completion requirements.
