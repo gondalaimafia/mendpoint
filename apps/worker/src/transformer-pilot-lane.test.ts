@@ -300,6 +300,89 @@ function adaptiveAdapter() {
   })!;
 }
 
+// Register tenant-a in the App DB so that `recordTrajectory` (which asserts the
+// tenant exists) can persist. The lane fixtures otherwise seed only unreferenced
+// tables (scm_connections etc. carry no tenants FK), so a real tenant row is
+// what a production database would have but these fixtures lack.
+function registerTenantA(db: AppDb): void {
+  db.raw
+    .prepare(
+      `INSERT OR IGNORE INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES ('tenant-a', 'tenant-a', 'Tenant A', 'team', 'active', 10, ?)`,
+    )
+    .run(CREATED_AT);
+}
+
+// Create and campaign-link the ReGauge Mission the API boundary would create for
+// campaign-a, so the pilot-lane trajectory emit can resolve it.
+function seedRegaugeMissionForCampaignA(db: AppDb): string {
+  registerTenantA(db);
+  dbModule.insertPrincipal(db, {
+    id: "principal-a",
+    tenantId: "tenant-a",
+    kind: "human",
+    subject: "owner@tenant-a.example",
+    displayName: "Owner A",
+    createdAt: CREATED_AT,
+  });
+  const mission = dbModule.createMission(db, {
+    id: "mission-regauge-campaign-a",
+    tenantId: "tenant-a",
+    product: "regauge",
+    triggerKind: "migration_objective",
+    objective: "Runtime upgrade for campaign-a",
+    ownerPrincipalId: "principal-a",
+    eventId: "mission-regauge-campaign-a-created",
+    idempotencyKey: "mission-regauge-campaign-a-create",
+    correlationId: "campaign-a",
+    createdAt: CREATED_AT,
+  });
+  dbModule.linkRegaugeCampaignToMission(db, {
+    tenantId: "tenant-a",
+    missionId: mission.id,
+    regaugeCampaignId: "campaign-a",
+    actorPrincipalId: "principal-a",
+    eventId: "mission-regauge-campaign-a-linked",
+    idempotencyKey: "mission-regauge-campaign-a-link",
+    correlationId: "campaign-a",
+    createdAt: CREATED_AT,
+  });
+  return mission.id;
+}
+
+function runAdaptiveLaneOnce(
+  fixture: { root: string; db: AppDb; store: TransformerPilotExecutionStore },
+  overrides?: { runId?: string; workerId?: string },
+) {
+  const adapter = adaptiveAdapter();
+  return runTransformerPilotLaneOnce({
+    db: fixture.db,
+    store: fixture.store,
+    gateConfig: gateConfig(),
+    tenantId: "tenant-a",
+    workerId: overrides?.workerId ?? "worker-adaptive",
+    evidenceRoot: join(fixture.root, "evidence"),
+    candidateRoot: join(fixture.root, "candidates"),
+    tempRoot: join(fixture.root, "workspaces"),
+    runId: overrides?.runId ?? "run-adaptive",
+    now: () => RUN_AT,
+    leaseToken: () => "transformer-adaptive-lease-token-0001",
+    adaptivePlannerAdapterForTenant: () => adapter,
+    authorizeAdaptiveExternalProcessing: (authorization) =>
+      authorizeConfiguredTransformerAdaptiveExternalProcessing(authorization, adaptiveModelEnv()),
+    adaptiveCandidateDataRoot: fixture.root,
+    commandRunner: async ({ cwd }) => {
+      const content = readFileSync(join(cwd, "package.json"), "utf8");
+      const passed = content.includes('"mendpointAdaptiveReview": "fixed"');
+      return {
+        exitCode: passed ? 0 : 9,
+        stdout: passed ? "verified" : "",
+        stderr: passed ? "" : "deterministic gate failed",
+      };
+    },
+  });
+}
+
 describe("Transformer production pilot lane", () => {
   it("loads an exact snapshot, executes one fenced attempt, and persists the candidate", async () => {
     const { root, db, store } = setup();
@@ -793,6 +876,70 @@ describe("Transformer production pilot lane", () => {
         headerRequestId: "adaptive-header-request-a",
       })],
     });
+  });
+
+  it("stamps the campaign Mission id onto the trajectory a ReGauge run produces", async () => {
+    const fixture = setup();
+    const missionId = seedRegaugeMissionForCampaignA(fixture.db);
+
+    const result = await runAdaptiveLaneOnce(fixture);
+    expect(result).toMatchObject({ attempted: 1, failed: 1 });
+
+    const candidates = listAdaptiveCandidates(fixture.db, "tenant-a");
+    expect(candidates).toHaveLength(1);
+    const attemptId = candidates[0]!.attemptId;
+
+    const trajectories = fixture.db.raw
+      .prepare(
+        `SELECT product, mission_id, run_id, final_outcome FROM trajectories WHERE tenant_id = ?`,
+      )
+      .all("tenant-a") as Array<{
+        product: string;
+        mission_id: string | null;
+        run_id: string | null;
+        final_outcome: string | null;
+      }>;
+    expect(trajectories).toHaveLength(1);
+    expect(trajectories[0]).toMatchObject({
+      product: "regauge",
+      mission_id: missionId,
+      // run_id stays populated with the attempt id: the existing per-attempt key
+      // is preserved, not replaced by mission_id.
+      run_id: attemptId,
+      final_outcome: "candidate_review_pending",
+    });
+  });
+
+  it("records a null-mission trajectory for a campaign with no Mission and never fabricates one", async () => {
+    const fixture = setup();
+    // Tenant exists but no Mission is linked — a campaign created before the
+    // Mission primitive was wired. The trajectory must still record, mission NULL.
+    registerTenantA(fixture.db);
+
+    const result = await runAdaptiveLaneOnce(fixture);
+    expect(result).toMatchObject({ attempted: 1, failed: 1 });
+    expect(listAdaptiveCandidates(fixture.db, "tenant-a")).toHaveLength(1);
+
+    const trajectories = fixture.db.raw
+      .prepare(`SELECT product, mission_id FROM trajectories WHERE tenant_id = ?`)
+      .all("tenant-a") as Array<{ product: string; mission_id: string | null }>;
+    expect(trajectories).toHaveLength(1);
+    expect(trajectories[0]!.product).toBe("regauge");
+    expect(trajectories[0]!.mission_id).toBeNull();
+  });
+
+  it("does not abort ReGauge candidate delivery when the Mission trajectory emit fails", async () => {
+    const fixture = setup();
+    // tenant-a is deliberately NOT registered, so recordTrajectory (which asserts
+    // the tenant exists) fails closed inside the best-effort emit. The candidate
+    // must still be recorded and the lane must still complete its attempt.
+    const result = await runAdaptiveLaneOnce(fixture);
+    expect(result).toMatchObject({ attempted: 1, failed: 1 });
+    expect(listAdaptiveCandidates(fixture.db, "tenant-a")).toHaveLength(1);
+    const count = fixture.db.raw
+      .prepare(`SELECT COUNT(*) AS n FROM trajectories WHERE tenant_id = ?`)
+      .get("tenant-a") as { n: number };
+    expect(count.n).toBe(0);
   });
 
   it("records an escalated tier when a review-tier policy is configured", async () => {

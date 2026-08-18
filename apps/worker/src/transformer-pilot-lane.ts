@@ -3,6 +3,8 @@ import { join, resolve } from "node:path";
 import {
   listRepositorySnapshots,
   recordAdaptiveCandidate,
+  recordTrajectory,
+  resolveMissionForRegaugeCampaign,
   type AppDb,
 } from "@mendpoint/db";
 import {
@@ -207,6 +209,78 @@ async function resolveCheckpointProvider(
 
 function stableId(prefix: string, ...parts: readonly string[]): string {
   return `${prefix}_${sha256(parts.join("\0"))}`;
+}
+
+/**
+ * Best-effort ReGauge trajectory emit (spec 6.1 / 8.6). A recorded adaptive
+ * candidate is the observable output of one ReGauge attempt; persisting a
+ * trajectory keyed by the campaign's Mission is what makes a later delivery
+ * outcome joinable back to the attempt that produced it — the seam PR #191 could
+ * not close, because a ReGauge delivery keys on candidate_id/attempt_id while
+ * trajectories key on run_id. The join is
+ * regauge_adaptive_deliveries.candidate_id -> regauge_adaptive_candidates.campaign_id
+ * -> mission.regauge_campaign_id -> mission.id -> trajectories.mission_id.
+ *
+ * Mission bookkeeping is metadata: it MUST NEVER abort candidate recording or the
+ * lane. Any failure is logged with enough context to diagnose and swallowed
+ * (matching the best-effort convention in packages/pipeline/src/index.ts), never
+ * a bare catch. `mission_id` is nullable: a campaign created before the Mission
+ * primitive was wired resolves to no mission, and the trajectory is written with
+ * mission_id NULL rather than fabricating one. `run_id` stays populated with the
+ * attempt id so the existing per-attempt key is preserved, not replaced.
+ */
+function emitRegaugeAdaptiveTrajectory(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    unitId: string;
+    attemptId: string;
+    candidateId: string;
+    family: string | null;
+    provider: string | null;
+    framework: string | null;
+    createdAt: string;
+  }>,
+): void {
+  try {
+    const mission = resolveMissionForRegaugeCampaign(db, input.tenantId, input.campaignId);
+    recordTrajectory(db, {
+      id: stableId(
+        "regaugetrajectory",
+        input.tenantId,
+        input.campaignId,
+        input.unitId,
+        input.attemptId,
+      ),
+      tenantId: input.tenantId,
+      product: "regauge",
+      taskKind: "regauge.adaptive_candidate",
+      taskSummary: `Adaptive candidate for unit ${input.unitId}`,
+      missionId: mission?.id ?? null,
+      runId: input.attemptId,
+      finalOutcome: "candidate_review_pending",
+      provenance: {
+        source: "regauge_pilot_lane",
+        candidateId: input.candidateId,
+        campaignId: input.campaignId,
+        unitId: input.unitId,
+        attemptId: input.attemptId,
+        family: input.family,
+        provider: input.provider,
+        framework: input.framework,
+        missionLinked: Boolean(mission),
+      },
+      createdAt: input.createdAt,
+    });
+  } catch (error) {
+    console.error(
+      `regauge trajectory emit failed tenant=${input.tenantId} campaign=${input.campaignId} ` +
+        `unit=${input.unitId} attempt=${input.attemptId} candidate=${input.candidateId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+    );
+  }
 }
 
 function empty(enabled: boolean): TransformerPilotLaneResult {
@@ -450,6 +524,17 @@ export async function runTransformerPilotLaneOnce(
           pending.handoff.sealedSha256,
         ),
         gateConfig: rawGate,
+      });
+      emitRegaugeAdaptiveTrajectory(input.db, {
+        tenantId: pending.tenantId,
+        campaignId: pending.campaignId,
+        unitId: pending.unitId,
+        attemptId: pending.handoff.attemptId,
+        candidateId: recordedCandidate.id,
+        family: pending.handoff.family ?? null,
+        provider: pending.handoff.provider ?? null,
+        framework: pending.handoff.framework ?? null,
+        createdAt: pending.handoff.observedAt,
       });
       adaptiveRecovered++;
     } catch (error) {
@@ -873,6 +958,17 @@ export async function runTransformerPilotLaneOnce(
                 gateConfig: rawGate,
               });
               adaptiveModelEvidence.push(modelEvidence);
+              emitRegaugeAdaptiveTrajectory(input.db, {
+                tenantId: handoff.tenantId,
+                campaignId: handoff.campaignId,
+                unitId: handoff.unitId,
+                attemptId: handoff.attemptId,
+                candidateId: recordedCandidate.id,
+                family: handoff.family ?? null,
+                provider: handoff.provider ?? null,
+                framework: handoff.framework ?? null,
+                createdAt: observedAt,
+              });
             } catch (error) {
               if (!handoffRecorded && modelEvidence?.created) {
                 discardTransformerAdaptiveModelEvidence(resolve(input.evidenceRoot), modelEvidence);

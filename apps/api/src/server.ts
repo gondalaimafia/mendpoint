@@ -815,7 +815,7 @@ app.route("/advanced-ai", createAdvancedAiApplicationRoutes({
   authorizeHumanApprover: (tenantId, principalId) => Boolean(db.raw.prepare("SELECT 1 FROM principals WHERE tenant_id = ? AND id = ? AND kind = 'human' AND revoked_at IS NULL").get(tenantId, principalId)),
 }));
 
-registerTransformerControlPlaneRoutes(app, transformerCampaigns, {}, requestAudit);
+registerTransformerControlPlaneRoutes(app, transformerCampaigns, {}, requestAudit, db);
 registerTransformerPilotExecutionRoutes(app, transformerExecutions, requestAudit);
 // Canonical (Regauge) mounts plus their legacy /transformer aliases; both point
 // at the same route instance, so external/legacy callers keep working forever.

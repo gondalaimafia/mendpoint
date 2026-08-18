@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   autoEnrollWardenCampaignOrg,
+  createMission,
   getProviderBySlug,
   getScmConnection,
+  linkFettlerCampaignToMission,
   recordAudit,
   type AppDb,
   type WardenOrgRepositoryCandidate,
@@ -190,6 +192,52 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           skipped: result.skipped.length,
         },
       });
+
+      // Retire the inert Mission primitive (spec 6.1 / 8.6). A Fettler campaign is
+      // the campaign-level Mission unit; its per-target attempts are the
+      // MigrationTasks under it (v3 6.1: a Mission has "one or more migration
+      // tasks"). Created and campaign-linked here at the API boundary because this
+      // is where a real principal (trustPrincipalId) exists. The worker attempt
+      // paths deliberately have no principal, which is exactly why the primitive
+      // sat inert — nothing forgot to call it; the callers could not satisfy
+      // assertPrincipal. Best-effort: Mission bookkeeping is metadata and must
+      // never fail an enrollment (convention in packages/pipeline/src/index.ts);
+      // never a bare catch. createMission/linkFettlerCampaignToMission are
+      // idempotent, so repeated enrollments are safe.
+      try {
+        const missionId = `mission-fettler-${createHash("sha256")
+          .update(`${tenantId}\0${campaignId}`)
+          .digest("hex")
+          .slice(0, 32)}`;
+        createMission(options.db, {
+          id: missionId,
+          tenantId,
+          product: "fettler",
+          triggerKind: "provider_change",
+          objective: `Fettler campaign ${campaignId}`.slice(0, 200),
+          ownerPrincipalId: trustPrincipalId,
+          eventId: `${missionId}-created`,
+          idempotencyKey: `mission-create-${missionId}`,
+          correlationId: campaignId,
+          createdAt: at,
+        });
+        linkFettlerCampaignToMission(options.db, {
+          tenantId,
+          campaignId,
+          missionId,
+          actorPrincipalId: trustPrincipalId,
+          eventId: `${missionId}-linked`,
+          idempotencyKey: `mission-link-${missionId}`,
+          correlationId: campaignId,
+          createdAt: at,
+        });
+      } catch (error) {
+        console.error(
+          `fettler mission wiring failed tenant=${tenantId} campaign=${campaignId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
 
       return c.json({
         campaignId: result.campaignId,

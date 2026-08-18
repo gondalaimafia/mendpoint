@@ -18,7 +18,12 @@ import {
   type TransformerGateDecision,
 } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
-import { recordAudit } from "@mendpoint/db";
+import {
+  createMission,
+  linkRegaugeCampaignToMission,
+  recordAudit,
+  type AppDb,
+} from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
 import {
   mappedErrorResponse,
@@ -813,6 +818,11 @@ export function registerTransformerControlPlaneRoutes(
   service: TransformerCampaignService,
   gateRuntime: TransformerGateRuntime = {},
   audit?: ControlPlaneAudit,
+  // App DB handle for retiring the inert Mission primitive (spec 6.1 / 8.6). The
+  // ReGauge campaign row lives in the separate control-plane store; the Mission is
+  // its App-DB projection. Optional so existing callers/tests that do not wire a
+  // Mission continue to work unchanged.
+  appDb?: AppDb,
 ): void {
   const gate = (c: Context<ApiEnv>, boundary: TransformerGateBoundary): TransformerGateDecision => {
     const principal = c.get("principal");
@@ -860,6 +870,67 @@ export function registerTransformerControlPlaneRoutes(
         resourceId: (result as { campaign: { id: string } }).campaign.id,
         metadata: campaignAuditMetadata(result),
       });
+      // Retire the inert Mission primitive for ReGauge (spec 6.1 / 8.6). The
+      // Mission is the App-DB projection of this control-plane campaign
+      // (mission.regauge_campaign_id, no cross-database FK) and the single key that
+      // makes a later delivery outcome joinable to the trajectory that produced it
+      // (regauge_adaptive_deliveries.candidate_id -> regauge_adaptive_candidates
+      // .campaign_id -> mission.regauge_campaign_id -> mission.id ->
+      // trajectories.mission_id). Created here at the API boundary, the only place
+      // with a real App-DB principal (trustPrincipalId); the worker pilot lane has
+      // none, which is why the primitive was inert. Best-effort: it must never fail
+      // campaign creation (convention in packages/pipeline/src/index.ts); never a
+      // bare catch. Idempotent on the derived mission id.
+      const trustPrincipalId = c.get("trustPrincipalId");
+      const tenantId = c.get("principal")?.tenantId;
+      if (appDb && trustPrincipalId && tenantId) {
+        const bundle = result as {
+          campaign: { id: string; name?: unknown };
+          blueprint?: { objective?: unknown };
+        };
+        const campaignId = bundle.campaign.id;
+        try {
+          const missionId = `mission-regauge-${createHash("sha256")
+            .update(`${tenantId}\0${campaignId}`)
+            .digest("hex")
+            .slice(0, 32)}`;
+          const objectiveText =
+            typeof bundle.blueprint?.objective === "string" && bundle.blueprint.objective.trim()
+              ? bundle.blueprint.objective.trim()
+              : typeof bundle.campaign.name === "string" && bundle.campaign.name.trim()
+                ? bundle.campaign.name.trim()
+                : campaignId;
+          const createdAt = new Date().toISOString();
+          createMission(appDb, {
+            id: missionId,
+            tenantId,
+            product: "regauge",
+            triggerKind: "migration_objective",
+            objective: objectiveText.slice(0, 200),
+            ownerPrincipalId: trustPrincipalId,
+            eventId: `${missionId}-created`,
+            idempotencyKey: `mission-create-${missionId}`,
+            correlationId: campaignId,
+            createdAt,
+          });
+          linkRegaugeCampaignToMission(appDb, {
+            tenantId,
+            missionId,
+            regaugeCampaignId: campaignId,
+            actorPrincipalId: trustPrincipalId,
+            eventId: `${missionId}-linked`,
+            idempotencyKey: `mission-link-${missionId}`,
+            correlationId: campaignId,
+            createdAt,
+          });
+        } catch (error) {
+          console.error(
+            `regauge mission wiring failed tenant=${tenantId} campaign=${campaignId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
       c.header("Location", `${base}/control-plane/campaigns/${(result as { campaign: { id: string } }).campaign.id}`);
       return c.json(result, 201);
     } catch (error) {
