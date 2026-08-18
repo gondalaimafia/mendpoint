@@ -165,14 +165,86 @@ export function isPrivateModelHost(
 }
 
 /**
+ * Egress-relevant slice of the model provider registry, keyed by provider id.
+ * This mirrors, for boot validation only, how packages/agent's provider
+ * registry resolves a provider's base URL: the ordered base-URL env vars
+ * (first non-empty wins) and the hardcoded default used when none is set.
+ *
+ * It is a mirror, not the source of truth. Resolve-time enforcement in
+ * packages/agent (`enforceModelEndpointEgress`, applied to the fully-resolved
+ * endpoint) is authoritative and covers every provider unconditionally; this
+ * table only lets boot validation report a would-be violation early. If it ever
+ * drifts from the registry, an unrecognized provider id falls through to the
+ * fail-closed branch in effectiveModelEndpointUrl / assessModelEgress (a
+ * violation under local_only), never a silent pass.
+ */
+const MODEL_PROVIDER_EGRESS_ENDPOINTS: ReadonlyMap<
+  string,
+  Readonly<{ baseUrlEnvVars: readonly string[]; defaultBaseUrl: string | null }>
+> = new Map([
+  ["muse-spark", { baseUrlEnvVars: ["LLM_AGENT_URL", "OPENAI_BASE_URL"], defaultBaseUrl: null }],
+  ["openai", { baseUrlEnvVars: ["OPENAI_BASE_URL"], defaultBaseUrl: "https://api.openai.com" }],
+  ["xai", { baseUrlEnvVars: ["XAI_BASE_URL"], defaultBaseUrl: "https://api.x.ai" }],
+  ["openai-gateway", { baseUrlEnvVars: ["LLM_AGENT_URL", "OPENAI_BASE_URL"], defaultBaseUrl: null }],
+  ["anthropic", { baseUrlEnvVars: ["ANTHROPIC_BASE_URL"], defaultBaseUrl: "https://api.anthropic.com" }],
+  ["gemini", { baseUrlEnvVars: ["GEMINI_BASE_URL"], defaultBaseUrl: "https://generativelanguage.googleapis.com" }],
+]);
+
+function firstModelEnvValue(keys: readonly string[], env: EnvLike): string | undefined {
+  for (const key of keys) {
+    const value = env[key]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+export type EffectiveModelEndpoint = Readonly<{
+  /** Base URL the agent would call, or null when nothing would be contacted. */
+  url: string | null;
+  /**
+   * False only when MENDPOINT_MODEL_PROVIDER names a provider this boot-time
+   * mirror does not recognize, so its endpoint cannot be determined and must
+   * fail closed under local_only rather than be assumed local.
+   */
+  determinable: boolean;
+}>;
+
+/**
+ * The base URL the agent would actually call under the current configuration,
+ * matching resolveModelBackend's precedence so boot validation sees the same
+ * endpoint the model path would use:
+ * - MENDPOINT_MODEL_PROVIDER unset => LLM_AGENT_URL || OPENAI_BASE_URL (today's
+ *   default path), or null when neither is set (heuristic-only, no egress).
+ * - a recognized provider id => its first configured base-URL env var, else its
+ *   hardcoded default, else null (no base URL and no default => nothing called).
+ * - an unrecognized provider id => not determinable (fails closed under
+ *   local_only).
+ */
+export function effectiveModelEndpointUrl(env: EnvLike = process.env): EffectiveModelEndpoint {
+  const provider = env.MENDPOINT_MODEL_PROVIDER?.trim();
+  if (!provider) {
+    return Object.freeze({ url: configuredModelEndpointUrl(env), determinable: true });
+  }
+  const descriptor = MODEL_PROVIDER_EGRESS_ENDPOINTS.get(provider);
+  if (!descriptor) {
+    return Object.freeze({ url: null, determinable: false });
+  }
+  const baseUrl = firstModelEnvValue(descriptor.baseUrlEnvVars, env) ?? descriptor.defaultBaseUrl;
+  return Object.freeze({ url: baseUrl ?? null, determinable: true });
+}
+
+/**
  * Assess the current model egress posture for boot validation and readiness.
- * When local_only is active, a configured endpoint must resolve to a private
- * host; a missing endpoint is allowed (heuristic-only, no egress).
+ * When local_only is active, the endpoint the agent would actually call
+ * (including a selected provider's resolved base URL or its hardcoded default)
+ * must resolve to a private host; a missing endpoint is allowed (heuristic-only,
+ * no egress), while a selected-but-unresolvable provider fails closed.
  */
 export function assessModelEgress(env: EnvLike = process.env): ModelEgressAssessment {
   const modeValid = isValidModelEgressMode(env.MENDPOINT_MODEL_EGRESS);
   const mode = modelEgressMode(env);
-  const configured = configuredModelEndpointUrl(env);
+  const effective = effectiveModelEndpointUrl(env);
+  const configured = effective.url;
   const endpointConfigured = configured !== null;
   let endpointHost: string | null = null;
   let hostParseFailed = false;
@@ -188,18 +260,25 @@ export function assessModelEgress(env: EnvLike = process.env): ModelEgressAssess
   let localOnlySatisfied = true;
   if (!modeValid) {
     violation = "model_egress_mode_invalid";
-  } else if (mode === "local_only" && endpointConfigured) {
-    if (hostParseFailed) {
-      violation = "warden_model_endpoint_invalid";
-      localOnlySatisfied = false;
-    } else if (
-      !isPrivateModelHost(
-        endpointHost ?? "",
-        parseModelLocalHosts(env.MENDPOINT_MODEL_LOCAL_HOSTS),
-      )
-    ) {
+  } else if (mode === "local_only") {
+    if (!effective.determinable) {
+      // A selected provider whose endpoint cannot be determined cannot be proven
+      // to stay local, so it fails closed rather than passing.
       violation = "model_egress_local_only_violation";
       localOnlySatisfied = false;
+    } else if (endpointConfigured) {
+      if (hostParseFailed) {
+        violation = "warden_model_endpoint_invalid";
+        localOnlySatisfied = false;
+      } else if (
+        !isPrivateModelHost(
+          endpointHost ?? "",
+          parseModelLocalHosts(env.MENDPOINT_MODEL_LOCAL_HOSTS),
+        )
+      ) {
+        violation = "model_egress_local_only_violation";
+        localOnlySatisfied = false;
+      }
     }
   }
 
@@ -211,6 +290,29 @@ export function assessModelEgress(env: EnvLike = process.env): ModelEgressAssess
     localOnlySatisfied,
     violation,
   });
+}
+
+/**
+ * Enforce the local_only egress control for an already-resolved model endpoint
+ * URL, so every model path (agent and verifier alike) refuses external egress
+ * through the same rule rather than each hardcoding its own host. When the mode
+ * is external_allowed this is a no-op. When it is local_only the endpoint host
+ * must be private, loopback, link-local, unique-local, or operator allowlisted;
+ * any other host raises model_egress_local_only_violation. A URL that does not
+ * parse raises warden_model_endpoint_invalid so a malformed endpoint fails
+ * closed rather than silently egressing.
+ */
+export function enforceModelEndpointEgress(url: string, env: EnvLike = process.env): void {
+  if (modelEgressMode(env) !== "local_only") return;
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    throw new Error("warden_model_endpoint_invalid");
+  }
+  if (!isPrivateModelHost(host, parseModelLocalHosts(env.MENDPOINT_MODEL_LOCAL_HOSTS))) {
+    throw new Error("model_egress_local_only_violation");
+  }
 }
 
 export const ReviewedVerificationCommandSchema = z.object({
