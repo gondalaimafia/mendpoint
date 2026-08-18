@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 import type { PrDetailData } from "./fixtures.js";
 import { PrReviewActions } from "./pr-review-actions.js";
+import { CoverageCard } from "./coverage.js";
 
 /**
  * `/prs/[id]` — one PR in review, driven by live data (`PrDetailData`) fetched
@@ -91,6 +92,7 @@ export function PrDetailView({ pr }: { pr: PrDetailData }) {
           ))}
         </div>
         <aside className="ds-detail__aside">
+          {pr.coverage && <CoverageCard summary={pr.coverage} />}
           <div className="ds-panel ds-panel--pad">
             <div className="section-label section-label--muted">CHECKS</div>
             <ul className="ds-check-list">

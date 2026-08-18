@@ -3213,6 +3213,82 @@ input:focus-visible {
   color: var(--foreground);
 }
 
+/* ------------------------------ Coverage -------------------------------- */
+/* Impact-coverage card (/prs/[id]) + list badge (/prs). The three coverage
+   states must read as distinct: emerald for a verified-clean result, amber for
+   partial / not-analyzed (weak), and a neutral border for unrecorded coverage.
+   The tint is confined to the border so it never competes with the diff or the
+   breaking-change alert. */
+.ds-coverage__head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.85rem;
+}
+.ds-coverage__icon {
+  flex: none;
+}
+.ds-coverage__headline {
+  font-family: var(--font);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.ds-coverage__detail {
+  margin: 0.6rem 0 0;
+  font-family: var(--font);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--secondary-foreground);
+}
+.ds-coverage__files {
+  margin: 0.6rem 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.ds-coverage__gaps {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.ds-coverage__gap {
+  font-family: var(--font);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--secondary-foreground);
+}
+.ds-coverage__gap-reason {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.ds-coverage--clean,
+.ds-coverage--covered {
+  border-color: var(--tint-emerald-30);
+}
+.ds-coverage--clean .ds-coverage__icon,
+.ds-coverage--covered .ds-coverage__icon {
+  color: var(--emerald);
+}
+.ds-coverage--no_known_impact,
+.ds-coverage--no_basis {
+  border-color: var(--tint-amber-28);
+}
+.ds-coverage--no_known_impact .ds-coverage__icon,
+.ds-coverage--no_basis .ds-coverage__icon {
+  color: var(--amber);
+}
+.ds-coverage--unknown .ds-coverage__icon {
+  color: var(--muted-foreground);
+}
+.ds-pr-card__coverage {
+  display: inline-flex;
+  margin-top: 0.15rem;
+}
+
 /* ------------------------------- Checks --------------------------------- */
 .ds-check-list {
   list-style: none;
