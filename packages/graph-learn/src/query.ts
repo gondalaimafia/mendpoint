@@ -857,18 +857,74 @@ export const GRAPH_RAG_TOOLS = [
   "stats",
 ] as const;
 
+/** How many rows/nodes {@link formatQueryForPlanner} renders inline. */
+const PLANNER_ROW_LIMIT = 12;
+
+/**
+ * Render the coverage banner for a graph result. This is the honesty boundary:
+ * a `partial` or `target_absent` result must never read as a definitive answer,
+ * and a missing assessment is reported as UNKNOWN rather than assumed complete.
+ * There is deliberately no `?? "complete"` fallback — an absent coverage field
+ * is the one case that must fail closed, not open.
+ */
+function formatCoverageForPlanner(r: GraphQueryResult): string {
+  const reason = r.coverage?.reason?.trim();
+  const suffix = reason ? ` (${reason})` : "";
+  switch (r.coverage?.basis) {
+    case "complete":
+      return `Coverage: complete. This result enumerates everything within the query's scope${suffix}.`;
+    case "partial": {
+      const omitted = r.truncation?.omittedPathsAtLeast;
+      const omittedNote =
+        typeof omitted === "number" && omitted > 0
+          ? ` At least ${omitted} more path(s) exist beyond what is shown.`
+          : "";
+      return `Coverage: PARTIAL. Enumeration stopped at a safety bound, so more may exist than is shown${suffix}.${omittedNote}`;
+    }
+    case "target_absent":
+      return `Coverage: TARGET ABSENT. This entity was never observed in the graph${suffix}; an empty result means there is no evidence either way, NOT that the entity has no relationships.`;
+    default:
+      return `Coverage: UNKNOWN. This result did not report coverage and must not be read as complete.`;
+  }
+}
+
+/**
+ * Render the inline rows/nodes, stating how many were omitted rather than
+ * silently cutting at {@link PLANNER_ROW_LIMIT}.
+ */
+function formatRowsForPlanner(r: GraphQueryResult): string {
+  if (r.rows?.length) {
+    const lines = r.rows
+      .slice(0, PLANNER_ROW_LIMIT)
+      .map((row) => `- ${JSON.stringify(row)}`);
+    const omitted = r.rows.length - PLANNER_ROW_LIMIT;
+    if (omitted > 0) lines.push(`- (${omitted} more row(s) not shown here)`);
+    return lines.join("\n");
+  }
+  const nodes = r.nodes ?? [];
+  if (nodes.length) {
+    const lines = nodes
+      .slice(0, PLANNER_ROW_LIMIT)
+      .map((n) => `- (${n.kind}) ${n.label} \`${n.id}\``);
+    const omitted = nodes.length - PLANNER_ROW_LIMIT;
+    if (omitted > 0) lines.push(`- (${omitted} more node(s) not shown here)`);
+    return lines.join("\n");
+  }
+  return "";
+}
+
+/**
+ * Format a graph result for a planner model and, downstream, the customer PR
+ * body. Coverage is rendered directly after the summary — before the row list —
+ * so it survives any head-truncation a caller applies to the string.
+ */
 export function formatQueryForPlanner(r: GraphQueryResult): string {
   return [
     `### Graph-RAG: ${r.op}`,
     r.summary,
-    r.rows?.length
-      ? r.rows
-          .slice(0, 12)
-          .map((row) => `- ${JSON.stringify(row)}`)
-          .join("\n")
-      : r.nodes
-          .slice(0, 12)
-          .map((n) => `- (${n.kind}) ${n.label} \`${n.id}\``)
-          .join("\n"),
-  ].join("\n");
+    formatCoverageForPlanner(r),
+    formatRowsForPlanner(r),
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
 }
