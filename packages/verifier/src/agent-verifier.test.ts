@@ -104,6 +104,42 @@ describe("AgentVerifier", () => {
     expect(score).toHaveBeenCalledTimes(firstCalls);
   });
 
+  const decisiveBackend: VerifierBackend = {
+    descriptor: backend.descriptor,
+    score: vi.fn(async (input: VerifierBackendScoreInput) => ({
+      requestId: input.requestId,
+      scores: Object.fromEntries(input.candidates.map((candidate) => [candidate.candidateId, candidate.candidateId.endsWith("b") ? 1 : 0])),
+      criterionId: input.criterion.id,
+      rawResponseDigest: digest("f"),
+      recognizedProbabilityMass: 1,
+      usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 2, reasoningTokens: 0, totalTokens: 12 },
+      estimatedCostUsd: 0.001,
+      latencyMs: 10,
+    })),
+  };
+
+  it("reaches ready_for_review when a candidate is decisively best and the pack carries substantive evidence", async () => {
+    const withEvidence = packInput();
+    withEvidence.sources = [{ id: "excerpt", kind: "repository_excerpt", digest: digest("b"), locator: "package.json:1", content: "{ \"name\": \"pkg\" }" }];
+    withEvidence.candidates.forEach((candidate) => { candidate.evidenceRefs = ["excerpt"]; });
+    const verifier = createAgentVerifier({ enabled: true, rolloutMode: "shadow", backend: decisiveBackend, evaluations: 2, pivots: 1, seed: 0, maximumCandidates: 5 });
+    const result = await verifier.verify(verifyInput(createVerifierEvidencePack(withEvidence)));
+    expect(result.status).toBe("verified");
+    expect(result.suggestedCandidateId).toBe("candidate_b");
+    expect(result.telemetry.candidateScores.candidate_b).toBeGreaterThanOrEqual(0.75);
+    expect(result.recommendation).toBe("ready_for_review");
+  });
+
+  it("caps the confident verdict at request_more_evidence when the pack carries no substantive evidence", async () => {
+    // Same decisive scores, but the only source is a verification reference (the
+    // shape of the product completion shadow lane). The verifier never saw the
+    // real change, so it may not surface ready_for_review.
+    const verifier = createAgentVerifier({ enabled: true, rolloutMode: "shadow", backend: decisiveBackend, evaluations: 2, pivots: 1, seed: 0, maximumCandidates: 5 });
+    const result = await verifier.verify(verifyInput());
+    expect(result.telemetry.candidateScores.candidate_b).toBeGreaterThanOrEqual(0.75);
+    expect(result.recommendation).toBe("request_more_evidence");
+  });
+
   it("fails closed when no deterministic candidate survives", async () => {
     const input = packInput();
     input.checks[0] = { id: "tests", status: "failed", evidenceRefs: ["test_evidence"], candidateIds: null };

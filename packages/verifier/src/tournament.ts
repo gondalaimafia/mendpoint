@@ -100,9 +100,27 @@ export function verifierScoreIdentity(input: VerifierScoreIdentityInput): string
   return sha256(canonicalJson(input));
 }
 
-export function bradleyTerryWinProbability(scoreA: number, scoreB: number): number {
+/**
+ * Logistic scale for the Bradley-Terry comparison, expressed in the units of the
+ * score distribution's own spread. Backend scores are contractually bounded to
+ * the [0, 1] domain, so the widest-spread (maximum-entropy) distribution over
+ * that support is uniform, whose standard deviation is exactly sqrt(1/12) ~=
+ * 0.2887. Bradley-Terry compares latent strengths on a logistic scale, so the
+ * score difference must be measured in units of that spread rather than in raw
+ * [0, 1] points. With no scale (an implicit scale of 1) the difference is at most
+ * 1, the win probability saturates near 1/(1+e^-1) ~= 0.731, and the mass
+ * weighted aggregate can never reach the 0.75 ready_for_review threshold for two
+ * or more candidates. Dividing the difference by the domain standard deviation
+ * lets a decisively separated candidate span the range the thresholds assume
+ * while still requiring a real margin (a ~0.317 raw-score lead over every
+ * opponent) before a confident verdict is reachable.
+ */
+export const VERIFIER_SCORE_SCALE = Math.sqrt(1 / 12);
+
+export function bradleyTerryWinProbability(scoreA: number, scoreB: number, scale: number = VERIFIER_SCORE_SCALE): number {
   if (![scoreA, scoreB].every((score) => Number.isFinite(score) && score >= 0 && score <= 1)) {
     fail("verifier_score_invalid");
   }
-  return 1 / (1 + Math.exp(-(scoreA - scoreB)));
+  if (!Number.isFinite(scale) || scale <= 0) fail("verifier_score_scale_invalid");
+  return 1 / (1 + Math.exp(-(scoreA - scoreB) / scale));
 }

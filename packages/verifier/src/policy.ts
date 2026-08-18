@@ -8,7 +8,7 @@ export type EnabledVerifierRuntimeConfig = Readonly<{
   rolloutMode: VerifierRolloutMode;
   provider: "deepseek";
   model: "deepseek-v4-flash";
-  baseUrl: "https://api.deepseek.com";
+  baseUrl: string;
   credentialEnvName: "DEEPSEEK_API_KEY";
   evaluations: number;
   pivots: number;
@@ -38,6 +38,17 @@ function decimal(env: Readonly<Record<string, string | undefined>>, name: string
   return value;
 }
 
+function resolveBaseUrl(env: Readonly<Record<string, string | undefined>>): string {
+  const raw = env.MENDPOINT_AGENT_VERIFIER_BASE_URL?.trim();
+  if (raw === undefined || raw === "") return "https://api.deepseek.com";
+  let parsed: URL;
+  try { parsed = new URL(raw); } catch { fail("verifier_config_base_url_invalid"); }
+  if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    fail("verifier_config_base_url_invalid");
+  }
+  return raw;
+}
+
 export function resolveVerifierRuntimeConfig(env: Readonly<Record<string, string | undefined>>): VerifierRuntimeConfig {
   const enabled = env.DEEPSEEK_VERIFIER_ENABLED?.trim();
   if (enabled === undefined || enabled === "" || enabled === "false") return Object.freeze({ enabled: false, rolloutMode: "off" });
@@ -52,7 +63,7 @@ export function resolveVerifierRuntimeConfig(env: Readonly<Record<string, string
     rolloutMode,
     provider: "deepseek" as const,
     model: "deepseek-v4-flash" as const,
-    baseUrl: "https://api.deepseek.com" as const,
+    baseUrl: resolveBaseUrl(env),
     credentialEnvName: "DEEPSEEK_API_KEY" as const,
     evaluations: integer(env, "MENDPOINT_AGENT_VERIFIER_EVALUATIONS", 4, 1, 16),
     pivots: integer(env, "MENDPOINT_AGENT_VERIFIER_PIVOTS", 2, 1, 16),

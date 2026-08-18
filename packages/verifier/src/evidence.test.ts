@@ -132,4 +132,14 @@ describe("verifier evidence", () => {
       expect(() => createVerifierEvidencePack({ ...input(), governance })).toThrow(/verifier_governance_/);
     }
   });
+
+  it("refuses to externally verify restricted classification content even when egress is otherwise authorized", () => {
+    const restricted = { ...input().governance, dataClassification: "restricted" as const };
+    expect(() => createVerifierEvidencePack({ ...input(), governance: restricted }))
+      .toThrow("verifier_governance_restricted_egress_denied");
+    // Public classification with the same authority stays admissible, so the
+    // restricted case is treated differently rather than blanket denied.
+    expect(() => createVerifierEvidencePack({ ...input(), governance: { ...input().governance, dataClassification: "public" as const } }))
+      .not.toThrow();
+  });
 });

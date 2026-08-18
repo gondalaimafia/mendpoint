@@ -213,6 +213,29 @@ export function assessModelEgress(env: EnvLike = process.env): ModelEgressAssess
   });
 }
 
+/**
+ * Enforce the local_only egress control for an already-resolved model endpoint
+ * URL, so every model path (agent and verifier alike) refuses external egress
+ * through the same rule rather than each hardcoding its own host. When the mode
+ * is external_allowed this is a no-op. When it is local_only the endpoint host
+ * must be private, loopback, link-local, unique-local, or operator allowlisted;
+ * any other host raises model_egress_local_only_violation. A URL that does not
+ * parse raises warden_model_endpoint_invalid so a malformed endpoint fails
+ * closed rather than silently egressing.
+ */
+export function enforceModelEndpointEgress(url: string, env: EnvLike = process.env): void {
+  if (modelEgressMode(env) !== "local_only") return;
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    throw new Error("warden_model_endpoint_invalid");
+  }
+  if (!isPrivateModelHost(host, parseModelLocalHosts(env.MENDPOINT_MODEL_LOCAL_HOSTS))) {
+    throw new Error("model_egress_local_only_violation");
+  }
+}
+
 export const ReviewedVerificationCommandSchema = z.object({
   command: z.string().min(1).max(500),
   ok: z.literal(true),

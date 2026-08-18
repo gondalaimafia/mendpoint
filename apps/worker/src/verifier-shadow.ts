@@ -73,6 +73,8 @@ export function createVerifierShadowRuntime(input: Readonly<{
           timeoutMs: config.timeoutMs,
           maximumRetries: config.maximumRetries,
           pricing: input.pricing,
+          baseUrl: config.baseUrl,
+          env,
         }),
         evaluations: config.evaluations,
         pivots: config.pivots,
