@@ -48,6 +48,41 @@ function isAllowedModelEditPath(
   return allowed.has(normalized);
 }
 
+function parseModelRepairAction(
+  value: unknown,
+  allowedPaths: ReadonlySet<string>,
+): RepairAction | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const action = value as Record<string, unknown>;
+  if (action.type !== "replace_in_file") return null;
+  if (!isAllowedModelEditPath(action.filePath, allowedPaths)) return null;
+  if (
+    typeof action.from !== "string" ||
+    action.from.length < 1 ||
+    action.from.length > 2_500 ||
+    action.from.includes("\0") ||
+    typeof action.to !== "string" ||
+    action.to.length < 1 ||
+    action.to.length > 2_500 ||
+    action.to.includes("\0") ||
+    action.from === action.to ||
+    typeof action.reason !== "string" ||
+    action.reason.trim().length < 1 ||
+    action.reason.length > 500 ||
+    (action.global !== undefined && typeof action.global !== "boolean")
+  ) {
+    return null;
+  }
+  return {
+    type: "replace_in_file",
+    filePath: normalizeSlicePath(action.filePath),
+    from: action.from,
+    to: action.to,
+    ...(action.global === undefined ? {} : { global: action.global }),
+    reason: action.reason,
+  };
+}
+
 export function planRepairs(
   observations: FailureObservation[],
   opts: {
@@ -274,14 +309,11 @@ Only edit provided slices. Never invent secrets. Max 8 actions.`;
     const allowedPaths = new Set(
       shownSlices.map((slice) => normalizeSlicePath(slice.filePath)),
     );
-    const actions = (parsed.actions ?? []).filter(
-      (a): a is RepairAction =>
-        Boolean(a) &&
-        a.type === "replace_in_file" &&
-        "from" in a &&
-        "to" in a &&
-        isAllowedModelEditPath(a.filePath, allowedPaths),
-    );
+    const actions = Array.isArray(parsed.actions)
+      ? parsed.actions
+          .map((action) => parseModelRepairAction(action, allowedPaths))
+          .filter((action): action is RepairAction => action !== null)
+      : [];
     if (!actions.length) return null;
     // Account for the call: record the model that ACTUALLY answered (provider
     // echo) and its token usage, rather than discarding them. This is the

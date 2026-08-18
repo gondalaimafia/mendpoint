@@ -173,8 +173,41 @@ describe("graph-learn substrate", () => {
     expect(formatQueryForPlanner(typo)).not.toContain("Coverage: complete");
   });
 
+  it("targeted evidence, field, and endpoint queries fail closed when the target was never observed", () => {
+    const db = openGraphLearnMemory();
+    const scope = { tenantId: "tenant-x" };
+
+    const evidence = runGraphQuery(
+      db,
+      { op: "repository_evidence", repositoryId: "repo-missing" },
+      scope,
+    );
+    expect(evidence.coverage.basis).toBe("target_absent");
+
+    const field = runGraphQuery(
+      db,
+      { op: "consumers_of_field", schemaName: "Charge", fieldName: "amount" },
+      scope,
+    );
+    expect(field.coverage.basis).toBe("target_absent");
+
+    const endpoint = runGraphQuery(
+      db,
+      { op: "broke_modes_for_endpoint", operationId: "createCharge" },
+      scope,
+    );
+    expect(endpoint.coverage.basis).toBe("target_absent");
+  });
+
   it("migration_ready_units fails closed because DEPENDS_ON has no producer", () => {
     const db = openGraphLearnMemory();
+    upsertNode(db, {
+      id: "migration-unit:u1",
+      kind: "MigrationUnit",
+      label: "u1",
+      repo_id: "tenant-x",
+      props: { campaign_id: "camp-1", status: "pending" },
+    });
     const r = runGraphQuery(
       db,
       { op: "migration_ready_units", campaignId: "camp-1" },
@@ -182,11 +215,20 @@ describe("graph-learn substrate", () => {
     );
     expect(r.coverage.basis).toBe("target_absent");
     expect(r.coverage.reason).toContain("DEPENDS_ON is not populated");
+    expect(r.nodes).toEqual([]);
+    expect(r.rows).toEqual([]);
     expect(formatQueryForPlanner(r)).not.toContain("Coverage: complete");
   });
 
   it("invariants_for_symbol fails closed because PRESERVES_INVARIANT has no producer", () => {
     const db = openGraphLearnMemory();
+    upsertNode(db, {
+      id: "symbol:charge",
+      kind: "Symbol",
+      label: "com.acme.Charge",
+      repo_id: "tenant-x",
+      props: { qualified_name: "com.acme.Charge" },
+    });
     const r = runGraphQuery(
       db,
       { op: "invariants_for_symbol", qualifiedName: "com.acme.Charge" },
@@ -194,6 +236,8 @@ describe("graph-learn substrate", () => {
     );
     expect(r.coverage.basis).toBe("target_absent");
     expect(r.coverage.reason).toContain("PRESERVES_INVARIANT is not populated");
+    expect(r.nodes).toEqual([]);
+    expect(r.rows).toEqual([]);
     expect(formatQueryForPlanner(r)).not.toContain("Coverage: complete");
   });
 

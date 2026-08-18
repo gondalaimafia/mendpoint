@@ -248,7 +248,14 @@ function runGraphQueryInner(
         edges: selected.map((item) => item.edge),
         summary: `${selected.length} of ${available.length} repository evidence record(s)`,
         coverage:
-          selected.length < available.length
+          snapshots.length === 0
+            ? {
+                basis: "target_absent",
+                reason: q.snapshotId
+                  ? `snapshot ${q.snapshotId} for repository ${q.repositoryId} is not in the graph`
+                  : `repository ${q.repositoryId} has no snapshot in the graph`,
+              }
+            : selected.length < available.length
             ? {
                 basis: "partial",
                 reason: `capped at limit ${limit} of ${available.length} available`,
@@ -687,8 +694,14 @@ function runGraphQueryInner(
         nodes: collectNodes(db, nodeIds),
         edges,
         summary: `field ${q.schemaName}.${q.fieldName}: ${consumerIds.size} consumer(s)`,
-        coverage: endpointScanTruncated
-          ? {
+        coverage:
+          schemaIds.size === 0
+            ? {
+                basis: "target_absent",
+                reason: `field ${q.schemaName}.${q.fieldName} is not in the graph`,
+              }
+            : endpointScanTruncated
+              ? {
               basis: "partial",
               reason: `endpoint scan capped at ${HARD_MAX_PATHS}`,
             }
@@ -737,29 +750,22 @@ function runGraphQueryInner(
         nodes: collectNodes(db, new Set(edges.flatMap((e) => [e.source, e.target]))),
         edges,
         summary: `${rows.length} break signal(s) for ${q.operationId}`,
-        coverage: { basis: "complete" },
+        coverage:
+          eps.length === 0
+            ? {
+                basis: "target_absent",
+                reason: `endpoint operation ${q.operationId} is not in the graph`,
+              }
+            : { basis: "complete" },
         rows,
       };
     }
     case "migration_ready_units": {
-      const units = listNodesByKind(db, "MigrationUnit").filter(
-        (u) =>
-          String(u.props?.campaign_id) === q.campaignId &&
-          (u.props?.status === "pending" || !u.props?.status),
-      );
-      const ready = units.filter((u) => {
-        const deps = edgesFrom(db, u.id, ["DEPENDS_ON"]);
-        return deps.every((d) => {
-          const dep = getNode(db, d.target);
-          return dep?.props?.status === "merged" || deps.length === 0;
-        });
-      });
-      const batch = ready.slice(0, q.batchSize ?? 10);
       return {
         op: q.op,
-        nodes: batch,
+        nodes: [],
         edges: [],
-        summary: `${batch.length} ready MigrationUnit(s) for campaign ${q.campaignId}`,
+        summary: `migration readiness unavailable for campaign ${q.campaignId}`,
         // Readiness is derived entirely from DEPENDS_ON, which no ingest path
         // populates, so `deps.every(...)` over an always-empty edge set is
         // vacuously true and would flag every pending unit "ready". Fail closed:
@@ -768,40 +774,15 @@ function runGraphQueryInner(
           basis: "target_absent",
           reason: "DEPENDS_ON is not populated by any ingest path",
         },
-        rows: batch.map((u) => ({ id: u.id, label: u.label, props: u.props })),
+        rows: [],
       };
     }
     case "invariants_for_symbol": {
-      const symbols = listNodesByKind(db, "Symbol").filter(
-        (s) =>
-          s.label === q.qualifiedName ||
-          String(s.props?.qualified_name) === q.qualifiedName,
-      );
-      const invs: GlNode[] = [];
-      const edges: GlEdge[] = [];
-      for (const s of symbols) {
-        for (const e of edgesFrom(db, s.id, ["PRESERVES_INVARIANT"])) {
-          edges.push(e);
-          const inv = getNode(db, e.target);
-          if (inv) invs.push(inv);
-        }
-        // via BSG: REALIZED_BY reverse
-        for (const e of edgesTo(db, s.id, ["REALIZED_BY"])) {
-          edges.push(e);
-          for (const e2 of edgesFrom(db, e.source, ["EXTRACTED_FROM"])) {
-            for (const e3 of edgesFrom(db, e2.target, ["PRESERVES_INVARIANT"])) {
-              edges.push(e3);
-              const inv = getNode(db, e3.target);
-              if (inv) invs.push(inv);
-            }
-          }
-        }
-      }
       return {
         op: q.op,
-        nodes: [...symbols, ...invs],
-        edges,
-        summary: `${invs.length} invariant(s) for ${q.qualifiedName}`,
+        nodes: [],
+        edges: [],
+        summary: `invariant coverage unavailable for ${q.qualifiedName}`,
         // Every path to an invariant terminates in PRESERVES_INVARIANT, which no
         // ingest path populates, so `0 invariant(s)` is not a definitive "this
         // symbol preserves nothing". Fail closed until a producer exists.
@@ -809,11 +790,7 @@ function runGraphQueryInner(
           basis: "target_absent",
           reason: "PRESERVES_INVARIANT is not populated by any ingest path",
         },
-        rows: invs.map((i) => ({
-          id: i.id,
-          expression: i.props?.expression ?? i.label,
-          kind: i.props?.inv_kind,
-        })),
+        rows: [],
       };
     }
     case "time_travel_calls": {

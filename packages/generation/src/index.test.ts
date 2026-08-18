@@ -80,6 +80,48 @@ describe("generation — FET-016 provider path in PR body", () => {
     // Absence is never dressed up as an assertion that no path exists.
     expect(draft.body).not.toMatch(/no path/i);
   });
+
+  it("renders a one-node no-anchor path as incomplete, not direct provider usage", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "mendpoint-no-anchor-"));
+    try {
+      const change: StructuralDiff = {
+        risk: "breaking",
+        summary: "detached graph-path evidence",
+        entries: [],
+      };
+      const findings: ImpactFinding[] = [
+        {
+          filePath: "src/detached.ts",
+          symbol: "detached",
+          lineStart: 1,
+          lineEnd: 1,
+          confidence: "low",
+          evidence: "detached predecessor map",
+          relatedOps: [],
+          graphPath: {
+            nodes: ["src/detached.ts"],
+            hops: 0,
+            terminal: "no_anchor",
+            truncated: true,
+            coverage: "partial",
+          },
+        },
+      ];
+
+      const draft = generateMigration({
+        providerName: "Acme Payments",
+        providerSlug: "acme-payments",
+        change,
+        findings,
+        repoRoot,
+      });
+
+      expect(draft.body).toContain("incomplete: no provider anchor reached");
+      expect(draft.body).not.toContain("direct provider usage");
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("unifiedDiff", () => {

@@ -205,6 +205,29 @@ describe("LLM repair planning edit-path constraints", () => {
     expect(result).toBeNull();
   });
 
+  it("rejects malformed replacement values instead of passing them to the mutation layer", async () => {
+    stubActions([
+      { type: "replace_in_file", filePath: "src/a.ts", from: "", to: "new", reason: "empty source" },
+      { type: "replace_in_file", filePath: "src/a.ts", from: { value: "old" }, to: "new", reason: "object source" },
+      { type: "replace_in_file", filePath: "src/a.ts", from: "old", to: { value: "new" }, reason: "object target" },
+      { type: "replace_in_file", filePath: "src/a.ts", from: "old", to: "new", global: "yes", reason: "bad flag" },
+      { type: "replace_in_file", filePath: "src/a.ts", from: "old", to: "new", reason: { text: "bad reason" } },
+      { type: "replace_in_file", filePath: "src/a.ts", from: "old", to: "new", global: false, reason: "valid" },
+    ]);
+
+    const result = await planRepairsWithLlm([...observations], slices, { attempt: 1 });
+    expect(result?.actions).toEqual([
+      {
+        type: "replace_in_file",
+        filePath: "src/a.ts",
+        from: "old",
+        to: "new",
+        global: false,
+        reason: "valid",
+      },
+    ]);
+  });
+
   it("keeps only the in-slice action when mixed with an out-of-slice attack", async () => {
     stubActions([
       { type: "replace_in_file", filePath: ".git/config", from: "a", to: "b", reason: "attack" },

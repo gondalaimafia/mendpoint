@@ -241,19 +241,40 @@ export function effectiveModelEndpointUrl(env: EnvLike = process.env): Effective
  * bespoke lane egresses to a public host (the LLM_AGENT_URL-private /
  * LLM_REPAIR_URL-public exploit).
  *
- * Currently the repair planner (packages/repair) resolves
- * LLM_REPAIR_URL ?? OPENAI_BASE_URL; OPENAI_BASE_URL is already covered by the
- * primary effective endpoint, so LLM_REPAIR_URL is the one variable primary
- * resolution misses. This is a boot-time mirror, not the source of truth:
+ * Currently the repair planner resolves LLM_REPAIR_URL and code-impact live
+ * confirmation resolves OPENAI_API_BASE or XAI_API_BASE. These variable names
+ * are not part of the primary provider registry, so primary resolution cannot
+ * see them. This is a boot-time mirror, not the source of truth:
  * resolve-time enforcement in the lane (enforceModelEndpointEgress at the fetch
  * call site) is authoritative; this only lets boot validation report a would-be
  * violation early.
  */
 export function auxiliaryModelEgressEndpoints(env: EnvLike = process.env): string[] {
-  const endpoints: string[] = [];
-  const repair = env.LLM_REPAIR_URL?.trim();
-  if (repair) endpoints.push(repair);
-  return endpoints;
+  const endpoints = new Set<string>();
+  for (const key of [
+    "LLM_REPAIR_URL",
+    // The repair lane falls back to OPENAI_BASE_URL even when the selected
+    // primary provider has already chosen a higher-precedence LLM_AGENT_URL.
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "XAI_API_BASE",
+  ] as const) {
+    const endpoint = env[key]?.trim();
+    if (endpoint) endpoints.add(endpoint);
+  }
+  const confirmMode = env.LLM_CONFIRM_MODE?.trim().toLowerCase();
+  const confirmRequested =
+    confirmMode === "live" ||
+    env.LLM_CONFIRM === "1" ||
+    env.LLM_CONFIRM?.trim().toLowerCase() === "true";
+  if (confirmRequested) {
+    if (env.XAI_API_KEY?.trim()) {
+      endpoints.add(env.XAI_API_BASE?.trim() || "https://api.x.ai/v1");
+    } else if (env.OPENAI_API_KEY?.trim()) {
+      endpoints.add(env.OPENAI_API_BASE?.trim() || "https://api.openai.com/v1");
+    }
+  }
+  return [...endpoints];
 }
 
 /**

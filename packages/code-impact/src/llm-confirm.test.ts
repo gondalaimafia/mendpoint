@@ -126,6 +126,14 @@ describe("llm confirm", () => {
     expect(resolveLlmConfirmMode()).toBe("live");
   });
 
+  it("does not select live confirmation for an unsupported Anthropic-only credential", () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    process.env.LLM_CONFIRM_MODE = "live";
+    expect(resolveLlmConfirmMode()).toBe("heuristic");
+  });
+
   it("redacts secret material from the outbound request body", async () => {
     process.env.OPENAI_API_KEY = "test-key";
     delete process.env.LLM_CONFIRM_TIMEOUT_MS;

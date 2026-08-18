@@ -60,7 +60,10 @@ export function createBudget(max = Number(process.env.LLM_CONFIRM_MAX ?? 12)): L
 }
 
 function hasLlmKey(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(env.OPENAI_API_KEY || env.XAI_API_KEY || env.ANTHROPIC_API_KEY);
+  // This transport is OpenAI-compatible and implements only the OpenAI and xAI
+  // credential paths below. An Anthropic-only key cannot authorize either
+  // request and must not switch the lane to live mode.
+  return Boolean(env.OPENAI_API_KEY || env.XAI_API_KEY);
 }
 
 export function resolveLlmConfirmMode(

@@ -111,6 +111,45 @@ describe("model egress assessment", () => {
     expect(a.endpointHost).toBe("public-model.invalid");
   });
 
+  it("flags public code-impact confirmation endpoints that primary provider resolution cannot see", () => {
+    for (const [name, value] of [
+      ["OPENAI_API_BASE", "https://openai-confirm.invalid/v1"],
+      ["XAI_API_BASE", "https://xai-confirm.invalid/v1"],
+    ] as const) {
+      const a = assessModelEgress({
+        MENDPOINT_MODEL_EGRESS: "local_only",
+        LLM_AGENT_URL: "http://127.0.0.1:8000",
+        [name]: value,
+      });
+      expect(a.violation).toBe("model_egress_local_only_violation");
+      expect(a.localOnlySatisfied).toBe(false);
+      expect(a.endpointHost).toBe(new URL(value).hostname);
+    }
+  });
+
+  it("flags a public OPENAI_BASE_URL hidden behind a private primary URL", () => {
+    const a = assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      MENDPOINT_MODEL_PROVIDER: "muse-spark",
+      LLM_AGENT_URL: "http://127.0.0.1:8000",
+      OPENAI_BASE_URL: "https://repair-fallback.invalid/v1",
+      LLM_REPAIR_URL: "",
+    });
+    expect(a.violation).toBe("model_egress_local_only_violation");
+    expect(a.endpointHost).toBe("repair-fallback.invalid");
+  });
+
+  it("flags the public code-impact provider default when live confirmation is enabled", () => {
+    const a = assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "http://127.0.0.1:8000",
+      LLM_CONFIRM_MODE: "live",
+      OPENAI_API_KEY: "configured",
+    });
+    expect(a.violation).toBe("model_egress_local_only_violation");
+    expect(a.endpointHost).toBe("api.openai.com");
+  });
+
   it("allows a private repair-lane LLM_REPAIR_URL under local_only", () => {
     expect(assessModelEgress({
       MENDPOINT_MODEL_EGRESS: "local_only",
