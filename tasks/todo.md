@@ -2128,3 +2128,18 @@ Objective: publish the exact sandbox runtime image, retain its immutable registr
 - [x] Record the final image, policy, app, secret, and health evidence below.
 
 Review: the exact image source commit was `3eb2724df86d99e339c557fc75dc036161a2ebbc`. The remote builder published `registry.fly.io/mendpoint-sandbox:sha-c1f0ccb583e8`, resolved by the live canary to `registry.fly.io/mendpoint-sandbox@sha256:6eacb37b3a9a795d2fed6baf4b032ced118c639e6d4d523b2bc9db9ff1a95c88`. The existing empty `mendpoint-sandbox` app was retained and converged. Network policy `01KZC4JJ74H8XMAYKZ2XQMTQFC` selects all Machines and permits only the API-required TCP port-0 sentinel, so all usable outbound ports are denied. A live direct-IP connection to `1.1.1.1:443` returned `EGRESS_BLOCKED:TimeoutError`. The canary also exposed that Fly's `/exec` endpoint ignores the OCI image user and starts as root; a red-first adapter regression now requires every verification command to execute through `/usr/sbin/runuser -u node`, and the live image proved `uid=1000(node)`. The full Platform suite passes 196/196, the joined Repair sandbox suite passes 6/6, the API sandbox suite passes 6/6, full repository typecheck passes, and the production build passes. A 90-day app-scoped token expiring 2026-11-16 was installed as deployed secret `MENDPOINT_SANDBOX_FLY_TOKEN` on `mendpoint-talal`. Its rolling restart reached one passing health check, and both `/healthz` and `/livez` returned HTTP 200. The canary was destroyed; the sandbox app retains no Machines and no public IPs.
+
+## Change Graph, Muse, verifier, and sandbox release integration: 2026-08-18
+
+Objective: review Claude's broader intelligence implementation as one release unit, make its architecture authority reproducible, prove the exact model behind every Muse result, and integrate the already-provisioned sandbox controls into the open deployment changes.
+
+- [ ] Inventory every unique commit and dirty change in PRs 202, 182, 190, 164, and 165 against current main.
+- [ ] Check the exact governing Change Graph authority document into the repository and verify its SHA-256 from a repository gate.
+- [ ] Remove any unsupported ADR approval assertion and bind ADR-0005 to separately recorded owner authority.
+- [ ] Prove the deployed provider and exact model identity without exposing credentials.
+- [ ] Make Muse-specific evaluations fail closed unless requested and echoed provider/model identity match the approved binding.
+- [ ] Rebase and repair the sandbox demo and customer profile changes with the immutable image digest, app, policy, and token prerequisites already proven.
+- [ ] Run focused graph, eval, verifier, sandbox, typecheck, build, and release gates on the combined candidate.
+- [ ] Perform a final security and regression review before pushing one coherent pull request.
+
+Acceptance: no architectural approval depends on an absent local file, no metric labeled Muse can be produced by an implicit fallback model, and no sandbox profile is merged until the checked-in app, image, default-deny policy, and scoped token contracts match live evidence.
