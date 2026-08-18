@@ -8,6 +8,7 @@ import { learningLoopEnabled } from "./transformer-learning-outcome.js";
 import {
   GOVERNED_LEARNING_PURPOSE,
   admitGovernedLearningOutcome,
+  temporalContaminationFree,
   type GovernedLearningAdmissionResult,
 } from "./governed-learning-producer.js";
 import type { AdmitApprovedOutcomeInput } from "./transformer-learning-producer.js";
@@ -135,7 +136,14 @@ export function admitTransformerGovernedLearningEvent(
         attribution: "model_behavior",
       },
       reviewerDecision: "accepted",
-      correctionSubstantive: true,
+      // A correction is substantive when the reviewed repair actually carries
+      // edits, rather than asserting `true`: an adaptive review with no edits is a
+      // no-op and must not be treated as a substantive model-behavior correction.
+      correctionSubstantive: artifact.review.edits.length > 0,
+      // Attest contamination-freedom from the temporal determination this producer
+      // can genuinely make, not a literal: the merged outcome was observed (at the
+      // review time) before admission. A malformed/future timestamp fails closed.
+      contaminationFree: temporalContaminationFree(candidate.reviewedAt, input.now),
       confidence: Math.min(1, Math.max(0, artifact.review.confidence / 100)),
       verificationAuthority: authority,
       // No per-candidate token meter exists at this seam; economics are unmetered.

@@ -20,6 +20,7 @@ import { learningLoopEnabled } from "./transformer-learning-outcome.js";
 import {
   GOVERNED_LEARNING_PURPOSE,
   admitGovernedLearningOutcome,
+  temporalContaminationFree,
   type GovernedLearningAdmissionResult,
 } from "./governed-learning-producer.js";
 
@@ -272,7 +273,15 @@ export function admitWardenGovernedLearningEvent(
         attribution: "model_behavior",
       },
       reviewerDecision: "accepted",
-      correctionSubstantive: true,
+      // A correction is substantive when the reviewed repair actually carries
+      // verified code edits, rather than asserting `true`. A valid Warden review
+      // always carries at least one verified edit; an evidence object with none
+      // (a no-op) would be non-substantive and correctly kept off the weight path.
+      correctionSubstantive: reviewEvidence.edits.length > 0,
+      // Attest contamination-freedom from the temporal determination this producer
+      // can genuinely make, not a literal: the merged outcome was observed before
+      // admission. A malformed/future timestamp fails closed at the admission gate.
+      contaminationFree: temporalContaminationFree(delivery.requestedAt, input.now),
       confidence: minConfidence(reviewEvidence),
       verificationAuthority: authority,
       economics: {
