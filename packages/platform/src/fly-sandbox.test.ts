@@ -278,6 +278,11 @@ describe("fly machines selection + default-safe routing", () => {
       sbx.dispose();
     }
   });
+
+  it("fails closed when a configured sandbox kind is invalid", () => {
+    vi.stubEnv("MENDPOINT_SANDBOX_KIND", "fly-machines");
+    expect(() => resolveSandboxKind()).toThrow("sandbox_kind_invalid");
+  });
 });
 
 describe("fly client credential gating", () => {

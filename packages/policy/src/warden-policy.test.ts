@@ -5,6 +5,7 @@ import {
   resolveWardenPolicy,
   type WardenPolicyContext,
 } from "./warden-policy.js";
+import { DEFAULT_POLICY } from "./index.js";
 
 const databases: DatabaseSync[] = [];
 const at = "2026-08-02T12:00:00.000Z";
@@ -124,7 +125,7 @@ describe("versioned Warden policy store", () => {
     expect(resolution.appliedDigests).toHaveLength(5);
     expect(resolution.policy).toMatchObject({
       minConfidenceForEdit: "medium",
-      neverTouchPaths: ["branch-only/"],
+      neverTouchPaths: [...DEFAULT_POLICY.neverTouchPaths, "branch-only/"],
       notificationsOnly: true,
       requireTwoReviewersForAuth: false,
     });

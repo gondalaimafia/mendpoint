@@ -224,13 +224,17 @@ export function getSandboxCacheStats() {
  * With nothing configured the result is "local" — the default path is unchanged.
  */
 export function resolveSandboxKind(opts: CreateSandboxOpts = {}): SandboxKind {
-  if (opts.kind) return opts.kind;
-  if (opts.tenantSandboxKind) return opts.tenantSandboxKind;
-  const env = process.env.MENDPOINT_SANDBOX_KIND;
-  if (env === "fly_machines" || env === "local" || env === "vm" || env === "in_cluster") {
-    return env;
+  const configured = opts.kind ?? opts.tenantSandboxKind ?? process.env.MENDPOINT_SANDBOX_KIND;
+  if (configured === undefined) return "local";
+  if (
+    configured === "fly_machines" ||
+    configured === "local" ||
+    configured === "vm" ||
+    configured === "in_cluster"
+  ) {
+    return configured;
   }
-  return "local";
+  throw new Error("sandbox_kind_invalid");
 }
 
 export function createSandbox(opts: CreateSandboxOpts = {}): SandboxHandle {
