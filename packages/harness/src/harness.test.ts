@@ -25,6 +25,7 @@ import {
   listPlans,
   getPlan,
 } from "./index.js";
+import { runSpecialistTool } from "./tools.js";
 import type { SandboxHandle } from "@mendpoint/platform";
 
 const dirs: string[] = [];
@@ -210,6 +211,52 @@ describe("harness", () => {
     const evidence = r.plan.steps.map((s) => s.evidence ?? "").join("\n");
     expect(evidence).not.toContain("stub_ok");
     expect(evidence).toMatch(/score|bsgId|campaignId|equal/);
+  });
+
+  it("fails the contract-suite security gate when no attestation is manufactured", () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-attest-"));
+    dirs.push(base);
+    const sandbox: SandboxHandle = {
+      id: "attest",
+      kind: "vm",
+      root: base,
+      mocks: [],
+      dispose: () => undefined,
+      run: () => ({ ok: true, stdout: "", stderr: "" }),
+    };
+    const securityGate = (notes?: string) => {
+      let plan = emptyPlan({
+        kind: "generic",
+        title: "attest",
+        goal: "fail closed",
+        agent: "warden",
+      });
+      plan = addStep(plan, {
+        title: "Contract suite",
+        action: "gate.contract_suite",
+        successCriteria: ["ok"],
+        ...(notes === undefined ? {} : { notes }),
+      });
+      const result = runSpecialistTool(plan.steps[0]!, sandbox);
+      const parsed = JSON.parse(result.output) as {
+        gates: Array<{ id: string; ok: boolean }>;
+      };
+      return { result, gate: parsed.gates.find((g) => g.id === "security-scan") };
+    };
+
+    // Absent notes: the value is manufactured nowhere, so the gate must refuse.
+    const absent = securityGate(undefined);
+    expect(absent.result.ok).toBe(false);
+    expect(absent.gate?.ok).toBe(false);
+
+    // Non-JSON notes: parseJsonNotes yields { text }, still not an attestation.
+    const nonJson = securityGate("free-form operator note");
+    expect(nonJson.result.ok).toBe(false);
+    expect(nonJson.gate?.ok).toBe(false);
+
+    // Only an explicit boolean attestation satisfies the security gate.
+    const attested = securityGate(JSON.stringify({ securityScanAttested: true }));
+    expect(attested.gate?.ok).toBe(true);
   });
 
   it("fails unknown actions and unmet success criteria", async () => {

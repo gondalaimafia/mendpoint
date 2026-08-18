@@ -265,6 +265,79 @@ describe("repair session", () => {
     }
   });
 
+  it("blocks a model-proposed edit to a protected path with no caller denylist", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-protected-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "x.ts"), "export const value = 1;\n", "utf8");
+    // A protected file present in the repo; the baseline denylist must guard it
+    // even though the caller supplies no neverTouchPaths.
+    writeFileSync(join(dir, ".env"), "TOKEN=PLACEHOLDER\n", "utf8");
+    writeFileSync(
+      join(dir, "check.mjs"),
+      [
+        "console.error(\"x.ts:1:1 - error TS2304: Cannot find name 'value'.\");",
+        "process.exit(1);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    actions: [
+                      {
+                        type: "replace_in_file",
+                        filePath: ".env",
+                        from: "PLACEHOLDER",
+                        to: "INJECTED",
+                        global: true,
+                        reason: "attempt to overwrite a protected file",
+                      },
+                    ],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    const priorRepairUrl = process.env.LLM_REPAIR_URL;
+    const priorApiKey = process.env.OPENAI_API_KEY;
+    process.env.LLM_REPAIR_URL = "https://repair.invalid/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    try {
+      const result = await runRepairSession({
+        repoRoot: dir,
+        verifyCommands: ["node check.mjs"],
+        useLlm: true,
+        maxAttempts: 3,
+      });
+
+      expect(result.ok).toBe(false);
+      // The protected write is silently skipped, so the attempt yields no edits.
+      expect(result.stopReason).toBe("no_edits");
+      expect(result.edits).toEqual([]);
+      // The protected file is untouched: original preserved, injection absent.
+      const envAfter = readFileSync(join(dir, ".env"), "utf8");
+      expect(envAfter).toBe("TOKEN=PLACEHOLDER\n");
+      expect(envAfter).not.toContain("INJECTED");
+    } finally {
+      if (priorRepairUrl === undefined) delete process.env.LLM_REPAIR_URL;
+      else process.env.LLM_REPAIR_URL = priorRepairUrl;
+      if (priorApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorApiKey;
+    }
+  });
+
   it("rejects arbitrary shell commands and runs supported verification profiles", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-verify-"));
     dirs.push(dir);
@@ -567,5 +640,33 @@ describe("repair filesystem policy", () => {
     ).toThrow(/file budget/);
     expect(readFileSync(join(repo, "a.ts"), "utf8")).toContain("old");
     expect(readFileSync(join(repo, "b.ts"), "utf8")).toContain("old");
+  });
+
+  it("keeps baseline never-touch protection when the caller passes an empty list", () => {
+    const repo = mkdtempSync(join(tmpdir(), "mendpoint-repair-baseline-"));
+    dirs.push(repo);
+    writeFileSync(join(repo, ".env"), "TOKEN=keep\n", "utf8");
+    writeFileSync(join(repo, "package-lock.json"), "{\"keep\":true}\n", "utf8");
+
+    for (const filePath of [".env", "package-lock.json"]) {
+      expect(() =>
+        applyActions(
+          [
+            {
+              type: "write_file",
+              filePath,
+              content: "TOKEN=changed\n",
+              reason: "should be blocked",
+            },
+          ],
+          { repoRoot: repo, neverTouchPaths: [] },
+        ),
+      ).toThrow(/blocked by policy/);
+    }
+
+    expect(readFileSync(join(repo, ".env"), "utf8")).toBe("TOKEN=keep\n");
+    expect(readFileSync(join(repo, "package-lock.json"), "utf8")).toBe(
+      "{\"keep\":true}\n",
+    );
   });
 });
