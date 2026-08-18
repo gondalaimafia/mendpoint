@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { mapPrStatus, parseUnifiedDiff, patchStats, relativeTime } from "./pr-map";
+import {
+  coverageSummary,
+  mapPrStatus,
+  parseUnifiedDiff,
+  patchStats,
+  relativeTime,
+} from "./pr-map";
+import type { PrCoverage } from "./pr-map";
 
 describe("pr-map — live PR mapping helpers", () => {
   it("maps API PR status onto DS lifecycle status", () => {
@@ -7,8 +14,60 @@ describe("pr-map — live PR mapping helpers", () => {
     expect(mapPrStatus("open")).toBe("open");
     expect(mapPrStatus("merged")).toBe("merged");
     expect(mapPrStatus("closed")).toBe("failing");
-    expect(mapPrStatus("low_confidence")).toBe("failing");
     expect(mapPrStatus("unknown")).toBe("open");
+  });
+
+  it("does not collapse a verified-clean low_confidence result into red 'failing'", () => {
+    // The §11.7 bug: low_confidence -> failing made a fully-analyzed clean repo
+    // and an unanalyzable one render identically red. Coverage now discriminates.
+    expect(mapPrStatus("low_confidence", { basis: "analyzed", gaps: [] })).toBe("open");
+    expect(mapPrStatus("low_confidence", { basis: "partial", gaps: [] })).toBe("pending");
+    expect(mapPrStatus("low_confidence", { basis: "not_analyzed", gaps: [] })).toBe("pending");
+    // Absent coverage is unknown, never clean — and still never a fabricated red.
+    expect(mapPrStatus("low_confidence")).toBe("pending");
+    expect(mapPrStatus("low_confidence", null)).toBe("pending");
+    expect(mapPrStatus("low_confidence", { basis: "analyzed", gaps: [] })).not.toBe("failing");
+  });
+
+  it("summarizes coverage into distinct, honest states", () => {
+    const clean = coverageSummary("low_confidence", {
+      basis: "analyzed",
+      gaps: [],
+      filesInspected: 128,
+      filesInScope: 128,
+    });
+    expect(clean.state).toBe("clean");
+    expect(clean.tone).toBe("emerald");
+    expect(clean.detail).toContain("complete evidence of no impact");
+    expect(clean.files).toBe("128 of 128 files inspected");
+
+    const partial: PrCoverage = {
+      basis: "partial",
+      reason: "Ruby files were present but unsupported.",
+      gaps: [{ reason: "unsupported_language", detail: "3 .rb files not analyzed", count: 3 }],
+    };
+    const partialSummary = coverageSummary("low_confidence", partial);
+    expect(partialSummary.state).toBe("no_known_impact");
+    expect(partialSummary.tone).toBe("amber");
+    expect(partialSummary.gaps[0]).toEqual({
+      reason: "Unsupported language",
+      detail: "3 .rb files not analyzed",
+    });
+
+    const notAnalyzed = coverageSummary("low_confidence", { basis: "not_analyzed", gaps: [] });
+    expect(notAnalyzed.state).toBe("no_basis");
+    expect(notAnalyzed.detail).toContain("not a clean result");
+
+    // Absent coverage -> unknown, never defaulted to analyzed/clean.
+    const unknown = coverageSummary("low_confidence", null);
+    expect(unknown.state).toBe("unknown");
+    expect(unknown.tone).toBe("neutral");
+    expect(unknown.detail).toContain("unverified");
+
+    // An actionable (non-empty) PR with full coverage is "covered", not "clean".
+    const covered = coverageSummary("open", { basis: "analyzed", gaps: [] });
+    expect(covered.state).toBe("covered");
+    expect(covered.tone).toBe("emerald");
   });
 
   it("counts +/- lines and touched files without double-counting git headers", () => {
