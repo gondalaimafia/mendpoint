@@ -101,9 +101,16 @@ over intact) verification FAILS and never falls back to host execution.
 - `MENDPOINT_SANDBOX_FLY_TOKEN` (preferred, narrower blast radius) or
   `FLY_API_TOKEN` — the credential. Without a resolvable token the run fails
   closed rather than degrading to the no-op mock or host path.
-- `MENDPOINT_SANDBOX_FLY_IMAGE` — the digest-pinned sandbox image
-  (`name@sha256:<64 hex>`; see `docs/SANDBOX_IMAGE.md`). Required on the live path:
-  there is no default, and an unset or tag-based image fails closed.
+- `MENDPOINT_SANDBOX_FLY_IMAGE` — REQUIRED, and digest-pinned
+  (`name@sha256:<64 hex>`). This image IS the isolation boundary, so a floating
+  `:latest` tag is not acceptable: it can change with no review and no
+  reproducibility. There is no code default — an unset, empty, or tag-based
+  value FAILS CLOSED (`sandbox_image_unresolved` / `sandbox_image_not_pinned` in
+  `packages/platform/src/fly-sandbox.ts`), refusing the host fallback rather than
+  degrading. Pin it in the reviewed deployment config so a change to the
+  isolation boundary is diffable; note that a Fly secret of the same name would
+  override the config and is invisible to review. See `docs/SANDBOX_IMAGE.md`
+  ("Pin production to an immutable reference").
 - The existing approval gates remain required in production
   (`MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION` and/or
   `MENDPOINT_APPROVED_VERIFIER_SHA256S`).
@@ -146,24 +153,38 @@ The policy the sandbox app MUST run under:
 How to provision it depends on the Fly org's networking controls (org-level
 egress rules / firewall on the `mendpoint-sandbox` app, or a Machine image whose
 entrypoint drops outbound routes before running the verifier). Whichever
-mechanism is used, the acceptance test is the same: a verifier Machine's attempt
-to open an outbound connection to an address outside the allowlist fails. Until
-that test passes, the exfiltration channel described under "Residual risk"
+mechanism is used, the acceptance test has two halves that must BOTH hold:
+
+1. a verifier Machine's attempt to open an outbound connection to an address
+   **outside** the allowlist **FAILS**, and
+2. a normal, in-allowlist verification **COMPLETES** inside the Machine.
+
+This default-deny egress policy is a **HARD PREREQUISITE**, not a follow-up.
+The security benefit of routing verification into a Machine comes from this
+policy, not from the Machine boundary itself: enabling
+`MENDPOINT_SANDBOX_KIND=fly_machines` without it merely relocates the
+exfiltration channel into the sandbox app rather than removing it. Until the
+acceptance test passes, the exfiltration channel described under "Residual risk"
 remains open even though execution is inside a microVM.
 
 ### Operator checklist to enable the sandbox
 
-1. Build and push the sandbox image (`npm run sandbox:image:push`) and pin an
-   immutable tag in `MENDPOINT_SANDBOX_FLY_IMAGE`.
+1. Build and push the sandbox image (`npm run sandbox:image:push`) and pin the
+   immutable `@sha256:` digest it prints in `MENDPOINT_SANDBOX_FLY_IMAGE`. The
+   deployment configs ship this value EMPTY so a missing pin fails closed; never
+   leave it as `:latest`.
 2. Create the dedicated `mendpoint-sandbox` Fly app and provision the default-deny
    egress policy above on it.
 3. Set the sandbox credential as a secret on each app that verifies (never in
    `fly.toml`): `fly secrets set MENDPOINT_SANDBOX_FLY_TOKEN=... --app <app>`.
    A scoped `MENDPOINT_SANDBOX_FLY_TOKEN` is preferred over a broad `FLY_API_TOKEN`.
-4. Confirm `MENDPOINT_SANDBOX_KIND=fly_machines`, `MENDPOINT_SANDBOX_FLY_APP`, and
-   `MENDPOINT_SANDBOX_FLY_IMAGE` are set in the deployment config (already wired in
-   `fly.toml` and `fly.customer-warden.toml`).
+4. Confirm `MENDPOINT_SANDBOX_KIND=fly_machines` and `MENDPOINT_SANDBOX_FLY_APP`
+   are present in the deployment config (wired in `fly.toml` and
+   `fly.customer-warden.toml`), and that `MENDPOINT_SANDBOX_FLY_IMAGE` has been
+   pinned to a digest (step 1) rather than left empty.
+5. Run the egress acceptance test (both halves above) and confirm it passes
+   before treating the sandbox as live.
 
 Because the fly_machines backend fails closed, verification refuses rather than
-degrading to host execution if steps 1-3 are incomplete — so provision the
-sandbox app and token before deploying the config that selects it.
+degrading to host execution if steps 1-4 are incomplete, so provision the
+sandbox app, pinned image, and token before deploying the config that selects it.
