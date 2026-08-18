@@ -639,10 +639,19 @@ export const HARD_MAX_PATHS = 1_000;
  * How a {@link GraphPath} walk ended. `anchor` — the walk reached a provider
  * anchor, so the path is complete. `cycle` / `max_hops` — the walk was stopped
  * by a safety bound (an import cycle, or the hop cap) and the emitted path is
- * truncated, never silently trimmed. The `cycle` / `max_hops` vocabulary
- * mirrors the dependency-path terminals in @mendpoint/graph-learn.
+ * truncated, never silently trimmed. `no_anchor` — the predecessor chain ran
+ * out before reaching an anchor (a reachable node with no predecessor, only
+ * possible on a malformed/detached predecessor map); the path is NOT complete
+ * and must never be reported as if it reached an anchor. The `cycle` /
+ * `max_hops` vocabulary mirrors the dependency-path terminals in
+ * @mendpoint/graph-learn.
  */
-export const GraphPathTerminalSchema = z.enum(["anchor", "cycle", "max_hops"]);
+export const GraphPathTerminalSchema = z.enum([
+  "anchor",
+  "cycle",
+  "max_hops",
+  "no_anchor",
+]);
 export type GraphPathTerminal = z.infer<typeof GraphPathTerminalSchema>;
 
 /**

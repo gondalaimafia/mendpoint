@@ -183,7 +183,10 @@ export function reachableFromAnchors(
  *  - exceeding {@link HARD_MAX_HOPS} yields terminal `max_hops`, `truncated`;
  *  - revisiting a node (only possible on a malformed/cyclic predecessor map, a
  *    defensive guarantee since BFS predecessors are acyclic) yields terminal
- *    `cycle`, `truncated`.
+ *    `cycle`, `truncated`;
+ *  - a reachable node whose predecessor chain runs out before an anchor (a
+ *    detached/malformed predecessor map, equally defensive) yields terminal
+ *    `no_anchor`, `truncated` — it never claims it reached an anchor.
  */
 export function anchorPathTo(
   target: string,
@@ -204,7 +207,14 @@ export function anchorPathTo(
       break;
     }
     const next = walk.predecessors.get(current);
-    if (next === undefined) break; // reachable non-anchor without a predecessor: treat as complete.
+    if (next === undefined) {
+      // Reachable non-anchor whose predecessor chain ran out: the walk did NOT
+      // reach an anchor, so it must not be reported `anchor`/`complete`. Fail
+      // closed with its own terminal, mirroring the `cycle` guard below.
+      terminal = "no_anchor";
+      truncated = true;
+      break;
+    }
     if (seen.has(next)) {
       terminal = "cycle";
       truncated = true;

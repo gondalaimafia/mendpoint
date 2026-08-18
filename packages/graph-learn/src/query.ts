@@ -104,17 +104,6 @@ export function blastRadius(
   return { nodes: collectNodes(db, seen), edges: edgeAcc, truncated };
 }
 
-/**
- * Ensure every result carries a coverage assessment. Ops that do not know they
- * are incomplete are `complete` within their scope by construction (deterministic
- * template enumeration); ops that can be truncated or targeted at an absent node
- * set their own coverage, which is preserved here.
- */
-function withDefaultCoverage(result: GraphQueryResult): GraphQueryResult {
-  if (result.coverage) return result;
-  return { ...result, coverage: { basis: "complete" } };
-}
-
 export function runGraphQuery(
   db: GraphLearnDb,
   q: GraphQuery,
@@ -139,6 +128,7 @@ export function runGraphQuery(
         edges: [],
         summary: `${rows.length} pattern(s) with >=${minSamples} samples`,
         rows,
+        coverage: { basis: "complete" },
       };
     } else if (q.op === "stats") {
       const stats = tenantGraphStats(db, scope);
@@ -148,6 +138,7 @@ export function runGraphQuery(
         edges: [],
         summary: `${stats.nodes} nodes, ${stats.edges} edges`,
         rows: [stats],
+        coverage: { basis: "complete" },
       };
     } else if (q.op === "latency_stats") {
       result = runGraphQueryInner(db, q);
@@ -155,7 +146,7 @@ export function runGraphQuery(
       tenantView = createTenantGraphView(db, scope);
       result = runGraphQueryInner(tenantView, q);
     }
-    return withDefaultCoverage(result);
+    return result;
   } finally {
     tenantView?.raw.close();
     recordLatency(q.op, performance.now() - t0);
@@ -175,6 +166,7 @@ function runGraphQueryInner(
         edges: [],
         summary: `${s.nodes} nodes, ${s.edges} edges`,
         rows: [s],
+        coverage: { basis: "complete" },
       };
     }
     case "latency_stats": {
@@ -184,6 +176,7 @@ function runGraphQueryInner(
         nodes: [],
         edges: [],
         summary: formatLatencyReport(report),
+        coverage: { basis: "complete" },
         rows: report.ops.map((o) => ({
           op: o.op,
           n: o.n,
@@ -254,6 +247,13 @@ function runGraphQueryInner(
         nodes,
         edges: selected.map((item) => item.edge),
         summary: `${selected.length} of ${available.length} repository evidence record(s)`,
+        coverage:
+          selected.length < available.length
+            ? {
+                basis: "partial",
+                reason: `capped at limit ${limit} of ${available.length} available`,
+              }
+            : { basis: "complete" },
         rows: selected.map(({ evidence }) => ({
           id: evidence!.props?.evidence_id,
           type: evidence!.props?.evidence_type,
@@ -290,6 +290,9 @@ function runGraphQueryInner(
     }
     case "who_consumes_provider": {
       const pId = `provider:${q.providerSlug}`;
+      // Fail closed on a typo'd/unknown slug: if the provider was never observed,
+      // "0 consumers" is no evidence, not a definitive "nothing consumes it".
+      const present = Boolean(getNode(db, pId));
       const edges = [
         ...edgesTo(db, pId, ["MONITORS", "CONSUMES"]),
       ];
@@ -300,6 +303,12 @@ function runGraphQueryInner(
         nodes,
         edges,
         summary: `${consumerIds.length} consumer(s) monitor ${q.providerSlug}`,
+        coverage: present
+          ? { basis: "complete" }
+          : {
+              basis: "target_absent",
+              reason: `provider ${q.providerSlug} is not in the graph`,
+            },
         rows: consumerIds.map((id) => ({ consumerId: id.replace(/^consumer:/, "") })),
       };
     }
@@ -313,11 +322,25 @@ function runGraphQueryInner(
       });
       const breakEdges = edgesTo(db, eid, ["BREAKS"]);
       const consumeEp = edgesTo(db, eid, ["CONSUMES"]);
+      // Fail closed when neither the endpoint nor its provider was ever observed
+      // (a typo'd slug/path): an empty consumer list is no evidence, not a
+      // definitive "nothing breaks if I ship this".
+      const endpointPresent = Boolean(getNode(db, eid));
+      const providerAbsent = p.coverage.basis === "target_absent";
       return {
         op: q.op,
         nodes: [...p.nodes, ...collectNodes(db, [eid])],
         edges: [...p.edges, ...breakEdges, ...consumeEp],
         summary: `endpoint ${q.method ?? ""} ${q.path} — ${p.rows?.length ?? 0} provider consumer(s); ${breakEdges.length} break edge(s)`,
+        coverage:
+          endpointPresent && !providerAbsent
+            ? { basis: "complete" }
+            : {
+                basis: "target_absent",
+                reason: providerAbsent
+                  ? `provider ${q.providerSlug} is not in the graph`
+                  : `endpoint ${q.method ?? "ANY"} ${q.path} is not in the graph`,
+              },
         rows: p.rows,
       };
     }
@@ -482,6 +505,7 @@ function runGraphQueryInner(
         nodes: collectNodes(db, pathIds),
         edges: pathEdges,
         summary: `path length ${pathEdges.length}`,
+        coverage: { basis: "complete" },
         rows: pathIds.map((id, i) => ({ step: i, nodeId: id })),
       };
     }
@@ -522,6 +546,7 @@ function runGraphQueryInner(
         nodes: [],
         edges: [],
         summary: `${rows.length} pattern(s) with >=${minS} samples`,
+        coverage: { basis: "complete" },
         rows,
       };
     }
@@ -566,6 +591,7 @@ function runGraphQueryInner(
         nodes,
         edges,
         summary: `${rows.length} outcome hit(s) for pattern ${JSON.stringify(q.pattern)}`,
+        coverage: { basis: "complete" },
         rows,
       };
     }
@@ -711,6 +737,7 @@ function runGraphQueryInner(
         nodes: collectNodes(db, new Set(edges.flatMap((e) => [e.source, e.target]))),
         edges,
         summary: `${rows.length} break signal(s) for ${q.operationId}`,
+        coverage: { basis: "complete" },
         rows,
       };
     }
@@ -733,6 +760,14 @@ function runGraphQueryInner(
         nodes: batch,
         edges: [],
         summary: `${batch.length} ready MigrationUnit(s) for campaign ${q.campaignId}`,
+        // Readiness is derived entirely from DEPENDS_ON, which no ingest path
+        // populates, so `deps.every(...)` over an always-empty edge set is
+        // vacuously true and would flag every pending unit "ready". Fail closed:
+        // the readiness signal is underivable, never a definitive "ready".
+        coverage: {
+          basis: "target_absent",
+          reason: "DEPENDS_ON is not populated by any ingest path",
+        },
         rows: batch.map((u) => ({ id: u.id, label: u.label, props: u.props })),
       };
     }
@@ -767,6 +802,13 @@ function runGraphQueryInner(
         nodes: [...symbols, ...invs],
         edges,
         summary: `${invs.length} invariant(s) for ${q.qualifiedName}`,
+        // Every path to an invariant terminates in PRESERVES_INVARIANT, which no
+        // ingest path populates, so `0 invariant(s)` is not a definitive "this
+        // symbol preserves nothing". Fail closed until a producer exists.
+        coverage: {
+          basis: "target_absent",
+          reason: "PRESERVES_INVARIANT is not populated by any ingest path",
+        },
         rows: invs.map((i) => ({
           id: i.id,
           expression: i.props?.expression ?? i.label,
@@ -793,10 +835,15 @@ function runGraphQueryInner(
         nodes: collectNodes(db, ids),
         edges,
         summary: `${edges.length} CALLS edge(s) valid at ${q.at}`,
+        coverage: { basis: "complete" },
       };
     }
     case "time_travel_modifies": {
-      let edges = edgesByKindAt(db, ["MODIFIES", "TOUCHES"], q.at, 5000);
+      const TIME_TRAVEL_EDGE_CAP = 5000;
+      let edges = edgesByKindAt(db, ["MODIFIES", "TOUCHES"], q.at, TIME_TRAVEL_EDGE_CAP);
+      // The store applies a LIMIT; hitting it means the temporal slice was cut
+      // short, so the result is partial, never a false `complete`.
+      const capped = edges.length >= TIME_TRAVEL_EDGE_CAP;
       // Git emits both names for compatibility. Prefer MODIFIES so one commit
       // and file pair is one temporal fact, and exclude non-git TOUCHES.
       const temporal = new Map<string, GlEdge>();
@@ -823,6 +870,12 @@ function runGraphQueryInner(
         nodes: collectNodes(db, ids),
         edges,
         summary: `${edges.length} MODIFIES edge(s) valid at ${q.at}`,
+        coverage: capped
+          ? {
+              basis: "partial",
+              reason: `temporal slice capped at ${TIME_TRAVEL_EDGE_CAP} edges`,
+            }
+          : { basis: "complete" },
         rows: edges.slice(0, 50).map((e) => ({
           id: e.id,
           from: e.source,
@@ -833,7 +886,16 @@ function runGraphQueryInner(
       };
     }
     default:
-      return { op: "unknown", nodes: [], edges: [], summary: "unknown query" };
+      // Reachable only when an untyped/unrecognized op is cast past the input
+      // types. It cannot assess coverage, so it must not read as complete — this
+      // is the one runtime path that renders `Coverage: UNKNOWN`.
+      return {
+        op: "unknown",
+        nodes: [],
+        edges: [],
+        summary: "unknown query",
+        coverage: { basis: "unknown", reason: "unrecognized query op" },
+      };
   }
 }
 

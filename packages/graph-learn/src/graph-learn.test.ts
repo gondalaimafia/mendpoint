@@ -130,18 +130,71 @@ describe("graph-learn substrate", () => {
     expect(md).toContain("(8 more row(s) not shown here)");
   });
 
-  it("absent coverage renders as UNKNOWN, never as complete", () => {
-    const md = formatQueryForPlanner({
-      op: "who_consumes_provider",
-      nodes: [],
-      edges: [],
-      summary: "legacy result built before coverage existed",
-      rows: [],
-      // coverage intentionally omitted
-    });
+  it("an unrecognized op renders as UNKNOWN through runGraphQuery, never as complete", () => {
+    // Coverage is a required field, so no result can omit it. The one runtime
+    // path that still cannot assess coverage is an untyped op cast past the
+    // input types and reaching the dispatcher's default branch. It must fail
+    // closed as UNKNOWN — proven end to end through runGraphQuery, not from a
+    // hand-built literal that bypasses the query layer.
+    const db = openGraphLearnMemory();
+    const r = runGraphQuery(
+      db,
+      { op: "totally-unknown-op" } as never,
+      { tenantId: "tenant-x" },
+    );
+    expect(r.coverage.basis).toBe("unknown");
+    const md = formatQueryForPlanner(r);
     expect(md).toContain("Coverage: UNKNOWN");
     expect(md).toContain("must not be read as complete");
     expect(md).not.toContain("Coverage: complete");
+  });
+
+  it("who_consumes_provider on an unknown slug reports target_absent, not empty-complete", () => {
+    const db = openGraphLearnMemory();
+    ingestControlPlane(
+      db,
+      {
+        provider: { id: "p1", slug: "acme", name: "Acme" },
+        consumers: [{ id: "c1", name: "Shop", githubOwner: "o", githubRepo: "shop" }],
+        monitors: [{ consumerId: "c1", providerId: "p1" }],
+      },
+      "tenant-x",
+    );
+    const scope = { tenantId: "tenant-x", consumerIds: ["c1"] };
+
+    const known = runGraphQuery(db, { op: "who_consumes_provider", providerSlug: "acme" }, scope);
+    expect(known.coverage.basis).toBe("complete");
+
+    // A typo'd slug yields the same "0 consumers" shape — but must fail closed.
+    const typo = runGraphQuery(db, { op: "who_consumes_provider", providerSlug: "acmee" }, scope);
+    expect(typo.rows?.length ?? 0).toBe(0);
+    expect(typo.coverage.basis).toBe("target_absent");
+    expect(typo.coverage.reason).toContain("not in the graph");
+    expect(formatQueryForPlanner(typo)).not.toContain("Coverage: complete");
+  });
+
+  it("migration_ready_units fails closed because DEPENDS_ON has no producer", () => {
+    const db = openGraphLearnMemory();
+    const r = runGraphQuery(
+      db,
+      { op: "migration_ready_units", campaignId: "camp-1" },
+      { tenantId: "tenant-x" },
+    );
+    expect(r.coverage.basis).toBe("target_absent");
+    expect(r.coverage.reason).toContain("DEPENDS_ON is not populated");
+    expect(formatQueryForPlanner(r)).not.toContain("Coverage: complete");
+  });
+
+  it("invariants_for_symbol fails closed because PRESERVES_INVARIANT has no producer", () => {
+    const db = openGraphLearnMemory();
+    const r = runGraphQuery(
+      db,
+      { op: "invariants_for_symbol", qualifiedName: "com.acme.Charge" },
+      { tenantId: "tenant-x" },
+    );
+    expect(r.coverage.basis).toBe("target_absent");
+    expect(r.coverage.reason).toContain("PRESERVES_INVARIANT is not populated");
+    expect(formatQueryForPlanner(r)).not.toContain("Coverage: complete");
   });
 
   it("ingests spec surfaces and blast radius", () => {
