@@ -22,6 +22,7 @@ import {
   listAdaptiveCandidates,
   listAudit,
   listJobs,
+  listTrajectories,
   recordAudit,
   reviewAdaptiveCandidate,
   upsertScmConnection,
@@ -215,6 +216,10 @@ export const TRANSFORMER_ADAPTIVE_DELIVERY_EVAL_SCENARIO: AgentEvalScenario = Ob
     const store = new TransformerPilotExecutionStore(join(root, "pilot.sqlite"));
     try {
       materialize(snapshotRoot, SOURCE_FILES);
+      db.raw.prepare(
+        `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+         VALUES (?, ?, ?, 'team', 'active', 10, ?)`,
+      ).run(TENANT_ID, TENANT_ID, "ReGauge adaptive delivery evaluation", CREATED_AT);
       upsertScmConnection(db, {
         id: "connection-transformer-delivery-eval",
         tenantId: TENANT_ID,
@@ -356,6 +361,7 @@ export const TRANSFORMER_ADAPTIVE_DELIVERY_EVAL_SCENARIO: AgentEvalScenario = Ob
         env: { MENDPOINT_DATA_DIR: root },
       });
       const routing = getRoutingLedgerForJob(db, CAMPAIGN_ID, TENANT_ID);
+      const trajectories = listTrajectories(db, TENANT_ID, { limit: 10 });
 
       const tenantInvisible = getAdaptiveCandidate(db, OTHER_TENANT_ID, candidate.id) === undefined;
       let crossTenantError = "none";
@@ -576,6 +582,17 @@ export const TRANSFORMER_ADAPTIVE_DELIVERY_EVAL_SCENARIO: AgentEvalScenario = Ob
         }
         : undefined;
       const grades = Object.freeze([
+        criticalGrade(
+          "adaptive.trajectory_persisted",
+          trajectories.length === 1 && trajectories[0]?.product === "regauge" &&
+            /^tfattempt_[a-f0-9]{32}$/.test(trajectories[0]?.runId ?? "") &&
+            trajectories[0]?.finalOutcome === "candidate_review_pending",
+          { count: 1, product: "regauge", runId: "tfattempt_<digest>",
+            finalOutcome: "candidate_review_pending" },
+          { count: trajectories.length, product: trajectories[0]?.product,
+            runId: trajectories[0]?.runId,
+            finalOutcome: trajectories[0]?.finalOutcome },
+        ),
         criticalGrade(
           "adaptive.production_lane_candidate",
           lane.attempted === 1 && lane.failed === 1 && candidate.status === "review_pending",

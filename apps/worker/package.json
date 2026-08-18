@@ -20,7 +20,8 @@
     "./transformer-s3-transport": "./src/transformer-s3-transport.ts",
     "./transformer-production-profile": "./src/transformer-production-profile.ts",
     "./verifier-shadow": "./src/verifier-shadow.ts",
-    "./verifier-product-shadow": "./src/verifier-product-shadow.ts"
+    "./verifier-product-shadow": "./src/verifier-product-shadow.ts",
+    "./warden-candidate-delivery": "./src/warden-candidate-delivery.ts"
   },
   "scripts": {
     "start": "tsx src/cli.ts",

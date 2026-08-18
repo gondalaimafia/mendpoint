@@ -11,6 +11,7 @@ import {
 } from "./capability-eval.js";
 import { TRANSFORMER_AGENT_EVAL_SCENARIOS } from "./transformer-agent-eval.js";
 import { TRANSFORMER_ADAPTIVE_DELIVERY_EVAL_SCENARIO } from "./transformer-adaptive-delivery-eval.js";
+import { FETTLER_DELEGATION_DELIVERY_EVAL_SCENARIO } from "./fettler-delegation-eval.js";
 import { WARDEN_AGENT_EVAL_SCENARIOS } from "./warden-agent-eval.js";
 import {
   WARDEN_SOURCE_EVAL_SCENARIO,
@@ -33,6 +34,7 @@ export async function runWardenTransformerEval(
       ...WARDEN_AGENT_EVAL_SCENARIOS,
       WARDEN_SOURCE_EVAL_SCENARIO,
       WARDEN_WORKER_SOURCE_EVAL_SCENARIO,
+      FETTLER_DELEGATION_DELIVERY_EVAL_SCENARIO,
       ...SPECIALIST_AGENT_EVAL_SCENARIOS,
       ...TRANSFORMER_AGENT_EVAL_SCENARIOS,
       TRANSFORMER_ADAPTIVE_DELIVERY_EVAL_SCENARIO,

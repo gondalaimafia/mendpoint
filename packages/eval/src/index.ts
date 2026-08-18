@@ -58,6 +58,7 @@ export {
   type RetryPenaltyInput,
 } from "./specialist-grades.js";
 export { SPECIALIST_AGENT_EVAL_SCENARIOS } from "./specialist-scenarios.js";
+export { FETTLER_DELEGATION_DELIVERY_EVAL_SCENARIO } from "./fettler-delegation-eval.js";
 export {
   DEFAULT_APPROVED_LIVE_MODEL,
   LIVE_MODEL_EVIDENCE_VERSION,
