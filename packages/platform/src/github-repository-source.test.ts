@@ -190,6 +190,31 @@ describe("GitHub repository source", () => {
       .toBe(true);
   });
 
+  it("accepts an exact repository scoped installation response when GitHub permission metadata is all false", async () => {
+    const transport = fixtureTransport([], {}, (input) =>
+      input.path === `/repositories/${REPOSITORY_ID}`
+        ? json(200, {
+            id: Number(REPOSITORY_ID),
+            full_name: "acme/service",
+            default_branch: "main",
+            permissions: {
+              admin: false,
+              maintain: false,
+              push: false,
+              triage: false,
+              pull: false,
+            },
+          })
+        : undefined,
+    );
+
+    await expect((await source(transport)).resolveRef("main")).resolves.toMatchObject({
+      repositoryId: `github:${REPOSITORY_ID}`,
+      sha: COMMIT,
+      observedRef: "main",
+    });
+  });
+
   it("fails closed when the installation cannot read the selected repository", async () => {
     const transport = fixtureTransport([], {}, (input) =>
       input.path === `/repositories/${REPOSITORY_ID}`

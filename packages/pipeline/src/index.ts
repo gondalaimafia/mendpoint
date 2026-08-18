@@ -712,6 +712,28 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   );
   const graphRagMd = formatQueryForPlanner(blast);
 
+  // Graph-update audit at the ingest entry point. ingestControlPlane +
+  // ingestSpecDiff upsert many nodes/edges per change; auditing every edge write
+  // would drown the compliance log, so one event per ingest records the actor,
+  // tenant, provider, and magnitude — the security- and migration-relevant facts
+  // (spec 19.8 graph updates). Deterministic id keeps it idempotent on replay.
+  recordAudit(db, {
+    id: `audit-graph-updated-${input.tenantId}-${changeId}`,
+    tenantId: input.tenantId,
+    actor: "pipeline",
+    action: "graph.updated",
+    resourceType: "graph",
+    resourceId: `change:${changeId}`,
+    metadata: {
+      source: "spec_diff",
+      changeId,
+      providerSlug: graphProviderSlug,
+      surfaces: surfaces.length,
+      graphNodes: blast.nodes.length,
+      graphEdges: blast.edges.length,
+    },
+  });
+
   recordAudit(db, {
     tenantId: input.tenantId,
     actor: "pipeline",

@@ -1,0 +1,55 @@
+name: Nightly synthetic eval (full corpus)
+
+# The per-PR CI (ci.yml) runs only the GENERATED synthetic families, which are
+# self-contained and need no external corpus. This nightly job is where the
+# HEAVY, hand-authored corpus scenarios belong — the 30,163-file scale case and
+# the language-support cases (Python/Go/Java/CJS) that drive the honest recall
+# failure and the ~precision-first readiness verdict. They are gated behind this
+# schedule rather than dropped.
+#
+# The corpus lives OUTSIDE the repo and is reached via MENDPOINT_CORPUS_ROOT. A
+# GitHub-hosted runner does not have it, so this job cleanly SKIPS the corpus and
+# degrades to the generated suite; point this workflow at a self-hosted runner
+# (or add a corpus-checkout step) that sets MENDPOINT_CORPUS_ROOT to get the full
+# readiness measure. The readiness gate is reported, never used to block.
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # daily 07:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  full-corpus-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Typecheck and unit-test evals
+        run: npm run eval:synthetic:check
+      - name: Run full synthetic suite (corpus if present)
+        run: npm run eval:synthetic
+        env:
+          # Set to the corpus location on a self-hosted runner that has it.
+          # Absent on GitHub-hosted runners -> corpus scenarios are skipped.
+          MENDPOINT_CORPUS_ROOT: ${{ vars.MENDPOINT_CORPUS_ROOT }}
+      - name: Upload full readiness evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: nightly-synthetic-eval-evidence
+          path: |
+            evals/reports/latest.md
+            evals/reports/readiness-scorecard.md
+            evals/reports/latest-runs.json
+            evals/FAILURES.md
+          if-no-files-found: error
+          retention-days: 30

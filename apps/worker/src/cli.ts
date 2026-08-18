@@ -86,7 +86,10 @@ import {
   resolveMutationFenceRoot,
   tryAcquireMutationLease,
   initializeWithMutationLease,
+  flushTelemetry,
+  isTelemetryEnabled,
 } from "@mendpoint/ops";
+import { checkAuditIntegrityForAllTenants } from "./audit-integrity.js";
 import { createWardenCheckpointJobJournal } from "./warden-checkpoint-journal.js";
 
 export function initializeWorkerDurableState<T>(
@@ -3526,6 +3529,39 @@ async function runService(intervalMs: number) {
   );
   heartbeatTimer.unref();
 
+  // Export buffered telemetry to OTLP on a fixed cadence so the module-level
+  // buffers cannot grow unbounded between shutdowns. No timer when telemetry is
+  // disabled; unref'd so it never keeps the worker alive.
+  const telemetryFlushIntervalMs = Math.max(
+    1_000,
+    Number(process.env.MENDPOINT_TELEMETRY_FLUSH_MS ?? 15_000),
+  );
+  const telemetryFlushTimer = isTelemetryEnabled()
+    ? setInterval(() => {
+        void flushTelemetry();
+      }, telemetryFlushIntervalMs)
+    : undefined;
+  telemetryFlushTimer?.unref();
+
+  // Periodic tamper-evident audit-chain verification. A broken hash chain is a
+  // security event: it emits a critical alert and logs loudly rather than being
+  // swallowed. Runs on the shared app DB and never crashes the worker.
+  const auditIntegrityIntervalMs = Math.max(
+    60_000,
+    Number(process.env.MENDPOINT_AUDIT_INTEGRITY_INTERVAL_MS ?? 6 * 60 * 60_000),
+  );
+  const runAuditIntegrityCheck = () => {
+    if (shutdown.signal.aborted) return;
+    try {
+      checkAuditIntegrityForAllTenants(heartbeatDb);
+    } catch (error) {
+      console.error("audit_integrity_check_failed", error);
+    }
+  };
+  runAuditIntegrityCheck();
+  const auditIntegrityTimer = setInterval(runAuditIntegrityCheck, auditIntegrityIntervalMs);
+  auditIntegrityTimer.unref();
+
   const runFeedLane = async () => {
     let failures = 0;
     while (!shutdown.signal.aborted) {
@@ -3683,6 +3719,11 @@ async function runService(intervalMs: number) {
     await Promise.all([lanes.feeds, lanes.jobs, runTransformerLane()]);
   } finally {
     clearInterval(heartbeatTimer);
+    if (telemetryFlushTimer) clearInterval(telemetryFlushTimer);
+    clearInterval(auditIntegrityTimer);
+    // Final drain of whatever telemetry accumulated since the last cadence tick.
+    // Safe when disabled (resets buffers, never throws, never hangs).
+    await flushTelemetry();
     process.off("SIGTERM", requestShutdown);
     process.off("SIGINT", requestShutdown);
     feedDb.raw.close();

@@ -39,6 +39,8 @@
     "eval:warden": "tsx packages/eval/src/warden-bench.ts",
     "eval:capabilities": "tsx packages/eval/src/capability-eval.ts",
     "eval:agents": "tsx packages/eval/src/agent-eval.ts",
+    "eval:synthetic": "tsx evals/runners/run-all.ts",
+    "eval:synthetic:check": "tsc -p evals/tsconfig.json --noEmit && vitest run evals",
     "eval:agents:live": "tsx packages/eval/src/agent-eval-live.ts",
     "eval:transformer:canary": "tsx packages/eval/src/transformer-canary.ts",
     "eval:performance": "tsx packages/eval/src/performance-runner.ts",

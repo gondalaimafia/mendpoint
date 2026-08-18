@@ -18,11 +18,29 @@ import {
   type TransformerGateDecision,
 } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
+import { recordAudit } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
 import {
   mappedErrorResponse,
   type PublicErrorRule,
 } from "./error-boundary.js";
+
+/**
+ * Canonical audit sink. The ReGauge control plane persists its own operational
+ * events to a separate SQLite log (tf_events); this sink additionally routes the
+ * security- and migration-critical actions (campaign creation, blueprint
+ * approval, promotion, lifecycle transitions, exceptions) into the single
+ * hash-chained audit_events table so ReGauge is not invisible to
+ * exportAuditJson / listAudit / verifyAuditIntegrity (spec 19.8, 31.7).
+ *
+ * It is the same `requestAudit` wrapper every other route uses; passing it here
+ * keeps ONE audit-write path rather than a parallel one.
+ */
+type ControlPlaneAuditEvent = Omit<
+  Parameters<typeof recordAudit>[1],
+  "tenantId" | "principalId" | "apiKeyId" | "requestId"
+>;
+export type ControlPlaneAudit = (c: Context<ApiEnv>, event: ControlPlaneAuditEvent) => void;
 
 const DB_ENV = "MENDPOINT_REGAUGE_CONTROL_PLANE_DB";
 const SECRET_KEY = /(?:secret|token|password|credential|private.?key|api.?key)/i;
@@ -418,6 +436,40 @@ function revisionFields(value: { id: string; state: string; revision: number; cr
   return { id: value.id, state: value.state, revision: value.revision, createdAt: value.createdAt };
 }
 
+/**
+ * Whitelist-shaped audit metadata for a campaign bundle result. Only validated
+ * scalar identifiers, enums, and revisions reach the append-only, exportable
+ * audit log — never blueprint content, objectives, evidence refs, or exception
+ * messages, which are free-form and could carry paths or secrets. This mirrors
+ * the redaction discipline in error-boundary's redactForStructuredLog.
+ */
+function campaignAuditMetadata(result: unknown): Record<string, unknown> {
+  const bundle = result as {
+    campaign?: {
+      id?: string;
+      state?: string;
+      revision?: number;
+      sourceSystem?: string;
+      targetSystem?: string;
+      blueprintId?: string;
+      bsgId?: string;
+    };
+    bsg?: { nodes?: unknown[]; edges?: unknown[] };
+  };
+  const campaign = bundle.campaign ?? {};
+  return {
+    campaignId: campaign.id ?? null,
+    state: campaign.state ?? null,
+    revision: campaign.revision ?? null,
+    sourceSystem: campaign.sourceSystem ?? null,
+    targetSystem: campaign.targetSystem ?? null,
+    blueprintId: campaign.blueprintId ?? null,
+    bsgId: campaign.bsgId ?? null,
+    nodeCount: Array.isArray(bundle.bsg?.nodes) ? bundle.bsg!.nodes!.length : null,
+    edgeCount: Array.isArray(bundle.bsg?.edges) ? bundle.bsg!.edges!.length : null,
+  };
+}
+
 export class TransformerCampaignService {
   readonly store: TransformerControlPlaneStore;
 
@@ -760,6 +812,7 @@ export function registerTransformerControlPlaneRoutes(
   app: Hono<ApiEnv>,
   service: TransformerCampaignService,
   gateRuntime: TransformerGateRuntime = {},
+  audit?: ControlPlaneAudit,
 ): void {
   const gate = (c: Context<ApiEnv>, boundary: TransformerGateBoundary): TransformerGateDecision => {
     const principal = c.get("principal");
@@ -800,6 +853,13 @@ export function registerTransformerControlPlaneRoutes(
       const denied = requireGate(c);
       if (denied) return denied;
       const result = service.createBundle(requestMetadata(c), await json(c));
+      audit?.(c, {
+        actor: "regauge",
+        action: "regauge.campaign.created",
+        resourceType: "regauge_campaign",
+        resourceId: (result as { campaign: { id: string } }).campaign.id,
+        metadata: campaignAuditMetadata(result),
+      });
       c.header("Location", `${base}/control-plane/campaigns/${(result as { campaign: { id: string } }).campaign.id}`);
       return c.json(result, 201);
     } catch (error) {
@@ -838,13 +898,35 @@ export function registerTransformerControlPlaneRoutes(
       const denied = requireGate(c);
       if (denied) return denied;
       const input = record(await json(c), "review_required");
-      return c.json(
-        service.reviewToReady(requestMetadata(c), c.req.param("campaignId"), {
-          campaign: positiveRevision(input.expectedCampaignRevision, "campaign_expected_revision_invalid"),
-          blueprint: positiveRevision(input.expectedBlueprintRevision, "blueprint_expected_revision_invalid"),
-          bsg: positiveRevision(input.expectedBsgRevision, "bsg_expected_revision_invalid"),
-        }),
-      );
+      const result = service.reviewToReady(requestMetadata(c), c.req.param("campaignId"), {
+        campaign: positiveRevision(input.expectedCampaignRevision, "campaign_expected_revision_invalid"),
+        blueprint: positiveRevision(input.expectedBlueprintRevision, "blueprint_expected_revision_invalid"),
+        bsg: positiveRevision(input.expectedBsgRevision, "bsg_expected_revision_invalid"),
+      });
+      const reviewed = result as { campaign: { id: string; state: string }; blueprint: { id: string } };
+      // The reviewer's approval is always durable at this point; the promotion to
+      // "ready" only lands once the independent approval quorum is met.
+      audit?.(c, {
+        actor: "regauge",
+        action: "regauge.blueprint.approved",
+        resourceType: "regauge_blueprint",
+        resourceId: reviewed.blueprint.id,
+        metadata: {
+          campaignId: reviewed.campaign.id,
+          blueprintId: reviewed.blueprint.id,
+          subjectType: "blueprint",
+        },
+      });
+      if (reviewed.campaign.state === "ready") {
+        audit?.(c, {
+          actor: "regauge",
+          action: "regauge.campaign.promoted",
+          resourceType: "regauge_campaign",
+          resourceId: reviewed.campaign.id,
+          metadata: campaignAuditMetadata(result),
+        });
+      }
+      return c.json(result);
     } catch (error) {
       return errorResponse(c, error);
     }
@@ -856,14 +938,20 @@ export function registerTransformerControlPlaneRoutes(
       if (denied) return denied;
       const input = record(await json(c), "transition_required");
       const state = requiredString(input.state, "campaign_state_invalid") as CampaignState;
-      return c.json(
-        service.transition(
-          requestMetadata(c),
-          c.req.param("campaignId"),
-          state,
-          positiveRevision(input.expectedRevision, "campaign_expected_revision_invalid"),
-        ),
+      const result = service.transition(
+        requestMetadata(c),
+        c.req.param("campaignId"),
+        state,
+        positiveRevision(input.expectedRevision, "campaign_expected_revision_invalid"),
       );
+      audit?.(c, {
+        actor: "regauge",
+        action: "regauge.campaign.transitioned",
+        resourceType: "regauge_campaign",
+        resourceId: c.req.param("campaignId"),
+        metadata: campaignAuditMetadata(result),
+      });
+      return c.json(result);
     } catch (error) {
       return errorResponse(c, error);
     }
@@ -873,10 +961,24 @@ export function registerTransformerControlPlaneRoutes(
     try {
       const denied = requireGate(c);
       if (denied) return denied;
-      return c.json(
-        service.createException(requestMetadata(c), c.req.param("campaignId"), await json(c)),
-        201,
-      );
+      const result = service.createException(requestMetadata(c), c.req.param("campaignId"), await json(c));
+      const created = result as {
+        exception: { id: string; state: string; revision: number; campaignId: string; code: string; unitId?: string };
+      };
+      audit?.(c, {
+        actor: "regauge",
+        action: "regauge.campaign.exception_created",
+        resourceType: "regauge_exception",
+        resourceId: created.exception.id,
+        metadata: {
+          campaignId: created.exception.campaignId,
+          exceptionId: created.exception.id,
+          code: created.exception.code,
+          state: created.exception.state,
+          unitId: created.exception.unitId ?? null,
+        },
+      });
+      return c.json(result, 201);
     } catch (error) {
       return errorResponse(c, error);
     }
