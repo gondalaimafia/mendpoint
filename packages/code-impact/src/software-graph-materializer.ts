@@ -113,6 +113,20 @@ function addRelationship(
 export function materializeFettlerSoftwareGraph(
   input: FettlerSoftwareGraphMaterializationInput,
 ): SoftwareGraphPublicationV1 {
+  const structuralSources = [
+    ...Object.values(input.index.callGraph.nodes).map((node) => node.structuralSource),
+    ...input.index.callGraph.edges.map((edge) => edge.structuralSource),
+  ].filter((source): source is NonNullable<typeof source> => source !== undefined);
+  if (structuralSources.some((source) =>
+    source.tenantId !== input.tenantId ||
+    source.repositoryId !== input.repositoryId ||
+    source.repositorySnapshotId !== input.repositorySnapshotId ||
+    source.repositoryRevision !== input.repositoryRevision ||
+    source.manifestDigest !== structuralSources[0]?.manifestDigest ||
+    source.structuralContentDigest !== structuralSources[0]?.structuralContentDigest
+  )) {
+    throw new Error("software_graph_structural_scope_mismatch");
+  }
   if (!Number.isInteger(input.maxCallerHops) || input.maxCallerHops < 1 || input.maxCallerHops > 8) {
     throw new Error("software_graph_materializer_hops_invalid");
   }
@@ -272,6 +286,13 @@ export function materializeFettlerSoftwareGraph(
         const callerKey = `${caller.filePath.replace(/\\/g, "/")}::${caller.enclosingType ?? ""}::${caller.name}`;
         const callerKind = caller.isTest ? "test" as const : "function" as const;
         const callerEntityId = digestId(callerKind, `${input.repositorySnapshotId}\0${callerKey}`);
+        const callerConfidenceBasis = caller.structuralSource
+          ? caller.structuralSource.epistemicState === "observed"
+            ? "static_analysis_high" as const
+            : caller.structuralSource.epistemicState === "inferred"
+              ? "static_analysis_medium" as const
+              : "static_analysis_low" as const
+          : "deterministic_exact" as const;
         addEntity(entities, {
           id: callerEntityId,
           kind: callerKind,
@@ -282,7 +303,7 @@ export function materializeFettlerSoftwareGraph(
           evidenceRefs: caller.structuralSource?.evidenceRefs ?? [sourceRef(caller.filePath, caller.lineStart)],
           extractor: caller.structuralSource?.extractor ?? EXTRACTOR,
           derivation: "call_graph",
-          confidenceBasis: "deterministic_exact",
+          confidenceBasis: callerConfidenceBasis,
           status: "active",
           validFrom: input.observedAt,
         });
