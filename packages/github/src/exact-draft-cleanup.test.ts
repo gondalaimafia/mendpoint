@@ -20,10 +20,16 @@ const inputScope = Object.freeze({
   expectedBaseSha: sha("a"),
   headBranch: "mendpoint/change",
   expectedHeadSha: sha("b"),
+  headDisposition: "delete" as const,
 });
 const input: ExactDraftCleanupInput = Object.freeze({
   ...inputScope,
   operationId: exactDraftCleanupOperationId(inputScope),
+});
+const retainedInputScope = Object.freeze({ ...inputScope, headDisposition: "retain_exact" as const });
+const retainedInput: ExactDraftCleanupInput = Object.freeze({
+  ...retainedInputScope,
+  operationId: exactDraftCleanupOperationId(retainedInputScope),
 });
 
 type HarnessOptions = Readonly<{
@@ -243,13 +249,51 @@ describe("cleanupExactDraftWithOctokit", () => {
     expect(client.unsafeDeleteRef).not.toHaveBeenCalled();
   });
 
-  it("returns typed not_supported before closing when no atomic delete authority is available", async () => {
+  it("closes the exact draft and retains its exact head when atomic deletion is unavailable", async () => {
+    const client = harness();
+    const evidence = await cleanupExactDraftWithOctokit(client.octokit, retainedInput);
+    expect(evidence).toMatchObject({
+      pullRequestState: "closed",
+      branchState: "retained_exact",
+      headSha: sha("b"),
+      openPullRequestsForHead: 0,
+    });
+    expect(new Set(evidence.evidenceRefs).size).toBe(evidence.evidenceRefs.length);
+    expect(client.update).toHaveBeenCalledTimes(1);
+    expect(client.compareAndDelete).not.toHaveBeenCalled();
+    expect(client.unsafeDeleteRef).not.toHaveBeenCalled();
+  });
+
+  it("reconciles retained-head cleanup after restart without another mutation", async () => {
+    const client = harness({ initialState: "closed", preflightOpenPullCount: 0 });
+    await expect(cleanupExactDraftWithOctokit(client.octokit, retainedInput)).resolves.toMatchObject({
+      pullRequestState: "closed",
+      branchState: "retained_exact",
+      headSha: sha("b"),
+      openPullRequestsForHead: 0,
+    });
+    expect(client.update).not.toHaveBeenCalled();
+    expect(client.compareAndDelete).not.toHaveBeenCalled();
+  });
+
+  it("keeps delete mode mutation-free when no atomic authority is supplied", async () => {
     const client = harness();
     const promise = cleanupExactDraftWithOctokit(client.octokit, input);
     await expect(promise).rejects.toBeInstanceOf(ExactDraftCleanupNotSupportedError);
-    await expect(promise).rejects.toMatchObject({ code: "github_exact_draft_cleanup_not_supported" });
     expect(client.update).not.toHaveBeenCalled();
-    expect(client.unsafeDeleteRef).not.toHaveBeenCalled();
+    expect(client.compareAndDelete).not.toHaveBeenCalled();
+  });
+
+  it("binds retained and deleted cleanup to different operation identities", () => {
+    expect(retainedInput.operationId).not.toBe(input.operationId);
+  });
+
+  it("rejects an atomic deletion authority when retained-head cleanup was requested", async () => {
+    const client = harness();
+    await expect(cleanupExactDraftWithOctokit(client.octokit, retainedInput, client.authority))
+      .rejects.toThrow("github_exact_draft_cleanup_invalid");
+    expect(client.update).not.toHaveBeenCalled();
+    expect(client.compareAndDelete).not.toHaveBeenCalled();
   });
 
   it("reconciles a lost close response with an authoritative read", async () => {

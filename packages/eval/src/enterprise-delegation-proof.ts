@@ -202,7 +202,8 @@ export type DelegatedPrTrialEvidence = Readonly<{
   }>;
   cleanup: Readonly<{
     pullRequestState: "closed";
-    branchExists: false;
+    branchState: "deleted" | "retained_exact";
+    headRevision: string;
     baseRevision: string;
     openTrialPullRequests: number;
     rollbackArtifact: Artifact;
@@ -653,7 +654,9 @@ export async function evaluateDelegatedPrAcceptance(input: Readonly<{
     const pullIdentity = `${evidence.delivery.remoteRepositoryId}:${evidence.delivery.pullRequestNumber}`;
     if (pullRequests.has(pullIdentity)) add(findings, false, "delegated_pr_replay_identity_conflict", "P0", trial);
     pullRequests.add(pullIdentity);
-    add(findings, evidence.cleanup.pullRequestState === "closed" && evidence.cleanup.branchExists === false &&
+    add(findings, evidence.cleanup.pullRequestState === "closed" &&
+      (evidence.cleanup.branchState === "deleted" || evidence.cleanup.branchState === "retained_exact") &&
+      evidence.cleanup.headRevision === evidence.candidate.commitSha &&
       evidence.cleanup.baseRevision === contract.repository.sourceRevision && evidence.cleanup.openTrialPullRequests === 0 &&
       artifact(evidence.cleanup.rollbackArtifact) && evidence.cleanup.evidenceRefs.length > 0 &&
       evidence.cleanup.evidenceRefs.every((reference) => EVIDENCE_REF.test(reference)),

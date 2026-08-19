@@ -148,8 +148,9 @@ async function trial(number: number): Promise<DelegatedPrTrialEvidence> {
         checkResults: [{ identity: "check:1:test", state: "success" }],
         reviewFeedback: { verdict: "none", changeRequests: [], comments: [] }, evidenceRefs: [`github-observation-${number}`] },
     },
-    cleanup: { pullRequestState: "closed", branchExists: false, baseRevision: contract.repository.sourceRevision,
-      openTrialPullRequests: 0, rollbackArtifact: rollback, observedAt: `2026-08-18T12:${minute}:45.000Z`, evidenceRefs: [`cleanup-${number}`] },
+    cleanup: { pullRequestState: "closed", branchState: "retained_exact", headRevision: String(number).repeat(40),
+      baseRevision: contract.repository.sourceRevision, openTrialPullRequests: 0, rollbackArtifact: rollback,
+      observedAt: `2026-08-18T12:${minute}:45.000Z`, evidenceRefs: [`cleanup-${number}`] },
   };
   const { artifact: _deliveryArtifact, ...deliveryClaims } = evidence.delivery;
   const attested = evidence.attestedArtifacts as Record<string, { artifactId: string; sha256: string }>;
@@ -216,7 +217,7 @@ describe("delegated PR acceptance", () => {
     ["verification", (value: DelegatedPrTrialEvidence) => { (value.verification.failToPass as { candidateExitCode: number }).candidateExitCode = 1; }, "delegated_pr_verification_invalid"],
     ["OIDC approval", (value: DelegatedPrTrialEvidence) => { (value.approval as { apiKeyId: string | null }).apiKeyId = "key"; }, "delegated_pr_approval_invalid"],
     ["real draft", (value: DelegatedPrTrialEvidence) => { (value.delivery as { matchingOpenDrafts: number }).matchingOpenDrafts = 2; }, "delegated_pr_delivery_invalid"],
-    ["cleanup", (value: DelegatedPrTrialEvidence) => { (value.cleanup as { branchExists: boolean }).branchExists = true; }, "delegated_pr_cleanup_invalid"],
+    ["cleanup", (value: DelegatedPrTrialEvidence) => { (value.cleanup as { headRevision: string }).headRevision = "f".repeat(40); }, "delegated_pr_cleanup_invalid"],
   ])("rejects invalid %s authority", async (_label, mutate, code) => {
     const { evidence, authority } = await fixture(); mutate(evidence[0]!);
     const report = await evaluateDelegatedPrAcceptance({ proof, contract, authority, trustPolicy });

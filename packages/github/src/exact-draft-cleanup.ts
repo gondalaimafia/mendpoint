@@ -16,13 +16,14 @@ export type ExactDraftCleanupOperationScope = Readonly<{
   expectedBaseSha: string;
   headBranch: string;
   expectedHeadSha: string;
+  headDisposition: "delete" | "retain_exact";
 }>;
 
 export type ExactDraftCleanupInput = ExactDraftCleanupOperationScope & Readonly<{
   operationId: string;
 }>;
 
-export type ExactDraftCleanupEvidence = Readonly<{
+type ExactDraftCleanupEvidenceBase = Readonly<{
   installationId: number;
   operationId: string;
   repositoryId: number;
@@ -34,11 +35,19 @@ export type ExactDraftCleanupEvidence = Readonly<{
   baseSha: string;
   headBranch: string;
   headSha: string;
-  branchState: "deleted";
-  deletionAuthorityEvidenceRef: string;
   openPullRequestsForHead: 0;
   evidenceRefs: readonly string[];
 }>;
+
+export type ExactDraftCleanupEvidence =
+  | (ExactDraftCleanupEvidenceBase & Readonly<{
+      branchState: "deleted";
+      deletionAuthorityEvidenceRef: string;
+    }>)
+  | (ExactDraftCleanupEvidenceBase & Readonly<{
+      branchState: "retained_exact";
+      retentionEvidenceRef: string;
+    }>);
 
 export type ExactHeadRefCompareAndDeleteInput = Readonly<{
   owner: string;
@@ -115,6 +124,7 @@ export function exactDraftCleanupOperationId(scope: ExactDraftCleanupOperationSc
     baseSha: scope.expectedBaseSha,
     headBranch: scope.headBranch,
     headSha: scope.expectedHeadSha,
+    headDisposition: scope.headDisposition,
   });
   return `sha256:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
 }
@@ -127,6 +137,7 @@ function validate(input: ExactDraftCleanupInput): void {
       !validBranch(input.baseBranch) || !validBranch(input.headBranch) ||
       input.baseBranch === input.headBranch ||
       !SHA.test(input.expectedBaseSha) || !SHA.test(input.expectedHeadSha) ||
+      (input.headDisposition !== "delete" && input.headDisposition !== "retain_exact") ||
       !OPERATION_ID.test(input.operationId) ||
       input.operationId !== exactDraftCleanupOperationId(input)) {
     throw new Error("github_exact_draft_cleanup_invalid");
@@ -292,9 +303,11 @@ async function compareAndDelete(
 }
 
 /**
- * Closes an exact draft and deletes only its pinned head ref. Every mutation is
- * preceded and followed by authoritative reads. PR-close response loss can be
- * reconciled from the PR itself; atomic-delete response loss fails closed
+ * Closes an exact draft and proves the base, head, and exact-head open-PR set.
+ * The safe default retains the pinned head for audit and rollback. A caller may
+ * inject a stronger atomic authority to delete that exact head. Every mutation
+ * is preceded and followed by authoritative reads. PR-close response loss can
+ * be reconciled from the PR itself; atomic-delete response loss fails closed
  * because later ref absence cannot prove which actor deleted it.
  */
 export async function cleanupExactDraftWithOctokit(
@@ -303,10 +316,15 @@ export async function cleanupExactDraftWithOctokit(
   authority?: ExactHeadRefCompareAndDeleteAuthority,
 ): Promise<ExactDraftCleanupEvidence> {
   validate(input);
-  if (authority?.capability !== "atomic_compare_and_delete" ||
-      typeof authority.compareAndDeleteExactHead !== "function") {
+  if (input.headDisposition === "delete" &&
+      (authority?.capability !== "atomic_compare_and_delete" ||
+       typeof authority.compareAndDeleteExactHead !== "function")) {
     throw new ExactDraftCleanupNotSupportedError();
   }
+  if (input.headDisposition === "retain_exact" && authority !== undefined) {
+    throw new Error("github_exact_draft_cleanup_invalid");
+  }
+  const deleteHead = input.headDisposition === "delete";
 
   const [initialPull, initialBase, initialHead, initialOpenPulls] = await Promise.all([
     readPull(octokit, input),
@@ -318,18 +336,20 @@ export async function cleanupExactDraftWithOctokit(
     throw new Error("github_exact_draft_cleanup_authority_mismatch");
   }
   let closedPull: PullIdentity;
-  let deletionAuthorityEvidenceRef: string;
+  let deletionAuthorityEvidenceRef: string | null = null;
   if (initialPull.state === "closed") {
     assertExactPull(initialPull, input, "closed");
-    if (initialHead !== null || initialOpenPulls.length !== 0) {
+    if (initialOpenPulls.length !== 0 || (deleteHead ? initialHead !== null : initialHead !== input.expectedHeadSha)) {
       throw new Error("github_exact_draft_cleanup_authority_mismatch");
     }
-    const recovery = await compareAndDelete(authority, input);
-    if (recovery.status !== "not_found") {
-      throw new Error("github_exact_draft_cleanup_delete_uncertain");
+    if (deleteHead) {
+      const recovery = await compareAndDelete(authority!, input);
+      if (recovery.status !== "not_found") {
+        throw new Error("github_exact_draft_cleanup_delete_uncertain");
+      }
+      deletionAuthorityEvidenceRef = recovery.evidenceRef;
     }
     closedPull = initialPull;
-    deletionAuthorityEvidenceRef = recovery.evidenceRef;
   } else {
     assertExactPull(initialPull, input, "open");
     if (initialHead !== input.expectedHeadSha) {
@@ -359,12 +379,14 @@ export async function cleanupExactDraftWithOctokit(
       throw new Error("github_exact_draft_cleanup_predelete_drift");
     }
 
-    const deletion = await compareAndDelete(authority, input);
-    if (deletion.status !== "deleted") {
-      throw new Error("github_exact_draft_cleanup_delete_uncertain");
+    if (deleteHead) {
+      const deletion = await compareAndDelete(authority!, input);
+      if (deletion.status !== "deleted") {
+        throw new Error("github_exact_draft_cleanup_delete_uncertain");
+      }
+      deletionAuthorityEvidenceRef = deletion.evidenceRef;
     }
     closedPull = observedClosedPull;
-    deletionAuthorityEvidenceRef = deletion.evidenceRef;
   }
 
   const [finalPull, finalBase, finalHead, finalOpenPulls] = await Promise.all([
@@ -374,21 +396,25 @@ export async function cleanupExactDraftWithOctokit(
     listOpenForExactHead(octokit, input),
   ]);
   assertExactPull(finalPull, input, "closed");
-  if (finalBase !== input.expectedBaseSha || finalHead !== null || finalOpenPulls.length !== 0) {
+  const expectedFinalHead = deleteHead ? null : input.expectedHeadSha;
+  if (finalBase !== input.expectedBaseSha || finalHead !== expectedFinalHead || finalOpenPulls.length !== 0) {
     throw new Error("github_exact_draft_cleanup_not_complete");
   }
 
+  const branchEvidenceRef = deleteHead
+    ? deletionAuthorityEvidenceRef!
+    : `github:head-retention:${input.headBranch}:${input.expectedHeadSha}:observed`;
   const evidenceRefs = Object.freeze([
     `github:installation:${input.installationId}`,
     `github:repository:${input.expectedRepositoryId}`,
     `github:cleanup-operation:${input.operationId}`,
     `github:pull-request:${input.owner}/${input.repo}#${input.pullRequestNumber}:closed`,
     `github:base:${input.baseBranch}:${input.expectedBaseSha}`,
-    `github:head:${input.headBranch}:${input.expectedHeadSha}:deleted`,
+    `github:head:${input.headBranch}:${input.expectedHeadSha}:${deleteHead ? "deleted" : "retained-exact"}`,
     `github:open-pulls:${input.owner}:${input.headBranch}:0`,
-    deletionAuthorityEvidenceRef,
+    branchEvidenceRef,
   ]);
-  return Object.freeze({
+  const common = {
     installationId: input.installationId,
     operationId: input.operationId,
     repositoryId: input.expectedRepositoryId,
@@ -400,9 +426,18 @@ export async function cleanupExactDraftWithOctokit(
     baseSha: input.expectedBaseSha,
     headBranch: input.headBranch,
     headSha: input.expectedHeadSha,
-    branchState: "deleted" as const,
-    deletionAuthorityEvidenceRef,
     openPullRequestsForHead: 0 as const,
     evidenceRefs,
-  });
+  };
+  return deleteHead
+    ? Object.freeze({
+      ...common,
+      branchState: "deleted" as const,
+      deletionAuthorityEvidenceRef: deletionAuthorityEvidenceRef!,
+    })
+    : Object.freeze({
+      ...common,
+      branchState: "retained_exact" as const,
+      retentionEvidenceRef: branchEvidenceRef,
+    });
 }
