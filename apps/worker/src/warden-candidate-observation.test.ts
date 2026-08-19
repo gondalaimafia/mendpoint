@@ -70,6 +70,11 @@ function observation(state: "success" | "failure" | "running"): ExactDraftObserv
       title: "Unit failed", summary: "token=ghp_abcdefghijklmnopqrstuvwxyz123456",
       text: "expected 1 received 2", detailsUrl: "https://github.com/acme/service/actions/runs/9",
     })]) : Object.freeze([]),
+    repositoryId: 101,
+    installationId: 202,
+    matchingOpenDrafts: 1,
+    changedPaths: Object.freeze(["src/a.ts"]),
+    remoteTreeSha: sha("e"),
     evidenceRefs: Object.freeze(["github:head:" + sha("d")]),
   });
 }
@@ -91,11 +96,18 @@ describe("Warden candidate CI observation", () => {
 
     expect(observe).toHaveBeenCalledWith(expect.objectContaining({
       pullRequestNumber: 17, expectedHeadSha: sha("d"), expectedRepositoryId: 101,
-      requireExactDraft: true,
+      expectedInstallationId: 202, requireExactDraft: true, includeDeliveryEvidence: true,
     }));
     const persisted = Buffer.from(persistEvidence.mock.calls[0]![0]).toString("utf8");
     expect(persisted).toContain("[REDACTED_GITHUB_TOKEN]");
     expect(persisted).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz123456");
+    expect(JSON.parse(persisted)).toMatchObject({
+      remoteRepositoryId: 101,
+      installationId: 202,
+      matchingOpenDrafts: 1,
+      changedPaths: ["src/a.ts"],
+      remoteTreeSha: sha("e"),
+    });
     expect(getJob(db, job.id, "tenant-a")?.status).toBe("done");
     expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("checks_failed");
     expect(listWardenCiObservations(db, "tenant-a", cycle.id)).toHaveLength(1);

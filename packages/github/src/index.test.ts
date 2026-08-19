@@ -390,6 +390,7 @@ describe("octokit real delivery", () => {
       baseBranch: "main",
       baseSha: BASE_SHA,
       commitSha: COMMIT_SHA,
+      remoteTreeSha: "desired-tree",
     });
     expect(octokit.git.createRef).toHaveBeenCalledWith(expect.objectContaining({ sha: BASE_SHA }));
     expect(octokit.git.updateRef).toHaveBeenCalledWith(expect.objectContaining({

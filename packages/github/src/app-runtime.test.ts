@@ -54,6 +54,41 @@ describe("github app runtime", () => {
     expect(fetched).toBe(false);
   });
 
+  it("rejects observation bindings outside the App installation scope before fetching a token", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const fetchToken = vi.fn();
+    const delivery = new GitHubAppDelivery(
+      { appId: "99", privateKeyPem: pem },
+      42,
+      fetchToken,
+      [101],
+    );
+    const input = {
+      owner: "acme",
+      repo: "shop",
+      pullRequestNumber: 23,
+      expectedBaseBranch: "main",
+      expectedBaseSha: EXACT_BASE_SHA,
+      expectedHeadBranch: "mendpoint/fettler/candidate-a",
+      expectedHeadSha: EXACT_COMMIT_SHA,
+      requireExactDraft: true,
+      includeDeliveryEvidence: true,
+    } as const;
+
+    await expect(delivery.observeExactDraft({
+      ...input,
+      expectedInstallationId: 43,
+      expectedRepositoryId: 101,
+    })).rejects.toThrow("github_app_observation_scope_mismatch");
+    await expect(delivery.observeExactDraft({
+      ...input,
+      expectedInstallationId: 42,
+      expectedRepositoryId: 102,
+    })).rejects.toThrow("github_app_observation_scope_mismatch");
+    expect(fetchToken).not.toHaveBeenCalled();
+  });
+
   it("deduplicates concurrent installation token refreshes", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();

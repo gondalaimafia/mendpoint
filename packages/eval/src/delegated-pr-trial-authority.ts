@@ -24,6 +24,7 @@ import {
   getVerifiedFettlerDelegationEvidence,
   type VerifiedFettlerDelegationEvidence,
 } from "@mendpoint/pipeline";
+import { EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION } from "@mendpoint/github";
 
 export const DELEGATED_PR_TRIAL_BUNDLE_KIND = "delegated_pr_trial_bundle" as const;
 export const DELEGATED_PR_TRIAL_BUNDLE_MEDIA_TYPE =
@@ -334,6 +335,9 @@ function assertDeliveryObservation(
   inventory: VerifiedFettlerDelegationEvidence,
 ): void {
   const ci = observed(inventory.ci, "delegated_pr_trial_ci_not_observed");
+  const delivered = observed(inventory.candidateDelivery, "delegated_pr_trial_delivery_not_observed");
+  if (ci.length !== 1) throw new Error("delegated_pr_trial_delivery_observation_invalid");
+  const cycle = ci[0]!.cycle;
   const matches = ci.flatMap((entry) => entry.observations).filter((entry) =>
     entry.evidenceArtifactId === trial.delivery.artifact.artifactId &&
     normalizeSha(entry.evidenceDigest) === trial.delivery.artifact.sha256 &&
@@ -346,7 +350,27 @@ function assertDeliveryObservation(
     trial.delivery.artifact,
     "delegated_pr_trial_delivery_observation_invalid",
   );
-  if (canonical(claims) !== canonical(trial.delivery.observation)) {
+  const durableObservation = object(claims.observation);
+  if (claims.schemaVersion !== EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION ||
+      claims.tenantId !== trial.tenantId || claims.cycleId !== cycle.id ||
+      claims.deliveryId !== cycle.deliveryId || claims.deliveryId !== delivered.delivery.id ||
+      claims.repositoryId !== trial.delivery.repositoryId ||
+      claims.remoteRepositoryId !== trial.delivery.remoteRepositoryId ||
+      claims.installationId !== trial.delivery.installationId ||
+      claims.pullRequestNumber !== trial.delivery.pullRequestNumber ||
+      claims.baseBranch !== trial.delivery.baseBranch || claims.branchName !== trial.delivery.headBranch ||
+      claims.baseRevision !== trial.delivery.observation.baseRevision ||
+      claims.headRevision !== trial.delivery.observation.headRevision ||
+      claims.matchingOpenDrafts !== trial.delivery.matchingOpenDrafts ||
+      claims.remoteTreeSha !== trial.delivery.remoteTreeSha || claims.observedAt !== trial.delivery.observedAt ||
+      claims.verdict !== "success" || claims.trigger !== "checks_passed" ||
+      claims.reviewFeedbackDigest !== null || trial.delivery.observation.reviewFeedback.verdict !== "none" ||
+      canonical(claims.changedPaths) !== canonical(trial.delivery.changedPaths) ||
+      canonical(claims.requiredResults) !== canonical(trial.delivery.observation.checkResults) ||
+      canonical(claims.failures) !== canonical(trial.delivery.observation.failures) ||
+      canonical(claims.reviewFeedback) !== canonical(trial.delivery.observation.reviewFeedback) ||
+      canonical(claims.evidenceRefs) !== canonical(trial.delivery.observation.evidenceRefs) ||
+      !durableObservation || canonical(durableObservation) !== canonical(trial.delivery.observation)) {
     throw new Error("delegated_pr_trial_delivery_observation_invalid");
   }
 }
@@ -452,6 +476,12 @@ function assertDurableBindings(
 
   const delivery = delivered.delivery;
   const cycle = ci[0]!.cycle;
+  const deliveryAuditJson = delivered.auditEvents[0]!.metadata_json;
+  if (!deliveryAuditJson) throw new Error("delegated_pr_trial_delivery_tree_mismatch");
+  const deliveryAuditMetadata = parseObject(deliveryAuditJson, "delegated_pr_trial_delivery_tree_mismatch");
+  if (deliveryAuditMetadata.remoteTreeSha !== trial.delivery.remoteTreeSha) {
+    throw new Error("delegated_pr_trial_delivery_tree_mismatch");
+  }
   if (trial.source.repositoryId !== delivery.repositoryId || trial.source.snapshotArtifact.artifactId !== delivery.snapshotId ||
       trial.source.baseBranch !== delivery.baseBranch || trial.source.revision !== delivery.expectedBaseRevision ||
       trial.source.remoteRepositoryId !== cycle.remoteRepositoryId || trial.source.installationId !== cycle.installationId ||

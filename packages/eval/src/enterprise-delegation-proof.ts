@@ -196,6 +196,7 @@ export type DelegatedPrTrialEvidence = Readonly<{
     artifact: Artifact;
     changedPaths: readonly string[];
     treeDigest: string;
+    remoteTreeSha: string;
     matchingOpenDrafts: number;
     observedAt: string;
     observation: ExactDraftObservation;
@@ -650,6 +651,13 @@ export async function evaluateDelegatedPrAcceptance(input: Readonly<{
       observation.baseRevision === contract.repository.sourceRevision && observation.headRevision === evidence.candidate.commitSha &&
       observation.checkRevision === evidence.candidate.commitSha && observation.checks === "success" &&
       remotePathsValid && evidence.delivery.treeDigest === evidence.candidate.treeDigest &&
+      REVISION.test(evidence.delivery.remoteTreeSha) &&
+      observation.repositoryId === evidence.delivery.remoteRepositoryId &&
+      observation.installationId === evidence.delivery.installationId &&
+      observation.matchingOpenDrafts === evidence.delivery.matchingOpenDrafts &&
+      observation.remoteTreeSha === evidence.delivery.remoteTreeSha &&
+      JSON.stringify([...(observation.changedPaths ?? [])].sort(compareCodeUnits)) ===
+        JSON.stringify([...remotePaths].sort(compareCodeUnits)) &&
       JSON.stringify(remotePaths.sort(compareCodeUnits)) === JSON.stringify([...changedPaths].sort(compareCodeUnits)) &&
       ID.test(evidence.delivery.headBranch) && observation.evidenceRefs.length > 0 &&
       observation.evidenceRefs.every((reference) => typeof reference === "string" && EVIDENCE_REF.test(reference)) &&

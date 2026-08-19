@@ -41,6 +41,7 @@ export type ExactDraftDeliveryResult = Readonly<{
   baseBranch: string;
   baseSha: string;
   commitSha: string;
+  remoteTreeSha?: string;
 }>;
 
 export type ValidatedExactDraftDeliveryInput = ExactDraftDeliveryInput;
@@ -156,6 +157,7 @@ function matchingPull(
   },
   input: ExactDraftDeliveryInput,
   commitSha: string,
+  remoteTreeSha: string,
 ): ExactDraftDeliveryResult | undefined {
   if (
     pull.state !== "open" ||
@@ -177,6 +179,7 @@ function matchingPull(
     baseBranch: input.baseBranch,
     baseSha: input.expectedBaseSha,
     commitSha,
+    remoteTreeSha,
   });
 }
 
@@ -184,6 +187,7 @@ async function recoverExactPull(
   octokit: Octokit,
   input: ExactDraftDeliveryInput,
   commitSha: string,
+  remoteTreeSha: string,
 ): Promise<ExactDraftDeliveryResult | undefined> {
   const { data: pulls } = await octokit.pulls.list({
     owner: input.owner,
@@ -193,7 +197,7 @@ async function recoverExactPull(
   });
   if (pulls.length === 0) return undefined;
   if (pulls.length !== 1) throw new Error("github_exact_draft_pull_request_diverged");
-  const result = matchingPull(pulls[0]!, input, commitSha);
+  const result = matchingPull(pulls[0]!, input, commitSha, remoteTreeSha);
   if (!result) throw new Error("github_exact_draft_pull_request_diverged");
   return result;
 }
@@ -302,7 +306,7 @@ export async function deliverExactDraftWithOctokit(
     throw new Error("github_exact_draft_branch_diverged");
   }
 
-  const existing = await recoverExactPull(octokit, input, commitSha);
+  const existing = await recoverExactPull(octokit, input, commitSha, desiredTree.sha);
   if (existing) return existing;
 
   let createdPull;
@@ -318,7 +322,7 @@ export async function deliverExactDraftWithOctokit(
     }));
   } catch (error) {
     try {
-      const recovered = await recoverExactPull(octokit, input, commitSha);
+      const recovered = await recoverExactPull(octokit, input, commitSha, desiredTree.sha);
       if (recovered) return recovered;
     } catch (recoveryError) {
       if (
@@ -331,7 +335,7 @@ export async function deliverExactDraftWithOctokit(
     }
     throw new ExactDraftRemoteSideEffectUncertainError(error);
   }
-  const result = matchingPull(createdPull, input, commitSha);
+  const result = matchingPull(createdPull, input, commitSha, desiredTree.sha);
   if (!result) throw new Error("github_exact_draft_pull_request_diverged");
   return result;
 }

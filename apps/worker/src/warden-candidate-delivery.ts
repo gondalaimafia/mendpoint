@@ -303,10 +303,13 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
             approvalSeal: delivery.sealedSha256, requesterPrincipalId: delivery.requesterPrincipalId,
             reviewEvidenceDigest: `sha256:${createHash("sha256").update(JSON.stringify(reviewedChanges)).digest("hex")}`,
             reviewedChangeCount: reviewedChanges.edits.length,
-            branchName: remote.branch, commitSha: remote.commitSha, draftPr: true,
+            branchName: remote.branch, commitSha: remote.commitSha,
+            ...(remote.remoteTreeSha ? { remoteTreeSha: remote.remoteTreeSha } : {}),
+            draftPr: true,
             draftPrNumber: remote.number, draftPrUrl: remote.url } });
         if (!completeJob(input.db, input.job.id, { deliveryId: delivery.id, runId: delivery.runId,
-          draftPrNumber: remote.number, draftPrUrl: remote.url, commitSha: remote.commitSha }, completedAt,
+          draftPrNumber: remote.number, draftPrUrl: remote.url, commitSha: remote.commitSha,
+          ...(remote.remoteTreeSha ? { remoteTreeSha: remote.remoteTreeSha } : {}) }, completedAt,
         { workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation })) {
           throw new Error("warden_candidate_delivery_lease_lost");
         }
