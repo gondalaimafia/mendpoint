@@ -276,8 +276,43 @@ describe("Fettler software graph materializer", () => {
     expect(result.context.byteLength).toBeLessThanOrEqual(8_192);
   });
 
-  it("reports partial provider coverage when one version contains additional endpoint surfaces", async () => {
+  it("keeps the analysed endpoint's provider coverage complete when the diff also touches sibling endpoints", async () => {
     const repoRoot = makeRepository();
+    const index = buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces([surface]) });
+    // The graph materializes exactly the ONE endpoint it was asked about, and the
+    // impact query targets that endpoint by key. A sibling endpoint changed in the
+    // same diff (providerEndpointSurfaceCount > 1) is a separate query's concern,
+    // not a gap in THIS endpoint's provider-specification coverage.
+    const publication = materializeFettlerSoftwareGraph({
+      index,
+      tenantId: "tenant-a",
+      repositoryId: "repo-a",
+      repositorySnapshotId: "snapshot-a",
+      repositoryRevision: "a".repeat(40),
+      providerId: "twilio",
+      providerSnapshotId: "twilio-openapi-2026-08-17",
+      providerRevision: "2026-08-17",
+      providerSdkPackage: "twilio",
+      providerSdkVersion: "4.0.0",
+      providerEndpointSurfaceCount: 3,
+      endpoint: {
+        canonicalKey: "POST /v1/messages",
+        method: "POST",
+        path: "/v1/messages",
+        sdkMethodPaths: [],
+        evidenceRefs: ["artifact:twilio-openapi:2026-08-17"],
+      },
+      observedAt: "2026-08-17T12:00:00.000Z",
+      maxCallerHops: 4,
+    });
+    const providerStage = publication.coverage.find(
+      (stage) => stage.stage === "provider_specification",
+    );
+    expect(providerStage).toMatchObject({ basis: "complete", omitted: 0 });
+    expect(providerStage?.reasons).toBeUndefined();
+
+    // End to end, the sibling surfaces do not push the query for the analysed
+    // endpoint to partial via a provider_specification gap.
     const db = openGraphLearnMemory();
     const result = await analyzeImpactWithSoftwareGraph(repoRoot, [
       surface,
@@ -296,11 +331,8 @@ describe("Fettler software graph materializer", () => {
       maxCallerHops: 4,
       maxContextBytes: 8_192,
     });
-
-    expect(result.graphImpact.coverage).toMatchObject({
-      basis: "partial",
-      reasons: expect.arrayContaining(["provider_specification:partial"]),
-    });
+    expect(result.graphImpact.coverage.reasons).not.toContain("provider_specification:partial");
+    db.raw.close();
   });
 
   it("publishes explicit reasons when a repository language is unsupported", async () => {
@@ -331,5 +363,193 @@ describe("Fettler software graph materializer", () => {
         "test_resolution:partial",
       ]),
     });
+  });
+
+  it("treats a .git working tree as complete discovery scope and still publishes", () => {
+    const repoRoot = makeRepositoryFromFiles({
+      "src/app.ts": [
+        "export function unrelated(x: number) {",
+        "  return x + 1;",
+        "}",
+      ].join("\n"),
+      ".git/HEAD": "ref: refs/heads/main\n",
+      ".git/config": "[core]\n\trepositoryformatversion = 0\n",
+    });
+    const index = buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces([surface]) });
+    // The walker records the deliberate `.git` prune as scope...
+    expect(index.skippedDirectories.some((entry) => entry.reason === "ignored_name:.git")).toBe(true);
+
+    const publication = materialize(repoRoot, index);
+    const discovery = publication.coverage.find((stage) => stage.stage === "repository_discovery");
+    // ...and that prune is correct scope, not a coverage gap, so discovery is
+    // complete (previously every git working tree was permanently `partial`).
+    expect(discovery).toMatchObject({ basis: "complete", omitted: 0 });
+    expect(discovery?.reasons).toBeUndefined();
+
+    const db = openGraphLearnMemory();
+    expect(() => publishSoftwareGraphVersion(db, publication)).not.toThrow();
+    db.raw.close();
+  });
+
+  it("keeps a genuinely omitted directory as a partial gap, distinct from a deliberate prune", () => {
+    const repoRoot = makeRepository();
+    const base = buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces([surface]) });
+    const index = {
+      ...base,
+      skippedDirectories: [
+        { path: ".git", reason: "ignored_name:.git" }, // deliberate: scope, not a gap
+        { path: "generated", reason: "unreadable_directory" }, // genuine: could not read
+      ],
+    };
+
+    const publication = materialize(repoRoot, index);
+    const discovery = publication.coverage.find((stage) => stage.stage === "repository_discovery");
+    // Only the genuine gap survives into the coverage determination and reasons.
+    expect(discovery).toMatchObject({ basis: "partial", omitted: 1 });
+    expect(discovery?.reasons).toEqual(["skipped_directory:unreadable_directory"]);
+  });
+
+  it("folds two matched SDK call sites in one function into a single entity carrying both lines", () => {
+    const repoRoot = makeRepositoryFromFiles({
+      "src/client.ts": [
+        'import twilio from "twilio";',
+        "export async function syncMessages(to: string) {",
+        "  const existing = await twilio.messages.list({ to });",
+        '  await twilio.messages.create({ to, Body: "hello" });',
+        "  return existing;",
+        "}",
+      ].join("\n"),
+    });
+
+    const publication = materialize(repoRoot);
+    const db = openGraphLearnMemory();
+    // On origin/main this threw software_graph_materializer_entity_collision.
+    expect(() => publishSoftwareGraphVersion(db, publication)).not.toThrow();
+    const internal = publication.entities.filter(
+      (entity) => entity.kind === "internal_sdk_method" && entity.label === "syncMessages",
+    );
+    expect(internal).toHaveLength(1);
+    const lines = internal[0]!.evidenceRefs
+      .filter((ref) => ref.includes("src/client.ts"))
+      .map((ref) => Number(ref.slice(ref.lastIndexOf(":") + 1)))
+      .sort((a, b) => a - b);
+    expect(lines).toEqual([3, 4]);
+    db.raw.close();
+  });
+
+  it("publishes a retry-loop shape that calls the same SDK method in try and catch", () => {
+    const repoRoot = makeRepositoryFromFiles({
+      "src/client.ts": [
+        'import twilio from "twilio";',
+        "export async function sendWithRetry(to: string) {",
+        "  try {",
+        '    return await twilio.messages.create({ to, Body: "a" });',
+        "  } catch {",
+        '    return await twilio.messages.create({ to, Body: "b" });',
+        "  }",
+        "}",
+      ].join("\n"),
+    });
+
+    const publication = materialize(repoRoot);
+    const db = openGraphLearnMemory();
+    expect(() => publishSoftwareGraphVersion(db, publication)).not.toThrow();
+    const internal = publication.entities.filter(
+      (entity) => entity.kind === "internal_sdk_method" && entity.label === "sendWithRetry",
+    );
+    expect(internal).toHaveLength(1);
+    const lines = internal[0]!.evidenceRefs
+      .filter((ref) => ref.includes("src/client.ts"))
+      .map((ref) => Number(ref.slice(ref.lastIndexOf(":") + 1)))
+      .sort((a, b) => a - b);
+    expect(lines).toEqual([4, 6]);
+    db.raw.close();
+  });
+
+  it("labels an explicit SDK-path match deterministic_exact and a last-segment fallback static_analysis_medium", () => {
+    const repoRoot = makeRepositoryFromFiles({
+      "src/client.ts": [
+        'import twilio from "twilio";',
+        "export async function sendMessage(to: string) {",
+        '  return twilio.messages.create({ to, Body: "hi" });',
+        "}",
+      ].join("\n"),
+    });
+    const index = buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces([surface]) });
+
+    const materializeWith = (sdkMethodPaths: string[]) =>
+      materializeFettlerSoftwareGraph({
+        index,
+        tenantId: "tenant-a",
+        repositoryId: "repo-a",
+        repositorySnapshotId: "snapshot-a",
+        repositoryRevision: "a".repeat(40),
+        providerId: "twilio",
+        providerSnapshotId: "twilio-openapi-2026-08-17",
+        providerRevision: "2026-08-17",
+        providerSdkPackage: "twilio",
+        providerSdkVersion: "4.0.0",
+        providerEndpointSurfaceCount: 1,
+        endpoint: {
+          canonicalKey: "POST /v1/messages",
+          method: "POST",
+          path: "/v1/messages",
+          sdkMethodPaths,
+          evidenceRefs: ["artifact:twilio-openapi:2026-08-17"],
+        },
+        observedAt: "2026-08-17T12:00:00.000Z",
+        maxCallerHops: 4,
+      });
+
+    const bindingBasis = (publication: ReturnType<typeof materializeWith>) => {
+      const providerSdk = publication.entities.find((entity) => entity.kind === "provider_sdk_method");
+      const usesEndpoint = publication.relationships.find((edge) => edge.kind === "uses_endpoint");
+      return { entity: providerSdk?.confidenceBasis, relationship: usesEndpoint?.confidenceBasis };
+    };
+
+    // Explicit method path supplied -> deterministic binding.
+    expect(bindingBasis(materializeWith(["messages.create"]))).toEqual({
+      entity: "deterministic_exact",
+      relationship: "deterministic_exact",
+    });
+    // No method path -> only the last-path-segment heuristic runs (the production
+    // reality): it must NOT be dressed up as deterministic_exact.
+    expect(bindingBasis(materializeWith([]))).toEqual({
+      entity: "static_analysis_medium",
+      relationship: "static_analysis_medium",
+    });
+  });
+
+  it("reaches complete coverage (a passed evidence verdict) for a healthy analysis of a git working tree", async () => {
+    const repoRoot = makeRepositoryFromFiles({
+      "src/client.ts": [
+        'import twilio from "twilio";',
+        "export async function sendMessage(to: string) {",
+        '  return twilio.messages.create({ to, Body: "hello" });',
+        "}",
+      ].join("\n"),
+      ".git/HEAD": "ref: refs/heads/main\n",
+    });
+    const db = openGraphLearnMemory();
+    const result = await analyzeImpactWithSoftwareGraph(repoRoot, [surface], {
+      graphDb: db,
+      tenantId: "tenant-a",
+      repositoryId: "repo-a",
+      repositorySnapshotId: "snapshot-a",
+      providerId: "twilio",
+      providerSnapshotId: "twilio-openapi-2026-08-17",
+      providerRevision: "2026-08-17",
+      providerSdkPackage: "twilio",
+      providerSdkVersion: "4.0.0",
+      observedAt: "2026-08-17T12:00:00.000Z",
+      maxCallerHops: 4,
+      maxContextBytes: 8_192,
+    });
+    expect(result.graphImpact.impact).toBe("impact");
+    // The pipeline writes verdict = coverage.basis === "complete" ? "passed" :
+    // "failed". A git working tree previously forced this to partial (=> failed)
+    // for every healthy analysis; it is now complete.
+    expect(result.graphImpact.coverage.basis).toBe("complete");
+    db.raw.close();
   });
 });
