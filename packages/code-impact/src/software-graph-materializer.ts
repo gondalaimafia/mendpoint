@@ -84,6 +84,7 @@ function addRelationship(
     derivation: SoftwareGraphRelationshipV1["derivation"];
     confidenceBasis: SoftwareGraphRelationshipV1["confidenceBasis"];
     validFrom: string;
+    extractor?: SoftwareGraphRelationshipV1["extractor"];
   },
 ): void {
   const id = digestId("relationship", [input.kind, input.sourceId, input.targetId, ...input.evidenceRefs].join("\0"));
@@ -93,7 +94,7 @@ function addRelationship(
     sourceId: input.sourceId,
     targetId: input.targetId,
     evidenceRefs: [...input.evidenceRefs].sort(compareCodeUnits),
-    extractor: EXTRACTOR,
+    extractor: input.extractor ?? EXTRACTOR,
     derivation: input.derivation,
     confidenceBasis: input.confidenceBasis,
     status: "active",
@@ -233,8 +234,8 @@ export function materializeFettlerSoftwareGraph(
           aliases: [caller.name],
           label: caller.name,
           scope: "repository",
-          evidenceRefs: [sourceRef(caller.filePath, caller.lineStart)],
-          extractor: EXTRACTOR,
+          evidenceRefs: caller.structuralSource?.evidenceRefs ?? [sourceRef(caller.filePath, caller.lineStart)],
+          extractor: caller.structuralSource?.extractor ?? EXTRACTOR,
           derivation: "call_graph",
           confidenceBasis: "deterministic_exact",
           status: "active",
@@ -251,7 +252,8 @@ export function materializeFettlerSoftwareGraph(
             : current.depth === 0 ? "wraps" : "calls",
           sourceId: callerEntityId,
           targetId: targetEntityId,
-          evidenceRefs: [sourceRef(edge.callSiteFile, edge.callSiteLine)],
+          evidenceRefs: edge.structuralSource?.evidenceRefs ?? [sourceRef(edge.callSiteFile, edge.callSiteLine)],
+          extractor: edge.structuralSource?.extractor,
           derivation: "call_graph",
           confidenceBasis: edge.confidence === "high"
             ? "static_analysis_high"

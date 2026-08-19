@@ -1,0 +1,93 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
+import { buildIndex } from "@mendpoint/codebase-index";
+import { openGraphLearnMemory, publishSoftwareGraphVersion, queryFettlerEndpointImpact } from "@mendpoint/graph-learn";
+import { structuralContentDigest, structuralExtractionToCallGraph, type StructuralExtractionV1 } from "@mendpoint/structural-graph";
+import { sdkContextFromSurfaces } from "./index.js";
+import { materializeFettlerSoftwareGraph } from "./software-graph-materializer.js";
+import type { ImpactableSurface } from "@mendpoint/shared";
+
+const directories: string[] = [];
+afterAll(() => directories.forEach((directory) => rmSync(directory, { recursive: true, force: true })));
+const digest = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
+const surface: ImpactableSurface = {
+  id: "stripe-charge-source",
+  canonicalId: "stripe.POST./v1/charges.request_field_replaced.source.payment_method",
+  kind: "request_field", op: "request_field_renamed", path: "/v1/charges", method: "post",
+  field: "source", fromField: "source", toField: "payment_method", severity: "breaking",
+  migrationStrategy: "Use payment_method", explanation: "Stripe replaced source with payment_method",
+  searchTokens: ["/v1/charges", "charges", "create", "source", "payment_method"],
+};
+
+function repository(): string {
+  const root = mkdtempSync(join(tmpdir(), "graphify-stripe-vertical-")); directories.push(root);
+  mkdirSync(join(root, "src"), { recursive: true }); mkdirSync(join(root, "test"), { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "stripe-consumer", dependencies: { stripe: "11.0.0" } }));
+  writeFileSync(join(root, "src", "client.ts"), ['import Stripe from "stripe";', "const stripe = new Stripe('test');", "export async function createCharge() {", "  return stripe.charges.create({ amount: 100, currency: 'usd', source: 'tok_test' });", "}"].join("\n"));
+  writeFileSync(join(root, "src", "checkout.ts"), ['import { createCharge } from "./client";', "export async function checkout() {", "  return createCharge();", "}"].join("\n"));
+  writeFileSync(join(root, "test", "checkout.test.ts"), ['import { checkout } from "../src/checkout";', "export async function testCheckout() {", "  return checkout();", "}"].join("\n"));
+  return root;
+}
+
+function structural(): StructuralExtractionV1 {
+  const extractor = { id: "graphify", version: "0.9.46", digest: `sha256:${"1".repeat(64)}` };
+  const provenance = (upstreamNodeId: string, sourceFile: string, sourceLocation: string, confidence: "EXTRACTED" | "INFERRED") => ({
+    engine: "graphify" as const, extractorVersion: "0.9.46", method: "tree-sitter" as const,
+    upstreamNodeId, upstreamConfidence: confidence, sourceFile, sourceLocation,
+    repositorySnapshotId: "snapshot-stripe", observedAt: "2026-08-19T00:00:00.000Z",
+  });
+  const node = (name: string, filePath: string, lineStart: number, lineEnd: number, isTest = false) => ({
+    id: digest(`snapshot-stripe\0${filePath}\0${name}`), canonicalKey: `${filePath}::${isTest ? "test" : "function"}::${name}`,
+    kind: isTest ? "test" as const : "function" as const, label: name, qualifiedName: name, filePath,
+    language: "typescript", lineStart, lineEnd, isTest, epistemicState: "observed" as const,
+    provenance: provenance(name, filePath, `L${lineStart}-L${lineEnd}`, "EXTRACTED"),
+  });
+  const createCharge = node("createCharge", "src/client.ts", 3, 5);
+  const checkout = node("checkout", "src/checkout.ts", 2, 4);
+  const testCheckout = node("testCheckout", "test/checkout.test.ts", 2, 4, true);
+  const edge = (source: typeof createCharge, target: typeof createCharge, filePath: string, line: number) => ({
+    id: digest(`${source.id}\0${target.id}\0${line}`), kind: "calls" as const, sourceId: source.id, targetId: target.id,
+    sourceFile: filePath, lineStart: line, lineEnd: line, epistemicState: "observed" as const, confidence: 1,
+    provenance: { ...provenance(`${source.label}->${target.label}`, filePath, `L${line}`, "EXTRACTED"), upstreamRelation: "calls" },
+  });
+  const withoutDigest = {
+    schemaVersion: "mendpoint.structural-extraction.v1" as const,
+    tenantId: "tenant-a", repositoryId: "repo-a", snapshotId: "snapshot-stripe", revision: "a".repeat(40),
+    observedAt: "2026-08-19T00:00:00.000Z", extractor, languages: ["typescript"],
+    nodes: [createCharge, checkout, testCheckout],
+    edges: [edge(checkout, createCharge, "src/checkout.ts", 3), edge(testCheckout, checkout, "test/checkout.test.ts", 3)],
+    ambiguities: [], warnings: [],
+    metrics: { elapsedMs: 1, normalizationMs: 1, peakMemoryBytes: 1_024, nodeCount: 3, edgeCount: 2, languageCount: 1, confidenceDistribution: { observed: 5, inferred: 0, ambiguous: 0 } },
+  };
+  return { ...withoutDigest, contentDigest: structuralContentDigest(withoutDigest) };
+}
+
+describe("Graphify normalized structure to Stripe Fettler impact", () => {
+  it("promotes an exact Stripe SDK use through an indirect wrapper and test into one immutable Change Graph version", () => {
+    const root = repository();
+    const extraction = structural();
+    const index = buildIndex(root, { callGraph: structuralExtractionToCallGraph(extraction), sdkContext: sdkContextFromSurfaces([surface]) });
+    const publication = materializeFettlerSoftwareGraph({
+      index, tenantId: "tenant-a", repositoryId: "repo-a", repositorySnapshotId: "snapshot-stripe",
+      repositoryRevision: "a".repeat(40), providerId: "stripe", providerSnapshotId: "stripe-openapi-v2",
+      providerRevision: "2026-08-19", providerSdkPackage: "stripe", providerSdkVersion: "11.0.0",
+      providerEndpointSurfaceCount: 1,
+      endpoint: { canonicalKey: "POST /v1/charges", method: "POST", path: "/v1/charges", sdkMethodPaths: ["charges.create"], evidenceRefs: ["artifact:stripe-openapi-v2"] },
+      observedAt: "2026-08-19T00:00:00.000Z", maxCallerHops: 4,
+    });
+    const db = openGraphLearnMemory();
+    const version = publishSoftwareGraphVersion(db, publication);
+    const impact = queryFettlerEndpointImpact(db, { tenantId: "tenant-a", repositoryId: "repo-a", graphVersionId: version.versionId, endpointKey: "POST /v1/charges", maxHops: 6, maxEntities: 50, maxRelationships: 100 });
+    expect(impact.impact).toBe("impact");
+    expect(impact.entities.map((entity) => entity.label)).toEqual(expect.arrayContaining(["createCharge", "checkout", "testCheckout"]));
+    expect(impact.paths.some((path) => path.length === 5)).toBe(true);
+    const structuralRelations = publication.relationships.filter((relationship) => ["wraps", "calls", "tests"].includes(relationship.kind));
+    expect(structuralRelations.every((relationship) => relationship.extractor.id === "graphify")).toBe(true);
+    expect(structuralRelations.every((relationship) => relationship.evidenceRefs.some((ref) => ref.startsWith("structural-extraction:sha256:")))).toBe(true);
+    db.raw.close();
+  });
+});

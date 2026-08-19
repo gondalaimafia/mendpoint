@@ -17,7 +17,8 @@
     "@mendpoint/change-intel": "*",
     "@mendpoint/codebase-index": "*",
     "@mendpoint/graph-learn": "*",
-    "@mendpoint/shared": "*"
+    "@mendpoint/shared": "*",
+    "@mendpoint/structural-graph": "*"
   },
 
   "devDependencies": {
