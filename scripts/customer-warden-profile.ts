@@ -43,6 +43,7 @@ export const CUSTOMER_WARDEN_REQUIRED_SECRETS = Object.freeze([
   "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64",
   "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID",
   "MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST",
+  "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA",
   "LLM_AGENT_MODEL",
   "LLM_AGENT_URL",
   "OPENAI_API_KEY",
@@ -84,6 +85,18 @@ const CUSTOMER_SENSITIVE_CHILD_ENV = Object.freeze([
   "FLY_API_TOKEN",
 ] as const);
 
+const CUSTOMER_SANDBOX_CHILD_ENV = Object.freeze([
+  "MENDPOINT_SANDBOX_KIND",
+  "MENDPOINT_SANDBOX_FLY_APP",
+  "MENDPOINT_SANDBOX_FLY_IMAGE",
+  "MENDPOINT_SANDBOX_FLY_TOKEN",
+  "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64",
+  "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64",
+  "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID",
+  "MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST",
+  "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA",
+] as const);
+
 const CUSTOMER_ROLE_SECRETS = Object.freeze({
   api: Object.freeze([
     "MENDPOINT_API_KEY",
@@ -92,16 +105,29 @@ const CUSTOMER_ROLE_SECRETS = Object.freeze({
     "GITHUB_APP_PRIVATE_KEY",
     "GITHUB_WEBHOOK_SECRET",
     "MENDPOINT_BACKUP_KEY",
-  ]),
-  worker: Object.freeze([
-    "MENDPOINT_APPLICATION_DATA_KEY",
-    "GITHUB_APP_PRIVATE_KEY",
-    "OPENAI_API_KEY",
+    "MENDPOINT_SANDBOX_KIND",
+    "MENDPOINT_SANDBOX_FLY_APP",
+    "MENDPOINT_SANDBOX_FLY_IMAGE",
     "MENDPOINT_SANDBOX_FLY_TOKEN",
     "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64",
     "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64",
     "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID",
     "MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST",
+    "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA",
+  ]),
+  worker: Object.freeze([
+    "MENDPOINT_APPLICATION_DATA_KEY",
+    "GITHUB_APP_PRIVATE_KEY",
+    "OPENAI_API_KEY",
+    "MENDPOINT_SANDBOX_KIND",
+    "MENDPOINT_SANDBOX_FLY_APP",
+    "MENDPOINT_SANDBOX_FLY_IMAGE",
+    "MENDPOINT_SANDBOX_FLY_TOKEN",
+    "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64",
+    "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64",
+    "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID",
+    "MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST",
+    "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA",
   ]),
   web: Object.freeze([
     "MENDPOINT_API_KEY",
@@ -121,9 +147,11 @@ export function customerWardenChildEnvironment(
 ): NodeJS.ProcessEnv {
   const scoped = { ...env };
   for (const name of CUSTOMER_SENSITIVE_CHILD_ENV) delete scoped[name];
+  for (const name of CUSTOMER_SANDBOX_CHILD_ENV) delete scoped[name];
   for (const name of CUSTOMER_ROLE_SECRETS[role]) {
     if (env[name] !== undefined) scoped[name] = env[name];
   }
+  scoped.MENDPOINT_PROCESS_ROLE = role;
   return scoped;
 }
 
@@ -165,6 +193,11 @@ export function validateCustomerWardenRuntime(
   }
   for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) {
     if (!resolveEitherRenamedEnv(env, name)?.trim()) errors.push(`Customer Fettler profile requires ${name}`);
+  }
+  if (env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) {
+    errors.push(
+      `Customer Fettler profile requires MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA=${SANDBOX_EGRESS_ATTESTATION_SCHEMA}`,
+    );
   }
   const transport = env.MENDPOINT_BACKUP_TRANSPORT?.trim();
   if (transport !== "rclone_s3" && transport !== "pre_mounted") {
@@ -216,3 +249,4 @@ export function validateCustomerWardenRuntime(
 }
 import { loadCustomerObjectStoreConfig } from "./customer-object-store.js";
 import { assessModelEgress, resolveEitherRenamedEnv } from "@mendpoint/shared";
+import { SANDBOX_EGRESS_ATTESTATION_SCHEMA } from "@mendpoint/platform";

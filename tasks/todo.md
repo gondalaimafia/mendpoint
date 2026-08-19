@@ -2543,3 +2543,22 @@ Review before publication: the post-merge pass closed every original review find
 Verification before publication: 69 focused structural, Stripe, materializer, performance, benchmark, and authority tests pass. Structural Graph passes 49 of 49 and Code Impact passes 103 of 103 in the complete repository run. Every workspace and scripts typechecks, every workspace and script test passes, the optimized 50-page web build passes, GA specification and governance checks pass, the production dependency audit reports zero vulnerabilities, and diff integrity passes. Two independent strict reviews found no remaining P0 or P1 blocker after the final fixes.
 
 Protected publication evidence: PR 244 source commit `7a36dbdc49dbeb8ad36395145887238120e4617d` passed tests, release gates, all container builds, and the deployment E2E browser and crash-recovery journey. GitHub reported the pull request cleanly mergeable against `b1486c38f98edc0371629651f2cefcfe03393409` before the final ledger-only update.
+
+## Enterprise sandbox proof prerequisite: 2026-08-19
+
+Objective: land the fail-closed sandbox containment and result-integrity contract required by an independent Fettler verifier without breaking explicit demo and CI environments.
+
+- [x] Re-audit open sandbox PR 242 against exact current main and identify the protected-gate failure.
+- [x] Replay the reviewed sandbox integrity change onto exact main without importing unrelated branch history.
+- [x] Add red regressions proving every production process declares its sandbox kind and customer profiles accept only `fly_machines`.
+- [x] Configure CI demo processes explicitly as `local` while preserving production Fly as `fly_machines`.
+- [x] Run focused Ops, Platform, Worker, startup, deployment E2E, typecheck, build, GA, audit, and diff gates.
+- [ ] Obtain strict P0 and P1 review, publish, merge, deploy, and verify production health before building the delegated trial producer.
+
+Acceptance: production never silently defaults to host execution; customer profiles require the pinned Fly sandbox and verified egress attestation; an absent execution exit code cannot become success; ambiguous egress failures cannot prove containment; demo and CI host execution remains explicit and auditable; and the exact deployed main revision remains healthy.
+
+Review before publication: the protected acceptance receipt is now schema v2 and binds the exact raw-IP forbidden probe command, ordered targets, allowed command, sandbox app, immutable image, and firewall policy. The sandbox installs explicit IPv4 and IPv6 reject rules behind a default-drop policy, so a timeout remains ambiguous while an exact firewall refusal is measurable. Production customer API and worker processes both require the complete v2 sandbox authority because both can reach pipeline verification. Web and backup processes receive none. The ReGauge coordinator is the only sandbox-exempt role, and both of its synchronous pipeline routes fail closed while queued coordinator work remains available. Demo and CI paths declare local execution explicitly. The protected workflow rejects absent command exit codes and rotates the receipt, public key, policy digest, and minimum schema together.
+
+Verification before publication: focused sandbox, startup, customer-profile, and workflow coverage passes 136 of 136 tests; the post-review API, worker, Ops, and script correction matrix also passes. The complete Worker package passes 347 of 347, the complete repository and script test command passes, every workspace and scripts typecheck passes, the optimized 50-page production build passes, GA specification and governance checks pass, and the production dependency audit reports zero vulnerabilities. An independent strict review found no remaining P0 or P1 after the role-boundary corrections. The local deployment browser journey could not start because Docker is not installed on this machine; its exact container, crash-recovery, accessibility, and Chromium gate remains mandatory in protected CI before merge.
+
+Protected pre-merge evidence: PR 245 source commit `7a799d4` passed tests, release gates, all container builds, and the deployment E2E Chromium and crash-recovery journey in workflow `32306984027`. PR 242 was closed as superseded rather than merging its stale red branch.

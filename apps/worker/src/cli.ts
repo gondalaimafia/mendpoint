@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { runChangePipeline, type PipelineReport } from "@mendpoint/pipeline";
 import {
   resolveFanoutSettlementMcuMicros,
+  SANDBOX_EGRESS_ATTESTATION_SCHEMA,
   sandboxEgressAuthorityFromEnv,
   verifySandboxEgressAttestation,
   type FanoutRunMeterSignals,
@@ -1598,6 +1599,15 @@ export function validateWorkerProductionEnv(
     if (env.GITHUB_MODE !== "real") {
       errors.push("Customer worker requires GITHUB_MODE=real");
     }
+    // The egress fence and its verification only run under fly_machines; any other
+    // kind (including the default "local" when unset) executes customer code on the
+    // worker host with no network isolation. Assert it explicitly here, as the API
+    // preflight does, so an unset or local kind cannot pass worker preflight.
+    if (env.MENDPOINT_SANDBOX_KIND?.trim() !== "fly_machines") {
+      errors.push(
+        "Customer worker requires MENDPOINT_SANDBOX_KIND=fly_machines; other sandbox kinds run customer code on the worker host with no network fence",
+      );
+    }
     if (env.MENDPOINT_DEPLOYMENT_CLASS !== "customer") {
       errors.push("Customer worker requires MENDPOINT_DEPLOYMENT_CLASS=customer");
     }
@@ -1609,6 +1619,11 @@ export function validateWorkerProductionEnv(
     }
     if (env.MENDPOINT_PILOT_SEED !== "0") {
       errors.push("Customer worker requires MENDPOINT_PILOT_SEED=0");
+    }
+    if (env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) {
+      errors.push(
+        `Customer worker requires MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA=${SANDBOX_EGRESS_ATTESTATION_SCHEMA}`,
+      );
     }
     if (resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED") !== "1") {
       errors.push("Customer worker requires Fettler model source execution");
@@ -1624,6 +1639,24 @@ export function validateWorkerProductionEnv(
   }
   if (env.GITHUB_MODE !== "mock" && env.GITHUB_MODE !== "real") {
     errors.push("GITHUB_MODE must be explicitly set to mock or real");
+  }
+  // The sandbox backend must be chosen explicitly in production: an unset kind
+  // silently resolves to "local" (no egress fence), so absence is refused rather
+  // than defaulted, mirroring the GITHUB_MODE guard above.
+  {
+    const sandboxKind = env.MENDPOINT_SANDBOX_KIND?.trim();
+    if (!sandboxKind) {
+      errors.push(
+        "MENDPOINT_SANDBOX_KIND must be explicitly set to fly_machines, local, vm, or in_cluster",
+      );
+    } else if (
+      sandboxKind !== "fly_machines" &&
+      sandboxKind !== "local" &&
+      sandboxKind !== "vm" &&
+      sandboxKind !== "in_cluster"
+    ) {
+      errors.push("MENDPOINT_SANDBOX_KIND must be exactly fly_machines, local, vm, or in_cluster");
+    }
   }
   if (env.MENDPOINT_SANDBOX_KIND?.trim() === "fly_machines") {
     try {

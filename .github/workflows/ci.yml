@@ -69,6 +69,7 @@ jobs:
           MENDPOINT_DEPLOYMENT_PROFILE: demo
           API_AUTH: required
           GITHUB_MODE: mock
+          MENDPOINT_SANDBOX_KIND: local
           MENDPOINT_DATA_DIR: ${{ runner.temp }}/mendpoint-ga
           MENDPOINT_REPOS_DIR: ${{ runner.temp }}/mendpoint-repos
       - name: Demo smoke (offline)
@@ -101,6 +102,7 @@ jobs:
           export MENDPOINT_DEPLOYMENT_PROFILE=demo
           export API_AUTH=required
           export GITHUB_MODE=mock
+          export MENDPOINT_SANDBOX_KIND=local
           export MENDPOINT_APPLICATION_DATA_KEY="$(printf 'b%.0s' {1..64})"
           export MENDPOINT_DATA_DIR="$RUNNER_TEMP/mendpoint-smoke"
           export MENDPOINT_REPOS_DIR="$RUNNER_TEMP/mendpoint-repos"
@@ -183,6 +185,7 @@ jobs:
             --publish 127.0.0.1:3001:3001 \
             -e MENDPOINT_DEPLOYMENT_PROFILE=demo \
             -e GITHUB_MODE=mock \
+            -e MENDPOINT_SANDBOX_KIND=local \
             -e MENDPOINT_APPLICATION_DATA_KEY="$(printf 'b%.0s' {1..64})" \
             -e MENDPOINT_REPOS_DIR=/workspace/repos \
             -v mendpoint-ci-data:/app/data \
@@ -242,6 +245,7 @@ jobs:
             --network mendpoint-ci \
             -e MENDPOINT_DEPLOYMENT_PROFILE=demo \
             -e GITHUB_MODE=mock \
+            -e MENDPOINT_SANDBOX_KIND=local \
             -e MENDPOINT_TENANT_ID=tenant_default \
             -v mendpoint-ci-data:/app/data \
             mendpoint-worker:ci \
@@ -253,6 +257,7 @@ jobs:
             --publish 127.0.0.1:3002:3000 \
             -e MENDPOINT_DEPLOYMENT_PROFILE=demo \
             -e GITHUB_MODE=mock \
+            -e MENDPOINT_SANDBOX_KIND=local \
             -e MENDPOINT_APPLICATION_DATA_KEY="$(printf 'b%.0s' {1..64})" \
             -e MENDPOINT_API_KEY="$fly_api_key" \
             -e MENDPOINT_WEB_ACCESS_TOKEN=ci-fly-web-access-token \

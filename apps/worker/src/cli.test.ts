@@ -57,7 +57,9 @@ import {
 import { recipeFilesDigest, sealAdaptiveCandidate } from "@mendpoint/transformer";
 import {
   SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
-  SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
+  SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS,
   sandboxEgressAttestationPayloadBytes,
 } from "@mendpoint/platform";
 import {
@@ -91,6 +93,56 @@ import {
 import { WARDEN_EXECUTOR_ID, WARDEN_PROVIDER_ID } from "./warden-router.js";
 
 const dirs: string[] = [];
+
+// Build a complete, cryptographically valid fly_machines egress-authority env block for
+// worker-preflight fixtures. A customer worker requires the network-fenced sandbox, and
+// the worker preflight verifies the signed attestation, so a real signature is needed.
+function signedSandboxAuthorityEnv(app: string, image: string): NodeJS.ProcessEnv {
+  const policyDigest = `sha256:${"b".repeat(64)}`;
+  const testedAt = new Date(Date.now() - 60_000).toISOString();
+  const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+  const keys = generateKeyPairSync("ed25519");
+  const payloadBytes = sandboxEgressAttestationPayloadBytes({
+    schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+    app,
+    image,
+    policyDigest,
+    testedAt,
+    expiresAt,
+    forbiddenOutbound: {
+      commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+      targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+      blocked: true,
+    },
+    allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
+    evidenceRefs: ["evidence://protected-egress-acceptance/customer"],
+  });
+  const envelope = Buffer.from(
+    JSON.stringify({
+      payload: payloadBytes.toString("base64"),
+      signatures: [
+        {
+          keyId: "sandbox-egress-key-1",
+          signature: sign(null, payloadBytes, keys.privateKey).toString("base64"),
+        },
+      ],
+    }),
+    "utf8",
+  ).toString("base64");
+  return {
+    MENDPOINT_SANDBOX_KIND: "fly_machines",
+    MENDPOINT_SANDBOX_FLY_APP: app,
+    MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-token",
+    MENDPOINT_SANDBOX_FLY_IMAGE: image,
+    MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: envelope,
+    MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64: keys.publicKey
+      .export({ format: "der", type: "spki" })
+      .toString("base64"),
+    MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
+    MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: policyDigest,
+    MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+  };
+}
 
 it("does not construct standalone worker stores while a customer backup is exclusive", () => {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-startup-fence-"));
@@ -1648,6 +1700,7 @@ describe("worker runtime", () => {
       NODE_ENV: "production",
       MENDPOINT_DEPLOYMENT_PROFILE: "demo",
       GITHUB_MODE: "mock",
+      MENDPOINT_SANDBOX_KIND: "local",
       MENDPOINT_DATA_DIR: repos,
       MENDPOINT_REPOS_DIR: repos,
       MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED: "1",
@@ -1715,13 +1768,17 @@ describe("worker runtime", () => {
     const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
     const keys = generateKeyPairSync("ed25519");
     const payloadBytes = sandboxEgressAttestationPayloadBytes({
-      schemaVersion: "2026-08-18.v1",
+      schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
       app: "mendpoint-sandbox",
       image,
       policyDigest,
       testedAt,
       expiresAt,
-      forbiddenOutbound: { url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL, blocked: true },
+      forbiddenOutbound: {
+        commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+        targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+        blocked: true,
+      },
       allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
       evidenceRefs: ["evidence://protected-egress-acceptance/startup"],
     });
@@ -1747,6 +1804,7 @@ describe("worker runtime", () => {
         keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
       MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
       MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: policyDigest,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
     };
 
     expect(validateWorkerProductionEnv(base)).toEqual([]);
@@ -1762,6 +1820,46 @@ describe("worker runtime", () => {
     ]));
   });
 
+  it("refuses a production worker whose sandbox kind is unset or a customer worker that is not fly_machines", () => {
+    const repos = mkdtempSync(join(tmpdir(), "mendpoint-worker-sandbox-kind-"));
+    dirs.push(repos);
+    // Sandbox kind unset in production: resolveSandboxKind would silently default to
+    // "local" (unfenced), so absence must be refused at boot.
+    expect(
+      validateWorkerProductionEnv({
+        NODE_ENV: "production",
+        MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+        GITHUB_MODE: "mock",
+        MENDPOINT_DATA_DIR: repos,
+        MENDPOINT_REPOS_DIR: repos,
+      }),
+    ).toContain(
+      "MENDPOINT_SANDBOX_KIND must be explicitly set to fly_machines, local, vm, or in_cluster",
+    );
+    // Customer worker pinned to local: set and well-formed, but no network fence.
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    expect(
+      validateWorkerProductionEnv({
+        NODE_ENV: "production",
+        MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+        GITHUB_MODE: "real",
+        MENDPOINT_DEPLOYMENT_CLASS: "customer",
+        MENDPOINT_SANDBOX_KIND: "local",
+        MENDPOINT_FEED_POLLING_ENABLED: "1",
+        POLL_LOCAL_ONLY: "0",
+        MENDPOINT_PILOT_SEED: "0",
+        GITHUB_APP_ID: "123",
+        GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+        MENDPOINT_BACKUP_FENCE_ROOT: join(repos, "backup-fence"),
+        MENDPOINT_WORKER_HEARTBEAT_PATH: join(repos, "worker-heartbeat.json"),
+        MENDPOINT_DATA_DIR: repos,
+        MENDPOINT_REPOS_DIR: repos,
+      }),
+    ).toContain(
+      "Customer worker requires MENDPOINT_SANDBOX_KIND=fly_machines; other sandbox kinds run customer code on the worker host with no network fence",
+    );
+  });
+
   it("requires an App for customer delivery and allows PAT only for a disposable canary", () => {
     const repos = mkdtempSync(join(tmpdir(), "mendpoint-worker-repos-"));
     dirs.push(repos);
@@ -1772,6 +1870,7 @@ describe("worker runtime", () => {
       MENDPOINT_DEPLOYMENT_PROFILE: "pilot",
       GITHUB_MODE: "real",
       MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      MENDPOINT_SANDBOX_KIND: "local",
       MENDPOINT_DATA_DIR: repos,
       MENDPOINT_REPOS_DIR: repos,
     };
@@ -1840,8 +1939,14 @@ describe("worker runtime", () => {
     })).toContain(
       "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
     );
+    // A customer worker now requires the network-fenced fly_machines sandbox, and the
+    // worker preflight cryptographically verifies its signed egress attestation, so the
+    // valid working path must carry a real authority block.
+    const sandboxImage = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
+    const sandboxAuthority = signedSandboxAuthorityEnv("mendpoint-sandbox", sandboxImage);
     const completeCustomerProfile = {
       ...customerProfile,
+      ...sandboxAuthority,
       GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant_default"}',
       MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
       MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_default",
@@ -1861,6 +1966,12 @@ describe("worker runtime", () => {
       ...completeCustomerProfile,
       MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "0",
     })).toContain("Customer worker requires external model processing to be explicitly allowed");
+    expect(validateWorkerProductionEnv({
+      ...completeCustomerProfile,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: "",
+    })).toContain(
+      `Customer worker requires MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA=${SANDBOX_EGRESS_ATTESTATION_SCHEMA}`,
+    );
     expect(validateWorkerProductionEnv(completeCustomerProfile)).toEqual([]);
   });
 

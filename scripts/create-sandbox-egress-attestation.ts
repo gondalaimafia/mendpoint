@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import {
   SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
   SANDBOX_EGRESS_ATTESTATION_SCHEMA,
-  SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS,
   sandboxEgressAttestationPayloadBytes,
   type SandboxEgressAttestationPayload,
 } from "@mendpoint/platform";
@@ -62,7 +63,10 @@ export function createSandboxEgressAttestation(
     testedAt: input.testedAt,
     expiresAt: input.expiresAt,
     forbiddenOutbound: Object.freeze({
-      url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
+      commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+      targets: Object.freeze(
+        SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+      ),
       blocked: true,
     }),
     allowedVerification: Object.freeze({

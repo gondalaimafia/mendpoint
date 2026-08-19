@@ -58,12 +58,16 @@ export {
 
 export type {
   SandboxEgressAttestationPayload,
+  VerifiedSandboxEgressAttestationPayload,
   SandboxEgressAuthorityConfig,
 } from "./sandbox-egress-attestation.js";
 export {
+  SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA,
   SANDBOX_EGRESS_ATTESTATION_SCHEMA,
   SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS,
   SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
   SANDBOX_EGRESS_ALLOWED_PROBE_COMMAND,
   SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
   sandboxEgressAttestationPayloadBytes,

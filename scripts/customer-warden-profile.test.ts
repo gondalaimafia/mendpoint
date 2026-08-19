@@ -8,6 +8,7 @@ import {
   customerWardenChildEnvironment,
   validateCustomerWardenRuntime,
 } from "./customer-warden-profile.js";
+import { SANDBOX_EGRESS_ATTESTATION_SCHEMA } from "@mendpoint/platform";
 
 const manifestPath = resolve(import.meta.dirname, "../fly.customer-warden.toml");
 
@@ -29,6 +30,8 @@ function customerRuntime(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     ...overrides,
   };
   for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) env[name] ??= `${name}-configured`;
+  env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA =
+    SANDBOX_EGRESS_ATTESTATION_SCHEMA;
   env.MENDPOINT_ALLOWED_MACHINE_ID = overrides.MENDPOINT_ALLOWED_MACHINE_ID ?? env.FLY_MACHINE_ID;
   env.MENDPOINT_BACKUP_STAGING_ROOT = overrides.MENDPOINT_BACKUP_STAGING_ROOT ?? "/tmp/mendpoint-backup-staging";
   env.MENDPOINT_BACKUP_OUTPUT_ROOT = overrides.MENDPOINT_BACKUP_OUTPUT_ROOT ?? env.MENDPOINT_BACKUP_STAGING_ROOT;
@@ -152,13 +155,24 @@ describe("Fettler-only customer Fly profile", () => {
     expect(api.MENDPOINT_BACKUP_KEY).toBe(env.MENDPOINT_BACKUP_KEY);
     expect(api.OPENAI_API_KEY).toBeUndefined();
     expect(api.AWS_SECRET_ACCESS_KEY).toBeUndefined();
-    expect(api.MENDPOINT_SANDBOX_FLY_TOKEN).toBeUndefined();
+    expect(api.MENDPOINT_SANDBOX_KIND).toBe(env.MENDPOINT_SANDBOX_KIND);
+    expect(api.MENDPOINT_SANDBOX_FLY_APP).toBe(env.MENDPOINT_SANDBOX_FLY_APP);
+    expect(api.MENDPOINT_SANDBOX_FLY_IMAGE).toBe(env.MENDPOINT_SANDBOX_FLY_IMAGE);
+    expect(api.MENDPOINT_SANDBOX_FLY_TOKEN).toBe(env.MENDPOINT_SANDBOX_FLY_TOKEN);
+    expect(api.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA).toBe(
+      SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+    );
+    expect(api.MENDPOINT_PROCESS_ROLE).toBe("api");
     expect(api.FLY_API_TOKEN).toBeUndefined();
     expect(worker.OPENAI_API_KEY).toBe(env.OPENAI_API_KEY);
     expect(worker.GITHUB_APP_PRIVATE_KEY).toBe(env.GITHUB_APP_PRIVATE_KEY);
     expect(worker.MENDPOINT_BACKUP_KEY).toBeUndefined();
     expect(worker.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(worker.MENDPOINT_SANDBOX_FLY_TOKEN).toBe(env.MENDPOINT_SANDBOX_FLY_TOKEN);
+    expect(worker.MENDPOINT_SANDBOX_KIND).toBe(env.MENDPOINT_SANDBOX_KIND);
+    expect(worker.MENDPOINT_SANDBOX_FLY_APP).toBe(env.MENDPOINT_SANDBOX_FLY_APP);
+    expect(worker.MENDPOINT_SANDBOX_FLY_IMAGE).toBe(env.MENDPOINT_SANDBOX_FLY_IMAGE);
+    expect(worker.MENDPOINT_PROCESS_ROLE).toBe("worker");
     expect(worker.FLY_API_TOKEN).toBeUndefined();
     expect(web.MENDPOINT_API_KEY).toBe(env.MENDPOINT_API_KEY);
     expect(web.OIDC_CLIENT_SECRET).toBe(env.OIDC_CLIENT_SECRET);
