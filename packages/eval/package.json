@@ -23,6 +23,7 @@
     "@mendpoint/graph-learn": "*",
     "@mendpoint/github": "*",
     "@mendpoint/ops": "*",
+    "@mendpoint/pipeline": "*",
     "@mendpoint/shared": "*",
     "@mendpoint/transformer": "*",
     "@mendpoint/verifier": "*",

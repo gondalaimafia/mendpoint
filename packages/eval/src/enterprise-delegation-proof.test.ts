@@ -112,7 +112,10 @@ async function trial(number: number): Promise<DelegatedPrTrialEvidence> {
       plannerSources: ["model"], scriptedPlannerInjected: false, pricingDigest: contract.approvedModel.pricingDigest,
       settledAt: `2026-08-18T12:${minute}:10.000Z`,
     },
-    meter: { costMeasured: true, costUsd: 0.25, inputTokens: 1000, outputTokens: 200, durationMs: 55_000 },
+    // Durable run metering ends when the candidate is ready. Human review,
+    // delivery, and cleanup extend the trial timeline but must not be invented
+    // as model execution time.
+    meter: { costMeasured: true, costUsd: 0.25, inputTokens: 1000, outputTokens: 200, durationMs: 20_000 },
     candidate: { artifact: candidate, commitSha: String(number).repeat(40), treeDigest: digest(`candidate-tree-${number}`),
       changedPaths: ["src/client.ts"], createdAt: `2026-08-18T12:${minute}:20.000Z` },
     verification: {

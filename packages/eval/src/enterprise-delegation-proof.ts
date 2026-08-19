@@ -340,9 +340,11 @@ function artifact(value: Artifact): boolean {
   return ID.test(value.artifactId) && SHA256.test(value.sha256);
 }
 
-function attestedArtifactsValid(evidence: DelegatedPrTrialEvidence): boolean {
+export function delegatedPrAttestedArtifactClaims(evidence: DelegatedPrTrialEvidence): Readonly<
+  Record<keyof DelegatedPrTrialEvidence["attestedArtifacts"], unknown>
+> {
   const { artifact: _deliveryArtifact, ...deliveryClaims } = evidence.delivery;
-  const expected: Readonly<Record<keyof DelegatedPrTrialEvidence["attestedArtifacts"], unknown>> = {
+  return freeze({
     workflow: evidence.workflow,
     model: evidence.model,
     accounting: evidence.meter,
@@ -362,7 +364,11 @@ function attestedArtifactsValid(evidence: DelegatedPrTrialEvidence): boolean {
       finalizedAt: evidence.finalizedAt,
     },
     changedPaths: evidence.candidate.changedPaths,
-  };
+  });
+}
+
+function attestedArtifactsValid(evidence: DelegatedPrTrialEvidence): boolean {
+  const expected = delegatedPrAttestedArtifactClaims(evidence);
   return Object.entries(expected).every(([key, value]) => {
     const entry = evidence.attestedArtifacts[key as keyof typeof expected];
     return artifact(entry) && entry.sha256 === sha256(value).slice("sha256:".length);
@@ -378,7 +384,7 @@ function add(
   }
 }
 
-function validateContract(contract: DelegatedPrAcceptanceContract): void {
+export function assertDelegatedPrAcceptanceContract(contract: DelegatedPrAcceptanceContract): void {
   const paths = [...contract.allowedChangedPaths];
   const valid = contract.schemaVersion === 1 && (contract.product === "fettler" || contract.product === "regauge") &&
     ID.test(contract.tenantId) && REVISION.test(contract.mendpointRevision) && artifact(contract.authorityManifest) &&
@@ -450,7 +456,10 @@ function verificationValid(
         execution.baselineExitCode === 0 && execution.candidateExitCode === 0);
 }
 
-function attestationScope(contract: DelegatedPrAcceptanceContract, evidence: DelegatedPrTrialEvidence) {
+export function delegatedPrAttestationScope(
+  contract: DelegatedPrAcceptanceContract,
+  evidence: DelegatedPrTrialEvidence,
+) {
   return {
     tenantId: contract.tenantId, repositoryId: contract.repository.repositoryId, runId: evidence.runId,
     correlationId: evidence.correlationId,
@@ -474,7 +483,7 @@ export async function evaluateDelegatedPrAcceptance(input: Readonly<{
   trustPolicy: SoftwareAttestationTrustPolicy;
 }>): Promise<DelegatedPrAcceptanceReport> {
   const contract = snapshotPlain(input.contract, "delegated_pr_acceptance_contract_invalid");
-  validateContract(contract);
+  assertDelegatedPrAcceptanceContract(contract);
   const contractDigest = sha256(contract);
   const scope = freeze({ product: contract.product, tenantId: contract.tenantId,
     repositoryId: contract.repository.repositoryId, sourceRevision: contract.repository.sourceRevision,
@@ -593,8 +602,9 @@ export async function evaluateDelegatedPrAcceptance(input: Readonly<{
       Number.isSafeInteger(evidence.meter.inputTokens) && (evidence.meter.inputTokens ?? 0) > 0 &&
       Number.isSafeInteger(evidence.meter.outputTokens) && (evidence.meter.outputTokens ?? 0) > 0 &&
       Number.isSafeInteger(evidence.meter.durationMs) && (evidence.meter.durationMs ?? 0) > 0 &&
+      (evidence.meter.durationMs ?? 0) <= duration &&
       Math.abs(evidence.meter.costUsd - modelCost) < 1e-9 && evidence.meter.inputTokens === inputTokens &&
-      evidence.meter.outputTokens === outputTokens && evidence.meter.durationMs === duration,
+      evidence.meter.outputTokens === outputTokens,
     "delegated_pr_accounting_mismatch", "P0", trial);
     totalCostUsd += evidence.meter.costUsd ?? 0;
     for (const record of evidence.model.provenance) {
@@ -663,7 +673,7 @@ export async function evaluateDelegatedPrAcceptance(input: Readonly<{
     "delegated_pr_cleanup_invalid", "P0", trial);
     try {
       const verifiedAttestation = await verifySoftwareAttestation({ envelope: evidence.attestation,
-        trustPolicy: input.trustPolicy, expectedScope: attestationScope(contract, evidence), verifiedAt });
+        trustPolicy: input.trustPolicy, expectedScope: delegatedPrAttestationScope(contract, evidence), verifiedAt });
       add(findings, verifiedAttestation.statement.predicate.outcome === "passed" &&
         timestamp(verifiedAttestation.statement.predicate.issuedAt) !== null && cleaned !== null && finalized !== null &&
         executionCompleted !== null && Date.parse(verifiedAttestation.statement.predicate.issuedAt) >= executionCompleted &&

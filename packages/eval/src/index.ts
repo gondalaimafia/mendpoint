@@ -163,3 +163,4 @@ export {
 } from "./warden-metrics.js";
 export * from "./muse-deepseek-verifier.js";
 export * from "./enterprise-delegation-proof.js";
+export * from "./delegated-pr-trial-authority.js";
