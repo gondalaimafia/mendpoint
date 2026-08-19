@@ -326,6 +326,7 @@ function bindAuthorityArtifacts(value: DelegatedPrTrialEvidence): Readonly<{
       tenantId: value.tenantId,
       runId: value.runId,
       candidateArtifact: candidate.artifact,
+      executionAuthorityId: value.verification.executionAuthorityId,
       execution: { ...executionClaims, candidateDigest: value.candidate.treeDigest },
     });
   };

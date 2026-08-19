@@ -279,6 +279,7 @@ function assertVerificationAuthority(
       tenantId: trial.tenantId,
       runId: trial.runId,
       candidateArtifact: trial.candidate.artifact,
+      executionAuthorityId: contract.verification.executionAuthorityId,
       execution: withoutArtifact(execution),
     };
     if (canonical(claims) !== canonical(expected)) {
