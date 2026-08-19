@@ -386,7 +386,14 @@ export class GitHubAppDelivery implements GitHubDelivery {
     return this.withAuthRetry((octokit) => deliverExactDraftWithOctokit(octokit, input));
   }
 
-  observeExactDraft(input: ExactDraftObservationInput): Promise<ExactDraftObservation> {
+  async observeExactDraft(input: ExactDraftObservationInput): Promise<ExactDraftObservation> {
+    if (
+      (input.expectedInstallationId !== undefined && input.expectedInstallationId !== this.installationId)
+      || (input.expectedRepositoryId !== undefined
+        && (!this.repositoryIds || !this.repositoryIds.includes(input.expectedRepositoryId)))
+    ) {
+      throw new Error("github_app_observation_scope_mismatch");
+    }
     return this.withAuthRetry((octokit) => observeExactDraftWithOctokit(octokit, input));
   }
 

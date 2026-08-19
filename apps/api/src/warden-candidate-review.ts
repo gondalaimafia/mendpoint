@@ -365,6 +365,7 @@ export function registerWardenCandidateReviewRoutes(
       audit(c, { actor: "operator", action: body.decision === "approve" ? "agent.candidate.approved"
         : body.decision === "reject" ? "agent.candidate.rejected" : "agent.candidate.regeneration_requested",
         resourceType: "agent_run", resourceId: run.id,
+        createdAt: reviewedAt,
         metadata: { decision: body.decision, rationale: body.rationale, product: "warden",
           reviewerPrincipalId: body.decision === "approve" ? trustId! : principal.id,
           ...(body.decision === "approve" ? {

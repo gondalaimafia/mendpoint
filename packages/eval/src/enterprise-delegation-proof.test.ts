@@ -144,11 +144,14 @@ async function trial(number: number): Promise<DelegatedPrTrialEvidence> {
       owner: contract.repository.owner, name: contract.repository.name, baseBranch: contract.repository.baseBranch,
       headBranch: `mendpoint/fettler-${number}`, pullRequestNumber: 100 + number, candidateDigest: candidate.sha256,
       changedPaths: ["src/client.ts"], treeDigest: digest(`candidate-tree-${number}`),
+      remoteTreeSha: String(number + 3).repeat(40),
       artifact: delivery, matchingOpenDrafts: 1, observedAt: `2026-08-18T12:${minute}:40.000Z`,
       observation: { state: "draft", baseRevision: contract.repository.sourceRevision, headRevision: String(number).repeat(40),
         checks: "success", checkRevision: String(number).repeat(40), approvals: 0, approvalRevision: null,
         conversationsResolved: true, failures: [], checkIdentities: ["check:1:test"],
         checkResults: [{ identity: "check:1:test", state: "success" }],
+        repositoryId: contract.repository.remoteRepositoryId, installationId: contract.repository.installationId,
+        matchingOpenDrafts: 1, changedPaths: ["src/client.ts"], remoteTreeSha: String(number + 3).repeat(40),
         reviewFeedback: { verdict: "none", changeRequests: [], comments: [] }, evidenceRefs: [`github-observation-${number}`] },
     },
     cleanup: { pullRequestState: "closed", branchState: "retained_exact", headRevision: String(number).repeat(40),
@@ -307,6 +310,22 @@ describe("delegated PR acceptance", () => {
       expect.objectContaining({ code: "delegated_pr_delivery_invalid", trial: 2 }),
       expect.objectContaining({ code: "delegated_pr_delivery_invalid", trial: 3 }),
     ]));
+  });
+
+  it("rejects GitHub observation authority that drifts from the delivered repository and tree", async () => {
+    const { evidence, authority } = await fixture();
+    Object.assign(evidence[0]!.delivery.observation, {
+      repositoryId: contract.repository.remoteRepositoryId + 1,
+      installationId: contract.repository.installationId,
+      matchingOpenDrafts: 1,
+      changedPaths: ["src/client.ts"],
+      remoteTreeSha: "f".repeat(40),
+    });
+    const report = await evaluateDelegatedPrAcceptance({ proof, contract, authority, trustPolicy });
+    expect(report.findings).toContainEqual(expect.objectContaining({
+      code: "delegated_pr_delivery_invalid",
+      trial: 1,
+    }));
   });
 
   it("passes frozen proof references to the authority and snapshots returned evidence", async () => {

@@ -712,9 +712,11 @@ export {
 
 export {
   observeExactDraftWithOctokit,
+  EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION,
   type ExactDraftFailure,
   type ExactDraftCheckResult,
   type ExactDraftObservation,
+  type ExactDraftObservationEvidenceV1,
   type ExactDraftObservationInput,
 } from "./exact-draft-observer.js";
 

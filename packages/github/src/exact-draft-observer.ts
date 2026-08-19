@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Octokit } from "@octokit/rest";
 
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -12,7 +13,9 @@ export type ExactDraftObservationInput = Readonly<{
   expectedHeadBranch: string;
   expectedHeadSha: string;
   expectedRepositoryId?: number;
+  expectedInstallationId?: number;
   requireExactDraft?: boolean;
+  includeDeliveryEvidence?: boolean;
   includeCommitStatuses?: boolean;
 }>;
 
@@ -72,13 +75,49 @@ export type ExactDraftObservation = Readonly<{
   checkIdentities: readonly string[];
   checkResults: readonly ExactDraftCheckResult[];
   reviewFeedback: ExactDraftReviewFeedback;
+  repositoryId?: number;
+  installationId?: number;
+  matchingOpenDrafts?: number;
+  changedPaths?: readonly string[];
+  remoteTreeSha?: string;
   evidenceRefs: readonly string[];
+}>;
+
+export const EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION =
+  "2026-08-18.github-exact-draft-observation.v1" as const;
+
+export type ExactDraftObservationEvidenceV1 = Readonly<{
+  schemaVersion: typeof EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION;
+  tenantId: string;
+  cycleId: string;
+  deliveryId: string;
+  repositoryId: string;
+  remoteRepositoryId: number;
+  installationId: number;
+  pullRequestNumber: number;
+  baseBranch: string;
+  branchName: string;
+  baseRevision: string;
+  headRevision: string;
+  matchingOpenDrafts: number;
+  changedPaths: readonly string[];
+  remoteTreeSha: string;
+  verdict: "success" | "failure";
+  trigger: "checks_passed" | "ci_failure" | "review_feedback";
+  requiredResults: readonly ExactDraftCheckResult[];
+  failures: readonly ExactDraftFailure[];
+  reviewFeedback: ExactDraftReviewFeedback;
+  reviewFeedbackDigest: string | null;
+  evidenceRefs: readonly string[];
+  observedAt: string;
+  observation: ExactDraftObservation;
 }>;
 
 const MAX_FAILURES = 20;
 const MAX_FAILURE_TEXT = 2_000;
 const MAX_REVIEW_FEEDBACK = 50;
 const MAX_REVIEW_FEEDBACK_BYTES = 64 * 1_024;
+const MAX_CHANGED_FILES = 300;
 
 function bounded(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -118,9 +157,89 @@ function validate(input: ExactDraftObservationInput): void {
       !input.expectedBaseBranch || !input.expectedHeadBranch ||
       !SHA.test(input.expectedBaseSha) || !SHA.test(input.expectedHeadSha) ||
       (input.expectedRepositoryId !== undefined &&
-        (!Number.isSafeInteger(input.expectedRepositoryId) || input.expectedRepositoryId < 1))) {
+        (!Number.isSafeInteger(input.expectedRepositoryId) || input.expectedRepositoryId < 1)) ||
+      (input.expectedInstallationId !== undefined &&
+        (!Number.isSafeInteger(input.expectedInstallationId) || input.expectedInstallationId < 1)) ||
+      (input.includeDeliveryEvidence === true && (input.requireExactDraft !== true ||
+        input.expectedRepositoryId === undefined || input.expectedInstallationId === undefined))) {
     throw new Error("github_exact_draft_observation_invalid");
   }
+}
+
+function validRepositoryPath(value: string): boolean {
+  return value.length > 0 && value.length <= 1_000 && !value.startsWith("/") && !value.endsWith("/") &&
+    !value.includes("\\") && !value.includes("//") && value.split("/").every((part) =>
+      part.length > 0 && part !== "." && part !== ".." && !/[\u0000-\u001f]/.test(part));
+}
+
+function linkHasNext(headers: Readonly<Record<string, unknown>>): boolean {
+  return String(headers.link ?? "").includes('rel="next"');
+}
+
+type DeliveryEvidence = Readonly<{
+  repositoryId: number;
+  installationId: number;
+  matchingOpenDrafts: number;
+  changedPaths: readonly string[];
+  remoteTreeSha: string;
+  evidenceRefs: readonly string[];
+}>;
+
+async function observeDeliveryEvidence(
+  octokit: Octokit,
+  input: ExactDraftObservationInput,
+  headRevision: string,
+): Promise<DeliveryEvidence | null> {
+  if (input.includeDeliveryEvidence !== true) return null;
+  const repositoryId = input.expectedRepositoryId!;
+  const installationId = input.expectedInstallationId!;
+  const [comparisonResponse, pullsResponse, commitResponse] = await Promise.all([
+    octokit.repos.compareCommitsWithBasehead({ owner: input.owner, repo: input.repo,
+      basehead: `${input.expectedBaseSha}...${input.expectedHeadSha}`, per_page: 100 }),
+    octokit.pulls.list({ owner: input.owner, repo: input.repo, state: "open",
+      head: `${input.owner}:${input.expectedHeadBranch}`, per_page: 100 }),
+    octokit.git.getCommit({ owner: input.owner, repo: input.repo, commit_sha: headRevision }),
+  ]);
+  const comparedFiles = comparisonResponse.data.files ?? [];
+  const comparedCommits = comparisonResponse.data.commits ?? [];
+  if (linkHasNext(comparisonResponse.headers) || linkHasNext(pullsResponse.headers) ||
+      comparedFiles.length === 0 || comparedFiles.length >= MAX_CHANGED_FILES) {
+    throw new Error("github_exact_draft_observation_incomplete");
+  }
+  if (comparisonResponse.data.base_commit.sha !== input.expectedBaseSha ||
+      comparedCommits.length === 0 || comparedCommits[comparedCommits.length - 1]?.sha !== input.expectedHeadSha) {
+    throw new Error("github_exact_draft_observation_authority_mismatch");
+  }
+  const changedPaths = comparedFiles.flatMap((file) => file.status === "renamed"
+    ? [String(file.previous_filename ?? ""), String(file.filename ?? "")]
+    : [String(file.filename ?? "")]).sort(compareCodeUnits);
+  if (changedPaths.some((path) => !validRepositoryPath(path)) ||
+      new Set(changedPaths).size !== changedPaths.length) {
+    throw new Error("github_exact_draft_observation_authority_mismatch");
+  }
+  const matching = pullsResponse.data.filter((candidate) => candidate.number === input.pullRequestNumber &&
+    candidate.state === "open" && candidate.draft === true && candidate.base.ref === input.expectedBaseBranch &&
+    candidate.base.sha === input.expectedBaseSha && candidate.head.ref === input.expectedHeadBranch &&
+    candidate.head.sha === input.expectedHeadSha);
+  if (pullsResponse.data.length !== 1 || matching.length !== 1) {
+    throw new Error("github_exact_draft_observation_authority_mismatch");
+  }
+  const remoteTreeSha = String(commitResponse.data.tree?.sha ?? "");
+  if (!SHA.test(remoteTreeSha)) throw new Error("github_exact_draft_observation_authority_mismatch");
+  return Object.freeze({
+    repositoryId,
+    installationId,
+    matchingOpenDrafts: matching.length,
+    changedPaths: Object.freeze(changedPaths),
+    remoteTreeSha,
+    evidenceRefs: Object.freeze([
+      `github:installation:${installationId}`,
+      `github:repository:${repositoryId}`,
+      `github:tree:${remoteTreeSha}`,
+      ...changedPaths.map((path) =>
+        `github:changed-path-sha256:${createHash("sha256").update(path, "utf8").digest("hex")}`),
+    ].sort(compareCodeUnits)),
+  });
 }
 
 function checkState(
@@ -183,6 +302,7 @@ export async function observeExactDraftWithOctokit(
       throw new Error("github_exact_draft_observation_authority_mismatch");
     }
   }
+  const deliveryEvidence = await observeDeliveryEvidence(octokit, input, headRevision);
   const [reviewsResponse, checksResponse, statusesResponse, threads] = await Promise.all([
     octokit.pulls.listReviews({ owner: input.owner, repo: input.repo, pull_number: input.pullRequestNumber, per_page: 100 }),
     octokit.checks.listForRef({ owner: input.owner, repo: input.repo, ref: headRevision, per_page: 100 }),
@@ -398,6 +518,7 @@ export async function observeExactDraftWithOctokit(
     ...threadNodes.map((thread) => `github:review-thread:${thread.id ?? "unknown"}:${thread.isResolved === true ? "resolved" : "open"}`),
     ...changeRequests.map((review) => `github:change-request:${review.id}:${headRevision}`),
     ...reviewComments.map((comment) => `github:review-comment:${comment.id}:${headRevision}`),
+    ...(deliveryEvidence?.evidenceRefs ?? []),
   ].sort(compareCodeUnits);
   return Object.freeze({
     state: pull.merged_at ? "merged" : pull.state === "closed" ? "closed" : "draft",
@@ -415,6 +536,13 @@ export async function observeExactDraftWithOctokit(
     checkIdentities: Object.freeze(checkIdentities),
     checkResults: Object.freeze(checkResults),
     reviewFeedback,
+    ...(deliveryEvidence ? {
+      repositoryId: deliveryEvidence.repositoryId,
+      installationId: deliveryEvidence.installationId,
+      matchingOpenDrafts: deliveryEvidence.matchingOpenDrafts,
+      changedPaths: deliveryEvidence.changedPaths,
+      remoteTreeSha: deliveryEvidence.remoteTreeSha,
+    } : {}),
     evidenceRefs: Object.freeze(evidenceRefs),
   });
 }

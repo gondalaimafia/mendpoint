@@ -2517,6 +2517,7 @@ export function recordAudit(
     resourceType: string;
     resourceId?: string | null;
     metadata?: unknown;
+    createdAt?: string;
   },
 ): string {
   const id = input.id ?? newId();
@@ -2524,6 +2525,11 @@ export function recordAudit(
   const apiKeyId = input.apiKeyId ?? null;
   const requestId = input.requestId ?? null;
   const resourceId = input.resourceId ?? null;
+  const createdAt = input.createdAt ?? nowIso();
+  const createdAtMs = Date.parse(createdAt);
+  if (!Number.isFinite(createdAtMs) || new Date(createdAtMs).toISOString() !== createdAt) {
+    throw new Error("audit_event_created_at_invalid");
+  }
   const metadataJson = input.metadata === undefined ? null : JSON.stringify(input.metadata);
   const metadataSha256 = hashJson(metadataJson);
   const ownsTransaction = !db.raw.isTransaction;
@@ -2540,7 +2546,8 @@ export function recordAudit(
         existing.action === input.action &&
         existing.resource_type === input.resourceType &&
         existing.resource_id === resourceId &&
-        existing.metadata_sha256 === metadataSha256;
+        existing.metadata_sha256 === metadataSha256 &&
+        (input.createdAt === undefined || existing.created_at === createdAt);
       if (!same) throw new Error("audit_event_id_conflict");
       if (ownsTransaction) db.raw.exec("COMMIT");
       return id;
@@ -2553,7 +2560,6 @@ export function recordAudit(
     );
     const sequence = (previous?.event_sequence ?? 0) + 1;
     const previousHash = previous?.event_hash ?? null;
-    const createdAt = nowIso();
     const eventHash = auditHash({
       tenantId: input.tenantId,
       sequence,

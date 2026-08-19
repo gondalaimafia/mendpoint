@@ -49,6 +49,7 @@ afterEach(() => {
 function seedCompleteDelegation(
   db: AppDb,
   approvalMetadata: Record<string, unknown> = {},
+  approvalCreatedAt = REVIEWED_AT,
 ): void {
   db.raw.prepare(`INSERT INTO principals
     (id, tenant_id, kind, subject, display_name, audience, created_at)
@@ -189,6 +190,7 @@ function seedCompleteDelegation(
     action: "agent.candidate.approved",
     resourceType: "agent_run",
     resourceId: RUN,
+    createdAt: approvalCreatedAt,
     metadata: {
       decision: "approve",
       reviewerPrincipalId: "human-a",
@@ -290,6 +292,16 @@ describe("Fettler delegation durable evidence inventory", () => {
     expect(evidence.auditIntegrity.ok).toBe(true);
   });
 
+  it("rejects approval metadata when the chained audit event was created at another time", () => {
+    const db = fixture();
+    seedCompleteDelegation(db, {}, "2026-08-18T12:02:01.000Z");
+
+    expect(getFettlerDelegationEvidence(db, TENANT, RUN).approval).toEqual({
+      status: "not_observed",
+      reason: "approval_audit_not_observed",
+    });
+  });
+
   it("returns literal not_observed values for a missing run and never crosses tenants", () => {
     const db = fixture();
     seedCompleteDelegation(db);
@@ -348,6 +360,7 @@ describe("Fettler delegation durable evidence inventory", () => {
       action: "agent.candidate.approved",
       resourceType: "agent_run",
       resourceId: RUN,
+      createdAt: REVIEWED_AT,
       metadata: JSON.parse(first.metadata_json),
     });
 

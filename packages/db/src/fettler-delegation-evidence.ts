@@ -231,6 +231,7 @@ function approvalAuditMatches(
     value.authMethod === binding.authMethod &&
     value.membershipEvidenceId === binding.membershipEvidenceId &&
     value.reviewedAt === binding.reviewedAt &&
+    event.created_at === binding.reviewedAt &&
     value.candidateDigest === binding.candidateDigest &&
     value.candidateManifestSha256 === binding.candidateManifestSha256 &&
     recordedDelivery?.id === delivery.id && recordedDelivery.runId === run.id &&
