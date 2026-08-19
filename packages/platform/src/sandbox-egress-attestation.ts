@@ -3,8 +3,34 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 
 export const SANDBOX_EGRESS_ATTESTATION_SCHEMA = "2026-08-18.v1" as const;
 export const SANDBOX_EGRESS_FORBIDDEN_PROBE_URL = "https://example.com/" as const;
+
+// Raw IPv4 anycast targets, never hostnames: a machine with real outbound egress
+// reaches these on 443, and because they are literal IPs the probe performs no DNS
+// lookup, so a broken resolver cannot masquerade as a network fence. Multiple
+// destinations are required so a single-host anomaly cannot alone conclude containment.
+export const SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS = [
+  ["1.1.1.1", 443],
+  ["8.8.8.8", 443],
+  ["9.9.9.9", 443],
+] as const;
+
+// Only these connect errors prove an egress fence. A DNS error, TLS error, refused
+// connection, timeout (silent drop), or transient blip is ambiguous and must be
+// reported as "not proven" (a nonzero exit that refuses the run), never as blocked.
+export const SANDBOX_EGRESS_FIREWALL_ERROR_CODES = [
+  "EPERM",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+] as const;
+
+// Probe exit codes are read by the forbidden-egress gate, where 0 means "containment
+// proven" and any nonzero value refuses the customer command:
+//   0  every target failed to connect with a firewall-class error (fence proven)
+//   42 at least one target was reachable (egress is open; not blocked)
+//   3  outcome ambiguous or unclassifiable (not proven)
+// Fail closed: only an unambiguous, multi-destination firewall result yields 0.
 export const SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND =
-  `node -e 'const c=new AbortController();setTimeout(()=>c.abort(),3000);fetch("${SANDBOX_EGRESS_FORBIDDEN_PROBE_URL}",{method:"HEAD",signal:c.signal,redirect:"manual"}).then(()=>process.exit(42),()=>process.exit(0))'`;
+  `node -e 'const net=require("node:net");const FW=new Set(${JSON.stringify(SANDBOX_EGRESS_FIREWALL_ERROR_CODES)});const T=${JSON.stringify(SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS)};Promise.all(T.map(([h,p])=>new Promise(res=>{const s=net.connect({host:h,port:p});let done=false;const fin=v=>{if(done)return;done=true;try{s.destroy()}catch(e){}res(v)};s.setTimeout(3000);s.on("connect",()=>fin({reachable:true}));s.on("timeout",()=>fin({code:"ETIMEDOUT"}));s.on("error",e=>fin({code:(e&&e.code)||"UNKNOWN"}))}))).then(rs=>{if(rs.some(r=>r.reachable))process.exit(42);const fenced=rs.filter(r=>r.code&&FW.has(r.code));if(fenced.length===rs.length&&fenced.length>=2)process.exit(0);process.exit(3)}).catch(()=>process.exit(3))'`;
 export const SANDBOX_EGRESS_ALLOWED_PROBE_COMMAND =
   "node -e 'process.stdout.write(\"mendpoint-egress-allowed\\n\")'";
 export const SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST =
@@ -27,11 +53,15 @@ export type SandboxEgressAttestationPayload = Readonly<{
   expiresAt: string;
   forbiddenOutbound: Readonly<{
     url: typeof SANDBOX_EGRESS_FORBIDDEN_PROBE_URL;
-    blocked: true;
+    // boolean, not the literal `true`, so a failed probe is representable: a negative
+    // receipt can be constructed and is then rejected by the verifier (which still
+    // requires `true`), rather than being impossible to write at all.
+    blocked: boolean;
   }>;
   allowedVerification: Readonly<{
     commandDigest: string;
-    passed: true;
+    // boolean, not the literal `true`: see forbiddenOutbound.blocked above.
+    passed: boolean;
   }>;
   evidenceRefs: readonly string[];
 }>;

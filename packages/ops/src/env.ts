@@ -175,6 +175,15 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
       if (githubMode !== "real") {
         errors.push("Customer deployment profile requires GITHUB_MODE=real");
       }
+      // Every network-fence control is gated on MENDPOINT_SANDBOX_KIND=fly_machines;
+      // any other kind (local, vm, in_cluster) runs customer code on the worker host
+      // with no egress fence. resolveSandboxKind defaults to local when unset, so this
+      // must be asserted explicitly or a customer deploy passes preflight unfenced.
+      if (env.MENDPOINT_SANDBOX_KIND?.trim() !== "fly_machines") {
+        errors.push(
+          "Customer deployment profile requires MENDPOINT_SANDBOX_KIND=fly_machines; other sandbox kinds run customer code on the worker host with no network fence",
+        );
+      }
       if (env.MENDPOINT_DEPLOYMENT_CLASS !== "customer") {
         errors.push(
           "Customer deployment profile requires MENDPOINT_DEPLOYMENT_CLASS=customer",
@@ -257,6 +266,28 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
             "GITHUB_APP_ACCOUNT_TENANT_BINDINGS must be a nonempty one-to-one JSON numeric account ID to tenant map; legacy login bindings are forbidden",
           );
         }
+      }
+    }
+    // The sandbox backend must be chosen explicitly in production. resolveSandboxKind
+    // silently defaults to "local" when MENDPOINT_SANDBOX_KIND is unset, so an absent
+    // value is not a safe default: it disables the egress fence without any signal.
+    // Refused here so an unset (or misspelled) kind is caught at boot, mirroring the
+    // "GITHUB_MODE must be explicitly set" guard above.
+    {
+      const sandboxKind = env.MENDPOINT_SANDBOX_KIND?.trim();
+      if (!sandboxKind) {
+        errors.push(
+          "MENDPOINT_SANDBOX_KIND must be explicitly set to fly_machines, local, vm, or in_cluster in production",
+        );
+      } else if (
+        sandboxKind !== "fly_machines" &&
+        sandboxKind !== "local" &&
+        sandboxKind !== "vm" &&
+        sandboxKind !== "in_cluster"
+      ) {
+        errors.push(
+          "MENDPOINT_SANDBOX_KIND must be exactly fly_machines, local, vm, or in_cluster",
+        );
       }
     }
     // Sandbox mock mode fabricates a passing verification: the mock Fly client

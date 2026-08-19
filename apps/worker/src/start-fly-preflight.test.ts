@@ -42,6 +42,13 @@ const CUSTOMER_WARDEN_ENV = {
   LLM_AGENT_MODEL: "test-model",
   LLM_AGENT_URL: "https://models.example/v1",
   OPENAI_API_KEY: "preflight-test-model-key",
+  // A customer profile now requires the network-fenced fly_machines sandbox and its
+  // complete egress authority. validateApiEnv (the launcher's runtime-env preflight)
+  // checks presence and format, not the signature, so placeholder attestation bytes
+  // suffice to exercise these launcher paths.
+  MENDPOINT_SANDBOX_KIND: "fly_machines",
+  MENDPOINT_SANDBOX_FLY_APP: "mendpoint-sandbox",
+  MENDPOINT_SANDBOX_FLY_IMAGE: `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`,
   MENDPOINT_SANDBOX_FLY_TOKEN: "preflight-test-sandbox-token",
   MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: "preflight-test-attestation",
   MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64: "preflight-test-public-key",
