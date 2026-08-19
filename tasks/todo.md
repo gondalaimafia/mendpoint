@@ -2553,7 +2553,7 @@ Objective: land the fail-closed sandbox containment and result-integrity contrac
 - [x] Add red regressions proving every production process declares its sandbox kind and customer profiles accept only `fly_machines`.
 - [x] Configure CI demo processes explicitly as `local` while preserving production Fly as `fly_machines`.
 - [x] Run focused Ops, Platform, Worker, startup, deployment E2E, typecheck, build, GA, audit, and diff gates.
-- [x] Correct the live Fly exec evidence contract after run `32308148571` proved successful commands omit `exit_code`.
+- [x] Correct the live Fly exec evidence contract after runs `32308148571` and `32309223296` proved successful commands omit `exit_code` and compound commands require an explicit shell.
 - [ ] Rerun the protected v2 proof, verify zero residual sandbox machines, and rotate the exact signed receipt.
 - [ ] Obtain strict P0 and P1 review, publish, merge, deploy, and verify production health before building the delegated trial producer.
 
