@@ -38,6 +38,18 @@ export function createVerifierShadowRuntime(input: Readonly<{
   const config = resolveVerifierRuntimeConfig(env);
   if (!config.enabled || config.rolloutMode === "off") return null;
   if (config.rolloutMode !== "offline" && config.rolloutMode !== "shadow") fail("verifier_shadow_rollout_invalid");
+  // `offline` is documented (docs/agents/MUSE_DEEPSEEK_VERIFIER_DESIGN.md) as
+  // "fixture and retained benchmark evaluation only" and must never open a live
+  // network transport. This worker shadow runtime is a production egress path
+  // with no retained-artifact source of its own, so a fixture is never available
+  // here for a live completion: offline therefore performs no observation and no
+  // egress. Refusing is the "no action" / fail-closed effect the design assigns
+  // to an unavailable transport; silently falling back to the live fetch
+  // transport (the prior behavior) is exactly what the offline contract forbids.
+  // Fixture and benchmark evaluation run through createAgentVerifier directly in
+  // the eval harness, not through this runtime. Only shadow builds a live
+  // transport below.
+  if (config.rolloutMode === "offline") return null;
   validatePricing(input.pricing);
   if (typeof input.persistTelemetry !== "function" || typeof input.auditCredentialAccess !== "function") fail("verifier_shadow_ports_invalid");
   const persistTelemetry = input.persistTelemetry.bind(input);
