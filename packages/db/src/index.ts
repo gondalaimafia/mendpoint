@@ -37,6 +37,7 @@ export * from "./external-baseline.js";
 export * from "./graphql-schema-version.js";
 export * from "./outcome-metrics.js";
 export * from "./agent-run-meter.js";
+export * from "./fettler-delegation-evidence.js";
 export * from "./developer-satisfaction.js";
 export * from "./self-serve-dashboard.js";
 export * from "./capability-adoption-opportunity.js";

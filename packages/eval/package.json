@@ -17,6 +17,7 @@
     "@mendpoint/agent": "*",
     "@mendpoint/change-intel": "*",
     "@mendpoint/code-impact": "*",
+    "@mendpoint/contract": "*",
     "@mendpoint/db": "*",
     "@mendpoint/generation": "*",
     "@mendpoint/graph-learn": "*",

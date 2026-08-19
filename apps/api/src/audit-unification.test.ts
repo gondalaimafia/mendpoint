@@ -70,7 +70,7 @@ function auditSink(db: AppDb): ControlPlaneAudit & CanaryAudit {
     recordAudit(db, {
       ...event,
       tenantId: principal.tenantId,
-      principalId: principal.id,
+      principalId: c.get("trustPrincipalId") ?? principal.id,
       apiKeyId: c.get("apiKeyId") ?? null,
       requestId: c.get("requestId") ?? null,
     });
@@ -99,6 +99,7 @@ function principalMiddleware(app: Hono<ApiEnv>) {
     const principalId = c.req.header("x-test-principal");
     if (tenantId && principalId) {
       c.set("principal", { id: principalId, tenantId, role: "owner" });
+      c.set("trustPrincipalId", "trust-reviewer-a");
     }
     await next();
   });
@@ -206,7 +207,7 @@ describe("audit unification", () => {
     expect(actions).toContain("regauge.campaign.promoted");
 
     const approval = events.find((event) => event.action === "regauge.blueprint.approved");
-    expect(approval?.principal_id).toBe("human:reviewer@example.com");
+    expect(approval?.principal_id).toBe("trust-reviewer-a");
     expect(approval?.resource_id).toBe("blueprint-a");
     // Metadata is whitelist-shaped: identifiers only, no blueprint content.
     const metadata = JSON.parse(approval?.metadata_json ?? "{}") as Record<string, unknown>;

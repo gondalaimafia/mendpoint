@@ -30,6 +30,8 @@ export {
 } from "./agent-eval-contract.js";
 export {
   runWardenTransformerEval,
+  summarizeProductionDelegation,
+  type ProductionDelegationSummary,
   type WardenTransformerEvalReport,
 } from "./agent-eval.js";
 export { WARDEN_AGENT_EVAL_SCENARIOS } from "./warden-agent-eval.js";
@@ -160,3 +162,4 @@ export {
   type WardenMetricsReport,
 } from "./warden-metrics.js";
 export * from "./muse-deepseek-verifier.js";
+export * from "./enterprise-delegation-proof.js";

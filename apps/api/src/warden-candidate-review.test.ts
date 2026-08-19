@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,12 +13,19 @@ import {
   getWardenCiUpdateByRun,
   insertAgentRun,
   insertPrincipal,
+  recordAudit,
+  verifyAuditIntegrity,
   type AppDb,
 } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
 import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
 
 const NOW = "2026-08-06T12:00:00.000Z";
+const CANDIDATE_DIGEST = "c".repeat(64);
+const CANDIDATE_MANIFEST_SHA256 = "f".repeat(64);
+const MEMBERSHIP_EVIDENCE_ID = `membership:${createHash("sha256")
+  .update("tenant-a\nhttps://identity.example.com\nreviewer-a", "utf8")
+  .digest("hex")}`;
 const opened: Array<{ db: AppDb; directory: string }> = [];
 
 function fixture(options: {
@@ -35,10 +43,16 @@ function fixture(options: {
     id: "trust-human-a",
     tenantId: "tenant-a",
     kind: "human",
-    subject: "reviewer@example.com",
+    subject: "https://identity.example.com|reviewer-a",
     displayName: "Reviewer",
+    audience: "https://identity.example.com",
     createdAt: NOW,
   });
+  db.raw.prepare(`INSERT INTO tenant_memberships
+    (tenant_id, issuer, subject, email, display_name, role, status, created_at, updated_at)
+    VALUES ('tenant-a', 'https://identity.example.com', 'reviewer-a', 'reviewer@example.com',
+      'Reviewer', 'owner', 'active', ?, ?)`)
+    .run(NOW, NOW);
   enqueueJob(db, {
     id: "source-job-1",
     tenantId: "tenant-a",
@@ -64,16 +78,31 @@ function fixture(options: {
     filesChanged: ["src/client.ts"],
     resultJson: JSON.stringify({
       source: { repositoryId: "repo-1", snapshotId: "snapshot-1", revision: "a".repeat(40) },
-      artifacts: {},
+      artifacts: {
+        candidateDigest: CANDIDATE_DIGEST,
+        candidateManifestSha256: CANDIDATE_MANIFEST_SHA256,
+      },
     }),
     createdAt: NOW,
     finishedAt: NOW,
   });
-  const audit = options.audit ?? vi.fn();
+  const audit = options.audit ?? vi.fn((c, event) => {
+    const principal = c.get("principal")!;
+    recordAudit(db, {
+      id: `audit-${event.action}-${event.resourceId}`,
+      ...event,
+      tenantId: principal.tenantId,
+      principalId: c.get("trustPrincipalId") ?? principal.id,
+      apiKeyId: c.get("apiKeyId") ?? null,
+      requestId: c.get("requestId") ?? null,
+    });
+  });
   const app = new Hono<ApiEnv>();
   app.use("*", async (c, next) => {
     c.set("principal", { id: "human:reviewer@example.com", tenantId: "tenant-a", role: "owner" });
     c.set("trustPrincipalId", "trust-human-a");
+    c.set("authMethod", "oidc");
+    c.set("membershipEvidenceId", MEMBERSHIP_EVIDENCE_ID);
     c.set("requestId", "request-1");
     return next();
   });
@@ -170,7 +199,7 @@ describe("Warden candidate human review", () => {
   it("uses a fresh human approval to update the existing CI draft instead of opening another pull request", async () => {
     const sealPath = "C:\\sealed-ci-approval.json";
     const sealSha = `sha256:${"b".repeat(64)}`;
-    const { app, db } = fixture({ sealApproval: async () => ({ path: sealPath, sha256: sealSha, created: true }) });
+    const { app, db, audit } = fixture({ sealApproval: async () => ({ path: sealPath, sha256: sealSha, created: true }) });
     seedCiRepairCandidate(db);
 
     const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
@@ -183,9 +212,73 @@ describe("Warden candidate human review", () => {
       update: { cycleId: "cycle-a", expectedHeadSha: "d".repeat(40) } });
     expect(getWardenCiUpdateByRun(db, "tenant-a", "warden-run-1")).toMatchObject({
       status: "pending", expectedHeadSha: "d".repeat(40), sealedSha256: sealSha,
-      reviewerPrincipalId: "human:reviewer@example.com",
+      reviewerPrincipalId: "trust-human-a",
     });
+    expect(JSON.parse(getAgentRun(db, "warden-run-1", "tenant-a")!.result_json!)).toMatchObject({
+      review: {
+        reviewerPrincipalId: "trust-human-a",
+        trustPrincipalId: "trust-human-a",
+        authMethod: "oidc",
+        membershipEvidenceId: MEMBERSHIP_EVIDENCE_ID,
+        reviewedAt: NOW,
+      },
+    });
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "agent.candidate.approved",
+      metadata: expect.objectContaining({
+        reviewerPrincipalId: "trust-human-a",
+        trustPrincipalId: "trust-human-a",
+        authMethod: "oidc",
+        membershipEvidenceId: MEMBERSHIP_EVIDENCE_ID,
+        reviewedAt: NOW,
+        candidateDigest: CANDIDATE_DIGEST,
+        candidateManifestSha256: CANDIDATE_MANIFEST_SHA256,
+      }),
+    }));
+    const approvalAudit = db.raw.prepare(
+      "SELECT principal_id, metadata_json FROM audit_events WHERE action = 'agent.candidate.approved'",
+    ).get() as { principal_id: string | null; metadata_json: string };
+    expect(approvalAudit.principal_id).toBe("trust-human-a");
+    expect(JSON.parse(approvalAudit.metadata_json)).toMatchObject({
+      trustPrincipalId: "trust-human-a",
+      authMethod: "oidc",
+      membershipEvidenceId: MEMBERSHIP_EVIDENCE_ID,
+      reviewedAt: NOW,
+      candidateDigest: CANDIDATE_DIGEST,
+      candidateManifestSha256: CANDIDATE_MANIFEST_SHA256,
+    });
+    expect(verifyAuditIntegrity(db, "tenant-a").ok).toBe(true);
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get())
+      .toEqual({ count: 0 });
+  });
+
+  it("does not grant delivery authority when membership is revoked while the approval is sealed", async () => {
+    let database: AppDb | undefined;
+    const fixtureResult = fixture({
+      sealApproval: async () => {
+        database!.raw.prepare(`UPDATE tenant_memberships
+          SET status = 'offboarded', offboarded_at = ?, updated_at = ?
+          WHERE tenant_id = 'tenant-a' AND issuer = 'https://identity.example.com' AND subject = 'reviewer-a'`)
+          .run("2026-08-06T12:00:01.000Z", "2026-08-06T12:00:01.000Z");
+        return { path: "C:\\sealed-revoked-approval.json", sha256: `sha256:${"b".repeat(64)}`, created: true };
+      },
+    });
+    database = fixtureResult.db;
+    seedCiRepairCandidate(database);
+
+    const response = await fixtureResult.app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve only while membership is active." }),
+    });
+
+    const responseBody = await response.json();
+    expect({ status: response.status, body: responseBody }).toEqual({
+      status: 403,
+      body: { error: "human_review_required", requestId: "request-1" },
+    });
+    expect(getAgentRun(database, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
+    expect(database.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get())
       .toEqual({ count: 0 });
   });
 
@@ -341,6 +434,8 @@ describe("Warden candidate human review", () => {
     concurrent.use("*", async (c, next) => {
       c.set("principal", { id: "human:reviewer@example.com", tenantId: "tenant-a", role: "owner" });
       c.set("trustPrincipalId", "trust-human-a");
+      c.set("authMethod", "oidc");
+      c.set("membershipEvidenceId", MEMBERSHIP_EVIDENCE_ID);
       c.set("requestId", "request-concurrent");
       return next();
     });
