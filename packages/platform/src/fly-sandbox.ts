@@ -484,6 +484,7 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
     publicKeySpkiBase64: configuredEgressAuthority.publicKeySpkiBase64,
     expectedKeyId: configuredEgressAuthority.expectedKeyId,
     expectedPolicyDigest: configuredEgressAuthority.expectedPolicyDigest,
+    minimumSchemaVersion: configuredEgressAuthority.minimumSchemaVersion,
     now: configuredEgressAuthority.now,
   });
 

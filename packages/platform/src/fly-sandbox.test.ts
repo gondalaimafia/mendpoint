@@ -18,8 +18,10 @@ import {
 } from "./fly-sandbox.js";
 import {
   SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
+  SANDBOX_EGRESS_ATTESTATION_SCHEMA,
   SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND,
-  SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS,
   sandboxEgressAttestationPayloadBytes,
 } from "./sandbox-egress-attestation.js";
 import {
@@ -50,13 +52,17 @@ function signedEgressAuthority(app: string, image: string) {
   const keys = generateKeyPairSync("ed25519");
   const policyDigest = `sha256:${"b".repeat(64)}`;
   const payload = {
-    schemaVersion: "2026-08-18.v1" as const,
+    schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
     app,
     image,
     policyDigest,
     testedAt: "2026-08-18T19:55:00.000Z",
     expiresAt: "2026-08-18T20:55:00.000Z",
-    forbiddenOutbound: { url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL, blocked: true as const },
+    forbiddenOutbound: {
+      commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+      targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+      blocked: true as const,
+    },
     allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true as const },
     evidenceRefs: ["evidence://protected-egress-acceptance/1"],
   };

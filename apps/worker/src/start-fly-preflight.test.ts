@@ -6,6 +6,7 @@ import { dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { customerBackupInputFromEnv, validateApiEnv } from "@mendpoint/ops";
+import { SANDBOX_EGRESS_ATTESTATION_SCHEMA } from "@mendpoint/platform";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const temporaryRoots: string[] = [];
@@ -54,6 +55,7 @@ const CUSTOMER_WARDEN_ENV = {
   MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64: "preflight-test-public-key",
   MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "preflight-test-key-id",
   MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: `sha256:${"a".repeat(64)}`,
+  MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
 } satisfies NodeJS.ProcessEnv;
 
 afterEach(() => {

@@ -55,6 +55,7 @@ const CUSTOMER_SANDBOX_ENV = {
   MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64: "cHVibGljLWtleQ==",
   MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
   MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: `sha256:${"b".repeat(64)}`,
+  MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: "2026-08-19.v2",
 } satisfies NodeJS.ProcessEnv;
 
 describe("ops GA", () => {
@@ -209,6 +210,34 @@ describe("ops GA", () => {
     expect(r.errors).toContain(
       "MENDPOINT_SANDBOX_KIND must be explicitly set to fly_machines, local, vm, or in_cluster in production",
     );
+  });
+
+  it("allows only the Transformer coordinator to omit sandbox credentials", () => {
+    const r = validateApiEnv({
+      NODE_ENV: "production",
+      MENDPOINT_PROCESS_ROLE: "transformer_coordinator",
+      MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      API_AUTH: "required",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(r.errors.filter((error) => error.includes("SANDBOX"))).toEqual([]);
+
+    const customerApi = validateApiEnv({
+      NODE_ENV: "production",
+      MENDPOINT_PROCESS_ROLE: "api",
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      API_AUTH: "required",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(customerApi.errors.some((error) => error.includes("SANDBOX"))).toBe(true);
   });
 
   it("refuses a customer profile whose sandbox kind is local (customer code would run unfenced)", () => {
@@ -540,7 +569,13 @@ describe("ops GA", () => {
     expect(worker).not.toContain("MENDPOINT_BACKUP_KEY:");
     expect(worker).toContain("GITHUB_APP_ACCOUNT_TENANT_BINDINGS:");
     expect(worker).toContain("MENDPOINT_WORKER_HEARTBEAT_PATH: /app/data/worker-heartbeat.json");
+    expect(worker).toContain("MENDPOINT_SANDBOX_KIND: ${MENDPOINT_SANDBOX_KIND:-local}");
+    expect(worker).toContain("MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA:");
     expect(worker).toContain('"run-service"');
+    const api = (compose.split("\n  api:")[1] ?? "").split("\n  web:")[0] ?? "";
+    expect(api).toContain("MENDPOINT_PROCESS_ROLE: api");
+    expect(api).toContain("MENDPOINT_SANDBOX_FLY_TOKEN");
+    expect(api).toContain("MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA");
     const web = (compose.split("\n  web:")[1] ?? "").split("\n  worker:")[0] ?? "";
     expect(web).toContain("MENDPOINT_WORKER_HEARTBEAT_PATH: /app/data/worker-heartbeat.json");
     expect(web).toContain("mendpoint-data:/app/data:ro");

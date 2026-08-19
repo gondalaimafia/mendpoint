@@ -1,7 +1,8 @@
 import { Buffer } from "node:buffer";
 import { createHash, createPublicKey, verify } from "node:crypto";
 
-export const SANDBOX_EGRESS_ATTESTATION_SCHEMA = "2026-08-18.v1" as const;
+export const SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA = "2026-08-18.v1" as const;
+export const SANDBOX_EGRESS_ATTESTATION_SCHEMA = "2026-08-19.v2" as const;
 export const SANDBOX_EGRESS_FORBIDDEN_PROBE_URL = "https://example.com/" as const;
 
 // Raw IPv4 anycast targets, never hostnames: a machine with real outbound egress
@@ -30,7 +31,9 @@ export const SANDBOX_EGRESS_FIREWALL_ERROR_CODES = [
 //   3  outcome ambiguous or unclassifiable (not proven)
 // Fail closed: only an unambiguous, multi-destination firewall result yields 0.
 export const SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND =
-  `node -e 'const net=require("node:net");const FW=new Set(${JSON.stringify(SANDBOX_EGRESS_FIREWALL_ERROR_CODES)});const T=${JSON.stringify(SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS)};Promise.all(T.map(([h,p])=>new Promise(res=>{const s=net.connect({host:h,port:p});let done=false;const fin=v=>{if(done)return;done=true;try{s.destroy()}catch(e){}res(v)};s.setTimeout(3000);s.on("connect",()=>fin({reachable:true}));s.on("timeout",()=>fin({code:"ETIMEDOUT"}));s.on("error",e=>fin({code:(e&&e.code)||"UNKNOWN"}))}))).then(rs=>{if(rs.some(r=>r.reachable))process.exit(42);const fenced=rs.filter(r=>r.code&&FW.has(r.code));if(fenced.length===rs.length&&fenced.length>=2)process.exit(0);process.exit(3)}).catch(()=>process.exit(3))'`;
+  `node -e 'const net=require("node:net");const FW=new Set(${JSON.stringify(SANDBOX_EGRESS_FIREWALL_ERROR_CODES)});const T=${JSON.stringify(SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS)};Promise.all(T.map(([h,p])=>new Promise(res=>{const s=net.connect({host:h,port:p});let done=false;const fin=v=>{if(done)return;done=true;try{s.destroy()}catch(e){}res(v)};s.setTimeout(3000);s.on("connect",()=>fin({reachable:true}));s.on("timeout",()=>fin({code:"ETIMEDOUT"}));s.on("error",e=>fin({code:(e&&e.code)||"UNKNOWN"}))}))).then(rs=>{if(rs.some(r=>r.reachable))process.exit(42);const fenced=rs.filter(r=>r.code&&FW.has(r.code));if(fenced.length===rs.length&&fenced.length>=2){process.stdout.write("mendpoint-egress-blocked\\n");process.exit(0)}process.exit(3)}).catch(()=>process.exit(3))'`;
+export const SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST =
+  `sha256:${createHash("sha256").update(SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND, "utf8").digest("hex")}`;
 export const SANDBOX_EGRESS_ALLOWED_PROBE_COMMAND =
   "node -e 'process.stdout.write(\"mendpoint-egress-allowed\\n\")'";
 export const SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST =
@@ -52,7 +55,8 @@ export type SandboxEgressAttestationPayload = Readonly<{
   testedAt: string;
   expiresAt: string;
   forbiddenOutbound: Readonly<{
-    url: typeof SANDBOX_EGRESS_FORBIDDEN_PROBE_URL;
+    commandDigest: typeof SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST;
+    targets: readonly string[];
     // boolean, not the literal `true`, so a failed probe is representable: a negative
     // receipt can be constructed and is then rejected by the verifier (which still
     // requires `true`), rather than being impossible to write at all.
@@ -71,8 +75,33 @@ export type SandboxEgressAuthorityConfig = Readonly<{
   publicKeySpkiBase64?: string;
   expectedKeyId?: string;
   expectedPolicyDigest?: string;
+  minimumSchemaVersion?:
+    | typeof SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA
+    | typeof SANDBOX_EGRESS_ATTESTATION_SCHEMA;
   now?: () => string;
 }>;
+
+type LegacySandboxEgressAttestationPayload = Readonly<{
+  schemaVersion: typeof SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA;
+  app: string;
+  image: string;
+  policyDigest: string;
+  testedAt: string;
+  expiresAt: string;
+  forbiddenOutbound: Readonly<{
+    url: typeof SANDBOX_EGRESS_FORBIDDEN_PROBE_URL;
+    blocked: boolean;
+  }>;
+  allowedVerification: Readonly<{
+    commandDigest: string;
+    passed: boolean;
+  }>;
+  evidenceRefs: readonly string[];
+}>;
+
+export type VerifiedSandboxEgressAttestationPayload =
+  | SandboxEgressAttestationPayload
+  | LegacySandboxEgressAttestationPayload;
 
 type AttestationEnvelope = Readonly<{
   payload: string;
@@ -122,6 +151,54 @@ function text(value: unknown, max: number, code: string): string {
   return value;
 }
 
+function normalizedScope(payload: Record<string, unknown>): Readonly<{
+  app: string;
+  image: string;
+  policyDigest: string;
+  testedAt: string;
+  expiresAt: string;
+  evidenceRefs: readonly string[];
+}> {
+  const app = text(payload.app, 63, "sandbox_egress_attestation_scope_invalid");
+  const image = text(payload.image, 380, "sandbox_egress_attestation_scope_invalid");
+  const policyDigest = text(payload.policyDigest, 71, "sandbox_egress_attestation_scope_invalid");
+  if (!APP.test(app) || !IMAGE.test(image) || !DIGEST.test(policyDigest)) fail("sandbox_egress_attestation_scope_invalid");
+  const testedAt = canonicalTimestamp(payload.testedAt, "sandbox_egress_attestation_time_invalid");
+  const expiresAt = canonicalTimestamp(payload.expiresAt, "sandbox_egress_attestation_time_invalid");
+  if (!Array.isArray(payload.evidenceRefs) || payload.evidenceRefs.length < 1 || payload.evidenceRefs.length > 32) fail("sandbox_egress_attestation_evidence_invalid");
+  const evidenceRefs = payload.evidenceRefs.map((ref) => text(ref, 512, "sandbox_egress_attestation_evidence_invalid"));
+  const sortedRefs = [...evidenceRefs].sort(codeUnitCompare);
+  if (new Set(sortedRefs).size !== sortedRefs.length || sortedRefs.some((ref, index) => ref !== evidenceRefs[index])) fail("sandbox_egress_attestation_evidence_invalid");
+  return Object.freeze({ app, image, policyDigest, testedAt, expiresAt, evidenceRefs: Object.freeze(sortedRefs) });
+}
+
+function normalizeLegacyPayload(value: unknown): LegacySandboxEgressAttestationPayload {
+  const payload = object(value, "sandbox_egress_attestation_payload_invalid");
+  exactKeys(payload, [
+    "schemaVersion", "app", "image", "policyDigest", "testedAt", "expiresAt",
+    "forbiddenOutbound", "allowedVerification", "evidenceRefs",
+  ], "sandbox_egress_attestation_payload_invalid");
+  if (payload.schemaVersion !== SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA) fail("sandbox_egress_attestation_schema_invalid");
+  const scope = normalizedScope(payload);
+  const forbidden = object(payload.forbiddenOutbound, "sandbox_egress_attestation_probe_invalid");
+  exactKeys(forbidden, ["url", "blocked"], "sandbox_egress_attestation_probe_invalid");
+  if (forbidden.url !== SANDBOX_EGRESS_FORBIDDEN_PROBE_URL || forbidden.blocked !== true) fail("sandbox_egress_attestation_probe_invalid");
+  const allowed = object(payload.allowedVerification, "sandbox_egress_attestation_probe_invalid");
+  exactKeys(allowed, ["commandDigest", "passed"], "sandbox_egress_attestation_probe_invalid");
+  if (allowed.commandDigest !== SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST || allowed.passed !== true) fail("sandbox_egress_attestation_probe_invalid");
+  return Object.freeze({
+    schemaVersion: SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA,
+    app: scope.app,
+    image: scope.image,
+    policyDigest: scope.policyDigest,
+    testedAt: scope.testedAt,
+    expiresAt: scope.expiresAt,
+    forbiddenOutbound: Object.freeze({ url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL, blocked: true }),
+    allowedVerification: Object.freeze({ commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true }),
+    evidenceRefs: scope.evidenceRefs,
+  });
+}
+
 function normalizePayload(value: unknown): SandboxEgressAttestationPayload {
   const payload = object(value, "sandbox_egress_attestation_payload_invalid");
   exactKeys(payload, [
@@ -129,33 +206,46 @@ function normalizePayload(value: unknown): SandboxEgressAttestationPayload {
     "forbiddenOutbound", "allowedVerification", "evidenceRefs",
   ], "sandbox_egress_attestation_payload_invalid");
   if (payload.schemaVersion !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) fail("sandbox_egress_attestation_schema_invalid");
-  const app = text(payload.app, 63, "sandbox_egress_attestation_scope_invalid");
-  const image = text(payload.image, 380, "sandbox_egress_attestation_scope_invalid");
-  const policyDigest = text(payload.policyDigest, 71, "sandbox_egress_attestation_scope_invalid");
-  if (!APP.test(app) || !IMAGE.test(image) || !DIGEST.test(policyDigest)) fail("sandbox_egress_attestation_scope_invalid");
-  const testedAt = canonicalTimestamp(payload.testedAt, "sandbox_egress_attestation_time_invalid");
-  const expiresAt = canonicalTimestamp(payload.expiresAt, "sandbox_egress_attestation_time_invalid");
+  const scope = normalizedScope(payload);
   const forbidden = object(payload.forbiddenOutbound, "sandbox_egress_attestation_probe_invalid");
-  exactKeys(forbidden, ["url", "blocked"], "sandbox_egress_attestation_probe_invalid");
-  if (forbidden.url !== SANDBOX_EGRESS_FORBIDDEN_PROBE_URL || forbidden.blocked !== true) fail("sandbox_egress_attestation_probe_invalid");
+  exactKeys(forbidden, ["commandDigest", "targets", "blocked"], "sandbox_egress_attestation_probe_invalid");
+  const expectedTargets = SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`);
+  if (
+    forbidden.commandDigest !== SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST ||
+    forbidden.blocked !== true ||
+    !Array.isArray(forbidden.targets) ||
+    forbidden.targets.length !== expectedTargets.length ||
+    forbidden.targets.some((target, index) => target !== expectedTargets[index])
+  ) fail("sandbox_egress_attestation_probe_invalid");
   const allowed = object(payload.allowedVerification, "sandbox_egress_attestation_probe_invalid");
   exactKeys(allowed, ["commandDigest", "passed"], "sandbox_egress_attestation_probe_invalid");
   if (allowed.commandDigest !== SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST || allowed.passed !== true) fail("sandbox_egress_attestation_probe_invalid");
-  if (!Array.isArray(payload.evidenceRefs) || payload.evidenceRefs.length < 1 || payload.evidenceRefs.length > 32) fail("sandbox_egress_attestation_evidence_invalid");
-  const evidenceRefs = payload.evidenceRefs.map((ref) => text(ref, 512, "sandbox_egress_attestation_evidence_invalid"));
-  const sortedRefs = [...evidenceRefs].sort(codeUnitCompare);
-  if (new Set(sortedRefs).size !== sortedRefs.length || sortedRefs.some((ref, index) => ref !== evidenceRefs[index])) fail("sandbox_egress_attestation_evidence_invalid");
   return Object.freeze({
     schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
-    app,
-    image,
-    policyDigest,
-    testedAt,
-    expiresAt,
-    forbiddenOutbound: Object.freeze({ url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL, blocked: true }),
+    app: scope.app,
+    image: scope.image,
+    policyDigest: scope.policyDigest,
+    testedAt: scope.testedAt,
+    expiresAt: scope.expiresAt,
+    forbiddenOutbound: Object.freeze({
+      commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+      targets: Object.freeze(expectedTargets),
+      blocked: true,
+    }),
     allowedVerification: Object.freeze({ commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true }),
-    evidenceRefs: Object.freeze(sortedRefs),
+    evidenceRefs: scope.evidenceRefs,
   });
+}
+
+function normalizeVersionedPayload(value: unknown): VerifiedSandboxEgressAttestationPayload {
+  const payload = object(value, "sandbox_egress_attestation_payload_invalid");
+  if (payload.schemaVersion === SANDBOX_EGRESS_ATTESTATION_SCHEMA) return normalizePayload(value);
+  if (payload.schemaVersion === SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA) return normalizeLegacyPayload(value);
+  fail("sandbox_egress_attestation_schema_invalid");
+}
+
+function canonicalPayloadBytes(payload: VerifiedSandboxEgressAttestationPayload): Buffer {
+  return Buffer.from(JSON.stringify(payload), "utf8");
 }
 
 export function sandboxEgressAttestationPayloadBytes(
@@ -171,7 +261,7 @@ export function verifySandboxEgressAttestation(input: Readonly<
     expectedImage: string;
     observedAt: string;
   }
->): SandboxEgressAttestationPayload {
+>): VerifiedSandboxEgressAttestationPayload {
   const attestationBase64 = input.attestationBase64?.trim();
   const publicKeySpkiBase64 = input.publicKeySpkiBase64?.trim();
   const expectedKeyId = input.expectedKeyId?.trim();
@@ -212,8 +302,14 @@ export function verifySandboxEgressAttestation(input: Readonly<
   } catch {
     fail("sandbox_egress_attestation_payload_invalid");
   }
-  const payload = normalizePayload(payloadValue);
-  if (!sandboxEgressAttestationPayloadBytes(payload).equals(payloadBytes)) fail("sandbox_egress_attestation_payload_invalid");
+  const payload = normalizeVersionedPayload(payloadValue);
+  if (input.minimumSchemaVersion && input.minimumSchemaVersion !== SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA && input.minimumSchemaVersion !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) {
+    fail("sandbox_egress_attestation_config_invalid");
+  }
+  if (input.minimumSchemaVersion === SANDBOX_EGRESS_ATTESTATION_SCHEMA && payload.schemaVersion !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) {
+    fail("sandbox_egress_attestation_schema_invalid");
+  }
+  if (!canonicalPayloadBytes(payload).equals(payloadBytes)) fail("sandbox_egress_attestation_payload_invalid");
   if (payload.app !== input.expectedApp || payload.image !== input.expectedImage || payload.policyDigest !== expectedPolicyDigest) {
     fail("sandbox_egress_attestation_scope_mismatch");
   }
@@ -228,10 +324,14 @@ export function verifySandboxEgressAttestation(input: Readonly<
 export function sandboxEgressAuthorityFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): SandboxEgressAuthorityConfig {
+  const minimumSchemaVersion = env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA?.trim();
   return Object.freeze({
     attestationBase64: env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64,
     publicKeySpkiBase64: env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64,
     expectedKeyId: env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID,
     expectedPolicyDigest: env.MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST,
+    minimumSchemaVersion: minimumSchemaVersion as
+      | SandboxEgressAuthorityConfig["minimumSchemaVersion"]
+      | undefined,
   });
 }

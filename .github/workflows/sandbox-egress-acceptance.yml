@@ -121,21 +121,35 @@ jobs:
             --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
             --json "ip6tables -S OUTPUT" \
             >test-results/sandbox-egress/ipv6-policy.json
-          for policy in ipv4-policy ipv6-policy; do
-            jq -e '.stdout == "-P OUTPUT DROP\n-A OUTPUT -o lo -j ACCEPT\n"' \
-              "test-results/sandbox-egress/${policy}.json" >/dev/null
-          done
+          jq -e '.stdout == "-P OUTPUT DROP\n-A OUTPUT -o lo -j ACCEPT\n-A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\n" and has("exit_code") and (.exit_code == 0)' \
+            test-results/sandbox-egress/ipv4-policy.json >/dev/null
+          jq -e '.stdout == "-P OUTPUT DROP\n-A OUTPUT -o lo -j ACCEPT\n-A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited\n" and has("exit_code") and (.exit_code == 0)' \
+            test-results/sandbox-egress/ipv6-policy.json >/dev/null
+          probes="$(node --import tsx --input-type=module -e '
+            import {
+              SANDBOX_EGRESS_ALLOWED_PROBE_COMMAND,
+              SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND,
+            } from "@mendpoint/platform";
+            process.stdout.write(JSON.stringify({
+              allowed: SANDBOX_EGRESS_ALLOWED_PROBE_COMMAND,
+              forbidden: SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND,
+            }));
+          ')"
+          allowed_probe="$(jq -r '.allowed' <<<"$probes")"
+          forbidden_probe="$(jq -r '.forbidden' <<<"$probes")"
+          printf '%s' "$allowed_probe" >test-results/sandbox-egress/allowed-command.txt
+          printf '%s' "$forbidden_probe" >test-results/sandbox-egress/forbidden-command.txt
           flyctl machine exec "$machine_id" \
             --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
-            --json "runuser -u node -- /bin/true" \
+            --json "runuser -u node -- $allowed_probe" \
             >test-results/sandbox-egress/allowed-local.json
-          jq -e '(.exit_code // 0) == 0' \
+          jq -e '.stdout == "mendpoint-egress-allowed\n" and has("exit_code") and (.exit_code == 0)' \
             test-results/sandbox-egress/allowed-local.json >/dev/null
           flyctl machine exec "$machine_id" \
             --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
-            --json "runuser -u node -- node -e fetch(process.argv[1]).then(()=>process.exit(42),()=>process.stdout.write(Buffer.from([98,108,111,99,107,101,100]))) https://example.com/" \
+            --json "runuser -u node -- $forbidden_probe" \
             >test-results/sandbox-egress/forbidden-outbound.json
-          jq -e '.stdout == "blocked" and ((.exit_code // 0) == 0)' \
+          jq -e '.stdout == "mendpoint-egress-blocked\n" and has("exit_code") and (.exit_code == 0)' \
             test-results/sandbox-egress/forbidden-outbound.json >/dev/null
           tested_at="$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')"
           expires_at="$(date -u -d '+23 hours' '+%Y-%m-%dT%H:%M:%S.000Z')"
@@ -170,6 +184,7 @@ jobs:
               expectedApp: process.env.MENDPOINT_SANDBOX_EGRESS_APP,
               expectedImage: process.env.MENDPOINT_SANDBOX_EGRESS_IMAGE,
               observedAt: new Date().toISOString(),
+              minimumSchemaVersion: receipt.payload.schemaVersion,
             });
           '
       - name: Rotate the verifying app authority
@@ -182,12 +197,14 @@ jobs:
           public_key="$(jq -r '.publicKeySpkiBase64' test-results/sandbox-egress/receipt.json)"
           key_id="$(jq -r '.keyId' test-results/sandbox-egress/receipt.json)"
           policy_digest="$(jq -r '.policyDigest' test-results/sandbox-egress/receipt.json)"
+          schema="$(jq -r '.payload.schemaVersion' test-results/sandbox-egress/receipt.json)"
           flyctl secrets set --app "$SANDBOX_VERIFYING_APP" \
             MENDPOINT_SANDBOX_FLY_IMAGE="$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
             MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" \
             MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64="$public_key" \
             MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
-            MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest"
+            MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
+            MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"
           for attempt in $(seq 1 24); do
             if curl --silent --show-error --fail --max-time 10 \
               "https://${SANDBOX_VERIFYING_APP}.fly.dev/livez" \

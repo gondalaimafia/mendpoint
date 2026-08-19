@@ -57,7 +57,9 @@ import {
 import { recipeFilesDigest, sealAdaptiveCandidate } from "@mendpoint/transformer";
 import {
   SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
-  SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
+  SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS,
   sandboxEgressAttestationPayloadBytes,
 } from "@mendpoint/platform";
 import {
@@ -101,13 +103,17 @@ function signedSandboxAuthorityEnv(app: string, image: string): NodeJS.ProcessEn
   const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
   const keys = generateKeyPairSync("ed25519");
   const payloadBytes = sandboxEgressAttestationPayloadBytes({
-    schemaVersion: "2026-08-18.v1",
+    schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
     app,
     image,
     policyDigest,
     testedAt,
     expiresAt,
-    forbiddenOutbound: { url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL, blocked: true },
+    forbiddenOutbound: {
+      commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+      targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+      blocked: true,
+    },
     allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
     evidenceRefs: ["evidence://protected-egress-acceptance/customer"],
   });
@@ -134,6 +140,7 @@ function signedSandboxAuthorityEnv(app: string, image: string): NodeJS.ProcessEn
       .toString("base64"),
     MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
     MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: policyDigest,
+    MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
   };
 }
 
@@ -1761,13 +1768,17 @@ describe("worker runtime", () => {
     const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
     const keys = generateKeyPairSync("ed25519");
     const payloadBytes = sandboxEgressAttestationPayloadBytes({
-      schemaVersion: "2026-08-18.v1",
+      schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
       app: "mendpoint-sandbox",
       image,
       policyDigest,
       testedAt,
       expiresAt,
-      forbiddenOutbound: { url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL, blocked: true },
+      forbiddenOutbound: {
+        commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+        targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+        blocked: true,
+      },
       allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
       evidenceRefs: ["evidence://protected-egress-acceptance/startup"],
     });
@@ -1793,6 +1804,7 @@ describe("worker runtime", () => {
         keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
       MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
       MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: policyDigest,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
     };
 
     expect(validateWorkerProductionEnv(base)).toEqual([]);
@@ -1954,6 +1966,12 @@ describe("worker runtime", () => {
       ...completeCustomerProfile,
       MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "0",
     })).toContain("Customer worker requires external model processing to be explicitly allowed");
+    expect(validateWorkerProductionEnv({
+      ...completeCustomerProfile,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: "",
+    })).toContain(
+      `Customer worker requires MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA=${SANDBOX_EGRESS_ATTESTATION_SCHEMA}`,
+    );
     expect(validateWorkerProductionEnv(completeCustomerProfile)).toEqual([]);
   });
 

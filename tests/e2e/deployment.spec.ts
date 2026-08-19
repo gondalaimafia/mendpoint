@@ -283,6 +283,7 @@ function startRuntime(workerIntervalMs: number): void {
     MENDPOINT_DEPLOYMENT_PROFILE: "demo",
     MENDPOINT_FEED_POLLING_ENABLED: "0",
     MENDPOINT_PILOT_SEED: "1",
+    MENDPOINT_SANDBOX_KIND: "local",
     MENDPOINT_TENANT_ID: tenantId,
     MENDPOINT_VERIFY_FIRST: "1",
     MENDPOINT_WEB_ACCESS_TOKEN: webToken,

@@ -3,10 +3,12 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
+  SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA,
+  SANDBOX_EGRESS_ATTESTATION_SCHEMA,
   SANDBOX_EGRESS_FIREWALL_ERROR_CODES,
   SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
   SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS,
-  SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
   sandboxEgressAttestationPayloadBytes,
   verifySandboxEgressAttestation,
   type SandboxEgressAttestationPayload,
@@ -20,14 +22,15 @@ const NOW = "2026-08-18T20:00:00.000Z";
 function signed(overrides: Partial<SandboxEgressAttestationPayload> = {}) {
   const keys = generateKeyPairSync("ed25519");
   const payload: SandboxEgressAttestationPayload = {
-    schemaVersion: "2026-08-18.v1",
+    schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
     app: APP,
     image: IMAGE,
     policyDigest: POLICY,
     testedAt: "2026-08-18T19:55:00.000Z",
     expiresAt: "2026-08-18T20:55:00.000Z",
     forbiddenOutbound: {
-      url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
+      commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+      targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
       blocked: true,
     },
     allowedVerification: {
@@ -64,6 +67,59 @@ describe("sandbox egress policy attestation", () => {
         observedAt: NOW,
       }),
     ).toMatchObject({ app: APP, image: IMAGE, policyDigest: POLICY });
+  });
+
+  it("binds the signed receipt to the exact multi-target forbidden probe", () => {
+    const fixture = signed();
+    expect(fixture.payload.forbiddenOutbound).toEqual({
+      commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+      targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+      blocked: true,
+    });
+    expect(() => sandboxEgressAttestationPayloadBytes({
+      ...fixture.payload,
+      forbiddenOutbound: {
+        ...fixture.payload.forbiddenOutbound,
+        commandDigest: `sha256:${"f".repeat(64)}`,
+      },
+    })).toThrow("sandbox_egress_attestation_probe_invalid");
+  });
+
+  it("allows a legacy receipt only during rollout and rejects it when v2 is required", () => {
+    const keys = generateKeyPairSync("ed25519");
+    const legacyPayload = {
+      schemaVersion: SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA,
+      app: APP,
+      image: IMAGE,
+      policyDigest: POLICY,
+      testedAt: "2026-08-18T19:55:00.000Z",
+      expiresAt: "2026-08-18T20:55:00.000Z",
+      forbiddenOutbound: { url: "https://example.com/", blocked: true },
+      allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
+      evidenceRefs: ["evidence://protected-egress-acceptance/legacy"],
+    };
+    const payloadBytes = Buffer.from(JSON.stringify(legacyPayload), "utf8");
+    const config = {
+      attestationBase64: Buffer.from(JSON.stringify({
+        payload: payloadBytes.toString("base64"),
+        signatures: [{
+          keyId: "sandbox-egress-key-1",
+          signature: sign(null, payloadBytes, keys.privateKey).toString("base64"),
+        }],
+      }), "utf8").toString("base64"),
+      publicKeySpkiBase64: keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+      expectedKeyId: "sandbox-egress-key-1",
+      expectedPolicyDigest: POLICY,
+      expectedApp: APP,
+      expectedImage: IMAGE,
+      observedAt: NOW,
+    };
+    expect(verifySandboxEgressAttestation(config).schemaVersion)
+      .toBe(SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA);
+    expect(() => verifySandboxEgressAttestation({
+      ...config,
+      minimumSchemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+    })).toThrow("sandbox_egress_attestation_schema_invalid");
   });
 
   it.each([
@@ -143,7 +199,10 @@ function runForbiddenProbe(outcomeFor: (host: string) => ProbeOutcome): Promise<
       if (id === "node:net") return makeFakeNet();
       throw new Error(`unexpected require(${id})`);
     };
-    const fakeProcess = { exit: (code: number) => resolve(code) };
+    const fakeProcess = {
+      stdout: { write: (_value: string) => true },
+      exit: (code: number) => resolve(code),
+    };
     // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
     const fn = new Function("require", "process", body) as (
       req: unknown,
@@ -208,13 +267,17 @@ describe("forbidden egress probe classification (fails closed on ambiguity)", ()
 
 describe("negative egress receipt (representable, then rejected)", () => {
   const failedPayload = {
-    schemaVersion: "2026-08-18.v1" as const,
+    schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
     app: APP,
     image: IMAGE,
     policyDigest: POLICY,
     testedAt: "2026-08-18T19:55:00.000Z",
     expiresAt: "2026-08-18T20:55:00.000Z",
-    forbiddenOutbound: { url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL, blocked: false },
+    forbiddenOutbound: {
+      commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+      targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+      blocked: false,
+    },
     allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
     evidenceRefs: ["evidence://protected-egress-acceptance/failed"],
   };

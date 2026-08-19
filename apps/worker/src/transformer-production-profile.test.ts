@@ -30,6 +30,16 @@ describe("Transformer production profile", () => {
     expect(manifest).not.toContain(
       '[[vm]]\n  processes = ["coordinator"]\n  size = "shared-cpu-2x"',
     );
+    const roleEntrypoint = readFileSync(
+      resolve(import.meta.dirname, "../../../scripts/start-transformer-role.mjs"),
+      "utf8",
+    );
+    const roleIndex = roleEntrypoint.indexOf(
+      'process.env.MENDPOINT_PROCESS_ROLE = "transformer_coordinator"',
+    );
+    const serverImportIndex = roleEntrypoint.indexOf('import("../apps/api/src/server.ts")');
+    expect(roleIndex).toBeGreaterThanOrEqual(0);
+    expect(serverImportIndex).toBeGreaterThan(roleIndex);
   });
 
   it("accepts the exact coordinator and worker production boundaries", () => {

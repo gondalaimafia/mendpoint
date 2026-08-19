@@ -17,7 +17,7 @@ import {
   requestBodyLimitMiddleware,
   rateLimitMiddleware,
 } from "./production.js";
-import { initializeApiRuntime } from "./api-runtime.js";
+import { initializeApiRuntime, synchronousPipelineExecutionAllowed } from "./api-runtime.js";
 import type { ApiEnv } from "./auth.js";
 
 const originalEnv = {
@@ -45,6 +45,13 @@ function limitedApp() {
 }
 
 describe("production rate limit identity", () => {
+  it("disables synchronous pipeline execution in the Transformer coordinator", () => {
+    expect(synchronousPipelineExecutionAllowed({
+      MENDPOINT_PROCESS_ROLE: "transformer_coordinator",
+    })).toBe(false);
+    expect(synchronousPipelineExecutionAllowed({ MENDPOINT_PROCESS_ROLE: "api" })).toBe(true);
+    expect(synchronousPipelineExecutionAllowed({})).toBe(true);
+  });
   it("rejects declared and streamed request bodies above the API ceiling", async () => {
     const app = new Hono<ApiEnv>();
     app.use("*", requestBodyLimitMiddleware({ maxBytes: 32 }));

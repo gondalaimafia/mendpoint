@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { runChangePipeline, type PipelineReport } from "@mendpoint/pipeline";
 import {
   resolveFanoutSettlementMcuMicros,
+  SANDBOX_EGRESS_ATTESTATION_SCHEMA,
   sandboxEgressAuthorityFromEnv,
   verifySandboxEgressAttestation,
   type FanoutRunMeterSignals,
@@ -1618,6 +1619,11 @@ export function validateWorkerProductionEnv(
     }
     if (env.MENDPOINT_PILOT_SEED !== "0") {
       errors.push("Customer worker requires MENDPOINT_PILOT_SEED=0");
+    }
+    if (env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) {
+      errors.push(
+        `Customer worker requires MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA=${SANDBOX_EGRESS_ATTESTATION_SCHEMA}`,
+      );
     }
     if (resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED") !== "1") {
       errors.push("Customer worker requires Fettler model source execution");

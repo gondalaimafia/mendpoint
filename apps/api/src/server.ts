@@ -323,7 +323,7 @@ import {
   createDurablePostTrainedEvidenceAuthority,
   createAdvancedAiApplicationRoutes,
 } from "./advanced-ai-applications.js";
-import { initializeApiRuntime } from "./api-runtime.js";
+import { initializeApiRuntime, synchronousPipelineExecutionAllowed } from "./api-runtime.js";
 import {
   internalErrorResponse,
   mappedErrorResponse,
@@ -1780,6 +1780,9 @@ app.post("/providers/:slug/versions", async (c) => {
 });
 
 app.post("/providers/:slug/publish", async (c) => {
+  if (!synchronousPipelineExecutionAllowed()) {
+    return c.json({ error: "synchronous_pipeline_execution_disabled" }, 503);
+  }
   const provider = getProviderBySlug(db, c.req.param("slug"));
   const scope = catalogMutationScope(c, provider);
   if ("deny" in scope) return scope.deny;
@@ -2107,6 +2110,9 @@ app.post("/feeds/poll", async (c) => {
   const body = await c.req
     .json<{ localOnly?: boolean; runPipeline?: boolean; slugs?: string[] }>()
     .catch(() => ({} as { localOnly?: boolean; runPipeline?: boolean; slugs?: string[] }));
+  if ((body.runPipeline ?? true) && !synchronousPipelineExecutionAllowed()) {
+    return c.json({ error: "synchronous_pipeline_execution_disabled" }, 503);
+  }
   const results = await pollAllFeeds({
     db,
     tenantId: requestTenantId(c),

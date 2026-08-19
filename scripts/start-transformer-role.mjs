@@ -8,6 +8,7 @@ const { validateTransformerProductionProfile } = await import("../apps/worker/sr
 const profile = validateTransformerProductionProfile(process.env, role);
 
 if (role === "coordinator") {
+  process.env.MENDPOINT_PROCESS_ROLE = "transformer_coordinator";
   const [
     { createDb },
     { ensureTransformerWorkerCredential },
