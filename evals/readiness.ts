@@ -27,6 +27,19 @@ export interface ScoredRun {
 }
 
 /**
+ * A gated scenario that was ABSENT from a run (e.g. the external corpus was not
+ * present on the runner). Its ground truth is known even though it did not run,
+ * so it can be attributed to the capability it would have fed and reported as an
+ * explicit coverage hole — never silently dropped, which would let the pooled
+ * metrics renormalise over a partial set and read as a pass.
+ */
+export interface AbsentScenario {
+  scenario_id: string;
+  product: string;
+  gt: GroundTruth;
+}
+
+/**
  * Fettler impact-analysis capability thresholds. `kind` is optional so the
  * shipped config's untagged entry (and the hand-built test fixtures) still parse
  * as this shape.
@@ -185,6 +198,26 @@ export interface CriterionResult {
   detail: string;
 }
 
+/**
+ * A not-measurable criterion for a capability whose gated scenarios were absent
+ * from the run. Because verdicts require every criterion to be `measurable &&
+ * passed`, appending this forces the capability to FAIL rather than silently
+ * renormalise its pooled metrics over the scenarios that happened to run.
+ */
+function absentCoverageCriterion(absent: AbsentScenario[]): CriterionResult | null {
+  if (absent.length === 0) return null;
+  const ids = absent.map((a) => a.scenario_id).sort();
+  return {
+    name: "gated_scenario_coverage",
+    measurable: false,
+    passed: false,
+    measured: `not measured (${absent.length} gated scenario(s) absent: ${ids.join(", ")})`,
+    threshold: "every gated scenario present and scored",
+    detail:
+      "gated scenarios were absent from this run (e.g. the external corpus was not present); the pooled metrics would renormalise over a partial set, so readiness cannot be demonstrated until they run",
+  };
+}
+
 /** Per-behaviour pass counts for a ReGauge family capability. */
 export interface RegaugeFamilyMetrics {
   family: string;
@@ -276,6 +309,7 @@ const asPct = (n: number): string => `${(n * 100).toFixed(1)}%`;
 function evaluateFettlerImpact(
   scored: ScoredRun[],
   t: FettlerImpactThresholds,
+  absent: AbsentScenario[] = [],
 ): CapabilityReadiness {
   const { tp, fp, fn, scenarioCount } = fettlerMicroStats(scored);
   const precision = tp + fp > 0 ? tp / (tp + fp) : null;
@@ -313,10 +347,15 @@ function evaluateFettlerImpact(
     {
       name: "holdout_within_dev",
       measurable: gapPp !== null,
-      passed: gapPp !== null && gapPp <= t.holdout_dev_gap_max_pp,
+      // Divergence in EITHER direction is disqualifying. A holdout that
+      // substantially OUTPERFORMS development is itself evidence the splits are
+      // not comparable (e.g. the holdout is easier, or blind to a benchmark-fit
+      // heuristic development exercises), so the magnitude of the gap is what the
+      // gate bounds, not the signed dev-minus-holdout delta.
+      passed: gapPp !== null && Math.abs(gapPp) <= t.holdout_dev_gap_max_pp,
       measured:
         gapPp !== null
-          ? `${gapPp >= 0 ? "" : "+"}${(-gapPp).toFixed(1)}pp vs dev`
+          ? `${gapPp <= 0 ? "+" : "-"}${Math.abs(gapPp).toFixed(1)}pp vs dev`
           : "not measured (no holdout or no development scenarios)",
       threshold: `holdout within ${t.holdout_dev_gap_max_pp}pp of development`,
       detail:
@@ -325,6 +364,12 @@ function evaluateFettlerImpact(
           : "requires both a development and a holdout split",
     },
   ];
+
+  // A gated flag_files scenario that was absent (corpus not present) leaves the
+  // pooled precision/recall renormalised over a partial set — report it as an
+  // explicit not-measured criterion so the capability cannot read as ready.
+  const cov = absentCoverageCriterion(absent);
+  if (cov) criteria.push(cov);
 
   // A not-measurable criterion cannot demonstrate readiness, so it does not pass.
   const verdict: "PASS" | "FAIL" = criteria.every((c) => c.measurable && c.passed) ? "PASS" : "FAIL";
@@ -361,6 +406,7 @@ function evaluateFettlerAbstention(
   capability: string,
   scored: ScoredRun[],
   t: FettlerAbstentionThresholds,
+  absent: AbsentScenario[] = [],
 ): CapabilityReadiness {
   const rows = fettlerRestraintScenarios(scored);
   const passed = rows.filter((s) => s.record.passed).length;
@@ -386,6 +432,9 @@ function evaluateFettlerAbstention(
       detail: "unsafe P0 failures (acted confidently where abstention was required); coverage gaps excluded",
     },
   ];
+
+  const cov = absentCoverageCriterion(absent);
+  if (cov) criteria.push(cov);
 
   const verdict: "PASS" | "FAIL" = criteria.every((c) => c.measurable && c.passed) ? "PASS" : "FAIL";
 
@@ -427,6 +476,7 @@ function evaluateRegaugeFamily(
   capability: string,
   scored: ScoredRun[],
   t: RegaugeFamilyThresholds,
+  absent: AbsentScenario[] = [],
 ): CapabilityReadiness {
   const rows = familyScenarios(scored, t.family);
   const apply = rows.filter((s) => REGAUGE_APPLY.has(s.gt.correct_behavior));
@@ -478,6 +528,9 @@ function evaluateRegaugeFamily(
     },
   ];
 
+  const cov = absentCoverageCriterion(absent);
+  if (cov) criteria.push(cov);
+
   // A not-measurable criterion cannot demonstrate readiness, so it does not pass.
   const verdict: "PASS" | "FAIL" = criteria.every((c) => c.measurable && c.passed) ? "PASS" : "FAIL";
 
@@ -515,15 +568,34 @@ export function evaluateReadiness(
   scored: ScoredRun[],
   gates: ReadinessGatesConfig,
   gatesPath: string = DEFAULT_GATES_PATH,
+  absent: AbsentScenario[] = [],
 ): ReadinessEvaluation {
+  // Attribute each absent gated scenario to the capability it would have fed, so
+  // that capability reports the coverage hole and fails rather than scoring over
+  // a partial set.
+  const absentFettlerFlag = absent.filter(
+    (a) => a.product === "fettler" && a.gt.correct_behavior === "flag_files",
+  );
+  const absentFettlerRestraint = absent.filter(
+    (a) => a.product === "fettler" && FETTLER_RESTRAINT.has(a.gt.correct_behavior),
+  );
+  const absentRegaugeFamily = (family: string): AbsentScenario[] =>
+    absent.filter(
+      (a) => a.product === "regauge" && (a.gt.recipe_expectation?.family ?? "") === family,
+    );
+
   const capabilities: CapabilityReadiness[] = [];
   for (const [name, thresholds] of Object.entries(gates.capabilities)) {
     if (isRegaugeFamily(thresholds)) {
-      capabilities.push(evaluateRegaugeFamily(name, scored, thresholds));
+      capabilities.push(
+        evaluateRegaugeFamily(name, scored, thresholds, absentRegaugeFamily(thresholds.family)),
+      );
     } else if (isFettlerAbstention(thresholds)) {
-      capabilities.push(evaluateFettlerAbstention(name, scored, thresholds));
+      capabilities.push(
+        evaluateFettlerAbstention(name, scored, thresholds, absentFettlerRestraint),
+      );
     } else if (name === "fettler-impact-analysis") {
-      capabilities.push(evaluateFettlerImpact(scored, thresholds));
+      capabilities.push(evaluateFettlerImpact(scored, thresholds, absentFettlerFlag));
     }
     // An unknown capability name/shape is intentionally not scored rather than
     // scored with a placeholder that could read as a pass.

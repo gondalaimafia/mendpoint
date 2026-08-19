@@ -1,36 +1,36 @@
 # MendPoint design-partner readiness scorecard (spec §29)
 
-- Generated: 2026-08-18T23:17:03.042Z
-- Git commit: `a817cd2`
+- Generated: 2026-08-19T15:20:21.992Z
+- Git commit: `a69526c`
 - Readiness policy: precision-first (owner Talal, decided 2026-08-17)
-- Overall readiness: **PASS**
+- Overall readiness: **FAIL**
 
 Every field below is populated from the latest run's real records or the versioned readiness evaluation. Fields the analysis-only path cannot measure are marked "not measured (<why>)" rather than left blank or estimated.
 
 ## Capability: Fettler — API-change impact analysis
 
-Readiness verdict: **PASS** (policy precision-first).
+Readiness verdict: **FAIL** (policy precision-first).
 
 | field | value |
 | --- | --- |
 | Capability | Given a structured OpenAPI v1->v2 change, flag exactly the impacted source files. |
-| Supported languages / stacks | go-service; node-service-edge; python-service; typescript-monorepo; typescript-monorepo-scale; typescript-service-generated |
-| Supported repo patterns | allOf, binary, both, distractors, edge, encoding, field-rename, file-cap, flat, generated-code, generated-only, generated-vendored, go, indirection, language-support, looks-generated, monorepo, nested2, node_modules-exclusion, pnpm, python, ref, ref-blindness, refToRef, restraint, robustness, scale, scoping, symlink, third-party, typescript, unmeasured-dimension, vendored, vendored-only, verification-honesty, workspace, wrapper-layers |
+| Supported languages / stacks | go-service; json-wire-payload-generated; node-service-edge; python-service; typescript-monorepo; typescript-service-generated |
+| Supported repo patterns | allOf, binary, both, distractors, edge, encoding, field-rename, flat, generated-code, generated-only, generated-vendored, go, indirection, json-payload, language-support, looks-generated, monorepo, nested2, pnpm, python, ref, ref-blindness, refToRef, restraint, robustness, scoping, symlink, third-party, typescript, unmeasured-dimension, vendored, vendored-only, verification-honesty, workspace, wrapper-layers |
 | Supported providers | provider-agnostic (driven by the OpenAPI diff, not a provider allowlist); exercised only against synthetic providers |
 | Known unsupported patterns | recall collapses on: java-service; node-cjs-service |
-| Scenario count | 33 Fettler scenarios (27 flag_files, 4 abstain, 2 other) |
-| Hidden-holdout status | 4 procedurally-generated holdout scenarios, never inspected while fixing; 4/4 passed |
-| Precision / recall | precision 98.5%, recall 96.3% (micro-averaged over 27 flag_files scenarios) |
+| Scenario count | 36 Fettler scenarios (30 flag_files, 4 abstain, 2 other) |
+| Hidden-holdout status | 7 procedurally-generated holdout scenarios, never inspected while fixing; 7/7 passed |
+| Precision / recall | precision 98.6%, recall 92.6% (micro-averaged over 30 flag_files scenarios) |
 | Patch verification rate | not measured (generation + sandbox verification path not exercised by the analysis-only runner) |
-| False-positive rate | 1.5% of confident findings (2/132) |
-| Known P0 / P1 | P0: none | P1: none |
-| Latency range | 22ms min, 75ms median, 26907ms max (n=33) |
+| False-positive rate | 1.4% of confident findings (2/139) |
+| Known P0 / P1 | P0: none | P1: fettler-edge-huge-monorepo (SCALE_FAILURE) |
+| Latency range | 22ms min, 58ms median, 120056ms max (n=36) |
 | Cost range | not measured (LLM off on this path; no model called, so token cost is genuinely zero rather than estimated) |
 | Required human review | yes — ambiguous renames and low-confidence notifications are surfaced for human decision, never auto-applied |
 | Rollback behaviour | not measured (PR delivery + apply path not exercised; rollback is a delivery-layer property) |
 | Security limitations | answer-key isolation is enforced (corpus staged with grading keys stripped, corpus root asserted outside the repo); product-side security limits (secret handling, sandbox escape) are not measured (full pipeline not exercised) |
 | Owner | Talal |
-| Last-validated commit | `a817cd2` |
+| Last-validated commit | `a69526c` |
 
 ## Capability: Fettler — restraint (abstention / no-op)
 
@@ -47,11 +47,11 @@ Fettler restraint: on an ambiguous rename (>=2 plausible successors) or an alrea
 | --- | --- |
 | Scenario count | 6 (abstain 4/4, no_op 2/2; 6/6 correct) |
 | Known P0 / P1 | P0: none | P1: none |
-| Latency range | 22ms min, 31ms median, 80ms max (n=6) |
+| Latency range | 22ms min, 29ms median, 135ms max (n=6) |
 | Cost range | not measured (LLM off on this path; no model called) |
 | Required human review | yes — an ambiguous rename is surfaced for a human decision, never auto-applied |
 | Owner | Talal |
-| Last-validated commit | `a817cd2` |
+| Last-validated commit | `a69526c` |
 
 ## Capability: ReGauge — migration recipe engine (per family)
 
@@ -73,11 +73,11 @@ ReGauge runtime family (node-runtime-18-to-20, node-runtime-20-to-22). The refer
 | Scenario count | 9 (apply 3/3, residual-refusal 4/4, abstention 2/2) |
 | Known P0 / P1 | P0: none | P1: none |
 | Patch verification rate | not measured (recipe apply + verification gate not exercised (analyze-only)) |
-| Latency range | 4ms min, 18ms median, 81ms max (n=9) |
+| Latency range | 3ms min, 17ms median, 152ms max (n=9) |
 | Cost range | not measured (deterministic recipe engine; no model called) |
 | Required human review | yes — recipe application produces a draft PR for human review; nothing auto-merges |
 | Rollback behaviour | not measured (inverse/rollback path not exercised) |
-| Last-validated commit | `a817cd2` |
+| Last-validated commit | `a69526c` |
 
 ### Family: sdk-upgrade (regauge-sdk-migration) — **PASS**
 
@@ -95,11 +95,11 @@ ReGauge SDK family (aws-sdk-js-v2-to-v3, stripe-node-v10-to-v11, googleapis-v25-
 | Scenario count | 13 (apply 3/3, residual-refusal 4/4, abstention 6/6) |
 | Known P0 / P1 | P0: none | P1: none |
 | Patch verification rate | not measured (recipe apply + verification gate not exercised (analyze-only)) |
-| Latency range | 5ms min, 32ms median, 79ms max (n=13) |
+| Latency range | 15ms min, 26ms median, 211ms max (n=13) |
 | Cost range | not measured (deterministic recipe engine; no model called) |
 | Required human review | yes — recipe application produces a draft PR for human review; nothing auto-merges |
 | Rollback behaviour | not measured (inverse/rollback path not exercised) |
-| Last-validated commit | `a817cd2` |
+| Last-validated commit | `a69526c` |
 
 ### Family: framework-upgrade (regauge-framework-migration) — **PASS**
 
@@ -117,11 +117,11 @@ ReGauge framework family (react-dom-17-to-18). Migrates render/hydrate call site
 | Scenario count | 4 (apply 1/1, residual-refusal 1/1, abstention 2/2) |
 | Known P0 / P1 | P0: none | P1: none |
 | Patch verification rate | not measured (recipe apply + verification gate not exercised (analyze-only)) |
-| Latency range | 4ms min, 19ms median, 66ms max (n=4) |
+| Latency range | 5ms min, 18ms median, 188ms max (n=4) |
 | Cost range | not measured (deterministic recipe engine; no model called) |
 | Required human review | yes — recipe application produces a draft PR for human review; nothing auto-merges |
 | Rollback behaviour | not measured (inverse/rollback path not exercised) |
-| Last-validated commit | `a817cd2` |
+| Last-validated commit | `a69526c` |
 
 ### Family: internal-api-rename (regauge-internal-api-migration) — **PASS**
 
@@ -139,13 +139,14 @@ ReGauge internal-API family (internal-api-acme-user-rename and the registry rena
 | Scenario count | 5 (apply 1/1, residual-refusal 2/2, abstention 2/2) |
 | Known P0 / P1 | P0: none | P1: none |
 | Patch verification rate | not measured (recipe apply + verification gate not exercised (analyze-only)) |
-| Latency range | 5ms min, 8ms median, 62ms max (n=5) |
+| Latency range | 4ms min, 6ms median, 177ms max (n=5) |
 | Cost range | not measured (deterministic recipe engine; no model called) |
 | Required human review | yes — recipe application produces a draft PR for human review; nothing auto-merges |
 | Rollback behaviour | not measured (inverse/rollback path not exercised) |
-| Last-validated commit | `a817cd2` |
+| Last-validated commit | `a69526c` |
 
 | Owner | Talal |
+
 
 ## Capabilities not measured (Phase 2 gate-coverage backlog)
 

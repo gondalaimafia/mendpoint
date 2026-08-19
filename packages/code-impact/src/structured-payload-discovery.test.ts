@@ -76,6 +76,69 @@ describe("structured payload discovery", () => {
     expect(promotable).not.toContain("spec/openapi.json");
   });
 
+  it("admits fixtures on structural evidence in directory names absent from the corpus", () => {
+    // None of these directory names (golden/, stubs/, wire-samples/) appear in
+    // the synthetic corpus, so a directory-name allowlist would reject them all.
+    // Each is admitted here only because the index shows something referencing it.
+    const repo = makeRepo({
+      "package.json": JSON.stringify({ name: "consumer" }),
+      "src/payments.ts": [
+        'import meridian from "meridian";',
+        'export const endpoint = "/v1/charges";',
+        "export const charge = (source: string) => meridian.charges.create({ source });",
+      ].join("\n"),
+      // (a) code sibling in the same directory -> proximity admission.
+      "golden/loader.ts": 'export const load = () => require("./charge.json");',
+      "golden/charge.json": JSON.stringify({ source: "tok_g" }, null, 2),
+      // (b) a source file imports the payload directly -> import-edge admission.
+      "src/consumer.ts": 'import refund from "../stubs/refund.json";\nexport const r = refund;',
+      "stubs/refund.json": JSON.stringify({ source: "tok_s" }, null, 2),
+      // (c) code in the enclosing package directory -> package-proximity admission.
+      "src/wire/handler.ts": "export const handle = (x: string) => x;",
+      "src/wire/wire-samples/entry.json": JSON.stringify({ source: "tok_w" }, null, 2),
+    });
+    const changeSurfaces = surfaces();
+    const index = buildIndex(repo, { sdkContext: sdkContextFromSurfaces(changeSurfaces) });
+    const candidates = discoverCandidates(
+      index,
+      changeSurfaces,
+      computeProviderReachability(index, changeSurfaces),
+    );
+    const promotable = candidates
+      .filter((candidate) => candidate.initialConfidence !== "low")
+      .map((candidate) => candidate.filePath);
+
+    expect(promotable).toContain("golden/charge.json");
+    expect(promotable).toContain("stubs/refund.json");
+    expect(promotable).toContain("src/wire/wire-samples/entry.json");
+  });
+
+  it("does not admit an unreferenced JSON that merely sits in resources/ or examples/", () => {
+    // Java/Spring keep PRODUCTION config under resources/; a name-based rule
+    // sweeps it in. With nothing referencing it and no code beside it, it must
+    // stay out even though it carries the changed wire key.
+    const repo = makeRepo({
+      "package.json": JSON.stringify({ name: "consumer" }),
+      "src/main/java/com/acme/App.java":
+        "package com.acme;\npublic class App { public static void main(String[] a) {} }\n",
+      "src/main/resources/application.json": JSON.stringify({ source: "prod-config" }, null, 2),
+      "examples/config.json": JSON.stringify({ source: "example" }, null, 2),
+    });
+    const changeSurfaces = surfaces();
+    const index = buildIndex(repo, { sdkContext: sdkContextFromSurfaces(changeSurfaces) });
+    const candidates = discoverCandidates(
+      index,
+      changeSurfaces,
+      computeProviderReachability(index, changeSurfaces),
+    );
+    const promotable = candidates
+      .filter((candidate) => candidate.initialConfidence !== "low")
+      .map((candidate) => candidate.filePath);
+
+    expect(promotable).not.toContain("src/main/resources/application.json");
+    expect(promotable).not.toContain("examples/config.json");
+  });
+
   it("reads each indexed file at most once across multiple surfaces", () => {
     const repo = makeRepo({
       "package.json": JSON.stringify({ name: "consumer" }),
