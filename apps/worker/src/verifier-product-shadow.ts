@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { recordAudit, type AppDb } from "@mendpoint/db";
+import { findActiveLearningConsent, recordAudit, type AppDb } from "@mendpoint/db";
 import { claimVerifierShadowAttempt, persistVerifierTelemetry } from "@mendpoint/pipeline";
 import {
   createCompletionVerifierEvidencePack,
@@ -12,6 +12,15 @@ import {
   type VerifierRisk,
 } from "@mendpoint/verifier";
 import { createVerifierShadowRuntime } from "./verifier-shadow.js";
+
+// The verifier sends tenant repository content to an EXTERNAL third-party model
+// (DeepSeek) for independent scoring. That egress is a categorically different
+// data use from the internal adapter-training purposes
+// (`governed-adapter-training`, `transformer-adaptive-repair`): a tenant may
+// consent to internal training yet not to external-model egress, or the reverse,
+// so a grant for one must never be read as a grant for the other. A distinct
+// consent purpose keeps the two authorizations separate.
+export const VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE = "verifier-external-model-egress";
 
 export type ProductCompletionShadowInput = Readonly<{
   tenantId: string;
@@ -40,8 +49,19 @@ export async function observeProductCompletionInShadow(input: Readonly<{
 }>): Promise<AgentVerifierResult | null> {
   const env = input.env ?? process.env;
   const runtimeConfig = resolveVerifierRuntimeConfig(env);
-  if (!runtimeConfig.enabled || runtimeConfig.rolloutMode === "off") return null;
+  // `off` never observes; `offline` never egresses from this production path
+  // (see createVerifierShadowRuntime). Refuse both before building an evidence
+  // pack or claiming an attempt, so offline never even prepares tenant content.
+  if (!runtimeConfig.enabled || runtimeConfig.rolloutMode === "off" || runtimeConfig.rolloutMode === "offline") return null;
   const governance = resolveGovernance(env, input.completion.tenantId, input.completion.product);
+  // Tenant consent for external-model egress is resolved from the append-only
+  // `learning_consents` table, NOT from the process-wide governance env blob, so
+  // a tenant that revokes consent stops egressing on the next completion without
+  // a redeploy. It is fail-closed: no record, a revoked one, an expired one, or
+  // an unreadable table all deny (see resolveExternalModelConsent). The operator
+  // env governance is retained as an ADDITIONAL restriction below: consent grants
+  // permission but cannot override the operator's off switch.
+  const consent = resolveExternalModelConsent(input.db, input.completion.tenantId, input.completion.observedAt);
   const pricing = resolvePricing(env);
   const principalId = env.MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID?.trim() || null;
   const pack = createCompletionVerifierEvidencePack({
@@ -50,10 +70,16 @@ export async function observeProductCompletionInShadow(input: Readonly<{
       dataClassification: governance.dataClassification,
       requiredRegion: governance.requiredRegion,
       processingRegion: governance.processingRegion,
+      // Operator external-processing switch (evidence pack gate evaluates this
+      // BEFORE consent, so an operator disabling egress globally always wins).
       externalModelAllowed: governance.externalModelAllowed,
       mayLeaveTenantBoundary: governance.mayLeaveTenantBoundary,
-      consentId: governance.consentId,
-      consentActive: governance.consentActive,
+      // Reference the authoritative append-only consent record when active; the
+      // env consentId is only a fallback for the denied path (never egresses).
+      consentId: consent.active ? consent.consentId : governance.consentId,
+      // Both the operator's env consent switch AND an active tenant table consent
+      // are required. Fail-closed: either false denies external egress.
+      consentActive: governance.consentActive && consent.active,
     },
     governanceEvidenceRef: governance.evidenceRef,
     assembledAt: input.completion.observedAt,
@@ -117,6 +143,34 @@ function resolveGovernance(env: Readonly<Record<string, string | undefined>>, te
   if (!["public", "internal", "confidential", "restricted"].includes(String(entry.dataClassification)) || !text(entry.requiredRegion) || !text(entry.processingRegion) || entry.requiredRegion !== entry.processingRegion || !text(entry.consentId) || !text(entry.evidenceRef)) fail("verifier_governance_configuration_invalid");
   if (typeof entry.externalModelAllowed !== "boolean" || typeof entry.mayLeaveTenantBoundary !== "boolean" || typeof entry.consentActive !== "boolean") fail("verifier_governance_configuration_invalid");
   return Object.freeze({ dataClassification: entry.dataClassification as VerifierDataClassification, requiredRegion: entry.requiredRegion as string, processingRegion: entry.processingRegion as string, consentId: entry.consentId as string, evidenceRef: entry.evidenceRef as string, externalModelAllowed: entry.externalModelAllowed, mayLeaveTenantBoundary: entry.mayLeaveTenantBoundary, consentActive: entry.consentActive });
+}
+
+type ExternalModelConsent =
+  | Readonly<{ active: true; consentId: string }>
+  | Readonly<{ active: false; consentId: null }>;
+
+/**
+ * Resolve tenant consent for external-model verifier egress from the append-only
+ * `learning_consents` table via the same `findActiveLearningConsent` path every
+ * other learning consumer uses. That helper is already fail-closed: it returns
+ * undefined for no grant, a revoked grant, an expired grant, an out-of-window
+ * grant, or an ambiguous residency, so revocation takes effect on the next
+ * completion with no redeploy. Any read failure (unreadable table, malformed
+ * timestamp) is also treated as a denial here: absence must never read as
+ * granted. This resolves consent only; the operator env governance switch is an
+ * additional restriction applied by the caller and by the evidence-pack gate.
+ */
+function resolveExternalModelConsent(db: AppDb, tenantId: string, at: string): ExternalModelConsent {
+  try {
+    const consent = findActiveLearningConsent(db, {
+      tenantId,
+      purpose: VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
+      at,
+    });
+    return consent ? Object.freeze({ active: true, consentId: consent.id }) : Object.freeze({ active: false, consentId: null });
+  } catch {
+    return Object.freeze({ active: false, consentId: null });
+  }
 }
 
 function resolvePricing(env: Readonly<Record<string, string | undefined>>): VerifierPricing {
