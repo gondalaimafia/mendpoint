@@ -35,8 +35,15 @@ export type FunctionNode = {
   bodyHash?: string;
   /** Mendpoint-owned provenance for an alternate structural extractor. */
   structuralSource?: {
+    tenantId: string;
+    repositoryId: string;
+    repositorySnapshotId: string;
+    repositoryRevision: string;
+    manifestDigest: string;
+    structuralContentDigest: string;
     extractor: { id: string; version: string; digest: string };
     evidenceRefs: string[];
+    epistemicState?: "observed" | "inferred" | "ambiguous";
   };
 };
 
@@ -53,8 +60,15 @@ export type CallEdge = {
   virtual: boolean;
   /** Mendpoint-owned provenance for an alternate structural extractor. */
   structuralSource?: {
+    tenantId: string;
+    repositoryId: string;
+    repositorySnapshotId: string;
+    repositoryRevision: string;
+    manifestDigest: string;
+    structuralContentDigest: string;
     extractor: { id: string; version: string; digest: string };
     evidenceRefs: string[];
+    epistemicState?: "observed" | "inferred" | "ambiguous";
   };
 };
 
