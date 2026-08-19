@@ -115,15 +115,15 @@ jobs:
             test-results/sandbox-egress/machine-config.json >/dev/null
           flyctl machine exec "$machine_id" \
             --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
-            --json "iptables -S OUTPUT" \
+            --json "iptables -S OUTPUT && echo mendpoint-exec-ok" \
             >test-results/sandbox-egress/ipv4-policy.json
           flyctl machine exec "$machine_id" \
             --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
-            --json "ip6tables -S OUTPUT" \
+            --json "ip6tables -S OUTPUT && echo mendpoint-exec-ok" \
             >test-results/sandbox-egress/ipv6-policy.json
-          jq -e '.stdout == "-P OUTPUT DROP\n-A OUTPUT -o lo -j ACCEPT\n-A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\n" and has("exit_code") and (.exit_code == 0)' \
+          jq -e '.stdout == "-P OUTPUT DROP\n-A OUTPUT -o lo -j ACCEPT\n-A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\nmendpoint-exec-ok\n" and ( .stderr // "" ) == "" and ((has("exit_code") | not) or (.exit_code == 0))' \
             test-results/sandbox-egress/ipv4-policy.json >/dev/null
-          jq -e '.stdout == "-P OUTPUT DROP\n-A OUTPUT -o lo -j ACCEPT\n-A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited\n" and has("exit_code") and (.exit_code == 0)' \
+          jq -e '.stdout == "-P OUTPUT DROP\n-A OUTPUT -o lo -j ACCEPT\n-A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited\nmendpoint-exec-ok\n" and ( .stderr // "" ) == "" and ((has("exit_code") | not) or (.exit_code == 0))' \
             test-results/sandbox-egress/ipv6-policy.json >/dev/null
           probes="$(node --import tsx --input-type=module -e '
             import {
@@ -141,15 +141,15 @@ jobs:
           printf '%s' "$forbidden_probe" >test-results/sandbox-egress/forbidden-command.txt
           flyctl machine exec "$machine_id" \
             --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
-            --json "runuser -u node -- $allowed_probe" \
+            --json "runuser -u node -- $allowed_probe && echo mendpoint-exec-ok" \
             >test-results/sandbox-egress/allowed-local.json
-          jq -e '.stdout == "mendpoint-egress-allowed\n" and has("exit_code") and (.exit_code == 0)' \
+          jq -e '.stdout == "mendpoint-egress-allowed\nmendpoint-exec-ok\n" and ( .stderr // "" ) == "" and ((has("exit_code") | not) or (.exit_code == 0))' \
             test-results/sandbox-egress/allowed-local.json >/dev/null
           flyctl machine exec "$machine_id" \
             --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
-            --json "runuser -u node -- $forbidden_probe" \
+            --json "runuser -u node -- $forbidden_probe && echo mendpoint-exec-ok" \
             >test-results/sandbox-egress/forbidden-outbound.json
-          jq -e '.stdout == "mendpoint-egress-blocked\n" and has("exit_code") and (.exit_code == 0)' \
+          jq -e '.stdout == "mendpoint-egress-blocked\nmendpoint-exec-ok\n" and ( .stderr // "" ) == "" and ((has("exit_code") | not) or (.exit_code == 0))' \
             test-results/sandbox-egress/forbidden-outbound.json >/dev/null
           tested_at="$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')"
           expires_at="$(date -u -d '+23 hours' '+%Y-%m-%dT%H:%M:%S.000Z')"

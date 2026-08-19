@@ -34,11 +34,20 @@ describe("sandbox image default-deny egress", () => {
     expect(workflow).toContain("sandbox_machine_not_destroyed");
     expect(workflow).toContain("all(.[]; .id != $id)");
     expect(workflow).toContain("expected_digest=");
-    expect(workflow).toContain('.stdout == \"mendpoint-egress-blocked\\n\"');
+    expect(workflow).toContain(
+      '.stdout == \"mendpoint-egress-blocked\\nmendpoint-exec-ok\\n\"',
+    );
     expect(workflow).toContain("SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND");
     expect(workflow).not.toContain("fetch(process.argv[1])");
     expect(workflow).not.toContain(".exit_code // 0");
-    expect(workflow).toContain('has(\"exit_code\") and (.exit_code == 0)');
+    expect(workflow).not.toContain('has(\"exit_code\") and (.exit_code == 0)');
+    expect(workflow).toContain("iptables -S OUTPUT && echo mendpoint-exec-ok");
+    expect(workflow).toContain("ip6tables -S OUTPUT && echo mendpoint-exec-ok");
+    expect(workflow).toContain("$allowed_probe && echo mendpoint-exec-ok");
+    expect(workflow).toContain("$forbidden_probe && echo mendpoint-exec-ok");
+    expect(workflow).toContain('((has(\"exit_code\") | not) or (.exit_code == 0))');
+    expect(workflow).toContain('( .stderr // \"\" ) == \"\"');
+    expect(workflow.match(/mendpoint-exec-ok/g)?.length).toBeGreaterThanOrEqual(8);
     expect(workflow).toContain("MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64");
     expect(workflow).toContain("MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA");
     expect(workflow).not.toContain("continue-on-error");
