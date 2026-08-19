@@ -309,6 +309,74 @@ function assertVerificationAuthority(
   }
 }
 
+function assertCandidateAuthority(
+  db: AppDb,
+  trial: DelegatedPrTrialEvidence,
+  producerPrincipalId: string,
+  producerVersion: string,
+  result: Record<string, unknown>,
+): void {
+  const row = loadManifest(db, trial.tenantId, trial.candidate.artifact.artifactId);
+  if (!row?.content_text || row.kind !== "delegated_pr_candidate" || row.schema_version !== 1 ||
+      row.media_type !== "application/vnd.mendpoint.delegated-pr-candidate+json" ||
+      row.producer_principal_id !== producerPrincipalId || row.sha256 !== trial.candidate.artifact.sha256 ||
+      !SHA256.test(row.sha256) || row.size_bytes !== Buffer.byteLength(row.content_text, "utf8") ||
+      contentDigest(row.content_text) !== row.sha256) {
+    throw new Error("delegated_pr_trial_candidate_artifact_invalid");
+  }
+  const claims = parseObject(row.content_text, "delegated_pr_trial_candidate_artifact_invalid");
+  exactKeys(claims, ["schemaVersion", "kind", "tenantId", "runId", "jobId", "repositoryId",
+    "snapshotId", "revision", "sourceManifestSha256", "sourceTreeDigest", "candidateTreeDigest",
+    "candidateManifestSha256", "changedPaths", "createdAt"],
+  "delegated_pr_trial_candidate_artifact_invalid");
+  if (canonical(claims) !== row.content_text) {
+    throw new Error("delegated_pr_trial_candidate_artifact_invalid");
+  }
+  const snapshotId = typeof claims.snapshotId === "string" ? claims.snapshotId : "";
+  const source = object(result.source);
+  const artifacts = object(result.artifacts);
+  const snapshot = db.raw.prepare(
+    `SELECT repository_id, resolved_sha, manifest_sha256 FROM repository_snapshots
+       WHERE tenant_id = ? AND id = ?`,
+  ).get(trial.tenantId, snapshotId) as
+    | { repository_id: string; resolved_sha: string; manifest_sha256: string }
+    | undefined;
+  if (claims.schemaVersion !== 1 || claims.kind !== "delegated_pr_candidate" ||
+      claims.tenantId !== trial.tenantId || claims.runId !== trial.runId || claims.jobId !== trial.jobId ||
+      claims.repositoryId !== trial.source.repositoryId || claims.snapshotId !== trial.source.snapshotArtifact.artifactId ||
+      claims.revision !== trial.source.revision || claims.sourceTreeDigest !== trial.source.treeDigest ||
+      claims.candidateTreeDigest !== trial.candidate.treeDigest || claims.createdAt !== trial.candidate.createdAt ||
+      canonical(claims.changedPaths) !== canonical(trial.candidate.changedPaths) ||
+      typeof claims.sourceManifestSha256 !== "string" || !SHA256.test(claims.sourceManifestSha256) ||
+      typeof claims.candidateManifestSha256 !== "string" || !DIGEST.test(claims.candidateManifestSha256) ||
+      !snapshot || snapshot.repository_id !== claims.repositoryId || snapshot.resolved_sha !== claims.revision ||
+      snapshot.manifest_sha256 !== claims.sourceManifestSha256 ||
+      source?.repositoryId !== claims.repositoryId || source.snapshotId !== claims.snapshotId ||
+      source.revision !== claims.revision || source.manifestSha256 !== claims.sourceManifestSha256 ||
+      artifacts?.sourceDigest !== claims.sourceTreeDigest || artifacts.candidateDigest !== claims.candidateTreeDigest ||
+      artifacts.candidateManifestSha256 !== claims.candidateManifestSha256) {
+    throw new Error("delegated_pr_trial_candidate_binding_invalid");
+  }
+  const evidence = db.raw.prepare(
+    `SELECT * FROM evidence_records WHERE tenant_id = ? AND subject_type = 'delegated_pr_candidate'
+       AND subject_id = ? ORDER BY created_at, id`,
+  ).all(trial.tenantId, trial.runId) as EvidenceRecordRow[];
+  if (evidence.length !== 1 || evidence[0]!.artifact_id !== row.id || evidence[0]!.input_artifact_id !== null ||
+      evidence[0]!.producer_principal_id !== producerPrincipalId ||
+      evidence[0]!.tool !== "mendpoint-candidate-authority" || evidence[0]!.tool_version !== producerVersion ||
+      evidence[0]!.commit_sha !== producerVersion || evidence[0]!.verdict !== "passed") {
+    throw new Error("delegated_pr_trial_candidate_evidence_invalid");
+  }
+  const principal = db.raw.prepare(
+    `SELECT * FROM principals WHERE tenant_id = ? AND id = ? AND kind = 'service'`,
+  ).get(trial.tenantId, producerPrincipalId) as PrincipalRow | undefined;
+  if (!principal || principal.created_at > evidence[0]!.created_at ||
+      principal.revoked_at && principal.revoked_at <= evidence[0]!.created_at ||
+      principal.expires_at && principal.expires_at <= evidence[0]!.created_at) {
+    throw new Error("delegated_pr_trial_candidate_evidence_invalid");
+  }
+}
+
 function assertClaimArtifacts(
   db: AppDb,
   trial: DelegatedPrTrialEvidence,
@@ -401,6 +469,8 @@ function assertDurableBindings(
   trial: DelegatedPrTrialEvidence,
   inventory: VerifiedFettlerDelegationEvidence,
   contract: DelegatedPrAcceptanceContract,
+  producerPrincipalId: string,
+  producerVersion: string,
 ): void {
   if (!inventory.auditIntegrity.ok) throw new Error("delegated_pr_trial_audit_invalid");
   const run = observed(inventory.agentRun, "delegated_pr_trial_run_not_observed");
@@ -429,6 +499,7 @@ function assertDurableBindings(
   const model = object(metrics?.model);
   const provenance = model?.provenance;
   const changedPaths = JSON.parse(run.files_changed_json) as unknown;
+  assertCandidateAuthority(db, trial, producerPrincipalId, producerVersion, result);
   const plannerSources = trajectory.steps
     .filter((step) => step.stepKind === "model_call")
     .map((step) => step.plannerSource)
@@ -442,11 +513,12 @@ function assertDurableBindings(
       trial.meter.costMeasured !== meter.costMeasured || trial.meter.costUsd !== meter.costUsd ||
       trial.meter.inputTokens !== meter.inputTokens || trial.meter.outputTokens !== meter.outputTokens ||
       trial.meter.durationMs !== meter.durationMs || canonical(trial.candidate.changedPaths) !== canonical(changedPaths) ||
-      normalizeSha(String(artifacts?.candidateDigest ?? "")) !== trial.candidate.artifact.sha256) {
+      String(artifacts?.candidateDigest ?? "") !== trial.candidate.treeDigest) {
     throw new Error("delegated_pr_trial_execution_binding_mismatch");
   }
   if (run.created_at !== trial.startedAt || meter.createdAt !== trial.startedAt ||
-      run.finished_at !== trial.candidate.createdAt || meter.candidateReadyAt !== trial.candidate.createdAt) {
+      meter.candidateReadyAt !== trial.candidate.createdAt ||
+      typeof run.finished_at !== "string" || Date.parse(run.finished_at) < Date.parse(trial.candidate.createdAt)) {
     throw new Error("delegated_pr_trial_execution_timeline_mismatch");
   }
 
@@ -457,14 +529,14 @@ function assertDurableBindings(
       trial.source.remoteRepositoryId !== cycle.remoteRepositoryId || trial.source.installationId !== cycle.installationId ||
       trial.candidate.commitSha !== delivery.commitSha || trial.delivery.repositoryId !== delivery.repositoryId ||
       trial.delivery.baseBranch !== delivery.baseBranch || trial.delivery.headBranch !== delivery.branchName ||
-      trial.delivery.pullRequestNumber !== delivery.draftPrNumber || trial.delivery.candidateDigest !== normalizeSha(approval.candidate.digest) ||
+      trial.delivery.pullRequestNumber !== delivery.draftPrNumber || trial.delivery.candidateDigest !== approval.candidate.digest ||
       trial.delivery.installationId !== cycle.installationId || trial.delivery.remoteRepositoryId !== cycle.remoteRepositoryId ||
       trial.approval.auditEventId !== approval.auditEvents[0]!.id || trial.approval.requestId !== approval.requestIds[0] ||
       trial.approval.membershipEvidenceId !== approval.membershipEvidenceId ||
       trial.approval.principalId !== approval.reviewerPrincipalId ||
       trial.approval.trustPrincipalId !== approval.trustPrincipalId || trial.approval.authMethod !== approval.authMethod ||
       trial.approval.approvedAt !== approval.reviewedAt ||
-      trial.approval.candidateDigest !== normalizeSha(approval.candidate.digest) ||
+      trial.approval.candidateDigest !== approval.candidate.digest ||
       trial.approval.sealArtifact.artifactId !== approval.seal.path ||
       trial.approval.sealArtifact.sha256 !== normalizeSha(approval.seal.sha256)) {
     throw new Error("delegated_pr_trial_review_delivery_mismatch");
@@ -631,7 +703,9 @@ export function createStoredDelegatedPrTrialAuthority(
         throw new Error("delegated_pr_trial_cleanup_binding_mismatch");
       }
       assertEvent(db, bundle, row, evidence, config.producerPrincipalId);
-      assertDurableBindings(db, bundle.trial, inventory, config.contract);
+      assertDurableBindings(
+        db, bundle.trial, inventory, config.contract, config.producerPrincipalId, config.producerVersion,
+      );
       assertClaimArtifacts(db, bundle.trial, config.producerPrincipalId);
       const verified = await verifySoftwareAttestation({
         envelope: bundle.trial.attestation,

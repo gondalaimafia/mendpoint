@@ -2554,8 +2554,8 @@ Objective: land the fail-closed sandbox containment and result-integrity contrac
 - [x] Configure CI demo processes explicitly as `local` while preserving production Fly as `fly_machines`.
 - [x] Run focused Ops, Platform, Worker, startup, deployment E2E, typecheck, build, GA, audit, and diff gates.
 - [x] Correct the live Fly exec evidence contract after runs `32308148571` and `32309223296` proved successful commands omit `exit_code` and compound commands require an explicit shell.
-- [ ] Rerun the protected v2 proof, verify zero residual sandbox machines, and rotate the exact signed receipt.
-- [ ] Obtain strict P0 and P1 review, publish, merge, deploy, and verify production health before building the delegated trial producer.
+- [x] Rerun the protected v2 proof, verify zero residual sandbox machines, and rotate the exact signed receipt.
+- [x] Obtain strict P0 and P1 review, publish, merge, deploy, and verify production health before building the delegated trial producer.
 
 Acceptance: production never silently defaults to host execution; customer profiles require the pinned Fly sandbox and verified egress attestation; an absent execution exit code cannot become success; ambiguous egress failures cannot prove containment; demo and CI host execution remains explicit and auditable; and the exact deployed main revision remains healthy.
 
@@ -2564,3 +2564,20 @@ Review before publication: the protected acceptance receipt is now schema v2 and
 Verification before publication: focused sandbox, startup, customer-profile, and workflow coverage passes 136 of 136 tests; the post-review API, worker, Ops, and script correction matrix also passes. The complete Worker package passes 347 of 347, the complete repository and script test command passes, every workspace and scripts typecheck passes, the optimized 50-page production build passes, GA specification and governance checks pass, and the production dependency audit reports zero vulnerabilities. An independent strict review found no remaining P0 or P1 after the role-boundary corrections. The local deployment browser journey could not start because Docker is not installed on this machine; its exact container, crash-recovery, accessibility, and Chromium gate remains mandatory in protected CI before merge.
 
 Protected pre-merge evidence: PR 245 source commit `7a799d4` passed tests, release gates, all container builds, and the deployment E2E Chromium and crash-recovery journey in workflow `32306984027`. PR 242 was closed as superseded rather than merging its stale red branch.
+
+Post-deploy evidence: PR 247 merged as `43ec87e0b55cf5451694887e904e307d70b2da20`. Protected sandbox acceptance run `32310817758` passed authority validation, default-deny and local-execution proof, v2 receipt signing and verification, production secret rotation, evidence upload, and teardown. `mendpoint-sandbox` lists zero Machines. Main workflow `32310192697` attempt two passed every test, evaluation, release, container, browser, deployment, and production-health job. The production Machine reports one passing check; `/livez` and `/healthz` return HTTP 200 with API and worker healthy. Live Chromium checks on the home, Fettler, and Regauge pages at 1440 by 900 and 375 by 812 returned HTTP 200, zero horizontal overflow, zero serious or critical accessibility violations, zero console errors, and zero actionable request failures.
+
+## Delegated candidate promotion and independent verification: 2026-08-19
+
+Objective: turn one exact `candidate_ready` Fettler run into immutable candidate and independent verifier evidence that the existing stored-trial authority can consume. No approval, GitHub delivery, cleanup, or enterprise-acceptance claim may be inferred from this slice.
+
+- [x] Add red tests proving a candidate-ready run with only attempt-engine verification cannot satisfy delegated verification authority.
+- [ ] Validate the exact source and candidate trees, manifest, evidence, tenant, repository, snapshot, revision, changed paths, and allowed verification commands before any external verifier effect.
+- [x] Publish one content-addressed `delegated_pr_candidate` artifact bound to the durable run and exact source authority.
+- [ ] Execute fail-to-pass and pass-to-pass through an independent, configured verifier principal and sandbox authority without accepting caller-authored verdicts.
+- [ ] Persist two exact `delegated_pr_verification_execution` artifacts plus evidence rows atomically only after both command contracts pass.
+- [ ] Make dispatch replay safe across response loss and reject same-key content drift without repeating spend or verifier effects.
+- [ ] Wire the operation behind a default-off worker job that derives authority from server configuration and durable IDs only.
+- [ ] Run focused red and green tests, affected full suites and typechecks, repository gates, build, strict review, protected publication, and live fail-closed verification.
+
+Acceptance: no caller can mint candidate or verifier success from JSON, paths, booleans, or digests alone. Every accepted artifact is tenant scoped, content addressed, immutable, bound to one durable run and snapshot, produced by an active independent service principal, and replay safe. Deterministic attempt-engine checks remain necessary but cannot substitute for independent delegated verification.

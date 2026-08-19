@@ -287,7 +287,7 @@ function trial(): DelegatedPrTrialEvidence {
 }
 
 function contentArtifact(artifactId: string, value: unknown) {
-  const content = JSON.stringify(value);
+  const content = JSON.stringify(canonicalValue(value));
   return {
     artifact: { artifactId, sha256: createHash("sha256").update(content).digest("hex") },
     content,
@@ -296,14 +296,25 @@ function contentArtifact(artifactId: string, value: unknown) {
 
 function bindAuthorityArtifacts(value: DelegatedPrTrialEvidence): Readonly<{
   trial: DelegatedPrTrialEvidence;
-  contents: Readonly<Record<string, Readonly<{ content: string; kind: string; producer: string }>>>;
+  contents: Readonly<Record<string, Readonly<{
+    content: string; kind: string; producer: string; mediaType?: string;
+  }>>>;
 }> {
   const candidateClaims = {
     schemaVersion: 1,
     kind: "delegated_pr_candidate",
     tenantId: value.tenantId,
     runId: value.runId,
+    jobId: value.jobId,
+    repositoryId: value.source.repositoryId,
+    snapshotId: value.source.snapshotArtifact.artifactId,
+    revision: value.source.revision,
+    sourceManifestSha256: hex("4"),
+    sourceTreeDigest: value.source.treeDigest,
+    candidateTreeDigest: value.candidate.treeDigest,
+    candidateManifestSha256: `sha256:${hex("f")}`,
     changedPaths: value.candidate.changedPaths,
+    createdAt: value.candidate.createdAt,
   };
   const candidate = contentArtifact(value.candidate.artifact.artifactId, candidateClaims);
   const verification = (role: "fail_to_pass" | "pass_to_pass", execution: typeof value.verification.failToPass) => {
@@ -315,7 +326,7 @@ function bindAuthorityArtifacts(value: DelegatedPrTrialEvidence): Readonly<{
       tenantId: value.tenantId,
       runId: value.runId,
       candidateArtifact: candidate.artifact,
-      execution: { ...executionClaims, candidateDigest: candidate.artifact.sha256 },
+      execution: { ...executionClaims, candidateDigest: value.candidate.treeDigest },
     });
   };
   const fail = verification("fail_to_pass", value.verification.failToPass);
@@ -331,11 +342,11 @@ function bindAuthorityArtifacts(value: DelegatedPrTrialEvidence): Readonly<{
     candidate: { ...value.candidate, artifact: candidate.artifact },
     verification: {
       ...value.verification,
-      failToPass: { ...value.verification.failToPass, artifact: fail.artifact, candidateDigest: candidate.artifact.sha256 },
-      passToPass: { ...value.verification.passToPass, artifact: pass.artifact, candidateDigest: candidate.artifact.sha256 },
+      failToPass: { ...value.verification.failToPass, artifact: fail.artifact, candidateDigest: value.candidate.treeDigest },
+      passToPass: { ...value.verification.passToPass, artifact: pass.artifact, candidateDigest: value.candidate.treeDigest },
     },
-    approval: { ...value.approval, candidateDigest: candidate.artifact.sha256 },
-    delivery: { ...value.delivery, artifact: delivery.artifact, candidateDigest: candidate.artifact.sha256 },
+    approval: { ...value.approval, candidateDigest: value.candidate.treeDigest },
+    delivery: { ...value.delivery, artifact: delivery.artifact, candidateDigest: value.candidate.treeDigest },
     cleanup: { ...value.cleanup, rollbackArtifact: cleanup.artifact },
   };
   const { artifact: _deliveryArtifact, ...deliveryClaims } = trialValue.delivery;
@@ -373,7 +384,8 @@ function bindAuthorityArtifacts(value: DelegatedPrTrialEvidence): Readonly<{
   return {
     trial: fullyBoundTrial,
     contents: {
-      [candidate.artifact.artifactId]: { content: candidate.content, kind: "delegated_pr_candidate", producer: "trial-service" },
+      [candidate.artifact.artifactId]: { content: candidate.content, kind: "delegated_pr_candidate",
+        producer: "trial-service", mediaType: "application/vnd.mendpoint.delegated-pr-candidate+json" },
       [fail.artifact.artifactId]: { content: fail.content, kind: "delegated_pr_verification_execution", producer: "verifier-a" },
       [pass.artifact.artifactId]: { content: pass.content, kind: "delegated_pr_verification_execution", producer: "verifier-a" },
       [delivery.artifact.artifactId]: { content: delivery.content, kind: "delegated_pr_github_observation", producer: "trial-service" },
@@ -399,12 +411,24 @@ function inventoryFor(
       id: value.runId,
       job_id: value.jobId,
       result_json: JSON.stringify({
-        artifacts: { candidateDigest: value.candidate.artifact.sha256, candidateManifestSha256: hex("f") },
+        source: {
+          repositoryId: value.source.repositoryId,
+          snapshotId: value.source.snapshotArtifact.artifactId,
+          revision: value.source.revision,
+          manifestSha256: hex("4"),
+        },
+        artifacts: {
+          sourceDigest: value.source.treeDigest,
+          candidateDigest: value.candidate.treeDigest,
+          candidateManifestSha256: `sha256:${hex("f")}`,
+        },
         agent: { metrics: { model: { provenance: value.model.provenance } } },
       }),
       files_changed_json: JSON.stringify(value.candidate.changedPaths),
       created_at: value.startedAt,
-      finished_at: value.candidate.createdAt,
+      // Candidate review updates the run lifecycle timestamp. Candidate readiness
+      // remains bound to the sealed candidate artifact and durable run meter.
+      finished_at: value.approval.approvedAt,
     } },
     job: { status: "observed", value: { id: value.jobId } },
     trajectory: { status: "observed", value: { trajectory: {}, steps: [{ stepKind: "model_call", plannerSource: "model" }] } },
@@ -428,7 +452,7 @@ function inventoryFor(
       reviewedAt: value.approval.approvedAt,
       requestIds: [value.approval.requestId],
       seal: { path: value.approval.sealArtifact.artifactId, sha256: `sha256:${value.approval.sealArtifact.sha256}` },
-      candidate: { digest: value.candidate.artifact.sha256, candidateManifestSha256: hex("f") },
+      candidate: { digest: value.candidate.treeDigest, candidateManifestSha256: `sha256:${hex("f")}` },
     } },
     candidateDelivery: { status: "observed", value: {
       delivery: {
@@ -490,7 +514,11 @@ function inventoryFor(
   };
 }
 
-async function fixture(options: Readonly<{ skipArtifactId?: string }> = {}) {
+async function fixture(options: Readonly<{
+  skipArtifactId?: string;
+  skipCandidateEvidence?: boolean;
+  skipVerificationEvidence?: boolean;
+}> = {}) {
   const root = mkdtempSync(join(tmpdir(), "delegated-trial-authority-"));
   roots.push(root);
   const db = createDb(join(root, "authority.sqlite"));
@@ -504,6 +532,23 @@ async function fixture(options: Readonly<{ skipArtifactId?: string }> = {}) {
     displayName: "Delegated trial controller",
     createdAt: "2026-08-18T12:00:00.000Z",
   });
+  db.raw.prepare(`INSERT INTO scm_connections
+    (id, tenant_id, provider, credential_ref, external_account_id, display_name,
+     created_at, updated_at)
+    VALUES ('connection-a', 'tenant-a', 'github', 'secret://github/app', 'account-a',
+      'GitHub', '2026-08-18T12:00:00.000Z', '2026-08-18T12:00:00.000Z')`).run();
+  db.raw.prepare(`INSERT INTO connected_repositories
+    (id, tenant_id, connection_id, remote_id, owner, name, default_branch,
+     selected_branch, environment, retention_days, status, created_at, updated_at)
+    VALUES ('repo-a', 'tenant-a', 'connection-a', '99', 'acme', 'repo', 'main', 'main',
+      'production', 30, 'ready', '2026-08-18T12:00:00.000Z', '2026-08-18T12:00:00.000Z')`).run();
+  db.raw.prepare(`INSERT INTO repository_snapshots
+    (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256,
+     storage_path, submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version,
+     created_at, expires_at)
+    VALUES ('snapshot-a', 'tenant-a', 'repo-a', 'main', ?, ?, '/snapshots/a', 'reject',
+      'reject', '[]', 1, '2026-08-18T12:00:00.000Z', '2026-08-20T12:00:00.000Z')`)
+    .run(revision("a"), hex("4"));
   insertPrincipal(db, {
     id: "verifier-a",
     tenantId: "tenant-a",
@@ -540,7 +585,7 @@ async function fixture(options: Readonly<{ skipArtifactId?: string }> = {}) {
       kind: entry.kind,
       schemaVersion: 1,
       sha256: createHash("sha256").update(entry.content).digest("hex"),
-      mediaType: "application/json",
+      mediaType: entry.mediaType ?? "application/json",
       sizeBytes: Buffer.byteLength(entry.content),
       storageRef: `sqlite://${artifactId}`,
       content: entry.content,
@@ -548,10 +593,26 @@ async function fixture(options: Readonly<{ skipArtifactId?: string }> = {}) {
       createdAt: "2026-08-18T12:03:00.000Z",
     });
   }
+  if (!options.skipCandidateEvidence) {
+    insertEvidenceRecord(db, {
+      id: "candidate-evidence",
+      tenantId: "tenant-a",
+      subjectType: "delegated_pr_candidate",
+      subjectId: evidence.runId,
+      artifactId: evidence.candidate.artifact.artifactId,
+      producerPrincipalId: "trial-service",
+      tool: "mendpoint-candidate-authority",
+      toolVersion: resolvedContract.mendpointRevision,
+      commitSha: resolvedContract.mendpointRevision,
+      verdict: "passed",
+      createdAt: evidence.candidate.createdAt,
+    });
+  }
   for (const [role, execution] of [
     ["fail_to_pass", evidence.verification.failToPass],
     ["pass_to_pass", evidence.verification.passToPass],
   ] as const) {
+    if (options.skipVerificationEvidence) continue;
     insertEvidenceRecord(db, {
       id: `verification-evidence-${role}`,
       tenantId: "tenant-a",
@@ -698,6 +759,20 @@ describe("stored delegated PR trial authority", () => {
     await expect(authority.loadTrial({ tenantId: "tenant-a", runId: "run-a", correlationId: "corr-a", trial: 1 }))
       .resolves.toBeNull();
     expect(evidence.runId).toBe("run-a");
+  });
+
+  it("does not treat attempt-engine success as delegated candidate or independent verifier authority", async () => {
+    const missingCandidate = await fixture({ skipCandidateEvidence: true });
+    persistBundle(missingCandidate.db, missingCandidate.evidence);
+    await expect(missingCandidate.authority.loadTrial({
+      tenantId: "tenant-a", runId: "run-a", correlationId: "corr-a", trial: 1,
+    })).rejects.toThrow("delegated_pr_trial_candidate_evidence_invalid");
+
+    const missingVerifier = await fixture({ skipVerificationEvidence: true });
+    persistBundle(missingVerifier.db, missingVerifier.evidence);
+    await expect(missingVerifier.authority.loadTrial({
+      tenantId: "tenant-a", runId: "run-a", correlationId: "corr-a", trial: 1,
+    })).rejects.toThrow("delegated_pr_trial_verification_evidence_invalid");
   });
 
   it("loads one immutable trusted bundle and rechecks the durable run and cleanup bindings", async () => {
