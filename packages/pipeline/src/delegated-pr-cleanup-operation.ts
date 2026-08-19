@@ -18,6 +18,7 @@ import {
   type ExactHeadRefCompareAndDeleteAuthority,
 } from "@mendpoint/github";
 import type {
+  SoftwareAttestationScope,
   SoftwareAttestationSigner,
   SoftwareAttestationTrustPolicy,
 } from "@mendpoint/contract";
@@ -84,6 +85,7 @@ export type VerifiedFettlerCleanupEvidence = Readonly<{
   artifact: Readonly<{ artifactId: string; sha256: string }>;
   attestationId: string;
   signerKeyIds: readonly string[];
+  attestationScope: SoftwareAttestationScope;
   observedAt: string;
   cleanup: ExactDraftCleanupEvidence;
 }>;
@@ -639,6 +641,7 @@ export async function getVerifiedFettlerDelegationEvidence(
         },
         attestationId: verified.attestation.statement.predicate.attestationId,
         signerKeyIds: verified.attestation.keys.map((key) => key.keyId),
+        attestationScope: verified.attestation.statement.predicate.scope,
         observedAt: verified.observedAt,
         cleanup: verified.cleanup,
       },
