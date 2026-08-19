@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CHANGE_GRAPH_AUTHORITY, checkChangeGraphAuthority } from "./change-graph-authority-check.js";
+import { CHANGE_GRAPH_AUTHORITY, GRAPHIFY_AUTHORITY, checkChangeGraphAuthority } from "./change-graph-authority-check.js";
 
 const roots: string[] = [];
 
@@ -22,6 +22,16 @@ function fixture(authority: Buffer, digest = createHash("sha256").update(authori
   writeFileSync(adrPath, [
     "../authority/Mendpoint_CODEX_Change_Graph_Intelligence_Prompt.md",
     digest,
+  ].join("\n"));
+  const graphifyAuthorityPath = join(root, ...GRAPHIFY_AUTHORITY.path.split("/"));
+  const graphifyAdrPath = join(root, ...GRAPHIFY_AUTHORITY.adrPath.split("/"));
+  mkdirSync(dirname(graphifyAuthorityPath), { recursive: true });
+  mkdirSync(dirname(graphifyAdrPath), { recursive: true });
+  const checkedInGraphify = readFileSync(join(process.cwd(), ...GRAPHIFY_AUTHORITY.path.split("/")));
+  writeFileSync(graphifyAuthorityPath, checkedInGraphify);
+  writeFileSync(graphifyAdrPath, [
+    "../authority/Codex_Master_Prompt_Integrate_Graphify_Into_the_Mendpoint_Change_Graph.md",
+    GRAPHIFY_AUTHORITY.sha256,
   ].join("\n"));
   return root;
 }
@@ -43,8 +53,8 @@ describe("Change Graph authority gate", () => {
     const adrPath = join(root, ...CHANGE_GRAPH_AUTHORITY.adrPath.split("/"));
     writeFileSync(adrPath, "# ADR without a binding\n");
     expect(checkChangeGraphAuthority(root)).toEqual(expect.arrayContaining([
-      "ADR does not link the checked in authority document",
-      "ADR does not bind the authority digest",
+      expect.stringContaining("ADR does not link the checked in authority document"),
+      expect.stringContaining("ADR does not bind the authority digest"),
     ]));
   });
 });

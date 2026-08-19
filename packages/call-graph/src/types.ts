@@ -33,6 +33,11 @@ export type FunctionNode = {
   signature?: string;
   /** Content hash of function body for incremental rebuild */
   bodyHash?: string;
+  /** Mendpoint-owned provenance for an alternate structural extractor. */
+  structuralSource?: {
+    extractor: { id: string; version: string; digest: string };
+    evidenceRefs: string[];
+  };
 };
 
 export type CallEdge = {
@@ -46,6 +51,11 @@ export type CallEdge = {
   confidence: CallEdgeConfidence;
   /** True if virtual/dynamic dispatch approximation */
   virtual: boolean;
+  /** Mendpoint-owned provenance for an alternate structural extractor. */
+  structuralSource?: {
+    extractor: { id: string; version: string; digest: string };
+    evidenceRefs: string[];
+  };
 };
 
 export type TypeHierarchy = {
