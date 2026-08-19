@@ -18,6 +18,7 @@ import {
 } from "./fly-sandbox.js";
 import {
   SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND,
   SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
   sandboxEgressAttestationPayloadBytes,
 } from "./sandbox-egress-attestation.js";
@@ -672,7 +673,7 @@ describe("production default-deny egress authority", () => {
       expect(result).toMatchObject({ ok: false, exitCode: -1 });
       expect(result.stderr).toContain("sandbox_egress_policy_unverified");
       expect(commands).toHaveLength(1);
-      expect(commands[0]).toContain(SANDBOX_EGRESS_FORBIDDEN_PROBE_URL);
+      expect(commands[0]).toContain(SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND);
       expect(commands[0]).not.toContain("CUSTOMER_COMMAND_MUST_NOT_RUN");
     } finally {
       await sbx.destroy();
@@ -702,8 +703,115 @@ describe("production default-deny egress authority", () => {
       const result = await sbx.runIsolated("CUSTOMER_VERIFICATION");
       expect(result).toMatchObject({ ok: true, exitCode: 0, stdout: "customer verified" });
       expect(commands).toHaveLength(3);
-      expect(commands[0]).toContain(SANDBOX_EGRESS_FORBIDDEN_PROBE_URL);
+      expect(commands[0]).toContain(SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND);
       expect(commands[2]).toContain("CUSTOMER_VERIFICATION");
+    } finally {
+      await sbx.destroy();
+    }
+  });
+
+  // Defect: Fly can return a reshaped or truncated /exec body with no exit_code.
+  // Absence must fail closed at each of the three consumer sites, never read as 0.
+  it("refuses at the forbidden-egress gate when the probe returns no exit code", async () => {
+    const commands: string[] = [];
+    const client = liveClient({
+      exec(input) {
+        commands.push(input.command.join(" "));
+        // No exit_code field at all: the "Fly never reported one" third state.
+        return { exit_code: undefined, stdout: "", stderr: "" };
+      },
+    });
+    const sbx = createFlyMachinesSandbox(
+      flyOpts(client, {
+        fly: { app: APP, image: DIGEST, egressAuthority: signedEgressAuthority(APP, DIGEST) },
+      }),
+    );
+    try {
+      const result = await sbx.runIsolated("CUSTOMER_COMMAND_MUST_NOT_RUN");
+      expect(result).toMatchObject({ ok: false, exitCode: -1 });
+      expect(result.stderr).toContain("sandbox_egress_policy_unverified");
+      // Only the forbidden probe ran; the customer command never executed.
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).not.toContain("CUSTOMER_COMMAND_MUST_NOT_RUN");
+    } finally {
+      await sbx.destroy();
+    }
+  });
+
+  it("refuses at the allowed-path gate when that probe returns no exit code", async () => {
+    const commands: string[] = [];
+    const client = liveClient({
+      exec(input) {
+        commands.push(input.command.join(" "));
+        // Forbidden probe proves blocked (0); the allowed probe reports no code.
+        return commands.length === 1
+          ? { exit_code: 0, stdout: "", stderr: "" }
+          : { exit_code: undefined, stdout: "", stderr: "" };
+      },
+    });
+    const sbx = createFlyMachinesSandbox(
+      flyOpts(client, {
+        fly: { app: APP, image: DIGEST, egressAuthority: signedEgressAuthority(APP, DIGEST) },
+      }),
+    );
+    try {
+      const result = await sbx.runIsolated("CUSTOMER_COMMAND_MUST_NOT_RUN");
+      expect(result).toMatchObject({ ok: false, exitCode: -1 });
+      expect(result.stderr).toContain("allowed local verification probe did not pass");
+      expect(commands).toHaveLength(2);
+      expect(commands[1]).not.toContain("CUSTOMER_COMMAND_MUST_NOT_RUN");
+    } finally {
+      await sbx.destroy();
+    }
+  });
+
+  it("never mints a passing verification when the customer command returns no exit code", async () => {
+    const commands: string[] = [];
+    const client = liveClient({
+      exec(input) {
+        commands.push(input.command.join(" "));
+        // Both egress probes pass; the customer command's response carries no code.
+        return commands.length <= 2
+          ? { exit_code: 0, stdout: "", stderr: "" }
+          : { exit_code: undefined, stdout: "customer output", stderr: "" };
+      },
+    });
+    const sbx = createFlyMachinesSandbox(
+      flyOpts(client, {
+        fly: { app: APP, image: DIGEST, egressAuthority: signedEgressAuthority(APP, DIGEST) },
+      }),
+    );
+    try {
+      const result = await sbx.runIsolated("CUSTOMER_VERIFICATION");
+      expect(commands).toHaveLength(3);
+      // An absent exit code is not green: ok is false and no exit code is reported.
+      expect(result.ok).toBe(false);
+      expect(result.exitCode).toBeUndefined();
+    } finally {
+      await sbx.destroy();
+    }
+  });
+
+  it("still fails a customer command that exits nonzero (working path unchanged)", async () => {
+    const commands: string[] = [];
+    const client = liveClient({
+      exec(input) {
+        commands.push(input.command.join(" "));
+        return commands.length <= 2
+          ? { exit_code: 0, stdout: "", stderr: "" }
+          : { exit_code: 7, stdout: "", stderr: "boom" };
+      },
+    });
+    const sbx = createFlyMachinesSandbox(
+      flyOpts(client, {
+        fly: { app: APP, image: DIGEST, egressAuthority: signedEgressAuthority(APP, DIGEST) },
+      }),
+    );
+    try {
+      const result = await sbx.runIsolated("CUSTOMER_VERIFICATION");
+      expect(commands).toHaveLength(3);
+      expect(result.ok).toBe(false);
+      expect(result.exitCode).toBe(7);
     } finally {
       await sbx.destroy();
     }
@@ -861,6 +969,39 @@ describe("REST client retry on transient Fly API failures", () => {
       }),
     ).rejects.toBeInstanceOf(FlySandboxError);
     expect(calls).toBe(1);
+  });
+
+  it("exec maps an absent exit_code to undefined (no 0 default is substituted)", async () => {
+    // A reshaped or truncated /exec body: stdout present, exit_code omitted entirely.
+    const fetchImpl = vi.fn(async () => jsonResponse({ stdout: "partial", stderr: "" }));
+    const client = createFlyRestClient({
+      token: "token-sentinel",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      retry: { baseMs: 1, sleep: () => Promise.resolve() },
+    });
+    const r = await client.exec({ app: "app", id: "m-1", command: ["true"], timeoutMs: 1_000 });
+    expect(r.exit_code).toBeUndefined();
+    expect(r.stdout).toBe("partial");
+  });
+
+  it("exec preserves a reported exit_code (0 and nonzero both survive)", async () => {
+    const bodies = [
+      { exit_code: 0, stdout: "", stderr: "" },
+      { exit_code: 3, stdout: "", stderr: "x" },
+    ];
+    let i = 0;
+    const fetchImpl = vi.fn(async () => jsonResponse(bodies[i++]!));
+    const client = createFlyRestClient({
+      token: "token-sentinel",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      retry: { baseMs: 1, sleep: () => Promise.resolve() },
+    });
+    expect(
+      (await client.exec({ app: "app", id: "m-1", command: ["x"], timeoutMs: 1_000 })).exit_code,
+    ).toBe(0);
+    expect(
+      (await client.exec({ app: "app", id: "m-1", command: ["x"], timeoutMs: 1_000 })).exit_code,
+    ).toBe(3);
   });
 });
 

@@ -41,6 +41,22 @@ const CUSTOMER_BACKUP_ENV = {
   MENDPOINT_BACKUP_CONFIGURATION_PATH: "configuration/recovery.json",
 } satisfies NodeJS.ProcessEnv;
 
+// A customer deployment now requires the network-fenced fly_machines sandbox plus its
+// complete immutable egress-attestation authority. Shared here so customer fixtures
+// configure a real fence instead of silently defaulting to an unfenced local sandbox.
+// (validateApiEnv checks presence and format, not the signature, so placeholder base64
+// values suffice; the signature itself is exercised by the worker preflight tests.)
+const CUSTOMER_SANDBOX_ENV = {
+  MENDPOINT_SANDBOX_KIND: "fly_machines",
+  MENDPOINT_SANDBOX_FLY_APP: "mendpoint-sandbox",
+  MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-token",
+  MENDPOINT_SANDBOX_FLY_IMAGE: `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`,
+  MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: "YXR0ZXN0YXRpb24=",
+  MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64: "cHVibGljLWtleQ==",
+  MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
+  MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: `sha256:${"b".repeat(64)}`,
+} satisfies NodeJS.ProcessEnv;
+
 describe("ops GA", () => {
   beforeEach(() => {
     clearRateLimits();
@@ -115,6 +131,7 @@ describe("ops GA", () => {
       MENDPOINT_DEPLOYMENT_PROFILE: "demo",
       API_AUTH: "required",
       GITHUB_MODE: "mock",
+      MENDPOINT_SANDBOX_KIND: "local",
       MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
       MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
       WEB_URL: "https://mendpoint.example",
@@ -178,6 +195,74 @@ describe("ops GA", () => {
     expect(complete.errors.filter((error) => error.includes("SANDBOX"))).toEqual([]);
   });
 
+  it("refuses production boot when MENDPOINT_SANDBOX_KIND is unset (no silent local default)", () => {
+    const r = validateApiEnv({
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      API_AUTH: "required",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors).toContain(
+      "MENDPOINT_SANDBOX_KIND must be explicitly set to fly_machines, local, vm, or in_cluster in production",
+    );
+  });
+
+  it("refuses a customer profile whose sandbox kind is local (customer code would run unfenced)", () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const r = validateApiEnv({
+      ...CUSTOMER_BACKUP_ENV,
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      MENDPOINT_FEED_POLLING_ENABLED: "1",
+      POLL_LOCAL_ONLY: "0",
+      MENDPOINT_PILOT_SEED: "0",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant_default"}',
+      // Set, well-formed, but not fly_machines: the fence is disabled with no other signal.
+      MENDPOINT_SANDBOX_KIND: "local",
+      MENDPOINT_DATA_DIR: CUSTOMER_BACKUP_ENV.MENDPOINT_BACKUP_SOURCE_ROOT,
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors).toContain(
+      "Customer deployment profile requires MENDPOINT_SANDBOX_KIND=fly_machines; other sandbox kinds run customer code on the worker host with no network fence",
+    );
+  });
+
+  it("boots a correctly configured fly_machines customer profile (working path preserved)", () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const r = validateApiEnv({
+      ...CUSTOMER_BACKUP_ENV,
+      ...CUSTOMER_SANDBOX_ENV,
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+      API_AUTH: "required",
+      GITHUB_MODE: "real",
+      MENDPOINT_DEPLOYMENT_CLASS: "customer",
+      MENDPOINT_FEED_POLLING_ENABLED: "1",
+      POLL_LOCAL_ONLY: "0",
+      MENDPOINT_PILOT_SEED: "0",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant_default"}',
+      MENDPOINT_DATA_DIR: CUSTOMER_BACKUP_ENV.MENDPOINT_BACKUP_SOURCE_ROOT,
+      MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
+      WEB_URL: "https://mendpoint.example",
+    });
+    expect(r.ok).toBe(true);
+  });
+
   it("accepts the dedicated Transformer pilot with customer class GitHub App delivery", () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const report = validateApiEnv({
@@ -190,6 +275,7 @@ describe("ops GA", () => {
       GITHUB_APP_ID: "123",
       GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
       GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant-transformer"}',
+      MENDPOINT_SANDBOX_KIND: "local",
       MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
       MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
     });
@@ -216,6 +302,7 @@ describe("ops GA", () => {
     const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const appOnly = validateApiEnv({
       ...CUSTOMER_BACKUP_ENV,
+      ...CUSTOMER_SANDBOX_ENV,
       NODE_ENV: "production",
       MENDPOINT_DEPLOYMENT_PROFILE: "customer",
       API_AUTH: "required",
@@ -303,6 +390,7 @@ describe("ops GA", () => {
       MENDPOINT_TENANT_ID: "tenant-canary",
       GITHUB_WEBHOOK_SECRET: "secret",
       GITHUB_TOKEN: "fine-grained-pat",
+      MENDPOINT_SANDBOX_KIND: "local",
       MENDPOINT_DATA_DIR: process.platform === "win32" ? "C:\\data" : "/data",
       MENDPOINT_REPOS_DIR: process.platform === "win32" ? "C:\\repos" : "/repos",
       WEB_URL: "https://mendpoint.example",
@@ -390,6 +478,7 @@ describe("ops GA", () => {
     const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const base = {
       ...CUSTOMER_BACKUP_ENV,
+      ...CUSTOMER_SANDBOX_ENV,
       NODE_ENV: "production",
       MENDPOINT_DEPLOYMENT_PROFILE: "customer",
       API_AUTH: "required",
