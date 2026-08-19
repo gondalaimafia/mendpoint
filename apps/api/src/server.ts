@@ -539,7 +539,7 @@ function requestAudit(
   recordAudit(db, {
     ...input,
     tenantId: principal.tenantId,
-    principalId: principal.id,
+    principalId: c.get("trustPrincipalId") ?? principal.id,
     apiKeyId: c.get("apiKeyId") ?? null,
     requestId: c.get("requestId") ?? null,
   });

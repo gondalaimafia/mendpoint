@@ -719,6 +719,19 @@ export {
 } from "./exact-draft-observer.js";
 
 export {
+  cleanupExactDraftWithOctokit,
+  exactDraftCleanupOperationId,
+  ExactDraftCleanupNotSupportedError,
+  type ExactDraftCleanupEvidence,
+  type ExactDraftCleanupInput,
+  type ExactDraftCleanupOperationScope,
+  type ExactHeadRefAuthorityReceiptScope,
+  type ExactHeadRefCompareAndDeleteAuthority,
+  type ExactHeadRefCompareAndDeleteInput,
+  type ExactHeadRefCompareAndDeleteResult,
+} from "./exact-draft-cleanup.js";
+
+export {
   updateExactDraftWithOctokit,
   reconcileExactDraftUpdateWithOctokit,
   type ExactDraftUpdateInput,

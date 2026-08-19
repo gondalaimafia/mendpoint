@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -161,6 +162,8 @@ describe("API authentication identity", () => {
       principal: c.get("principal"),
       scopes: c.get("authScopes"),
       trustPrincipalId: c.get("trustPrincipalId"),
+      authMethod: c.get("authMethod"),
+      membershipEvidenceId: c.get("membershipEvidenceId"),
     }));
 
     const response = await app.request("/private", {
@@ -180,12 +183,56 @@ describe("API authentication identity", () => {
       },
       scopes: ["*"],
       trustPrincipalId: expect.stringMatching(/^principal-human-/),
+      authMethod: "oidc",
+      membershipEvidenceId: `membership:${createHash("sha256")
+        .update(`tenant-a\n${oidc.issuer}\nuser-123`, "utf8")
+        .digest("hex")}`,
     });
     expect(
       getPrincipalBySubject(db, "tenant-a", "human", `${oidc.issuer}|user-123`),
     ).toMatchObject({
       display_name: "Membership Owner",
       audience: oidc.issuer,
+    });
+  });
+
+  it("rejects an OIDC identity whose durable trust principal is revoked", async () => {
+    process.env.API_AUTH = "required";
+    const db = testDb();
+    const oidc = await oidcFixture();
+    const observedAt = new Date().toISOString();
+    putTenantMembership(db, {
+      tenantId: "tenant-a",
+      issuer: oidc.issuer,
+      subject: "user-123",
+      email: null,
+      displayName: "Revoked Reviewer",
+      role: "admin",
+      status: "active",
+      updatedAt: observedAt,
+    });
+    insertPrincipal(db, {
+      id: "principal-human-revoked",
+      tenantId: "tenant-a",
+      kind: "human",
+      subject: `${oidc.issuer}|user-123`,
+      displayName: "Revoked Reviewer",
+      audience: oidc.issuer,
+      revokedAt: observedAt,
+      createdAt: "2026-08-01T00:00:00.000Z",
+    });
+    const app = new Hono<ApiEnv>();
+    app.use("*", createAuthMiddleware(db, { oidc: oidc.verifier }));
+    app.get("/private", (c) => c.json({ principal: c.get("principal") }));
+
+    const response = await app.request("/private", {
+      headers: { Authorization: `Bearer ${await oidc.token()}` },
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({
+      error: "unauthorized",
+      message: "trust_principal_inactive",
     });
   });
 

@@ -18,16 +18,58 @@ import {
   WARDEN_WORKER_SOURCE_EVAL_SCENARIO,
 } from "./warden-source-eval.js";
 import { SPECIALIST_AGENT_EVAL_SCENARIOS } from "./specialist-scenarios.js";
+import type { DelegatedPrAcceptanceReport } from "./enterprise-delegation-proof.js";
+
+export type ProductionDelegationSummary = Readonly<{
+  status: "not_measured" | "accepted" | "rejected";
+  delegatedPrAccepted: boolean;
+  proofDigest: string | null;
+  contractDigest: string | null;
+  evidenceDigest: string | null;
+  acceptanceDigest: string | null;
+  verifiedAt: string | null;
+  signerKeyIds: readonly string[];
+  scope: DelegatedPrAcceptanceReport["scope"] | null;
+}>;
 
 export type WardenTransformerEvalReport = Readonly<{
   schemaVersion: 1;
   passed: boolean;
   behavior: AgentEvalReport;
   capability: CapabilityEvalReport;
+  productionDelegation: ProductionDelegationSummary;
 }>;
+
+export function summarizeProductionDelegation(
+  report?: DelegatedPrAcceptanceReport,
+): ProductionDelegationSummary {
+  if (!report) return Object.freeze({
+    status: "not_measured",
+    delegatedPrAccepted: false,
+    proofDigest: null,
+    contractDigest: null,
+    evidenceDigest: null,
+    acceptanceDigest: null,
+    verifiedAt: null,
+    signerKeyIds: Object.freeze([]),
+    scope: null,
+  });
+  return Object.freeze({
+    status: report.delegatedPrAccepted ? "accepted" : "rejected",
+    delegatedPrAccepted: report.delegatedPrAccepted,
+    proofDigest: report.proofDigest,
+    contractDigest: report.contractDigest,
+    evidenceDigest: report.evidenceDigest,
+    acceptanceDigest: report.acceptanceDigest,
+    verifiedAt: report.verifiedAt,
+    signerKeyIds: Object.freeze([...report.signerKeyIds]),
+    scope: Object.freeze({ ...report.scope }),
+  });
+}
 
 export async function runWardenTransformerEval(
   repetitions = 3,
+  delegatedPrReport?: DelegatedPrAcceptanceReport,
 ): Promise<WardenTransformerEvalReport> {
   const behavior = await runAgentEvalScenarios(
     [
@@ -42,12 +84,15 @@ export async function runWardenTransformerEval(
     repetitions,
   );
   const capability = await runCapabilityEval();
+  const productionDelegation = summarizeProductionDelegation(delegatedPrReport);
+  const deterministicPassed = behavior.passed && capability.passed === capability.total &&
+    capability.criticalFailures.length === 0;
   return Object.freeze({
     schemaVersion: 1,
-    passed: behavior.passed && capability.passed === capability.total &&
-      capability.criticalFailures.length === 0,
+    passed: deterministicPassed && (!delegatedPrReport || productionDelegation.delegatedPrAccepted),
     behavior,
     capability,
+    productionDelegation,
   });
 }
 
@@ -84,6 +129,7 @@ async function main(): Promise<void> {
   console.log(`Contract evidence ${report.behavior.byEvidenceLane.contract.passed}/${report.behavior.byEvidenceLane.contract.total}`);
   console.log(`Scripted planner evidence ${report.behavior.byEvidenceLane.simulated_scripted.passed}/${report.behavior.byEvidenceLane.simulated_scripted.total}`);
   console.log(`Live model evidence ${report.behavior.byEvidenceLane.live_model.passed}/${report.behavior.byEvidenceLane.live_model.total}`);
+  console.log(`Production delegation ${report.productionDelegation.status}`);
   if (report.behavior.byEvidenceLane.live_model.total === 0) {
     console.log("Live model capability not evaluated");
   }

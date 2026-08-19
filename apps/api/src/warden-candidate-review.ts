@@ -9,6 +9,7 @@ import {
   getAgentRun,
   getJob,
   getPrincipal,
+  getTenantMembership,
   getWardenCandidateDeliveryByRun,
   getWardenCiCycle,
   getWardenCiUpdateByRun,
@@ -35,6 +36,12 @@ import { isHumanWardenReviewer } from "./warden-review-auth.js";
 type AuditEvent = Omit<Parameters<typeof recordAudit>[1], "tenantId" | "principalId" | "apiKeyId" | "requestId">;
 export type WardenCandidateReviewAudit = (c: Context<ApiEnv>, event: AuditEvent) => void;
 type ReviewDecision = "approve" | "reject" | "regenerate";
+
+function membershipEvidenceId(tenantId: string, issuer: string, subject: string): string {
+  return `membership:${createHash("sha256")
+    .update(`${tenantId}\n${issuer}\n${subject}`, "utf8")
+    .digest("hex")}`;
+}
 
 const REVIEW_INPUT_ERRORS: readonly PublicErrorRule[] = [
   "decision must be approve, reject, or regenerate",
@@ -84,6 +91,7 @@ const WARDEN_REVIEW_ERRORS = [
     "warden_ci_budget_exhausted",
     "warden_ci_mutation_in_flight",
   ].map((internalCode) => ({ internalCode, status: 409 as const })),
+  { internalCode: "human_review_required", status: 403 },
   { internalCode: "warden_candidate_expired", status: 410 },
 ] satisfies readonly PublicErrorRule[];
 
@@ -212,6 +220,17 @@ export function registerWardenCandidateReviewRoutes(
     if (!isHumanWardenReviewer(principal, trust, tenantId, c.get("apiKeyId"))) {
       return c.json({ error: "human_review_required" }, 403);
     }
+    const issuer = trust?.audience ?? "";
+    const subjectPrefix = issuer ? `${issuer}|` : "";
+    const subject = trust?.subject.startsWith(subjectPrefix) ? trust.subject.slice(subjectPrefix.length) : "";
+    const membership = issuer && subject ? getTenantMembership(db, tenantId, issuer, subject) : undefined;
+    const approvalMembershipEvidenceId = issuer && subject
+      ? membershipEvidenceId(tenantId, issuer, subject)
+      : "";
+    if (c.get("authMethod") !== "oidc" || !membership || membership.status !== "active" ||
+        c.get("membershipEvidenceId") !== approvalMembershipEvidenceId) {
+      return c.json({ error: "human_review_required" }, 403);
+    }
     let body: { decision: ReviewDecision; rationale: string };
     try { body = parseDecision(await c.req.json<unknown>().catch(() => null)); }
     catch (error) { return mappedErrorResponse(c, error, REVIEW_INPUT_ERRORS); }
@@ -241,22 +260,45 @@ export function registerWardenCandidateReviewRoutes(
       catch (error) { return mappedErrorResponse(c, error, WARDEN_REVIEW_ERRORS); }
     }
     let seal: Awaited<ReturnType<typeof sealWardenCandidateApproval>> | null = null;
+    const artifacts = result.artifacts && typeof result.artifacts === "object"
+      ? result.artifacts as Record<string, unknown>
+      : {};
+    const candidateDigest = typeof artifacts.candidateDigest === "string" ? artifacts.candidateDigest : "";
+    const candidateManifestSha256 = typeof artifacts.candidateManifestSha256 === "string"
+      ? artifacts.candidateManifestSha256
+      : "";
     if (body.decision === "approve") {
+      if (!candidateDigest || !candidateManifestSha256) {
+        return mappedErrorResponse(c, new Error("warden_candidate_approval_binding_invalid"), WARDEN_REVIEW_ERRORS);
+      }
       try {
         seal = await sealApproval({
           tenantId, repoPath: run.repo_path, status: run.status, resultJson: run.result_json,
-          baseBranch: binding!.baseBranch, reviewerPrincipalId: principal.id, rationale: body.rationale,
+          baseBranch: binding!.baseBranch, reviewerPrincipalId: trustId!, rationale: body.rationale,
         });
       } catch (error) {
         return mappedErrorResponse(c, error, WARDEN_REVIEW_ERRORS);
       }
     }
-    const artifacts = result.artifacts && typeof result.artifacts === "object" ? result.artifacts as Record<string, unknown> : {};
     const status = body.decision === "approve" ? "candidate_approved"
       : body.decision === "reject" ? "candidate_rejected" : "candidate_superseded";
     let response: Record<string, unknown>;
     db.raw.exec("BEGIN IMMEDIATE");
     try {
+      const currentTrust = trustId ? getPrincipal(db, tenantId, trustId) : undefined;
+      const currentMembership = issuer && subject ? getTenantMembership(db, tenantId, issuer, subject) : undefined;
+      const reviewedAtMs = Date.parse(reviewedAt);
+      const currentPrincipalActive = Boolean(currentTrust && currentTrust.kind === "human" &&
+        currentTrust.tenant_id === tenantId && currentTrust.audience === issuer &&
+        currentTrust.subject === `${issuer}|${subject}` && currentTrust.revoked_at === null &&
+        (!currentTrust.expires_at || Date.parse(currentTrust.expires_at) > reviewedAtMs));
+      if (!Number.isFinite(reviewedAtMs) || new Date(reviewedAtMs).toISOString() !== reviewedAt ||
+          !currentPrincipalActive ||
+          !currentMembership || currentMembership.status !== "active" ||
+          c.get("authMethod") !== "oidc" ||
+          c.get("membershipEvidenceId") !== approvalMembershipEvidenceId) {
+        throw new Error("human_review_required");
+      }
       run = getAgentRun(db, run.id, tenantId)!;
       if (run.status !== "candidate_ready") throw new Error("warden_candidate_review_conflict");
       let reviewedResult: Record<string, unknown>;
@@ -285,7 +327,12 @@ export function registerWardenCandidateReviewRoutes(
         response = { status, supersedingRunId: next.runId, supersedingJobId: next.jobId };
       } else {
         reviewedResult = { ...result, review: { decision: body.decision, rationale: body.rationale,
-          reviewedAt, reviewerPrincipalId: principal.id },
+          reviewedAt, reviewerPrincipalId: body.decision === "approve" ? trustId! : principal.id,
+          ...(body.decision === "approve" ? {
+            trustPrincipalId: trustId!,
+            authMethod: "oidc",
+            membershipEvidenceId: approvalMembershipEvidenceId,
+          } : {}) },
           ...(seal ? { artifacts: { ...artifacts, approval: { path: seal.path, sha256: seal.sha256 } } } : {}),
           ...(body.decision === "reject" ? { cleanup: { status: "pending", attempts: 0 } } : {}) };
         response = { status };
@@ -304,14 +351,14 @@ export function registerWardenCandidateReviewRoutes(
           const update = enqueueWardenCiUpdate(db, { tenantId, cycleId: ciAuthority.cycle.id,
             repairRunId: run.id, expectedHeadSha: ciAuthority.cycle.currentHeadSha,
             expectedFeedbackDigest: ciAuthority.reviewFeedbackDigest,
-            sealedPath: seal!.path, sealedSha256: seal!.sha256, reviewerPrincipalId: principal.id,
+            sealedPath: seal!.path, sealedSha256: seal!.sha256, reviewerPrincipalId: trustId!,
             rationale: body.rationale, observedAt: reviewedAt });
           response = { ...response, update };
         } else {
           const delivery = enqueueWardenCandidateDelivery(db, { tenantId, runId: run.id,
             repositoryId: binding!.repositoryId, snapshotId: binding!.snapshotId, baseBranch: binding!.baseBranch,
             expectedBaseRevision: binding!.revision, sealedPath: seal!.path, sealedSha256: seal!.sha256,
-            requesterPrincipalId: principal.id, rationale: body.rationale, now: reviewedAt });
+            requesterPrincipalId: trustId!, rationale: body.rationale, now: reviewedAt });
           response = { ...response, delivery };
         }
       }
@@ -319,7 +366,16 @@ export function registerWardenCandidateReviewRoutes(
         : body.decision === "reject" ? "agent.candidate.rejected" : "agent.candidate.regeneration_requested",
         resourceType: "agent_run", resourceId: run.id,
         metadata: { decision: body.decision, rationale: body.rationale, product: "warden",
-          reviewerPrincipalId: principal.id, ...response } });
+          reviewerPrincipalId: body.decision === "approve" ? trustId! : principal.id,
+          ...(body.decision === "approve" ? {
+            trustPrincipalId: trustId!,
+            authMethod: "oidc",
+            membershipEvidenceId: approvalMembershipEvidenceId,
+            reviewedAt,
+            candidateDigest,
+            candidateManifestSha256,
+          } : {}),
+          ...response } });
       db.raw.exec("COMMIT");
     } catch (error) {
       if (db.raw.isTransaction) db.raw.exec("ROLLBACK");

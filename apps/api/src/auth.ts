@@ -42,6 +42,8 @@ export type ApiVariables = {
   authScopes?: string[];
   principal?: Principal;
   trustPrincipalId?: string;
+  authMethod?: "oidc" | "api_key";
+  membershipEvidenceId?: string;
   webhookDeliveryId?: string;
 };
 export type ApiEnv = { Variables: ApiVariables };
@@ -66,6 +68,16 @@ export type OidcVerifierConfig = {
   jwks?: JWTVerifyGetKey;
   jwksUri?: string;
 };
+
+function activeTrustPrincipal(
+  principal: Readonly<{ created_at: string; expires_at: string | null; revoked_at: string | null }>,
+  observedAtMs = Date.now(),
+): boolean {
+  const createdAtMs = Date.parse(principal.created_at);
+  const expiresAtMs = principal.expires_at === null ? null : Date.parse(principal.expires_at);
+  return Number.isFinite(createdAtMs) && createdAtMs <= observedAtMs && principal.revoked_at === null &&
+    (expiresAtMs === null || (Number.isFinite(expiresAtMs) && expiresAtMs > observedAtMs));
+}
 
 function textClaim(name: string, value: unknown, max = 512): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.length > max) {
@@ -338,6 +350,9 @@ export function createAuthMiddleware(
           audience: identity.issuer,
           createdAt: nowIso(),
         });
+        if (!activeTrustPrincipal(trustPrincipal)) {
+          return c.json({ error: "unauthorized", message: "trust_principal_inactive" }, 401);
+        }
         c.set("tenantId", identity.tenantId);
         c.set("principal", {
           id: `human:${trustSubject}`,
@@ -349,6 +364,10 @@ export function createAuthMiddleware(
         // scope attenuation applies only when an API key authenticated the request.
         c.set("authScopes", ["*"]);
         c.set("trustPrincipalId", trustPrincipal.id);
+        c.set("authMethod", "oidc");
+        c.set("membershipEvidenceId", `membership:${createHash("sha256")
+          .update(`${identity.tenantId}\n${identity.issuer}\n${identity.subject}`, "utf8")
+          .digest("hex")}`);
         return next();
       } catch (error) {
         return c.json({
@@ -428,6 +447,7 @@ export function createAuthMiddleware(
       if (
         !trustPrincipal ||
         trustPrincipal.kind !== "human" ||
+        !activeTrustPrincipal(trustPrincipal) ||
         !issuer ||
         !subject ||
         !membership ||
@@ -465,11 +485,15 @@ export function createAuthMiddleware(
         createdAt: nowIso(),
       });
     }
+    if (!activeTrustPrincipal(trustPrincipal)) {
+      return c.json({ error: "unauthorized", message: "trust_principal_inactive" }, 401);
+    }
     c.set("tenantId", key.tenant_id);
     c.set("apiKeyId", key.id);
     c.set("authScopes", scopes);
     c.set("principal", principal);
     c.set("trustPrincipalId", trustPrincipal.id);
+    c.set("authMethod", "api_key");
     return next();
   };
 }
