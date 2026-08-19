@@ -62,6 +62,25 @@ describe("worker verifier shadow runtime", () => {
     expect(persist).toHaveBeenCalledWith(result.telemetry);
   });
 
+  it("performs no observation and no network egress in offline mode", () => {
+    // Offline is documented as "fixture and retained benchmark evaluation only"
+    // and must never open a live transport. This production shadow runtime has no
+    // fixture source, so offline refuses: the runtime is null (observe is
+    // unreachable) whether or not a transport is injected, and no live fetch
+    // transport is ever constructed. An injected transport is never invoked.
+    const transport = vi.fn(async () => { throw new Error("provider_called"); });
+    expect(createVerifierShadowRuntime({
+      env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "offline", DEEPSEEK_API_KEY: "deepseek-secret" },
+      pricing, persistTelemetry: async () => undefined, auditCredentialAccess: async () => undefined,
+      transport: { request: transport },
+    })).toBeNull();
+    expect(createVerifierShadowRuntime({
+      env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "offline", DEEPSEEK_API_KEY: "deepseek-secret" },
+      pricing, persistTelemetry: async () => undefined, auditCredentialAccess: async () => undefined,
+    })).toBeNull();
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   it("rejects non shadow rollout and invalid pricing before any external request", () => {
     expect(() => createVerifierShadowRuntime({ env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "selective", DEEPSEEK_API_KEY: "secret" }, pricing, persistTelemetry: async () => undefined, auditCredentialAccess: async () => undefined }))
       .toThrow("verifier_shadow_rollout_invalid");
