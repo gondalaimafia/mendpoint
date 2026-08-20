@@ -623,16 +623,16 @@ export async function evaluateDelegatedPrAcceptance(input: Readonly<{
       changedPaths.every(validPath) && new Set(changedPaths).size === changedPaths.length &&
       changedPaths.every((path) => contract.allowedChangedPaths.includes(path)), "delegated_pr_candidate_invalid", "P0", trial);
     add(findings, evidence.verification.executionAuthorityId === contract.verification.executionAuthorityId &&
-      verificationValid(evidence.verification.failToPass, contract, evidence.candidate.artifact.sha256,
+      verificationValid(evidence.verification.failToPass, contract, evidence.candidate.treeDigest,
       contract.verification.failToPassCommandDigest, true) && verificationValid(evidence.verification.passToPass, contract,
-      evidence.candidate.artifact.sha256, contract.verification.passToPassCommandDigest, false),
+      evidence.candidate.treeDigest, contract.verification.passToPassCommandDigest, false),
     "delegated_pr_verification_invalid", "P0", trial);
     add(findings, evidence.approval.auditChainVerified && evidence.approval.action === "agent.candidate.approved" &&
       ID.test(evidence.approval.auditEventId) && ID.test(evidence.approval.requestId) &&
       ID.test(evidence.approval.membershipEvidenceId) && evidence.approval.principalKind === "human" &&
       evidence.approval.authMethod === "oidc" && evidence.approval.apiKeyId === null &&
       evidence.approval.principalId === evidence.approval.trustPrincipalId &&
-      evidence.approval.candidateDigest === evidence.candidate.artifact.sha256 && artifact(evidence.approval.sealArtifact),
+      evidence.approval.candidateDigest === evidence.candidate.treeDigest && artifact(evidence.approval.sealArtifact),
     "delegated_pr_approval_invalid", "P0", trial);
 
     const observation = evidence.delivery.observation;
@@ -644,7 +644,7 @@ export async function evaluateDelegatedPrAcceptance(input: Readonly<{
       evidence.delivery.remoteRepositoryId === contract.repository.remoteRepositoryId &&
       evidence.delivery.repositoryId === contract.repository.repositoryId && evidence.delivery.owner === contract.repository.owner &&
       evidence.delivery.name === contract.repository.name && evidence.delivery.baseBranch === contract.repository.baseBranch &&
-      evidence.delivery.candidateDigest === evidence.candidate.artifact.sha256 && artifact(evidence.delivery.artifact) &&
+      evidence.delivery.candidateDigest === evidence.candidate.treeDigest && artifact(evidence.delivery.artifact) &&
       Number.isSafeInteger(evidence.delivery.pullRequestNumber) && evidence.delivery.pullRequestNumber > 0 &&
       evidence.delivery.matchingOpenDrafts === 1 && observation.state === "draft" &&
       observation.baseRevision === contract.repository.sourceRevision && observation.headRevision === evidence.candidate.commitSha &&

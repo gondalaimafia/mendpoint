@@ -77,6 +77,7 @@ const proof: DelegatedPrProof = {
 async function trial(number: number): Promise<DelegatedPrTrialEvidence> {
   const minute = `0${number}`;
   const candidate = { artifactId: `candidate-${number}`, sha256: hex(String(number)) };
+  const candidateTreeDigest = digest(`candidate-tree-${number}`);
   const fail = { artifactId: `fail-${number}`, sha256: digest(`fail-${number}`).slice(7) };
   const pass = { artifactId: `pass-${number}`, sha256: digest(`pass-${number}`).slice(7) };
   const delivery = { artifactId: `delivery-${number}`, sha256: digest(`delivery-${number}`).slice(7) };
@@ -116,17 +117,17 @@ async function trial(number: number): Promise<DelegatedPrTrialEvidence> {
     // delivery, and cleanup extend the trial timeline but must not be invented
     // as model execution time.
     meter: { costMeasured: true, costUsd: 0.25, inputTokens: 1000, outputTokens: 200, durationMs: 20_000 },
-    candidate: { artifact: candidate, commitSha: String(number).repeat(40), treeDigest: digest(`candidate-tree-${number}`),
+    candidate: { artifact: candidate, commitSha: String(number).repeat(40), treeDigest: candidateTreeDigest,
       changedPaths: ["src/client.ts"], createdAt: `2026-08-18T12:${minute}:20.000Z` },
     verification: {
       executionAuthorityId: contract.verification.executionAuthorityId,
       failToPass: { artifact: fail, authorityId: contract.verification.authorityId, authorityDigest: contract.verification.authorityDigest,
         commandDigest: contract.verification.failToPassCommandDigest, sourceDigest: contract.repository.treeDigest,
-        candidateDigest: candidate.sha256, baselineExitCode: 1, candidateExitCode: 0, baselineVerdict: "test_failure",
+        candidateDigest: candidateTreeDigest, baselineExitCode: 1, candidateExitCode: 0, baselineVerdict: "test_failure",
         failingCheckIdentities: ["test:target"], sandboxBackend: "fly-sandbox", logsDigest: digest(`fail-logs-${number}`) },
       passToPass: { artifact: pass, authorityId: contract.verification.authorityId, authorityDigest: contract.verification.authorityDigest,
         commandDigest: contract.verification.passToPassCommandDigest, sourceDigest: contract.repository.treeDigest,
-        candidateDigest: candidate.sha256, baselineExitCode: 0, candidateExitCode: 0, baselineVerdict: "passed",
+        candidateDigest: candidateTreeDigest, baselineExitCode: 0, candidateExitCode: 0, baselineVerdict: "passed",
         failingCheckIdentities: [], sandboxBackend: "fly-sandbox", logsDigest: digest(`pass-logs-${number}`) },
       completedAt: `2026-08-18T12:${minute}:30.000Z`,
     },
@@ -134,7 +135,7 @@ async function trial(number: number): Promise<DelegatedPrTrialEvidence> {
       auditEventId: `audit-${number}`, requestId: `approval-request-${number}`,
       membershipEvidenceId: `membership-${number}`, auditChainVerified: true, action: "agent.candidate.approved",
       principalId: "human:reviewer", principalKind: "human", authMethod: "oidc", apiKeyId: null,
-      trustPrincipalId: "human:reviewer", candidateDigest: candidate.sha256,
+      trustPrincipalId: "human:reviewer", candidateDigest: candidateTreeDigest,
       sealArtifact: { artifactId: `approval-${number}`, sha256: digest(`approval-${number}`).slice(7) },
       approvedAt: `2026-08-18T12:${minute}:35.000Z`,
     },
@@ -142,8 +143,8 @@ async function trial(number: number): Promise<DelegatedPrTrialEvidence> {
       provider: "github", publisher: "github_app", installationId: contract.repository.installationId,
       remoteRepositoryId: contract.repository.remoteRepositoryId, repositoryId: contract.repository.repositoryId,
       owner: contract.repository.owner, name: contract.repository.name, baseBranch: contract.repository.baseBranch,
-      headBranch: `mendpoint/fettler-${number}`, pullRequestNumber: 100 + number, candidateDigest: candidate.sha256,
-      changedPaths: ["src/client.ts"], treeDigest: digest(`candidate-tree-${number}`),
+      headBranch: `mendpoint/fettler-${number}`, pullRequestNumber: 100 + number, candidateDigest: candidateTreeDigest,
+      changedPaths: ["src/client.ts"], treeDigest: candidateTreeDigest,
       artifact: delivery, matchingOpenDrafts: 1, observedAt: `2026-08-18T12:${minute}:40.000Z`,
       observation: { state: "draft", baseRevision: contract.repository.sourceRevision, headRevision: String(number).repeat(40),
         checks: "success", checkRevision: String(number).repeat(40), approvals: 0, approvalRevision: null,

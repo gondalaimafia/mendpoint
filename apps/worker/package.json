@@ -21,7 +21,8 @@
     "./transformer-production-profile": "./src/transformer-production-profile.ts",
     "./verifier-shadow": "./src/verifier-shadow.ts",
     "./verifier-product-shadow": "./src/verifier-product-shadow.ts",
-    "./warden-candidate-delivery": "./src/warden-candidate-delivery.ts"
+    "./warden-candidate-delivery": "./src/warden-candidate-delivery.ts",
+    "./delegated-pr-verification-job": "./src/delegated-pr-verification-job.ts"
   },
   "scripts": {
     "start": "tsx src/cli.ts",

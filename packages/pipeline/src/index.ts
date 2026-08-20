@@ -79,6 +79,8 @@ import { createWardenDraftPrPackage } from "./warden-pr-package.js";
 export * from "./warden-campaign-executor.js";
 export * from "./software-attestation-operation.js";
 export * from "./delegated-pr-cleanup-operation.js";
+export * from "./delegated-pr-candidate-operation.js";
+export * from "./delegated-pr-verification-operation.js";
 export * from "./post-trained-application.js";
 export * from "./post-trained-training.js";
 export * from "./post-trained-evaluation.js";
