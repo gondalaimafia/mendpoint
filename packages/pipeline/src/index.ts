@@ -90,6 +90,7 @@ export * from "./learning-event.js";
 export * from "./lesson-routing.js";
 export * from "./verifier-learning.js";
 export * from "./organization-memory-precedence.js";
+export * from "./mission-context-compiler.js";
 export * from "./verifier-telemetry.js";
 import {
   getGraphLearnDb,

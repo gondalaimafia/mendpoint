@@ -1,0 +1,231 @@
+/**
+ * Worker-side producer for the Mission Context Compiler. The agent process holds
+ * no database handle at the model seam, so this module (which does) reads the
+ * durable stores and hands the compiler already-fetched inputs, then returns the
+ * rendered injection plus the context refs to persist.
+ *
+ * Reads only. Tenant is always the authenticated job principal (`tenantId`),
+ * never a value from a request body or the capture DTO. Every store read is
+ * tenant-scoped; the compiler re-asserts the tenant on every item.
+ *
+ * Honest scope note (see docs/missions/CONTEXT_COMPILER.md): a Fettler repair job
+ * on current main is NOT bound to a `mission` row (its agent.run payload carries
+ * no campaign or mission id). So on that path the mission-scoped sections report
+ * `no_mission_bound` — distinct from "store unavailable" — while the tenant-scoped
+ * organization memory still applies. When a Fettler job IS mission-bound (a
+ * separate, acknowledged binding gap), passing the resolved `mission` lights up
+ * decisions, exceptions, verification, and history too.
+ */
+import {
+  classifyMissionVerificationEvidence,
+  evaluateMissionExceptions,
+  getActiveMissionDecisions,
+  listMissionVerifications,
+  listOrganizationMemory,
+  listTrajectories,
+  resolveMissionSnapshotIdentity,
+  type AppDb,
+  type Mission,
+  type MissionVerificationStanding,
+} from "@mendpoint/db";
+import {
+  compileAndRenderMissionContext,
+  type CompiledMissionContext,
+  type InheritedContextEnvelope,
+  type MissionContextInput,
+  type VerificationInput,
+} from "@mendpoint/pipeline";
+
+export type BuildMissionContextParams = Readonly<{
+  tenantId: string;
+  /** The resolved Mission, or null when the task is not mission-bound. */
+  mission: Mission | null;
+  task: Readonly<{ taskId: string; capability: string; riskClass: string; goal: string }>;
+  /** Fallback identity when no mission is bound (a Fettler repair on a snapshot). */
+  fallback: Readonly<{ objective: string; repositoryId: string | null; snapshotId: string | null }>;
+  evidenceRefs?: readonly string[];
+}>;
+
+/** Map a per-scope verification standing to the compiler's carried-through input. */
+function verificationInputsForStanding(
+  tenantId: string,
+  scope: string,
+  standing: MissionVerificationStanding,
+): VerificationInput {
+  if (standing.standing === "current_evidence") {
+    const record = standing.record;
+    return {
+      tenantId,
+      id: record.id,
+      statement: record.verification,
+      verdict: record.status,
+      state: "current_evidence",
+      reason: null,
+      boundSnapshotId: record.snapshotId,
+    };
+  }
+  if (standing.standing === "stale_evidence") {
+    const record = standing.record;
+    return {
+      tenantId,
+      id: record.id,
+      statement: record.verification,
+      verdict: record.status,
+      state: "stale_evidence",
+      reason: `snapshot_identity_changed:${standing.changed.field}`,
+      boundSnapshotId: record.snapshotId,
+    };
+  }
+  // no_current_evidence: no single record; surface the absence reason per scope so
+  // "never verified" stays distinct from "only stale" and from a failed current run.
+  return {
+    tenantId,
+    id: `verification:${scope}`,
+    statement: `scope ${scope}`,
+    verdict: "none",
+    state: "no_current_evidence",
+    reason: standing.reason,
+  };
+}
+
+/**
+ * Assemble and render the inherited context for one Fettler task. Returns the
+ * compiled envelope, the injection to place on the task, and the context refs to
+ * persist. Never throws for a store read: a read failure surfaces as a
+ * `not_consulted` section, never as a fabricated empty one.
+ */
+export function buildMissionContext(
+  db: AppDb,
+  params: BuildMissionContextParams,
+): CompiledMissionContext {
+  const { tenantId, mission } = params;
+
+  // Organization memory is tenant-scoped and applies with or without a mission.
+  // Subject key is the memory scope, which decisions share, so a decision and a
+  // memory on the same scope contend under the single precedence resolver.
+  const memoryHeads = listOrganizationMemory(db, { tenantId });
+  const organizationMemory: MissionContextInput["organizationMemory"] = {
+    consulted: true,
+    records: memoryHeads.map((record) => ({ subjectKey: record.scope, record })),
+  };
+
+  const missionId = mission?.id ?? null;
+  const snapshotId = mission?.snapshotId ?? params.fallback.snapshotId;
+
+  const missionDecisions: MissionContextInput["missionDecisions"] = mission
+    ? {
+        consulted: true,
+        records: getActiveMissionDecisions(db, tenantId, mission.id).map((decision) => ({
+          tenantId,
+          id: decision.id,
+          subjectKey: decision.scope,
+          directive: decision.decision,
+          decidedAt: decision.createdAt,
+        })),
+      }
+    : { consulted: false, reason: "no_mission_bound" };
+
+  const exceptions: MissionContextInput["exceptions"] = mission
+    ? (() => {
+        const evaluation = evaluateMissionExceptions(db, tenantId, mission.id);
+        // Unresolved = open exceptions (blocking, non-blocking-open, and stale
+        // ones awaiting re-affirmation). Resolved/withdrawn are excluded.
+        const open = [...evaluation.blocking, ...evaluation.nonBlockingOpen, ...evaluation.stale];
+        return {
+          consulted: true,
+          records: open.map((exception) => ({
+            tenantId,
+            id: exception.id,
+            statement: exception.reason,
+            status: exception.standing,
+          })),
+        };
+      })()
+    : { consulted: false, reason: "no_mission_bound" };
+
+  // Verification currency is decided ONLY by classifyMissionVerificationEvidence,
+  // and only when a bound current snapshot identity exists. With no mission or no
+  // single snapshot binding, we report not_consulted rather than guessing currency.
+  const verification: MissionContextInput["verification"] = (() => {
+    if (!mission) return { consulted: false, reason: "no_mission_bound" as const };
+    if (!mission.snapshotId) return { consulted: false, reason: "no_mission_bound" as const };
+    const current = resolveMissionSnapshotIdentity(db, tenantId, mission.snapshotId);
+    const all = listMissionVerifications(db, tenantId, mission.id);
+    const scopes = [...new Set(all.map((record) => record.scope))].sort();
+    return {
+      consulted: true,
+      records: scopes.map((scope) =>
+        verificationInputsForStanding(
+          tenantId,
+          scope,
+          classifyMissionVerificationEvidence(
+            all.filter((record) => record.scope === scope),
+            current,
+          ),
+        ),
+      ),
+    };
+  })();
+
+  const history: MissionContextInput["history"] = mission
+    ? {
+        consulted: true,
+        records: listTrajectories(db, tenantId, { missionId: mission.id, limit: 32 }).map((trajectory) => ({
+          tenantId,
+          trajectoryRef: trajectory.id,
+          outcome: trajectory.finalOutcome ?? "unknown",
+          summary: trajectory.taskSummary,
+        })),
+      }
+    : { consulted: false, reason: "no_mission_bound" };
+
+  const input: MissionContextInput = {
+    tenantId,
+    mission: {
+      missionId,
+      product: mission?.product ?? "fettler",
+      objective: mission?.objective ?? params.fallback.objective,
+      repositoryId: mission?.repositoryId ?? params.fallback.repositoryId,
+      snapshotId,
+      // The Mission row carries no graph version (deferred on main), so the graph
+      // projection is not available on this path; the Fettler agent has no graph.
+      graphVersionId: null,
+    },
+    task: params.task,
+    // No tenant hard-policy store exists on main (policy is synthesized per call,
+    // not persisted per tenant), so policy constraints are honestly not_consulted
+    // rather than fabricated. The precedence machinery is exercised whenever a
+    // mission decision and a memory share a scope.
+    hardPolicies: { consulted: false, reason: "store_not_available" },
+    missionDecisions,
+    organizationMemory,
+    userPreferences: { consulted: false, reason: "store_not_available" },
+    // The Fettler agent has no graph tool; no graph version is bound here.
+    graph: { consulted: false, reason: "graph_version_absent" },
+    history,
+    verification,
+    exceptions,
+    ...(params.evidenceRefs ? { evidenceRefs: params.evidenceRefs } : {}),
+  };
+
+  return compileAndRenderMissionContext(input);
+}
+
+/**
+ * Whether an envelope carries any inherited content worth injecting. An envelope
+ * whose every inherited section is empty or not-consulted is not injected, so the
+ * prompt is not grown for nothing.
+ */
+export function hasInheritedContent(envelope: InheritedContextEnvelope): boolean {
+  if (envelope.relevantOrgMemory.status === "consulted" && envelope.relevantOrgMemory.applied.length > 0) {
+    return true;
+  }
+  if (envelope.activeDecisions.status === "consulted" && envelope.activeDecisions.entries.length > 0) return true;
+  if (envelope.unresolvedExceptions.status === "consulted" && envelope.unresolvedExceptions.entries.length > 0) {
+    return true;
+  }
+  if (envelope.verificationState.status === "consulted" && envelope.verificationState.entries.length > 0) return true;
+  if (envelope.policyConstraints.status === "consulted" && envelope.policyConstraints.entries.length > 0) return true;
+  if (envelope.graphProjection.status === "consulted") return true;
+  return false;
+}
