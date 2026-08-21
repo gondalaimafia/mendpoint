@@ -2583,3 +2583,17 @@ Objective: turn one exact `candidate_ready` Fettler run into immutable candidate
 Acceptance: no caller can mint candidate or verifier success from JSON, paths, booleans, or digests alone. Every accepted artifact is tenant scoped, content addressed, immutable, bound to one durable run and snapshot, produced by an active independent service principal, and replay safe. Deterministic attempt-engine checks remain necessary but cannot substitute for independent delegated verification.
 
 Review: the candidate authority and verifier effect protocol are implemented. The verifier protocol is fail closed, lease fenced, signed receipt bound, response-loss reconcilable, and persists the exact sandbox execution authority in each immutable execution artifact. The default-off worker job derives all authority from protected configuration and durable run IDs. Its concrete Fly sandbox adapter independently reconstructs and hashes the sealed source and candidate, then runs the fail-to-pass and pass-to-pass contracts in isolated workspaces. Exact replay after response loss performs no second sandbox execution, infrastructure exit codes settle as terminal failures, and candidate drift reaches no sandbox call. Focused worker coverage passes 10 of 10, the complete Worker suite passes 357 of 357, the complete Pipeline suite passes 114 of 114, and the complete Eval suite passes 166 of 166. All repository typechecks, the optimized 50-page production build, GA governance checks, and the production dependency audit pass. The bounded adapter currently rejects executable-file candidates, caps each reconstructed tree at 5,000 files and 8 MiB, and leaves a post-dispatch transport-unknown effect pending rather than risking a duplicate external execution. Protected live Fly execution remains required before activation.
+## Claude review five-fix remediation: 2026-08-21
+
+Objective: close the five approved review findings without weakening existing authority or compatibility contracts.
+
+- [ ] Require OIDC human identity and active membership evidence for every human-only Organization Memory mutation.
+- [ ] Derive corroboration from authoritative source identity and matching semantic content; reject contradictory observations.
+- [ ] Converge ReGauge Mission creation and launch onto one owner/scope contract without swallowed ID conflicts.
+- [ ] Bind delegated fail-to-pass acceptance to authoritative observed check identities, or narrow the contract so it makes no unearned identity claim.
+- [ ] Reject U+061C ARABIC LETTER MARK in ReGauge recipe paths.
+- [ ] Capture a valid RED regression for each finding before production edits.
+- [ ] Run focused tests and typechecks after each fix, then repository-wide tests, typecheck, production build, dependency audit, and diff integrity.
+- [ ] Publish only through a protected pull request after all gates pass.
+
+Acceptance: API keys cannot perform human-only memory transitions; contradictory observations cannot corroborate each other; campaign creation and launch converge on one exact Mission; delegated acceptance proves exactly what the verifier observed; all Unicode bidi controls are rejected from reviewable paths; and no existing compatibility or replay behavior regresses.

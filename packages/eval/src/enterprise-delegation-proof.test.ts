@@ -8,6 +8,7 @@ import {
   type SoftwareAttestationTrustPolicy,
 } from "@mendpoint/contract";
 import {
+  assertDelegatedPrAcceptanceContract,
   evaluateDelegatedPrAcceptance,
   type DelegatedPrAcceptanceAuthority,
   type DelegatedPrAcceptanceContract,
@@ -198,6 +199,14 @@ async function fixture(): Promise<{ authority: DelegatedPrAcceptanceAuthority; e
 }
 
 describe("delegated PR acceptance", () => {
+  it("accepts a contract that makes no unobserved failing-check identity claim", () => {
+    const withoutUnobservedIdentityClaim = structuredClone(contract) as unknown as Record<string, unknown>;
+    delete (withoutUnobservedIdentityClaim.verification as Record<string, unknown>).failToPassIdentities;
+    expect(() => assertDelegatedPrAcceptanceContract(
+      withoutUnobservedIdentityClaim as unknown as DelegatedPrAcceptanceContract,
+    )).not.toThrow();
+  });
+
   it("accepts three authority-loaded, signed, exact live draft trials", async () => {
     const { authority } = await fixture();
     const report = await evaluateDelegatedPrAcceptance({ proof, contract, authority, trustPolicy });

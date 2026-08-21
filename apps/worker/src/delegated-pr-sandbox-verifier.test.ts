@@ -126,6 +126,14 @@ afterEach(() => {
 });
 
 describe("delegated PR Fly sandbox verifier", () => {
+  it("does not require configured failing-check identities that the verifier cannot observe", () => {
+    const { db, env } = fixture();
+    delete env.MENDPOINT_DELEGATED_PR_FAIL_TO_PASS_IDENTITIES;
+    expect(() => delegatedPrVerificationRuntimeFromEnv(db, env, "worker-a", async () => {
+      throw new Error("not called");
+    })).not.toThrow();
+  });
+
   it("reconstructs exact sealed source and candidate bytes and publishes both command contracts", async () => {
     const value = fixture();
     const observedAt = new Date().toISOString();
