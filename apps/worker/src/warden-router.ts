@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   ExecutorRegistry,
   routeTask,
@@ -8,6 +7,11 @@ import {
   type RouterTaskSpec,
   type TaskRisk,
 } from "@mendpoint/platform";
+import {
+  buildRoutingPolicySnapshot,
+  buildRoutingTaskSpec,
+  digest,
+} from "./routing-envelope.js";
 import {
   DEFAULT_ROUTING_BREAKER,
   loadRoutingAvailability,
@@ -101,27 +105,6 @@ export type WardenModelRoutingProfile = Readonly<{
   maximumDataClassification: DataClassification;
   estimatedCostUsd: number;
 }>;
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined) throw new Error("warden_canonical_value_invalid");
-    return encoded;
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  }
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .filter((key) => record[key] !== undefined)
-    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
-}
-
-function digest(value: unknown): string {
-  return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
-}
 
 function validateModelRoutingProfile(profile: WardenModelRoutingProfile): void {
   if (
@@ -274,42 +257,7 @@ export type WardenRoutingRequest = Readonly<{
   decidedAt: Date;
 }>;
 
-/**
- * Honest lower-bound estimate of the prompt-seed input tokens available AT the
- * routing call (the task goal, verification command, and artifact identifiers).
- * This is a seed estimate, not a full-context measurement — the repository
- * context size is unknown until the attempt runs — but it is a real,
- * input-derived value rather than a hardcoded zero, so the router's
- * `hard_limit_exceeded` gate can fire when a seed already exceeds a specialized
- * executor's input window. Approximated at ~4 characters per token.
- */
-export function estimateSeedInputTokens(
-  parts: readonly (string | undefined)[],
-): number {
-  const chars = parts.reduce((sum, part) => sum + (part?.length ?? 0), 0);
-  return Math.max(1, Math.ceil(chars / 4));
-}
-
-/**
- * Risk-adjusted minimum quality floor (§13.4: quality gates override cost, and
- * higher-risk work demands stronger results). Replaces the inert
- * `minimumScore: 0` so the router's `quality_below_minimum` gate can fire.
- */
-export function riskQualityFloor(risk: TaskRisk): number {
-  switch (risk) {
-    case "low":
-      return 0.6;
-    case "medium":
-      return 0.7;
-    case "high":
-      return 0.8;
-    case "critical":
-      return 0.9;
-  }
-}
-
 function buildTaskSpec(input: WardenRoutingRequestInput): RouterTaskSpec {
-  const budgetUsd = input.budgetUsd ?? 25;
   const sourceArtifactId = input.sourceArtifactId ?? input.policySnapshotId ?? "";
   // No honest change-risk signal exists at this call site: blast radius and
   // impact coverage are produced by the attempt (after routing), and the
@@ -317,7 +265,7 @@ function buildTaskSpec(input: WardenRoutingRequestInput): RouterTaskSpec {
   // (§12.3). Risk therefore stays caller-supplied or the medium default — a
   // deliberate under-claim, not a fabricated derivation.
   const risk: TaskRisk = input.risk ?? "medium";
-  return {
+  return buildRoutingTaskSpec({
     taskId: input.taskId,
     tenantId: input.tenantId,
     kind: WARDEN_TASK_KIND,
@@ -326,68 +274,38 @@ function buildTaskSpec(input: WardenRoutingRequestInput): RouterTaskSpec {
     inputArtifactIds: input.modelSource
       ? [sourceArtifactId, input.modelSource.policyDigest]
       : [sourceArtifactId],
-    requiredCapabilities: [input.taskMode === "feature" ? "warden.feature" : "warden.repair"],
-    allowedTools: [],
-    context: {
-      estimatedInputTokens:
-        input.estimatedInputTokens ??
-        estimateSeedInputTokens([input.goal, input.verifyCommand, sourceArtifactId]),
-      maximumOutputTokens: input.maxOutputTokens ?? 8_192,
-    },
-    verification: {
-      requiredChecks: [input.verifyCommand],
-      requireAll: true,
-      onFailure: "human_handoff",
-    },
-    fallbackPolicy: {
-      enabled: true,
-      maxAttempts: 3,
-      sameExecutorRetries: 1,
-      retryableFailures: ["timeout", "rate_limited", "provider_unavailable"],
-      fallbackFailures: ["provider_unavailable", "executor_unavailable"],
-    },
-    privacy: { classification: input.classification ?? "restricted" },
+    requiredCapabilities: [
+      input.taskMode === "feature" ? "warden.feature" : "warden.repair",
+    ],
+    classification: input.classification ?? "restricted",
     risk,
-    quality: { minimumScore: riskQualityFloor(risk) },
-    latency: { maximumMs: input.maximumLatencyMs ?? 3_600_000 },
-    budget: { maximumUsd: budgetUsd },
-  };
+    verifyCommand: input.verifyCommand,
+    tokenSeedParts: [input.goal, input.verifyCommand, sourceArtifactId],
+    estimatedInputTokens: input.estimatedInputTokens,
+    maxOutputTokens: input.maxOutputTokens,
+    maximumLatencyMs: input.maximumLatencyMs,
+    budgetUsd: input.budgetUsd,
+  });
 }
 
 function buildPolicySnapshot(
   input: WardenRoutingRequestInput,
 ): RouterPolicySnapshot {
-  const allowedClassifications: readonly DataClassification[] = input.modelSource
-    ? (["public", "internal", "confidential", "restricted"] as const).slice(
-        0,
-        (["public", "internal", "confidential", "restricted"] as const)
-            .indexOf(input.modelSource.maximumDataClassification) + 1,
-      )
-    : ["public", "internal", "confidential", "restricted"];
-  const policyBody: Omit<RouterPolicySnapshot, "snapshotId" | "capturedAt"> = {
-    version: 1,
-    privacy: {
-      allowedClassifications,
-      externalProcessingAllowed: Boolean(
-        input.modelSource && input.externalProcessingAllowed === true,
-      ),
-    },
-    region: {
-      allowedExecutionRegions: [input.modelSource?.region ?? WARDEN_ROUTING_REGION],
-    },
-    risk: { maximumAutonomousRisk: "medium", humanReviewAtOrAbove: "high" },
-    // Baseline policy quality floor (§13.4). The effective minimum is the max of
-    // this and the risk-adjusted task floor, so no executor below the baseline is
-    // ever eligible and the `quality_below_minimum` gate can fire.
-    quality: { minimumScore: 0.6 },
-    latency: { maximumMs: input.maximumLatencyMs ?? 3_600_000 },
-    budget: { maximumUsd: input.budgetUsd ?? 25 },
-  };
-  return {
-    snapshotId: digest(policyBody),
-    ...policyBody,
-    capturedAt: (input.decidedAt ?? new Date()).toISOString(),
-  };
+  return buildRoutingPolicySnapshot({
+    // The classification ceiling is an explicit declaration: an external model
+    // source contributes its cleared maximum; otherwise the caller's declared
+    // repository classification. An absent declaration narrows to `public` (the
+    // shared builder's fail-safe) rather than widening to all four.
+    maximumDataClassification:
+      input.modelSource?.maximumDataClassification ?? input.classification,
+    externalProcessingAllowed: Boolean(
+      input.modelSource && input.externalProcessingAllowed === true,
+    ),
+    allowedExecutionRegions: [input.modelSource?.region ?? WARDEN_ROUTING_REGION],
+    maximumLatencyMs: input.maximumLatencyMs,
+    budgetUsd: input.budgetUsd,
+    decidedAt: input.decidedAt,
+  });
 }
 
 /** Build the routing request passed to `runPolicyRoutedWarden`. */

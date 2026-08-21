@@ -67,7 +67,19 @@ export type RouterTaskSpec = Readonly<{
   idempotencyKey: string;
   inputArtifactIds: readonly string[];
   requiredCapabilities: readonly string[];
-  allowedTools: readonly string[];
+  /**
+   * Tools every candidate executor must provide for this task. The gate excludes
+   * any executor missing one.
+   *
+   * Three-valued on purpose (§13.2): `undefined` is the honest "no
+   * tool-eligibility claim declared" state — distinct from `[]`, which is a
+   * declaration that the task requires no tools and passes trivially. An
+   * undeclared requirement is unverifiable, so `evaluateExecutor` refuses it
+   * (`tool_requirement_undeclared`) rather than reading the empty `.some()` as a
+   * pass; every production caller declares its real tool needs. Making the empty
+   * array stand in for "unspecified" is exactly the fail-open this field closes.
+   */
+  allowedTools?: readonly string[];
   context: Readonly<{
     estimatedInputTokens: number;
     maximumOutputTokens: number;
@@ -312,6 +324,7 @@ export type ExecutorAvailability = Readonly<{
 export type RoutingExclusionReason =
   | "capability_missing"
   | "tool_missing"
+  | "tool_requirement_undeclared"
   | "hard_limit_exceeded"
   | "executor_unhealthy"
   | "license_disallowed"
@@ -624,7 +637,12 @@ function evaluateExecutor(
   ) {
     reasons.push("capability_missing");
   }
-  if (task.allowedTools.some((tool) => !executor.tools.includes(tool))) {
+  if (task.allowedTools === undefined) {
+    // An undeclared tool requirement is a refusal to make a tool-eligibility
+    // claim, not a pass. `[].some()` would read as "no restriction", so the
+    // absence is rejected rather than silently admitted (§13.2, fail-closed).
+    reasons.push("tool_requirement_undeclared");
+  } else if (task.allowedTools.some((tool) => !executor.tools.includes(tool))) {
     reasons.push("tool_missing");
   }
   if (
@@ -877,7 +895,12 @@ function validateTask(task: RouterTaskSpec): void {
   if (!(task.risk in RISK_RANK)) throw new Error("Task risk is invalid");
   validateStringList(task.inputArtifactIds, "task artifacts");
   validateStringList(task.requiredCapabilities, "task capabilities");
-  validateStringList(task.allowedTools, "task tools");
+  // `undefined` is the honest "no tool requirement declared" state and is
+  // rejected at evaluation (`tool_requirement_undeclared`), not here; a declared
+  // list (including `[]`) must still be a valid, unique string list.
+  if (task.allowedTools !== undefined) {
+    validateStringList(task.allowedTools, "task tools");
+  }
   validateStringList(task.verification.requiredChecks, "task verification checks");
   if (!task.verification.requiredChecks.length || task.verification.requireAll !== true ||
     !["human_handoff", "eligible_fallback"].includes(task.verification.onFailure)) {

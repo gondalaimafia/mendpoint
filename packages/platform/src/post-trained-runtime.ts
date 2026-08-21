@@ -240,6 +240,9 @@ function validateExecutor(descriptor: ExecutorDescriptor, task: RouterTaskSpec, 
     !hasText(task.taskId) ||
     !hasText(task.idempotencyKey) ||
     task.requiredCapabilities.some((capability) => !descriptor.capabilities.includes(capability)) ||
+    // An undeclared tool requirement is unverifiable, so admission fails closed
+    // rather than treating the absent claim as a pass (mirrors the router gate).
+    task.allowedTools === undefined ||
     task.allowedTools.some((tool) => !descriptor.tools.includes(tool)) ||
     task.context.estimatedInputTokens > descriptor.limits.maximumInputTokens ||
     task.context.maximumOutputTokens > descriptor.limits.maximumOutputTokens ||
