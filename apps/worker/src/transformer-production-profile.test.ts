@@ -55,6 +55,38 @@ describe("Transformer production profile", () => {
     });
   });
 
+  it("requires the bounded DeepSeek verifier shadow profile", () => {
+    for (const [name, value] of [
+      ["DEEPSEEK_VERIFIER_ENABLED", "false"],
+      ["DEEPSEEK_API_KEY", ""],
+      ["MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE", "offline"],
+      ["MENDPOINT_AGENT_VERIFIER_SCORING_MODE", "upstream_thinking_logprobs"],
+      ["MENDPOINT_AGENT_VERIFIER_EVALUATIONS", "2"],
+      ["MENDPOINT_AGENT_VERIFIER_PIVOTS", "2"],
+      ["MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES", "2"],
+      ["MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD", "0.06"],
+      ["MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS", "30000"],
+      ["MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES", "1"],
+    ] as const) {
+      expect(() => validateTransformerProductionProfile({ ...environment(), [name]: value }, "coordinator"))
+        .toThrow("transformer_production_verifier_profile_invalid");
+    }
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "{}",
+    }, "coordinator")).toThrow("transformer_production_verifier_governance_invalid");
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}",
+    }, "coordinator")).toThrow("transformer_production_verifier_pricing_invalid");
+    const mixedGovernance = JSON.parse(environment().MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON!);
+    mixedGovernance.entries[0].externalModelAllowed = true;
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify(mixedGovernance),
+    }, "coordinator")).toThrow("transformer_production_verifier_governance_invalid");
+  });
+
   it("derives production worker identity from the Fly machine and rejects app-wide overrides", () => {
     expect(resolveTransformerWorkerId(environment())).toBe("fly-abcd1234abcd12");
     expect(resolveTransformerWorkerId({
@@ -206,5 +238,17 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_REGAUGE_CANARY_REVISION: CANARY_REVISION,
     MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF: approval,
     MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() + 60 * 60_000).toISOString(),
+    DEEPSEEK_VERIFIER_ENABLED: "true",
+    DEEPSEEK_API_KEY: "deepseek-secret",
+    MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+    MENDPOINT_AGENT_VERIFIER_SCORING_MODE: "nonthinking_logprobs",
+    MENDPOINT_AGENT_VERIFIER_EVALUATIONS: "1",
+    MENDPOINT_AGENT_VERIFIER_PIVOTS: "1",
+    MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES: "1",
+    MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD: "0.05",
+    MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS: "8000",
+    MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES: "0",
+    MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant-a", products: ["regauge"], dataClassification: "confidential", requiredRegion: "cn", processingRegion: "cn", consentId: "pending-durable-consent", evidenceRef: "github-environment:regauge-production", externalModelAllowed: false, mayLeaveTenantBoundary: false, consentActive: false }] }),
+    MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "deepseek-v4-flash-2026-08-21", currency: "USD", effectiveAt: "2026-08-21T00:00:00.000Z", inputPerMillion: 0.14, cachedInputPerMillion: 0.0028, outputPerMillion: 0.28 }),
   };
 }

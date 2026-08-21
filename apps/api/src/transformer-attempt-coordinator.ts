@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import {
   createTransformerPilotCheckpointAuthority,
+  type TransformerAttemptCheckpointCompletionResult,
   type TransformerDraftDeliveryLease,
   type TransformerPilotExecutionStore,
   type TransformerExecutableAttemptLease,
@@ -39,6 +40,7 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
   store: TransformerPilotExecutionStore;
   now?: () => string;
   gateConfig?: string;
+  observeCompletedAttempt?(result: TransformerAttemptCheckpointCompletionResult): Promise<void>;
   loadExactSource(lease: TransformerExecutableAttemptLease, observedAt: string): ExactSourceSnapshot | Promise<ExactSourceSnapshot>;
   resolveDraftRepository?(input: Readonly<{
     tenantId: string;
@@ -106,6 +108,17 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
     const bound = { ...input, ...(!preserveBoundTime && operation !== "readHead" && operation !== "readBindingAuthority" ? { observedAt } : {}), gateConfig: options.gateConfig };
     const method = authority[operation] as unknown as (value: Json) => unknown;
     const result = await method.call(authority, bound);
+    if (operation === "completeWithHead" && options.observeCompletedAttempt) {
+      try {
+        await options.observeCompletedAttempt(result as TransformerAttemptCheckpointCompletionResult);
+      } catch (error) {
+        console.error(JSON.stringify({
+          event: "regauge_verifier_shadow_observation_failed",
+          code: error instanceof Error ? error.message : "verifier_shadow_unknown",
+          observedAt,
+        }));
+      }
+    }
     return c.json({ result: result === undefined ? null : result, serverTime: observedAt });
   }));
   app.post("/source", async (c) => handled(c, async () => {

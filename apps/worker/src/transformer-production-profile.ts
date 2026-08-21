@@ -113,6 +113,7 @@ export function validateTransformerProductionProfile(
   const campaignId = identifier(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_CAMPAIGN_ID"), "transformer_production_campaign_required");
   const environment = identifier(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ENVIRONMENT"), "transformer_production_environment_required");
   if (environment !== "production") throw new Error("transformer_production_environment_invalid");
+  validateVerifierProfile(env, tenantId);
   const gate = parseTransformerGateConfig(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_GATE"), "transformer_production_gate_required"));
   const grant = gate.grants.find((candidate) => candidate.tenantId === tenantId && candidate.environment === environment);
   if (!grant || !["api_control_plane", "worker_action", "delivery"].every((boundary) => grant.boundaries.includes(boundary as never))) {
@@ -234,6 +235,65 @@ function required(value: string | undefined, code: string): string { if (!value?
 function identifier(value: string | undefined, code: string): string { const result = required(value, code); if (!ID.test(result)) throw new Error(code); return result; }
 function key(value: string | undefined, code: string): void { const encoded = required(value, code); const bytes = Buffer.from(encoded, "base64"); if (bytes.byteLength !== 32 || bytes.toString("base64") !== encoded) throw new Error(code); }
 function secureUrl(value: string | undefined, code: string): void { let parsed: URL; try { parsed = new URL(required(value, code)); } catch { throw new Error(code); } if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error(code); }
+function validateVerifierProfile(env: NodeJS.ProcessEnv, tenantId: string): void {
+  const exactProfile = {
+    DEEPSEEK_VERIFIER_ENABLED: "true",
+    MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+    MENDPOINT_AGENT_VERIFIER_SCORING_MODE: "nonthinking_logprobs",
+    MENDPOINT_AGENT_VERIFIER_EVALUATIONS: "1",
+    MENDPOINT_AGENT_VERIFIER_PIVOTS: "1",
+    MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES: "1",
+    MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD: "0.05",
+    MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS: "8000",
+    MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES: "0",
+  } as const;
+  if (!env.DEEPSEEK_API_KEY?.trim() || Object.entries(exactProfile)
+    .some(([name, value]) => env[name] !== value)) {
+    throw new Error("transformer_production_verifier_profile_invalid");
+  }
+  let governance: unknown;
+  try { governance = JSON.parse(required(env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON, "transformer_production_verifier_governance_invalid")); }
+  catch { throw new Error("transformer_production_verifier_governance_invalid"); }
+  if (!plain(governance) || Object.keys(governance).sort().join(",") !== "entries,schemaVersion" ||
+      governance.schemaVersion !== "2026-08-17.v1" || !Array.isArray(governance.entries) ||
+      governance.entries.length !== 1) {
+    throw new Error("transformer_production_verifier_governance_invalid");
+  }
+  const entry = governance.entries[0];
+  const governanceKeys = ["consentActive", "consentId", "dataClassification", "evidenceRef",
+    "externalModelAllowed", "mayLeaveTenantBoundary", "processingRegion", "products",
+    "requiredRegion", "tenantId"].sort().join(",");
+  if (!plain(entry) || Object.keys(entry).sort().join(",") !== governanceKeys ||
+      entry.tenantId !== tenantId || JSON.stringify(entry.products) !== JSON.stringify(["regauge"]) ||
+      entry.dataClassification !== "confidential" || entry.requiredRegion !== "cn" ||
+      entry.processingRegion !== "cn" ||
+      typeof entry.externalModelAllowed !== "boolean" ||
+      typeof entry.mayLeaveTenantBoundary !== "boolean" ||
+      typeof entry.consentActive !== "boolean" ||
+      new Set([entry.externalModelAllowed, entry.mayLeaveTenantBoundary, entry.consentActive]).size !== 1 ||
+      typeof entry.consentId !== "string" || !entry.consentId.trim() ||
+      typeof entry.evidenceRef !== "string" || !entry.evidenceRef.trim()) {
+    throw new Error("transformer_production_verifier_governance_invalid");
+  }
+  let pricing: unknown;
+  try { pricing = JSON.parse(required(env.MENDPOINT_AGENT_VERIFIER_PRICING_JSON, "transformer_production_verifier_pricing_invalid")); }
+  catch { throw new Error("transformer_production_verifier_pricing_invalid"); }
+  const pricingKeys = ["cachedInputPerMillion", "currency", "effectiveAt", "inputPerMillion",
+    "outputPerMillion", "version"].sort().join(",");
+  if (!plain(pricing) || Object.keys(pricing).sort().join(",") !== pricingKeys ||
+      pricing.currency !== "USD" || typeof pricing.version !== "string" ||
+      !pricing.version.startsWith("deepseek-v4-flash-") || typeof pricing.effectiveAt !== "string" ||
+      !Number.isFinite(Date.parse(pricing.effectiveAt)) ||
+      new Date(Date.parse(pricing.effectiveAt)).toISOString() !== pricing.effectiveAt ||
+      pricing.inputPerMillion !== 0.14 || pricing.cachedInputPerMillion !== 0.0028 ||
+      pricing.outputPerMillion !== 0.28) {
+    throw new Error("transformer_production_verifier_pricing_invalid");
+  }
+}
+function plain(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
 function resolveStorageAlias(custom: string | undefined, standard: string | undefined, code: string): string | undefined {
   const customValue = custom?.trim();
   const standardValue = standard?.trim();
