@@ -9,6 +9,10 @@ import {
   enqueueWardenCiCycle,
   getJob,
   getWardenCiCycle,
+  insertArtifactManifest,
+  insertPrincipal,
+  insertTenant,
+  listArtifactManifests,
   listWardenCiObservations,
   listJobs,
   type AppDb,
@@ -31,12 +35,25 @@ const verifiedAuthority = Object.freeze({
   failToPassArtifactId: "fail-artifact-a",
   passToPassArtifactId: "pass-artifact-a",
   completedAt: "2026-08-13T12:00:30.000Z",
+  candidateProducerPrincipalId: "candidate-authority",
+  candidateProducerVersion: sha("f"),
 });
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-warden-observe-"));
   const db = createDb(join(root, "worker.sqlite"));
   opened.push({ db, root });
+  insertTenant(db, { id: "tenant-a", slug: "tenant-a", name: "Tenant A",
+    createdAt: "2026-08-13T11:58:00.000Z" });
+  insertPrincipal(db, { id: "candidate-authority", tenantId: "tenant-a", kind: "service",
+    subject: "delegated-trial-controller", displayName: "Delegated trial controller",
+    createdAt: "2026-08-13T11:58:00.000Z" });
+  const candidateContent = JSON.stringify({ candidate: "a" });
+  insertArtifactManifest(db, { id: "candidate-artifact-a", tenantId: "tenant-a", kind: "delegated_pr_candidate",
+    schemaVersion: 1, sha256: createHash("sha256").update(candidateContent).digest("hex"),
+    mediaType: "application/json", sizeBytes: Buffer.byteLength(candidateContent),
+    storageRef: "sqlite://candidate-artifact-a", content: candidateContent,
+    producerPrincipalId: "candidate-authority", createdAt: "2026-08-13T12:00:00.000Z" });
   db.raw.prepare(`INSERT INTO agent_runs
     (id, tenant_id, job_id, goal, repo_path, status, ok, steps, result_json, created_at, finished_at)
     VALUES ('run-a', 'tenant-a', 'source-job-a', 'repair', 'repo', 'candidate_approved', 1, 1, ?, ?, ?)`)
@@ -88,6 +105,8 @@ function observation(state: "success" | "failure" | "running"): ExactDraftObserv
       changeRequests: Object.freeze([]),
       comments: Object.freeze([]),
     }),
+    repositoryId: 101, installationId: 202, matchingOpenDrafts: 1,
+    changedPaths: Object.freeze(["src/a.ts"]), remoteTreeSha: sha("e"),
     failures: state === "failure" ? Object.freeze([Object.freeze({
       kind: "check_run" as const, id: "9", publisherId: 77, name: "unit", state: "failure" as const,
       title: "Unit failed", summary: "token=ghp_abcdefghijklmnopqrstuvwxyz123456",
@@ -143,6 +162,24 @@ describe("Warden candidate CI observation", () => {
       sourceJobId: "source-job-a",
       candidateDigest: digest("7"),
     });
+    const canonicalArtifacts = listArtifactManifests(db, "tenant-a", "delegated_pr_github_observation");
+    expect(canonicalArtifacts).toHaveLength(1);
+    expect(canonicalArtifacts[0]).toMatchObject({ id: "artifact-success-a",
+      sha256: result.observationDigest.slice("sha256:".length),
+      media_type: "application/vnd.mendpoint.github-exact-draft-observation+json",
+      producer_principal_id: "candidate-authority" });
+    expect(JSON.parse(canonicalArtifacts[0]!.content_text!)).toMatchObject({
+      schemaVersion: "2026-08-18.github-exact-draft-observation.v1", tenantId: "tenant-a",
+      cycleId: cycle.id, deliveryId: "delivery-a", remoteRepositoryId: 101, installationId: 202,
+      matchingOpenDrafts: 1, changedPaths: ["src/a.ts"], remoteTreeSha: sha("e"),
+      verdict: "success", trigger: "checks_passed",
+    });
+    expect(db.raw.prepare(`SELECT subject_type, subject_id, artifact_id, input_artifact_id,
+      producer_principal_id, tool, tool_version, commit_sha, verdict FROM evidence_records
+      WHERE tenant_id = 'tenant-a' AND subject_type = 'delegated_pr_github_observation'`).all())
+      .toEqual([expect.objectContaining({ subject_id: savedObservation.id, artifact_id: "artifact-success-a",
+        input_artifact_id: "candidate-artifact-a", producer_principal_id: "candidate-authority",
+        tool: "mendpoint-exact-github-observer", tool_version: sha("f"), commit_sha: sha("f"), verdict: "passed" })]);
   });
 
   it("does not create a cleanup handoff for an ordinary non-delegated draft", async () => {
@@ -187,6 +224,7 @@ describe("Warden candidate CI observation", () => {
     expect(persisted).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz123456");
     expect(getJob(db, job.id, "tenant-a")?.status).toBe("done");
     expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("checks_failed");
+    expect(listArtifactManifests(db, "tenant-a", "delegated_pr_github_observation")).toHaveLength(0);
     expect(listWardenCiObservations(db, "tenant-a", cycle.id)).toHaveLength(1);
     expect(listJobs(db, 20, "tenant-a").filter((candidate) =>
       candidate.type === "warden.candidate.cleanup")).toHaveLength(0);
@@ -204,6 +242,7 @@ describe("Warden candidate CI observation", () => {
     expect(persistEvidence).not.toHaveBeenCalled();
     expect(getJob(db, job.id, "tenant-a")?.status).toBe("pending");
     expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("observation_pending");
+    expect(listArtifactManifests(db, "tenant-a", "delegated_pr_github_observation")).toHaveLength(0);
     expect(listJobs(db, 20, "tenant-a").filter((candidate) =>
       candidate.type === "warden.candidate.cleanup")).toHaveLength(0);
     expect(assertDelegatedPrVerificationApprovalAuthority).not.toHaveBeenCalled();
@@ -306,6 +345,7 @@ describe("Warden candidate CI observation", () => {
       candidate.type === "warden.candidate.cleanup")).toHaveLength(0);
     expect(getJob(db, job.id, "tenant-a")?.status).toBe("running");
     expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("observation_pending");
+    expect(listArtifactManifests(db, "tenant-a", "delegated_pr_github_observation")).toHaveLength(0);
   });
 
   it("rolls back the successful observation when delegated authority is invalid", async () => {

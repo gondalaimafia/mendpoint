@@ -711,11 +711,13 @@ export {
 } from "./app-runtime.js";
 
 export {
+  EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION,
   observeExactDraftWithOctokit,
   type ExactDraftFailure,
   type ExactDraftCheckResult,
   type ExactDraftObservation,
   type ExactDraftObservationInput,
+  type ExactDraftObservationEvidenceV1,
 } from "./exact-draft-observer.js";
 
 export {

@@ -16,6 +16,10 @@ function octokit(input: Readonly<{
   checkCount?: number;
   draft?: boolean;
   repositoryId?: number;
+  changedFiles?: Array<Readonly<{ filename: string; previous_filename?: string; status?: string }>>;
+  compareNextPage?: boolean;
+  matchingDrafts?: number;
+  pullsNextPage?: boolean;
   checkDetailsUrl?: string;
   reviews?: Array<Readonly<{
     id: number;
@@ -74,6 +78,16 @@ function octokit(input: Readonly<{
         })),
         headers: {},
       })),
+      list: vi.fn(async () => ({
+        data: Array.from({ length: input.matchingDrafts ?? 1 }, (_, index) => ({
+          number: 3 + index,
+          state: "open",
+          draft: true,
+          base: { ref: "main", sha: input.baseSha ?? sha("a") },
+          head: { ref: "mendpoint/change", sha: head },
+        })),
+        headers: input.pullsNextPage ? { link: '<https://api.github.test/pulls?page=2>; rel="next"' } : {},
+      })),
     },
     checks: {
       listForRef: vi.fn(async () => ({ data: {
@@ -94,6 +108,17 @@ function octokit(input: Readonly<{
           target_url: "https://ci.example.invalid/build/11",
         }],
       } })),
+      compareCommitsWithBasehead: vi.fn(async () => ({
+        data: {
+          base_commit: { sha: input.baseSha ?? sha("a") },
+          commits: [{ sha: head }],
+          files: input.changedFiles ?? [{ filename: "src/client.ts", status: "modified" }],
+        },
+        headers: input.compareNextPage ? { link: '<https://api.github.test/compare?page=2>; rel="next"' } : {},
+      })),
+    },
+    git: {
+      getCommit: vi.fn(async () => ({ data: { tree: { sha: sha("c") } } })),
     },
     graphql: vi.fn(async () => ({ repository: { pullRequest: { reviewThreads: {
       nodes: [{
@@ -134,6 +159,51 @@ const input = Object.freeze({
 });
 
 describe("exact GitHub draft observation", () => {
+  it("binds complete remote files, tree, installation, and one exact open draft", async () => {
+    const client = octokit();
+    const observed = await observeExactDraftWithOctokit(client, {
+      ...input, expectedRepositoryId: 101, expectedInstallationId: 202,
+      requireExactDraft: true, includeDeliveryEvidence: true,
+    });
+    expect(observed).toMatchObject({ repositoryId: 101, installationId: 202, matchingOpenDrafts: 1,
+      changedPaths: ["src/client.ts"], remoteTreeSha: sha("c") });
+    expect(client.pulls.list).toHaveBeenCalledWith(expect.objectContaining({ state: "open", head: "acme:mendpoint/change" }));
+    expect(client.repos.compareCommitsWithBasehead).toHaveBeenCalledWith(expect.objectContaining({
+      basehead: `${sha("a")}...${sha("b")}`,
+    }));
+    expect(observed.evidenceRefs).toEqual(expect.arrayContaining([
+      "github:installation:202", "github:repository:101", `github:tree:${sha("c")}`,
+      "github:changed-path-sha256:25d66d74617fe2e23d7946bd6e3ba95640ab1b9bc8947445d604fc271c7c1f12",
+    ]));
+  });
+
+  it.each([
+    [{ compareNextPage: true }, "github_exact_draft_observation_incomplete"],
+    [{ pullsNextPage: true }, "github_exact_draft_observation_incomplete"],
+    [{ matchingDrafts: 2 }, "github_exact_draft_observation_authority_mismatch"],
+  ])("fails closed when remote delivery evidence is incomplete or ambiguous", async (settings, code) => {
+    await expect(observeExactDraftWithOctokit(octokit(settings), {
+      ...input, expectedRepositoryId: 101, expectedInstallationId: 202,
+      requireExactDraft: true, includeDeliveryEvidence: true,
+    })).rejects.toThrow(code);
+  });
+
+  it("binds both sides of a rename and accepts canonical Git paths with spaces", async () => {
+    const observed = await observeExactDraftWithOctokit(octokit({ changedFiles: [{
+      filename: "src/new client.ts", previous_filename: "src/old client.ts", status: "renamed",
+    }] }), { ...input, expectedRepositoryId: 101, expectedInstallationId: 202,
+      requireExactDraft: true, includeDeliveryEvidence: true });
+    expect(observed.changedPaths).toEqual(["src/new client.ts", "src/old client.ts"]);
+  });
+
+  it("fails closed at GitHub's comparison file cap", async () => {
+    const changedFiles = Array.from({ length: 300 }, (_, index) => ({ filename: `src/file-${index}.ts`, status: "modified" }));
+    await expect(observeExactDraftWithOctokit(octokit({ changedFiles }), {
+      ...input, expectedRepositoryId: 101, expectedInstallationId: 202,
+      requireExactDraft: true, includeDeliveryEvidence: true,
+    })).rejects.toThrow("github_exact_draft_observation_incomplete");
+  });
+
   it("binds exact head checks, reviews, and resolved conversations", async () => {
     const client = octokit();
     await expect(observeExactDraftWithOctokit(client, input)).resolves.toMatchObject({

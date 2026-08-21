@@ -79,6 +79,8 @@ export type DelegatedPrVerificationApprovalAuthority =
       failToPassArtifactId: string;
       passToPassArtifactId: string;
       completedAt: string;
+      candidateProducerPrincipalId: string;
+      candidateProducerVersion: string;
     }>;
 
 function timestamp(value: unknown): value is string {
@@ -184,8 +186,9 @@ export function assertDelegatedPrVerificationApprovalAuthority(
     throw new Error("delegated_pr_verification_authority_invalid");
   }
   let terminal;
+  let verifiedAuthority: DelegatedPrVerificationAuthority;
   try {
-    const authority = storedAuthority
+    verifiedAuthority = storedAuthority
       ? storedAuthority as DelegatedPrVerificationAuthority
       : deriveDelegatedPrVerificationAuthority(db, {
         tenantId: input.tenantId,
@@ -201,7 +204,7 @@ export function assertDelegatedPrVerificationApprovalAuthority(
       candidateArtifactId: result.candidateArtifactId,
       idempotencyKey: `${verificationJobId}:verification`,
       completedAt: result.completedAt,
-    }, authority);
+    }, verifiedAuthority);
   } catch {
     throw new Error("delegated_pr_verification_authority_invalid");
   }
@@ -216,6 +219,8 @@ export function assertDelegatedPrVerificationApprovalAuthority(
     failToPassArtifactId: result.failToPassArtifactId,
     passToPassArtifactId: result.passToPassArtifactId,
     completedAt: result.completedAt,
+    candidateProducerPrincipalId: verifiedAuthority.candidateProducerPrincipalId,
+    candidateProducerVersion: verifiedAuthority.candidateProducerVersion,
   });
 }
 
