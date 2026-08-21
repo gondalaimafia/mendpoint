@@ -42,6 +42,9 @@ export * from "./organization-memory.js";
 export * from "./developer-satisfaction.js";
 export * from "./self-serve-dashboard.js";
 export * from "./capability-adoption-opportunity.js";
+export * from "./mission-decisions.js";
+export * from "./mission-exceptions.js";
+export * from "./mission-verification.js";
 
 export type AppDb = {
   raw: DatabaseSync;
@@ -816,6 +819,114 @@ CREATE UNIQUE INDEX IF NOT EXISTS mission_fettler_campaign_uidx
   ON mission(tenant_id, fettler_campaign_id) WHERE fettler_campaign_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS mission_regauge_campaign_uidx
   ON mission(tenant_id, regauge_campaign_id) WHERE regauge_campaign_id IS NOT NULL;
+
+-- Mission durable records (spec 6.1 / 8.6 companion to the mission primitive
+-- above). Three append-only, tenant-content-addressed stores that let a later
+-- task read what an earlier task already established for the SAME mission: a
+-- DECISION log, an EXCEPTION register, and VERIFICATION history. Each row's
+-- primary key is a sha256 content digest over canonical JSON that INCLUDES
+-- tenant_id (Change Graph Tier-1 binding), so a different tenant produces a
+-- different primary key by construction; cross-tenant collision is arithmetically
+-- impossible, not merely filtered. The composite foreign key (tenant_id,
+-- mission_id) -> mission(tenant_id, id) binds every row to a mission of the same
+-- tenant, and mission_verifications additionally binds (snapshot_id, tenant_id)
+-- -> repository_snapshots(id, tenant_id), so a row can never reference another
+-- tenant's mission or snapshot. All three tables are brand-new, so — like the
+-- mission table above — they converge on fresh AND pre-change databases purely
+-- through CREATE TABLE/INDEX IF NOT EXISTS, with no ALTER and no shape change to
+-- any existing table. All three are append-only, enforced by BEFORE UPDATE/DELETE
+-- triggers: a change of mind is a new superseding row, never an overwrite, so the
+-- full chain survives and stays readable.
+CREATE TABLE IF NOT EXISTS mission_decisions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  author_principal_id TEXT NOT NULL REFERENCES principals(id),
+  evidence_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active', 'retracted')),
+  supersedes_id TEXT REFERENCES mission_decisions(id),
+  content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS mission_decisions_mission_idx
+  ON mission_decisions(tenant_id, mission_id, created_at);
+-- A decision may be superseded by at most one successor: supersession is a
+-- linear chain, never a fork and never an overwrite.
+CREATE UNIQUE INDEX IF NOT EXISTS mission_decisions_supersedes_uidx
+  ON mission_decisions(tenant_id, supersedes_id) WHERE supersedes_id IS NOT NULL;
+CREATE TRIGGER IF NOT EXISTS mission_decisions_no_update
+BEFORE UPDATE ON mission_decisions BEGIN
+  SELECT RAISE(ABORT, 'mission_decisions_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS mission_decisions_no_delete
+BEFORE DELETE ON mission_decisions BEGIN
+  SELECT RAISE(ABORT, 'mission_decisions_append_only');
+END;
+
+CREATE TABLE IF NOT EXISTS mission_exceptions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  impact TEXT NOT NULL,
+  owner_principal_id TEXT NOT NULL REFERENCES principals(id),
+  resolution_path TEXT NOT NULL,
+  blocking INTEGER NOT NULL CHECK (blocking IN (0, 1)),
+  status TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'withdrawn')),
+  observed_snapshot_id TEXT,
+  observed_resolved_sha TEXT,
+  supersedes_id TEXT REFERENCES mission_exceptions(id),
+  content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
+  FOREIGN KEY (observed_snapshot_id, tenant_id) REFERENCES repository_snapshots(id, tenant_id),
+  -- A context-bound exception carries both snapshot-identity fields; a
+  -- context-independent one carries neither.
+  CHECK ((observed_snapshot_id IS NULL AND observed_resolved_sha IS NULL)
+      OR (observed_snapshot_id IS NOT NULL AND observed_resolved_sha IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS mission_exceptions_mission_idx
+  ON mission_exceptions(tenant_id, mission_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS mission_exceptions_supersedes_uidx
+  ON mission_exceptions(tenant_id, supersedes_id) WHERE supersedes_id IS NOT NULL;
+CREATE TRIGGER IF NOT EXISTS mission_exceptions_no_update
+BEFORE UPDATE ON mission_exceptions BEGIN
+  SELECT RAISE(ABORT, 'mission_exceptions_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS mission_exceptions_no_delete
+BEFORE DELETE ON mission_exceptions BEGIN
+  SELECT RAISE(ABORT, 'mission_exceptions_append_only');
+END;
+
+CREATE TABLE IF NOT EXISTS mission_verifications (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT NOT NULL,
+  verification TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL,
+  resolved_sha TEXT NOT NULL,
+  manifest_sha256 TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('passed', 'failed', 'inconclusive')),
+  verifier_principal_id TEXT NOT NULL REFERENCES principals(id),
+  content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
+  FOREIGN KEY (snapshot_id, tenant_id) REFERENCES repository_snapshots(id, tenant_id)
+);
+CREATE INDEX IF NOT EXISTS mission_verifications_mission_idx
+  ON mission_verifications(tenant_id, mission_id, scope, created_at);
+CREATE TRIGGER IF NOT EXISTS mission_verifications_no_update
+BEFORE UPDATE ON mission_verifications BEGIN
+  SELECT RAISE(ABORT, 'mission_verifications_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS mission_verifications_no_delete
+BEFORE DELETE ON mission_verifications BEGIN
+  SELECT RAISE(ABORT, 'mission_verifications_append_only');
+END;
 
 -- Trajectory capture (Intelligence Ownership Phases 4 + 7). The OBSERVATION layer
 -- that closes Phase 0 blocker #1 (persist the input -> output pair) and blocker #4
