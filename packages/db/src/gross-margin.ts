@@ -39,6 +39,34 @@ export type ActualExecutionCostEntry = Readonly<{
   previousHash: string | null;
   entryHash: string;
   createdAt: string;
+  /**
+   * Mission this execution's cost is attributable to, or null when there is no
+   * mission link. On the ReGauge live launch path a mission genuinely exists and
+   * is carried here; the Fettler `agent.run` payload carries no campaign/mission
+   * id (and `createWardenCampaign` has zero non-test callers), so a Fettler cost
+   * row is honestly null — "no mission link yet", never a fabricated one.
+   */
+  missionId: string | null;
+  /**
+   * Per-component measurement state. A component is UNMEASURED when we did not
+   * observe its cost on this execution — not when it cost nothing. An unmeasured
+   * component's money-micros is always 0 (so the arithmetic total CHECK still
+   * holds), but the flag keeps "we did not measure" distinguishable from
+   * "we measured zero". Collapsing those two is this repo's dominant defect.
+   */
+  modelCostMeasured: boolean;
+  cacheCostMeasured: boolean;
+  gpuCostMeasured: boolean;
+  graphCostMeasured: boolean;
+  sandboxCostMeasured: boolean;
+  verificationCostMeasured: boolean;
+  /**
+   * Hash-payload version. Version 1 rows predate mission attribution and the
+   * measurement flags and are hashed over the original field set, so a
+   * pre-change volume still verifies. Version 2 rows include the fields above in
+   * the hash. See `hashEntry`.
+   */
+  costSchemaVersion: number;
 }>;
 
 export type GrossMarginIncompleteAttribution = Readonly<{
@@ -135,6 +163,14 @@ type CostRow = {
   prev_hash: string | null;
   entry_hash: string;
   created_at: string;
+  mission_id: string | null;
+  model_cost_measured: number;
+  cache_cost_measured: number;
+  gpu_cost_measured: number;
+  graph_cost_measured: number;
+  sandbox_cost_measured: number;
+  verification_cost_measured: number;
+  cost_schema_version: number;
 };
 
 type UsageRevenueRow = {
@@ -157,10 +193,32 @@ export type ActualExecutionCostInput = Omit<
   | "entrySequence"
   | "previousHash"
   | "entryHash"
+  | "missionId"
+  | "modelCostMeasured"
+  | "cacheCostMeasured"
+  | "gpuCostMeasured"
+  | "graphCostMeasured"
+  | "sandboxCostMeasured"
+  | "verificationCostMeasured"
+  | "costSchemaVersion"
 > & {
   campaignId?: string | null;
   fallbackFromExecutionId?: string | null;
   acceptedOutcomeId?: string | null;
+  missionId?: string | null;
+  /**
+   * Per-component measurement state. Omitted defaults to `true` (measured) so
+   * the HTTP caller — which supplies real numbers for every component — records
+   * measured rows unchanged. An internal writer that could not measure a
+   * component MUST pass `false` for it and 0 for its money-micros; the validator
+   * rejects a measured=false component that carries a nonzero cost.
+   */
+  modelCostMeasured?: boolean;
+  cacheCostMeasured?: boolean;
+  gpuCostMeasured?: boolean;
+  graphCostMeasured?: boolean;
+  sandboxCostMeasured?: boolean;
+  verificationCostMeasured?: boolean;
 };
 
 type TaskRevenue = {
@@ -260,10 +318,44 @@ function entryFromRow(row: CostRow): ActualExecutionCostEntry {
     previousHash: row.prev_hash,
     entryHash: row.entry_hash,
     createdAt: row.created_at,
+    missionId: row.mission_id,
+    modelCostMeasured: row.model_cost_measured === 1,
+    cacheCostMeasured: row.cache_cost_measured === 1,
+    gpuCostMeasured: row.gpu_cost_measured === 1,
+    graphCostMeasured: row.graph_cost_measured === 1,
+    sandboxCostMeasured: row.sandbox_cost_measured === 1,
+    verificationCostMeasured: row.verification_cost_measured === 1,
+    costSchemaVersion: row.cost_schema_version,
   });
 }
 
+/**
+ * Hash the entry, versioned so a schema change never breaks an existing chain.
+ *
+ * Version 1 rows (written before mission attribution and the measurement flags,
+ * and any row a pre-change volume upgraded) are hashed over EXACTLY the original
+ * field set. The new columns are stripped before hashing, so their migrated
+ * defaults never enter the digest and the stored hash still verifies.
+ *
+ * Version 2 rows include the mission id, the six measurement flags, and the
+ * version itself in the digest, so tampering with attribution or a flag breaks
+ * the chain.
+ */
 function hashEntry(entry: Omit<ActualExecutionCostEntry, "entryHash">): string {
+  if (entry.costSchemaVersion <= 1) {
+    const {
+      missionId: _missionId,
+      modelCostMeasured: _modelCostMeasured,
+      cacheCostMeasured: _cacheCostMeasured,
+      gpuCostMeasured: _gpuCostMeasured,
+      graphCostMeasured: _graphCostMeasured,
+      sandboxCostMeasured: _sandboxCostMeasured,
+      verificationCostMeasured: _verificationCostMeasured,
+      costSchemaVersion: _costSchemaVersion,
+      ...legacy
+    } = entry;
+    return createHash("sha256").update(JSON.stringify(legacy)).digest("hex");
+  }
   return createHash("sha256").update(JSON.stringify(entry)).digest("hex");
 }
 
@@ -299,7 +391,14 @@ function sameRequest(
     entry.verificationCostMoneyMicros === input.verificationCostMoneyMicros &&
     entry.totalCostMoneyMicros === totalCostMoneyMicros &&
     entry.currency === input.currency.toUpperCase() &&
-    entry.actorPrincipalId === input.actorPrincipalId
+    entry.actorPrincipalId === input.actorPrincipalId &&
+    entry.missionId === (input.missionId ?? null) &&
+    entry.modelCostMeasured === (input.modelCostMeasured ?? true) &&
+    entry.cacheCostMeasured === (input.cacheCostMeasured ?? true) &&
+    entry.gpuCostMeasured === (input.gpuCostMeasured ?? true) &&
+    entry.graphCostMeasured === (input.graphCostMeasured ?? true) &&
+    entry.sandboxCostMeasured === (input.sandboxCostMeasured ?? true) &&
+    entry.verificationCostMeasured === (input.verificationCostMeasured ?? true)
   );
 }
 
@@ -343,6 +442,24 @@ function validateInput(input: ActualExecutionCostInput): number {
   if (!/^[A-Z]{3}$/.test(currency)) throw new Error("execution_cost_currency_invalid");
   text("execution_cost_actor_principal_id", input.actorPrincipalId);
   timestamp("execution_cost_created_at", input.createdAt);
+  if (input.missionId) text("execution_cost_mission_id", input.missionId);
+  // A component that was not measured must carry zero money-micros. This keeps
+  // the arithmetic total honest (unmeasured contributes 0) while the flag stays
+  // the sole carrier of "not measured". A measured=false component with a
+  // nonzero cost is a contradiction and is rejected — never silently coerced.
+  const consistency: Array<[string, boolean, number]> = [
+    ["model", input.modelCostMeasured ?? true, input.modelCostMoneyMicros],
+    ["cache", input.cacheCostMeasured ?? true, input.cacheCostMoneyMicros],
+    ["gpu", input.gpuCostMeasured ?? true, input.gpuCostMoneyMicros],
+    ["graph", input.graphCostMeasured ?? true, input.graphCostMoneyMicros],
+    ["sandbox", input.sandboxCostMeasured ?? true, input.sandboxCostMoneyMicros],
+    ["verification", input.verificationCostMeasured ?? true, input.verificationCostMoneyMicros],
+  ];
+  for (const [name, measured, micros] of consistency) {
+    if (!measured && micros !== 0) {
+      throw new Error(`execution_cost_${name}_unmeasured_nonzero`);
+    }
+  }
   return safeSum("execution_cost_total", [
     input.modelCostMoneyMicros,
     input.cacheCostMoneyMicros,
@@ -444,6 +561,14 @@ export function recordActualExecutionCost(
       entrySequence,
       previousHash: previous?.entry_hash ?? null,
       createdAt: input.createdAt,
+      missionId: input.missionId ?? null,
+      modelCostMeasured: input.modelCostMeasured ?? true,
+      cacheCostMeasured: input.cacheCostMeasured ?? true,
+      gpuCostMeasured: input.gpuCostMeasured ?? true,
+      graphCostMeasured: input.graphCostMeasured ?? true,
+      sandboxCostMeasured: input.sandboxCostMeasured ?? true,
+      verificationCostMeasured: input.verificationCostMeasured ?? true,
+      costSchemaVersion: 2,
     });
     const entryHash = hashEntry(entry);
     db.raw.prepare(
@@ -455,8 +580,11 @@ export function recordActualExecutionCost(
         model_cost_money_micros, cache_cost_money_micros, gpu_millis,
         gpu_cost_money_micros, graph_cost_money_micros, sandbox_cost_money_micros,
         verification_cost_money_micros, total_cost_money_micros, currency,
-        actor_principal_id, entry_sequence, prev_hash, entry_hash, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        actor_principal_id, entry_sequence, prev_hash, entry_hash, created_at,
+        mission_id, model_cost_measured, cache_cost_measured, gpu_cost_measured,
+        graph_cost_measured, sandbox_cost_measured, verification_cost_measured,
+        cost_schema_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       entry.id,
       entry.tenantId,
@@ -491,6 +619,14 @@ export function recordActualExecutionCost(
       entry.previousHash,
       entryHash,
       entry.createdAt,
+      entry.missionId,
+      entry.modelCostMeasured ? 1 : 0,
+      entry.cacheCostMeasured ? 1 : 0,
+      entry.gpuCostMeasured ? 1 : 0,
+      entry.graphCostMeasured ? 1 : 0,
+      entry.sandboxCostMeasured ? 1 : 0,
+      entry.verificationCostMeasured ? 1 : 0,
+      entry.costSchemaVersion,
     );
     const inserted = one<CostRow>(
       db,
@@ -504,6 +640,142 @@ export function recordActualExecutionCost(
     db.raw.exec("ROLLBACK");
     throw error;
   }
+}
+
+export type ExecutionCostFromRoutingLedgerInput = Readonly<{
+  tenantId: string;
+  /** The run whose routing_ledger rows carry the measured model cost/tokens. */
+  sourceRunId: string;
+  executionId: string;
+  taskId: string;
+  taskClass: string;
+  route: string;
+  actorPrincipalId: string;
+  createdAt: string;
+  campaignId?: string | null;
+  missionId?: string | null;
+  attemptNumber?: number;
+  retryNumber?: number;
+  outcomeStatus?: ExecutionOutcomeStatus;
+  acceptedOutcomeId?: string | null;
+  currency?: string;
+  idempotencyKey?: string;
+}>;
+
+type LedgerAggregateRow = Readonly<{
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  cost_usd: number | null;
+  measured_rows: number | null;
+  model_id: string | null;
+}>;
+
+/**
+ * Write one `actual_execution_cost_entries` row for a real execution, deriving
+ * each component from what actually happened rather than estimating.
+ *
+ * The model component is sourced from the durable `routing_ledger` rows for the
+ * run (the same measured feed `agent_run_meters` uses): its money-micros is the
+ * summed charged `cost_usd` converted to integer micros, and it is marked
+ * MEASURED only when at least one ledger row carried a cost. When no ledger row
+ * did, the model component is UNMEASURED (flag false, 0 micros) — an honest
+ * "we did not measure", never a fabricated zero.
+ *
+ * The other five components (cache, GPU, graph, sandbox, verification) have no
+ * meter on this execution path today, so each is written UNMEASURED with 0
+ * micros. As soon as a real meter exists for one, pass its measured cost through
+ * `recordActualExecutionCost` directly (or extend this function) — the schema is
+ * already shaped for it. Cache tokens are not separately reported by the router,
+ * so cache_read/cache_write are 0 and the cache component stays unmeasured; the
+ * provider's charge is captured whole in the model component.
+ */
+export function recordExecutionCostFromRoutingLedger(
+  db: AppDb,
+  input: ExecutionCostFromRoutingLedgerInput,
+): ActualExecutionCostEntry {
+  const tenantId = text("tenant_id", input.tenantId);
+  const sourceRunId = text("execution_cost_source_run_id", input.sourceRunId);
+  const aggregate =
+    (one<LedgerAggregateRow>(
+      db,
+      `SELECT
+         SUM(input_tokens) AS input_tokens,
+         SUM(output_tokens) AS output_tokens,
+         SUM(total_tokens) AS total_tokens,
+         SUM(cost_usd) AS cost_usd,
+         SUM(CASE WHEN cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS measured_rows,
+         MAX(selected_executor_id) AS model_id
+       FROM routing_ledger
+       WHERE tenant_id = ? AND run_id = ?`,
+      [tenantId, sourceRunId],
+    ) ?? {
+      input_tokens: null,
+      output_tokens: null,
+      total_tokens: null,
+      cost_usd: null,
+      measured_rows: 0,
+      model_id: null,
+    });
+
+  const modelMeasured = (aggregate.measured_rows ?? 0) > 0;
+  // USD is REAL in routing_ledger; convert to integer micros once, fail closed
+  // on an unsafe value rather than writing a rounded lie.
+  const modelCostMoneyMicros = modelMeasured
+    ? (() => {
+        const micros = Math.round((aggregate.cost_usd ?? 0) * 1_000_000);
+        if (!Number.isSafeInteger(micros) || micros < 0) {
+          throw new Error("execution_cost_model_micros_invalid");
+        }
+        return micros;
+      })()
+    : 0;
+
+  const idempotencyKey =
+    input.idempotencyKey ?? `execution-cost:routing-ledger:${input.executionId}`;
+  const id = `execution-cost-${createHash("sha256")
+    .update(`${tenantId}\n${idempotencyKey}`)
+    .digest("hex")
+    .slice(0, 32)}`;
+
+  return recordActualExecutionCost(db, {
+    id,
+    tenantId,
+    idempotencyKey,
+    executionId: input.executionId,
+    taskId: input.taskId,
+    campaignId: input.campaignId ?? null,
+    taskClass: input.taskClass,
+    route: input.route,
+    attemptNumber: input.attemptNumber ?? 1,
+    retryNumber: input.retryNumber ?? 0,
+    fallbackFromExecutionId: null,
+    outcomeStatus: input.outcomeStatus ?? "unresolved",
+    acceptedOutcomeId: input.acceptedOutcomeId ?? null,
+    inputTokens: modelMeasured ? aggregate.input_tokens ?? 0 : 0,
+    outputTokens: modelMeasured ? aggregate.output_tokens ?? 0 : 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    modelId: aggregate.model_id ?? "routing_ledger_aggregate",
+    modelPriceVersion: "routing_ledger",
+    modelCostMoneyMicros,
+    cacheCostMoneyMicros: 0,
+    gpuMillis: 0,
+    gpuCostMoneyMicros: 0,
+    graphCostMoneyMicros: 0,
+    sandboxCostMoneyMicros: 0,
+    verificationCostMoneyMicros: 0,
+    currency: input.currency ?? "USD",
+    actorPrincipalId: input.actorPrincipalId,
+    createdAt: input.createdAt,
+    missionId: input.missionId ?? null,
+    modelCostMeasured: modelMeasured,
+    cacheCostMeasured: false,
+    gpuCostMeasured: false,
+    graphCostMeasured: false,
+    sandboxCostMeasured: false,
+    verificationCostMeasured: false,
+  });
 }
 
 export function listActualExecutionCosts(
@@ -556,6 +828,24 @@ export function verifyExecutionCostIntegrity(
         totalCostMoneyMicros,
         error: `execution_cost_component_total:${entry.id}`,
       };
+    }
+    const measurement: Array<[string, boolean, number]> = [
+      ["model", entry.modelCostMeasured, entry.modelCostMoneyMicros],
+      ["cache", entry.cacheCostMeasured, entry.cacheCostMoneyMicros],
+      ["gpu", entry.gpuCostMeasured, entry.gpuCostMoneyMicros],
+      ["graph", entry.graphCostMeasured, entry.graphCostMoneyMicros],
+      ["sandbox", entry.sandboxCostMeasured, entry.sandboxCostMoneyMicros],
+      ["verification", entry.verificationCostMeasured, entry.verificationCostMoneyMicros],
+    ];
+    for (const [name, measured, micros] of measurement) {
+      if (!measured && micros !== 0) {
+        return {
+          ok: false,
+          checked: index,
+          totalCostMoneyMicros,
+          error: `execution_cost_unmeasured_nonzero:${name}:${entry.id}`,
+        };
+      }
     }
     const { entryHash: _entryHash, ...hashInput } = entry;
     if (hashEntry(hashInput) !== entry.entryHash) {
