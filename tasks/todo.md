@@ -2587,13 +2587,17 @@ Review: the candidate authority and verifier effect protocol are implemented. Th
 
 Objective: close the five approved review findings without weakening existing authority or compatibility contracts.
 
-- [ ] Require OIDC human identity and active membership evidence for every human-only Organization Memory mutation.
-- [ ] Derive corroboration from authoritative source identity and matching semantic content; reject contradictory observations.
-- [ ] Converge ReGauge Mission creation and launch onto one owner/scope contract without swallowed ID conflicts.
-- [ ] Bind delegated fail-to-pass acceptance to authoritative observed check identities, or narrow the contract so it makes no unearned identity claim.
-- [ ] Reject U+061C ARABIC LETTER MARK in ReGauge recipe paths.
-- [ ] Capture a valid RED regression for each finding before production edits.
-- [ ] Run focused tests and typechecks after each fix, then repository-wide tests, typecheck, production build, dependency audit, and diff integrity.
+- [x] Require OIDC human identity and active membership evidence for every human-only Organization Memory mutation.
+- [x] Derive corroboration from authoritative source identity and matching semantic content; reject contradictory observations.
+- [x] Converge ReGauge Mission creation and launch onto one owner/scope contract without swallowed ID conflicts.
+- [x] Bind delegated fail-to-pass acceptance to authoritative observed check identities, or narrow the contract so it makes no unearned identity claim.
+- [x] Reject U+061C ARABIC LETTER MARK in ReGauge recipe paths.
+- [x] Capture a valid RED regression for each finding before production edits.
+- [x] Run focused tests and typechecks after each fix, then repository-wide tests, typecheck, production build, dependency audit, and diff integrity.
 - [ ] Publish only through a protected pull request after all gates pass.
 
 Acceptance: API keys cannot perform human-only memory transitions; contradictory observations cannot corroborate each other; campaign creation and launch converge on one exact Mission; delegated acceptance proves exactly what the verifier observed; all Unicode bidi controls are rejected from reviewable paths; and no existing compatibility or replay behavior regresses.
+
+Review before publication: Organization Memory now derives corroboration identity from an active tenant principal and exact passed evidence records. Human lifecycle mutations require OIDC plus membership evidence, while same-principal, reused-evidence, contradictory, revoked, and expired observations fail closed. ReGauge campaign creation and live launch share one deterministic Mission ID; launch preserves the human owner, binds the exact repository snapshot once, advances the durable state, and no longer returns success when Mission authority cannot be established. Delegated verification no longer requires or echoes check identities its independent command runner never observes. Recipe validation now rejects U+061C with the rest of the Unicode bidirectional controls.
+
+Red-first evidence: the focused matrix failed on API-key mutation, same-principal and contradictory corroboration, missing evidence, Mission identity conflict, missing Mission authority, the unobserved delegated identity contract, and U+061C classification before production changes. After implementation and rebasing onto current main, DB passes 321 of 321, Worker 369 of 369, Eval 170 of 170, and the isolated API, Pipeline, and Transformer timeout cases pass 33 of 33, 19 of 19, and 3 of 3. Their full parallel runs reached 411 of 415, 140 of 141, and 464 of 465 before only machine-load timeouts; every timed-out test passed alone. Every workspace and scripts typechecks, the optimized 50-page production build passes, GA specification and governance checks pass, the production dependency audit reports zero vulnerabilities, and diff integrity passes.
