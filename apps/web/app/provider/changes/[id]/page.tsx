@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { graphPathDisplay, type GraphPath } from "@mendpoint/shared";
 import { ApiRequestError, apiGet, type MigrationPr } from "../../../../lib/api";
 import { SeverityForm } from "./severity-form";
 
@@ -18,13 +19,10 @@ type ChangeDetail = {
     symbol: string;
     confidence: string;
     // Provider->code path behind the finding (FET-016). null = not computed.
-    graphPath: {
-      nodes: string[];
-      hops: number;
-      terminal: "anchor" | "cycle" | "max_hops";
-      truncated: boolean;
-      coverage: "complete" | "partial";
-    } | null;
+    // The shared GraphPath type is the single source of truth for the shape
+    // (including the `no_anchor` terminal), so this cannot silently drift from
+    // the analyzer that produces it or the formatter that renders it.
+    graphPath: GraphPath | null;
   }>;
   prs: MigrationPr[];
 };
@@ -35,22 +33,28 @@ type FindingGraphPath = ChangeDetail["findings"][number]["graphPath"];
  * Render the provider->code reachability path for a finding (FET-016): the
  * import chain, provider anchor first. An absent path reads as "not computed"
  * (no locatable provider anchor), which is distinct from a short computed path.
+ * The direct-vs-bounded decision comes from the shared graphPathDisplay helper
+ * so this renderer stays in lockstep with the PR-body formatter: a one-node but
+ * truncated `no_anchor` path is labelled incomplete, never "direct provider
+ * usage".
  */
 function renderGraphPath(graphPath: FindingGraphPath) {
   if (!graphPath) return <span className="muted">not computed</span>;
-  if (graphPath.nodes.length <= 1) {
-    return (
-      <code title="Direct provider usage">{graphPath.nodes[0] ?? "?"}</code>
-    );
+  const display = graphPathDisplay(graphPath);
+  if (display.kind === "direct") {
+    return <code title="Direct provider usage">{display.node}</code>;
   }
-  const suffix = graphPath.truncated
-    ? graphPath.terminal === "cycle"
+  const suffix =
+    display.bound === "cycle"
       ? " (truncated at an import cycle)"
-      : ` (truncated at the ${graphPath.hops}-hop limit)`
-    : "";
+      : display.bound === "no_anchor"
+        ? " (incomplete: no provider anchor reached)"
+        : display.bound === "max_hops"
+          ? ` (truncated at the ${display.hops}-hop limit)`
+          : "";
   return (
     <code>
-      {graphPath.nodes.join(" → ")}
+      {display.nodes.join(" → ")}
       {suffix}
     </code>
   );

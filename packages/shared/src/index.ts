@@ -256,12 +256,18 @@ export function auxiliaryModelEgressEndpoints(env: EnvLike = process.env): strin
     // The repair lane falls back to OPENAI_BASE_URL even when the selected
     // primary provider has already chosen a higher-precedence LLM_AGENT_URL.
     "OPENAI_BASE_URL",
-    "OPENAI_API_BASE",
-    "XAI_API_BASE",
   ] as const) {
     const endpoint = env[key]?.trim();
     if (endpoint) endpoints.add(endpoint);
   }
+  // OPENAI_API_BASE / XAI_API_BASE are read ONLY by the code-impact confirm
+  // lane, which is opt-in and off by default. Adding them unconditionally
+  // refused a local_only boot for a stale base URL whose lane could never
+  // egress (resolveLlmConfirmMode() === "off"). Treat them as egress-relevant
+  // only when that lane is actually enabled, mirroring resolveLlmConfirmMode's
+  // "live" predicate below (explicit opt-in AND a usable key). @mendpoint/shared
+  // cannot import @mendpoint/code-impact without a cycle, so the predicate is
+  // replicated here; resolve-time enforceModelEndpointEgress stays authoritative.
   const confirmMode = env.LLM_CONFIRM_MODE?.trim().toLowerCase();
   const confirmRequested =
     confirmMode === "live" ||
@@ -738,6 +744,39 @@ export const GraphPathSchema = z.object({
   coverage: z.enum(["complete", "partial"]),
 });
 export type GraphPath = z.infer<typeof GraphPathSchema>;
+
+/**
+ * Format-agnostic display decision for a {@link GraphPath} (FET-016), the single
+ * source of truth every renderer (the PR-body markdown formatter and the web
+ * console) must share so the "direct provider usage vs bounded chain" logic
+ * cannot drift between them. A zero-hop path is `direct` ONLY when it actually
+ * terminated at an anchor (not truncated): a one-node path that was truncated is
+ * the sole shape a `no_anchor` walk can take, so short-circuiting on node count
+ * alone would mislabel an incomplete detached path as direct provider usage.
+ * `bound` names why a chain stopped so it never reads as complete.
+ */
+export type GraphPathDisplay =
+  | { readonly kind: "direct"; readonly node: string }
+  | {
+      readonly kind: "chain";
+      readonly nodes: readonly string[];
+      readonly bound: "cycle" | "no_anchor" | "max_hops" | null;
+      readonly hops: number;
+    };
+
+export function graphPathDisplay(p: GraphPath): GraphPathDisplay {
+  if (p.nodes.length <= 1 && !p.truncated) {
+    return { kind: "direct", node: p.nodes[0] ?? "?" };
+  }
+  const bound = p.truncated
+    ? p.terminal === "cycle"
+      ? "cycle"
+      : p.terminal === "no_anchor"
+        ? "no_anchor"
+        : "max_hops"
+    : null;
+  return { kind: "chain", nodes: p.nodes, bound, hops: p.hops };
+}
 
 export const ConfirmedImpactSchema = z.object({
   filePath: z.string(),

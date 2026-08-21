@@ -3,6 +3,7 @@ import {
   createGitLabDelivery,
   createReviewableChangeDelivery,
   gitlabAsReviewableChangeDelivery,
+  GitLabDeliveryError,
   HttpGitLabDelivery,
   MockGitLabDelivery,
   type GitLabFetch,
@@ -225,6 +226,55 @@ describe("HttpGitLabDelivery", () => {
         parentSha,
         message: "Apply migration",
         files: [{ path: "src/client.ts", content: "tampered\n", mode: "100755" }],
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it("throws a retryable GitLabDeliveryError when the commit read is unreachable (500/429), never a false", async () => {
+    // An unreachable upstream is the third state boolean cannot carry: it must
+    // surface as a retryable error carrying the upstream status, not collapse
+    // into a proven mismatch that dead-letters an approved candidate.
+    const commitSha = "c".repeat(40);
+    for (const status of [500, 429] as const) {
+      const { fetchImpl } = scriptedFetch([
+        {
+          method: "GET",
+          match: (u) => u.endsWith(`/repository/commits/${commitSha}`),
+          reply: { ok: false, status, json: { message: "upstream unavailable" } },
+        },
+      ]);
+      const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+      const err = await delivery
+        .verifyExactCommit(NS, PROJECT, SOURCE, {
+          commitSha,
+          parentSha: "a".repeat(40),
+          message: "Apply migration",
+          files: [{ path: "src/client.ts", content: "x\n" }],
+        })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(GitLabDeliveryError);
+      expect(err).toMatchObject({ provider: "gitlab", operation: "verifyExactCommit", status });
+    }
+  });
+
+  it("returns a terminal false when the commit read is a definite 404 (proven absent, not an outage)", async () => {
+    // A 404 is GitLab's definite answer that the head is not our commit, a
+    // proven mismatch that must stay terminal and fail closed.
+    const commitSha = "d".repeat(40);
+    const { fetchImpl } = scriptedFetch([
+      {
+        method: "GET",
+        match: (u) => u.endsWith(`/repository/commits/${commitSha}`),
+        reply: { ok: false, status: 404, json: { message: "404 Commit Not Found" } },
+      },
+    ]);
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    await expect(
+      delivery.verifyExactCommit(NS, PROJECT, SOURCE, {
+        commitSha,
+        parentSha: "a".repeat(40),
+        message: "Apply migration",
+        files: [{ path: "src/client.ts", content: "x\n" }],
       }),
     ).resolves.toBe(false);
   });
