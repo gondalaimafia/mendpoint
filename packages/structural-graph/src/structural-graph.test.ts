@@ -112,6 +112,8 @@ describe("Mendpoint structural extraction contract", () => {
     ["unknown confidence", { ...raw(), edges: [{ source: "wrapper", target: "create_payment", relation: "calls", confidence: "CERTAIN" }] }, "GRAPHIFY_AMBIGUITY"],
     ["partial extraction", { ...raw(), failed_sources: ["src/client.ts"] }, "GRAPHIFY_EXTRACTION_FAILURE"],
     ["unsupported language", { ...raw(), unsupported_languages: [{ language: "r", files: ["analysis.R"] }] }, "GRAPHIFY_LANGUAGE_GAP"],
+    ["string-valued warnings", { ...raw(), warnings: "one parse recovery" }, "GRAPHIFY_EXTRACTION_FAILURE"],
+    ["object-valued warnings", { ...raw(), warnings: { detail: "one parse recovery" } }, "GRAPHIFY_EXTRACTION_FAILURE"],
   ])("fails closed for %s", (_name, value, code) => expect(() => normalizeGraphifyExtraction(request(), value, metadata())).toThrow(code));
 
   it("rejects missing confidence and missing coverage evidence instead of upgrading them", () => {
@@ -126,6 +128,10 @@ describe("Mendpoint structural extraction contract", () => {
     const missingCoverage = structuredClone(raw()) as unknown as Record<string, unknown>;
     delete missingCoverage.unsupported_languages;
     expect(() => normalizeGraphifyExtraction(request(), missingCoverage, metadata())).toThrow("GRAPHIFY_EXTRACTION_FAILURE");
+
+    const missingWarnings = structuredClone(raw()) as unknown as Record<string, unknown>;
+    delete missingWarnings.warnings;
+    expect(() => normalizeGraphifyExtraction(request(), missingWarnings, metadata())).toThrow("GRAPHIFY_EXTRACTION_FAILURE");
   });
 
   it("preserves classified, manifest-bound warning provenance", () => {

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { gradeGraphifyBenchmark, graphifyBenchmarkCohortDigest, stageGraphifyBenchmark, type GraphifyBenchmarkCase, type GraphifyBenchmarkKey } from "./benchmark.js";
+import { gradeGraphifyBenchmark, graphifyBenchmarkCohortDigest, stageGraphifyBenchmark, type GraphifyBenchmarkCase, type GraphifyBenchmarkKey, type StagedGraphifyBenchmark } from "./benchmark.js";
 
 const digest = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const cases: GraphifyBenchmarkCase[] = Array.from({ length: 18 }, (_, index) => ({
-  caseId: `case-${String(index + 1).padStart(2, "0")}`,
+  // Opaque caseId: it carries no ordinal or parity signal, so a predictor cannot
+  // recover the indirect label from the identifier the way the earlier fixture let it.
+  caseId: `case-${digest(`graphify-case-${index}`).slice(7, 19)}`,
   familyDigest: digest(String.fromCharCode(97 + index)),
   split: index < 6 ? "development" : index < 12 ? "validation" : "holdout",
   indirect: index % 2 === 1,
@@ -28,24 +30,38 @@ const key: GraphifyBenchmarkKey = {
 };
 
 describe("Graphify adoption benchmark contract", () => {
-  it("keeps labels out of predictors, requires three arms and a sealed holdout, and measures indirect value", async () => {
+  it("keeps labels out of predictors, requires three arms and a sealed holdout, and cannot manufacture an indirect-value delta without the labels", async () => {
+    // A genuinely label-free predictor: it receives only the narrowed payload,
+    // never closes over the sealed answer key, and cannot recover the indirect
+    // label from the opaque caseId. With nothing to condition on it returns the
+    // same fixed structural guess for every arm and every case, so any arm-C
+    // advantage would have to come from a leak. There is none: the honest delta
+    // is exactly zero. GRAPHIFY_BENCHMARK.md treats the >=10-point figure only as
+    // a future adoption requirement, never as a measured result, so nothing
+    // downstream depends on a non-zero delta here.
     const predict = vi.fn(async (input: { arm: "A" | "B" | "C"; caseId: string; inputDigest: string; language: string }) => {
       expect(Object.keys(input).sort()).toEqual(["arm", "caseId", "inputDigest", "language"]);
       expect(input).not.toHaveProperty("expectedNodes");
       expect(input).not.toHaveProperty("expectedEdges");
-      const truth = key.cases.find((item) => item.caseId === input.caseId)!;
-      const index = Number(input.caseId.slice(-2));
-      if (input.arm === "A" && index % 2 === 0) return { nodes: truth.expectedNodes.slice(0, 3), edges: truth.expectedEdges.slice(0, 2), elapsedMs: 8, peakMemoryBytes: 1_000 };
-      if (input.arm === "B") return { nodes: truth.expectedNodes, edges: truth.expectedEdges, elapsedMs: 6, peakMemoryBytes: 1_100, semantic: "not_measured" as const };
-      return { nodes: truth.expectedNodes, edges: truth.expectedEdges, elapsedMs: 7, peakMemoryBytes: 1_200 };
+      expect(input).not.toHaveProperty("indirect");
+      return {
+        nodes: ["endpoint", "sdk", "wrapper"],
+        edges: ["sdk->endpoint", "wrapper->sdk"],
+        elapsedMs: 7,
+        peakMemoryBytes: 1_200,
+        ...(input.arm === "B" ? { semantic: "not_measured" as const } : {}),
+      };
     });
     const staged = await stageGraphifyBenchmark({ cases, cohortDigest: key.cohortDigest, predict });
     const report = gradeGraphifyBenchmark(staged, key);
     expect(predict).toHaveBeenCalledTimes(54);
     expect(report.cohort).toEqual({ total: 18, development: 6, validation: 6, holdout: 6, indirect: 9 });
     expect(Object.values(report.arms).every((arm) => arm.semanticStatus === "not_measured")).toBe(true);
-    expect(report.arms.C.indirectRecall).toBe(1);
-    expect(report.arms.C.indirectRecall - report.arms.A.indirectRecall).toBeGreaterThanOrEqual(0.1);
+    // The harness scores every arm, but a label-free predictor sees identical
+    // inputs across arms and returns identical structure, so arm C has no
+    // indirect-value advantage over arm A. The delta is zero, not >=0.1.
+    expect(report.arms.A.indirectRecall).toBe(report.arms.C.indirectRecall);
+    expect(report.arms.C.indirectRecall - report.arms.A.indirectRecall).toBe(0);
     expect(report.modelCalls).toBe(0);
     expect(report.decision).toBe("KEEP AS INTERNAL TOOL ONLY");
     expect(report.adoptionBlockedBy).toEqual([
@@ -55,6 +71,18 @@ describe("Graphify adoption benchmark contract", () => {
       "network_denial_not_measured",
       "sealed_external_holdout_not_executed",
     ]);
+  });
+
+  it("refuses to grade a cohort that is not the pinned 18 cases, so an empty artifact cannot report a flattering zero latency or memory", () => {
+    const emptyCohortDigest = graphifyBenchmarkCohortDigest([]);
+    const emptyStaged: StagedGraphifyBenchmark = {
+      schemaVersion: "mendpoint.graphify-benchmark-staged.v1",
+      cohortDigest: emptyCohortDigest,
+      cases: [],
+      predictions: [],
+    };
+    const emptyKey: GraphifyBenchmarkKey = { cohortDigest: emptyCohortDigest, cases: [] };
+    expect(() => gradeGraphifyBenchmark(emptyStaged, emptyKey)).toThrow("GRAPHIFY_BENCHMARK_COHORT_INVALID");
   });
 
   it("fails closed on family leakage, missing arms, and a mismatched sealed key", async () => {
