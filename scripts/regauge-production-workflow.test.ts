@@ -151,6 +151,10 @@ describe("Regauge production workflow", () => {
     const stage = workflow.jobs.deploy.steps.find(
       (step: Record<string, unknown>) => step.name === "Stage production secrets",
     ).run as string;
+    const validation = workflow.jobs.deploy.steps.find(
+      (step: Record<string, unknown>) => step.name === "Validate exact authority before mutation",
+    ).run as string;
+    expect(validation).toContain("MENDPOINT_APPLICATION_DATA_KEY");
     for (const name of [
       "MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID",
       "MENDPOINT_REGAUGE_CANARY_DEFAULT_BRANCH",
@@ -171,6 +175,7 @@ describe("Regauge production workflow", () => {
     const env = workflow.jobs.deploy.env;
     expect(env).toMatchObject({
       DEEPSEEK_API_KEY: "${{ secrets.DEEPSEEK_API_KEY }}",
+      MENDPOINT_APPLICATION_DATA_KEY: "${{ secrets.MENDPOINT_APPLICATION_DATA_KEY }}",
       MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "${{ vars.REGAUGE_DEEPSEEK_GOVERNANCE_JSON }}",
       MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "${{ vars.REGAUGE_DEEPSEEK_PRICING_JSON }}",
     });
@@ -178,6 +183,7 @@ describe("Regauge production workflow", () => {
       (step: Record<string, unknown>) => step.name === "Stage production secrets",
     ).run as string;
     for (const binding of [
+      'MENDPOINT_APPLICATION_DATA_KEY="$MENDPOINT_APPLICATION_DATA_KEY"',
       "DEEPSEEK_VERIFIER_ENABLED=true",
       "DEEPSEEK_API_KEY=\"$DEEPSEEK_API_KEY\"",
       "MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=shadow",
@@ -191,6 +197,8 @@ describe("Regauge production workflow", () => {
       "MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON=\"$MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON\"",
       "MENDPOINT_AGENT_VERIFIER_PRICING_JSON=\"$MENDPOINT_AGENT_VERIFIER_PRICING_JSON\"",
     ]) expect(stage).toContain(binding);
+    expect(source).not.toContain('echo "$MENDPOINT_APPLICATION_DATA_KEY"');
+    expect(source).not.toContain('printf \'%s\\n\' "$MENDPOINT_APPLICATION_DATA_KEY"');
     expect(stage).not.toContain("MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=active");
   });
 
