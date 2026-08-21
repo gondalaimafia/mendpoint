@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExactDraftDeliveryInput } from "./exact-draft.js";
-import { MockGitLabDelivery, type GitLabDelivery, type MergeRequestResult } from "./gitlab.js";
+import {
+  GitLabDeliveryError,
+  MockGitLabDelivery,
+  type GitLabDelivery,
+  type MergeRequestResult,
+} from "./gitlab.js";
 import { gitlabAsExactDraftDelivery } from "./gitlab-exact-draft.js";
 
 const BASE_SHA = "a".repeat(40);
@@ -281,5 +286,60 @@ describe("gitlabAsExactDraftDelivery", () => {
     expect(result.draft).toBe(true);
     expect(createCalls).toBe(1);
     expect(commitCalls).toBe(0);
+  });
+
+  it("propagates a retryable outage (not a diverged integrity error) when verification cannot reach GitLab", async () => {
+    // The source branch exists, but verifyExactCommit cannot reach GitLab to
+    // decide (a 500). This must surface as a retryable GitLabDeliveryError
+    // carrying the upstream status, NOT the terminal
+    // gitlab_exact_draft_branch_diverged that would dead-letter an approved
+    // candidate on a transient outage.
+    const gitlab: GitLabDelivery = {
+      async resolveBranchSha(_ns, _p, branch) {
+        return branch === intent().branch ? "cd".repeat(20) : BASE_SHA;
+      },
+      async verifyExactCommit() {
+        throw new GitLabDeliveryError("verifyExactCommit", 500, { message: "upstream" });
+      },
+      async createBranch() {},
+      async commitFiles() {
+        return COMMIT_SHA;
+      },
+      async openDraftMergeRequest() {
+        throw new Error("no merge request must be opened when verification is inconclusive");
+      },
+    };
+
+    const err = await gitlabAsExactDraftDelivery(gitlab)
+      .deliverExactDraft(intent())
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GitLabDeliveryError);
+    expect(err).toMatchObject({ provider: "gitlab", operation: "verifyExactCommit", status: 500 });
+    expect(String((err as Error).message)).not.toContain("gitlab_exact_draft_branch_diverged");
+  });
+
+  it("fails closed as diverged when the existing branch head is a PROVEN mismatch", async () => {
+    // verifyExactCommit returned a definite false (GitLab answered; the head is
+    // not our commit). This is the one case that stays terminal and fails
+    // closed — the outage fix must not make a real integrity mismatch retryable.
+    const gitlab: GitLabDelivery = {
+      async resolveBranchSha(_ns, _p, branch) {
+        return branch === intent().branch ? "cd".repeat(20) : BASE_SHA;
+      },
+      async verifyExactCommit() {
+        return false;
+      },
+      async createBranch() {},
+      async commitFiles() {
+        return COMMIT_SHA;
+      },
+      async openDraftMergeRequest() {
+        throw new Error("no merge request must be opened for a diverged branch");
+      },
+    };
+
+    await expect(
+      gitlabAsExactDraftDelivery(gitlab).deliverExactDraft(intent()),
+    ).rejects.toThrow("gitlab_exact_draft_branch_diverged");
   });
 });

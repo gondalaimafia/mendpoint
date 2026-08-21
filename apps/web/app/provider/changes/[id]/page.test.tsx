@@ -103,4 +103,29 @@ describe("change detail — FET-016 provider path column", () => {
 
     expect(html).toContain("truncated at an import cycle");
   });
+
+  it("labels a one-node no_anchor path as incomplete, never as direct provider usage", async () => {
+    // A detached node has no predecessor, so a no_anchor walk can only ever
+    // emit a single node with truncated=true. The renderer must not short-circuit
+    // on node count alone and mislabel it "Direct provider usage".
+    const html = await renderWithFindings([
+      {
+        id: "f1",
+        filePath: "detached.ts",
+        lineStart: 4,
+        symbol: "source",
+        confidence: "medium",
+        graphPath: {
+          nodes: ["detached.ts"],
+          hops: 0,
+          terminal: "no_anchor",
+          truncated: true,
+          coverage: "partial",
+        },
+      },
+    ]);
+
+    expect(html).toContain("incomplete: no provider anchor reached");
+    expect(html).not.toContain("Direct provider usage");
+  });
 });

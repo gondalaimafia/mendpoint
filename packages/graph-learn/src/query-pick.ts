@@ -94,16 +94,12 @@ const RULES: Array<{
     },
     weight: 8,
   },
-  {
-    re: /migration|ready\s+units|campaign/i,
-    op: "migration_ready_units",
-    build: (_m, text) => {
-      const id =
-        text.match(/campaign[:\s]+([\w-]+)/i)?.[1] ?? "default";
-      return { op: "migration_ready_units", campaignId: id };
-    },
-    weight: 7,
-  },
+  // No rule routes to `migration_ready_units` or `invariants_for_symbol` while
+  // their source relations (DEPENDS_ON / PRESERVES_INVARIANT) have no ingest
+  // producer: a natural-language readiness or invariant question must not be
+  // steered to an op that can only return an empty result. The handlers still
+  // exist and answer `target_absent` for direct callers; restore a rule here
+  // (and the entry in GRAPH_RAG_TOOLS) when a producer lands.
   {
     re: /latency|slo|p99|p50/i,
     op: "latency_stats",

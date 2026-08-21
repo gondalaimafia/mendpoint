@@ -644,20 +644,34 @@ describe("ops GA", () => {
     ).toBe(true);
   });
 
-  it("fails boot when a private primary model hides a public code-impact confirmation endpoint", () => {
-    for (const [name, value] of [
-      ["OPENAI_API_BASE", "https://openai-confirm.invalid/v1"],
-      ["XAI_API_BASE", "https://xai-confirm.invalid/v1"],
-    ] as const) {
+  it("does not fail boot for a stale confirm-lane base URL while that lane is disabled", () => {
+    // OPENAI_API_BASE / XAI_API_BASE are read only by the opt-in, off-by-default
+    // code-impact confirm lane. With the lane off, a stale public value cannot
+    // egress (resolveLlmConfirmMode() === "off"), so it must not block boot.
+    for (const name of ["OPENAI_API_BASE", "XAI_API_BASE"] as const) {
       const r = validateApiEnv({
         MENDPOINT_MODEL_EGRESS: "local_only",
         LLM_AGENT_URL: "http://127.0.0.1:8000",
-        [name]: value,
+        [name]: "https://stale-confirm.invalid/v1",
       });
-      expect(r.ok).toBe(false);
       expect(r.errors.some((error) => error.includes("forbids an external model endpoint")))
-        .toBe(true);
+        .toBe(false);
     }
+  });
+
+  it("fails boot when the enabled confirm lane points at a public host under local_only", () => {
+    // The exploit is only reachable when the lane can actually run: explicit
+    // opt-in AND a usable key. Then the public base URL is inspected and refused.
+    const r = validateApiEnv({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "http://127.0.0.1:8000",
+      LLM_CONFIRM_MODE: "live",
+      OPENAI_API_KEY: "configured",
+      OPENAI_API_BASE: "https://openai-confirm.invalid/v1",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((error) => error.includes("forbids an external model endpoint")))
+      .toBe(true);
   });
 
   it("accepts a local model endpoint under local_only egress", () => {
