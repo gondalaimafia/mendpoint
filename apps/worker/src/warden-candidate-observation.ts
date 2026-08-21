@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { redactSourceForModel } from "@mendpoint/agent";
 import {
   completeJob,
+  enqueueJob,
   failJob,
+  getAgentRun,
+  getJob,
+  getWardenCandidateDelivery,
   getWardenCiCycle,
   pauseWardenCiCycle,
   recordWardenCiObservation,
@@ -15,8 +19,10 @@ import type {
   ExactDraftObservation,
   ExactDraftObservationInput,
 } from "@mendpoint/github";
+import { assertDelegatedPrVerificationApprovalAuthority } from "./delegated-pr-verification-job.js";
 
 const JOB_TYPE = "warden.candidate.observe";
+export const WARDEN_CANDIDATE_CLEANUP_JOB_TYPE = "warden.candidate.cleanup";
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const MAX_FIELD_CHARS = 2_000;
 const MAX_REVIEW_FEEDBACK_BYTES = 64 * 1_024;
@@ -58,6 +64,77 @@ function assertJob(job: JobRow): void {
 
 function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function cleanupJobId(input: Readonly<{
+  tenantId: string;
+  cycleId: string;
+  headSha: string;
+  observationDigest: string;
+}>): string {
+  return `wardencicleanupjob_${createHash("sha256")
+    .update([input.tenantId, input.cycleId, input.headSha, input.observationDigest].join("\0"), "utf8")
+    .digest("hex").slice(0, 32)}`;
+}
+
+function enqueueDelegatedCleanupHandoff(input: Readonly<{
+  db: AppDb;
+  tenantId: string;
+  cycleId: string;
+  deliveryId: string;
+  observationId: string;
+  headSha: string;
+  observationDigest: string;
+  observedAt: string;
+}>): string | null {
+  if (!input.db.raw.isTransaction) throw new Error("warden_ci_cleanup_transaction_required");
+  const delivery = getWardenCandidateDelivery(input.db, input.tenantId, input.deliveryId);
+  const run = delivery ? getAgentRun(input.db, delivery.runId, input.tenantId) : undefined;
+  let result: Record<string, unknown> | null = null;
+  try { result = run?.result_json ? JSON.parse(run.result_json) as Record<string, unknown> : null; }
+  catch { throw new Error("warden_ci_cleanup_run_invalid"); }
+  const artifacts = result?.artifacts && typeof result.artifacts === "object" && !Array.isArray(result.artifacts)
+    ? result.artifacts as Record<string, unknown>
+    : null;
+  const candidateDigest = typeof artifacts?.candidateDigest === "string" ? artifacts.candidateDigest : "";
+  if (!delivery || delivery.status !== "delivered" || !run?.job_id || !result) {
+    throw new Error("warden_ci_cleanup_run_invalid");
+  }
+  const authority = assertDelegatedPrVerificationApprovalAuthority(input.db, {
+    tenantId: input.tenantId,
+    runId: run.id,
+    sourceJobId: run.job_id,
+    candidateDigest,
+  });
+  if (!authority.required) return null;
+  const id = cleanupJobId(input);
+  const payload = {
+    schemaVersion: 1,
+    cycleId: input.cycleId,
+    deliveryId: input.deliveryId,
+    observationId: input.observationId,
+    headSha: input.headSha,
+    observationDigest: input.observationDigest,
+  };
+  const payloadJson = JSON.stringify(payload);
+  const existing = getJob(input.db, id, input.tenantId);
+  if (existing) {
+    if (existing.type !== WARDEN_CANDIDATE_CLEANUP_JOB_TYPE || existing.payload_json !== payloadJson ||
+        existing.max_attempts !== 20 || existing.created_at !== input.observedAt ||
+        existing.available_at !== input.observedAt) {
+      throw new Error("warden_ci_cleanup_job_conflict");
+    }
+    return id;
+  }
+  enqueueJob(input.db, {
+    id,
+    tenantId: input.tenantId,
+    type: WARDEN_CANDIDATE_CLEANUP_JOB_TYPE,
+    payload,
+    maxAttempts: 20,
+    createdAt: input.observedAt,
+  });
+  return id;
 }
 
 function resultMap(observation: ExactDraftObservation): ReadonlyMap<string, ExactDraftCheckResult> {
@@ -346,6 +423,18 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
       evidenceDigest: persisted.digest,
       observedAt,
     });
+    if (trigger === "checks_passed") {
+      enqueueDelegatedCleanupHandoff({
+        db: input.db,
+        tenantId: cycle.tenantId,
+        cycleId: cycle.id,
+        deliveryId: cycle.deliveryId,
+        observationId: saved.id,
+        headSha: cycle.currentHeadSha,
+        observationDigest,
+        observedAt,
+      });
+    }
     const completed = completeJob(input.db, input.job.id, {
       cycleId: cycle.id,
       deliveryId: cycle.deliveryId,
