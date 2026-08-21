@@ -87,6 +87,7 @@ export * from "./post-trained-evaluation.js";
 export * from "./post-trained-canary.js";
 export * from "./learning-operations.js";
 export * from "./learning-event.js";
+export * from "./lesson-routing.js";
 export * from "./verifier-learning.js";
 export * from "./organization-memory-precedence.js";
 export * from "./verifier-telemetry.js";
