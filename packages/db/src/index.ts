@@ -45,6 +45,8 @@ export * from "./capability-adoption-opportunity.js";
 export * from "./mission-decisions.js";
 export * from "./mission-exceptions.js";
 export * from "./mission-verification.js";
+export * from "./mission-artifacts.js";
+export * from "./mission-timeline.js";
 
 export type AppDb = {
   raw: DatabaseSync;
@@ -947,6 +949,97 @@ END;
 CREATE TRIGGER IF NOT EXISTS mission_verifications_no_delete
 BEFORE DELETE ON mission_verifications BEGIN
   SELECT RAISE(ABORT, 'mission_verifications_append_only');
+END;
+
+-- Mission artifact registry (task brief §2). Mission outputs are first-class:
+-- impact report, migration plan, candidate patch, pull request, test run,
+-- verification report, architecture report, rollback plan, graph diff. These two
+-- tables store REFERENCES and LINEAGE, never copies — the bytes live in
+-- artifact_manifests (content-addressed). mission_artifacts binds a manifest to a
+-- mission in a role; mission_artifact_lineage records which registered output
+-- derived from which (a derived_from DAG). Both are brand-new, so — like the
+-- mission durable-record tables above — they converge on fresh AND pre-change
+-- databases purely through CREATE TABLE/INDEX IF NOT EXISTS, with no ALTER and no
+-- shape change to any existing table. Both are append-only, enforced by BEFORE
+-- UPDATE/DELETE triggers. Each row's primary key is a sha256 content digest over
+-- canonical JSON that INCLUDES tenant_id (Change Graph Tier-1 binding), so a
+-- different tenant produces a different primary key by construction. The
+-- composite foreign keys (tenant_id, mission_id) -> mission(tenant_id, id) and
+-- (tenant_id, artifact_id) -> artifact_manifests(tenant_id, id) make it
+-- structurally impossible for a row to reference another tenant's mission or
+-- artifact.
+--
+-- artifact_manifests_id_tenant_uidx is an additive index (existing columns,
+-- index-only, no shape change) that the composite FK targets. It mirrors
+-- repository_snapshots_id_tenant_uidx above. artifact_manifests.id is already the
+-- PRIMARY KEY, so (id, tenant_id) is trivially unique and this index build cannot
+-- fail on any pre-existing volume.
+CREATE UNIQUE INDEX IF NOT EXISTS artifact_manifests_id_tenant_uidx
+  ON artifact_manifests(id, tenant_id);
+
+CREATE TABLE IF NOT EXISTS mission_artifacts (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN (
+    'impact_report', 'migration_plan', 'candidate_patch', 'pull_request', 'test_run',
+    'verification_report', 'architecture_report', 'rollback_plan', 'graph_diff')),
+  -- A REFERENCE to artifact_manifests(id); the content lives there and is never
+  -- duplicated onto this row. artifact_sha256 is the manifest's canonical digest.
+  artifact_id TEXT NOT NULL,
+  artifact_sha256 TEXT NOT NULL CHECK (length(artifact_sha256) = 64),
+  label TEXT NOT NULL,
+  producer_principal_id TEXT NOT NULL REFERENCES principals(id),
+  content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
+  FOREIGN KEY (artifact_id, tenant_id) REFERENCES artifact_manifests(id, tenant_id),
+  -- One registration per (mission, role, artifact): an artifact fills a role once.
+  UNIQUE (tenant_id, mission_id, role, artifact_id)
+);
+CREATE INDEX IF NOT EXISTS mission_artifacts_mission_idx
+  ON mission_artifacts(tenant_id, mission_id, role, created_at);
+CREATE INDEX IF NOT EXISTS mission_artifacts_artifact_idx
+  ON mission_artifacts(tenant_id, artifact_id);
+CREATE TRIGGER IF NOT EXISTS mission_artifacts_no_update
+BEFORE UPDATE ON mission_artifacts BEGIN
+  SELECT RAISE(ABORT, 'mission_artifacts_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS mission_artifacts_no_delete
+BEFORE DELETE ON mission_artifacts BEGIN
+  SELECT RAISE(ABORT, 'mission_artifacts_append_only');
+END;
+
+CREATE TABLE IF NOT EXISTS mission_artifact_lineage (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT NOT NULL,
+  -- artifact_id derived_from parent_artifact_id. Both are references to
+  -- artifact_manifests and both must be registered outputs of this mission.
+  artifact_id TEXT NOT NULL,
+  parent_artifact_id TEXT NOT NULL,
+  relation TEXT NOT NULL CHECK (relation IN ('derived_from')),
+  recorded_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
+  FOREIGN KEY (artifact_id, tenant_id) REFERENCES artifact_manifests(id, tenant_id),
+  FOREIGN KEY (parent_artifact_id, tenant_id) REFERENCES artifact_manifests(id, tenant_id),
+  -- A DAG edge never points at itself; longer cycles are rejected in code.
+  CHECK (artifact_id != parent_artifact_id),
+  UNIQUE (tenant_id, mission_id, artifact_id, parent_artifact_id)
+);
+CREATE INDEX IF NOT EXISTS mission_artifact_lineage_child_idx
+  ON mission_artifact_lineage(tenant_id, mission_id, artifact_id);
+CREATE INDEX IF NOT EXISTS mission_artifact_lineage_parent_idx
+  ON mission_artifact_lineage(tenant_id, mission_id, parent_artifact_id);
+CREATE TRIGGER IF NOT EXISTS mission_artifact_lineage_no_update
+BEFORE UPDATE ON mission_artifact_lineage BEGIN
+  SELECT RAISE(ABORT, 'mission_artifact_lineage_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS mission_artifact_lineage_no_delete
+BEFORE DELETE ON mission_artifact_lineage BEGIN
+  SELECT RAISE(ABORT, 'mission_artifact_lineage_append_only');
 END;
 
 -- Trajectory capture (Intelligence Ownership Phases 4 + 7). The OBSERVATION layer
