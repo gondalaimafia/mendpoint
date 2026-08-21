@@ -2,7 +2,21 @@
 
 One entry per unresolved failure or coverage gap surfaced by the suite. Never silently discarded. Generated from the latest run; re-run the suite to refresh.
 
-## FAIL-001 — fettler-ts-payments-rename (precision)
+## FAIL-001 — fettler-edge-huge-monorepo (completes_within_budget)
+
+- Scenario: fettler-edge-huge-monorepo
+- Product: fettler
+- Severity: P1
+- Failure category: SCALE_FAILURE
+- Observed behavior: analysis did not finish within the 120000ms budget on this repository
+- Expected behavior: complete analysis within the budget
+- Root cause: to be diagnosed (Phase 7); classify from the category above
+- Proposed generalized fix: smallest generalizable root-cause fix in the subsystem named by the category
+- Status: OPEN
+- Regression test: this scenario (fettler-edge-huge-monorepo) becomes the permanent regression once fixed
+- Owner: unassigned
+
+## FAIL-002 — fettler-ts-payments-rename (precision)
 
 - Scenario: fettler-ts-payments-rename
 - Product: fettler
@@ -16,7 +30,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-ts-payments-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-002 — fettler-java-settlement-rename (expected_findings_recall)
+## FAIL-003 — fettler-java-settlement-rename (expected_findings_recall)
 
 - Scenario: fettler-java-settlement-rename
 - Product: fettler
@@ -30,7 +44,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-java-settlement-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-003 — fettler-java-settlement-rename (precision)
+## FAIL-004 — fettler-java-settlement-rename (precision)
 
 - Scenario: fettler-java-settlement-rename
 - Product: fettler
@@ -44,7 +58,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-java-settlement-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-004 — fettler-node-cjs-rename (expected_findings_recall)
+## FAIL-005 — fettler-node-cjs-rename (expected_findings_recall)
 
 - Scenario: fettler-node-cjs-rename
 - Product: fettler
@@ -58,7 +72,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (fettler-node-cjs-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-005 — regauge-runtime-upgrade (recipe_residual)
+## FAIL-006 — regauge-runtime-upgrade (recipe_residual)
 
 - Scenario: regauge-runtime-upgrade
 - Product: regauge
@@ -72,7 +86,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-runtime-upgrade) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-006 — regauge-sdk-upgrade (family_coverage)
+## FAIL-007 — regauge-sdk-upgrade (family_coverage)
 
 - Scenario: regauge-sdk-upgrade
 - Product: regauge
@@ -86,7 +100,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-sdk-upgrade) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-007 — regauge-framework-upgrade (family_coverage)
+## FAIL-008 — regauge-framework-upgrade (family_coverage)
 
 - Scenario: regauge-framework-upgrade
 - Product: regauge
@@ -100,7 +114,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-framework-upgrade) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-008 — regauge-internal-api-rename (family_coverage)
+## FAIL-009 — regauge-internal-api-rename (family_coverage)
 
 - Scenario: regauge-internal-api-rename
 - Product: regauge
@@ -114,7 +128,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-internal-api-rename) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-009 — regauge-partial-campaign (family_coverage)
+## FAIL-010 — regauge-partial-campaign (family_coverage)
 
 - Scenario: regauge-partial-campaign
 - Product: regauge
@@ -128,7 +142,7 @@ One entry per unresolved failure or coverage gap surfaced by the suite. Never si
 - Regression test: this scenario (regauge-partial-campaign) becomes the permanent regression once fixed
 - Owner: unassigned
 
-## FAIL-010 — gen-regauge-runtime-unsupported-21-23 (family_coverage)
+## FAIL-011 — gen-regauge-runtime-unsupported-21-23 (family_coverage)
 
 - Scenario: gen-regauge-runtime-unsupported-21-23
 - Product: regauge

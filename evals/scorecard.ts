@@ -7,7 +7,12 @@
  * explicit "not measured (<why>)" — never blanked and never guessed — following
  * the precedent the latest report already sets for unmeasured dimensions.
  */
-import type { ReadinessEvaluation, ReadinessGatesConfig, ScoredRun } from "./readiness.js";
+import type {
+  AbsentScenario,
+  ReadinessEvaluation,
+  ReadinessGatesConfig,
+  ScoredRun,
+} from "./readiness.js";
 
 const NOT_MEASURED = (why: string): string => `not measured (${why})`;
 
@@ -148,6 +153,25 @@ function fettlerAbstentionScorecard(scored: ScoredRun[], ev: ReadinessEvaluation
   return lines.join("\n");
 }
 
+/** §29 block listing gated scenarios that were ABSENT from this run (not scored). */
+function absentScenariosScorecard(absent: AbsentScenario[]): string {
+  if (absent.length === 0) return "";
+  const out: string[] = [];
+  out.push(`## Gated scenarios not measured this run (absent)`);
+  out.push("");
+  out.push(
+    `${absent.length} gated scenario(s) did not run (e.g. MENDPOINT_CORPUS_ROOT unset / corpus absent). They are reported here, not renormalised away: the readiness verdict above FAILS every capability one of these would have fed, so a partial run cannot read as ready.`,
+  );
+  out.push("");
+  out.push(`| scenario | product | correct behavior | status |`);
+  out.push(`| --- | --- | --- | --- |`);
+  for (const a of [...absent].sort((x, y) => x.scenario_id.localeCompare(y.scenario_id))) {
+    out.push(`| ${a.scenario_id} | ${a.product} | ${a.gt.correct_behavior} | not measured (absent) |`);
+  }
+  out.push("");
+  return out.join("\n");
+}
+
 /** §29 block listing capabilities that have no measurable signal today. */
 function notMeasuredScorecard(gates: ReadinessGatesConfig): string {
   const block = gates.not_measured;
@@ -235,6 +259,7 @@ export function renderScorecard(
   scored: ScoredRun[],
   ev: ReadinessEvaluation,
   gates: ReadinessGatesConfig,
+  absent: AbsentScenario[] = [],
 ): string {
   const now = new Date().toISOString();
   const commit = scored[0]?.record.git_commit ?? "unknown";
@@ -253,6 +278,7 @@ export function renderScorecard(
   out.push(fettlerScorecard(scored, ev, gates));
   out.push(fettlerAbstentionScorecard(scored, ev, gates));
   out.push(regaugeFamilyScorecard(scored, ev, gates));
+  out.push(absentScenariosScorecard(absent));
   out.push(notMeasuredScorecard(gates));
   return out.join("\n") + "\n";
 }

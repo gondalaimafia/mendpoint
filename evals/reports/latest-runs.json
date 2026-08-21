@@ -1,10 +1,10 @@
 [
   {
-    "run_id": "7e47f9b5-4d00-4850-95ba-a3388e120d35",
-    "timestamp": "2026-08-18T23:16:26.479Z",
-    "git_commit": "a817cd2",
+    "run_id": "7b21602b-41c3-49e4-9f48-577d5188ec27",
+    "timestamp": "2026-08-19T15:18:09.493Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-ts-payments-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -157,7 +157,7 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 320,
+    "latency_ms": 2214,
     "importChainGrade": {
       "applicable": true,
       "grader_results": [
@@ -246,11 +246,11 @@
     }
   },
   {
-    "run_id": "612ad2b4-e22f-4a49-82ae-6786e128b853",
-    "timestamp": "2026-08-18T23:16:26.849Z",
-    "git_commit": "a817cd2",
+    "run_id": "1a334feb-ec6a-402e-9e1d-2241b6c45d86",
+    "timestamp": "2026-08-19T15:18:11.975Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-python-billing-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -457,7 +457,7 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 155,
+    "latency_ms": 2032,
     "importChainGrade": {
       "applicable": true,
       "grader_results": [
@@ -529,11 +529,11 @@
     }
   },
   {
-    "run_id": "aa6ec8d4-7b05-44b9-bcc5-93026b3c67a9",
-    "timestamp": "2026-08-18T23:16:27.058Z",
-    "git_commit": "a817cd2",
+    "run_id": "db29f47b-ca48-4aa7-96db-5308b05363ce",
+    "timestamp": "2026-08-19T15:18:14.260Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-go-ledger-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -769,7 +769,7 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 115,
+    "latency_ms": 417,
     "importChainGrade": {
       "applicable": true,
       "grader_results": [
@@ -856,11 +856,11 @@
     }
   },
   {
-    "run_id": "3c05005b-5147-4ba4-9f52-eed67c6a9fe5",
-    "timestamp": "2026-08-18T23:16:27.224Z",
-    "git_commit": "a817cd2",
+    "run_id": "4eb73909-8199-493e-888e-1711681fe012",
+    "timestamp": "2026-08-19T15:18:14.830Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-java-settlement-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1073,7 +1073,7 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 158,
+    "latency_ms": 376,
     "importChainGrade": {
       "applicable": true,
       "grader_results": [
@@ -1142,11 +1142,11 @@
     }
   },
   {
-    "run_id": "ab9810d8-dbad-4489-bca1-b68f5cc731d5",
-    "timestamp": "2026-08-18T23:16:27.426Z",
-    "git_commit": "a817cd2",
+    "run_id": "e6a1dcff-8267-4046-8b41-7ff0f6d2187f",
+    "timestamp": "2026-08-19T15:18:15.311Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-node-cjs-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1280,14 +1280,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 1652
+    "latency_ms": 1468
   },
   {
-    "run_id": "8d656589-1fda-4851-b5ef-08df1f3b3ed0",
-    "timestamp": "2026-08-18T23:16:29.293Z",
-    "git_commit": "a817cd2",
+    "run_id": "f20f2dae-ed39-400b-a2d2-fc668763e33c",
+    "timestamp": "2026-08-19T15:18:16.904Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-ts-monorepo-rename",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1456,14 +1456,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 644
+    "latency_ms": 431
   },
   {
-    "run_id": "705e6b8e-512d-40b7-a0f2-a73595098c50",
-    "timestamp": "2026-08-18T23:16:29.999Z",
-    "git_commit": "a817cd2",
+    "run_id": "3a3375cd-1d68-47be-bd44-dbcf460fdc88",
+    "timestamp": "2026-08-19T15:18:17.366Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-edge-already-migrated",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1505,14 +1505,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 73
+    "latency_ms": 135
   },
   {
-    "run_id": "9d48adb7-9581-4b35-b2da-86ed807aeef6",
-    "timestamp": "2026-08-18T23:16:30.102Z",
-    "git_commit": "a817cd2",
+    "run_id": "c02ce07b-4efd-4a53-9e31-3793f22896b6",
+    "timestamp": "2026-08-19T15:18:17.519Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-edge-ambiguous",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1554,14 +1554,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 80
+    "latency_ms": 94
   },
   {
-    "run_id": "f4b4d834-8d8c-4c0c-b355-8b08950592de",
-    "timestamp": "2026-08-18T23:16:30.220Z",
-    "git_commit": "a817cd2",
+    "run_id": "236e0bde-486e-4420-8604-fdcc0763f4c7",
+    "timestamp": "2026-08-19T15:18:17.632Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-edge-binary-encoding",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1619,14 +1619,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 159
+    "latency_ms": 135
   },
   {
-    "run_id": "e4fd003c-7322-4601-a7b4-d1e02df11c42",
-    "timestamp": "2026-08-18T23:16:30.420Z",
-    "git_commit": "a817cd2",
+    "run_id": "dada478d-3e68-4039-841b-13975397f2cb",
+    "timestamp": "2026-08-19T15:18:17.787Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-edge-deep-indirection",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1692,7 +1692,7 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 174,
+    "latency_ms": 132,
     "importChainGrade": {
       "applicable": true,
       "grader_results": [
@@ -1733,11 +1733,11 @@
     }
   },
   {
-    "run_id": "c5b813a9-4ca5-4ffb-923d-0adf41937ef4",
-    "timestamp": "2026-08-18T23:16:30.652Z",
-    "git_commit": "a817cd2",
+    "run_id": "29d2a3e8-8f05-4c78-ba87-22a03dce03c3",
+    "timestamp": "2026-08-19T15:18:17.947Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-edge-generated-code",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1794,83 +1794,62 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 106
+    "latency_ms": 155
   },
   {
-    "run_id": "5f7996c3-194c-44b7-b364-76fb480a4f8c",
-    "timestamp": "2026-08-18T23:16:32.271Z",
-    "git_commit": "a817cd2",
+    "run_id": "10af11ee-69e2-42de-9a5b-5d46dd05a445",
+    "timestamp": "2026-08-19T15:20:18.163Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-edge-huge-monorepo",
     "scenario_version": "1",
-    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "invocation_path": "isolated child process, budget 120000ms",
     "model": null,
     "model_provider": null,
     "routing_decisions": [],
     "tokens": null,
+    "latency_ms": 120056,
     "estimated_cost_usd": null,
     "activity": {
-      "filesExamined": 25810,
-      "candidateCount": 19,
-      "confirmedCount": 19,
-      "lowConfidenceCount": 0,
+      "filesExamined": 0,
       "notes": [
-        "files_scanned=25810",
-        "surfaces=5",
-        "candidates=19",
-        "confident_sites=7",
-        "low_confidence=none"
+        "exceeded 120000ms budget; hard-killed"
       ]
     },
-    "findings": [
-      "check.mjs",
-      "packages/pkg000/src/provider.js",
-      "packages/pkg050/src/billing/charge.js",
-      "packages/pkg123/src/checkout.js",
-      "packages/pkg200/lib/payments/create.js",
-      "packages/pkg255/src/api/charges.js",
-      "packages/pkg299/src/legacy/pay.js"
-    ],
+    "findings": [],
     "findingGraphPaths": [],
-    "confidence": "medium",
+    "confidence": null,
     "produced_edit": false,
     "grader_results": [
       {
-        "dimension": "expected_findings_recall",
-        "passed": true,
-        "score": 1,
-        "detail": "6/6 expected files flagged"
-      },
-      {
-        "dimension": "false_positive_traps",
-        "passed": true,
-        "score": 1,
-        "detail": "no distractor flagged"
-      },
-      {
-        "dimension": "precision",
-        "passed": true,
-        "score": 1,
-        "detail": "precision 100%"
+        "dimension": "completes_within_budget",
+        "passed": false,
+        "score": 0,
+        "detail": "did not complete within 120000ms"
       }
     ],
-    "failures": [],
-    "passed": true,
-    "unmeasured_dimensions": [
-      "migration_patch_correctness (generation path not exercised)",
-      "verification_honesty (sandbox/verification path not exercised)",
-      "pr_delivery (GitHub delivery not exercised)",
-      "token_cost / model_routing (LLM off; no model called)"
+    "failures": [
+      {
+        "category": "SCALE_FAILURE",
+        "severity": "P1",
+        "dimension": "completes_within_budget",
+        "observed": "analysis did not finish within the 120000ms budget on this repository",
+        "expected": "complete analysis within the budget"
+      }
     ],
-    "latency_ms": 26907
+    "passed": false,
+    "unmeasured_dimensions": [
+      "impact findings (analysis did not complete within budget)"
+    ],
+    "error": "ETIMEDOUT"
   },
   {
-    "run_id": "0590c762-cffe-479e-83ee-26eeb7dc8562",
-    "timestamp": "2026-08-18T23:16:59.327Z",
-    "git_commit": "a817cd2",
+    "run_id": "3fc549f1-26ae-4e37-9fd2-08c553f5ebf2",
+    "timestamp": "2026-08-19T15:20:18.183Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-edge-no-test-command",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1927,14 +1906,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 76
+    "latency_ms": 95
   },
   {
-    "run_id": "6eb1764d-7951-4813-8583-55a4e721e365",
-    "timestamp": "2026-08-18T23:16:59.447Z",
-    "git_commit": "a817cd2",
+    "run_id": "d564dabb-9721-4ed5-b0ef-94350c8d4822",
+    "timestamp": "2026-08-19T15:20:18.321Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-edge-pnpm-workspace",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -1991,14 +1970,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 91
+    "latency_ms": 89
   },
   {
-    "run_id": "bb12094b-b7ae-4074-bb3f-2c7757c70b52",
-    "timestamp": "2026-08-18T23:16:59.580Z",
-    "git_commit": "a817cd2",
+    "run_id": "a9a3e1b9-8006-4cf9-8813-0bcd0d7cc11d",
+    "timestamp": "2026-08-19T15:20:18.452Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "fettler-edge-vendored-sdk",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -2055,14 +2034,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 95
+    "latency_ms": 82
   },
   {
-    "run_id": "7569142b-5d79-429e-bcce-83530796814e",
-    "timestamp": "2026-08-18T23:16:59.684Z",
-    "git_commit": "a817cd2",
+    "run_id": "72da0efc-381f-4e57-8c6a-f1ea6b1c4d19",
+    "timestamp": "2026-08-19T15:20:18.540Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "regauge-runtime-upgrade",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2119,14 +2098,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 81
+    "latency_ms": 152
   },
   {
-    "run_id": "dc853f25-7f2a-4d7e-a3df-49e22934c66d",
-    "timestamp": "2026-08-18T23:16:59.765Z",
-    "git_commit": "a817cd2",
+    "run_id": "36953c4c-e3b5-460e-8c89-7f74cf5e1c8d",
+    "timestamp": "2026-08-19T15:20:18.692Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "regauge-sdk-upgrade",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2172,14 +2151,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 53
+    "latency_ms": 211
   },
   {
-    "run_id": "83d7e600-dd14-4e45-9119-66a6d3e87e9b",
-    "timestamp": "2026-08-18T23:16:59.818Z",
-    "git_commit": "a817cd2",
+    "run_id": "09bce46e-d70f-464e-a26d-8a2722b5ce74",
+    "timestamp": "2026-08-19T15:20:18.903Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "regauge-framework-upgrade",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2225,14 +2204,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 66
+    "latency_ms": 188
   },
   {
-    "run_id": "bdde640b-4901-4f09-a83b-15e9f30ee54c",
-    "timestamp": "2026-08-18T23:16:59.885Z",
-    "git_commit": "a817cd2",
+    "run_id": "867baf04-6aac-46c5-916b-058eb284e3cf",
+    "timestamp": "2026-08-19T15:20:19.091Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "regauge-internal-api-rename",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2278,14 +2257,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 62
+    "latency_ms": 177
   },
   {
-    "run_id": "eb48c697-d755-4ceb-a7ad-7e4ba7852cb5",
-    "timestamp": "2026-08-18T23:16:59.947Z",
-    "git_commit": "a817cd2",
+    "run_id": "dafaed3b-cf1d-40f8-a941-7e7b1f1dafc3",
+    "timestamp": "2026-08-19T15:20:19.269Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "regauge-partial-campaign",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2331,14 +2310,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 58
+    "latency_ms": 89
   },
   {
-    "run_id": "4f3695b5-6a76-4488-a2c4-3157850b19a2",
-    "timestamp": "2026-08-18T23:17:00.005Z",
-    "git_commit": "a817cd2",
+    "run_id": "11b1ec0b-83aa-4338-94d2-2d9818113f28",
+    "timestamp": "2026-08-19T15:20:19.358Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "regauge-should-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -2376,14 +2355,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 79
+    "latency_ms": 105
   },
   {
-    "run_id": "00e84a99-05d2-4454-ae11-7aa491911e16",
-    "timestamp": "2026-08-18T23:17:00.133Z",
-    "git_commit": "a817cd2",
+    "run_id": "941ba6f7-1975-43ca-abc9-c7c3a89b241f",
+    "timestamp": "2026-08-19T15:20:19.495Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ref-flat",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -2480,14 +2459,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 51
+    "latency_ms": 48
   },
   {
-    "run_id": "5bce52cb-507c-4694-af05-c512f70465da",
-    "timestamp": "2026-08-18T23:17:00.250Z",
-    "git_commit": "a817cd2",
+    "run_id": "c7214056-463d-4a15-a78e-e457b5fd2e6d",
+    "timestamp": "2026-08-19T15:20:19.596Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ref-ref",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -2598,14 +2577,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 42
+    "latency_ms": 50
   },
   {
-    "run_id": "7122c416-bb9a-4229-873f-78929b2ccec8",
-    "timestamp": "2026-08-18T23:17:00.357Z",
-    "git_commit": "a817cd2",
+    "run_id": "c810502e-0792-4d5f-a04f-e055d501d26b",
+    "timestamp": "2026-08-19T15:20:19.695Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ref-allOf",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -2716,14 +2695,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 62
+    "latency_ms": 40
   },
   {
-    "run_id": "196a8c45-29f9-4bef-b481-cfa543b921dc",
-    "timestamp": "2026-08-18T23:17:00.491Z",
-    "git_commit": "a817cd2",
+    "run_id": "4a8f4b05-39f9-40d0-b3bc-d08c36035e2b",
+    "timestamp": "2026-08-19T15:20:19.779Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ref-nested2",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -2820,14 +2799,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 65
+    "latency_ms": 37
   },
   {
-    "run_id": "a4616621-05b8-414a-a7fb-56abdabee391",
-    "timestamp": "2026-08-18T23:17:00.638Z",
-    "git_commit": "a817cd2",
+    "run_id": "1a26f2b4-e17b-4312-b47b-082cfe4ec26d",
+    "timestamp": "2026-08-19T15:20:19.873Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ref-refToRef",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -2938,14 +2917,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 84
+    "latency_ms": 51
   },
   {
-    "run_id": "b99fa8c7-91b3-4f49-a640-267526c8f984",
-    "timestamp": "2026-08-18T23:17:00.787Z",
-    "git_commit": "a817cd2",
+    "run_id": "211a4a6e-f307-4d8d-b016-913a4f3b3314",
+    "timestamp": "2026-08-19T15:20:19.975Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ref-counterfactual",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -2990,11 +2969,11 @@
     "latency_ms": 22
   },
   {
-    "run_id": "99779558-14f7-4b6e-9637-33b65460ca97",
-    "timestamp": "2026-08-18T23:17:00.864Z",
-    "git_commit": "a817cd2",
+    "run_id": "4ac355be-9c62-44b1-91b1-1d2bcc84a06b",
+    "timestamp": "2026-08-19T15:20:20.045Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ref-nested2-regression",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3119,14 +3098,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 46
+    "latency_ms": 45
   },
   {
-    "run_id": "799db272-575f-415b-bc6c-71c186175c67",
-    "timestamp": "2026-08-18T23:17:00.984Z",
-    "git_commit": "a817cd2",
+    "run_id": "c419927e-131d-414f-85c0-39cbd5e1cec0",
+    "timestamp": "2026-08-19T15:20:20.135Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ambiguous-two",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3171,11 +3150,11 @@
     "latency_ms": 25
   },
   {
-    "run_id": "5e6e42cd-f5b4-4573-8147-ce450a05f469",
-    "timestamp": "2026-08-18T23:17:01.077Z",
-    "git_commit": "a817cd2",
+    "run_id": "af850cfb-9b55-4e8a-b61d-dcc596a56605",
+    "timestamp": "2026-08-19T15:20:20.206Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ambiguous-three",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3217,14 +3196,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 30
+    "latency_ms": 25
   },
   {
-    "run_id": "994bf765-f04e-45e4-9db7-98d53e3eaa3d",
-    "timestamp": "2026-08-18T23:17:01.176Z",
-    "git_commit": "a817cd2",
+    "run_id": "595a13d8-1d2b-47da-91c7-9763de8a3832",
+    "timestamp": "2026-08-19T15:20:20.284Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ambiguous-two-decoy",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3266,14 +3245,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 31
+    "latency_ms": 29
   },
   {
-    "run_id": "8660deec-5bc6-4723-8fbe-d9a46ff0860a",
-    "timestamp": "2026-08-18T23:17:01.280Z",
-    "git_commit": "a817cd2",
+    "run_id": "d378a96c-9829-48dd-92d7-56f35e68cd2c",
+    "timestamp": "2026-08-19T15:20:20.371Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-genvendor-generated-only",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3398,14 +3377,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 53
+    "latency_ms": 59
   },
   {
-    "run_id": "e2ff42f8-9a64-46fc-980f-78e8173a994e",
-    "timestamp": "2026-08-18T23:17:01.419Z",
-    "git_commit": "a817cd2",
+    "run_id": "06216ea7-71cc-4650-a82c-630ff3f21dc6",
+    "timestamp": "2026-08-19T15:20:20.501Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-genvendor-vendored-only",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3516,14 +3495,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 75
+    "latency_ms": 74
   },
   {
-    "run_id": "f6a22b9b-da8b-444b-9d03-93fd47845679",
-    "timestamp": "2026-08-18T23:17:01.584Z",
-    "git_commit": "a817cd2",
+    "run_id": "32832856-b479-42a5-ba87-cf28381ffb8d",
+    "timestamp": "2026-08-19T15:20:20.632Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-genvendor-both",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3634,14 +3613,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 58
+    "latency_ms": 55
   },
   {
-    "run_id": "67cd568e-f4fc-4fe2-8cae-30577274a49a",
-    "timestamp": "2026-08-18T23:17:01.712Z",
-    "git_commit": "a817cd2",
+    "run_id": "bc447c79-b246-4b54-93ad-31216e8092c1",
+    "timestamp": "2026-08-19T15:20:20.748Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-genvendor-looks-generated",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -3780,14 +3759,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 49
+    "latency_ms": 54
   },
   {
-    "run_id": "ddb4d0ef-1e30-496e-9ea3-67f81936139b",
-    "timestamp": "2026-08-18T23:17:01.791Z",
-    "git_commit": "a817cd2",
+    "run_id": "1365de63-2f32-4d51-9ec6-2d607ad0b96c",
+    "timestamp": "2026-08-19T15:20:20.819Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-runtime-supported-18-20",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3834,14 +3813,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 31
+    "latency_ms": 17
   },
   {
-    "run_id": "e1ce774e-7333-4fd8-a5a0-40e282ee0eef",
-    "timestamp": "2026-08-18T23:17:01.834Z",
-    "git_commit": "a817cd2",
+    "run_id": "d73f17a9-76d2-4791-a681-da0dd2525100",
+    "timestamp": "2026-08-19T15:20:20.842Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-runtime-supported-20-22",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3888,14 +3867,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 26
+    "latency_ms": 17
   },
   {
-    "run_id": "55740e89-ab49-4613-851f-445b6b92e507",
-    "timestamp": "2026-08-18T23:17:01.869Z",
-    "git_commit": "a817cd2",
+    "run_id": "4fc0afc3-25f2-444b-954c-5d3b199ad29e",
+    "timestamp": "2026-08-19T15:20:20.875Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-runtime-unsupported-21-23",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3941,14 +3920,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 18
+    "latency_ms": 17
   },
   {
-    "run_id": "96f46fbf-8ac7-4e5e-b6f4-b40c6dd03493",
-    "timestamp": "2026-08-18T23:17:01.897Z",
-    "git_commit": "a817cd2",
+    "run_id": "e8e452ca-bf11-471b-bbec-5c41e73f4aef",
+    "timestamp": "2026-08-19T15:20:20.898Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-runtime-already-migrated",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -3986,14 +3965,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 20
+    "latency_ms": 19
   },
   {
-    "run_id": "88ce6aff-65ad-4dd7-89b0-c4b4fd39dfca",
-    "timestamp": "2026-08-18T23:17:01.924Z",
-    "git_commit": "a817cd2",
+    "run_id": "4c1edfd4-1ff2-4bed-b1af-e6c7bdfef466",
+    "timestamp": "2026-08-19T15:20:20.922Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-aws-apply",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4041,14 +4020,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 48
+    "latency_ms": 26
   },
   {
-    "run_id": "e8bf7fc0-8f21-450d-8135-33fc4b95fd61",
-    "timestamp": "2026-08-18T23:17:01.980Z",
-    "git_commit": "a817cd2",
+    "run_id": "be7e708b-1507-4c62-a953-c51cb282d64b",
+    "timestamp": "2026-08-19T15:20:20.954Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-aws-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4090,14 +4069,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 30
+    "latency_ms": 26
   },
   {
-    "run_id": "f6af1e05-9a43-4591-9d9b-781c3a22a552",
-    "timestamp": "2026-08-18T23:17:02.018Z",
-    "git_commit": "a817cd2",
+    "run_id": "450d8439-8a5f-4e30-ba41-37894d16c7ad",
+    "timestamp": "2026-08-19T15:20:20.986Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-aws-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4135,14 +4114,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 22
+    "latency_ms": 26
   },
   {
-    "run_id": "3d24d055-d78a-4ffb-9a50-81e8d27e6bd0",
-    "timestamp": "2026-08-18T23:17:02.047Z",
-    "git_commit": "a817cd2",
+    "run_id": "d95f14d3-20a1-43cc-93f5-00f7c54b1bce",
+    "timestamp": "2026-08-19T15:20:21.017Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-stripe-apply",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4189,14 +4168,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 5
+    "latency_ms": 17
   },
   {
-    "run_id": "546b5be6-cbab-47b2-a477-b1f7d7a4713b",
-    "timestamp": "2026-08-18T23:17:02.059Z",
-    "git_commit": "a817cd2",
+    "run_id": "50b144bd-ef99-4e16-bd14-581bdd7e43a2",
+    "timestamp": "2026-08-19T15:20:21.039Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-stripe-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4237,14 +4216,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 30
+    "latency_ms": 21
   },
   {
-    "run_id": "769de45b-d8fb-47f3-86e5-15136d34ff53",
-    "timestamp": "2026-08-18T23:17:02.094Z",
-    "git_commit": "a817cd2",
+    "run_id": "af13c143-3383-4420-8f42-77635f9e2d6d",
+    "timestamp": "2026-08-19T15:20:21.065Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-stripe-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4282,14 +4261,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 36
+    "latency_ms": 22
   },
   {
-    "run_id": "361a43f8-3324-450a-b996-d1f3043f848a",
-    "timestamp": "2026-08-18T23:17:02.137Z",
-    "git_commit": "a817cd2",
+    "run_id": "0d438e85-fe3a-4d4e-aca9-55425a82fcb7",
+    "timestamp": "2026-08-19T15:20:21.090Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-googleapis-apply",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4336,14 +4315,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 5
+    "latency_ms": 24
   },
   {
-    "run_id": "15124b74-8dd9-4e99-b581-2a62ead43a39",
-    "timestamp": "2026-08-18T23:17:02.150Z",
-    "git_commit": "a817cd2",
+    "run_id": "2331ca26-45cb-4a96-b1c8-b07fa1124611",
+    "timestamp": "2026-08-19T15:20:21.119Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-googleapis-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4384,14 +4363,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 38
+    "latency_ms": 25
   },
   {
-    "run_id": "a4921773-a353-4654-a717-ca67865c8ef8",
-    "timestamp": "2026-08-18T23:17:02.197Z",
-    "git_commit": "a817cd2",
+    "run_id": "cd989ac7-c546-49bd-86c8-165fe60d7d8d",
+    "timestamp": "2026-08-19T15:20:21.148Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-googleapis-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4429,14 +4408,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 22
+    "latency_ms": 15
   },
   {
-    "run_id": "1a4984e4-ac35-4033-a641-3b40dd67f2d3",
-    "timestamp": "2026-08-18T23:17:02.226Z",
-    "git_commit": "a817cd2",
+    "run_id": "107f867e-4597-435b-8e6a-cdab8c4dfdee",
+    "timestamp": "2026-08-19T15:20:21.165Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-react-dom-apply",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4483,14 +4462,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 4
+    "latency_ms": 17
   },
   {
-    "run_id": "c7e3ca68-4cc0-468c-8ea4-2745c487f9a9",
-    "timestamp": "2026-08-18T23:17:02.239Z",
-    "git_commit": "a817cd2",
+    "run_id": "fa50f023-d982-4440-a2d8-fadcc65d7649",
+    "timestamp": "2026-08-19T15:20:21.187Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-react-dom-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4531,14 +4510,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 6
+    "latency_ms": 5
   },
   {
-    "run_id": "6e89591a-af25-4e6b-bccc-8638c01de9b6",
-    "timestamp": "2026-08-18T23:17:02.251Z",
-    "git_commit": "a817cd2",
+    "run_id": "95c81ccc-83bf-40e6-b94c-95eaad22e918",
+    "timestamp": "2026-08-19T15:20:21.197Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-react-dom-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4576,14 +4555,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 19
+    "latency_ms": 18
   },
   {
-    "run_id": "7c445cc3-0fc2-489c-9806-8bb8c447d8ff",
-    "timestamp": "2026-08-18T23:17:02.276Z",
-    "git_commit": "a817cd2",
+    "run_id": "1528002e-0dda-4a76-a68d-dafbef970ff9",
+    "timestamp": "2026-08-19T15:20:21.219Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-acme-user-apply",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4630,14 +4609,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 8
+    "latency_ms": 6
   },
   {
-    "run_id": "711574e2-f1e6-4cd4-9cbd-8afe8d254c3e",
-    "timestamp": "2026-08-18T23:17:02.288Z",
-    "git_commit": "a817cd2",
+    "run_id": "7bf40f4f-1f9f-4fe1-ad0e-a78ea294d9f7",
+    "timestamp": "2026-08-19T15:20:21.230Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-acme-user-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4681,11 +4660,11 @@
     "latency_ms": 6
   },
   {
-    "run_id": "3c74f6fb-620a-4978-a8ae-3aa39ccab88c",
-    "timestamp": "2026-08-18T23:17:02.300Z",
-    "git_commit": "a817cd2",
+    "run_id": "5277bff5-0b6d-454d-a356-593db6c18a50",
+    "timestamp": "2026-08-19T15:20:21.241Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-acme-user-abstain",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4723,14 +4702,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 5
+    "latency_ms": 4
   },
   {
-    "run_id": "0691ba50-ac2b-455e-ad40-c55edebd5462",
-    "timestamp": "2026-08-18T23:17:02.315Z",
-    "git_commit": "a817cd2",
+    "run_id": "98b279f3-bc06-4ade-908f-bb3ed08d0004",
+    "timestamp": "2026-08-19T15:20:21.251Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-regauge-runtime-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4773,14 +4752,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 7
+    "latency_ms": 4
   },
   {
-    "run_id": "62446eb6-6f24-4a45-9ec3-213917f93d88",
-    "timestamp": "2026-08-18T23:17:02.333Z",
-    "git_commit": "a817cd2",
+    "run_id": "187c0f28-5f26-4723-aa38-b2af9302b54e",
+    "timestamp": "2026-08-19T15:20:21.261Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "reg-regauge-runtime-platform-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4823,14 +4802,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 6
+    "latency_ms": 5
   },
   {
-    "run_id": "f1a0674e-60c4-4ec1-9049-bc32dd2ef95a",
-    "timestamp": "2026-08-18T23:17:02.348Z",
-    "git_commit": "a817cd2",
+    "run_id": "07a57786-319d-41dd-ac5b-e6ad3715d898",
+    "timestamp": "2026-08-19T15:20:21.272Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "reg-regauge-runtime-digest-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4873,14 +4852,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 4
+    "latency_ms": 3
   },
   {
-    "run_id": "534eab95-c11d-4af7-bb9a-fa6a0c95eecd",
-    "timestamp": "2026-08-18T23:17:02.362Z",
-    "git_commit": "a817cd2",
+    "run_id": "1ed12f1c-84d1-4f4f-93f8-3644e09d6e31",
+    "timestamp": "2026-08-19T15:20:21.281Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "reg-regauge-runtime-nested-engine-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4923,14 +4902,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 17
+    "latency_ms": 13
   },
   {
-    "run_id": "cc171f49-6d24-48b8-ad94-3c927ea55a1a",
-    "timestamp": "2026-08-18T23:17:02.388Z",
-    "git_commit": "a817cd2",
+    "run_id": "1d95d83b-9c9a-4afc-899c-7c48bedd7522",
+    "timestamp": "2026-08-19T15:20:21.301Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "reg-regauge-aws-vendored-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -4972,14 +4951,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 32
+    "latency_ms": 29
   },
   {
-    "run_id": "2f02bc24-945a-416b-b3b6-c98675b59da9",
-    "timestamp": "2026-08-18T23:17:02.426Z",
-    "git_commit": "a817cd2",
+    "run_id": "5a109291-f794-4f2c-9c1a-e69a9de200f9",
+    "timestamp": "2026-08-19T15:20:21.335Z",
+    "git_commit": "a69526c",
     "product": "regauge",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "reg-regauge-internal-api-acme-residual",
     "scenario_version": "1",
     "invocation_path": "transformer.analyzeRecipe over the shipped recipe registry (analyze-only; apply/verify not run)",
@@ -5020,14 +4999,14 @@
       "inverse/rollback (not run)",
       "adaptive_repair token_cost / model_routing (LLM path not exercised)"
     ],
-    "latency_ms": 8
+    "latency_ms": 6
   },
   {
-    "run_id": "99d55e36-1258-4297-bb50-a2e7db212090",
-    "timestamp": "2026-08-18T23:17:02.485Z",
-    "git_commit": "a817cd2",
+    "run_id": "5ec02533-447c-40f8-b63d-7d62cbdf186a",
+    "timestamp": "2026-08-19T15:20:21.372Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ref-flat-holdout-0",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -5124,14 +5103,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 71
+    "latency_ms": 36
   },
   {
-    "run_id": "0966ef45-d74b-45be-a828-73ac6b320c7e",
-    "timestamp": "2026-08-18T23:17:02.650Z",
-    "git_commit": "a817cd2",
+    "run_id": "e87d0edd-8fab-4fd9-97a6-ad930284aa6e",
+    "timestamp": "2026-08-19T15:20:21.461Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ref-ref-holdout-1",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -5256,14 +5235,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 97
+    "latency_ms": 58
   },
   {
-    "run_id": "74789c32-c6db-43e3-8d9f-2d2b34b29180",
-    "timestamp": "2026-08-18T23:17:02.825Z",
-    "git_commit": "a817cd2",
+    "run_id": "d7defde1-424f-4fd5-b6d6-68c17b54a805",
+    "timestamp": "2026-08-19T15:20:21.563Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ref-nested2-holdout-2",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -5360,14 +5339,14 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 53
+    "latency_ms": 35
   },
   {
-    "run_id": "d2541a48-99ed-414a-92e0-cc9a2ed003e4",
-    "timestamp": "2026-08-18T23:17:02.963Z",
-    "git_commit": "a817cd2",
+    "run_id": "6796da9e-c3a8-44d6-9ae8-9f7a4de35cbc",
+    "timestamp": "2026-08-19T15:20:21.641Z",
+    "git_commit": "a69526c",
     "product": "fettler",
-    "product_version": "mendpoint@1.0.0+a817cd2",
+    "product_version": "mendpoint@1.0.0+a69526c",
     "scenario_id": "gen-fettler-ref-allOf-holdout-3",
     "scenario_version": "1",
     "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
@@ -5478,6 +5457,296 @@
       "pr_delivery (GitHub delivery not exercised)",
       "token_cost / model_routing (LLM off; no model called)"
     ],
-    "latency_ms": 50
+    "latency_ms": 48
+  },
+  {
+    "run_id": "c091dc03-c562-4618-9f03-5a0ddd1544c5",
+    "timestamp": "2026-08-19T15:20:21.735Z",
+    "git_commit": "a69526c",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+a69526c",
+    "scenario_id": "gen-fettler-json-payload-json-0",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 9,
+      "candidateCount": 11,
+      "confirmedCount": 10,
+      "lowConfidenceCount": 2,
+      "notes": [
+        "files_scanned=9",
+        "surfaces=1",
+        "candidates=11",
+        "confident_sites=4",
+        "low_confidence=src/analytics/tracker.ts, src/infra/provider/client.ts"
+      ]
+    },
+    "findings": [
+      "src/contracts/golden/charge-response.json",
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "test/wire-samples/charge-request.json"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "4/4 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 54
+  },
+  {
+    "run_id": "acd10d74-2df0-4002-aae0-77e9552e9d89",
+    "timestamp": "2026-08-19T15:20:21.839Z",
+    "git_commit": "a69526c",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+a69526c",
+    "scenario_id": "gen-fettler-json-payload-json-1",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 9,
+      "candidateCount": 11,
+      "confirmedCount": 10,
+      "lowConfidenceCount": 2,
+      "notes": [
+        "files_scanned=9",
+        "surfaces=1",
+        "candidates=11",
+        "confident_sites=4",
+        "low_confidence=src/analytics/tracker.ts, src/infra/provider/client.ts"
+      ]
+    },
+    "findings": [
+      "src/contracts/golden/charge-response.json",
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "test/wire-samples/charge-request.json"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "4/4 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 41
+  },
+  {
+    "run_id": "4eeb63c5-0c54-4f91-8ae8-7efbea5a5b71",
+    "timestamp": "2026-08-19T15:20:21.924Z",
+    "git_commit": "a69526c",
+    "product": "fettler",
+    "product_version": "mendpoint@1.0.0+a69526c",
+    "scenario_id": "gen-fettler-json-payload-json-2",
+    "scenario_version": "1",
+    "invocation_path": "change-intel.normalizeChange -> code-impact.analyzeImpact (useLlm:false, minConfidence:medium)",
+    "model": null,
+    "model_provider": null,
+    "routing_decisions": [],
+    "tokens": null,
+    "estimated_cost_usd": null,
+    "activity": {
+      "filesExamined": 10,
+      "candidateCount": 14,
+      "confirmedCount": 12,
+      "lowConfidenceCount": 2,
+      "notes": [
+        "files_scanned=10",
+        "surfaces=1",
+        "candidates=14",
+        "confident_sites=5",
+        "low_confidence=src/analytics/tracker.ts, src/infra/provider/client.ts"
+      ]
+    },
+    "findings": [
+      "src/contracts/golden/charge-response.json",
+      "src/infra/provider/client.ts",
+      "src/services/checkoutService.ts",
+      "src/services/settlementService.ts",
+      "test/wire-samples/charge-request.json"
+    ],
+    "findingGraphPaths": [
+      {
+        "filePath": "src/infra/provider/client.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts"
+          ],
+          "hops": 0,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/checkoutService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/checkoutService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      },
+      {
+        "filePath": "src/services/settlementService.ts",
+        "graphPath": {
+          "nodes": [
+            "src/infra/provider/client.ts",
+            "src/services/settlementService.ts"
+          ],
+          "hops": 1,
+          "terminal": "anchor",
+          "truncated": false,
+          "coverage": "complete"
+        }
+      }
+    ],
+    "confidence": "medium",
+    "produced_edit": false,
+    "grader_results": [
+      {
+        "dimension": "expected_findings_recall",
+        "passed": true,
+        "score": 1,
+        "detail": "5/5 expected files flagged"
+      },
+      {
+        "dimension": "false_positive_traps",
+        "passed": true,
+        "score": 1,
+        "detail": "no distractor flagged"
+      },
+      {
+        "dimension": "precision",
+        "passed": true,
+        "score": 1,
+        "detail": "precision 100%"
+      }
+    ],
+    "failures": [],
+    "passed": true,
+    "unmeasured_dimensions": [
+      "migration_patch_correctness (generation path not exercised)",
+      "verification_honesty (sandbox/verification path not exercised)",
+      "pr_delivery (GitHub delivery not exercised)",
+      "token_cost / model_routing (LLM off; no model called)"
+    ],
+    "latency_ms": 44
   }
 ]

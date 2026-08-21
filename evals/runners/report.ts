@@ -13,10 +13,23 @@ import {
   evaluateReadiness,
   loadReadinessGates,
   renderReadinessSection,
+  type AbsentScenario,
   type ScoredRun,
 } from "../readiness.js";
 
 export type { ScoredRun } from "../readiness.js";
+
+/** One markdown row per absent gated scenario, so a skipped set is never invisible. */
+function absentScenarioRows(absent: AbsentScenario[]): string[] {
+  if (absent.length === 0) return [];
+  const out: string[] = [];
+  out.push(`| scenario | product | correct behavior | status |`);
+  out.push(`| --- | --- | --- | --- |`);
+  for (const a of [...absent].sort((x, y) => x.scenario_id.localeCompare(y.scenario_id))) {
+    out.push(`| ${a.scenario_id} | ${a.product} | ${a.gt.correct_behavior} | not-measured (absent) |`);
+  }
+  return out;
+}
 
 const SAFE_NOTE_CATEGORIES = new Set(["COVERAGE_GAP", "HARNESS_LIMITATION"]);
 
@@ -50,7 +63,7 @@ function tableFor(
   return lines.join("\n");
 }
 
-export function renderLatestReport(scored: ScoredRun[]): string {
+export function renderLatestReport(scored: ScoredRun[], absent: AbsentScenario[] = []): string {
   const now = new Date().toISOString();
   const commit = scored[0]?.record.git_commit ?? "unknown";
   const total = scored.length;
@@ -81,19 +94,29 @@ export function renderLatestReport(scored: ScoredRun[]): string {
 
   out.push(`## Overall`);
   out.push("");
-  out.push(`- Total scenarios: ${total}`);
+  out.push(`- Total scenarios: ${total} scored${absent.length ? ` + ${absent.length} gated scenario(s) NOT MEASURED (absent)` : ""}`);
   out.push(`- Passed (safe + correct for shipped engine): ${passed} (${pct(passed, total)})`);
   out.push(`- Unsafe/incorrect failures: ${allUnsafe.length}`);
   out.push(`- Coverage gaps recorded: ${coverageGaps.length}`);
   out.push(`- P0 failures (dangerous / materially incorrect): ${allUnsafe.filter((x) => x.f.severity === "P0").length}`);
   out.push("");
+  if (absent.length) {
+    out.push(`### Gated scenarios not measured (absent from this run)`);
+    out.push("");
+    out.push(
+      `These gated scenarios did not run (e.g. the external corpus was not present). They are NOT counted as passes and NOT renormalised away: the pooled metrics below score only what ran, and the readiness gate FAILS any capability one of these would have fed. A green pass rate here is coverage over ${total} scenarios, not the full ${total + absent.length}.`,
+    );
+    out.push("");
+    out.push(...absentScenarioRows(absent));
+    out.push("");
+  }
 
   // Readiness gates (spec §33.5): evaluate the run against the owner's versioned
   // acceptance criteria BEFORE the per-slice breakdowns, so the headline is the
   // honest PASS/FAIL, not a pile of green sub-tables. The thresholds are read
   // from evals/readiness-gates.json, never hard-coded here.
   const gates = loadReadinessGates();
-  const readiness = evaluateReadiness(scored, gates);
+  const readiness = evaluateReadiness(scored, gates, undefined, absent);
   out.push(renderReadinessSection(readiness));
   out.push("");
   out.push(
@@ -308,7 +331,10 @@ export function renderLatestReport(scored: ScoredRun[]): string {
   return out.join("\n") + "\n";
 }
 
-export function renderFailuresBacklog(scored: ScoredRun[]): string {
+export function renderFailuresBacklog(
+  scored: ScoredRun[],
+  absent: AbsentScenario[] = [],
+): string {
   const out: string[] = [];
   out.push(`# FAILURES — MendPoint evaluation backlog`);
   out.push("");
@@ -352,7 +378,25 @@ export function renderFailuresBacklog(scored: ScoredRun[]): string {
   for (const { s, f, isGap } of rows) {
     emit(s.record.scenario_id, s.record.product, f, isGap);
   }
-  if (rows.length === 0) {
+  // Absent gated scenarios are a coverage hole, not a pass — surface each as an
+  // explicit not-measured backlog entry so the evidence file records the gap.
+  for (const a of [...absent].sort((x, y) => x.scenario_id.localeCompare(y.scenario_id))) {
+    id++;
+    out.push(`## NOT-MEASURED-${String(id).padStart(3, "0")} — ${a.scenario_id} (coverage)`);
+    out.push("");
+    out.push(`- Scenario: ${a.scenario_id}`);
+    out.push(`- Product: ${a.product}`);
+    out.push(`- Severity: coverage hole (not scored)`);
+    out.push(`- Failure category: NOT_MEASURED`);
+    out.push(`- Observed behavior: gated scenario absent from this run (external corpus not present)`);
+    out.push(`- Expected behavior: scenario present and scored so its capability's gate is measured`);
+    out.push(`- Root cause: MENDPOINT_CORPUS_ROOT not set / corpus not on this runner`);
+    out.push(`- Proposed generalized fix: run on a runner with the corpus; until then readiness FAILS the capability this would have fed rather than renormalising`);
+    out.push(`- Status: NOT MEASURED`);
+    out.push(`- Owner: unassigned`);
+    out.push("");
+  }
+  if (rows.length === 0 && absent.length === 0) {
     out.push(`No failures recorded. Treat with suspicion — verify the corpus is adversarial enough.`);
     out.push("");
   }

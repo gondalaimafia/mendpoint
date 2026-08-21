@@ -23,7 +23,7 @@ import { runFettler, runFettlerDirectDeterministic } from "./fettler-runner.js";
 import { runRegauge } from "./regauge-runner.js";
 import { renderLatestReport, renderFailuresBacklog, type ScoredRun } from "./report.js";
 import { assertCorpusIsolation } from "./isolation.js";
-import { evaluateReadiness, loadReadinessGates } from "../readiness.js";
+import { evaluateReadiness, loadReadinessGates, type AbsentScenario } from "../readiness.js";
 import { renderScorecard } from "../scorecard.js";
 import type { RunRecord } from "./types.js";
 
@@ -235,12 +235,14 @@ async function main(): Promise<void> {
   // without it — every GitHub-hosted CI runner — skip those scenarios cleanly
   // rather than record them as crashes. Generated scenarios always run. What was
   // skipped is reported so a green run can never be mistaken for full coverage.
-  const skippedCorpus: string[] = [];
+  const skippedCorpus: AbsentScenario[] = [];
   scenarios = scenarios.filter((rs) => {
     if (rs.origin !== "corpus") return true;
     const cfg = SCENARIOS.find((s) => s.scenario_id === rs.scenario_id);
     if (cfg && existsSync(cfg.repoPath)) return true;
-    skippedCorpus.push(rs.scenario_id);
+    // Keep the ground truth of the absent scenario so it can be attributed to
+    // the readiness capability it would have fed and reported as not-measured.
+    skippedCorpus.push({ scenario_id: rs.scenario_id, product: rs.product, gt: rs.gt });
     return false;
   });
   if (skippedCorpus.length) {
@@ -268,13 +270,13 @@ async function main(): Promise<void> {
   }
 
   const gates = loadReadinessGates();
-  const readiness = evaluateReadiness(scored, gates);
+  const readiness = evaluateReadiness(scored, gates, undefined, skippedCorpus);
 
   const reportsDir = join(HERE, "..", "reports");
   mkdirSync(reportsDir, { recursive: true });
-  writeFileSync(join(reportsDir, "latest.md"), renderLatestReport(scored), "utf8");
-  writeFileSync(join(HERE, "..", "FAILURES.md"), renderFailuresBacklog(scored), "utf8");
-  writeFileSync(join(reportsDir, "readiness-scorecard.md"), renderScorecard(scored, readiness, gates), "utf8");
+  writeFileSync(join(reportsDir, "latest.md"), renderLatestReport(scored, skippedCorpus), "utf8");
+  writeFileSync(join(HERE, "..", "FAILURES.md"), renderFailuresBacklog(scored, skippedCorpus), "utf8");
+  writeFileSync(join(reportsDir, "readiness-scorecard.md"), renderScorecard(scored, readiness, gates, skippedCorpus), "utf8");
   writeFileSync(
     join(reportsDir, "latest-runs.json"),
     JSON.stringify(scored.map((s) => s.record), null, 2) + "\n",

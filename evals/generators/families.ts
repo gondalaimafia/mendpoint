@@ -28,7 +28,7 @@ import {
   type RefStyle,
   type SyntheticRepo,
 } from "../mutations/engine.js";
-import { tsPaymentsService } from "./templates.js";
+import { tsPaymentsService, jsonWirePayloadService } from "./templates.js";
 import { recipeFamilyScenarios } from "./recipe-families.js";
 import { regressionScenarios } from "../regression/build.js";
 import type { GeneratedScenario } from "./types.js";
@@ -374,6 +374,67 @@ export function holdoutRefVariations(count: number, seedBase = 90_000): Generate
   return out;
 }
 
+/**
+ * One holdout scenario from the JSON wire-payload family — a family the
+ * development split never uses. Its impact evidence lives in JSON fixtures
+ * placed in directories absent from the development split, admitted only on
+ * structural evidence, so the anti-overfitting gate can SEE the
+ * structured-payload path (which `holdoutRefVariations` is blind to).
+ */
+function jsonPayloadHoldoutScenario(
+  refStyle: RefStyle,
+  seed: number,
+  idSuffix: string,
+): GeneratedScenario {
+  const t = jsonWirePayloadService({ seed, field: RENAME.from });
+  const mut = renameApiRequestField(t.repo, {
+    path: t.path,
+    method: t.method,
+    from: RENAME.from,
+    to: RENAME.to,
+    example: RENAME.example,
+    refStyle,
+    impactedFiles: t.roles.impacted,
+    decoyFiles: t.roles.decoys,
+  });
+  const scenario_id = `gen-fettler-json-payload${idSuffix}`;
+  return {
+    scenario_id,
+    product: "fettler",
+    slug: t.slug,
+    repo: mut.mutated,
+    gt: assembleGt(
+      {
+        scenario_id,
+        product: "fettler",
+        repo_family: "json-wire-payload-generated",
+        difficulty: 4,
+        difficulty_rationale: `JSON wire-payload family (holdout): the renamed field's impact lives in JSON fixtures under directories (test/wire-samples/, src/contracts/golden/) the development split never uses, admitted only on structural evidence. Ref style: ${refStyle}.`,
+        dataset_split: "holdout",
+        tags: ["generated", "fettler", "field-rename", "json-payload", refStyle, "holdout"],
+        notes: `Auto-generated (seed=${seed}). ${mut.changeLog.join(" | ")}`,
+        slug: t.slug,
+      },
+      mut.groundTruth,
+    ),
+  };
+}
+
+/**
+ * Procedurally emit UNSEEN holdout scenarios from the JSON wire-payload family —
+ * deliberately NOT the ref-rename generators the development split uses, and each
+ * exercising the JSON-payload admission path with a fixture in a directory name
+ * that appears nowhere in the development split. Small by design: the honesty is
+ * in reporting the n, not padding it. Seeds are deterministic so the set is
+ * reproducible run-to-run.
+ */
+export function holdoutJsonPayloadVariations(seedBase = 95_000): GeneratedScenario[] {
+  const styles: RefStyle[] = ["nested2", "allOf", "refToRef"];
+  return styles.map((style, i) =>
+    jsonPayloadHoldoutScenario(style, seedBase + i * 7, `-json-${i}`),
+  );
+}
+
 /** Every generated scenario across all families, with splits assigned. */
 export function generateAllScenarios(): GeneratedScenario[] {
   const scenarios: GeneratedScenario[] = [
@@ -417,7 +478,13 @@ export function generateAllScenarios(): GeneratedScenario[] {
   // residual idioms guard against re-introduction; the open internal-API residual
   // case fails honestly until the fix lands.
   scenarios.push(...regressionScenarios());
-  // Holdout: unseen procedural variations.
+  // Holdout: unseen procedural variations. Two families, kept SEPARATE on
+  // purpose. The ref-rename variations generalize the ref-blindness family; the
+  // JSON wire-payload variations are a family the development split never uses
+  // and exercise the structured-payload path, so the anti-overfitting gate is no
+  // longer blind to the fixture-admission heuristic. Holdout n is reported in the
+  // readiness output rather than padded.
   scenarios.push(...holdoutRefVariations(4));
+  scenarios.push(...holdoutJsonPayloadVariations());
   return scenarios;
 }

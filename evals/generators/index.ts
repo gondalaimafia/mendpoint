@@ -19,7 +19,7 @@ import { generateAllScenarios } from "./families.js";
 import type { GeneratedScenario } from "./types.js";
 
 export type { GeneratedScenario } from "./types.js";
-export { generateAllScenarios, holdoutRefVariations } from "./families.js";
+export { generateAllScenarios, holdoutRefVariations, holdoutJsonPayloadVariations } from "./families.js";
 
 /**
  * All generated scenarios. Every ground truth is validated here so a malformed
