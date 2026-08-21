@@ -106,6 +106,8 @@ describe("Regauge production workflow", () => {
     expect(authority).toContain("${GITHUB_RUN_ID}");
     expect(authority).toContain("${GITHUB_RUN_ATTEMPT}");
     expect(authority).toContain("${GITHUB_SHA}");
+    expect(authority).toContain("revision:${MENDPOINT_REGAUGE_CANARY_REVISION}:draft:1");
+    expect(authority).not.toContain("revision:${GITHUB_SHA}:draft:1");
     expect(authority).toContain("${MENDPOINT_REGAUGE_CAMPAIGN_ID}");
     expect(authority).toContain("${MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID}");
     expect(authority).toContain("draft:1");
@@ -120,6 +122,7 @@ describe("Regauge production workflow", () => {
       "MENDPOINT_REGAUGE_TENANT_ID",
       "MENDPOINT_REGAUGE_CAMPAIGN_ID",
       "MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID",
+      "MENDPOINT_REGAUGE_CANARY_REVISION",
       "GITHUB_SHA",
       "GITHUB_RUN_ID",
       "GITHUB_RUN_ATTEMPT",

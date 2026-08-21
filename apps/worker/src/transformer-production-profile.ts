@@ -100,11 +100,9 @@ export function validateTransformerProductionProfile(
   if (!env.MENDPOINT_RELEASE_REVISION?.trim()) {
     throw new Error("transformer_production_release_revision_required");
   }
-  let releaseRevision: string;
   try {
     const resolvedRevision = resolveReleaseRevision(env);
     if (!resolvedRevision) throw new Error("release_revision_missing");
-    releaseRevision = resolvedRevision;
   } catch {
     throw new Error("transformer_production_release_revision_invalid");
   }
@@ -131,6 +129,13 @@ export function validateTransformerProductionProfile(
   if (!NUMERIC_ID.test(repositoryId)) {
     throw new Error("transformer_production_canary_repository_id_invalid");
   }
+  const canaryRevision = required(
+    env.MENDPOINT_REGAUGE_CANARY_REVISION,
+    "transformer_production_canary_revision_required",
+  );
+  if (!/^[a-f0-9]{40}$/.test(canaryRevision)) {
+    throw new Error("transformer_production_canary_revision_invalid");
+  }
   const productionApprovalRef = required(
     env.MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF,
     "transformer_production_delivery_approval_required",
@@ -142,7 +147,7 @@ export function validateTransformerProductionProfile(
     "repository",
     repositoryId,
     "revision",
-    releaseRevision,
+    canaryRevision,
     "draft:1:run",
   ].join(":");
   const approvalSuffix = productionApprovalRef.slice(expectedApprovalPrefix.length);

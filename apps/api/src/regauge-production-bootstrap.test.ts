@@ -8,7 +8,7 @@ import {
 
 const REVISION = "a".repeat(40);
 const SNAPSHOT_DIGEST = `sha256:${"b".repeat(64)}`;
-const APPROVAL_REF = "approval:regauge:20260814";
+const APPROVAL_REF = `approval:regauge:tenant_regauge_canary:campaign_regauge_canary_20260814:repository:1319732323:revision:${REVISION}:draft:1:run:98765:attempt:1`;
 
 function gate(): string {
   return JSON.stringify({
@@ -155,6 +155,18 @@ describe("Regauge production campaign bootstrap", () => {
     await bootstrapRegaugeProductionCampaign(input(), fixture.runtime);
     const changed = input();
     changed.repository.expectedRevision = "e".repeat(40);
+    const changedApproval = APPROVAL_REF.replace(`revision:${REVISION}`, `revision:${changed.repository.expectedRevision}`);
+    changed.productionApprovalRef = changedApproval;
+    changed.evidenceRefs = [changedApproval, "evidence:regauge:acceptance"];
+    changed.gateConfig = JSON.stringify({
+      schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION,
+      tenantAllowlist: [changed.tenantId],
+      environmentAllowlist: [changed.environment],
+      grants: [{ tenantId: changed.tenantId, environment: changed.environment,
+        boundaries: ["api_control_plane", "worker_action", "delivery"],
+        acceptanceEvidenceRefs: ["evidence:regauge:acceptance"],
+        productionDeliveryApprovalRefs: [changedApproval] }],
+    });
 
     await expect(bootstrapRegaugeProductionCampaign(changed, fixture.runtime))
       .rejects.toThrow("regauge_production_bootstrap_idempotency_conflict");
@@ -184,6 +196,35 @@ describe("Regauge production campaign bootstrap", () => {
     missingApproval.evidenceRefs = ["approval:missing", "evidence:regauge:acceptance"];
     await expect(bootstrapRegaugeProductionCampaign(missingApproval, fixture.runtime))
       .rejects.toThrow("regauge_production_bootstrap_gate_denied");
+    expect(fixture.calls).toEqual({ prepare: 0, plan: 0, review: 0, launch: 0, record: 0 });
+  });
+
+  it.each([
+    ["tenant", APPROVAL_REF.replace("tenant_regauge_canary", "tenant_other")],
+    ["campaign", APPROVAL_REF.replace("campaign_regauge_canary_20260814", "campaign_other")],
+    ["repository", APPROVAL_REF.replace("repository:1319732323", "repository:1319732324")],
+    ["source revision", APPROVAL_REF.replace(`revision:${REVISION}`, `revision:${"c".repeat(40)}`)],
+    ["draft count", APPROVAL_REF.replace("draft:1", "draft:2")],
+  ])("rejects an approval bound to the wrong %s even when the gate contains it", async (_label, value) => {
+    const fixture = fakeRuntime();
+    const changed = input();
+    changed.productionApprovalRef = value;
+    changed.evidenceRefs = [value, "evidence:regauge:acceptance"];
+    changed.gateConfig = JSON.stringify({
+      schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION,
+      tenantAllowlist: [changed.tenantId],
+      environmentAllowlist: [changed.environment],
+      grants: [{
+        tenantId: changed.tenantId,
+        environment: changed.environment,
+        boundaries: ["api_control_plane", "worker_action", "delivery"],
+        acceptanceEvidenceRefs: ["evidence:regauge:acceptance"],
+        productionDeliveryApprovalRefs: [value],
+      }],
+    });
+
+    await expect(bootstrapRegaugeProductionCampaign(changed, fixture.runtime))
+      .rejects.toThrow("regauge_production_bootstrap_approval_invalid");
     expect(fixture.calls).toEqual({ prepare: 0, plan: 0, review: 0, launch: 0, record: 0 });
   });
 });

@@ -126,10 +126,11 @@ jobs:
           [[ "$MENDPOINT_REGAUGE_TENANT_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$ ]]
           [[ "$MENDPOINT_REGAUGE_CAMPAIGN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$ ]]
           [[ "$MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+          [[ "$MENDPOINT_REGAUGE_CANARY_REVISION" =~ ^[a-f0-9]{40}$ ]]
           [[ "$GITHUB_SHA" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ ]]
           [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
-          approval_ref="approval:regauge:${MENDPOINT_REGAUGE_TENANT_ID}:${MENDPOINT_REGAUGE_CAMPAIGN_ID}:repository:${MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID}:revision:${GITHUB_SHA}:draft:1:run:${GITHUB_RUN_ID}:attempt:${GITHUB_RUN_ATTEMPT}"
+          approval_ref="approval:regauge:${MENDPOINT_REGAUGE_TENANT_ID}:${MENDPOINT_REGAUGE_CAMPAIGN_ID}:repository:${MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID}:revision:${MENDPOINT_REGAUGE_CANARY_REVISION}:draft:1:run:${GITHUB_RUN_ID}:attempt:${GITHUB_RUN_ATTEMPT}"
           evidence_ref="evidence:github:run:${GITHUB_RUN_ID}:attempt:${GITHUB_RUN_ATTEMPT}:revision:${GITHUB_SHA}"
           activation_expires_at="$(date -u -d '+70 minutes' '+%Y-%m-%dT%H:%M:%S.000Z')"
           gate="$(
