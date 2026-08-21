@@ -241,6 +241,18 @@ export function materializeFettlerSoftwareGraph(
     }
     const seedKey = seedKeyOf(seed);
     const seedEntityId = seedEntityIdOf(seedKey);
+    // The seed is the anchor of every impact path, and it is only as trustworthy
+    // as the structural extraction that placed it: an inferred or ambiguous
+    // structural node must never be presented as a deterministic_exact fact.
+    // Derive the basis from structuralSource.epistemicState, exactly as the
+    // caller branch below does.
+    const seedConfidenceBasis = seed.structuralSource
+      ? seed.structuralSource.epistemicState === "observed"
+        ? "static_analysis_high" as const
+        : seed.structuralSource.epistemicState === "inferred"
+          ? "static_analysis_medium" as const
+          : "static_analysis_low" as const
+      : "deterministic_exact" as const;
     addEntity(entities, {
       id: seedEntityId,
       kind: "internal_sdk_method",
@@ -248,10 +260,10 @@ export function materializeFettlerSoftwareGraph(
       aliases: [seed.name],
       label: seed.name,
       scope: "repository",
-      evidenceRefs: [...(seedEvidenceRefs.get(seedEntityId) ?? [sourceRef(seed.filePath, usage.line)])].sort(compareCodeUnits),
-      extractor: EXTRACTOR,
+      evidenceRefs: seed.structuralSource?.evidenceRefs ?? [...(seedEvidenceRefs.get(seedEntityId) ?? [sourceRef(seed.filePath, usage.line)])].sort(compareCodeUnits),
+      extractor: seed.structuralSource?.extractor ?? EXTRACTOR,
       derivation: "repository_usage",
-      confidenceBasis: "deterministic_exact",
+      confidenceBasis: seedConfidenceBasis,
       status: "active",
       validFrom: input.observedAt,
     });
@@ -261,7 +273,7 @@ export function materializeFettlerSoftwareGraph(
       targetId: providerSdkId,
       evidenceRefs: [sourceRef(usage.filePath, usage.line)],
       derivation: "repository_usage",
-      confidenceBasis: "deterministic_exact",
+      confidenceBasis: seedConfidenceBasis,
       validFrom: input.observedAt,
     });
 

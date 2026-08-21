@@ -44,8 +44,8 @@ export type GraphifyBenchmarkArmMetrics = {
   edgePrecision: number | null;
   edgeRecall: number;
   indirectRecall: number;
-  p95ElapsedMs: number;
-  peakMemoryBytes: number;
+  p95ElapsedMs: number | null;
+  peakMemoryBytes: number | null;
 };
 export type GraphifyBenchmarkReport = {
   schemaVersion: "mendpoint.graphify-benchmark.v1";
@@ -154,11 +154,18 @@ export async function stageGraphifyBenchmark(input: {
 
 const precision = (numerator: number, denominator: number) => denominator === 0 ? null : numerator / denominator;
 const recall = (numerator: number, denominator: number) => denominator === 0 ? 0 : numerator / denominator;
-const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.max(0, Math.ceil(values.length * 0.95) - 1)] ?? 0;
+// A latency percentile over nothing is not zero, it is unmeasured. Returning the
+// flattering 0 lets a cohort that measured no latency read as instant; return
+// null so "not measured" cannot silently drop out of the aggregate.
+const p95 = (values: number[]): number | null => values.length === 0 ? null : ([...values].sort((a, b) => a - b)[Math.max(0, Math.ceil(values.length * 0.95) - 1)] ?? null);
 
 export function gradeGraphifyBenchmark(staged: StagedGraphifyBenchmark, key: GraphifyBenchmarkKey): GraphifyBenchmarkReport {
   staged = structuredClone(staged);
   key = structuredClone(key);
+  // The benchmark is pinned to an 18-case cohort. Without this invariant an empty
+  // (or truncated) staged artifact grades cleanly and reports a flattering
+  // p95ElapsedMs: 0 / peakMemoryBytes: 0 for a cohort that measured nothing.
+  if (staged.cases.length !== 18 || key.cases.length !== 18) fail("GRAPHIFY_BENCHMARK_COHORT_INVALID");
   if (
     staged.schemaVersion !== "mendpoint.graphify-benchmark-staged.v1" ||
     staged.cohortDigest !== key.cohortDigest ||
@@ -210,7 +217,7 @@ export function gradeGraphifyBenchmark(staged: StagedGraphifyBenchmark, key: Gra
     let nodeTrue = 0, nodePredicted = 0, nodeExpected = 0, edgeTrue = 0, edgePredicted = 0, edgeExpected = 0;
     let indirectTrue = 0, indirectExpected = 0;
     const elapsed: number[] = [];
-    let peakMemoryBytes = 0;
+    let peakMemoryBytes: number | null = null;
     for (const item of staged.cases) {
       const expected = truth.get(item.caseId)!;
       const prediction = staged.predictions.find((candidate) => candidate.caseId === item.caseId && candidate.arm === arm);
@@ -224,13 +231,18 @@ export function gradeGraphifyBenchmark(staged: StagedGraphifyBenchmark, key: Gra
         indirectTrue += expected.expectedIndirectEdges.filter((edge) => edges.has(edge)).length;
         indirectExpected += expected.expectedIndirectEdges.length;
       }
-      elapsed.push(prediction.output.elapsedMs); peakMemoryBytes = Math.max(peakMemoryBytes, prediction.output.peakMemoryBytes);
+      elapsed.push(prediction.output.elapsedMs);
+      peakMemoryBytes = peakMemoryBytes === null ? prediction.output.peakMemoryBytes : Math.max(peakMemoryBytes, prediction.output.peakMemoryBytes);
     }
+    // A latency or memory metric that measured nothing must fail the gate, not
+    // pass as an unmeasured null quietly folded into the report.
+    const p95ElapsedMs = p95(elapsed);
+    if (p95ElapsedMs === null || peakMemoryBytes === null) fail("GRAPHIFY_BENCHMARK_METRICS_UNMEASURED");
     metrics[arm] = {
       semanticStatus: "not_measured",
       nodePrecision: precision(nodeTrue, nodePredicted), nodeRecall: recall(nodeTrue, nodeExpected),
       edgePrecision: precision(edgeTrue, edgePredicted), edgeRecall: recall(edgeTrue, edgeExpected),
-      indirectRecall: recall(indirectTrue, indirectExpected), p95ElapsedMs: p95(elapsed), peakMemoryBytes,
+      indirectRecall: recall(indirectTrue, indirectExpected), p95ElapsedMs, peakMemoryBytes,
     };
   }
   const reportWithoutDigest = {

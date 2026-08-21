@@ -770,7 +770,14 @@ export function normalizeGraphifyExtraction(
   }).sort((a, b) => compareCodeUnits(`${a.kind}\0${a.sourceId}\0${a.targetId}\0${a.id}`, `${b.kind}\0${b.sourceId}\0${b.targetId}\0${b.id}`));
 
   const languages = Array.from(new Set(nodes.map((node) => node.language))).sort(compareCodeUnits);
-  const warnings: StructuralWarningV1[] = (Array.isArray(raw.warnings) ? raw.warnings : [])
+  // Coerce nothing: an absent, string-, or object-valued warnings field is a
+  // malformed extraction and must be rejected, not folded to [] where it would
+  // share a content digest with a clean run. This matches the coverage-evidence
+  // sibling above that throws on an absent failed_sources / unsupported_languages.
+  if (!Array.isArray(raw.warnings)) {
+    throw structuralFailure("GRAPHIFY_EXTRACTION_FAILURE", "Graphify warnings evidence is absent or malformed");
+  }
+  const warnings: StructuralWarningV1[] = raw.warnings
     .map((candidate) => {
       if (typeof candidate === "string") {
         return {

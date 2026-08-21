@@ -15,8 +15,8 @@ describe("Graphify normalization size tiers", () => {
     };
     const nodes = files.map((entry, index) => ({ id: `n${index}`, label: `f${index}`, file_type: "function", source_file: entry.path, source_location: "L1", confidence: "EXTRACTED" }));
     const edges = nodes.slice(1).map((node, index) => ({ source: node.id, target: nodes[index].id, relation: "calls", source_file: files[index + 1].path, source_location: "L1", confidence: "EXTRACTED", weight: 1 }));
-    const first = normalizeGraphifyExtraction(request, { nodes, edges, failed_sources: [], unsupported_languages: [] }, { version: "0.9.46", digest: GRAPHIFY_EVALUATION_PIN.implementationDigest, elapsedMs: 1, peakMemoryBytes: 1, observedFiles: files });
-    const second = normalizeGraphifyExtraction(request, { nodes: [...nodes].reverse(), edges: [...edges].reverse(), failed_sources: [], unsupported_languages: [] }, { version: "0.9.46", digest: GRAPHIFY_EVALUATION_PIN.implementationDigest, elapsedMs: 999, peakMemoryBytes: 2, observedFiles: files });
+    const first = normalizeGraphifyExtraction(request, { nodes, edges, warnings: [], failed_sources: [], unsupported_languages: [] }, { version: "0.9.46", digest: GRAPHIFY_EVALUATION_PIN.implementationDigest, elapsedMs: 1, peakMemoryBytes: 1, observedFiles: files });
+    const second = normalizeGraphifyExtraction(request, { nodes: [...nodes].reverse(), edges: [...edges].reverse(), warnings: [], failed_sources: [], unsupported_languages: [] }, { version: "0.9.46", digest: GRAPHIFY_EVALUATION_PIN.implementationDigest, elapsedMs: 999, peakMemoryBytes: 2, observedFiles: files });
     expect(first.metrics.nodeCount).toBe(count);
     expect(first.metrics.edgeCount).toBe(Math.max(0, count - 1));
     expect(first.contentDigest).toBe(second.contentDigest);
