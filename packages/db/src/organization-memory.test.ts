@@ -1,8 +1,16 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDb, insertPrincipal, insertTenant, type AppDb } from "./index.js";
+import {
+  createDb,
+  insertArtifactManifest,
+  insertEvidenceRecord,
+  insertPrincipal,
+  insertTenant,
+  type AppDb,
+} from "./index.js";
 import {
   activateOrganizationMemory,
   assessActivation,
@@ -51,6 +59,14 @@ function fixture(tenants: string[] = ["tenant-a"]): AppDb {
       displayName: `Human ${tenantId}`,
       createdAt: AT,
     });
+    insertPrincipal(db, {
+      id: `human-${tenantId}-second`,
+      tenantId,
+      kind: "human",
+      subject: `user-${tenantId}-second`,
+      displayName: `Human ${tenantId} second`,
+      createdAt: AT,
+    });
   }
   return db;
 }
@@ -63,15 +79,65 @@ const OBS = {
   source: "repeated_verified_behavior" as const,
 };
 
+function observe(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    category: typeof OBS.category;
+    scope: string;
+    subjectKey: string;
+    statement: string;
+    source: typeof OBS.source;
+    at: string;
+    observerPrincipalId?: string;
+  }>,
+  evidenceKey: string,
+) {
+  const observerPrincipalId = input.observerPrincipalId ?? `human-${input.tenantId}`;
+  const memoryId = organizationMemoryId(input);
+  const artifactId = `artifact-${evidenceKey}`;
+  const evidenceId = `evidence-${evidenceKey}`;
+  const content = JSON.stringify({ memoryId, evidenceKey });
+  const sha256 = createHash("sha256").update(content).digest("hex");
+  insertArtifactManifest(db, {
+    id: artifactId,
+    tenantId: input.tenantId,
+    kind: "organization_memory_observation",
+    schemaVersion: 1,
+    sha256,
+    mediaType: "application/json",
+    sizeBytes: Buffer.byteLength(content),
+    storageRef: `inline:${artifactId}`,
+    content,
+    producerPrincipalId: observerPrincipalId,
+    createdAt: input.at,
+  });
+  insertEvidenceRecord(db, {
+    id: evidenceId,
+    tenantId: input.tenantId,
+    subjectType: "organization_memory_observation",
+    subjectId: memoryId,
+    artifactId,
+    producerPrincipalId: observerPrincipalId,
+    tool: "mendpoint-organization-memory-observer",
+    verdict: "passed",
+    createdAt: input.at,
+  });
+  return recordOrganizationMemoryObservation(db, {
+    ...input,
+    observerPrincipalId,
+    sourceRefs: [evidenceId],
+  });
+}
+
 describe("Organization Memory governance", () => {
   it("a single observation cannot reach ACTIVE", () => {
     const db = fixture();
-    const candidate = recordOrganizationMemoryObservation(db, {
+    const candidate = observe(db, {
       tenantId: "tenant-a",
       ...OBS,
-      observationFingerprint: "obs-1",
       at: T1,
-    });
+    }, "single-observation");
     expect(candidate.status).toBe("MEMORY_CANDIDATE");
 
     // The activation control must refuse: one observation is corroboration 1,
@@ -98,19 +164,17 @@ describe("Organization Memory governance", () => {
 
   it("re-submitting the SAME observation cannot inflate corroboration", () => {
     const db = fixture();
-    const first = recordOrganizationMemoryObservation(db, {
+    const first = observe(db, {
       tenantId: "tenant-a",
       ...OBS,
-      observationFingerprint: "obs-dup",
       at: T1,
-    });
-    // Same fingerprint again — idempotent, still a single distinct observation.
-    const again = recordOrganizationMemoryObservation(db, {
+    }, "duplicate-observation");
+    // Same authority evidence again — idempotent, still a single distinct observation.
+    const again = observe(db, {
       tenantId: "tenant-a",
       ...OBS,
-      observationFingerprint: "obs-dup",
       at: T2,
-    });
+    }, "duplicate-observation");
     expect(again.recordId).toBe(first.recordId);
     expect(again.status).toBe("MEMORY_CANDIDATE");
     expect(() =>
@@ -125,18 +189,17 @@ describe("Organization Memory governance", () => {
 
   it("two independent observations validate, then activate to ACTIVE", () => {
     const db = fixture();
-    recordOrganizationMemoryObservation(db, {
+    observe(db, {
       tenantId: "tenant-a",
       ...OBS,
-      observationFingerprint: "obs-1",
       at: T1,
-    });
-    const second = recordOrganizationMemoryObservation(db, {
+    }, "independent-one");
+    const second = observe(db, {
       tenantId: "tenant-a",
       ...OBS,
-      observationFingerprint: "obs-2",
+      observerPrincipalId: "human-tenant-a-second",
       at: T2,
-    });
+    }, "independent-two");
     expect(CORROBORATION_THRESHOLD).toBe(2);
     expect(second.status).toBe("VALIDATION");
     const active = activateOrganizationMemory(db, {
@@ -148,14 +211,33 @@ describe("Organization Memory governance", () => {
     expect(active.status).toBe("ACTIVE");
   });
 
-  it("a human confirmation promotes a single-observation candidate", () => {
+  it("rechecks corroboration authority at activation time", () => {
     const db = fixture();
-    const candidate = recordOrganizationMemoryObservation(db, {
+    observe(db, { tenantId: "tenant-a", ...OBS, at: T1 }, "revocation-one");
+    const second = observe(db, {
       tenantId: "tenant-a",
       ...OBS,
-      observationFingerprint: "obs-1",
+      observerPrincipalId: "human-tenant-a-second",
+      at: T2,
+    }, "revocation-two");
+    db.raw.prepare("UPDATE principals SET revoked_at = ? WHERE id = ?")
+      .run(T2, "human-tenant-a-second");
+    expect(() => activateOrganizationMemory(db, {
+      tenantId: "tenant-a",
+      memoryId: second.memoryId,
+      reason: "must recheck authority",
+      at: T3,
+    })).toThrow("organization_memory_observer_authority_invalid");
+    expect(getOrganizationMemoryHead(db, "tenant-a", second.memoryId)?.status).toBe("VALIDATION");
+  });
+
+  it("a human confirmation promotes a single-observation candidate", () => {
+    const db = fixture();
+    const candidate = observe(db, {
+      tenantId: "tenant-a",
+      ...OBS,
       at: T1,
-    });
+    }, "human-confirmation");
     const confirmed = confirmOrganizationMemory(db, {
       tenantId: "tenant-a",
       memoryId: candidate.memoryId,
@@ -193,12 +275,11 @@ describe("Organization Memory governance", () => {
 
   it("rejects a candidate", () => {
     const db = fixture();
-    const candidate = recordOrganizationMemoryObservation(db, {
+    const candidate = observe(db, {
       tenantId: "tenant-a",
       ...OBS,
-      observationFingerprint: "obs-1",
       at: T1,
-    });
+    }, "rejection");
     const rejected = rejectOrganizationMemory(db, {
       tenantId: "tenant-a",
       memoryId: candidate.memoryId,

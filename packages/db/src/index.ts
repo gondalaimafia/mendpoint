@@ -3835,6 +3835,7 @@ export {
   transitionWardenTarget,
 } from "./warden-campaign.js";
 export {
+  bindMissionScope,
   createMission,
   getMission,
   linkFettlerCampaignToMission,

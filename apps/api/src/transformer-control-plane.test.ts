@@ -725,10 +725,9 @@ describe("ReGauge campaign Mission wiring", () => {
     });
   });
 
-  it("does not fail campaign creation when the Mission wiring cannot resolve a principal", async () => {
+  it("fails closed before campaign creation when Mission authority cannot resolve the principal", async () => {
     const service = open();
-    // App DB has no 'principal-a' row, so createMission's assertPrincipal fails;
-    // the campaign must still be created (Mission bookkeeping is best-effort).
+    // App DB has no 'principal-a' row, so Mission authority is unavailable.
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-transformer-appdb-empty-"));
     dirs.push(dir);
     const appDb = createDb(join(dir, "app.sqlite"));
@@ -746,9 +745,8 @@ describe("ReGauge campaign Mission wiring", () => {
       headers: mutationHeaders(),
       body: JSON.stringify(bundle()),
     });
-    expect(response.status).toBe(201);
-    // The campaign exists in the control-plane store; the Mission was not created.
-    expect(service.get("tenant-a", "campaign-a")).toBeDefined();
+    expect(response.status).toBe(401);
+    expect(() => service.get("tenant-a", "campaign-a")).toThrow("campaign_not_found");
     expect(resolveMissionForRegaugeCampaign(appDb, "tenant-a", "campaign-a")).toBeUndefined();
   });
 });
