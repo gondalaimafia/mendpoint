@@ -13,7 +13,7 @@ programme was worth building. Its integrity matters more than its result.**
   `docs/memory/MEMORY_PRECEDENCE.md`.
 - **Gates:** `npm run typecheck` -> exit 0. `npx vitest run packages/pipeline packages/db evals`
   includes `evals/context-benchmark/context-benchmark.test.ts` (22 tests).
-- **Related decision:** `docs/adr/0009-persistent-context-benchmark-methodology.md`.
+- **Related decision:** `docs/adr/0010-persistent-context-benchmark-methodology.md`.
 
 ---
 
@@ -25,15 +25,21 @@ the claim the Mission Spaces programme makes, and everything else is secondary.
 
 Three constraints shaped it, and each is stated here so no reader can miss it.
 
-1. **There is no Context Compiler on main.** `docs/missions/CURRENT_STATE.md`
-   records, checked against code, that every model call reconstructs identical,
-   tenant-independent context from compiled-in constants, and that the compiled
-   envelope Arm B is meant to receive is not wired into any live model call.
-   `docs/missions/CONTEXT_COMPILER.md`, named in the task brief, **does not exist
-   on `origin/main`**; its subject matter lives in the "Existing context
-   assembly" section of `CURRENT_STATE.md`, which states plainly that no context
-   compiler exists. So this benchmark cannot measure the product end to end
-   today. It measures the mechanism the product intends to add.
+1. **The compiler now exists, but is gated off and not mission-bound on the live
+   path.** This benchmark was designed against main @ `bd37545`, where there was
+   no Context Compiler at all: `docs/missions/CURRENT_STATE.md` recorded, checked
+   against code, that every model call reconstructed identical, tenant-independent
+   context from compiled-in constants. That is now stale. The **Mission Context
+   Compiler has merged** (`docs/missions/CONTEXT_COMPILER.md`,
+   `packages/pipeline/src/mission-context-compiler.ts`,
+   `packages/agent/src/inherited-context.ts`, ADR-0009), and the injection seam
+   is in `packages/agent/src/agent.ts`. But it is gated behind
+   `MENDPOINT_INHERITED_CONTEXT` (default off), and on the live Fettler dispatch a
+   job is not bound to a mission, so the mission-scoped sections report
+   `no_mission_bound` and only organization memory can reach the prompt. So the
+   benchmark still cannot measure the mission-bound product end to end today; it
+   measures the mechanism, and Section 1.1 maps the modeled envelope onto the real
+   compiler section by section, naming where they match and where they diverge.
 
 2. **This repository's benchmarks have flattered themselves.** The Graphify
    benchmark's headline advantage was entirely a label leak; an anti-overfitting
@@ -92,6 +98,87 @@ of statelessness.
 Because the agent is arm-blind and truth-blind, **any measured difference between
 arms is attributable to inherited context and to nothing else.** That is the
 whole point, and Section 3 shows the controls that hold it true.
+
+## 1.1 Reconciliation with the real Mission Context Compiler
+
+The compiler that would build Arm B's envelope now exists on main
+(`packages/pipeline/src/mission-context-compiler.ts`, documented in
+`docs/missions/CONTEXT_COMPILER.md`). Its conceptual envelope
+(`InheritedContextEnvelope`) has sections `missionIdentity`, `task`,
+`graphProjection`, `relevantHistory`, `activeDecisions`, `relevantOrgMemory`,
+`policyConstraints`, `verificationState`, `unresolvedExceptions`, `evidenceRefs`,
+`precedence`, and `bounds`. Reading the modeled envelope against the real one:
+
+**Where they match (and why the ceiling is meaningful):**
+
+- **Precedence is the same code.** The compiler resolves ordering ONLY through
+  `resolveOrganizationDecision`, grouping every precedence-participating layer by
+  `subjectKey` and calling the resolver once per subject. The benchmark's agent
+  does exactly this: its `resolutionKey` is the compiler's `subjectKey`, and it
+  groups reachable items by layer and calls the same resolver once per hazard. So
+  the agent's choice of governing layer is the compiler's own logic, not a
+  reimplementation. The benchmark's "hard policy beats a conflicting confirmed
+  memory" and "confirmed memory wins and is named" tests are the same properties
+  as the compiler's CONTROL 1 and CONTROL 2.
+- **Section-to-layer mapping.** The benchmark's `KnowledgeItem` layers map onto
+  real sections: `hard_policy` to `policyConstraints`, `mission_decision` to
+  `activeDecisions`, `confirmed_org_memory` / `user_preference` /
+  `inferred_candidate` to `relevantOrgMemory` (`applied` vs `overridden`), the
+  verification hazard to `verificationState`, and the exemption hazards to
+  `unresolvedExceptions`.
+- **A confirmed-but-wrong memory reaches the model as applied.** The compiler
+  cannot know a confirmed memory is wrong for a task; it places it in
+  `relevantOrgMemory.applied` and the renderer injects it. The
+  `conflicting-context-harm` scenario is therefore a faithful model of real
+  compiler behavior, not an artifact: this is a risk the compiler's bounds and
+  precedence do **not** mitigate, which is why the persistent arm's loss there is
+  the sharpest finding in this report.
+- **Live vs mission-bound reach.** The `memory-oauth-controlled` scenario (org
+  memory only) corresponds to what can reach the **live** Fettler prompt today;
+  the `regauge-multistage-migration` scenario (decisions, exceptions,
+  verification, history) corresponds to the **mission-bound** path, which is
+  implemented and covered by `apps/worker/src/mission-context.test.ts` but is not
+  yet exercised by the live dispatch (a Fettler job is not mission-bound, so those
+  sections report `no_mission_bound`).
+
+**Where the modeled envelope diverges (stated so no reader over-reads the ceiling):**
+
+1. **The absence tri-state is collapsed.** This is the load-bearing divergence.
+   The real compiler distinguishes three reasons a section is empty:
+   `not_consulted{store_not_available}` (the store was not read),
+   `consulted{applied: []}` ("no organization memory applies"), and
+   `not_consulted{no_mission_bound}` (the task is not part of a formal mission).
+   The benchmark models "context not inherited" as the mere **absence** of a
+   `KnowledgeItem` and collapses all three into one "absent". This does not affect
+   the outcome metrics (all three yield "the agent lacks the knowledge and falls to
+   the naive default"), but any consumer that branches on *why* a section is empty
+   is not modeled here, and that distinction is load-bearing in the real compiler.
+2. **Bounds and stale-exclusion are not modeled; the inflation scenario overstates
+   the real token cost.** The real compiler caps each section at 32 items and the
+   rendered body at 32768 bytes, dropping lowest-priority sections first
+   (`bounds.promptTruncated`), and **excludes** disabled/rejected/stale/deleted
+   memory before rendering. The `context-inflation-control` scenario deliberately
+   models an *unselective* envelope that carries stale, irrelevant, and duplicated
+   items and grows unbounded, so its token figures are a stress model of what the
+   compiler's selection and bounds exist to prevent. In particular the real
+   compiler would not carry the stale items at all, and would cap the total. The
+   scenario's value is to show why selection and bounds matter, and it does not
+   claim the real compiler is unbounded.
+3. **Verification currency is a single item, not the real tri-state.** The real
+   compiler carries `current_evidence` / `stale_evidence` / `no_current_evidence`
+   from `classifyMissionVerificationEvidence` and never presents a
+   changed-snapshot verification as current. The benchmark's verification hazard
+   models only "the verified variant is known"; it does not model a stale
+   verification being correctly withheld.
+4. **No distinct graph-projection section.** The real compiler runs the bounded
+   `compileFettlerImpactContext` (16 KB cap) for `graphProjection`, reporting
+   `not_consulted{graph_version_absent}` on the Fettler path. The benchmark folds
+   any graph context into generic items and does not model this section.
+
+The net: the precedence core the ceiling depends on is the real compiler's own
+code, so the ceiling is meaningful; the divergences are all in *reporting fidelity*
+and *envelope hygiene* (tri-state, bounds, stale-exclusion, graph), and each is
+named above rather than left for a reader to discover.
 
 ## 2. The cohort
 
@@ -276,11 +363,14 @@ there is no Mendpoint-specific live evidence behind it. Specifically:
   attends to and correctly applies the relevant context; the realized (as opposed
   to ceiling) repeat-avoidance rate; and any time, token, or cost figure. Those
   require a live-model lane that reuses this cohort and sealed key unchanged.
-- **Also not established, and not claimed:** that the compiler which would build
-  the envelope exists (it does not, on main), or that persistent context helps on
-  scenarios unlike these. On a cohort where the resolving knowledge is intrinsic
-  to the immediate files, the harness reports zero advantage (Section 3, control
-  5).
+- **Also not established, and not claimed:** that the merged compiler, once
+  ungated and mission-bound, realizes any of this on a live model; or that
+  persistent context helps on scenarios unlike these. The compiler now exists
+  (Section 1.1) but is gated off by default and reports `no_mission_bound` on the
+  live Fettler path, so the mission-scoped envelope this benchmark models is not
+  yet exercised in production. On a cohort where the resolving knowledge is
+  intrinsic to the immediate files, the harness reports zero advantage (Section 3,
+  control 5).
 
 ## 7. Gates, and proof each can fail
 
