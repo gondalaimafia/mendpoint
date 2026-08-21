@@ -111,20 +111,45 @@ describe("model egress assessment", () => {
     expect(a.endpointHost).toBe("public-model.invalid");
   });
 
-  it("flags public code-impact confirmation endpoints that primary provider resolution cannot see", () => {
-    for (const [name, value] of [
-      ["OPENAI_API_BASE", "https://openai-confirm.invalid/v1"],
-      ["XAI_API_BASE", "https://xai-confirm.invalid/v1"],
-    ] as const) {
-      const a = assessModelEgress({
+  it("treats OPENAI_API_BASE / XAI_API_BASE as egress only when the confirm lane is enabled", () => {
+    // The code-impact confirm lane is opt-in and off by default. A stale base
+    // URL whose lane can never run must NOT refuse a local_only boot: booting
+    // is impossible to justify as an egress risk when resolveLlmConfirmMode()
+    // would return "off". (Previously these were added unconditionally, so a
+    // stale value refused boot even though nothing could egress.)
+    for (const name of ["OPENAI_API_BASE", "XAI_API_BASE"] as const) {
+      const bootsDespiteStale = assessModelEgress({
         MENDPOINT_MODEL_EGRESS: "local_only",
         LLM_AGENT_URL: "http://127.0.0.1:8000",
-        [name]: value,
+        [name]: "https://stale-confirm.invalid/v1",
       });
-      expect(a.violation).toBe("model_egress_local_only_violation");
-      expect(a.localOnlySatisfied).toBe(false);
-      expect(a.endpointHost).toBe(new URL(value).hostname);
+      expect(bootsDespiteStale.violation).toBeNull();
+      expect(bootsDespiteStale.localOnlySatisfied).toBe(true);
     }
+
+    // With the lane actually enabled (explicit opt-in AND a usable key), the
+    // same public base URL is inspected and refused at its own host.
+    const refusedOpenai = assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "http://127.0.0.1:8000",
+      LLM_CONFIRM_MODE: "live",
+      OPENAI_API_KEY: "configured",
+      OPENAI_API_BASE: "https://openai-confirm.invalid/v1",
+    });
+    expect(refusedOpenai.violation).toBe("model_egress_local_only_violation");
+    expect(refusedOpenai.localOnlySatisfied).toBe(false);
+    expect(refusedOpenai.endpointHost).toBe("openai-confirm.invalid");
+
+    const refusedXai = assessModelEgress({
+      MENDPOINT_MODEL_EGRESS: "local_only",
+      LLM_AGENT_URL: "http://127.0.0.1:8000",
+      LLM_CONFIRM_MODE: "live",
+      XAI_API_KEY: "configured",
+      XAI_API_BASE: "https://xai-confirm.invalid/v1",
+    });
+    expect(refusedXai.violation).toBe("model_egress_local_only_violation");
+    expect(refusedXai.localOnlySatisfied).toBe(false);
+    expect(refusedXai.endpointHost).toBe("xai-confirm.invalid");
   });
 
   it("flags a public OPENAI_BASE_URL hidden behind a private primary URL", () => {

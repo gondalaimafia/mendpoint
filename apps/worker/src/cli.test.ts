@@ -13,7 +13,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+
+// Resolve committed fixtures from this module's own location, not process.cwd():
+// `npx vitest run apps/worker` runs from the repository root, so a cwd-relative
+// "../../fixtures" path escapes the repository entirely. This test means the same
+// thing however it is invoked.
+const fixturesRoot = resolve(import.meta.dirname, "..", "..", "..", "fixtures");
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
@@ -950,8 +956,8 @@ describe("worker runtime", () => {
   it("joins real OpenAPI impact evidence to a bounded Warden run without opening a draft", async () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-real-joined-warden-"));
     dirs.push(root);
-    const repoRoot = join(process.cwd(), "..", "..", "fixtures", "consumers", "shop-app");
-    const providerRoot = join(process.cwd(), "..", "..", "fixtures", "providers", "acme-payments");
+    const repoRoot = join(fixturesRoot, "consumers", "shop-app");
+    const providerRoot = join(fixturesRoot, "providers", "acme-payments");
     const db = createDb(join(root, "jobs.sqlite"));
     const at = nowIso();
     insertProvider(db, {

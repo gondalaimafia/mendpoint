@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { validateGroundTruth } from "../ground-truth/schema.js";
-import { generateScenarios, holdoutRefVariations, materializeRepo } from "./index.js";
+import {
+  generateScenarios,
+  holdoutRefVariations,
+  holdoutJsonPayloadVariations,
+  materializeRepo,
+} from "./index.js";
 import { listFilesRecursive } from "../runners/stage.js";
 import { tsPaymentsService } from "./templates.js";
 
@@ -72,6 +77,42 @@ describe("holdoutRefVariations", () => {
     expect(a.length).toBe(6);
     expect(a.every((s) => s.gt.dataset_split === "holdout")).toBe(true);
     // Deterministic: same seeds -> same ids and same ground truth.
+    expect(a.map((s) => s.scenario_id)).toEqual(b.map((s) => s.scenario_id));
+    expect(JSON.stringify(a.map((s) => s.gt))).toBe(JSON.stringify(b.map((s) => s.gt)));
+  });
+});
+
+describe("holdoutJsonPayloadVariations", () => {
+  it("emits holdout scenarios from a family the development split does not use, with JSON fixtures in novel directories", () => {
+    const dev = new Set(
+      generateScenarios()
+        .filter((s) => s.gt.dataset_split === "development")
+        .flatMap((s) => Object.keys(s.repo.files)),
+    );
+    // Directory names the development split uses for its fixtures.
+    const devDirs = new Set([...dev].map((p) => p.split("/").slice(0, -1).join("/")));
+
+    const holdout = holdoutJsonPayloadVariations();
+    expect(holdout.length).toBeGreaterThan(0);
+    for (const s of holdout) {
+      expect(s.gt.dataset_split).toBe("holdout");
+      expect(validateGroundTruth(s.gt), s.scenario_id).toEqual([]);
+      const jsonFixtures = Object.keys(s.repo.files).filter((p) => p.endsWith(".json") && p !== "package.json");
+      // The holdout actually exercises the JSON-payload path.
+      expect(jsonFixtures.length).toBeGreaterThan(0);
+      // Every JSON fixture is an expected finding (the impact really lives there).
+      for (const f of jsonFixtures) expect(s.gt.expected_findings).toContain(f);
+      // At least one fixture sits in a directory name absent from the dev split.
+      const inNovelDir = jsonFixtures.some(
+        (f) => !devDirs.has(f.split("/").slice(0, -1).join("/")),
+      );
+      expect(inNovelDir, s.scenario_id).toBe(true);
+    }
+  });
+
+  it("is deterministic run-to-run", () => {
+    const a = holdoutJsonPayloadVariations();
+    const b = holdoutJsonPayloadVariations();
     expect(a.map((s) => s.scenario_id)).toEqual(b.map((s) => s.scenario_id));
     expect(JSON.stringify(a.map((s) => s.gt))).toBe(JSON.stringify(b.map((s) => s.gt)));
   });

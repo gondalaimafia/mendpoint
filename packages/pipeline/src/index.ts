@@ -114,6 +114,36 @@ function textDigest(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+/** GitHub rejects pull-request bodies longer than this many characters. */
+export const MAX_PR_BODY_CHARS = 65_536;
+
+/**
+ * Bound the assembled PR body to GitHub's hard limit before delivery, otherwise
+ * a large body fails PR creation with a 422 for a reason unrelated to the change.
+ * The Change Graph evidence JSON (shadow evidence, capped at 32 KB and also
+ * persisted as an immutable artifact) is dropped first, so the coverage and
+ * evidence statements below it always survive; dropping it also states, in
+ * words, that it was shortened. Only if that is still not enough do we fall back
+ * to an explicit truncation notice (mirrors generation's capBody shape).
+ */
+export function boundPrBody(body: string, graphEvidenceBlock: string): string {
+  if (body.length <= MAX_PR_BODY_CHARS) return body;
+  let bounded = body;
+  if (graphEvidenceBlock && bounded.includes(graphEvidenceBlock)) {
+    bounded = bounded.replace(
+      graphEvidenceBlock,
+      [
+        "### Change Graph evidence",
+        "",
+        "_Graph context omitted to keep this PR body under GitHub's limit; it remains available as an immutable artifact (see the context artifact id above)._",
+      ].join("\n"),
+    );
+  }
+  if (bounded.length <= MAX_PR_BODY_CHARS) return bounded;
+  const notice = `\n\n_This PR body was truncated to stay under GitHub's ${MAX_PR_BODY_CHARS.toLocaleString("en-US")}-character limit; some detail above was omitted._`;
+  return bounded.slice(0, MAX_PR_BODY_CHARS - notice.length) + notice;
+}
+
 function resolveRepositoryRevision(
   repoRoot: string,
   snapshotContent: string,
@@ -1103,7 +1133,19 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       },
     });
 
-    // Enforce: never claim auto-merge in PR body; attach plan + registry + gates + critic
+    // Enforce: never claim auto-merge in PR body; attach plan + registry + gates + critic.
+    // Kept as a named block so an oversized body can drop it first (see boundPrBody).
+    const graphEvidenceBlock = graphContextContent
+      ? [
+          "### Change Graph evidence",
+          `- Graph version: \`${graphVersionId}\``,
+          `- Context artifact: \`${graphContextArtifactId}\``,
+          "",
+          "```json",
+          graphContextContent,
+          "```",
+        ].join("\n")
+      : "";
     const prBody = [
       draft.body,
       "",
@@ -1112,17 +1154,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       registryMd,
       "",
       graphRagMd,
-      graphContextContent
-        ? [
-            "### Change Graph evidence",
-            `- Graph version: \`${graphVersionId}\``,
-            `- Context artifact: \`${graphContextArtifactId}\``,
-            "",
-            "```json",
-            graphContextContent,
-            "```",
-          ].join("\n")
-        : "",
+      graphEvidenceBlock,
       "",
       gates.reportMarkdown,
       "",
@@ -1771,6 +1803,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         ].join("\n");
       }
     }
+    // Bound the fully assembled body before it is persisted or delivered, so a
+    // large graph context never pushes PR creation past GitHub's hard limit.
+    prBodyFinal = boundPrBody(prBodyFinal, graphEvidenceBlock);
     if (retryablePr) {
       updateMigrationPrDelivery(db, prId, {
         status: shouldDeliver ? "delivery_pending" : status,

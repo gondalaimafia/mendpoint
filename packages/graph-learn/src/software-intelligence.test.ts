@@ -447,13 +447,14 @@ describe("foundational software intelligence graph", () => {
       delete (invalid.entities[0] as unknown as Record<string, unknown>)[field];
       expect(() => publishSoftwareGraphVersion(db, invalid)).toThrow(code);
     }
+    // A numeric confidence has no place in the graph today: the calibrated
+    // probability basis was removed, so a `confidence` key is an unknown field
+    // and is rejected by the shape check rather than a confidence-specific rule.
     const fabricatedProbability = publication();
-    fabricatedProbability.entities[0] = {
-      ...fabricatedProbability.entities[0]!, confidence: 1,
-    };
+    (fabricatedProbability.entities[0] as unknown as Record<string, unknown>).confidence = 1;
     const probabilityDb = openGraphLearnMemory();
     expect(() => publishSoftwareGraphVersion(probabilityDb, fabricatedProbability)).toThrow(
-      "software_graph_entity_confidence_invalid",
+      "software_graph_entity_shape_invalid",
     );
     const db = openGraphLearnMemory();
     const invalidRelationship = publication();

@@ -5,6 +5,7 @@ import type {
   VerifierBackendScore,
   VerifierCandidate,
   VerifierEvidencePack,
+  VerifierFailureCode,
   VerifierRecommendation,
   VerifierRolloutMode,
   VerifierRisk,
@@ -123,7 +124,15 @@ export function createAgentVerifier(input: AgentVerifierConfig): AgentVerifier {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "verifier_backend_unknown";
-        const failureCode = message.includes("logprob") ? "logprob_failure" as const : "api_failure" as const;
+        // Distinguish a cache/backend identity mismatch (validateBackendScore
+        // rejecting a response whose requestId/criterionId does not bind the
+        // problem — a cache-poisoning signal) from an ordinary upstream failure.
+        // Folding them together would make a poisoning event look like a 503.
+        const failureCode: VerifierFailureCode = message.includes("logprob")
+          ? "logprob_failure"
+          : message.includes("cache_or_backend_identity_mismatch")
+            ? "cache_failure"
+            : "api_failure";
         return resultFor({
           status: "failed", pack: request.pack, config, incumbentCandidateId: request.incumbentCandidateId,
           filtered, scores: {}, suggestedCandidateId: null, effectiveCandidateId: request.incumbentCandidateId,

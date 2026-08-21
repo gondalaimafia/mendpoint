@@ -1,16 +1,16 @@
 # MendPoint synthetic-repo evaluation — latest run
 
-- Generated: 2026-08-18T23:17:03.037Z
-- Git commit: `a817cd2`
+- Generated: 2026-08-19T15:20:21.987Z
+- Git commit: `a69526c`
 - Invocation: deterministic analysis core (Fettler: change-intel -> code-impact, LLM off; ReGauge: analyzeRecipe over shipped registry, analyze-only)
 
 This corpus is built to make MendPoint fail, not to flatter it. "Pass" means the product did the SAFE, correct thing for the CURRENT shipped engine (found the impacted files without touching a distractor, or correctly abstained). Coverage gaps and dimensions the harness cannot yet observe are listed separately and do NOT count as passes.
 
 ## Overall
 
-- Total scenarios: 64
-- Passed (safe + correct for shipped engine): 61 (95%)
-- Unsafe/incorrect failures: 4
+- Total scenarios: 67 scored
+- Passed (safe + correct for shipped engine): 63 (94%)
+- Unsafe/incorrect failures: 5
 - Coverage gaps recorded: 6
 - P0 failures (dangerous / materially incorrect): 0
 
@@ -18,16 +18,16 @@ This corpus is built to make MendPoint fail, not to flatter it. "Pass" means the
 
 Policy: **precision-first**, owner Talal, decided 2026-08-17 (schema v1). Thresholds are read from `evals/readiness-gates.json`, not hard-coded here. A capability is design-partner ready only when it clears every criterion.
 
-**Overall readiness: PASS**
+**Overall readiness: FAIL**
 
-### fettler-impact-analysis — PASS
+### fettler-impact-analysis — FAIL
 
 | criterion | measured | threshold | verdict |
 | --- | --- | --- | --- |
-| impact_precision | 98.5% | >= 90.0% | PASS |
-| impact_recall | 96.3% | >= 85.0% | PASS |
+| impact_precision | 98.6% | >= 90.0% | PASS |
+| impact_recall | 92.6% | >= 85.0% | PASS |
 | open_p0 | 0 | <= 0 | PASS |
-| holdout_within_dev | +14.3pp vs dev | holdout within 10pp of development | PASS |
+| holdout_within_dev | +19.0pp vs dev | holdout within 10pp of development | FAIL |
 
 ### fettler-abstention — PASS
 
@@ -81,10 +81,10 @@ Holdout scenarios are procedurally generated from scenario families and are NEVE
 
 | split | scenarios | passed | pass rate |
 | --- | --- | --- | --- |
-| development | 45 | 42 | 93% |
+| development | 45 | 41 | 91% |
 | regression | 6 | 6 | 100% |
 | validation | 9 | 9 | 100% |
-| holdout | 4 | 4 | 100% |
+| holdout | 7 | 7 | 100% |
 
 ### Holdout detail
 
@@ -94,21 +94,25 @@ Holdout scenarios are procedurally generated from scenario families and are NEVE
 | gen-fettler-ref-ref-holdout-1 | fettler | 3 | flag_files | yes |
 | gen-fettler-ref-nested2-holdout-2 | fettler | 4 | flag_files | yes |
 | gen-fettler-ref-allOf-holdout-3 | fettler | 4 | flag_files | yes |
+| gen-fettler-json-payload-json-0 | fettler | 4 | flag_files | yes |
+| gen-fettler-json-payload-json-1 | fettler | 4 | flag_files | yes |
+| gen-fettler-json-payload-json-2 | fettler | 4 | flag_files | yes |
 
 ## Fettler
 
-Scenarios: 33, passed 30 (91%)
+Scenarios: 36, passed 32 (89%)
 
 ### By repository family
 | family | scenarios | passed | pass rate |
 | --- | --- | --- | --- |
 | go-service | 1 | 1 | 100% |
 | java-service | 1 | 0 | 0% |
+| json-wire-payload-generated | 3 | 3 | 100% |
 | node-cjs-service | 1 | 0 | 0% |
 | node-service-edge | 7 | 7 | 100% |
 | python-service | 1 | 1 | 100% |
 | typescript-monorepo | 2 | 2 | 100% |
-| typescript-monorepo-scale | 1 | 1 | 100% |
+| typescript-monorepo-scale | 1 | 0 | 0% |
 | typescript-service | 1 | 0 | 0% |
 | typescript-service-generated | 18 | 18 | 100% |
 
@@ -116,8 +120,8 @@ Scenarios: 33, passed 30 (91%)
 | difficulty | scenarios | passed | pass rate |
 | --- | --- | --- | --- |
 | L3 | 11 | 8 | 73% |
-| L4 | 17 | 17 | 100% |
-| L5 | 5 | 5 | 100% |
+| L4 | 20 | 20 | 100% |
+| L5 | 5 | 4 | 80% |
 
 ### Per scenario (recall / precision / traps)
 | scenario | L | behavior | recall | precision | traps hit | passed |
@@ -133,7 +137,7 @@ Scenarios: 33, passed 30 (91%)
 | fettler-edge-binary-encoding | 4 | flag_files | 100% | 100% | no | yes |
 | fettler-edge-deep-indirection | 4 | flag_files | 100% | 100% | no | yes |
 | fettler-edge-generated-code | 4 | flag_files | 100% | 100% | no | yes |
-| fettler-edge-huge-monorepo | 5 | flag_files | 100% | 100% | no | yes |
+| fettler-edge-huge-monorepo | 5 | flag_files | CRASH | - | - | NO |
 | fettler-edge-no-test-command | 3 | flag_files | 100% | 100% | no | yes |
 | fettler-edge-pnpm-workspace | 4 | flag_files | 100% | 100% | no | yes |
 | fettler-edge-vendored-sdk | 4 | flag_files | 100% | 100% | no | yes |
@@ -155,6 +159,9 @@ Scenarios: 33, passed 30 (91%)
 | gen-fettler-ref-ref-holdout-1 | 3 | flag_files | 100% | 100% | no | yes |
 | gen-fettler-ref-nested2-holdout-2 | 4 | flag_files | 100% | 100% | no | yes |
 | gen-fettler-ref-allOf-holdout-3 | 4 | flag_files | 100% | 100% | no | yes |
+| gen-fettler-json-payload-json-0 | 4 | flag_files | 100% | 100% | no | yes |
+| gen-fettler-json-payload-json-1 | 4 | flag_files | 100% | 100% | no | yes |
+| gen-fettler-json-payload-json-2 | 4 | flag_files | 100% | 100% | no | yes |
 
 ## Relationship-path accuracy (importChain grader)
 
@@ -222,8 +229,8 @@ Scenarios: 31, passed 31 (100%)
 
 | product | scenarios | min | median | p90 | max |
 | --- | --- | --- | --- | --- | --- |
-| fettler | 33 | 22ms | 75ms | 320ms | 26907ms |
-| regauge | 31 | 4ms | 22ms | 62ms | 81ms |
+| fettler | 36 | 22ms | 58ms | 1468ms | 120056ms |
+| regauge | 31 | 3ms | 18ms | 152ms | 211ms |
 
 Note: the largest-repo scenario runs under a hard wall-clock budget in an isolated child; a budget overrun is recorded as a SCALE_FAILURE (see Top remaining risks), and its max latency above reflects that budget ceiling, not a completed analysis. Files-scanned per run is in the raw records (`activity.filesExamined`) — plot latency against it to read scale behaviour.
 
@@ -233,6 +240,7 @@ Not measured in this slice. The deterministic analysis path the runner exercises
 
 ## Top remaining risks
 
+- **[P1] SCALE_FAILURE** — fettler-edge-huge-monorepo (completes_within_budget): analysis did not finish within the 120000ms budget on this repository
 - **[P2] FALSE_POSITIVE** — fettler-ts-payments-rename (precision): flagged non-expected files: test/meridianClient.test.ts
 - **[P2] FALSE_NEGATIVE** — fettler-java-settlement-rename (expected_findings_recall): flagged 11/13; missed: src/main/java/com/acme/settlement/payments/PaymentsClient.java, src/main/java/com/acme/settlement/charge/Charge.java
 - **[P2] FALSE_POSITIVE** — fettler-java-settlement-rename (precision): flagged non-expected files: src/main/java/com/acme/settlement/reporting/RevenueReport.java
@@ -251,6 +259,7 @@ Not measured in this slice. The deterministic analysis path the runner exercises
 
 - adaptive_repair token_cost / model_routing (LLM path not exercised)
 - idempotency (apply-then-reapply not run)
+- impact findings (analysis did not complete within budget)
 - inverse/rollback (not run)
 - migration_patch_correctness (generation path not exercised)
 - pr_delivery (GitHub delivery not exercised)
@@ -260,7 +269,7 @@ Not measured in this slice. The deterministic analysis path the runner exercises
 
 ## Design-partner readiness
 
-**What we can accept today.** Fettler impact analysis on fettler-ts-monorepo-rename, fettler-edge-deep-indirection, fettler-edge-huge-monorepo: repositories where the change is an OpenAPI field rename in a supported language and the impacted sites are reachable through imports. ReGauge's one shipped, applicable family (Node runtime version bump) is safe to run where it matches.
+**What we can accept today.** Fettler impact analysis on fettler-ts-monorepo-rename, fettler-edge-deep-indirection: repositories where the change is an OpenAPI field rename in a supported language and the impacted sites are reachable through imports. ReGauge's one shipped, applicable family (Node runtime version bump) is safe to run where it matches.
 
 **What we should NOT yet accept.** Repositories in languages where recall collapsed (java-service). Repositories that require any ReGauge migration family other than the Node runtime bump — SDK major upgrades, framework upgrades, and internal-API renames are coverage gaps today (the engine correctly abstains, but delivers no value). Any repository whose correct answer is a judgement call (ambiguous renames) unless a human is in the loop.
 

@@ -14,7 +14,7 @@ import type {
   GraphPath,
   ImpactableSurface,
 } from "@mendpoint/shared";
-import type { CodebaseIndex, FileRecord } from "@mendpoint/codebase-index";
+import type { CodebaseIndex, FileRecord, StructuredFileRecord } from "@mendpoint/codebase-index";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildProviderReachability, type UnresolvedImport } from "./lang-import-graph.js";
@@ -215,16 +215,79 @@ export type CandidateDiscoveryOptions = Readonly<{
   readFile?: (absolutePath: string) => string;
 }>;
 
-function isStructuredPayloadFixture(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, "/").toLowerCase();
+/** Lower-cased, forward-slashed directory of a path, trailing slash kept; "" at repo root. */
+function dirOf(path: string): string {
+  const p = path.replace(/\\/g, "/").toLowerCase();
+  const i = p.lastIndexOf("/");
+  return i < 0 ? "" : p.slice(0, i + 1);
+}
+
+/** The directory that encloses `dir` (its package). "" when `dir` is a top-level directory. */
+function parentDirOf(dir: string): string {
+  if (!dir) return "";
+  const trimmed = dir.slice(0, -1); // drop trailing slash
+  const i = trimmed.lastIndexOf("/");
+  return i < 0 ? "" : trimmed.slice(0, i + 1);
+}
+
+/**
+ * Whether a JS/TS import specifier refers to a given JSON file. Relative
+ * specifiers (`./fixtures/foo.json`, `../data/foo`) are matched by their tail
+ * against the file's normalized path; the `.json` suffix is optional in the
+ * specifier. Package/module imports (Go/Java/Python) are not file paths and do
+ * not spuriously match.
+ */
+function importReferencesJson(spec: string, jsonPathLower: string): boolean {
+  let s = spec.replace(/\\/g, "/").toLowerCase().replace(/^(?:\.\.?\/)+/, "");
+  if (!s) return false;
+  if (!s.endsWith(".json")) s = `${s}.json`;
+  return jsonPathLower === s || jsonPathLower.endsWith(`/${s}`);
+}
+
+/**
+ * Whether a JSON file is admissible as wire-contract fixture evidence.
+ *
+ * Admission is grounded in the index's STRUCTURE, not the fixture directory's
+ * name. A payload qualifies when something references it — it belongs to a test
+ * tree (a test file owns it), a source file imports it, or a code file sits in
+ * its directory or the package directory that encloses it (the shape of a
+ * `testdata/` or `__fixtures__/` data dir nested inside a code package). A JSON
+ * that merely happens to sit in a directory called `resources/` or `examples/`
+ * — where Java/Spring repos keep PRODUCTION configuration — is not admitted
+ * unless that structural evidence is present. The name check below only
+ * EXCLUDES known build/tooling manifests; it never admits.
+ *
+ * The enclosing-package check is skipped at the repo root, so a lone
+ * `resources/config.json` beside root-level code is not swept in.
+ */
+function isStructuredPayloadFixture(
+  file: StructuredFileRecord,
+  codeDirs: ReadonlySet<string>,
+  importSpecs: readonly string[],
+): boolean {
+  const normalized = file.path.replace(/\\/g, "/").toLowerCase();
   if (!normalized.endsWith(".json")) return false;
   const name = normalized.split("/").at(-1) ?? "";
-  if (/^(?:package(?:-lock)?|tsconfig|openapi|swagger)(?:\.[^.]+)*\.json$/.test(name)) {
+  // Build/tooling manifests and API SPECS are never consumer wire fixtures,
+  // wherever they sit. The version segment separator is `.` OR `-` so the
+  // OpenAPI spec pair (`openapi-v1.json`, `openapi-v2.json`) — which lives in a
+  // `spec/` directory that test-path classification treats as a test tree — is
+  // excluded rather than admitted as a payload.
+  if (/^(?:package(?:-lock)?|tsconfig|openapi|swagger)(?:[.-][^.]+)*\.json$/.test(name)) {
     return false;
   }
-  return /(^|\/)(?:fixtures?|__fixtures__|testdata|resources|snapshots?|mocks?|examples?)(\/|$)/.test(
-    normalized,
-  );
+  // (1) Test-tree ownership: the payload lives under a test tree a test file owns.
+  if (file.isTest) return true;
+  // (2) Import edge: a source file imports the payload directly.
+  if (importSpecs.some((spec) => importReferencesJson(spec, normalized))) return true;
+  // (3) Structural proximity: a code file sits beside the payload (same
+  //     directory), or in the package directory that encloses the payload's
+  //     directory — but never inferred from the repo root.
+  const dir = dirOf(normalized);
+  if (codeDirs.has(dir)) return true;
+  const parent = parentDirOf(dir);
+  if (parent && codeDirs.has(parent)) return true;
+  return false;
 }
 
 function structuredKeyEvidence(
@@ -395,6 +458,11 @@ export function discoverCandidates(
       return null;
     }
   };
+  // Structural context for JSON payload admission (see isStructuredPayloadFixture):
+  // the set of directories that hold code, and every import specifier, so a
+  // payload is admitted on a reference/proximity signal rather than its dir name.
+  const codeDirs = new Set(index.files.map((f) => dirOf(f.path)));
+  const importSpecs = index.files.flatMap((f) => f.imports);
   const functionsByFile = new Map<string, typeof index.functions>();
   for (const fn of index.functions) {
     const functions = functionsByFile.get(fn.filePath) ?? [];
@@ -582,9 +650,11 @@ export function discoverCandidates(
 
     // JSON request/response fixtures are executable contract evidence even
     // though they have no import edge. Keep this channel deliberately narrow:
-    // valid JSON, a fixture/test-data path, and an exact changed wire key.
+    // valid JSON, STRUCTURAL admission (a test tree owns it, a source file
+    // imports it, or a code file encloses it — see isStructuredPayloadFixture),
+    // and an exact changed wire key.
     for (const file of index.structuredFiles ?? []) {
-      if (!isStructuredPayloadFixture(file.path)) continue;
+      if (!isStructuredPayloadFixture(file, codeDirs, importSpecs)) continue;
       const text = readIndexedFile(file.path);
       if (text === null) continue;
       for (const field of fieldHints) {

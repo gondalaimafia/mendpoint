@@ -876,7 +876,18 @@ function runGraphQueryInner(
   }
 }
 
-/** Planner tool surface — string templates */
+/**
+ * Planner tool surface — string templates.
+ *
+ * `migration_ready_units` and `invariants_for_symbol` are deliberately NOT
+ * advertised here while their sole source relations (DEPENDS_ON and
+ * PRESERVES_INVARIANT) have no ingest producer: advertising them lets a planner
+ * route a readiness or invariant question to an op that can only ever return an
+ * empty result. Their handlers still exist (returning `target_absent` for any
+ * direct caller), so re-enabling them means re-adding them here AND to the
+ * natural-language rules in query-pick.ts at the same time a producer lands —
+ * which keeps the re-enable honest.
+ */
 export const GRAPH_RAG_TOOLS = [
   "who_consumes_provider",
   "who_consumes_endpoint",
@@ -890,8 +901,6 @@ export const GRAPH_RAG_TOOLS = [
   "pattern_success_rates",
   "consumers_of_field",
   "broke_modes_for_endpoint",
-  "migration_ready_units",
-  "invariants_for_symbol",
   "time_travel_calls",
   "time_travel_modifies",
   "latency_stats",

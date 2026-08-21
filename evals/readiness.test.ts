@@ -229,6 +229,66 @@ describe("evaluateReadiness", () => {
     // A criterion that cannot be measured cannot demonstrate readiness.
     expect(ev.overall).toBe("FAIL");
   });
+
+  it("FAILS the holdout gap when the holdout OUTPERFORMS development beyond the threshold", () => {
+    // Findings are all correct (precision/recall clear the bar), but the holdout
+    // pass rate (100%) exceeds the development pass rate (50%) by 50pp — far more
+    // than the 10pp allowed. A holdout that outperforms this much is evidence the
+    // splits are not comparable, so it must FAIL, not silently pass.
+    const scored: ScoredRun[] = [
+      { gt: gt({ scenario_id: "d1", dataset_split: "development", expected_findings: ["src/a.ts"] }), record: rec({ scenario_id: "d1", findings: ["src/a.ts"], passed: true }) },
+      { gt: gt({ scenario_id: "d2", dataset_split: "development", expected_findings: ["src/c.ts"] }), record: rec({ scenario_id: "d2", findings: ["src/c.ts"], passed: false }) },
+      { gt: gt({ scenario_id: "h1", dataset_split: "holdout", expected_findings: ["src/b.ts"] }), record: rec({ scenario_id: "h1", findings: ["src/b.ts"], passed: true }) },
+      { gt: gt({ scenario_id: "h2", dataset_split: "holdout", expected_findings: ["src/d.ts"] }), record: rec({ scenario_id: "h2", findings: ["src/d.ts"], passed: true }) },
+    ];
+    const ev = evaluateReadiness(scored, GATES);
+    const cap = ev.capabilities[0];
+    expect(cap.metrics.precision).toBe(1);
+    expect(cap.metrics.recall).toBe(1);
+    const gap = cap.criteria.find((c) => c.name === "holdout_within_dev")!;
+    expect(gap.measurable).toBe(true);
+    expect(gap.passed).toBe(false);
+    // The rendered line agrees with the comparison: it shows the holdout ABOVE
+    // development (+) by a magnitude (50.0pp) that exceeds the 10pp bound.
+    expect(gap.measured).toBe("+50.0pp vs dev");
+    expect(ev.overall).toBe("FAIL");
+  });
+
+  it("FAILS a capability whose gated scenario is absent, without renormalising the pooled metrics", () => {
+    // Everything that DID run passes cleanly — precision/recall are 100% over the
+    // scenarios present. But a gated flag_files scenario was absent (corpus not
+    // on this runner). The capability must FAIL on an explicit not-measured
+    // coverage criterion, not read as ready over the partial set.
+    const scored: ScoredRun[] = [
+      { gt: gt({ scenario_id: "a", dataset_split: "development", expected_findings: ["src/a.ts"] }), record: rec({ scenario_id: "a", findings: ["src/a.ts"], passed: true }) },
+      { gt: gt({ scenario_id: "h", dataset_split: "holdout", expected_findings: ["src/b.ts"] }), record: rec({ scenario_id: "h", findings: ["src/b.ts"], passed: true }) },
+    ];
+    const absent = [
+      { scenario_id: "fettler-corpus-scale", product: "fettler", gt: gt({ scenario_id: "fettler-corpus-scale", correct_behavior: "flag_files" }) },
+    ];
+    const ev = evaluateReadiness(scored, GATES, undefined, absent);
+    const cap = ev.capabilities[0];
+    // Pooled metrics are NOT diluted by the absent scenario (no phantom zeros).
+    expect(cap.metrics.precision).toBe(1);
+    expect(cap.metrics.recall).toBe(1);
+    // But the capability fails on the coverage hole.
+    const cov = cap.criteria.find((c) => c.name === "gated_scenario_coverage")!;
+    expect(cov).toBeDefined();
+    expect(cov.measurable).toBe(false);
+    expect(cov.measured).toContain("fettler-corpus-scale");
+    expect(cap.verdict).toBe("FAIL");
+    expect(ev.overall).toBe("FAIL");
+  });
+
+  it("does not add a coverage criterion when no gated scenario is absent", () => {
+    const scored: ScoredRun[] = [
+      { gt: gt({ scenario_id: "a", dataset_split: "development", expected_findings: ["src/a.ts"] }), record: rec({ scenario_id: "a", findings: ["src/a.ts"], passed: true }) },
+      { gt: gt({ scenario_id: "h", dataset_split: "holdout", expected_findings: ["src/b.ts"] }), record: rec({ scenario_id: "h", findings: ["src/b.ts"], passed: true }) },
+    ];
+    const ev = evaluateReadiness(scored, GATES, undefined, []);
+    expect(ev.capabilities[0].criteria.some((c) => c.name === "gated_scenario_coverage")).toBe(false);
+    expect(ev.overall).toBe("PASS");
+  });
 });
 
 describe("fettler-abstention capability (Phase 2 gate coverage)", () => {

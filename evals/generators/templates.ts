@@ -204,3 +204,97 @@ export async function replay(amount: number, ${field}: string) {
     method,
   };
 }
+
+/**
+ * Build a seeded consumer whose wire-contract evidence lives in JSON PAYLOAD
+ * fixtures — the channel `tsPaymentsService` never exercises (its only fixture is
+ * a TypeScript one). The JSON fixtures sit in directories (`test/wire-samples/`,
+ * `src/contracts/golden/`) that appear NOWHERE in the ref-rename family the
+ * development split uses, and are admitted only on STRUCTURAL evidence: one is
+ * owned by a test tree, the other has a code file in its enclosing package
+ * directory. A directory-name allowlist fitted to the corpus fixture dirs would
+ * miss both. Used for the holdout split so the anti-overfitting gate can see the
+ * structured-payload path.
+ */
+export function jsonWirePayloadService(opts: TemplateOptions): TemplateResult {
+  const rng = mulberry32(opts.seed);
+  const slug = opts.slug ?? "meridian";
+  const field = opts.field ?? "source";
+  const ProviderClass = slug.charAt(0).toUpperCase() + slug.slice(1);
+  const path = "/v1/charges";
+  const method = "POST";
+
+  const files: Record<string, string> = {};
+  const impacted: string[] = [];
+  const decoys: string[] = [];
+
+  files["package.json"] =
+    JSON.stringify(
+      { name: `synthetic-${slug}-wire`, private: true, dependencies: { [slug]: "^1.0.0" } },
+      null,
+      2,
+    ) + "\n";
+  files["README.md"] = `# synthetic-${slug}-wire\n\nA synthetic payments consumer whose contract fixtures are JSON payloads.\n`;
+
+  // Anchor: imports the provider package, declares the request type + field.
+  const client = "src/infra/provider/client.ts";
+  files[client] = `import { ${ProviderClass} } from "${slug}";
+
+export interface ProviderChargeRequest {
+  amount: number;
+  ${field}: string;
+}
+
+const client = new ${ProviderClass}();
+
+export async function createCharge(req: ProviderChargeRequest): Promise<{ id: string }> {
+  return client.charges.create({ amount: req.amount, ${field}: req.${field} });
+}
+`;
+  impacted.push(client);
+
+  // Seeded impacted service(s) reaching the client through a relative import.
+  const serviceCount = 1 + Math.floor(rng() * 2);
+  const serviceNames = ["checkoutService", "settlementService"];
+  for (let i = 0; i < serviceCount; i++) {
+    const name = serviceNames[i] ?? `service${i}`;
+    const p = `src/services/${name}.ts`;
+    files[p] = `import { createCharge, type ProviderChargeRequest } from "../infra/provider/client.js";
+
+export async function ${name.replace("Service", "")}(amount: number, ${field}: string): Promise<{ id: string }> {
+  const req: ProviderChargeRequest = { amount, ${field} };
+  return createCharge(req);
+}
+`;
+    impacted.push(p);
+  }
+
+  // JSON wire fixture #1: under a test tree, in a directory (wire-samples/) the
+  // development split never uses. Admitted because a test file owns the tree.
+  const requestFixture = "test/wire-samples/charge-request.json";
+  files[requestFixture] = JSON.stringify({ amount: 1000, [field]: "pm_card_visa" }, null, 2) + "\n";
+  impacted.push(requestFixture);
+
+  // JSON wire fixture #2: NOT under a test tree, in a directory (golden/) absent
+  // from the development split. Admitted only by structural proximity — a code
+  // file sits in the enclosing package directory (src/contracts/).
+  files["src/contracts/verify.ts"] =
+    `// Contract verifier for the golden payload fixtures (no provider field here).\nexport const verify = (raw: string): unknown => JSON.parse(raw);\n`;
+  const responseFixture = "src/contracts/golden/charge-response.json";
+  files[responseFixture] = JSON.stringify({ id: "ch_1", [field]: "pm_card_visa" }, null, 2) + "\n";
+  impacted.push(responseFixture);
+
+  // Decoy: same token in an unrelated context, never reaching the provider.
+  const decoy = "src/analytics/tracker.ts";
+  files[decoy] = `// Analytics event origin — unrelated to the provider payment field.\nexport interface AnalyticsEvent {\n  ${field}: string;\n  ts: number;\n}\nexport function track(e: AnalyticsEvent): string {\n  return e.${field};\n}\n`;
+  decoys.push(decoy);
+
+  return {
+    repo: { files },
+    roles: { impacted, decoys, generated: [], vendored: [], looksGenerated: [] },
+    slug,
+    field,
+    path,
+    method,
+  };
+}
