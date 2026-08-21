@@ -364,6 +364,17 @@ export function extractGovernedLesson(input: GovernedLearningEvent): GovernedLea
   });
 }
 
+// This 1:1 map from `attribution` to `LearningDestination` is only as
+// discriminating as the `attribution` it is handed. In production it is handed a
+// constant: every governed-learning producer hardcodes
+// `attribution: "model_behavior"` (warden-learning-producer.ts:273,
+// transformer-governed-learning-producer.ts:136), so this function is effectively
+// a constant function there and only `model_weight` is ever emitted. And of the
+// eleven destinations it CAN emit, only `model_weight` has a downstream sink; the
+// other ten are computed and dropped. Both facts are made observable and countable
+// in `lesson-routing.ts` (`summarizeLessonRouting`,
+// `assessProductionAttributionDiscrimination`); the upstream blocker that keeps
+// attribution constant is documented in `docs/learning/LESSON_DESTINATION_ROUTING.md`.
 function classify(event: GovernedLearningEventV1): Array<Readonly<{ destination: LearningDestination; rationale: string }>> {
   const attribution = event.observedOutcome.attribution;
   const mapped: Record<LearningOutcomeAttribution, Readonly<{ destination: LearningDestination; rationale: string }>> = {
