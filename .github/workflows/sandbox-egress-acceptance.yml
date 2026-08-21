@@ -174,17 +174,28 @@ jobs:
             >test-results/sandbox-egress/receipt.json
           node --import tsx --input-type=module -e '
             import { readFileSync } from "node:fs";
-            import { verifySandboxEgressAttestation } from "@mendpoint/platform";
+            import {
+              verifySandboxEgressAttestation,
+              SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR,
+            } from "@mendpoint/platform";
             const receipt = JSON.parse(readFileSync("test-results/sandbox-egress/receipt.json", "utf8"));
+            // Every expected value must come from a source INDEPENDENT of the receipt, or
+            // the check is a tautology that cannot fail. The trusted key id and policy
+            // digest come from the configured production authority (validated non-empty,
+            // and the policy digest matched to the entrypoint hash, in "Validate protected
+            // authority" above); the schema floor comes from platform code. The receipt
+            // only supplies its own envelope and public key, which the signature is
+            // checked against. An unset configured value refuses (fails closed) rather
+            // than passing.
             verifySandboxEgressAttestation({
               attestationBase64: receipt.attestationBase64,
               publicKeySpkiBase64: receipt.publicKeySpkiBase64,
-              expectedKeyId: receipt.keyId,
-              expectedPolicyDigest: receipt.policyDigest,
+              expectedKeyId: process.env.MENDPOINT_SANDBOX_EGRESS_KEY_ID,
+              expectedPolicyDigest: process.env.MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST,
               expectedApp: process.env.MENDPOINT_SANDBOX_EGRESS_APP,
               expectedImage: process.env.MENDPOINT_SANDBOX_EGRESS_IMAGE,
               observedAt: new Date().toISOString(),
-              minimumSchemaVersion: receipt.payload.schemaVersion,
+              minimumSchemaVersion: SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR,
             });
           '
       - name: Rotate the verifying app authority
