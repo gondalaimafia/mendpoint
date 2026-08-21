@@ -3598,6 +3598,7 @@ export {
   getMission,
   linkFettlerCampaignToMission,
   linkRegaugeCampaignToMission,
+  regaugeMissionId,
   resolveMissionForFettlerCampaign,
   resolveMissionForRegaugeCampaign,
   transitionMission,

@@ -3,7 +3,13 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDb, listDomainEvents, type AppDb } from "@mendpoint/db";
+import {
+  createDb,
+  listDomainEvents,
+  resolveMissionForRegaugeCampaign,
+  verifyDomainEventIntegrity,
+  type AppDb,
+} from "@mendpoint/db";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import {
   CredentialBroker,
@@ -255,5 +261,29 @@ describe("Regauge production bootstrap runtime", () => {
       .toHaveLength(1);
     const storedDigest = createHash("sha256").update(first.requestDigest).digest("hex");
     expect(storedDigest).toMatch(/^[a-f0-9]{64}$/);
+
+    // The Mission is created AND bound at the live launch seam: it carries the
+    // exact verified snapshot the campaign launched (not a HEAD re-resolution),
+    // and it has advanced out of `created` to `executing` on the real lifecycle.
+    const launchedUnit = executions.store
+      .getCampaign("tenant_regauge_canary", "campaign_regauge_canary_20260814")!.units[0]!;
+    const mission = resolveMissionForRegaugeCampaign(
+      db,
+      "tenant_regauge_canary",
+      "campaign_regauge_canary_20260814",
+    );
+    expect(mission).toBeDefined();
+    expect(mission!.state).toBe("executing");
+    expect(mission!.product).toBe("regauge");
+    expect(mission!.repositoryId).toBe(launchedUnit.snapshot.repositoryId);
+    expect(mission!.snapshotId).toBe(launchedUnit.snapshot.snapshotId);
+    // The hash-chained domain_events stay verifiable across create + link + the
+    // four lifecycle transitions.
+    expect(verifyDomainEventIntegrity(db, "tenant_regauge_canary").ok).toBe(true);
+    const missionEvents = listDomainEvents(db, "tenant_regauge_canary", "mission", mission!.id)
+      .map((event) => event.event_type);
+    expect(missionEvents).toContain("mission.created");
+    expect(missionEvents).toContain("mission.regauge_campaign_linked");
+    expect(missionEvents.filter((type) => type === "mission.transitioned")).toHaveLength(4);
   }, 20_000);
 });
