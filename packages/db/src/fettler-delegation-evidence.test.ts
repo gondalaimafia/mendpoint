@@ -377,10 +377,10 @@ describe("Fettler delegation durable evidence inventory", () => {
     const evidence = getFettlerDelegationEvidence(db, TENANT, RUN);
     expect(evidence.auditIntegrity.ok).toBe(false);
     expect(evidence.approval).toEqual({ status: "not_observed", reason: "audit_chain_invalid" });
-    expect(evidence.candidateDelivery.status === "observed" &&
-      evidence.candidateDelivery.value.auditEvents).toEqual([]);
-    expect(evidence.candidateDelivery.status === "observed" &&
-      evidence.candidateDelivery.value.auditReason).toBe("audit_chain_invalid");
+    // A torn audit chain leaves the delivery unproven, so the discriminant itself
+    // must say so -- matching the sibling approval record -- rather than reporting
+    // observed with the truth demoted to a nested auditReason field.
+    expect(evidence.candidateDelivery).toEqual({ status: "not_observed", reason: "audit_chain_invalid" });
   });
 
   it("is read only and fails closed on conflicting run and job bindings", () => {
