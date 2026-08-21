@@ -3,6 +3,23 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 
 export const SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA = "2026-08-18.v1" as const;
 export const SANDBOX_EGRESS_ATTESTATION_SCHEMA = "2026-08-19.v2" as const;
+
+// Receipt schema versions in ascending order of strength; the array index is a
+// version's rank. A newer schema is APPENDED, never inserted, so ranks stay stable.
+// The legacy v1 schema (rank 0) attested containment with an unsound
+// fetch/example.com probe and sits below the floor.
+export const SANDBOX_EGRESS_ATTESTATION_SCHEMA_VERSIONS: readonly string[] = Object.freeze([
+  SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA,
+  SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+]);
+
+// The lowest receipt schema the verifier will EVER accept, enforced unconditionally at
+// the point of verification. This is policy in code, not an input: an operator env var
+// may only RAISE the floor to a newer schema, never lower or disable it, and a blank or
+// unset variable means "use this code floor" (never "accept any schema version").
+export const SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR: typeof SANDBOX_EGRESS_ATTESTATION_SCHEMA =
+  SANDBOX_EGRESS_ATTESTATION_SCHEMA;
+
 export const SANDBOX_EGRESS_FORBIDDEN_PROBE_URL = "https://example.com/" as const;
 
 // Raw IPv4 anycast targets, never hostnames: a machine with real outbound egress
@@ -57,14 +74,18 @@ export type SandboxEgressAttestationPayload = Readonly<{
   forbiddenOutbound: Readonly<{
     commandDigest: typeof SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST;
     targets: readonly string[];
-    // boolean, not the literal `true`, so a failed probe is representable: a negative
-    // receipt can be constructed and is then rejected by the verifier (which still
-    // requires `true`), rather than being impossible to write at all.
+    // boolean, not the literal `true`. Our producer never emits a negative receipt:
+    // `sandboxEgressAttestationPayloadBytes` refuses `blocked: false` with
+    // `sandbox_egress_attestation_probe_invalid`. The wider type exists for the verifier,
+    // which parses untrusted (attacker-signable) JSON where `blocked: false` can appear
+    // and must be representable so it can be explicitly rejected rather than silently
+    // coerced to `true`.
     blocked: boolean;
   }>;
   allowedVerification: Readonly<{
     commandDigest: string;
-    // boolean, not the literal `true`: see forbiddenOutbound.blocked above.
+    // boolean, not the literal `true`, for the verifier's benefit: see
+    // forbiddenOutbound.blocked above. The producer never emits `passed: false`.
     passed: boolean;
   }>;
   evidenceRefs: readonly string[];
@@ -75,9 +96,11 @@ export type SandboxEgressAuthorityConfig = Readonly<{
   publicKeySpkiBase64?: string;
   expectedKeyId?: string;
   expectedPolicyDigest?: string;
-  minimumSchemaVersion?:
-    | typeof SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA
-    | typeof SANDBOX_EGRESS_ATTESTATION_SCHEMA;
+  // A raise-only operator input, validated at the point of verification: it may lift the
+  // code floor to a newer schema but can never lower or disable it. Typed `string`
+  // because it arrives from untrusted env; `resolveSandboxEgressMinimumSchema` rejects a
+  // non-empty value that is not a known schema version. Blank/unset means "code floor".
+  minimumSchemaVersion?: string;
   now?: () => string;
 }>;
 
@@ -255,6 +278,31 @@ export function sandboxEgressAttestationPayloadBytes(
   return Buffer.from(JSON.stringify(normalized), "utf8");
 }
 
+/**
+ * Resolve the minimum receipt schema version the verifier will require. The code floor
+ * (`SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR`) is always the lower bound; a
+ * `configured` value may only RAISE it to a higher-ranked known schema, never lower or
+ * disable it. A blank or unset `configured` value returns the floor; a non-empty value
+ * that is not a known schema version is rejected as configuration error.
+ *
+ * `policy` is an injection seam for tests (mirroring the probe test's fake `node:net`):
+ * production always resolves against the module's real version ordering and code floor.
+ */
+export function resolveSandboxEgressMinimumSchema(
+  configured: string | undefined,
+  policy: Readonly<{ floor?: string; versions?: readonly string[] }> = {},
+): string {
+  const versions = policy.versions ?? SANDBOX_EGRESS_ATTESTATION_SCHEMA_VERSIONS;
+  const floor = policy.floor ?? SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR;
+  const floorRank = versions.indexOf(floor);
+  if (floorRank < 0) fail("sandbox_egress_attestation_config_invalid");
+  const trimmed = configured?.trim();
+  if (!trimmed) return floor;
+  const configuredRank = versions.indexOf(trimmed);
+  if (configuredRank < 0) fail("sandbox_egress_attestation_config_invalid");
+  return configuredRank > floorRank ? versions[configuredRank] : floor;
+}
+
 export function verifySandboxEgressAttestation(input: Readonly<
   SandboxEgressAuthorityConfig & {
     expectedApp: string;
@@ -303,10 +351,14 @@ export function verifySandboxEgressAttestation(input: Readonly<
     fail("sandbox_egress_attestation_payload_invalid");
   }
   const payload = normalizeVersionedPayload(payloadValue);
-  if (input.minimumSchemaVersion && input.minimumSchemaVersion !== SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA && input.minimumSchemaVersion !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) {
-    fail("sandbox_egress_attestation_config_invalid");
-  }
-  if (input.minimumSchemaVersion === SANDBOX_EGRESS_ATTESTATION_SCHEMA && payload.schemaVersion !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) {
+  // The schema floor is policy in code, enforced unconditionally. `minimumSchemaVersion`
+  // is an operator input that may only RAISE the floor; a blank or unset value keeps the
+  // code floor, so a legacy receipt below the floor is always rejected. A non-empty value
+  // that is not a known schema version raises config_invalid.
+  const requiredSchema = resolveSandboxEgressMinimumSchema(input.minimumSchemaVersion);
+  const requiredRank = SANDBOX_EGRESS_ATTESTATION_SCHEMA_VERSIONS.indexOf(requiredSchema);
+  const payloadRank = SANDBOX_EGRESS_ATTESTATION_SCHEMA_VERSIONS.indexOf(payload.schemaVersion);
+  if (payloadRank < 0 || payloadRank < requiredRank) {
     fail("sandbox_egress_attestation_schema_invalid");
   }
   if (!canonicalPayloadBytes(payload).equals(payloadBytes)) fail("sandbox_egress_attestation_payload_invalid");
@@ -330,8 +382,8 @@ export function sandboxEgressAuthorityFromEnv(
     publicKeySpkiBase64: env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64,
     expectedKeyId: env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID,
     expectedPolicyDigest: env.MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST,
-    minimumSchemaVersion: minimumSchemaVersion as
-      | SandboxEgressAuthorityConfig["minimumSchemaVersion"]
-      | undefined,
+    // Passed through unvalidated: the raise-only floor is resolved and any unknown value
+    // rejected at the point of verification, not here.
+    minimumSchemaVersion,
   });
 }

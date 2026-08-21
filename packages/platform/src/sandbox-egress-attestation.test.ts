@@ -1,14 +1,19 @@
 import { Buffer } from "node:buffer";
 import { generateKeyPairSync, sign } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
   SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA,
+  SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR,
   SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+  SANDBOX_EGRESS_ATTESTATION_SCHEMA_VERSIONS,
   SANDBOX_EGRESS_FIREWALL_ERROR_CODES,
   SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND,
   SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
   SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS,
+  resolveSandboxEgressMinimumSchema,
   sandboxEgressAttestationPayloadBytes,
   verifySandboxEgressAttestation,
   type SandboxEgressAttestationPayload,
@@ -85,7 +90,7 @@ describe("sandbox egress policy attestation", () => {
     })).toThrow("sandbox_egress_attestation_probe_invalid");
   });
 
-  it("allows a legacy receipt only during rollout and rejects it when v2 is required", () => {
+  it("rejects a legacy v1 receipt for every MIN_SCHEMA input (unset, blank, v1, v2): the floor is code, not input", () => {
     const keys = generateKeyPairSync("ed25519");
     const legacyPayload = {
       schemaVersion: SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA,
@@ -114,12 +119,19 @@ describe("sandbox egress policy attestation", () => {
       expectedImage: IMAGE,
       observedAt: NOW,
     };
-    expect(verifySandboxEgressAttestation(config).schemaVersion)
-      .toBe(SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA);
-    expect(() => verifySandboxEgressAttestation({
-      ...config,
-      minimumSchemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
-    })).toThrow("sandbox_egress_attestation_schema_invalid");
+    // The unsound legacy probe (fetch/example.com) is below the code floor. Unset, blank,
+    // and a v1 input all keep the code floor (below-floor does not lower), and requiring
+    // v2 also rejects it. There is no input that accepts a legacy receipt.
+    for (const minimumSchemaVersion of [
+      undefined,
+      "",
+      "  ",
+      SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA,
+      SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+    ]) {
+      expect(() => verifySandboxEgressAttestation({ ...config, minimumSchemaVersion }))
+        .toThrow("sandbox_egress_attestation_schema_invalid");
+    }
   });
 
   it.each([
@@ -311,5 +323,97 @@ describe("negative egress receipt (representable, then rejected)", () => {
         observedAt: NOW,
       }),
     ).toThrow("sandbox_egress_attestation_probe_invalid");
+  });
+});
+
+describe("schema floor is a code policy, raised-only by config (finding 1)", () => {
+  it("is the strongest known schema version, so unset/blank resolves to it and rejects legacy", () => {
+    const versions = SANDBOX_EGRESS_ATTESTATION_SCHEMA_VERSIONS;
+    expect(SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR).toBe(SANDBOX_EGRESS_ATTESTATION_SCHEMA);
+    expect(versions[versions.length - 1]).toBe(SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR);
+    // A blank or unset value means "use the code floor", never "accept anything".
+    for (const configured of [undefined, "", "   "]) {
+      expect(resolveSandboxEgressMinimumSchema(configured)).toBe(SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR);
+    }
+  });
+
+  it("an env value BELOW the code floor does not lower it", () => {
+    expect(resolveSandboxEgressMinimumSchema(SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA))
+      .toBe(SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR);
+  });
+
+  it("an env value ABOVE the code floor does raise it", () => {
+    // With the real two-version ordering v2 is the top; a value outranking a (lower)
+    // floor raises the requirement to that value.
+    expect(
+      resolveSandboxEgressMinimumSchema(SANDBOX_EGRESS_ATTESTATION_SCHEMA, {
+        floor: SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA,
+      }),
+    ).toBe(SANDBOX_EGRESS_ATTESTATION_SCHEMA);
+    // Forward-looking: once a newer schema is appended to the ordering, configuring it
+    // raises the floor above the current code floor.
+    const FUTURE = "2026-09-01.v3";
+    expect(
+      resolveSandboxEgressMinimumSchema(FUTURE, {
+        versions: [...SANDBOX_EGRESS_ATTESTATION_SCHEMA_VERSIONS, FUTURE],
+      }),
+    ).toBe(FUTURE);
+  });
+
+  it("a non-empty value that is not a known schema version fails closed with config_invalid", () => {
+    expect(() => resolveSandboxEgressMinimumSchema("nonsense"))
+      .toThrow("sandbox_egress_attestation_config_invalid");
+  });
+});
+
+describe("acceptance verification sources expected values independent of the receipt (finding 3)", () => {
+  it("the workflow never threads the receipt's own key id, policy digest, or schema into the expected values", () => {
+    const workflow = readFileSync(
+      fileURLToPath(
+        new URL("../../../.github/workflows/sandbox-egress-acceptance.yml", import.meta.url),
+      ),
+      "utf8",
+    );
+    // A receipt vouching for itself can never mismatch: these tautological bindings must
+    // be gone.
+    expect(workflow).not.toContain("expectedKeyId: receipt.keyId");
+    expect(workflow).not.toContain("expectedPolicyDigest: receipt.policyDigest");
+    expect(workflow).not.toContain("minimumSchemaVersion: receipt.payload.schemaVersion");
+    // The trusted key id and policy digest come from the configured production authority;
+    // the schema floor comes from platform code.
+    expect(workflow).toContain("expectedKeyId: process.env.MENDPOINT_SANDBOX_EGRESS_KEY_ID");
+    expect(workflow).toContain(
+      "expectedPolicyDigest: process.env.MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST",
+    );
+    expect(workflow).toContain("minimumSchemaVersion: SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR");
+  });
+
+  it("a configured trusted key id that differs from the receipt's self-declared key id is a reachable rejection", () => {
+    const fixture = signed();
+    // The receipt signs itself under keyId "sandbox-egress-key-1". An independent trusted
+    // key id (what the workflow reads from configured vars) that differs must reject,
+    // proving the branch is not a self-satisfied tautology.
+    expect(() =>
+      verifySandboxEgressAttestation({
+        ...fixture.config,
+        expectedKeyId: "configured-trusted-key-id",
+        expectedApp: APP,
+        expectedImage: IMAGE,
+        observedAt: NOW,
+      }),
+    ).toThrow("sandbox_egress_attestation_signature_invalid");
+  });
+
+  it("a configured policy digest that differs from the receipt's self-bound digest is a reachable rejection", () => {
+    const fixture = signed();
+    expect(() =>
+      verifySandboxEgressAttestation({
+        ...fixture.config,
+        expectedPolicyDigest: `sha256:${"e".repeat(64)}`,
+        expectedApp: APP,
+        expectedImage: IMAGE,
+        observedAt: NOW,
+      }),
+    ).toThrow("sandbox_egress_attestation_scope_mismatch");
   });
 });
