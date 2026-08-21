@@ -15,6 +15,7 @@ import {
   type JobRow,
 } from "@mendpoint/db";
 import {
+  GitLabDeliveryError,
   gitlabAsExactDraftDelivery,
   MockGitLabDelivery,
   type ExactDraftDeliveryInput,
@@ -270,6 +271,104 @@ describe("Transformer adaptive GitLab draft delivery", () => {
       status: "delivery_failed",
       commitSha: null,
     });
+  });
+
+  it("retries (does not dead-letter) an approved candidate when GitLab is unreachable during verification", async () => {
+    const value = fixture();
+    // The source branch already exists, so delivery reconciles it. GitLab is
+    // unreachable (a 500) during that verification: this is "could not check",
+    // not "checked and diverged", and must be retried, never dead-lettered.
+    const unreachable: GitLabDelivery = {
+      async resolveBranchSha(_namespace, _project, branch) {
+        return branch === "main" ? BASE_SHA : "cd".repeat(20);
+      },
+      async verifyExactCommit() {
+        throw new GitLabDeliveryError("verifyExactCommit", 500, { message: "upstream unavailable" });
+      },
+      async createBranch() {
+        throw new Error("createBranch must not run when verification is inconclusive");
+      },
+      async commitFiles() {
+        throw new Error("commitFiles must not run when verification is inconclusive");
+      },
+      async openDraftMergeRequest() {
+        throw new Error("openDraftMergeRequest must not run when verification is inconclusive");
+      },
+    };
+
+    const result = await runTransformerAdaptiveDelivery(
+      workerInput(value, gitlabGithub(unreachable)),
+    );
+
+    // Retryable, not terminal: the approved candidate survives the outage.
+    expect(result).toMatchObject({
+      status: "retry_scheduled",
+      errorCode: "transformer_adaptive_delivery_retryable",
+    });
+    expect(getAdaptiveCandidate(value.db, TENANT_ID, value.candidateId)?.status).toBe("approved");
+    const persisted = getAdaptiveDeliveryByCandidate(value.db, TENANT_ID, value.candidateId)!;
+    expect(persisted.status).not.toBe("delivered");
+    expect(persisted.commitSha).toBeNull();
+
+    // The durable job reason records "could not verify" (upstream status), and
+    // the job is rescheduled (pending), NOT dead-lettered.
+    const durable = value.db.raw
+      .prepare("SELECT status, error, error_code FROM jobs WHERE id = ?")
+      .get(value.job.id) as { status: string; error: string; error_code: string };
+    expect(durable.status).toBe("pending");
+    expect(durable.status).not.toBe("dead_letter");
+    expect(durable.error_code).toBe("transformer_adaptive_delivery_retryable");
+    expect(durable.error).toContain("verifyExactCommit");
+    expect(durable.error).toContain("500");
+    expect(durable.error).not.toContain("diverged");
+  });
+
+  it("dead-letters (terminal) an approved candidate only on a PROVEN diverged branch", async () => {
+    const value = fixture();
+    // The source branch exists and GitLab answers definitively: the head is not
+    // our commit (verifyExactCommit returns false). This is a proven integrity
+    // mismatch — it stays terminal and fails closed, and the outage fix must not
+    // have loosened it.
+    const diverged: GitLabDelivery = {
+      async resolveBranchSha(_namespace, _project, branch) {
+        return branch === "main" ? BASE_SHA : "cd".repeat(20);
+      },
+      async verifyExactCommit() {
+        return false;
+      },
+      async createBranch() {
+        throw new Error("createBranch must not run for a diverged branch");
+      },
+      async commitFiles() {
+        throw new Error("commitFiles must not run for a diverged branch");
+      },
+      async openDraftMergeRequest() {
+        throw new Error("openDraftMergeRequest must not run for a diverged branch");
+      },
+    };
+
+    const result = await runTransformerAdaptiveDelivery(
+      workerInput(value, gitlabGithub(diverged)),
+    );
+
+    expect(result).toMatchObject({
+      status: "delivery_failed",
+      errorCode: "transformer_adaptive_delivery_terminal",
+    });
+    expect(getAdaptiveCandidate(value.db, TENANT_ID, value.candidateId)?.status).toBe("approved");
+    expect(getAdaptiveDeliveryByCandidate(value.db, TENANT_ID, value.candidateId)).toMatchObject({
+      status: "delivery_failed",
+      commitSha: null,
+    });
+
+    // The durable job reason records the integrity divergence and dead-letters,
+    // distinct from the retryable "could not verify" reason above.
+    const durable = value.db.raw
+      .prepare("SELECT status, error, error_code FROM jobs WHERE id = ?")
+      .get(value.job.id) as { status: string; error: string; error_code: string };
+    expect(durable.status).toBe("dead_letter");
+    expect(durable.error_code).toBe("transformer_adaptive_delivery_terminal");
+    expect(durable.error).toContain("gitlab_exact_draft_branch_diverged");
   });
 
   it("fails closed and does not deliver when the base branch has drifted since the seal", async () => {

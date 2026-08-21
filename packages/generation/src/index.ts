@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { graphPathDisplay } from "@mendpoint/shared";
 import type {
   Confidence,
   GraphPath,
@@ -49,18 +50,19 @@ export type GenerateInput = {
  * provider usage.
  */
 function formatGraphPath(p: GraphPath): string {
-  const chain = p.nodes.join(" → ");
-  const suffix = p.truncated
-    ? p.terminal === "cycle"
-      ? " _(truncated at an import cycle)_"
-      : p.terminal === "no_anchor"
-        ? " _(incomplete: no provider anchor reached)_"
-        : ` _(truncated at the ${p.hops}-hop limit)_`
-    : "";
-  if (p.nodes.length <= 1 && !p.truncated) {
-    return `path: \`${p.nodes[0] ?? "?"}\` (direct provider usage)`;
+  const d = graphPathDisplay(p);
+  if (d.kind === "direct") {
+    return `path: \`${d.node}\` (direct provider usage)`;
   }
-  return `path: ${chain}${suffix}`;
+  const suffix =
+    d.bound === "cycle"
+      ? " _(truncated at an import cycle)_"
+      : d.bound === "no_anchor"
+        ? " _(incomplete: no provider anchor reached)_"
+        : d.bound === "max_hops"
+          ? ` _(truncated at the ${d.hops}-hop limit)_`
+          : "";
+  return `path: ${d.nodes.join(" → ")}${suffix}`;
 }
 
 function overallConfidence(findings: ImpactFinding[]): Confidence {
