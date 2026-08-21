@@ -4,6 +4,8 @@ import {
   heuristicConfirm,
   llmConfirmLive,
   resolveLlmConfirmMode,
+  type LlmConfirmReservation,
+  type LlmConfirmSettlement,
 } from "./llm-confirm.js";
 import type {
   ConfirmedImpact,
@@ -220,4 +222,141 @@ describe("llm confirm", () => {
     ).resolves.toBeNull();
     expect(Date.now() - started).toBeLessThan(250);
   }, 1_000);
+
+  it("refuses once the run's token ceiling is reached, before any egress", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_API_BASE = "http://127.0.0.1:9000/v1";
+    delete process.env.XAI_API_KEY;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const reserve = vi.fn();
+    const settle = vi.fn();
+
+    const budget = createBudget(10, 500);
+    budget.usedTokens = 500; // ceiling already reached
+    const staticResult: ConfirmedImpact = {
+      filePath: "src/a.ts",
+      lineStart: 1,
+      lineEnd: 1,
+      symbol: "amount_cents",
+      confidence: "medium",
+      evidence: "amount_cents",
+      impactType: "field_access",
+      surfaceIds: ["s1"],
+      relatedOps: ["request_field_renamed"],
+      confirmationPath: "static",
+    };
+
+    const result = await llmConfirmLive(
+      ctx({}),
+      surfaces,
+      staticResult,
+      budget,
+      undefined,
+      { reserve, settle },
+    );
+    // A call-count cap alone would have allowed this call (used=0<10). The token
+    // ceiling refuses it: no egress, no reservation, no charge.
+    expect(result).toEqual(staticResult);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(settle).not.toHaveBeenCalled();
+    expect(budget.used).toBe(0);
+  });
+
+  it("meters a live confirmation call: reserves, settles with token counts, and accumulates spend", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_API_BASE = "http://127.0.0.1:9000/v1";
+    delete process.env.XAI_API_KEY;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            id: "resp-1",
+            model: "grok-3-mini",
+            usage: { prompt_tokens: 300, completion_tokens: 100, total_tokens: 400 },
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    affected: true,
+                    confidence: "high",
+                    impactType: "field_access",
+                    rationale: "affected",
+                  }),
+                },
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+
+    const ledger: LlmConfirmSettlement[] = [];
+    const reserved: LlmConfirmReservation[] = [];
+    const accounting = {
+      reserve: (r: LlmConfirmReservation) => {
+        reserved.push(r);
+      },
+      settle: (s: LlmConfirmSettlement) => {
+        ledger.push(s);
+      },
+    };
+
+    const budget = createBudget(10, 400);
+    const result = await llmConfirmLive(
+      ctx({}),
+      surfaces,
+      null,
+      budget,
+      undefined,
+      accounting,
+    );
+    expect(result?.confirmationPath).toBe("hybrid_llm");
+    // The call is metered, not billed to nothing: one reservation, one settlement
+    // carrying the observed token counts.
+    expect(reserved).toHaveLength(1);
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]).toMatchObject({
+      status: "succeeded",
+      inputTokens: 300,
+      outputTokens: 100,
+      totalTokens: 400,
+      model: "grok-3-mini",
+    });
+    // Observed tokens accumulate onto the run budget, so the next call refuses.
+    expect(budget.usedTokens).toBe(400);
+    const second = await llmConfirmLive(ctx({}), surfaces, null, budget, undefined, accounting);
+    expect(second).toBeNull();
+    expect(reserved).toHaveLength(1); // no second reservation — refused before egress
+  });
+
+  it("propagates an accounting failure as a safety-boundary failure", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_API_BASE = "http://127.0.0.1:9000/v1";
+    delete process.env.XAI_API_KEY;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+            choices: [{ message: { content: JSON.stringify({ affected: false, confidence: "low", rationale: "n" }) } }],
+          }),
+        ),
+      ),
+    );
+    const accounting = {
+      reserve: () => undefined,
+      settle: () => {
+        throw new Error("execution_cost_ledger_unavailable");
+      },
+    };
+    // Unlike a model-call error (which fails closed to the static result), an
+    // accounting error must reach the caller.
+    await expect(
+      llmConfirmLive(ctx({}), surfaces, null, createBudget(1), undefined, accounting),
+    ).rejects.toThrow(/execution_cost_ledger_unavailable/);
+  });
 });

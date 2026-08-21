@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   appendDomainEvent,
+  bindMissionScope,
   createDb,
   createMission,
   getMission,
@@ -19,6 +20,7 @@ import {
   upsertGitHubInstallation,
   verifyDomainEventIntegrity,
   type AppDb,
+  type Mission,
   type MissionState,
 } from "@mendpoint/db";
 import {
@@ -127,24 +129,29 @@ export function bindRegaugeMissionAtLaunch(
     repositories: readonly Readonly<{ repositoryId: string; snapshotId: string }>[];
     createdAt: string;
   }>,
-): void {
+): Mission {
   const missionId = regaugeMissionId(input.tenantId, input.campaignId);
   const scope = input.repositories.length === 1 ? input.repositories[0]! : null;
   const objective = input.objective.trim().slice(0, 200) || input.campaignId;
-  createMission(db, {
-    id: missionId,
-    tenantId: input.tenantId,
-    product: "regauge",
-    triggerKind: "migration_objective",
-    objective,
-    ownerPrincipalId: input.ownerPrincipalId,
-    repositoryId: scope?.repositoryId ?? null,
-    snapshotId: scope?.snapshotId ?? null,
-    eventId: `${missionId}-created`,
-    idempotencyKey: `mission-create-${missionId}`,
-    correlationId: input.campaignId,
-    createdAt: input.createdAt,
-  });
+  let current = getMission(db, input.tenantId, missionId);
+  if (!current) {
+    current = createMission(db, {
+      id: missionId,
+      tenantId: input.tenantId,
+      product: "regauge",
+      triggerKind: "migration_objective",
+      objective,
+      ownerPrincipalId: input.ownerPrincipalId,
+      repositoryId: scope?.repositoryId ?? null,
+      snapshotId: scope?.snapshotId ?? null,
+      eventId: `${missionId}-created`,
+      idempotencyKey: `mission-create-${missionId}`,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
+  } else if (current.product !== "regauge") {
+    throw new Error("mission_product_mismatch");
+  }
   linkRegaugeCampaignToMission(db, {
     tenantId: input.tenantId,
     missionId,
@@ -155,21 +162,34 @@ export function bindRegaugeMissionAtLaunch(
     correlationId: input.campaignId,
     createdAt: input.createdAt,
   });
+  if (scope) {
+    current = bindMissionScope(db, {
+      tenantId: input.tenantId,
+      missionId,
+      repositoryId: scope.repositoryId,
+      snapshotId: scope.snapshotId,
+      actorPrincipalId: input.ownerPrincipalId,
+      eventId: `${missionId}-scope-bound`,
+      idempotencyKey: `mission-scope-${missionId}`,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
+  }
   // By the time launch runs, the orchestrator has already proven the campaign is
   // reviewed and approved (campaignState === "ready"), so discovery, scoping, and
   // planning are accomplished facts on the way to `executing`, not guesses.
   for (let i = 1; i < REGAUGE_MISSION_LAUNCH_ORDER.length; i += 1) {
     const to = REGAUGE_MISSION_LAUNCH_ORDER[i]!;
-    const current = getMission(db, input.tenantId, missionId);
-    if (!current) return;
-    const fromIndex = REGAUGE_MISSION_LAUNCH_ORDER.indexOf(current.state);
-    if (fromIndex < 0) return; // mission left the linear path (cancelled/failed); do not force
+    const loopCurrent = getMission(db, input.tenantId, missionId);
+    if (!loopCurrent) throw new Error("mission_not_found");
+    const fromIndex = REGAUGE_MISSION_LAUNCH_ORDER.indexOf(loopCurrent.state);
+    if (fromIndex < 0) return loopCurrent; // mission left the linear path (cancelled/failed); do not force
     if (fromIndex >= i) continue; // already at or past this state (idempotent replay)
-    if (fromIndex !== i - 1) return; // a gap we cannot honestly bridge; stop
-    transitionMission(db, {
+    if (fromIndex !== i - 1) return loopCurrent; // a gap we cannot honestly bridge; stop
+    current = transitionMission(db, {
       tenantId: input.tenantId,
       missionId,
-      expectedRevision: current.revision,
+      expectedRevision: loopCurrent.revision,
       to,
       actorPrincipalId: input.ownerPrincipalId,
       eventId: `${missionId}-transition-${to}`,
@@ -178,6 +198,7 @@ export function bindRegaugeMissionAtLaunch(
       createdAt: input.createdAt,
     });
   }
+  return current;
 }
 
 function required(env: Readonly<Record<string, string | undefined>>, name: string): string {
@@ -541,43 +562,24 @@ export function createRegaugeProductionBootstrapRuntime(
         evidenceRefs: input.evidenceRefs,
       }, input.campaignId);
       const execution = mapExecution(options, input.tenantId, input.campaignId)!;
-      // Create-or-bind the Mission here, at the live launch seam, and advance it
-      // to `executing`. Best-effort by deliberate choice: mission bookkeeping must
-      // never fail production provisioning (the same convention the other two
-      // mission writers follow). It is NOT silent — a failure is logged loudly
-      // with identifiers, AND because the mission's own `state` column is the
-      // source of truth, a failed advance leaves the mission in its true
-      // (un-advanced) state rather than fabricating a success: there is no
-      // third state where "did not advance" masquerades as "advanced".
-      try {
-        const owner = getPrincipalBySubject(
-          options.db,
-          input.tenantId,
-          "service",
-          "service:regauge-production-bootstrap",
-        );
-        if (!owner) {
-          console.error(
-            `regauge mission launch wiring skipped: service principal missing tenant=${input.tenantId} campaign=${input.campaignId}`,
-          );
-        } else {
-          const campaign = options.control.store.getCampaign(input.tenantId, input.campaignId);
-          bindRegaugeMissionAtLaunch(options.db, {
-            tenantId: input.tenantId,
-            campaignId: input.campaignId,
-            ownerPrincipalId: owner.id,
-            objective: campaign?.name ?? input.campaignId,
-            repositories: [{ repositoryId: execution.repositoryId, snapshotId: execution.snapshotId }],
-            createdAt: now(),
-          });
-        }
-      } catch (error) {
-        console.error(
-          `regauge mission launch wiring failed tenant=${input.tenantId} campaign=${input.campaignId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+      // Mission state is part of launch authority. Do not return an execution
+      // that cannot be joined to the exact durable Mission.
+      const owner = getPrincipalBySubject(
+        options.db,
+        input.tenantId,
+        "service",
+        "service:regauge-production-bootstrap",
+      );
+      if (!owner) throw new Error("regauge_production_bootstrap_principal_missing");
+      const campaign = options.control.store.getCampaign(input.tenantId, input.campaignId);
+      bindRegaugeMissionAtLaunch(options.db, {
+        tenantId: input.tenantId,
+        campaignId: input.campaignId,
+        ownerPrincipalId: owner.id,
+        objective: campaign?.name ?? input.campaignId,
+        repositories: [{ repositoryId: execution.repositoryId, snapshotId: execution.snapshotId }],
+        createdAt: now(),
+      });
       return execution;
     },
     async readReceipt(tenantId, campaignId) {

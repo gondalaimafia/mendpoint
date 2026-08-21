@@ -200,6 +200,59 @@ export function getMission(db: AppDb, tenantId: string, missionId: string): Miss
   return row ? mission(row) : undefined;
 }
 
+/**
+ * Set the exact repository and immutable snapshot scope once. A control-plane
+ * writer may create a Mission before launch knows the selected snapshot; the
+ * launch writer fills that authority without changing the human owner.
+ */
+export function bindMissionScope(db: AppDb, input: {
+  tenantId: string; missionId: string; repositoryId: string; snapshotId: string;
+  actorPrincipalId: string; eventId: string; idempotencyKey: string; correlationId: string;
+  causationId?: string | null; createdAt: string;
+}): Mission {
+  assertPrincipal(db, input.tenantId, input.actorPrincipalId);
+  const repositoryId = required("mission_repository_id", input.repositoryId);
+  const snapshotId = required("mission_snapshot_id", input.snapshotId);
+  if (!one(db, `SELECT id FROM connected_repositories WHERE id = ? AND tenant_id = ?`,
+    [repositoryId, input.tenantId])) {
+    throw new Error("mission_repository_tenant_mismatch");
+  }
+  if (!one(db, `SELECT id FROM repository_snapshots
+      WHERE id = ? AND tenant_id = ? AND repository_id = ?`,
+    [snapshotId, input.tenantId, repositoryId])) {
+    throw new Error("mission_snapshot_tenant_mismatch");
+  }
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const current = one<MissionRow>(db, `SELECT * FROM mission WHERE id = ? AND tenant_id = ?`,
+      [input.missionId, input.tenantId]);
+    if (!current) throw new Error("mission_not_found");
+    if (current.repository_id === repositoryId && current.snapshot_id === snapshotId) {
+      db.raw.exec("COMMIT");
+      return mission(current);
+    }
+    if (current.repository_id !== null || current.snapshot_id !== null) throw new Error("mission_scope_conflict");
+    const changed = db.raw.prepare(`UPDATE mission
+      SET repository_id = ?, snapshot_id = ?, revision = revision + 1, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND revision = ?
+        AND repository_id IS NULL AND snapshot_id IS NULL`).run(
+      repositoryId,
+      snapshotId,
+      input.createdAt,
+      input.missionId,
+      input.tenantId,
+      current.revision,
+    );
+    if (Number(changed.changes) !== 1) throw new Error("mission_revision_conflict");
+    event(db, { ...input, eventType: "mission.scope_bound",
+      payload: { repositoryId, snapshotId, previousRevision: current.revision, revision: current.revision + 1 } });
+    const value = mission(one<MissionRow>(db, `SELECT * FROM mission WHERE id = ? AND tenant_id = ?`,
+      [input.missionId, input.tenantId])!);
+    db.raw.exec("COMMIT");
+    return value;
+  } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
+}
+
 // Fettler/Warden linkage: the mission projects the campaign identity through the
 // `mission.fettler_campaign_id` foreign key (same database). Set-once, unique per
 // tenant, and the referenced campaign must be tenant-owned.

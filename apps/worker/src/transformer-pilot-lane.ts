@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import {
   listRepositorySnapshots,
   recordAdaptiveCandidate,
+  recordExecutionCostFromRoutingLedger,
   recordTrajectory,
   resolveMissionForRegaugeCampaign,
   type AppDb,
@@ -276,6 +277,28 @@ function emitRegaugeAdaptiveTrajectory(
       },
       createdAt: input.createdAt,
     });
+    // Attribute this attempt's compute cost to its mission. The ReGauge live
+    // launch path binds a real mission (owner principal included), so when one
+    // resolves we write a six-way execution-cost row carrying `mission_id`. The
+    // model component is derived from the attempt's routing_ledger rows; the
+    // other five are recorded UNMEASURED (no meter on this path yet), never a
+    // fabricated zero. Without a bound mission there is no owner principal to
+    // attribute to, so no cost row is written here (an unbound Surface-A campaign
+    // is honestly left unattributed rather than charged to a synthetic actor).
+    if (mission) {
+      recordExecutionCostFromRoutingLedger(db, {
+        tenantId: input.tenantId,
+        sourceRunId: input.attemptId,
+        executionId: input.attemptId,
+        taskId: input.unitId,
+        taskClass: "regauge.adaptive_candidate",
+        route: "regauge",
+        campaignId: input.campaignId,
+        missionId: mission.id,
+        actorPrincipalId: mission.ownerPrincipalId,
+        createdAt: input.createdAt,
+      });
+    }
   } catch (error) {
     console.error(
       `regauge trajectory emit failed tenant=${input.tenantId} campaign=${input.campaignId} ` +

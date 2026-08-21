@@ -187,6 +187,11 @@ describe("immutable Transformer recipes", () => {
     const rloPath = `src/${String.fromCodePoint(0x202e)}gnp.js`;
     expect(() => assertRecipePathAllowed(NODE_RUNTIME_18_TO_20_RECIPE, rloPath)).toThrow("recipe_path_invalid:");
 
+    // U+061C (Arabic letter mark) is also a Unicode Bidi_Control and can reorder
+    // adjacent characters in operator-facing paths.
+    const almPath = `src/${String.fromCodePoint(0x061c)}package.json`;
+    expect(() => assertRecipePathAllowed(NODE_RUNTIME_18_TO_20_RECIPE, almPath)).toThrow("recipe_path_invalid:");
+
     // Legitimate paths must still pass structural validation: they reach the allowlist check and
     // are rejected there as not-allowed, never as structurally invalid. A path with a space and a
     // CJK filename (built by code point) both stay valid.

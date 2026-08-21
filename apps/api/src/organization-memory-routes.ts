@@ -21,6 +21,7 @@ import {
   deleteOrganizationMemory,
   disableOrganizationMemory,
   editOrganizationMemory,
+  getPrincipal,
   getOrganizationMemoryProvenance,
   getOrganizationMemoryScope,
   listOrganizationMemory,
@@ -48,6 +49,8 @@ const VALIDATION_ERRORS = [
   { internalCode: "organization_memory_confidence_invalid", status: 400 as const },
   { internalCode: "organization_memory_observation_source_invalid", status: 400 as const },
   { internalCode: "organization_memory_source_ref_invalid", status: 400 as const },
+  { internalCode: "organization_memory_evidence_invalid", status: 400 as const },
+  { internalCode: "organization_memory_observer_authority_invalid", status: 401 as const },
   { internalCode: "organization_memory_applies_to_invalid", status: 400 as const },
 ];
 
@@ -64,6 +67,8 @@ const STATE_ERRORS = [
   { internalCode: "organization_memory_activation_blocked_status_terminal", status: 409 as const },
   { internalCode: "organization_memory_activation_blocked_insufficient_corroboration", status: 409 as const },
   { internalCode: "organization_memory_activation_blocked_memory_not_found", status: 404 as const },
+  { internalCode: "organization_memory_observation_conflict", status: 409 as const },
+  { internalCode: "organization_memory_observation_not_independent", status: 409 as const },
 ];
 
 const ALL_ERRORS = [...NOT_FOUND_ERRORS, ...VALIDATION_ERRORS, ...STATE_ERRORS];
@@ -85,6 +90,22 @@ function parseStatus(value: string | undefined): OrganizationMemoryStatus | unde
   return (ORGANIZATION_MEMORY_STATUSES as readonly string[]).includes(value)
     ? (value as OrganizationMemoryStatus)
     : { error: true };
+}
+
+function humanAuthority(input: Readonly<{
+  db: AppDb;
+  tenantId: string;
+  trustPrincipalId: string | undefined;
+  authMethod: "oidc" | "api_key" | undefined;
+  membershipEvidenceId: string | undefined;
+  at: string;
+}>): string | null {
+  if (!input.trustPrincipalId || input.authMethod !== "oidc" || !input.membershipEvidenceId) return null;
+  const principal = getPrincipal(input.db, input.tenantId, input.trustPrincipalId);
+  const expiresAt = principal?.expires_at === null ? null : Date.parse(principal?.expires_at ?? "");
+  if (!principal || principal.kind !== "human" || principal.revoked_at !== null ||
+      (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.parse(input.at)))) return null;
+  return principal.id;
 }
 
 export function createOrganizationMemoryRoutes(
@@ -110,7 +131,15 @@ export function createOrganizationMemoryRoutes(
   // POST / — create a memory the organization stated directly. Human only.
   routes.post("/", async (c) => {
     const principal = c.get("principal");
-    const trustPrincipalId = c.get("trustPrincipalId");
+    const at = clock();
+    const trustPrincipalId = principal ? humanAuthority({
+      db,
+      tenantId: principal.tenantId,
+      trustPrincipalId: c.get("trustPrincipalId"),
+      authMethod: c.get("authMethod"),
+      membershipEvidenceId: c.get("membershipEvidenceId"),
+      at,
+    }) : null;
     if (!principal || !trustPrincipalId) {
       return c.json({ error: "authenticated_principal_required" }, 401);
     }
@@ -142,7 +171,7 @@ export function createOrganizationMemoryRoutes(
         sourceRefs: sourceRefs as string[] | undefined,
         appliesTo: appliesTo as string[] | undefined,
         reason,
-        at: clock(),
+        at,
       });
       return c.json({ memory }, 201);
     } catch (error) {
@@ -153,18 +182,18 @@ export function createOrganizationMemoryRoutes(
   // POST /observations — record one observation of a convention (inferred).
   routes.post("/observations", async (c) => {
     const principal = c.get("principal");
-    if (!principal) return c.json({ error: "authenticated_principal_required" }, 401);
+    const trustPrincipalId = c.get("trustPrincipalId");
+    if (!principal || !trustPrincipalId) return c.json({ error: "authenticated_principal_required" }, 401);
     const body = (await c.req.json<unknown>().catch(() => null)) as Record<string, unknown> | null;
     if (!body || typeof body !== "object") return c.json({ error: "invalid_body" }, 400);
     const category = reqStr(body.category);
     const scope = reqStr(body.scope);
     const subjectKey = reqStr(body.subjectKey);
     const statement = reqStr(body.statement);
-    const observationFingerprint = reqStr(body.observationFingerprint);
     const source = reqStr(body.source);
-    if (!category || !scope || !subjectKey || !statement || !observationFingerprint || !source) {
+    if (!category || !scope || !subjectKey || !statement || !source) {
       return c.json(
-        { error: "category, scope, subjectKey, statement, observationFingerprint and source are required" },
+        { error: "category, scope, subjectKey, statement and source are required" },
         400,
       );
     }
@@ -180,7 +209,7 @@ export function createOrganizationMemoryRoutes(
         scope,
         subjectKey,
         statement,
-        observationFingerprint,
+        observerPrincipalId: trustPrincipalId,
         source: source as never,
         confidence: body.confidence as never,
         structuredValue: body.structuredValue,
@@ -212,7 +241,15 @@ export function createOrganizationMemoryRoutes(
   ) => {
     routes.post(path, async (c) => {
       const principal = c.get("principal");
-      const trustPrincipalId = c.get("trustPrincipalId");
+      const at = clock();
+      const trustPrincipalId = principal ? humanAuthority({
+        db,
+        tenantId: principal.tenantId,
+        trustPrincipalId: c.get("trustPrincipalId"),
+        authMethod: c.get("authMethod"),
+        membershipEvidenceId: c.get("membershipEvidenceId"),
+        at,
+      }) : null;
       if (!principal || !trustPrincipalId) {
         return c.json({ error: "authenticated_principal_required" }, 401);
       }
@@ -226,7 +263,7 @@ export function createOrganizationMemoryRoutes(
           memoryId: c.req.param("memoryId") ?? "",
           actorPrincipalId: trustPrincipalId,
           reason,
-          at: clock(),
+          at,
           body: body ?? {},
         });
         return c.json({ memory });

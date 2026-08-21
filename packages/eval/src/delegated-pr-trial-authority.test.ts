@@ -96,7 +96,6 @@ const contract: DelegatedPrAcceptanceContract = Object.freeze({
     passToPassCommandDigest: `sha256:${hex("9")}`,
     policyArtifact: artifact("policy-artifact", "a"),
     requiredCheckIdentities: ["check:1:test"],
-    failToPassIdentities: ["test:provider"],
     sandboxBackend: "fly_machines",
   },
   attestationProducer: {
