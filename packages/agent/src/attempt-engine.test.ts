@@ -80,10 +80,31 @@ function checkpointJournal(): WardenCheckpointJournal & {
   };
 }
 
+// An attempt this file spawns can still be releasing its working directory when
+// cleanup runs, and on Windows that surfaces as an EPERM/EBUSY that rmSync's own
+// maxRetries does not retry. Retry manually so the just-terminated child's
+// directory handle is released instead of leaking the temp tree; a directory
+// that stays locked past the budget still throws rather than being swallowed.
+function removeTreeSync(target: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rmSync(target, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY") && attempt < 50) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
 afterEach(() => {
   while (roots.length) {
     const root = roots.pop();
-    if (root) rmSync(root, { recursive: true, force: true });
+    if (root) removeTreeSync(root);
   }
 });
 
