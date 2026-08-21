@@ -106,9 +106,17 @@ over intact) verification FAILS and never falls back to host execution.
 - `MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID` — the trusted key identity.
 - `MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST` — SHA-256 of the reviewed image
   entrypoint policy.
-- `MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA=2026-08-19.v2` — rejects
-  legacy receipts that proved a different probe. The protected acceptance
-  workflow rotates this value atomically with the v2 receipt.
+- `MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA` — a raise-only override, not a
+  switch. The verifier enforces a built-in schema floor
+  (`SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR`, currently `2026-08-19.v2`)
+  unconditionally, so a legacy v1 receipt — which proved containment with the
+  unsound `fetch`/`example.com` probe — is ALWAYS rejected, whether this variable
+  is unset, blank, or set to the legacy version. Setting it can only RAISE the
+  floor to a newer known schema; it can never lower or disable it, and a value
+  that is not a known schema version fails closed with `config_invalid`. The
+  protected acceptance workflow still rotates this value atomically with the
+  receipt, but because it is raise-only the fleet floor can never fall below the
+  code floor.
 
 Production startup cryptographically validates these values and the worker
 revalidates them immediately before every command. The v2 receipt binds the

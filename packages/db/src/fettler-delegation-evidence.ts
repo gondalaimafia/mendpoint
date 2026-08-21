@@ -435,11 +435,13 @@ export function getFettlerDelegationEvidence(
   if (!delivery) {
     candidateDelivery = notObserved("candidate_delivery_not_observed");
   } else if (!auditIntegrity.ok) {
-    candidateDelivery = observed(Object.freeze({
-      delivery,
-      auditEvents: Object.freeze([]),
-      auditReason: "audit_chain_invalid",
-    }));
+    // A broken audit chain means the delivery cannot be proven, so the
+    // discriminant itself must carry that truth: return not_observed rather
+    // than observed(...) with the reason demoted to a nested field. A reader
+    // checks the status, not the payload -- reporting observed here would let a
+    // torn chain read as a confirmed delivery. Matches approvalEvidence, which
+    // returns notObserved("audit_chain_invalid") for the identical condition.
+    candidateDelivery = notObserved("audit_chain_invalid");
   } else {
     const deliveryEvents = auditEvents.filter((event) => deliveryAuditMatches(event, delivery));
     const actionEvents = auditEvents.filter((event) => event.action === "agent.candidate.draft_delivered");
