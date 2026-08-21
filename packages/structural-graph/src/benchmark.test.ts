@@ -60,8 +60,10 @@ describe("Graphify adoption benchmark contract", () => {
     // The harness scores every arm, but a label-free predictor sees identical
     // inputs across arms and returns identical structure, so arm C has no
     // indirect-value advantage over arm A. The delta is zero, not >=0.1.
+    // This cohort has a non-empty indirect denominator, so recall is a measured number here.
+    expect(report.arms.A.indirectRecall).not.toBeNull();
     expect(report.arms.A.indirectRecall).toBe(report.arms.C.indirectRecall);
-    expect(report.arms.C.indirectRecall - report.arms.A.indirectRecall).toBe(0);
+    expect(report.arms.C.indirectRecall! - report.arms.A.indirectRecall!).toBe(0);
     expect(report.modelCalls).toBe(0);
     expect(report.decision).toBe("KEEP AS INTERNAL TOOL ONLY");
     expect(report.adoptionBlockedBy).toEqual([
@@ -124,6 +126,24 @@ describe("Graphify adoption benchmark contract", () => {
       key,
     );
     expect(report.arms.A.indirectRecall).toBe(0);
+  });
+
+  it("returns null recall for an empty ground-truth denominator and fails the gate", async () => {
+    // A cohort whose sealed key expects no nodes measured no node recall. Recall over a zero
+    // denominator must be null and fail the gate, not fold a flattering 0 into the report.
+    const predict = async (input: { arm: "A" | "B" | "C" }) => ({
+      nodes: [],
+      edges: [],
+      elapsedMs: 1,
+      peakMemoryBytes: 1,
+      ...(input.arm === "B" ? { semantic: "not_measured" as const } : {}),
+    });
+    const staged = await stageGraphifyBenchmark({ cases, cohortDigest: key.cohortDigest, predict });
+    const zeroNodeKey: GraphifyBenchmarkKey = {
+      ...key,
+      cases: key.cases.map((item) => ({ ...item, expectedNodes: [] })) as GraphifyBenchmarkKey["cases"],
+    };
+    expect(() => gradeGraphifyBenchmark(staged, zeroNodeKey)).toThrow("GRAPHIFY_BENCHMARK_METRICS_UNMEASURED");
   });
 
   it("deep-freezes the staged evidence before the sealed key is loaded", async () => {

@@ -40,10 +40,10 @@ export type StagedGraphifyBenchmark = {
 export type GraphifyBenchmarkArmMetrics = {
   semanticStatus: "not_measured";
   nodePrecision: number | null;
-  nodeRecall: number;
+  nodeRecall: number | null;
   edgePrecision: number | null;
-  edgeRecall: number;
-  indirectRecall: number;
+  edgeRecall: number | null;
+  indirectRecall: number | null;
   p95ElapsedMs: number | null;
   peakMemoryBytes: number | null;
 };
@@ -153,7 +153,9 @@ export async function stageGraphifyBenchmark(input: {
 }
 
 const precision = (numerator: number, denominator: number) => denominator === 0 ? null : numerator / denominator;
-const recall = (numerator: number, denominator: number) => denominator === 0 ? 0 : numerator / denominator;
+// A recall over an empty ground-truth denominator measured nothing; 0 is the flattering value here
+// exactly as 1 is for precision. Return null so an unmeasured cohort cannot read as a real result.
+const recall = (numerator: number, denominator: number): number | null => denominator === 0 ? null : numerator / denominator;
 // A latency percentile over nothing is not zero, it is unmeasured. Returning the
 // flattering 0 lets a cohort that measured no latency read as instant; return
 // null so "not measured" cannot silently drop out of the aggregate.
@@ -234,15 +236,19 @@ export function gradeGraphifyBenchmark(staged: StagedGraphifyBenchmark, key: Gra
       elapsed.push(prediction.output.elapsedMs);
       peakMemoryBytes = peakMemoryBytes === null ? prediction.output.peakMemoryBytes : Math.max(peakMemoryBytes, prediction.output.peakMemoryBytes);
     }
-    // A latency or memory metric that measured nothing must fail the gate, not
+    // A latency, memory, or recall metric that measured nothing must fail the gate, not
     // pass as an unmeasured null quietly folded into the report.
     const p95ElapsedMs = p95(elapsed);
-    if (p95ElapsedMs === null || peakMemoryBytes === null) fail("GRAPHIFY_BENCHMARK_METRICS_UNMEASURED");
+    const nodeRecall = recall(nodeTrue, nodeExpected);
+    const edgeRecall = recall(edgeTrue, edgeExpected);
+    const indirectRecall = recall(indirectTrue, indirectExpected);
+    if (p95ElapsedMs === null || peakMemoryBytes === null ||
+        nodeRecall === null || edgeRecall === null || indirectRecall === null) fail("GRAPHIFY_BENCHMARK_METRICS_UNMEASURED");
     metrics[arm] = {
       semanticStatus: "not_measured",
-      nodePrecision: precision(nodeTrue, nodePredicted), nodeRecall: recall(nodeTrue, nodeExpected),
-      edgePrecision: precision(edgeTrue, edgePredicted), edgeRecall: recall(edgeTrue, edgeExpected),
-      indirectRecall: recall(indirectTrue, indirectExpected), p95ElapsedMs, peakMemoryBytes,
+      nodePrecision: precision(nodeTrue, nodePredicted), nodeRecall,
+      edgePrecision: precision(edgeTrue, edgePredicted), edgeRecall,
+      indirectRecall, p95ElapsedMs, peakMemoryBytes,
     };
   }
   const reportWithoutDigest = {

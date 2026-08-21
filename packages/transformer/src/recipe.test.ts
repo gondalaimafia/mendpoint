@@ -181,6 +181,21 @@ describe("immutable Transformer recipes", () => {
     ).toThrow("recipe_path_invalid:../outside");
   });
 
+  it("rejects bidirectional and format control characters but accepts spaces and CJK filenames", () => {
+    // U+202E (right-to-left override) can make an executable render as a text file to an operator
+    // reading review output. Named by code point so no control character is embedded in source.
+    const rloPath = `src/${String.fromCodePoint(0x202e)}gnp.js`;
+    expect(() => assertRecipePathAllowed(NODE_RUNTIME_18_TO_20_RECIPE, rloPath)).toThrow("recipe_path_invalid:");
+
+    // Legitimate paths must still pass structural validation: they reach the allowlist check and
+    // are rejected there as not-allowed, never as structurally invalid. A path with a space and a
+    // CJK filename (built by code point) both stay valid.
+    const spacePath = "src/my file.js";
+    const cjkPath = `src/${String.fromCodePoint(0x65e5, 0x672c, 0x8a9e)}.js`;
+    expect(() => assertRecipePathAllowed(NODE_RUNTIME_18_TO_20_RECIPE, spacePath)).toThrow("recipe_path_not_allowed:");
+    expect(() => assertRecipePathAllowed(NODE_RUNTIME_18_TO_20_RECIPE, cjkPath)).toThrow("recipe_path_not_allowed:");
+  });
+
   it("restores the exact input through verified inverse operations", () => {
     const reference = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
     const applied = applyRecipe(reference, INPUT);

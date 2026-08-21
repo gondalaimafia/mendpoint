@@ -256,8 +256,15 @@ function deepFreeze<T>(value: T): T {
   return Object.freeze(value);
 }
 
+// Bidirectional and format control characters: C0 controls, DEL, zero-width and directional
+// marks (U+200B-U+200F), embedding/override controls (U+202A-U+202E), isolates (U+2066-U+2069),
+// and the byte-order mark (U+FEFF). A right-to-left override can make an executable render as a
+// text file to an operator reading review output, so exclude the set rather than allowlisting a
+// narrow class that would reject legitimate spaces or CJK filenames.
+const FORBIDDEN_PATH_CHARS = /[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
+
 function validatePath(path: string): string {
-  if (!path || path.includes("\\") || posix.isAbsolute(path)) {
+  if (!path || path.includes("\\") || posix.isAbsolute(path) || FORBIDDEN_PATH_CHARS.test(path)) {
     throw new Error(`recipe_path_invalid:${path}`);
   }
   const normalized = posix.normalize(path);
