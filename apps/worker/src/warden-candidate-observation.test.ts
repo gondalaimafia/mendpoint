@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,15 +15,33 @@ import {
 } from "@mendpoint/db";
 import type { ExactDraftObservation } from "@mendpoint/github";
 import { runWardenCandidateObservation } from "./warden-candidate-observation.js";
+import { assertDelegatedPrVerificationApprovalAuthority } from "./delegated-pr-verification-job.js";
+
+vi.mock("./delegated-pr-verification-job.js", () => ({
+  assertDelegatedPrVerificationApprovalAuthority: vi.fn(),
+}));
 
 const opened: Array<{ db: AppDb; root: string }> = [];
 const sha = (value: string) => value.repeat(40);
 const digest = (value: string) => `sha256:${value.repeat(64)}`;
+const verifiedAuthority = Object.freeze({
+  required: true as const,
+  verificationJobId: "verification-job-a",
+  candidateArtifactId: "candidate-artifact-a",
+  failToPassArtifactId: "fail-artifact-a",
+  passToPassArtifactId: "pass-artifact-a",
+  completedAt: "2026-08-13T12:00:30.000Z",
+});
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-warden-observe-"));
   const db = createDb(join(root, "worker.sqlite"));
   opened.push({ db, root });
+  db.raw.prepare(`INSERT INTO agent_runs
+    (id, tenant_id, job_id, goal, repo_path, status, ok, steps, result_json, created_at, finished_at)
+    VALUES ('run-a', 'tenant-a', 'source-job-a', 'repair', 'repo', 'candidate_approved', 1, 1, ?, ?, ?)`)
+    .run(JSON.stringify({ status: "candidate_ready", artifacts: { candidateDigest: digest("7") } }),
+      "2026-08-13T11:59:00.000Z", "2026-08-13T12:00:00.000Z");
   db.raw.prepare(`INSERT INTO fettler_candidate_deliveries
     (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
      expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
@@ -54,6 +72,11 @@ afterEach(() => {
   }
 });
 
+beforeEach(() => {
+  vi.mocked(assertDelegatedPrVerificationApprovalAuthority).mockReset();
+  vi.mocked(assertDelegatedPrVerificationApprovalAuthority).mockReturnValue({ required: false });
+});
+
 function observation(state: "success" | "failure" | "running"): ExactDraftObservation {
   return Object.freeze({
     state: "draft", baseRevision: sha("a"), headRevision: sha("d"), checks: state,
@@ -75,6 +98,72 @@ function observation(state: "success" | "failure" | "running"): ExactDraftObserv
 }
 
 describe("Warden candidate CI observation", () => {
+  it("atomically enqueues one exact cleanup handoff after successful checks", async () => {
+    vi.mocked(assertDelegatedPrVerificationApprovalAuthority).mockReturnValue(verifiedAuthority);
+    const { db, cycle, job } = fixture();
+    const persistEvidence = vi.fn(async (bytes: Uint8Array) => ({
+      artifactId: "artifact-success-a",
+      digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    }));
+
+    const result = await runWardenCandidateObservation({
+      db, job, observe: async () => observation("success"), persistEvidence,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:02:00.000Z",
+    });
+    expect(result).toMatchObject({ status: "checks_passed", cycleId: cycle.id });
+    if (result.status !== "checks_passed") throw new Error("expected checks_passed result");
+
+    const cleanupJobs = listJobs(db, 20, "tenant-a")
+      .filter((candidate) => candidate.type === "warden.candidate.cleanup");
+    expect(cleanupJobs).toHaveLength(1);
+    const cleanupJobId = `wardencicleanupjob_${createHash("sha256")
+      .update(["tenant-a", cycle.id, sha("d"), result.observationDigest].join("\0"), "utf8")
+      .digest("hex").slice(0, 32)}`;
+    const savedObservation = listWardenCiObservations(db, "tenant-a", cycle.id)[0]!;
+    expect(cleanupJobs[0]).toMatchObject({
+      id: cleanupJobId,
+      tenant_id: "tenant-a",
+      status: "pending",
+      max_attempts: 20,
+    });
+    expect(JSON.parse(cleanupJobs[0]!.payload_json)).toEqual({
+      schemaVersion: 1,
+      cycleId: cycle.id,
+      deliveryId: "delivery-a",
+      observationId: savedObservation.id,
+      headSha: sha("d"),
+      observationDigest: result.observationDigest,
+    });
+    expect(getJob(db, job.id, "tenant-a")?.status).toBe("done");
+    expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("awaiting_review");
+    expect(assertDelegatedPrVerificationApprovalAuthority).toHaveBeenCalledWith(db, {
+      tenantId: "tenant-a",
+      runId: "run-a",
+      sourceJobId: "source-job-a",
+      candidateDigest: digest("7"),
+    });
+  });
+
+  it("does not create a cleanup handoff for an ordinary non-delegated draft", async () => {
+    const { db, cycle, job } = fixture();
+    const persistEvidence = vi.fn(async (bytes: Uint8Array) => ({
+      artifactId: "artifact-ordinary-a",
+      digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    }));
+
+    await expect(runWardenCandidateObservation({
+      db, job, observe: async () => observation("success"), persistEvidence,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:02:00.000Z",
+    })).resolves.toMatchObject({ status: "checks_passed", cycleId: cycle.id });
+
+    expect(listJobs(db, 20, "tenant-a").filter((candidate) =>
+      candidate.type === "warden.candidate.cleanup")).toHaveLength(0);
+    expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("awaiting_review");
+    expect(assertDelegatedPrVerificationApprovalAuthority).toHaveBeenCalledTimes(1);
+  });
+
   it("persists redacted failed-check evidence and terminalizes the exact observation job", async () => {
     const { db, cycle, job } = fixture();
     const observe = vi.fn(async () => observation("failure"));
@@ -99,6 +188,9 @@ describe("Warden candidate CI observation", () => {
     expect(getJob(db, job.id, "tenant-a")?.status).toBe("done");
     expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("checks_failed");
     expect(listWardenCiObservations(db, "tenant-a", cycle.id)).toHaveLength(1);
+    expect(listJobs(db, 20, "tenant-a").filter((candidate) =>
+      candidate.type === "warden.candidate.cleanup")).toHaveLength(0);
+    expect(assertDelegatedPrVerificationApprovalAuthority).not.toHaveBeenCalled();
   });
 
   it("reschedules running checks without persisting repair evidence", async () => {
@@ -112,6 +204,9 @@ describe("Warden candidate CI observation", () => {
     expect(persistEvidence).not.toHaveBeenCalled();
     expect(getJob(db, job.id, "tenant-a")?.status).toBe("pending");
     expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("observation_pending");
+    expect(listJobs(db, 20, "tenant-a").filter((candidate) =>
+      candidate.type === "warden.candidate.cleanup")).toHaveLength(0);
+    expect(assertDelegatedPrVerificationApprovalAuthority).not.toHaveBeenCalled();
   });
 
   it("durably pauses after the bounded required-check polling budget", async () => {
@@ -184,6 +279,55 @@ describe("Warden candidate CI observation", () => {
     expect(listJobs(db, 20, "tenant-a")).toContainEqual(expect.objectContaining({
       type: "warden.candidate.repair", status: "pending",
     }));
+    expect(listJobs(db, 20, "tenant-a").filter((candidate) =>
+      candidate.type === "warden.candidate.cleanup")).toHaveLength(0);
+    expect(assertDelegatedPrVerificationApprovalAuthority).not.toHaveBeenCalled();
+  });
+
+  it("rolls back the cleanup handoff and observation if the worker loses its lease", async () => {
+    vi.mocked(assertDelegatedPrVerificationApprovalAuthority).mockReturnValue(verifiedAuthority);
+    const { db, cycle, job } = fixture();
+    const persistEvidence = vi.fn(async (bytes: Uint8Array) => ({
+      artifactId: "artifact-stale-lease-a",
+      digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    }));
+
+    await expect(runWardenCandidateObservation({
+      db,
+      job: { ...job, lease_generation: job.lease_generation + 1 },
+      observe: async () => observation("success"),
+      persistEvidence,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:02:00.000Z",
+    })).rejects.toThrow("warden_ci_observation_lease_lost");
+
+    expect(listWardenCiObservations(db, "tenant-a", cycle.id)).toHaveLength(0);
+    expect(listJobs(db, 20, "tenant-a").filter((candidate) =>
+      candidate.type === "warden.candidate.cleanup")).toHaveLength(0);
+    expect(getJob(db, job.id, "tenant-a")?.status).toBe("running");
+    expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("observation_pending");
+  });
+
+  it("rolls back the successful observation when delegated authority is invalid", async () => {
+    const { db, cycle, job } = fixture();
+    vi.mocked(assertDelegatedPrVerificationApprovalAuthority)
+      .mockImplementation(() => { throw new Error("delegated_pr_verification_authority_invalid"); });
+    const persistEvidence = vi.fn(async (bytes: Uint8Array) => ({
+      artifactId: "artifact-invalid-authority-a",
+      digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    }));
+
+    await expect(runWardenCandidateObservation({
+      db, job, observe: async () => observation("success"), persistEvidence,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:02:00.000Z",
+    })).rejects.toThrow("delegated_pr_verification_authority_invalid");
+
+    expect(listWardenCiObservations(db, "tenant-a", cycle.id)).toHaveLength(0);
+    expect(listJobs(db, 20, "tenant-a").filter((candidate) =>
+      candidate.type === "warden.candidate.cleanup")).toHaveLength(0);
+    expect(getJob(db, job.id, "tenant-a")?.status).toBe("running");
+    expect(getWardenCiCycle(db, "tenant-a", cycle.id)?.status).toBe("observation_pending");
   });
 
   it.each([
