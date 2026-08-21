@@ -6,6 +6,7 @@
  * - Supports OpenAI-compatible APIs: OPENAI_API_KEY, XAI_API_KEY (+ base URLs).
  * - Offline: LLM_CONFIRM_MODE=heuristic applies deterministic rules (CI / no keys).
  */
+import { createHash } from "node:crypto";
 import {
   enforceModelEndpointEgress,
   fetchBoundedText,
@@ -27,7 +28,59 @@ export type LlmConfirmDecision = {
 export type LlmConfirmBudget = {
   maxCalls: number;
   used: number;
+  /**
+   * Cumulative token ceiling for the whole analysis run. A call-count cap is not
+   * a spend cap when per-call token usage varies by orders of magnitude, so this
+   * lane also refuses once observed tokens reach this ceiling. Enforced in
+   * `llmConfirmLive` before each call; `usedTokens` accumulates the tokens each
+   * successful call actually reported.
+   */
+  maxTokens: number;
+  usedTokens: number;
 };
+
+/**
+ * Durable reserve/settle boundary for the confirmation model call, mirroring the
+ * agent's `AgentExternalModelAccounting`. When supplied, `llmConfirmLive`
+ * reserves before the call and settles the observed tokens after, so the call is
+ * metered rather than billed to nothing. An accounting failure is a
+ * safety-boundary failure and is re-thrown (never swallowed into a static
+ * fallback), exactly as the agent treats its own accounting failures.
+ */
+export type LlmConfirmReservation = Readonly<{
+  reservationId: string;
+  /** Upper bound of tokens this one call may consume, reserved before egress. */
+  maxTokens: number;
+}>;
+
+export type LlmConfirmSettlement = Readonly<{
+  reservationId: string;
+  status: "succeeded" | "failed";
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  model?: string | null;
+  headerRequestId?: string | null;
+}>;
+
+export type LlmConfirmAccounting = Readonly<{
+  reserve: (reservation: LlmConfirmReservation) => void | Promise<void>;
+  settle: (settlement: LlmConfirmSettlement) => void | Promise<void>;
+}>;
+
+/**
+ * Per-call token reservation ceiling. The request pins `max_tokens` to 300
+ * completion tokens; the prompt adds the bounded slice. This ceiling reserves
+ * generously above that so a reservation never rejects an in-budget call, while
+ * still being a real per-call bound.
+ */
+const PER_CALL_TOKEN_RESERVATION = 8_000;
+
+function defaultMaxTokens(maxCalls: number, env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.LLM_CONFIRM_MAX_TOKENS ?? Number.NaN);
+  if (Number.isSafeInteger(configured) && configured > 0) return configured;
+  return Math.max(1, maxCalls) * PER_CALL_TOKEN_RESERVATION;
+}
 
 /**
  * A single successful live model call, as observed on the wire. Emitted through
@@ -55,8 +108,11 @@ export type LlmCallObservation = Readonly<{
 /** Observer invoked once per successful live model call. */
 export type LlmConfirmObserver = (observation: LlmCallObservation) => void;
 
-export function createBudget(max = Number(process.env.LLM_CONFIRM_MAX ?? 12)): LlmConfirmBudget {
-  return { maxCalls: max, used: 0 };
+export function createBudget(
+  max = Number(process.env.LLM_CONFIRM_MAX ?? 12),
+  maxTokens = defaultMaxTokens(max),
+): LlmConfirmBudget {
+  return { maxCalls: max, used: 0, maxTokens, usedTokens: 0 };
 }
 
 function hasLlmKey(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -282,8 +338,12 @@ export async function llmConfirmLive(
   staticResult: ConfirmedImpact | null,
   budget: LlmConfirmBudget,
   onCall?: LlmConfirmObserver,
+  accounting?: LlmConfirmAccounting,
 ): Promise<ConfirmedImpact | null> {
   if (budget.used >= budget.maxCalls) return staticResult;
+  // A call-count cap is not a spend cap: refuse once the run has consumed its
+  // token ceiling, before any further egress or reservation.
+  if (budget.usedTokens >= budget.maxTokens) return staticResult;
 
   const { system, user } = buildPrompt(ctx, surfaces);
   // Redact secret material from the raw code slices before egress. The engine
@@ -295,9 +355,66 @@ export async function llmConfirmLive(
   );
   if (redaction.excluded) return staticResult;
 
+  const reservationId = `llmconfirm_${createHash("sha256")
+    .update(`${ctx.candidate.filePath}\0${ctx.candidate.lineStart}\0${ctx.candidate.symbol}\0${budget.used}`)
+    .digest("hex")
+    .slice(0, 32)}`;
+  // Reserve before the call. An accounting failure here is a safety-boundary
+  // failure and must propagate — it is NOT swallowed into a static fallback.
+  if (accounting) await accounting.reserve({ reservationId, maxTokens: PER_CALL_TOKEN_RESERVATION });
+
   budget.used++;
+  let observedUsage:
+    | { input?: number; output?: number; total?: number; model?: unknown; headerRequestId: string | null }
+    | undefined;
+  const captureUsage: LlmConfirmObserver = (observation) => {
+    const usage = observation.body.usage;
+    observedUsage = {
+      input: usage?.prompt_tokens,
+      output: usage?.completion_tokens,
+      total: usage?.total_tokens,
+      model: observation.body.model,
+      headerRequestId: observation.headerRequestId,
+    };
+    onCall?.(observation);
+  };
+
+  let raw: string | undefined;
+  let callFailed = false;
   try {
-    const raw = await callOpenAiCompatible(system, redaction.text, onCall);
+    raw = await callOpenAiCompatible(system, redaction.text, captureUsage);
+  } catch {
+    // Model-call failure (network/HTTP/timeout) fails closed to the static
+    // result. Accounting failures are handled separately below and propagate.
+    callFailed = true;
+  }
+
+  // Meter what the call actually consumed. Token counts accumulate onto the
+  // run budget so the NEXT call refuses once the token ceiling is reached, and
+  // settle records the call rather than leaving it billed to nothing. A settle
+  // failure is a safety-boundary failure and propagates.
+  const totalTokens =
+    observedUsage?.total ??
+    (observedUsage && (observedUsage.input !== undefined || observedUsage.output !== undefined)
+      ? (observedUsage.input ?? 0) + (observedUsage.output ?? 0)
+      : undefined);
+  if (typeof totalTokens === "number" && Number.isFinite(totalTokens)) {
+    budget.usedTokens += totalTokens;
+  }
+  if (accounting) {
+    await accounting.settle({
+      reservationId,
+      status: callFailed ? "failed" : "succeeded",
+      ...(observedUsage?.input !== undefined ? { inputTokens: observedUsage.input } : {}),
+      ...(observedUsage?.output !== undefined ? { outputTokens: observedUsage.output } : {}),
+      ...(totalTokens !== undefined ? { totalTokens } : {}),
+      ...(typeof observedUsage?.model === "string" ? { model: observedUsage.model } : {}),
+      ...(observedUsage ? { headerRequestId: observedUsage.headerRequestId } : {}),
+    });
+  }
+
+  if (callFailed || raw === undefined) return staticResult;
+  try {
     const decision = parseDecision(raw);
     if (!decision) return staticResult;
     if (!decision.affected) {
@@ -341,6 +458,7 @@ export async function confirmWithLlmBudget(
   staticResult: ConfirmedImpact | null,
   budget: LlmConfirmBudget,
   onCall?: LlmConfirmObserver,
+  accounting?: LlmConfirmAccounting,
 ): Promise<ConfirmedImpact | null> {
   const mode = resolveLlmConfirmMode();
   if (mode === "off") return staticResult;
@@ -351,5 +469,5 @@ export async function confirmWithLlmBudget(
   if (mode === "heuristic") {
     return heuristicConfirm(ctx, surfaces, staticResult);
   }
-  return llmConfirmLive(ctx, surfaces, staticResult, budget, onCall);
+  return llmConfirmLive(ctx, surfaces, staticResult, budget, onCall, accounting);
 }

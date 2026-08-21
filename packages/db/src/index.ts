@@ -707,6 +707,27 @@ CREATE TABLE IF NOT EXISTS actual_execution_cost_entries (
   prev_hash TEXT,
   entry_hash TEXT NOT NULL CHECK (length(entry_hash) = 64),
   created_at TEXT NOT NULL,
+  -- Mission this execution's cost is attributable to (ReGauge live path), or
+  -- NULL when there is no mission link (every Fettler row today: the Fettler
+  -- agent.run payload carries no campaign/mission id). Nullable FK to our own
+  -- mission table; an unresolved mission is honestly null, never fabricated.
+  mission_id TEXT REFERENCES mission(id),
+  -- Per-component measurement state. 1 = measured, 0 = not measured. An
+  -- unmeasured component always carries 0 money-micros (so the arithmetic total
+  -- CHECK still holds); the flag is the sole carrier of "not measured", keeping
+  -- it distinguishable from "measured zero". Defaults are 1 so an existing
+  -- (HTTP-written) row — where the caller supplied real numbers for every
+  -- component — reads as measured after an in-place column add.
+  model_cost_measured INTEGER NOT NULL DEFAULT 1 CHECK (model_cost_measured IN (0, 1)),
+  cache_cost_measured INTEGER NOT NULL DEFAULT 1 CHECK (cache_cost_measured IN (0, 1)),
+  gpu_cost_measured INTEGER NOT NULL DEFAULT 1 CHECK (gpu_cost_measured IN (0, 1)),
+  graph_cost_measured INTEGER NOT NULL DEFAULT 1 CHECK (graph_cost_measured IN (0, 1)),
+  sandbox_cost_measured INTEGER NOT NULL DEFAULT 1 CHECK (sandbox_cost_measured IN (0, 1)),
+  verification_cost_measured INTEGER NOT NULL DEFAULT 1 CHECK (verification_cost_measured IN (0, 1)),
+  -- Hash-payload version. 1 = original field set (pre-change rows, hashed
+  -- without the columns above so a pre-change volume still verifies); 2 =
+  -- includes mission id and the measurement flags in the hash.
+  cost_schema_version INTEGER NOT NULL DEFAULT 1 CHECK (cost_schema_version >= 1),
   CHECK (
     (outcome_status = 'accepted' AND accepted_outcome_id IS NOT NULL) OR
     (outcome_status != 'accepted' AND accepted_outcome_id IS NULL)
@@ -2356,6 +2377,58 @@ function migrateProvidersFeedColumns(db: AppDb) {
       name: "graph_path_json",
       sql: "TEXT",
     },
+    // Mission attribution + per-component measurement state on the six-way
+    // execution cost ledger. These mirror the CREATE TABLE above so a pre-change
+    // volume (which has the table but not these columns) converges on boot. The
+    // measurement flags default to 1 (measured) so an existing HTTP-written row,
+    // where the caller supplied real numbers for every component, reads as
+    // measured; a new internal writer sets 0 for a component it did not measure.
+    // cost_schema_version defaults to 1 so a pre-change row is hashed over the
+    // original field set and its stored hash still verifies (see hashEntry).
+    // mission_id is nullable with an FK to our own mission table; ADD COLUMN with
+    // a foreign key requires the default to be NULL, which it is. No static
+    // index/view/constraint references any of these, so the static DDL never
+    // touches them on a DB that has not yet run this migration.
+    {
+      table: "actual_execution_cost_entries",
+      name: "mission_id",
+      sql: "TEXT REFERENCES mission(id)",
+    },
+    {
+      table: "actual_execution_cost_entries",
+      name: "model_cost_measured",
+      sql: "INTEGER NOT NULL DEFAULT 1 CHECK (model_cost_measured IN (0, 1))",
+    },
+    {
+      table: "actual_execution_cost_entries",
+      name: "cache_cost_measured",
+      sql: "INTEGER NOT NULL DEFAULT 1 CHECK (cache_cost_measured IN (0, 1))",
+    },
+    {
+      table: "actual_execution_cost_entries",
+      name: "gpu_cost_measured",
+      sql: "INTEGER NOT NULL DEFAULT 1 CHECK (gpu_cost_measured IN (0, 1))",
+    },
+    {
+      table: "actual_execution_cost_entries",
+      name: "graph_cost_measured",
+      sql: "INTEGER NOT NULL DEFAULT 1 CHECK (graph_cost_measured IN (0, 1))",
+    },
+    {
+      table: "actual_execution_cost_entries",
+      name: "sandbox_cost_measured",
+      sql: "INTEGER NOT NULL DEFAULT 1 CHECK (sandbox_cost_measured IN (0, 1))",
+    },
+    {
+      table: "actual_execution_cost_entries",
+      name: "verification_cost_measured",
+      sql: "INTEGER NOT NULL DEFAULT 1 CHECK (verification_cost_measured IN (0, 1))",
+    },
+    {
+      table: "actual_execution_cost_entries",
+      name: "cost_schema_version",
+      sql: "INTEGER NOT NULL DEFAULT 1 CHECK (cost_schema_version >= 1)",
+    },
   ];
   const addedColumns = new Set<string>();
   for (const column of additiveColumns) {
@@ -3592,6 +3665,7 @@ export type {
 export type {
   ActualExecutionCostInput,
   ActualExecutionCostEntry,
+  ExecutionCostFromRoutingLedgerInput,
   ExecutionCostIntegrity,
   ExecutionOutcomeStatus,
   GrossMarginAttribution,
@@ -3857,6 +3931,7 @@ export {
   listActualExecutionCosts,
   reconcileGrossMargin,
   recordActualExecutionCost,
+  recordExecutionCostFromRoutingLedger,
   verifyExecutionCostIntegrity,
 } from "./gross-margin.js";
 
