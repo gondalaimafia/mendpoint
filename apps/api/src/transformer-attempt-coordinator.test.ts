@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
   applyRecipe,
@@ -16,6 +16,7 @@ import { createTransformerMultinodeService, type TransformerMultinodeTransport }
 import type { ApiEnv } from "./auth.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
+import { buildDedicatedRegaugeCompletionInput } from "./regauge-verifier-shadow.js";
 
 const roots: string[] = [];
 const services: TransformerPilotExecutionService[] = [];
@@ -71,12 +72,23 @@ describe("real Transformer multi-node coordinator", () => {
     const constraint = createOrganizationConstraintContract({ tenantId: "tenant-a", organizationId: "org-a", version: 1, effectiveAt: "2026-08-12T11:59:00.000Z", sources: [{ id: "policy-a", kind: "explicit_policy", repositoryId: "repo-a", revision: revision("a"), digest: `sha256:${"a".repeat(64)}`, locator: "policy://org-a/repo-a/v1", evidenceRefs: ["evidence:policy:a"] }], rules: [{ id: "allow-a", sourceId: "policy-a", repositoryId: "repo-a", pathPattern: "**", actions: ["change"], effect: "allow", ownerIds: ["owner-a"], rationale: "Approved test scope" }] });
     service.store.createCampaign({ tenantId: "tenant-a", organizationId: "org-a", campaignId: "campaign-a", environment: "test", constraints: constraint, units: [{ id: "unit-a", title: "Migrate node", ownerId: "owner-a", reviewerIds: ["reviewer-a"], dependsOn: [], snapshot: { snapshotId: "snapshot-a", repositoryId: "repo-a", revision: revision("a"), manifestSha256: "a".repeat(64), digest: snapshotDigest, evidenceRefs: ["evidence:snapshot:a"] }, candidateRevision: revision("c"), candidateDigest: applied.outputDigest, recipe: recipeReference(NODE_RUNTIME_18_TO_20_RECIPE), changedPaths: ["package.json"] }], observedAt: "2026-08-12T12:00:00.000Z", evidenceRefs: ["evidence:create"], idempotencyKey: "create-a", gateConfig: gate });
     const app = new Hono<ApiEnv>();
+    const completedObserver = vi.fn(async (completion) => {
+      expect(buildDedicatedRegaugeCompletionInput(completion)).toMatchObject({
+        tenantId: "tenant-a",
+        missionId: "campaign-a",
+        taskId: "campaign-a:unit-a",
+        candidateDigest: applied.outputDigest,
+        deterministicEvidenceDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      });
+      throw new Error("shadow_observer_unavailable");
+    });
     app.use("*", async (c, next) => { c.set("requestId", "request-real"); c.set("principal", { id: "api-key:worker", tenantId: c.req.header("x-test-tenant") ?? "tenant-a", role: "agent" }); c.set("authScopes", ["transformer:worker"]); await next(); });
     app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
       enabled: true,
       store: service.store,
       now: () => coordinatorNow,
       gateConfig: gate,
+      observeCompletedAttempt: completedObserver,
       loadExactSource: () => ({ repositoryId: "repo-a", revision: revision("a"), digest: snapshotDigest, files, fileModes: { "package.json": "100644" } }),
       resolveDraftRepository: () => ({ owner: "acme", repo: "repo-a", baseBranch: "main", installationId: 42, remoteRepositoryId: 84 }),
     }));
@@ -132,6 +144,7 @@ describe("real Transformer multi-node coordinator", () => {
     const runner = createTransformerMultinodeService(runnerConfig, transport, artifactBackend);
     const result = await runner.runOnce();
     expect(result).toMatchObject({ status: "completed" });
+    expect(completedObserver).toHaveBeenCalled();
     expect(loseCompletionResponse).toBe(false);
     expect(service.store.getCampaign("tenant-a", "campaign-a")?.units[0]).toMatchObject({ candidateDigest: applied.outputDigest });
     await expect(runner.runOnce()).resolves.toMatchObject({ status: "idle" });

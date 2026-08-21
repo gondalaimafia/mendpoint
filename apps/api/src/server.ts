@@ -307,6 +307,7 @@ import { createLearningConsentRoutes } from "./learning-consent-routes.js";
 import { createOrganizationMemoryRoutes } from "./organization-memory-routes.js";
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
+import { observeDedicatedRegaugeCompletionInShadow } from "./regauge-verifier-shadow.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
 import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
 import {
@@ -826,6 +827,11 @@ const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorR
   enabled: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED") === "1",
   store: transformerExecutions.store,
   gateConfig: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
+  observeCompletedAttempt: (completion) => observeDedicatedRegaugeCompletionInShadow({
+    db,
+    env: process.env,
+    completion,
+  }).then(() => undefined),
   loadExactSource: (lease, observedAt) => loadTransformerRecipeSnapshot(db, lease, observedAt),
   resolveDraftRepository: createTransformerDraftRepositoryAuthority(db, process.env),
 });

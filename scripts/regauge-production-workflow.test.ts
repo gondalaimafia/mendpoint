@@ -151,6 +151,35 @@ describe("Regauge production workflow", () => {
     ]) expect(stage).toContain(`${name}=\"$${name}\"`);
   });
 
+  it("stages only the bounded DeepSeek shadow verifier authority", () => {
+    const source = readFileSync(".github/workflows/regauge-production.yml", "utf8");
+    const workflow = parse(source) as Record<string, any>;
+    const env = workflow.jobs.deploy.env;
+    expect(env).toMatchObject({
+      DEEPSEEK_API_KEY: "${{ secrets.DEEPSEEK_API_KEY }}",
+      MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "${{ vars.REGAUGE_DEEPSEEK_GOVERNANCE_JSON }}",
+      MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "${{ vars.REGAUGE_DEEPSEEK_PRICING_JSON }}",
+    });
+    const stage = workflow.jobs.deploy.steps.find(
+      (step: Record<string, unknown>) => step.name === "Stage production secrets",
+    ).run as string;
+    for (const binding of [
+      "DEEPSEEK_VERIFIER_ENABLED=true",
+      "DEEPSEEK_API_KEY=\"$DEEPSEEK_API_KEY\"",
+      "MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=shadow",
+      "MENDPOINT_AGENT_VERIFIER_SCORING_MODE=nonthinking_logprobs",
+      "MENDPOINT_AGENT_VERIFIER_EVALUATIONS=1",
+      "MENDPOINT_AGENT_VERIFIER_PIVOTS=1",
+      "MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES=1",
+      "MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD=0.05",
+      "MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS=8000",
+      "MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES=0",
+      "MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON=\"$MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON\"",
+      "MENDPOINT_AGENT_VERIFIER_PRICING_JSON=\"$MENDPOINT_AGENT_VERIFIER_PRICING_JSON\"",
+    ]) expect(stage).toContain(binding);
+    expect(stage).not.toContain("MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=active");
+  });
+
   it("contains the delivery worker after every activation outcome", () => {
     const workflow = parse(
       readFileSync(".github/workflows/regauge-production.yml", "utf8"),
