@@ -304,6 +304,7 @@ import { createOutcomeMetricsRoutes } from "./outcome-metrics-routes.js";
 import { createDiagnosticsRoutes } from "./diagnostics-routes.js";
 import { createDashboardRoutes } from "./dashboard-routes.js";
 import { createLearningConsentRoutes } from "./learning-consent-routes.js";
+import { createOrganizationMemoryRoutes } from "./organization-memory-routes.js";
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
@@ -863,6 +864,7 @@ app.route("/diagnostics", createDiagnosticsRoutes({ db }));
 app.route("/metrics/dashboard", createDashboardRoutes({ db }));
 app.route("/platform/sandbox", createPlatformSandboxRoutes());
 app.route("/learning", createLearningConsentRoutes({ db }));
+app.route("/organization-memory", createOrganizationMemoryRoutes({ db }));
 
 // Persist alerts under data/
 try {
