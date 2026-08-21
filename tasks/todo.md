@@ -2671,6 +2671,8 @@ Objective: recover the dedicated coordinator from the latest encrypted snapshot 
 - [x] Make activation fail closed unless that one restored volume is encrypted, 20 GB, created, located in `sjc`, and either unattached or attached only to this app's coordinator process.
 - [x] Point only the coordinator mount at the restored volume and remove automatic empty-volume creation.
 - [x] Run the focused workflow test, YAML and Fly config validation, affected typecheck, governance checks, and diff integrity.
+- [ ] Require and stage one dedicated 32-byte application-data encryption key after the first restored-volume startup exposed the missing authority.
+- [ ] Prove the application key is protected, never logged, and carried into the Fly deployment without reading its value.
 - [ ] Publish through protected pull request CI and verify exact post-merge main CI.
 - [ ] Rerun the protected one-draft activation and verify exact revision, coordinator and worker health, containment, and zero DeepSeek provider calls under deny-all governance.
 - [ ] Browser-check the live dedicated hostname in Chrome and preserve screenshots if activation succeeds.
@@ -2679,3 +2681,5 @@ Objective: recover the dedicated coordinator from the latest encrypted snapshot 
 Acceptance: deployment can mount only restored volume `vol_4y83e8lm03q5x03r` as `mendpoint_transformer_data_v2`; a missing, duplicated, wrong-region, wrong-size, unencrypted, non-created, or foreign-process-attached volume stops before secret staging or deployment; the original volume remains recoverable.
 
 Review before publication: the workflow now rejects every volume except restored encrypted volume `vol_4y83e8lm03q5x03r`, including mismatched name, state, size, region, zone, backup policy, or host health. An attachment is accepted only when its exact Machine belongs to the coordinator process in the same Fly app. Automatic empty-volume creation is removed. The coordinator mount uses only `mendpoint_transformer_data_v2`, while the original volume remains untouched. RED failed on the missing restored-volume authority. GREEN passes 25 focused tests, workflow YAML parsing, Fly profile validation, Worker typecheck, GA governance checks, the optimized 50-page production build, dependency audit with zero vulnerabilities, and diff integrity.
+
+Activation evidence: protected run `32536362631` passed preflight, volume authority, storage authority, and secret staging, then mounted the restored volume and started coordinator Machine `d89323ea06d938`. Startup failed closed with `application_data_key_required` before worker deployment, model evaluation, draft creation, or DeepSeek observation. The failed Machine was destroyed, both volumes are unattached and healthy, and worker count remains zero. A source-level protected-secret binding is now under review, but the key value remains unset pending explicit compatibility authority.
