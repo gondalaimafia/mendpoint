@@ -38,6 +38,7 @@ export * from "./graphql-schema-version.js";
 export * from "./outcome-metrics.js";
 export * from "./agent-run-meter.js";
 export * from "./fettler-delegation-evidence.js";
+export * from "./organization-memory.js";
 export * from "./developer-satisfaction.js";
 export * from "./self-serve-dashboard.js";
 export * from "./capability-adoption-opportunity.js";
@@ -1029,6 +1030,61 @@ BEGIN SELECT RAISE(ABORT, 'learning_deletion_events_append_only'); END;
 CREATE TRIGGER IF NOT EXISTS learning_deletion_events_append_only_delete BEFORE DELETE ON learning_deletion_events
 BEGIN SELECT RAISE(ABORT, 'learning_deletion_events_append_only'); END;
 CREATE INDEX IF NOT EXISTS evidence_records_subject_idx ON evidence_records(tenant_id, subject_type, subject_id, created_at);
+
+-- Organization Memory: a durable, tenant-scoped store for organizational
+-- conventions and preferences, kept strictly separate from objective graph
+-- facts (which live in the Change Graph). Tier 1 structural tenant binding:
+-- record_id is the sha256 of the canonical body which INCLUDES tenant_id, so a
+-- different tenant produces a different primary key by construction and a
+-- cross-tenant collision is arithmetically impossible, not merely filtered
+-- (mirrors gl_software_versions_v1). Append-only: every lifecycle transition and
+-- every edit is a NEW immutable row on a supersession chain keyed by memory_id,
+-- so history can never be destroyed by an edit or disable (see the append-only
+-- triggers below). The whole table is self-contained in this static DDL; no
+-- additive migration adds a column it depends on, so an existing volume that
+-- predates the table gains it via CREATE TABLE IF NOT EXISTS on next boot.
+CREATE TABLE IF NOT EXISTS organization_memory (
+  record_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  memory_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  supersedes_record_id TEXT REFERENCES organization_memory(record_id),
+  transition TEXT NOT NULL CHECK (transition IN (
+    'observed', 'corroborated', 'validated', 'human_confirmed', 'activated',
+    'created_explicit', 'edited', 'disabled', 'rejected', 'staled', 'deleted')),
+  scope TEXT NOT NULL,
+  category TEXT NOT NULL CHECK (category IN (
+    'ARCHITECTURE_CONVENTION', 'CODING_CONVENTION', 'MIGRATION_PREFERENCE',
+    'TESTING_REQUIREMENT', 'REVIEW_PREFERENCE', 'DEPLOYMENT_POLICY',
+    'RISK_PREFERENCE', 'INTERNAL_ABSTRACTION', 'PRESENTATION_PREFERENCE')),
+  statement TEXT NOT NULL,
+  structured_value TEXT,
+  source TEXT NOT NULL CHECK (source IN (
+    'explicit', 'policy_config', 'repeated_verified_behavior', 'reviewer_correction')),
+  source_refs TEXT NOT NULL,
+  observation_fingerprint TEXT,
+  confidence TEXT NOT NULL CHECK (confidence IN ('low', 'medium', 'high')),
+  status TEXT NOT NULL CHECK (status IN (
+    'OBSERVATION', 'MEMORY_CANDIDATE', 'VALIDATION', 'CONFIRMED', 'ACTIVE',
+    'REJECTED', 'STALE', 'DISABLED', 'DELETED')),
+  applies_to TEXT NOT NULL,
+  training_eligible INTEGER NOT NULL DEFAULT 0 CHECK (training_eligible IN (0, 1)),
+  actor_principal_id TEXT REFERENCES principals(id),
+  reason TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  created_at TEXT NOT NULL,
+  last_confirmed_at TEXT,
+  UNIQUE (tenant_id, memory_id, revision),
+  UNIQUE (tenant_id, memory_id, observation_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS organization_memory_chain_idx
+  ON organization_memory(tenant_id, memory_id, revision);
+CREATE INDEX IF NOT EXISTS organization_memory_status_idx
+  ON organization_memory(tenant_id, status, memory_id);
+CREATE TRIGGER IF NOT EXISTS organization_memory_append_only_update BEFORE UPDATE ON organization_memory
+BEGIN SELECT RAISE(ABORT, 'organization_memory_append_only'); END;
+CREATE TRIGGER IF NOT EXISTS organization_memory_append_only_delete BEFORE DELETE ON organization_memory
+BEGIN SELECT RAISE(ABORT, 'organization_memory_append_only'); END;
 
 CREATE TABLE IF NOT EXISTS review_decisions (
   id TEXT PRIMARY KEY,
