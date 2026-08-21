@@ -133,6 +133,9 @@ function request(overrides: Partial<Parameters<typeof wardenRoutingRequest>[0]> 
     idempotencyKey: "run-1",
     verifyCommand: "npm test",
     sourceArtifactId: "snapshot-1",
+    // The production Warden path always declares a repository classification;
+    // the policy classification ceiling is derived from it, not from absence.
+    classification: "restricted",
     decidedAt: new Date("2026-08-01T12:00:00.000Z"),
     ...overrides,
   });
@@ -325,6 +328,67 @@ describe("warden routing runtime", () => {
     expect(routingRequest.task.inputArtifactIds).toEqual(["snapshot-1"]);
     expect(routingRequest.policy.privacy.externalProcessingAllowed).toBe(false);
     expect(routingRequest.policy.region.allowedExecutionRegions).toEqual(["internal"]);
+  });
+
+  it("narrows an absent-source classification envelope to public rather than admitting restricted", async () => {
+    // No model source AND no declared classification: the envelope must not
+    // widen to all four classifications. If this control is deleted (absence
+    // back to all four), the ceiling would admit restricted and the restricted
+    // task below would route to the internal executor instead of handing off.
+    const undeclared = wardenRoutingRequest({
+      taskId: "job-1",
+      tenantId: "tenant_default",
+      goal: "Repair API client",
+      idempotencyKey: "run-1",
+      verifyCommand: "npm test",
+      sourceArtifactId: "snapshot-1",
+      decidedAt: new Date("2026-08-01T12:00:00.000Z"),
+    });
+    expect(undeclared.policy.privacy.allowedClassifications).toEqual(["public"]);
+    // The default Warden task classification is restricted, so an undeclared
+    // envelope cannot process it: the router hands off.
+    expect(undeclared.task.privacy.classification).toBe("restricted");
+
+    const db = freshDb();
+    const runtime = createWardenRoutingRuntime({
+      db,
+      tenantId: "tenant_default",
+      jobId: "job-1",
+      runId: "run-1",
+      registry: buildWardenExecutorRegistry("2026-08-01T12:00:00.000Z"),
+    });
+    const routed = await runPolicyRoutedWarden({
+      task: { goal: "Repair API client", repoRoot: "." },
+      routingRequest: undeclared,
+      runtime,
+      outcomeIdempotencyKey: "job-1:run-1:undeclared",
+      telemetry: () => ({ actualCostUsd: null, verifierId: "warden-attempt-verifier" }),
+      executor: {
+        executorId: WARDEN_EXECUTOR_ID,
+        providerId: WARDEN_PROVIDER_ID,
+        run: async () => PASSED_RUN,
+      },
+    });
+    expect(routed.routing.action).toBe("human_handoff");
+    const ledger = getRoutingLedgerForJob(db, "job-1", "tenant_default");
+    expect(JSON.parse(ledger[0]!.eliminated_json)).toEqual([
+      expect.objectContaining({
+        reasons: expect.arrayContaining(["privacy_disallowed"]),
+      }),
+    ]);
+  });
+
+  it("builds the task envelope from the shared builder with declared tool requirements", () => {
+    // Both routers share one builder; the tool requirement is the real tool set,
+    // not the empty array that made `tool_missing` structurally inert.
+    expect(request().task.allowedTools).toEqual([
+      "read_file",
+      "write_file",
+      "run_command",
+    ]);
+    expect(wardenExecutorDescriptor("2026-08-01T12:00:00.000Z").tools).toEqual(
+      expect.arrayContaining([...(request().task.allowedTools ?? [])]),
+    );
   });
 
   it("persists a routing decision for a real queued job", async () => {

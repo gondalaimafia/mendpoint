@@ -303,6 +303,24 @@ describe("Gate 7 policy router", () => {
     expect(outcome.plan.fallbacks[0]?.executorId).toBe("frontier");
   });
 
+  it("refuses tool eligibility when the task declares no tool requirement", () => {
+    // An undeclared tool requirement is unverifiable and must not read as a pass.
+    // Delete the `tool_requirement_undeclared` gate and this otherwise-eligible
+    // executor would route (action "execute") instead of handing off.
+    const outcome = routeTask({
+      task: task({ allowedTools: undefined }),
+      policy: policy(),
+      registry: registry(executor("recipe", { kind: "deterministic_recipe" })),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    if (outcome.action !== "human_handoff") throw new Error("expected handoff");
+    expect(outcome.decision.evaluations.map((item) => item.reasons).flat()).toContain(
+      "tool_requirement_undeclared",
+    );
+  });
+
   it("fails closed on tool, hard limit, health, and commercial license boundaries", () => {
     const outcome = routeTask({
       task: task(),

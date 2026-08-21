@@ -720,6 +720,12 @@ export async function runTransformerPilotLaneOnce(
           campaign.campaignId,
         ),
         sourceArtifactIds: campaign.sourceArtifactIds,
+        // Explicit classification ceiling for the internal deterministic lane.
+        // The router policy no longer authorizes every classification when no
+        // source policy is declared, so the internal lane declares the maximum
+        // it is trusted to process locally (no external egress). An adaptive
+        // external route overrides this with its own cleared maximum below.
+        classification: "confidential",
         ...(adaptiveAdapter
           ? {
               classification: adaptiveAdapter.policy.maximumDataClassification,
