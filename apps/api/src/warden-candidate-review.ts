@@ -34,6 +34,7 @@ import {
   sealWardenCandidateApproval,
 } from "./warden-candidate.js";
 import { isHumanWardenReviewer } from "./warden-review-auth.js";
+import { assertDelegatedPrVerificationApprovalAuthority } from "@mendpoint/worker/delegated-pr-verification-job";
 
 type AuditEvent = Omit<Parameters<typeof recordAudit>[1], "tenantId" | "principalId" | "apiKeyId" | "requestId">;
 export type WardenCandidateReviewAudit = (c: Context<ApiEnv>, event: AuditEvent) => void;
@@ -87,6 +88,9 @@ const WARDEN_REVIEW_ERRORS = [
     "warden_candidate_tenant_root_escape",
     "warden_candidate_workspace_escape",
     "warden_candidate_workspace_invalid",
+    "delegated_pr_verification_authority_invalid",
+    "delegated_pr_verification_failed",
+    "delegated_pr_verification_pending",
     "warden_ci_update_not_authorized",
     "warden_ci_update_conflict",
     "warden_ci_repair_rebind_not_authorized",
@@ -273,6 +277,16 @@ export function registerWardenCandidateReviewRoutes(
       if (!candidateDigest || !candidateManifestSha256) {
         return mappedErrorResponse(c, new Error("warden_candidate_approval_binding_invalid"), WARDEN_REVIEW_ERRORS);
       }
+      if (!run.job_id) {
+        return mappedErrorResponse(c, new Error("warden_candidate_source_job_missing"), WARDEN_REVIEW_ERRORS);
+      }
+      try {
+        assertDelegatedPrVerificationApprovalAuthority(db, {
+          tenantId, runId: run.id, sourceJobId: run.job_id, candidateDigest,
+        });
+      } catch (error) {
+        return mappedErrorResponse(c, error, WARDEN_REVIEW_ERRORS);
+      }
       try {
         seal = await sealApproval({
           tenantId, repoPath: run.repo_path, status: run.status, resultJson: run.result_json,
@@ -303,6 +317,12 @@ export function registerWardenCandidateReviewRoutes(
       }
       run = getAgentRun(db, run.id, tenantId)!;
       if (run.status !== "candidate_ready") throw new Error("warden_candidate_review_conflict");
+      if (body.decision === "approve") {
+        if (!run.job_id) throw new Error("warden_candidate_source_job_missing");
+        assertDelegatedPrVerificationApprovalAuthority(db, {
+          tenantId, runId: run.id, sourceJobId: run.job_id, candidateDigest,
+        });
+      }
       let reviewedResult: Record<string, unknown>;
       if (body.decision === "regenerate") {
         if (!run.job_id) throw new Error("warden_candidate_source_job_missing");

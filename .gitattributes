@@ -1,4 +1,9 @@
+.gitattributes text eol=lf
 *.sh text eol=lf
 docs/website-upload/** text eol=lf
 docs/authority/Mendpoint_CODEX_Change_Graph_Intelligence_Prompt.md -text
 docs/authority/Codex_Master_Prompt_Integrate_Graphify_Into_the_Mendpoint_Change_Graph.md -text
+apps/worker/src/delegated-pr-verification-job.ts text eol=lf
+apps/worker/src/delegated-pr-verification-job.test.ts text eol=lf
+packages/pipeline/src/delegated-pr-verification-operation.ts text eol=lf
+packages/pipeline/src/delegated-pr-verification-operation.test.ts text eol=lf

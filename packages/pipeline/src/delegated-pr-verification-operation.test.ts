@@ -9,6 +9,7 @@ import {
 } from "./delegated-pr-candidate-operation.js";
 import {
   delegatedPrVerificationResultDigest,
+  readDelegatedPrVerificationTerminal,
   runDelegatedPrVerification,
   type DelegatedPrVerificationExchange,
   type DelegatedPrVerificationResolution,
@@ -143,6 +144,40 @@ async function fixture() {
 }
 
 describe("delegated PR verification operation", () => {
+  it("revalidates the configured authority, candidate, execution artifacts, and evidence for approval", async () => {
+    const { db, input, dependencies } = await fixture();
+    const completed = await runDelegatedPrVerification(db, input, dependencies);
+    expect(completed.status).toBe("completed");
+    if (completed.status !== "completed") throw new Error("expected completed verification");
+    const authority = {
+      candidateProducerPrincipalId: dependencies.candidateProducerPrincipalId,
+      candidateProducerVersion: dependencies.candidateProducerVersion,
+      authorityId: dependencies.authorityId,
+      authorityDigest: dependencies.authorityDigest,
+      executionAuthorityId: dependencies.executionAuthorityId,
+      mendpointRevision: dependencies.mendpointRevision,
+      policy: dependencies.policy,
+    };
+    expect(readDelegatedPrVerificationTerminal(db, {
+      tenantId: input.tenantId,
+      runId: input.runId,
+      correlationId: input.correlationId,
+      candidateArtifactId: input.candidateArtifactId,
+      idempotencyKey: input.idempotencyKey,
+      completedAt: completed.completedAt,
+    }, authority)).toEqual(completed);
+
+    expect(() => readDelegatedPrVerificationTerminal(db, {
+      tenantId: input.tenantId,
+      runId: input.runId,
+      correlationId: input.correlationId,
+      candidateArtifactId: input.candidateArtifactId,
+      idempotencyKey: input.idempotencyKey,
+      completedAt: completed.completedAt,
+    }, { ...authority, authorityDigest: `sha256:${hex("8")}` }))
+      .toThrow("delegated_pr_verification_idempotency_conflict");
+  });
+
   it("persists two independent executions atomically and replays without another effect", async () => {
     const { db, input, verifier, dependencies, candidate } = await fixture();
     const first = await runDelegatedPrVerification(db, input, dependencies);

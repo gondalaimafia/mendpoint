@@ -100,11 +100,7 @@ export type RunDelegatedPrVerificationInput = Readonly<{
   requestedAt: string;
 }>;
 
-export type DelegatedPrVerificationDependencies = Readonly<{
-  enabled?: boolean;
-  workerId: string;
-  timeoutMs: number;
-  leaseMs: number;
+export type DelegatedPrVerificationAuthority = Readonly<{
   candidateProducerPrincipalId: string;
   candidateProducerVersion: string;
   authorityId: string;
@@ -112,6 +108,13 @@ export type DelegatedPrVerificationDependencies = Readonly<{
   executionAuthorityId: string;
   mendpointRevision: string;
   policy: DelegatedPrVerificationPolicy;
+}>;
+
+export type DelegatedPrVerificationDependencies = DelegatedPrVerificationAuthority & Readonly<{
+  enabled?: boolean;
+  workerId: string;
+  timeoutMs: number;
+  leaseMs: number;
   verifier: DelegatedPrVerifier;
   verifyReceipt(receipt: DelegatedPrVerificationReceipt): boolean;
 }>;
@@ -330,7 +333,7 @@ function snapshotDependencies(
 function loadCandidate(
   db: AppDb,
   input: RunDelegatedPrVerificationInput,
-  dependencies: DelegatedPrVerificationDependencies,
+  dependencies: DelegatedPrVerificationAuthority,
 ): Readonly<{ claims: CandidateClaims; artifact: Readonly<{ artifactId: string; sha256: string }> }> {
   const row = db.raw.prepare(
     `SELECT * FROM artifact_manifests WHERE tenant_id = ? AND id = ? AND kind = 'delegated_pr_candidate'
@@ -453,7 +456,7 @@ export function delegatedPrVerificationResultDigest(result: DelegatedPrVerificat
 function requestDigest(
   input: RunDelegatedPrVerificationInput,
   candidate: Readonly<{ claims: CandidateClaims; artifact: Readonly<{ artifactId: string; sha256: string }> }>,
-  dependencies: DelegatedPrVerificationDependencies,
+  dependencies: DelegatedPrVerificationAuthority,
 ): string {
   return `sha256:${sha256(canonical({
     schemaVersion: 1,
@@ -593,7 +596,7 @@ function validateExecution(
   execution: DelegatedPrVerificationExecution,
   role: "fail_to_pass" | "pass_to_pass",
   candidate: CandidateClaims,
-  dependencies: DelegatedPrVerificationDependencies,
+  dependencies: DelegatedPrVerificationAuthority,
 ): void {
   const expectedCommand = role === "fail_to_pass"
     ? dependencies.policy.failToPassCommandDigest : dependencies.policy.passToPassCommandDigest;
@@ -828,7 +831,7 @@ function readTerminal(
   input: RunDelegatedPrVerificationInput,
   candidate: Readonly<{ claims: CandidateClaims; artifact: Readonly<{ artifactId: string; sha256: string }> }>,
   digest: string,
-  dependencies: DelegatedPrVerificationDependencies,
+  dependencies: DelegatedPrVerificationAuthority,
 ): DelegatedPrVerificationResult | undefined {
   const events = db.raw.prepare(
     `SELECT event_type, actor_principal_id, correlation_id, payload_json FROM domain_events
@@ -912,6 +915,167 @@ function readTerminal(
     passToPass: readExecution("pass_to_pass"),
     completedAt: payload.completedAt,
   });
+}
+
+export type ReadDelegatedPrVerificationTerminalInput = Readonly<{
+  tenantId: string;
+  runId: string;
+  correlationId: string;
+  candidateArtifactId: string;
+  idempotencyKey: string;
+  completedAt: string;
+}>;
+
+export type DeriveDelegatedPrVerificationAuthorityInput = Readonly<{
+  tenantId: string;
+  runId: string;
+  candidateArtifactId: string;
+  failToPassArtifactId: string;
+  passToPassArtifactId: string;
+}>;
+
+export function deriveDelegatedPrVerificationAuthority(
+  db: AppDb,
+  unsafeInput: DeriveDelegatedPrVerificationAuthorityInput,
+): DelegatedPrVerificationAuthority {
+  const input = snapshotPlain(unsafeInput, "delegated_pr_verification_authority_invalid");
+  if (!exactKeys(input, ["tenantId", "runId", "candidateArtifactId", "failToPassArtifactId",
+    "passToPassArtifactId"]) || [input.tenantId, input.runId, input.candidateArtifactId,
+      input.failToPassArtifactId, input.passToPassArtifactId].some((value) => !ID.test(value)) ||
+      input.failToPassArtifactId === input.passToPassArtifactId) {
+    throw new Error("delegated_pr_verification_authority_invalid");
+  }
+  const candidate = db.raw.prepare(
+    `SELECT producer_principal_id FROM artifact_manifests WHERE tenant_id = ? AND id = ?
+       AND kind = 'delegated_pr_candidate' AND schema_version = 1`,
+  ).get(input.tenantId, input.candidateArtifactId) as { producer_principal_id: string | null } | undefined;
+  const candidateEvidence = db.raw.prepare(
+    `SELECT producer_principal_id, tool, tool_version, commit_sha, verdict FROM evidence_records
+       WHERE tenant_id = ? AND subject_type = 'delegated_pr_candidate' AND subject_id = ?
+       AND artifact_id = ? ORDER BY created_at, id`,
+  ).all(input.tenantId, input.runId, input.candidateArtifactId) as Array<{
+    producer_principal_id: string | null; tool: string; tool_version: string | null;
+    commit_sha: string | null; verdict: string;
+  }>;
+  const candidateRecord = candidateEvidence[0];
+  if (!candidate?.producer_principal_id || candidateEvidence.length !== 1 || !candidateRecord ||
+      candidateRecord.producer_principal_id !== candidate.producer_principal_id ||
+      candidateRecord.tool !== "mendpoint-candidate-authority" || candidateRecord.verdict !== "passed" ||
+      !candidateRecord.tool_version || candidateRecord.tool_version !== candidateRecord.commit_sha ||
+      !REVISION.test(candidateRecord.tool_version)) {
+    throw new Error("delegated_pr_verification_authority_invalid");
+  }
+  const execution = (artifactId: string, role: "fail_to_pass" | "pass_to_pass") => {
+    const row = db.raw.prepare(
+      `SELECT sha256, size_bytes, content_text, producer_principal_id FROM artifact_manifests
+         WHERE tenant_id = ? AND id = ? AND kind = 'delegated_pr_verification_execution'
+         AND schema_version = 1 AND media_type = ?`,
+    ).get(input.tenantId, artifactId, MEDIA_TYPE) as
+      | { sha256: string; size_bytes: number; content_text: string | null; producer_principal_id: string | null }
+      | undefined;
+    if (!row?.content_text || !row.producer_principal_id || !SHA256.test(row.sha256) ||
+        sha256(row.content_text) !== row.sha256 || Buffer.byteLength(row.content_text, "utf8") !== row.size_bytes) {
+      throw new Error("delegated_pr_verification_authority_invalid");
+    }
+    let content: Record<string, unknown>;
+    try { content = JSON.parse(row.content_text) as Record<string, unknown>; }
+    catch { throw new Error("delegated_pr_verification_authority_invalid"); }
+    const observed = content.execution as DelegatedPrVerificationExecution;
+    if (canonical(content) !== row.content_text || content.schemaVersion !== 1 ||
+        content.kind !== "delegated_pr_verification_execution" || content.role !== role ||
+        content.tenantId !== input.tenantId || content.runId !== input.runId || !observed ||
+        observed.authorityId !== row.producer_principal_id || !ID.test(String(content.executionAuthorityId ?? "")) ||
+        !DIGEST.test(observed.authorityDigest) || !DIGEST.test(observed.commandDigest) ||
+        !ID.test(observed.sandboxBackend)) {
+      throw new Error("delegated_pr_verification_authority_invalid");
+    }
+    const evidence = db.raw.prepare(
+      `SELECT producer_principal_id, tool, tool_version, commit_sha, verdict FROM evidence_records
+         WHERE tenant_id = ? AND subject_type = 'delegated_pr_verification' AND subject_id = ?
+         AND artifact_id = ? AND input_artifact_id = ? ORDER BY created_at, id`,
+    ).all(input.tenantId, `${input.runId}:${role}`, artifactId, input.candidateArtifactId) as Array<{
+      producer_principal_id: string | null; tool: string; tool_version: string | null;
+      commit_sha: string | null; verdict: string;
+    }>;
+    const record = evidence[0];
+    if (evidence.length !== 1 || !record || record.producer_principal_id !== row.producer_principal_id ||
+        record.tool !== "mendpoint-independent-verifier" || record.tool_version !== observed.authorityDigest ||
+        !record.commit_sha || !REVISION.test(record.commit_sha) || record.verdict !== "passed") {
+      throw new Error("delegated_pr_verification_authority_invalid");
+    }
+    return Object.freeze({
+      authorityId: observed.authorityId,
+      authorityDigest: observed.authorityDigest,
+      commandDigest: observed.commandDigest,
+      executionAuthorityId: String(content.executionAuthorityId),
+      sandboxBackend: observed.sandboxBackend,
+      mendpointRevision: record.commit_sha,
+    });
+  };
+  const failToPass = execution(input.failToPassArtifactId, "fail_to_pass");
+  const passToPass = execution(input.passToPassArtifactId, "pass_to_pass");
+  if (failToPass.authorityId !== passToPass.authorityId ||
+      failToPass.authorityDigest !== passToPass.authorityDigest ||
+      failToPass.executionAuthorityId !== passToPass.executionAuthorityId ||
+      failToPass.sandboxBackend !== passToPass.sandboxBackend ||
+      failToPass.mendpointRevision !== passToPass.mendpointRevision) {
+    throw new Error("delegated_pr_verification_authority_invalid");
+  }
+  return deepFreeze({
+    candidateProducerPrincipalId: candidate.producer_principal_id,
+    candidateProducerVersion: candidateRecord.tool_version,
+    authorityId: failToPass.authorityId,
+    authorityDigest: failToPass.authorityDigest,
+    executionAuthorityId: failToPass.executionAuthorityId,
+    mendpointRevision: failToPass.mendpointRevision,
+    policy: {
+      failToPassCommandDigest: failToPass.commandDigest,
+      passToPassCommandDigest: passToPass.commandDigest,
+      sandboxBackend: failToPass.sandboxBackend,
+    },
+  });
+}
+
+export function readDelegatedPrVerificationTerminal(
+  db: AppDb,
+  unsafeInput: ReadDelegatedPrVerificationTerminalInput,
+  unsafeAuthority: DelegatedPrVerificationAuthority,
+): DelegatedPrVerificationResult | undefined {
+  const input = snapshotPlain(unsafeInput, "delegated_pr_verification_authority_invalid");
+  const authority = snapshotPlain(unsafeAuthority, "delegated_pr_verification_authority_invalid");
+  if (!exactKeys(input, ["tenantId", "runId", "correlationId", "candidateArtifactId",
+    "idempotencyKey", "completedAt"]) ||
+      !exactKeys(authority, ["candidateProducerPrincipalId", "candidateProducerVersion", "authorityId",
+        "authorityDigest", "executionAuthorityId", "mendpointRevision", "policy"]) ||
+      !exactKeys(authority.policy, ["failToPassCommandDigest", "passToPassCommandDigest", "sandboxBackend"]) ||
+      [input.tenantId, input.runId, input.correlationId, input.candidateArtifactId, input.idempotencyKey,
+        authority.candidateProducerPrincipalId, authority.authorityId, authority.executionAuthorityId,
+        authority.policy.sandboxBackend].some((value) => !ID.test(value)) ||
+      !timestamp(input.completedAt) || !REVISION.test(authority.candidateProducerVersion) ||
+      !REVISION.test(authority.mendpointRevision) || !DIGEST.test(authority.authorityDigest) ||
+      !DIGEST.test(authority.policy.failToPassCommandDigest) ||
+      !DIGEST.test(authority.policy.passToPassCommandDigest) ||
+      authority.authorityId === authority.candidateProducerPrincipalId ||
+      authority.authorityId === authority.executionAuthorityId) {
+    throw new Error("delegated_pr_verification_authority_invalid");
+  }
+  const runInput: RunDelegatedPrVerificationInput = Object.freeze({
+    tenantId: input.tenantId,
+    runId: input.runId,
+    correlationId: input.correlationId,
+    candidateArtifactId: input.candidateArtifactId,
+    idempotencyKey: input.idempotencyKey,
+    requestedAt: input.completedAt,
+  });
+  const principal = db.raw.prepare(
+    `SELECT id FROM principals WHERE tenant_id = ? AND id = ? AND kind = 'service'
+       AND created_at <= ? AND (expires_at IS NULL OR expires_at > ?)
+       AND (revoked_at IS NULL OR revoked_at > ?)`,
+  ).get(input.tenantId, authority.authorityId, input.completedAt, input.completedAt, input.completedAt);
+  if (!principal) throw new Error("delegated_pr_verification_authority_invalid");
+  const candidate = loadCandidate(db, runInput, authority);
+  const digest = requestDigest(runInput, candidate, authority);
+  return readTerminal(db, runInput, candidate, digest, authority);
 }
 
 export async function runDelegatedPrVerification(
