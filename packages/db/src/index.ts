@@ -47,6 +47,8 @@ export * from "./mission-exceptions.js";
 export * from "./mission-verification.js";
 export * from "./mission-artifacts.js";
 export * from "./mission-timeline.js";
+export * from "./mission-handoff.js";
+export * from "./task-ownership.js";
 
 export type AppDb = {
   raw: DatabaseSync;

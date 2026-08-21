@@ -67,8 +67,10 @@ import {
   listVersionsForProvider,
   settleActiveWardenModelReservationsForFence,
   settleWardenCiRepairWithoutCandidate,
+  getMission,
   type AppDb,
   type FeedScheduleRow,
+  type Mission,
 } from "@mendpoint/db";
 import {
   listCatalogFeeds,
@@ -638,6 +640,13 @@ type WardenJobPayload = Readonly<{
   reviewFeedback?: string;
   supersedesRunId?: string;
   reviewerPrincipalId?: string;
+  // The mission this job belongs to, if any. Carried forward across a regenerate
+  // so a resumed run reads the compiled envelope for its mission (decisions,
+  // exceptions, verification, history) instead of only tenant organization
+  // memory. A Fettler repair job on current main carries none (the Fettler ->
+  // mission binding is a separate, acknowledged gap), so this stays undefined and
+  // the mission-scoped sections honestly report `no_mission_bound`.
+  missionId?: string;
   source?: Readonly<{
     pipelineJobId: string;
     changeId: string;
@@ -3021,12 +3030,21 @@ async function processJobsOnceUnfenced(
               let inheritedContext: InheritedContextInjection | undefined;
               if (inheritedContextEnabled(process.env)) {
                 try {
+                  // Resume with the compiled envelope for this job's mission when
+                  // one is bound (carried forward across a regenerate). A Fettler
+                  // repair job on current main carries no missionId, so this stays
+                  // null and the mission-scoped sections report `no_mission_bound`
+                  // while tenant organization memory still reaches the model. A
+                  // present-but-unresolvable id is a real fault: fail closed (skip
+                  // injection, log it) rather than compile as if no mission.
+                  let mission: Mission | null = null;
+                  if (payload.missionId) {
+                    mission = getMission(db, job.tenant_id, payload.missionId) ?? null;
+                    if (!mission) throw new Error(`mission_not_found:${payload.missionId}`);
+                  }
                   const compiled = buildMissionContext(db, {
                     tenantId: job.tenant_id,
-                    // A Fettler agent.run job carries no campaign/mission id, so it
-                    // is not mission-bound; the tenant organization memory still
-                    // applies. Binding a Fettler job to a mission is a separate gap.
-                    mission: null,
+                    mission,
                     task: {
                       taskId: job.id,
                       capability: (payload.mode ?? "repair") === "feature" ? "feature" : "repair",
