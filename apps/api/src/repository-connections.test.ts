@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -12,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
   getConsumerRepo,
@@ -43,6 +44,7 @@ import {
 } from "./repository-connections.js";
 
 const roots: string[] = [];
+const canonicalRoots: string[] = [];
 const dbs: AppDb[] = [];
 const previousReposDir = process.env.MENDPOINT_REPOS_DIR;
 const previousNodeEnv = process.env.NODE_ENV;
@@ -158,10 +160,22 @@ function git(root: string, ...args: string[]): string {
   }).trim();
 }
 
-function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "mendpoint-connection-"));
-  roots.push(root);
-  const repositoryPath = join(root, "customer-repo");
+// Building the customer git repository costs ~8 subprocess spawns. Doing that in
+// every test in this file stampedes git under parallel CI load, which is what
+// tips these filesystem-heavy tests past their timeouts even though each passes
+// in isolation. Build one canonical repository the first time it is needed, then
+// hand every test an isolated on-disk copy (a plain recursive file copy, no
+// subprocess) with its own repos dir and database. The committed tree, exec
+// bits, and commit SHA are identical to the previous per-test build, and no
+// absolute path is stored inside .git, so each copy is a faithful, independent
+// repository a test may freely mutate.
+let canonicalRepositoryCache: { path: string; sha: string } | undefined;
+
+function canonicalRepository(): { path: string; sha: string } {
+  if (canonicalRepositoryCache) return canonicalRepositoryCache;
+  const home = mkdtempSync(join(tmpdir(), "mendpoint-connection-canonical-"));
+  canonicalRoots.push(home);
+  const repositoryPath = join(home, "customer-repo");
   mkdirSync(join(repositoryPath, ".github", "workflows"), { recursive: true });
   mkdirSync(join(repositoryPath, "scripts"), { recursive: true });
   git(repositoryPath, "init", "-b", "main");
@@ -179,11 +193,21 @@ function fixture() {
   if (git(repositoryPath, "status", "--porcelain")) {
     throw new Error("repository_connection_fixture_not_clean");
   }
+  canonicalRepositoryCache = { path: repositoryPath, sha: git(repositoryPath, "rev-parse", "HEAD") };
+  return canonicalRepositoryCache;
+}
+
+function fixture() {
+  const source = canonicalRepository();
+  const root = mkdtempSync(join(tmpdir(), "mendpoint-connection-"));
+  roots.push(root);
+  const repositoryPath = join(root, "customer-repo");
+  cpSync(source.path, repositoryPath, { recursive: true });
   process.env.MENDPOINT_REPOS_DIR = root;
   process.env.NODE_ENV = "test";
   const db = createDb(join(root, "connections.sqlite"));
   dbs.push(db);
-  return { root, repositoryPath, db, sha: git(repositoryPath, "rev-parse", "HEAD") };
+  return { root, repositoryPath, db, sha: source.sha };
 }
 
 function makeFixtureTreeWritable(root: string): void {
@@ -207,7 +231,23 @@ function makeFixtureTreeWritable(root: string): void {
 
 function removeFixtureRoot(root: string): void {
   makeFixtureTreeWritable(root);
-  rmSync(root, { recursive: true, force: true });
+  // On Windows an open handle or an antivirus scan can briefly lock a file as
+  // EPERM/EBUSY, which rmSync's own maxRetries does not retry. Retry manually so
+  // the lock clears instead of leaking the repository tree; a directory that
+  // stays locked past the budget still throws rather than being swallowed.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rmSync(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY") && attempt < 50) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+        continue;
+      }
+      throw error;
+    }
+  }
 }
 
 afterEach(() => {
@@ -219,6 +259,16 @@ afterEach(() => {
     const root = roots.pop();
     if (root) {
       removeFixtureRoot(root);
+    }
+  }
+});
+
+afterAll(() => {
+  canonicalRepositoryCache = undefined;
+  while (canonicalRoots.length) {
+    const home = canonicalRoots.pop();
+    if (home) {
+      removeFixtureRoot(home);
     }
   }
 });

@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  linkSync,
   copyFileSync,
   chmodSync,
 } from "node:fs";
@@ -25,16 +26,35 @@ import {
 import { applyActions, RepairPolicyError } from "./apply.js";
 
 const dirs: string[] = [];
+
+// A verifier this file spawns can still be releasing its working directory when
+// cleanup runs, and on Windows that surfaces as an EPERM/EBUSY that rmSync's own
+// maxRetries does not retry. Retry manually so the just-terminated child's
+// directory handle is released instead of leaking the temp tree; a directory
+// that stays locked past the budget still throws rather than being silently
+// swallowed (the prior code swallowed every failure and leaked the tree).
+function removeTreeSync(target: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rmSync(target, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY") && attempt < 50) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   while (dirs.length) {
     const d = dirs.pop();
     if (d) {
-      try {
-        rmSync(d, { recursive: true, force: true });
-      } catch {
-        /* */
-      }
+      removeTreeSync(d);
     }
   }
 });
@@ -454,8 +474,18 @@ describe("repair session", () => {
     // the customer repo's ./test script, which fails loudly if a host secret
     // reaches it, then exits 0.
     const goExe = join(bin, process.platform === "win32" ? "go.exe" : "go");
-    copyFileSync(process.execPath, goExe);
-    chmodSync(goExe, 0o755);
+    // Hard-link the ~87MB Node binary instead of copying it: the same spawnable
+    // executable, but with no large disk write that contends under parallel CI
+    // load (this test timed out at 5000ms on a loaded runner while the copy
+    // ran). A hard link shares Node's inode, which is already executable, so no
+    // chmod is needed. Fall back to a real copy across filesystems, where hard
+    // links are unavailable.
+    try {
+      linkSync(process.execPath, goExe);
+    } catch {
+      copyFileSync(process.execPath, goExe);
+      chmodSync(goExe, 0o755);
+    }
     writeFileSync(
       join(dir, "test"),
       `if (process.env.MENDPOINT_TEST_HOST_SECRET) { console.error("LEAKED_SECRET"); process.exit(3); }\n` +
