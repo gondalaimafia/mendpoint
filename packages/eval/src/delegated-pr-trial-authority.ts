@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey } from "node:crypto";
 import {
   verifyDomainEventIntegrity,
   type AppDb,
@@ -8,6 +8,7 @@ import {
   type PrincipalRow,
 } from "@mendpoint/db";
 import {
+  MENDPOINT_SOFTWARE_ATTESTATION_PREDICATE_V1,
   verifySoftwareAttestation,
   type SoftwareAttestationArtifactInput,
   type SoftwareAttestationTrustPolicy,
@@ -435,6 +436,19 @@ function requireManifest(
   return row;
 }
 
+// Canonical bytes the stored authority manifest must carry: the acceptance
+// contract itself, minus its own authorityManifest field. That field is the
+// self-reference -- its sha256 is the hash of exactly these bytes -- so it
+// cannot appear inside the bytes being hashed. Every other threshold that makes
+// acceptance meaningful (maximumProofAgeMs, maximumTotalCostUsd, allowedChangedPaths,
+// attestationProducer.trustedKeyIds, verification.authorityId, ...) is inside,
+// so the manifest sha256 the contract commits to binds all of them to a durable
+// artifact rather than leaving them as values the caller asserted about itself.
+function authorityManifestContent(contract: DelegatedPrAcceptanceContract): string {
+  const { authorityManifest: _self, ...anchored } = contract;
+  return canonical(anchored);
+}
+
 function exactArtifactSet(
   values: readonly SoftwareAttestationArtifactInput[],
 ): Set<string> {
@@ -733,7 +747,13 @@ export function createStoredDelegatedPrTrialAuthority(
         config.contract.authorityManifest,
         config.producerPrincipalId,
       );
-      if (row.kind !== "delegated_pr_acceptance_authority" || row.schema_version !== 1) {
+      // The lookup by {artifactId, sha256} plus this content comparison is what
+      // stops the acceptance contract from anchoring to nothing: the stored
+      // manifest must carry the exact contract being evaluated, so the contract's
+      // authorityManifest.sha256 cannot point at a durable artifact while the
+      // supplied thresholds say something else. Fail closed on any mismatch.
+      if (row.kind !== "delegated_pr_acceptance_authority" || row.schema_version !== 1 ||
+          row.content_text !== authorityManifestContent(config.contract)) {
         throw new Error("delegated_pr_trial_authority_manifest_invalid");
       }
       return deepFreeze({ artifactId: row.id, sha256: row.sha256 });
@@ -741,5 +761,84 @@ export function createStoredDelegatedPrTrialAuthority(
     async now() {
       return config.verifiedAt;
     },
+  });
+}
+
+export type DelegatedPrTrialAttestationTrust = Readonly<{
+  producerPrincipalId?: string;
+  producerService?: string;
+  trustPolicy?: SoftwareAttestationTrustPolicy;
+}>;
+
+// The attestation trust anchor is read from the operator's environment, never
+// from the caller's config. An unconfigured or malformed environment returns an
+// empty record so the caller fails closed rather than trusting whatever key the
+// contract happens to name -- the same shape as
+// apps/api/src/advanced-ai-applications.ts:98.
+export function delegatedPrTrialAttestationTrustFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): DelegatedPrTrialAttestationTrust {
+  const keyId = env.MENDPOINT_DELEGATED_PR_ATTESTATION_KEY_ID;
+  const publicDer = env.MENDPOINT_DELEGATED_PR_ATTESTATION_PUBLIC_KEY_SPKI_BASE64;
+  const principalId = env.MENDPOINT_DELEGATED_PR_ATTESTATION_PRINCIPAL_ID;
+  const service = env.MENDPOINT_DELEGATED_PR_ATTESTATION_SERVICE;
+  const tenantIds = env.MENDPOINT_DELEGATED_PR_ATTESTATION_TENANT_IDS
+    ?.split(",").map((value) => value.trim()).filter(Boolean);
+  const validFrom = env.MENDPOINT_DELEGATED_PR_ATTESTATION_KEY_VALID_FROM;
+  const validUntil = env.MENDPOINT_DELEGATED_PR_ATTESTATION_KEY_VALID_UNTIL;
+  if (![keyId, publicDer, principalId, service, validFrom, validUntil].every((value) => value?.trim()) ||
+      !tenantIds?.length) {
+    return {};
+  }
+  if (!Number.isFinite(Date.parse(validFrom!)) || !Number.isFinite(Date.parse(validUntil!)) ||
+      Date.parse(validFrom!) >= Date.parse(validUntil!) || new Set(tenantIds).size !== tenantIds.length) {
+    return {};
+  }
+  try {
+    const publicKey = createPublicKey({ key: Buffer.from(publicDer!, "base64"), format: "der", type: "spki" });
+    return Object.freeze({
+      producerPrincipalId: principalId!,
+      producerService: service!,
+      trustPolicy: Object.freeze({
+        resolve: (requested: string) => requested === keyId ? Object.freeze({
+          keyId: keyId!, algorithm: "ed25519" as const, publicKey, principalId: principalId!, service: service!,
+          tenantIds: Object.freeze([...tenantIds]), predicateTypes: Object.freeze([MENDPOINT_SOFTWARE_ATTESTATION_PREDICATE_V1]),
+          validFrom: validFrom!, validUntil: validUntil!, revokedAt: null,
+        }) : null,
+      }),
+    });
+  } catch {
+    return {};
+  }
+}
+
+// Production entry point: derive the trust policy and producer principal from the
+// environment and refuse to build an authority when they are absent. The contract
+// (with its thresholds) still arrives from config, but it is now anchored on both
+// sides -- the durable authority manifest must carry it (see manifest() above) and
+// its declared producer must match the operator-configured principal -- so widening
+// a threshold in config alone can no longer yield delegatedPrAccepted: true.
+export function createStoredDelegatedPrTrialAuthorityFromEnv(
+  db: AppDb,
+  runtime: Readonly<{
+    contract: DelegatedPrAcceptanceContract;
+    verifiedAt: string;
+    maximumCleanupAgeMs?: number;
+  }>,
+  env: NodeJS.ProcessEnv = process.env,
+): DelegatedPrAcceptanceAuthority {
+  const trust = delegatedPrTrialAttestationTrustFromEnv(env);
+  if (!trust.trustPolicy || !trust.producerPrincipalId || !trust.producerService) {
+    throw new Error("delegated_pr_trial_authority_trust_unconfigured");
+  }
+  return createStoredDelegatedPrTrialAuthority(db, {
+    contract: runtime.contract,
+    producerPrincipalId: trust.producerPrincipalId,
+    producerService: trust.producerService,
+    producerVersion: runtime.contract.mendpointRevision,
+    verifiedAt: runtime.verifiedAt,
+    maximumCleanupAgeMs: runtime.maximumCleanupAgeMs,
+    cleanupTrustPolicy: trust.trustPolicy,
+    trialTrustPolicy: trust.trustPolicy,
   });
 }

@@ -46,7 +46,7 @@ function structural(): StructuralExtractionV1 {
     language: "typescript", lineStart, lineEnd, isTest, epistemicState,
     provenance: provenance(name, filePath, `L${lineStart}-L${lineEnd}`, epistemicState === "observed" ? "EXTRACTED" : epistemicState === "inferred" ? "INFERRED" : "AMBIGUOUS"),
   });
-  const createCharge = node("createCharge", "src/client.ts", 3, 5);
+  const createCharge = node("createCharge", "src/client.ts", 3, 5, false, "ambiguous");
   const checkout = node("checkout", "src/checkout.ts", 2, 4, false, "inferred");
   const testCheckout = node("testCheckout", "test/checkout.test.ts", 2, 4, true, "ambiguous");
   const edge = (source: typeof createCharge, target: typeof createCharge, filePath: string, line: number) => ({
@@ -70,7 +70,7 @@ function structural(): StructuralExtractionV1 {
     nodes: [createCharge, checkout, testCheckout],
     edges: [edge(checkout, createCharge, "src/checkout.ts", 3), edge(testCheckout, checkout, "test/checkout.test.ts", 3)],
     ambiguities: [], warnings: [],
-    metrics: { elapsedMs: 1, normalizationMs: 1, peakMemoryBytes: 1_024, nodeCount: 3, edgeCount: 2, languageCount: 1, confidenceDistribution: { observed: 3, inferred: 1, ambiguous: 1 } },
+    metrics: { elapsedMs: 1, normalizationMs: 1, peakMemoryBytes: 1_024, nodeCount: 3, edgeCount: 2, languageCount: 1, confidenceDistribution: { observed: 2, inferred: 1, ambiguous: 2 } },
   };
   return { ...withoutDigest, contentDigest: structuralContentDigest(withoutDigest) };
 }
@@ -101,6 +101,18 @@ describe("Graphify normalized structure to Stripe Fettler impact", () => {
     expect(publication.entities.find((entity) => entity.label === "testCheckout")?.confidenceBasis).toBe("static_analysis_low");
     expect(publication.entities.filter((entity) => ["checkout", "testCheckout"].includes(entity.label)).every(
       (entity) => entity.confidenceBasis !== "deterministic_exact",
+    )).toBe(true);
+    // The seed internal_sdk_method is the anchor of every impact path. Its
+    // ambiguous structural source must be carried honestly, not stamped exact:
+    // the confidence basis, the extractor attribution, and the evidence refs all
+    // derive from the structural source, exactly as the caller entities above.
+    const seedEntity = publication.entities.find((entity) => entity.kind === "internal_sdk_method" && entity.label === "createCharge");
+    expect(seedEntity?.confidenceBasis).toBe("static_analysis_low");
+    expect(seedEntity?.confidenceBasis).not.toBe("deterministic_exact");
+    expect(seedEntity?.extractor.id).toBe("graphify");
+    expect(seedEntity?.evidenceRefs.some((ref) => ref.startsWith("structural-extraction:sha256:"))).toBe(true);
+    expect(publication.relationships.filter((relationship) => relationship.kind === "uses_sdk_method").every(
+      (relationship) => relationship.confidenceBasis === "static_analysis_low",
     )).toBe(true);
     db.raw.close();
   });
