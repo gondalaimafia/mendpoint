@@ -162,6 +162,7 @@ const ENV_KEYS = [
   "OPENAI_BASE_URL",
   "LLM_AGENT_MODEL",
   "MENDPOINT_LIVE_APPROVED_MODEL",
+  "MENDPOINT_LIVE_APPROVED_HOST",
   "MENDPOINT_LIVE_EVAL_MAX_USD",
   "NODE_ENV",
 ] as const;
@@ -180,6 +181,11 @@ describe("Warden live eval runner", () => {
     delete process.env.LLM_AGENT_MODEL;
     delete process.env.MENDPOINT_LIVE_APPROVED_MODEL;
     delete process.env.MENDPOINT_LIVE_EVAL_MAX_USD;
+    // The approved host is pinned out of band (task 1). Default it to the host
+    // of the https endpoint the majority of cases configure; cases that point
+    // LLM_AGENT_URL at a mock server override it to that server's host, and the
+    // approved-host control cases delete or diverge it explicitly.
+    process.env.MENDPOINT_LIVE_APPROVED_HOST = "models.example";
     process.env.NODE_ENV = "test";
   });
 
@@ -227,6 +233,34 @@ describe("Warden live eval runner", () => {
     process.env.LLM_AGENT_MODEL = "some-unapproved-model";
     await expect(runWardenLiveEval({ repetitions: 1 }))
       .rejects.toThrow("warden_model_not_approved");
+  });
+
+  it("refuses to run when MENDPOINT_LIVE_APPROVED_HOST is not pinned", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
+    process.env.LLM_AGENT_MODEL = APPROVED_MODEL;
+    // The pin must be supplied out of band; deriving it from the endpoint would
+    // compare a value against itself and can never fail.
+    delete process.env.MENDPOINT_LIVE_APPROVED_HOST;
+    await expect(runWardenLiveEval({ repetitions: 1 }))
+      .rejects.toThrow("warden_live_eval_approved_host_required");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to run when the endpoint host differs from the approved host", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
+    process.env.LLM_AGENT_MODEL = APPROVED_MODEL;
+    // Pin a host that is NOT the endpoint host: the run must fail closed before
+    // any provider call rather than proceeding against an unapproved host.
+    process.env.MENDPOINT_LIVE_APPROVED_HOST = "approved.example";
+    await expect(runWardenLiveEval({ repetitions: 1 }))
+      .rejects.toThrow("warden_live_eval_endpoint_host_not_approved");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("runs the approved contributor tier model without rejecting it", async () => {
@@ -289,6 +323,7 @@ describe("Warden live eval runner", () => {
     });
     process.env.OPENAI_API_KEY = "test-key";
     process.env.LLM_AGENT_URL = `http://127.0.0.1:${port}/v1`;
+    process.env.MENDPOINT_LIVE_APPROVED_HOST = `127.0.0.1:${port}`;
     process.env.LLM_AGENT_MODEL = APPROVED_MODEL;
     try {
       await expect(runWardenLiveEval({
@@ -310,6 +345,7 @@ describe("Warden live eval runner", () => {
     });
     process.env.OPENAI_API_KEY = "test-key";
     process.env.LLM_AGENT_URL = `http://127.0.0.1:${port}/v1`;
+    process.env.MENDPOINT_LIVE_APPROVED_HOST = `127.0.0.1:${port}`;
     process.env.LLM_AGENT_MODEL = APPROVED_MODEL;
     try {
       const report = await runWardenLiveEval({ repetitions: 1 });
@@ -367,6 +403,7 @@ describe("Warden live eval runner", () => {
     });
     process.env.OPENAI_API_KEY = "test-key";
     process.env.LLM_AGENT_URL = `http://127.0.0.1:${port}/v1`;
+    process.env.MENDPOINT_LIVE_APPROVED_HOST = `127.0.0.1:${port}`;
     process.env.LLM_AGENT_MODEL = APPROVED_MODEL;
     try {
       const report = await runWardenLiveEval({ repetitions: 1 });
@@ -658,6 +695,7 @@ describe("Warden live eval runner", () => {
     });
     process.env.OPENAI_API_KEY = "test-key";
     process.env.LLM_AGENT_URL = `http://127.0.0.1:${port}/v1`;
+    process.env.MENDPOINT_LIVE_APPROVED_HOST = `127.0.0.1:${port}`;
     process.env.LLM_AGENT_MODEL = APPROVED_MODEL;
     try {
       const report = await runWardenLiveEval({ repetitions: 1 });
@@ -677,6 +715,7 @@ describe("Warden live eval runner", () => {
     });
     process.env.OPENAI_API_KEY = "test-key";
     process.env.LLM_AGENT_URL = `http://127.0.0.1:${port}/v1`;
+    process.env.MENDPOINT_LIVE_APPROVED_HOST = `127.0.0.1:${port}`;
     process.env.LLM_AGENT_MODEL = APPROVED_MODEL;
     try {
       const report = await runWardenLiveEval({ repetitions: 1 });

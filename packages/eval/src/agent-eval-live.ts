@@ -572,8 +572,10 @@ function trialSignature(trial: LiveEvalTrial): string {
  * with MENDPOINT_LIVE_EVAL_MAX_USD) and aborts before the accumulated spend can
  * exceed it. The configured model id must equal the approved allowlist model
  * (MENDPOINT_LIVE_APPROVED_MODEL); an unapproved model fails closed before any
- * call. Provider rate limits and typed transient delivery failures are backed
- * off within bounded retries, never spinning.
+ * call. The endpoint host must equal the host pinned out of band via
+ * MENDPOINT_LIVE_APPROVED_HOST; an unpinned or mismatched host fails closed
+ * before any call. Provider rate limits and typed transient delivery failures
+ * are backed off within bounded retries, never spinning.
  */
 export async function runWardenLiveEval(
   options: RunWardenLiveEvalOptions = {},
@@ -589,8 +591,22 @@ export async function runWardenLiveEval(
   if (resolveAgentModelName(env) !== approvedModel) {
     throw new Error("warden_model_not_approved");
   }
+  // Approved-host gate. The host must be pinned OUT OF BAND via
+  // MENDPOINT_LIVE_APPROVED_HOST, not derived from the endpoint the run will
+  // use: deriving `approved.host` from `endpoint` compares a value against
+  // itself downstream (LiveEvalAccounting) and can never fail. Mirror the
+  // sibling lane's fail-closed shape (resolveLiveLaneConfig in live-model-eval)
+  // and refuse — never proceed — when the pin is absent, then compare the
+  // resolved endpoint host against the independent pin.
+  const approvedHost = env.MENDPOINT_LIVE_APPROVED_HOST?.trim();
+  if (!approvedHost) {
+    throw new Error("warden_live_eval_approved_host_required");
+  }
+  if (new URL(endpoint).host !== approvedHost) {
+    throw new Error("warden_live_eval_endpoint_host_not_approved");
+  }
   const approved: LiveModelApprovedConfig = Object.freeze({
-    host: new URL(endpoint).host,
+    host: approvedHost,
     model: approvedModel,
   });
   const repetitions = boundedRepetitions(options.repetitions);

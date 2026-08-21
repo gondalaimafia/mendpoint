@@ -403,13 +403,86 @@ fail, and restoring it.
 | `gradeBenchmark` empty-cohort guard | "an empty cohort throws rather than grading cleanly to a flattering zero" |
 | cohort/key digest binding | "grading a truncated cohort against the full key throws a digest mismatch" |
 
-## 9. The successor: a live-model lane
+## 9. The successor: a live-model lane (implemented)
 
-The honest next step is a live-model lane that reuses this exact cohort and sealed
-key and measures **realized** repeat avoidance rather than the ceiling, plus real
-time and cost. It would keep every leak control here unchanged (staging without
-the key, arm-blind prompts, id-invariance) and add: a live model behind each arm,
-per-arm token and cost capture, and a grader that scores the model's actual
-output against the same sealed key. Until that lane runs, the ceiling reported
-here is the honest ceiling, and nothing above it may be stated as a product
-result.
+The honest next step named above is now **built**: a live-model third arm that
+reuses this exact cohort and sealed key and measures **realized** repeat
+avoidance rather than the ceiling. It lives in `evals/context-benchmark/`
+(`live-arm.ts`, the runner `run-live.ts`, and controls in `live-arm.test.ts`).
+
+**Only the agent changes.** The lane imports `COHORT` and `SEALED_KEY` unchanged
+from `scenarios.ts` and grades with the SAME `gradeBenchmark`/`evaluateGates`.
+The single substitution is the agent: a real model in place of the modeled
+perfect-attention chooser. A control test (`a perfect-attention model yields the
+SAME graded report as the deterministic arm`) drives the live stager with a model
+that attends perfectly and shows it reproduces the §5 ceiling exactly (headline
+and per-arm outcome metrics identical), so any live shortfall is attributable to
+imperfect attention and to nothing else — not to the arms differing in some
+unnoticed way, which is the Graphify failure this whole harness is built against.
+
+**The persistent envelope is built by the real compiler.** Each arm's prompt is
+produced by `compileAndRenderMissionContext`
+(`packages/pipeline/src/mission-context-compiler.ts`) — the shipped compiler and
+renderer, not the modeled stand-in — from that arm's reachable items. For the
+persistent arm this closes the §1.1 reporting-fidelity divergences at the point
+where they matter: the model reads the compiler's own rendered prompt. (The
+cohort carries no verification/exception/history/graph inputs, so those sections
+render honestly as `not_consulted`; the precedence-governed decisions, policy,
+and organization memory the cohort does carry are rendered by the real compiler.)
+
+**Leak-proofing, re-verified for an arm that sees rendered prompt TEXT.** Each
+arm's prompt is compiled from `availableItems(task, arm)` alone, so the stateless
+prompt text carries no persistent item (test: `a stateless live prompt contains
+no persistent item's content`; it fails if the arm filter is removed). The option
+set handed to the model is only the hazard's PUBLIC options, so the sealed answer
+cannot leak through the response schema. Each staged choice still carries the
+arm's reachable item ids, so the artifact leak gate G3 recomputes the
+persistent-item set and would catch any stateless choice that reached one.
+
+**Model output is untrusted.** It is parsed defensively and validated against the
+hazard's option set; anything else becomes an explicit no-valid-choice sentinel
+that grades as wrong (never a correct answer, and a delivery failure is never
+mistaken for one). It is never executed and never steers control flow.
+
+**Cost and safety.** A hard USD cap (`MENDPOINT_LIVE_EVAL_MAX_USD`, default
+**five dollars**, treated as a ceiling) is enforced BEFORE any call: every call
+reserves a conservative worst case and settles the measured cost, and a
+reservation that would exceed the cap is refused rather than made (a call-count
+budget is not a spend cap). An accounting failure is a safety-boundary failure
+and aborts the run rather than being swallowed. The runner prints a worst-case
+cost estimate before running and the actual spend after. For the full cohort (24
+calls, 12 hazards × 2 arms) the worst-case estimate is **≈ $0.0023**; the
+measured spend is lower.
+
+**The model and where the prompts go.** The lane runs on
+`muse-spark-1.2-contributor` (the owner-approved default). **That is a contributor
+training tier: prompts and completions submitted to it may be used by the provider
+for training.** Anyone reading a live result from this lane must know that is where
+the prompts went. This is safe here only because **every prompt is synthetic by
+construction**: it is built solely from the in-memory cohort (tenant
+`tenant-northwind`) plus neutral task/mission descriptors derived from public
+hazard fields. No repository content, no database, no real organization memory,
+and no real mission decisions reach a prompt — traced through
+`missionContextInputForTaskArm` (which reads only cohort items and stamps the
+synthetic tenant) and asserted by `carries only the arm's reachable items and the
+synthetic tenant`.
+
+**To run it** (any missing precondition skips cleanly with a stated
+not-measured reason; the lane never silently passes and never reports the modeled
+arm as live): set `OPENAI_API_KEY` (or `XAI_API_KEY`), `LLM_AGENT_URL`,
+`LLM_AGENT_MODEL=muse-spark-1.2-contributor`, and pin `MENDPOINT_LIVE_APPROVED_HOST`
+to the endpoint host out of band (the task-1 host pin), then
+`npx tsx evals/context-benchmark/run-live.ts`.
+
+**Result to date: not measured.** As of this writing the lane is built and
+verified but the paid live run has not been executed (the approved host was not
+pinned, so the lane fails closed and spends $0). No realized repeat-avoidance
+number exists yet, and the §5 ceiling stands unchanged as the honest ceiling.
+When the lane is run, report the headline plainly whatever it is: the expected
+outcome is that realized repeat avoidance is **below** the ceiling, because real
+attention is imperfect, and a result at or worse than the stateless arm on the
+conflicting-context scenario is faithful, not a defect (§1.1). Under spec v3
+§36.1, a single live run at this sample count (three previously-resolved hazards
+in the headline denominator) supports very little on its own — it is an anecdote
+about one model on one day, not a rate — and the report must say so rather than
+implying more.
