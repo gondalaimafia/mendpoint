@@ -261,6 +261,27 @@ describe("Organization Memory API routes", () => {
     expect(rows.count).toBe(0);
   });
 
+  it("rejects a delegated-actor API key presenting a human trust principal", async () => {
+    // The actual hole line 103 closes: the auth.ts delegated-actor branch lets an
+    // API key present a kind:"human" trust principal with authMethod:"api_key" and
+    // NO membership evidence. The later kind !== "human" guard cannot catch this
+    // (the principal really is human), so only the authMethod/membershipEvidence
+    // check on line 103 stops it. Deleting that line admits the write.
+    const db = fixture();
+    const app = appWith(db, {
+      tenantId: "tenant-a",
+      trustPrincipalId: "human-tenant-a",
+      authMethod: "api_key",
+    });
+    const res = await app.request("/organization-memory", {
+      method: "POST",
+      body: JSON.stringify(createBody),
+    });
+    expect(res.status).toBe(401);
+    const rows = db.raw.prepare("SELECT COUNT(*) AS count FROM organization_memory").get() as { count: number };
+    expect(rows.count).toBe(0);
+  });
+
   it("does not count two observations from the same principal as independent corroboration", async () => {
     const db = fixture();
     const memoryId = organizationMemoryId({

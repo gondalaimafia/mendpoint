@@ -6,7 +6,7 @@ import {
   type KeyLike,
 } from "node:crypto";
 import { posix } from "node:path";
-import { resolveRecipe, type RecipeReference } from "./recipe.js";
+import { containsForbiddenPathChar, resolveRecipe, type RecipeReference } from "./recipe.js";
 
 export const PROVIDER_RECIPE_SCHEMA_VERSION = "2026-08-02.v1" as const;
 
@@ -254,7 +254,7 @@ function uniqueStrings(value: unknown, path: string, max = 100): readonly string
 
 function safePath(value: unknown, path: string): string {
   const result = text(value, path, 512);
-  if (result.includes("\\") || posix.isAbsolute(result)) fail("recipe_path_invalid", path);
+  if (result.includes("\\") || posix.isAbsolute(result) || containsForbiddenPathChar(result)) fail("recipe_path_invalid", path);
   const normalized = posix.normalize(result);
   if (normalized !== result || normalized === ".." || normalized.startsWith("../")) {
     fail("recipe_path_invalid", path);

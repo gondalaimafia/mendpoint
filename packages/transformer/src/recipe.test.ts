@@ -201,6 +201,34 @@ describe("immutable Transformer recipes", () => {
     expect(() => assertRecipePathAllowed(NODE_RUNTIME_18_TO_20_RECIPE, cjkPath)).toThrow("recipe_path_not_allowed:");
   });
 
+  it("rejects line separators and the invisible tag block while keeping spaces and CJK valid", () => {
+    // U+2028 (line separator) would render one path as two lines in operator-facing
+    // output. Named by code point so no control character is embedded in source.
+    const lineSepPath = `src/before${String.fromCodePoint(0x2028)}after.js`;
+    expect(() => assertRecipePathAllowed(NODE_RUNTIME_18_TO_20_RECIPE, lineSepPath)).toThrow(
+      "recipe_path_invalid:",
+    );
+
+    // U+E0041 is in the Unicode tag block (U+E0000-U+E007F): an invisible ASCII
+    // 'A' that smuggles hidden text inside an apparently ordinary path. This is an
+    // astral code point, so the forbidden-path pattern must carry the `u` flag or
+    // it would silently not match.
+    const tagPath = `src/${String.fromCodePoint(0xe0041)}package.json`;
+    expect(() => assertRecipePathAllowed(NODE_RUNTIME_18_TO_20_RECIPE, tagPath)).toThrow(
+      "recipe_path_invalid:",
+    );
+
+    // Legitimate paths still reach the allowlist check, never rejected as invalid.
+    const spacePath = "src/my file.js";
+    const cjkPath = `src/${String.fromCodePoint(0x65e5, 0x672c, 0x8a9e)}.js`;
+    expect(() => assertRecipePathAllowed(NODE_RUNTIME_18_TO_20_RECIPE, spacePath)).toThrow(
+      "recipe_path_not_allowed:",
+    );
+    expect(() => assertRecipePathAllowed(NODE_RUNTIME_18_TO_20_RECIPE, cjkPath)).toThrow(
+      "recipe_path_not_allowed:",
+    );
+  });
+
   it("restores the exact input through verified inverse operations", () => {
     const reference = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
     const applied = applyRecipe(reference, INPUT);
