@@ -7,8 +7,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NODE_RUNTIME_18_TO_20_RECIPE } from "@mendpoint/transformer";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import {
+  bindMissionScope,
   createDb,
   insertPrincipal,
+  regaugeMissionId,
   resolveMissionForRegaugeCampaign,
   type AppDb,
 } from "@mendpoint/db";
@@ -722,6 +724,74 @@ describe("ReGauge campaign Mission wiring", () => {
       state: "created",
       regaugeCampaignId: "campaign-a",
       ownerPrincipalId: "principal-a",
+    });
+  });
+
+  it("replays campaign creation with 201 after launch has bound the Mission scope", async () => {
+    const service = open();
+    const appDb = appDbWithTenant();
+    const app = testAppWithMission(service, appDb);
+
+    const created = await app.request("/transformer/control-plane/campaigns", {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify(bundle()),
+    });
+    expect(created.status).toBe(201);
+
+    // Simulate launch binding the Mission's snapshot scope after creation. Once
+    // repository_id/snapshot_id are non-null, an exact-match re-create with
+    // repositoryId:null cannot match — the pre-fix regression the short-circuit
+    // closes.
+    const at = "2026-01-01T00:00:00.000Z";
+    appDb.raw
+      .prepare(
+        `INSERT INTO scm_connections (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+         VALUES ('conn-a','tenant-a','github','me://ref','acct','Acme',?,?)`,
+      )
+      .run(at, at);
+    appDb.raw
+      .prepare(
+        `INSERT INTO connected_repositories
+         (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch, environment, retention_days, status, created_at, updated_at)
+         VALUES ('repo-a','tenant-a','conn-a','1','acme','svc','main','main','production',30,'ready',?,?)`,
+      )
+      .run(at, at);
+    appDb.raw
+      .prepare(
+        `INSERT INTO repository_snapshots
+         (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+          submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+         VALUES ('snap-a','tenant-a','repo-a','main',?,?,'C:/tmp/snap-a','reject','reject','[]',1,?, '2026-02-01T00:00:00.000Z')`,
+      )
+      .run("1".repeat(40), "a".repeat(64), at);
+    bindMissionScope(appDb, {
+      tenantId: "tenant-a",
+      missionId: regaugeMissionId("tenant-a", "campaign-a"),
+      repositoryId: "repo-a",
+      snapshotId: "snap-a",
+      actorPrincipalId: "principal-a",
+      eventId: "scope-bound-a",
+      idempotencyKey: "scope-a",
+      correlationId: "campaign-a",
+      createdAt: at,
+    });
+
+    // The idempotent replay of the original request must still return 201, not
+    // mission_id_conflict.
+    const replay = await app.request("/transformer/control-plane/campaigns", {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify(bundle()),
+    });
+    expect(replay.status).toBe(201);
+
+    const mission = resolveMissionForRegaugeCampaign(appDb, "tenant-a", "campaign-a");
+    expect(mission).toMatchObject({
+      product: "regauge",
+      regaugeCampaignId: "campaign-a",
+      repositoryId: "repo-a",
+      snapshotId: "snap-a",
     });
   });
 

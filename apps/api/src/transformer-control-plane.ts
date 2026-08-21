@@ -20,6 +20,7 @@ import {
 import { resolveRenamedEnv } from "@mendpoint/shared";
 import {
   createMission,
+  getMission,
   getPrincipal,
   linkRegaugeCampaignToMission,
   regaugeMissionId,
@@ -907,18 +908,34 @@ export function registerTransformerControlPlaneRoutes(
               ? bundle.campaign.name.trim()
               : campaignId;
         const createdAt = missionAuthorityAt;
-        createMission(appDb, {
-          id: missionId,
-          tenantId,
-          product: "regauge",
-          triggerKind: "migration_objective",
-          objective: objectiveText.slice(0, 200),
-          ownerPrincipalId: trustPrincipalId,
-          eventId: `${missionId}-created`,
-          idempotencyKey: `mission-create-${missionId}`,
-          correlationId: campaignId,
-          createdAt,
-        });
+        // Launch may already have created this Mission and bound its snapshot
+        // scope (the mission id is derived from the same campaign id, so it is
+        // stable across writers). A replayed campaign-creation request must not
+        // re-attempt createMission then: its exact-match idempotency compares the
+        // incoming repositoryId:null against the now-bound scope, cannot match,
+        // and raises mission_id_conflict — turning a request that previously
+        // returned 201 into an error. Mirror the launch writer's getMission
+        // short-circuit: if the mission already exists for this tenant, treat
+        // creation as satisfied and only (idempotently) ensure the campaign link.
+        // Genuine write failures still surface loudly because the block is no
+        // longer wrapped in a swallowing try/catch.
+        const existingMission = getMission(appDb, tenantId, missionId);
+        if (!existingMission) {
+          createMission(appDb, {
+            id: missionId,
+            tenantId,
+            product: "regauge",
+            triggerKind: "migration_objective",
+            objective: objectiveText.slice(0, 200),
+            ownerPrincipalId: trustPrincipalId,
+            eventId: `${missionId}-created`,
+            idempotencyKey: `mission-create-${missionId}`,
+            correlationId: campaignId,
+            createdAt,
+          });
+        } else if (existingMission.product !== "regauge") {
+          throw new Error("mission_product_mismatch");
+        }
         linkRegaugeCampaignToMission(appDb, {
           tenantId,
           missionId,

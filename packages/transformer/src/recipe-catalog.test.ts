@@ -157,6 +157,20 @@ describe("signed provider recipe catalog", () => {
     ).toThrow("recipe_incompatible");
   });
 
+  it("rejects catalog signal paths carrying invisible format or tag characters", () => {
+    // safePath in recipe-catalog shares the forbidden-path set with recipe.ts so
+    // the two validators cannot drift. U+2028 (line separator) and a U+E0000-range
+    // tag character (invisible ASCII smuggling) must both be rejected. Named by
+    // code point so no control character is embedded in source.
+    const lineSep = structuredClone(fixture()) as ProviderRecipeArtifact;
+    (lineSep.detection.allOf[0] as { path: string }).path = `package${String.fromCodePoint(0x2028)}.json`;
+    expect(() => signProviderRecipe(lineSep, KEY_ID, privateKey)).toThrow("recipe_path_invalid");
+
+    const tagged = structuredClone(fixture()) as ProviderRecipeArtifact;
+    (tagged.detection.allOf[0] as { path: string }).path = `package${String.fromCodePoint(0xe0041)}.json`;
+    expect(() => signProviderRecipe(tagged, KEY_ID, privateKey)).toThrow("recipe_path_invalid");
+  });
+
   it("rejects incompatible implementation bounds and undeclared telemetry metrics", () => {
     const incompatible = structuredClone(fixture()) as ProviderRecipeArtifact;
     (incompatible.boundedEdits.allowedPaths as string[]).push("src/unbounded.ts");

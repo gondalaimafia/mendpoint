@@ -143,6 +143,34 @@ Every active memory is listable with its source and provenance, and every one is
 disableable. There is no path that creates invisible, irreversible
 personalization.
 
+## Operational status of the observation path
+
+`POST /observations` and the independent-corroboration branch of promotion are
+**not operational on this branch** — they are built and fail closed, not live.
+
+Admitting an observation requires every `sourceRefs` entry to resolve to an
+`evidence_records` row with `subject_type = "organization_memory_observation"`,
+`subject_id` equal to the memory id, `producer_principal_id` equal to the
+observing principal, and `verdict = "passed"` (enforced in
+`observationAuthority`, `packages/db/src/organization-memory.ts`). This is a
+deliberate fail-closed authority control: an observation only counts if an
+independent, verified producer vouched for it.
+
+No production code produces such a record. `insertEvidenceRecord`
+(`packages/db/src/trust.ts`) is the only writer of `evidence_records`, and no
+caller anywhere in `apps/` or `packages/` passes
+`subjectType: "organization_memory_observation"` — only test helpers mint it.
+Until a dedicated observation-evidence producer is built (the surface that turns
+an inferred convention into a verified, attributable observation), `POST
+/observations` always rejects with `organization_memory_evidence_invalid`, so no
+memory can reach ACTIVE through independent corroboration. Explicit human-created
+memory (`POST /`) and human confirmation (`POST /:memoryId/confirm` then
+`/activate`) are the only operational promotion paths today.
+
+Do not relax the evidence requirement to make the path reachable — that would
+re-open the authority gap the control closes. The path becomes operational only
+when the producer exists.
+
 ## `trainingEligible`
 
 `trainingEligible` is a field on the model. It defaults to `false` and there is

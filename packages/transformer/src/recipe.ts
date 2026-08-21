@@ -256,13 +256,27 @@ function deepFreeze<T>(value: T): T {
   return Object.freeze(value);
 }
 
-// Bidirectional and format control characters: C0 controls, DEL, zero-width and directional
-// Arabic letter mark (U+061C), marks (U+200B-U+200F), embedding/override controls
-// (U+202A-U+202E), isolates (U+2066-U+2069),
-// and the byte-order mark (U+FEFF). A right-to-left override can make an executable render as a
-// text file to an operator reading review output, so exclude the set rather than allowlisting a
-// narrow class that would reject legitimate spaces or CJK filenames.
-const FORBIDDEN_PATH_CHARS = /[\u0000-\u001F\u007F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
+// Bidirectional and format control characters, excluded because they can make a
+// path lie to an operator reading review output. Covered: C0 controls and DEL
+// (U+0000-U+001F, U+007F); soft hyphen (U+00AD); Arabic letter mark (U+061C);
+// zero-width and directional marks (U+200B-U+200F); line and paragraph
+// separators (U+2028-U+2029), which would render one path as two lines;
+// embedding/override controls (U+202A-U+202E); word joiner and invisible math
+// operators (U+2060-U+2064); deprecated format controls (U+206A-U+206F);
+// isolates (U+2066-U+2069); the byte-order mark (U+FEFF); and the Unicode tag
+// block (U+E0000-U+E007F), which can smuggle invisible ASCII inside an
+// apparently ordinary path. A right-to-left override can make an executable
+// render as a text file; a tag character can hide arbitrary text. Exclude the
+// set rather than allowlisting a narrow class that would reject legitimate
+// spaces or CJK filenames. The tag block is astral, so the pattern needs the `u`
+// flag; without it the U+E0000 range would silently not match.
+const FORBIDDEN_PATH_CHARS = /[\u0000-\u001F\u007F\u00AD\u061C\u200B-\u200F\u2028\u2029\u202A-\u202E\u2060-\u2064\u206A-\u206F\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/u;
+
+// Single source of truth for the forbidden bidirectional/format/invisible path
+// set, shared with recipe-catalog.ts so the two path validators cannot drift.
+export function containsForbiddenPathChar(path: string): boolean {
+  return FORBIDDEN_PATH_CHARS.test(path);
+}
 
 function validatePath(path: string): string {
   if (!path || path.includes("\\") || posix.isAbsolute(path) || FORBIDDEN_PATH_CHARS.test(path)) {
