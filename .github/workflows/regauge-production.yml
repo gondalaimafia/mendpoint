@@ -198,8 +198,33 @@ jobs:
           set -euo pipefail
           flyctl status --app mendpoint-transformer-pilot >/dev/null 2>&1 \
             || { echo "regauge_fly_app_bootstrap_required"; exit 1; }
-          if ! flyctl volumes list --app mendpoint-transformer-pilot --json | jq -e '.[] | select(.name == "mendpoint_transformer_data")' >/dev/null; then
-            flyctl volumes create mendpoint_transformer_data --app mendpoint-transformer-pilot --region sjc --size 20 --yes
+          volume_json="$(flyctl volumes list --app mendpoint-transformer-pilot --json \
+            | jq -ce '[.[] | select(
+                .id == "vol_4y83e8lm03q5x03r"
+                and .name == "mendpoint_transformer_data_v2"
+                and .state == "created"
+                and .size_gb == 20
+                and .region == "sjc"
+                and .zone == "b376"
+                and .encrypted == true
+                and .snapshot_retention == 14
+                and .auto_backup_enabled == true
+                and .host_status == "ok"
+              )] | if length == 1 then .[0] else error("regauge_fly_volume_authority_invalid") end')" \
+            || { echo "regauge_fly_volume_authority_invalid"; exit 1; }
+          printf '%s\n' "$volume_json" > test-results/regauge-production/coordinator-volume.json
+          attached_machine_id="$(jq -r '.attached_machine_id // empty' <<<"$volume_json")"
+          if [[ -n "$attached_machine_id" ]]; then
+            flyctl machines list --app mendpoint-transformer-pilot --json \
+              | jq -e --arg machine_id "$attached_machine_id" \
+                '[.[] | select(
+                  .id == $machine_id
+                  and .config.metadata.fly_process_group == "coordinator"
+                )] | if length == 1 then .[0] else error("regauge_fly_volume_attachment_invalid") end' \
+              > test-results/regauge-production/coordinator-volume-machine.json \
+              || { echo "regauge_fly_volume_attachment_invalid"; exit 1; }
+          else
+            printf '{"attached":false}\n' > test-results/regauge-production/coordinator-volume-machine.json
           fi
       - name: Verify private checkpoint storage
         shell: bash

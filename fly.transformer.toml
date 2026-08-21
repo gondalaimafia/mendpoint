@@ -37,7 +37,7 @@ kill_timeout = 45
   GITHUB_MODE = "real"
 
 [[mounts]]
-  source = "mendpoint_transformer_data"
+  source = "mendpoint_transformer_data_v2"
   destination = "/data"
   processes = ["coordinator"]
   initial_size = "20gb"
