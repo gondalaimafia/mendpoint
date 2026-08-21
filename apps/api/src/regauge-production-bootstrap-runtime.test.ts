@@ -36,7 +36,16 @@ const previousReposDir = process.env.MENDPOINT_REPOS_DIR;
 const previousNodeEnv = process.env.NODE_ENV;
 const REVISION = "1".repeat(40);
 const TREE = "2".repeat(40);
-const APPROVAL = "approval:regauge:20260814";
+const APPROVAL = [
+  "approval:regauge",
+  "tenant_regauge_canary",
+  "campaign_regauge_canary_20260814",
+  "repository:1319732323",
+  `revision:${REVISION}`,
+  "draft:1",
+  "run:32513731026",
+  "attempt:1",
+].join(":");
 
 const files = {
   "package.json": `${JSON.stringify({

@@ -7,7 +7,9 @@ import {
   validateTransformerProductionProfile,
 } from "./transformer-production-profile.js";
 
-const approval = `approval:regauge:tenant-a:campaign-a:repository:123456:revision:${"a".repeat(40)}:draft:1:run:98765:attempt:1`;
+const CANARY_REVISION = "a".repeat(40);
+const RELEASE_REVISION = "b".repeat(40);
+const approval = `approval:regauge:tenant-a:campaign-a:repository:123456:revision:${CANARY_REVISION}:draft:1:run:98765:attempt:1`;
 const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [approval] }] });
 
 describe("Transformer production profile", () => {
@@ -132,12 +134,12 @@ describe("Transformer production profile", () => {
     expect(() => validateTransformerProductionProfile({ ...environment(), MENDPOINT_TRANSFORMER_GATE: wrongGate }, "worker")).toThrow("transformer_production_gate_scope_invalid");
   });
 
-  it("requires a single-run draft approval bound to campaign, repository, and release", () => {
+  it("requires a single-run draft approval bound to campaign, repository, and canary source revision", () => {
     for (const value of [
       "approval:pilot",
       approval.replace("campaign-a", "campaign-b"),
       approval.replace("repository:123456", "repository:654321"),
-      approval.replace(`revision:${"a".repeat(40)}`, `revision:${"b".repeat(40)}`),
+      approval.replace(`revision:${CANARY_REVISION}`, `revision:${"c".repeat(40)}`),
       approval.replace("draft:1", "draft:2"),
     ]) {
       const changedGate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [value] }] });
@@ -148,6 +150,14 @@ describe("Transformer production profile", () => {
         MENDPOINT_TRANSFORMER_EVIDENCE_REFS: `${value},evidence:pilot`,
       }, "worker")).toThrow("transformer_production_delivery_approval_scope_invalid");
     }
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_REGAUGE_CANARY_REVISION: undefined,
+    }, "worker")).toThrow("transformer_production_canary_revision_required");
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_REGAUGE_CANARY_REVISION: "main",
+    }, "worker")).toThrow("transformer_production_canary_revision_invalid");
   });
 
   it("requires a canonical activation expiry within the protected run window", () => {
@@ -190,9 +200,10 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_TRANSFORMER_READINESS_HOST: "0.0.0.0", MENDPOINT_DATA_DIR: "/data/db", GITHUB_APP_ID: "42", GITHUB_APP_PRIVATE_KEY: "private",
     GITHUB_WEBHOOK_SECRET: "webhook", GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant-a"}',
     FLY_MACHINE_ID: "abcd1234abcd12",
-    MENDPOINT_RELEASE_REVISION: "a".repeat(40),
+    MENDPOINT_RELEASE_REVISION: RELEASE_REVISION,
     MENDPOINT_REGAUGE_BOOTSTRAP_ENABLED: "1",
     MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID: "123456",
+    MENDPOINT_REGAUGE_CANARY_REVISION: CANARY_REVISION,
     MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF: approval,
     MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() + 60 * 60_000).toISOString(),
   };

@@ -230,6 +230,21 @@ function normalize(input: RegaugeProductionBootstrapInput): Readonly<{
     productionDeliveryApprovalRefs: [productionApprovalRef],
   }, text(input.gateConfig, "regauge_production_bootstrap_gate_invalid", 100_000));
   if (!gate.allowed) throw new Error("regauge_production_bootstrap_gate_denied");
+  const expectedApprovalPrefix = [
+    "approval:regauge",
+    tenantId,
+    campaignId,
+    "repository",
+    remoteRepositoryId,
+    "revision",
+    expectedRevision,
+    "draft:1:run:",
+  ].join(":");
+  const approvalSuffix = productionApprovalRef.slice(expectedApprovalPrefix.length);
+  if (!productionApprovalRef.startsWith(expectedApprovalPrefix) ||
+      !/^[1-9][0-9]*:attempt:[1-9][0-9]*$/.test(approvalSuffix)) {
+    throw new Error("regauge_production_bootstrap_approval_invalid");
+  }
   for (const boundary of ["api_control_plane", "worker_action"] as const) {
     if (!assessTransformerGate({ tenantId, environment, boundary }, input.gateConfig).allowed) {
       throw new Error("regauge_production_bootstrap_gate_denied");
