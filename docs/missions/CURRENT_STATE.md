@@ -33,20 +33,30 @@ owner_principal_id  -> principals(id), revision, created_at, updated_at
 | Property | State |
 |---|---|
 | Tenant scope | Present — `tenant_id NOT NULL REFERENCES tenants(id)`, `UNIQUE (tenant_id, id)`. But see *Tenant binding* below: the primary key is `id` alone. |
-| Repository / snapshot binding | Columns exist, **never populated**. Both writers pass neither. Every production row has `repository_id = NULL, snapshot_id = NULL`. |
-| Change Graph version | **Absent.** No `graph_version_id` or `content_digest` column exists. |
+| Repository / snapshot binding | Columns exist. On `2f914cb` they were **never populated** (both writers passed neither). As of 2026-08-21 the production launch seam binds them for single-repo campaigns; see *Writers* below. |
+| Change Graph version | **Absent, and deferred.** No `graph_version_id` or `content_digest` column exists, and none was added: ReGauge has no software-graph version to bind (see the 2026-08-21 update under *Writers*). |
 | Decisions, exceptions, corrections, verification | **Absent by design** — `packages/db/src/mission.ts:15`: payloads are never duplicated onto the mission row. Everything is by reference through the linked campaign. |
 
-**Writers — two, one of them unreachable.**
+**Writers — and the ReGauge writer is on a bypassed surface.**
 
-- ReGauge: `POST /regauge/control-plane/campaigns` -> `apps/api/src/transformer-control-plane.ts:904`. **Live.**
-- Fettler: `POST /fettler/campaigns/:id/enroll-org` -> `apps/api/src/warden-campaign-enrollment.ts:212`. **Dead in practice** — `autoEnrollWardenCampaignOrg` requires a pre-existing `fettler_campaigns` row in `draft`, and `createWardenCampaign` (`packages/db/src/warden-campaign.ts:135`) has zero non-test callers. The endpoint always 404s.
+The original sweep recorded the ReGauge control-plane writer simply as "Live." That is true of the HTTP *route* but **misleading**, and the correction below is the load-bearing fact for any Mission Space work. There are **two decoupled ReGauge campaign-creation surfaces**, and the one that creates a Mission is not the one the production orchestration uses:
 
-Both writes sit inside best-effort `try`/`catch` that logs and swallows, so a Mission write failure is invisible to the caller.
+| | Surface A — control-plane POST | Surface B — mission plan/launch |
+|---|---|---|
+| Route | `POST /regauge/control-plane/campaigns` (`apps/api/src/server.ts:818`) | `POST /regauge/missions` -> `apps/api/src/transformer-missions.ts` `plan`/`launch`, mounted `server.ts:822` |
+| Creates a Mission? | **Yes** — `createMission` + `linkRegaugeCampaignToMission` at `apps/api/src/transformer-control-plane.ts:904/916` | **No** — calls `this.control.createBundle` directly (`transformer-missions.ts:140`), bypassing the mission-wiring block |
+| repositoryId / snapshotId in scope? | **No** (the campaign bundle carries neither) | **Yes** — `transformer-missions.ts:198-206` (`executionRepositories`, exact per-unit snapshot) |
+| Used by the live production orchestration? | **No** | **Yes** — `apps/api/src/regauge-production-bootstrap-runtime.ts:378` (`plan`), `:429` (`launch`) |
+
+So on `2f914cb` the Mission was born only on the surface that has no repository/snapshot, while the surface that has them created no Mission — which is *why* both bindings were null and the state machine never advanced. The Fettler writer (`POST /fettler/campaigns/:id/enroll-org` -> `apps/api/src/warden-campaign-enrollment.ts:212`) remains **dead in practice** — `autoEnrollWardenCampaignOrg` requires a pre-existing `fettler_campaigns` row in `draft`, and `createWardenCampaign` (`packages/db/src/warden-campaign.ts:135`) has zero non-test callers, so the endpoint always 404s.
+
+The Surface A and Fettler writes sit inside best-effort `try`/`catch` that logs and swallows, so a Mission write failure is invisible to the caller.
+
+> **Update, 2026-08-21 (PR "Bind the Mission where the live path actually launches it").** The production launch seam now create-or-binds the Mission: `bindRegaugeMissionAtLaunch` (`apps/api/src/regauge-production-bootstrap-runtime.ts`) is invoked from the bootstrap `launch` wrapper, where the exact verified snapshot and the `service:regauge-production-bootstrap` principal both exist. It binds `repository_id`/`snapshot_id` (single-repo only; fail-closed to null otherwise) and advances the Mission `created -> discovering -> scoped -> planning -> executing`. Surface A's client-created Mission is left unbound by design (the control-plane API carries no repository/snapshot). No `graph_version_id` column was added — ReGauge has no software-graph version to bind (no `providerId`; nothing on the transformer path imports `graph-learn`), so the column is deferred rather than added dead.
 
 **Readers.**
 
-- `transitionMission` — **built, uncalled.** Every production mission row is therefore permanently `state='created'`, and the 12-state machine at `packages/db/src/mission.ts:88-101` is dead code. It already implements optimistic-`revision` CAS plus a hash-chained `domain_events` append, correctly.
+- `transitionMission` — was **built, uncalled**; **now called** on the live launch seam (see the 2026-08-21 update above), so a launched ReGauge Mission advances to `executing` instead of sitting permanently at `state='created'`. It implements optimistic-`revision` CAS plus a hash-chained `domain_events` append, correctly (`packages/db/src/mission.ts:88-101`).
 - `getMission`, `resolveMissionForFettlerCampaign` — **built, uncalled.**
 - `resolveMissionForRegaugeCampaign` — one caller, `apps/worker/src/transformer-pilot-lane.ts:250`, used only to stamp `trajectories.mission_id`.
 
