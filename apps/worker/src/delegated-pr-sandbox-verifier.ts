@@ -13,6 +13,7 @@ import {
   type DelegatedPrCandidateOperationDependencies,
   type DelegatedPrVerificationDependencies,
   type DelegatedPrVerificationExchange,
+  type DelegatedPrVerificationExecution,
   type DelegatedPrVerificationReceipt,
   type DelegatedPrVerificationResolution,
   type DelegatedPrVerifier,
@@ -54,6 +55,9 @@ export type DelegatedPrSandboxExecutionResult = Readonly<{
   stdout: string;
   stderr: string;
   exitCode: number;
+  // The kind of sandbox the executor actually ran on. Reported by the executor, never assumed:
+  // an executor that cannot name its own backend must leave this absent so the run refuses to pass.
+  backend: string;
 }>;
 
 export type DelegatedPrSandboxExecutor = (
@@ -372,7 +376,7 @@ async function flyExecute(input: DelegatedPrSandboxExecutionInput): Promise<Dele
   try {
     const result = await handle.runIsolated(`cd /workspace && ${input.command}`, { timeoutMs: input.timeoutMs });
     return Object.freeze({ ok: result.ok, stdout: result.stdout, stderr: result.stderr,
-      exitCode: typeof result.exitCode === "number" ? result.exitCode : -1 });
+      exitCode: typeof result.exitCode === "number" ? result.exitCode : -1, backend: "fly_machines" });
   } finally {
     handle.dispose();
   }
@@ -418,12 +422,16 @@ function execution(
   baseline: DelegatedPrSandboxExecutionResult,
   candidate: DelegatedPrSandboxExecutionResult,
   baselineVerdict: "test_failure" | "passed",
-  failingCheckIdentities: readonly string[],
-) {
+  sandboxBackend: string,
+): DelegatedPrVerificationExecution {
   const logsDigest = digest(canonical({ baseline, candidate }));
   return Object.freeze({ authorityId, authorityDigest, commandDigest, sourceDigest, candidateDigest,
     baselineExitCode: baseline.exitCode, candidateExitCode: candidate.exitCode, baselineVerdict,
-    failingCheckIdentities: Object.freeze([...failingCheckIdentities]), sandboxBackend: "fly_machines", logsDigest });
+    // The runner output is not parsed, so which checks were failing is never observed. Emit the
+    // not_observed sentinel rather than echoing the configured expectation as if it were seen.
+    failingCheckIdentities: Object.freeze({ status: "not_observed" as const,
+      reason: "check_identities_not_parsed_from_runner_output" }),
+    sandboxBackend, logsDigest });
 }
 
 function createVerifier(input: Readonly<{
@@ -435,7 +443,6 @@ function createVerifier(input: Readonly<{
   receiptSecret: string;
   failToPassCommand: string;
   passToPassCommand: string;
-  failToPassIdentities: readonly string[];
   timeoutMs: number;
   execute: DelegatedPrSandboxExecutor;
 }>): DelegatedPrVerifier {
@@ -455,14 +462,20 @@ function createVerifier(input: Readonly<{
       const result = JSON.parse(existing.result_json) as DelegatedPrVerificationResolution;
       return signedReceipt(request, result, input.receiptSecret);
     }
-    if (existing || !allowDispatch) {
+    // A dispatched-but-unsettled row is a prior attempt that produced no durable outcome (a transient
+    // sandbox transport error before any mutation). Re-running the sandbox is side-effect free, so
+    // re-attempt it rather than latching the request into pending forever. Only a genuinely first
+    // reconcile with nothing dispatched has nothing to run.
+    if (!existing && !allowDispatch) {
       return signedReceipt(request, Object.freeze({ status: "pending" }), input.receiptSecret);
     }
-    input.db.raw.prepare(
-      `INSERT INTO delegated_pr_sandbox_verifier_effects
-       (tenant_id, request_digest, run_id, candidate_artifact_id, phase)
-       VALUES (?, ?, ?, ?, 'dispatched')`,
-    ).run(request.tenantId, request.requestDigest, request.runId, request.candidateArtifact.artifactId);
+    if (!existing) {
+      input.db.raw.prepare(
+        `INSERT INTO delegated_pr_sandbox_verifier_effects
+         (tenant_id, request_digest, run_id, candidate_artifact_id, phase)
+         VALUES (?, ?, ?, ?, 'dispatched')`,
+      ).run(request.tenantId, request.requestDigest, request.runId, request.candidateArtifact.artifactId);
+    }
     let result: DelegatedPrVerificationResolution;
     let externalStarted = false;
     try {
@@ -479,12 +492,20 @@ function createVerifier(input: Readonly<{
       const failCandidate = await run("fail_to_pass", "candidate", input.failToPassCommand);
       const passBaseline = await run("pass_to_pass", "source", input.passToPassCommand);
       const passCandidate = await run("pass_to_pass", "candidate", input.passToPassCommand);
-      const observedExitCodes = [failBaseline.exitCode, failCandidate.exitCode,
-        passBaseline.exitCode, passCandidate.exitCode];
+      const runs = [failBaseline, failCandidate, passBaseline, passCandidate];
+      const observedExitCodes = runs.map((value) => value.exitCode);
+      const backends = runs.map((value) => value.backend);
+      // The backend must be reported by the executor that actually ran; never assume one. A stub
+      // that cannot name its own backend leaves this unobserved and the run refuses to pass.
+      const observedBackend = typeof backends[0] === "string" && ID.test(backends[0]) &&
+        backends.every((value) => value === backends[0]) ? backends[0] : undefined;
       if (observedExitCodes.some((value) => !Number.isSafeInteger(value) || INFRA_EXIT_CODES.has(value)) ||
           !(failBaseline.exitCode > 0 && failCandidate.exitCode === 0 && passBaseline.exitCode === 0 &&
           passCandidate.exitCode === 0)) {
         result = Object.freeze({ status: "failed", code: "delegated_pr_verification_contract_failed",
+          completedAt: new Date().toISOString() });
+      } else if (observedBackend === undefined) {
+        result = Object.freeze({ status: "failed", code: "delegated_pr_verification_sandbox_backend_unobserved",
           completedAt: new Date().toISOString() });
       } else {
         result = Object.freeze({
@@ -493,10 +514,10 @@ function createVerifier(input: Readonly<{
           failToPass: execution(input.authorityId, input.authorityDigest,
             digest(input.failToPassCommand), request.candidate.sourceTreeDigest,
             request.candidate.candidateTreeDigest, failBaseline, failCandidate, "test_failure",
-            input.failToPassIdentities),
+            observedBackend),
           passToPass: execution(input.authorityId, input.authorityDigest,
             digest(input.passToPassCommand), request.candidate.sourceTreeDigest,
-            request.candidate.candidateTreeDigest, passBaseline, passCandidate, "passed", []),
+            request.candidate.candidateTreeDigest, passBaseline, passCandidate, "passed", observedBackend),
           completedAt: new Date().toISOString(),
         });
       }
@@ -551,7 +572,7 @@ export function delegatedPrVerificationRuntimeFromEnv(
     loadExactCandidate: async (database, identity) => loadBundle(database, identity, env).candidate,
   });
   const verifier = createVerifier({ db, env, authorityId, authorityDigest, executionAuthorityId,
-    receiptSecret, failToPassCommand, passToPassCommand, failToPassIdentities, timeoutMs, execute });
+    receiptSecret, failToPassCommand, passToPassCommand, timeoutMs, execute });
   return Object.freeze({
     candidateDependencies: Object.freeze({ enabled: true, authority,
       producerPrincipalId: candidateAuthorityId, producerVersion: mendpointRevision }),
