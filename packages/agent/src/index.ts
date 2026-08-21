@@ -6,6 +6,7 @@ export type {
   AgentTask,
   AgentTaskMode,
   AgentModelBudget,
+  InheritedContextInjection,
   AgentPlanner,
   AgentPlannerInput,
   AgentPlannerObservation,
@@ -54,6 +55,12 @@ export {
 } from "./knowledge.js";
 export { proposeWardenFix, hasAutomaticWardenRepair } from "./fixes.js";
 export { runWarden, runWelder, runApiBugAgent } from "./agent.js";
+export {
+  renderInheritedContextSystemBlock,
+  inheritedContextEnabled,
+  INHERITED_CONTEXT_ENV_VAR,
+  MAX_INHERITED_CONTEXT_BYTES,
+} from "./inherited-context.js";
 export { readWardenApprovalArtifact } from "./warden-approval-artifact.js";
 export { discoverVerifyCommand } from "./discover-verify.js";
 export {

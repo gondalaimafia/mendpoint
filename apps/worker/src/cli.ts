@@ -113,9 +113,11 @@ import {
   runPolicyRoutedWarden,
   readWardenApprovalArtifact,
   resolveAgentModelEndpoint,
+  inheritedContextEnabled,
   WARDEN_CANDIDATE_REVIEW_LIMITS,
   type AgentModelSourcePolicy,
   type AgentPlanner,
+  type InheritedContextInjection,
   type WardenAttemptLimits,
   type WardenAttemptResult,
   type WardenRuntimeTerminalEvidence,
@@ -176,6 +178,7 @@ import {
 } from "./warden-model-accounting.js";
 import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
 import { persistWardenTrajectory } from "./warden-trajectory.js";
+import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
 import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
 
@@ -2921,6 +2924,9 @@ async function processJobsOnceUnfenced(
         });
         pendingWardenRoutingFinalizer = () => routingRuntime.applyPendingOutcome();
         let capturedAttempt: WardenAttemptResult | null = null;
+        // Context refs supplied to the model this run, persisted onto the
+        // trajectory's context_refs_json (set only when inherited context injected).
+        let inheritedContextRefs: readonly unknown[] | undefined;
         const routed = await runPolicyRoutedWarden({
           task: {
             goal: executionGoal,
@@ -3004,6 +3010,47 @@ async function processJobsOnceUnfenced(
                     signal: leaseAbort.signal,
                   }
                 : undefined;
+              // Compile inherited context (organization memory, and — when the
+              // job is mission-bound — decisions/exceptions/verification/history)
+              // instead of rebuilding a tenant-independent prompt from constants.
+              // Gated behind the default-off `MENDPOINT_INHERITED_CONTEXT` switch;
+              // the seam re-checks the same switch. On today's repair path no
+              // mission is bound, so mission-scoped sections report
+              // `no_mission_bound` while tenant organization memory still reaches
+              // the model. Best-effort: a compile failure never blocks the attempt.
+              let inheritedContext: InheritedContextInjection | undefined;
+              if (inheritedContextEnabled(process.env)) {
+                try {
+                  const compiled = buildMissionContext(db, {
+                    tenantId: job.tenant_id,
+                    // A Fettler agent.run job carries no campaign/mission id, so it
+                    // is not mission-bound; the tenant organization memory still
+                    // applies. Binding a Fettler job to a mission is a separate gap.
+                    mission: null,
+                    task: {
+                      taskId: job.id,
+                      capability: (payload.mode ?? "repair") === "feature" ? "feature" : "repair",
+                      riskClass: repositoryClassification,
+                      goal: executionGoal,
+                    },
+                    fallback: {
+                      objective: executionGoal,
+                      repositoryId: binding.repositoryId,
+                      snapshotId: binding.snapshotId,
+                    },
+                  });
+                  if (hasInheritedContent(compiled.envelope)) {
+                    inheritedContext = compiled.injection;
+                    inheritedContextRefs = compiled.refs;
+                  }
+                } catch (error) {
+                  console.error(
+                    `  Fettler inherited-context compile failed session=${sessionId}: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`,
+                  );
+                }
+              }
               const attempt = await runWardenAttempt({
                 mode: payload.mode ?? "repair",
                 scope: { tenantId: job.tenant_id, attemptId: job.id },
@@ -3034,6 +3081,7 @@ async function processJobsOnceUnfenced(
                     : {}),
                   allowNetwork: false,
                   sessionId,
+                  ...(inheritedContext ? { inheritedContext } : {}),
                   neverTouchPaths: [...verification.protectedPaths],
                   shouldContinue: () =>
                     !leaseLost && opts.shouldContinue?.() !== false &&
@@ -3128,6 +3176,7 @@ async function processJobsOnceUnfenced(
               capture: attempt.capture,
               jobId: job.id,
               runId: sessionId,
+              ...(inheritedContextRefs ? { contextRefs: inheritedContextRefs } : {}),
               createdAt: nowIso(),
             });
           } catch (error) {

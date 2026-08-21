@@ -214,6 +214,29 @@ export type AgentExternalModelAccounting = Readonly<{
   settle: (settlement: AgentExternalModelSettlement) => Promise<void>;
 }>;
 
+/**
+ * Compiled inherited context, injected into the model system prompt at the model
+ * seam (`llmSuggestTool`). The agent is DB-free, so this is produced UPSTREAM by
+ * the Mission Context Compiler (`@mendpoint/pipeline`) and travels in on the task.
+ *
+ * `promptBody` is the compiler's already-bounded, section-labelled rendering of
+ * the inherited-context envelope. The agent NEVER trusts it: it re-verifies the
+ * digest and byte bound, then wraps it in an explicit untrusted-data frame before
+ * it can reach a model (`renderInheritedContextSystemBlock`). It carries only
+ * references and digests of the context that was supplied, never model reasoning.
+ */
+export type InheritedContextInjection = Readonly<{
+  schemaVersion: "mendpoint.inherited-context.v1";
+  /** sha256 of `promptBody`, re-checked at the seam; a mismatch drops the block. */
+  digest: string;
+  /** Compiler-rendered, bounded, section-labelled context text. */
+  promptBody: string;
+  /** Number of envelope sections rendered into `promptBody` (diagnostics only). */
+  sectionCount: number;
+  /** UTF-8 byte length of `promptBody`, re-checked against the seam ceiling. */
+  byteLength: number;
+}>;
+
 export type AgentTask = {
   /** Natural language bug report / goal */
   goal: string;
@@ -253,6 +276,13 @@ export type AgentTask = {
   /** Durable reserve/settle boundary required before externally approved model calls. */
   externalModelAccounting?: AgentExternalModelAccounting;
   sessionId?: string;
+  /**
+   * Compiled inherited context to inject into the model system prompt. Produced
+   * upstream by the Mission Context Compiler. Injection is gated behind a
+   * default-off switch (`MENDPOINT_INHERITED_CONTEXT`) and re-verified at the
+   * seam; when absent, the prompt is byte-for-byte today's constant.
+   */
+  inheritedContext?: InheritedContextInjection;
   /** Cooperative cancellation checked around every awaited or mutating phase. */
   shouldContinue?: () => boolean;
 };

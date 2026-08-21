@@ -39,6 +39,13 @@ export type PersistWardenTrajectoryParams = Readonly<{
   jobId: string;
   runId?: string | null;
   missionId?: string | null;
+  /**
+   * References to the inherited context that was actually supplied to this run's
+   * model (from the Mission Context Compiler). Identifiers and digests only — never
+   * model reasoning. Fills `trajectories.context_refs_json`, the schema slot that
+   * makes "what context did this run receive" answerable.
+   */
+  contextRefs?: readonly unknown[];
   createdAt: string;
   /** Deterministic id override (tests); a fresh id is minted otherwise. */
   trajectoryId?: string;
@@ -74,6 +81,7 @@ export function persistWardenTrajectory(
       taskKind: capture.taskKind,
       taskSummary: capture.taskSummary,
       ...(params.missionId ? { missionId: params.missionId } : {}),
+      ...(params.contextRefs ? { contextRefs: params.contextRefs } : {}),
       runId,
       jobId,
       availableTools: capture.availableTools,
