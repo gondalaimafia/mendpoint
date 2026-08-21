@@ -1,0 +1,246 @@
+/**
+ * Agent -> human -> agent handoff, written as durable records (task brief §2, §3,
+ * §4).
+ *
+ * This adds NO new store. It is a thin, tested composition over the three
+ * mission record stores that already exist:
+ *   - `mission-exceptions.ts`  — the blocker + the specific question being asked;
+ *   - `mission-decisions.ts`   — the human's resolution, and rejected approaches,
+ *                                as durable decisions with a supersession chain.
+ *
+ * The design is deliberately small: a handoff WRITES records here; a resume READS
+ * the compiled envelope (see `apps/worker/src/mission-context.ts` +
+ * `packages/pipeline/src/mission-context-compiler.ts`). Nothing in this module
+ * reaches a model, and nothing here stores model reasoning — only the reason for
+ * the handoff, the question, evidence references, and the recorded decision.
+ *
+ * All reviewer- and agent-authored strings that flow through here (`question`,
+ * `context`, `directive`, `resolutionNote`) are UNTRUSTED DATA. They are stored
+ * verbatim and, downstream, only ever reach a model inside the compiler's
+ * untrusted-data fence (`renderInheritedContextSystemBlock`). This module never
+ * interprets them as instructions.
+ */
+import type { AppDb } from "./index.js";
+import {
+  raiseMissionException,
+  resolveMissionException,
+  type MissionException,
+  type SnapshotIdentity,
+} from "./mission-exceptions.js";
+import {
+  recordMissionDecision,
+  supersedeMissionDecision,
+  type MissionDecision,
+} from "./mission-decisions.js";
+
+/**
+ * Why a task is being handed to a human. An explicit, closed enum: a handoff
+ * that cannot name its reason is rejected rather than defaulted (fail closed).
+ * "Please review" forces the human to reconstruct the problem; a named reason
+ * plus a specific question does not.
+ */
+export type HandoffReason =
+  | "graph_incomplete"
+  | "high_risk_change"
+  | "ambiguous_requirement"
+  | "policy_exception"
+  | "verification_failure"
+  | "architecture_decision_required";
+
+const HANDOFF_REASONS: ReadonlySet<HandoffReason> = new Set<HandoffReason>([
+  "graph_incomplete",
+  "high_risk_change",
+  "ambiguous_requirement",
+  "policy_exception",
+  "verification_failure",
+  "architecture_decision_required",
+]);
+
+function assertHandoffReason(reason: unknown): HandoffReason {
+  if (typeof reason !== "string" || !HANDOFF_REASONS.has(reason as HandoffReason)) {
+    throw new Error("task_handoff_reason_invalid");
+  }
+  return reason as HandoffReason;
+}
+
+/**
+ * Open an agent -> human handoff (task brief §2). Records a BLOCKING mission
+ * exception that carries the explicit reason and the SPECIFIC question the agent
+ * is asking, so the human resolves a precise decision rather than reconstructing
+ * the whole problem. Binding the exception to the snapshot it was observed
+ * against means that if the mission later moves past that snapshot the exception
+ * goes STALE (surfaced for re-affirmation) instead of silently blocking forever.
+ *
+ * The agent's work-so-far is preserved by reference (trajectory, diff digest,
+ * evidence) on the resolution decision, not by copying reasoning here.
+ */
+export function openTaskHandoff(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    missionId: string;
+    reason: HandoffReason;
+    /** The specific question the human must answer. Required and non-empty. */
+    question: string;
+    /** What the agent concluded / why this blocks (the impact). Required. */
+    context: string;
+    ownerPrincipalId: string;
+    observedAgainst?: SnapshotIdentity;
+    correlationId: string;
+    causationId?: string | null;
+    createdAt: string;
+  },
+): MissionException {
+  const reason = assertHandoffReason(input.reason);
+  if (typeof input.question !== "string" || !input.question.trim()) {
+    throw new Error("task_handoff_question_required");
+  }
+  // The stored blocker reason carries the enum AND the question as data. The
+  // mission-exceptions store bounds and control-character-checks it.
+  const statement = `[${reason}] ${input.question.trim()}`;
+  return raiseMissionException(db, {
+    tenantId: input.tenantId,
+    missionId: input.missionId,
+    reason: statement,
+    impact: input.context,
+    ownerPrincipalId: input.ownerPrincipalId,
+    resolutionPath: "await_human_resolution",
+    blocking: true,
+    ...(input.observedAgainst ? { observedAgainst: input.observedAgainst } : {}),
+    correlationId: input.correlationId,
+    causationId: input.causationId ?? null,
+    createdAt: input.createdAt,
+  });
+}
+
+/**
+ * Resolve an agent -> human handoff and hand back to the agent (task brief §3,
+ * §4). Atomically: closes the blocking exception (so the same question is not
+ * asked again) AND records the human's resolution as a durable mission decision
+ * (so a later task inherits the answer). The decision's `scope` is the subject
+ * the answer governs; a later decision on the same subject can supersede it when
+ * circumstances change.
+ */
+export function resolveTaskHandoff(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    priorExceptionId: string;
+    /** How the blocker was closed (recorded on the exception chain). */
+    resolutionNote: string;
+    /** The durable decision the resolution establishes. */
+    decision: string;
+    /** The subject the decision governs (contends under precedence by subject). */
+    scope: string;
+    authorPrincipalId: string;
+    /** References to the evidence the decision rests on (never reasoning). */
+    evidence?: readonly string[];
+    correlationId: string;
+    causationId?: string | null;
+    createdAt: string;
+  },
+): { exception: MissionException; decision: MissionDecision } {
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const exception = resolveMissionException(db, {
+      tenantId: input.tenantId,
+      priorExceptionId: input.priorExceptionId,
+      resolutionNote: input.resolutionNote,
+      actorPrincipalId: input.authorPrincipalId,
+      correlationId: input.correlationId,
+      causationId: input.causationId ?? null,
+      createdAt: input.createdAt,
+    });
+    const decision = recordMissionDecision(db, {
+      tenantId: input.tenantId,
+      missionId: exception.missionId,
+      decision: input.decision,
+      scope: input.scope,
+      authorPrincipalId: input.authorPrincipalId,
+      ...(input.evidence ? { evidence: input.evidence } : {}),
+      correlationId: input.correlationId,
+      causationId: input.causationId ?? null,
+      createdAt: input.createdAt,
+    });
+    if (owns) db.raw.exec("COMMIT");
+    return { exception, decision };
+  } catch (error) {
+    if (owns) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/**
+ * Record a reviewer directive as a durable mission decision (task brief §4). The
+ * regenerate path uses this so each review cycle's guidance survives as an
+ * ACTIVE decision the next cycle inherits — instead of only the latest cycle's
+ * rationale reaching the next run by string concatenation. Give distinct
+ * `scope`s to distinct directives so they all stay active (a shared scope makes
+ * a later decision supersede an earlier one only when you explicitly supersede).
+ */
+export function recordReviewerDirective(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    missionId: string;
+    directive: string;
+    scope: string;
+    authorPrincipalId: string;
+    evidence?: readonly string[];
+    correlationId: string;
+    causationId?: string | null;
+    createdAt: string;
+  },
+): MissionDecision {
+  return recordMissionDecision(db, {
+    tenantId: input.tenantId,
+    missionId: input.missionId,
+    decision: input.directive,
+    scope: input.scope,
+    authorPrincipalId: input.authorPrincipalId,
+    ...(input.evidence ? { evidence: input.evidence } : {}),
+    correlationId: input.correlationId,
+    causationId: input.causationId ?? null,
+    createdAt: input.createdAt,
+  });
+}
+
+/**
+ * Revise a prior decision because circumstances genuinely changed (task brief §4
+ * escape hatch). This supersedes the prior decision — the prior drops out of the
+ * active set so it stops being enforced — and REQUIRES non-empty evidence for
+ * the change, so revision is a deliberate, evidenced act rather than a silent
+ * reversal. Suppression of a rejected approach is therefore never absolute: new
+ * conflicting evidence lets an agent revisit it.
+ */
+export function reviseDecisionOnNewEvidence(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    priorDecisionId: string;
+    decision: string;
+    scope: string;
+    authorPrincipalId: string;
+    /** The new evidence that justifies revisiting. Required and non-empty. */
+    evidence: readonly string[];
+    correlationId: string;
+    causationId?: string | null;
+    createdAt: string;
+  },
+): MissionDecision {
+  if (!Array.isArray(input.evidence) || input.evidence.length < 1) {
+    throw new Error("task_handoff_revision_evidence_required");
+  }
+  return supersedeMissionDecision(db, {
+    tenantId: input.tenantId,
+    priorDecisionId: input.priorDecisionId,
+    decision: input.decision,
+    scope: input.scope,
+    authorPrincipalId: input.authorPrincipalId,
+    evidence: input.evidence,
+    correlationId: input.correlationId,
+    causationId: input.causationId ?? null,
+    createdAt: input.createdAt,
+  });
+}

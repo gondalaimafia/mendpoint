@@ -8,8 +8,10 @@ import {
   enqueueWardenCiUpdate,
   getAgentRun,
   getJob,
+  getMission,
   getPrincipal,
   getTenantMembership,
+  recordReviewerDirective,
   getWardenCandidateDeliveryByRun,
   getWardenCiCycle,
   getWardenCiUpdateByRun,
@@ -320,6 +322,29 @@ export function registerWardenCandidateReviewRoutes(
           rebindWardenCiRepair(db, { tenantId, cycleId: ciAuthority.cycle.id,
             currentRepairRunId: run.id, nextRepairRunId: next.runId, nextRepairJobId: next.jobId,
             observedAt: reviewedAt });
+        }
+        // First real caller of the mission decision store. When this regenerate is
+        // part of a formal mission, record the reviewer's directive as a durable
+        // ACTIVE decision so EVERY prior cycle's guidance survives for the resumed
+        // run to inherit through the compiled envelope — not only the latest
+        // cycle's rationale by string concatenation. Scoped by the superseded run
+        // so distinct cycles stay distinct active decisions. The rationale is
+        // untrusted reviewer text: stored as data, and it only ever reaches a
+        // model inside the compiler's untrusted-data fence. A Fettler repair with
+        // no mission bound skips this — the mission is never fabricated.
+        const regenerateMissionId = typeof originalPayload.missionId === "string"
+          ? originalPayload.missionId : null;
+        if (regenerateMissionId && getMission(db, tenantId, regenerateMissionId)) {
+          recordReviewerDirective(db, {
+            tenantId,
+            missionId: regenerateMissionId,
+            directive: body.rationale,
+            scope: `reviewer_directive:${run.id}`,
+            authorPrincipalId: trustId!,
+            evidence: [`agent_run:${run.id}`, ...(candidateDigest ? [`candidate:${candidateDigest}`] : [])],
+            correlationId: next.runId,
+            createdAt: reviewedAt,
+          });
         }
         reviewedResult = { ...result, review: { decision: body.decision, rationale: body.rationale,
           reviewedAt, reviewerPrincipalId: principal.id, supersedingRunId: next.runId, supersedingJobId: next.jobId },

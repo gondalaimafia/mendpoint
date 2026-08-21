@@ -6,7 +6,9 @@ import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
+  createMission,
   enqueueJob,
+  getActiveMissionDecisions,
   getAgentRun,
   getJob,
   getWardenCiCycle,
@@ -395,6 +397,54 @@ describe("Warden candidate human review", () => {
       action: "agent.candidate.regeneration_requested",
       metadata: expect.objectContaining({ reviewerPrincipalId: "human:reviewer@example.com" }),
     }));
+  });
+
+  // First real caller of the mission decision store (task brief §4). When the
+  // regenerate is part of a formal mission, the reviewer's directive is recorded
+  // as a durable ACTIVE decision so a later cycle inherits it through the
+  // compiled envelope. Deleting the recordReviewerDirective call in the
+  // regenerate branch makes this die.
+  it("records the reviewer directive as a mission decision when the regenerate is mission-bound", async () => {
+    const { app, db } = fixture();
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
+    });
+    const src = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        decision: "regenerate",
+        rationale: "Do not use a raw OAuth flow: it violates the internal auth policy.",
+      }),
+    });
+    expect(response.status).toBe(202);
+    const body = await response.json() as { supersedingJobId: string };
+    // The mission id is carried forward to the regenerated run.
+    expect(JSON.parse(getJob(db, body.supersedingJobId, "tenant-a")!.payload_json)).toMatchObject({ missionId: "m1" });
+    // The reviewer directive is now a durable active decision on the mission.
+    const active = getActiveMissionDecisions(db, "tenant-a", "m1");
+    expect(active).toHaveLength(1);
+    expect(active[0]!.decision).toBe("Do not use a raw OAuth flow: it violates the internal auth policy.");
+    expect(active[0]!.scope).toBe("reviewer_directive:warden-run-1");
+  });
+
+  it("records no mission decision when the regenerate is not mission-bound (no fabrication)", async () => {
+    const { app, db } = fixture();
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Repair the internal mapping." }),
+    });
+    expect(response.status).toBe(202);
+    // No mission exists and none is fabricated: the decision store stays empty.
+    const count = db.raw.prepare("SELECT COUNT(*) AS n FROM mission_decisions").get() as { n: number };
+    expect(count.n).toBe(0);
   });
 
   it("keeps the committed winner seal through an orchestrated concurrent approval conflict", async () => {
