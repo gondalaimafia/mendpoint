@@ -25,6 +25,7 @@ import {
   getVerifiedFettlerDelegationEvidence,
   type VerifiedFettlerDelegationEvidence,
 } from "@mendpoint/pipeline";
+import { EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION } from "@mendpoint/github";
 
 export const DELEGATED_PR_TRIAL_BUNDLE_KIND = "delegated_pr_trial_bundle" as const;
 export const DELEGATED_PR_TRIAL_BUNDLE_MEDIA_TYPE =
@@ -402,22 +403,75 @@ function assertDeliveryObservation(
   db: AppDb,
   trial: DelegatedPrTrialEvidence,
   inventory: VerifiedFettlerDelegationEvidence,
+  producerPrincipalId: string,
+  producerVersion: string,
 ): void {
   const ci = observed(inventory.ci, "delegated_pr_trial_ci_not_observed");
-  const matches = ci.flatMap((entry) => entry.observations).filter((entry) =>
+  const matches = ci.flatMap((entry) => entry.observations.map((observation) => ({
+    cycle: entry.cycle,
+    observation,
+  }))).filter(({ observation: entry }) =>
     entry.evidenceArtifactId === trial.delivery.artifact.artifactId &&
     normalizeSha(entry.evidenceDigest) === trial.delivery.artifact.sha256 &&
     entry.headSha === trial.candidate.commitSha && entry.verdict === "success" &&
     entry.observedAt === trial.delivery.observedAt);
   if (matches.length !== 1) throw new Error("delegated_pr_trial_delivery_observation_invalid");
+  const { cycle, observation } = matches[0]!;
+  const delivered = observed(inventory.candidateDelivery, "delegated_pr_trial_delivery_not_observed").delivery;
+  if (!delivered.draftPrNumber || !delivered.branchName) {
+    throw new Error("delegated_pr_trial_delivery_observation_invalid");
+  }
   const claims = verifiedArtifactContent(
     db,
     trial.tenantId,
     trial.delivery.artifact,
     "delegated_pr_trial_delivery_observation_invalid",
   );
-  if (canonical(claims) !== canonical(trial.delivery.observation)) {
+  const row = loadManifest(db, trial.tenantId, trial.delivery.artifact.artifactId);
+  const expected = {
+    schemaVersion: EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION,
+    tenantId: trial.tenantId,
+    cycleId: cycle.id,
+    deliveryId: delivered.id,
+    repositoryId: trial.delivery.repositoryId,
+    remoteRepositoryId: trial.delivery.remoteRepositoryId,
+    installationId: trial.delivery.installationId,
+    pullRequestNumber: trial.delivery.pullRequestNumber,
+    baseBranch: trial.delivery.baseBranch,
+    branchName: trial.delivery.headBranch,
+    baseRevision: trial.delivery.observation.baseRevision,
+    headRevision: trial.delivery.observation.headRevision,
+    matchingOpenDrafts: trial.delivery.matchingOpenDrafts,
+    changedPaths: [...trial.delivery.changedPaths].sort(compareCodeUnits),
+    remoteTreeSha: trial.delivery.remoteTreeSha,
+    verdict: "success",
+    trigger: "checks_passed",
+    requiredResults: [...trial.delivery.observation.checkResults]
+      .sort((left, right) => compareCodeUnits(left.identity, right.identity)),
+    failures: trial.delivery.observation.failures,
+    reviewFeedback: trial.delivery.observation.reviewFeedback,
+    reviewFeedbackDigest: null,
+    evidenceRefs: [...trial.delivery.observation.evidenceRefs].sort(compareCodeUnits),
+    observedAt: trial.delivery.observedAt,
+    observation: trial.delivery.observation,
+  };
+  if (!row || row.kind !== "delegated_pr_github_observation" || row.schema_version !== 1 ||
+      row.media_type !== "application/vnd.mendpoint.github-exact-draft-observation+json" ||
+      row.producer_principal_id !== producerPrincipalId || canonical(claims) !== canonical(expected)) {
     throw new Error("delegated_pr_trial_delivery_observation_invalid");
+  }
+  const evidence = db.raw.prepare(
+    `SELECT * FROM evidence_records WHERE tenant_id = ?
+       AND subject_type = 'delegated_pr_github_observation' AND subject_id = ?
+       ORDER BY created_at, id`,
+  ).all(trial.tenantId, observation.id) as EvidenceRecordRow[];
+  if (evidence.length !== 1 || evidence[0]!.artifact_id !== trial.delivery.artifact.artifactId ||
+      evidence[0]!.input_artifact_id !== trial.candidate.artifact.artifactId ||
+      evidence[0]!.producer_principal_id !== producerPrincipalId ||
+      evidence[0]!.tool !== "mendpoint-exact-github-observer" ||
+      evidence[0]!.tool_version !== producerVersion || evidence[0]!.commit_sha !== producerVersion ||
+      evidence[0]!.verdict !== "passed" || evidence[0]!.created_at !== trial.delivery.observedAt) {
+    throw new Error("delegated_pr_trial_delivery_observation_evidence_invalid");
   }
 }
 
@@ -576,7 +630,7 @@ function assertDurableBindings(
     throw new Error("delegated_pr_trial_cleanup_binding_mismatch");
   }
   assertCleanupScope(trial, inventory, contract);
-  assertDeliveryObservation(db, trial, inventory);
+  assertDeliveryObservation(db, trial, inventory, producerPrincipalId, producerVersion);
   assertVerificationAuthority(db, trial, contract);
 }
 

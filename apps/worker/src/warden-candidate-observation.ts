@@ -6,20 +6,26 @@ import {
   failJob,
   getAgentRun,
   getJob,
+  getPrincipal,
   getWardenCandidateDelivery,
   getWardenCiCycle,
+  insertArtifactManifest,
+  insertEvidenceRecord,
   pauseWardenCiCycle,
   recordWardenCiObservation,
   type AppDb,
   type JobRow,
 } from "@mendpoint/db";
-import type {
+import {
+  EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION,
   ExactDraftCheckResult,
   ExactDraftFailure,
   ExactDraftObservation,
+  type ExactDraftObservationEvidenceV1,
   ExactDraftObservationInput,
 } from "@mendpoint/github";
-import { assertDelegatedPrVerificationApprovalAuthority } from "./delegated-pr-verification-job.js";
+import { assertDelegatedPrVerificationApprovalAuthority,
+  type DelegatedPrVerificationApprovalAuthority } from "./delegated-pr-verification-job.js";
 
 const JOB_TYPE = "warden.candidate.observe";
 export const WARDEN_CANDIDATE_CLEANUP_JOB_TYPE = "warden.candidate.cleanup";
@@ -29,7 +35,7 @@ const MAX_REVIEW_FEEDBACK_BYTES = 64 * 1_024;
 const MAX_EVIDENCE_BYTES = 128 * 1_024;
 const REVIEW_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const REVIEWER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
-const REVIEW_PATH = /^(?!\/)(?!.*(?:\.\.\/|\/\.\.?\/|\\|\/\/))[A-Za-z0-9._-][A-Za-z0-9._\/-]{0,999}$/;
+const REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 
 export type WardenCandidateObservationInput = Readonly<{
   db: AppDb;
@@ -66,6 +72,43 @@ function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+function validRepositoryPath(value: string): boolean {
+  return value.length > 0 && value.length <= 1_000 && !value.startsWith("/") && !value.endsWith("/") &&
+    !value.includes("\\") && !value.includes("//") && value.split("/").every((part) =>
+      part.length > 0 && part !== "." && part !== ".." && !/[\u0000-\u001f]/.test(part));
+}
+
+type RequiredDelegatedAuthority = Extract<DelegatedPrVerificationApprovalAuthority, { required: true }>;
+
+function persistCanonicalObservation(input: Readonly<{ db: AppDb; tenantId: string; observationId: string;
+  artifactId: string; observationDigest: string; bytes: Uint8Array; authority: RequiredDelegatedAuthority;
+  observedAt: string }>): void {
+  if (!input.db.raw.isTransaction) throw new Error("warden_ci_observation_transaction_required");
+  const principal = getPrincipal(input.db, input.tenantId, input.authority.candidateProducerPrincipalId);
+  if (!principal || principal.kind !== "service" || principal.created_at > input.observedAt ||
+      principal.revoked_at && principal.revoked_at <= input.observedAt ||
+      principal.expires_at && principal.expires_at <= input.observedAt ||
+      !REVISION.test(input.authority.candidateProducerVersion)) {
+    throw new Error("warden_ci_observation_producer_invalid");
+  }
+  const content = Buffer.from(input.bytes).toString("utf8");
+  insertArtifactManifest(input.db, { id: input.artifactId, tenantId: input.tenantId,
+    kind: "delegated_pr_github_observation", schemaVersion: 1,
+    sha256: input.observationDigest.slice("sha256:".length),
+    mediaType: "application/vnd.mendpoint.github-exact-draft-observation+json",
+    sizeBytes: Buffer.byteLength(content, "utf8"), storageRef: `sqlite://${input.artifactId}`,
+    content, producerPrincipalId: input.authority.candidateProducerPrincipalId, createdAt: input.observedAt });
+  const evidenceId = `evidence_github_observation_${createHash("sha256")
+    .update([input.tenantId, input.observationId, input.artifactId, input.observationDigest].join("\0"), "utf8")
+    .digest("hex").slice(0, 40)}`;
+  insertEvidenceRecord(input.db, { id: evidenceId, tenantId: input.tenantId,
+    subjectType: "delegated_pr_github_observation", subjectId: input.observationId,
+    artifactId: input.artifactId, inputArtifactId: input.authority.candidateArtifactId,
+    producerPrincipalId: input.authority.candidateProducerPrincipalId, tool: "mendpoint-exact-github-observer",
+    toolVersion: input.authority.candidateProducerVersion, commitSha: input.authority.candidateProducerVersion,
+    verdict: "passed", createdAt: input.observedAt });
+}
+
 function cleanupJobId(input: Readonly<{
   tenantId: string;
   cycleId: string;
@@ -85,6 +128,8 @@ function enqueueDelegatedCleanupHandoff(input: Readonly<{
   observationId: string;
   headSha: string;
   observationDigest: string;
+  evidenceArtifactId: string;
+  evidenceBytes: Uint8Array;
   observedAt: string;
 }>): string | null {
   if (!input.db.raw.isTransaction) throw new Error("warden_ci_cleanup_transaction_required");
@@ -107,6 +152,10 @@ function enqueueDelegatedCleanupHandoff(input: Readonly<{
     candidateDigest,
   });
   if (!authority.required) return null;
+  persistCanonicalObservation({ db: input.db, tenantId: input.tenantId,
+    observationId: input.observationId, artifactId: input.evidenceArtifactId,
+    observationDigest: input.observationDigest, bytes: input.evidenceBytes, authority,
+    observedAt: input.observedAt });
   const id = cleanupJobId(input);
   const payload = {
     schemaVersion: 1,
@@ -178,15 +227,15 @@ function failureIdentity(failure: ExactDraftFailure): string {
 function safeFailures(
   observation: ExactDraftObservation,
   requiredChecks: readonly string[],
-): readonly Readonly<Record<string, string | null>>[] {
+): readonly ExactDraftFailure[] {
   const required = new Set(requiredChecks);
   return Object.freeze(observation.failures
     .filter((failure) => required.has(failureIdentity(failure)))
     .map((failure) => Object.freeze({
       kind: failure.kind,
       id: failure.id,
-      publisherId: failure.publisherId === null ? null : String(failure.publisherId),
-      name: redact(failure.name),
+      publisherId: failure.publisherId,
+      name: redact(failure.name)!,
       state: failure.state,
       title: redact(failure.title),
       summary: redact(failure.summary),
@@ -208,21 +257,21 @@ function evidenceBytes(input: Readonly<{
   branchName: string;
   baseRevision: string;
   headRevision: string;
+  matchingOpenDrafts: number;
+  changedPaths: readonly string[];
+  remoteTreeSha: string;
   verdict: "success" | "failure";
   trigger: "checks_passed" | "ci_failure" | "review_feedback";
   requiredResults: readonly ExactDraftCheckResult[];
-  failures: readonly Readonly<Record<string, string | null>>[];
-  reviewFeedback: Readonly<{
-    verdict: "changes_requested" | "none";
-    changeRequests: readonly Readonly<Record<string, string | null>>[];
-    comments: readonly Readonly<Record<string, string | number | null>>[];
-  }>;
+  failures: readonly ExactDraftFailure[];
+  reviewFeedback: ExactDraftObservation["reviewFeedback"];
   reviewFeedbackDigest: string | null;
   evidenceRefs: readonly string[];
   observedAt: string;
+  observation: ExactDraftObservation;
 }>): Uint8Array {
-  const document = {
-    schemaVersion: "2026-08-13.warden-ci-observation.v1",
+  const document: ExactDraftObservationEvidenceV1 = {
+    schemaVersion: EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION,
     tenantId: input.tenantId,
     cycleId: input.cycleId,
     deliveryId: input.deliveryId,
@@ -234,6 +283,9 @@ function evidenceBytes(input: Readonly<{
     branchName: input.branchName,
     baseRevision: input.baseRevision,
     headRevision: input.headRevision,
+    matchingOpenDrafts: input.matchingOpenDrafts,
+    changedPaths: [...input.changedPaths].sort(compareCodeUnits),
+    remoteTreeSha: input.remoteTreeSha,
     verdict: input.verdict,
     trigger: input.trigger,
     requiredResults: [...input.requiredResults].sort((left, right) => compareCodeUnits(left.identity, right.identity)),
@@ -242,6 +294,7 @@ function evidenceBytes(input: Readonly<{
     reviewFeedbackDigest: input.reviewFeedbackDigest,
     evidenceRefs: [...input.evidenceRefs].sort(compareCodeUnits),
     observedAt: input.observedAt,
+    observation: input.observation,
   };
   return Buffer.from(JSON.stringify(document), "utf8");
 }
@@ -252,7 +305,7 @@ function canonicalTimestamp(value: unknown): value is string {
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
 }
 
-export function safeWardenReviewFeedback(observation: ExactDraftObservation) {
+export function safeWardenReviewFeedback(observation: ExactDraftObservation): ExactDraftObservation["reviewFeedback"] {
   const feedback = observation.reviewFeedback;
   if (!feedback || (feedback.verdict !== "none" && feedback.verdict !== "changes_requested") ||
       !Array.isArray(feedback.changeRequests) || !Array.isArray(feedback.comments) ||
@@ -278,7 +331,7 @@ export function safeWardenReviewFeedback(observation: ExactDraftObservation) {
   });
   const comments = feedback.comments.map((comment) => {
     if (!REVIEW_ID.test(comment.id) || !REVIEW_ID.test(comment.threadId) || !REVIEWER.test(comment.reviewer) ||
-        comment.commitRevision !== observation.headRevision || !REVIEW_PATH.test(comment.path) ||
+        comment.commitRevision !== observation.headRevision || !validRepositoryPath(comment.path) ||
         (comment.line !== null && (!Number.isSafeInteger(comment.line) || comment.line < 1)) ||
         !canonicalTimestamp(comment.createdAt) || !canonicalTimestamp(comment.updatedAt)) {
       throw new Error("warden_ci_review_feedback_invalid");
@@ -288,7 +341,7 @@ export function safeWardenReviewFeedback(observation: ExactDraftObservation) {
       threadId: comment.threadId,
       reviewer: comment.reviewer,
       commitRevision: comment.commitRevision,
-      body: redact(comment.body),
+      body: redact(comment.body)!,
       path: comment.path,
       line: comment.line,
       createdAt: comment.createdAt,
@@ -338,13 +391,22 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
     expectedHeadBranch: cycle.branchName,
     expectedHeadSha: cycle.currentHeadSha,
     expectedRepositoryId: cycle.remoteRepositoryId,
+    expectedInstallationId: cycle.installationId,
     requireExactDraft: true,
+    includeDeliveryEvidence: true,
     includeCommitStatuses: false,
   });
   if (observation.state !== "draft" || observation.baseRevision !== cycle.baseRevision ||
-      observation.headRevision !== cycle.currentHeadSha || observation.checkRevision !== cycle.currentHeadSha) {
+      observation.headRevision !== cycle.currentHeadSha || observation.checkRevision !== cycle.currentHeadSha ||
+      observation.repositoryId !== cycle.remoteRepositoryId || observation.installationId !== cycle.installationId ||
+      observation.matchingOpenDrafts !== 1 || !REVISION.test(observation.remoteTreeSha ?? "") ||
+      !Array.isArray(observation.changedPaths) || observation.changedPaths.length === 0 ||
+      observation.changedPaths.some((path) => !validRepositoryPath(path)) ||
+      new Set(observation.changedPaths).size !== observation.changedPaths.length) {
     throw new Error("warden_ci_observation_authority_mismatch");
   }
+  const changedPaths = Object.freeze([...(observation.changedPaths ?? [])]);
+  const remoteTreeSha = observation.remoteTreeSha!;
   const checks = requiredResults(observation, cycle.requiredChecks);
   const now = input.now ?? (() => new Date().toISOString());
   const observedAt = now();
@@ -383,6 +445,13 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
     : reviewFeedback.verdict === "changes_requested" ? "review_feedback" as const
       : "checks_passed" as const;
   const verdict = trigger === "checks_passed" ? "success" as const : "failure" as const;
+  const failures = safeFailures(observation, cycle.requiredChecks);
+  const durableObservation: ExactDraftObservation = Object.freeze({ ...observation,
+    checkIdentities: Object.freeze(checks.map((check) => check.identity)),
+    checkResults: Object.freeze(checks.map((check) => Object.freeze({ ...check }))),
+    failures: Object.freeze(failures.map((failure) => Object.freeze({ ...failure }))),
+    reviewFeedback, changedPaths, remoteTreeSha,
+    evidenceRefs: Object.freeze([...observation.evidenceRefs].sort(compareCodeUnits)) });
   const bytes = evidenceBytes({
     tenantId: cycle.tenantId,
     cycleId: cycle.id,
@@ -395,14 +464,18 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
     branchName: cycle.branchName,
     baseRevision: cycle.baseRevision,
     headRevision: cycle.currentHeadSha,
+    matchingOpenDrafts: 1,
+    changedPaths,
+    remoteTreeSha,
     verdict,
     trigger,
     requiredResults: checks,
-    failures: safeFailures(observation, cycle.requiredChecks),
+    failures,
     reviewFeedback,
     reviewFeedbackDigest,
     evidenceRefs: observation.evidenceRefs,
     observedAt,
+    observation: durableObservation,
   });
   if (bytes.byteLength > MAX_EVIDENCE_BYTES) throw new Error("warden_ci_observation_evidence_limit");
   const observationDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -432,6 +505,8 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
         observationId: saved.id,
         headSha: cycle.currentHeadSha,
         observationDigest,
+        evidenceArtifactId: persisted.artifactId,
+        evidenceBytes: bytes,
         observedAt,
       });
     }

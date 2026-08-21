@@ -22,6 +22,7 @@ import {
   type DelegatedPrAcceptanceContract,
   type DelegatedPrTrialEvidence,
 } from "./enterprise-delegation-proof.js";
+import { EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION } from "@mendpoint/github";
 
 const mocked = vi.hoisted(() => ({ inventory: null as unknown }));
 vi.mock("@mendpoint/pipeline", () => ({
@@ -254,6 +255,7 @@ function trial(): DelegatedPrTrialEvidence {
       artifact: deliveryArtifact,
       changedPaths: ["src/client.ts"],
       treeDigest: `sha256:${hex("d")}`,
+      remoteTreeSha: revision("c"),
       matchingOpenDrafts: 1,
       observedAt: "2026-08-18T12:05:00.000Z",
       observation: {
@@ -332,7 +334,32 @@ function bindAuthorityArtifacts(value: DelegatedPrTrialEvidence): Readonly<{
   };
   const fail = verification("fail_to_pass", value.verification.failToPass);
   const pass = verification("pass_to_pass", value.verification.passToPass);
-  const delivery = contentArtifact(value.delivery.artifact.artifactId, value.delivery.observation);
+  const delivery = contentArtifact(value.delivery.artifact.artifactId, {
+    schemaVersion: EXACT_DRAFT_OBSERVATION_EVIDENCE_VERSION,
+    tenantId: value.tenantId,
+    cycleId: "cycle-a",
+    deliveryId: "delivery-row",
+    repositoryId: value.delivery.repositoryId,
+    remoteRepositoryId: value.delivery.remoteRepositoryId,
+    installationId: value.delivery.installationId,
+    pullRequestNumber: value.delivery.pullRequestNumber,
+    baseBranch: value.delivery.baseBranch,
+    branchName: value.delivery.headBranch,
+    baseRevision: value.delivery.observation.baseRevision,
+    headRevision: value.delivery.observation.headRevision,
+    matchingOpenDrafts: value.delivery.matchingOpenDrafts,
+    changedPaths: value.delivery.changedPaths,
+    remoteTreeSha: value.delivery.remoteTreeSha,
+    verdict: "success",
+    trigger: "checks_passed",
+    requiredResults: value.delivery.observation.checkResults,
+    failures: value.delivery.observation.failures,
+    reviewFeedback: value.delivery.observation.reviewFeedback,
+    reviewFeedbackDigest: null,
+    evidenceRefs: value.delivery.observation.evidenceRefs,
+    observedAt: value.delivery.observedAt,
+    observation: value.delivery.observation,
+  });
   const cleanup = contentArtifact(value.cleanup.rollbackArtifact.artifactId, {
     schemaVersion: 1,
     kind: "delegated_pr_cleanup_rollback",
@@ -389,7 +416,8 @@ function bindAuthorityArtifacts(value: DelegatedPrTrialEvidence): Readonly<{
         producer: "trial-service", mediaType: "application/vnd.mendpoint.delegated-pr-candidate+json" },
       [fail.artifact.artifactId]: { content: fail.content, kind: "delegated_pr_verification_execution", producer: "verifier-a" },
       [pass.artifact.artifactId]: { content: pass.content, kind: "delegated_pr_verification_execution", producer: "verifier-a" },
-      [delivery.artifact.artifactId]: { content: delivery.content, kind: "delegated_pr_github_observation", producer: "trial-service" },
+      [delivery.artifact.artifactId]: { content: delivery.content, kind: "delegated_pr_github_observation",
+        producer: "trial-service", mediaType: "application/vnd.mendpoint.github-exact-draft-observation+json" },
       [cleanup.artifact.artifactId]: { content: cleanup.content, kind: "delegated_pr_cleanup_rollback", producer: "trial-service" },
       ...Object.fromEntries(Object.values(attestedEntries).map((entry) => [entry.artifact.artifactId, {
         content: entry.content,
@@ -457,6 +485,7 @@ function inventoryFor(
     } },
     candidateDelivery: { status: "observed", value: {
       delivery: {
+        id: "delivery-row",
         repositoryId: value.delivery.repositoryId,
         snapshotId: value.source.snapshotArtifact.artifactId,
         baseBranch: value.delivery.baseBranch,
@@ -471,9 +500,11 @@ function inventoryFor(
       auditReason: null,
     } },
     ci: { status: "observed", value: [{ cycle: {
+      id: "cycle-a",
       remoteRepositoryId: value.delivery.remoteRepositoryId,
       installationId: value.delivery.installationId,
     }, observations: [{
+      id: "observation-a",
       evidenceArtifactId: value.delivery.artifact.artifactId,
       evidenceDigest: `sha256:${value.delivery.artifact.sha256}`,
       headSha: value.candidate.commitSha,
@@ -519,6 +550,8 @@ async function fixture(options: Readonly<{
   skipArtifactId?: string;
   skipCandidateEvidence?: boolean;
   skipVerificationEvidence?: boolean;
+  skipObservationEvidence?: boolean;
+  observationTool?: string;
 }> = {}) {
   const root = mkdtempSync(join(tmpdir(), "delegated-trial-authority-"));
   roots.push(root);
@@ -631,6 +664,22 @@ async function fixture(options: Readonly<{
       commitSha: resolvedContract.mendpointRevision,
       verdict: "passed",
       createdAt: evidence.verification.completedAt,
+    });
+  }
+  if (!options.skipObservationEvidence) {
+    insertEvidenceRecord(db, {
+      id: "github-observation-evidence",
+      tenantId: "tenant-a",
+      subjectType: "delegated_pr_github_observation",
+      subjectId: "observation-a",
+      artifactId: evidence.delivery.artifact.artifactId,
+      inputArtifactId: evidence.candidate.artifact.artifactId,
+      producerPrincipalId: "trial-service",
+      tool: options.observationTool ?? "mendpoint-exact-github-observer",
+      toolVersion: resolvedContract.mendpointRevision,
+      commitSha: resolvedContract.mendpointRevision,
+      verdict: "passed",
+      createdAt: evidence.delivery.observedAt,
     });
   }
   const keys = generateKeyPairSync("ed25519");
@@ -778,6 +827,20 @@ describe("stored delegated PR trial authority", () => {
     await expect(missingVerifier.authority.loadTrial({
       tenantId: "tenant-a", runId: "run-a", correlationId: "corr-a", trial: 1,
     })).rejects.toThrow("delegated_pr_trial_verification_evidence_invalid");
+  });
+
+  it("requires exact candidate-bound GitHub observation evidence from the trusted producer", async () => {
+    const missing = await fixture({ skipObservationEvidence: true });
+    persistBundle(missing.db, missing.evidence);
+    await expect(missing.authority.loadTrial({
+      tenantId: "tenant-a", runId: "run-a", correlationId: "corr-a", trial: 1,
+    })).rejects.toThrow("delegated_pr_trial_delivery_observation_evidence_invalid");
+
+    const forged = await fixture({ observationTool: "caller-authored-observer" });
+    persistBundle(forged.db, forged.evidence);
+    await expect(forged.authority.loadTrial({
+      tenantId: "tenant-a", runId: "run-a", correlationId: "corr-a", trial: 1,
+    })).rejects.toThrow("delegated_pr_trial_delivery_observation_evidence_invalid");
   });
 
   it("loads one immutable trusted bundle and rechecks the durable run and cleanup bindings", async () => {
