@@ -2662,3 +2662,20 @@ Objective: run the existing DeepSeek V4 Flash verifier on exact durable ReGauge 
 Acceptance: the dedicated production path may emit a content-addressed DeepSeek shadow observation only after exact deterministic success and current tenant egress consent. Missing, revoked, expired, ambiguous, or mismatched consent or governance causes zero provider calls. Provider failure, timeout, malformed output, or score can never change completion, delivery, or approval. Exact replay creates no duplicate request, charge, telemetry, or audit authority.
 
 Review so far: RED tests failed at the missing coordinator adapter, callback, workflow bindings, and bounded production profile. The implemented path observes only the authoritative `completeWithHead` result and catches every shadow failure after durable completion. Focused verifier, API, worker, workflow, and Transformer suites passed 158 tests; the final focused matrix passed 44 of 44, including zero provider calls under the protected deny-all policy. All affected package typechecks, the full monorepo typecheck, production build, GA policy gates, workflow YAML parse, dependency audit, and diff integrity passed. The protected environment contains the key plus pricing, while operator governance is intentionally deny-all until separate destination-specific approval and durable tenant consent are proven.
+
+## ReGauge coordinator volume recovery: 2026-08-21
+
+Objective: recover the dedicated coordinator from the latest encrypted snapshot onto a schedulable Fly host without deleting or mutating the original rollback volume.
+
+- [x] Capture a RED workflow contract requiring the exact restored volume ID and canonical mount name.
+- [x] Make activation fail closed unless that one restored volume is encrypted, 20 GB, created, located in `sjc`, and either unattached or attached only to this app's coordinator process.
+- [x] Point only the coordinator mount at the restored volume and remove automatic empty-volume creation.
+- [x] Run the focused workflow test, YAML and Fly config validation, affected typecheck, governance checks, and diff integrity.
+- [ ] Publish through protected pull request CI and verify exact post-merge main CI.
+- [ ] Rerun the protected one-draft activation and verify exact revision, coordinator and worker health, containment, and zero DeepSeek provider calls under deny-all governance.
+- [ ] Browser-check the live dedicated hostname in Chrome and preserve screenshots if activation succeeds.
+- [ ] Keep `vol_4ojd7q87kdxy8xxr` intact until the restored volume and application data are independently verified and deletion is separately approved.
+
+Acceptance: deployment can mount only restored volume `vol_4y83e8lm03q5x03r` as `mendpoint_transformer_data_v2`; a missing, duplicated, wrong-region, wrong-size, unencrypted, non-created, or foreign-process-attached volume stops before secret staging or deployment; the original volume remains recoverable.
+
+Review before publication: the workflow now rejects every volume except restored encrypted volume `vol_4y83e8lm03q5x03r`, including mismatched name, state, size, region, zone, backup policy, or host health. An attachment is accepted only when its exact Machine belongs to the coordinator process in the same Fly app. Automatic empty-volume creation is removed. The coordinator mount uses only `mendpoint_transformer_data_v2`, while the original volume remains untouched. RED failed on the missing restored-volume authority. GREEN passes 25 focused tests, workflow YAML parsing, Fly profile validation, Worker typecheck, GA governance checks, the optimized 50-page production build, dependency audit with zero vulnerabilities, and diff integrity.

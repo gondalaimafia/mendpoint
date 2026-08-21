@@ -60,6 +60,20 @@ describe("Regauge production workflow", () => {
     expect(infrastructure).toBeDefined();
     expect(infrastructure.run).toContain("regauge_fly_app_bootstrap_required");
     expect(infrastructure.run).not.toContain("flyctl apps create");
+    expect(infrastructure.run).toContain("vol_4y83e8lm03q5x03r");
+    expect(infrastructure.run).toContain('.name == "mendpoint_transformer_data_v2"');
+    expect(infrastructure.run).toContain('.zone == "b376"');
+    expect(infrastructure.run).toContain(".encrypted == true");
+    expect(infrastructure.run).toContain("length == 1");
+    expect(infrastructure.run).toContain("flyctl machines list --app mendpoint-transformer-pilot --json");
+    expect(infrastructure.run).toContain('.config.metadata.fly_process_group == "coordinator"');
+    expect(infrastructure.run).toContain("coordinator-volume-machine.json");
+    expect(infrastructure.run).toContain("regauge_fly_volume_authority_invalid");
+    expect(infrastructure.run).not.toContain("flyctl volumes create");
+    expect(infrastructure.run).not.toMatch(/\.name == "mendpoint_transformer_data"/);
+    const flyProfile = readFileSync("fly.transformer.toml", "utf8");
+    expect(flyProfile).toContain('source = "mendpoint_transformer_data_v2"');
+    expect(flyProfile).not.toContain('source = "mendpoint_transformer_data"');
     const storage = deploy.steps.find(
       (step: Record<string, unknown>) => step.name === "Verify private checkpoint storage",
     );
