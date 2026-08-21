@@ -21,14 +21,35 @@ import {
 } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
 import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
+import { enqueueDelegatedPrVerificationJob } from "@mendpoint/worker/delegated-pr-verification-job";
 
 const NOW = "2026-08-06T12:00:00.000Z";
 const CANDIDATE_DIGEST = "c".repeat(64);
 const CANDIDATE_MANIFEST_SHA256 = "f".repeat(64);
+const VERIFICATION_AUTHORITY = Object.freeze({
+  candidateProducerPrincipalId: "candidate-authority",
+  candidateProducerVersion: "f".repeat(40),
+  authorityId: "verifier-a",
+  authorityDigest: `sha256:${"3".repeat(64)}`,
+  executionAuthorityId: "sandbox-a",
+  mendpointRevision: "f".repeat(40),
+  policy: Object.freeze({
+    failToPassCommandDigest: `sha256:${"1".repeat(64)}`,
+    passToPassCommandDigest: `sha256:${"2".repeat(64)}`,
+    sandboxBackend: "fly_machines",
+  }),
+});
 const MEMBERSHIP_EVIDENCE_ID = `membership:${createHash("sha256")
   .update("tenant-a\nhttps://identity.example.com\nreviewer-a", "utf8")
   .digest("hex")}`;
 const opened: Array<{ db: AppDb; directory: string }> = [];
+
+function markDelegatedVerificationRequest(db: AppDb, jobId: string): void {
+  db.raw.prepare("UPDATE jobs SET result_json = ? WHERE id = ? AND tenant_id = ?")
+    .run(JSON.stringify({ sessionId: "warden-run-1", status: "candidate_ready",
+      delegatedVerification: { schemaVersion: 1, jobId, authority: VERIFICATION_AUTHORITY } }),
+    "source-job-1", "tenant-a");
+}
 
 function fixture(options: {
   audit?: Parameters<typeof registerWardenCandidateReviewRoutes>[2];
@@ -252,6 +273,67 @@ describe("Warden candidate human review", () => {
     expect(verifyAuditIntegrity(db, "tenant-a").ok).toBe(true);
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get())
       .toEqual({ count: 0 });
+  });
+
+  it.each([
+    ["pending", "delegated_pr_verification_pending"],
+    ["dead_letter", "delegated_pr_verification_failed"],
+  ])("does not seal or approve while a requested delegated verification is %s", async (status, error) => {
+    const sealApproval = vi.fn(async () => ({ path: "C:\\sealed.json",
+      sha256: `sha256:${"b".repeat(64)}`, created: true }));
+    const { app, db } = fixture({ sealApproval });
+    seedCiRepairCandidate(db);
+    const run = getAgentRun(db, "warden-run-1", "tenant-a")!;
+    const result = JSON.parse(run.result_json!) as Record<string, unknown>;
+    db.raw.prepare("UPDATE agent_runs SET result_json = ? WHERE id = ? AND tenant_id = ?")
+      .run(JSON.stringify({ ...result, artifacts: {
+        ...(result.artifacts as Record<string, unknown>), candidateDigest: `sha256:${CANDIDATE_DIGEST}`,
+      } }), run.id, run.tenant_id);
+    const verificationJobId = enqueueDelegatedPrVerificationJob(db, { tenantId: "tenant-a", runId: "warden-run-1",
+      correlationId: "source-job-1", createdAt: NOW });
+    markDelegatedVerificationRequest(db, verificationJobId);
+    db.raw.prepare("UPDATE jobs SET status = ? WHERE id = ?").run(status, verificationJobId);
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve only after independent verification." }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error });
+    expect(sealApproval).not.toHaveBeenCalled();
+    expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
+    expect(getWardenCiUpdateByRun(db, "tenant-a", "warden-run-1")).toBeUndefined();
+  });
+
+  it("rechecks delegated verification after sealing and blocks a late request", async () => {
+    let database: AppDb | undefined;
+    const sealApproval = vi.fn(async () => {
+      const verificationJobId = enqueueDelegatedPrVerificationJob(database!, { tenantId: "tenant-a", runId: "warden-run-1",
+        correlationId: "source-job-1", createdAt: NOW });
+      markDelegatedVerificationRequest(database!, verificationJobId);
+      return { path: "C:\\sealed-race.json", sha256: `sha256:${"b".repeat(64)}`, created: true };
+    });
+    const value = fixture({ sealApproval });
+    database = value.db;
+    seedCiRepairCandidate(value.db);
+    const run = getAgentRun(value.db, "warden-run-1", "tenant-a")!;
+    const result = JSON.parse(run.result_json!) as Record<string, unknown>;
+    value.db.raw.prepare("UPDATE agent_runs SET result_json = ? WHERE id = ? AND tenant_id = ?")
+      .run(JSON.stringify({ ...result, artifacts: {
+        ...(result.artifacts as Record<string, unknown>), candidateDigest: `sha256:${CANDIDATE_DIGEST}`,
+      } }), run.id, run.tenant_id);
+
+    const response = await value.app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve only if authority remains current." }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "delegated_pr_verification_pending" });
+    expect(sealApproval).toHaveBeenCalledTimes(1);
+    expect(getAgentRun(value.db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
+    expect(getWardenCiUpdateByRun(value.db, "tenant-a", "warden-run-1")).toBeUndefined();
   });
 
   it("does not grant delivery authority when membership is revoked while the approval is sealed", async () => {

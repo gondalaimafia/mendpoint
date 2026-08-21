@@ -2610,8 +2610,8 @@ Post-deploy evidence: the first main deployment attempt correctly failed closed 
 
 Objective: make the protected Fettler delegated pull request path causally require independent verification, then create a durable handoff from an exact successful GitHub observation to cleanup and trial assembly.
 
-- [ ] Add RED API coverage proving a pending, failed, missing-required, ambiguous, or corrupt delegated verification cannot authorize human approval or GitHub delivery.
-- [ ] Require the exact completed delegated verification job and its durable completed event before approval when protected verification is configured; preserve ordinary approval when no delegated verification was requested.
+- [x] Add RED API coverage proving a pending, failed, missing-required, ambiguous, or corrupt delegated verification cannot authorize human approval or GitHub delivery.
+- [x] Require the exact completed delegated verification job and its durable completed event before approval when protected verification is configured; preserve ordinary approval when no delegated verification was requested.
 - [ ] Add RED worker coverage proving only an exact successful check observation creates one deterministic tenant-scoped cleanup job in the same transaction.
 - [ ] Implement the cleanup handoff without inferring cleanup success or mutating GitHub from the observation worker.
 - [ ] Port only the still-valid exact observation authority from stale PR 237, including repository, installation, base/head, remote tree, changed paths, and complete draft enumeration bindings.
@@ -2619,6 +2619,8 @@ Objective: make the protected Fettler delegated pull request path causally requi
 - [ ] Run focused and affected full suites, typechecks, production build, governance checks, dependency audit, strict review, protected publication, and exact deployment verification.
 
 Acceptance: no human approval can race or bypass a delegated verifier that was requested; failed or indeterminate verification causes zero delivery authority; successful checks create exactly one durable cleanup handoff; and the eventual cleanup and trial assembler consume exact content-addressed authority rather than filesystem-only or caller-authored claims.
+
+Review for the approval-gate slice: the verification request, exact verifier authority and policy snapshot, candidate-ready source result, and deterministic verification job are persisted in one completion transaction. Approval checks the authority before creating a seal and again under `BEGIN IMMEDIATE` before any review or delivery mutation. A completed job is accepted only after the Pipeline terminal reader recomputes its request digest and validates the promoted candidate, both verification artifacts, both evidence records, configured command digests, sandbox backend, execution authority, Mendpoint revision, hash-chained event, and active verifier principal. Jobs created by the previously deployed markerless producer reconstruct the same historical authority only from immutable content-addressed artifacts and unique evidence records, then pass through the identical terminal reader. RED evidence captured the original pending-approval bypass and the later synthetic job-plus-event authority bypass. The corrected focused matrix passes 49 of 49. Pipeline passes 152 of 152 and Worker passes 391 of 391. API reached 426 of 427 under a parallel machine-load run; the sole repository reconnect timeout passed alone in 645 milliseconds. Monorepo typecheck, the optimized 50-page production build, GA governance checks, dependency audit, and diff integrity pass. Independent strict review found no remaining P0 or P1.
 
 ## ReGauge canary approval source binding: 2026-08-21
 
@@ -2630,6 +2632,8 @@ Objective: ensure the protected one-draft authority names the exact canary repos
 - [x] Require the worker production profile to validate the exact 40-character canary revision and bind the approval to it.
 - [x] Make the API bootstrap independently validate the full tenant, campaign, remote repository, expected revision, one-draft, run, and attempt scope before any repository or Mission effect.
 - [x] Run focused API, Worker, and workflow tests plus affected typechecks and diff integrity before rebasing onto current main.
-- [ ] Rebase onto current main, rerun verification, obtain strict review, and publish through protected CI.
+- [x] Rebase onto current main, rerun verification, obtain strict review, and publish through protected CI.
 
 Acceptance: changing only the Mendpoint release SHA never changes or satisfies canary repository authorization; any mismatch in the tenant, campaign, remote repository, exact source revision, draft count, run, or attempt fails before effects.
+
+Review: merged as PR 270 at `0ba2d288bc03423dc0f37a9bc91cdf673661b38a`. The protected PR workflow `32515422020` and exact post-merge workflow `32515833890` passed tests, release gates, container builds, deployment E2E, and deployment. Focused API, Worker, and workflow coverage passed 34 of 34; monorepo typecheck, production build, GA checks, dependency audit, and diff integrity passed. Strict review found no P0 or P1 issue. Live `/livez` and `/healthz` returned HTTP 200. Browser checks at 1440 by 900 and 375 by 812 verified the homepage plus canonical Fettler and Regauge documentation with the approved names, zero horizontal overflow, no broken images, and no console errors. The live combined worker still reports Regauge disabled and inactive, so this closes the source authorization defect without claiming dedicated Regauge activation.

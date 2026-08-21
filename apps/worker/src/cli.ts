@@ -167,7 +167,7 @@ import {
 } from "./warden-candidate-delivery.js";
 import {
   DELEGATED_PR_VERIFICATION_JOB_TYPE,
-  enqueueDelegatedPrVerificationJob,
+  requestDelegatedPrVerificationJob,
   runDelegatedPrVerificationJob,
 } from "./delegated-pr-verification-job.js";
 import {
@@ -3299,11 +3299,12 @@ async function processJobsOnceUnfenced(
             pendingWardenRoutingFinalizer,
             attempt.status === "succeeded" ? attempt.finalizeTerminal : undefined,
             attempt.status === "succeeded" && delegatedPrVerification
-              ? () => enqueueDelegatedPrVerificationJob(db, {
+              ? () => requestDelegatedPrVerificationJob(db, {
                   tenantId: job.tenant_id,
                   runId: sessionId,
                   correlationId: job.id,
                   createdAt: nowIso(),
+                  authority: delegatedPrVerification.verificationDependencies,
                 })
               : noAction && payload.ciFailure
               ? () => settleWardenCiRepairWithoutCandidate(db, { tenantId: job.tenant_id,
