@@ -3,13 +3,19 @@
 Updated: 2026-08-21
 
 The lesson classifier (`classify` in `packages/pipeline/src/learning-event.ts`)
-assigns every validated lesson to one of eleven `LearningDestination` values. This
+assigns every validated lesson to one of eleven `LearningDestination` values it can
+emit. The taxonomy defines a twelfth value, `organization_memory`, that the
+classifier never emits and no sink consumes — it names where a tenant convention
+belongs (spec §17.4/§17.4.3, ADR-0008) but is vocabulary, not a live route. This
 document records which of those destinations actually go anywhere, how the drop is
 now made observable, why the two lesson taxonomies in the tree are deliberately
 separate, and the upstream work that must land before Organization Memory can be
 fed from this pipeline.
 
-It describes the code on this branch, not intended future wiring.
+It describes the code on this branch, not intended future wiring. In particular,
+the `organization_memory` destination existing does **not** mean the routing is
+live: the three-part upstream blocker below is unchanged, and nothing is classified
+there today.
 
 ## The gap this makes visible
 
@@ -20,7 +26,9 @@ That line is the only consumer of `lesson.destinations` in the repository. A les
 classified to any of the other ten destinations (`router_policy`, `retrieval`,
 `graph`, `parser`, `tooling`, `deterministic_recipe`, `prompt`, `product_logic`,
 `calibration`, `no_action`) is computed, stored on the lesson object, and consumed
-by nothing.
+by nothing. The twelfth value, `organization_memory`, is not even reachable from the
+classifier: it has no attribution that maps to it, so it is never emitted and, like
+the other ten, has no sink.
 
 Until now that drop was silent: "we routed this lesson to `retrieval`" and "nothing
 acted on this lesson" were indistinguishable — the pipeline's dominant defect shape,
@@ -85,8 +93,9 @@ look like duplication, but they are two layers, not two copies, and one already
 derives from the other:
 
 - `packages/pipeline/src/learning-event.ts` — the canonical **intervention**
-  vocabulary (`LearningDestination`, spec §17.4): the eleven improvement targets a
-  lesson routes to. Owned in `packages/pipeline`.
+  vocabulary (`LearningDestination`, spec §17.4): the improvement targets a lesson
+  routes to. Eleven are classifier-emittable; the twelfth, `organization_memory`,
+  is named vocabulary the classifier never emits. Owned in `packages/pipeline`.
 - `evals/classification/destinations.ts` — a **failure-category** taxonomy
   (`MISSING_FACT`, `CONTEXT_FAILURE`, `PREFERENCE`, ...). Each category's
   `permittedInterventions` are `LearningDestination` values, imported via
@@ -98,8 +107,10 @@ The eval taxonomy classifies *why a failure happened*; the pipeline taxonomy nam
 *the lightest intervention that fixes it*. The failure category maps onto the
 intervention vocabulary — it does not restate it. Note also that the eval
 `PREFERENCE` category maps to the `model_weight` intervention (preference *tuning*
-on real preference data), **not** to Organization Memory. Neither taxonomy has a
-memory destination.
+on real preference data), **not** to Organization Memory. The pipeline taxonomy now
+has a memory destination (`organization_memory`), but nothing maps the eval
+`PREFERENCE` category onto it and the classifier never emits it; the eval taxonomy
+still has no memory destination.
 
 Keep them separate. The apparent duplication is a typed layering, and the type
 import already fails to compile if the intervention vocabulary drifts. Merging them
@@ -115,7 +126,13 @@ it rejects `explicit` sources, forces `status: "MEMORY_CANDIDATE"` (never `ACTIV
 and `trainingEligible: false`, counts independent corroboration structurally, and
 binds tenant into the record hash. The gap that stops the lesson pipeline feeding it
 is entirely **upstream**, and forcing a route now would manufacture organizational
-conventions out of one-off fixes. Three things must exist first:
+conventions out of one-off fixes. Three things must exist first.
+
+The **destination vocabulary** is now in place and is the only part that changed:
+`LearningDestination` has an `organization_memory` value, spec §17.4 lists
+`ORGANIZATION_MEMORY`, and §17.4.3 names the Organization Memory store (ADR-0008) as
+the tenant-private rules/context form. That is a naming reconciliation, not a route.
+The three blockers that keep anything from being classified there are untouched:
 
 1. **An attribution value that means "organizational convention."** The current
    `LearningOutcomeAttribution` vocabulary
@@ -123,11 +140,12 @@ conventions out of one-off fixes. Three things must exist first:
    deterministic_recipe | prompt | product_logic | calibration | none`) has no value
    for an enduring organizational preference. A single reviewer correction is
    ambiguous across graph / org-memory / retrieval-harness / recipe / model; the
-   vocabulary distinguishes four of those but has no value for the fifth. Spec
-   §17.4 also has no memory destination, and §17.4.3 routes
-   `organization-specific convention → tenant-private graph/rules/context`.
-   Reconciling that with the new store is a specification question for the owner, not
-   a wiring change. Reinterpreting an existing one-off-fix attribution
+   vocabulary distinguishes four of those but has no value for the fifth. Naming the
+   `organization_memory` *destination* does not supply this *attribution* — the
+   classifier is a 1:1 map from attribution, so with no convention attribution the
+   destination is never emitted (an attribution value was deliberately deferred: it
+   needs a producer that can honestly attest a repeated reviewer correction of a
+   non-defect). Reinterpreting an existing one-off-fix attribution
    (`prompt` / `product_logic` / `retrieval`) as a convention is the exact failure to
    avoid.
 

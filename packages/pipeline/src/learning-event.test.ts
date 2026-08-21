@@ -3,6 +3,7 @@ import {
   createGovernedLearningEvent,
   extractGovernedLesson,
 } from "./learning-event.js";
+import type { LearningDestination, LearningOutcomeAttribution } from "./learning-event.js";
 
 const CREATED_AT = "2026-08-14T20:00:00.000Z";
 
@@ -250,5 +251,42 @@ describe("governed learning events", () => {
         splitGroupId: "",
       },
     }))).toThrow("learning_event_split_group_invalid");
+  });
+
+  it("keeps the event digest identical after adding the organization_memory destination", () => {
+    // LOAD-BEARING. The `organization_memory` destination is additive vocabulary on
+    // `LearningDestination`, which is a *lesson* field and not part of the hashed
+    // `GovernedLearningEventV1`. This pins the canonical fixture's digest to the
+    // value it produced BEFORE the destination was added (captured on origin/main).
+    // If the additive change ever perturbs an existing event's digest — the one
+    // outcome the brief forbids for this governed, digest-bound type — this dies.
+    const event = createGovernedLearningEvent(eventInput());
+    expect(event.digest).toBe("22ce18b82ca96f96d3bedab62d5de7c73713149e7f61ca8e59529eeb4dcd46b9");
+  });
+
+  it("makes organization_memory a reachable value that no attribution routes to", () => {
+    // Reachable as a value: it typechecks as a LearningDestination.
+    const named: LearningDestination = "organization_memory";
+    expect(named).toBe("organization_memory");
+
+    // But the classifier (a 1:1 map from attribution) never emits it: no attribution
+    // value means "organizational convention". Sweep every attribution and confirm.
+    // This control dies if a future edit wires an attribution to organization_memory
+    // without the honest producer the routing doc requires.
+    const attributions: readonly LearningOutcomeAttribution[] = [
+      "model_behavior", "router", "retrieval", "graph", "parser", "tooling",
+      "deterministic_recipe", "prompt", "product_logic", "calibration", "none",
+    ];
+    for (const attribution of attributions) {
+      const lesson = extractGovernedLesson(createGovernedLearningEvent(eventInput({
+        observedOutcome: {
+          status: "failed" as const,
+          summary: `Outcome attributed to ${attribution}.`,
+          attribution,
+          evidenceRefs: [`evidence-${attribution}`],
+        },
+      })));
+      expect(lesson.destinations.map((d) => d.destination)).not.toContain("organization_memory");
+    }
   });
 });
