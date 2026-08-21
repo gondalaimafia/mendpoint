@@ -174,6 +174,43 @@ describe("AgentVerifier", () => {
     });
     expect(Object.keys(result.telemetry.candidateScores)).toHaveLength(0);
   });
+
+  it("classifies a cache or backend identity mismatch distinctly from an upstream failure", async () => {
+    // A response whose requestId does not bind the problem: validateBackendScore
+    // rejects it as a cache/backend identity mismatch — a cache-poisoning signal
+    // that must not read as an ordinary provider outage.
+    const poisoned: VerifierBackend = {
+      descriptor: backend.descriptor,
+      score: async (input) => ({
+        requestId: `${input.requestId}-tampered`,
+        scores: Object.fromEntries(input.candidates.map((candidate) => [candidate.candidateId, 0.5])),
+        criterionId: input.criterion.id,
+        rawResponseDigest: digest("f"),
+        recognizedProbabilityMass: 1,
+        usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 2, reasoningTokens: 0, totalTokens: 12 },
+        estimatedCostUsd: 0.001,
+        latencyMs: 10,
+      }),
+    };
+    const poisonedResult = await createAgentVerifier({
+      enabled: true, rolloutMode: "shadow", backend: poisoned, evaluations: 1, pivots: 1, seed: 0, maximumCandidates: 5,
+    }).verify(verifyInput());
+    expect(poisonedResult.status).toBe("failed");
+    expect(poisonedResult.telemetry.failureCode).toBe("cache_failure");
+
+    // A plain upstream error stays an api_failure, not a cache one.
+    const upstream: VerifierBackend = {
+      descriptor: backend.descriptor,
+      score: async () => {
+        throw new Error("provider returned 503 service unavailable");
+      },
+    };
+    const upstreamResult = await createAgentVerifier({
+      enabled: true, rolloutMode: "shadow", backend: upstream, evaluations: 1, pivots: 1, seed: 0, maximumCandidates: 5,
+    }).verify(verifyInput());
+    expect(upstreamResult.status).toBe("failed");
+    expect(upstreamResult.telemetry.failureCode).toBe("api_failure");
+  });
 });
 
 describe("verification policy", () => {

@@ -3,14 +3,24 @@ import type { GraphLearnDb } from "./store.js";
 
 export type SoftwareEntityKind = "endpoint" | "provider_sdk_method" | "internal_sdk_method" | "function" | "test";
 export type SoftwareRelationshipKind = "uses_endpoint" | "uses_sdk_method" | "wraps" | "calls" | "tests";
-export type SoftwareGraphStatus = "active" | "stale" | "conflicted" | "superseded";
+// A "conflicted" status — competing extractor evidence disagreeing about the same
+// entity or relationship — is a future state with no producer today: the
+// materializer only emits "active". Re-add it here together with the conflict
+// detection that would produce it (the conflictRefs field below already carries
+// the disagreeing evidence), so the reader below cannot branch on a state the
+// graph can never reach.
+export type SoftwareGraphStatus = "active" | "stale" | "superseded";
 export type SoftwareGraphDerivation = "provider_spec" | "provider_sdk_binding" | "repository_usage" | "call_graph";
+// A "calibrated_probability" basis (a numeric confidence from a calibration model)
+// has no producer today: every entity and relationship is derived deterministically
+// or from tiered static analysis, so no numeric confidence is ever emitted. Re-add
+// the basis together with the `confidence` field and the calibration producer that
+// would populate it.
 export type SoftwareGraphConfidenceBasis =
   | "deterministic_exact"
   | "static_analysis_high"
   | "static_analysis_medium"
-  | "static_analysis_low"
-  | "calibrated_probability";
+  | "static_analysis_low";
 
 export type SoftwareGraphEntityV1 = {
   id: string;
@@ -23,7 +33,6 @@ export type SoftwareGraphEntityV1 = {
   extractor: SoftwareGraphExtractorV1;
   derivation: SoftwareGraphDerivation;
   confidenceBasis: SoftwareGraphConfidenceBasis;
-  confidence?: number;
   status: SoftwareGraphStatus;
   validFrom: string;
   validTo?: string;
@@ -39,7 +48,6 @@ export type SoftwareGraphRelationshipV1 = {
   extractor: SoftwareGraphExtractorV1;
   derivation: SoftwareGraphDerivation;
   confidenceBasis: SoftwareGraphConfidenceBasis;
-  confidence?: number;
   status: SoftwareGraphStatus;
   validFrom: string;
   validTo?: string;
@@ -47,7 +55,11 @@ export type SoftwareGraphRelationshipV1 = {
 };
 export type SoftwareGraphCoverageStageV1 = {
   stage: "repository_discovery" | "language_parsing" | "provider_specification" | "sdk_resolution" | "call_resolution" | "test_resolution";
-  basis: "complete" | "partial" | "not_analyzed" | "failed" | "conflicted";
+  // The materializer emits only these three bases today. "failed" (a stage ran
+  // but produced no authoritative result) and "conflicted" (authoritative sources
+  // disagree) are future states with no producer; re-add them here together with
+  // the stage logic that would emit them. See docs/graph/COVERAGE_MODEL.md.
+  basis: "complete" | "partial" | "not_analyzed";
   analyzed: number;
   omitted: number;
   reasons?: string[];
@@ -95,7 +107,6 @@ const RELATIONSHIP_KINDS = new Set<SoftwareRelationshipKind>([
 const GRAPH_STATUSES = new Set<SoftwareGraphStatus>([
   "active",
   "stale",
-  "conflicted",
   "superseded",
 ]);
 const DERIVATIONS = new Set<SoftwareGraphDerivation>([
@@ -103,7 +114,7 @@ const DERIVATIONS = new Set<SoftwareGraphDerivation>([
 ]);
 const CONFIDENCE_BASES = new Set<SoftwareGraphConfidenceBasis>([
   "deterministic_exact", "static_analysis_high", "static_analysis_medium",
-  "static_analysis_low", "calibrated_probability",
+  "static_analysis_low",
 ]);
 const COVERAGE_STAGES = new Set<SoftwareGraphCoverageStageV1["stage"]>([
   "repository_discovery",
@@ -117,8 +128,6 @@ const COVERAGE_BASES = new Set<SoftwareGraphCoverageStageV1["basis"]>([
   "complete",
   "partial",
   "not_analyzed",
-  "failed",
-  "conflicted",
 ]);
 const compareCodeUnits = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
@@ -183,7 +192,7 @@ function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraph
   const entities = input.entities.map((entity) => {
     onlyKeys(entity, [
       "id", "kind", "canonicalKey", "aliases", "label", "scope", "evidenceRefs",
-      "extractor", "derivation", "confidenceBasis", "confidence", "status", "validFrom", "validTo", "conflictRefs",
+      "extractor", "derivation", "confidenceBasis", "status", "validFrom", "validTo", "conflictRefs",
     ], "software_graph_entity_shape_invalid");
     if (!ID_RE.test(entity.id)) throw new Error("software_graph_entity_id_invalid");
     if (entityIds.has(entity.id)) throw new Error("software_graph_entity_id_duplicate");
@@ -216,12 +225,6 @@ function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraph
     }
     if (!DERIVATIONS.has(entity.derivation)) throw new Error("software_graph_entity_derivation_invalid");
     if (!CONFIDENCE_BASES.has(entity.confidenceBasis)) throw new Error("software_graph_entity_confidence_basis_invalid");
-    if (entity.confidence === undefined) {
-      if (entity.confidenceBasis === "calibrated_probability") throw new Error("software_graph_entity_confidence_invalid");
-    } else if (
-      entity.confidenceBasis !== "calibrated_probability" ||
-      !Number.isFinite(entity.confidence) || entity.confidence < 0 || entity.confidence > 1
-    ) throw new Error("software_graph_entity_confidence_invalid");
     if (!entity.validFrom) throw new Error("software_graph_entity_validity_invalid");
     exactUtc(entity.validFrom, "software_graph_entity_validity_invalid");
     if (entity.validFrom > input.observedAt) {
@@ -232,9 +235,6 @@ function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraph
       throw new Error("software_graph_entity_validity_invalid");
     }
     if (entity.conflictRefs) validateEvidence(entity.conflictRefs, "software_graph_entity_conflicts_invalid");
-    if (entity.status === "conflicted" && !entity.conflictRefs?.length) {
-      throw new Error("software_graph_entity_conflicts_invalid");
-    }
     return {
       ...entity,
       aliases,
@@ -250,7 +250,7 @@ function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraph
   const relationships = input.relationships.map((relationship) => {
     onlyKeys(relationship, [
       "id", "kind", "sourceId", "targetId", "evidenceRefs", "extractor",
-      "derivation", "confidenceBasis", "confidence", "status", "validFrom", "validTo", "conflictRefs",
+      "derivation", "confidenceBasis", "status", "validFrom", "validTo", "conflictRefs",
     ], "software_graph_relationship_shape_invalid");
     if (!ID_RE.test(relationship.id)) throw new Error("software_graph_relationship_id_invalid");
     if (relationshipIds.has(relationship.id)) throw new Error("software_graph_relationship_id_duplicate");
@@ -272,12 +272,6 @@ function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraph
     if (!semanticPairIsValid) throw new Error("software_graph_relationship_semantics_invalid");
     if (!DERIVATIONS.has(relationship.derivation)) throw new Error("software_graph_relationship_derivation_invalid");
     if (!CONFIDENCE_BASES.has(relationship.confidenceBasis)) throw new Error("software_graph_relationship_confidence_basis_invalid");
-    if (relationship.confidence === undefined) {
-      if (relationship.confidenceBasis === "calibrated_probability") throw new Error("software_graph_relationship_confidence_invalid");
-    } else if (
-      relationship.confidenceBasis !== "calibrated_probability" ||
-      !Number.isFinite(relationship.confidence) || relationship.confidence < 0 || relationship.confidence > 1
-    ) throw new Error("software_graph_relationship_confidence_invalid");
     validateEvidence(relationship.evidenceRefs, "software_graph_relationship_evidence_invalid");
     onlyKeys(relationship.extractor, ["id", "version", "digest"], "software_graph_extractor_invalid");
     boundedString(relationship.extractor.id, "software_graph_extractor_invalid");
@@ -291,9 +285,6 @@ function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraph
     if (relationship.validTo) exactUtc(relationship.validTo, "software_graph_relationship_validity_invalid");
     if (relationship.validFrom && relationship.validTo && relationship.validTo <= relationship.validFrom) throw new Error("software_graph_relationship_validity_invalid");
     if (relationship.conflictRefs) validateEvidence(relationship.conflictRefs, "software_graph_relationship_conflicts_invalid");
-    if (relationship.status === "conflicted" && !relationship.conflictRefs?.length) {
-      throw new Error("software_graph_relationship_conflicts_invalid");
-    }
     return {
       ...relationship,
       evidenceRefs: [...relationship.evidenceRefs].sort(compareCodeUnits),
@@ -584,7 +575,6 @@ export function compileFettlerImpactContext(result: FettlerEndpointImpactResult,
       label: entity.label,
       derivation: edge.derivation,
       confidenceBasis: edge.confidenceBasis,
-      ...(edge.confidence === undefined ? {} : { confidence: edge.confidence }),
       evidenceRefs: [...new Set([...entity.evidenceRefs, ...edge.evidenceRefs])]
         .sort(compareCodeUnits),
     };
