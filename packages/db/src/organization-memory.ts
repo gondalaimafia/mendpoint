@@ -565,6 +565,13 @@ function observationAuthority(
     throw new Error("organization_memory_evidence_invalid");
   }
   for (const sourceRef of sourceRefs) {
+    // Fail-closed authority control: an observation only counts if an
+    // independent, verified producer vouched for it. No production code path
+    // currently mints an evidence_records row with this subject_type (see
+    // docs/memory/ORGANIZATION_MEMORY.md, "Operational status of the observation
+    // path"), so this check always rejects in production and the observation /
+    // independent-corroboration promotion path is inert-but-safe, not live. Do
+    // not relax it to make the path reachable — build the producer instead.
     const evidence = one<ObservationEvidenceAuthority>(
       db,
       `SELECT id, subject_type, subject_id, producer_principal_id, verdict
