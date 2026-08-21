@@ -83,6 +83,8 @@ export type DelegatedPrProof = Readonly<{
   }>[];
 }>;
 
+export type NotObserved = Readonly<{ status: "not_observed"; reason: string }>;
+
 export type DelegatedPrVerificationExecution = Readonly<{
   artifact: Artifact;
   authorityId: string;
@@ -93,7 +95,10 @@ export type DelegatedPrVerificationExecution = Readonly<{
   baselineExitCode: number;
   candidateExitCode: number;
   baselineVerdict: "test_failure" | "passed";
-  failingCheckIdentities: readonly string[];
+  // This verifier re-executes commands and observes exit codes; it never parses runner output,
+  // so which individual checks were failing is never observed. Typed as NotObserved so no layer
+  // can echo the configured failToPassIdentities as if the run had seen it.
+  failingCheckIdentities: NotObserved;
   sandboxBackend: string;
   logsDigest: string;
 }>;
@@ -340,6 +345,13 @@ function artifact(value: Artifact): boolean {
   return ID.test(value.artifactId) && SHA256.test(value.sha256);
 }
 
+function isNotObserved(value: unknown): value is NotObserved {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).length === 2 && record.status === "not_observed" &&
+    typeof record.reason === "string" && record.reason.length > 0 && record.reason.length <= 256;
+}
+
 export function delegatedPrAttestedArtifactClaims(evidence: DelegatedPrTrialEvidence): Readonly<
   Record<keyof DelegatedPrTrialEvidence["attestedArtifacts"], unknown>
 > {
@@ -446,13 +458,15 @@ function verificationValid(
     execution.sourceDigest === contract.repository.treeDigest && execution.candidateDigest === candidateDigest &&
     DIGEST.test(execution.logsDigest) && execution.sandboxBackend === contract.verification.sandboxBackend &&
     Number.isSafeInteger(execution.baselineExitCode) && Number.isSafeInteger(execution.candidateExitCode) &&
-    execution.baselineExitCode !== 126 && execution.candidateExitCode !== 126 && (failToPass
+    execution.baselineExitCode !== 126 && execution.candidateExitCode !== 126 &&
+    // The runner output is never parsed, so this verifier cannot have seen which checks were
+    // failing. Require the not_observed sentinel rather than comparing an echoed list against the
+    // configured expectation, which could not fail.
+    isNotObserved(execution.failingCheckIdentities) && (failToPass
       ? execution.baselineVerdict === "test_failure" && execution.baselineExitCode > 0 &&
         ![124, 125, 126, 127, 128, 130, 137, 143].includes(execution.baselineExitCode) &&
-        JSON.stringify([...execution.failingCheckIdentities].sort(compareCodeUnits)) ===
-          JSON.stringify([...contract.verification.failToPassIdentities].sort(compareCodeUnits)) &&
         execution.candidateExitCode === 0
-      : execution.baselineVerdict === "passed" && execution.failingCheckIdentities.length === 0 &&
+      : execution.baselineVerdict === "passed" &&
         execution.baselineExitCode === 0 && execution.candidateExitCode === 0);
 }
 
