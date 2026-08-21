@@ -101,14 +101,16 @@ async function fixture() {
       authorityId: "verifier-a", authorityDigest: `sha256:${hex("3")}`,
       commandDigest: policy.failToPassCommandDigest, sourceDigest: candidate.sourceTreeDigest,
       candidateDigest: candidate.candidateTreeDigest, baselineExitCode: 1, candidateExitCode: 0,
-      baselineVerdict: "test_failure", failingCheckIdentities: Object.freeze(["test:target"]),
+      baselineVerdict: "test_failure", failingCheckIdentities: Object.freeze({
+        status: "not_observed", reason: "check_identities_not_parsed_from_runner_output" }),
       sandboxBackend: policy.sandboxBackend, logsDigest: `sha256:${hex("4")}`,
     }),
     passToPass: Object.freeze({
       authorityId: "verifier-a", authorityDigest: `sha256:${hex("3")}`,
       commandDigest: policy.passToPassCommandDigest, sourceDigest: candidate.sourceTreeDigest,
       candidateDigest: candidate.candidateTreeDigest, baselineExitCode: 0, candidateExitCode: 0,
-      baselineVerdict: "passed", failingCheckIdentities: Object.freeze([]),
+      baselineVerdict: "passed", failingCheckIdentities: Object.freeze({
+        status: "not_observed", reason: "check_identities_not_parsed_from_runner_output" }),
       sandboxBackend: policy.sandboxBackend, logsDigest: `sha256:${hex("5")}`,
     }),
     completedAt: "2026-08-19T12:04:00.000Z",
@@ -211,6 +213,38 @@ describe("delegated PR verification operation", () => {
       .rejects.toThrow("delegated_pr_verification_result_invalid");
     expect(db.raw.prepare(
       "SELECT COUNT(*) AS count FROM artifact_manifests WHERE kind = 'delegated_pr_verification_execution'",
+    ).get()).toEqual({ count: 0 });
+  });
+
+  it("rejects an execution that fabricates observed check identities as a list", async () => {
+    const { db, input, verifier, dependencies, completed, exchange } = await fixture();
+    vi.mocked(verifier.verify).mockImplementationOnce(async (request) => {
+      const base = completed(request);
+      return exchange(request, {
+        ...base,
+        failToPass: { ...base.failToPass, failingCheckIdentities: ["test:target"] },
+      } as unknown as DelegatedPrVerificationResolution);
+    });
+    await expect(runDelegatedPrVerification(db, input, dependencies))
+      .rejects.toThrow("delegated_pr_verification_result_invalid");
+    expect(db.raw.prepare(
+      "SELECT COUNT(*) AS count FROM artifact_manifests WHERE kind = 'delegated_pr_verification_execution'",
+    ).get()).toEqual({ count: 0 });
+  });
+
+  it("rejects an execution whose reported sandbox backend disagrees with the policy", async () => {
+    const { db, input, verifier, dependencies, completed, exchange } = await fixture();
+    vi.mocked(verifier.verify).mockImplementationOnce(async (request) => {
+      const base = completed(request);
+      return exchange(request, {
+        ...base,
+        failToPass: { ...base.failToPass, sandboxBackend: "local" },
+      });
+    });
+    await expect(runDelegatedPrVerification(db, input, dependencies))
+      .rejects.toThrow("delegated_pr_verification_result_invalid");
+    expect(db.raw.prepare(
+      "SELECT COUNT(*) AS count FROM evidence_records WHERE subject_type = 'delegated_pr_verification'",
     ).get()).toEqual({ count: 0 });
   });
 

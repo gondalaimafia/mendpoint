@@ -8,6 +8,8 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 
+export type NotObserved = Readonly<{ status: "not_observed"; reason: string }>;
+
 export type DelegatedPrVerificationExecution = Readonly<{
   authorityId: string;
   authorityDigest: string;
@@ -17,7 +19,9 @@ export type DelegatedPrVerificationExecution = Readonly<{
   baselineExitCode: number;
   candidateExitCode: number;
   baselineVerdict: "test_failure" | "passed";
-  failingCheckIdentities: readonly string[];
+  // The runner output is not parsed, so which individual checks were failing is never observed.
+  // Typed as NotObserved so this layer cannot echo the configured expectation as if it saw it.
+  failingCheckIdentities: NotObserved;
   sandboxBackend: string;
   logsDigest: string;
 }>;
@@ -250,6 +254,16 @@ function timestamp(value: unknown): value is string {
 
 function exactKeys(value: object, keys: readonly string[]): boolean {
   return canonical(Object.keys(value).sort(compareCodeUnits)) === canonical([...keys].sort(compareCodeUnits));
+}
+
+function isNotObserved(value: unknown): value is NotObserved {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      !exactKeys(value, ["status", "reason"])) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return record.status === "not_observed" && typeof record.reason === "string" &&
+    record.reason.length > 0 && record.reason.length <= 256;
 }
 
 function validPath(value: unknown): value is string {
@@ -587,7 +601,6 @@ function validateExecution(
 ): void {
   const expectedCommand = role === "fail_to_pass"
     ? dependencies.policy.failToPassCommandDigest : dependencies.policy.passToPassCommandDigest;
-  const identities = [...execution.failingCheckIdentities];
   const validCommon = exactKeys(execution, ["authorityId", "authorityDigest", "commandDigest",
     "sourceDigest", "candidateDigest", "baselineExitCode", "candidateExitCode", "baselineVerdict",
     "failingCheckIdentities", "sandboxBackend", "logsDigest"]) &&
@@ -597,14 +610,14 @@ function validateExecution(
     execution.sandboxBackend === dependencies.policy.sandboxBackend && DIGEST.test(execution.logsDigest) &&
     Number.isSafeInteger(execution.baselineExitCode) && Number.isSafeInteger(execution.candidateExitCode) &&
     !INFRA_EXIT_CODES.has(execution.baselineExitCode) && !INFRA_EXIT_CODES.has(execution.candidateExitCode) &&
-    identities.every((value) => ID.test(value)) && new Set(identities).size === identities.length;
+    // Reject any execution that claims to have observed which checks were failing: this verifier
+    // does not parse runner output, so the field must carry the not_observed sentinel, never a list.
+    isNotObserved(execution.failingCheckIdentities);
   const validRole = role === "fail_to_pass"
     ? execution.baselineVerdict === "test_failure" && execution.baselineExitCode > 0 &&
-      execution.candidateExitCode === 0 &&
-      canonical([...identities].sort(compareCodeUnits)) ===
-        canonical([...dependencies.policy.failToPassIdentities].sort(compareCodeUnits))
+      execution.candidateExitCode === 0
     : execution.baselineVerdict === "passed" && execution.baselineExitCode === 0 &&
-      execution.candidateExitCode === 0 && identities.length === 0;
+      execution.candidateExitCode === 0;
   if (!validCommon || !validRole) throw new Error("delegated_pr_verification_result_invalid");
 }
 

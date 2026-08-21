@@ -134,6 +134,7 @@ describe("delegated PR Fly sandbox verifier", () => {
       stdout: `${input.workspace}:${input.role}`,
       stderr: "",
       exitCode: input.workspace === "source" && input.role === "fail_to_pass" ? 1 : 0,
+      backend: "fly_machines",
     }));
     const runtime = delegatedPrVerificationRuntimeFromEnv(value.db, value.env, "worker-a", execute);
     expect(runtime).toBeDefined();
@@ -153,6 +154,17 @@ describe("delegated PR Fly sandbox verifier", () => {
     for (const call of execute.mock.calls) {
       const input = call[0];
       expect(input.files["src.ts"]).toEqual(input.workspace === "source" ? value.sourceBytes : value.candidateBytes);
+    }
+    const executions = (value.db.raw.prepare(
+      "SELECT content_text FROM artifact_manifests WHERE kind = 'delegated_pr_verification_execution' ORDER BY id",
+    ).all() as Array<{ content_text: string }>).map((row) => JSON.parse(row.content_text).execution);
+    expect(executions).toHaveLength(2);
+    for (const artifact of executions) {
+      // The backend is the one the executor reported, and check identities are honestly not_observed
+      // rather than echoed from MENDPOINT_DELEGATED_PR_FAIL_TO_PASS_IDENTITIES.
+      expect(artifact.sandboxBackend).toBe("fly_machines");
+      expect(artifact.failingCheckIdentities).toEqual({
+        status: "not_observed", reason: "check_identities_not_parsed_from_runner_output" });
     }
   });
 
@@ -181,6 +193,7 @@ describe("delegated PR Fly sandbox verifier", () => {
       stdout: "bounded",
       stderr: "",
       exitCode: input.workspace === "source" && input.role === "fail_to_pass" ? 1 : 0,
+      backend: "fly_machines",
     }));
     const runtime = delegatedPrVerificationRuntimeFromEnv(value.db, value.env, "worker-a", execute)!;
     const originalVerifier = runtime.verificationDependencies.verifier;
@@ -224,6 +237,7 @@ describe("delegated PR Fly sandbox verifier", () => {
       stdout: "",
       stderr: "sandbox timed out",
       exitCode: input.workspace === "source" && input.role === "fail_to_pass" ? 124 : 0,
+      backend: "fly_machines",
     }));
     const runtime = delegatedPrVerificationRuntimeFromEnv(value.db, value.env, "worker-a", execute)!;
     const jobId = enqueueDelegatedPrVerificationJob(value.db, { tenantId: "tenant-a", runId: "run-a",
@@ -237,6 +251,68 @@ describe("delegated PR Fly sandbox verifier", () => {
     });
     expect(execute).toHaveBeenCalledTimes(4);
     expect(getJob(value.db, jobId, "tenant-a")?.status).toBe("dead_letter");
+    expect(value.db.raw.prepare(
+      "SELECT phase FROM delegated_pr_sandbox_verifier_effects WHERE tenant_id = ?",
+    ).get("tenant-a")).toEqual({ phase: "settled" });
+  });
+
+  it("refuses to pass when the executor does not report its own sandbox backend", async () => {
+    const value = fixture();
+    const observedAt = new Date().toISOString();
+    // A plain executor that stands in for Fly but never names its backend must not be assumed
+    // to be fly_machines: the run settles as a signed failure instead of a false pass.
+    const execute = vi.fn(async (input: DelegatedPrSandboxExecutionInput) => ({
+      ok: input.workspace === "candidate" || input.role === "pass_to_pass",
+      stdout: "",
+      stderr: "",
+      exitCode: input.workspace === "source" && input.role === "fail_to_pass" ? 1 : 0,
+      backend: undefined as unknown as string,
+    }));
+    const runtime = delegatedPrVerificationRuntimeFromEnv(value.db, value.env, "worker-a", execute)!;
+    const jobId = enqueueDelegatedPrVerificationJob(value.db, { tenantId: "tenant-a", runId: "run-a",
+      correlationId: "source-job-a", createdAt: observedAt });
+    const job = claimNextJob(value.db, ["warden.candidate.verify"], { tenantId: "tenant-a",
+      workerId: "worker-a", leaseMs: 60_000, now: observedAt })!;
+    await expect(runDelegatedPrVerificationJob(value.db, { job, ...runtime,
+      now: () => observedAt })).resolves.toMatchObject({
+      status: "failed",
+      code: "delegated_pr_verification_sandbox_backend_unobserved",
+    });
+    expect(execute).toHaveBeenCalledTimes(4);
+    expect(getJob(value.db, jobId, "tenant-a")?.status).toBe("dead_letter");
+  });
+
+  it("recovers from a transient sandbox transport error instead of poisoning the request", async () => {
+    const value = fixture();
+    const observedAt = new Date().toISOString();
+    let calls = 0;
+    const execute = vi.fn(async (input: DelegatedPrSandboxExecutionInput) => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error("sandbox transport lost"), { code: "ECONNRESET" });
+      return {
+        ok: input.workspace === "candidate" || input.role === "pass_to_pass",
+        stdout: "",
+        stderr: "",
+        exitCode: input.workspace === "source" && input.role === "fail_to_pass" ? 1 : 0,
+        backend: "fly_machines",
+      };
+    });
+    const runtime = delegatedPrVerificationRuntimeFromEnv(value.db, value.env, "worker-a", execute)!;
+    const jobId = enqueueDelegatedPrVerificationJob(value.db, { tenantId: "tenant-a", runId: "run-a",
+      correlationId: "source-job-a", createdAt: observedAt });
+    const first = claimNextJob(value.db, ["warden.candidate.verify"], { tenantId: "tenant-a",
+      workerId: "worker-a", leaseMs: 60_000, now: observedAt })!;
+    await expect(runDelegatedPrVerificationJob(value.db, { job: first, ...runtime,
+      now: () => observedAt })).resolves.toMatchObject({ status: "retry_scheduled" });
+    value.db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ? AND tenant_id = ?")
+      .run(observedAt, jobId, "tenant-a");
+    const second = claimNextJob(value.db, ["warden.candidate.verify"], { tenantId: "tenant-a",
+      workerId: "worker-a", leaseMs: 60_000, now: observedAt })!;
+    await expect(runDelegatedPrVerificationJob(value.db, { job: second, ...runtime,
+      now: () => observedAt })).resolves.toMatchObject({ status: "verified" });
+    // One throwing call on the poisoned first attempt, then four successful runs on the retry.
+    expect(calls).toBe(5);
+    expect(getJob(value.db, jobId, "tenant-a")?.status).toBe("done");
     expect(value.db.raw.prepare(
       "SELECT phase FROM delegated_pr_sandbox_verifier_effects WHERE tenant_id = ?",
     ).get("tenant-a")).toEqual({ phase: "settled" });
