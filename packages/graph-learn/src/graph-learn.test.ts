@@ -600,6 +600,79 @@ describe("graph-learn substrate", () => {
     }
   });
 
+  it("creates and converges the software-graph tables from a pre-change volume", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gl-swgraph-"));
+    const path = join(dir, "legacy.sqlite");
+    try {
+      const raw = new DatabaseSync(path);
+      // A volume from before the software-graph tables were introduced: the base
+      // graph exists, gl_software_versions_v1 is present but from an earlier shape
+      // missing parent_version_id, and gl_software_heads_v1 does not exist at all.
+      raw.exec(`
+        CREATE TABLE gl_nodes (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          label TEXT NOT NULL,
+          props_json TEXT,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE gl_edges (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          source TEXT NOT NULL,
+          target TEXT NOT NULL,
+          props_json TEXT,
+          label REAL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE gl_software_versions_v1 (
+          version_id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL,
+          repository_id TEXT NOT NULL,
+          repository_snapshot_id TEXT NOT NULL,
+          repository_revision TEXT NOT NULL,
+          content_digest TEXT NOT NULL,
+          content_json TEXT NOT NULL,
+          observed_at TEXT NOT NULL
+        );
+      `);
+      raw.close();
+
+      const db = openGraphLearnDb(path);
+      const columns = (table: string) =>
+        (
+          db.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+        ).map((c) => c.name);
+
+      // The additive loop converged the pre-change table by adding the missing
+      // column (ALTER appends it last); without the loop it would be invisible.
+      expect(columns("gl_software_versions_v1")).toEqual([
+        "version_id",
+        "tenant_id",
+        "repository_id",
+        "repository_snapshot_id",
+        "repository_revision",
+        "content_digest",
+        "content_json",
+        "observed_at",
+        "parent_version_id",
+      ]);
+      // The heads table was absent on the pre-change volume; CREATE TABLE
+      // materialized it in full.
+      expect(columns("gl_software_heads_v1")).toEqual([
+        "tenant_id",
+        "repository_id",
+        "provider_id",
+        "version_id",
+        "content_digest",
+        "updated_at",
+      ]);
+      db.raw.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("configures persistent graph storage for overlapping API and worker access", async () => {
     const dir = mkdtempSync(join(tmpdir(), "gl-concurrency-"));
     const path = join(dir, "graph.sqlite");

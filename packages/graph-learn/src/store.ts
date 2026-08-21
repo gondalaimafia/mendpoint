@@ -125,6 +125,41 @@ function migrate(raw: DatabaseSync): void {
       }
     }
   }
+  // Additive columns for volumes that already carry gl_software_versions_v1 from
+  // an earlier shape. Register every new nullable/defaulted column here so it
+  // converges on existing volumes — ensureTables never ALTERs implicitly, so a
+  // column added only to the CREATE TABLE above would be invisible on any volume
+  // that already has this table.
+  const svcols = (
+    raw.prepare(`PRAGMA table_info(gl_software_versions_v1)`).all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  for (const [col, def] of [
+    ["parent_version_id", "TEXT"],
+  ] as const) {
+    if (!svcols.includes(col)) {
+      try {
+        raw.exec(`ALTER TABLE gl_software_versions_v1 ADD COLUMN ${col} ${def}`);
+      } catch {
+        /* */
+      }
+    }
+  }
+  // Same additive discipline for gl_software_heads_v1. Every current column is
+  // part of the composite primary key or NOT NULL and arrives via CREATE TABLE,
+  // so none is ALTER-added today; the loop exists so the next nullable/defaulted
+  // column added to the table above is registered here and converges cleanly.
+  const shcols = (
+    raw.prepare(`PRAGMA table_info(gl_software_heads_v1)`).all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  for (const [col, def] of [] as ReadonlyArray<readonly [string, string]>) {
+    if (!shcols.includes(col)) {
+      try {
+        raw.exec(`ALTER TABLE gl_software_heads_v1 ADD COLUMN ${col} ${def}`);
+      } catch {
+        /* */
+      }
+    }
+  }
   raw.exec(DDL_INDEXES);
 }
 
