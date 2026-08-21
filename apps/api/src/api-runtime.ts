@@ -21,6 +21,12 @@ import { createAppDbTransformerMissionAuthority } from "./transformer-mission-au
 import { createTransformerMissionRoutes } from "./transformer-mission-routes.js";
 import { TransformerMissionService } from "./transformer-missions.js";
 
+export function synchronousPipelineExecutionAllowed(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return env.MENDPOINT_PROCESS_ROLE?.trim() !== "transformer_coordinator";
+}
+
 export function initializeApiRuntime(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ) {

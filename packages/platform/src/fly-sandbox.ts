@@ -54,7 +54,11 @@ export type FlyMachine = {
   createdAt?: string;
 };
 
-export type FlyExecResult = { exit_code: number; stdout: string; stderr: string };
+// exit_code is `number | undefined`, not defaulted: Fly can return a reshaped or
+// truncated /exec body with no code at all, and that third state (never reported)
+// must stay distinguishable from an observed 0. Every consumer treats absence as a
+// hard failure; a sentinel like 0 would mint an unproven pass under a security gate.
+export type FlyExecResult = { exit_code: number | undefined; stdout: string; stderr: string };
 
 /**
  * Minimal Fly Machines REST surface the adapter depends on. The real
@@ -480,6 +484,7 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
     publicKeySpkiBase64: configuredEgressAuthority.publicKeySpkiBase64,
     expectedKeyId: configuredEgressAuthority.expectedKeyId,
     expectedPolicyDigest: configuredEgressAuthority.expectedPolicyDigest,
+    minimumSchemaVersion: configuredEgressAuthority.minimumSchemaVersion,
     now: configuredEgressAuthority.now,
   });
 
@@ -633,7 +638,11 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
           }),
           probeTimeoutMs,
         );
-        if (forbiddenProbe.timedOut || forbiddenProbe.value.exit_code !== 0) {
+        if (
+          forbiddenProbe.timedOut ||
+          typeof forbiddenProbe.value.exit_code !== "number" ||
+          forbiddenProbe.value.exit_code !== 0
+        ) {
           result = {
             ok: false,
             stdout: "",
@@ -650,7 +659,11 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
             }),
             probeTimeoutMs,
           );
-          if (allowedProbe.timedOut || allowedProbe.value.exit_code !== 0) {
+          if (
+            allowedProbe.timedOut ||
+            typeof allowedProbe.value.exit_code !== "number" ||
+            allowedProbe.value.exit_code !== 0
+          ) {
             result = {
               ok: false,
               stdout: "",
@@ -679,7 +692,8 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
         } else {
           const exec = capped.value;
           result = {
-            ok: exec.exit_code === 0,
+            // An absent exit code is never a pass: only an observed 0 is green.
+            ok: typeof exec.exit_code === "number" && exec.exit_code === 0,
             stdout: clip(exec.stdout, 8000),
             stderr: clip(exec.stderr, 4000),
             exitCode: exec.exit_code,
@@ -1046,7 +1060,8 @@ export function createFlyRestClient(cfg: {
         stderr?: string;
       };
       return {
-        exit_code: typeof j.exit_code === "number" ? j.exit_code : 0,
+        // No default: an absent code is reported as undefined so consumers can fail closed.
+        exit_code: typeof j.exit_code === "number" ? j.exit_code : undefined,
         stdout: j.stdout ?? "",
         stderr: j.stderr ?? "",
       };

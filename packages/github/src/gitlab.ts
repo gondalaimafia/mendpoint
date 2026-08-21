@@ -106,6 +106,16 @@ export interface GitLabDelivery {
    * delivery intended: sole parent, message, changed paths, modes, and bytes.
    * This is the response-loss reconciliation boundary. A false result is never
    * permission to mutate the branch again.
+   *
+   * This is a tri-state carried across a boolean-plus-throw boundary, exactly
+   * as resolveBranchSha carries "absent" (undefined) apart from "unreachable"
+   * (throw): a `true`/`false` result is a *proven* match or a *proven*
+   * mismatch, and both are terminal. An upstream that could not be reached to
+   * decide (a 5xx, a 429, or a lost request) throws a GitLabDeliveryError
+   * carrying the upstream status so the delivery is retried rather than
+   * laundering the outage into a proven-mismatch dead-letter. A proven mismatch
+   * must never be turned into a throw; an unreachable upstream must never be
+   * collapsed into `false`.
    */
   verifyExactCommit(
     namespace: string,
@@ -150,6 +160,7 @@ export type GitLabExactCommitIntent = Readonly<{
 export type GitLabDeliveryOperation =
   | "createBranch"
   | "resolveBranchSha"
+  | "verifyExactCommit"
   | "commitFiles"
   | "openDraftMergeRequest";
 
@@ -428,7 +439,15 @@ export class HttpGitLabDelivery implements GitLabDelivery {
       `${this.api}/projects/${id}/repository/commits/${encodeURIComponent(commitSha)}`,
       { headers: this.headers() },
     );
-    if (!commit.ok) return false;
+    // A 404 is GitLab's definitive answer that no such commit exists: the head
+    // is not our intended commit, a proven mismatch that fails closed. Any other
+    // non-ok status (5xx, 429, a lost request reported as status 0) means we
+    // could not reach GitLab to decide, so it must retry rather than be
+    // laundered into a permanent mismatch. This mirrors resolveBranchSha.
+    if (commit.status === 404) return false;
+    if (!commit.ok) {
+      throw new GitLabDeliveryError("verifyExactCommit", commit.status, commit.json);
+    }
     const metadata = commit.json as {
       id?: unknown;
       parent_ids?: unknown;
@@ -461,7 +480,14 @@ export class HttpGitLabDelivery implements GitLabDelivery {
         `${this.api}/projects/${id}/repository/commits/${encodeURIComponent(commitSha)}/diff?per_page=${perPage}&page=${page}`,
         { headers: this.headers() },
       );
-      if (!response.ok || !Array.isArray(response.json)) return false;
+      // The commit is already proven present, so any non-ok diff read is an
+      // upstream we could not reach to decide, not proof the content diverged:
+      // retry it. A reachable 200 whose body is not an array is a proven
+      // structural anomaly and fails closed.
+      if (!response.ok) {
+        throw new GitLabDeliveryError("verifyExactCommit", response.status, response.json);
+      }
+      if (!Array.isArray(response.json)) return false;
       diffs.push(...response.json);
       if (diffs.length > 1_000) return false;
       const nextPage = response.headers?.["x-next-page"];
@@ -498,10 +524,19 @@ export class HttpGitLabDelivery implements GitLabDelivery {
         `${this.api}/projects/${id}/repository/files/${encodedPath}?ref=${encodeURIComponent(commitSha)}`,
         { headers: this.headers() },
       );
+      // For a delete, a 404 is the proof the file is gone; a 200 proves it is
+      // still present (a mismatch). Any other non-ok status is an upstream we
+      // could not reach to decide, so retry rather than dead-letter.
+      if (remote.status !== 404 && !remote.ok) {
+        throw new GitLabDeliveryError("verifyExactCommit", remote.status, remote.json);
+      }
       if ("delete" in file) {
         if (diff.deleted_file !== true || remote.status !== 404) return false;
         continue;
       }
+      // A diff that marks this expected-content path as deleted is a proven
+      // mismatch. A surviving non-ok read here can only be a 404 (5xx/429 threw
+      // above): the expected-content file is absent, another proven mismatch.
       if (diff.deleted_file === true || !remote.ok) return false;
       const observed = remote.json as {
         content?: unknown;

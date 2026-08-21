@@ -55,6 +55,10 @@ export function isProduction(): boolean {
  */
 export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport {
   const mode = nodeEnv(env);
+  const processRole = env.MENDPOINT_PROCESS_ROLE?.trim();
+  const transformerCoordinator =
+    processRole === "transformer_coordinator" &&
+    env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() === "transformer_pilot";
   const errors: string[] = [];
   const warnings: string[] = [];
   const values: Record<string, string | undefined> = {
@@ -175,6 +179,15 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
       if (githubMode !== "real") {
         errors.push("Customer deployment profile requires GITHUB_MODE=real");
       }
+      // Every network-fence control is gated on MENDPOINT_SANDBOX_KIND=fly_machines;
+      // any other kind (local, vm, in_cluster) runs customer code on the worker host
+      // with no egress fence. resolveSandboxKind defaults to local when unset, so this
+      // must be asserted explicitly or a customer deploy passes preflight unfenced.
+      if (env.MENDPOINT_SANDBOX_KIND?.trim() !== "fly_machines") {
+        errors.push(
+          "Customer deployment profile requires MENDPOINT_SANDBOX_KIND=fly_machines; other sandbox kinds run customer code on the worker host with no network fence",
+        );
+      }
       if (env.MENDPOINT_DEPLOYMENT_CLASS !== "customer") {
         errors.push(
           "Customer deployment profile requires MENDPOINT_DEPLOYMENT_CLASS=customer",
@@ -259,6 +272,30 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
         }
       }
     }
+    // The sandbox backend must be chosen explicitly in production. resolveSandboxKind
+    // silently defaults to "local" when MENDPOINT_SANDBOX_KIND is unset, so an absent
+    // value is not a safe default: it disables the egress fence without any signal.
+    // Refused here so an unset (or misspelled) kind is caught at boot, mirroring the
+    // "GITHUB_MODE must be explicitly set" guard above.
+    if (!transformerCoordinator) {
+      const sandboxKind = env.MENDPOINT_SANDBOX_KIND?.trim();
+      if (!sandboxKind) {
+        errors.push(
+          "MENDPOINT_SANDBOX_KIND must be explicitly set to fly_machines, local, vm, or in_cluster in production",
+        );
+      } else if (
+        sandboxKind !== "fly_machines" &&
+        sandboxKind !== "local" &&
+        sandboxKind !== "vm" &&
+        sandboxKind !== "in_cluster"
+      ) {
+        errors.push(
+          "MENDPOINT_SANDBOX_KIND must be exactly fly_machines, local, vm, or in_cluster",
+        );
+      }
+    } else if (env.MENDPOINT_SANDBOX_FLY_TOKEN?.trim()) {
+      errors.push("MENDPOINT_SANDBOX_FLY_TOKEN is forbidden in a Transformer coordinator process");
+    }
     // Sandbox mock mode fabricates a passing verification: the mock Fly client
     // mints exit_code 0 without ever running the command, so it must never reach
     // a real deployment. Refused here — alongside the other production-mode
@@ -269,7 +306,7 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
         "MENDPOINT_SANDBOX_FLY_MODE=mock is forbidden in production; the mock sandbox reports a passing verification without executing the command; unset it and wire a real Fly sandbox token",
       );
     }
-    if (env.MENDPOINT_SANDBOX_KIND?.trim() === "fly_machines") {
+    if (!transformerCoordinator && env.MENDPOINT_SANDBOX_KIND?.trim() === "fly_machines") {
       const requiredSandboxAuthority = [
         "MENDPOINT_SANDBOX_FLY_APP",
         "MENDPOINT_SANDBOX_FLY_TOKEN",

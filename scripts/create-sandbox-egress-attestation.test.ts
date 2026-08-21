@@ -2,7 +2,8 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
-  SANDBOX_EGRESS_FORBIDDEN_PROBE_URL,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+  SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS,
   verifySandboxEgressAttestation,
 } from "@mendpoint/platform";
 import { createSandboxEgressAttestation } from "./create-sandbox-egress-attestation.js";
@@ -29,7 +30,11 @@ describe("sandbox egress acceptance receipt producer", () => {
 
     expect(JSON.stringify(receipt)).not.toContain(privateKeyPkcs8Base64);
     expect(receipt.payload).toMatchObject({
-      forbiddenOutbound: { url: SANDBOX_EGRESS_FORBIDDEN_PROBE_URL, blocked: true },
+      forbiddenOutbound: {
+        commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+        targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+        blocked: true,
+      },
       allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
     });
     expect(verifySandboxEgressAttestation({

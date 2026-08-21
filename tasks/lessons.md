@@ -85,6 +85,11 @@
 **Correction:** Each check was correct. The register count is an integrity check on a provenance claim; the principal requirement is why unattended paths cannot mutate missions; the strict writer type is what stopped pre-migration drift from returning.
 **Rule:** Before weakening a check, name the property it protects and ask whether the blockage is that property doing its job. If so, do the smaller correct work instead, and record in the change why the check must stay — otherwise the next person removes it.
 
+### 2026-08-19 — Verify requested fixes in the merged tree
+**Mistake:** I reported that seven review findings were included in the Graphify merge because the branch had passed broad checks, without proving each requested fix was present in the exact merged tree.
+**Correction:** Talal required the outstanding findings to be fixed, and an exact post-merge audit showed the reviewed changes were absent or incomplete.
+**Rule:** Before claiming review findings are fixed or merged, map every finding to an exact regression and merged-tree line, rerun the focused matrix at the merge SHA, and keep publication blocked when any mapping is missing.
+
 ### 2026-08-18 — Review the complete parallel implementation
 **Mistake:** I narrowed a review of Claude's larger Change Graph and Muse implementation to the sandbox prerequisite because the latest concrete work had provisioned that dependency.
 **Correction:** Talal clarified that the sandbox is not the implementation under review; it is one gate inside the larger Claude workstream.

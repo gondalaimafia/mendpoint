@@ -23,9 +23,19 @@ export function checkChangeGraphAuthority(repoRoot: string): string[] {
     if (!existsSync(authorityPath)) {
       issues.push(`authority missing: ${authority.path}`);
     } else {
-      const actual = createHash("sha256").update(readFileSync(authorityPath)).digest("hex");
+      const authorityBytes = readFileSync(authorityPath);
+      const actual = createHash("sha256").update(authorityBytes).digest("hex");
       if (actual !== authority.sha256) {
         issues.push(`authority digest mismatch: expected ${authority.sha256}, actual ${actual}`);
+      }
+      if ("sourceSha256" in authority) {
+        const sourceBytes = authorityBytes.at(-1) === 0x0a
+          ? authorityBytes.subarray(0, authorityBytes.byteLength - 1)
+          : authorityBytes;
+        const sourceActual = createHash("sha256").update(sourceBytes).digest("hex");
+        if (sourceActual !== authority.sourceSha256) {
+          issues.push(`source authority digest mismatch: expected ${authority.sourceSha256}, actual ${sourceActual}`);
+        }
       }
     }
     if (!existsSync(adrPath)) {
@@ -35,6 +45,9 @@ export function checkChangeGraphAuthority(repoRoot: string): string[] {
       const authorityName = authority.path.split("/").at(-1)!;
       if (!adr.includes(`../authority/${authorityName}`)) issues.push(`ADR does not link the checked in authority document: ${authority.adrPath}`);
       if (!adr.includes(authority.sha256)) issues.push(`ADR does not bind the authority digest: ${authority.adrPath}`);
+      if ("sourceSha256" in authority && !adr.includes(authority.sourceSha256)) {
+        issues.push(`ADR does not bind the source authority digest: ${authority.adrPath}`);
+      }
     }
   }
   return issues;

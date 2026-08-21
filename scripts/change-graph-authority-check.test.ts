@@ -32,6 +32,7 @@ function fixture(authority: Buffer, digest = createHash("sha256").update(authori
   writeFileSync(graphifyAdrPath, [
     "../authority/Codex_Master_Prompt_Integrate_Graphify_Into_the_Mendpoint_Change_Graph.md",
     GRAPHIFY_AUTHORITY.sha256,
+    GRAPHIFY_AUTHORITY.sourceSha256,
   ].join("\n"));
   return root;
 }
@@ -39,6 +40,9 @@ function fixture(authority: Buffer, digest = createHash("sha256").update(authori
 describe("Change Graph authority gate", () => {
   it("accepts the exact checked in authority and ADR binding", () => {
     expect(checkChangeGraphAuthority(process.cwd())).toEqual([]);
+    expect(readFileSync(join(process.cwd(), ".gitattributes"), "utf8")).toContain(
+      `${GRAPHIFY_AUTHORITY.path} -text`,
+    );
   });
 
   it("rejects an altered authority even when the ADR still names the expected digest", () => {
@@ -55,6 +59,18 @@ describe("Change Graph authority gate", () => {
     expect(checkChangeGraphAuthority(root)).toEqual(expect.arrayContaining([
       expect.stringContaining("ADR does not link the checked in authority document"),
       expect.stringContaining("ADR does not bind the authority digest"),
+    ]));
+  });
+
+  it("rejects an ADR that does not bind the original source authority digest", () => {
+    const root = fixture(Buffer.from("not the authority", "utf8"));
+    const adrPath = join(root, ...GRAPHIFY_AUTHORITY.adrPath.split("/"));
+    writeFileSync(adrPath, [
+      `../authority/${GRAPHIFY_AUTHORITY.path.split("/").at(-1)}`,
+      GRAPHIFY_AUTHORITY.sha256,
+    ].join("\n"));
+    expect(checkChangeGraphAuthority(root)).toEqual(expect.arrayContaining([
+      expect.stringContaining("ADR does not bind the source authority digest"),
     ]));
   });
 });

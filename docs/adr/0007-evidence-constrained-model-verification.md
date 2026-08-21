@@ -1,4 +1,4 @@
-# ADR-0004: Evidence constrained model verification
+# ADR-0007: Evidence constrained model verification
 
 - **Status:** Proposed
 - **Date:** 2026-08-17

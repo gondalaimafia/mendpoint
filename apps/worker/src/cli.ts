@@ -13,9 +13,15 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runChangePipeline, type PipelineReport } from "@mendpoint/pipeline";
+import {
+  runChangePipeline,
+  type DelegatedPrCandidateOperationDependencies,
+  type DelegatedPrVerificationDependencies,
+  type PipelineReport,
+} from "@mendpoint/pipeline";
 import {
   resolveFanoutSettlementMcuMicros,
+  SANDBOX_EGRESS_ATTESTATION_SCHEMA,
   sandboxEgressAuthorityFromEnv,
   verifySandboxEgressAttestation,
   type FanoutRunMeterSignals,
@@ -155,6 +161,15 @@ import {
   runWardenCandidateDelivery,
   type ResolveWardenCandidateRepository,
 } from "./warden-candidate-delivery.js";
+import {
+  DELEGATED_PR_VERIFICATION_JOB_TYPE,
+  enqueueDelegatedPrVerificationJob,
+  runDelegatedPrVerificationJob,
+} from "./delegated-pr-verification-job.js";
+import {
+  delegatedPrVerificationRuntimeFromEnv,
+  validateDelegatedPrVerificationEnvironment,
+} from "./delegated-pr-sandbox-verifier.js";
 import {
   assertWardenModelAccountingSettled,
   createWardenModelAccountingRuntime,
@@ -1598,6 +1613,15 @@ export function validateWorkerProductionEnv(
     if (env.GITHUB_MODE !== "real") {
       errors.push("Customer worker requires GITHUB_MODE=real");
     }
+    // The egress fence and its verification only run under fly_machines; any other
+    // kind (including the default "local" when unset) executes customer code on the
+    // worker host with no network isolation. Assert it explicitly here, as the API
+    // preflight does, so an unset or local kind cannot pass worker preflight.
+    if (env.MENDPOINT_SANDBOX_KIND?.trim() !== "fly_machines") {
+      errors.push(
+        "Customer worker requires MENDPOINT_SANDBOX_KIND=fly_machines; other sandbox kinds run customer code on the worker host with no network fence",
+      );
+    }
     if (env.MENDPOINT_DEPLOYMENT_CLASS !== "customer") {
       errors.push("Customer worker requires MENDPOINT_DEPLOYMENT_CLASS=customer");
     }
@@ -1609,6 +1633,11 @@ export function validateWorkerProductionEnv(
     }
     if (env.MENDPOINT_PILOT_SEED !== "0") {
       errors.push("Customer worker requires MENDPOINT_PILOT_SEED=0");
+    }
+    if (env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) {
+      errors.push(
+        `Customer worker requires MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA=${SANDBOX_EGRESS_ATTESTATION_SCHEMA}`,
+      );
     }
     if (resolveRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED") !== "1") {
       errors.push("Customer worker requires Fettler model source execution");
@@ -1625,6 +1654,24 @@ export function validateWorkerProductionEnv(
   if (env.GITHUB_MODE !== "mock" && env.GITHUB_MODE !== "real") {
     errors.push("GITHUB_MODE must be explicitly set to mock or real");
   }
+  // The sandbox backend must be chosen explicitly in production: an unset kind
+  // silently resolves to "local" (no egress fence), so absence is refused rather
+  // than defaulted, mirroring the GITHUB_MODE guard above.
+  {
+    const sandboxKind = env.MENDPOINT_SANDBOX_KIND?.trim();
+    if (!sandboxKind) {
+      errors.push(
+        "MENDPOINT_SANDBOX_KIND must be explicitly set to fly_machines, local, vm, or in_cluster",
+      );
+    } else if (
+      sandboxKind !== "fly_machines" &&
+      sandboxKind !== "local" &&
+      sandboxKind !== "vm" &&
+      sandboxKind !== "in_cluster"
+    ) {
+      errors.push("MENDPOINT_SANDBOX_KIND must be exactly fly_machines, local, vm, or in_cluster");
+    }
+  }
   if (env.MENDPOINT_SANDBOX_KIND?.trim() === "fly_machines") {
     try {
       verifySandboxEgressAttestation({
@@ -1639,6 +1686,7 @@ export function validateWorkerProductionEnv(
       );
     }
   }
+  errors.push(...validateDelegatedPrVerificationEnvironment(env));
   const verifierEnabled = env.DEEPSEEK_VERIFIER_ENABLED?.trim();
   if (verifierEnabled && verifierEnabled !== "true" && verifierEnabled !== "false") {
     errors.push("DEEPSEEK_VERIFIER_ENABLED must be exactly true or false");
@@ -2393,6 +2441,10 @@ async function processJobsOnceUnfenced(
     transformerAdaptiveRepositoryResolver?: ResolveTransformerAdaptiveRepository;
     wardenCandidateGithub?: GitHubDelivery;
     wardenCandidateRepositoryResolver?: ResolveWardenCandidateRepository;
+    delegatedPrVerification?: Readonly<{
+      candidateDependencies: DelegatedPrCandidateOperationDependencies;
+      verificationDependencies: DelegatedPrVerificationDependencies;
+    }>;
     onActiveJob?: (
       job: { id: string; type: string; leaseGeneration: number } | null,
     ) => void;
@@ -2400,6 +2452,8 @@ async function processJobsOnceUnfenced(
 ): Promise<JobDrainResult> {
   const workerId = opts.workerId ?? WORKER_ID;
   const workerEnv = opts.wardenEnv ?? process.env;
+  const delegatedPrVerification = opts.delegatedPrVerification ??
+    delegatedPrVerificationRuntimeFromEnv(db, workerEnv, workerId);
   const leaseMs = parseLeaseMs(opts.leaseMs ?? process.env.JOB_LEASE_MS);
   const maxJobs = Math.max(1, Math.min(opts.maxJobs ?? 25, 100));
   const result: JobDrainResult = {
@@ -2427,11 +2481,16 @@ async function processJobsOnceUnfenced(
     }
   }
   for (; result.claimed < maxJobs && opts.shouldContinue?.() !== false; ) {
+    const claimedTypes = ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
+      "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
+      "transformer.adaptive.deliver"];
+    if (delegatedPrVerification?.candidateDependencies.enabled === true &&
+        delegatedPrVerification.verificationDependencies.enabled === true) {
+      claimedTypes.push(DELEGATED_PR_VERIFICATION_JOB_TYPE);
+    }
     const job = claimNextJob(
       db,
-      ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
-        "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
-        "transformer.adaptive.deliver"],
+      claimedTypes,
       {
       tenantId: opts.allTenants
         ? undefined
@@ -2495,6 +2554,20 @@ async function processJobsOnceUnfenced(
     }, Math.max(100, Math.floor(leaseMs / 3)));
     renewal.unref();
     try {
+      if (job.type === DELEGATED_PR_VERIFICATION_JOB_TYPE) {
+        if (!delegatedPrVerification) throw new Error("delegated_pr_verification_disabled");
+        const verification = await runDelegatedPrVerificationJob(db, {
+          job,
+          candidateDependencies: delegatedPrVerification.candidateDependencies,
+          verificationDependencies: delegatedPrVerification.verificationDependencies,
+        });
+        if (verification.status === "verified") result.succeeded++;
+        else {
+          result.failed++;
+          if (verification.status === "retry_scheduled") result.retried++;
+        }
+        continue;
+      }
       if (job.type === "warden.candidate.deliver") {
         const ciReentry = wardenCiConfigForDeliveryJob(db, job, workerEnv);
         const delivery = await runWardenCandidateDelivery({
@@ -3158,7 +3231,14 @@ async function processJobsOnceUnfenced(
             runWrite,
             pendingWardenRoutingFinalizer,
             attempt.status === "succeeded" ? attempt.finalizeTerminal : undefined,
-            noAction && payload.ciFailure
+            attempt.status === "succeeded" && delegatedPrVerification
+              ? () => enqueueDelegatedPrVerificationJob(db, {
+                  tenantId: job.tenant_id,
+                  runId: sessionId,
+                  correlationId: job.id,
+                  createdAt: nowIso(),
+                })
+              : noAction && payload.ciFailure
               ? () => settleWardenCiRepairWithoutCandidate(db, { tenantId: job.tenant_id,
                   cycleId: payload.ciFailure!.cycleId, repairRunId: sessionId,
                   reason: attempt.code, observedAt: nowIso() })

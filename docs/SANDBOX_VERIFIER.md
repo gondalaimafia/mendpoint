@@ -105,8 +105,16 @@ over intact) verification FAILS and never falls back to host execution.
   Ed25519 verification key.
 - `MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID` — the trusted key identity.
 - `MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST` — SHA-256 of the reviewed image
-  entrypoint policy. Production startup cryptographically validates these four
-  values and the worker revalidates them immediately before every command.
+  entrypoint policy.
+- `MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA=2026-08-19.v2` — rejects
+  legacy receipts that proved a different probe. The protected acceptance
+  workflow rotates this value atomically with the v2 receipt.
+
+Production startup cryptographically validates these values and the worker
+revalidates them immediately before every command. The v2 receipt binds the
+exact multi-address raw-IP probe command and ordered targets. A reachable
+target, timeout, DNS-class error, missing exit code, or unclassified socket
+error fails closed; only the reviewed firewall rejection result is accepted.
 
 ### What still runs in the worker container after this change
 
@@ -143,8 +151,8 @@ The policy the sandbox app MUST run under:
 `.github/workflows/sandbox-egress-acceptance.yml` workflow proves the exact image
 and has two mandatory observations:
 
-1. a verifier Machine's attempt to open an outbound connection to an address
-   **outside** the allowlist **FAILS**, and
+1. the exact receipt-bound multi-address TCP probe receives an explicit
+   firewall-class rejection for every target, and
 2. a normal, in-allowlist verification **COMPLETES** inside the Machine.
 
 This default-deny egress policy is a **HARD PREREQUISITE**, not a follow-up. The

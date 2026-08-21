@@ -8,7 +8,7 @@
 - B: Graphify normalization, with semantic fields explicitly `not_measured`;
 - C: Graphify normalization plus Mendpoint provider/entity resolution and immutable Change Graph traversal.
 
-The contract requires 18 cases: six development, six validation, six holdout, with at least three indirect cases in every split. Family digests cannot cross splits. Predictors receive no labels. The key is supplied only after all predictions are staged. Model calls, tokens, and cost are fixed at zero.
+The contract requires 18 cases: six development, six validation, six holdout, with at least three indirect cases in every split. Family digests cannot cross splits. The canonical cohort digest binds every case ID, input digest, family, language, split, and indirect classification. The protected key repeats those bindings and grading revalidates the complete staged artifact after reload. Predictors receive no labels. The key is supplied only after all predictions are staged. Model calls, tokens, and cost are fixed at zero. The deeply frozen report binds the cohort digest plus canonical staged-prediction and sealed-key digests before it is content addressed.
 
 Unit tests prove the staging, sealed-key, and scoring contract. This version deliberately cannot emit an adoption result because it does not yet measure exact-path accuracy, trap correctness, incremental equivalence, network denial, or an executed external holdout. Those fields require a successor benchmark schema after the pinned process exists.
 

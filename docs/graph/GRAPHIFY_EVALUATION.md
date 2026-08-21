@@ -32,7 +32,7 @@ Both systems discover symbols, calls, imports, inheritance, references, structur
 | Finding | Consequence |
 |---|---|
 | No schema version, tenant, manifest digest, parser artifact identity, or mandatory snapshot binding in Graphify output | Raw output is untrusted candidate evidence only. |
-| Missing confidence can be backfilled as `EXTRACTED`; numeric confidence and hyperedges are not fully validated | Mendpoint must validate every fact and retain the original label. |
+| Missing confidence can be backfilled as `EXTRACTED`; numeric confidence and hyperedges are not fully validated | Mendpoint rejects absent or unknown confidence, validates numeric confidence, and retains the original label. |
 | `graph_diff` compares IDs and relation endpoints but ignores attributes, confidence, locations, provenance, weights, and hyperedges | Mendpoint must own temporal diff and invalidation. |
 | Windows watcher locking is a no-op because it depends on `fcntl` | Do not use watch as concurrent production authority. |
 | Mixed document/media extraction and MCP PR tools can make network calls | Only isolated code-only extraction is eligible for the experiment. |
@@ -43,7 +43,7 @@ Both systems discover symbols, calls, imports, inheritance, references, structur
 
 ## Implemented experiment boundary
 
-`@mendpoint/structural-graph` now defines a Mendpoint-owned extraction contract, exact manifest binding, deterministic identity, Graphify normalization, provenance retention, a killable process-port boundary, classified failures, fallback, incremental diff, and a projection into the existing call graph. The Graphify process port remains private and has no production implementation. No Graphify dependency, wheel, MCP server, graph database, external model call, or runtime flag is activated.
+`@mendpoint/structural-graph` now defines a Mendpoint-owned extraction contract, exact manifest-byte materialization, deterministic identity, Graphify normalization, provenance retention, a repository-pinned supervised process boundary, classified and audited fallback, incremental diff, runtime invariant validation, and a projection into the existing call graph. The Graphify process receives bounded byte copies rather than a mutable repository path. The Graphify process port remains private and has no production implementation. No Graphify dependency, wheel, MCP server, graph database, external model call, or runtime flag is activated.
 
 ## Conclusion
 

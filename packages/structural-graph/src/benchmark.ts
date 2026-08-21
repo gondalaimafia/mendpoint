@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type GraphifyBenchmarkSplit = "development" | "validation" | "holdout";
 export type GraphifyBenchmarkArm = "A" | "B" | "C";
 export type GraphifyBenchmarkCase = {
@@ -17,7 +19,17 @@ export type GraphifyBenchmarkPrediction = {
 };
 export type GraphifyBenchmarkKey = {
   cohortDigest: string;
-  cases: Array<{ caseId: string; expectedNodes: string[]; expectedEdges: string[] }>;
+  cases: Array<{
+    caseId: string;
+    familyDigest: string;
+    split: GraphifyBenchmarkSplit;
+    indirect: boolean;
+    language: string;
+    inputDigest: string;
+    expectedNodes: string[];
+    expectedEdges: string[];
+    expectedIndirectEdges: string[];
+  }>;
 };
 export type StagedGraphifyBenchmark = {
   schemaVersion: "mendpoint.graphify-benchmark-staged.v1";
@@ -26,10 +38,10 @@ export type StagedGraphifyBenchmark = {
   predictions: Array<{ caseId: string; arm: GraphifyBenchmarkArm; output: GraphifyBenchmarkPrediction }>;
 };
 export type GraphifyBenchmarkArmMetrics = {
-  semanticStatus: "measured" | "not_measured";
-  nodePrecision: number;
+  semanticStatus: "not_measured";
+  nodePrecision: number | null;
   nodeRecall: number;
-  edgePrecision: number;
+  edgePrecision: number | null;
   edgeRecall: number;
   indirectRecall: number;
   p95ElapsedMs: number;
@@ -37,6 +49,10 @@ export type GraphifyBenchmarkArmMetrics = {
 };
 export type GraphifyBenchmarkReport = {
   schemaVersion: "mendpoint.graphify-benchmark.v1";
+  contentDigest: `sha256:${string}`;
+  cohortDigest: string;
+  stagedDigest: `sha256:${string}`;
+  keyDigest: `sha256:${string}`;
   cohort: { total: number; development: number; validation: number; holdout: number; indirect: number };
   arms: Record<GraphifyBenchmarkArm, GraphifyBenchmarkArmMetrics>;
   modelCalls: 0;
@@ -56,6 +72,37 @@ const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 const compareCodeUnits = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const fail = (code: string): never => { throw new Error(code); };
 const unique = (values: readonly string[]) => new Set(values).size === values.length;
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => compareCodeUnits(a, b))
+      .map(([key, child]) => [key, canonicalValue(child)]));
+  }
+  return value;
+}
+const contentDigest = (value: unknown): `sha256:${string}` => `sha256:${createHash("sha256").update(JSON.stringify(canonicalValue(value)), "utf8").digest("hex")}`;
+const canonicalCase = (item: GraphifyBenchmarkCase) => ({
+  caseId: item.caseId,
+  familyDigest: item.familyDigest,
+  split: item.split,
+  indirect: item.indirect,
+  language: item.language,
+  inputDigest: item.inputDigest,
+});
+
+export function graphifyBenchmarkCohortDigest(cases: readonly GraphifyBenchmarkCase[]): string {
+  const canonical = [...cases].map(canonicalCase).sort((a, b) => compareCodeUnits(a.caseId, b.caseId));
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonical), "utf8").digest("hex")}`;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  }
+  return value;
+}
 
 function validatePrediction(value: GraphifyBenchmarkPrediction, arm: GraphifyBenchmarkArm): GraphifyBenchmarkPrediction {
   if (!value || !Array.isArray(value.nodes) || !Array.isArray(value.edges) || value.nodes.length > 100_000 || value.edges.length > 500_000 || !unique(value.nodes) || !unique(value.edges)) fail("GRAPHIFY_BENCHMARK_OUTPUT_INVALID");
@@ -72,13 +119,16 @@ function validatePrediction(value: GraphifyBenchmarkPrediction, arm: GraphifyBen
 export async function stageGraphifyBenchmark(input: {
   cases: GraphifyBenchmarkCase[];
   cohortDigest: string;
-  predict(caseInput: GraphifyBenchmarkCase & { arm: GraphifyBenchmarkArm }): Promise<GraphifyBenchmarkPrediction>;
+  predict(caseInput: Pick<GraphifyBenchmarkCase, "caseId" | "inputDigest" | "language"> & { arm: GraphifyBenchmarkArm }): Promise<GraphifyBenchmarkPrediction>;
 }): Promise<StagedGraphifyBenchmark> {
-  if (!DIGEST_RE.test(input.cohortDigest) || input.cases.length !== 18 || !unique(input.cases.map((item) => item.caseId))) fail("GRAPHIFY_BENCHMARK_COHORT_INVALID");
+  const cases = structuredClone(input.cases);
+  const cohortDigest = input.cohortDigest;
+  const predict = input.predict;
+  if (typeof predict !== "function" || !DIGEST_RE.test(cohortDigest) || cohortDigest !== graphifyBenchmarkCohortDigest(cases) || cases.length !== 18 || !unique(cases.map((item) => item.caseId))) fail("GRAPHIFY_BENCHMARK_COHORT_INVALID");
   const splitCounts = { development: 0, validation: 0, holdout: 0 };
   const indirectCounts = { development: 0, validation: 0, holdout: 0 };
   const familySplit = new Map<string, GraphifyBenchmarkSplit>();
-  for (const item of input.cases) {
+  for (const item of cases) {
     if (!DIGEST_RE.test(item.familyDigest) || !DIGEST_RE.test(item.inputDigest) || !item.caseId || !item.language) fail("GRAPHIFY_BENCHMARK_CASE_INVALID");
     splitCounts[item.split] += 1;
     if (item.indirect) indirectCounts[item.split] += 1;
@@ -87,24 +137,74 @@ export async function stageGraphifyBenchmark(input: {
     familySplit.set(item.familyDigest, item.split);
   }
   if (Object.values(splitCounts).some((count) => count !== 6) || Object.values(indirectCounts).some((count) => count < 3)) fail("GRAPHIFY_BENCHMARK_SPLIT_INVALID");
-  const cases = structuredClone(input.cases);
   const predictions: StagedGraphifyBenchmark["predictions"] = [];
   for (const item of cases) {
     for (const arm of ["A", "B", "C"] as const) {
-      const output = validatePrediction(await input.predict({ ...structuredClone(item), arm }), arm);
+      const output = validatePrediction(await predict({
+        caseId: item.caseId,
+        inputDigest: item.inputDigest,
+        language: item.language,
+        arm,
+      }), arm);
       predictions.push({ caseId: item.caseId, arm, output });
     }
   }
-  return Object.freeze({ schemaVersion: "mendpoint.graphify-benchmark-staged.v1", cohortDigest: input.cohortDigest, cases, predictions });
+  return deepFreeze({ schemaVersion: "mendpoint.graphify-benchmark-staged.v1", cohortDigest, cases, predictions });
 }
 
-const ratio = (numerator: number, denominator: number) => denominator === 0 ? 1 : numerator / denominator;
+const precision = (numerator: number, denominator: number) => denominator === 0 ? null : numerator / denominator;
+const recall = (numerator: number, denominator: number) => denominator === 0 ? 0 : numerator / denominator;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.max(0, Math.ceil(values.length * 0.95) - 1)] ?? 0;
 
 export function gradeGraphifyBenchmark(staged: StagedGraphifyBenchmark, key: GraphifyBenchmarkKey): GraphifyBenchmarkReport {
-  if (staged.cohortDigest !== key.cohortDigest || key.cases.length !== staged.cases.length || !unique(key.cases.map((item) => item.caseId))) fail("GRAPHIFY_BENCHMARK_KEY_MISMATCH");
+  staged = structuredClone(staged);
+  key = structuredClone(key);
+  if (
+    staged.schemaVersion !== "mendpoint.graphify-benchmark-staged.v1" ||
+    staged.cohortDigest !== key.cohortDigest ||
+    staged.cohortDigest !== graphifyBenchmarkCohortDigest(staged.cases) ||
+    key.cases.length !== staged.cases.length ||
+    !unique(key.cases.map((item) => item.caseId))
+  ) fail("GRAPHIFY_BENCHMARK_KEY_MISMATCH");
+  for (const item of staged.cases) {
+    if (
+      !item ||
+      !item.caseId ||
+      !DIGEST_RE.test(item.familyDigest) ||
+      !DIGEST_RE.test(item.inputDigest) ||
+      !["development", "validation", "holdout"].includes(item.split) ||
+      typeof item.indirect !== "boolean" ||
+      !item.language
+    ) fail("GRAPHIFY_BENCHMARK_KEY_MISMATCH");
+  }
   const truth = new Map(key.cases.map((item) => [item.caseId, item]));
   if (staged.cases.some((item) => !truth.has(item.caseId))) fail("GRAPHIFY_BENCHMARK_KEY_MISMATCH");
+  for (const item of staged.cases) {
+    const expected = truth.get(item.caseId)!;
+    if (
+      expected.familyDigest !== item.familyDigest ||
+      expected.split !== item.split ||
+      expected.indirect !== item.indirect ||
+      expected.language !== item.language ||
+      expected.inputDigest !== item.inputDigest ||
+      !Array.isArray(expected.expectedNodes) ||
+      !Array.isArray(expected.expectedEdges) ||
+      !Array.isArray(expected.expectedIndirectEdges) ||
+      !unique(expected.expectedNodes) ||
+      !unique(expected.expectedEdges) ||
+      !unique(expected.expectedIndirectEdges) ||
+      expected.expectedIndirectEdges.some((edge) => !expected.expectedEdges.includes(edge)) ||
+      (item.indirect && expected.expectedIndirectEdges.length === 0)
+    ) fail("GRAPHIFY_BENCHMARK_KEY_MISMATCH");
+  }
+  if (
+    staged.predictions.length !== staged.cases.length * 3 ||
+    !unique(staged.predictions.map((item) => `${item.caseId}\0${item.arm}`))
+  ) fail("GRAPHIFY_BENCHMARK_ARM_MISSING");
+  for (const prediction of staged.predictions) {
+    if (!truth.has(prediction.caseId) || !["A", "B", "C"].includes(prediction.arm)) fail("GRAPHIFY_BENCHMARK_ARM_MISSING");
+    validatePrediction(prediction.output, prediction.arm);
+  }
   const metrics = {} as Record<GraphifyBenchmarkArm, GraphifyBenchmarkArmMetrics>;
   for (const arm of ["A", "B", "C"] as const) {
     let nodeTrue = 0, nodePredicted = 0, nodeExpected = 0, edgeTrue = 0, edgePredicted = 0, edgeExpected = 0;
@@ -121,20 +221,23 @@ export function gradeGraphifyBenchmark(staged: StagedGraphifyBenchmark, key: Gra
       edgeTrue += expected.expectedEdges.filter((edge) => edges.has(edge)).length;
       edgePredicted += edges.size; edgeExpected += expected.expectedEdges.length;
       if (item.indirect && item.split !== "development") {
-        indirectTrue += expected.expectedEdges.filter((edge) => edges.has(edge)).length;
-        indirectExpected += expected.expectedEdges.length;
+        indirectTrue += expected.expectedIndirectEdges.filter((edge) => edges.has(edge)).length;
+        indirectExpected += expected.expectedIndirectEdges.length;
       }
       elapsed.push(prediction.output.elapsedMs); peakMemoryBytes = Math.max(peakMemoryBytes, prediction.output.peakMemoryBytes);
     }
     metrics[arm] = {
-      semanticStatus: arm === "B" ? "not_measured" : "measured",
-      nodePrecision: ratio(nodeTrue, nodePredicted), nodeRecall: ratio(nodeTrue, nodeExpected),
-      edgePrecision: ratio(edgeTrue, edgePredicted), edgeRecall: ratio(edgeTrue, edgeExpected),
-      indirectRecall: ratio(indirectTrue, indirectExpected), p95ElapsedMs: p95(elapsed), peakMemoryBytes,
+      semanticStatus: "not_measured",
+      nodePrecision: precision(nodeTrue, nodePredicted), nodeRecall: recall(nodeTrue, nodeExpected),
+      edgePrecision: precision(edgeTrue, edgePredicted), edgeRecall: recall(edgeTrue, edgeExpected),
+      indirectRecall: recall(indirectTrue, indirectExpected), p95ElapsedMs: p95(elapsed), peakMemoryBytes,
     };
   }
-  return Object.freeze({
+  const reportWithoutDigest = {
     schemaVersion: "mendpoint.graphify-benchmark.v1",
+    cohortDigest: staged.cohortDigest,
+    stagedDigest: contentDigest(staged),
+    keyDigest: contentDigest(key),
     cohort: {
       total: staged.cases.length,
       development: staged.cases.filter((item) => item.split === "development").length,
@@ -151,5 +254,6 @@ export function gradeGraphifyBenchmark(staged: StagedGraphifyBenchmark, key: Gra
       "network_denial_not_measured",
       "sealed_external_holdout_not_executed",
     ] as GraphifyBenchmarkReport["adoptionBlockedBy"],
-  });
+  } as const;
+  return deepFreeze({ ...reportWithoutDigest, contentDigest: contentDigest(reportWithoutDigest) });
 }

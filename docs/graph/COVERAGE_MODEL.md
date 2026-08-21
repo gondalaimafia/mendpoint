@@ -6,7 +6,10 @@ Each graph version records stages for repository discovery, language parsing, pr
 
 - `complete`: every item inside the declared scope was processed;
 - `partial`: processing succeeded but a declared bound or unsupported area remains;
-- `not_analyzed`: the stage did not run;
+- `not_analyzed`: the stage did not run.
+
+Two further bases are reserved for future stage logic and have no producer today, so the published type (`SoftwareGraphCoverageStageV1["basis"]`) does not yet admit them; re-add each here together with the stage logic that would emit it:
+
 - `failed`: the stage ran but produced no authoritative result;
 - `conflicted`: authoritative sources disagree.
 
