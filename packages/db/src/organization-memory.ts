@@ -409,7 +409,11 @@ export function listOrganizationMemory(
 function countDistinctObservations(chain: readonly OrganizationMemoryRecord[]): number {
   const fingerprints = new Set<string>();
   for (const record of chain) {
-    if (record.observationFingerprint !== null) fingerprints.add(record.observationFingerprint);
+    // Rows created before evidence-bound observation authority have no actor.
+    // They remain visible history but cannot contribute to corroboration.
+    if (record.observationFingerprint !== null && record.actorPrincipalId !== null && record.sourceRefs.length > 0) {
+      fingerprints.add(record.observationFingerprint);
+    }
   }
   return fingerprints.size;
 }
@@ -526,12 +530,105 @@ function normalizeRefs(name: string, value: readonly string[] | undefined): stri
   return value.map((entry) => requireText(name, entry));
 }
 
+type ObservationEvidenceAuthority = Readonly<{
+  id: string;
+  subject_type: string;
+  subject_id: string;
+  producer_principal_id: string | null;
+  verdict: string;
+}>;
+
+function observationAuthority(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    memoryId: string;
+    observerPrincipalId: string;
+    sourceRefs: readonly string[] | undefined;
+    observedAt: string;
+  }>,
+): Readonly<{ sourceRefs: readonly string[]; fingerprint: string }> {
+  const principalId = requireText("organization_memory_observer_principal", input.observerPrincipalId);
+  const principal = one<{ id: string; revoked_at: string | null; expires_at: string | null }>(
+    db,
+    `SELECT id, revoked_at, expires_at FROM principals WHERE id = ? AND tenant_id = ?`,
+    [principalId, input.tenantId],
+  );
+  const expiresAt = principal?.expires_at === null ? null : Date.parse(principal?.expires_at ?? "");
+  if (!principal || principal.revoked_at !== null ||
+      (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.parse(input.observedAt)))) {
+    throw new Error("organization_memory_observer_authority_invalid");
+  }
+  const sourceRefs = normalizeRefs("organization_memory_source_ref", input.sourceRefs)
+    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+  if (sourceRefs.length === 0 || new Set(sourceRefs).size !== sourceRefs.length) {
+    throw new Error("organization_memory_evidence_invalid");
+  }
+  for (const sourceRef of sourceRefs) {
+    const evidence = one<ObservationEvidenceAuthority>(
+      db,
+      `SELECT id, subject_type, subject_id, producer_principal_id, verdict
+         FROM evidence_records WHERE id = ? AND tenant_id = ?`,
+      [sourceRef, input.tenantId],
+    );
+    if (!evidence || evidence.subject_type !== "organization_memory_observation" ||
+        evidence.subject_id !== input.memoryId || evidence.producer_principal_id !== principalId ||
+        evidence.verdict !== "passed") {
+      throw new Error("organization_memory_evidence_invalid");
+    }
+  }
+  return Object.freeze({
+    sourceRefs: Object.freeze(sourceRefs),
+    fingerprint: sha256Hex(canonicalJson({
+      tenantId: input.tenantId,
+      memoryId: input.memoryId,
+      observerPrincipalId: principalId,
+      sourceRefs,
+    })),
+  });
+}
+
+function sameObservedMeaning(
+  head: OrganizationMemoryRecord,
+  input: Readonly<{ statement: string; structuredValue?: unknown; appliesTo?: readonly string[] }>,
+): boolean {
+  return head.statement === input.statement &&
+    canonicalJson(head.structuredValue ?? null) === canonicalJson(input.structuredValue ?? null) &&
+    canonicalJson([...head.appliesTo]) === canonicalJson(normalizeRefs("organization_memory_applies_to", input.appliesTo));
+}
+
+function assertCurrentIndependentObservationAuthority(
+  db: AppDb,
+  chain: readonly OrganizationMemoryRecord[],
+  at: string,
+): void {
+  const observations = chain.filter((record) =>
+    record.observationFingerprint !== null && record.actorPrincipalId !== null && record.sourceRefs.length > 0);
+  const principals = new Set<string>();
+  for (const record of observations) {
+    const authority = observationAuthority(db, {
+      tenantId: record.tenantId,
+      memoryId: record.memoryId,
+      observerPrincipalId: record.actorPrincipalId!,
+      sourceRefs: record.sourceRefs,
+      observedAt: at,
+    });
+    if (authority.fingerprint !== record.observationFingerprint || principals.has(record.actorPrincipalId!)) {
+      throw new Error("organization_memory_evidence_invalid");
+    }
+    principals.add(record.actorPrincipalId!);
+  }
+  if (principals.size < CORROBORATION_THRESHOLD) {
+    throw new Error("organization_memory_activation_blocked_insufficient_corroboration");
+  }
+}
+
 /**
  * Record one observation of a convention. The FIRST observation creates a
  * MEMORY_CANDIDATE (never ACTIVE). Each subsequent INDEPENDENT observation
- * (a distinct fingerprint) corroborates it; when the distinct count reaches
+ * (a distinct authenticated principal with passed evidence) corroborates it; when the distinct count reaches
  * CORROBORATION_THRESHOLD the head advances to VALIDATION. Re-submitting the
- * same fingerprint is idempotent. `source` must be an inferred source — explicit
+ * same authority evidence is idempotent. `source` must be an inferred source — explicit
  * statements go through `createExplicitMemory`.
  */
 export function recordOrganizationMemoryObservation(
@@ -542,7 +639,7 @@ export function recordOrganizationMemoryObservation(
     scope: string;
     subjectKey: string;
     statement: string;
-    observationFingerprint: string;
+    observerPrincipalId: string;
     source: Exclude<OrganizationMemorySource, "explicit">;
     confidence?: OrganizationMemoryConfidence;
     structuredValue?: unknown;
@@ -556,7 +653,6 @@ export function recordOrganizationMemoryObservation(
   const category = validateCategory(input.category);
   const scope = requireText("organization_memory_scope", input.scope);
   const statement = requireText("organization_memory_statement", input.statement);
-  const fingerprint = requireText("organization_memory_observation_fingerprint", input.observationFingerprint);
   if (input.source === ("explicit" as OrganizationMemorySource)) {
     throw new Error("organization_memory_observation_source_invalid");
   }
@@ -568,6 +664,13 @@ export function recordOrganizationMemoryObservation(
   const memoryId = organizationMemoryId({ tenantId, category, scope, subjectKey: input.subjectKey });
 
   return withTransaction(db, () => {
+    const authority = observationAuthority(db, {
+      tenantId,
+      memoryId,
+      observerPrincipalId: input.observerPrincipalId,
+      sourceRefs: input.sourceRefs,
+      observedAt: at,
+    });
     const chain = chainRecords(db, tenantId, memoryId);
     if (chain.length === 0) {
       return insertRecord(db, {
@@ -581,13 +684,13 @@ export function recordOrganizationMemoryObservation(
         statement,
         structuredValue: input.structuredValue ?? null,
         source: input.source,
-        sourceRefs: normalizeRefs("organization_memory_source_ref", input.sourceRefs),
-        observationFingerprint: fingerprint,
+        sourceRefs: authority.sourceRefs,
+        observationFingerprint: authority.fingerprint,
         confidence,
         status: "MEMORY_CANDIDATE",
         appliesTo: normalizeRefs("organization_memory_applies_to", input.appliesTo),
         trainingEligible: false,
-        actorPrincipalId: null,
+        actorPrincipalId: input.observerPrincipalId,
         reason: input.reason?.trim() ? input.reason : "observed",
         createdAt: at,
         lastConfirmedAt: null,
@@ -597,9 +700,20 @@ export function recordOrganizationMemoryObservation(
     if (TERMINAL_STATUSES.has(head.status)) {
       throw new Error("organization_memory_not_open");
     }
-    // Idempotent: this exact observation already counted.
-    if (chain.some((record) => record.observationFingerprint === fingerprint)) {
+    if (!sameObservedMeaning(head, input)) {
+      throw new Error("organization_memory_observation_conflict");
+    }
+    // Idempotent: this exact authenticated authority evidence already counted.
+    if (chain.some((record) => record.observationFingerprint === authority.fingerprint)) {
       return head;
+    }
+    if (chain.some((record) => record.observationFingerprint !== null &&
+        record.actorPrincipalId === input.observerPrincipalId)) {
+      throw new Error("organization_memory_observation_not_independent");
+    }
+    const usedRefs = new Set(chain.flatMap((record) => [...record.sourceRefs]));
+    if (authority.sourceRefs.some((sourceRef) => usedRefs.has(sourceRef))) {
+      throw new Error("organization_memory_observation_not_independent");
     }
     const distinctAfter = countDistinctObservations(chain) + 1;
     const advancesToValidation =
@@ -614,14 +728,14 @@ export function recordOrganizationMemoryObservation(
       category: head.category,
       statement: head.statement,
       structuredValue: head.structuredValue ?? null,
-      source: head.source,
-      sourceRefs: head.sourceRefs,
-      observationFingerprint: fingerprint,
+      source: input.source,
+      sourceRefs: authority.sourceRefs,
+      observationFingerprint: authority.fingerprint,
       confidence: head.confidence,
       status: advancesToValidation ? "VALIDATION" : head.status,
       appliesTo: head.appliesTo,
       trainingEligible: head.trainingEligible,
-      actorPrincipalId: null,
+      actorPrincipalId: input.observerPrincipalId,
       reason: input.reason?.trim() ? input.reason : "corroborated",
       createdAt: at,
       lastConfirmedAt: head.lastConfirmedAt,
@@ -756,6 +870,9 @@ export function activateOrganizationMemory(
     const assessment = assessActivation(chain);
     if (assessment.status !== "eligible") {
       throw new Error(`organization_memory_activation_blocked_${assessment.reason}`);
+    }
+    if (assessment.basis === "independent_corroboration") {
+      assertCurrentIndependentObservationAuthority(db, chain, at);
     }
     return insertRecord(db, {
       ...headBody(head),

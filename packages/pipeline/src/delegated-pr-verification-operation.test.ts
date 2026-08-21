@@ -89,7 +89,6 @@ async function fixture() {
   const policy = Object.freeze({
     failToPassCommandDigest: `sha256:${hex("1")}`,
     passToPassCommandDigest: `sha256:${hex("2")}`,
-    failToPassIdentities: Object.freeze(["test:target"]),
     sandboxBackend: "fly_machines",
   });
   const completed = (request: Readonly<{

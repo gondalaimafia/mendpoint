@@ -8,6 +8,7 @@ import {
   type SoftwareAttestationTrustPolicy,
 } from "@mendpoint/contract";
 import {
+  assertDelegatedPrAcceptanceContract,
   evaluateDelegatedPrAcceptance,
   type DelegatedPrAcceptanceAuthority,
   type DelegatedPrAcceptanceContract,
@@ -40,7 +41,6 @@ const contract: DelegatedPrAcceptanceContract = Object.freeze({
     authorityId: "verifier-1", authorityDigest: digest("verifier"),
     failToPassCommandDigest: digest("fail-command"), passToPassCommandDigest: digest("pass-command"),
     policyArtifact: { artifactId: "policy-1", sha256: hex("4") }, requiredCheckIdentities: ["check:1:test"],
-    failToPassIdentities: ["test:target"],
     sandboxBackend: "fly-sandbox",
   },
   attestationProducer: { principalId: "service:fettler", service: "fettler-worker", trustedKeyIds: ["delegation-key"] },
@@ -198,6 +198,14 @@ async function fixture(): Promise<{ authority: DelegatedPrAcceptanceAuthority; e
 }
 
 describe("delegated PR acceptance", () => {
+  it("accepts a contract that makes no unobserved failing-check identity claim", () => {
+    const withoutUnobservedIdentityClaim = structuredClone(contract) as unknown as Record<string, unknown>;
+    delete (withoutUnobservedIdentityClaim.verification as Record<string, unknown>).failToPassIdentities;
+    expect(() => assertDelegatedPrAcceptanceContract(
+      withoutUnobservedIdentityClaim as unknown as DelegatedPrAcceptanceContract,
+    )).not.toThrow();
+  });
+
   it("accepts three authority-loaded, signed, exact live draft trials", async () => {
     const { authority } = await fixture();
     const report = await evaluateDelegatedPrAcceptance({ proof, contract, authority, trustPolicy });
@@ -221,7 +229,7 @@ describe("delegated PR acceptance", () => {
     ["live model", (value: DelegatedPrTrialEvidence) => { (value.model.provenance[0] as { host: string }).host = "wrong.example"; }, "delegated_pr_live_model_invalid"],
     ["accounting", (value: DelegatedPrTrialEvidence) => { (value.meter as { costUsd: number }).costUsd = 0.2; }, "delegated_pr_accounting_mismatch"],
     ["verification", (value: DelegatedPrTrialEvidence) => { (value.verification.failToPass as { candidateExitCode: number }).candidateExitCode = 1; }, "delegated_pr_verification_invalid"],
-    ["echoed check identities", (value: DelegatedPrTrialEvidence) => { (value.verification.failToPass as { failingCheckIdentities: unknown }).failingCheckIdentities = [...contract.verification.failToPassIdentities]; }, "delegated_pr_verification_invalid"],
+    ["echoed check identities", (value: DelegatedPrTrialEvidence) => { (value.verification.failToPass as { failingCheckIdentities: unknown }).failingCheckIdentities = ["test:target"]; }, "delegated_pr_verification_invalid"],
     ["OIDC approval", (value: DelegatedPrTrialEvidence) => { (value.approval as { apiKeyId: string | null }).apiKeyId = "key"; }, "delegated_pr_approval_invalid"],
     ["real draft", (value: DelegatedPrTrialEvidence) => { (value.delivery as { matchingOpenDrafts: number }).matchingOpenDrafts = 2; }, "delegated_pr_delivery_invalid"],
     ["cleanup", (value: DelegatedPrTrialEvidence) => { (value.cleanup as { headRevision: string }).headRevision = "f".repeat(40); }, "delegated_pr_cleanup_invalid"],

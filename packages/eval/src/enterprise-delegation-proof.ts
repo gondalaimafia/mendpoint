@@ -46,7 +46,6 @@ export type DelegatedPrAcceptanceContract = Readonly<{
     passToPassCommandDigest: string;
     policyArtifact: Artifact;
     requiredCheckIdentities: readonly string[];
-    failToPassIdentities: readonly string[];
     sandboxBackend: string;
   }>;
   attestationProducer: Readonly<{ principalId: string; service: string; trustedKeyIds: readonly string[] }>;
@@ -97,7 +96,7 @@ export type DelegatedPrVerificationExecution = Readonly<{
   baselineVerdict: "test_failure" | "passed";
   // This verifier re-executes commands and observes exit codes; it never parses runner output,
   // so which individual checks were failing is never observed. Typed as NotObserved so no layer
-  // can echo the configured failToPassIdentities as if the run had seen it.
+  // can echo configured identities as if the run had seen them.
   failingCheckIdentities: NotObserved;
   sandboxBackend: string;
   logsDigest: string;
@@ -417,9 +416,6 @@ export function assertDelegatedPrAcceptanceContract(contract: DelegatedPrAccepta
     contract.verification.requiredCheckIdentities.length > 0 &&
     contract.verification.requiredCheckIdentities.every((identity) => ID.test(identity)) &&
     new Set(contract.verification.requiredCheckIdentities).size === contract.verification.requiredCheckIdentities.length &&
-    contract.verification.failToPassIdentities.length > 0 &&
-    contract.verification.failToPassIdentities.every((identity) => ID.test(identity)) &&
-    new Set(contract.verification.failToPassIdentities).size === contract.verification.failToPassIdentities.length &&
     ID.test(contract.verification.sandboxBackend) &&
     ID.test(contract.attestationProducer.principalId) && ID.test(contract.attestationProducer.service) &&
     contract.attestationProducer.trustedKeyIds.length > 0 &&

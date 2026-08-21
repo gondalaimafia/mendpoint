@@ -88,7 +88,6 @@ export type DelegatedPrVerifier = Readonly<{
 export type DelegatedPrVerificationPolicy = Readonly<{
   failToPassCommandDigest: string;
   passToPassCommandDigest: string;
-  failToPassIdentities: readonly string[];
   sandboxBackend: string;
 }>;
 
@@ -285,9 +284,6 @@ function validateInput(
     !timestamp(input.requestedAt) || !REVISION.test(dependencies.candidateProducerVersion) ||
     !REVISION.test(dependencies.mendpointRevision) || !DIGEST.test(dependencies.authorityDigest) ||
     !DIGEST.test(policy.failToPassCommandDigest) || !DIGEST.test(policy.passToPassCommandDigest) ||
-    !Array.isArray(policy.failToPassIdentities) || policy.failToPassIdentities.length === 0 ||
-    policy.failToPassIdentities.some((value) => !ID.test(value)) ||
-    new Set(policy.failToPassIdentities).size !== policy.failToPassIdentities.length ||
     !Number.isSafeInteger(dependencies.timeoutMs) || dependencies.timeoutMs < 1 ||
     !Number.isSafeInteger(dependencies.leaseMs) || dependencies.leaseMs < dependencies.timeoutMs * 2 ||
     dependencies.authorityId === dependencies.candidateProducerPrincipalId ||
