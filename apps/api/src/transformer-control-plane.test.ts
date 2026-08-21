@@ -746,7 +746,7 @@ describe("ReGauge campaign Mission wiring", () => {
       body: JSON.stringify(bundle()),
     });
     expect(response.status).toBe(401);
-    expect(service.get("tenant-a", "campaign-a")).toBeUndefined();
+    expect(() => service.get("tenant-a", "campaign-a")).toThrow("campaign_not_found");
     expect(resolveMissionForRegaugeCampaign(appDb, "tenant-a", "campaign-a")).toBeUndefined();
   });
 });

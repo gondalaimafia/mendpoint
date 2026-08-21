@@ -88,8 +88,6 @@ export function validateDelegatedPrVerificationEnvironment(
   const revision = requireValue("MENDPOINT_GIT_COMMIT");
   const failCommand = requireValue("MENDPOINT_DELEGATED_PR_FAIL_TO_PASS_COMMAND");
   const passCommand = requireValue("MENDPOINT_DELEGATED_PR_PASS_TO_PASS_COMMAND");
-  const identities = requireValue("MENDPOINT_DELEGATED_PR_FAIL_TO_PASS_IDENTITIES")
-    .split(",").map((value) => value.trim()).filter(Boolean);
   if (env.MENDPOINT_SANDBOX_KIND?.trim() !== "fly_machines") {
     errors.push("Delegated PR verification requires MENDPOINT_SANDBOX_KIND=fly_machines");
   }
@@ -105,10 +103,6 @@ export function validateDelegatedPrVerificationEnvironment(
     if (value && (value.length > 1_024 || /[\0\r\n;&|><`$]/.test(value))) {
       errors.push(`Delegated PR ${name} command is invalid`);
     }
-  }
-  if (identities.length === 0 || identities.some((value) => !ID.test(value)) ||
-      new Set(identities).size !== identities.length) {
-    errors.push("Delegated PR fail to pass identities are invalid");
   }
   try { integer(env, "MENDPOINT_DELEGATED_PR_TIMEOUT_MS", 120_000, 1_000, 600_000); }
   catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
@@ -557,15 +551,11 @@ export function delegatedPrVerificationRuntimeFromEnv(
   const mendpointRevision = required(env, "MENDPOINT_GIT_COMMIT");
   const failToPassCommand = command(env, "MENDPOINT_DELEGATED_PR_FAIL_TO_PASS_COMMAND");
   const passToPassCommand = command(env, "MENDPOINT_DELEGATED_PR_PASS_TO_PASS_COMMAND");
-  const failToPassIdentities = required(env, "MENDPOINT_DELEGATED_PR_FAIL_TO_PASS_IDENTITIES")
-    .split(",").map((value) => value.trim()).filter(Boolean).sort(compareCodeUnits);
   const timeoutMs = integer(env, "MENDPOINT_DELEGATED_PR_TIMEOUT_MS", 120_000, 1_000, 600_000);
   const leaseMs = integer(env, "MENDPOINT_DELEGATED_PR_LEASE_MS", 300_000, timeoutMs * 2, 1_800_000);
   if (![candidateAuthorityId, authorityId, executionAuthorityId, workerId].every((value) => ID.test(value)) ||
       candidateAuthorityId === authorityId || authorityId === executionAuthorityId ||
-      !DIGEST.test(authorityDigest) || !REVISION.test(mendpointRevision) || receiptSecret.length < 32 ||
-      failToPassIdentities.length === 0 || failToPassIdentities.some((value) => !ID.test(value)) ||
-      new Set(failToPassIdentities).size !== failToPassIdentities.length) {
+      !DIGEST.test(authorityDigest) || !REVISION.test(mendpointRevision) || receiptSecret.length < 32) {
     throw new Error("delegated_pr_verification_configuration_invalid");
   }
   const authority: DelegatedPrCandidateAuthority = Object.freeze({
@@ -581,7 +571,7 @@ export function delegatedPrVerificationRuntimeFromEnv(
       authorityId, authorityDigest, executionAuthorityId, mendpointRevision,
       policy: Object.freeze({ failToPassCommandDigest: digest(failToPassCommand),
         passToPassCommandDigest: digest(passToPassCommand),
-        failToPassIdentities: Object.freeze(failToPassIdentities), sandboxBackend: "fly_machines" }),
+        sandboxBackend: "fly_machines" }),
       verifier,
       verifyReceipt: receiptVerifier(receiptSecret),
     }),

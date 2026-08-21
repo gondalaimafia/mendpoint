@@ -112,7 +112,6 @@ function fixture() {
     MENDPOINT_DELEGATED_PR_RECEIPT_SECRET: "test-receipt-secret-that-is-at-least-32-bytes",
     MENDPOINT_DELEGATED_PR_FAIL_TO_PASS_COMMAND: "npm test -- target",
     MENDPOINT_DELEGATED_PR_PASS_TO_PASS_COMMAND: "npm test -- regression",
-    MENDPOINT_DELEGATED_PR_FAIL_TO_PASS_IDENTITIES: "test:target",
     MENDPOINT_GIT_COMMIT: revision("f"),
   } as NodeJS.ProcessEnv;
   return { db, env, root, sourceBytes, candidateBytes, candidateWorkspace };
@@ -169,7 +168,7 @@ describe("delegated PR Fly sandbox verifier", () => {
     expect(executions).toHaveLength(2);
     for (const artifact of executions) {
       // The backend is the one the executor reported, and check identities are honestly not_observed
-      // rather than echoed from MENDPOINT_DELEGATED_PR_FAIL_TO_PASS_IDENTITIES.
+      // rather than echoed from configuration.
       expect(artifact.sandboxBackend).toBe("fly_machines");
       expect(artifact.failingCheckIdentities).toEqual({
         status: "not_observed", reason: "check_identities_not_parsed_from_runner_output" });

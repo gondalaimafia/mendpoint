@@ -20,7 +20,9 @@ import {
 import { resolveRenamedEnv } from "@mendpoint/shared";
 import {
   createMission,
+  getPrincipal,
   linkRegaugeCampaignToMission,
+  regaugeMissionId,
   recordAudit,
   type AppDb,
 } from "@mendpoint/db";
@@ -862,6 +864,16 @@ export function registerTransformerControlPlaneRoutes(
     try {
       const denied = requireGate(c);
       if (denied) return denied;
+      const trustPrincipalId = c.get("trustPrincipalId");
+      const tenantId = c.get("principal")?.tenantId;
+      const missionAuthorityAt = new Date().toISOString();
+      const missionPrincipal = appDb && trustPrincipalId && tenantId
+        ? getPrincipal(appDb, tenantId, trustPrincipalId)
+        : undefined;
+      if (appDb && (!missionPrincipal || missionPrincipal.revoked_at !== null ||
+          (missionPrincipal.expires_at !== null && missionPrincipal.expires_at <= missionAuthorityAt))) {
+        return c.json({ error: "authenticated_principal_required" }, 401);
+      }
       const result = service.createBundle(requestMetadata(c), await json(c));
       audit?.(c, {
         actor: "regauge",
@@ -878,58 +890,45 @@ export function registerTransformerControlPlaneRoutes(
       // .campaign_id -> mission.regauge_campaign_id -> mission.id ->
       // trajectories.mission_id). Created here at the API boundary, the only place
       // with a real App-DB principal (trustPrincipalId); the worker pilot lane has
-      // none, which is why the primitive was inert. Best-effort: it must never fail
-      // campaign creation (convention in packages/pipeline/src/index.ts); never a
-      // bare catch. Idempotent on the derived mission id.
-      const trustPrincipalId = c.get("trustPrincipalId");
-      const tenantId = c.get("principal")?.tenantId;
+      // none, which is why the primitive was inert. Mission binding is required
+      // whenever the App DB is configured; preflight above prevents creating an
+      // unowned campaign. Idempotent on the derived mission id.
       if (appDb && trustPrincipalId && tenantId) {
         const bundle = result as {
           campaign: { id: string; name?: unknown };
           blueprint?: { objective?: unknown };
         };
         const campaignId = bundle.campaign.id;
-        try {
-          const missionId = `mission-regauge-${createHash("sha256")
-            .update(`${tenantId}\0${campaignId}`)
-            .digest("hex")
-            .slice(0, 32)}`;
-          const objectiveText =
-            typeof bundle.blueprint?.objective === "string" && bundle.blueprint.objective.trim()
-              ? bundle.blueprint.objective.trim()
-              : typeof bundle.campaign.name === "string" && bundle.campaign.name.trim()
-                ? bundle.campaign.name.trim()
-                : campaignId;
-          const createdAt = new Date().toISOString();
-          createMission(appDb, {
-            id: missionId,
-            tenantId,
-            product: "regauge",
-            triggerKind: "migration_objective",
-            objective: objectiveText.slice(0, 200),
-            ownerPrincipalId: trustPrincipalId,
-            eventId: `${missionId}-created`,
-            idempotencyKey: `mission-create-${missionId}`,
-            correlationId: campaignId,
-            createdAt,
-          });
-          linkRegaugeCampaignToMission(appDb, {
-            tenantId,
-            missionId,
-            regaugeCampaignId: campaignId,
-            actorPrincipalId: trustPrincipalId,
-            eventId: `${missionId}-linked`,
-            idempotencyKey: `mission-link-${missionId}`,
-            correlationId: campaignId,
-            createdAt,
-          });
-        } catch (error) {
-          console.error(
-            `regauge mission wiring failed tenant=${tenantId} campaign=${campaignId}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
+        const missionId = regaugeMissionId(tenantId, campaignId);
+        const objectiveText =
+          typeof bundle.blueprint?.objective === "string" && bundle.blueprint.objective.trim()
+            ? bundle.blueprint.objective.trim()
+            : typeof bundle.campaign.name === "string" && bundle.campaign.name.trim()
+              ? bundle.campaign.name.trim()
+              : campaignId;
+        const createdAt = missionAuthorityAt;
+        createMission(appDb, {
+          id: missionId,
+          tenantId,
+          product: "regauge",
+          triggerKind: "migration_objective",
+          objective: objectiveText.slice(0, 200),
+          ownerPrincipalId: trustPrincipalId,
+          eventId: `${missionId}-created`,
+          idempotencyKey: `mission-create-${missionId}`,
+          correlationId: campaignId,
+          createdAt,
+        });
+        linkRegaugeCampaignToMission(appDb, {
+          tenantId,
+          missionId,
+          regaugeCampaignId: campaignId,
+          actorPrincipalId: trustPrincipalId,
+          eventId: `${missionId}-linked`,
+          idempotencyKey: `mission-link-${missionId}`,
+          correlationId: campaignId,
+          createdAt,
+        });
       }
       c.header("Location", `${base}/control-plane/campaigns/${(result as { campaign: { id: string } }).campaign.id}`);
       return c.json(result, 201);

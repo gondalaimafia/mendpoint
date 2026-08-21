@@ -48,6 +48,22 @@ function fixture(): AppDb {
     displayName: "Owner",
     createdAt: "2026-01-01T00:00:00.000Z",
   });
+  db.raw.prepare(`INSERT INTO scm_connections
+    (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+    VALUES ('connection-a', 't1', 'github', 'secret://github/app', 'account-a', 'GitHub', ?, ?)`)
+    .run(AT, AT);
+  db.raw.prepare(`INSERT INTO connected_repositories
+    (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+     environment, retention_days, status, created_at, updated_at)
+    VALUES ('repo-exact', 't1', 'connection-a', '99', 'acme', 'repo', 'main', 'main',
+      'production', 30, 'ready', ?, ?)`)
+    .run(AT, AT);
+  db.raw.prepare(`INSERT INTO repository_snapshots
+    (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+     submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+    VALUES ('snapshot-exact', 't1', 'repo-exact', 'main', ?, ?, '/snapshots/exact', 'reject',
+      'pointer_only', '[]', 1, ?, '2026-08-15T17:00:00.000Z')`)
+    .run("a".repeat(40), "b".repeat(64), AT);
   return db;
 }
 
@@ -171,11 +187,13 @@ describe("bindRegaugeMissionAtLaunch", () => {
       campaignId,
       ownerPrincipalId: "svc-bootstrap",
       objective: "Runtime upgrade to Node 22",
-      repositories: [],
+      repositories: [{ repositoryId: "repo-exact", snapshotId: "snapshot-exact" }],
       createdAt: AT,
     })).not.toThrow();
     const mission = resolveMissionForRegaugeCampaign(db, "t1", campaignId);
     expect(mission?.ownerPrincipalId).toBe("human-owner");
+    expect(mission?.repositoryId).toBe("repo-exact");
+    expect(mission?.snapshotId).toBe("snapshot-exact");
     expect(mission?.state).toBe("executing");
   });
 });

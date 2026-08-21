@@ -167,6 +167,16 @@ describe("Organization Memory API routes", () => {
   it("records an observation, then disables it, and exposes provenance", async () => {
     const db = fixture();
     const app = appWith(db, { tenantId: "tenant-a", trustPrincipalId: "human-tenant-a" });
+    const evidenceId = observationEvidence(db, {
+      memoryId: organizationMemoryId({
+        tenantId: "tenant-a",
+        category: "MIGRATION_PREFERENCE",
+        scope: "tenant",
+        subjectKey: "batch-small",
+      }),
+      principalId: "human-tenant-a",
+      suffix: "batch-small",
+    });
     const observed = await app.request("/organization-memory/observations", {
       method: "POST",
       body: JSON.stringify({
@@ -174,8 +184,8 @@ describe("Organization Memory API routes", () => {
         scope: "tenant",
         subjectKey: "batch-small",
         statement: "Keep migration batches small",
-        observationFingerprint: "obs-1",
         source: "reviewer_correction",
+        sourceRefs: [evidenceId],
       }),
     });
     expect(observed.status).toBe(201);
@@ -196,6 +206,16 @@ describe("Organization Memory API routes", () => {
   it("blocks activating a lone observation through the API", async () => {
     const db = fixture();
     const app = appWith(db, { tenantId: "tenant-a", trustPrincipalId: "human-tenant-a" });
+    const evidenceId = observationEvidence(db, {
+      memoryId: organizationMemoryId({
+        tenantId: "tenant-a",
+        category: "TESTING_REQUIREMENT",
+        scope: "tenant",
+        subjectKey: "e2e-required",
+      }),
+      principalId: "human-tenant-a",
+      suffix: "e2e-required",
+    });
     const observed = await app.request("/organization-memory/observations", {
       method: "POST",
       body: JSON.stringify({
@@ -203,8 +223,8 @@ describe("Organization Memory API routes", () => {
         scope: "tenant",
         subjectKey: "e2e-required",
         statement: "E2E tests required",
-        observationFingerprint: "obs-1",
         source: "repeated_verified_behavior",
+        sourceRefs: [evidenceId],
       }),
     });
     const memoryId = ((await observed.json()) as { memory: { memoryId: string } }).memory.memoryId;
@@ -269,11 +289,11 @@ describe("Organization Memory API routes", () => {
     };
     expect((await app.request("/organization-memory/observations", {
       method: "POST",
-      body: JSON.stringify({ ...body, observationFingerprint: "caller-one", sourceRefs: [evidenceOne] }),
+      body: JSON.stringify({ ...body, sourceRefs: [evidenceOne] }),
     })).status).toBe(201);
     const second = await app.request("/organization-memory/observations", {
       method: "POST",
-      body: JSON.stringify({ ...body, observationFingerprint: "caller-two", sourceRefs: [evidenceTwo] }),
+      body: JSON.stringify({ ...body, sourceRefs: [evidenceTwo] }),
     });
     expect(second.status).toBe(409);
     expect(((await second.json()) as { error: string }).error).toBe("organization_memory_observation_not_independent");
@@ -306,7 +326,6 @@ describe("Organization Memory API routes", () => {
         scope: "tenant",
         subjectKey: "auth-client",
         statement: "Always use the internal auth client",
-        observationFingerprint: "caller-one",
         source: "repeated_verified_behavior",
         sourceRefs: [firstEvidence],
       }),
@@ -318,7 +337,6 @@ describe("Organization Memory API routes", () => {
         scope: "tenant",
         subjectKey: "auth-client",
         statement: "Never use the internal auth client",
-        observationFingerprint: "caller-two",
         source: "reviewer_correction",
         sourceRefs: [secondEvidence],
       }),
@@ -337,7 +355,6 @@ describe("Organization Memory API routes", () => {
         scope: "tenant",
         subjectKey: "missing-evidence",
         statement: "Use the internal auth client",
-        observationFingerprint: "caller-value",
         source: "repeated_verified_behavior",
         sourceRefs: ["evidence-does-not-exist"],
       }),
