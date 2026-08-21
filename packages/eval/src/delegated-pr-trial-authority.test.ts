@@ -30,6 +30,7 @@ vi.mock("@mendpoint/pipeline", () => ({
 
 import {
   createStoredDelegatedPrTrialAuthority,
+  createStoredDelegatedPrTrialAuthorityFromEnv,
   delegatedPrTrialBundleId,
   DELEGATED_PR_TRIAL_ASSEMBLER,
   DELEGATED_PR_TRIAL_BUNDLE_KIND,
@@ -558,7 +559,11 @@ async function fixture(options: Readonly<{
     displayName: "Independent verifier",
     createdAt: "2026-08-18T12:00:00.000Z",
   });
-  const manifestContent = JSON.stringify({ schemaVersion: 1, kind: "delegated_pr_acceptance_authority" });
+  // The authority manifest carries the acceptance contract itself, minus its own
+  // self-referential authorityManifest field, so the contract's threshold fields
+  // are anchored to this durable artifact rather than only to the caller's config.
+  const { authorityManifest: _dropAuthorityManifest, ...anchoredContract } = contract;
+  const manifestContent = JSON.stringify(canonicalValue(anchoredContract));
   insertArtifactManifest(db, {
     id: contract.authorityManifest.artifactId,
     tenantId: "tenant-a",
@@ -883,5 +888,33 @@ describe("stored delegated PR trial authority", () => {
       .resolves.toBeNull();
     await expect(authority.manifest()).resolves.toEqual(resolvedContract.authorityManifest);
     await expect(authority.now()).resolves.toBe("2026-08-18T12:11:00.000Z");
+  });
+
+  it("rejects a supplied contract whose thresholds differ from the durable authority manifest", async () => {
+    const { db, resolvedContract, trustPolicy } = await fixture();
+    // The manifest sha256 the contract commits to is reused, but a threshold is
+    // widened -- exactly the "load the contract from config and widen a limit"
+    // move. The durable manifest still carries the original contract, so it fails.
+    const widened = { ...resolvedContract, maximumProofAgeMs: resolvedContract.maximumProofAgeMs * 12 } as DelegatedPrAcceptanceContract;
+    const authority = createStoredDelegatedPrTrialAuthority(db, {
+      contract: widened,
+      producerPrincipalId: "trial-service",
+      producerService: "mendpoint-delegated-trial",
+      producerVersion: revision("f"),
+      verifiedAt: "2026-08-18T12:11:00.000Z",
+      maximumCleanupAgeMs: 60 * 60 * 1000,
+      cleanupTrustPolicy: trustPolicy,
+      trialTrustPolicy: trustPolicy,
+    });
+    await expect(authority.manifest()).rejects.toThrow("delegated_pr_trial_authority_manifest_invalid");
+  });
+
+  it("refuses to build an authority when the environment trust anchor is unconfigured", async () => {
+    const { db, resolvedContract } = await fixture();
+    expect(() => createStoredDelegatedPrTrialAuthorityFromEnv(
+      db,
+      { contract: resolvedContract, verifiedAt: "2026-08-18T12:11:00.000Z", maximumCleanupAgeMs: 60 * 60 * 1000 },
+      {},
+    )).toThrow("delegated_pr_trial_authority_trust_unconfigured");
   });
 });
