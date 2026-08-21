@@ -642,10 +642,10 @@ describe("transformer adaptive candidate review routes", () => {
 
     const pilotBeforeReconciliation = store.getCampaign("tenant-a", "campaign-1")!;
     expect(processTransformerAdaptiveRegenerations(db, store, { observedAt: scheduledAt }))
-      .toEqual({ considered: 1, blocked: 1, scheduled: 0, failed: 0, errors: [] });
+      .toEqual({ considered: 1, blocked: 1, indeterminate: 0, scheduled: 0, failed: 0, errors: [] });
     expect(processTransformerAdaptiveRegenerations(db, store, {
       observedAt: new Date(Date.parse(scheduledAt) + 500).toISOString(),
-    })).toEqual({ considered: 1, blocked: 1, scheduled: 0, failed: 0, errors: [] });
+    })).toEqual({ considered: 1, blocked: 1, indeterminate: 0, scheduled: 0, failed: 0, errors: [] });
     expect(store.getCampaign("tenant-a", "campaign-1")).toEqual(pilotBeforeReconciliation);
     expect(getAdaptiveRegenerationByCandidate(db, "tenant-a", seeded.id)).toMatchObject({
       status: "pending",
