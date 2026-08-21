@@ -2,18 +2,24 @@ import { createHash } from "node:crypto";
 import {
   appendDomainEvent,
   createDb,
+  createMission,
+  getMission,
   getPrincipalBySubject,
   getTenant,
   insertPrincipal,
   insertTenant,
+  linkRegaugeCampaignToMission,
   listConnectedRepositories,
   listDomainEvents,
   listRepositorySnapshots,
   listScmConnections,
   putTenantMembership,
+  regaugeMissionId,
+  transitionMission,
   upsertGitHubInstallation,
   verifyDomainEventIntegrity,
   type AppDb,
+  type MissionState,
 } from "@mendpoint/db";
 import {
   InstallationTokenCache,
@@ -71,6 +77,107 @@ const RECIPE_CATALOG = Object.freeze([
 
 function stableId(prefix: string, ...parts: string[]): string {
   return `${prefix}-${createHash("sha256").update(parts.join("\0"), "utf8").digest("hex").slice(0, 24)}`;
+}
+
+// Ordered ReGauge mission lifecycle up to the point a launch can honestly claim.
+// The full section 8.6 model continues verifying -> awaiting_review -> accepted|
+// rejected|partial|failed, but those depend on the ASYNC attempt outcome that the
+// launch seam never observes (it is produced later by the worker pilot lane,
+// which has no request principal and no mission-advance wiring today). They are
+// therefore deliberately left unreachable from here.
+const REGAUGE_MISSION_LAUNCH_ORDER: readonly MissionState[] = [
+  "created",
+  "discovering",
+  "scoped",
+  "planning",
+  "executing",
+];
+
+/**
+ * Create-or-bind the App-DB Mission for a ReGauge control-plane campaign at the
+ * live LAUNCH seam and advance it to `executing`.
+ *
+ * This is the single place on the production ReGauge path where a real principal
+ * AND the exact verified repository snapshot coexist: the control-plane campaign
+ * is created on a different surface (POST /regauge/control-plane/campaigns) that
+ * has neither, and the production orchestration launches through the mission
+ * plan/launch service, which carries the snapshot but creates no mission. So the
+ * mission is born here, bound to what it was launched from, and advanced.
+ *
+ * Scope binding is FAIL-CLOSED. The mission row carries a SINGLE
+ * repository_id/snapshot_id, which is honest only when the campaign launched
+ * exactly one repository. For any other count we bind NEITHER (null) rather than
+ * privileging one repository: per-unit scope belongs on a per-migration-task
+ * object that does not exist yet, and asserting a single-repo scope for a
+ * multi-repo campaign would be a fabricated claim. The production bootstrap is
+ * structurally single-repo (mapExecution enforces one unit), so the bound branch
+ * is the live one; the null branch is the guard.
+ *
+ * Advance is idempotent and tolerant of partial prior progress: each step runs
+ * only from its immediate predecessor state, so a replayed launch (or a mission
+ * already advanced) is a no-op rather than an illegal transition or a CAS throw.
+ */
+export function bindRegaugeMissionAtLaunch(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    ownerPrincipalId: string;
+    objective: string;
+    repositories: readonly Readonly<{ repositoryId: string; snapshotId: string }>[];
+    createdAt: string;
+  }>,
+): void {
+  const missionId = regaugeMissionId(input.tenantId, input.campaignId);
+  const scope = input.repositories.length === 1 ? input.repositories[0]! : null;
+  const objective = input.objective.trim().slice(0, 200) || input.campaignId;
+  createMission(db, {
+    id: missionId,
+    tenantId: input.tenantId,
+    product: "regauge",
+    triggerKind: "migration_objective",
+    objective,
+    ownerPrincipalId: input.ownerPrincipalId,
+    repositoryId: scope?.repositoryId ?? null,
+    snapshotId: scope?.snapshotId ?? null,
+    eventId: `${missionId}-created`,
+    idempotencyKey: `mission-create-${missionId}`,
+    correlationId: input.campaignId,
+    createdAt: input.createdAt,
+  });
+  linkRegaugeCampaignToMission(db, {
+    tenantId: input.tenantId,
+    missionId,
+    regaugeCampaignId: input.campaignId,
+    actorPrincipalId: input.ownerPrincipalId,
+    eventId: `${missionId}-linked`,
+    idempotencyKey: `mission-link-${missionId}`,
+    correlationId: input.campaignId,
+    createdAt: input.createdAt,
+  });
+  // By the time launch runs, the orchestrator has already proven the campaign is
+  // reviewed and approved (campaignState === "ready"), so discovery, scoping, and
+  // planning are accomplished facts on the way to `executing`, not guesses.
+  for (let i = 1; i < REGAUGE_MISSION_LAUNCH_ORDER.length; i += 1) {
+    const to = REGAUGE_MISSION_LAUNCH_ORDER[i]!;
+    const current = getMission(db, input.tenantId, missionId);
+    if (!current) return;
+    const fromIndex = REGAUGE_MISSION_LAUNCH_ORDER.indexOf(current.state);
+    if (fromIndex < 0) return; // mission left the linear path (cancelled/failed); do not force
+    if (fromIndex >= i) continue; // already at or past this state (idempotent replay)
+    if (fromIndex !== i - 1) return; // a gap we cannot honestly bridge; stop
+    transitionMission(db, {
+      tenantId: input.tenantId,
+      missionId,
+      expectedRevision: current.revision,
+      to,
+      actorPrincipalId: input.ownerPrincipalId,
+      eventId: `${missionId}-transition-${to}`,
+      idempotencyKey: `mission-transition-${missionId}-${to}`,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
+  }
 }
 
 function required(env: Readonly<Record<string, string | undefined>>, name: string): string {
@@ -433,7 +540,45 @@ export function createRegaugeProductionBootstrapRuntime(
         idempotencyKey: `bootstrap-launch-${input.requestDigest.slice(7, 39)}`,
         evidenceRefs: input.evidenceRefs,
       }, input.campaignId);
-      return mapExecution(options, input.tenantId, input.campaignId)!;
+      const execution = mapExecution(options, input.tenantId, input.campaignId)!;
+      // Create-or-bind the Mission here, at the live launch seam, and advance it
+      // to `executing`. Best-effort by deliberate choice: mission bookkeeping must
+      // never fail production provisioning (the same convention the other two
+      // mission writers follow). It is NOT silent — a failure is logged loudly
+      // with identifiers, AND because the mission's own `state` column is the
+      // source of truth, a failed advance leaves the mission in its true
+      // (un-advanced) state rather than fabricating a success: there is no
+      // third state where "did not advance" masquerades as "advanced".
+      try {
+        const owner = getPrincipalBySubject(
+          options.db,
+          input.tenantId,
+          "service",
+          "service:regauge-production-bootstrap",
+        );
+        if (!owner) {
+          console.error(
+            `regauge mission launch wiring skipped: service principal missing tenant=${input.tenantId} campaign=${input.campaignId}`,
+          );
+        } else {
+          const campaign = options.control.store.getCampaign(input.tenantId, input.campaignId);
+          bindRegaugeMissionAtLaunch(options.db, {
+            tenantId: input.tenantId,
+            campaignId: input.campaignId,
+            ownerPrincipalId: owner.id,
+            objective: campaign?.name ?? input.campaignId,
+            repositories: [{ repositoryId: execution.repositoryId, snapshotId: execution.snapshotId }],
+            createdAt: now(),
+          });
+        }
+      } catch (error) {
+        console.error(
+          `regauge mission launch wiring failed tenant=${input.tenantId} campaign=${input.campaignId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      return execution;
     },
     async readReceipt(tenantId, campaignId) {
       const integrity = verifyDomainEventIntegrity(options.db, tenantId);

@@ -20,10 +20,12 @@ import type {
 } from "@mendpoint/transformer";
 import {
   createWardenRoutingRuntime,
-  estimateSeedInputTokens,
-  riskQualityFloor,
   wardenExecutorDescriptor,
 } from "./warden-router.js";
+import {
+  buildRoutingPolicySnapshot,
+  buildRoutingTaskSpec,
+} from "./routing-envelope.js";
 
 /**
  * Durable policy-routed execution for the production Transformer attempt path.
@@ -172,14 +174,14 @@ export type TransformerRoutingRequest = Readonly<{
 }>;
 
 function buildTaskSpec(input: TransformerRoutingRequestInput): RouterTaskSpec {
-  const budgetUsd = input.budgetUsd ?? 25;
   const goal = input.goal ?? `Regauge recipe migration for ${input.campaignId}`;
+  const verifyCommand = input.verifyCommand ?? "transformer.recipe.verify";
   // No honest change-risk signal exists at this call site: the runnable campaign
   // carries no blast radius or impact coverage (both are produced by the attempt,
   // after routing). Risk stays caller-supplied or the medium default — a
   // deliberate under-claim, not a fabricated derivation.
   const risk: TaskRisk = input.risk ?? "medium";
-  return {
+  return buildRoutingTaskSpec({
     taskId: input.taskId,
     tenantId: input.tenantId,
     kind: TRANSFORMER_TASK_KIND,
@@ -187,69 +189,36 @@ function buildTaskSpec(input: TransformerRoutingRequestInput): RouterTaskSpec {
     idempotencyKey: input.idempotencyKey,
     inputArtifactIds: [...input.sourceArtifactIds],
     requiredCapabilities: [TRANSFORMER_CAPABILITY],
-    allowedTools: [],
-    context: {
-      estimatedInputTokens:
-        input.estimatedInputTokens ??
-        estimateSeedInputTokens([
-          goal,
-          input.verifyCommand,
-          ...input.sourceArtifactIds,
-        ]),
-      maximumOutputTokens: input.maxOutputTokens ?? 8_192,
-    },
-    verification: {
-      requiredChecks: [input.verifyCommand ?? "transformer.recipe.verify"],
-      requireAll: true,
-      onFailure: "human_handoff",
-    },
-    fallbackPolicy: {
-      enabled: true,
-      maxAttempts: 3,
-      sameExecutorRetries: 1,
-      retryableFailures: ["timeout", "rate_limited", "provider_unavailable"],
-      fallbackFailures: ["provider_unavailable", "executor_unavailable"],
-    },
-    privacy: { classification: input.classification ?? "confidential" },
+    classification: input.classification ?? "confidential",
     risk,
-    quality: { minimumScore: riskQualityFloor(risk) },
-    latency: { maximumMs: input.maximumLatencyMs ?? 3_600_000 },
-    budget: { maximumUsd: budgetUsd },
-  };
+    verifyCommand,
+    tokenSeedParts: [goal, verifyCommand, ...input.sourceArtifactIds],
+    estimatedInputTokens: input.estimatedInputTokens,
+    maxOutputTokens: input.maxOutputTokens,
+    maximumLatencyMs: input.maximumLatencyMs,
+    budgetUsd: input.budgetUsd,
+  });
 }
 
 function buildPolicySnapshot(
   input: TransformerRoutingRequestInput,
 ): RouterPolicySnapshot {
-  const body: Omit<RouterPolicySnapshot, "snapshotId" | "capturedAt"> = {
-    version: 1,
-    privacy: {
-      allowedClassifications: [
-        "public",
-        "internal",
-        "confidential",
-        "restricted",
-      ],
-      externalProcessingAllowed: input.externalProcessingAllowed ?? false,
-    },
-    region: {
-      allowedExecutionRegions: [input.allowedExecutionRegion ?? TRANSFORMER_ROUTING_REGION],
-    },
-    risk: { maximumAutonomousRisk: "medium", humanReviewAtOrAbove: "high" },
-    // Baseline policy quality floor (§13.4). The effective minimum is the max of
-    // this and the risk-adjusted task floor, so no executor below the baseline is
-    // ever eligible and the `quality_below_minimum` gate can fire.
-    quality: { minimumScore: 0.6 },
-    latency: { maximumMs: input.maximumLatencyMs ?? 3_600_000 },
-    budget: { maximumUsd: input.budgetUsd ?? 25 },
-  };
-  return {
-    snapshotId: `sha256:${createHash("sha256")
-      .update(JSON.stringify(body), "utf8")
-      .digest("hex")}`,
-    ...body,
-    capturedAt: (input.decidedAt ?? new Date()).toISOString(),
-  };
+  return buildRoutingPolicySnapshot({
+    // The classification ceiling is an explicit declaration: an external
+    // adaptive route supplies its cleared maximum via `classification`, and the
+    // internal deterministic lane declares its own. An absent declaration
+    // narrows to `public` (the shared builder's fail-safe) rather than
+    // authorizing all four classifications unconditionally, which is what the
+    // former hardcoded literal did.
+    maximumDataClassification: input.classification,
+    externalProcessingAllowed: input.externalProcessingAllowed ?? false,
+    allowedExecutionRegions: [
+      input.allowedExecutionRegion ?? TRANSFORMER_ROUTING_REGION,
+    ],
+    maximumLatencyMs: input.maximumLatencyMs,
+    budgetUsd: input.budgetUsd,
+    decidedAt: input.decidedAt,
+  });
 }
 
 /** Build the routing request passed to `runRoutedTransformerAttempt`. */

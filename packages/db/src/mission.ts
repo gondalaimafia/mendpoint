@@ -1,6 +1,17 @@
+import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { AppDb } from "./index.js";
 import { appendDomainEvent } from "./trust.js";
+
+// Deterministic App-DB mission id for a ReGauge/Transformer control-plane
+// campaign. Shared so that every writer that create-or-binds the mission for a
+// campaign derives the SAME id — that identity is what makes createMission and
+// linkRegaugeCampaignToMission idempotent across writers (e.g. the control-plane
+// route and the production launch seam). Mirrors the Fettler id shape
+// (`mission-fettler-…`) used at the enrollment writer.
+export function regaugeMissionId(tenantId: string, campaignId: string): string {
+  return `mission-regauge-${createHash("sha256").update(`${tenantId}\0${campaignId}`).digest("hex").slice(0, 32)}`;
+}
 
 // The Mission is the shared, tenant-scoped execution primitive (spec section 6.1
 // and 8.6). It is the single join point between the two previously disjoint
@@ -125,6 +136,14 @@ export function createMission(db: AppDb, input: {
   }
   db.raw.exec("BEGIN IMMEDIATE");
   try {
+    // Deliberately tenant-LESS: `id` is a global PRIMARY KEY, so this is the
+    // idempotency/uniqueness guard that lets a mission id reused across tenants
+    // surface as a clean `mission_id_conflict` below rather than a raw INSERT
+    // constraint error. Do NOT add `AND tenant_id = ?` here — that would let a
+    // cross-tenant id collision slip past this check into the INSERT. (The
+    // post-write value re-reads below ARE tenant-scoped; those are pure reads of
+    // a row this transaction just wrote, and the predicate is defense-in-depth
+    // against a future tenant-scoped-key refactor.)
     const existing = one<MissionRow>(db, `SELECT * FROM mission WHERE id = ?`, [input.id]);
     if (existing) {
       const value = mission(existing);
@@ -146,7 +165,7 @@ export function createMission(db: AppDb, input: {
     event(db, { ...input, missionId: input.id, actorPrincipalId: input.ownerPrincipalId,
       eventType: "mission.created", payload: { product: input.product, triggerKind: input.triggerKind,
         state: "created", revision: 1 } });
-    const value = mission(one<MissionRow>(db, `SELECT * FROM mission WHERE id = ?`, [input.id])!);
+    const value = mission(one<MissionRow>(db, `SELECT * FROM mission WHERE id = ? AND tenant_id = ?`, [input.id, input.tenantId])!);
     db.raw.exec("COMMIT");
     return value;
   } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
@@ -170,7 +189,7 @@ export function transitionMission(db: AppDb, input: {
     if (Number(changed.changes) !== 1) throw new Error("mission_revision_conflict");
     event(db, { ...input, eventType: "mission.transitioned",
       payload: { from: current.state, to: input.to, previousRevision: current.revision, revision: current.revision + 1 } });
-    const value = mission(one<MissionRow>(db, `SELECT * FROM mission WHERE id = ?`, [input.missionId])!);
+    const value = mission(one<MissionRow>(db, `SELECT * FROM mission WHERE id = ? AND tenant_id = ?`, [input.missionId, input.tenantId])!);
     db.raw.exec("COMMIT");
     return value;
   } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
@@ -209,7 +228,7 @@ export function linkFettlerCampaignToMission(db: AppDb, input: {
     if (Number(changed.changes) !== 1) throw new Error("mission_link_conflict");
     event(db, { ...input, eventType: "mission.fettler_campaign_linked",
       payload: { campaignId: input.campaignId } });
-    const value = mission(one<MissionRow>(db, `SELECT * FROM mission WHERE id = ?`, [input.missionId])!);
+    const value = mission(one<MissionRow>(db, `SELECT * FROM mission WHERE id = ? AND tenant_id = ?`, [input.missionId, input.tenantId])!);
     db.raw.exec("COMMIT");
     return value;
   } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
@@ -242,7 +261,7 @@ export function linkRegaugeCampaignToMission(db: AppDb, input: {
     if (Number(changed.changes) !== 1) throw new Error("mission_link_conflict");
     event(db, { ...input, eventType: "mission.regauge_campaign_linked",
       payload: { regaugeCampaignId } });
-    const value = mission(one<MissionRow>(db, `SELECT * FROM mission WHERE id = ?`, [input.missionId])!);
+    const value = mission(one<MissionRow>(db, `SELECT * FROM mission WHERE id = ? AND tenant_id = ?`, [input.missionId, input.tenantId])!);
     db.raw.exec("COMMIT");
     return value;
   } catch (error) { db.raw.exec("ROLLBACK"); throw error; }

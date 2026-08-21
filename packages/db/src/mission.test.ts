@@ -14,6 +14,7 @@ import {
   resolveMissionForFettlerCampaign,
   resolveMissionForRegaugeCampaign,
   transitionMission,
+  verifyDomainEventIntegrity,
   type AppDb,
   type MissionState,
 } from "./index.js";
@@ -98,6 +99,28 @@ describe("mission primitive", () => {
     const events = listDomainEvents(db, "t1", "mission", "m-fettler")
       .filter((e) => e.event_type === "mission.transitioned");
     expect(events).toHaveLength(7);
+  });
+
+  it("keeps the hash-chained domain_events verifiable across every transition", () => {
+    const db = fixture();
+    regaugeMission(db);
+    expect(verifyDomainEventIntegrity(db, "t1").ok).toBe(true);
+    move(db, "m-regauge", 1, "discovering");
+    move(db, "m-regauge", 2, "scoped");
+    move(db, "m-regauge", 3, "planning");
+    move(db, "m-regauge", 4, "executing");
+    // The per-tenant prev_hash/event_hash chain must remain intact after the
+    // create event plus four transition events.
+    const integrity = verifyDomainEventIntegrity(db, "t1");
+    expect(integrity.ok).toBe(true);
+    const missionEvents = listDomainEvents(db, "t1", "mission", "m-regauge");
+    expect(missionEvents.map((e) => e.event_type)).toEqual([
+      "mission.created",
+      "mission.transitioned",
+      "mission.transitioned",
+      "mission.transitioned",
+      "mission.transitioned",
+    ]);
   });
 
   it("lets Fettler skip planning (scoped -> executing) per section 8.6", () => {

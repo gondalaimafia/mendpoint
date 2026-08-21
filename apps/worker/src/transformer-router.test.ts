@@ -109,6 +109,10 @@ function transformerRequest(campaignId: string, decidedAt: Date, risk?: "high") 
       `manifest:${"b".repeat(64)}`,
       `sha256:${"c".repeat(64)}`,
     ],
+    // The internal deterministic lane declares its classification ceiling, as the
+    // production pilot lane does; the policy ceiling is derived from it, not from
+    // absence.
+    classification: "confidential",
     decidedAt,
     ...(risk ? { risk } : {}),
   });
@@ -147,6 +151,22 @@ describe("transformer routing runtime", () => {
     }>;
     const warden = eliminated.find((e) => e.executorId === WARDEN_EXECUTOR_ID);
     expect(warden?.reasons).toContain("capability_missing");
+  });
+
+  it("builds the task envelope from the shared builder with declared tool requirements", () => {
+    // Same shared builder as Warden: real tool requirements, and an absent
+    // classification narrows the envelope to public rather than all four.
+    const spec = transformerRequest("campaign-tools", new Date(CHECKED_AT)).task;
+    expect(spec.allowedTools).toEqual(["read_file", "write_file", "run_command"]);
+    const undeclared = transformerRoutingRequest({
+      taskId: "campaign-undeclared",
+      tenantId: "tenant_default",
+      campaignId: "campaign-undeclared",
+      idempotencyKey: "claim-undeclared",
+      sourceArtifactIds: [`sha256:${"c".repeat(64)}`],
+      decidedAt: new Date(CHECKED_AT),
+    });
+    expect(undeclared.policy.privacy.allowedClassifications).toEqual(["public"]);
   });
 
   it("emits an honest token estimate and a risk-adjusted quality floor", () => {
@@ -286,6 +306,7 @@ describe("transformer routing runtime", () => {
         idempotencyKey: "wk-1",
         verifyCommand: "npm test",
         policySnapshotId: "wsnapshot-1",
+        classification: "restricted",
         decidedAt: at,
       }),
     );
