@@ -349,6 +349,57 @@ confirmed memory is 59 tokens. This is the mechanism the programme is built on,
 measured in isolation, with the same not-measured caveat on realization by a live
 model.
 
+### 5.2 The realized live result (n=1), beside the ceiling
+
+The live-model lane (Section 9) was run once against the real model
+`muse-spark-1.2-contributor` at `api.meta.ai`, over the full 24-call cohort
+(12 hazards x 2 arms), under the $5 cap. **Actual spend: $0.0050** (worst-case
+estimate before the run: $0.0216). Every prompt was synthetic; every leak and
+accounting gate PASSED. The realized figures sit here beside the deterministic
+ceiling so the gap between them is visible:
+
+| Metric | `stateless` ceiling | `stateless` LIVE | `persistent` ceiling | `persistent` LIVE |
+|---|---|---|---|---|
+| Task correctness | 0.4167 | 0.8333 | 0.9167 | 0.9167 |
+| **Repeated-mistake rate (headline)** | **1.0000 (3/3)** | **0.0000 (0/3)** | **0.0000 (0/3)** | **0.0000 (0/3)** |
+| Human corrections | 7 | 2 | 1 | 1 |
+| Verification success | 0.5000 (4/8) | 0.7500 (6/8) | 0.8750 (7/8) | 0.8750 (7/8) |
+| Model tokens | not-measured | 16858 | not-measured | 12345 |
+| Model cost | not-measured | $0.0030 | not-measured | $0.0020 |
+
+**Realized repeats avoided by persistent context: 0.0000, against a ceiling of
+3.0000.** The live arm landed *below* the ceiling, exactly as expected — but note
+carefully *why*, because it is not the obvious reading. The headline did not
+collapse because the persistent arm failed; the persistent arm repeated zero of
+three, the same as its ceiling. It collapsed because the **stateless** arm also
+repeated zero of three, where the modeled stateless agent repeats all three by
+construction. Given only its immediate context, the real model's own priors
+already chose the resolved options (`internal-auth-client` over `direct-oauth`,
+`adapter-per-provider` over `inline-switch`, `use-retry-wrapper` over
+`use-circuit-breaker`) — the sensible defaults a capable model reaches without
+being told. On this cohort, for this model, statelessness cost almost nothing on
+the headline metric, so the marginal value of inherited context there was zero.
+
+Persistent context still helped at the margin the headline does not capture: task
+correctness 11/12 vs 10/12, verification 7/8 vs 6/8, and one fewer human
+correction. And it did not hurt on aggregate here (both arms carry the same single
+miss count difference), though the modeled `conflicting-context-harm` loss remains
+a real risk the compiler's precedence does not mitigate (Section 1.1).
+
+**This is one run.** Under spec v3 Section 36.1 it is an anecdote about one model
+on one day at a headline denominator of three previously-resolved hazards, not a
+rate. The provider is a reasoning model at temperature 0, which is not guaranteed
+to be deterministic; a second run may differ. The honest conclusion supported is
+narrow: *on this synthetic cohort, a strong live model did not need the inherited
+context to avoid these particular previously-resolved mistakes, so the modeled
+ceiling — which assumes a stateless agent that always repeats them — overstates
+the realized headline value of persistent context for this model and cohort.* It
+does not establish that persistent context is valueless in general (a harder
+cohort, where the resolved answer is genuinely counter to a model's priors, would
+separate the arms), and it does not establish the opposite either. It establishes
+that the ceiling is a ceiling, and that the distance below it, here, is the whole
+distance.
+
 ## 6. What the numbers do and do not support
 
 Under spec v3 §36.1, **no number here is a Mendpoint product claim**, because
@@ -474,15 +525,15 @@ arm as live): set `OPENAI_API_KEY` (or `XAI_API_KEY`), `LLM_AGENT_URL`,
 to the endpoint host out of band (the task-1 host pin), then
 `npx tsx evals/context-benchmark/run-live.ts`.
 
-**Result to date: not measured.** As of this writing the lane is built and
-verified but the paid live run has not been executed (the approved host was not
-pinned, so the lane fails closed and spends $0). No realized repeat-avoidance
-number exists yet, and the §5 ceiling stands unchanged as the honest ceiling.
-When the lane is run, report the headline plainly whatever it is: the expected
-outcome is that realized repeat avoidance is **below** the ceiling, because real
-attention is imperfect, and a result at or worse than the stateless arm on the
-conflicting-context scenario is faithful, not a defect (§1.1). Under spec v3
-§36.1, a single live run at this sample count (three previously-resolved hazards
-in the headline denominator) supports very little on its own — it is an anecdote
-about one model on one day, not a rate — and the report must say so rather than
-implying more.
+**Result: measured once (n=1); see Section 5.2 for the figures beside the
+ceiling.** The lane was run over the full 24-call cohort against
+`muse-spark-1.2-contributor` at `api.meta.ai`, actual spend **$0.0050**, all gates
+PASS. Realized repeats avoided by persistent context was **0.0000 against a
+ceiling of 3.0000** — below the ceiling as expected, but because the real
+*stateless* model already chose the resolved options from its own priors, not
+because the persistent arm regressed. Under spec v3 §36.1 this single run is an
+anecdote about one model on one day at a headline denominator of three
+previously-resolved hazards, not a rate; the provider is a reasoning model at
+temperature 0 and is not guaranteed deterministic, so a second run may differ.
+The §5 ceiling stands unchanged as the ceiling, and Section 5.2 states exactly
+what this one realized run does and does not support.

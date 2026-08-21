@@ -103,8 +103,11 @@ import { COHORT, SEALED_KEY } from "./scenarios.js";
 
 /** Default hard spend cap for the live context arm: five US dollars, a ceiling. */
 export const DEFAULT_LIVE_CONTEXT_MAX_USD = 5;
-/** A choice JSON object is tiny; this bounds the completion generously. */
-export const DEFAULT_LIVE_CONTEXT_MAX_OUTPUT_TOKENS = 64;
+/** muse-spark is a reasoning model: the completion budget must cover hidden
+ * reasoning tokens PLUS the tiny choice JSON. At 64 the model exhausted the
+ * budget on reasoning and returned null content (finish_reason "length"), so
+ * this is sized to leave ample room; the cap still bounds the dollar cost. */
+export const DEFAULT_LIVE_CONTEXT_MAX_OUTPUT_TOKENS = 4096;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 32_768;
 
