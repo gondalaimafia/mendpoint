@@ -54,7 +54,6 @@ describe("Fettler-only customer Fly profile", () => {
     for (const setting of [
       'MENDPOINT_DEPLOYMENT_PROFILE = "customer"',
       'MENDPOINT_DEPLOYMENT_CLASS = "customer"',
-      'MENDPOINT_CUSTOMER_READY = "0"',
       'MENDPOINT_CUSTOMER_TOPOLOGY = "single_node"',
       'MENDPOINT_CUSTOMER_MAX_MACHINES = "1"',
       'GITHUB_MODE = "real"',
@@ -74,6 +73,12 @@ describe("Fettler-only customer Fly profile", () => {
     ]) expect(manifest).toContain(setting);
 
     expect(manifest).not.toContain("MENDPOINT_TRANSFORMER_GATE");
+    // Readiness is declared per deployment, never baked into the shared profile
+    // as an inherited constant.
+    expect(manifest).not.toMatch(/^\s*MENDPOINT_CUSTOMER_READY\s*=/m);
+    expect(manifest).toContain(
+      "Readiness is declared per deployment, never inherited as a shared constant.",
+    );
     expect(dockerfile).toMatch(/apt-get install[^\n]*rclone/);
     expect(dockerfile).not.toContain("fuse3");
     expect(dockerfile).not.toContain("user_allow_other");
@@ -211,6 +216,43 @@ describe("Fettler-only customer Fly profile", () => {
     }))).toContain(
       "Customer Fettler profile requires MENDPOINT_BACKUP_TRANSPORT=rclone_s3 or pre_mounted",
     );
+  });
+
+  it("lets a deployment declare its own readiness and fails closed when it cannot", () => {
+    // A realistic configuration that declares itself ready boots ready.
+    expect(
+      validateCustomerWardenRuntime(customerRuntime({ MENDPOINT_CUSTOMER_READY: "1" })),
+    ).toEqual([]);
+
+    // An honest not-ready hold still boots; the readiness probe reports it.
+    expect(
+      validateCustomerWardenRuntime(customerRuntime({ MENDPOINT_CUSTOMER_READY: "0" })),
+    ).toEqual([]);
+
+    // Declared ready but a precondition is unmet: the specific precondition is
+    // named and the deployment does not boot ready.
+    const missingSecret = customerRuntime({ MENDPOINT_CUSTOMER_READY: "1" });
+    delete missingSecret.OIDC_ISSUER;
+    const missingSecretErrors = validateCustomerWardenRuntime(missingSecret);
+    expect(missingSecretErrors).toContain("Customer Fettler profile requires OIDC_ISSUER");
+    expect(missingSecretErrors).not.toEqual([]);
+
+    // Indeterminate (unset) declaration fails closed at boot, named.
+    const unset = customerRuntime();
+    delete unset.MENDPOINT_CUSTOMER_READY;
+    const unsetErrors = validateCustomerWardenRuntime(unset);
+    expect(unsetErrors).not.toEqual([]);
+    expect(unsetErrors.some((e) => e.includes("MENDPOINT_CUSTOMER_READY could not be determined")))
+      .toBe(true);
+    expect(unsetErrors.some((e) => e.includes("got unset"))).toBe(true);
+
+    // Indeterminate (unrecognized value) fails closed at boot, named.
+    const garbageErrors = validateCustomerWardenRuntime(
+      customerRuntime({ MENDPOINT_CUSTOMER_READY: "maybe" }),
+    );
+    expect(garbageErrors.some((e) => e.includes("MENDPOINT_CUSTOMER_READY could not be determined")))
+      .toBe(true);
+    expect(garbageErrors.some((e) => e.includes('got "maybe"'))).toBe(true);
   });
 
   it("asserts a local model endpoint at boot under local_only egress", () => {

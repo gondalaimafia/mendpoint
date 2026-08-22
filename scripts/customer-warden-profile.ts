@@ -158,7 +158,6 @@ export function customerWardenChildEnvironment(
 const REQUIRED_SETTINGS = Object.freeze({
   MENDPOINT_DEPLOYMENT_PROFILE: "customer",
   MENDPOINT_DEPLOYMENT_CLASS: "customer",
-  MENDPOINT_CUSTOMER_READY: "0",
   MENDPOINT_CUSTOMER_TOPOLOGY: "single_node",
   GITHUB_MODE: "real",
   MENDPOINT_FEED_POLLING_ENABLED: "1",
@@ -245,8 +244,20 @@ export function validateCustomerWardenRuntime(
       "Customer Fettler profile requires a private, loopback, link-local, or allowlisted model endpoint when MENDPOINT_MODEL_EGRESS=local_only",
     );
   }
+  // Readiness is declared by the deployment, not pinned to a constant. Every
+  // check above is a readiness precondition; a deployment that declares itself
+  // ready (MENDPOINT_CUSTOMER_READY=1) with any unmet precondition already
+  // cannot boot because those errors block it. The only additional boot blocker
+  // here is an indeterminate declaration, which must fail closed rather than be
+  // read as ready. A declared not-ready deployment (=0) still boots as an honest
+  // hold; the readiness probe reports it as not ready.
+  const readiness = assessCustomerReadiness(env, errors);
+  if (readiness.status === "indeterminate") {
+    errors.push(...readiness.reasons);
+  }
   return errors;
 }
 import { loadCustomerObjectStoreConfig } from "./customer-object-store.js";
 import { assessModelEgress, resolveEitherRenamedEnv } from "@mendpoint/shared";
 import { SANDBOX_EGRESS_ATTESTATION_SCHEMA } from "@mendpoint/platform";
+import { assessCustomerReadiness } from "@mendpoint/ops";

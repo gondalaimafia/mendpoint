@@ -20,7 +20,14 @@ kill_timeout = 30
   PORT = "3000"
   MENDPOINT_DEPLOYMENT_PROFILE = "customer"
   MENDPOINT_DEPLOYMENT_CLASS = "customer"
-  MENDPOINT_CUSTOMER_READY = "0"
+  # Readiness is declared per deployment, never inherited as a shared constant.
+  # Each customer app sets MENDPOINT_CUSTOMER_READY as a Fly env/secret at
+  # provisioning time: "1" declares the deployment ready (boots ready only when
+  # every precondition in scripts/customer-warden-profile.ts is met), "0"
+  # declares an honest not-ready hold (boots but the /readyz probe reports not
+  # ready). It is intentionally absent here: an unset or unrecognized value is
+  # indeterminate and fails closed at boot rather than reading as ready.
+  #   fly secrets set MENDPOINT_CUSTOMER_READY=1 --app <customer-app>
   MENDPOINT_CUSTOMER_TOPOLOGY = "single_node"
   MENDPOINT_CUSTOMER_MAX_MACHINES = "1"
   GITHUB_MODE = "real"
