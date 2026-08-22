@@ -272,12 +272,13 @@ describe("governed learning operations", () => {
     expect(first).toMatchObject({ eventId: "event-admission", learningRecordId: ids.learningRecordId, lesson: { eligibleForModelTraining: true } });
     expect(db.raw.prepare("SELECT COUNT(*) c FROM learning_records WHERE tenant_id = ?").get("tenant-a")).toEqual({ c: 1 });
 
-    // The learning status surfaces lesson-routing observability so the drop is
-    // seen on the live operator surface. This admitted lesson is a `model_weight`
-    // sink (substantive model_behavior correction), so it reached a sink and none
-    // went nowhere. The static halves report the production reality: the
-    // classifier is no longer constant (both governed-learning producers now
-    // derive attribution from run evidence), and only one destination has a sink.
+    // The learning status surfaces lesson-routing observability so the drop is seen
+    // on the live operator surface. This lesson is admitted DIRECTLY with a
+    // substantive model_behavior correction (not via the production producers, which
+    // always emit `none`), so it exercises the `model_weight` sink: it reached a sink
+    // and none went nowhere. The attribution half reports its narrow measure —
+    // `effectivelyConstant: false` because no producer hardcodes a same literal —
+    // which does NOT imply the producers discriminate; only one destination has a sink.
     const status = getGovernedLearningStatus(db, "tenant-a", CREATED_AT);
     expect(status.lessonRouting.lessons).toEqual({
       classified: 1,
@@ -285,9 +286,9 @@ describe("governed learning operations", () => {
       terminalNoAction: 0,
       wentNowhere: 0,
     });
-    // Regression guard: if a producer slid back to a hardcoded constant,
-    // assessProductionAttributionDiscrimination would report effectivelyConstant
-    // true again and this assertion would fail.
+    // Regression guard for the narrow check: if a producer slid back to a hardcoded
+    // same literal, assessProductionAttributionDiscrimination would report
+    // effectivelyConstant true and this assertion would fail.
     expect(status.lessonRouting.attribution).toMatchObject({
       effectivelyConstant: false,
       constant: null,

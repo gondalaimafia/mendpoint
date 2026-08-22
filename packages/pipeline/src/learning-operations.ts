@@ -166,22 +166,23 @@ export type GovernedLearningConsentResult = Readonly<{
  * status so the drop that `lesson-routing.ts` names is actually seen. Three honest
  * facts, none of which the eleven-destination taxonomy makes visible on its own:
  *
- *   - `attribution` (static): whether the classifier discriminates in production.
- *     `effectivelyConstant` is now false — both governed-learning producers derive
- *     attribution from run evidence (`deriveOutcomeAttribution`) rather than
- *     hardcoding `model_behavior`, so the taxonomy no longer collapses to
- *     `model_weight` / `no_action` before it reaches routing. This is the more
- *     important number: without it a reader could not tell whether the system
- *     discriminates before it routes.
+ *   - `attribution` (static): the NARROW same-hardcoded-literal check.
+ *     `effectivelyConstant` is false because neither production producer hardcodes a
+ *     literal — but read `assessProductionAttributionDiscrimination`'s own doc: that
+ *     false does NOT mean the classifier discriminates in production. It does not.
+ *     Both producers call `deriveOutcomeAttribution` yet can only feed it a constant
+ *     `not_verified` today, so both always emit `none` and nothing reaches
+ *     `model_weight`; that degeneracy is invisible to this static check.
  *   - `destinations` (static): how many of the taxonomy's destinations actually
  *     reach a sink. Today one (`model_weight`) does; the rest are `unrouted` or the
- *     `no_action` terminal, so "ten of eleven have no sink" is countable here.
+ *     `no_action` terminal, so "ten of eleven have no sink" is countable here. In
+ *     production nothing routes even to `model_weight`, since attribution is `none`.
  *   - `lessons` (live, tenant-scoped): the real per-lesson counts. `wentNowhere` is
  *     the operator's answer to "how many lessons did we classify and then drop?" —
  *     a lesson that reached no sink and was not the intentional `no_action`
- *     terminal. It becomes non-zero the moment a producer emits a discriminating
- *     attribution into a destination nothing consumes — now reachable, since the
- *     producers derive attribution rather than emitting a single constant.
+ *     terminal. It stays zero in production while every lesson is `none` ->
+ *     `no_action`; it becomes non-zero only once a producer can emit a
+ *     discriminating attribution into a destination nothing consumes.
  */
 export type LessonRoutingObservability = Readonly<{
   attribution: ProductionAttributionDiscrimination;

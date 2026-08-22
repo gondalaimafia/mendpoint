@@ -75,11 +75,13 @@ describe("lesson destination dispositions", () => {
 });
 
 describe("production attribution discrimination", () => {
-  it("no longer reports the classifier as constant, because both production producers derive attribution", () => {
-    // The most important number in this module. It once said the eleven-way
-    // taxonomy collapsed to one branch before routing; now both production
-    // producers derive attribution from run evidence, so the input discriminates
-    // again and the assessment must report that honestly.
+  it("reports no hardcoded-same-literal collapse (its narrow scope), NOT that the classifier discriminates", () => {
+    // This detects ONLY the same-hardcoded-literal degeneracy, and neither producer
+    // hardcodes, so it is false. It does NOT prove the classifier discriminates in
+    // production — both producers feed the deriver a constant `not_verified` and
+    // always emit `none`, a degeneracy this static check cannot see (see the
+    // function's own doc and the module header). The values below are the honest
+    // report of the narrow thing it measures.
     const assessment = assessProductionAttributionDiscrimination();
     expect(assessment.productionProducers).toBe(2);
     expect(assessment.hardcodedProductionProducers).toBe(0);
@@ -117,8 +119,8 @@ describe("production attribution discrimination", () => {
   it("names the exact classification seam for each production producer", () => {
     const references = GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS.filter((e) => e.role === "production").map((e) => e.reference);
     expect(references).toEqual([
-      "apps/worker/src/warden-learning-producer.ts:317",
-      "apps/worker/src/transformer-governed-learning-producer.ts:149",
+      "apps/worker/src/warden-learning-producer.ts:368",
+      "apps/worker/src/transformer-governed-learning-producer.ts:161",
     ]);
   });
 });

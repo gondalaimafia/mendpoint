@@ -54,6 +54,20 @@ export type OutcomeAttributionEvidence = Readonly<{
  *     no statement about the model at all.
  *   - `failed` + `unrecorded` -> no observation of what the model was given, so a
  *     model failure cannot be told apart from a retrieval gap.
+ *
+ * Production reachability today: BOTH production seams pass only `not_verified`
+ * (warden-learning-producer.ts and transformer-governed-learning-producer.ts), so
+ * in production this function always returns `none`. `"verified"` is never passed
+ * because neither seam has an independent verifier — edits are model-self-selected
+ * and the deterministic command's "passed" is tautological (schema forbids a failed
+ * command). `"failed"` is never passed because it is structurally unrepresentable
+ * in the review evidence: `ReviewedVerificationCommandSchema` types `ok`/`exitCode`
+ * as the literals `true`/`0`, so a failed command cannot parse — which is why the
+ * `failed` cases here, and the `retrieval` attribution they alone reach, are
+ * dormant in production rather than merely unused. The full three-state logic is
+ * retained (and exercised by outcome-attribution.test.ts) so this function is
+ * correct for any seam that later observes a genuine, representable verification
+ * outcome; making failure representable is a schema-and-product decision upstream.
  */
 export function deriveOutcomeAttribution(
   evidence: OutcomeAttributionEvidence,
