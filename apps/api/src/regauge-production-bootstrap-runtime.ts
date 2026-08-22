@@ -64,7 +64,7 @@ import { createAppDbTransformerMissionAuthority } from "./transformer-mission-au
 import { TransformerMissionService } from "./transformer-missions.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
 
-const RECEIPT_SCHEMA = "2026-08-14.v1" as const;
+const RECEIPT_SCHEMAS = new Set(["2026-08-14.v1", "2026-08-21.v2"]);
 const RECEIPT_EVENT = "regauge.production.bootstrap.completed";
 const RECEIPT_AGGREGATE = "regauge_production_bootstrap";
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
@@ -280,9 +280,11 @@ function receiptFromEvent(
     eventHash: `sha256:${event.event_hash}`,
   } as RegaugeProductionBootstrapReceipt;
   if (
-    receipt.schemaVersion !== RECEIPT_SCHEMA ||
+    !RECEIPT_SCHEMAS.has(receipt.schemaVersion) ||
     !SHA256.test(receipt.requestDigest) || !SHA256.test(receipt.snapshotDigest) ||
     !SHA256.test(receipt.blueprintDigest) || !SHA256.test(receipt.eventHash) ||
+    (receipt.schemaVersion === "2026-08-21.v2" && !SHA256.test(receipt.campaignAuthorityDigest ?? "")) ||
+    (receipt.schemaVersion === "2026-08-14.v1" && receipt.campaignAuthorityDigest !== undefined) ||
     event.aggregate_id !== receipt.campaignId
   ) {
     throw new Error("regauge_production_bootstrap_receipt_invalid");
