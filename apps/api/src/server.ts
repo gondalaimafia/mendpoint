@@ -133,6 +133,7 @@ import {
 } from "@mendpoint/github";
 import { wakeFettlerReviewFromWebhook } from "./warden-review-webhook.js";
 import { dispatchFettlerPrReviewFromWebhook } from "./fettler-pr-review-webhook.js";
+import { enqueueDeliveryOutcomeLearning } from "./delivery-outcome-learning-dispatch.js";
 import {
   listBrandPacks,
   getBrandPack,
@@ -2740,6 +2741,36 @@ app.post("/webhooks/github", async (c) => {
         },
       });
     };
+    // Re-invoke the governed learning producer now that a terminal outcome is
+    // durably recorded. Best-effort and idempotent: the outcome is already
+    // committed above, so a lost enqueue must not fail the webhook (GitHub retries
+    // under the same delivery id, which the upstream dedup drops), and the enqueue
+    // itself deduplicates per delivery. A failure is recorded so it stays
+    // diagnosable. The worker reads the outcome from the delivery row and lets the
+    // producer decide what to admit; nothing about the outcome is carried here.
+    const enqueueDeliveryLearning = (
+      lane: "fettler" | "regauge",
+      tenantId: string,
+      deliveryId: string,
+      resourceType: string,
+    ) => {
+      try {
+        enqueueDeliveryOutcomeLearning({ db, lane, tenantId, deliveryId, createdAt: nowIso() });
+      } catch (error) {
+        recordAudit(db, {
+          tenantId,
+          actor: "github_webhook",
+          action: "learning.outcome_resolution_enqueue_failed",
+          resourceType,
+          resourceId: deliveryId,
+          requestId: c.get("requestId"),
+          metadata: {
+            lane,
+            error: error instanceof Error ? error.message.slice(0, 200) : String(error),
+          },
+        });
+      }
+    };
     const fettlerDelivery = prUrl ? findWardenCandidateDeliveryByPrUrl(db, prUrl) : undefined;
     if (fettlerDelivery) {
       const updated = recordWardenCandidateDeliveryOutcome(db, {
@@ -2750,6 +2781,7 @@ app.post("/webhooks/github", async (c) => {
         observedAt: nowIso(),
       });
       auditDeliveryOutcome(fettlerDelivery.tenantId, fettlerDelivery.id, "fettler_candidate_delivery");
+      enqueueDeliveryLearning("fettler", updated.tenantId, updated.id, "fettler_candidate_delivery");
       return c.json({
         ok: true,
         applied: updated.outcome,
@@ -2767,6 +2799,7 @@ app.post("/webhooks/github", async (c) => {
         observedAt: nowIso(),
       });
       auditDeliveryOutcome(regaugeDelivery.tenantId, regaugeDelivery.id, "regauge_adaptive_delivery");
+      enqueueDeliveryLearning("regauge", updated.tenantId, updated.id, "regauge_adaptive_delivery");
       return c.json({
         ok: true,
         applied: updated.outcome,
