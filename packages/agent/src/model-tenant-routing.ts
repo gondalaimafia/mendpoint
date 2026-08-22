@@ -22,11 +22,23 @@
  * existing founder/preview runs are unchanged. Customers — and therefore the
  * fail-closed rule — exist only once customer routing is turned on.
  *
- * The non-training endpoint/keys are EXTERNAL and not available yet, so the
- * non-training provider is config-supplied (a registered provider selected by
- * `MENDPOINT_NON_TRAINING_MODEL_PROVIDER` with its own base-URL/API-key env):
- * unconfigured resolves to null (unavailable), never a fabricated key or a
- * silent fall-through to the contributor tier.
+ * The Muse tiers share ONE API, base URL, and key; only the model id differs
+ * (`muse-spark-1.2-contributor` trains on submitted prompts/completions,
+ * `muse-spark-1.2` does not). So a customer tenant is served by substituting the
+ * non-training MODEL ID on the resolved backend -- no second provider, no extra
+ * credential.
+ *
+ * Precedence of the two substitution mechanisms is explicit: an optional
+ * `MENDPOINT_NON_TRAINING_MODEL_PROVIDER` selects WHICH backend (provider,
+ * endpoint, key) resolves first, for deployments where the tiers really are
+ * different providers; the model-id substitution then runs ON TOP of whatever
+ * backend resulted, correcting the model id if it is still a training tier. The
+ * provider override picks the backend; the model-id substitution is the final,
+ * lighter safety net on that backend's model id.
+ *
+ * Fail-closed either way: a training model with no known non-training
+ * counterpart throws rather than being served, and the caller's guard is the
+ * backstop, so a customer can never reach a training tier.
  */
 import {
   MODEL_PROVIDER_ENV_VAR,
@@ -155,20 +167,86 @@ export function assertBackendAllowedForTenant(
 }
 
 /**
- * Resolve the non-training backend a customer tenant should use. When a
- * non-training provider is configured, the gateway resolves that provider (its
- * own base-URL/API-key env); otherwise it falls back to the base resolution.
- * Either way the caller runs the guard, so an unconfigured or misconfigured
- * non-training provider can never silently serve a training tier.
+ * Built-in training -> non-training model substitutions.
+ *
+ * The Muse tiers are the SAME API, base URL, and key; only the model id differs
+ * (`muse-spark-1.2-contributor` trains on submitted prompts/completions,
+ * `muse-spark-1.2` does not). So a customer tenant is served by swapping the
+ * model id on the resolved backend -- not by pointing at a second provider.
+ */
+export const DEFAULT_NON_TRAINING_MODEL_SUBSTITUTIONS: Readonly<Record<string, string>> =
+  Object.freeze({
+    "muse-spark-1.2-contributor": "muse-spark-1.2",
+  });
+
+/** Overrides the non-training model id for every training model. */
+export const NON_TRAINING_MODEL_ENV_VAR = "MENDPOINT_NON_TRAINING_MODEL";
+/** Extra `training=non_training` substitutions, comma separated. */
+export const NON_TRAINING_MODEL_MAP_ENV_VAR = "MENDPOINT_NON_TRAINING_MODEL_MAP";
+
+/** Thrown when a training model has no known non-training counterpart. */
+export const NON_TRAINING_MODEL_UNMAPPED_ERROR = "model_non_training_substitute_unknown";
+
+/**
+ * The non-training model id for a training model: an explicit override wins,
+ * then configured substitutions, then the built-ins. Returns undefined when no
+ * counterpart is known so the caller can fail closed instead of serving the
+ * training tier.
+ */
+export function nonTrainingModelFor(
+  trainingModel: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const override = env[NON_TRAINING_MODEL_ENV_VAR]?.trim();
+  if (override) return override;
+  const configured: Record<string, string> = {};
+  for (const entry of (env[NON_TRAINING_MODEL_MAP_ENV_VAR] ?? "").split(",")) {
+    const [from, to] = entry.split("=");
+    const key = from?.trim();
+    const value = to?.trim();
+    if (key && value) configured[key] = value;
+  }
+  const substitute =
+    configured[trainingModel.trim()] ??
+    DEFAULT_NON_TRAINING_MODEL_SUBSTITUTIONS[trainingModel.trim()];
+  return substitute?.trim() || undefined;
+}
+
+/**
+ * Resolve the non-training backend a customer tenant should use.
+ *
+ * Default (and the Muse case): resolve the normal backend and substitute the
+ * non-training MODEL ID, keeping the same provider, endpoint, and API key.
+ * A separate non-training provider remains an optional override for
+ * deployments where the tiers really are different providers; when set it picks
+ * the backend first, then this substitution runs on top of the model it
+ * resolved (see the precedence note in this file's header).
+ *
+ * Fails closed: if the resolved model is a training tier with no known
+ * non-training counterpart, this throws rather than serving the training tier.
+ * The caller also runs the guard, so a misconfigured substitution is caught.
  */
 export function resolveNonTrainingModelBackend(
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedModelBackend | null {
   const provider = env[NON_TRAINING_MODEL_PROVIDER_ENV_VAR]?.trim();
-  if (provider) {
-    return resolveModelBackend({ ...env, [MODEL_PROVIDER_ENV_VAR]: provider });
+  const backend = provider
+    ? resolveModelBackend({ ...env, [MODEL_PROVIDER_ENV_VAR]: provider })
+    : resolveModelBackend(env);
+  if (!backend) return null;
+  if (!isTrainingTierModel(backend.model, env)) return backend;
+
+  const substitute = nonTrainingModelFor(backend.model, env);
+  if (!substitute) {
+    throw new Error(
+      `${NON_TRAINING_MODEL_UNMAPPED_ERROR}: no non-training model is configured for ` +
+        `"${backend.model}". Set ${NON_TRAINING_MODEL_ENV_VAR} or add an entry to ` +
+        `${NON_TRAINING_MODEL_MAP_ENV_VAR} (for example ` +
+        `"${backend.model}=<non-training-model-id>").`,
+    );
   }
-  return resolveModelBackend(env);
+  // Same provider, endpoint, and key -- only the model id changes.
+  return Object.freeze({ ...backend, model: substitute });
 }
 
 /**
