@@ -187,3 +187,4 @@ export function filterFindingsByPolicy(
 }
 
 export * from "./warden-policy.js";
+export * from "./policy-envelope.js";
