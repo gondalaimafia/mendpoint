@@ -1,10 +1,13 @@
 # Product Spec: Mendpoint
 
 > Superseded on 2026-08-01. The canonical product authority is
+> [`product/mendpoint-product-platform-specification-v4.md`](./product/mendpoint-product-platform-specification-v4.md)
+> (v4.0, canonical as of 2026-08-22; see
+> [`adr/2026-08-22-adopt-v4-product-specification.md`](./adr/2026-08-22-adopt-v4-product-specification.md)),
+> which succeeds the v3.0 document
 > [`product/mendpoint-product-platform-specification-v3.md`](./product/mendpoint-product-platform-specification-v3.md)
-> (v3.0, canonical as of 2026-08-18; see
-> [`adr/0004-canonical-product-specification-v3.md`](./adr/0004-canonical-product-specification-v3.md)).
-> It superseded the v2.0 document
+> (see [`adr/0004-canonical-product-specification-v3.md`](./adr/0004-canonical-product-specification-v3.md)).
+> The v3.0 document superseded the v2.0 document
 > [`product/mendpoint-product-platform-specification.md`](./product/mendpoint-product-platform-specification.md),
 > which had superseded
 > [`FOUNDATIONAL_PRODUCT_SPEC.md`](./FOUNDATIONAL_PRODUCT_SPEC.md), which had

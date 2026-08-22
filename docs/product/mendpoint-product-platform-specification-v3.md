@@ -1,5 +1,7 @@
 # Mendpoint Product and Platform Specification
 
+**Repository authority:** Superseded on 2026-08-22 by [`docs/product/mendpoint-product-platform-specification-v4.md`](./mendpoint-product-platform-specification-v4.md) (v4.0), which the owner named the single canonical product and platform specification because it adds the persistent Mission intelligence, Organization Memory, Policy Envelope, shared human/agent task state, and pluggable structural-extraction contracts this document omits. Retained unchanged below as history; see [`docs/adr/2026-08-22-adopt-v4-product-specification.md`](../adr/2026-08-22-adopt-v4-product-specification.md), which supersedes [`docs/adr/0004-canonical-product-specification-v3.md`](../adr/0004-canonical-product-specification-v3.md). The requirement register [`PRODUCT_REQUIREMENTS.json`](../PRODUCT_REQUIREMENTS.json) now pins the v4.0 document.
+
 ## Development foundation
 
 **Product:** Mendpoint  

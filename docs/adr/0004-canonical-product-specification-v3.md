@@ -4,7 +4,7 @@
 - **Date:** 2026-08-18
 - **Author:** Claude Code
 - **Supersedes:** ADR-0001
-- **Superseded by:** none
+- **Superseded by:** 2026-08-22-adopt-v4-product-specification
 
 ## Context
 
