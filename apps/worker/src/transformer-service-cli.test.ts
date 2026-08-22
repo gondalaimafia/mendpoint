@@ -20,20 +20,20 @@ describe("Transformer service CLI", () => {
 
   it("rejects incomplete enabled configuration before network startup", async () => {
     const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
-    await expect(runTransformerServiceCli({ MENDPOINT_TRANSFORMER_MULTINODE_ENABLED: "1" })).rejects.toThrow("transformer_multinode_worker_id_required");
+    await expect(runTransformerServiceCli({ MENDPOINT_REGAUGE_MULTINODE_ENABLED: "1" })).rejects.toThrow("transformer_multinode_worker_id_required");
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it("rejects an unsafe readiness bind address before network startup", async () => {
     const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     await expect(runTransformerServiceCli({
-      MENDPOINT_TRANSFORMER_MULTINODE_ENABLED: "1",
-      MENDPOINT_TRANSFORMER_WORKER_ID: "worker-a",
-      MENDPOINT_TRANSFORMER_TENANT_ID: "tenant-a",
-      MENDPOINT_TRANSFORMER_CAMPAIGN_ID: "campaign-a",
-      MENDPOINT_TRANSFORMER_PRIVATE_DATA_ROOT: "C:\\private",
-      MENDPOINT_TRANSFORMER_CHECKPOINT_KEY: Buffer.alloc(32, 1).toString("base64"),
-      MENDPOINT_TRANSFORMER_READINESS_HOST: "example.com",
+      MENDPOINT_REGAUGE_MULTINODE_ENABLED: "1",
+      MENDPOINT_REGAUGE_WORKER_ID: "worker-a",
+      MENDPOINT_REGAUGE_TENANT_ID: "tenant-a",
+      MENDPOINT_REGAUGE_CAMPAIGN_ID: "campaign-a",
+      MENDPOINT_REGAUGE_PRIVATE_DATA_ROOT: "C:\\private",
+      MENDPOINT_REGAUGE_CHECKPOINT_KEY: Buffer.alloc(32, 1).toString("base64"),
+      MENDPOINT_REGAUGE_READINESS_HOST: "example.com",
     })).rejects.toThrow("transformer_multinode_readiness_host_invalid");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -70,6 +70,6 @@ describe("Transformer service CLI", () => {
   });
 });
 
-function environment(root: string, port: number): NodeJS.ProcessEnv { return { MENDPOINT_TRANSFORMER_MULTINODE_ENABLED: "1", MENDPOINT_TRANSFORMER_WORKER_ID: "worker-a", MENDPOINT_TRANSFORMER_TENANT_ID: "tenant-a", MENDPOINT_TRANSFORMER_CAMPAIGN_ID: "campaign-a", MENDPOINT_TRANSFORMER_PRIVATE_DATA_ROOT: root, MENDPOINT_TRANSFORMER_CHECKPOINT_KEY: Buffer.alloc(32, 1).toString("base64"), MENDPOINT_TRANSFORMER_OPERATION_SECRET: Buffer.alloc(32, 2).toString("base64"), MENDPOINT_TRANSFORMER_INTERVAL_MS: "100", MENDPOINT_TRANSFORMER_READINESS_PORT: String(port), MENDPOINT_TRANSFORMER_COORDINATOR_URL: "https://coordinator.example/", MENDPOINT_TRANSFORMER_COORDINATOR_TOKEN: "x".repeat(32), MENDPOINT_TRANSFORMER_COORDINATOR_TIMEOUT_MS: "1000", MENDPOINT_TRANSFORMER_MAX_RESPONSE_BYTES: "4096", MENDPOINT_TRANSFORMER_ARTIFACT_BACKEND: "filesystem", MENDPOINT_TRANSFORMER_SHARED_ARTIFACT_ROOT: join(root, "artifacts"), MENDPOINT_TRANSFORMER_ENVIRONMENT: "test", MENDPOINT_TRANSFORMER_LEASE_MS: "60000", MENDPOINT_TRANSFORMER_EXECUTOR_DIGEST: `sha256:${"e".repeat(64)}`, MENDPOINT_TRANSFORMER_EVIDENCE_REFS: "evidence:runner", MENDPOINT_TRANSFORMER_GATE: "gate", GITHUB_MODE: "real", GITHUB_APP_ID: "42", GITHUB_APP_PRIVATE_KEY: testPrivateKey }; }
+function environment(root: string, port: number): NodeJS.ProcessEnv { return { MENDPOINT_REGAUGE_MULTINODE_ENABLED: "1", MENDPOINT_REGAUGE_WORKER_ID: "worker-a", MENDPOINT_REGAUGE_TENANT_ID: "tenant-a", MENDPOINT_REGAUGE_CAMPAIGN_ID: "campaign-a", MENDPOINT_REGAUGE_PRIVATE_DATA_ROOT: root, MENDPOINT_REGAUGE_CHECKPOINT_KEY: Buffer.alloc(32, 1).toString("base64"), MENDPOINT_REGAUGE_OPERATION_SECRET: Buffer.alloc(32, 2).toString("base64"), MENDPOINT_REGAUGE_INTERVAL_MS: "100", MENDPOINT_REGAUGE_READINESS_PORT: String(port), MENDPOINT_REGAUGE_COORDINATOR_URL: "https://coordinator.example/", MENDPOINT_REGAUGE_COORDINATOR_TOKEN: "x".repeat(32), MENDPOINT_REGAUGE_COORDINATOR_TIMEOUT_MS: "1000", MENDPOINT_REGAUGE_MAX_RESPONSE_BYTES: "4096", MENDPOINT_REGAUGE_ARTIFACT_BACKEND: "filesystem", MENDPOINT_REGAUGE_SHARED_ARTIFACT_ROOT: join(root, "artifacts"), MENDPOINT_REGAUGE_ENVIRONMENT: "test", MENDPOINT_REGAUGE_LEASE_MS: "60000", MENDPOINT_REGAUGE_EXECUTOR_DIGEST: `sha256:${"e".repeat(64)}`, MENDPOINT_REGAUGE_EVIDENCE_REFS: "evidence:runner", MENDPOINT_REGAUGE_GATE: "gate", GITHUB_MODE: "real", GITHUB_APP_ID: "42", GITHUB_APP_PRIVATE_KEY: testPrivateKey }; }
 async function freePort(): Promise<number> { const server = createServer(); await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); const port = typeof address === "object" && address ? address.port : 0; await new Promise<void>((resolve) => server.close(() => resolve())); return port; }
 async function readReady(url: string): Promise<{ status: number; body: unknown }> { return new Promise((resolve, reject) => { import("node:http").then(({ get }) => get(url, (response) => { const chunks: Buffer[] = []; response.on("data", (chunk) => chunks.push(Buffer.from(chunk))); response.on("end", () => resolve({ status: response.statusCode ?? 0, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) })); }).on("error", reject), reject); }); }

@@ -1392,7 +1392,7 @@ describe("transformer adaptive candidate review routes", () => {
 });
 
 describe("transformer adaptive review: rejected-outcome negative capture", () => {
-  const LEARNING_ON: NodeJS.ProcessEnv = { MENDPOINT_TRANSFORMER_LEARNING_ENABLED: "1" };
+  const LEARNING_ON: NodeJS.ProcessEnv = { MENDPOINT_REGAUGE_LEARNING_ENABLED: "1" };
   const REJECTED_PURPOSE = "transformer-adaptive-rejected-outcomes";
 
   function seedReviewerAndConsent(db: AppDb): void {

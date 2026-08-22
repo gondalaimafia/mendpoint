@@ -97,10 +97,12 @@ describe("Transformer production profile", () => {
       ...environment(),
       MENDPOINT_REGAUGE_WORKER_ID: "shared-worker",
     })).toThrow("transformer_production_worker_id_override_forbidden");
-    expect(() => resolveTransformerWorkerId({
+    // The retired legacy override name is no longer read, so it cannot smuggle a
+    // shared worker id past the override guard; the Fly-derived id stands.
+    expect(resolveTransformerWorkerId({
       ...environment(),
       MENDPOINT_TRANSFORMER_WORKER_ID: "shared-worker",
-    })).toThrow("transformer_production_worker_id_override_forbidden");
+    })).toBe("fly-abcd1234abcd12");
     expect(() => validateTransformerProductionProfile({
       ...environment(),
       FLY_MACHINE_ID: undefined,
@@ -109,11 +111,11 @@ describe("Transformer production profile", () => {
 
   it("accepts Fly Tigris standard storage variables and rejects ambiguous aliases", () => {
     const tigris = environment();
-    delete tigris.MENDPOINT_TRANSFORMER_S3_ENDPOINT;
-    delete tigris.MENDPOINT_TRANSFORMER_S3_REGION;
-    delete tigris.MENDPOINT_TRANSFORMER_S3_BUCKET;
-    delete tigris.MENDPOINT_TRANSFORMER_S3_ACCESS_KEY_ID;
-    delete tigris.MENDPOINT_TRANSFORMER_S3_SECRET_ACCESS_KEY;
+    delete tigris.MENDPOINT_REGAUGE_S3_ENDPOINT;
+    delete tigris.MENDPOINT_REGAUGE_S3_REGION;
+    delete tigris.MENDPOINT_REGAUGE_S3_BUCKET;
+    delete tigris.MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID;
+    delete tigris.MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY;
     Object.assign(tigris, {
       AWS_ENDPOINT_URL_S3: "https://fly.storage.tigris.dev",
       AWS_REGION: "auto",
@@ -151,11 +153,11 @@ describe("Transformer production profile", () => {
   });
 
   it.each([
-    ["MENDPOINT_TRANSFORMER_ENABLED", "0", "transformer_production_activation_required"],
-    ["MENDPOINT_TRANSFORMER_ARTIFACT_BACKEND", "filesystem", "transformer_production_s3_required"],
-    ["MENDPOINT_TRANSFORMER_COORDINATOR_TOKEN", "known-token", "transformer_production_worker_token_invalid"],
-    ["MENDPOINT_TRANSFORMER_COORDINATOR_URL", "http://coordinator.internal", "transformer_production_coordinator_url_invalid"],
-    ["MENDPOINT_TRANSFORMER_S3_PREFIX", "transformer/tenant-b/campaign-a", "transformer_production_s3_prefix_invalid"],
+    ["MENDPOINT_REGAUGE_ENABLED", "0", "transformer_production_activation_required"],
+    ["MENDPOINT_REGAUGE_ARTIFACT_BACKEND", "filesystem", "transformer_production_s3_required"],
+    ["MENDPOINT_REGAUGE_COORDINATOR_TOKEN", "known-token", "transformer_production_worker_token_invalid"],
+    ["MENDPOINT_REGAUGE_COORDINATOR_URL", "http://coordinator.internal", "transformer_production_coordinator_url_invalid"],
+    ["MENDPOINT_REGAUGE_S3_PREFIX", "transformer/tenant-b/campaign-a", "transformer_production_s3_prefix_invalid"],
     ["MENDPOINT_PILOT_SEED", "1", "transformer_production_seed_forbidden"],
   ])("rejects unsafe %s configuration", (name, value, code) => {
     expect(() => validateTransformerProductionProfile({ ...environment(), [name]: value }, "worker")).toThrow(code);
@@ -163,7 +165,7 @@ describe("Transformer production profile", () => {
 
   it("rejects client activation without the exact server grant", () => {
     const wrongGate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["ui"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [] }] });
-    expect(() => validateTransformerProductionProfile({ ...environment(), MENDPOINT_TRANSFORMER_GATE: wrongGate }, "worker")).toThrow("transformer_production_gate_scope_invalid");
+    expect(() => validateTransformerProductionProfile({ ...environment(), MENDPOINT_REGAUGE_GATE: wrongGate }, "worker")).toThrow("transformer_production_gate_scope_invalid");
   });
 
   it("requires a single-run draft approval bound to campaign, repository, and canary source revision", () => {
@@ -177,9 +179,9 @@ describe("Transformer production profile", () => {
       const changedGate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [value] }] });
       expect(() => validateTransformerProductionProfile({
         ...environment(),
-        MENDPOINT_TRANSFORMER_GATE: changedGate,
+        MENDPOINT_REGAUGE_GATE: changedGate,
         MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF: value,
-        MENDPOINT_TRANSFORMER_EVIDENCE_REFS: `${value},evidence:pilot`,
+        MENDPOINT_REGAUGE_EVIDENCE_REFS: `${value},evidence:pilot`,
       }, "worker")).toThrow("transformer_production_delivery_approval_scope_invalid");
     }
     expect(() => validateTransformerProductionProfile({
@@ -219,17 +221,17 @@ describe("Transformer production profile", () => {
 function environment(): NodeJS.ProcessEnv {
   return {
     NODE_ENV: "production", API_AUTH: "required", API_HOST: "0.0.0.0", GITHUB_MODE: "real",
-    MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot", MENDPOINT_DEPLOYMENT_CLASS: "customer", MENDPOINT_TRANSFORMER_ENABLED: "1",
-    MENDPOINT_TRANSFORMER_MULTINODE_COORDINATOR_ENABLED: "1", MENDPOINT_TRANSFORMER_MULTINODE_ENABLED: "1",
-    MENDPOINT_TRANSFORMER_ARTIFACT_BACKEND: "s3", MENDPOINT_PILOT_SEED: "0", MENDPOINT_FEED_POLLING_ENABLED: "0",
-    MENDPOINT_TRANSFORMER_TENANT_ID: "tenant-a", MENDPOINT_TRANSFORMER_CAMPAIGN_ID: "campaign-a", MENDPOINT_TRANSFORMER_ENVIRONMENT: "production",
-    MENDPOINT_TRANSFORMER_GATE: gate, MENDPOINT_TRANSFORMER_COORDINATOR_TOKEN: `me_${"a".repeat(40)}`,
-    MENDPOINT_TRANSFORMER_COORDINATOR_URL: "https://mendpoint-transformer-pilot.fly.dev/",
-    MENDPOINT_TRANSFORMER_CHECKPOINT_KEY: Buffer.alloc(32, 1).toString("base64"), MENDPOINT_TRANSFORMER_OPERATION_SECRET: Buffer.alloc(32, 2).toString("base64"),
-    MENDPOINT_TRANSFORMER_S3_ENDPOINT: "https://s3.example.com", MENDPOINT_TRANSFORMER_S3_REGION: "auto", MENDPOINT_TRANSFORMER_S3_BUCKET: "pilot",
-    MENDPOINT_TRANSFORMER_S3_PREFIX: "transformer/tenant-a/campaign-a", MENDPOINT_TRANSFORMER_S3_ACCESS_KEY_ID: "access", MENDPOINT_TRANSFORMER_S3_SECRET_ACCESS_KEY: "secret",
-    MENDPOINT_TRANSFORMER_EXECUTOR_DIGEST: `sha256:${"e".repeat(64)}`, MENDPOINT_TRANSFORMER_EVIDENCE_REFS: `${approval},evidence:pilot`,
-    MENDPOINT_TRANSFORMER_READINESS_HOST: "0.0.0.0", MENDPOINT_DATA_DIR: "/data/db", GITHUB_APP_ID: "42", GITHUB_APP_PRIVATE_KEY: "private",
+    MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot", MENDPOINT_DEPLOYMENT_CLASS: "customer", MENDPOINT_REGAUGE_ENABLED: "1",
+    MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED: "1", MENDPOINT_REGAUGE_MULTINODE_ENABLED: "1",
+    MENDPOINT_REGAUGE_ARTIFACT_BACKEND: "s3", MENDPOINT_PILOT_SEED: "0", MENDPOINT_FEED_POLLING_ENABLED: "0",
+    MENDPOINT_REGAUGE_TENANT_ID: "tenant-a", MENDPOINT_REGAUGE_CAMPAIGN_ID: "campaign-a", MENDPOINT_REGAUGE_ENVIRONMENT: "production",
+    MENDPOINT_REGAUGE_GATE: gate, MENDPOINT_REGAUGE_COORDINATOR_TOKEN: `me_${"a".repeat(40)}`,
+    MENDPOINT_REGAUGE_COORDINATOR_URL: "https://mendpoint-transformer-pilot.fly.dev/",
+    MENDPOINT_REGAUGE_CHECKPOINT_KEY: Buffer.alloc(32, 1).toString("base64"), MENDPOINT_REGAUGE_OPERATION_SECRET: Buffer.alloc(32, 2).toString("base64"),
+    MENDPOINT_REGAUGE_S3_ENDPOINT: "https://s3.example.com", MENDPOINT_REGAUGE_S3_REGION: "auto", MENDPOINT_REGAUGE_S3_BUCKET: "pilot",
+    MENDPOINT_REGAUGE_S3_PREFIX: "transformer/tenant-a/campaign-a", MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID: "access", MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY: "secret",
+    MENDPOINT_REGAUGE_EXECUTOR_DIGEST: `sha256:${"e".repeat(64)}`, MENDPOINT_REGAUGE_EVIDENCE_REFS: `${approval},evidence:pilot`,
+    MENDPOINT_REGAUGE_READINESS_HOST: "0.0.0.0", MENDPOINT_DATA_DIR: "/data/db", GITHUB_APP_ID: "42", GITHUB_APP_PRIVATE_KEY: "private",
     GITHUB_WEBHOOK_SECRET: "webhook", GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant-a"}',
     FLY_MACHINE_ID: "abcd1234abcd12",
     MENDPOINT_RELEASE_REVISION: RELEASE_REVISION,

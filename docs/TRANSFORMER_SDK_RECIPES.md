@@ -7,7 +7,7 @@ runs objective verification, and can be rolled back by inverse operations. This
 page states exactly what the shipped SDK recipes support and where they abstain.
 
 Nothing here changes the enablement gate. The gate
-(`MENDPOINT_TRANSFORMER_GATE`) defaults to DENIED and the customer-warden
+(`MENDPOINT_REGAUGE_GATE`) defaults to DENIED and the customer-warden
 profile keeps Regauge off, so these recipes are unreachable in a default
 deployment.
 

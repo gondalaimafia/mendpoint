@@ -11,10 +11,14 @@ export {
 
 export {
   RENAMED_ENV,
+  RETIRED_ENV,
+  RETIRED_ENV_ALIASES,
   readRenamedEnv,
   resolveRenamedEnv,
   resolveEitherRenamedEnv,
   type RenamedEnvName,
+  type ActiveRenamedEnvName,
+  type RetiredRenamedEnvName,
 } from "./renamed-env.js";
 
 export {

@@ -9,7 +9,7 @@ deployment.
 
 ## Flag
 
-`MENDPOINT_TRANSFORMER_LEARNING_ENABLED` gates the entire loop. Unset or any value
+`MENDPOINT_REGAUGE_LEARNING_ENABLED` gates the entire loop. Unset or any value
 other than `1` is off. When off:
 
 - No learning record is admitted on delivery success.
@@ -19,9 +19,9 @@ other than `1` is off. When off:
 
 This flag composes with, and never replaces, the existing gates:
 
-- `MENDPOINT_TRANSFORMER_GATE` stays DENIED by default and still governs whether
+- `MENDPOINT_REGAUGE_GATE` stays DENIED by default and still governs whether
   Regauge runs at all.
-- `MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED` still gates the
+- `MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED` still gates the
   model-sourced planner. Precedent is only ever surfaced into that planner, so it
   additionally requires that gate to be on.
 
@@ -121,5 +121,5 @@ something a model learns.
   produced honestly, the outcome is not admitted.
 - It does not change the deterministic recipes.
 - It does not auto-enable. Nothing in a default deployment behaves differently
-  until an operator sets `MENDPOINT_TRANSFORMER_LEARNING_ENABLED=1` and the tenant
+  until an operator sets `MENDPOINT_REGAUGE_LEARNING_ENABLED=1` and the tenant
   has granted consent.

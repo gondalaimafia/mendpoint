@@ -133,8 +133,8 @@ set LLM_AGENT_MODEL=...
 
 The configured planner receives the first planning turn. Repository source is excluded
 from model requests unless an operator also configures
-`MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED=1`, an exact tenant allowlist in
-`MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS`, and `MENDPOINT_WARDEN_MODEL_PROVIDER`. Source
+`MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED=1`, an exact tenant allowlist in
+`MENDPOINT_FETTLER_MODEL_SOURCE_TENANTS`, and `MENDPOINT_FETTLER_MODEL_PROVIDER`. Source
 excerpts are redacted before request limits are applied. Ambiguous credential material is
 excluded rather than partially disclosed.
 

@@ -163,8 +163,8 @@ function customerBackupEnv(root: string): Record<string, string> {
     MENDPOINT_BACKUP_DATABASE_PATH: "mendpoint.sqlite",
     MENDPOINT_BACKUP_GRAPH_PATH: "graph-learn.sqlite",
     MENDPOINT_BACKUP_CHANGE_SOURCES_PATH: "change-sources.sqlite",
-    MENDPOINT_BACKUP_TRANSFORMER_CONTROL_PLANE_PATH: "transformer-control-plane.sqlite",
-    MENDPOINT_BACKUP_TRANSFORMER_PILOT_PATH: "transformer-pilot.sqlite",
+    MENDPOINT_BACKUP_REGAUGE_CONTROL_PLANE_PATH: "transformer-control-plane.sqlite",
+    MENDPOINT_BACKUP_REGAUGE_PILOT_PATH: "transformer-pilot.sqlite",
     MENDPOINT_BACKUP_ARTIFACTS_PATH: ".",
     MENDPOINT_BACKUP_CONFIGURATION_PATH: "config.json",
   };
@@ -208,8 +208,8 @@ describe("disaster recovery", () => {
       MENDPOINT_BACKUP_DATABASE_PATH: "mendpoint.sqlite",
       MENDPOINT_BACKUP_GRAPH_PATH: "graph-learn.sqlite",
       MENDPOINT_BACKUP_CHANGE_SOURCES_PATH: "change-sources.sqlite",
-      MENDPOINT_BACKUP_TRANSFORMER_CONTROL_PLANE_PATH: "transformer-control-plane.sqlite",
-      MENDPOINT_BACKUP_TRANSFORMER_PILOT_PATH: "transformer-pilot.sqlite",
+      MENDPOINT_BACKUP_REGAUGE_CONTROL_PLANE_PATH: "transformer-control-plane.sqlite",
+      MENDPOINT_BACKUP_REGAUGE_PILOT_PATH: "transformer-pilot.sqlite",
       MENDPOINT_BACKUP_ARTIFACTS_PATH: ".",
       MENDPOINT_BACKUP_CONFIGURATION_PATH: "config.json",
     };

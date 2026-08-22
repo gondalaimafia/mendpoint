@@ -7,7 +7,7 @@ import {
   loadAppCredentials,
   parseGitHubAccountTenantBindings,
 } from "@mendpoint/github";
-import { assessModelEgress, resolveEitherRenamedEnv } from "@mendpoint/shared";
+import { assessModelEgress, resolveEitherRenamedEnv, RETIRED_ENV_ALIASES } from "@mendpoint/shared";
 import { customerBackupInputFromEnv } from "./disaster-recovery.js";
 
 export type EnvReport = {
@@ -165,6 +165,24 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     TRUST_PROXY: env.TRUST_PROXY,
     TRUST_PROXY_SECRET: env.TRUST_PROXY_SECRET ? "[set]" : undefined,
   };
+
+  // Retired environment names (Transformer -> Regauge): the legacy name is no
+  // longer read. A deployment that still sets only the retired legacy name would
+  // otherwise get a silent default -- the exact silent-misconfiguration failure
+  // this repository keeps producing. Refuse it loudly here, naming the current
+  // variable, rather than falling back. Fires in every mode so ga:check and the
+  // test suite catch it, not only a production boot.
+  for (const [current, legacy] of RETIRED_ENV_ALIASES) {
+    const legacyValue = env[legacy];
+    const currentValue = env[current];
+    const legacySet = legacyValue !== undefined && legacyValue.trim() !== "";
+    const currentSet = currentValue !== undefined && currentValue.trim() !== "";
+    if (legacySet && !currentSet) {
+      errors.push(
+        `${legacy} was retired in the Transformer->Regauge rename and is no longer read; set ${current} instead`,
+      );
+    }
+  }
 
   // Enforced no-egress mode: fail fast at boot when local_only is configured
   // but an external model endpoint would be used, rather than at first run.
