@@ -9,9 +9,11 @@
  * arm A (raw retrieval + Muse) runs only when the live model is explicitly
  * requested AND configured; otherwise it is recorded "not measured" with the
  * reason. Arms B (Change Graph projection + Muse) and C (+ independent verifier)
- * are DECLARED but cannot run yet — the projection is not wired into
- * `packages/code-impact` and `packages/verifier` is not on main — so they are
- * reported not-measured with their code blockers, never dropped from the report.
+ * are DECLARED but this runner cannot measure them yet. The projection is now
+ * wired into `packages/code-impact` (`analyzeImpactWithSoftwareGraph`), but this
+ * runner does not yet route Fettler through it; arm C additionally waits on
+ * `packages/verifier`. Both are reported not-measured with their blockers, never
+ * dropped from the report.
  *
  * Writes:
  *   evals/reports/representation-arms.md    every declared arm × task family
@@ -52,7 +54,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../..");
 
 const ARM_B_BLOCKER =
-  "Change Graph projection is not wired into packages/code-impact (@mendpoint/graph-learn is not on the evaluated path); the projection is being built concurrently";
+  "the Change Graph projection is now wired into packages/code-impact (analyzeImpactWithSoftwareGraph at packages/code-impact/src/index.ts:605, over @mendpoint/graph-learn), but this runner does not yet route Fettler through it: arm B still needs a runFettler path that consumes the software-graph projection instead of raw retrieval, and — like arm A — the live Muse lane";
 const ARM_C_BLOCKER =
   "the independent verifier (packages/verifier) is not on main yet (arrives with PR #182); arm C also depends on the arm B projection";
 

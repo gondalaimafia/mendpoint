@@ -680,22 +680,40 @@ There is no `docker` backend. Eleven verification profiles exist
 (`:350-357`); the attempt engine runs baseline plus final target/regression/security suites
 (`packages/agent/src/attempt-engine.ts:968-1010,1168-1183`).
 
-**What is the default in production? `local`.** Resolution order is
-`opts.kind → tenantSandboxKind → MENDPOINT_SANDBOX_KIND → "local"`
-(`packages/platform/src/sandbox.ts:179-187`). `MENDPOINT_SANDBOX_KIND` is **absent from
-`fly.toml`, `fly.customer-warden.toml`, and `fly.transformer.toml`**. The only mention is a
-local-defaulted dev opt-in at `docker-compose.yml:130`. Verification therefore runs `execFile`
-inside the worker container, with no process or egress isolation, in every deployed configuration.
+**[Refreshed 2026-08-21, past this document's `fcec22e` pin.]** The two paragraphs below describe
+current `origin/main`, not the pinned `fcec22e` (2026-08-17). This is the most security-relevant
+claim in the file, and it changed the morning after the pin: PR #164 (`a930ee6`, 2026-08-18 05:28,
+"Enable fly_machines sandbox verification on the demo app") switched the sandbox on in config, and a
+later customer-profile change re-granted the worker its credential. At `fcec22e` the original text —
+default `local`, `MENDPOINT_SANDBOX_KIND` absent everywhere, worker denied the credential — was
+accurate. It no longer is. The rest of this document remains as of `fcec22e` unless similarly marked.
 
-**`fly_machines` is written, tested, fail-closed, and switched off.** PRs #151 (`3f52c0f`), #163
-(`33a7777`), #168 (`03420bd`), #176 (`fcec22e`) all merged; PRs #164/#165 (branch
-`claude/enable-sandbox-verification`, tip `6ea6579`) are **not merged** and are titled "BLOCKED".
-Two independent reasons it could not work if flipped today: the sandbox app is suspended and the
-image was likely never pushed (PR #168's own commit message), and the worker is **structurally
-denied the credential** — `MENDPOINT_SANDBOX_FLY_TOKEN` and `FLY_API_TOKEN` are in
-`CUSTOMER_SENSITIVE_CHILD_ENV` (`scripts/customer-warden-profile.ts:73-74`), stripped at `:109`, and
-not re-added to any role (`:87-91`), asserted by test
-(`scripts/customer-warden-profile.test.ts:156`).
+**What is the effective default in production? `fly_machines`.** The resolution order is unchanged —
+`opts.kind → tenantSandboxKind → MENDPOINT_SANDBOX_KIND → "local"`
+(`packages/platform/src/sandbox.ts:226-228`), so an *unset* variable still falls back to `local`. But
+`MENDPOINT_SANDBOX_KIND` is now **explicitly set to `fly_machines`** in both deployed configs —
+`fly.toml:35` (demo) and `fly.customer-warden.toml:43` (customer) — each pinned to an immutable image
+digest (`fly.toml:48`, `fly.customer-warden.toml:56`). It remains **absent only from
+`fly.transformer.toml`** (env block `:6-20`), whose worker therefore still resolves to `local`. `vm`
+and `in_cluster` still throw (`sandbox.ts:237,244-248`); `local` still self-describes as "Not process
+or network isolation" (`:254`). So the earlier claim that host `execFile` runs "in every deployed
+configuration" now holds only for the transformer pilot, not the demo or customer apps.
+
+**`fly_machines` was already written, tested, and fail-closed at the pin; what changed is that it is
+now selected in config and the worker is granted the token.** PR #164 — described in the pinned
+revision as "not merged" and "BLOCKED" — merged as `a930ee6` (2026-08-18). The image is
+digest-pinned in reviewed config (`fly.toml:48`), which contradicts the pinned revision's "image was
+likely never pushed." The worker is **no longer structurally denied the credential it needs.**
+`resolveFlySandboxToken` prefers `MENDPOINT_SANDBOX_FLY_TOKEN`, falling back to `FLY_API_TOKEN`
+(`packages/platform/src/fly-sandbox.ts:352-355`). The customer profile still strips both sensitive
+tokens (`scripts/customer-warden-profile.ts:149`), but `CUSTOMER_ROLE_SECRETS.worker` now **re-grants
+`MENDPOINT_SANDBOX_FLY_TOKEN`** (`:125`, re-added at `:151-153`); a test asserts the worker child now
+receives it (`scripts/customer-warden-profile.test.ts:171`) while the generic `FLY_API_TOKEN` stays
+denied (`:176`). Two caveats remain, checkable only against operational state and not the repo:
+whether the sandbox Fly app is actually provisioned and reachable, and whether the
+`MENDPOINT_SANDBOX_FLY_TOKEN` secret is actually set on the app. If no token resolves, `fly-sandbox`
+fails closed and refuses host fallback (`fly-sandbox.ts:547`) rather than degrading to the old
+behaviour.
 
 **Does verification run the target repo's build/tests? Mechanically yes; in deployed config,
 effectively no.** When `NODE_ENV === "production"`, `packages/repair/src/verify.ts:261-294` requires
