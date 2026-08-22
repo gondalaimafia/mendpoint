@@ -14,9 +14,20 @@
 import { resolve } from "node:path";
 import type { Product } from "../ground-truth/schema.js";
 
+// A GitHub-hosted runner passes `MENDPOINT_CORPUS_ROOT: ${{ vars.MENDPOINT_CORPUS_ROOT }}`,
+// which is the EMPTY STRING when the repository variable is unset — not undefined.
+// `?? default` only falls back on null/undefined, so an empty string would survive
+// and `resolve("")` collapses to `process.cwd()` (the repo root), which then trips
+// the answer-key isolation guard even though no corpus is present. Treat an empty or
+// whitespace-only value as unset so it degrades to the default / clean skip instead.
+const corpusRootEnv = process.env.MENDPOINT_CORPUS_ROOT?.trim();
+
+/** True when an operator explicitly configured a corpus root via the environment. */
+export const CORPUS_ROOT_CONFIGURED = corpusRootEnv !== undefined && corpusRootEnv.length > 0;
+
 /** Root under which the synthetic corpus repositories live. */
 export const CORPUS_ROOT = resolve(
-  process.env.MENDPOINT_CORPUS_ROOT ?? "C:/Users/Talal/dev",
+  CORPUS_ROOT_CONFIGURED ? corpusRootEnv! : "C:/Users/Talal/dev",
 );
 
 export interface ScenarioConfig {

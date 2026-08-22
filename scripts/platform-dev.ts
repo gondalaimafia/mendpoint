@@ -76,7 +76,9 @@ async function main() {
         okRate: 0.6,
         prefix: `platform-dev-seed-${Date.now().toString(36)}`,
       });
-      console.log(`  seeded ${need} synthetic scores to reach volume target`);
+      console.log(
+        `  seeded ${need} synthetic scores (marked synthetic; excluded from the real day-90 gate)`,
+      );
     }
   }
   const dog = platform.dogfood(root);
