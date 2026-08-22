@@ -1,11 +1,14 @@
 // Lesson routing observability.
 //
 // The lesson classifier (`classify` in `learning-event.ts`) assigns every
-// validated lesson to a `LearningDestination`. Exactly one of those eleven
-// destinations — `model_weight` — is actually consumed downstream: the governed
-// training corpus reads it at `learning-operations.ts:707`. A lesson classified
-// to any of the other ten is computed, stored on the lesson object, and then
-// consumed by nothing. Historically that drop was silent: "we routed this
+// validated lesson to one of the eleven `LearningDestination` values it can emit.
+// (The taxonomy defines a twelfth, `organization_memory`, that names where a
+// tenant convention belongs — spec §17.4/§17.4.3, ADR-0008 — but the classifier
+// never emits it and nothing consumes it; it is vocabulary, not a live route.)
+// Exactly one destination — `model_weight` — is actually consumed downstream: the
+// governed training corpus reads it at `learning-operations.ts:707`. A lesson
+// classified to any of the other ten is computed, stored on the lesson object, and
+// then consumed by nothing. Historically that drop was silent: "we routed this
 // lesson to `retrieval`" and "nothing acted on this lesson" were indistinguishable.
 //
 // This module names the drop so it becomes observable and countable, following
@@ -69,6 +72,11 @@ export const LESSON_DESTINATION_DISPOSITIONS: Readonly<Record<LearningDestinatio
     prompt: "unrouted",
     product_logic: "unrouted",
     calibration: "unrouted",
+    // Named in the taxonomy (spec §17.4, ADR-0008) but not a live route: `classify`
+    // never emits it and no sink consumes it. `unrouted` is the honest disposition —
+    // its existence as a value must not read as a working route. See the upstream
+    // blocker in docs/learning/LESSON_DESTINATION_ROUTING.md.
+    organization_memory: "unrouted",
   });
 
 /** The disposition of a single destination. Total: every destination has one. */
