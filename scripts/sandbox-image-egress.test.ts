@@ -14,6 +14,10 @@ describe("sandbox image default-deny egress", () => {
       resolve(root, ".github/workflows/sandbox-egress-acceptance.yml"),
       "utf8",
     );
+    const renewal = readFileSync(
+      resolve(root, ".github/workflows/sandbox-egress-renewal.yml"),
+      "utf8",
+    );
 
     expect(dockerfile).toContain("iptables");
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/local/bin/mendpoint-sandbox-entrypoint"]');
@@ -28,7 +32,10 @@ describe("sandbox image default-deny egress", () => {
     expect(flyManifest).toContain('dockerfile = "Dockerfile.sandbox"');
     expect(flyManifest).not.toContain("http_service");
     expect(builder).toContain('"scripts/start-sandbox-entrypoint.sh"');
-    expect(workflow).toContain("environment: sandbox-production");
+    // The engine's environment is parameterized; the renewal caller wires the
+    // manual path to the protected `sandbox-production` environment.
+    expect(workflow).toContain("environment: ${{ inputs.environment }}");
+    expect(renewal).toContain("environment: sandbox-production");
     expect(workflow).toContain("trap 'cleanup || true' EXIT");
     expect(workflow).toContain("trap - EXIT");
     expect(workflow).toContain("sandbox_machine_not_destroyed");

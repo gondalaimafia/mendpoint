@@ -266,4 +266,38 @@ describe("readiness storage boundary", () => {
     });
     expect(JSON.stringify(report)).not.toContain("private schema statement");
   });
+
+  it("reports customer readiness from the declaration and fails closed when indeterminate", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-readiness-customer-"));
+    roots.push(root);
+    const previous = { ...process.env };
+    Object.assign(process.env, {
+      NODE_ENV: "test",
+      MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+    });
+    try {
+      const readinessCheck = () =>
+        readiness({ dbPath: join(root, "mendpoint.sqlite"), dbPing: () => true }).checks.find(
+          (c) => c.name === "customer_readiness",
+        );
+
+      process.env.MENDPOINT_CUSTOMER_READY = "1";
+      expect(readinessCheck()).toEqual({ name: "customer_readiness", ok: true, detail: "ready" });
+
+      process.env.MENDPOINT_CUSTOMER_READY = "0";
+      const notReady = readinessCheck();
+      expect(notReady?.ok).toBe(false);
+      expect(notReady?.detail).toContain("not_ready");
+
+      delete process.env.MENDPOINT_CUSTOMER_READY;
+      const indeterminate = readinessCheck();
+      expect(indeterminate?.ok).toBe(false);
+      expect(indeterminate?.detail).toContain("indeterminate");
+    } finally {
+      for (const key of Object.keys(process.env)) {
+        if (!(key in previous)) delete process.env[key];
+      }
+      Object.assign(process.env, previous);
+    }
+  });
 });
