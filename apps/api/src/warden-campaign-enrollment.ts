@@ -29,7 +29,11 @@ const ALLOWED_FIELDS = new Set(["providerSlug", "connectionId", "mockRepositorie
 const CAMPAIGN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
 const ERRORS: readonly PublicErrorRule[] = [
-  { internalCode: "warden_enroll_authentication_required", publicCode: "unauthorized", status: 401 },
+  // authorizeCampaignWriter / reverifyCampaignWriter (shared with the create
+  // path) throw these; enrolment maps them identically so both routes on this
+  // resource refuse with the same 401/403 taxonomy.
+  { internalCode: "warden_campaign_create_authentication_required", publicCode: "unauthorized", status: 401 },
+  { internalCode: "warden_campaign_create_forbidden", publicCode: "forbidden", status: 403 },
   { internalCode: "warden_campaign_not_found", publicCode: "not_found", status: 404 },
   { internalCode: "warden_enroll_connection_not_found", publicCode: "not_found", status: 404 },
   { internalCode: "warden_org_provider_unknown", publicCode: "not_found", status: 404 },
@@ -340,12 +344,12 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
 
   routes.post("/:id/enroll-org", async (c) => {
     try {
-      const principal = c.get("principal");
-      const tenantId = c.get("tenantId");
-      const trustPrincipalId = c.get("trustPrincipalId");
-      if (!principal || !tenantId || principal.tenantId !== tenantId || !trustPrincipalId) {
-        throw new Error("warden_enroll_authentication_required");
-      }
+      // Enrolment binds an organization's repositories into a campaign and is at
+      // least as sensitive as creating one, so it holds the same bar: the
+      // strongest gate in the repository (apps/api/src/warden-candidate-review.ts),
+      // reused verbatim from the create path above rather than reimplemented.
+      const auth = authorizeCampaignWriter(c, options.db);
+      const { principal, tenantId, trustPrincipalId } = auth;
       const campaignId = (c.req.param("id") ?? "").trim();
       if (!CAMPAIGN_ID.test(campaignId)) throw new Error("warden_enroll_campaign_invalid");
       const input = await body(c);
@@ -376,6 +380,13 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
       );
 
       const at = now();
+      // Re-verify against live rows immediately before the write. Unlike create,
+      // an await (the installation crawl) sits between the entry gate and here, so
+      // this re-check is the defense against a trust revocation or membership
+      // offboarding that lands mid-crawl, and its independent expiry check refuses
+      // a principal that has expired since entry. No await follows before the
+      // write, so no in-process state can change between this check and it.
+      reverifyCampaignWriter(c, options.db, auth, at);
       const result = autoEnrollWardenCampaignOrg(options.db, {
         tenantId,
         campaignId,
