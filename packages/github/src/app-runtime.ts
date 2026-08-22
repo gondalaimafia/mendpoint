@@ -218,6 +218,48 @@ export async function defaultFetchInstallationToken(
   };
 }
 
+export type InstallationAccount = Readonly<{
+  installationId: number;
+  /** GitHub's numeric account id, or null when the installation reports none. */
+  accountId: number | null;
+  accountLogin: string | null;
+  accountType: string | null;
+}>;
+
+export type InstallationMetadataFetcher = (
+  installationId: number,
+  jwt: string,
+) => Promise<InstallationAccount>;
+
+/**
+ * Read an installation's authoritative account identity as the App. Authenticates
+ * with the App JWT (not an installation token), exactly like the access-token
+ * exchange above, so it makes no assumption about the very identity it observes.
+ * The response's `account.id` is the verified value; a missing account yields
+ * nulls rather than a fabricated id.
+ */
+export async function defaultFetchInstallationMetadata(
+  installationId: number,
+  jwt: string,
+): Promise<InstallationAccount> {
+  const octokit = octokitFor(jwt);
+  const { data } = await octokit.request(
+    "GET /app/installations/{installation_id}",
+    { installation_id: installationId },
+  );
+  const account =
+    (data as { account?: { id?: number; login?: string; type?: string } | null })
+      .account ?? null;
+  const accountId =
+    account && Number.isSafeInteger(account.id) ? Number(account.id) : null;
+  return {
+    installationId,
+    accountId,
+    accountLogin: account?.login ?? null,
+    accountType: account?.type ?? null,
+  };
+}
+
 export type InstallationRepository = Readonly<{
   id: number;
   owner: string;

@@ -196,6 +196,10 @@ function verifierDigest(value: string): string {
 import { runWardenCandidateObservation } from "./warden-candidate-observation.js";
 import { runWardenCiRepairDispatch } from "./warden-ci-repair-dispatch.js";
 import { runFettlerPrReviewDispatch } from "./fettler-pr-review-dispatch.js";
+import {
+  createInstallationAccountFetcher,
+  reconcileNullInstallationAccounts,
+} from "./installation-account-reconcile.js";
 import { runWardenCandidateUpdate } from "./warden-candidate-update.js";
 import { createWardenCiEvidenceStore } from "./warden-ci-evidence.js";
 import { materializeWardenCiHead } from "./warden-ci-materializer.js";
@@ -4115,15 +4119,54 @@ async function main() {
     await new Promise(() => undefined);
   } else if (cmd === "sdk-signals") {
     console.log(JSON.stringify(await probeKnownSdks({ localOnly: args.localOnly }), null, 2));
+  } else if (cmd === "reconcile-installations") {
+    // On-demand backfill of a NULL github_installations.account_id from GitHub.
+    // Tenant scoped: an explicit tenant is required and never crossed. Optionally
+    // narrowed to a single installation id for a precise production run.
+    const argv = process.argv.slice(3);
+    const readFlag = (name: string) => {
+      const index = argv.indexOf(name);
+      return index >= 0 ? argv[index + 1] : undefined;
+    };
+    const tenantId = readFlag("--tenant") ?? process.env.MENDPOINT_TENANT_ID;
+    if (!tenantId?.trim()) {
+      throw new Error(
+        "reconcile-installations requires --tenant or MENDPOINT_TENANT_ID",
+      );
+    }
+    const installationId = readFlag("--installation");
+    const db = initializeWorkerDurableState(() => createDb());
+    try {
+      const reconciled = await reconcileNullInstallationAccounts({
+        db,
+        tenantId,
+        fetchAccount: createInstallationAccountFetcher(process.env),
+        ...(installationId ? { installationId } : {}),
+      });
+      console.log(JSON.stringify({ tenantId, reconciled }, null, 2));
+      // A mismatch or a not-observed row means nothing was fixed and an operator
+      // must look; exit non-zero so a scripted run notices.
+      if (
+        reconciled.some(
+          (result) =>
+            result.outcome === "mismatch" || result.outcome === "not_observed",
+        )
+      ) {
+        process.exitCode = 1;
+      }
+    } finally {
+      db.raw.close();
+    }
   } else {
-    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals]
+    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals|reconcile-installations]
   poll-once [--local] [--no-pipeline] [--slug acme-payments]
   poll [--local] [--interval 60000]
   process-jobs
   run-jobs [--interval 5000]
   run-service [--interval 5000]
   run-transformer-service
-  sdk-signals [--local]`);
+  sdk-signals [--local]
+  reconcile-installations [--tenant tenant_default] [--installation 151614362]`);
     process.exitCode = 1;
   }
 }
