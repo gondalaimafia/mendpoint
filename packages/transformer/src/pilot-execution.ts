@@ -3096,7 +3096,8 @@ export class TransformerPilotExecutionStore {
     if (state.state !== "running") throw new Error("transformer_pilot_campaign_not_running");
     const wave = Math.min(...state.units.filter((unit) => unit.state !== "merged" && unit.state !== "cancelled" && unit.state !== "rolled_back").map((unit) => unit.wave));
     const current = state.units.filter((unit) => unit.wave === wave);
-    if (!current.length || current.some((unit) => unit.state !== "executed")) {
+    const replayable = current.length > 0 && current.every((unit) => unit.state === "draft");
+    if (!current.length || (!replayable && current.some((unit) => unit.state !== "executed"))) {
       throw new Error("transformer_pilot_wave_execution_incomplete");
     }
     const actions = current.map((unit): TransformerDraftAction => ({
@@ -3105,12 +3106,26 @@ export class TransformerPilotExecutionStore {
       repositoryId: unit.snapshot.repositoryId,
       expectedBaseRevision: unit.snapshot.revision,
       expectedHeadRevision: unit.candidateRevision,
-      evidenceRefs: [...new Set([...unit.executionEvidenceRefs, ...gate.acceptanceEvidenceRefs])].sort(),
+      evidenceRefs: replayable
+        ? [...(unit.draftDelivery?.authorizationEvidenceRefs ??
+            new Set([...unit.executionEvidenceRefs, ...gate.acceptanceEvidenceRefs]))].sort()
+        : [...new Set([...unit.executionEvidenceRefs, ...gate.acceptanceEvidenceRefs])].sort(),
       draft: true,
       autoMerge: false,
       autoDeploy: false,
     }));
-    this.mutate(input, "delivery.drafts_authorized", { wave, actionUnitIds: actions.map((action) => action.unitId) }, (draft) => {
+    if (replayable) return actions;
+    this.mutate(input, "delivery.drafts_authorized", {
+      wave,
+      actionUnitIds: actions.map((action) => action.unitId),
+      productionDeliveryApprovalRefs: [...(input.productionDeliveryApprovalRefs ?? [])].sort(),
+      acceptanceEvidenceRefs: [...gate.acceptanceEvidenceRefs].sort(),
+    }, (draft) => {
+      if (draft.state !== "running") throw new Error("transformer_pilot_campaign_not_running");
+      const exactWave = draft.units.filter((unit) => unit.wave === wave);
+      if (!exactWave.length || exactWave.some((unit) => unit.state !== "executed")) {
+        throw new Error("transformer_pilot_wave_execution_incomplete");
+      }
       draft.units = draft.units.map((unit) => {
         if (unit.wave !== wave) return unit;
         const evidenceRefs = actions.find((action) => action.unitId === unit.id)!.evidenceRefs;

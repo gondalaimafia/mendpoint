@@ -109,3 +109,8 @@
 **Mistake:** I described narrowing the active work to Regauge in a way that implied the previously inventoried delivery, learning, and Graphify scope was being dropped.
 **Correction:** Talal said to keep the full scope, but fix and ship Regauge activation first and faster.
 **Rule:** When one blocker becomes the priority inside a larger authorized program, explicitly park the remaining work in the plan rather than removing it. Finish the highest-priority live path, then resume the preserved sequence.
+
+### 2026-08-21 — Resume immediately when external authority is restored
+**Mistake:** I paused the production activation after an external credential boundary was resolved instead of immediately continuing the next safe, authorized step.
+**Correction:** Talal asked why I had stopped, granted explicit approval, and completed the required device connection.
+**Rule:** When the user restores a required credential or device authority during an already-approved bounded deployment, verify the authority without exposing secrets and immediately resume the next planned safe step. Stop only on a new material risk or missing authority.

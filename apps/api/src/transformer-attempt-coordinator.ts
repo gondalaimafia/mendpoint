@@ -15,7 +15,7 @@ const OPERATIONS = [
   "claimNextAttempt", "renewAttemptLease", "assertCurrentAttemptFence",
   "recordAdaptiveAttemptUsage", "reserveAdaptiveModelCall", "settleAdaptiveModelCall",
   "recordAdaptiveCandidateHandoff", "completeAttempt", "recordAttemptFailure",
-  "claimNextDraftDelivery", "assertCurrentDraftDeliveryFence", "completeDraftDelivery",
+  "authorizeCurrentWaveDrafts", "claimNextDraftDelivery", "assertCurrentDraftDeliveryFence", "completeDraftDelivery",
   "reconcileWave",
 ] as const;
 const AUTHORITY_OPERATIONS = [
@@ -35,11 +35,23 @@ export type TransformerDraftRepositoryTarget = Readonly<{
   remoteRepositoryId: number;
 }>;
 
+export type TransformerProductionDraftAuthorization = Readonly<{
+  tenantId: string;
+  campaignId: string;
+  environment: string;
+  remoteRepositoryId: number;
+  sourceRevision: string;
+  productionApprovalRef: string;
+  activationExpiresAt: string;
+  maximumDrafts: 1;
+}>;
+
 export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
   enabled: boolean;
   store: TransformerPilotExecutionStore;
   now?: () => string;
   gateConfig?: string;
+  draftAuthorization?: TransformerProductionDraftAuthorization;
   observeCompletedAttempt?(result: TransformerAttemptCheckpointCompletionResult): Promise<void>;
   loadExactSource(lease: TransformerExecutableAttemptLease, observedAt: string): ExactSourceSnapshot | Promise<ExactSourceSnapshot>;
   resolveDraftRepository?(input: Readonly<{
@@ -50,6 +62,7 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
   }>): TransformerDraftRepositoryTarget | Promise<TransformerDraftRepositoryTarget>;
 }>): Hono<ApiEnv> {
   if (options.enabled) parseTransformerGateConfig(options.gateConfig);
+  if (options.draftAuthorization) requireDraftAuthorization(options.draftAuthorization);
   const app = new Hono<ApiEnv>();
   const now = options.now ?? (() => new Date().toISOString());
   const authority = createTransformerPilotCheckpointAuthority(options.store);
@@ -77,6 +90,51 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
     const input = await request(c);
     assertTenant(c, input);
     const observedAt = serverTime(now);
+    if (operation === "authorizeCurrentWaveDrafts") {
+      if (input.productionDeliveryApprovalRefs !== undefined) {
+        throw new Error("coordinator_request_invalid");
+      }
+      if (typeof input.idempotencyKey !== "string" || !input.idempotencyKey.trim() ||
+          !Array.isArray(input.evidenceRefs) ||
+          input.evidenceRefs.some((reference) => typeof reference !== "string" || !reference.trim())) {
+        throw new Error("coordinator_request_invalid");
+      }
+      const authorization = options.draftAuthorization;
+      if (!authorization ||
+          input.tenantId !== authorization.tenantId ||
+          input.campaignId !== authorization.campaignId ||
+          Date.parse(observedAt) >= Date.parse(authorization.activationExpiresAt)) {
+        throw new Error("coordinator_draft_authorization_denied");
+      }
+      const campaign = options.store.getCampaign(authorization.tenantId, authorization.campaignId);
+      if (!campaign || campaign.environment !== authorization.environment ||
+          campaign.units.length !== authorization.maximumDrafts) {
+        throw new Error("coordinator_draft_authorization_denied");
+      }
+      const unit = campaign.units[0]!;
+      if (unit.snapshot.revision !== authorization.sourceRevision || !options.resolveDraftRepository) {
+        throw new Error("coordinator_draft_authorization_denied");
+      }
+      const target = await options.resolveDraftRepository({
+        tenantId: authorization.tenantId,
+        repositoryId: unit.snapshot.repositoryId,
+        snapshotId: unit.snapshot.snapshotId,
+        expectedBaseRevision: unit.snapshot.revision,
+      });
+      if (target.remoteRepositoryId !== authorization.remoteRepositoryId) {
+        throw new Error("coordinator_draft_authorization_denied");
+      }
+      const result = options.store.authorizeCurrentWaveDrafts({
+        tenantId: authorization.tenantId,
+        campaignId: authorization.campaignId,
+        observedAt,
+        evidenceRefs: input.evidenceRefs as string[],
+        idempotencyKey: input.idempotencyKey,
+        gateConfig: options.gateConfig,
+        productionDeliveryApprovalRefs: [authorization.productionApprovalRef],
+      });
+      return c.json({ result, serverTime: observedAt });
+    }
     const bound = { ...input, observedAt, gateConfig: options.gateConfig };
     const method = options.store[operation] as unknown as (value: Json) => unknown;
     const result = await method.call(options.store, bound);
@@ -255,11 +313,25 @@ async function request(c: Context<ApiEnv>): Promise<Json> {
   try { const value = JSON.parse(text); if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(); return value as Json; } catch { throw new Error("coordinator_request_invalid"); }
 }
 function serverTime(now: () => string): string { const value = now(); if (!Number.isFinite(Date.parse(value)) || new Date(Date.parse(value)).toISOString() !== value) throw new Error("coordinator_clock_invalid"); return value; }
+function requireDraftAuthorization(
+  input: TransformerProductionDraftAuthorization,
+): TransformerProductionDraftAuthorization {
+  if (!input.tenantId.trim() || !input.campaignId.trim() || !input.environment.trim() ||
+      !Number.isSafeInteger(input.remoteRepositoryId) || input.remoteRepositoryId < 1 ||
+      !/^[a-f0-9]{40}$/.test(input.sourceRevision) || !input.productionApprovalRef.trim() ||
+      !Number.isFinite(Date.parse(input.activationExpiresAt)) ||
+      new Date(Date.parse(input.activationExpiresAt)).toISOString() !== input.activationExpiresAt ||
+      input.maximumDrafts !== 1) {
+    throw new Error("coordinator_draft_authorization_invalid");
+  }
+  return input;
+}
 async function handled(c: Context<ApiEnv>, operation: () => Promise<Response>): Promise<Response> {
   try { return await operation(); } catch (error) {
     const code = error instanceof Error ? error.message : "coordinator_unavailable";
     if (code === "coordinator_unauthorized") return c.json({ error: code }, 401);
     if (code === "coordinator_scope_denied") return c.json({ error: code }, 403);
+    if (code === "coordinator_draft_authorization_denied") return c.json({ error: code }, 403);
     if (code === "coordinator_not_found") return c.json({ error: code }, 404);
     if (code === "coordinator_request_invalid") return c.json({ error: code }, 400);
     if (code === "coordinator_campaign_not_ready") return c.json({ error: code }, 503);
