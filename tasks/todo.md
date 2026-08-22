@@ -3282,3 +3282,16 @@ Production Machine `896427a6e67358` repeatedly reaches the web ready state, then
 RED: the workflow test could not find any runtime-preparation step before protected-authority validation. The retained failed runs corroborate the defect: validation exited, evidence upload found no files, and the failure page crashed because `tsx` had not been installed.
 
 GREEN: a single preparation step now writes only run metadata to a retained artifact and installs the existing reporter before validation. The probe, signing, and rotation order is unchanged. Thirteen focused renewal and image-egress tests pass, both workflow files parse as YAML, every action remains commit-pinned, GA passes, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
+
+## 2026-08-22 Public documentation drift
+
+- [x] Reproduce the exact generated-file drift without rewriting source content.
+- [x] Regenerate only the stale website-upload artifacts from the canonical catalog.
+- [x] Run documentation checks, names and claims gates, production build, and strict diff review.
+- [ ] Publish a separate protected pull request and leave deployment gated on live health.
+
+### Review
+
+RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
+
+GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.
