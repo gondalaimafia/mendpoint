@@ -3214,7 +3214,7 @@ Objective: finish only the internal evaluation lane authorized by ADR-0006. Buil
 - [x] Implement the private Python process bridge and Node supervisor without exporting Graphify process types or adding a production environment selector.
 - [x] Pin the evaluation dependency and retained license materials, then verify the installed artifact against the recorded digest before execution.
 - [ ] Build the 18-case A/B/C cohort, stage predictions before labels, grade with a separately supplied sealed key, and measure direct, indirect, trap, incremental, and four size tiers.
-- [ ] Record the exact result and adoption blockers without converting internal evidence into a product claim.
+- [x] Record the exact result and adoption blockers without converting internal evidence into a product claim.
 - [ ] Run focused suites, workspace typechecks, production build, GA checks, dependency audit, container checks, and strict diff review before publishing a separate pull request.
 
 ### Review
@@ -3225,3 +3225,4 @@ Objective: finish only the internal evaluation lane authorized by ADR-0006. Buil
 - The complete monorepo test command passes every workspace and all 164 root script tests. The production build, GA gate, and production dependency audit pass; the audit reports 0 vulnerabilities.
 - Windows cannot prove the Linux network namespace boundary and this machine has no WSL or Docker. The pull-request workflow is therefore the first eligible real process smoke; no local execution is represented as containment evidence.
 - Production selection remains impossible: the process factory is absent from the package root, there is no environment selector or caller, and the adoption decision remains internal only.
+- Linux process proof: GitHub run `32600370037` passed on exact revision `557b3e4c47726f4858ab52c0764bbc61bfc5758f`. The two-file smoke produced 4 nodes and 5 edges in 220.901 ms at 33,460,224 peak RSS bytes. The evidence record explicitly denies sealed-holdout, four-tier, quality, economics, and production-adoption claims.

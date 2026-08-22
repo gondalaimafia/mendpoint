@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "mendpoint.graphify-process-evidence.v1",
+  "run": {
+    "provider": "github-actions",
+    "runId": "32600370037",
+    "url": "https://github.com/gondalaimafia/mendpoint/actions/runs/32600370037",
+    "event": "pull_request",
+    "headRevision": "557b3e4c47726f4858ab52c0764bbc61bfc5758f",
+    "conclusion": "success",
+    "createdAt": "2026-08-22T21:42:30Z",
+    "updatedAt": "2026-08-22T21:43:03Z"
+  },
+  "result": {
+    "schemaVersion": "mendpoint.graphify-process-smoke.v1",
+    "status": "verified",
+    "extractor": {
+      "id": "graphify",
+      "version": "0.9.46",
+      "digest": "sha256:35d854d66884c623a8e25ca059b54744ade91ae17ffc0f79fd39e108a1666b5d"
+    },
+    "sourceFileCount": 2,
+    "nodeCount": 4,
+    "edgeCount": 5,
+    "elapsedMs": 220.901,
+    "peakMemoryBytes": 33460224,
+    "contentDigest": "sha256:326a57f02b48bbf3ce0a7ee8c5f80cb585068a91178c663d14b5f63391779a6b",
+    "observedAt": "2026-08-22T21:42:58.697Z"
+  },
+  "claimBoundary": {
+    "processProtocolVerified": true,
+    "pinnedPackageVerified": true,
+    "distinctNetworkNamespaceVerified": true,
+    "hardMemoryCeilingApplied": true,
+    "sealedExternalHoldoutExecuted": false,
+    "fourTierPerformanceRunExecuted": false,
+    "productionAdoptionAuthorized": false
+  }
+}
