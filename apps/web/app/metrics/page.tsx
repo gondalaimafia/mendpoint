@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { apiGet } from "../../lib/api";
 
 export const dynamic = "force-dynamic";
@@ -56,6 +57,11 @@ export default async function MetricsPage() {
       <p className="lead">
         Design-partner instrumentation: PR funnel, merge rate, coverage, suppressions,
         notification-only events, time-to-merge.
+      </p>
+      <p className="command-actions" aria-label="Related views">
+        <Link className="btn" href="/metrics/dashboard">
+          Self-serve dashboard
+        </Link>
       </p>
       {error && (
         <div className="card">

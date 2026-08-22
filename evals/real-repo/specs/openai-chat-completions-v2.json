@@ -1,0 +1,206 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "OpenAI API (subset under analysis)",
+    "version": "v2",
+    "description": "The INJECTED provider change. Identical to v1 except the Chat Completions endpoint POST /v1/chat/completions has been removed and superseded by the Responses API POST /v1/responses. This mirrors OpenAI steering developers off Chat Completions onto the Responses API. Every consumer of chat.completions.create must migrate. All other endpoints are byte-for-byte identical to v1 so the only surface the diff reports is this one supersession."
+  },
+  "servers": [{ "url": "https://api.openai.com" }],
+  "paths": {
+    "/v1/responses": {
+      "post": {
+        "operationId": "createResponse",
+        "summary": "Creates a model response (successor to Chat Completions).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["model", "input"],
+                "properties": {
+                  "model": { "type": "string" },
+                  "input": { "type": "array", "items": { "type": "object" } },
+                  "tools": { "type": "array", "items": { "type": "object" } },
+                  "max_output_tokens": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/v1/embeddings": {
+      "post": {
+        "operationId": "createEmbedding",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["model", "input"],
+                "properties": {
+                  "model": { "type": "string" },
+                  "input": { "type": "string" },
+                  "encoding_format": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/v1/images/generations": {
+      "post": {
+        "operationId": "createImage",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["prompt"],
+                "properties": {
+                  "model": { "type": "string" },
+                  "prompt": { "type": "string" },
+                  "n": { "type": "integer" },
+                  "size": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/v1/moderations": {
+      "post": {
+        "operationId": "createModeration",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["input"],
+                "properties": {
+                  "model": { "type": "string" },
+                  "input": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/v1/files": {
+      "post": {
+        "operationId": "createFile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file", "purpose"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary" },
+                  "purpose": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/v1/batches": {
+      "post": {
+        "operationId": "createBatch",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["input_file_id", "endpoint", "completion_window"],
+                "properties": {
+                  "input_file_id": { "type": "string" },
+                  "endpoint": { "type": "string" },
+                  "completion_window": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/v1/fine_tuning/jobs": {
+      "post": {
+        "operationId": "createFineTuningJob",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["model", "training_file"],
+                "properties": {
+                  "model": { "type": "string" },
+                  "training_file": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/v1/assistants": {
+      "post": {
+        "operationId": "createAssistant",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["model"],
+                "properties": {
+                  "model": { "type": "string" },
+                  "name": { "type": "string" },
+                  "instructions": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/v1/threads": {
+      "post": {
+        "operationId": "createThread",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "messages": { "type": "array", "items": { "type": "object" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "OK" } }
+      }
+    }
+  }
+}

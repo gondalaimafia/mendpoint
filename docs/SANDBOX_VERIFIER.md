@@ -164,10 +164,47 @@ and has two mandatory observations:
 2. a normal, in-allowlist verification **COMPLETES** inside the Machine.
 
 This default-deny egress policy is a **HARD PREREQUISITE**, not a follow-up. The
-workflow signs the two observations with the protected Ed25519 authority and
-rotates the exact receipt onto the verifying app. The receipt is valid for less
-than 24 hours, so stale evidence makes verification unavailable rather than
-silently weakening isolation.
+reusable engine (`.github/workflows/sandbox-egress-acceptance.yml`) signs the two
+observations with the protected Ed25519 authority and rotates the exact receipt
+onto **every consuming app**, not just the verifying app: `fly.customer-warden.toml`
+enables `MENDPOINT_SANDBOX_KIND=fly_machines` on every customer app, and each of
+those verifies the receipt before it can boot. The receipt is valid for less than
+24 hours, so stale evidence makes verification unavailable rather than silently
+weakening isolation.
+
+### Renewal without weakening the proof
+
+A fresh receipt is both a boot requirement and a readiness condition, so it must
+be renewed continuously — not by someone remembering to run a workflow. Renewal
+is driven by `.github/workflows/sandbox-egress-renewal.yml`:
+
+- **scheduled** every 6 hours (receipt lifetime < 24h, so a single failed run
+  still leaves margin and further attempts before the receipt lapses), and
+- **manual** (`workflow_dispatch`) for on-demand mints out of that cadence.
+
+Both paths delegate the probe, mint, and rotation to the same engine, so the
+containment probe lives in one place and cannot drift between them. They differ
+only in which GitHub Environment gates the mint:
+
+- The **manual** path runs under `sandbox-production` — its **required reviewer is
+  preserved** and a human-typed `SANDBOX_EGRESS_ACCEPTED` confirmation is still
+  required.
+- The **scheduled** path runs unattended under a second environment,
+  `sandbox-production-renewal`, that carries **no required reviewer** but a
+  **deployment-branch restriction to the default branch only**. GitHub runs
+  scheduled workflows solely from the default branch, so the reviewed probe steps
+  on that branch are guaranteed to run and gate the mint; a pushed branch with the
+  probe deleted cannot deploy to that environment and therefore cannot reach the
+  signing key. That deployment-branch rule is the machine-checkable substitute for
+  the human-typed string — the probe itself is never skipped, and the mint still
+  refuses unless it passes.
+
+A failed or skipped renewal is surfaced **before** the receipt lapses, never after
+workers start crash-looping: a paging sink (`PAGING_WEBHOOK_URL` or
+`PAGERDUTY_ROUTING_KEY`) is a hard prerequisite; a failed run pages immediately;
+and `scripts/check-sandbox-egress-freshness.ts` pages once the receipt is within a
+lead window of expiry (default 6h, `SANDBOX_EGRESS_ALERT_LEAD_MS`) regardless of
+whether a renewal ran.
 
 ### Operator checklist to enable the sandbox
 
@@ -183,10 +220,30 @@ silently weakening isolation.
    are present in the deployment config (wired in `fly.toml` and
    `fly.customer-warden.toml`), and that `MENDPOINT_SANDBOX_FLY_IMAGE` has been
    pinned to a digest (step 1) rather than left empty.
-5. Run the protected `Sandbox egress acceptance` workflow with confirmation
-   `SANDBOX_EGRESS_ACCEPTED`. It starts one bounded Machine, verifies the exact
-   image and both probes, destroys the Machine, signs the receipt, rotates the
-   verifying app secrets, and requires `/livez` and `/healthz` to recover.
+5. Configure the two GitHub Environments:
+   - `sandbox-production`: keep its **required reviewer** (manual path).
+   - `sandbox-production-renewal`: **no required reviewer**, but restrict its
+     **deployment branches to the default branch only** (scheduled path). Do not
+     add a required reviewer here — the branch restriction is the protection, and a
+     reviewer would block unattended renewal.
+   Both environments must expose the mint authority the engine reads
+   (`MENDPOINT_SANDBOX_EGRESS_SIGNING_KEY_PKCS8_BASE64`, `SANDBOX_FLY_API_TOKEN`,
+   and the `SANDBOX_*` / `MENDPOINT_SANDBOX_EGRESS_*` variables). Store the signing
+   key only where a deployment-branch rule keeps it off untrusted branches.
+6. Provide rotation configuration so the receipt reaches every consuming app,
+   enumerated from configuration rather than a hardcoded list:
+   - `ROTATION_FLY_API_TOKEN` — an org-scoped Fly token able to `apps list` and
+     `secrets set` across the consuming apps (a per-app verifying token cannot).
+   - `SANDBOX_EGRESS_ROTATION_APP_PREFIXES` (and optionally `FLY_ORG`) — the
+     naming convention that selects consuming apps from the live inventory. A newly
+     provisioned app matching the convention is covered without editing any list.
+   - a paging sink (`PAGING_WEBHOOK_URL` or `PAGERDUTY_ROUTING_KEY`).
+7. Leave renewal to the schedule. For an on-demand mint, run the
+   `Sandbox egress receipt renewal` workflow (`workflow_dispatch`) with
+   confirmation `SANDBOX_EGRESS_ACCEPTED`. Either path starts one bounded Machine,
+   verifies the exact image and both probes, destroys the Machine, signs the
+   receipt, rotates every consuming app's secrets, and requires `/livez` and
+   `/healthz` to recover on each.
 
 Because the fly_machines backend fails closed, verification refuses rather than
 degrading to host execution if any authority is incomplete, invalid, or expired.

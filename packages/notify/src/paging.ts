@@ -16,7 +16,9 @@ export type PagingEventType =
   | "dr_drill_fail"
   | "dead_letter_growth"
   | "expired_lease_uncertain_side_effect"
-  | "worker_heartbeat_stale";
+  | "worker_heartbeat_stale"
+  | "egress_receipt_expiring"
+  | "egress_receipt_renewal_failed";
 
 export type PagingSeverity = "critical" | "error" | "warning";
 
@@ -226,6 +228,89 @@ export function pagingEventForWorkerHeartbeat(input: {
     };
   }
   return null;
+}
+
+/**
+ * Adapter: build a paging event from the sandbox-egress receipt's freshness.
+ *
+ * The receipt is a boot requirement AND a readiness condition: when it lapses,
+ * workers crash-loop and health goes red. A renewal that fails silently — a
+ * failed scheduled run, or a run that never happened — is equivalent to no
+ * renewal, so the alarm is driven by the receipt's OWN expiry, not by whether a
+ * renewal ran. It fires while there is still time to act: once `now` is within
+ * `leadMs` of `expiresAt` (and also once the receipt has already expired). A
+ * healthy margin returns null (no page).
+ *
+ * An unreadable expiry timestamp is itself a critical alarm rather than a silent
+ * pass — a receipt whose freshness cannot be established must be treated as at
+ * risk, never as fresh.
+ */
+export function pagingEventForEgressReceipt(input: {
+  expiresAt: string;
+  now: string;
+  leadMs: number;
+}): PagingEvent | null {
+  const expires = Date.parse(input.expiresAt);
+  const now = Date.parse(input.now);
+  if (!Number.isFinite(expires) || !Number.isFinite(now)) {
+    return {
+      type: "egress_receipt_expiring",
+      severity: "critical",
+      summary: "Sandbox egress receipt expiry is unreadable — cannot prove freshness",
+      dedupeKey: "egress_receipt_expiring:unreadable",
+      details: { expiresAt: input.expiresAt, now: input.now },
+    };
+  }
+  const remainingMs = expires - now;
+  const lead = Number.isFinite(input.leadMs) && input.leadMs > 0 ? input.leadMs : 0;
+  if (remainingMs > lead) return null;
+  const lapsed = remainingMs <= 0;
+  const remainingMinutes = Math.floor(remainingMs / 60000);
+  return {
+    type: "egress_receipt_expiring",
+    severity: "critical",
+    summary: lapsed
+      ? `Sandbox egress receipt has lapsed (expired ${input.expiresAt}); verification is unavailable`
+      : `Sandbox egress receipt expires in ${remainingMinutes} min (${input.expiresAt}); renewal has not refreshed it`,
+    dedupeKey: `egress_receipt_expiring:${input.expiresAt}`,
+    details: { expiresAt: input.expiresAt, now: input.now, remainingMs, lapsed },
+  };
+}
+
+/**
+ * Best-effort page when the sandbox-egress receipt is approaching or past
+ * expiry. Returns null (no page) while the receipt has healthy margin. Never
+ * throws: `notifyPaging` is fail-open.
+ */
+export async function pageEgressReceiptFreshness(input: {
+  expiresAt: string;
+  now: string;
+  leadMs: number;
+}): Promise<NotifyPagingResult | null> {
+  const event = pagingEventForEgressReceipt(input);
+  return event ? notifyPaging(event) : null;
+}
+
+/**
+ * Best-effort page for a failed egress-receipt renewal run. Called from the
+ * renewal workflow's failure path so a failed renewal is loud and attributable
+ * immediately — hours before the receipt lapses — rather than discovered when
+ * workers start crash-looping.
+ */
+export async function pageEgressReceiptRenewalFailed(input: {
+  runUrl?: string;
+  detail?: string;
+}): Promise<NotifyPagingResult> {
+  return notifyPaging({
+    type: "egress_receipt_renewal_failed",
+    severity: "critical",
+    summary: "Sandbox egress receipt renewal FAILED — receipt will lapse without a fresh mint",
+    dedupeKey: "egress_receipt_renewal_failed",
+    details: {
+      runUrl: input.runUrl ?? "",
+      detail: input.detail ?? "",
+    },
+  });
 }
 
 /**

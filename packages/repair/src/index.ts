@@ -33,6 +33,3 @@ export {
   runVerificationInSandbox,
   type VerificationSandboxOptions,
 } from "./verify-sandbox.js";
-
-/** Integrate with CI loop: repair then re-verify */
-export { runAgenticRepairLoop } from "./loop.js";
