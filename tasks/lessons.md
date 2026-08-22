@@ -114,3 +114,8 @@
 **Mistake:** I paused the production activation after an external credential boundary was resolved instead of immediately continuing the next safe, authorized step.
 **Correction:** Talal asked why I had stopped, granted explicit approval, and completed the required device connection.
 **Rule:** When the user restores a required credential or device authority during an already-approved bounded deployment, verify the authority without exposing secrets and immediately resume the next planned safe step. Stop only on a new material risk or missing authority.
+
+### 2026-08-22 — Intermediate modes are not the product destination
+**Mistake:** I treated green pilot, shadow, demo, mock, default-off, and evidence-only implementations as completed inventory items even when their customer production paths were not active.
+**Correction:** Talal stated that everything should be in production and nothing should remain in pilot, shadow, or demo mode.
+**Rule:** Treat pilot, shadow, demo, mock, default-off, and evidence-only states as temporary release stages. Keep the capability open until the governed production path is enabled and proven live. Never remove a safety gate or fabricate consent to change the label; when production authority or evidence is missing, record the exact blocker and continue the work that can safely be completed.

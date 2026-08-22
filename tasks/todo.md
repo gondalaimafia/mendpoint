@@ -2856,3 +2856,17 @@ restoration.
 - GREEN: 13 checkpoint tests and 7 authenticated coordinator tests pass. Exact execution reopening still rejects the newer executor, delivery accepts only that field difference, and a changed constraint still fails closed.
 - Full verification: the complete monorepo `npm test` command exited 0, including 443 Transformer tests, 462 API tests, 410 worker tests, and 161 script tests. Transformer, worker, and API typechecks, the production build, GA gate, and the production dependency audit all pass; the audit reports 0 vulnerabilities.
 - Security review: the authenticated envelope, canonical state, envelope metadata, tenant, environment, campaign, unit, repository, snapshot, source and candidate manifests, recipe, constraint, verification plan, and candidate seal remain exact. Only `executorDigest` may differ in the delivery-only opener. The execution and resume opener is unchanged and still rejects that difference.
+
+## 2026-08-22 Production-only product promotion
+
+- [ ] Inventory every runtime, workflow, environment, route, worker, public claim, and release artifact that is pilot, shadow, demo, mock, default off, inactive, or evidence only.
+- [ ] Classify each surface as promotion ready, code incomplete, evidence blocked, or authority blocked, with an exact source and production proof pointer.
+- [ ] Restore the shared production foundation before merging any change that would trigger deployment.
+- [ ] Promote eligible capabilities in dependency order without weakening tenant consent, source control authorization, sandbox egress, reviewer approval, or rollback controls.
+- [ ] Run focused regressions, full tests, all workspace typechecks, production build, GA and governance checks, dependency audit, container startup, deployment E2E, exact live probes, restart recovery, and authenticated browser verification.
+- [ ] Merge only green protected changes, verify the exact deployed revision, and remove pilot, shadow, demo, mock, and inactive claims only where production evidence exists.
+- [ ] Record any remaining external authority or evidence blockers as blockers, not as production functionality.
+
+### Review
+
+In progress. The target state is production operation with retained safety controls, not global flag deletion or terminology-only renaming. A capability remains incomplete until its real production path, rollback, observability, and exact live evidence pass.
