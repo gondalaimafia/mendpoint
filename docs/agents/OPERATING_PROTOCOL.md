@@ -416,3 +416,23 @@ The tell is that the repository contains readers but no writer. Absence of a wri
 A change that retired two per-customer backup path variables reached review before this was caught. Its own loud-failure guard would have refused boot for any customer who had set them, which is the guard working correctly against a change that should not have been made.
 
 When in doubt, keep reading the old name. A retained alias costs a lookup; a retired one costs a customer outage.
+
+### 18.2 A search that returns nothing may not have searched
+
+On the Windows host, Git Bash rewrites arguments that look like paths before the
+command sees them (MSYS path conversion). A pattern containing `="/` — for example
+`href="/metrics` — matches the `key=/path` rule, so `git grep` silently searches for
+a rewritten string and reports **no matches**. Zero results from a mangled pattern
+is indistinguishable from zero results from an honest search, and "nothing links to
+this" is exactly the kind of conclusion that gets acted on.
+
+Two rules follow:
+
+- Prefix any search whose pattern contains a slash with `MSYS_NO_PATHCONV=1`, or
+  write the pattern so no slash follows `=` or a quote.
+- Before reporting a negative result as a finding, confirm the search can find
+  something. Run it against a string you know is present in the same file. A search
+  that cannot produce a hit has not established an absence.
+
+This is the third-state defect in the tooling rather than the product: "the query
+did not run correctly" collapsed into "there is nothing there."
