@@ -1,27 +1,50 @@
 name: Sandbox egress acceptance
 
+# Reusable engine: proves default-deny egress inside a real sandbox Machine,
+# signs the acceptance receipt only if that probe passes, and rotates the receipt
+# onto every consuming app. It is invoked from sandbox-egress-renewal.yml by two
+# paths that differ ONLY in which environment gates the mint:
+#   - manual (workflow_dispatch): environment `sandbox-production` with its
+#     required reviewer and a human-typed confirmation string.
+#   - scheduled (cron): a deployment-branch-restricted environment whose rule is
+#     the default branch. GitHub runs scheduled workflows only from the default
+#     branch, so the reviewed probe steps on that branch are guaranteed to run
+#     and gate the mint. That trusted-ref guarantee is the machine-checkable
+#     substitute for the human-typed string; the probe itself is never skipped.
 permissions:
   contents: read
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      confirmation:
-        description: Type SANDBOX_EGRESS_ACCEPTED to authorize one proof and receipt rotation
+      environment:
+        description: GitHub Environment whose protection gates this mint.
         required: true
+        type: string
+      require_confirmation:
+        description: When true, require the human-typed confirmation string (manual path).
+        required: false
+        default: false
+        type: boolean
+      confirmation:
+        description: Confirmation string, checked only when require_confirmation is true.
+        required: false
+        default: ""
         type: string
 
 jobs:
   accept:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: sandbox-production
+    environment: ${{ inputs.environment }}
     concurrency:
       group: sandbox-egress-production
       cancel-in-progress: false
     env:
       SANDBOX_FLY_API_TOKEN: ${{ secrets.SANDBOX_FLY_API_TOKEN }}
-      VERIFYING_FLY_API_TOKEN: ${{ secrets.VERIFYING_FLY_API_TOKEN }}
+      # Org-scoped token used to enumerate apps and rotate the receipt onto every
+      # consuming app (a per-app verifying token cannot reach the others).
+      ROTATION_FLY_API_TOKEN: ${{ secrets.ROTATION_FLY_API_TOKEN }}
       MENDPOINT_SANDBOX_EGRESS_SIGNING_KEY_PKCS8_BASE64: ${{ secrets.MENDPOINT_SANDBOX_EGRESS_SIGNING_KEY_PKCS8_BASE64 }}
       MENDPOINT_SANDBOX_EGRESS_APP: ${{ vars.SANDBOX_FLY_APP }}
       MENDPOINT_SANDBOX_EGRESS_IMAGE: ${{ vars.SANDBOX_IMAGE_DIGEST }}
@@ -29,6 +52,17 @@ jobs:
       MENDPOINT_SANDBOX_EGRESS_KEY_ID: ${{ vars.SANDBOX_EGRESS_KEY_ID }}
       SANDBOX_IMAGE_TAG: ${{ vars.SANDBOX_IMAGE_TAG }}
       SANDBOX_VERIFYING_APP: ${{ vars.SANDBOX_VERIFYING_APP }}
+      # Rotation targets are enumerated from configuration, not a hardcoded list:
+      # the operator naming convention (prefixes) and optional org filter select
+      # apps from the live Fly inventory.
+      SANDBOX_EGRESS_ROTATION_APP_PREFIXES: ${{ vars.SANDBOX_EGRESS_ROTATION_APP_PREFIXES }}
+      FLY_ORG: ${{ vars.FLY_ORG }}
+      # Failure visibility: a failed or skipped renewal must page BEFORE the
+      # receipt lapses. At least one sink is a hard prerequisite (asserted below).
+      PAGING_WEBHOOK_URL: ${{ secrets.PAGING_WEBHOOK_URL }}
+      PAGERDUTY_ROUTING_KEY: ${{ secrets.PAGERDUTY_ROUTING_KEY }}
+      MENDPOINT_SANDBOX_EGRESS_ALERT_LEAD_MS: ${{ vars.SANDBOX_EGRESS_ALERT_LEAD_MS }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -42,11 +76,29 @@ jobs:
         shell: bash
         env:
           CONFIRMATION: ${{ inputs.confirmation }}
+          REQUIRE_CONFIRMATION: ${{ inputs.require_confirmation }}
         run: |
           set -euo pipefail
-          test "$CONFIRMATION" = "SANDBOX_EGRESS_ACCEPTED"
+          if [ "$REQUIRE_CONFIRMATION" = "true" ]; then
+            # Manual path: a human authorizes this mint with the exact confirmation
+            # string, on top of the environment's required reviewer.
+            test "$CONFIRMATION" = "SANDBOX_EGRESS_ACCEPTED"
+          else
+            # Automated renewal path: no human types a string. The mint is
+            # authorized by a machine-checkable guarantee that the probe below runs
+            # on a TRUSTED REF -- this job runs only under an environment whose
+            # deployment-branch rule is the default branch, and GitHub runs
+            # scheduled workflows only from that branch. Assert the trusted ref
+            # here as defense in depth on top of that environment rule. The probe
+            # is NEVER skipped: whichever path mints, the steps below must pass.
+            test -n "$DEFAULT_BRANCH"
+            test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+          fi
+          # A failed or skipped renewal must be loud BEFORE the receipt lapses, so
+          # a paging sink is a hard prerequisite, never optional.
+          test -n "${PAGING_WEBHOOK_URL:-}" || test -n "${PAGERDUTY_ROUTING_KEY:-}"
           required=(
-            SANDBOX_FLY_API_TOKEN VERIFYING_FLY_API_TOKEN
+            SANDBOX_FLY_API_TOKEN ROTATION_FLY_API_TOKEN
             MENDPOINT_SANDBOX_EGRESS_SIGNING_KEY_PKCS8_BASE64
             MENDPOINT_SANDBOX_EGRESS_APP MENDPOINT_SANDBOX_EGRESS_IMAGE
             MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST MENDPOINT_SANDBOX_EGRESS_KEY_ID
@@ -198,10 +250,10 @@ jobs:
               minimumSchemaVersion: SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA_FLOOR,
             });
           '
-      - name: Rotate the verifying app authority
+      - name: Rotate the egress authority to every consuming app
         shell: bash
         env:
-          FLY_API_TOKEN: ${{ env.VERIFYING_FLY_API_TOKEN }}
+          FLY_API_TOKEN: ${{ env.ROTATION_FLY_API_TOKEN }}
         run: |
           set -euo pipefail
           attestation="$(jq -r '.attestationBase64' test-results/sandbox-egress/receipt.json)"
@@ -209,26 +261,63 @@ jobs:
           key_id="$(jq -r '.keyId' test-results/sandbox-egress/receipt.json)"
           policy_digest="$(jq -r '.policyDigest' test-results/sandbox-egress/receipt.json)"
           schema="$(jq -r '.payload.schemaVersion' test-results/sandbox-egress/receipt.json)"
-          flyctl secrets set --app "$SANDBOX_VERIFYING_APP" \
-            MENDPOINT_SANDBOX_FLY_IMAGE="$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
-            MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" \
-            MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64="$public_key" \
-            MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
-            MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
-            MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"
-          for attempt in $(seq 1 24); do
-            if curl --silent --show-error --fail --max-time 10 \
-              "https://${SANDBOX_VERIFYING_APP}.fly.dev/livez" \
-              >test-results/sandbox-egress/livez.json \
-              && curl --silent --show-error --fail --max-time 10 \
-                "https://${SANDBOX_VERIFYING_APP}.fly.dev/healthz" \
-                >test-results/sandbox-egress/healthz.json; then
-              exit 0
+          # Enumerate the apps that consume the receipt FROM CONFIGURATION -- the
+          # live Fly inventory filtered by the operator naming convention -- never
+          # a hardcoded list (a hardcoded list is how this rotation reached only
+          # one app). A newly provisioned customer app matching the convention is
+          # covered without editing anything here. The sandbox image app is
+          # excluded: it IS the isolation boundary and must never carry a receipt.
+          apps_json="$(flyctl apps list --json)"
+          targets="$(APPS_JSON="$apps_json" node --import tsx --input-type=module -e '
+            import { parseFlyAppListing, resolveSandboxEgressRotationTargets } from "@mendpoint/ops";
+            const apps = parseFlyAppListing(process.env.APPS_JSON ?? "");
+            const prefixes = (process.env.SANDBOX_EGRESS_ROTATION_APP_PREFIXES ?? "")
+              .split(",").map((value) => value.trim()).filter(Boolean);
+            const targets = resolveSandboxEgressRotationTargets(apps, {
+              verifyingApp: process.env.SANDBOX_VERIFYING_APP ?? "",
+              includePrefixes: prefixes,
+              org: process.env.FLY_ORG?.trim() || undefined,
+              excludeApps: [process.env.MENDPOINT_SANDBOX_EGRESS_APP ?? ""],
+            });
+            process.stdout.write(targets.join("\n"));
+          ')"
+          test -n "$targets"
+          printf '%s\n' "$targets" > test-results/sandbox-egress/rotation-targets.txt
+          while IFS= read -r app; do
+            test -n "$app" || continue
+            flyctl secrets set --app "$app" \
+              MENDPOINT_SANDBOX_FLY_IMAGE="$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
+              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" \
+              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64="$public_key" \
+              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
+              MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
+              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"
+            healthy=false
+            for attempt in $(seq 1 24); do
+              if curl --silent --show-error --fail --max-time 10 \
+                  "https://${app}.fly.dev/livez" \
+                  >"test-results/sandbox-egress/livez-${app}.json" \
+                && curl --silent --show-error --fail --max-time 10 \
+                  "https://${app}.fly.dev/healthz" \
+                  >"test-results/sandbox-egress/healthz-${app}.json"; then
+                healthy=true
+                break
+              fi
+              sleep 5
+            done
+            if [ "$healthy" != true ]; then
+              echo "The app $app did not become healthy after receipt rotation"
+              exit 1
             fi
-            sleep 5
-          done
-          echo "The verifying app did not become healthy after receipt rotation"
-          exit 1
+          done <<< "$targets"
+      - name: Confirm the renewed receipt has healthy margin
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fail loudly (and page) if the freshly minted receipt is somehow
+          # already inside the alert lead window -- a misconfigured lifetime would
+          # otherwise ship a receipt that lapses before the next renewal.
+          node --import tsx scripts/check-sandbox-egress-freshness.ts
       - name: Upload sandbox acceptance evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -237,3 +326,19 @@ jobs:
           path: test-results/sandbox-egress/
           if-no-files-found: error
           retention-days: 90
+      - name: Page on renewal failure
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # A failed renewal is surfaced immediately -- hours before the receipt
+          # lapses -- rather than discovered when workers start crash-looping.
+          node --import tsx --input-type=module -e '
+            import { pageEgressReceiptRenewalFailed } from "@mendpoint/notify";
+            await pageEgressReceiptRenewalFailed({
+              runUrl: process.env.RUN_URL,
+              detail: "sandbox egress receipt renewal run failed",
+            });
+          '
