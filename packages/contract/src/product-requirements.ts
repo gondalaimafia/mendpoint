@@ -178,6 +178,31 @@ const V3_REQUIREMENT_ID = /^ME-(FET|REG|CGR)-[0-9]{3}$/;
 const V3_GAP_ID = /^(FET|REG|CGR)-[0-9]{3}$/;
 
 /**
+ * The v4.0 persistent-context baseline register set: the operating-context
+ * surface the v4.0 specification adds over v3.0 — Mission Space (§6.5), Mission
+ * decisions/exceptions/artifacts (§6.9) and the §28.1.0 acceptance criteria
+ * (MSN), the Shared Mission Task Engine (§6.8, MTE), Organization Memory (§6.6,
+ * OMM), the Policy Envelope (§6.7, PEV), the Mission Context Compiler (§6.10,
+ * MCC), and the pluggable structural-extractor contract (§11.22–§11.26, SXT).
+ * These identifiers derive from a different audit than the foundational and
+ * v3.0 sets, so they are listed explicitly rather than generated from a
+ * domain-count table.
+ */
+export const V4_PLATFORM_REQUIREMENT_IDS = [
+  "ME-MSN-001",
+  "ME-MSN-002",
+  "ME-MSN-003",
+  "ME-MTE-001",
+  "ME-OMM-001",
+  "ME-PEV-001",
+  "ME-MCC-001",
+  "ME-SXT-001",
+].sort();
+
+const V4_REQUIREMENT_ID = /^ME-(MSN|MTE|OMM|PEV|MCC|SXT)-[0-9]{3}$/;
+const V4_GAP_ID = /^(MSN|MTE|OMM|PEV|MCC|SXT)-[0-9]{3}$/;
+
+/**
  * The foundational register set. Its accepted identifiers, identifier shape,
  * and gap-analysis token shape are exactly what the register enforced before
  * multi-set validation existed; nothing here changes the foundational contract.
@@ -198,6 +223,14 @@ export const V3_PLATFORM_REGISTER_SET: RegisterSetDefinition = {
   expectedIds: V3_PLATFORM_REQUIREMENT_IDS,
 };
 
+export const V4_PLATFORM_REGISTER_SET: RegisterSetDefinition = {
+  key: "v4-platform",
+  title: "v4.0 persistent-context baseline requirements",
+  requirementIdPattern: V4_REQUIREMENT_ID,
+  gapIdPattern: V4_GAP_ID,
+  expectedIds: V4_PLATFORM_REQUIREMENT_IDS,
+};
+
 /**
  * The register sets enforced by default. The foundational set is validated
  * against the manifest's top-level `requirements`/`closurePlan`; every other
@@ -206,6 +239,7 @@ export const V3_PLATFORM_REGISTER_SET: RegisterSetDefinition = {
 export const PRODUCT_REGISTER_SETS: readonly RegisterSetDefinition[] = [
   FOUNDATIONAL_REGISTER_SET,
   V3_PLATFORM_REGISTER_SET,
+  V4_PLATFORM_REGISTER_SET,
 ];
 
 const TARGET_RELEASES = new Set<ProductTargetRelease>([
