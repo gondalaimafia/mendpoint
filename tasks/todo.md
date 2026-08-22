@@ -2916,7 +2916,7 @@ GREEN: a single preparation step now writes only run metadata to a retained arti
 - [x] Reconstruct the last failed and first successful protected activation runs from GitHub evidence.
 - [x] Compare the live failure boundary with the exact delivery-only code change that resolved it.
 - [x] Record the correction as reusable operating rules in `tasks/lessons.md`.
-- [ ] Verify the documentation diff, commit it separately, and publish it for review.
+- [x] Verify the documentation diff, commit it separately, and publish it for review.
 
 ### Review
 
