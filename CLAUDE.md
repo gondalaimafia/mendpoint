@@ -11,7 +11,7 @@ Before substantive work, read:
 1. `docs/agents/OPERATING_PROTOCOL.md`
 2. `REVIEW.md`
 3. `docs/agents/SECURITY_BOUNDARIES.md`
-4. relevant sections of `docs/product/mendpoint-product-platform-specification-v3.md`
+4. relevant sections of `docs/product/mendpoint-product-platform-specification-v4.md`
 5. applicable ADRs
 6. the current GitHub issue
 
