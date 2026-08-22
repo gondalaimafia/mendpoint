@@ -142,3 +142,12 @@ Always:
 8. open/update the PR
 9. request Claude peer review
 10. do not merge a material PR solely on your own authority
+
+## Cursor Cloud specific instructions
+
+Durable, non-obvious notes for Cloud Agents. Standard commands live in `README.md` and the root `package.json` scripts.
+
+- **Node runtime (critical):** This repo requires the latest Node 22.x (CI uses `node-version: "22"`). `packages/db` relies on `node:sqlite`'s `isTransaction`, which is absent from Node 22.14.0. On a stale runtime, SQLite-backed tests fail with `cannot start a transaction within a transaction` and the API crashes at boot. The Cloud environment provides Node 22.23.2 as the default `node`/`npm`/`npx`; if `node --version` ever reports 22.14.0 you are on the stale platform runtime — use a login shell (or the nvm 22.x bin) before running tests/servers.
+- **Running the API in dev:** `npm run dev:api` (port 3001) fails to boot unless `MENDPOINT_APPLICATION_DATA_KEY` is set to a distinct 32-byte key — `MENDPOINT_APPLICATION_DATA_KEY=$(openssl rand -hex 32) npm run dev:api` works for local dev. In dev, API auth is `off` (header identity such as `x-tenant-id`/`x-role` is accepted); it becomes `required` under `NODE_ENV=production`.
+- **Running the web dashboard in dev:** `npm run dev:web` (port 3000) serves public pages without auth, but operator dashboards require `MENDPOINT_WEB_ACCESS_TOKEN` (any non-empty value locally) plus `MENDPOINT_API_URL=http://127.0.0.1:3001`. Sign in at `/access` with that token.
+- **Seed/demo (offline):** `npm run db:seed` populates `data/mendpoint.sqlite`; `npm run demo` runs the full change→impact→PR pipeline with no network.
