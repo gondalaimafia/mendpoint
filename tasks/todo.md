@@ -3265,3 +3265,20 @@ Objective: finish only the internal evaluation lane authorized by ADR-0006. Buil
 - Windows cannot prove the Linux network namespace boundary and this machine has no WSL or Docker. The pull-request workflow is therefore the first eligible real process smoke; no local execution is represented as containment evidence.
 - Production selection remains impossible: the process factory is absent from the package root, there is no environment selector or caller, and the adoption decision remains internal only.
 - Linux process proof: GitHub run `32600370037` passed on exact revision `557b3e4c47726f4858ab52c0764bbc61bfc5758f`. The two-file smoke produced 4 nodes and 5 edges in 220.901 ms at 33,460,224 peak RSS bytes. The evidence record explicitly denies sealed-holdout, four-tier, quality, economics, and production-adoption claims.
+
+## 2026-08-22 Sandbox egress renewal recovery
+
+- [x] Diagnose the live crash loop and retain the exact expired-attestation evidence.
+- [x] Restrict `sandbox-production-renewal` to the exact default branch before adding authority.
+- [x] Reconcile the reviewed nonsecret image, policy, app, org, target, and freshness bindings across both renewal environments.
+- [x] Make failure evidence and paging runnable even when protected-authority validation fails before dependency installation.
+- [x] Run the focused workflow tests, workflow syntax checks, release gates, and strict diff review.
+- [ ] Provision only approved secret authority, rerun the already-confirmed one-proof rotation, and require live health before merging unrelated PRs.
+
+### Review
+
+Production Machine `896427a6e67358` repeatedly reaches the web ready state, then the worker refuses `sandbox_egress_attestation_expired`; the shared launcher exits and Fly reaches its restart cap. Renewal runs fail before probing because their protected environments are incomplete. The manual environment is missing an org-scoped rotation token and paging sink. The scheduled environment originally had neither a default-branch restriction nor any bindings; it is now restricted to exact `main` and carries only the reviewed nonsecret bindings. No credential value was read.
+
+RED: the workflow test could not find any runtime-preparation step before protected-authority validation. The retained failed runs corroborate the defect: validation exited, evidence upload found no files, and the failure page crashed because `tsx` had not been installed.
+
+GREEN: a single preparation step now writes only run metadata to a retained artifact and installs the existing reporter before validation. The probe, signing, and rotation order is unchanged. Thirteen focused renewal and image-egress tests pass, both workflow files parse as YAML, every action remains commit-pinned, GA passes, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.

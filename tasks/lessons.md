@@ -157,3 +157,8 @@
 **Mistake:** I continued preparing the ReGauge activation after Talal redirected the session to the rest of the outstanding inventory.
 **Correction:** Talal explicitly said to skip ReGauge activation and start the remaining inventory.
 **Rule:** When a user parks one workstream inside a larger plan, cancel any pending execution for that workstream, preserve its state, and immediately move to the next authorized inventory item without treating prior priority as current authority.
+
+### 2026-08-22 — Reconcile the full inventory before resuming
+**Mistake:** I resumed the non-ReGauge backlog without explicitly carrying the outstanding DeepSeek verifier slice into the active sequence.
+**Correction:** Talal called out that the DeepSeek and verifier work was still outstanding and asked me to complete it too.
+**Rule:** Before resuming a parked backlog, reconcile the active plan against every previously accepted inventory item and environment blocker. Preserve named slices explicitly so sequencing one item cannot silently omit another.
