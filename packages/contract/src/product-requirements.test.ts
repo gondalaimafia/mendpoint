@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalTextSha256,
   FOUNDATIONAL_REGISTER_SET,
+  PRODUCT_REGISTER_SETS,
+  V4_PLATFORM_REGISTER_SET,
+  V4_PLATFORM_REQUIREMENT_IDS,
   validateProductRequirements,
   type RegisterSetDefinition,
 } from "./product-requirements.js";
@@ -368,5 +371,37 @@ describe("multi-set product requirement validation", () => {
       subject: "additionalRegisterSets:v3-platform",
       message: "closure plan count must equal 1",
     });
+  });
+});
+
+describe("v4-platform register set", () => {
+  it("is enforced by default alongside the foundational and v3.0 sets", () => {
+    const keys = PRODUCT_REGISTER_SETS.map((set) => set.key);
+    expect(keys).toContain("v4-platform");
+    expect(keys).toEqual(["foundational", "v3-platform", "v4-platform"]);
+  });
+
+  it("declares the eight persistent-context identifiers exactly", () => {
+    expect(V4_PLATFORM_REGISTER_SET.expectedIds).toEqual(V4_PLATFORM_REQUIREMENT_IDS);
+    expect(V4_PLATFORM_REQUIREMENT_IDS).toEqual([
+      "ME-MCC-001",
+      "ME-MSN-001",
+      "ME-MSN-002",
+      "ME-MSN-003",
+      "ME-MTE-001",
+      "ME-OMM-001",
+      "ME-PEV-001",
+      "ME-SXT-001",
+    ]);
+  });
+
+  it("accepts its own identifiers and rejects foreign ones", () => {
+    for (const id of V4_PLATFORM_REQUIREMENT_IDS) {
+      expect(V4_PLATFORM_REGISTER_SET.requirementIdPattern.test(id)).toBe(true);
+    }
+    expect(V4_PLATFORM_REGISTER_SET.requirementIdPattern.test("ME-FND-001")).toBe(false);
+    expect(V4_PLATFORM_REGISTER_SET.requirementIdPattern.test("ME-FET-015")).toBe(false);
+    expect(V4_PLATFORM_REGISTER_SET.gapIdPattern.test("MSN-001")).toBe(true);
+    expect(V4_PLATFORM_REGISTER_SET.gapIdPattern.test("SPEC-01")).toBe(false);
   });
 });
