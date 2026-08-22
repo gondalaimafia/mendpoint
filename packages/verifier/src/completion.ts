@@ -21,6 +21,11 @@ export function createCompletionVerifierEvidencePack(input: Readonly<{
   observableSummary: string;
   deterministicEvidenceDigest: string;
   deterministicEvidenceRefs: readonly string[];
+  repositoryExcerpt?: Readonly<{
+    digest: string;
+    locator: string;
+    content: string;
+  }>;
   assembledAt: string;
   assemblerVersion: string;
 }>): VerifierEvidencePack {
@@ -37,6 +42,21 @@ export function createCompletionVerifierEvidencePack(input: Readonly<{
     evidenceRefs,
     summary: boundedText(input.observableSummary, "verifier_completion_summary_invalid", 32_000),
   });
+  const repositoryExcerpt = input.repositoryExcerpt
+    ? {
+        id: "candidate_repository_excerpt",
+        kind: "repository_excerpt" as const,
+        digest: exactDigest(input.repositoryExcerpt.digest, "verifier_completion_repository_excerpt_digest_invalid"),
+        locator: boundedText(input.repositoryExcerpt.locator, "verifier_completion_repository_excerpt_locator_invalid", 1024),
+        content: repositoryExcerptContent(input.repositoryExcerpt.content),
+      }
+    : null;
+  const candidateEvidenceRefs = [
+    "deterministic_completion",
+    "external_verifier_authority",
+    ...(repositoryExcerpt ? [repositoryExcerpt.id] : []),
+    ...evidenceRefs,
+  ].sort(codeUnitCompare);
   return createVerifierEvidencePack({
     schemaVersion: "2026-08-17.v1",
     tenantId: identifier(input.tenantId, "verifier_tenant_id_invalid"),
@@ -53,6 +73,7 @@ export function createCompletionVerifierEvidencePack(input: Readonly<{
     sources: [
       { id: "deterministic_completion", kind: "verification", digest: exactDigest(input.deterministicEvidenceDigest, "verifier_completion_evidence_digest_invalid"), locator: evidenceRefs.join(","), content: completionEvidence },
       { id: "external_verifier_authority", kind: "owner", digest: sha256(governanceEvidenceRef), locator: governanceEvidenceRef, content: `External verifier authority: ${governanceEvidenceRef}` },
+      ...(repositoryExcerpt ? [repositoryExcerpt] : []),
     ],
     checks: [{ id: "deterministic_completion", status: "passed", evidenceRefs: [...evidenceRefs], candidateIds: null }],
     candidates: [{
@@ -61,11 +82,19 @@ export function createCompletionVerifierEvidencePack(input: Readonly<{
       kind: "completion",
       observableOutput: completionEvidence,
       changedPaths: [...changed],
-      evidenceRefs: ["deterministic_completion", "external_verifier_authority", ...evidenceRefs].sort(codeUnitCompare),
+      evidenceRefs: candidateEvidenceRefs,
       deterministicCheckIds: ["deterministic_completion"],
       hardCriterionResults: [],
     }],
     assembledAt: input.assembledAt,
     assemblerVersion: input.assemblerVersion,
   });
+}
+
+function repositoryExcerptContent(value: string): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 16_384 ||
+      !value.trim() || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) {
+    fail("verifier_completion_repository_excerpt_invalid");
+  }
+  return value;
 }

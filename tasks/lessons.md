@@ -133,3 +133,7 @@
 **Mistake:** The slower activation path repeatedly approached persisted state as something to rebuild or rematerialize, creating new snapshots and additional replay conflicts even though the completed, authorized attempt was already valid.
 **Correction:** The successful path reused the existing checkpoint, encrypted workspace, candidate seal, campaign, and authorization, then changed only the delivery reader needed to consume them.
 **Rule:** Treat authenticated durable state as an asset during recovery. Prefer read-only replay from the exact stored artifact over recreation. A recovery fix should be rejected if it causes already completed model work, verification, authorization, or source capture to run again without evidence that the stored result is invalid.
+### 2026-08-22 — Park a prioritized workstream when direction changes
+**Mistake:** I continued preparing the ReGauge activation after Talal redirected the session to the rest of the outstanding inventory.
+**Correction:** Talal explicitly said to skip ReGauge activation and start the remaining inventory.
+**Rule:** When a user parks one workstream inside a larger plan, cancel any pending execution for that workstream, preserve its state, and immediately move to the next authorized inventory item without treating prior priority as current authority.

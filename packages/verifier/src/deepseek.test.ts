@@ -62,6 +62,9 @@ describe("DeepSeek verifier backend", () => {
     expect(calls[0]?.body).toMatchObject({
       model: "deepseek-v4-flash", thinking: { type: "disabled" }, logprobs: true, top_logprobs: 20,
     });
+    const messages = calls[0]?.body.messages as Array<{ role: string; content: string }>;
+    expect(messages[1]?.content).toContain("Replace each X with exactly one uppercase letter from A through T");
+    expect(messages[1]?.content).not.toContain("[A-T]");
     expect(JSON.stringify(calls[0]?.body)).not.toContain("deepseek-secret");
     expect(result.scores.candidate_a).toBeGreaterThan(0.9);
     expect(result.scores.candidate_b).toBeLessThan(0.1);
@@ -188,6 +191,27 @@ describe("DeepSeek verifier backend", () => {
     });
     const result = await backend.score(request());
     expect(result.scores.candidate_a).toBeLessThan(0.1);
+  });
+
+  it("decodes score alternatives when the provider fuses the tag boundary with the score letter", async () => {
+    const response = structuredClone(okResponse);
+    response.body.choices[0]!.message.content = "<score>A</score>";
+    response.body.choices[0]!.logprobs.content = [
+      { token: "<", logprob: -0.01, top_logprobs: [{ token: "<", logprob: -0.01 }] },
+      { token: "score", logprob: -0.01, top_logprobs: [{ token: "score", logprob: -0.01 }] },
+      { token: ">A", logprob: -0.01, top_logprobs: [{ token: ">A", logprob: -0.01 }, { token: ">T", logprob: -5 }] },
+      { token: "</", logprob: -0.01, top_logprobs: [{ token: "</", logprob: -0.01 }] },
+      { token: "score", logprob: -0.01, top_logprobs: [{ token: "score", logprob: -0.01 }] },
+      { token: ">", logprob: -0.01, top_logprobs: [{ token: ">", logprob: -0.01 }] },
+    ];
+    const backend = createDeepSeekVerifierBackend({
+      apiKey: "key", transport: { request: async () => response }, scoringMode: "nonthinking_logprobs",
+      timeoutMs: 1000, maximumRetries: 0,
+      pricing: { version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 },
+    });
+    const result = await backend.score({ ...request(), candidates: [request().candidates[0]] });
+    expect(result.scores.candidate_a).toBeGreaterThan(0.9);
+    expect(result.recognizedProbabilityMass).toBeGreaterThan(0.9);
   });
 
   it("rejects a truncated score distribution with insufficient recognized probability mass", async () => {

@@ -2952,3 +2952,23 @@ GREEN: `/readyz` now re-exports the established `/healthz` readiness handler and
 RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
 
 GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.
+## 2026-08-22 Non-ReGauge outstanding inventory
+
+Direction: park ReGauge activation and resume the remaining seven-day inventory. Preserve the coordinator, encrypted volumes, campaign state, and merged checkpoint fix. Do not approve or dispatch another ReGauge activation until Talal resumes that workstream.
+
+- [x] Cancel waiting ReGauge production workflow `32592472552` before protected approval.
+- [ ] Restore `mendpoint-talal` health by renewing the expired sandbox egress receipt without weakening the default-deny proof.
+- [x] Reconcile live open pull requests, dirty worktrees, failed workflows, TODO markers, outstanding planning records, and external environment bindings.
+- [ ] Review and finish eligible learning-flywheel work, beginning with PR 319, without overlapping Claude's active branch.
+- [ ] Finish delegated cleanup and acceptance proof wiring that has current authority. Exact cleanup authority and attestation role acceptance are green; the durable job consumer remains next.
+- [x] Give the Fettler completion verifier bounded substantive repository evidence and add a one-request, synthetic-public DeepSeek shadow smoke runner.
+- [ ] Finish Graphify implementation and comparative evidence that can run under current sandbox authority.
+- [ ] Close small code-quality gaps: pilot intake authorization parity, unlinked outcomes metrics, renamed environment coverage, dead adaptive router aggregation, and collision-proof ADR numbering.
+- [ ] Run affected tests red first, full tests, workspace typechecks, production build, GA checks, dependency audit, container/deployment E2E, and live verification before merge.
+- [ ] Record separately anything requiring a new credential, tenant consent, reviewer binding, or external target; do not simulate activation evidence.
+
+### Review
+
+In progress. ReGauge workflow `32592472552` is cancelled. Main production is independently unhealthy because `MENDPOINT_SANDBOX_EGRESS_ATTESTATION` expired; the reviewed renewal workflow fails closed because `ROTATION_FLY_API_TOKEN` and a paging sink are absent from `sandbox-production`.
+
+DeepSeek review: the dedicated coordinator has the key and exact shadow configuration, while the main Fettler app does not yet have those bindings. The prior product pack carried only verification and owner references, so even a high score could not reach `ready_for_review`. Fettler now assembles a bounded excerpt from only exact changed files, rejects traversal, symlinks, binary data, oversized files, and non-file paths, and adds that substantive evidence to the shadow pack. The live provider exposed two protocol bugs hidden by mocks: the prompt's literal `[A-T]` placeholder was echoed, and V4 Flash fused the tag boundary with the score token (`>A`). RED regressions now require an explicit X substitution and contextual normalization that accepts only alternatives with the exact same token prefix and suffix. Focused verifier and worker suites plus affected typechecks pass. A synthetic-public live protocol proof returned model `deepseek-v4-flash`, nonthinking logprobs, candidate score `1`, recognized probability mass `1`, 288 total tokens, estimated cost `$0.0000060368`, latency `823 ms`, and response digest `sha256:c550da51589c3e28d91587d5af58b4655d9f6c1d17c84c6d08702d4d9604f4b3`. This is provider compatibility evidence, not ReGauge activation or a quality benchmark; no ReGauge worker was started.

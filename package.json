@@ -45,6 +45,7 @@
     "eval:synthetic:arms": "tsx evals/runners/run-arms.ts",
     "eval:synthetic:check": "tsc -p evals/tsconfig.json --noEmit && vitest run evals",
     "eval:agents:live": "tsx packages/eval/src/agent-eval-live.ts",
+    "verifier:deepseek:smoke": "tsx scripts/deepseek-verifier-live-smoke.ts",
     "eval:transformer:canary": "tsx packages/eval/src/transformer-canary.ts",
     "eval:performance": "tsx packages/eval/src/performance-runner.ts",
     "regauge:production:proof": "tsx scripts/regauge-production-proof.ts",
