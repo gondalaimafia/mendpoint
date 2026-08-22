@@ -31,6 +31,7 @@ Canonical edge kinds remain specific: `imports`, `calls`, `inherits`, `implement
 | `EXTRACTED` | `observed` |
 | `INFERRED` | `inferred` |
 | `AMBIGUOUS` | `ambiguous` plus an explicit ambiguity record |
+| `UNSPECIFIED` inserted by the pinned bridge when Graphify omits confidence | `ambiguous` plus an explicit warning and ambiguity record |
 
 The original confidence label, relation, source file, location, Graphify version, snapshot, and observation time remain in provenance. Structural state cannot be promoted to deterministic provider truth without separate corroboration.
 
