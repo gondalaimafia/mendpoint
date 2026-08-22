@@ -5,7 +5,7 @@ import { existsSync, accessSync, constants, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assessModelEgress } from "@mendpoint/shared";
 import { RELEASE, releaseBanner } from "./release.js";
-import { validateApiEnv } from "./env.js";
+import { validateApiEnv, assessCustomerReadiness } from "./env.js";
 import { featureMatrix } from "./features.js";
 import { assessCustomerBackupReadiness } from "./disaster-recovery.js";
 import { recordCounter, recordHistogram, startSpan } from "./telemetry.js";
@@ -124,6 +124,20 @@ export function readiness(opts?: {
       name: "last_verified_backup",
       ok: backup.ok,
       detail: backup.detail,
+    });
+
+    // A customer deployment's readiness must reflect its declared state and its
+    // unmet preconditions, never a constant. Indeterminate and not-ready both
+    // fail this check (fail closed); only a "ready" declaration with no env
+    // errors reads as ready, and any blocker is named in the detail.
+    const customerReadiness = assessCustomerReadiness(process.env, env.errors);
+    checks.push({
+      name: "customer_readiness",
+      ok: customerReadiness.status === "ready",
+      detail:
+        customerReadiness.status === "ready"
+          ? "ready"
+          : `${customerReadiness.status}: ${customerReadiness.reasons.join("; ")}`,
     });
   }
 
