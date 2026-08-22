@@ -3,6 +3,7 @@ import {
   createTransformerPilotAttemptCheckpointConfig,
   deriveTransformerAttemptCheckpointBinding,
   openTransformerAttemptCheckpoint,
+  openTransformerAttemptCheckpointForDraftDelivery,
   openTransformerWorkspaceArtifact,
   runTransformerAttempt,
   type ExactSourceSnapshot,
@@ -265,7 +266,11 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
             envelope.generation !== claim.checkpointHead.generation) {
           throw new Error("transformer_multinode_draft_checkpoint_invalid");
         }
-        const state = openTransformerAttemptCheckpoint(envelope, config.encryptionKey, binding);
+        const state = openTransformerAttemptCheckpointForDraftDelivery(
+          envelope,
+          config.encryptionKey,
+          binding,
+        );
         if (state.stage !== "terminal" || !state.candidateSeal ||
             state.candidateSeal.candidateRevision !== claim.candidateRevision ||
             state.candidateSeal.candidateDigest !== claim.candidateDigest) {

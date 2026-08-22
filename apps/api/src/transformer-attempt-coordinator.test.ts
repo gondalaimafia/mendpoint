@@ -206,7 +206,7 @@ describe("real Transformer multi-node coordinator", () => {
     await expect(response.json()).resolves.toEqual({ error: "coordinator_campaign_not_ready" });
   });
 
-  it("runs the actual recipe and verifier through authenticated remote coordinator and exact fenced source", async () => {
+  it("delivers an authenticated terminal checkpoint after the executor deployment changes", async () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-real-multinode-")); roots.push(root);
     let coordinatorNow = new Date().toISOString();
     const service = new TransformerPilotExecutionService(join(root, "pilot.sqlite"), { rawGateConfig: gate, environment: "test", now: () => coordinatorNow });
@@ -317,7 +317,11 @@ describe("real Transformer multi-node coordinator", () => {
     ]);
     await expect(runner.runDeliveryOnce()).resolves.toEqual({ status: "idle" });
     coordinatorNow = new Date(Date.parse(coordinatorNow) + 2 * 60 * 60 * 1_000).toISOString();
-    const replacement = createTransformerMultinodeService({ ...runnerConfig, workerId: "worker-b" }, transport, artifactBackend);
+    const replacement = createTransformerMultinodeService({
+      ...runnerConfig,
+      workerId: "worker-b",
+      executorDigest: `sha256:${"f".repeat(64)}`,
+    }, transport, artifactBackend);
     await expect(replacement.runDeliveryOnce()).resolves.toEqual({ status: "delivered", deliveryId: expect.any(String), pullRequestUrl: "https://github.com/acme/repo-a/pull/7", commitSha: revision("d") });
     expect(loseDraftCompletionResponse).toBe(false);
     expect(draftCalls).toBe(2);
