@@ -92,9 +92,25 @@ Organization Memory has a correctly-governed write path and **no producer can fe
 
 Also: `MENDPOINT_REGAUGE_LEARNING_ENABLED` is checked in six places and set in **none** of the three Fly configs.
 
-### 2.4 Scale the real-repository harness
+### 2.4 Exercise the rest of the pipeline on the same real repository
 
-Once milestone 1 lands (one repository, one injected defect, honest result), milestone 2 is a corpus. Do not scale before the first result is trustworthy.
+Milestone 1 landed: `openai/openai-quickstart-node` @ `6e6e034` (MIT), with the provider removing `POST /v1/chat/completions`. Result: **recall 5/5, precision 83%, verdict FAIL** on one debatable finding — `batch/index.js`, where line 15 is literally `endpoint: "/v1/chat/completions"`. The sealed key was deliberately not retuned to absorb it; whether that is a true positive is a grading-rule decision.
+
+**What that run did not touch.** It ran `analyzeImpact` with `useLlm: false` — fully deterministic, **zero model calls**. So it exercised the impact engine alone: no model-assisted confirm, no Muse or DeepSeek verification, no remediation, no pull-request generation.
+
+**Milestone 2 is depth on the same repository, not breadth across many.**
+
+1. Re-run the identical scenario with the **LLM confirm path on**, and compare against the deterministic result.
+2. Then carry it through **remediation to a draft pull request**.
+3. Only then add repositories.
+
+The sequencing matters: the deterministic 5/5 is now a **control**. If the model-assisted run scores worse on the same repository with the same sealed key, that is a clean attributable signal rather than a confound — which is precisely what the earlier persistent-context benchmark lacked when its control arm was modelled rather than run.
+
+Two prerequisites, both owner actions already listed in section 1: the tenant consent grant (1.1) for external model egress, and one installation event (1.2) so a draft can actually be delivered. Neither is a code change.
+
+The scenario was built to punish shortcuts and should be preserved as-is: nine sibling files in the same repository import the same `openai` package and call other endpoints, so a correct trace must follow which endpoint each call reaches rather than noticing that a file imports the provider. The deterministic path found the non-obvious `fine_tuning/use_model.js` site and flagged none of the eight decoys.
+
+Do not scale to a corpus before the first end-to-end result is trustworthy.
 
 ### 2.5 Make ADR numbering collision-proof
 
