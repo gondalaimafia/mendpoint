@@ -2836,6 +2836,11 @@ restoration.
 - [ ] Strictly review the diff, commit, push, open and merge the PR only after checks pass.
 - [ ] Rerun the protected ReGauge activation, prove one real draft, readiness soak, containment, exact deployed revision, and evidence artifact.
 - [ ] Resume the preserved broader inventory after ReGauge activation: DeepSeek governed activation, learning, Graphify, and delegated proof finalization.
+- [x] Contain the post-claim production worker while preserving the coordinator and encrypted campaign state.
+- [x] Reproduce the post-claim failure against the exact live checkpoint and trace it to an executor digest change across deployments.
+- [x] Add a red regression proving an authenticated terminal checkpoint remains deliverable after the delivery worker deploys a newer executor revision.
+- [x] Open terminal delivery checkpoints with exact authenticated binding checks while permitting only the executor revision to differ; keep execution resume strict.
+- [ ] Run focused and full verification, review, merge, redeploy, and rerun the protected one-draft canary.
 
 ### Review
 
@@ -2845,3 +2850,9 @@ restoration.
 - Full monorepo test command passes every workspace and the 73 script tests. The three affected package typechecks, full production build, GA gate, and production dependency audit also pass.
 - Strict review: no P0/P1. Server-owned authority binds the exact campaign, environment, one-unit limit, source revision, remote repository, protected approval, and expiry. Cross-workflow recovery reuses the exact pending draft read-only without rewriting its historical authorization; pause and lease races remain fenced.
 - Live binding: installation 151614362 now has account ID 273115720, selected repository access, and no suspension/deletion. No App settings mutation was needed.
+- Post-merge live activation reached `delivery.drafts_authorized` and two fenced `delivery.draft_claimed` events, proving the claim fix. Exact source and target recovery passed. The worker then failed before GitHub branch creation at `openTransformerAttemptCheckpoint` with `transformer_attempt_checkpoint_binding_mismatch`.
+- Root cause: the checkpoint binding includes `executorDigest`, and the protected workflow derives that digest from `GITHUB_SHA`. The completed attempt was created by the prior deployed revision; delivery ran after #312 on a different revision. The integration test used one digest for both phases, so it did not exercise deployment-boundary recovery. Delivery only reads an already terminal, authenticated checkpoint; attempt execution and resume must retain exact executor matching.
+- RED: the package regression failed because the delivery-only opener did not exist, and the authenticated coordinator regression failed at `transformer_attempt_checkpoint_binding_mismatch` when its replacement worker used a newer executor digest.
+- GREEN: 13 checkpoint tests and 7 authenticated coordinator tests pass. Exact execution reopening still rejects the newer executor, delivery accepts only that field difference, and a changed constraint still fails closed.
+- Full verification: the complete monorepo `npm test` command exited 0, including 443 Transformer tests, 462 API tests, 410 worker tests, and 161 script tests. Transformer, worker, and API typechecks, the production build, GA gate, and the production dependency audit all pass; the audit reports 0 vulnerabilities.
+- Security review: the authenticated envelope, canonical state, envelope metadata, tenant, environment, campaign, unit, repository, snapshot, source and candidate manifests, recipe, constraint, verification plan, and candidate seal remain exact. Only `executorDigest` may differ in the delivery-only opener. The execution and resume opener is unchanged and still rejects that difference.

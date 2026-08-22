@@ -26,6 +26,7 @@ import {
   openTransformerCoordinatorCompletionRequest,
   openTransformerModelEffectResultArtifact,
   openTransformerAttemptCheckpoint,
+  openTransformerAttemptCheckpointForDraftDelivery,
   openTransformerVerifierEffectResultArtifact,
   openTransformerWorkspaceArtifact,
   openTransformerWorkspaceTransitionRequest,
@@ -325,6 +326,33 @@ describe("Transformer attempt checkpoint", () => {
       ...current.state,
       binding: { ...current.state.binding, sourceManifestDigest: digest("wrong source") },
     }, key)).rejects.toThrow(/transformer_attempt_checkpoint_(binding|genesis|state)/);
+  });
+
+  it("opens an authenticated delivery checkpoint across only an executor revision change", async () => {
+    const journal = new Journal();
+    const current = fixture();
+    install(journal, current);
+    const envelope = await commitTransformerAttemptCheckpointGenesis(journal, current.state, key);
+    const newerExecutorBinding = {
+      ...current.state.binding,
+      executorDigest: digest("newer executor deployment"),
+    };
+
+    expect(() => openTransformerAttemptCheckpoint(
+      envelope,
+      key,
+      newerExecutorBinding,
+    )).toThrow("transformer_attempt_checkpoint_binding_mismatch");
+    expect(openTransformerAttemptCheckpointForDraftDelivery(
+      envelope,
+      key,
+      newerExecutorBinding,
+    )).toEqual(current.state);
+    expect(() => openTransformerAttemptCheckpointForDraftDelivery(
+      envelope,
+      key,
+      { ...newerExecutorBinding, constraintDigest: digest("changed constraint") },
+    )).toThrow("transformer_attempt_checkpoint_binding_mismatch");
   });
 
   it("encrypts checkpoint and workspace bytes and rejects tampering", async () => {

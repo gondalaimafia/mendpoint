@@ -1513,10 +1513,9 @@ function seal(state: TransformerAttemptCheckpointState, key: Uint8Array): Transf
   });
 }
 
-export function openTransformerAttemptCheckpoint(
+function openAuthenticatedTransformerAttemptCheckpoint(
   envelope: TransformerAttemptCheckpointEnvelope,
   key: Uint8Array,
-  expectedBinding: TransformerAttemptCheckpointBinding,
 ): TransformerAttemptCheckpointState {
   exactKeys(envelope, [
     "schemaVersion", "protocol", "keyId", "episodeId", "generation", "writerLeaseGeneration",
@@ -1571,16 +1570,44 @@ export function openTransformerAttemptCheckpoint(
   if (!encodeState(normalized).equals(encoded)) {
     throw new Error("transformer_attempt_checkpoint_noncanonical");
   }
-  validateBinding(expectedBinding);
-  if (canonical(normalized.binding) !== canonical(expectedBinding)) {
-    throw new Error("transformer_attempt_checkpoint_binding_mismatch");
-  }
   if (normalized.episodeId !== envelope.episodeId || normalized.generation !== envelope.generation ||
       normalized.writerLeaseGeneration !== envelope.writerLeaseGeneration ||
       normalized.writerLeaseTokenDigest !== envelope.writerLeaseTokenDigest) {
     throw new Error("transformer_attempt_checkpoint_envelope_mismatch");
   }
   return deepFreeze(structuredClone(normalized));
+}
+
+export function openTransformerAttemptCheckpoint(
+  envelope: TransformerAttemptCheckpointEnvelope,
+  key: Uint8Array,
+  expectedBinding: TransformerAttemptCheckpointBinding,
+): TransformerAttemptCheckpointState {
+  const state = openAuthenticatedTransformerAttemptCheckpoint(envelope, key);
+  validateBinding(expectedBinding);
+  if (canonical(state.binding) !== canonical(expectedBinding)) {
+    throw new Error("transformer_attempt_checkpoint_binding_mismatch");
+  }
+  return state;
+}
+
+export function openTransformerAttemptCheckpointForDraftDelivery(
+  envelope: TransformerAttemptCheckpointEnvelope,
+  key: Uint8Array,
+  expectedBinding: TransformerAttemptCheckpointBinding,
+): TransformerAttemptCheckpointState {
+  const state = openAuthenticatedTransformerAttemptCheckpoint(envelope, key);
+  validateBinding(expectedBinding);
+  // Delivery reads a completed artifact but executes no recipe or verifier code.
+  // The executor revision may therefore be historical; every other authority field stays exact.
+  const deliveryBinding = {
+    ...expectedBinding,
+    executorDigest: state.binding.executorDigest,
+  } satisfies TransformerAttemptCheckpointBinding;
+  if (canonical(state.binding) !== canonical(deliveryBinding)) {
+    throw new Error("transformer_attempt_checkpoint_binding_mismatch");
+  }
+  return state;
 }
 
 function prefix(current: readonly unknown[], next: readonly unknown[]): boolean {
