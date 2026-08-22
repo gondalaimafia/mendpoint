@@ -13,7 +13,7 @@ Register only approved executors, then route a structured task under tenant risk
 1. Create an executor registry with immutable descriptors.
 2. Define the tenant task and routing policy.
 3. Resolve the ranked eligible candidates.
-4. Dispatch through the selected executor and persist routing evidence, cost, and outcome.
+4. Dispatch through the selected executor and return the immutable routing decision, cost, and outcome.
 
 ## What it does
 
@@ -21,7 +21,7 @@ Register only approved executors, then route a structured task under tenant risk
 - Deterministic ranking with recipe preference when requirements match
 - Circuit breakers, bounded retries, policy-bound fallback, and human handoff
 - OpenAI, Anthropic, Gemini, xAI, Muse Spark, and OpenAI-compatible provider adapters
-- Durable routing and provider provenance evidence
+- Immutable per-decision routing and provider provenance record
 
 ## When to use it
 
@@ -34,7 +34,7 @@ Register only approved executors, then route a structured task under tenant risk
 1. The caller submits a structured task spec rather than a free-form provider choice.
 2. The router removes ineligible or unhealthy executors.
 3. It ranks remaining candidates deterministically using configured utility and limits.
-4. The runtime dispatches through the chosen adapter, accounts usage, and stores the decision evidence.
+4. The runtime dispatches through the chosen adapter, accounts usage, and returns the immutable decision record.
 5. Fresh policy and lifecycle checks run again at sensitive dispatch boundaries.
 
 ## Interfaces
@@ -49,7 +49,6 @@ Register only approved executors, then route a structured task under tenant risk
 ## Evidence and verification
 
 - Router policy and ranking: `packages/platform/src/router.test.ts`
-- Durable runtime evidence: `packages/platform/src/router-runtime.test.ts`
 - Model provider adapters: `packages/agent/src/model-providers.test.ts`
 
 ## Safety model

@@ -2940,3 +2940,15 @@ Acceptance: `/readyz` returns the same fail-closed API, authentication, worker, 
 RED: the public production probe surface had no `/readyz` route, so the Phase 1 readiness assertion redirected to the operator access page rather than returning machine-readable readiness evidence.
 
 GREEN: `/readyz` now re-exports the established `/healthz` readiness handler and is explicitly public in middleware. The focused route and middleware suite passes 38 of 38 tests, the web typecheck passes, the optimized web build includes `/readyz`, `npm run ga:check` passes, and `git diff --check` is clean.
+## 2026-08-22 Public documentation drift
+
+- [x] Reproduce the exact generated-file drift without rewriting source content.
+- [x] Regenerate only the stale website-upload artifacts from the canonical catalog.
+- [x] Run documentation checks, names and claims gates, production build, and strict diff review.
+- [ ] Publish a separate protected pull request and leave deployment gated on live health.
+
+### Review
+
+RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
+
+GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.
