@@ -7,6 +7,7 @@ import {
   loadAppCredentials,
   parseGitHubAccountTenantBindings,
 } from "@mendpoint/github";
+import { ADAPTIVE_ROUTER_ENV, isAdaptiveRoutingEnabled } from "@mendpoint/platform";
 import { assessModelEgress, resolveEitherRenamedEnv, RETIRED_ENV_ALIASES } from "@mendpoint/shared";
 import { customerBackupInputFromEnv } from "./disaster-recovery.js";
 
@@ -182,6 +183,23 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
         `${legacy} was retired in the Transformer->Regauge rename and is no longer read; set ${current} instead`,
       );
     }
+  }
+
+  // MENDPOINT_ROUTER_ADAPTIVE is recognised (isAdaptiveRoutingEnabled reads it),
+  // but adaptive routing is structurally inert: aggregateRouterOutcomes is the
+  // only producer of AdaptiveRoutingStats and has no production caller, so
+  // routeTask is never handed an adaptiveStats snapshot. Enabling the flag would
+  // therefore change nothing while looking like a live feature -- the silent
+  // "flag on but unwired is indistinguishable from flag on and working" failure
+  // this repository keeps producing. Refuse it loudly here, in every mode (so
+  // ga:check and the test suite catch it, not only a production boot), naming
+  // the variable, rather than no-opping. Do NOT satisfy this by wiring the flag
+  // while leaving the guard in place: the guard depends on aggregateRouterOutcomes
+  // staying unwired, so wiring it means removing this guard as well.
+  if (isAdaptiveRoutingEnabled(env)) {
+    errors.push(
+      `${ADAPTIVE_ROUTER_ENV} is recognised but adaptive routing is not yet wired to a stats producer, so enabling it has no effect; unset ${ADAPTIVE_ROUTER_ENV} until a stats producer is wired`,
+    );
   }
 
   // Enforced no-egress mode: fail fast at boot when local_only is configured
