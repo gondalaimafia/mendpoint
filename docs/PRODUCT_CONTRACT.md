@@ -2,7 +2,7 @@
 
 Version: 1.0  
 Effective date: 2026-08-01  
-Authority: `product/mendpoint-product-platform-specification-v3.md` (v3.0, canonical as of 2026-08-18; see `adr/0004-canonical-product-specification-v3.md`, which supersedes `adr/0001-canonical-product-specification.md`)
+Authority: `product/mendpoint-product-platform-specification-v4.md` (v4.0, canonical as of 2026-08-22; see `adr/2026-08-22-adopt-v4-product-specification.md`, which supersedes `adr/0004-canonical-product-specification-v3.md`)
 
 This contract resolves the foundational specification decisions that must be
 stable before implementation can be treated as release evidence. The machine
