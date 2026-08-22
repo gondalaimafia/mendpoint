@@ -1524,6 +1524,7 @@ CREATE TABLE IF NOT EXISTS routing_ledger (
   task_snapshot_id TEXT NOT NULL,
   action TEXT NOT NULL,
   selected_executor_id TEXT,
+  executed_executor_id TEXT,
   provider_id TEXT,
   eliminated_json TEXT NOT NULL DEFAULT '[]',
   fallback_json TEXT NOT NULL DEFAULT '[]',
@@ -2578,6 +2579,18 @@ function migrateProvidersFeedColumns(db: AppDb) {
       table: "actual_execution_cost_entries",
       name: "cost_schema_version",
       sql: "INTEGER NOT NULL DEFAULT 1 CHECK (cost_schema_version >= 1)",
+    },
+    // Which executor actually ran, recorded at outcome time (recordRoutingOutcome).
+    // Mirrors the CREATE TABLE above so a pre-change volume (which has the table
+    // but not this column) converges on boot. Nullable, no default: a decision
+    // whose outcome has not been recorded, or a caller that did not observe the
+    // executed executor, reads NULL ("not observed") rather than a value copied
+    // from selected_executor_id. No static index/view/constraint references it,
+    // so the static DDL never touches it on a DB that has not run this migration.
+    {
+      table: "routing_ledger",
+      name: "executed_executor_id",
+      sql: "TEXT",
     },
   ];
   const addedColumns = new Set<string>();
@@ -7140,6 +7153,10 @@ export function recordRoutingOutcome(
     envelopeId: string;
     action: string;
     outcome: string;
+    // The executor that actually ran. Absent when the caller did not observe it;
+    // stays NULL rather than defaulting to selected_executor_id (a copy would make
+    // "did the executed executor differ from the selected one" tautologically false).
+    executorId?: string | null;
     errorCode?: string | null;
     inputTokens?: number | null;
     outputTokens?: number | null;
@@ -7154,13 +7171,15 @@ export function recordRoutingOutcome(
   const result = db.raw
     .prepare(
       `UPDATE routing_ledger SET
-         action = ?, outcome = ?, error_code = ?, input_tokens = ?, output_tokens = ?,
+         action = ?, outcome = ?, executed_executor_id = ?, error_code = ?,
+         input_tokens = ?, output_tokens = ?,
          total_tokens = ?, cost_usd = ?, started_at = ?, completed_at = ?, updated_at = ?
        WHERE tenant_id = ? AND job_id = ? AND envelope_id = ?`,
     )
     .run(
       input.action,
       input.outcome,
+      input.executorId ?? null,
       input.errorCode ?? null,
       input.inputTokens ?? null,
       input.outputTokens ?? null,
@@ -7270,6 +7289,7 @@ export function recordRoutingOutcomeExactlyOnce(
       envelopeId: input.envelopeId,
       action: input.action,
       outcome: input.outcome,
+      executorId: input.executorId,
       errorCode: input.errorCode ?? null,
       inputTokens: input.inputTokens ?? null,
       outputTokens: input.outputTokens ?? null,

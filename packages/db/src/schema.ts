@@ -444,6 +444,7 @@ export type RoutingLedgerRow = {
   task_snapshot_id: string;
   action: string;
   selected_executor_id: string | null;
+  executed_executor_id: string | null;
   provider_id: string | null;
   eliminated_json: string;
   fallback_json: string;
