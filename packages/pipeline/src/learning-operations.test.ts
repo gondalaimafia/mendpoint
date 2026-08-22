@@ -276,7 +276,8 @@ describe("governed learning operations", () => {
     // seen on the live operator surface. This admitted lesson is a `model_weight`
     // sink (substantive model_behavior correction), so it reached a sink and none
     // went nowhere. The static halves report the production reality: the
-    // classifier is effectively constant, and only one destination has a sink.
+    // classifier is no longer constant (both governed-learning producers now
+    // derive attribution from run evidence), and only one destination has a sink.
     const status = getGovernedLearningStatus(db, "tenant-a", CREATED_AT);
     expect(status.lessonRouting.lessons).toEqual({
       classified: 1,
@@ -284,9 +285,12 @@ describe("governed learning operations", () => {
       terminalNoAction: 0,
       wentNowhere: 0,
     });
+    // Regression guard: if a producer slid back to a hardcoded constant,
+    // assessProductionAttributionDiscrimination would report effectivelyConstant
+    // true again and this assertion would fail.
     expect(status.lessonRouting.attribution).toMatchObject({
-      effectivelyConstant: true,
-      constant: "model_behavior",
+      effectivelyConstant: false,
+      constant: null,
     });
     expect(status.lessonRouting.destinations.sinkConsumes).toBe(1);
     expect(status.lessonRouting.destinations.terminalNoAction).toBe(1);

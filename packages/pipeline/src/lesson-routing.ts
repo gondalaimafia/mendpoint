@@ -20,12 +20,16 @@
 //   1. Per lesson: which of its destinations reach a sink, which are the
 //      intentional `no_action` terminal, and which are UNROUTED — classified to a
 //      destination nothing consumes (`summarizeLessonRouting`).
-//   2. Across the pipeline: that in production the classifier is effectively a
-//      CONSTANT function, because every governed-learning producer hardcodes
-//      `attribution: "model_behavior"` rather than deriving it from the observed
-//      outcome (`assessProductionAttributionDiscrimination`). This is the more
-//      important number: without it, a reader of the eleven-destination taxonomy
-//      would believe the system discriminates before routing. It does not, yet.
+//   2. Across the pipeline: whether the classifier is effectively a CONSTANT
+//      function, because its input `attribution` is degenerate
+//      (`assessProductionAttributionDiscrimination`). It once was: every
+//      governed-learning producer hardcoded `attribution: "model_behavior"`. Both
+//      production producers now DERIVE attribution from evidence the run produced
+//      (`deriveOutcomeAttribution` in `apps/worker/src/outcome-attribution.ts`),
+//      so the assessment reports `effectivelyConstant: false` — the classifier is
+//      handed a discriminating input again. The assessment fails closed: it
+//      asserts degeneracy only when every production producer hardcodes the SAME
+//      single constant, never otherwise.
 //
 // See `docs/learning/LESSON_DESTINATION_ROUTING.md` for what each count means, the
 // two-taxonomy layering decision, and the upstream blocker that must be closed
@@ -146,16 +150,20 @@ export type ProducerAttributionSource =
   // The producer emits a compile-time constant, ignoring what actually happened.
   | "hardcoded_constant"
   // The producer forwards an attribution chosen by its caller.
-  | "caller_supplied";
+  | "caller_supplied"
+  // The producer derives the attribution from evidence the run actually produced
+  // (verification outcome, graph-context delivery) via `deriveOutcomeAttribution`.
+  | "evidence_derived";
 
 /**
  * A governed-learning producer and how it sets `observedOutcome.attribution`.
  * `reference` is the exact `file:line` the classifier's discrimination is decided
- * at. The two production producers hardcode a constant; the generic base producer
- * forwards its caller's value (and its only production callers are the two
- * hardcoded ones). `governed-learning-attribution.test.ts` in `apps/worker` reads
- * these source files and fails if a producer's attribution drifts from this
- * registry, so the count below cannot silently become a lie.
+ * at. The two production producers now DERIVE attribution from run evidence; the
+ * generic base producer forwards its caller's value (and its only production
+ * callers are the two derived ones). `governed-learning-attribution.test.ts` in
+ * `apps/worker` reads these source files and fails if a producer's attribution
+ * drifts from this registry — including a regression back to a hardcoded constant
+ * — so the assessment below cannot silently become a lie.
  */
 export type GovernedLearningProducerAttribution = Readonly<{
   producer: string;
@@ -169,16 +177,16 @@ export const GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS: readonly GovernedLearningP
   Object.freeze({
     producer: "apps/worker/src/warden-learning-producer.ts",
     role: "production" as const,
-    attributionSource: "hardcoded_constant" as const,
-    constantValue: "model_behavior" as const,
-    reference: "apps/worker/src/warden-learning-producer.ts:273",
+    attributionSource: "evidence_derived" as const,
+    constantValue: null,
+    reference: "apps/worker/src/warden-learning-producer.ts:317",
   }),
   Object.freeze({
     producer: "apps/worker/src/transformer-governed-learning-producer.ts",
     role: "production" as const,
-    attributionSource: "hardcoded_constant" as const,
-    constantValue: "model_behavior" as const,
-    reference: "apps/worker/src/transformer-governed-learning-producer.ts:136",
+    attributionSource: "evidence_derived" as const,
+    constantValue: null,
+    reference: "apps/worker/src/transformer-governed-learning-producer.ts:149",
   }),
   Object.freeze({
     producer: "apps/worker/src/governed-learning-producer.ts",
@@ -194,9 +202,10 @@ export const GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS: readonly GovernedLearningP
  * `effectivelyConstant` is true only when EVERY production producer hardcodes the
  * SAME single attribution, so the eleven-way taxonomy collapses to one branch
  * before it ever reaches routing. It fails closed: if any production producer
- * forwarded a caller value, we could not prove the input is degenerate, so
- * `effectivelyConstant` would be false — never asserting discrimination that has
- * not been demonstrated.
+ * derives its attribution from evidence (`evidence_derived`) or forwards a caller
+ * value (`caller_supplied`), we cannot prove the input is degenerate, so
+ * `effectivelyConstant` is false — never asserting a degeneracy that no longer
+ * holds. With both production producers now `evidence_derived`, it reports false.
  */
 export type ProductionAttributionDiscrimination = Readonly<{
   productionProducers: number;

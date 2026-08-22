@@ -167,20 +167,21 @@ export type GovernedLearningConsentResult = Readonly<{
  * facts, none of which the eleven-destination taxonomy makes visible on its own:
  *
  *   - `attribution` (static): whether the classifier discriminates in production.
- *     Today `effectivelyConstant` is true — both governed-learning producers
- *     hardcode `model_behavior` — so the taxonomy collapses to `model_weight` /
- *     `no_action` before it ever reaches routing. This is the more important
- *     number: without it a reader believes the system discriminates before it
- *     routes. It does not, yet.
+ *     `effectivelyConstant` is now false — both governed-learning producers derive
+ *     attribution from run evidence (`deriveOutcomeAttribution`) rather than
+ *     hardcoding `model_behavior`, so the taxonomy no longer collapses to
+ *     `model_weight` / `no_action` before it reaches routing. This is the more
+ *     important number: without it a reader could not tell whether the system
+ *     discriminates before it routes.
  *   - `destinations` (static): how many of the taxonomy's destinations actually
  *     reach a sink. Today one (`model_weight`) does; the rest are `unrouted` or the
  *     `no_action` terminal, so "ten of eleven have no sink" is countable here.
  *   - `lessons` (live, tenant-scoped): the real per-lesson counts. `wentNowhere` is
  *     the operator's answer to "how many lessons did we classify and then drop?" —
  *     a lesson that reached no sink and was not the intentional `no_action`
- *     terminal. Given the constant attribution above it is structurally zero today;
- *     it becomes non-zero the moment a producer emits a discriminating attribution
- *     into a destination nothing consumes.
+ *     terminal. It becomes non-zero the moment a producer emits a discriminating
+ *     attribution into a destination nothing consumes — now reachable, since the
+ *     producers derive attribution rather than emitting a single constant.
  */
 export type LessonRoutingObservability = Readonly<{
   attribution: ProductionAttributionDiscrimination;

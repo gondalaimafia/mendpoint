@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { CandidateReviewEvidence } from "@mendpoint/shared";
 import {
   createDb,
+  getLearningRecordRedactedContent,
   grantLearningConsent,
   insertPrincipal,
   insertTenant,
@@ -303,5 +304,71 @@ describe("admitWardenGovernedLearningEvent records why graphContextArtifactId is
     const meta = attribution(db);
     expect(meta?.graphContextDelivery).toBe("unrecorded");
     expect(meta?.trajectoryId).toBeNull();
+  });
+});
+
+// --- Evidence-derived outcome attribution ----------------------------------
+//
+// The producer no longer hardcodes `attribution: "model_behavior"`; it derives
+// the attribution from the run's evidence (the verification authority and the
+// graph-context delivery). These tests read the admitted event back out of the
+// redacted lesson document and prove the producer is no longer a constant
+// function: an objectively verified (hard) outcome attributes to the model and is
+// training-eligible, while an unverified (soft) outcome is undetermined (`none`)
+// and can never train weights.
+
+type StoredLesson = {
+  event: { observedOutcome: { attribution: string } };
+  lesson: { eligibleForModelTraining: boolean; destinations: Array<{ destination: string }> };
+};
+
+function storedLesson(db: AppDb, recordId: string, tenantId = TENANT): StoredLesson | undefined {
+  const content = getLearningRecordRedactedContent(db, tenantId, recordId);
+  return content ? (JSON.parse(content) as StoredLesson) : undefined;
+}
+
+describe("admitWardenGovernedLearningEvent derives attribution from run evidence", () => {
+  it("an objectively verified (hard) merged repair attributes to model_behavior and is training-eligible", () => {
+    const db = setup();
+    seedTrajectory(db); // recorded_absent; a verified success is model_behavior regardless
+
+    const result = admitWardenGovernedLearningEvent({
+      db,
+      delivery: delivery(),
+      run: agentRun(),
+      reviewEvidence: review("verifier"), // every edit independently assessed -> hard
+      now: NOW,
+      env: ENV,
+    });
+    expect(result.admitted).toBe(true);
+
+    const doc = storedLesson(db, result.recordId!);
+    expect(doc?.event.observedOutcome.attribution).toBe("model_behavior");
+    expect(doc?.lesson.eligibleForModelTraining).toBe(true);
+    expect(doc?.lesson.destinations.map((d) => d.destination)).toContain("model_weight");
+  });
+
+  it("an unverified (soft) merged repair is undetermined none and never training-eligible", () => {
+    // The control that proves the producer is no longer constant: before this
+    // change it emitted model_behavior here too. A soft verdict establishes nothing
+    // objective, so the honest attribution is `none`, not the model.
+    const db = setup();
+    seedTrajectory(db);
+
+    const result = admitWardenGovernedLearningEvent({
+      db,
+      delivery: delivery(),
+      run: agentRun(),
+      reviewEvidence: review("planner"), // model self-assessed -> soft
+      now: NOW,
+      env: ENV,
+    });
+    expect(result.admitted).toBe(true);
+
+    const doc = storedLesson(db, result.recordId!);
+    expect(doc?.event.observedOutcome.attribution).toBe("none");
+    expect(doc?.event.observedOutcome.attribution).not.toBe("model_behavior");
+    expect(doc?.lesson.eligibleForModelTraining).toBe(false);
+    expect(doc?.lesson.destinations.map((d) => d.destination)).not.toContain("model_weight");
   });
 });

@@ -75,26 +75,41 @@ describe("lesson destination dispositions", () => {
 });
 
 describe("production attribution discrimination", () => {
-  it("reports the classifier as effectively constant because every production producer hardcodes model_behavior", () => {
-    // The most important number in this module: it says the eleven-way taxonomy
-    // collapses to one branch before routing. If the assessment were weakened to
-    // hide the degeneracy (returning effectivelyConstant: false while the registry
-    // still shows two hardcoded production producers on one constant), this fails.
+  it("no longer reports the classifier as constant, because both production producers derive attribution", () => {
+    // The most important number in this module. It once said the eleven-way
+    // taxonomy collapsed to one branch before routing; now both production
+    // producers derive attribution from run evidence, so the input discriminates
+    // again and the assessment must report that honestly.
     const assessment = assessProductionAttributionDiscrimination();
     expect(assessment.productionProducers).toBe(2);
-    expect(assessment.hardcodedProductionProducers).toBe(2);
-    expect(assessment.distinctProductionConstants).toEqual(["model_behavior"]);
+    expect(assessment.hardcodedProductionProducers).toBe(0);
+    expect(assessment.distinctProductionConstants).toEqual([]);
+    expect(assessment.effectivelyConstant).toBe(false);
+    expect(assessment.constant).toBeNull();
+  });
+
+  it("is not hardwired to false: an all-hardcoded-same registry still reports constant", () => {
+    // Control that the assessment can still detect a genuine degeneracy, so
+    // `effectivelyConstant: false` above reflects the code and is not a stuck value.
+    const allHardcoded = GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS.map((entry) =>
+      entry.role === "production"
+        ? { ...entry, attributionSource: "hardcoded_constant" as const, constantValue: "model_behavior" as const }
+        : entry,
+    );
+    const assessment = assessProductionAttributionDiscrimination(allHardcoded);
     expect(assessment.effectivelyConstant).toBe(true);
     expect(assessment.constant).toBe("model_behavior");
   });
 
-  it("fails closed: a caller-supplied production producer means we cannot assert degeneracy", () => {
-    const withCallerSupplied = GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS.map((entry) =>
-      entry.producer === "apps/worker/src/warden-learning-producer.ts"
-        ? { ...entry, attributionSource: "caller_supplied" as const, constantValue: null }
-        : entry,
-    );
-    const assessment = assessProductionAttributionDiscrimination(withCallerSupplied);
+  it("fails closed: a single non-hardcoded production producer means we cannot assert degeneracy", () => {
+    const mixed = GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS.map((entry) => {
+      if (entry.role !== "production") return entry;
+      // Make transformer hardcoded so exactly one production producer is derived.
+      return entry.producer === "apps/worker/src/transformer-governed-learning-producer.ts"
+        ? { ...entry, attributionSource: "hardcoded_constant" as const, constantValue: "model_behavior" as const }
+        : entry;
+    });
+    const assessment = assessProductionAttributionDiscrimination(mixed);
     expect(assessment.effectivelyConstant).toBe(false);
     expect(assessment.constant).toBeNull();
   });
@@ -102,8 +117,8 @@ describe("production attribution discrimination", () => {
   it("names the exact classification seam for each production producer", () => {
     const references = GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS.filter((e) => e.role === "production").map((e) => e.reference);
     expect(references).toEqual([
-      "apps/worker/src/warden-learning-producer.ts:273",
-      "apps/worker/src/transformer-governed-learning-producer.ts:136",
+      "apps/worker/src/warden-learning-producer.ts:317",
+      "apps/worker/src/transformer-governed-learning-producer.ts:149",
     ]);
   });
 });
