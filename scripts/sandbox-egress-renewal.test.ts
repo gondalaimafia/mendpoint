@@ -140,6 +140,33 @@ describe("sandbox egress engine — rotation reaches every configured app", () =
 });
 
 describe("sandbox egress engine — failure visibility before expiry", () => {
+  it("prepares the failure reporter and a diagnostic artifact before authority validation", () => {
+    const workflow = engine();
+    const steps = workflow.jobs.accept.steps as Record<string, any>[];
+    const prepareIndex = steps.findIndex(
+      (candidate) => candidate.name === "Prepare renewal diagnostics and runtime",
+    );
+    const validateIndex = steps.findIndex(
+      (candidate) => candidate.name === "Validate protected authority",
+    );
+    const uploadIndex = steps.findIndex(
+      (candidate) => candidate.name === "Upload sandbox acceptance evidence",
+    );
+    const pageIndex = steps.findIndex(
+      (candidate) => candidate.name === "Alert on renewal failure",
+    );
+
+    expect(prepareIndex).toBeGreaterThan(-1);
+    expect(prepareIndex).toBeLessThan(validateIndex);
+    expect(uploadIndex).toBeGreaterThan(validateIndex);
+    expect(pageIndex).toBeGreaterThan(validateIndex);
+
+    const prepare = steps[prepareIndex].run as string;
+    expect(prepare).toContain("npm ci");
+    expect(prepare).toContain("test-results/sandbox-egress/renewal-context.txt");
+    expect(steps[uploadIndex].if).toBe("always()");
+  });
+
   it("self-checks the freshly minted receipt's margin", () => {
     const workflow = engine();
     const steps = workflow.jobs.accept.steps as Record<string, any>[];

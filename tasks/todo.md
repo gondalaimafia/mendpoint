@@ -2894,3 +2894,20 @@ restoration.
 - The first quality review found two P1s and one P2: it broke the legacy protected pilot workflow, could send the bearer token to an arbitrary HTTPS coordinator, and omitted CODEOWNERS coverage. The follow-up preserves the legacy profile, requires the exact canonical coordinator URL for each production role before token transport, and adds the dedicated manifest to CODEOWNERS.
 - Final independent review reports no P0, P1, or P2 findings. The focused suite passes 79 of 79 tests; API, worker, and ops typechecks, the production build, `npm run ga:check`, and `git diff --check` pass on the final tree.
 - Deliberate boundary: this slice defines the dedicated production profile. App and volume provisioning, encrypted state migration, protected-workflow cutover, secret staging, live revision and health proof, one-draft proof, and retirement of the old pilot app remain in parent issue #350 and must not occur through this PR.
+
+## 2026-08-22 Sandbox egress renewal recovery
+
+- [x] Diagnose the live crash loop and retain the exact expired-attestation evidence.
+- [x] Restrict `sandbox-production-renewal` to the exact default branch before adding authority.
+- [x] Reconcile the reviewed nonsecret image, policy, app, org, target, and freshness bindings across both renewal environments.
+- [x] Make failure evidence and paging runnable even when protected-authority validation fails before dependency installation.
+- [x] Run the focused workflow tests, workflow syntax checks, release gates, and strict diff review.
+- [ ] Provision only approved secret authority, rerun the already-confirmed one-proof rotation, and require live health before merging unrelated PRs.
+
+### Review
+
+Production Machine `896427a6e67358` repeatedly reaches the web ready state, then the worker refuses `sandbox_egress_attestation_expired`; the shared launcher exits and Fly reaches its restart cap. Renewal runs fail before probing because their protected environments are incomplete. The manual environment is missing an org-scoped rotation token and paging sink. The scheduled environment originally had neither a default-branch restriction nor any bindings; it is now restricted to exact `main` and carries only the reviewed nonsecret bindings. No credential value was read.
+
+RED: the workflow test could not find any runtime-preparation step before protected-authority validation. The retained failed runs corroborate the defect: validation exited, evidence upload found no files, and the failure page crashed because `tsx` had not been installed.
+
+GREEN: a single preparation step now writes only run metadata to a retained artifact and installs the existing reporter before validation. The probe, signing, and rotation order is unchanged. Thirteen focused renewal and image-egress tests pass, both workflow files parse as YAML, every action remains commit-pinned, GA passes, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
