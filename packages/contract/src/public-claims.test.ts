@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  detectStaleClaims,
   validatePublicClaimRegistry,
   type PublicClaimRegistry,
   type PublicClaimRequirement,
@@ -220,6 +221,54 @@ describe("public claim registry validation", () => {
     if (staleLive.type !== "live") throw new Error("expected live evidence");
     staleLive.freshUntil = "2026-08-02T11:59:59.000Z";
     expect(validate(stale).some((issue) => issue.code === "LIVE_EVIDENCE_STALE")).toBe(true);
+  });
+
+  it("fails when a live evidence freshness window has expired", () => {
+    const input = registry();
+    const live = input.claims[0].evidence[0];
+    if (live.type !== "live") throw new Error("expected live evidence");
+    // freshUntil sits before AS_OF, so the freshness window has closed.
+    live.observedAt = "2026-08-01T10:00:00.000Z";
+    live.freshUntil = "2026-08-02T11:00:00.000Z";
+    expect(validate(input).some((issue) => issue.code === "LIVE_EVIDENCE_STALE")).toBe(true);
+  });
+});
+
+describe("claim staleness against shipped code", () => {
+  it("reports a claim whose surface path changed since the audited revision", () => {
+    const input = registry();
+    const issues = detectStaleClaims(input, {
+      status: "comparable",
+      headRevision: "1111111111111111111111111111111111111111",
+      changedPaths: ["apps/web/app/page.tsx"],
+    });
+    const stale = issues.filter((issue) => issue.code === "CLAIM_SURFACE_STALE");
+    expect(stale).toHaveLength(1);
+    expect(stale[0].subject).toBe("CLM-001");
+    expect(stale[0].message).toContain("apps/web/app/page.tsx");
+    expect(stale[0].message).toContain(input.auditedRevision);
+    expect(stale[0].message).toContain("1111111111111111111111111111111111111111");
+  });
+
+  it("does not report a claim whose surfaces are untouched, however old the audit", () => {
+    const input = registry();
+    const issues = detectStaleClaims(input, {
+      status: "comparable",
+      headRevision: "2222222222222222222222222222222222222222",
+      changedPaths: ["apps/api/src/unrelated.ts", "README.md"],
+    });
+    expect(issues).toEqual([]);
+  });
+
+  it("fails closed when the comparison is indeterminate rather than passing", () => {
+    const input = registry();
+    const issues = detectStaleClaims(input, {
+      status: "indeterminate",
+      reason: "auditedRevision is absent from this shallow clone",
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("CLAIM_STALENESS_INDETERMINATE");
+    expect(issues[0].message).toContain("shallow clone");
   });
 });
 

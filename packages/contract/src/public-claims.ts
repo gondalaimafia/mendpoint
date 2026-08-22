@@ -88,6 +88,24 @@ export interface PublicClaimValidationOptions {
   asOf?: Date;
 }
 
+/**
+ * Result of comparing the registry's auditedRevision against the revision being
+ * shipped. The caller (which has Git access) performs the comparison and hands
+ * the outcome to {@link detectStaleClaims}. Keeping this a plain value keeps the
+ * staleness rule pure and testable without a working tree.
+ *
+ * `indeterminate` is a fail-closed signal: a shallow clone, a missing object, a
+ * non-ancestor auditedRevision, or "not a Git work tree" all land here so the
+ * gate reports a could-not-determine failure rather than silently passing.
+ */
+export type ClaimStalenessComparison =
+  | {
+      readonly status: "comparable";
+      readonly headRevision: string;
+      readonly changedPaths: readonly string[];
+    }
+  | { readonly status: "indeterminate"; readonly reason: string };
+
 const CLAIM_ID = /^CLM-[0-9]{3}$/;
 const EVIDENCE_ID = /^CLM-[0-9]{3}-EV[0-9]{2}$/;
 const DESTINATION_ID = /^DST-[0-9]{3}$/;
@@ -424,4 +442,55 @@ function liveTimestamp(
     return undefined;
   }
   return parsed;
+}
+
+/**
+ * Detects claims whose audit is stale relative to the code being shipped.
+ *
+ * A claim is stale when any of its own `surfacePaths` changed between the
+ * registry's `auditedRevision` and `HEAD`. Scoping to surfacePaths (rather than
+ * requiring `auditedRevision === HEAD`) keeps the check precise and
+ * self-limiting: editing one surface invalidates only the claims that describe
+ * it, and a claim whose surfaces are untouched stays valid however old the audit
+ * is.
+ *
+ * The check fails closed. When the comparison could not be performed
+ * (`indeterminate`) a single registry-level issue is returned rather than an
+ * empty (passing) result.
+ */
+export function detectStaleClaims(
+  registry: Pick<PublicClaimRegistry, "auditedRevision" | "claims">,
+  comparison: ClaimStalenessComparison,
+): PublicClaimIssue[] {
+  const issues: PublicClaimIssue[] = [];
+  const auditedRevision = nonempty(registry.auditedRevision)
+    ? registry.auditedRevision
+    : "unknown";
+
+  if (comparison.status === "indeterminate") {
+    add(
+      issues,
+      "CLAIM_STALENESS_INDETERMINATE",
+      "registry",
+      `cannot compare auditedRevision ${auditedRevision} against HEAD: ${comparison.reason}`,
+    );
+    return issues;
+  }
+
+  const changed = new Set(comparison.changedPaths);
+  for (const claim of registry.claims ?? []) {
+    const id = nonempty(claim?.id) ? claim.id : "unknown";
+    for (const surfacePath of claim?.surfacePaths ?? []) {
+      if (nonempty(surfacePath) && changed.has(surfacePath)) {
+        add(
+          issues,
+          "CLAIM_SURFACE_STALE",
+          id,
+          `surface ${surfacePath} changed between auditedRevision ${auditedRevision} and HEAD ${comparison.headRevision}; re-audit the claim and update auditedRevision`,
+        );
+      }
+    }
+  }
+
+  return issues;
 }

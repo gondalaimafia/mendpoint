@@ -4,6 +4,8 @@
 **Version:** `1.0.0` · channel `ga` · product **Fettler** on platform **Mendpoint**  
 **Date:** 2026-07-27
 
+<!-- public-claim: CLM-015 (General Availability status) — tracked in docs/PUBLIC_CLAIMS.json -->
+
 This document is the **production GA story**: what is in, what is out, how to run it, and what you may claim.
 
 ---
