@@ -202,6 +202,7 @@ import {
   resolveVerifierGovernance,
 } from "./verifier-product-shadow.js";
 import { runVerifierAdvisoryJob } from "./verifier-advisory-job.js";
+import { buildVerifierRepositoryExcerpt } from "./verifier-repository-excerpt.js";
 
 function verifierDigest(value: string): string {
   if (/^sha256:[a-f0-9]{64}$/.test(value)) return value;
@@ -3617,6 +3618,10 @@ async function processJobsOnceUnfenced(
         }
         if (attempt.status === "succeeded") {
           try {
+            const repositoryExcerpt = buildVerifierRepositoryExcerpt({
+              candidateWorkspace: attempt.artifacts.candidateWorkspace,
+              changedPaths: attempt.changedPaths,
+            });
             await observeProductCompletionInAdvisory({
               db,
               env: workerEnv,
@@ -3640,6 +3645,7 @@ async function processJobsOnceUnfenced(
                   attempt.artifacts.candidateManifestSha256,
                   attempt.artifacts.evidenceSha256,
                 ]),
+                ...(repositoryExcerpt ? { repositoryExcerpt } : {}),
                 observedAt: nowIso(),
               },
             });
