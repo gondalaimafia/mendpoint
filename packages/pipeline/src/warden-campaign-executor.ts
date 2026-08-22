@@ -54,10 +54,21 @@ export type WardenTypedEditStrategy = Readonly<{
 
 export type WardenVerificationCheck = Readonly<{
   command: string;
-  status: "passed" | "failed";
+  /**
+   * Three genuinely distinct outcomes. `not_verified` means the command could not
+   * run under the required containment — nothing was learned — and must never be
+   * conflated with `failed` (the command ran and the tests failed).
+   */
+  status: "passed" | "failed" | "not_verified";
   failureFingerprints: readonly string[];
   outputSha256: string;
   durationMs: number;
+  /**
+   * The backend that ACTUALLY ran the command, observed from the run. `null` only
+   * when `status` is `not_verified` — a passed/failed check must name the backend
+   * it ran under (an executor that cannot name its backend yields `not_verified`).
+   */
+  sandboxBackend: string | null;
 }>;
 
 export type WardenVerificationRun = Readonly<{
@@ -75,6 +86,12 @@ export type WardenVerificationComparison = Readonly<{
   resolvedFailures: readonly string[];
   baselineFailed: readonly string[];
   postEditFailed: readonly string[];
+  /**
+   * Commands whose verification could not run (in either phase). While this is
+   * non-empty the comparison is inconclusive — nothing was proven about the edits
+   * — so `ok` is forced false and a refusal is never read as a clean pass.
+   */
+  notVerified: readonly string[];
 }>;
 
 export type WardenCampaignExecutionResult = Readonly<{
@@ -209,12 +226,17 @@ export function createWardenSourceEnvelope(source: UnifiedSourceArtifact): Warde
   });
 }
 
-function validateCheck(check: WardenVerificationCheck, command: string): void {
-  if (check.command !== command || !["passed", "failed"].includes(check.status) ||
+export function validateCheck(check: WardenVerificationCheck, command: string): void {
+  if (check.command !== command || !["passed", "failed", "not_verified"].includes(check.status) ||
     !SHA256.test(check.outputSha256) || !Number.isSafeInteger(check.durationMs) || check.durationMs < 0 ||
     check.failureFingerprints.some((value) => !SHA256.test(value)) ||
     (check.status === "passed" && check.failureFingerprints.length > 0) ||
-    (check.status === "failed" && check.failureFingerprints.length === 0)) {
+    (check.status === "failed" && check.failureFingerprints.length === 0) ||
+    // A refusal carries no failure fingerprint and no backend; a passed/failed
+    // check MUST name the backend it actually ran under (fail-closed: an executor
+    // that cannot name its backend can only be not_verified).
+    (check.status === "not_verified" && (check.failureFingerprints.length > 0 || check.sandboxBackend !== null)) ||
+    (check.status !== "not_verified" && (typeof check.sandboxBackend !== "string" || check.sandboxBackend.length === 0))) {
     throw new WardenCampaignExecutionError("warden_verification_result_invalid", false);
   }
 }
@@ -235,12 +257,21 @@ export function compareWardenVerificationRuns(
   const after = new Set(postEditFailed);
   const introducedFailures = postEditFailed.filter((failure) => !before.has(failure));
   const resolvedFailures = baselineFailed.filter((failure) => !after.has(failure));
+  // Any command that could not be verified (in either phase) makes the comparison
+  // inconclusive: with the tests unrun we cannot claim the edits introduced no
+  // regression, so fail closed rather than read a refusal as a clean pass.
+  const notVerified = [...new Set(
+    [...baseline.checks, ...postEdit.checks]
+      .filter((check) => check.status === "not_verified")
+      .map((check) => check.command),
+  )].sort();
   return Object.freeze({
-    ok: introducedFailures.length === 0,
+    ok: introducedFailures.length === 0 && notVerified.length === 0,
     introducedFailures: Object.freeze(introducedFailures),
     resolvedFailures: Object.freeze(resolvedFailures),
     baselineFailed: Object.freeze(baselineFailed),
     postEditFailed: Object.freeze(postEditFailed),
+    notVerified: Object.freeze(notVerified),
   });
 }
 
@@ -345,12 +376,18 @@ async function defaultVerify(input: {
     const started = performance.now();
     const result = await runVerificationCommand(command, input.workspaceRoot);
     const output = `${result.stdout}\n${result.stderr}\n${result.error ?? ""}`;
+    // A refusal (not_verified) is not a failure: it carries no failure
+    // fingerprint and no backend. A passed/failed check records the OBSERVED
+    // backend the command actually ran under, never the configured one.
+    const status: WardenVerificationCheck["status"] =
+      result.outcome === "verified" ? "passed" : result.outcome === "failed" ? "failed" : "not_verified";
     checks.push(Object.freeze({
       command,
-      status: result.ok ? "passed" : "failed",
-      failureFingerprints: Object.freeze(result.ok ? [] : [sha256(output)]),
+      status,
+      failureFingerprints: Object.freeze(status === "failed" ? [sha256(output)] : []),
       outputSha256: sha256(output),
       durationMs: Math.max(0, Math.round(performance.now() - started)),
+      sandboxBackend: status === "not_verified" ? null : result.sandboxBackend,
     }));
   }
   return Object.freeze(checks);
@@ -600,6 +637,11 @@ export async function executeWardenCampaignTarget(input: {
       producerPrincipalId: input.actorPrincipalId, createdAt: input.createdAt,
     });
     appendRun("verification_completed", comparison, [artifactReference(baselineArtifact), artifactReference(postEditArtifact)]);
+    // A refusal is not a regression: distinguish "we could not verify" (retry the
+    // run) from "the edits introduced a failure" so the two are never conflated.
+    if (comparison.notVerified.length > 0) {
+      throw new WardenCampaignExecutionError("warden_verification_not_verified", true);
+    }
     if (!comparison.ok) throw new WardenCampaignExecutionError("warden_verification_regression", true);
 
     const packageArtifact = persistJsonArtifact(input.db, {
