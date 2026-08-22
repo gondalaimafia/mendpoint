@@ -63,6 +63,8 @@ export {
 
 export {
   validatePublicClaimRegistry,
+  detectStaleClaims,
+  type ClaimStalenessComparison,
   type PublicClaim,
   type PublicClaimEvidence,
   type PublicClaimEvidenceType,

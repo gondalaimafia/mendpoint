@@ -4,7 +4,9 @@
 **Version:** `1.0.0-preview` · channel `preview` · product **Fettler** on platform **Mendpoint**  
 **Date:** 2026-07-27
 
-This document is the **production readiness story**: what is in, what is out, how to run it, and what you may claim.
+<!-- public-claim: CLM-015 (General Availability status) — tracked in docs/PUBLIC_CLAIMS.json -->
+
+This document is the **production GA story**: what is in, what is out, how to run it, and what you may claim.
 
 ---
 
