@@ -3205,3 +3205,22 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Root cause: the protected environment and pinned Git revision identify `codex/regauge-canary-baseline`, while the shared DeepSeek scope and workflow Policy Envelope required `main`; activation would fail before the dedicated coordinator could start.
 - Authority: the approved scope now names the exact canary branch. The workflow derives the envelope branch from the protected binding and separately rejects every branch except that approved value. Tenant, campaign, repository, model class, external-processing consent, advisory-only behavior, and expiry are unchanged.
 - Verification: 74 focused tests pass across the production workflow, shared advisory scope, worker profile, worker verifier job, coordinator dispatch, and bootstrap runtime. Full workspace typecheck, the optimized 50-route production build, and the complete GA policy and evidence gate pass; YAML parsing and diff integrity are clean. The register remains honest at 28 verified foundational requirements, with ReGauge still explicitly non-GA.
+## 2026-08-22 Graphify pinned process and benchmark
+
+Objective: finish only the internal evaluation lane authorized by ADR-0006. Build a pinned, killable, zero-network Graphify process over copied immutable bytes; measure it against the current extractor with sealed labels; and keep production selection impossible unless the evidence clears every adoption gate.
+
+- [x] Re-read the checked-in Graphify authority, ADR, adapter contract, benchmark contract, and exact upstream `0.9.46` source at `558df6d57d61cb6ef79c740ec7473c6d953d79a7`.
+- [x] Add red tests for process identity, private working directory, exact byte materialization, protocol bounds, output coverage, timeout termination, memory enforcement, and zero-network authority.
+- [x] Implement the private Python process bridge and Node supervisor without exporting Graphify process types or adding a production environment selector.
+- [x] Pin the evaluation dependency and retained license materials, then verify the installed artifact against the recorded digest before execution.
+- [ ] Build the 18-case A/B/C cohort, stage predictions before labels, grade with a separately supplied sealed key, and measure direct, indirect, trap, incremental, and four size tiers.
+- [ ] Record the exact result and adoption blockers without converting internal evidence into a product claim.
+- [ ] Run focused suites, workspace typechecks, production build, GA checks, dependency audit, container checks, and strict diff review before publishing a separate pull request.
+
+### Review
+
+- The official PyPI JSON record independently matches the compiled `graphifyy-0.9.46-py3-none-any.whl` SHA-256 pin.
+- Red first process tests failed before the concrete supervisor existed. Six supervisor regressions and the existing 49 contract and benchmark tests now pass.
+- The bridge syntax check, full workspace typecheck, root script typecheck, workflow pin check, YAML parse, and strict diff whitespace check pass.
+- Windows cannot prove the Linux network namespace boundary and this machine has no WSL or Docker. The pull-request workflow is therefore the first eligible real process smoke; no local execution is represented as containment evidence.
+- Production selection remains impossible: the process factory is absent from the package root, there is no environment selector or caller, and the adoption decision remains internal only.

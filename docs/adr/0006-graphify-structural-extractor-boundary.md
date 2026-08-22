@@ -17,7 +17,7 @@ Graphify can reduce work in commodity static extraction, particularly across lan
 
 Mendpoint owns `StructuralGraphExtractor` and `mendpoint.structural-extraction.v1`. Graphify-specific raw types, IDs, process mechanics, NetworkX graph, storage, communities, and query APIs remain private. Accepted Graphify facts must bind an exact tenant repository snapshot manifest, pass Mendpoint validation and resource limits, retain upstream provenance, and project through existing call-graph and immutable software-graph seams.
 
-Graphify `0.9.46` is **KEEP AS INTERNAL TOOL ONLY**. There is no production dependency, process implementation, feature activation, or runtime caller. The current extractor remains authoritative. A classified Graphify failure may fall back to it; unexpected failures remain visible.
+Graphify `0.9.46` is **KEEP AS INTERNAL TOOL ONLY**. A private, pinned Linux process implementation exists for controlled evaluation, but there is no production dependency, feature activation, exported process factory, or runtime caller. The current extractor remains authoritative. A classified Graphify failure may fall back to it; unexpected failures remain visible.
 
 ## Alternatives considered
 

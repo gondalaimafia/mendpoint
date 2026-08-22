@@ -29,13 +29,15 @@ Known blind spots include runtime dispatch, reflection, dependency injection, ge
 - hard process timeout/termination contract;
 - classified Graphify failures and safe fallback;
 - stable identity and Mendpoint-owned incremental diff;
+- a private pinned Linux process bridge with exact byte replay, address-space limits, network-namespace isolation, bounded output, and confirmed termination;
+- an exact Python 3.11 evaluation lock, retained upstream notices, and a pull-request smoke that retains process evidence;
 - projection to the current call graph;
 - a Stripe SDK to endpoint to wrapper to test semantic integration test;
 - a label-free three-arm benchmark and sealed-key grader contract.
 
 ## What was deliberately not built or activated
 
-- Graphify Python process implementation or dependency;
+- Graphify in any production image, exported package surface, or runtime caller;
 - Graphify MCP server, storage, graph database, communities, or query API;
 - production environment flag or worker wiring;
 - external model calls;
