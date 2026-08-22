@@ -1,19 +1,41 @@
 /**
  * Renamed environment variables: Warden -> Fettler, Transformer -> Regauge.
  *
- * Each key is the current (canonical) variable name; each value is the
- * superseded (legacy) name. Several of these are still set as secrets under
- * their legacy names on the live deployment, so every read must prefer the
- * current name and fall back to the legacy one. Do NOT remove a legacy fallback
- * until the corresponding live secret has been migrated to the current name.
+ * The rename produced two classes of aliases, kept apart deliberately:
  *
- * This map is the single source of truth for the rename. Read sites, tests, and
- * the customer configuration verification all enumerate it, so a variable is
- * only renamed correctly once it appears here with both a current and legacy
- * read path wired.
+ *  - RENAMED_ENV holds the aliases that are STILL ACTIVE. Each read prefers the
+ *    current (canonical) name and falls back to the superseded (legacy) one,
+ *    because a live deployment still carries the value under the legacy name and
+ *    that setter cannot be changed from this repository. Do NOT remove a legacy
+ *    fallback here until the corresponding live secret has been migrated.
+ *
+ *  - RETIRED_ENV holds the aliases that have been RETIRED. Every place that used
+ *    to set the legacy name now sets the current one (config, workflows, docs),
+ *    so the reader no longer honours the legacy value: it reads the current name
+ *    only. If a deployment still sets nothing but the retired legacy name, that
+ *    is refused loudly at boot (see validateApiEnv in @mendpoint/ops) with a
+ *    message naming the current variable, rather than silently falling back to a
+ *    default. The mapping is kept so the boot check and the forward name
+ *    resolution below still know the legacy name; the legacy VALUE is never read.
+ *
+ * Both maps together are the single source of truth for the rename. Read sites,
+ * tests, and the customer configuration verification all enumerate them, so a
+ * variable is only renamed correctly once it appears in one of them with the
+ * matching read path wired.
+ */
+
+/**
+ * Active aliases: still dual-read (current preferred, legacy fallback). These
+ * are set under their legacy names by operator-provisioned customer Fettler
+ * deployments (the Warden model/self-serve secrets, plus the Transformer ->
+ * Regauge customer backup paths below), configuration this repository cannot
+ * change, so the legacy fallback must stay until each live secret is migrated.
  */
 export const RENAMED_ENV = Object.freeze({
-  // Warden -> Fettler
+  // Warden -> Fettler. These are set per customer as operator-managed Fly
+  // secrets and [env] on customer Fettler deployments, under the legacy names,
+  // and that configuration cannot be changed from this repository, so the
+  // legacy fallback must stay until each live secret is migrated.
   MENDPOINT_SELF_SERVE_FETTLER: "MENDPOINT_SELF_SERVE_WARDEN",
   MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED: "MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED",
   MENDPOINT_FETTLER_MODEL_SOURCE_TENANTS: "MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS",
@@ -36,6 +58,26 @@ export const RENAMED_ENV = Object.freeze({
   MENDPOINT_FETTLER_CI_REENTRY_CONFIG_JSON:
     "MENDPOINT_WARDEN_CI_REENTRY_CONFIG_JSON",
 
+  // Transformer -> Regauge customer backup paths. These are NOT part of the
+  // Regauge production surface; they are operator-provisioned per-customer Fly
+  // secrets on customer Fettler deployments (CUSTOMER_WARDEN_REQUIRED_SECRETS in
+  // scripts/customer-warden-profile.ts), delivered under the legacy names, and
+  // that configuration cannot be changed from this repository. Kept active
+  // (dual-read) for the same reason as the Warden secrets above: retiring the
+  // fallback would fail a live customer boot on a secret we cannot migrate.
+  MENDPOINT_BACKUP_REGAUGE_CONTROL_PLANE_PATH:
+    "MENDPOINT_BACKUP_TRANSFORMER_CONTROL_PLANE_PATH",
+  MENDPOINT_BACKUP_REGAUGE_PILOT_PATH: "MENDPOINT_BACKUP_TRANSFORMER_PILOT_PATH",
+} as const satisfies Readonly<Record<string, string>>);
+
+/**
+ * Retired Transformer -> Regauge aliases. The legacy value is no longer read;
+ * the current name is authoritative. The Regauge production surface is
+ * configured entirely from this repository and its CI workflow, which set the
+ * current names (see .github/workflows/regauge-production.yml, fly.transformer.toml,
+ * fly.customer-warden.toml), so no live deployment depends on the legacy name.
+ */
+export const RETIRED_ENV = Object.freeze({
   // Transformer -> Regauge
   MENDPOINT_REGAUGE_ENVIRONMENT: "MENDPOINT_TRANSFORMER_ENVIRONMENT",
   MENDPOINT_REGAUGE_GATE: "MENDPOINT_TRANSFORMER_GATE",
@@ -102,11 +144,6 @@ export const RENAMED_ENV = Object.freeze({
     "MENDPOINT_TRANSFORMER_S3_SECRET_ACCESS_KEY",
   MENDPOINT_REGAUGE_S3_SESSION_TOKEN: "MENDPOINT_TRANSFORMER_S3_SESSION_TOKEN",
 
-  // Transformer backup paths -> Regauge
-  MENDPOINT_BACKUP_REGAUGE_CONTROL_PLANE_PATH:
-    "MENDPOINT_BACKUP_TRANSFORMER_CONTROL_PLANE_PATH",
-  MENDPOINT_BACKUP_REGAUGE_PILOT_PATH: "MENDPOINT_BACKUP_TRANSFORMER_PILOT_PATH",
-
   // Transformer live eval -> Regauge live eval
   MENDPOINT_EVAL_LIVE_REGAUGE: "MENDPOINT_EVAL_LIVE_TRANSFORMER",
   MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD: "MENDPOINT_TRANSFORMER_LIVE_EVAL_MAX_USD",
@@ -116,18 +153,42 @@ export const RENAMED_ENV = Object.freeze({
     "MENDPOINT_TRANSFORMER_LIVE_MIN_CONSISTENCY",
 } as const satisfies Readonly<Record<string, string>>);
 
-export type RenamedEnvName = keyof typeof RENAMED_ENV;
+export type ActiveRenamedEnvName = keyof typeof RENAMED_ENV;
+export type RetiredRenamedEnvName = keyof typeof RETIRED_ENV;
+export type RenamedEnvName = ActiveRenamedEnvName | RetiredRenamedEnvName;
+
+/**
+ * Retired (current, legacy) pairs, in declaration order. Consumed by the boot
+ * validation so a deployment that sets only the retired legacy name fails loudly
+ * naming the current variable.
+ */
+export const RETIRED_ENV_ALIASES: ReadonlyArray<
+  readonly [RetiredRenamedEnvName, string]
+> = Object.freeze(
+  (Object.entries(RETIRED_ENV) as ReadonlyArray<[RetiredRenamedEnvName, string]>)
+    .map(([current, legacy]) => [current, legacy] as const),
+);
 
 type EnvLike = Readonly<Record<string, string | undefined>>;
 
-/** Reverse of RENAMED_ENV: legacy name -> current (canonical) name. */
-const LEGACY_TO_CURRENT: Readonly<Record<string, RenamedEnvName>> = Object.freeze(
-  Object.fromEntries(
-    (Object.entries(RENAMED_ENV) as ReadonlyArray<[RenamedEnvName, string]>).map(
-      ([current, legacy]) => [legacy, current] as const,
+const ACTIVE_LEGACY = RENAMED_ENV as Readonly<Record<string, string>>;
+const RETIRED_LEGACY = RETIRED_ENV as Readonly<Record<string, string>>;
+
+/** Reverse maps: legacy name -> current name, kept separate by class. */
+const ACTIVE_LEGACY_TO_CURRENT: Readonly<Record<string, ActiveRenamedEnvName>> =
+  Object.freeze(
+    Object.fromEntries(
+      (Object.entries(RENAMED_ENV) as ReadonlyArray<[ActiveRenamedEnvName, string]>)
+        .map(([current, legacy]) => [legacy, current] as const),
     ),
-  ),
-);
+  );
+const RETIRED_LEGACY_TO_CURRENT: Readonly<Record<string, RetiredRenamedEnvName>> =
+  Object.freeze(
+    Object.fromEntries(
+      (Object.entries(RETIRED_ENV) as ReadonlyArray<[RetiredRenamedEnvName, string]>)
+        .map(([current, legacy]) => [legacy, current] as const),
+    ),
+  );
 
 /**
  * Read a renamed environment variable, preferring the current name and falling
@@ -138,8 +199,8 @@ const LEGACY_TO_CURRENT: Readonly<Record<string, RenamedEnvName>> = Object.freez
  * The raw (untrimmed) configured value is returned unchanged, and a value that
  * is set but empty on both names is still surfaced, so call sites that trim,
  * compare, or specifically validate emptiness behave exactly as they did when
- * reading the legacy variable directly. Production still holds secrets under the
- * legacy names, so the fallback must not be removed until they are migrated.
+ * reading the legacy variable directly. This is the ACTIVE (still-dual-read)
+ * path; retired aliases never reach it.
  */
 export function readRenamedEnv(
   env: EnvLike,
@@ -158,30 +219,43 @@ export function readRenamedEnv(
 
 /**
  * Resolve a renamed variable by its current name, taking its legacy name from
- * the source-of-truth map. Prefer this at read sites where the current name is
+ * the source-of-truth maps. Prefer this at read sites where the current name is
  * known statically, so a typo is a compile error rather than a silent miss.
+ *
+ * Active aliases dual-read (current preferred, legacy fallback). Retired aliases
+ * read the current name only: the legacy value is never honoured, so a
+ * deployment that still sets it does not get a silent fallback.
  */
 export function resolveRenamedEnv(
   env: EnvLike,
   current: RenamedEnvName,
 ): string | undefined {
-  return readRenamedEnv(env, current, RENAMED_ENV[current]);
+  const legacy = ACTIVE_LEGACY[current];
+  if (legacy !== undefined) return readRenamedEnv(env, current, legacy);
+  // Retired: current name only.
+  return env[current];
 }
 
 /**
  * Resolve a variable given either its current name, its legacy name, or an
  * unrelated name. Used where code iterates a list of variable names that predate
  * the rename (for example the customer configuration required-secrets list and
- * the production profile checks): renamed names dual-read, unrelated names read
- * directly.
+ * the production profile checks).
+ *
+ * Active names dual-read. Retired names — whether the current or the legacy name
+ * is supplied — resolve forward to the current name and read that only, so the
+ * legacy value is never honoured. Unrelated names read directly.
  */
 export function resolveEitherRenamedEnv(
   env: EnvLike,
   name: string,
 ): string | undefined {
-  const legacy = (RENAMED_ENV as Readonly<Record<string, string>>)[name];
-  if (legacy !== undefined) return readRenamedEnv(env, name, legacy);
-  const current = LEGACY_TO_CURRENT[name];
-  if (current !== undefined) return readRenamedEnv(env, current, name);
+  const activeLegacy = ACTIVE_LEGACY[name];
+  if (activeLegacy !== undefined) return readRenamedEnv(env, name, activeLegacy);
+  if (RETIRED_LEGACY[name] !== undefined) return env[name];
+  const activeCurrent = ACTIVE_LEGACY_TO_CURRENT[name];
+  if (activeCurrent !== undefined) return readRenamedEnv(env, activeCurrent, name);
+  const retiredCurrent = RETIRED_LEGACY_TO_CURRENT[name];
+  if (retiredCurrent !== undefined) return env[retiredCurrent];
   return env[name];
 }

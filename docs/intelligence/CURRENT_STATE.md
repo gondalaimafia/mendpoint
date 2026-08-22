@@ -593,7 +593,7 @@ a run to a human-authored gold patch. The only gold-file dataset is offline and 
 `{path, offset, totalChars, truncated, contentDigest, contentBytes}` and a `search` result to
 `{path, line}` pairs — content is replaced by a SHA-256 digest. Source text reaches the model only
 when a tenant has an approved external-processing policy (`modelSourceAuthorized`, `:2418-2430`;
-`fly.customer-warden.toml:39` sets `MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED = "1"`, `fly.toml` does
+`fly.customer-warden.toml` sets `MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED = "1"`, `fly.toml` does
 not). The model therefore plans over filenames, line numbers, digests, and 500-char summaries.
 
 **Budgets exist; compaction does not.** `maxPromptEvidenceBytes: 16 * 1024`

@@ -127,7 +127,7 @@ counts, and it lands gated-off for production.
   separate live lane (`eval:agents:live`).
 - It is **not** a real customer repository or a real SCM. Delivery goes through
   the mock GitHub and GitLab adapters, never the network.
-- It does **not** enable production. `MENDPOINT_TRANSFORMER_GATE` stays denied by
+- It does **not** enable production. `MENDPOINT_REGAUGE_GATE` stays denied by
   default and the customer-warden profile stays Regauge-off; the canary
   never flips them. T5 is the step that flips the gate, and only after this
   canary is green.

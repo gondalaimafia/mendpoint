@@ -18,7 +18,7 @@ that narrow surface is reported out-of-scope by analysis so the recipe abstains
 rather than editing customer code it cannot prove is the exact target.
 
 Nothing here changes the enablement gate. The gate
-(`MENDPOINT_TRANSFORMER_GATE`) defaults to DENIED and the customer-warden
+(`MENDPOINT_REGAUGE_GATE`) defaults to DENIED and the customer-warden
 profile keeps Regauge off, so these recipes are unreachable in a default
 deployment. Every migration is delivered as a human-reviewed draft PR with no
 auto-merge.

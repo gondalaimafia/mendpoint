@@ -1860,27 +1860,27 @@ export function validateWorkerProductionEnv(
   if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED") === "1") {
     if (!(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_TENANTS") ?? "").trim()) {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS is required when Regauge adaptive model source is enabled",
+        "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_TENANTS is required when Regauge adaptive model source is enabled",
       );
     }
     if (!resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER")?.trim()) {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER is required when Regauge adaptive model source is enabled",
+        "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER is required when Regauge adaptive model source is enabled",
       );
     }
     if (!resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT")?.trim()) {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT is required when Regauge adaptive model source is enabled",
+        "MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT is required when Regauge adaptive model source is enabled",
       );
     }
     if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED") !== "1") {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED must be 1 when Regauge adaptive model source is enabled",
+        "MENDPOINT_REGAUGE_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED must be 1 when Regauge adaptive model source is enabled",
       );
     }
     if (!resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION")?.trim()) {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION is required when Regauge adaptive model source is enabled",
+        "MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION is required when Regauge adaptive model source is enabled",
       );
     }
     if (
@@ -1889,7 +1889,7 @@ export function validateWorkerProductionEnv(
       )
     ) {
       errors.push(
-        "MENDPOINT_TRANSFORMER_ADAPTIVE_MAX_DATA_CLASSIFICATION must be public, internal, confidential, or restricted when Regauge adaptive model source is enabled",
+        "MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION must be public, internal, confidential, or restricted when Regauge adaptive model source is enabled",
       );
     }
     if (!env.LLM_AGENT_MODEL?.trim()) {

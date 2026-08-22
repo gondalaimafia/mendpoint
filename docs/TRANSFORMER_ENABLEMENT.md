@@ -5,7 +5,7 @@ Regauge for ONE pilot tenant. It is the prove-then-enable flip: the config
 is PREPARED in code, and a person deliberately applies it.
 
 **Status: prepared, not applied.** Landing the T5 change sets no production
-secret and changes production behavior by exactly zero. `MENDPOINT_TRANSFORMER_GATE`
+secret and changes production behavior by exactly zero. `MENDPOINT_REGAUGE_GATE`
 stays unset, so `assessTransformerGate` stays fail-closed (denied) everywhere.
 The customer-warden profile stays Regauge-off and still forbids any gate
 config. Nothing enables Regauge until an operator runs the steps below.
@@ -80,7 +80,7 @@ specific pilot tenant.
    example:
 
    ```
-   fly secrets set MENDPOINT_TRANSFORMER_GATE="$GATE_JSON" -a <pilot-app>
+   fly secrets set MENDPOINT_REGAUGE_GATE="$GATE_JSON" -a <pilot-app>
    ```
 
    If the pilot uses the adaptive or learning lanes, set the associated flags as
@@ -96,7 +96,7 @@ specific pilot tenant.
    ```
 
    Run this in the deployment where the secret is set so it reads the live
-   `MENDPOINT_TRANSFORMER_GATE`. Expect `pilot allowed: true` and
+   `MENDPOINT_REGAUGE_GATE`. Expect `pilot allowed: true` and
    `other tenant denied: true`. For a production delivery grant, also confirm the
    delivery boundary is denied without the approval reference and allowed with
    it.
@@ -107,7 +107,7 @@ Rollback is a single action: remove the secret. With no config, the gate default
 is denied, so Regauge is off again for everyone.
 
 ```
-fly secrets unset MENDPOINT_TRANSFORMER_GATE -a <pilot-app>
+fly secrets unset MENDPOINT_REGAUGE_GATE -a <pilot-app>
 ```
 
 Then re-verify that the gate is denied:
@@ -124,7 +124,7 @@ set adaptive or learning flags in step 3, unset those too.
 - The gate default stays unset => denied; `assessTransformerGate` is not
   weakened.
 - The customer-warden profile stays Regauge-off and still forbids
-  `MENDPOINT_TRANSFORMER_GATE`. Do not enable Regauge on that profile.
+  `MENDPOINT_REGAUGE_GATE`. Do not enable Regauge on that profile.
 - Security classification, mutation fencing, human review with no auto-merge,
   delivery guards, and learning-loop guards are unchanged. Delivery stays
   draft-only and never merges.

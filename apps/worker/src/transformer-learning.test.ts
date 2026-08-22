@@ -37,7 +37,7 @@ const HUMAN = "human-tenant-a";
 const AT = "2026-08-01T00:00:00.000Z";
 const OBSERVED = "2026-08-01T10:00:00.000Z";
 const NOW = "2026-08-01T12:00:00.000Z";
-const ON = Object.freeze({ MENDPOINT_TRANSFORMER_LEARNING_ENABLED: "1" }) as NodeJS.ProcessEnv;
+const ON = Object.freeze({ MENDPOINT_REGAUGE_LEARNING_ENABLED: "1" }) as NodeJS.ProcessEnv;
 const OFF = Object.freeze({}) as NodeJS.ProcessEnv;
 
 const dirs: string[] = [];

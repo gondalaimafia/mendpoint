@@ -244,13 +244,13 @@ class MemoryCheckpointArtifacts implements TransformerAttemptCheckpointArtifactS
 
 function adaptiveModelEnv(): NodeJS.ProcessEnv {
   return {
-    MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED: "1",
-    MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS: "tenant-a",
-    MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER: "openai-compatible",
-    MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT: "us-central-primary",
-    MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED: "1",
-    MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION: "us-central1",
-    MENDPOINT_TRANSFORMER_ADAPTIVE_MAX_DATA_CLASSIFICATION: "confidential",
+    MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED: "1",
+    MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_TENANTS: "tenant-a",
+    MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER: "openai-compatible",
+    MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT: "us-central-primary",
+    MENDPOINT_REGAUGE_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED: "1",
+    MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION: "us-central1",
+    MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION: "confidential",
     LLM_AGENT_MODEL: "model-a",
     LLM_AGENT_URL: "https://models.example/v1",
     OPENAI_API_KEY: "test-secret",
@@ -1128,7 +1128,7 @@ describe("Transformer production pilot lane", () => {
           authorization,
           {
             ...adaptiveModelEnv(),
-            MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT: "drifted-deployment",
+            MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT: "drifted-deployment",
           },
         ),
     });
@@ -1300,7 +1300,7 @@ describe("Transformer production pilot lane", () => {
     expect(transformerPilotWorkerPath({ MENDPOINT_DATA_DIR: dataRoot }, resolve("worker-app")))
       .toBe(join(dataRoot, "transformer-pilot.sqlite"));
     expect(transformerPilotWorkerPath({
-      MENDPOINT_TRANSFORMER_PILOT_DB: databasePath,
+      MENDPOINT_REGAUGE_PILOT_DB: databasePath,
     }, resolve("worker-app"))).toBe(databasePath);
   });
 });

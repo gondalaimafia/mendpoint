@@ -16,16 +16,16 @@ const SOURCE_DIGEST = `sha256:${createHash("sha256").update(SOURCE_CONTENT, "utf
 
 function liveEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
-    MENDPOINT_EVAL_LIVE_TRANSFORMER: "1",
-    MENDPOINT_TRANSFORMER_LIVE_EVAL_TENANT: TENANT,
-    MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED: "1",
-    MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_TENANTS: TENANT,
-    MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_PROVIDER: "openai-compatible",
-    MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_DEPLOYMENT: "us-central-primary",
-    MENDPOINT_TRANSFORMER_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED: "1",
-    MENDPOINT_TRANSFORMER_ADAPTIVE_EXECUTION_REGION: "us-central1",
-    MENDPOINT_TRANSFORMER_ADAPTIVE_MAX_DATA_CLASSIFICATION: "confidential",
-    MENDPOINT_TRANSFORMER_LIVE_EVAL_MAX_USD: "1",
+    MENDPOINT_EVAL_LIVE_REGAUGE: "1",
+    MENDPOINT_REGAUGE_LIVE_EVAL_TENANT: TENANT,
+    MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED: "1",
+    MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_TENANTS: TENANT,
+    MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER: "openai-compatible",
+    MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT: "us-central-primary",
+    MENDPOINT_REGAUGE_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED: "1",
+    MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION: "us-central1",
+    MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION: "confidential",
+    MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD: "1",
     LLM_AGENT_MODEL: MODEL,
     LLM_AGENT_URL: "https://models.example/v1",
     OPENAI_API_KEY: "test-secret",
@@ -92,7 +92,7 @@ const PRICE_TABLE = {
 describe("Transformer live model eval", () => {
   it("fails closed without the explicit live Transformer opt in", async () => {
     const env = liveEnv();
-    delete env.MENDPOINT_EVAL_LIVE_TRANSFORMER;
+    delete env.MENDPOINT_EVAL_LIVE_REGAUGE;
 
     await expect(runTransformerLiveEval({ env, repetitions: 1 }))
       .rejects.toThrow("transformer_live_eval_opt_in_required");
@@ -101,8 +101,8 @@ describe("Transformer live model eval", () => {
   it("fails closed when the production adapter policy is absent", async () => {
     await expect(runTransformerLiveEval({
       env: {
-        MENDPOINT_EVAL_LIVE_TRANSFORMER: "1",
-        MENDPOINT_TRANSFORMER_LIVE_EVAL_TENANT: TENANT,
+        MENDPOINT_EVAL_LIVE_REGAUGE: "1",
+        MENDPOINT_REGAUGE_LIVE_EVAL_TENANT: TENANT,
       },
       repetitions: 1,
     })).rejects.toThrow("transformer_live_eval_configuration_required");
@@ -210,8 +210,8 @@ describe("Transformer live model eval", () => {
   it("cannot certify failed objectives when both aggregate thresholds are zero", async () => {
     const report = await runTransformerLiveEval({
       env: liveEnv({
-        MENDPOINT_TRANSFORMER_LIVE_MIN_PASS_RATE: "0",
-        MENDPOINT_TRANSFORMER_LIVE_MIN_CONSISTENCY: "0",
+        MENDPOINT_REGAUGE_LIVE_MIN_PASS_RATE: "0",
+        MENDPOINT_REGAUGE_LIVE_MIN_CONSISTENCY: "0",
       }),
       repetitions: 2,
       fetchImpl: async () => responseFor(">=18 <20"),
@@ -227,7 +227,7 @@ describe("Transformer live model eval", () => {
   it("charges a failed call at its reservation and blocks a second call that cannot fit", async () => {
     const fetchImpl = vi.fn(async () => responseWithoutUsage());
     const report = await runTransformerLiveEval({
-      env: liveEnv({ MENDPOINT_TRANSFORMER_LIVE_EVAL_MAX_USD: "3" }),
+      env: liveEnv({ MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD: "3" }),
       repetitions: 2,
       fetchImpl,
       priceTable: {
@@ -253,7 +253,7 @@ describe("Transformer live model eval", () => {
     async (configuredBudget) => {
       const fetchImpl = vi.fn(async () => responseFor());
       await expect(runTransformerLiveEval({
-        env: liveEnv({ MENDPOINT_TRANSFORMER_LIVE_EVAL_MAX_USD: configuredBudget }),
+        env: liveEnv({ MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD: configuredBudget }),
         repetitions: 1,
         fetchImpl,
         priceTable: PRICE_TABLE,
@@ -266,7 +266,7 @@ describe("Transformer live model eval", () => {
     const fetchImpl = vi.fn(async () => responseFor());
 
     await expect(runTransformerLiveEval({
-      env: liveEnv({ MENDPOINT_TRANSFORMER_LIVE_EVAL_MAX_USD: "0" }),
+      env: liveEnv({ MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD: "0" }),
       repetitions: 1,
       fetchImpl,
       priceTable: PRICE_TABLE,

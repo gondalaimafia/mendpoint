@@ -45,7 +45,7 @@ Evaluate the planning preview against an approved snapshot without authorizing c
 | POST /transformer/control-plane/campaigns/:campaignId/review | API | Record independent blueprint review. |
 | GET /transformer/executions/:campaignId | API | Inspect execution state. |
 | npm run eval:transformer:canary | Command | Run the deterministic Regauge canary. |
-| MENDPOINT_TRANSFORMER_GATE | Configuration | Tenant, environment, boundary, and production-delivery authority. |
+| MENDPOINT_REGAUGE_GATE | Configuration | Tenant, environment, boundary, and production-delivery authority. |
 
 ## Evidence and verification
 

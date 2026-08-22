@@ -71,7 +71,7 @@ The Fettler candidate delivery path routes through the same selector; see
 | `GITLAB_TOKEN` | Project, group, or personal access token, required for `real`. | none |
 | `GITLAB_API_URL` | REST v4 base URL, for self-managed GitLab. | `https://gitlab.com/api/v4` |
 
-This stage lands gated off. `MENDPOINT_TRANSFORMER_GATE` stays denied by default
+This stage lands gated off. `MENDPOINT_REGAUGE_GATE` stays denied by default
 and the customer-warden profile keeps Regauge off, so no candidate is
 delivered anywhere until Regauge is explicitly enabled.
 

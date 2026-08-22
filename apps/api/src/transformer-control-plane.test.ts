@@ -444,7 +444,7 @@ describe("Transformer campaign service", () => {
     );
     expect(
       transformerControlPlanePath(
-        { MENDPOINT_TRANSFORMER_CONTROL_PLANE_DB: override },
+        { MENDPOINT_REGAUGE_CONTROL_PLANE_DB: override },
         cwd,
       ),
     ).toBe(override);

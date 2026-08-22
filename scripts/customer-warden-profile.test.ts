@@ -24,8 +24,8 @@ function customerRuntime(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     MENDPOINT_FEED_POLLING_ENABLED: "1",
     POLL_LOCAL_ONLY: "0",
     MENDPOINT_PILOT_SEED: "0",
-    MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
-    MENDPOINT_TRANSFORMER_ENABLED: "0",
+    MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED: "1",
+    MENDPOINT_REGAUGE_ENABLED: "0",
     MENDPOINT_BACKUP_TRANSPORT: "rclone_s3",
     ...overrides,
   };
@@ -58,8 +58,8 @@ describe("Fettler-only customer Fly profile", () => {
       'MENDPOINT_CUSTOMER_MAX_MACHINES = "1"',
       'GITHUB_MODE = "real"',
       'MENDPOINT_FEED_POLLING_ENABLED = "1"',
-      'MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED = "1"',
-      'MENDPOINT_TRANSFORMER_ENABLED = "0"',
+      'MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED = "1"',
+      'MENDPOINT_REGAUGE_ENABLED = "0"',
       'MENDPOINT_BACKUP_TRANSPORT = "rclone_s3"',
       'MENDPOINT_BACKUP_OUTPUT_ROOT = "/tmp/mendpoint-backup-staging"',
       'MENDPOINT_BACKUP_STAGING_ROOT = "/tmp/mendpoint-backup-staging"',
@@ -193,14 +193,18 @@ describe("Fettler-only customer Fly profile", () => {
 
   it("fails closed when Regauge authority or a multi-node topology is requested", () => {
     expect(validateCustomerWardenRuntime(customerRuntime())).toEqual([]);
+    // The retired legacy names are no longer read, so the profile check is
+    // driven through the current (Regauge) names. The error strings keep the
+    // legacy names because the checked source (customer-warden-profile.ts) still
+    // reports them under their original keys.
     expect(validateCustomerWardenRuntime(customerRuntime({
-      MENDPOINT_TRANSFORMER_ENABLED: "1",
+      MENDPOINT_REGAUGE_ENABLED: "1",
     }))).toContain("Customer Fettler profile requires MENDPOINT_TRANSFORMER_ENABLED=0");
     expect(validateCustomerWardenRuntime(customerRuntime({
-      MENDPOINT_TRANSFORMER_GATE: '{"tenant_default":true}',
+      MENDPOINT_REGAUGE_GATE: '{"tenant_default":true}',
     }))).toContain("Customer Fettler profile forbids MENDPOINT_TRANSFORMER_GATE");
     expect(validateCustomerWardenRuntime(customerRuntime({
-      MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED: "1",
+      MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED: "1",
     }))).toContain(
       "Customer Fettler profile forbids MENDPOINT_TRANSFORMER_ADAPTIVE_MODEL_SOURCE_ENABLED=1",
     );

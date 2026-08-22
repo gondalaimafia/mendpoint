@@ -99,8 +99,8 @@ describe("production rate limit identity", () => {
         MENDPOINT_BACKUP_FENCE_ROOT: fenceRoot,
         DB_PATH: databasePath,
         MENDPOINT_CHANGE_SOURCE_DB_PATH: changeSourcePath,
-        MENDPOINT_TRANSFORMER_CONTROL_PLANE_DB_PATH: transformerCampaignPath,
-        MENDPOINT_TRANSFORMER_PILOT_DB_PATH: transformerExecutionPath,
+        MENDPOINT_REGAUGE_CONTROL_PLANE_DB_PATH: transformerCampaignPath,
+        MENDPOINT_REGAUGE_PILOT_DB_PATH: transformerExecutionPath,
         MENDPOINT_APPLICATION_DATA_KEY: "0".repeat(64),
       }),
     ).toThrow("customer_startup_blocked_by_backup");
