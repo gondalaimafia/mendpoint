@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  bindMissionGraphVersion,
+  bindMissionPolicyEnvelopeVersion,
   createDb,
   createMission,
   createWardenCampaign,
@@ -60,6 +62,84 @@ function wardenCampaign(db: AppDb, id = "campaign") {
     concurrencyLimit: 1, completionPolicy: "all", eventId: `wc-${id}`, idempotencyKey: `wc-${id}`,
     correlationId: "corr", createdAt: "2026-01-01T00:00:00.000Z" });
 }
+
+describe("mission execution-context version binding", () => {
+  function bindGraph(db: AppDb, id: string, graphVersionId: string, suffix = "") {
+    return bindMissionGraphVersion(db, { tenantId: "t1", missionId: id, graphVersionId,
+      actorPrincipalId: "p1", eventId: `gv-${id}${suffix}`, idempotencyKey: `gv-${id}${suffix}`,
+      correlationId: "corr", createdAt: "2026-01-03T00:00:00.000Z" });
+  }
+  function bindPolicy(db: AppDb, id: string, version: string, suffix = "") {
+    return bindMissionPolicyEnvelopeVersion(db, { tenantId: "t1", missionId: id, policyEnvelopeVersion: version,
+      actorPrincipalId: "p1", eventId: `pev-${id}${suffix}`, idempotencyKey: `pev-${id}${suffix}`,
+      correlationId: "corr", createdAt: "2026-01-03T00:00:00.000Z" });
+  }
+
+  it("defaults both version pins to null on a new mission", () => {
+    const db = fixture();
+    const created = fettlerMission(db);
+    expect(created.graphVersionId).toBeNull();
+    expect(created.policyEnvelopeVersion).toBeNull();
+  });
+
+  it("pins the graph version set-once, bumps the revision, and emits a domain event", () => {
+    const db = fixture();
+    fettlerMission(db);
+    const bound = bindGraph(db, "m-fettler", "sgv1:abc");
+    expect(bound.graphVersionId).toBe("sgv1:abc");
+    expect(bound.revision).toBe(2);
+    expect(getMission(db, "t1", "m-fettler")?.graphVersionId).toBe("sgv1:abc");
+    const events = listDomainEvents(db, "t1", "mission", "m-fettler");
+    expect(events.map((e) => e.event_type)).toContain("mission.graph_version_bound");
+  });
+
+  it("is idempotent when the same graph version is re-bound and does not bump the revision", () => {
+    const db = fixture();
+    fettlerMission(db);
+    const first = bindGraph(db, "m-fettler", "sgv1:abc");
+    const again = bindGraph(db, "m-fettler", "sgv1:abc", "-2");
+    expect(again.revision).toBe(first.revision);
+    expect(again.graphVersionId).toBe("sgv1:abc");
+  });
+
+  it("fails closed when a different graph version is bound after the first", () => {
+    const db = fixture();
+    fettlerMission(db);
+    bindGraph(db, "m-fettler", "sgv1:abc");
+    expect(() => bindGraph(db, "m-fettler", "sgv1:def", "-2")).toThrow("mission_graph_version_conflict");
+  });
+
+  it("pins the policy envelope version independently of the graph version", () => {
+    const db = fixture();
+    fettlerMission(db);
+    bindGraph(db, "m-fettler", "sgv1:abc");
+    const bound = bindPolicy(db, "m-fettler", "policy-v7");
+    expect(bound.graphVersionId).toBe("sgv1:abc");
+    expect(bound.policyEnvelopeVersion).toBe("policy-v7");
+    expect(bound.revision).toBe(3);
+    const events = listDomainEvents(db, "t1", "mission", "m-fettler");
+    expect(events.map((e) => e.event_type)).toContain("mission.policy_envelope_bound");
+  });
+
+  it("fails closed when a different policy envelope version is bound after the first", () => {
+    const db = fixture();
+    fettlerMission(db);
+    bindPolicy(db, "m-fettler", "policy-v7");
+    expect(() => bindPolicy(db, "m-fettler", "policy-v8", "-2")).toThrow(
+      "mission_policy_envelope_version_conflict",
+    );
+  });
+
+  it("cannot bind a version onto another tenant's mission", () => {
+    const db = fixture();
+    fettlerMission(db);
+    expect(() =>
+      bindMissionGraphVersion(db, { tenantId: "t2", missionId: "m-fettler", graphVersionId: "sgv1:abc",
+        actorPrincipalId: "p2", eventId: "gv-x", idempotencyKey: "gv-x", correlationId: "corr",
+        createdAt: "2026-01-03T00:00:00.000Z" }),
+    ).toThrow("mission_not_found");
+  });
+});
 
 describe("mission primitive", () => {
   it("creates a mission and records it as CREATED with a domain event", () => {

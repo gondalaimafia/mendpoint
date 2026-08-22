@@ -858,6 +858,8 @@ CREATE TABLE IF NOT EXISTS mission (
   snapshot_id TEXT REFERENCES repository_snapshots(id),
   fettler_campaign_id TEXT REFERENCES fettler_campaigns(id),
   regauge_campaign_id TEXT,
+  graph_version_id TEXT,
+  policy_envelope_version TEXT,
   owner_principal_id TEXT NOT NULL REFERENCES principals(id),
   revision INTEGER NOT NULL CHECK (revision > 0),
   created_at TEXT NOT NULL,
@@ -2400,6 +2402,13 @@ function migrateProvidersFeedColumns(db: AppDb) {
     // this migration reads NULL ("no failure class recorded"), never a
     // fabricated class. No static index/view/constraint references it.
     { table: "trajectory_steps", name: "failure_class", sql: "TEXT" },
+    // Mission execution-context version pins (v4 §6.7 Policy Envelope, §11.10
+    // temporal graph versioning). Nullable TEXT, no default, so a pre-change
+    // mission row reads NULL. No static index/view/constraint references them, so
+    // an existing DB that has not run this migration never touches them in the
+    // static DDL; the CREATE TABLE above carries them for fresh databases.
+    { table: "mission", name: "graph_version_id", sql: "TEXT" },
+    { table: "mission", name: "policy_envelope_version", sql: "TEXT" },
     // S1.1 tenant-private providers. Nullable, no default, so legacy rows read NULL (shared
     // catalog, byte-identical). No static index/view/constraint references it, so an existing
     // DB that has not run this migration never touches the column in the static DDL.
@@ -4010,6 +4019,8 @@ export {
   transitionWardenTarget,
 } from "./warden-campaign.js";
 export {
+  bindMissionGraphVersion,
+  bindMissionPolicyEnvelopeVersion,
   bindMissionScope,
   createMission,
   getMission,
