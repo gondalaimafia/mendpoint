@@ -6,7 +6,7 @@ import {
   type WardenCheckpointSourceEvidence,
 } from "./checkpoint.js";
 import { ABSENT_FILE_EVIDENCE_DIGEST, validatedToolCall } from "./agent.js";
-import type { AgentStep, ToolName } from "./types.js";
+import type { AgentStep, ToolFailureClass, ToolName } from "./types.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const CODE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -259,11 +259,15 @@ function effectEventResultFromBytes(content: Uint8Array): WardenRuntimeJson {
     "ok", "tool", "summary",
     ...(result.data === undefined ? [] : ["data"]),
     ...(result.error === undefined ? [] : ["error"]),
+    ...(result.failureClass === undefined ? [] : ["failureClass"]),
   ], code);
   if (typeof result.ok !== "boolean" || typeof result.summary !== "string" ||
       !( ["list_dir", "read_file", "search", "write_file", "replace_in_file", "delete_file",
         "run_command", "http_probe", "finish"] as const).includes(result.tool as ToolName) ||
-      (result.error !== undefined && typeof result.error !== "string")) {
+      (result.error !== undefined && typeof result.error !== "string") ||
+      (result.failureClass !== undefined &&
+        !(["bad_arguments", "policy_refusal", "infra_failure", "target_failure",
+          "undetermined"] as const).includes(result.failureClass as ToolFailureClass))) {
     throw new Error(code);
   }
   if (envelope.mutation !== undefined) {

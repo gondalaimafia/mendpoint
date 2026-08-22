@@ -128,6 +128,7 @@ export function persistWardenTrajectory(
         result: tool.result,
         ok: tool.ok,
         error: tool.error,
+        failureClass: tool.failureClass,
         plannerSource: tool.plannerSource,
         createdAt,
       });

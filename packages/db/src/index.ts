@@ -1152,6 +1152,11 @@ CREATE TABLE IF NOT EXISTS trajectory_steps (
   verification_json TEXT,
   ok INTEGER CHECK (ok IN (0, 1)),
   error TEXT,
+  -- Typed reason for a tool step's ok = 0, recorded verbatim from the tool
+  -- result. Nullable: null is success (or a step kind that never sets it),
+  -- never a fabricated class. No CHECK constraint so a new class value never
+  -- requires a table rebuild on a deployed volume.
+  failure_class TEXT,
   cost_usd REAL,
   latency_ms INTEGER,
   started_at TEXT,
@@ -2389,6 +2394,12 @@ function migrateProvidersFeedColumns(db: AppDb) {
     name: string;
     sql: string;
   }> = [
+    // Typed tool-failure class on the append-only trajectory step. Mirrors the
+    // CREATE TABLE column above so a pre-change volume (table present, column
+    // absent) converges on boot. Nullable, no default: a step written before
+    // this migration reads NULL ("no failure class recorded"), never a
+    // fabricated class. No static index/view/constraint references it.
+    { table: "trajectory_steps", name: "failure_class", sql: "TEXT" },
     // S1.1 tenant-private providers. Nullable, no default, so legacy rows read NULL (shared
     // catalog, byte-identical). No static index/view/constraint references it, so an existing
     // DB that has not run this migration never touches the column in the static DDL.

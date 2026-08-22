@@ -115,6 +115,14 @@ export type TrajectoryStep = Readonly<{
   verification: TrajectoryVerification | null;
   ok: boolean | null;
   error: string | null;
+  /**
+   * Typed reason a tool step carries `ok: false`
+   * ("bad_arguments" | "policy_refusal" | "infra_failure" | "target_failure" |
+   * "undetermined"), recorded verbatim from the tool result. Null on success and
+   * on step kinds that never set it, so null reads as "no failure recorded"
+   * rather than a fabricated class.
+   */
+  failureClass: string | null;
   costUsd: number | null;
   latencyMs: number | null;
   startedAt: string | null;
@@ -177,6 +185,7 @@ type StepRow = {
   verification_json: string | null;
   ok: number | null;
   error: string | null;
+  failure_class: string | null;
   cost_usd: number | null;
   latency_ms: number | null;
   started_at: string | null;
@@ -272,6 +281,7 @@ function step(row: StepRow): TrajectoryStep {
       : null,
     ok: row.ok === null ? null : row.ok === 1,
     error: row.error,
+    failureClass: row.failure_class,
     costUsd: row.cost_usd,
     latencyMs: row.latency_ms,
     startedAt: row.started_at,
@@ -536,6 +546,7 @@ type RecordStepBase = {
   plannerSource?: string | null;
   ok?: boolean | null;
   error?: string | null;
+  failureClass?: string | null;
   costUsd?: number | null;
   latencyMs?: number | null;
   startedAt?: string | null;
@@ -569,9 +580,9 @@ function insertStep(
       `INSERT INTO trajectory_steps
         (id, trajectory_id, tenant_id, step_index, step_kind, tool_name, planner_source,
          input_blob_sha256, output_blob_sha256, model_id, reservation_ref, router_decision_ref,
-         learning_event_ref, verification_json, ok, error, cost_usd, latency_ms, started_at,
-         ended_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         learning_event_ref, verification_json, ok, error, failure_class, cost_usd, latency_ms,
+         started_at, ended_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       id,
@@ -590,6 +601,7 @@ function insertStep(
       fields.verification ? JSON.stringify(fields.verification) : null,
       base.ok === undefined || base.ok === null ? null : base.ok ? 1 : 0,
       base.error ?? null,
+      base.failureClass ?? null,
       base.costUsd ?? null,
       base.latencyMs ?? null,
       base.startedAt ?? null,

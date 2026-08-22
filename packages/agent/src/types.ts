@@ -54,12 +54,31 @@ export type AgentExecutionIntent = Readonly<{
   expectedResultDigest?: string;
 }>;
 
+/**
+ * Typed reason a tool result carries `ok: false`. A bare `ok: false` conflates
+ * four different worlds: a bad model-supplied argument, a harness policy
+ * refusal, a containment/infrastructure failure, and a genuine non-zero exit
+ * from the target under test. Carrying the class lets a downstream reader tell
+ * "the tool infrastructure failed" from "the model's edit failed its test"
+ * instead of guessing from free-text `error`. `undetermined` is used only where
+ * the observing site genuinely cannot tell which class applies; it is never a
+ * default. Success carries no class.
+ */
+export type ToolFailureClass =
+  | "bad_arguments"
+  | "policy_refusal"
+  | "infra_failure"
+  | "target_failure"
+  | "undetermined";
+
 export type ToolResult = {
   ok: boolean;
   tool: ToolName;
   summary: string;
   data?: unknown;
   error?: string;
+  /** Set on every `ok: false` result; omitted on success. */
+  failureClass?: ToolFailureClass;
 };
 
 export type AgentStep = {
