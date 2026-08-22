@@ -10,6 +10,7 @@
  * corpus, or a misconfigured `MENDPOINT_CORPUS_ROOT`, must fail loudly here rather
  * than silently poison the run.
  */
+import { existsSync } from "node:fs";
 import { relative, resolve } from "node:path";
 
 export class CorpusIsolationError extends Error {
@@ -44,5 +45,38 @@ export function assertCorpusIsolation(corpusRoot: string, repoRoot: string): voi
         `The corpus under test must live outside the tree that holds evals/ground-truth so a staged product cannot read its own answer key. ` +
         `Set MENDPOINT_CORPUS_ROOT to a path outside the repo, or keep the corpus external.`,
     );
+  }
+}
+
+/**
+ * Assert answer-key isolation for a whole run, without mis-firing on a runner
+ * that simply has no corpus.
+ *
+ * The invariant that matters is: every corpus repo the product will actually
+ * STAGE and read must resolve outside the tree holding evals/ground-truth. So:
+ *
+ *  - If an operator explicitly configured a corpus root (`configured`), hold it
+ *    to the invariant loudly even before any scenario dir materializes — a
+ *    MENDPOINT_CORPUS_ROOT pointing inside the tree is a misconfiguration.
+ *  - Always assert over the corpus repos that actually EXIST on disk (the ones a
+ *    run will stage). A corpus committed into the tree fails here.
+ *
+ * A GitHub-hosted runner with no corpus (no env, no scenario dirs present) has
+ * nothing to assert and degrades cleanly to the generated suite, instead of the
+ * old behaviour where an empty/default root collapsed onto the repo root and
+ * threw. This never weakens the check: any corpus that could actually leak its
+ * answer key still fails loudly.
+ */
+export function assertCorpusRunIsolation(args: {
+  corpusRoot: string;
+  configured: boolean;
+  corpusRepoPaths: readonly string[];
+  repoRoot: string;
+  exists?: (p: string) => boolean;
+}): void {
+  const exists = args.exists ?? existsSync;
+  if (args.configured) assertCorpusIsolation(args.corpusRoot, args.repoRoot);
+  for (const repoPath of args.corpusRepoPaths) {
+    if (exists(repoPath)) assertCorpusIsolation(repoPath, args.repoRoot);
   }
 }

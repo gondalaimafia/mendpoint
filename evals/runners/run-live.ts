@@ -26,10 +26,10 @@ import {
   resolveLiveLaneConfig,
   type LiveModelApprovedConfig,
 } from "@mendpoint/eval/live-model";
-import { CORPUS_ROOT, SCENARIOS } from "../scenarios/index.js";
+import { CORPUS_ROOT, CORPUS_ROOT_CONFIGURED, SCENARIOS } from "../scenarios/index.js";
 import { resolveScenarios } from "../scenarios/resolve.js";
 import { runFettler } from "./fettler-runner.js";
-import { assertCorpusIsolation } from "./isolation.js";
+import { assertCorpusRunIsolation } from "./isolation.js";
 import {
   buildLiveLanePayload,
   buildLiveResult,
@@ -80,10 +80,15 @@ async function main(): Promise<void> {
   const commit = gitCommit();
   const ctx = { gitCommit: commit, productVersion: productVersion(commit) };
 
-  // Same answer-key isolation invariant the deterministic driver asserts: the
-  // corpus must resolve OUTSIDE the repo that holds the ground truth. This
+  // Same answer-key isolation invariant the deterministic driver asserts: every
+  // corpus repo must resolve OUTSIDE the repo that holds the ground truth. This
   // matters more with the model on, since the product now reads staged files.
-  assertCorpusIsolation(CORPUS_ROOT, REPO_ROOT);
+  assertCorpusRunIsolation({
+    corpusRoot: CORPUS_ROOT,
+    configured: CORPUS_ROOT_CONFIGURED,
+    corpusRepoPaths: SCENARIOS.map((s) => s.repoPath),
+    repoRoot: REPO_ROOT,
+  });
 
   const liveRequested = args.live || liveEnvRequested(process.env);
   const config = resolveLiveLaneConfig();

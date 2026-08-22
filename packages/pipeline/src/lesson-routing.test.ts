@@ -29,12 +29,23 @@ describe("lesson destination dispositions", () => {
 
   it("classifies every other destination as unrouted so the drop is not silent", () => {
     const unrouted = ALL_DESTINATIONS.filter((d) => dispositionForDestination(d) === "unrouted");
-    // Nine sinkless destinations: the eleven minus model_weight (a sink) and
-    // no_action (intentional terminal). If a real sink is added without updating
-    // the disposition map, this count changes and the test fails loudly.
+    // Ten sinkless destinations: the twelve minus model_weight (a sink) and
+    // no_action (intentional terminal). `organization_memory` is among them — it is
+    // named vocabulary with no sink. If a real sink is added without updating the
+    // disposition map, this count changes and the test fails loudly.
     expect(unrouted.sort()).toEqual(
-      ["calibration", "deterministic_recipe", "graph", "parser", "product_logic", "prompt", "retrieval", "router_policy", "tooling"],
+      ["calibration", "deterministic_recipe", "graph", "organization_memory", "parser", "product_logic", "prompt", "retrieval", "router_policy", "tooling"],
     );
+  });
+
+  it("names organization_memory as an unrouted destination, never a live route", () => {
+    // The organization-memory destination exists as vocabulary (spec §17.4, ADR-0008)
+    // but has no sink. This control dies if it is prematurely marked sink_consumes
+    // without a real consumer — the "the route works" lie the doc warns against.
+    expect(dispositionForDestination("organization_memory")).toBe("unrouted");
+    const summary = summarizeLessonRouting(lesson(["organization_memory"]));
+    expect(summary.reachedSink).toBe(false);
+    expect(summary.wentNowhere).toBe(true);
   });
 
   it("counts a model_weight lesson as reaching a sink and not going nowhere", () => {
