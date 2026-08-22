@@ -2717,3 +2717,111 @@ Review: in progress. Exact main `8c1a2c9c8f553af65dbe3677ef45aaa3616e3be6` passe
 Activation checkpoint: protected workflow `32537897567` passed preflight, exact authority derivation, restored-volume verification, storage verification, and secret staging, then failed before worker activation, model evaluation, or GitHub delivery. The coordinator exposed `regauge_production_bootstrap_idempotency_conflict` because the v1 campaign receipt bound a prior workflow run's short-lived approval and evidence into the durable campaign replay digest. The failed Machine `d8d2e26c9eed78` was removed; both encrypted volumes remain intact. A red regression reproduced the conflict. The v2 receipt now separates immutable campaign authority from the per-run authorization.
 
 Second activation checkpoint: protected workflow `32539804388` reached the legacy reauthorization path but failed because that path rematerialized the repository and compared the new snapshot identity with the durable v1 receipt. The two failed attempts created two newer snapshots with the same exact revision and manifest as the original. Machine `2869194b4eee68` and the bounded diagnostic Machines were removed; both encrypted volumes remain intact and unattached. The corrected replay is read-only: it checks the current GitHub installation grant, tenant-scoped SCM connection, exact connected repository, the receipt's exact snapshot ID and stored bytes, recipe scope, control-plane blueprint, and running execution. It never materializes or requires the revision to be globally unique. RED failed 2 of 12 on the old behavior. GREEN passes 14 of 14 focused bootstrap/runtime tests, including duplicate snapshots, API typecheck, and 434 of 434 API tests after the two full-suite timeout cases passed on isolated rerun.
+
+## Why the self-serve slices reverted in #93 were not restored (2026-08-21)
+
+This section records a completed assessment. It deliberately restores nothing:
+no code, no schema, no route, no npm script. Its only purpose is so the same
+investigation is not re-run in a fortnight at the same cost and reaching the
+same conclusion.
+
+### On the revert itself
+
+Commit 6a7b2f6 (#93, 13 August, "Restore last known healthy production
+source") cut 58 files and 7,670 lines "for isolated diagnosis and reintroduction
+after production is healthy," reverting #86 (Fly token name + verify:config),
+#87 (RBAC), #90 (connectors), #92 (model-tenant-routing) and #89 (console).
+The diagnosis it deferred was never completed and no reintroduction commit was
+ever made. Nine days of absent product surface therefore rests on an unexamined
+guess about which of five batched merges broke production. That is the finding
+here, more than any single line of the reverted code.
+
+### On the crash-loop cause
+
+The failure it was reacting to ("the Fly machine exits before binding") matches
+a documented failure CLASS, but the specific 13 August culprit was never pinned.
+
+- The class is recorded at tasks/lessons.md:7: a static-DDL statement referenced
+  a column (agent_runs.job_id) that only arrives via a later additive migration.
+  Fresh databases (all tests, CI deployment-e2e) build the full table and pass;
+  the existing production volume lacked the column, raw.exec(DDL) threw
+  "no such column" before migrations ran, the machine crash-looped to its
+  restart cap, and production stayed down until a manual image rollback. See
+  also the memory notes "ensureTables never alters" and "Fresh-DB CI masks
+  upgrade breaks."
+- The two reverted DB tables look schema-innocent. In the pre-revert
+  packages/db/src/index.ts, tenant_member_scopes and connectors are each
+  self-contained: every indexed column exists in the same CREATE TABLE, and
+  explicit comments state that CREATE IF NOT EXISTS is idempotent on fresh and
+  existing volumes and that "no additive migration column entry is needed." The
+  same file had already moved the agent_runs job_id unique index out of the
+  static DDL and into the migration, i.e. it had already absorbed the lesson.
+- #92 (packages/agent/src/model-tenant-routing.ts) remains a plausible,
+  unexamined non-schema culprit: it runs unconditionally on every model call,
+  unlike the flag-gated self-serve routes. It is out of scope to restore
+  (contributor tier and model-tenant-routing must not be touched), so it was not
+  investigated further here.
+
+### On each slice (supersession)
+
+- Console views (runs route, runs-view, run-controls, run-detail-view, run-map,
+  connections-panel, access-view): SUPERSEDED. The console was rebuilt around a
+  changes/prs model; the runs nav id now redirects to /prs
+  (apps/web/app/components/console/console-shell.tsx). fixtures.ts exists today
+  at 288 lines against the reverted-era 422, so a restore would clobber live
+  work. Do not restore; treat as rebuild if wanted.
+- Self-serve API routes (self-serve-runs.ts, self-serve-admin.ts,
+  connectors.ts): AUTH REGRESSION as-is. Their gate is presence-only
+  (principal present plus non-empty tenantId). Today's write standard
+  (apps/api/src/warden-campaign-enrollment.ts) requires OIDC, a non-revoked
+  human trust principal, an active tenant membership, and evidence-id
+  re-verification immediately before the write. Making them compliant is a
+  rebuild, not a restore. The read side is also partly superseded by
+  packages/db/src/self-serve-dashboard.ts, which survived the revert.
+- Connectors and member-scopes DB layers (packages/connectors,
+  packages/db/src/connectors.ts, member-scopes.ts, audit-query): safe to apply
+  (convergence-aware, no table-name collisions on main), but would be DEAD CODE:
+  @mendpoint/connectors is imported nowhere, and the only consumers were the
+  superseded console and the auth-regressive routes. One of the two,
+  connectors, is a credential-storing tenant table, so landing it with no
+  compliant write path adds attack surface for no delivered feature. Held.
+
+### On verify:config specifically
+
+Not restored. packages/ops/src/env.ts (validateApiEnv, readiness) already owns
+production environment validation, masks secrets, and is wired into
+npm run ga:check via scripts/ga-check.ts. Restoring a hand-maintained second
+list of environment-variable names would create a drifting second source of
+truth, not a restoration. Beyond that, the August script cannot honestly assert
+today, per capability:
+
+- Billing: unassertable. MENDPOINT_BILLING_COLLECTION, STRIPE_SECRET_KEY and
+  MENDPOINT_BILLING_ALLOW_LIVE appear only in packages/shared/src/error-guidance.ts
+  guidance strings; no live parser or collector consumes them on main.
+- Model tier: stale and out of scope. The script's "customer code must never run
+  on a training tier" framing contradicts the approved default tier
+  muse-spark-1.2-contributor (model-tenant-routing.ts), and the real vars have
+  changed (MENDPOINT_TRAINING_TIER_MODELS and MENDPOINT_NON_TRAINING_MODEL_PROVIDER
+  are new).
+- Fly sandbox: incomplete. Today additionally requires the digest-pinned
+  MENDPOINT_SANDBOX_FLY_IMAGE (fly-sandbox refuses host fallback without it),
+  plus MENDPOINT_SANDBOX_FLY_MODE and MENDPOINT_SANDBOX_ALLOW_UNPINNED_IMAGE.
+- GitHub App: dead variables. GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET
+  are read nowhere; the real ones today are GITHUB_APP_ACCOUNT_TENANT_BINDINGS,
+  GITHUB_APP_OWNER_TENANT_BINDINGS, and GITHUB_APP_PRIVATE_KEY or
+  GITHUB_APP_PRIVATE_KEY_PATH.
+- Self-serve flags: renamed. MENDPOINT_SELF_SERVE_WARDEN is now
+  MENDPOINT_SELF_SERVE_FETTLER (old name kept as a legacy alias via RENAMED_ENV
+  in packages/shared/src/renamed-env.ts); MENDPOINT_SELF_SERVE_ADMIN is read
+  nowhere.
+- Key shape: wrong. MENDPOINT_APPLICATION_DATA_KEY is accepted as 64 hex OR
+  base64url (parseCustomerBackupKey), so the hex-64-only shape rule would flag a
+  valid key as malformed.
+
+A verifier asserting dead names, a false training-tier policy, a wrong key
+shape, and unwired billing variables would report green against a configuration
+nobody runs. If an operator setup checklist is wanted later, build it as a
+secret-safe presentation layer over validateApiEnv (reusing RENAMED_ENV),
+covering only the self-serve capabilities validateApiEnv does not, and excluding
+billing and model tier. That is new work, scoped and titled as such, not a
+restoration.
