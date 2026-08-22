@@ -28,6 +28,13 @@ kill_timeout = 30
   # ready). It is intentionally absent here: an unset or unrecognized value is
   # indeterminate and fails closed at boot rather than reading as ready.
   #   fly secrets set MENDPOINT_CUSTOMER_READY=1 --app <customer-app>
+  # Governed learning is likewise declared per deployment, never inherited as a
+  # shared constant. MENDPOINT_REGAUGE_LEARNING_ENABLED is intentionally absent
+  # here: enabling it for every customer app from one committed line would make
+  # a per-tenant data-governance decision on the operator's behalf. Each customer
+  # deployment that wants the learning loop sets it explicitly, and every write
+  # is still gated at runtime on an un-revoked learning_consents row.
+  #   fly secrets set MENDPOINT_REGAUGE_LEARNING_ENABLED=1 --app <customer-app>
   MENDPOINT_CUSTOMER_TOPOLOGY = "single_node"
   MENDPOINT_CUSTOMER_MAX_MACHINES = "1"
   GITHUB_MODE = "real"

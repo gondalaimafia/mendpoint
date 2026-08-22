@@ -25,6 +25,13 @@ kill_timeout = 45
   MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED = "1"
   MENDPOINT_REGAUGE_MULTINODE_ENABLED = "1"
   MENDPOINT_REGAUGE_BOOTSTRAP_ENABLED = "1"
+  # Governed learning is default-off; only an explicit "1" enables it
+  # (learningLoopEnabled, apps/worker/src/transformer-learning-outcome.ts).
+  # Enabled here for our own pilot. This flag alone admits nothing: every
+  # learning write is additionally gated at runtime on an un-revoked row in
+  # learning_consents, so enabling it on a deployment with no consent granted
+  # changes no behaviour beyond letting the loop run once consent exists.
+  MENDPOINT_REGAUGE_LEARNING_ENABLED = "1"
   MENDPOINT_REGAUGE_ARTIFACT_BACKEND = "s3"
   MENDPOINT_REGAUGE_READINESS_HOST = "0.0.0.0"
   MENDPOINT_REGAUGE_READINESS_PORT = "9465"
