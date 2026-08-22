@@ -20,6 +20,7 @@
  *      fails closed. This module never persists anything itself; it only shapes
  *      observable text so the store can redact and content-address it.
  */
+import type { ObservedVerificationCommand } from "@mendpoint/shared";
 import type { AgentRunResult, AgentTaskMode, ToolName } from "./types.js";
 
 /** Warden offers this fixed tool universe (mirrors agent.ts TOOL_NAMES). */
@@ -68,12 +69,40 @@ export type WardenCaptureToolStep = Readonly<{
   plannerSource: string | null;
 }>;
 
+/**
+ * The redacted verification projection carried on the capture DTO and persisted
+ * as a trajectory verification step. It records a three-state `verdict` derived
+ * from the observed {@link ObservedVerificationCommand} `outcome`, so a refusal
+ * (`not_verified`) never reads as a test failure. The builder maps observed runs
+ * into this shape; the trajectory persister and DB contract read `verdict`.
+ */
 export type WardenCaptureVerification = Readonly<{
   verdict: string;
   exitCode: number | null;
   command: string | null;
   sandboxBackend: string | null;
 }>;
+
+/**
+ * Project an observed verification run onto the redacted trajectory verdict
+ * vocabulary. The three observed states map one-to-one: `verified` -> "passed",
+ * `failed` -> "failed", `not_verified` -> "not_verified". A failure and a
+ * refusal therefore stay distinguishable at the persisted layer instead of
+ * collapsing into one another.
+ */
+function toCaptureVerification(observed: ObservedVerificationCommand): WardenCaptureVerification {
+  return Object.freeze({
+    verdict:
+      observed.outcome === "verified"
+        ? "passed"
+        : observed.outcome === "failed"
+          ? "failed"
+          : "not_verified",
+    exitCode: observed.exitCode,
+    command: observed.command,
+    sandboxBackend: observed.sandboxBackend,
+  });
+}
 
 export type WardenCaptureModelProvenanceRecord = Readonly<{
   /** Exact model echoed by the provider response body (never the requested id). */
@@ -251,7 +280,7 @@ export function buildWardenAttemptCapture(input: {
   changedPaths?: readonly string[];
   candidateDigest?: string | null;
   changedFiles?: readonly { path: string; content: string }[];
-  verifications?: readonly WardenCaptureVerification[];
+  verifications?: readonly ObservedVerificationCommand[];
 }): WardenAttemptCapture {
   const agent = input.agent;
   const model = agent.metrics.model;
@@ -288,7 +317,7 @@ export function buildWardenAttemptCapture(input: {
     modelMeasured: measured,
     modelProvenance: Object.freeze(provenance),
     toolSteps: Object.freeze(toolStepsFrom(agent)),
-    verifications: Object.freeze([...(input.verifications ?? [])]),
+    verifications: Object.freeze((input.verifications ?? []).map(toCaptureVerification)),
     sandboxBackend: input.sandboxBackend,
     finalOutcome:
       input.status === "succeeded" ? "candidate_ready" : `rejected:${input.code ?? "unknown"}`,

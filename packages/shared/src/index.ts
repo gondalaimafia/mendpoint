@@ -400,6 +400,39 @@ export const ReviewedVerificationCommandSchema = z.object({
 });
 export type ReviewedVerificationCommand = z.infer<typeof ReviewedVerificationCommandSchema>;
 
+/**
+ * The record of an OBSERVED verification run, kept deliberately distinct from
+ * {@link ReviewedVerificationCommandSchema} above. A single type was quietly
+ * doing two incompatible jobs; these two schemas separate them:
+ *
+ *   - `ReviewedVerificationCommandSchema` ASSERTS a candidate is approvable, so
+ *     it admits only a passing command (`ok: true`, `exitCode: 0`). That literal
+ *     is correct there — an approved candidate must have passed — and stays as
+ *     it is. The transformer sealing gate (adaptive-candidate.ts) enforces the
+ *     same guarantee on its own review evidence.
+ *   - `ObservedVerificationCommandSchema` RECORDS what a run actually observed, so
+ *     `ok` is a real boolean and `exitCode` a real number: a failed run
+ *     (`ok: false`, nonzero exit) is a fact that must be representable, never an
+ *     impossibility. `outcome` carries the three genuinely-distinct states so a
+ *     refusal (`not_verified` — the command never ran) is never collapsed into a
+ *     failure, and `ok` stays the fail-closed boolean companion (`ok === true`
+ *     iff `outcome === "verified"`), mirroring the executor's own contract in
+ *     packages/repair/src/verify.ts.
+ *
+ * A failed verification is therefore representable without weakening any approval
+ * guarantee: the guarantee lives on the reviewed schema and the sealing gate, not
+ * on this observation record.
+ */
+export const ObservedVerificationCommandSchema = z.object({
+  command: z.string().min(1).max(500),
+  ok: z.boolean(),
+  exitCode: z.number().int(),
+  outcome: z.enum(["verified", "failed", "not_verified"]),
+  outputSha256: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  sandboxBackend: z.string().min(1).max(100).nullable(),
+});
+export type ObservedVerificationCommand = z.infer<typeof ObservedVerificationCommandSchema>;
+
 export const ReviewedChangeEvidenceSchema = z.object({
   path: z.string().min(1).max(1_000),
   rationale: z.string().min(1).max(500).nullable(),

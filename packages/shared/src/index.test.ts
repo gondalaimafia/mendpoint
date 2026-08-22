@@ -4,7 +4,9 @@ import {
   CandidateReviewEvidenceSchema,
   ChangeRiskSchema,
   newId,
+  ObservedVerificationCommandSchema,
   ok,
+  ReviewedVerificationCommandSchema,
 } from "./index.js";
 
 describe("shared", () => {
@@ -43,6 +45,37 @@ describe("shared", () => {
       lastSuccessAt: "2026-08-07T11:59:59.000Z",
       pollStartedAt: "2026-08-07T11:58:59.999Z",
     })).toMatchObject({ ok: false, reason: "poll_overdue" });
+  });
+
+  it("represents a FAILED observed verification without weakening the approval schema", () => {
+    // The record of an observed run: a failure is a first-class, representable
+    // fact (ok:false, nonzero exit, outcome "failed") that round-trips intact. If
+    // this ever regresses to an impossibility, this assertion fails.
+    const failed = {
+      command: "npm test",
+      ok: false,
+      exitCode: 1,
+      outcome: "failed" as const,
+      outputSha256: `sha256:${"a".repeat(64)}`,
+      sandboxBackend: "local",
+    };
+    expect(ObservedVerificationCommandSchema.parse(failed)).toEqual(failed);
+
+    // The third state stays distinct from a failure, and a refusal establishes no
+    // backend.
+    const refused = {
+      command: "npm test",
+      ok: false,
+      exitCode: -1,
+      outcome: "not_verified" as const,
+      outputSha256: `sha256:${"a".repeat(64)}`,
+      sandboxBackend: null,
+    };
+    expect(ObservedVerificationCommandSchema.parse(refused)).toEqual(refused);
+
+    // The approval schema is the other job and must NOT admit the same failure: an
+    // approved candidate must have passed. This is the guarantee that survives.
+    expect(ReviewedVerificationCommandSchema.safeParse(failed).success).toBe(false);
   });
 
   it("accepts only complete successful candidate review evidence", () => {

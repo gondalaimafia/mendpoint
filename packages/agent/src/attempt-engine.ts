@@ -32,9 +32,8 @@ import {
   buildWardenAttemptCapture,
   wardenAvailableTools,
   type WardenAttemptCapture,
-  type WardenCaptureVerification,
 } from "./trajectory-capture.js";
-import type { CandidateReviewEvidenceV2 } from "@mendpoint/shared";
+import type { CandidateReviewEvidenceV2, ObservedVerificationCommand } from "@mendpoint/shared";
 import {
   ABSENT_FILE_EVIDENCE_DIGEST,
   createWardenRuntimeModelAuthorityDigest,
@@ -793,6 +792,25 @@ function observedBackendOf(
   return observed;
 }
 
+/**
+ * Project an internal {@link VerificationRecord} onto the serializable observed
+ * record the trajectory capture carries. It preserves the real `ok`/`exitCode`
+ * and the three-state `outcome`, so a FAILED run is recorded as what it was
+ * rather than being unrepresentable. Building it here, as each command's record
+ * becomes available, is what lets the reject path below carry a failed
+ * verification instead of dropping it.
+ */
+function observedVerification(record: VerificationRecord): ObservedVerificationCommand {
+  return {
+    command: record.command,
+    ok: record.ok,
+    exitCode: record.exitCode,
+    outcome: record.outcome,
+    outputSha256: record.outputSha256,
+    sandboxBackend: record.sandboxBackend,
+  };
+}
+
 function verifierPaths(manifest: TreeManifest): string[] {
   return manifest.entries
     .map((entry) => entry.path)
@@ -1033,6 +1051,12 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
   // backend. Stays null until a command executes under a real backend; a refusal
   // (not_verified) never sets it. Updated after each target verification below.
   let observedSandboxBackend: VerificationExecution["sandboxBackend"] = null;
+  // The candidate verifications actually observed, hoisted so a rejection AFTER a
+  // verifier ran (e.g. a failed target) still records what it observed instead of
+  // dropping it. Accumulated as each final verification completes, BEFORE the
+  // pass/fail gate, so a failed run is captured on the reject path below. A
+  // rejection before any verifier runs leaves this empty, which is honest.
+  const observedVerifications: ObservedVerificationCommand[] = [];
   const captureAvailableTools = wardenAvailableTools({
     allowNetwork: false,
     dryRun: input.task.dryRun,
@@ -1303,6 +1327,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
     );
     assertAttemptContinues(input);
     observedSandboxBackend = target.record.sandboxBackend ?? observedSandboxBackend;
+    observedVerifications.push(observedVerification(target.record));
     // A post-edit refusal (not_verified) means the verifier could not run, which is
     // NOT the same as the candidate failing the target. Keep the two apart.
     if (target.execution.outcome === "not_verified") {
@@ -1321,6 +1346,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
     );
     assertAttemptContinues(input);
     observedSandboxBackend = observedBackendOf(regression) ?? observedSandboxBackend;
+    for (const record of regression.records) observedVerifications.push(observedVerification(record));
     const regressionRefusal = firstNotVerified(regression);
     if (regressionRefusal) {
       fail(
@@ -1338,6 +1364,7 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
     );
     assertAttemptContinues(input);
     observedSandboxBackend = observedBackendOf(security) ?? observedSandboxBackend;
+    for (const record of security.records) observedVerifications.push(observedVerification(record));
     const securityRefusal = firstNotVerified(security);
     if (securityRefusal) {
       fail(
@@ -1465,25 +1492,6 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
             await execution.finalize(outcome);
         })()
       : undefined;
-    const verifications: WardenCaptureVerification[] = [
-      target.record,
-      ...regression.records,
-      ...security.records,
-    ].map((record) => ({
-      // Three-state verdict and the OBSERVED backend, per record — never the
-      // configured backend echoed uniformly across every command. The existing
-      // "passed"/"failed" observation vocabulary is preserved and the third state
-      // is added as "not_verified" so a refusal never reads as a test failure.
-      verdict:
-        record.outcome === "verified"
-          ? "passed"
-          : record.outcome === "failed"
-            ? "failed"
-            : "not_verified",
-      exitCode: record.exitCode,
-      command: record.command,
-      sandboxBackend: record.sandboxBackend,
-    }));
     capture = buildWardenAttemptCapture({
       agent,
       goal: input.task.goal,
@@ -1499,7 +1507,9 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       changedPaths: difference.changedPaths,
       candidateDigest: candidateManifest.digest,
       changedFiles: readChangedFiles(workspace, difference.changedPaths, input.limits),
-      verifications,
+      // The observed candidate verifications (target, then regression, then
+      // security), each carrying its real ok/exitCode and three-state outcome.
+      verifications: observedVerifications,
     });
     const result = freezeResult({
       status: "succeeded",
@@ -1549,6 +1559,11 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
           sandboxBackend: observedSandboxBackend,
           status: "rejected",
           code: rejectionCode,
+          // A rejection AFTER a verifier ran (e.g. a failed target) still observed
+          // a real verification. Carry those observations so the failure is
+          // durably recorded rather than lost — the second half of making a failed
+          // verification representable. Empty when nothing ran before the reject.
+          verifications: observedVerifications,
         })
       : undefined;
     if (error instanceof AttemptError) {

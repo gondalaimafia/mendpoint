@@ -130,7 +130,14 @@ describe("buildWardenAttemptCapture", () => {
     candidateDigest: "cand-digest",
     changedFiles: [{ path: "src/api.ts", content: "const x = 2;" }],
     verifications: [
-      { verdict: "passed", exitCode: 0, command: "npm test", sandboxBackend: "local" },
+      {
+        command: "npm test",
+        ok: true,
+        exitCode: 0,
+        outcome: "verified",
+        outputSha256: `sha256:${"a".repeat(64)}`,
+        sandboxBackend: "local",
+      },
     ],
   });
 
@@ -186,5 +193,45 @@ describe("buildWardenAttemptCapture", () => {
     expect(built.modelMeasured).toBe(false);
     expect(built.costUsd).toBeNull();
     expect(built.finalOutcome).toBe("rejected:warden_attempt_agent_failed");
+  });
+
+  it("records a FAILED verification on a rejected capture, kept distinct from a refusal", () => {
+    const built = buildWardenAttemptCapture({
+      agent,
+      goal: agent.goal,
+      taskMode: "repair",
+      verifyCommand: "npm test",
+      availableTools: [],
+      runId: null,
+      sandboxBackend: "local",
+      status: "rejected",
+      code: "warden_attempt_target_failed",
+      verifications: [
+        {
+          command: "npm test",
+          ok: false,
+          exitCode: 1,
+          outcome: "failed",
+          outputSha256: `sha256:${"b".repeat(64)}`,
+          sandboxBackend: "local",
+        },
+        {
+          command: "npm run lint",
+          ok: false,
+          exitCode: -1,
+          outcome: "not_verified",
+          outputSha256: `sha256:${"c".repeat(64)}`,
+          sandboxBackend: null,
+        },
+      ],
+    });
+    // A failed run reads as "failed" (not lost, not "passed"); a refusal reads as
+    // "not_verified" (never collapsed into "failed"). Both are now representable
+    // on the reject path, which is where the failure actually happens.
+    expect(built.verifications).toEqual([
+      { verdict: "failed", exitCode: 1, command: "npm test", sandboxBackend: "local" },
+      { verdict: "not_verified", exitCode: -1, command: "npm run lint", sandboxBackend: null },
+    ]);
+    expect(built.finalOutcome).toBe("rejected:warden_attempt_target_failed");
   });
 });
