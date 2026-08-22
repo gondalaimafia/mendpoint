@@ -18,6 +18,7 @@ import {
   type JobRow,
   type WardenCandidateDeliveryOutcome,
 } from "@mendpoint/db";
+import { governedLearningAdmissionIds } from "@mendpoint/pipeline";
 import { GOVERNED_LEARNING_PURPOSE } from "./governed-learning-producer.js";
 import {
   LEARNING_OUTCOME_RESOLVE_JOB_TYPE,
@@ -166,6 +167,33 @@ function resolveJob(db: AppDb, deliveryId: string): JobRow {
   })!;
 }
 
+/**
+ * Read back the stored governed lesson document for an admitted event (the
+ * redacted `{ event, lesson }` artifact), so a test can assert the observed outcome
+ * and weight-training eligibility the producer derived. Mirrors the reader in
+ * governed-learning-verdict.test.ts.
+ */
+function storedLesson(db: AppDb, eventId: string): {
+  observedStatus: string;
+  verdict: string;
+  eligibleForModelTraining: boolean;
+} {
+  const ids = governedLearningAdmissionIds(TENANT, eventId);
+  const row = db.raw
+    .prepare("SELECT content_text FROM artifact_manifests WHERE id = ? AND tenant_id = ?")
+    .get(ids.redactedArtifactId, TENANT) as { content_text: string | null } | undefined;
+  if (!row?.content_text) throw new Error("lesson document not found");
+  const doc = JSON.parse(row.content_text) as {
+    event: { observedOutcome: { status: string }; verification: { verdict: string } };
+    lesson: { eligibleForModelTraining: boolean };
+  };
+  return {
+    observedStatus: doc.event.observedOutcome.status,
+    verdict: doc.event.verification.verdict,
+    eligibleForModelTraining: doc.lesson.eligibleForModelTraining,
+  };
+}
+
 describe("outcome-resolution learning re-invocation", () => {
   it("admits a governed learning event once a delivered PR is observed merged", () => {
     const { db, deliveryId, artifactEnv } = fixture("merged");
@@ -204,14 +232,28 @@ describe("outcome-resolution learning re-invocation", () => {
     expect(second.recordId).toBe(first.recordId);
   });
 
-  it("admits nothing for a PR observed closed without merge (a negative result, not a positive signal)", () => {
+  it("records a PR observed closed without merge as a negative result that can never train weights", () => {
     const { db, deliveryId, artifactEnv } = fixture("closed_unmerged");
     const job = resolveJob(db, deliveryId);
 
     const admission = runOutcomeResolutionLearning({ db, job, artifactEnv, now: () => LATER });
 
-    expect(admission.admitted).toBe(false);
-    expect(admission.reason).toBe("outcome_closed_unmerged");
+    // Post-#324 the admission gate admits terminal non-merged outcomes so the
+    // corpus carries real outcome variance. The record is admitted and routed, but
+    // the failure is recorded honestly and is never a positive training signal.
+    expect(admission.admitted).toBe(true);
+    expect(admission.eventId).toBeTruthy();
+
+    const doc = storedLesson(db, admission.eventId!);
+    // The observed outcome is the failure member, never forced to a success value.
+    expect(doc.observedStatus).toBe("failed");
+    expect(doc.observedStatus).not.toBe("corrected");
+    // The invariant #324 proved, asserted through the outcome-resolution path that
+    // carries real production failures: a non-success outcome records no
+    // verification authority, so its verdict is `inconclusive` and it can never
+    // reach the model-weight corpus.
+    expect(doc.verdict).toBe("inconclusive");
+    expect(doc.eligibleForModelTraining).toBe(false);
   });
 
   it("no-ops honestly when the learning loop is disabled (default-off, mock mode)", () => {
