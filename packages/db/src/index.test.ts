@@ -1148,6 +1148,97 @@ describe("db", () => {
     })).toThrow("github_installation_account_mismatch");
   });
 
+  it("an installation acquires the account identity its authorization needs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-install-backfill-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    // Mirror the live pre-migration row: installation 151614362 exists under
+    // tenant_default with account_id still null, because the row predates the
+    // additive migration that added the column. Every pull-request webhook for
+    // it is refused with installation_not_authorized until the id is filled in.
+    const rowId = newId();
+    upsertGitHubInstallation(db, {
+      id: rowId,
+      installationId: "151614362",
+      accountId: null,
+      accountLogin: "octo-org",
+      tenantId: "tenant_default",
+      repositories: [{ id: 1, owner: "octo-org", name: "widgets" }],
+      repositorySelection: "selected",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    });
+    expect(listGitHubInstallations(db, "tenant_default")[0]?.account_id).toBeNull();
+
+    // The next signature-verified installation event supplies the account id.
+    // COALESCE(account_id, ?) backfills the null on the existing row.
+    upsertGitHubInstallation(db, {
+      id: newId(),
+      installationId: "151614362",
+      accountId: "273115720",
+      accountLogin: "octo-org",
+      tenantId: "tenant_default",
+      repositories: [{ id: 1, owner: "octo-org", name: "widgets" }],
+      repositorySelection: "selected",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    });
+    const acquired = listGitHubInstallations(db, "tenant_default");
+    // The null acquired its identity, on the same row: no duplicate, the primary
+    // id and tenant binding are preserved.
+    expect(acquired).toHaveLength(1);
+    expect(acquired[0]?.account_id).toBe("273115720");
+    expect(acquired[0]?.id).toBe(rowId);
+    expect(acquired[0]?.tenant_id).toBe("tenant_default");
+
+    // Replay of the same event is idempotent: the account id is unchanged and
+    // there is still exactly one row on the same primary id.
+    upsertGitHubInstallation(db, {
+      id: newId(),
+      installationId: "151614362",
+      accountId: "273115720",
+      accountLogin: "octo-org",
+      tenantId: "tenant_default",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    });
+    const replayed = listGitHubInstallations(db, "tenant_default");
+    expect(replayed).toHaveLength(1);
+    expect(replayed[0]?.account_id).toBe("273115720");
+    expect(replayed[0]?.id).toBe(rowId);
+
+    // A later event that omits the account id (for example a repository-only
+    // update) must not wipe the bound identity: COALESCE(account_id, ?) keeps
+    // it, whereas a plain assignment would null it back out.
+    upsertGitHubInstallation(db, {
+      id: newId(),
+      installationId: "151614362",
+      accountId: null,
+      accountLogin: "octo-org",
+      tenantId: "tenant_default",
+      repositories: [{ id: 2, owner: "octo-org", name: "gadgets" }],
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    });
+    expect(listGitHubInstallations(db, "tenant_default")[0]?.account_id).toBe("273115720");
+
+    // Once bound, a conflicting account id is refused, never silently
+    // reassigned. This guards backfill and conflict-refusal from trading places.
+    expect(() =>
+      upsertGitHubInstallation(db, {
+        id: newId(),
+        installationId: "151614362",
+        accountId: "999999999",
+        accountLogin: "octo-org",
+        tenantId: "tenant_default",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+      }),
+    ).toThrow("github_installation_account_mismatch");
+    expect(listGitHubInstallations(db, "tenant_default")[0]?.account_id).toBe("273115720");
+  });
+
   it("isolates tenant-owned durable records and findings", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-isolation-"));
     dirs.push(dir);
