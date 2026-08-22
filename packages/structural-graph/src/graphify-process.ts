@@ -17,7 +17,7 @@ const RESPONSE_METADATA_BYTES_PER_FILE = 1_024;
 const RESPONSE_FIXED_OVERHEAD_BYTES = 64 * 1024;
 export const GRAPHIFY_BRIDGE_PIN = Object.freeze({
   protocolVersion: PROTOCOL_VERSION,
-  digest: "sha256:948a114e2197329d2b6d1f7a16799d236761a177ae4992ecbe65c2dc83f12310",
+  digest: "sha256:eeb22283f5811bf27ee6764eb37d5153f139b0e1d60fe9cb9ccb657392cc0551",
 } as const);
 
 type ProcessSource = StructuralSnapshotFileV1 & { bytes: Uint8Array };

@@ -178,12 +178,20 @@ def main() -> None:
                     parallel=False,
                     max_workers=1,
                 )
+        nodes = graphify_result.get("nodes", [])
+        edges = graphify_result.get("edges", [])
+        missing_node_confidence = sum(1 for node in nodes if "confidence" not in node)
+        missing_edge_confidence = sum(1 for edge in edges if "confidence" not in edge)
         output = {
-            "nodes": graphify_result.get("nodes", []),
-            "edges": graphify_result.get("edges", []),
+            "nodes": [{**node, "confidence": node.get("confidence", "UNSPECIFIED")} for node in nodes],
+            "edges": [{**edge, "confidence": edge.get("confidence", "UNSPECIFIED")} for edge in edges],
             "failed_sources": graphify_result.get("failed_sources", []),
             "unsupported_languages": unsupported,
-            "warnings": [],
+            "warnings": ([
+                "Graphify omitted confidence on "
+                f"{missing_node_confidence} nodes and {missing_edge_confidence} edges; "
+                "Mendpoint retained them as UNSPECIFIED and ambiguous."
+            ] if missing_node_confidence or missing_edge_confidence else []),
         }
         if len(output["nodes"]) > max_nodes or len(output["edges"]) > max_edges:
             fail("Graphify output exceeds its graph ceiling")
