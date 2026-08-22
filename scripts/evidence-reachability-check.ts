@@ -44,11 +44,16 @@
  *                    type-only import) or a caller exists but could not be
  *                    connected to an entry point.
  *
- * Shipped mode: reporting + fail-on-proven-dead. The process exits non-zero
- * only when it can PROVE a citation unreachable. Everything ambiguous is
- * NOT_DETERMINED and does not block. Static reachability is genuinely hard; an
- * over-eager blocking rule would flag legitimate code, get muted, and be
- * deleted, leaving the register worse off than a precise reporter.
+ * Enforcing mode (--strict): fail ONLY on a proven-unreachable citation that
+ * belongs to a `verified` requirement. That narrowing is the whole point. A
+ * partial or scaffold requirement citing code nothing calls is honest about
+ * being incomplete; a `verified` requirement doing so is a false claim, and a
+ * false claim is the only thing that should block the build. Every other
+ * proven-dead citation (on a non-verified requirement) stays reported and
+ * visible but does not block, and everything ambiguous is NOT_DETERMINED and
+ * does not block. Static reachability is genuinely hard; an over-eager blocking
+ * rule would flag legitimate code, get muted, and be deleted, leaving the
+ * register worse off than a precise reporter.
  *
  * Known limitations (stated plainly, not hidden):
  *   - Transitive deadness beyond the first hop is not chased. If S's only
@@ -869,6 +874,25 @@ function formatCitation(result: CitationResult): string {
   return `  ${who} [${result.type}] ${result.locator}\n    ${result.reason}`;
 }
 
+export type StrictGateResult = Readonly<{
+  /** True when the build must fail: a verified requirement rests on dead code. */
+  failed: boolean;
+  /** The verified requirement ids that cite a proven-unreachable test. */
+  blockers: readonly string[];
+}>;
+
+/**
+ * The enforcing-mode (--strict) decision, isolated so the narrowing is testable.
+ * Blocks ONLY on unreachable citations that belong to a `verified` requirement;
+ * proven-dead citations on partial/scaffold requirements are reported but never
+ * block. Reverting this to `report.counts.unreachable > 0` is exactly the
+ * regression the narrowing test guards against.
+ */
+export function evaluateStrictGate(report: ReachabilityReport): StrictGateResult {
+  const blockers = report.verifiedCitingUnreachable;
+  return { failed: blockers.length > 0, blockers };
+}
+
 function main(): void {
   const root = resolve(process.cwd());
   const strict = process.argv.includes("--strict");
@@ -913,17 +937,24 @@ function main(): void {
   );
   for (const id of report.verifiedCitingUnreachable) console.log(`  ${id}`);
 
-  if (strict && report.counts.unreachable > 0) {
-    console.error(
-      `\nFAIL (--strict): ${report.counts.unreachable} citation(s) proven unreachable.`,
-    );
-    process.exitCode = 1;
-    return;
+  if (strict) {
+    const gate = evaluateStrictGate(report);
+    if (gate.failed) {
+      console.error(
+        `\nFAIL (--strict): ${gate.blockers.length} verified requirement(s) cite a ` +
+          `proven-unreachable test: ${gate.blockers.join(", ")}.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
   }
   if (report.counts.unreachable > 0) {
     console.log(
-      `\nReporting mode: ${report.counts.unreachable} proven-unreachable citation(s) above. ` +
-        `Run with --strict to fail the build on them.`,
+      strict
+        ? `\nEnforcing mode: ${report.counts.unreachable} proven-unreachable citation(s) above, ` +
+            `none on a verified requirement — the gate passes. They stay reported until wired or removed.`
+        : `\nReporting mode: ${report.counts.unreachable} proven-unreachable citation(s) above. ` +
+            `Run with --strict to fail the build on any that belong to a verified requirement.`,
     );
   } else {
     console.log("\nNo citation could be proven unreachable.");

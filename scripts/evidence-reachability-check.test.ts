@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   analyzeCitation,
   buildRepoIndex,
+  evaluateStrictGate,
   runReachabilityReport,
   type RepoIndex,
 } from "./evidence-reachability-check.js";
@@ -233,6 +234,88 @@ describe("evidence reachability — real register invariants", () => {
     // ME-SCM-006 and ME-GRF-006 were downgraded to partial and their
     // proven-dead citations removed, so no verified requirement now rests on a
     // proven-unreachable test.
+    expect(report.verifiedCitingUnreachable).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The narrowing: --strict blocks on verified requirements only.
+// ---------------------------------------------------------------------------
+
+describe("evidence reachability — --strict narrows to verified requirements", () => {
+  function writeRepoRoot(files: Record<string, string>): string {
+    const root = mkdtempSync(join(tmpdir(), "reach-strict-"));
+    tempRoots.push(root);
+    for (const [rel, content] of Object.entries(files)) {
+      const abs = join(root, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, content, "utf8");
+    }
+    return root;
+  }
+
+  // One entry (server) uses liveThing; deadLeaf is exercised only by its test
+  // and the barrel re-export — the same proven-dead shape the register hit.
+  const baseFiles: Record<string, string> = {
+    "package.json": JSON.stringify({ name: "fixture", scripts: {} }),
+    "apps/api/package.json": JSON.stringify({ name: "@mendpoint/api" }),
+    "apps/api/src/server.ts": `import { liveThing } from "@mendpoint/core";\nliveThing();\n`,
+    "packages/core/package.json": JSON.stringify({ name: "@mendpoint/core", main: "./src/index.ts" }),
+    "packages/core/src/index.ts":
+      `export { liveThing } from "./live.js";\nexport { deadLeaf } from "./dead.js";\n`,
+    "packages/core/src/live.ts": `export function liveThing(): number {\n  return 1;\n}\n`,
+    "packages/core/src/dead.ts": `export function deadLeaf(): number {\n  return 2;\n}\n`,
+    "packages/core/src/dead.test.ts": `import { deadLeaf } from "./index.js";\ndeadLeaf();\n`,
+  };
+
+  const manifest = (status: string): string =>
+    JSON.stringify({
+      requirements: [
+        {
+          id: "ME-TST-001",
+          implementationStatus: status,
+          acceptance: [
+            {
+              id: "ME-TST-001-AC01",
+              evidence: [
+                {
+                  id: "ME-TST-001-AC01-EV01",
+                  type: "unit",
+                  locator: "packages/core/src/dead.test.ts",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+  it("blocks a verified requirement whose only citation is proven unreachable", () => {
+    const root = writeRepoRoot({
+      ...baseFiles,
+      "docs/PRODUCT_REQUIREMENTS.json": manifest("verified"),
+    });
+    const report = runReachabilityReport(root);
+    // The citation is genuinely proven unreachable...
+    expect(report.counts.unreachable).toBeGreaterThanOrEqual(1);
+    // ...and because it belongs to a verified requirement, the gate must fail.
+    const gate = evaluateStrictGate(report);
+    expect(gate.failed).toBe(true);
+    expect(gate.blockers).toContain("ME-TST-001");
+  });
+
+  it("does NOT block a partial requirement citing the identically dead test", () => {
+    const root = writeRepoRoot({
+      ...baseFiles,
+      "docs/PRODUCT_REQUIREMENTS.json": manifest("partial"),
+    });
+    const report = runReachabilityReport(root);
+    // Same proven-unreachable citation shape as the verified case...
+    expect(report.counts.unreachable).toBeGreaterThanOrEqual(1);
+    // ...but a partial requirement is honest about being incomplete, so the
+    // gate stays green. Reverting the narrowing (blocking on counts.unreachable)
+    // makes exactly this assertion die.
+    expect(evaluateStrictGate(report).failed).toBe(false);
     expect(report.verifiedCitingUnreachable).toEqual([]);
   });
 });
