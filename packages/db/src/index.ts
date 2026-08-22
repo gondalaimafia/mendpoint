@@ -3947,6 +3947,7 @@ export {
   autoEnrollWardenCampaignOrg,
   claimReadyWardenTargets,
   createWardenCampaign,
+  getWardenCampaign,
   getWardenRolloutDecision,
   listWardenCampaignTargets,
   planWardenRollout,
