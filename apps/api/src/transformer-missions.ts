@@ -23,6 +23,7 @@ export interface TransformerMissionRepositoryAuthority {
     repositoryId: string,
     observedAt: string,
     allowedPaths?: readonly string[],
+    snapshotId?: string,
   ): Readonly<{
     planning: TransformerMissionPlanningRepository;
     execution: TransformerMissionRepository;

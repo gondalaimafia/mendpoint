@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  insertRepositorySnapshot,
   listDomainEvents,
+  listRepositorySnapshots,
   resolveMissionForRegaugeCampaign,
   verifyDomainEventIntegrity,
   type AppDb,
@@ -254,6 +256,35 @@ describe("Regauge production bootstrap runtime", () => {
       regaugeProductionBootstrapInputFromEnvironment(environment()),
       runtime,
     );
+    const storedSnapshot = listRepositorySnapshots(
+      db,
+      "tenant_regauge_canary",
+      first.repositoryId,
+    ).find((snapshot) => snapshot.id === first.snapshotId)!;
+    insertRepositorySnapshot(db, {
+      id: "duplicate-same-revision-snapshot",
+      tenantId: "tenant_regauge_canary",
+      repositoryId: first.repositoryId,
+      requestedRef: storedSnapshot.requested_ref,
+      resolvedSha: storedSnapshot.resolved_sha,
+      manifestSha256: storedSnapshot.manifest_sha256,
+      storagePath: storedSnapshot.storage_path,
+      submodulesPolicy: storedSnapshot.submodules_policy,
+      lfsPolicy: storedSnapshot.lfs_policy,
+      sparsePaths: JSON.parse(storedSnapshot.sparse_paths_json) as string[],
+      fileManifestVersion: 1,
+      createdAt: "2026-08-14T17:01:00.000Z",
+      expiresAt: "2026-09-13T17:01:00.000Z",
+    });
+    await expect(baseRuntime.readRepositoryAuthority({
+      bootstrap: regaugeProductionBootstrapInputFromEnvironment(environment()),
+      repository: {
+        repositoryId: first.repositoryId,
+        snapshotId: first.snapshotId,
+        revision: first.revision,
+        snapshotDigest: first.snapshotDigest,
+      },
+    })).resolves.toMatchObject({ snapshotId: first.snapshotId, revision: REVISION });
     const second = await bootstrapRegaugeProductionCampaign(
       regaugeProductionBootstrapInputFromEnvironment(environment()),
       runtime,

@@ -64,7 +64,7 @@ function fakeRuntime() {
   let control: Awaited<ReturnType<RegaugeProductionBootstrapRuntime["readControl"]>>;
   let execution: Awaited<ReturnType<RegaugeProductionBootstrapRuntime["readExecution"]>>;
   let receipt: Awaited<ReturnType<RegaugeProductionBootstrapRuntime["readReceipt"]>>;
-  const calls = { prepare: 0, plan: 0, review: 0, launch: 0, record: 0 };
+  const calls = { prepare: 0, readRepository: 0, plan: 0, review: 0, launch: 0, record: 0 };
   const runtime: RegaugeProductionBootstrapRuntime = {
     async prepareRepository() {
       calls.prepare += 1;
@@ -74,6 +74,10 @@ function fakeRuntime() {
         revision: REVISION,
         snapshotDigest: SNAPSHOT_DIGEST,
       };
+    },
+    async readRepositoryAuthority({ repository }) {
+      calls.readRepository += 1;
+      return repository;
     },
     async readControl() { return control; },
     async plan(request) {
@@ -147,7 +151,7 @@ describe("Regauge production campaign bootstrap", () => {
       state: "running",
       eventHash: `sha256:${"d".repeat(64)}`,
     });
-    expect(fixture.calls).toEqual({ prepare: 1, plan: 1, review: 1, launch: 1, record: 1 });
+    expect(fixture.calls).toEqual({ prepare: 1, readRepository: 1, plan: 1, review: 1, launch: 1, record: 1 });
   });
 
   it("reauthorizes the same durable campaign for a new protected workflow run without relaunching", async () => {
@@ -172,7 +176,7 @@ describe("Regauge production campaign bootstrap", () => {
 
     await expect(bootstrapRegaugeProductionCampaign(nextRun, fixture.runtime))
       .resolves.toEqual(first);
-    expect(fixture.calls).toEqual({ prepare: 1, plan: 1, review: 1, launch: 1, record: 1 });
+    expect(fixture.calls).toEqual({ prepare: 1, readRepository: 1, plan: 1, review: 1, launch: 1, record: 1 });
   });
 
   it("revalidates the exact repository before reauthorizing a legacy receipt", async () => {
@@ -201,7 +205,39 @@ describe("Regauge production campaign bootstrap", () => {
       ...fixture.runtime,
       async readReceipt() { return legacyReceipt; },
     })).resolves.toEqual(legacyReceipt);
-    expect(fixture.calls).toEqual({ prepare: 2, plan: 1, review: 1, launch: 1, record: 1 });
+    expect(fixture.calls).toEqual({ prepare: 1, readRepository: 1, plan: 1, review: 1, launch: 1, record: 1 });
+  });
+
+  it("rejects legacy reauthorization when the read-only repository authority drifts", async () => {
+    const fixture = fakeRuntime();
+    const first = await bootstrapRegaugeProductionCampaign(input(), fixture.runtime);
+    const { campaignAuthorityDigest: _campaignAuthorityDigest, ...legacyFields } = first;
+    const legacyReceipt = { ...legacyFields, schemaVersion: "2026-08-14.v1" as const };
+    const nextRun = input();
+    const nextApproval = APPROVAL_REF.replace("run:98765", "run:98766");
+    nextRun.productionApprovalRef = nextApproval;
+    nextRun.evidenceRefs = [nextApproval, "evidence:regauge:acceptance"];
+    nextRun.gateConfig = JSON.stringify({
+      schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION,
+      tenantAllowlist: [nextRun.tenantId],
+      environmentAllowlist: [nextRun.environment],
+      grants: [{
+        tenantId: nextRun.tenantId,
+        environment: nextRun.environment,
+        boundaries: ["api_control_plane", "worker_action", "delivery"],
+        acceptanceEvidenceRefs: ["evidence:regauge:acceptance"],
+        productionDeliveryApprovalRefs: [nextApproval],
+      }],
+    });
+
+    await expect(bootstrapRegaugeProductionCampaign(nextRun, {
+      ...fixture.runtime,
+      async readReceipt() { return legacyReceipt; },
+      async readRepositoryAuthority({ repository }) {
+        return { ...repository, snapshotId: "snapshot-drift" };
+      },
+    })).rejects.toThrow("regauge_production_bootstrap_idempotency_conflict");
+    expect(fixture.calls.prepare).toBe(1);
   });
 
   it("rejects campaign drift before invoking repository or mission effects", async () => {
@@ -235,7 +271,7 @@ describe("Regauge production campaign bootstrap", () => {
       ...fixture.runtime,
       async readExecution() { return undefined; },
     })).rejects.toThrow("regauge_production_bootstrap_execution_drift");
-    expect(fixture.calls).toEqual({ prepare: 1, plan: 1, review: 1, launch: 1, record: 1 });
+    expect(fixture.calls).toEqual({ prepare: 1, readRepository: 1, plan: 1, review: 1, launch: 1, record: 1 });
   });
 
   it("fails closed before effects without an independent reviewer and production delivery grant", async () => {
@@ -250,7 +286,7 @@ describe("Regauge production campaign bootstrap", () => {
     missingApproval.evidenceRefs = ["approval:missing", "evidence:regauge:acceptance"];
     await expect(bootstrapRegaugeProductionCampaign(missingApproval, fixture.runtime))
       .rejects.toThrow("regauge_production_bootstrap_gate_denied");
-    expect(fixture.calls).toEqual({ prepare: 0, plan: 0, review: 0, launch: 0, record: 0 });
+    expect(fixture.calls).toEqual({ prepare: 0, readRepository: 0, plan: 0, review: 0, launch: 0, record: 0 });
   });
 
   it.each([
@@ -279,6 +315,6 @@ describe("Regauge production campaign bootstrap", () => {
 
     await expect(bootstrapRegaugeProductionCampaign(changed, fixture.runtime))
       .rejects.toThrow("regauge_production_bootstrap_approval_invalid");
-    expect(fixture.calls).toEqual({ prepare: 0, plan: 0, review: 0, launch: 0, record: 0 });
+    expect(fixture.calls).toEqual({ prepare: 0, readRepository: 0, plan: 0, review: 0, launch: 0, record: 0 });
   });
 });

@@ -115,6 +115,7 @@ function activeSnapshot(
   tenantId: string,
   repositoryId: string,
   observedAt: string,
+  snapshotId?: string,
 ): Readonly<{ snapshot: RepositorySnapshotRow; policy: RepositorySnapshotPolicyRow }> {
   const observed = Date.parse(observedAt);
   if (!Number.isFinite(observed) || new Date(observed).toISOString() !== observedAt) {
@@ -123,6 +124,7 @@ function activeSnapshot(
   const repository = getConnectedRepository(db, repositoryId, tenantId);
   if (!repository || repository.status !== "ready") throw new Error("transformer_mission_repository_not_found");
   for (const snapshot of listRepositorySnapshots(db, tenantId, repositoryId)) {
+    if (snapshotId !== undefined && snapshot.id !== snapshotId) continue;
     const deletion = getRepositorySnapshotDeletionStatus(db, tenantId, snapshot.id);
     if (deletion?.status === "planned" || deletion?.status === "deleted") continue;
     if (snapshot.file_manifest_version !== 1 || !REVISION.test(snapshot.resolved_sha) ||
@@ -188,8 +190,9 @@ function loadRepository(
   repositoryId: string,
   observedAt: string,
   allowedPaths?: readonly string[],
+  snapshotId?: string,
 ) {
-  const { snapshot, policy } = activeSnapshot(db, tenantId, repositoryId, observedAt);
+  const { snapshot, policy } = activeSnapshot(db, tenantId, repositoryId, observedAt, snapshotId);
   const allowed = allowedPaths === undefined ? undefined : new Set(allowedPaths.map(safePath));
   const manifest = listRepositorySnapshotFiles(db, tenantId, snapshot.id)
     .filter((row) => allowed === undefined || allowed.has(row.path));
@@ -268,8 +271,14 @@ export function createAppDbTransformerMissionAuthority(db: AppDb): Readonly<{
   organizations: TransformerMissionOrganizationAuthority;
 }> {
   const repositories: TransformerMissionRepositoryAuthority = Object.freeze({
-    load(tenantId: string, repositoryId: string, observedAt: string, allowedPaths?: readonly string[]) {
-      const value = loadRepository(db, tenantId, repositoryId, observedAt, allowedPaths);
+    load(
+      tenantId: string,
+      repositoryId: string,
+      observedAt: string,
+      allowedPaths?: readonly string[],
+      snapshotId?: string,
+    ) {
+      const value = loadRepository(db, tenantId, repositoryId, observedAt, allowedPaths, snapshotId);
       return Object.freeze({ planning: value.planning, execution: value.execution });
     },
   });
