@@ -7,14 +7,22 @@ ADRs are authority rank #2 in the source-of-truth hierarchy defined in `docs/age
 ## Path convention
 
 - One ADR per file, in this directory: `docs/adr/`.
-- File name: `NNNN-short-kebab-title.md`, where `NNNN` is a zero-padded four-digit number.
-- `docs/adr/0000-template.md` is the template. Copy it to the next available number to start a new ADR. Never edit `0000-template.md` as if it were a real decision.
+- File name for a **new** ADR: `YYYY-MM-DD-short-kebab-title.md`, where `YYYY-MM-DD` is the date the ADR is authored and the title is a short kebab-case summary (for example `2026-08-22-change-graph-authority.md`).
+- `docs/adr/0000-template.md` is the template. Copy it to `<today>-<your-title>.md` to start a new ADR. Never edit `0000-template.md` as if it were a real decision.
 
 ## Numbering
 
-- Numbers are assigned sequentially in order of creation and never reused, even if an ADR is later rejected or superseded.
-- The next ADR takes the lowest unused four-digit number (the first real ADR is `0001`).
-- Numbering reflects creation order, not importance.
+Sequential four-digit numbering (`NNNN-short-kebab-title.md`) was the original scheme. Under parallel authorship it produced repeated collisions: two agents each correctly computed "the next free number is N" at the same time and both wrote `NNNN`. Because the two files had different titles, git kept both, and one silently lost every cross-reference pointing at `ADR-NNNN`. The number was derived from shared repository state, so "pick the next free number" was a race both authors could win.
+
+New ADRs are identified by **authoring date plus title** instead:
+
+- The identifier is the whole filename, `YYYY-MM-DD-short-kebab-title.md`. It is derived from the author's own date and chosen title, not from a scan of the sibling files, so two authors never read and increment the same counter.
+- A genuine collision would require two files with the identical date **and** title — that is, two identical paths, which git cannot represent. The second author gets a path conflict to resolve rather than a silent overwrite, so collisions cannot merge silently.
+- Cross-references to a new ADR use its full identifier (for example "superseded by ADR `2026-08-22-change-graph-authority`").
+
+The existing sequential ADRs `0000`–`0013` are **grandfathered**: they keep their numbers and are never renumbered, because those numbers are referenced from code comments, PR bodies, and `tasks/todo.md`. The sequential range is closed at `0013` — no new four-digit ADR may be added, which is what removes the racing scheme.
+
+`npm run adr:check` (part of `ga:check`) enforces this: every ADR must match either the dated scheme or a grandfathered sequential number at or below the boundary, dated ADRs must carry a real calendar date, and no two ADRs may claim the same identifier. The boundary lives in `scripts/adr-numbering-check.ts` as `LAST_SEQUENTIAL_ADR`.
 
 ## Status lifecycle
 
