@@ -103,6 +103,7 @@ function matchesAllowedRoute(method: string, path: string): boolean {
     ["GET", /^billing\/config$/],
     ["GET", /^agent\/runs(?:\/[^/]+(?:\/candidate)?)?$/],
     ["GET", /^audit\/export$/],
+    ["GET", /^metrics\/dashboard\/export$/],
     ["GET", /^github\/app\/install-url$/],
     ["GET", /^design-partner-applications$/],
     ["GET", /^design-partner-applications\/[^/]+$/],

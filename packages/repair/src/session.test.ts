@@ -17,7 +17,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { runRepairSession } from "./session.js";
 import { diagnoseFailureLog } from "./diagnose.js";
 import { planRepairs } from "./plan.js";
-import { runAgenticRepairLoop } from "./loop.js";
 import {
   discoverVerificationCommands,
   parseVerificationCommand,
@@ -154,23 +153,22 @@ describe("repair session", () => {
   });
 
   it("marks a dry run as simulated and never claims verification", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-loop-"));
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-repair-dry-"));
     dirs.push(dir);
     writeFileSync(join(dir, "x.ts"), `const amount_cents = 1;\n`, "utf8");
     writeFileSync(join(dir, "check.mjs"), "console.log('ok')\n", "utf8");
-    const r = await runAgenticRepairLoop({
+    const repair = await runRepairSession({
       repoRoot: dir,
       renameMap: { amount_cents: "amount" },
       dryRun: true,
       verifyCommands: ["node check.mjs"],
       maxAttempts: 1,
     });
-    expect(r.ok).toBe(false);
-    expect(r.repair.ok).toBe(false);
-    expect(r.repair.simulated).toBe(true);
-    expect(r.repair.stopReason).toBe("simulated");
-    expect(r.repair.finalVerify?.ok).toBe(false);
-    expect(r.repair.reportMarkdown).toContain("SIMULATED");
+    expect(repair.ok).toBe(false);
+    expect(repair.simulated).toBe(true);
+    expect(repair.stopReason).toBe("simulated");
+    expect(repair.finalVerify?.ok).toBe(false);
+    expect(repair.reportMarkdown).toContain("SIMULATED");
     expect(readFileSync(join(dir, "x.ts"), "utf8")).toContain("amount_cents");
   });
 

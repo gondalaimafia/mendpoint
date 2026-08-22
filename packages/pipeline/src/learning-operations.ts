@@ -23,7 +23,15 @@ import {
   extractGovernedLesson,
   type GovernedLearningEventV1,
   type GovernedLearningLesson,
+  type LearningDestination,
 } from "./learning-event.js";
+import {
+  assessProductionAttributionDiscrimination,
+  dispositionForDestination,
+  summarizeLessonRouting,
+  LESSON_DESTINATION_DISPOSITIONS,
+  type ProductionAttributionDiscrimination,
+} from "./lesson-routing.js";
 
 export type MaterializeGovernedLearningCorpusInput = Readonly<{
   tenantId: string;
@@ -153,6 +161,44 @@ export type GovernedLearningConsentResult = Readonly<{
   evidenceId: string;
 }>;
 
+/**
+ * Operator-visible lesson-routing observability, surfaced on the live learning
+ * status so the drop that `lesson-routing.ts` names is actually seen. Three honest
+ * facts, none of which the eleven-destination taxonomy makes visible on its own:
+ *
+ *   - `attribution` (static): whether the classifier discriminates in production.
+ *     Today `effectivelyConstant` is true — both governed-learning producers
+ *     hardcode `model_behavior` — so the taxonomy collapses to `model_weight` /
+ *     `no_action` before it ever reaches routing. This is the more important
+ *     number: without it a reader believes the system discriminates before it
+ *     routes. It does not, yet.
+ *   - `destinations` (static): how many of the taxonomy's destinations actually
+ *     reach a sink. Today one (`model_weight`) does; the rest are `unrouted` or the
+ *     `no_action` terminal, so "ten of eleven have no sink" is countable here.
+ *   - `lessons` (live, tenant-scoped): the real per-lesson counts. `wentNowhere` is
+ *     the operator's answer to "how many lessons did we classify and then drop?" —
+ *     a lesson that reached no sink and was not the intentional `no_action`
+ *     terminal. Given the constant attribution above it is structurally zero today;
+ *     it becomes non-zero the moment a producer emits a discriminating attribution
+ *     into a destination nothing consumes.
+ */
+export type LessonRoutingObservability = Readonly<{
+  attribution: ProductionAttributionDiscrimination;
+  destinations: Readonly<{
+    total: number;
+    sinkConsumes: number;
+    terminalNoAction: number;
+    unrouted: number;
+    unroutedDestinations: readonly LearningDestination[];
+  }>;
+  lessons: Readonly<{
+    classified: number;
+    reachedSink: number;
+    terminalNoAction: number;
+    wentNowhere: number;
+  }>;
+}>;
+
 export type GovernedLearningStatus = Readonly<{
   tenantId: string;
   activeConsentCount: number;
@@ -163,6 +209,7 @@ export type GovernedLearningStatus = Readonly<{
   evaluationCount: number;
   canaryCount: number;
   adapterCount: number;
+  lessonRouting: LessonRoutingObservability;
 }>;
 
 type DatasetSplit = "train" | "validation" | "holdout";
@@ -471,6 +518,75 @@ export function revokeGovernedLearningConsent(
   }, "revoked");
 }
 
+/**
+ * Aggregate lesson routing for one tenant. The static halves (`attribution`,
+ * `destinations`) are zero-cost — they read the in-module registry and disposition
+ * map, not the database. The live `lessons` half projects only each lesson's
+ * `destinations` array with SQLite's `json_extract` (never the full redacted
+ * document), joins by primary key, and folds each through `summarizeLessonRouting`,
+ * so the scan is bounded by the tenant's admitted-lesson count on this admin-only
+ * status read. A row whose stored destinations are absent or malformed is skipped
+ * rather than mislabelled, so `classified` counts only lessons summarised honestly.
+ */
+function summarizeTenantLessonRouting(db: AppDb, tenantId: string): LessonRoutingObservability {
+  let sinkConsumes = 0;
+  let terminalNoActionDestinations = 0;
+  const unroutedDestinations: LearningDestination[] = [];
+  for (const destination of Object.keys(LESSON_DESTINATION_DISPOSITIONS) as LearningDestination[]) {
+    switch (dispositionForDestination(destination)) {
+      case "sink_consumes": sinkConsumes += 1; break;
+      case "terminal_no_action": terminalNoActionDestinations += 1; break;
+      case "unrouted": unroutedDestinations.push(destination); break;
+    }
+  }
+
+  const rows = db.raw.prepare(
+    `SELECT r.id AS id, json_extract(a.content_text, '$.lesson.destinations') AS destinations
+     FROM learning_records r
+     JOIN artifact_manifests a ON a.id = r.redacted_artifact_id AND a.tenant_id = r.tenant_id
+     WHERE r.tenant_id = ? AND json_valid(a.content_text)`,
+  ).all(tenantId) as Array<{ id: string; destinations: string | null }>;
+
+  let classified = 0;
+  let reachedSink = 0;
+  let terminalNoAction = 0;
+  let wentNowhere = 0;
+  for (const row of rows) {
+    if (typeof row.destinations !== "string") continue;
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.destinations); } catch { continue; }
+    if (!Array.isArray(parsed) || parsed.length === 0) continue;
+    const destinations: Array<{ destination: LearningDestination; rationale: string }> = [];
+    let wellFormed = true;
+    for (const entry of parsed) {
+      const destination = (entry as { destination?: unknown })?.destination;
+      if (typeof destination !== "string" || !(destination in LESSON_DESTINATION_DISPOSITIONS)) {
+        wellFormed = false;
+        break;
+      }
+      destinations.push({ destination: destination as LearningDestination, rationale: "" });
+    }
+    if (!wellFormed) continue;
+    const summary = summarizeLessonRouting({ lessonId: row.id, destinations });
+    classified += 1;
+    if (summary.reachedSink) reachedSink += 1;
+    else if (summary.wentNowhere) wentNowhere += 1;
+    else terminalNoAction += 1;
+  }
+
+  return Object.freeze({
+    attribution: assessProductionAttributionDiscrimination(),
+    destinations: Object.freeze({
+      total: sinkConsumes + terminalNoActionDestinations + unroutedDestinations.length,
+      sinkConsumes,
+      terminalNoAction: terminalNoActionDestinations,
+      unrouted: unroutedDestinations.length,
+      unroutedDestinations: Object.freeze(unroutedDestinations),
+    }),
+    lessons: Object.freeze({ classified, reachedSink, terminalNoAction, wentNowhere }),
+  });
+}
+
 export function getGovernedLearningStatus(db: AppDb, tenantId: string, at: string): GovernedLearningStatus {
   requireBoundedText(tenantId, "learning_status_tenant_invalid");
   if (new Date(at).toISOString() !== at) throw new Error("learning_status_time_invalid");
@@ -493,6 +609,7 @@ export function getGovernedLearningStatus(db: AppDb, tenantId: string, at: strin
     evaluationCount: count("SELECT COUNT(DISTINCT aggregate_id) count FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'post_trained_evaluation'", tenantId),
     canaryCount: count("SELECT COUNT(DISTINCT aggregate_id) count FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'post_trained_canary_run'", tenantId),
     adapterCount: count("SELECT COUNT(DISTINCT aggregate_id) count FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'post_trained_adapter'", tenantId),
+    lessonRouting: summarizeTenantLessonRouting(db, tenantId),
   });
 }
 
