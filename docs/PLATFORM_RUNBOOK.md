@@ -14,8 +14,7 @@ npm run dev:api         # optional API on :3001
 ```bash
 npm run graph:temporal -- . --months=12 --max=2000   # git → graph-learn
 npm run graph:slo                                     # p50/p99 latency gate
-npm run dogfood:report                                # ≥30 runs / ≥50% ok
-npm run dogfood:report -- --seed=30                   # offline seed scores
+npm run dogfood:report                                # ≥30 REAL runs / ≥50% ok (refuses if synthetic present)
 npm run trajectory:list                               # list runs/
 npm run trajectory:view -- <runId>                    # plan/trace/score
 npm run graph:bench                                   # 20-query pack

@@ -26,11 +26,18 @@ export type DogfoodRunSummary = {
   graphQueries?: number;
   tokensEst?: number;
   path: string;
+  /** True when this record was fabricated by seedDogfoodScores, not a real run. */
+  synthetic: boolean;
 };
 
 export type DogfoodReport = {
   generatedAt: string;
   baseDir: string;
+  /**
+   * All count/rate fields below describe REAL runs only. Fabricated (seeded)
+   * records are excluded from them so a synthetic score can never inflate the
+   * day-90 verdict; they are surfaced separately via `synthetic`/`syntheticRuns`.
+   */
   totalRuns: number;
   okRuns: number;
   failRuns: number;
@@ -43,6 +50,10 @@ export type DogfoodReport = {
   meetsVolume: boolean;
   meetsOkRate: boolean;
   day90Ready: boolean;
+  /** True when any fabricated record was present in this base dir. */
+  synthetic: boolean;
+  /** Count of fabricated records found and excluded from the real figures. */
+  syntheticRuns: number;
   byDay: Array<{ day: string; runs: number; ok: number }>;
   runs: DogfoodRunSummary[];
   notes: string[];
@@ -84,6 +95,7 @@ export function collectDogfood(baseDir: string): DogfoodReport {
     const s = loadRunScore(baseDir, runId);
     if (!s) continue;
     const path = scorePath(baseDir, runId);
+    const synthetic = !!s.synthetic;
     runs.push({
       runId,
       ok: !!s.ok,
@@ -94,7 +106,11 @@ export function collectDogfood(baseDir: string): DogfoodReport {
       graphQueries: s.graphQueries,
       tokensEst: s.tokensEst,
       path,
+      synthetic,
     });
+    // Fabricated records never contribute to the per-day tally that feeds the
+    // real figures.
+    if (synthetic) continue;
     // day from run folder mtime approximation via score if no ts — use runId prefix if uuid skip
     let day = "unknown";
     try {
@@ -116,12 +132,16 @@ export function collectDogfood(baseDir: string): DogfoodReport {
   const ledger = readLedger(baseDir);
   for (const e of ledger) {
     const day = e.ts.slice(0, 10);
+    const synthetic = e.source === "seed";
     const bucket = dayMap.get(day) ?? { runs: 0, ok: 0 };
     // only count ledger-only runs not already in runs/
     if (!runs.some((r) => r.runId === e.runId)) {
-      bucket.runs++;
-      if (e.ok) bucket.ok++;
-      dayMap.set(day, bucket);
+      // Fabricated ledger entries are recorded but excluded from the day tally.
+      if (!synthetic) {
+        bucket.runs++;
+        if (e.ok) bucket.ok++;
+        dayMap.set(day, bucket);
+      }
       runs.push({
         runId: e.runId,
         ok: e.ok,
@@ -131,28 +151,38 @@ export function collectDogfood(baseDir: string): DogfoodReport {
         recoveredFromFailure: !!e.recoveredFromFailure,
         graphQueries: e.graphQueries,
         path: "ledger",
+        synthetic,
       });
-    } else {
-      // refresh day buckets from ledger timestamps for known runs
+    } else if (!synthetic) {
+      // refresh day buckets from ledger timestamps for known real runs
       dayMap.set(day, bucket);
     }
   }
 
-  const totalRuns = runs.length;
-  const okRuns = runs.filter((r) => r.ok).length;
+  // The day-90 verdict is computed from REAL runs only. A fabricated (seeded)
+  // record is recorded and surfaced, but it can never contribute to the volume
+  // or ok-rate that gate readiness — the whole point of the integrity fix.
+  const realRuns = runs.filter((r) => !r.synthetic);
+  const syntheticRuns = runs.length - realRuns.length;
+  const totalRuns = realRuns.length;
+  const okRuns = realRuns.filter((r) => r.ok).length;
   const failRuns = totalRuns - okRuns;
   const okRate = totalRuns ? okRuns / totalRuns : 0;
-  const recovered = runs.filter((r) => r.recoveredFromFailure).length;
+  const recovered = realRuns.filter((r) => r.recoveredFromFailure).length;
   const avgDurationMs = totalRuns
-    ? runs.reduce((a, r) => a + r.durationMs, 0) / totalRuns
+    ? realRuns.reduce((a, r) => a + r.durationMs, 0) / totalRuns
     : 0;
-  const totalGraphQueries = runs.reduce(
+  const totalGraphQueries = realRuns.reduce(
     (a, r) => a + (r.graphQueries ?? 0),
     0,
   );
   const meetsVolume = totalRuns >= DOGFOOD_TARGET_RUNS;
   const meetsOkRate = okRate >= DOGFOOD_TARGET_OK_RATE;
   const notes: string[] = [];
+  if (syntheticRuns > 0)
+    notes.push(
+      `SYNTHETIC: ${syntheticRuns} fabricated record(s) present and EXCLUDED from the figures above. This base dir is not a real measurement.`,
+    );
   if (!meetsVolume)
     notes.push(
       `Need ${DOGFOOD_TARGET_RUNS - totalRuns} more run(s) to hit volume target (${DOGFOOD_TARGET_RUNS}).`,
@@ -179,6 +209,8 @@ export function collectDogfood(baseDir: string): DogfoodReport {
     meetsVolume,
     meetsOkRate,
     day90Ready: meetsVolume && meetsOkRate,
+    synthetic: syntheticRuns > 0,
+    syntheticRuns,
     byDay: [...dayMap.entries()]
       .map(([day, v]) => ({ day, runs: v.runs, ok: v.ok }))
       .sort((a, b) => a.day.localeCompare(b.day)),
@@ -254,6 +286,11 @@ export function writeDogfoodReport(
 export function formatDogfoodReport(r: DogfoodReport): string {
   return [
     `### Dogfood report`,
+    ...(r.synthetic
+      ? [
+          `SYNTHETIC REPORT — ${r.syntheticRuns} fabricated record(s) present and excluded; NOT a real measurement.`,
+        ]
+      : []),
     `runs: ${r.totalRuns}/${r.targetRuns} (ok=${r.okRuns} fail=${r.failRuns})`,
     `okRate: ${(r.okRate * 100).toFixed(1)}% (target ${(r.targetOkRate * 100).toFixed(0)}%)`,
     `recovered: ${r.recovered} · avgDuration: ${r.avgDurationMs.toFixed(0)}ms · graphQueries: ${r.totalGraphQueries}`,
@@ -290,6 +327,9 @@ export function seedDogfoodScores(
       durationMs: 50 + i * 3,
       graphQueries: 2 + (i % 5),
       tokensEst: 1000 + i * 10,
+      // Structural marker: these scores are fabricated, not real runs. collectDogfood
+      // reads this to exclude them from the real dogfood figures.
+      synthetic: true,
     };
     writeFileSync(join(dir, "score.json"), JSON.stringify(score, null, 2));
     writeFileSync(
