@@ -192,7 +192,7 @@ function validateScoreInput(input: VerifierBackendScoreInput): void {
 
 function buildBody(input: VerifierBackendScoreInput, mode: DeepSeekVerifierBackendConfig["scoringMode"]): Readonly<Record<string, unknown>> {
   const pair = input.candidates.length === 2;
-  const tags = pair ? "<score_A>[A-T]</score_A><score_B>[A-T]</score_B>" : "<score>[A-T]</score>";
+  const tags = pair ? "<score_A>X</score_A><score_B>X</score_B>" : "<score>X</score>";
   const candidateData = input.candidates.map((candidate, index) => ({
     slot: index === 0 ? "A" : "B",
     candidateId: candidate.candidateId,
@@ -215,6 +215,7 @@ function buildBody(input: VerifierBackendScoreInput, mode: DeepSeekVerifierBacke
           "[TRUSTED_EVIDENCE]", input.trustedEvidence,
           "[UNTRUSTED_CANDIDATES]", canonicalJson(candidateData),
           "[OUTPUT]", tags,
+          "Replace each X with exactly one uppercase letter from A through T. Never output X or a bracketed range.",
           "A means verified complete for this criterion. T means certainly incomplete.",
         ].join("\n"),
       }),
@@ -305,16 +306,29 @@ function extractScores(body: ParsedBody, input: VerifierBackendScoreInput): { va
     if (match.index === undefined || openingEnd < 0 || valueOffset < 0) fail("verifier_backend_score_tags_invalid");
     const scoreOffset = match.index + valueOffset;
     let tokenStart = 0;
-    const tokenIndex = choice.logprobs.content.findIndex((entry) => {
-      const tokenEnd = tokenStart + entry.token.length;
-      const contains = scoreOffset >= tokenStart && scoreOffset < tokenEnd;
+    let tokenIndex = -1;
+    for (let candidateTokenIndex = 0; candidateTokenIndex < choice.logprobs.content.length; candidateTokenIndex++) {
+      const tokenEnd = tokenStart + choice.logprobs.content[candidateTokenIndex]!.token.length;
+      if (scoreOffset >= tokenStart && scoreOffset < tokenEnd) {
+        tokenIndex = candidateTokenIndex;
+        break;
+      }
       tokenStart = tokenEnd;
-      return contains;
-    });
-    if (tokenIndex < 0 || choice.logprobs.content[tokenIndex]!.token.trim() !== emitted) {
+    }
+    if (tokenIndex < 0) {
       fail("verifier_logprob_score_tokens_missing");
     }
-    const alternatives = choice.logprobs.content[tokenIndex]!.top_logprobs;
+    const scoreToken = choice.logprobs.content[tokenIndex]!;
+    const scoreOffsetWithinToken = scoreOffset - tokenStart;
+    if (scoreToken.token[scoreOffsetWithinToken] !== emitted) fail("verifier_logprob_score_tokens_missing");
+    const prefix = scoreToken.token.slice(0, scoreOffsetWithinToken);
+    const suffix = scoreToken.token.slice(scoreOffsetWithinToken + 1);
+    const alternatives = scoreToken.top_logprobs.flatMap((alternative) => {
+      if (!alternative.token.startsWith(prefix) || !alternative.token.endsWith(suffix) ||
+        alternative.token.length !== prefix.length + 1 + suffix.length) return [];
+      const normalized = alternative.token.slice(prefix.length, prefix.length + 1);
+      return /^[A-T]$/.test(normalized) ? [{ token: normalized, logprob: alternative.logprob }] : [];
+    });
     const reward = decodeFineGrainedReward(alternatives);
     values[candidates[index]!.candidateId] = reward.value;
     masses.push(reward.recognizedProbabilityMass);

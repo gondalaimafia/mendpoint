@@ -187,6 +187,7 @@ import { persistWardenTrajectory } from "./warden-trajectory.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
 import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
+import { buildVerifierRepositoryExcerpt } from "./verifier-repository-excerpt.js";
 
 function verifierDigest(value: string): string {
   if (/^sha256:[a-f0-9]{64}$/.test(value)) return value;
@@ -3349,6 +3350,10 @@ async function processJobsOnceUnfenced(
         }
         if (attempt.status === "succeeded") {
           try {
+            const repositoryExcerpt = buildVerifierRepositoryExcerpt({
+              candidateWorkspace: attempt.artifacts.candidateWorkspace,
+              changedPaths: attempt.changedPaths,
+            });
             await observeProductCompletionInShadow({
               db,
               env: workerEnv,
@@ -3371,6 +3376,7 @@ async function processJobsOnceUnfenced(
                   attempt.artifacts.candidateManifestSha256,
                   attempt.artifacts.evidenceSha256,
                 ]),
+                ...(repositoryExcerpt ? { repositoryExcerpt } : {}),
                 observedAt: nowIso(),
               },
             });

@@ -17,6 +17,25 @@ describe("product completion evidence", () => {
     expect(filterDeterministicCandidates(pack).eligible.map(({ candidateId }) => candidateId)).toEqual(["candidate_a"]);
   });
 
+  it("binds an exact candidate repository excerpt as substantive verifier evidence", () => {
+    const excerpt = "export function endpoint() { return '/v1/responses'; }\n";
+    const pack = createCompletionVerifierEvidencePack({
+      tenantId: "tenant_a", missionId: "mission_a", taskId: "task_a", product: "fettler", repositoryId: "repo_a", snapshotDigest: digest("snapshot"), objective: "Migrate the API call.", risk: "medium",
+      governance: { dataClassification: "confidential", requiredRegion: "us", processingRegion: "us", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentId: "consent_a", consentActive: true },
+      governanceEvidenceRef: "approval:external-verifier", allowedChangedPaths: ["src/api.ts"], candidateId: "candidate_a", candidateDigest: digest("candidate"), changedPaths: ["src/api.ts"], observableSummary: "The exact candidate passed target, regression, and security verification.", deterministicEvidenceDigest: digest("verification"), deterministicEvidenceRefs: ["target", "regression", "security"],
+      repositoryExcerpt: { digest: digest(excerpt), locator: "src/api.ts", content: excerpt },
+      assembledAt: "2026-08-17T12:00:00.000Z", assemblerVersion: "test/1",
+    });
+
+    expect(pack.sources).toContainEqual(expect.objectContaining({
+      id: "candidate_repository_excerpt",
+      kind: "repository_excerpt",
+      locator: "src/api.ts",
+      content: excerpt,
+    }));
+    expect(pack.candidates[0]?.evidenceRefs).toContain("candidate_repository_excerpt");
+  });
+
   it("rejects a changed path outside the exact completion scope", () => {
     expect(() => createCompletionVerifierEvidencePack({
       tenantId: "tenant_a", missionId: "mission_a", taskId: "task_a", product: "regauge", repositoryId: "repo_a", snapshotDigest: digest("snapshot"), objective: "Plan the migration.", risk: "high",
