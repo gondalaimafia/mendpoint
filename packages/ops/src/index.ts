@@ -10,8 +10,11 @@ export {
   deploymentProfile,
   validateApiEnv,
   assertApiEnvOrExit,
+  assessCustomerReadiness,
   type EnvReport,
   type DeploymentProfile,
+  type CustomerReadinessStatus,
+  type CustomerReadinessAssessment,
 } from "./env.js";
 export {
   rateLimit,

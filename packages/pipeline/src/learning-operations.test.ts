@@ -20,6 +20,7 @@ import { createGovernedLearningEvent, extractGovernedLesson } from "./learning-e
 import {
   admitGovernedLearningEvent,
   authorizeGovernedLearningCorpus,
+  getGovernedLearningStatus,
   governedLearningAdmissionIds,
   governedLearningSplit,
   materializeGovernedLearningCorpus,
@@ -270,6 +271,32 @@ describe("governed learning operations", () => {
     expect(admitGovernedLearningEvent(db, input, authority)).toEqual(first);
     expect(first).toMatchObject({ eventId: "event-admission", learningRecordId: ids.learningRecordId, lesson: { eligibleForModelTraining: true } });
     expect(db.raw.prepare("SELECT COUNT(*) c FROM learning_records WHERE tenant_id = ?").get("tenant-a")).toEqual({ c: 1 });
+
+    // The learning status surfaces lesson-routing observability so the drop is
+    // seen on the live operator surface. This admitted lesson is a `model_weight`
+    // sink (substantive model_behavior correction), so it reached a sink and none
+    // went nowhere. The static halves report the production reality: the
+    // classifier is effectively constant, and only one destination has a sink.
+    const status = getGovernedLearningStatus(db, "tenant-a", CREATED_AT);
+    expect(status.lessonRouting.lessons).toEqual({
+      classified: 1,
+      reachedSink: 1,
+      terminalNoAction: 0,
+      wentNowhere: 0,
+    });
+    expect(status.lessonRouting.attribution).toMatchObject({
+      effectivelyConstant: true,
+      constant: "model_behavior",
+    });
+    expect(status.lessonRouting.destinations.sinkConsumes).toBe(1);
+    expect(status.lessonRouting.destinations.terminalNoAction).toBe(1);
+    expect(status.lessonRouting.destinations.unrouted).toBe(status.lessonRouting.destinations.unroutedDestinations.length);
+    expect(status.lessonRouting.destinations.unroutedDestinations).toContain("organization_memory");
+    expect(status.lessonRouting.destinations.total).toBe(
+      status.lessonRouting.destinations.sinkConsumes
+        + status.lessonRouting.destinations.terminalNoAction
+        + status.lessonRouting.destinations.unrouted,
+    );
   });
 
   it("rejects forged attribution before writing any learning authority", () => {

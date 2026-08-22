@@ -7,7 +7,7 @@ import {
   loadAppCredentials,
   parseGitHubAccountTenantBindings,
 } from "@mendpoint/github";
-import { assessModelEgress } from "@mendpoint/shared";
+import { assessModelEgress, resolveEitherRenamedEnv } from "@mendpoint/shared";
 import { customerBackupInputFromEnv } from "./disaster-recovery.js";
 
 export type EnvReport = {
@@ -47,6 +47,71 @@ export function nodeEnv(
 
 export function isProduction(): boolean {
   return nodeEnv() === "production";
+}
+
+/**
+ * Customer readiness is a three-valued fact, never a boolean pin.
+ *
+ * A customer deployment declares its own readiness through
+ * MENDPOINT_CUSTOMER_READY rather than inheriting a hardcoded constant:
+ *   - "1"  the deployment declares itself ready;
+ *   - "0"  the deployment declares itself not ready (an honest hold);
+ *   - anything else, or unset  the declaration could not be determined.
+ *
+ * The third state must never collapse into "ready": an indeterminate or
+ * unmet deployment fails closed. When readiness cannot be honestly claimed the
+ * specific reason(s) are named, so an operator sees which precondition blocks
+ * readiness instead of a single opaque zero.
+ */
+export type CustomerReadinessStatus = "ready" | "not_ready" | "indeterminate";
+
+export type CustomerReadinessAssessment = {
+  status: CustomerReadinessStatus;
+  declared: CustomerReadinessStatus;
+  reasons: string[];
+};
+
+/**
+ * Combine a deployment's readiness declaration with the preconditions it has
+ * failed to meet. `unmetPreconditions` is the already-computed, named list of
+ * blockers the caller can see (for the boot gate, the profile errors; for the
+ * runtime probe, the env-report errors). This function never re-derives them —
+ * it only decides whether the declaration may honestly read as ready.
+ */
+export function assessCustomerReadiness(
+  env: Readonly<Record<string, string | undefined>>,
+  unmetPreconditions: readonly string[] = [],
+): CustomerReadinessAssessment {
+  const declared = resolveEitherRenamedEnv(env, "MENDPOINT_CUSTOMER_READY")?.trim();
+  if (declared !== "0" && declared !== "1") {
+    return {
+      status: "indeterminate",
+      declared: "indeterminate",
+      reasons: [
+        `MENDPOINT_CUSTOMER_READY could not be determined: set it to exactly "1" (this deployment declares itself ready) or "0" (declares itself not ready); got ${
+          declared ? JSON.stringify(declared) : "unset"
+        }`,
+      ],
+    };
+  }
+  if (declared === "0") {
+    return {
+      status: "not_ready",
+      declared: "not_ready",
+      reasons: [
+        "MENDPOINT_CUSTOMER_READY=0: this deployment declares itself not ready",
+        ...unmetPreconditions,
+      ],
+    };
+  }
+  if (unmetPreconditions.length > 0) {
+    return {
+      status: "not_ready",
+      declared: "ready",
+      reasons: [...unmetPreconditions],
+    };
+  }
+  return { status: "ready", declared: "ready", reasons: [] };
 }
 
 /**
