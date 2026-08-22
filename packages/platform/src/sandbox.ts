@@ -36,6 +36,16 @@ export type SandboxRunResult = {
   stderr: string;
   exitCode?: number;
   timedOut?: boolean;
+  /**
+   * The backend that ACTUALLY executed the command, stamped by the executor at
+   * the point of execution — never echoed back from the requested configuration.
+   * It is present ONLY on a result derived from a command that really ran; every
+   * fail-closed refusal (no isolation established, the command never dispatched)
+   * leaves it `undefined`. A caller reading this MUST treat an absent backend as
+   * "not verified" — nothing was learned about the command — and never as a test
+   * failure. See {@link ../repair/src/verify-sandbox.ts}.
+   */
+  backend?: SandboxKind;
 };
 
 export type SandboxHandle = {
@@ -350,13 +360,18 @@ export function createLocalSandbox(opts: CreateSandboxOpts = {}): SandboxHandle 
           stdio: ["ignore", "pipe", "pipe"],
           env: scrubbedSandboxEnv(),
         });
-        return { ok: true, stdout: String(stdout).slice(0, 8000), stderr: "" };
+        // The command genuinely ran on the host workdir, so the backend is
+        // observed as "local" (no isolation) rather than assumed.
+        return { ok: true, stdout: String(stdout).slice(0, 8000), stderr: "", backend: "local" };
       } catch (e: unknown) {
         const err = e as { stdout?: Buffer; stderr?: Buffer; message?: string };
+        // A non-zero exit (or timeout kill) still means the command executed on
+        // the host workdir; the backend is observed, the run merely failed.
         return {
           ok: false,
           stdout: String(err.stdout ?? "").slice(0, 4000),
           stderr: String(err.stderr ?? err.message ?? e).slice(0, 4000),
+          backend: "local",
         };
       }
     },

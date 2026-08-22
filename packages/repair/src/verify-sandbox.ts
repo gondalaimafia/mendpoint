@@ -28,8 +28,17 @@ import {
   type FlyMachineClient,
   type SandboxHandle,
   type SandboxKind,
+  type SandboxRunResult,
 } from "@mendpoint/platform";
 import type { VerificationExecution } from "./verify.js";
+
+/** The backend kinds a sandbox run may legitimately report having executed under. */
+const KNOWN_SANDBOX_BACKENDS: ReadonlySet<SandboxKind> = new Set<SandboxKind>([
+  "local",
+  "vm",
+  "in_cluster",
+  "fly_machines",
+]);
 
 /**
  * Directories that are never source and dwarf a real repo tree (installed
@@ -156,7 +165,62 @@ function collectRepoWorkspace(
 }
 
 function failClosed(stderr: string): VerificationExecution {
-  return { ok: false, stdout: "", stderr, exitCode: -1, error: stderr };
+  // Containment could not be established, so the command never ran: not_verified,
+  // and no backend was established. This is never a test failure.
+  return {
+    ok: false,
+    stdout: "",
+    stderr,
+    exitCode: -1,
+    error: stderr,
+    outcome: "not_verified",
+    sandboxBackend: null,
+  };
+}
+
+/**
+ * Map a sandbox {@link SandboxRunResult} to a three-state {@link VerificationExecution}.
+ *
+ * The recorded backend is read from what the executor REPORTS it ran under
+ * (`result.backend`), never from the configuration that requested the run — a
+ * field that echoes its own input proves nothing. Fail closed on both edges:
+ *
+ *  - an absent or unrecognised backend means the executor cannot name what it
+ *    ran (or nothing ran), so the outcome is `not_verified` even if the result
+ *    claims `ok: true` — an unreportable backend never yields `verified`;
+ *  - otherwise the observed backend is recorded and the run is `verified`/`failed`
+ *    strictly by whether the command passed.
+ *
+ * Exported so the classification itself is unit-testable against fabricated run
+ * results without a live sandbox.
+ */
+export function classifySandboxRunResult(result: SandboxRunResult): VerificationExecution {
+  const observed = result.backend;
+  if (observed === undefined || !KNOWN_SANDBOX_BACKENDS.has(observed)) {
+    const stderr =
+      result.stderr ||
+      "sandbox verification refused: executor did not report which backend it ran; refusing to record a result";
+    return {
+      ok: false,
+      stdout: result.stdout,
+      stderr,
+      exitCode: typeof result.exitCode === "number" ? result.exitCode : -1,
+      error: stderr,
+      outcome: "not_verified",
+      sandboxBackend: null,
+    };
+  }
+  const exitCode =
+    typeof result.exitCode === "number" ? result.exitCode : result.ok ? 0 : 1;
+  return {
+    ok: result.ok,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exitCode,
+    error: result.ok ? undefined : result.stderr || "sandbox verification failed",
+    outcome: result.ok ? "verified" : "failed",
+    sandboxBackend: observed,
+  };
 }
 
 /**
@@ -173,6 +237,13 @@ export async function runVerificationInSandbox(input: {
   repoRoot: string;
   timeoutMs: number;
   options?: VerificationSandboxOptions;
+  /**
+   * Test seam: inject the sandbox factory. Defaults to the real
+   * {@link createSandbox}. Mirrors the existing `flyClient` injection and lets a
+   * test prove the recorded backend follows the RUN even when it differs from the
+   * forced `kind: "fly_machines"` configuration below.
+   */
+  createSandboxImpl?: (opts: CreateSandboxOpts) => SandboxHandle;
 }): Promise<VerificationExecution> {
   const { command, repoRoot, timeoutMs } = input;
   if (!existsSync(repoRoot)) {
@@ -195,9 +266,10 @@ export async function runVerificationInSandbox(input: {
     flyClient: input.options?.flyClient,
   };
 
+  const create = input.createSandboxImpl ?? createSandbox;
   let handle: SandboxHandle;
   try {
-    handle = createSandbox(opts);
+    handle = create(opts);
   } catch (e) {
     return failClosed(`sandbox verification refused: ${String(e)}; refusing host fallback`);
   }
@@ -213,15 +285,10 @@ export async function runVerificationInSandbox(input: {
     // metacharacters, allowlisted or operator-approved), so wrapping it to run in
     // the uploaded /workspace directory is safe. The Machine's /bin/sh runs it.
     const result = await handle.runIsolated(`cd /workspace && ${command}`, { timeoutMs });
-    const exitCode =
-      typeof result.exitCode === "number" ? result.exitCode : result.ok ? 0 : 1;
-    return {
-      ok: result.ok,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      exitCode,
-      error: result.ok ? undefined : result.stderr || "sandbox verification failed",
-    };
+    // The backend is read from what the run REPORTED, not from the forced
+    // `kind: "fly_machines"` above: a result that cannot name its backend is
+    // not_verified, never a pass.
+    return classifySandboxRunResult(result);
   } catch (e) {
     // A thrown isolation failure is still fail-closed: never run on the host.
     return failClosed(
