@@ -31,7 +31,7 @@ jobs:
       - name: Install pinned Graphify evaluator
         shell: bash
         run: |
-          python -m venv .graphify-venv
+          python -m venv --copies .graphify-venv
           .graphify-venv/bin/python -m pip install --disable-pip-version-check --requirement packages/structural-graph/python/requirements.lock
           test "$(.graphify-venv/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("graphifyy"))')" = "0.9.46"
       - name: Run namespace isolated process smoke
