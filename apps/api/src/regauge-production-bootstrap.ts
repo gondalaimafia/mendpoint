@@ -79,8 +79,9 @@ export type RegaugeProductionExecution = Readonly<{
 }>;
 
 export type RegaugeProductionBootstrapReceipt = Readonly<{
-  schemaVersion: "2026-08-14.v1";
+  schemaVersion: "2026-08-14.v1" | "2026-08-21.v2";
   requestDigest: string;
+  campaignAuthorityDigest?: string;
   tenantId: string;
   campaignId: string;
   repositoryId: string;
@@ -187,6 +188,7 @@ function normalize(input: RegaugeProductionBootstrapInput): Readonly<{
   bootstrap: RegaugeProductionBootstrapInput;
   reviewerActorId: string;
   requestDigest: string;
+  campaignAuthorityDigest: string;
 }> {
   const tenantId = identifier(input.tenantId, "regauge_production_bootstrap_tenant_invalid");
   const campaignId = identifier(input.campaignId, "regauge_production_bootstrap_campaign_invalid");
@@ -286,7 +288,19 @@ function normalize(input: RegaugeProductionBootstrapInput): Readonly<{
   };
   const { gateConfig, ...authority } = bootstrap;
   const requestDigest = digest({ ...authority, gateConfigDigest: digest(gateConfig) });
-  return Object.freeze({ bootstrap, reviewerActorId, requestDigest });
+  const campaignAuthorityDigest = digest({
+    tenantId: bootstrap.tenantId,
+    campaignId: bootstrap.campaignId,
+    environment: bootstrap.environment,
+    repository: bootstrap.repository,
+    plannerActorId: bootstrap.plannerActorId,
+    reviewer: {
+      issuer: bootstrap.reviewer.issuer,
+      subject: bootstrap.reviewer.subject,
+    },
+    objective: bootstrap.objective,
+  });
+  return Object.freeze({ bootstrap, reviewerActorId, requestDigest, campaignAuthorityDigest });
 }
 
 function validateControl(
@@ -336,17 +350,40 @@ export async function bootstrapRegaugeProductionCampaign(
   const plan = normalize(structuredClone(rawInput));
   const existingReceipt = await runtime.readReceipt(plan.bootstrap.tenantId, plan.bootstrap.campaignId);
   if (existingReceipt) {
-    if (existingReceipt.requestDigest !== plan.requestDigest) {
+    if (
+      existingReceipt.tenantId !== plan.bootstrap.tenantId ||
+      existingReceipt.campaignId !== plan.bootstrap.campaignId
+    ) {
+      throw new Error("regauge_production_bootstrap_receipt_drift");
+    }
+    const legacyReauthorization = existingReceipt.schemaVersion === "2026-08-14.v1" &&
+      existingReceipt.requestDigest !== plan.requestDigest;
+    if (
+      existingReceipt.schemaVersion === "2026-08-21.v2" &&
+      existingReceipt.campaignAuthorityDigest !== plan.campaignAuthorityDigest
+    ) {
       throw new Error("regauge_production_bootstrap_idempotency_conflict");
     }
-    const control = await runtime.readControl(plan.bootstrap.tenantId, plan.bootstrap.campaignId);
-    if (!control) throw new Error("regauge_production_bootstrap_control_drift");
-    validateControl(control, plan, {
+    let repository: RegaugeProductionRepositoryAuthority = {
       repositoryId: existingReceipt.repositoryId,
       snapshotId: existingReceipt.snapshotId,
       revision: existingReceipt.revision,
       snapshotDigest: existingReceipt.snapshotDigest,
-    });
+    };
+    if (legacyReauthorization) {
+      repository = await runtime.prepareRepository(plan);
+      if (
+        repository.repositoryId !== existingReceipt.repositoryId ||
+        repository.snapshotId !== existingReceipt.snapshotId ||
+        repository.revision !== existingReceipt.revision ||
+        repository.snapshotDigest !== existingReceipt.snapshotDigest
+      ) {
+        throw new Error("regauge_production_bootstrap_idempotency_conflict");
+      }
+    }
+    const control = await runtime.readControl(plan.bootstrap.tenantId, plan.bootstrap.campaignId);
+    if (!control) throw new Error("regauge_production_bootstrap_control_drift");
+    validateControl(control, plan, repository);
     if (control.blueprintId !== existingReceipt.blueprintId ||
         control.blueprintDigest !== existingReceipt.blueprintDigest) {
       throw new Error("regauge_production_bootstrap_control_drift:receipt");
@@ -409,8 +446,9 @@ export async function bootstrapRegaugeProductionCampaign(
   }
   validateExecution(execution, control);
   return runtime.recordReceipt({
-    schemaVersion: "2026-08-14.v1",
+    schemaVersion: "2026-08-21.v2",
     requestDigest: plan.requestDigest,
+    campaignAuthorityDigest: plan.campaignAuthorityDigest,
     tenantId: plan.bootstrap.tenantId,
     campaignId: plan.bootstrap.campaignId,
     repositoryId: repository.repositoryId,
