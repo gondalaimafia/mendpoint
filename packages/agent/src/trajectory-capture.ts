@@ -21,7 +21,7 @@
  *      observable text so the store can redact and content-address it.
  */
 import type { ObservedVerificationCommand } from "@mendpoint/shared";
-import type { AgentRunResult, AgentTaskMode, ToolName } from "./types.js";
+import type { AgentRunResult, AgentTaskMode, ToolFailureClass, ToolName } from "./types.js";
 
 /** Warden offers this fixed tool universe (mirrors agent.ts TOOL_NAMES). */
 const WARDEN_TOOL_UNIVERSE: readonly ToolName[] = [
@@ -66,6 +66,8 @@ export type WardenCaptureToolStep = Readonly<{
   result: string;
   ok: boolean;
   error: string | null;
+  /** Typed reason for `ok: false`; null on success (never a default). */
+  failureClass: ToolFailureClass | null;
   plannerSource: string | null;
 }>;
 
@@ -170,6 +172,7 @@ function toolStepsFrom(agent: AgentRunResult): WardenCaptureToolStep[] {
       summary: entry.result.summary,
       data: entry.result.data,
       error: entry.result.error ?? null,
+      failureClass: entry.result.failureClass ?? null,
     });
     return Object.freeze({
       stepIndex: index,
@@ -178,6 +181,7 @@ function toolStepsFrom(agent: AgentRunResult): WardenCaptureToolStep[] {
       result,
       ok: entry.result.ok,
       error: entry.result.error ?? null,
+      failureClass: entry.result.failureClass ?? null,
       plannerSource: entry.plannerSource ?? null,
     });
   });

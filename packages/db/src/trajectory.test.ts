@@ -401,4 +401,99 @@ describe("trajectory capture", () => {
     });
     expect(listTrajectorySteps(upgraded, "t1", "post-upgrade")).toHaveLength(1);
   });
+
+  it("persists a tool step's failure class and reads null on success", () => {
+    const { db } = fixture();
+    openTrajectory(db);
+    recordToolCall(db, {
+      id: "fail-step",
+      tenantId: "t1",
+      trajectoryId: "traj-1",
+      stepIndex: 1,
+      toolName: "run_command",
+      args: JSON.stringify({ command: "node check.mjs" }),
+      result: JSON.stringify({ ok: false, summary: "exit 1", failureClass: "target_failure" }),
+      ok: false,
+      error: "verification failed",
+      failureClass: "target_failure",
+      createdAt: T0,
+    });
+    recordToolCall(db, {
+      id: "ok-step",
+      tenantId: "t1",
+      trajectoryId: "traj-1",
+      stepIndex: 2,
+      toolName: "read_file",
+      args: JSON.stringify({ path: "src/pay.ts" }),
+      result: JSON.stringify({ ok: true, summary: "read 42 lines" }),
+      ok: true,
+      createdAt: T0,
+    });
+
+    const steps = listTrajectorySteps(db, "t1", "traj-1");
+    const failed = steps.find((s) => s.id === "fail-step");
+    const succeeded = steps.find((s) => s.id === "ok-step");
+    expect(failed!.failureClass).toBe("target_failure");
+    // Null on success: a successful step must never read as a fabricated class,
+    // and null is distinguishable from any of the recorded failure worlds.
+    expect(succeeded!.failureClass).toBeNull();
+  });
+
+  it("converges failure_class from a PRE-CHANGE volume that has the table but not the column", () => {
+    // A database created BEFORE this change has trajectory_steps WITHOUT
+    // failure_class. Simulate that predecessor in place (drop just the column,
+    // keeping the table and its rows), then prove reopening adds it back via the
+    // additive migration and a failure class round-trips against the converged
+    // shape. This is the additive-column path, distinct from a full table drop.
+    const { db, path } = fixture();
+    openTrajectory(db);
+    recordToolCall(db, {
+      id: "legacy-step",
+      tenantId: "t1",
+      trajectoryId: "traj-1",
+      stepIndex: 0,
+      toolName: "list_dir",
+      args: "{}",
+      result: "{}",
+      ok: true,
+      createdAt: T0,
+    });
+
+    db.raw.exec("ALTER TABLE trajectory_steps DROP COLUMN failure_class");
+    const columnsBefore = db.raw
+      .prepare(`PRAGMA table_info(trajectory_steps)`)
+      .all() as Array<{ name: string }>;
+    expect(columnsBefore.some((c) => c.name === "failure_class")).toBe(false);
+    db.raw.close();
+
+    // Reopen the SAME file: createDb re-runs the additive migration.
+    const upgraded = createDb(path);
+    opened[opened.length - 1].db = upgraded;
+    const columnsAfter = upgraded.raw
+      .prepare(`PRAGMA table_info(trajectory_steps)`)
+      .all() as Array<{ name: string }>;
+    expect(columnsAfter.some((c) => c.name === "failure_class")).toBe(true);
+    // The pre-change row survived and reads null (no failure class recorded).
+    const legacy = listTrajectorySteps(upgraded, "t1", "traj-1").find(
+      (s) => s.id === "legacy-step",
+    );
+    expect(legacy!.failureClass).toBeNull();
+    // A new failure class writes and reads back against the converged schema.
+    recordToolCall(upgraded, {
+      id: "post-upgrade-step",
+      tenantId: "t1",
+      trajectoryId: "traj-1",
+      stepIndex: 1,
+      toolName: "run_command",
+      args: "{}",
+      result: JSON.stringify({ ok: false, failureClass: "infra_failure" }),
+      ok: false,
+      failureClass: "infra_failure",
+      createdAt: T0,
+    });
+    const upgradedStep = listTrajectorySteps(upgraded, "t1", "traj-1").find(
+      (s) => s.id === "post-upgrade-step",
+    );
+    expect(upgradedStep!.failureClass).toBe("infra_failure");
+  });
 });

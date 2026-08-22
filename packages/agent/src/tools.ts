@@ -25,7 +25,7 @@ import {
   DEFAULT_NEVER_TOUCH,
   EXCLUDED_DIRECTORIES,
 } from "./policies.js";
-import type { AgentSourceContextBudget, ToolCall, ToolResult } from "./types.js";
+import type { AgentSourceContextBudget, ToolCall, ToolFailureClass, ToolResult } from "./types.js";
 
 /** Fallback walker ceilings used only when no source-context budget is bound. */
 const DEFAULT_MAX_SEARCH_FILES = 2_000;
@@ -345,7 +345,9 @@ function recordReadCoverage(
 
 function blockMutation(ctx: ToolContext, tool: ToolCall["tool"], summary: string, error: string): ToolResult {
   if (ctx.sourceContext) ctx.sourceContext.blockedMutations++;
-  return { ok: false, tool, summary, error };
+  // Every blockMutation caller is a harness fence (source-observation, source
+  // budget, or change budget): the mutation was refused before it ran.
+  return { ok: false, tool, summary, error, failureClass: "policy_refusal" };
 }
 
 function assertObservedMutation(
@@ -492,9 +494,9 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
       case "list_dir": {
         const rel = String(args.path ?? ".");
         const safe = safeRel(ctx.repoRoot, rel);
-        if (!safe) return { ok: false, tool, summary: "path escape blocked", error: "path" };
+        if (!safe) return { ok: false, tool, summary: "path escape blocked", error: "path", failureClass: "bad_arguments" };
         const abs = join(ctx.repoRoot, safe);
-        if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT" };
+        if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT", failureClass: "bad_arguments" };
         const st = statSync(abs);
         if (st.isFile()) {
           return { ok: true, tool, summary: `file ${safe}`, data: { files: [safe] } };
@@ -530,14 +532,14 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         const rel = String(args.path ?? "");
         const safe = safeRel(ctx.repoRoot, rel);
         if (!safe || pathBlocked(safe, never)) {
-          return { ok: false, tool, summary: "blocked path", error: "policy" };
+          return { ok: false, tool, summary: "blocked path", error: "policy", failureClass: "policy_refusal" };
         }
         const abs = join(ctx.repoRoot, safe);
-        if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT" };
+        if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT", failureClass: "bad_arguments" };
         const stat = statSync(abs);
         const maxFileBytes = ctx.sourceContext?.budget.maxFileBytes ?? 1024 * 1024;
         if (!stat.isFile() || stat.size > maxFileBytes) {
-          return { ok: false, tool, summary: "file exceeds source budget", error: "source_budget" };
+          return { ok: false, tool, summary: "file exceeds source budget", error: "source_budget", failureClass: "policy_refusal" };
         }
         const bytes = readFileSync(abs);
         const state = ctx.sourceContext;
@@ -554,7 +556,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         const nextOffset = offset + window.length;
         const exposedBytes = Buffer.byteLength(window, "utf8");
         if (state && state.observedBytes + exposedBytes > state.budget.maxTotalReadBytes) {
-          return { ok: false, tool, summary: "source read budget exhausted", error: "source_budget" };
+          return { ok: false, tool, summary: "source read budget exhausted", error: "source_budget", failureClass: "policy_refusal" };
         }
         if (state) {
           state.observedBytes += exposedBytes;
@@ -595,16 +597,16 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
       case "search": {
         const query = String(args.query ?? "");
         if (!query || query.length < 2) {
-          return { ok: false, tool, summary: "query too short", error: "args" };
+          return { ok: false, tool, summary: "query too short", error: "args", failureClass: "bad_arguments" };
         }
         const rawScope = String(args.scopePath ?? ".");
         const scopePath = safeRel(ctx.repoRoot, rawScope);
         if (!scopePath || pathBlocked(scopePath, never)) {
-          return { ok: false, tool, summary: "blocked search scope", error: "policy" };
+          return { ok: false, tool, summary: "blocked search scope", error: "policy", failureClass: "policy_refusal" };
         }
         const scopeRoot = join(ctx.repoRoot, scopePath === "." ? "" : scopePath);
         if (!existsSync(scopeRoot) || !statSync(scopeRoot).isDirectory()) {
-          return { ok: false, tool, summary: "search scope not found", error: "ENOENT" };
+          return { ok: false, tool, summary: "search scope not found", error: "ENOENT", failureClass: "bad_arguments" };
         }
         const state = ctx.sourceContext;
         const maxFiles = state?.budget.maxSearchFiles ?? DEFAULT_MAX_SEARCH_FILES;
@@ -673,7 +675,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         const content = String(args.content ?? "");
         const safe = safeRel(ctx.repoRoot, rel, true);
         if (!safe || pathBlocked(safe, neverMutate)) {
-          return { ok: false, tool, summary: "blocked path", error: "policy" };
+          return { ok: false, tool, summary: "blocked path", error: "policy", failureClass: "policy_refusal" };
         }
         const abs = join(ctx.repoRoot, safe);
         const state = ctx.sourceContext;
@@ -693,6 +695,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
             tool,
             summary: `no change for ${safe}`,
             error: "no_change",
+            failureClass: "bad_arguments",
           };
         }
         captureOriginal(ctx, safe, abs);
@@ -720,16 +723,16 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         const global = args.global !== false;
         const safe = safeRel(ctx.repoRoot, rel);
         if (!safe || pathBlocked(safe, neverMutate)) {
-          return { ok: false, tool, summary: "blocked path", error: "policy" };
+          return { ok: false, tool, summary: "blocked path", error: "policy", failureClass: "policy_refusal" };
         }
-        if (!from) return { ok: false, tool, summary: "from required", error: "args" };
+        if (!from) return { ok: false, tool, summary: "from required", error: "args", failureClass: "bad_arguments" };
         const abs = join(ctx.repoRoot, safe);
-        if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT" };
+        if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT", failureClass: "bad_arguments" };
         const original = readFileSync(abs, "utf8");
         const sourceFence = assertObservedMutation(ctx, tool, safe, abs);
         if (sourceFence) return { ...sourceFence, tool };
         if (!original.includes(from)) {
-          return { ok: false, tool, summary: `pattern not found in ${safe}`, error: "no_match" };
+          return { ok: false, tool, summary: `pattern not found in ${safe}`, error: "no_match", failureClass: "bad_arguments" };
         }
         const updated = replaceLiteralOccurrences(original, from, to, global);
         if (updated === original) {
@@ -738,6 +741,7 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
             tool,
             summary: `no change for ${safe}`,
             error: "no_change",
+            failureClass: "bad_arguments",
           };
         }
         const state = ctx.sourceContext;
@@ -770,12 +774,12 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
         const rel = String(args.path ?? "");
         const safe = safeRel(ctx.repoRoot, rel, true);
         if (!safe || safe === "." || pathBlocked(safe, neverMutate)) {
-          return { ok: false, tool, summary: "blocked path", error: "policy" };
+          return { ok: false, tool, summary: "blocked path", error: "policy", failureClass: "policy_refusal" };
         }
         const abs = join(ctx.repoRoot, safe);
-        if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT" };
+        if (!existsSync(abs)) return { ok: false, tool, summary: "not found", error: "ENOENT", failureClass: "bad_arguments" };
         const info = statSync(abs);
-        if (!info.isFile()) return { ok: false, tool, summary: "not a regular file", error: "type" };
+        if (!info.isFile()) return { ok: false, tool, summary: "not a regular file", error: "type", failureClass: "bad_arguments" };
         const state = ctx.sourceContext;
         if (state && (
           info.size > state.budget.maxFileBytes ||
@@ -797,11 +801,14 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
       }
 
       case "run_command": {
+        // The synchronous executor cannot service run_command; the async wrapper
+        // routes it. Reaching here is a harness dispatch fault, not the model's.
         return {
           ok: false,
           tool,
           summary: "command requires asynchronous execution",
           error: "async_required",
+          failureClass: "infra_failure",
         };
       }
 
@@ -812,11 +819,12 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
             tool,
             summary: "network disabled (set allowNetwork)",
             error: "policy",
+            failureClass: "policy_refusal",
           };
         }
         const url = String(args.url ?? "");
         if (!/^https?:\/\//i.test(url)) {
-          return { ok: false, tool, summary: "invalid url", error: "args" };
+          return { ok: false, tool, summary: "invalid url", error: "args", failureClass: "bad_arguments" };
         }
         // Synchronous-ish via deasync alternative: use Atomics wait not available —
         // return note that probe must be async wrapper
@@ -825,24 +833,39 @@ export function executeTool(ctx: ToolContext, call: ToolCall): ToolResult {
           tool,
           summary: "use http_probe_async",
           error: "sync_not_supported",
+          // The synchronous path cannot await fetch; the async wrapper handles
+          // http_probe. Reaching here is a harness dispatch fault.
+          failureClass: "infra_failure",
         };
       }
 
       case "finish": {
         const ok = Boolean(args.ok ?? false);
         const message = String(args.message ?? (ok ? "done" : "failed"));
-        return { ok, tool, summary: message, data: { ok, message } };
+        // `finish` reports the agent's own mission verdict, not a tool
+        // execution: a false verdict carries no observable tool-failure class,
+        // so it is undetermined rather than forced into one of the four.
+        return {
+          ok,
+          tool,
+          summary: message,
+          data: { ok, message },
+          ...(ok ? {} : { failureClass: "undetermined" as const }),
+        };
       }
 
       default:
-        return { ok: false, tool, summary: "unknown tool", error: "unknown" };
+        return { ok: false, tool, summary: "unknown tool", error: "unknown", failureClass: "bad_arguments" };
     }
   } catch (e) {
+    // An unexpected throw inside the executor is an infrastructure fault, not a
+    // model-attributable outcome.
     return {
       ok: false,
       tool,
       summary: "tool exception",
       error: e instanceof Error ? e.message : String(e),
+      failureClass: "infra_failure",
     };
   }
 }
@@ -855,14 +878,23 @@ export async function executeToolAsync(
   if (call.tool === "run_command") {
     const cmd = String(call.args.command ?? "");
     if (!cmd) {
-      return { ok: false, tool: "run_command", summary: "command required", error: "args" };
+      // The model supplied no command: a bad argument, not a run outcome.
+      return {
+        ok: false,
+        tool: "run_command",
+        summary: "command required",
+        error: "args",
+        failureClass: "bad_arguments",
+      };
     }
     if (commandBlocked(cmd) || !ctx.allowedCommands?.includes(cmd)) {
+      // Harness policy refused the command; it never ran.
       return {
         ok: false,
         tool: "run_command",
         summary: "command blocked by policy",
         error: "policy",
+        failureClass: "policy_refusal",
       };
     }
     if (ctx.dryRun) {
@@ -906,6 +938,9 @@ export async function executeToolAsync(
           exitCode: execution.exitCode,
           outcome: execution.outcome,
         },
+        // Containment/approval could not admit the command, so it never ran.
+        // This is an infrastructure fault, never the target failing.
+        failureClass: "infra_failure",
       };
     }
     return {
@@ -924,6 +959,10 @@ export async function executeToolAsync(
         exitCode: execution.exitCode,
         outcome: execution.outcome,
       },
+      // The command ran to a non-zero exit: the target under test genuinely
+      // failed. This is the common, model-attributable case and must never be
+      // relabelled as an infrastructure fault.
+      failureClass: "target_failure",
     };
   }
   if (call.tool === "http_probe") {
@@ -933,6 +972,7 @@ export async function executeToolAsync(
         tool: "http_probe",
         summary: "network disabled",
         error: "policy",
+        failureClass: "policy_refusal",
       };
     }
     const url = String(call.args.url ?? "");
@@ -943,6 +983,7 @@ export async function executeToolAsync(
         tool: "http_probe",
         summary: "probe method blocked by policy",
         error: "policy",
+        failureClass: "policy_refusal",
       };
     }
     try {
@@ -1004,17 +1045,24 @@ export async function executeToolAsync(
                 .slice(0, 20),
             ),
           },
+          // A non-2xx response ran to completion, but a single status cannot
+          // tell a client-side 4xx (a bad argument) from a server-side 5xx (a
+          // target failure), so it is undetermined rather than a guess.
+          ...(res.ok ? {} : { failureClass: "undetermined" as const }),
         };
       } finally {
         clearTimeout(t);
         signal?.removeEventListener("abort", abortFromParent);
       }
     } catch (e) {
+      // The probe threw before producing a response (network error, timeout,
+      // abort, redirect/target rejection): an infrastructure fault.
       return {
         ok: false,
         tool: "http_probe",
         summary: "request failed",
         error: e instanceof Error ? e.message : String(e),
+        failureClass: "infra_failure",
       };
     }
   }

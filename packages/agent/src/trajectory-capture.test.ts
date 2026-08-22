@@ -157,6 +157,44 @@ describe("buildWardenAttemptCapture", () => {
     expect(capture.toolSteps[0]?.plannerSource).toBe("model");
   });
 
+  it("carries the tool result's failure class into the captured step, null on success", () => {
+    const failing = buildWardenAttemptCapture({
+      agent: agentResult({
+        steps: [
+          step({
+            call: { tool: "read_file", args: { path: "src/api.ts" } },
+            result: { ok: true, tool: "read_file", summary: "read 40 lines" },
+          }),
+          step({
+            call: { tool: "run_command", args: { command: "npm test" } },
+            result: {
+              ok: false,
+              tool: "run_command",
+              summary: "exit 1: npm test",
+              error: "1 failing",
+              failureClass: "target_failure",
+            },
+          }),
+        ],
+      }),
+      goal: "fix the failing endpoint",
+      taskMode: "repair",
+      verifyCommand: "npm test",
+      availableTools: wardenAvailableTools({ allowNetwork: false, dryRun: false }),
+      runId: "sess-1",
+      sandboxBackend: "local",
+      status: "succeeded",
+      changedPaths: [],
+      candidateDigest: "cand-digest",
+      changedFiles: [],
+      verifications: [],
+    });
+    expect(failing.toolSteps[0]?.failureClass).toBeNull();
+    expect(failing.toolSteps[1]?.failureClass).toBe("target_failure");
+    // The observable result blob also reflects the class.
+    expect(failing.toolSteps[1]?.result).toContain("target_failure");
+  });
+
   it("carries the observable (input -> output) surface", () => {
     expect(capture.assembledContext).toContain("fix the failing endpoint");
     expect(capture.assembledContext).toContain("src/api.ts");

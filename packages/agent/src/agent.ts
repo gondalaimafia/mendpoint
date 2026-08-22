@@ -62,6 +62,7 @@ import type {
   AgentVerifierState,
   LiveModelProvenanceRecord,
   ToolCall,
+  ToolFailureClass,
   ToolName,
   ToolResult,
 } from "./types.js";
@@ -3282,6 +3283,14 @@ function validatedRuntimeToolCall(
   };
 }
 
+const TOOL_FAILURE_CLASSES: ReadonlySet<ToolFailureClass> = new Set([
+  "bad_arguments",
+  "policy_refusal",
+  "infra_failure",
+  "target_failure",
+  "undetermined",
+]);
+
 function validateRuntimeToolEffectResult(
   value: WardenRuntimeJson,
   call: ToolCall,
@@ -3302,10 +3311,14 @@ function validateRuntimeToolEffectResult(
   const resultKeys = Object.keys(record).sort().join(",");
   const expectedKeys = ["ok", "tool", "summary",
     ...(record.data === undefined ? [] : ["data"]),
-    ...(record.error === undefined ? [] : ["error"])].sort().join(",");
+    ...(record.error === undefined ? [] : ["error"]),
+    ...(record.failureClass === undefined ? [] : ["failureClass"])].sort().join(",");
   if (resultKeys !== expectedKeys || typeof record.ok !== "boolean" ||
       record.tool !== call.tool || typeof record.summary !== "string" ||
-      (record.error !== undefined && typeof record.error !== "string")) {
+      (record.error !== undefined && typeof record.error !== "string") ||
+      (record.failureClass !== undefined &&
+        (typeof record.failureClass !== "string" ||
+          !TOOL_FAILURE_CLASSES.has(record.failureClass as ToolFailureClass)))) {
     throw new Error("warden_runtime_tool_result_invalid");
   }
   let mutation: RuntimeMutationMaterial | undefined;
