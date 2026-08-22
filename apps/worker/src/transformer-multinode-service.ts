@@ -69,6 +69,7 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
   evidenceRefs: readonly string[];
   gateConfig?: string;
   commandRunner?: RecipeCommandRunner;
+  now?: () => string;
   operationSecret: Uint8Array;
   deliverDraft?(input: ExactDraftDeliveryInput, target: TransformerMultinodeDraftTarget): Promise<ExactDraftDeliveryResult>;
   observeDraft?(input: ExactDraftObservationInput, target: TransformerMultinodeDraftTarget): Promise<ExactDraftObservation>;
@@ -83,6 +84,7 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
   const markArtifact = artifactBackend.mark.bind(artifactBackend);
   const deliverDraft = inputConfig.deliverDraft;
   const observeDraft = inputConfig.observeDraft;
+  const now = inputConfig.now ?? (() => new Date().toISOString());
   let coordinatorTime: string | undefined;
   const remote = async (path: string, body: unknown, signal?: AbortSignal) => {
     const response = await request({ path, body, signal });
@@ -126,6 +128,7 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
     encryptionKey: new Uint8Array(config.encryptionKey),
     executorDigest: config.executorDigest,
     evidenceRefs: Object.freeze([...config.evidenceRefs]),
+    now,
     ...(config.gateConfig === undefined ? {} : { gateConfig: config.gateConfig }),
   });
   const stable = (purpose: string) => createHmac("sha256", config.operationSecret).update(`${config.tenantId}:${config.campaignId}:${config.workerId}:${purpose}`).digest("hex");
@@ -134,7 +137,7 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
     .digest("hex");
   const leaseToken = stable("lease-token");
   const token = () => leaseToken;
-  const observedAt = (_phase: TransformerAttemptPhase) => coordinatorTime ?? new Date().toISOString();
+  const observedAt = (_phase: TransformerAttemptPhase) => coordinatorTime ?? now();
   const serviceInstanceId = randomBytes(16).toString("hex");
   let claimOrdinal = 0;
   let deliveryClaimOrdinal = 0;

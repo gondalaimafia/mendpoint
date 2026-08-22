@@ -258,7 +258,7 @@ describe("real Transformer multi-node coordinator", () => {
 
   it("delivers an authenticated terminal checkpoint after the executor deployment changes", async () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-real-multinode-")); roots.push(root);
-    let coordinatorNow = new Date().toISOString();
+    let coordinatorNow = "2026-08-12T12:00:00.000Z";
     const service = new TransformerPilotExecutionService(join(root, "pilot.sqlite"), { rawGateConfig: gate, environment: "test", now: () => coordinatorNow });
     services.push(service);
     const files = { "package.json": '{"engines":{"node":">=18 <19"},"scripts":{"test":"node test.js"}}\n' };
@@ -320,7 +320,7 @@ describe("real Transformer multi-node coordinator", () => {
     const draftBranches: string[] = [];
     let observationCalls = 0;
     const artifactBackend = createFilesystemTransformerArtifactBackend({ root: join(root, "artifacts"), maxStoredBytes: 8 * 1024 * 1024 });
-    const runnerConfig: Parameters<typeof createTransformerMultinodeService>[0] = { enabled: true, mode: "checkpoint_required", workerId: "worker-a", tenantId: "tenant-a", campaignId: "campaign-a", environment: "test", evidenceRoot: join(root, "evidence"), candidateRoot: join(root, "candidates"), leaseDurationMs: 3_600_000, executorDigest: `sha256:${"e".repeat(64)}`, encryptionKey: new Uint8Array(32).fill(1), operationSecret: new Uint8Array(32).fill(2), evidenceRefs: ["evidence:runner"], gateConfig: gate, commandRunner: async () => ({ exitCode: 0, stdout: "ok", stderr: "", timedOut: false, durationMs: 1 }), deliverDraft: async (intent, target) => {
+    const runnerConfig: Parameters<typeof createTransformerMultinodeService>[0] = { enabled: true, mode: "checkpoint_required", workerId: "worker-a", tenantId: "tenant-a", campaignId: "campaign-a", environment: "test", evidenceRoot: join(root, "evidence"), candidateRoot: join(root, "candidates"), leaseDurationMs: 3_600_000, executorDigest: `sha256:${"e".repeat(64)}`, encryptionKey: new Uint8Array(32).fill(1), operationSecret: new Uint8Array(32).fill(2), evidenceRefs: ["evidence:runner"], gateConfig: gate, now: () => coordinatorNow, commandRunner: async () => ({ exitCode: 0, stdout: "ok", stderr: "", timedOut: false, durationMs: 1 }), deliverDraft: async (intent, target) => {
       draftCalls += 1;
       draftBranches.push(intent.branch);
       expect(target).toEqual({ owner: "acme", repo: "repo-a", baseBranch: "main", installationId: 42, remoteRepositoryId: 84 });
