@@ -166,6 +166,10 @@ import {
   type ResolveWardenCandidateRepository,
 } from "./warden-candidate-delivery.js";
 import {
+  LEARNING_OUTCOME_RESOLVE_JOB_TYPE,
+  runOutcomeResolutionLearning,
+} from "./outcome-resolution-learning.js";
+import {
   DELEGATED_PR_VERIFICATION_JOB_TYPE,
   requestDelegatedPrVerificationJob,
   runDelegatedPrVerificationJob,
@@ -2496,7 +2500,7 @@ async function processJobsOnceUnfenced(
   for (; result.claimed < maxJobs && opts.shouldContinue?.() !== false; ) {
     const claimedTypes = ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
       "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
-      "fettler.pr.review", "transformer.adaptive.deliver"];
+      "fettler.pr.review", "transformer.adaptive.deliver", LEARNING_OUTCOME_RESOLVE_JOB_TYPE];
     if (delegatedPrVerification?.candidateDependencies.enabled === true &&
         delegatedPrVerification.verificationDependencies.enabled === true) {
       claimedTypes.push(DELEGATED_PR_VERIFICATION_JOB_TYPE);
@@ -2696,6 +2700,17 @@ async function processJobsOnceUnfenced(
           result.failed++;
           if (delivery.status === "retry_scheduled") result.retried++;
         }
+        continue;
+      }
+      if (job.type === LEARNING_OUTCOME_RESOLVE_JOB_TYPE) {
+        // Re-invoke the governed learning producer now that the delivered PR has a
+        // terminal outcome. The admit is best-effort and never throws, so the job
+        // always completes; the producer's verdict is recorded for diagnosis only.
+        const admission = runOutcomeResolutionLearning({ db, job, artifactEnv: workerEnv });
+        if (!completeJob(db, job.id, admission, nowIso(), { ...fence })) {
+          throw new Error("learning_outcome_resolve_lease_lost");
+        }
+        result.succeeded++;
         continue;
       }
       if (job.type === "agent.run") {
