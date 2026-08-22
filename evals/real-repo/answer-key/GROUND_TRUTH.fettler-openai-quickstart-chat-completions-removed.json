@@ -1,0 +1,67 @@
+{
+  "scenario_id": "fettler-openai-quickstart-chat-completions-removed",
+  "repo_family": "javascript-service",
+  "difficulty": 3,
+  "difficulty_rationale": "Level 3 cross-cutting. The impacted call sites (openai.chat.completions.create) span three directories and include a non-obvious one in fine_tuning/use_model.js, so directory name is not a shortcut. Nine sibling files in the SAME repository import the same `openai` package and call sibling endpoints (embeddings, images, moderations, files, batches, fine-tuning jobs, assistants, threads); a correct trace must follow the actual endpoint each call reaches, not the fact that the file imports the provider.",
+  "intended_product": ["fettler"],
+  "dataset_split": "holdout",
+  "correct_behavior": "flag_files",
+  "faults": [
+    {
+      "id": "chat-completions-endpoint-superseded",
+      "description": "Provider removed POST /v1/chat/completions and superseded it with the Responses API POST /v1/responses. Every consumer of openai.chat.completions.create must migrate.",
+      "family": "endpoint-removed"
+    }
+  ],
+  "expected_findings": [
+    "chat_completions/function_calling.js",
+    "chat_completions/index.js",
+    "chat_completions/multi_turn.js",
+    "chat_completions/vision.js",
+    "fine_tuning/use_model.js"
+  ],
+  "acceptable_findings": [],
+  "false_positive_traps": [
+    "assistants/index.js",
+    "assistants/thread.js",
+    "batch/index.js",
+    "batch/retrieve_results.js",
+    "embeddings/index.js",
+    "fine_tuning/index.js",
+    "images/index.js",
+    "moderation/images.js",
+    "moderation/index.js"
+  ],
+  "blast_radius_truth": {
+    "affectedFiles": 5,
+    "importChain": [
+      "openai package (POST /v1/chat/completions) -> openai.chat.completions.create(...) at each impacted file"
+    ],
+    "untouchedSubsystems": [
+      "embeddings",
+      "images",
+      "moderation",
+      "batch",
+      "assistants",
+      "fine_tuning job management (files.create / fineTuning.jobs.*)"
+    ]
+  },
+  "tags": ["javascript", "esm", "openai", "endpoint-removed", "real-repo", "distractors"],
+  "notes": "SEALED ANSWER KEY. Hand-derived by reading the repository source at the pinned commit with grep, NEVER from any product output. `expected_findings` are exactly the files containing a genuine `openai.chat.completions.create(...)` call. `false_positive_traps` are the sibling files that import the same `openai` package but call a DIFFERENT endpoint that the injected change does not touch. This file must never be copied into, or reachable from, the repository under test.",
+  "injected_change": {
+    "kind": "endpoint_removed",
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "superseded_by": { "method": "POST", "path": "/v1/responses" },
+    "provider_slug": "openai",
+    "spec_v1": "specs/openai-chat-completions-v1.json",
+    "spec_v2": "specs/openai-chat-completions-v2.json"
+  },
+  "impacted_call_sites": [
+    { "file": "chat_completions/function_calling.js", "symbol": "openai.chat.completions.create", "line": 42 },
+    { "file": "chat_completions/index.js", "symbol": "openai.chat.completions.create", "line": 4 },
+    { "file": "chat_completions/multi_turn.js", "symbol": "openai.chat.completions.create", "line": 19 },
+    { "file": "chat_completions/vision.js", "symbol": "openai.chat.completions.create", "line": 6 },
+    { "file": "fine_tuning/use_model.js", "symbol": "openai.chat.completions.create", "line": 39 }
+  ]
+}
