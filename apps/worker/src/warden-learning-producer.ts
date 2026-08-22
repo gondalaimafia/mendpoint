@@ -11,6 +11,7 @@ import {
 } from "@mendpoint/db";
 import type { CandidateReviewEvidence } from "@mendpoint/shared";
 import type {
+  LearningOutcomeStatus,
   LearningProvenanceQualifier,
   LearningRiskClass,
   LearningSignalClass,
@@ -262,23 +263,29 @@ export function admitWardenGovernedLearningEvent(
   if (!learningLoopEnabled(env)) return Object.freeze({ admitted: false, reason: "disabled" });
   const { db, delivery, run, reviewEvidence } = input;
   // Terminal-outcome gate. A delivered draft PR has no verified outcome yet, so
-  // admitting a "corrected/accepted" record at delivery fabricates an outcome the
-  // reviewer never gave — and learning_records is append-only, so it could never
-  // be retracted when the PR is later closed unmerged. Admit only a genuinely
-  // merged outcome. A null outcome is "pending" (no decision yet); a
-  // closed_unmerged/reverted outcome is a negative result. Both are structurally
-  // distinct and neither is a positive training signal.
+  // admitting any record at delivery would fabricate an outcome the PR never
+  // reached — and learning_records is append-only, so it could never be retracted.
+  // Admit only a TERMINAL outcome: a null outcome is "pending" (no decision yet)
+  // and is skipped. A merged outcome is a positive result; a closed_unmerged or
+  // reverted outcome is a negative result. Both terminal outcomes are now admitted
+  // so the corpus carries real outcome variance, but every non-success outcome is
+  // recorded honestly (see the branching below) and can never train weights: it
+  // carries no verification authority, so its verdict is `inconclusive`, which caps
+  // its evidence strength at "insufficient" and keeps it off the model_weight path.
   //
   // NOTE: this producer runs at the delivery seam, where `outcome` is always null,
-  // so it now no-ops until admission is re-invoked at outcome resolution. That
-  // re-invocation belongs to the corpus pipeline (see the PR body) and is not
-  // wired here.
-  if (delivery.outcome !== "merged") {
-    return Object.freeze({
-      admitted: false,
-      reason: delivery.outcome === null ? "outcome_pending" : `outcome_${delivery.outcome}`,
-    });
+  // so it still no-ops here until admission is re-invoked at outcome resolution.
+  // That re-invocation belongs to the corpus pipeline (see the PR body) and is not
+  // wired here; the widened gate makes the producer ready for it.
+  if (delivery.outcome === null) {
+    return Object.freeze({ admitted: false, reason: "outcome_pending" });
   }
+  // A merged PR is the positive, corrected outcome; a closed_unmerged repair
+  // failed to be accepted, and a reverted one was accepted then rolled back. Each
+  // maps to the honest `observedOutcome.status` member, never a success value.
+  const succeeded = delivery.outcome === "merged";
+  const outcomeStatus: LearningOutcomeStatus =
+    delivery.outcome === "merged" ? "corrected" : delivery.outcome === "reverted" ? "rolled_back" : "failed";
   try {
     const consent = findActiveLearningConsent(db, {
       tenantId: delivery.tenantId,
@@ -294,10 +301,14 @@ export function admitWardenGovernedLearningEvent(
 
     const authority = deriveWardenVerificationAuthority(reviewEvidence);
     // Derive `deterministically_verified` from the recorded authority instead of
-    // asserting it: a soft verdict keeps only `reviewer_accepted`.
-    const provenanceQualifiers: readonly LearningProvenanceQualifier[] = authority.signalClass === "hard"
-      ? ["deterministically_verified", "reviewer_accepted"]
-      : ["reviewer_accepted"];
+    // asserting it: a soft verdict keeps only `reviewer_accepted`. A non-success
+    // outcome keeps only `reviewer_accepted` too — the repair was reviewer-approved
+    // at delivery, but its correctness was never established (it was not merged), so
+    // `deterministically_verified`/`merged_and_verified` would be a false claim.
+    const provenanceQualifiers: readonly LearningProvenanceQualifier[] =
+      succeeded && authority.signalClass === "hard"
+        ? ["deterministically_verified", "reviewer_accepted"]
+        : ["reviewer_accepted"];
 
     // Resolve the run's trajectory ONCE (never throwing into admission) so both the
     // attribution derivation and the graph-context audit read the same observation.
@@ -319,18 +330,23 @@ export function admitWardenGovernedLearningEvent(
     //     command), so nothing here establishes `verified`.
     //   - `"failed"` is structurally UNREPRESENTABLE: ReviewedVerificationCommandSchema
     //     types ok/exitCode as the literals true/0, so a failed verification cannot
-    //     parse into the evidence at all. Admission is also restricted to a merged
-    //     delivery outcome (above), so a failure could not reach this deriver even
-    //     if it were representable. `"failed"` is therefore never passed — see
-    //     outcome-attribution.ts, whose `failed`/`retrieval` branches stay dormant.
+    //     parse into the evidence at all. The widened admission gate now admits
+    //     non-merged terminal outcomes, but their terminal fate is recorded in
+    //     `observedOutcome.status` (`failed`/`rolled_back`), never as a verification
+    //     `"failed"` — this seam observes no objective failure signal. `"failed"` is
+    //     therefore never passed — see outcome-attribution.ts, whose
+    //     `failed`/`retrieval` branches stay dormant.
     //
     // So `deriveOutcomeAttribution` receives `not_verified` and returns `none`
     // (undetermined) for every production Warden event: high precision, fail closed,
     // never a fabricated `model_behavior`. `contextDelivery` is still resolved and
     // recorded honestly (it does not change `none`, but a `not_verified` outcome
     // makes it moot regardless — the deriver short-circuits `not_verified` to
-    // `none`). Making failure representable, and admitting non-merged outcomes, are
-    // decisions for the owner; until then this cannot discriminate.
+    // `none`). Admitting non-merged outcomes is now done (the owner's decision, this
+    // change); making failure representable and mapping a terminal failure to a
+    // VerificationOutcome remain, so until the outcome-resolution re-invocation and
+    // that mapping land this cannot discriminate and every admitted outcome routes
+    // to `no_action`.
     const attribution = deriveOutcomeAttribution({
       verification: "not_verified",
       contextDelivery: classifyGraphContextDelivery(trajectory),
@@ -363,22 +379,40 @@ export function admitWardenGovernedLearningEvent(
       },
       predictionSummary: boundedLine(reviewEvidence.summary, 4000, "Apply the reviewed Warden repair."),
       outcome: {
-        status: "corrected",
-        summary: boundedLine(reviewEvidence.verification.summary, 4000, "The repair passed objective verification."),
+        // Record the honest terminal outcome, never forced to a success value: a
+        // merged repair is `corrected`, a reverted one `rolled_back`, a
+        // closed_unmerged one `failed`.
+        status: outcomeStatus,
+        summary: succeeded
+          ? boundedLine(reviewEvidence.verification.summary, 4000, "The repair passed objective verification.")
+          : boundedLine(delivery.rationale, 4000, "The delivered repair was not accepted."),
         attribution,
       },
+      // The candidate was reviewer-approved before delivery; the terminal fate
+      // above is a downstream outcome, not a review rejection, so the review
+      // decision stays `accepted` for both paths (the admission gate binds it to
+      // accepted/modified/merged).
       reviewerDecision: "accepted",
-      // A correction is substantive when the reviewed repair actually carries
-      // verified code edits, rather than asserting `true`. A valid Warden review
-      // always carries at least one verified edit; an evidence object with none
-      // (a no-op) would be non-substantive and correctly kept off the weight path.
-      correctionSubstantive: reviewEvidence.edits.length > 0,
+      // A correction is substantive only on the success path, and only when the
+      // reviewed repair actually carries verified code edits (not asserting `true`).
+      // A non-success outcome established no substantive correction — the repair was
+      // not accepted — so it is `false`: the conservative not-established value,
+      // which also keeps a failure off the model_weight path in `classify`.
+      correctionSubstantive: succeeded && reviewEvidence.edits.length > 0,
       // Attest contamination-freedom from the temporal determination this producer
-      // can genuinely make, not a literal: the merged outcome was observed before
+      // can genuinely make, not a literal: the outcome was observed before
       // admission. A malformed/future timestamp fails closed at the admission gate.
       contaminationFree: temporalContaminationFree(delivery.requestedAt, input.now),
+      // Confidence is a prediction-time value present regardless of outcome, so it
+      // is recorded on both paths: a failed outcome with a recorded confidence is
+      // precisely the calibration signal a failure teaches. Nulling it would erase
+      // real signal, not add honesty.
       confidence: minConfidence(reviewEvidence),
-      verificationAuthority: authority,
+      // A merged repair carries its correctness-verification authority; a
+      // non-success outcome carries the explicit not-observed state (null): its
+      // repair correctness was never objectively verified, so no producer is
+      // synthesized and the derived verdict stays `inconclusive`.
+      verificationAuthority: succeeded ? authority : null,
       economics: {
         inputTokens: meter?.inputTokens ?? 0,
         outputTokens: meter?.outputTokens ?? 0,

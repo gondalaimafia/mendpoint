@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { findActiveLearningConsent, type AdaptiveDeliveryOutcome } from "@mendpoint/db";
 import type {
+  LearningOutcomeStatus,
   LearningProvenanceQualifier,
   LearningRiskClass,
 } from "@mendpoint/pipeline";
@@ -52,19 +53,27 @@ export function admitTransformerGovernedLearningEvent(
   if (!learningLoopEnabled(env)) return Object.freeze({ admitted: false, reason: "disabled" });
   const { db, tenantId, candidate, artifact } = input;
   // Terminal-outcome gate. A delivered draft PR has no verified outcome yet, so
-  // admitting a "corrected/accepted" record at delivery fabricates one the
-  // reviewer never gave — and learning_records is append-only, so it could never
-  // be retracted when the PR is later closed unmerged. Admit only a genuinely
-  // merged outcome; a null outcome is "pending" and a closed_unmerged/reverted
-  // outcome is a negative result. This producer runs at the delivery seam, where
-  // the outcome is always null, so it now no-ops until admission is re-invoked at
-  // outcome resolution (a corpus-pipeline change; see the PR body).
-  if (input.deliveryOutcome !== "merged") {
-    return Object.freeze({
-      admitted: false,
-      reason: input.deliveryOutcome === null ? "outcome_pending" : `outcome_${input.deliveryOutcome}`,
-    });
+  // admitting any record at delivery would fabricate an outcome the PR never
+  // reached — and learning_records is append-only, so it could never be retracted.
+  // Admit only a TERMINAL outcome: a null outcome is "pending" and is skipped. A
+  // merged outcome is a positive result; a closed_unmerged or reverted outcome is
+  // a negative result. Both terminal outcomes are now admitted so the corpus
+  // carries real outcome variance, but every non-success outcome is recorded
+  // honestly (see the branching below) and can never train weights: it carries no
+  // verification authority, so its verdict is `inconclusive`, which caps evidence
+  // strength at "insufficient" and keeps it off the model_weight path. This
+  // producer runs at the delivery seam, where the outcome is always null, so it
+  // still no-ops until admission is re-invoked at outcome resolution (a
+  // corpus-pipeline change; see the PR body); the widened gate makes it ready.
+  if (input.deliveryOutcome === null) {
+    return Object.freeze({ admitted: false, reason: "outcome_pending" });
   }
+  // A merged PR is the positive, corrected outcome; a closed_unmerged repair
+  // failed to be accepted, and a reverted one was accepted then rolled back. Each
+  // maps to the honest `observedOutcome.status` member, never a success value.
+  const succeeded = input.deliveryOutcome === "merged";
+  const outcomeStatus: LearningOutcomeStatus =
+    input.deliveryOutcome === "merged" ? "corrected" : input.deliveryOutcome === "reverted" ? "rolled_back" : "failed";
   try {
     if (
       candidate.reviewDecision !== "approve" ||
@@ -111,9 +120,13 @@ export function admitTransformerGovernedLearningEvent(
     // `"verified"` would require objective verification to have concluded the model's
     // action correct; the only signal here is a `passed` flag that cannot vary (see
     // above), assessing model-self-selected edits, so nothing establishes it.
-    // `"failed"` is structurally unrepresentable (ReviewedVerificationCommandSchema
-    // types ok/exitCode as the literals true/0) and admission is restricted to a
-    // merged outcome anyway, so failure never reaches the deriver. This seam also
+    // `"failed"` (the VerificationOutcome) is structurally unrepresentable
+    // (ReviewedVerificationCommandSchema types ok/exitCode as the literals true/0);
+    // and although the widened admission gate now admits non-merged terminal
+    // outcomes, their terminal fate is recorded in `observedOutcome.status`
+    // (`failed`/`rolled_back`), not as a verification `"failed"` — this seam still
+    // observes no objective failure signal, so it passes `not_verified` for every
+    // outcome that reaches the deriver. This seam also
     // observes no graph-context delivery — there is no trajectory-by-run link on the
     // adaptive candidate path — so `contextDelivery` is the honest `unrecorded`.
     // `deriveOutcomeAttribution` therefore returns `none` (undetermined) for every
@@ -156,21 +169,39 @@ export function admitTransformerGovernedLearningEvent(
         "Adaptive repair candidate.",
       ),
       outcome: {
-        status: "corrected",
-        summary: boundedLine(artifact.review.verification.summary, 4000, "The repair passed objective verification."),
+        // Record the honest terminal outcome, never forced to a success value: a
+        // merged repair is `corrected`, a reverted one `rolled_back`, a
+        // closed_unmerged one `failed`.
+        status: outcomeStatus,
+        summary: succeeded
+          ? boundedLine(artifact.review.verification.summary, 4000, "The repair passed objective verification.")
+          : boundedLine(candidate.reviewRationale, 4000, "The delivered repair was not accepted."),
         attribution,
       },
+      // The candidate was reviewer-approved before delivery; the terminal fate is a
+      // downstream outcome, not a review rejection, so the review decision stays
+      // `accepted` for both paths (the admission gate binds it to
+      // accepted/modified/merged).
       reviewerDecision: "accepted",
-      // A correction is substantive when the reviewed repair actually carries
-      // edits, rather than asserting `true`: an adaptive review with no edits is a
-      // no-op and must not be treated as a substantive model-behavior correction.
-      correctionSubstantive: artifact.review.edits.length > 0,
+      // A correction is substantive only on the success path, and only when the
+      // reviewed repair actually carries edits (not asserting `true`). A non-success
+      // outcome established no substantive correction — the repair was not accepted
+      // — so it is `false`: the conservative not-established value, which also keeps
+      // a failure off the model_weight path in `classify`.
+      correctionSubstantive: succeeded && artifact.review.edits.length > 0,
       // Attest contamination-freedom from the temporal determination this producer
-      // can genuinely make, not a literal: the merged outcome was observed (at the
-      // review time) before admission. A malformed/future timestamp fails closed.
+      // can genuinely make, not a literal: the outcome was observed (at the review
+      // time) before admission. A malformed/future timestamp fails closed.
       contaminationFree: temporalContaminationFree(candidate.reviewedAt, input.now),
+      // Confidence is a prediction-time value present regardless of outcome, so it
+      // is recorded on both paths: a failed outcome with a recorded confidence is
+      // precisely the calibration signal a failure teaches.
       confidence: Math.min(1, Math.max(0, artifact.review.confidence / 100)),
-      verificationAuthority: authority,
+      // A merged repair carries its correctness-verification authority; a
+      // non-success outcome carries the explicit not-observed state (null): its
+      // repair correctness was never objectively verified, so the derived verdict
+      // stays `inconclusive`.
+      verificationAuthority: succeeded ? authority : null,
       // No per-candidate token meter exists at this seam; economics are unmetered.
       economics: { inputTokens: 0, outputTokens: 0, latencyMs: 0, costUsd: 0 },
       sourceClass: "design_partner_verified",

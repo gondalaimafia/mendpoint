@@ -82,9 +82,12 @@ function facts(
     signalClass?: LearningSignalClass;
     producedBy?: LearningVerificationProducer;
     contaminationFree?: boolean;
+    status?: GovernedLearningOutcomeFacts["outcome"]["status"];
+    nullAuthority?: boolean;
   }> = {},
 ): GovernedLearningOutcomeFacts {
   const signalClass = overrides.signalClass ?? "hard";
+  const status = overrides.status ?? "corrected";
   return {
     db,
     tenantId: TENANT,
@@ -106,16 +109,18 @@ function facts(
     },
     execution: { modelId: null, adapterId: null, routerDecisionId: `warden_route_${runId}`, fallback: false },
     predictionSummary: "Apply the reviewed Warden repair.",
-    outcome: { status: "corrected", summary: "The repair passed objective verification.", attribution: "model_behavior" },
+    outcome: { status, summary: "The repair passed objective verification.", attribution: "model_behavior" },
     reviewerDecision: "accepted",
     correctionSubstantive: true,
     contaminationFree: overrides.contaminationFree ?? true,
     confidence: 0.9,
-    verificationAuthority: {
-      signalClass,
-      producedBy: overrides.producedBy ?? (signalClass === "hard" ? "sandbox_command" : "model_verifier"),
-      producerModelId: signalClass === "hard" ? null : "muse-spark-1.2",
-    },
+    verificationAuthority: overrides.nullAuthority
+      ? null
+      : {
+          signalClass,
+          producedBy: overrides.producedBy ?? (signalClass === "hard" ? "sandbox_command" : "model_verifier"),
+          producerModelId: signalClass === "hard" ? null : "muse-spark-1.2",
+        },
     economics: { inputTokens: 100, outputTokens: 20, latencyMs: 500, costUsd: 0.01 },
     sourceClass: "design_partner_verified",
     provenanceQualifiers: signalClass === "hard"
@@ -188,6 +193,56 @@ describe("governed producer derives the verification verdict from the recorded a
     expect(lesson.verdict).toBe("passed");
     expect(lesson.evidenceStrength).toBe("high");
     expect(lesson.eligibleForModelTraining).toBe(true);
+  });
+
+  it("a failed outcome carried through admission is never eligible to train weights, even with a hard authority", () => {
+    // The safety property the whole change turns on: admitting a failure must never
+    // make it eligible to train weights. This is the fail-closed case — a hard
+    // authority (a deterministic runtime signal that the outcome was negative)
+    // paired with a `failed` status. The verdict is derived as `failed`, NOT
+    // `passed`, precisely because the outcome did not succeed: "hard" is the
+    // signal's authority, not a claim the repair passed. `strength()` then caps the
+    // lesson at "insufficient" and it routes only to `no_action`.
+    //
+    // Load-bearing check: this assertion dies if the verdict derivation in
+    // governed-learning-producer.ts is weakened back to `signalClass === "hard" ?
+    // "passed" : "inconclusive"` (dropping the outcome-success condition). With that
+    // weakening the verdict becomes `passed`, evidence strength becomes "high", the
+    // lesson routes to `model_weight`, and `eligibleForModelTraining` flips to true
+    // — so the assertions below fail. Verified by temporarily applying the weakening
+    // and observing the failure, then restoring.
+    const db = setup();
+    const result = admitGovernedLearningOutcome(facts(db, "run-failed-hard", { signalClass: "hard", status: "failed" }));
+    expect(result.admitted).toBe(true);
+
+    const lesson = storedLesson(db, result.eventId!);
+    expect(lesson.verdict).toBe("failed");
+    expect(lesson.verdict).not.toBe("passed");
+    expect(lesson.evidenceStrength).toBe("insufficient");
+    expect(lesson.destinations).toEqual([
+      { destination: "no_action", rationale: "verification_not_authoritative" },
+    ]);
+    expect(lesson.eligibleForModelTraining).toBe(false);
+  });
+
+  it("a failed outcome with no verification authority (the honest producer path) is inconclusive and inert", () => {
+    // The realistic failure path: the producers record NO correctness-verification
+    // authority for a non-success outcome (the explicit not-observed state, null),
+    // so the derived verdict is `inconclusive`. This confirms the honest recording
+    // yields the same fail-closed result as the hard-authority case above.
+    const db = setup();
+    const result = admitGovernedLearningOutcome(
+      facts(db, "run-failed-null", { status: "rolled_back", nullAuthority: true }),
+    );
+    expect(result.admitted).toBe(true);
+
+    const lesson = storedLesson(db, result.eventId!);
+    expect(lesson.verdict).toBe("inconclusive");
+    expect(lesson.evidenceStrength).toBe("insufficient");
+    expect(lesson.destinations).toEqual([
+      { destination: "no_action", rationale: "verification_not_authoritative" },
+    ]);
+    expect(lesson.eligibleForModelTraining).toBe(false);
   });
 
   it("an outcome whose contamination status is not attested is rejected by the admission gate", () => {
