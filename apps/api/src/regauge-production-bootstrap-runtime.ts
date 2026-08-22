@@ -4,6 +4,8 @@ import {
   bindMissionScope,
   createDb,
   createMission,
+  getConnectedRepository,
+  getGitHubInstallationByInstallationId,
   getMission,
   getPrincipalBySubject,
   getTenant,
@@ -296,6 +298,7 @@ function mapControl(
   options: RuntimeOptions,
   tenantId: string,
   campaignId: string,
+  snapshotId?: string,
 ): RegaugeProductionControl | undefined {
   const campaign = options.control.store.getCampaign(tenantId, campaignId);
   if (!campaign) return undefined;
@@ -308,7 +311,8 @@ function mapControl(
   }
   const repository = blueprint.evidence.repositories[0]!;
   const snapshots = listRepositorySnapshots(options.db, tenantId, repository.id)
-    .filter((snapshot) => snapshot.resolved_sha === repository.revision);
+    .filter((snapshot) => snapshot.resolved_sha === repository.revision &&
+      (snapshotId === undefined || snapshot.id === snapshotId));
   if (snapshots.length !== 1) throw new Error("regauge_production_bootstrap_snapshot_ambiguous");
   const campaignState = campaign.state;
   const blueprintState = storedBlueprint.state;
@@ -346,7 +350,7 @@ function mapExecution(
   if (!campaign) return undefined;
   if (campaign.units.length !== 1) throw new Error("regauge_production_bootstrap_execution_drift");
   const unit = campaign.units[0]!;
-  const control = mapControl(options, tenantId, campaignId);
+  const control = mapControl(options, tenantId, campaignId, unit.snapshot.snapshotId);
   if (!control) throw new Error("regauge_production_bootstrap_control_drift");
   return Object.freeze({
     campaignId: campaign.campaignId,
@@ -376,6 +380,28 @@ function findRepository(
     throw new Error("regauge_production_bootstrap_repository_not_authorized");
   }
   return repository;
+}
+
+function matchingRecipe(input: RegaugeProductionBootstrapInput) {
+  const matching = RECIPE_CATALOG.filter((recipe) =>
+    recipe.source === input.objective.sourceSystem &&
+    recipe.target === input.objective.targetSystem);
+  if (matching.length !== 1) throw new Error("regauge_production_bootstrap_recipe_ambiguous");
+  return matching[0]!;
+}
+
+function parseRecord(value: string | null, code: string): Record<string, unknown> {
+  let parsed: unknown;
+  try { parsed = value === null ? null : JSON.parse(value); } catch { throw new Error(code); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(code);
+  return parsed as Record<string, unknown>;
+}
+
+function parseArray(value: string | null, code: string): readonly unknown[] {
+  let parsed: unknown;
+  try { parsed = value === null ? null : JSON.parse(value); } catch { throw new Error(code); }
+  if (!Array.isArray(parsed)) throw new Error(code);
+  return parsed;
 }
 
 export function createRegaugeProductionBootstrapRuntime(
@@ -488,14 +514,9 @@ export function createRegaugeProductionBootstrapRuntime(
         repositoryId: stored.id,
         expectedRevision: bootstrap.repository.expectedRevision,
       }, options.repositoryDependencies);
-      const matchingRecipes = RECIPE_CATALOG.filter((recipe) =>
-        recipe.source === bootstrap.objective.sourceSystem &&
-        recipe.target === bootstrap.objective.targetSystem);
-      if (matchingRecipes.length !== 1) {
-        throw new Error("regauge_production_bootstrap_recipe_ambiguous");
-      }
+      const recipe = matchingRecipe(bootstrap);
       const authority = createAppDbTransformerMissionAuthority(options.db)
-        .repositories.load(bootstrap.tenantId, stored.id, at, matchingRecipes[0]!.allowedPaths);
+        .repositories.load(bootstrap.tenantId, stored.id, at, recipe.allowedPaths, materialized.snapshot.id);
       return Object.freeze({
         repositoryId: stored.id,
         snapshotId: materialized.snapshot.id,
@@ -503,7 +524,83 @@ export function createRegaugeProductionBootstrapRuntime(
         snapshotDigest: authority.planning.snapshotDigest,
       });
     },
-    async readControl(tenantId, campaignId) { return mapControl(options, tenantId, campaignId); },
+    async readRepositoryAuthority({ bootstrap, repository }) {
+      findRepository(await options.listInstallationRepositories(), bootstrap);
+      if (!getTenant(options.db, bootstrap.tenantId)) {
+        throw new Error("regauge_production_bootstrap_tenant_drift");
+      }
+      const installation = getGitHubInstallationByInstallationId(
+        options.db,
+        bootstrap.repository.installationId,
+      );
+      if (!installation || installation.tenant_id !== bootstrap.tenantId ||
+          installation.account_id !== bootstrap.repository.accountId ||
+          installation.account_login.toLowerCase() !== bootstrap.repository.accountLogin.toLowerCase() ||
+          installation.suspended_at !== null || installation.deleted_at !== null) {
+        throw new Error("regauge_production_bootstrap_installation_drift");
+      }
+      const permissions = parseRecord(
+        installation.permissions_json,
+        "regauge_production_bootstrap_installation_drift",
+      );
+      if (permissions.contents !== "write" || permissions.pull_requests !== "write" ||
+          permissions.checks !== "read" || permissions.metadata !== "read") {
+        throw new Error("regauge_production_bootstrap_installation_drift");
+      }
+      const installationRepositories = parseArray(
+        installation.repositories_json,
+        "regauge_production_bootstrap_installation_drift",
+      );
+      const exactInstallationRepository = installationRepositories.filter((candidate) => {
+        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+        const value = candidate as Record<string, unknown>;
+        return String(value.id) === bootstrap.repository.remoteRepositoryId &&
+          typeof value.owner === "string" &&
+          value.owner.toLowerCase() === bootstrap.repository.owner.toLowerCase() &&
+          typeof value.name === "string" &&
+          value.name.toLowerCase() === bootstrap.repository.name.toLowerCase();
+      });
+      if (installation.repository_selection !== "selected" || exactInstallationRepository.length !== 1) {
+        throw new Error("regauge_production_bootstrap_installation_drift");
+      }
+      const connection = listScmConnections(options.db, bootstrap.tenantId)
+        .filter((candidate) => candidate.provider === "github" &&
+          candidate.external_account_id === bootstrap.repository.installationId &&
+          candidate.revoked_at === null);
+      const stored = getConnectedRepository(options.db, repository.repositoryId, bootstrap.tenantId);
+      if (connection.length !== 1 || !stored || stored.connection_id !== connection[0]!.id ||
+          stored.remote_id !== bootstrap.repository.remoteRepositoryId ||
+          stored.owner !== bootstrap.repository.owner || stored.name !== bootstrap.repository.name ||
+          stored.default_branch !== bootstrap.repository.defaultBranch ||
+          stored.selected_branch !== bootstrap.repository.selectedBranch ||
+          stored.environment !== bootstrap.environment || stored.status !== "ready") {
+        throw new Error("regauge_production_bootstrap_repository_drift");
+      }
+      const snapshots = listRepositorySnapshots(options.db, bootstrap.tenantId, stored.id)
+        .filter((candidate) => candidate.id === repository.snapshotId);
+      if (snapshots.length !== 1 || snapshots[0]!.requested_ref !== bootstrap.repository.selectedBranch ||
+          snapshots[0]!.resolved_sha !== bootstrap.repository.expectedRevision ||
+          snapshots[0]!.file_manifest_version !== 1) {
+        throw new Error("regauge_production_bootstrap_repository_drift");
+      }
+      const recipe = matchingRecipe(bootstrap);
+      const authority = createAppDbTransformerMissionAuthority(options.db).repositories.load(
+        bootstrap.tenantId,
+        stored.id,
+        now(),
+        recipe.allowedPaths,
+        repository.snapshotId,
+      );
+      return Object.freeze({
+        repositoryId: stored.id,
+        snapshotId: authority.execution.snapshot.snapshotId,
+        revision: authority.execution.snapshot.revision,
+        snapshotDigest: authority.planning.snapshotDigest,
+      });
+    },
+    async readControl(tenantId, campaignId, snapshotId) {
+      return mapControl(options, tenantId, campaignId, snapshotId);
+    },
     async plan(input) {
       const planned = options.missions.plan({
         tenantId: input.tenantId,
@@ -538,7 +635,7 @@ export function createRegaugeProductionBootstrapRuntime(
       if (planned.decision !== "planned") {
         throw new Error(`regauge_production_bootstrap_recipe_abstained:${planned.reasons.join(",")}`);
       }
-      return mapControl(options, input.tenantId, input.campaignId)!;
+      return mapControl(options, input.tenantId, input.campaignId, input.snapshotId)!;
     },
     async review(input) {
       options.control.reviewToReady({
@@ -552,7 +649,7 @@ export function createRegaugeProductionBootstrapRuntime(
         blueprint: input.control.blueprintRevision,
         bsg: input.control.bsgRevision,
       });
-      return mapControl(options, input.tenantId, input.campaignId)!;
+      return mapControl(options, input.tenantId, input.campaignId, input.control.snapshotId)!;
     },
     async readExecution(tenantId, campaignId) { return mapExecution(options, tenantId, campaignId); },
     async launch(input) {

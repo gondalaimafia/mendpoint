@@ -115,7 +115,15 @@ export type RegaugeProductionBootstrapRuntime = Readonly<{
     reviewerActorId: string;
     requestDigest: string;
   }>): Promise<RegaugeProductionRepositoryAuthority>;
-  readControl(tenantId: string, campaignId: string): Promise<RegaugeProductionControl | undefined>;
+  readRepositoryAuthority(input: Readonly<{
+    bootstrap: RegaugeProductionBootstrapInput;
+    repository: RegaugeProductionRepositoryAuthority;
+  }>): Promise<RegaugeProductionRepositoryAuthority>;
+  readControl(
+    tenantId: string,
+    campaignId: string,
+    snapshotId?: string,
+  ): Promise<RegaugeProductionControl | undefined>;
   plan(input: RegaugeProductionPlanRequest): Promise<RegaugeProductionControl>;
   review(input: Readonly<{
     tenantId: string;
@@ -356,32 +364,35 @@ export async function bootstrapRegaugeProductionCampaign(
     ) {
       throw new Error("regauge_production_bootstrap_receipt_drift");
     }
-    const legacyReauthorization = existingReceipt.schemaVersion === "2026-08-14.v1" &&
-      existingReceipt.requestDigest !== plan.requestDigest;
     if (
       existingReceipt.schemaVersion === "2026-08-21.v2" &&
       existingReceipt.campaignAuthorityDigest !== plan.campaignAuthorityDigest
     ) {
       throw new Error("regauge_production_bootstrap_idempotency_conflict");
     }
-    let repository: RegaugeProductionRepositoryAuthority = {
+    const receiptRepository: RegaugeProductionRepositoryAuthority = {
       repositoryId: existingReceipt.repositoryId,
       snapshotId: existingReceipt.snapshotId,
       revision: existingReceipt.revision,
       snapshotDigest: existingReceipt.snapshotDigest,
     };
-    if (legacyReauthorization) {
-      repository = await runtime.prepareRepository(plan);
-      if (
-        repository.repositoryId !== existingReceipt.repositoryId ||
-        repository.snapshotId !== existingReceipt.snapshotId ||
-        repository.revision !== existingReceipt.revision ||
-        repository.snapshotDigest !== existingReceipt.snapshotDigest
-      ) {
-        throw new Error("regauge_production_bootstrap_idempotency_conflict");
-      }
+    const repository = await runtime.readRepositoryAuthority({
+      bootstrap: plan.bootstrap,
+      repository: receiptRepository,
+    });
+    if (
+      repository.repositoryId !== existingReceipt.repositoryId ||
+      repository.snapshotId !== existingReceipt.snapshotId ||
+      repository.revision !== existingReceipt.revision ||
+      repository.snapshotDigest !== existingReceipt.snapshotDigest
+    ) {
+      throw new Error("regauge_production_bootstrap_idempotency_conflict");
     }
-    const control = await runtime.readControl(plan.bootstrap.tenantId, plan.bootstrap.campaignId);
+    const control = await runtime.readControl(
+      plan.bootstrap.tenantId,
+      plan.bootstrap.campaignId,
+      existingReceipt.snapshotId,
+    );
     if (!control) throw new Error("regauge_production_bootstrap_control_drift");
     validateControl(control, plan, repository);
     if (control.blueprintId !== existingReceipt.blueprintId ||
