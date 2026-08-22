@@ -70,6 +70,7 @@ import {
   completeFeedTenantDispatch,
   recordRoutingDecision,
   recordRoutingOutcome,
+  recordRoutingOutcomeExactlyOnce,
   recordRoutingExecutorOutcome,
   loadRoutingAvailability,
   loadRoutingBreakerSnapshot,
@@ -2935,6 +2936,130 @@ describe("db", () => {
 
     const byRun = listRoutingLedgerForRun(db, "run-1", "tenant_default");
     expect(byRun.map((r) => r.envelope_id)).toEqual(["route_dec_1"]);
+  });
+
+  it("records the executed executor id on the outcome, readable per run", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-route-executed-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+
+    recordRoutingDecision(db, {
+      tenantId: "tenant_default",
+      jobId: "job-exec",
+      runId: "run-exec",
+      taskKind: "warden.attempt",
+      envelopeId: "route_exec_1",
+      policySnapshotId: "policy-1",
+      taskSnapshotId: "task-1",
+      action: "execute",
+      selectedExecutorId: "warden-attempt",
+      providerId: "mendpoint-internal",
+      eliminated: [],
+      fallback: [],
+      breaker: [],
+      handoffRequired: false,
+      decision: { decisionId: "route_exec_1" },
+      createdAt: "2026-08-01T12:00:00.000Z",
+    });
+
+    // The executor that actually ran is observed at outcome time. The exactly-once
+    // seam is the only production writer, so drive it here to prove the id it
+    // already receives now lands in the durable ledger row.
+    const applied = recordRoutingOutcomeExactlyOnce(db, {
+      tenantId: "tenant_default",
+      jobId: "job-exec",
+      envelopeId: "route_exec_1",
+      idempotencyKey: "idem-exec-1",
+      idempotencyPayload: { outcome: "succeeded" },
+      executorId: "warden-attempt",
+      providerId: "mendpoint-internal",
+      breakerFeedback: "success",
+      action: "completed",
+      outcome: "succeeded",
+      observedAt: "2026-08-01T12:00:02.000Z",
+    });
+    expect(applied).toBe(true);
+
+    const byRun = listRoutingLedgerForRun(db, "run-exec", "tenant_default");
+    expect(byRun).toHaveLength(1);
+    expect(byRun[0]!.selected_executor_id).toBe("warden-attempt");
+    expect(byRun[0]!.executed_executor_id).toBe("warden-attempt");
+  });
+
+  it("leaves executed_executor_id NULL when the caller observed no executor", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-route-noexec-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+
+    recordRoutingDecision(db, {
+      tenantId: "tenant_default",
+      jobId: "job-noexec",
+      runId: "run-noexec",
+      taskKind: "warden.attempt",
+      envelopeId: "route_noexec_1",
+      policySnapshotId: "policy-1",
+      taskSnapshotId: "task-1",
+      action: "execute",
+      selectedExecutorId: "warden-attempt",
+      providerId: "mendpoint-internal",
+      eliminated: [],
+      fallback: [],
+      breaker: [],
+      handoffRequired: false,
+      decision: { decisionId: "route_noexec_1" },
+      createdAt: "2026-08-01T12:00:00.000Z",
+    });
+
+    // No executorId supplied: the executed executor was not observed. It must
+    // stay NULL ("not observed"), never a copy of selected_executor_id.
+    const updated = recordRoutingOutcome(db, {
+      tenantId: "tenant_default",
+      jobId: "job-noexec",
+      envelopeId: "route_noexec_1",
+      action: "completed",
+      outcome: "succeeded",
+      observedAt: "2026-08-01T12:00:02.000Z",
+    });
+    expect(updated).toBe(true);
+
+    const byJob = getRoutingLedgerForJob(db, "job-noexec", "tenant_default");
+    expect(byJob).toHaveLength(1);
+    expect(byJob[0]!.selected_executor_id).toBe("warden-attempt");
+    expect(byJob[0]!.executed_executor_id).toBeNull();
+  });
+
+  it("adds executed_executor_id to a routing_ledger that predates the column", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-db-route-converge-"));
+    dirs.push(dir);
+    const path = join(dir, "t.sqlite");
+
+    // Build a database on the current schema, then drop the new column to
+    // reproduce a volume created before it existed (ensureTables never alters,
+    // so a column missing from the additive list would be permanently absent).
+    const seeded = createDb(path);
+    seeded.raw.exec(`ALTER TABLE routing_ledger DROP COLUMN executed_executor_id;`);
+    seeded.raw.close();
+
+    const legacy = new DatabaseSync(path);
+    expect(
+      legacy
+        .prepare("PRAGMA table_info(routing_ledger)")
+        .all()
+        .some((c) => (c as { name: string }).name === "executed_executor_id"),
+    ).toBe(false);
+    legacy.close();
+
+    // Reopening runs ensureTables, whose additive migration must re-add it.
+    const migrated = createDb(path);
+    dbs.push(migrated);
+    expect(
+      migrated.raw
+        .prepare("PRAGMA table_info(routing_ledger)")
+        .all()
+        .some((c) => (c as { name: string }).name === "executed_executor_id"),
+    ).toBe(true);
   });
 
   it("records a handoff decision and isolates the ledger across tenants", () => {
