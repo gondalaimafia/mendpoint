@@ -611,9 +611,38 @@ describe("Transformer pilot execution coordinator", () => {
     expect(() => complete(store, "unit-a", 2, "lease-token-unit-a-stale-1", 1)).toThrow("transformer_pilot_fence_stale");
     complete(store, "unit-a", 2, tokenA, 1);
     expect(store.claimNextAttempt({ ...mutation(3, "claim-blocked"), leaseToken: "lease-token-unit-b-00000001", gateConfig: gateConfig() })).toBeNull();
-    expect(store.authorizeCurrentWaveDrafts({ ...mutation(3, "draft-a"), gateConfig: gateConfig() })).toEqual([
+    const protectedGate = JSON.stringify({
+      schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION,
+      tenantAllowlist: ["tenant-a"],
+      environmentAllowlist: ["staging"],
+      grants: [{
+        tenantId: "tenant-a",
+        environment: "staging",
+        boundaries: ["worker_action", "delivery"],
+        acceptanceEvidenceRefs: ["acceptance:pilot-a:v1"],
+        productionDeliveryApprovalRefs: ["approval:run-a", "approval:run-b"],
+      }],
+    });
+    const firstDraftAuthorization = {
+      ...mutation(3, "draft-run-a"),
+      gateConfig: protectedGate,
+      productionDeliveryApprovalRefs: ["approval:run-a"],
+    };
+    expect(store.authorizeCurrentWaveDrafts(firstDraftAuthorization)).toEqual([
       expect.objectContaining({ type: "open_draft", unitId: "unit-a", draft: true, autoMerge: false, autoDeploy: false }),
     ]);
+    const authorizationEvents = store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "delivery.drafts_authorized");
+    const freshRunAuthorization = {
+      ...mutation(4, "draft-run-b"),
+      gateConfig: protectedGate,
+      productionDeliveryApprovalRefs: ["approval:run-b"],
+    };
+    expect(store.authorizeCurrentWaveDrafts(freshRunAuthorization)).toEqual([
+      expect.objectContaining({ type: "open_draft", unitId: "unit-a", draft: true, autoMerge: false, autoDeploy: false }),
+    ]);
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "delivery.drafts_authorized")).toEqual(authorizationEvents);
     store.reconcileWave({ ...mutation(4, "merge-a"), wave: 1, observations: [observation("unit-a", "merged", "a", "c")], gateConfig: gateConfig() });
     expect(store.claimNextAttempt({ ...mutation(5, "claim-b"), leaseToken: "lease-token-unit-b-00000001", gateConfig: gateConfig() })?.unitId).toBe("unit-b");
     store.close();

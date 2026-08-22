@@ -309,6 +309,7 @@ import { createLearningConsentRoutes } from "./learning-consent-routes.js";
 import { createOrganizationMemoryRoutes } from "./organization-memory-routes.js";
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
+import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
 import { observeDedicatedRegaugeCompletionInShadow } from "./regauge-verifier-shadow.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
 import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
@@ -825,10 +826,30 @@ registerTransformerPilotExecutionRoutes(app, transformerExecutions, requestAudit
 // at the same route instance, so external/legacy callers keep working forever.
 app.route("/regauge/missions", transformerMissionRoutes);
 app.route("/transformer/missions", transformerMissionRoutes);
+const transformerAttemptCoordinatorEnabled =
+  resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED") === "1";
+const transformerDraftAuthorization = transformerAttemptCoordinatorEnabled
+  ? (() => {
+      const bootstrap = regaugeProductionBootstrapInputFromEnvironment(process.env);
+      const activationExpiresAt = process.env.MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT?.trim();
+      if (!activationExpiresAt) throw new Error("regauge_production_activation_expiry_required");
+      return Object.freeze({
+        tenantId: bootstrap.tenantId,
+        campaignId: bootstrap.campaignId,
+        environment: bootstrap.environment,
+        remoteRepositoryId: Number(bootstrap.repository.remoteRepositoryId),
+        sourceRevision: bootstrap.repository.expectedRevision,
+        productionApprovalRef: bootstrap.productionApprovalRef,
+        activationExpiresAt,
+        maximumDrafts: 1 as const,
+      });
+    })()
+  : undefined;
 const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorRoutes({
-  enabled: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED") === "1",
+  enabled: transformerAttemptCoordinatorEnabled,
   store: transformerExecutions.store,
   gateConfig: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
+  ...(transformerDraftAuthorization ? { draftAuthorization: transformerDraftAuthorization } : {}),
   observeCompletedAttempt: (completion) => observeDedicatedRegaugeCompletionInShadow({
     db,
     env: process.env,

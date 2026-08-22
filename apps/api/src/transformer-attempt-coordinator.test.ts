@@ -22,9 +22,154 @@ const roots: string[] = [];
 const services: TransformerPilotExecutionService[] = [];
 afterEach(() => { while (services.length) services.pop()?.close(); while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
 const revision = (character: string) => character.repeat(40);
-const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["test"], grants: [{ tenantId: "tenant-a", environment: "test", boundaries: ["api_control_plane", "worker_action", "delivery", "ui"], acceptanceEvidenceRefs: ["acceptance:transformer-pilot:v1"], productionDeliveryApprovalRefs: [] }] });
+const draftApproval = "approval:regauge:exact";
+const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["test"], grants: [{ tenantId: "tenant-a", environment: "test", boundaries: ["api_control_plane", "worker_action", "delivery", "ui"], acceptanceEvidenceRefs: ["acceptance:transformer-pilot:v1"], productionDeliveryApprovalRefs: [draftApproval] }] });
 
 describe("real Transformer multi-node coordinator", () => {
+  it("binds draft authorization to server owned campaign, repository, revision, approval, and expiry authority", async () => {
+    const service = new TransformerPilotExecutionService(":memory:", {
+      rawGateConfig: gate,
+      environment: "test",
+    });
+    services.push(service);
+    const authorize = vi.spyOn(service.store, "authorizeCurrentWaveDrafts").mockReturnValue([]);
+    const campaign = {
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      environment: "test",
+      units: [{
+        id: "unit-a",
+        state: "executed",
+        snapshot: {
+          repositoryId: "repository-a",
+          snapshotId: "snapshot-a",
+          revision: revision("a"),
+        },
+      }],
+    };
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true,
+      store: service.store,
+      now: () => "2026-08-22T05:00:00.000Z",
+      gateConfig: gate,
+      draftAuthorization: {
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        remoteRepositoryId: 84,
+        sourceRevision: revision("a"),
+        environment: "test",
+        productionApprovalRef: draftApproval,
+        activationExpiresAt: "2026-08-22T05:10:00.000Z",
+        maximumDrafts: 1,
+      },
+      loadExactSource: () => { throw new Error("must_not_load"); },
+      resolveDraftRepository: () => ({
+        owner: "acme",
+        repo: "repo-a",
+        baseBranch: "main",
+        installationId: 42,
+        remoteRepositoryId: 84,
+      }),
+    }));
+    vi.spyOn(service.store, "getCampaign").mockReturnValue(campaign as never);
+    const request = (campaignId: string, extra: Record<string, unknown> = {}) => app.request(
+      `/v1/regauge/attempt-coordinator/operations/authorizeCurrentWaveDrafts`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tenantId: "tenant-a",
+          campaignId,
+          evidenceRefs: ["evidence:runner"],
+          idempotencyKey: "regauge-draft-authorize-exact",
+          ...extra,
+        }),
+      },
+    );
+
+    expect((await request("campaign-b")).status).toBe(403);
+    expect((await request("campaign-a", {
+      productionDeliveryApprovalRefs: ["approval:regauge:caller-authored"],
+    })).status).toBe(400);
+    const accepted = await request("campaign-a");
+    expect(accepted.status).toBe(200);
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      productionDeliveryApprovalRefs: [draftApproval],
+    }));
+  });
+
+  it("rejects durable draft authorization after the server owned activation expiry", async () => {
+    const service = new TransformerPilotExecutionService(":memory:", {
+      rawGateConfig: gate,
+      environment: "test",
+    });
+    services.push(service);
+    const authorize = vi.spyOn(service.store, "authorizeCurrentWaveDrafts").mockReturnValue([]);
+    vi.spyOn(service.store, "getCampaign").mockReturnValue({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      units: [{ state: "executed", snapshot: {
+        repositoryId: "repository-a",
+        snapshotId: "snapshot-a",
+        revision: revision("a"),
+      } }],
+    } as never);
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true,
+      store: service.store,
+      now: () => "2026-08-22T05:10:00.000Z",
+      gateConfig: gate,
+      draftAuthorization: {
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        remoteRepositoryId: 84,
+        sourceRevision: revision("a"),
+        environment: "test",
+        productionApprovalRef: draftApproval,
+        activationExpiresAt: "2026-08-22T05:10:00.000Z",
+        maximumDrafts: 1,
+      },
+      loadExactSource: () => { throw new Error("must_not_load"); },
+      resolveDraftRepository: () => ({
+        owner: "acme",
+        repo: "repo-a",
+        baseBranch: "main",
+        installationId: 42,
+        remoteRepositoryId: 84,
+      }),
+    }));
+    const response = await app.request(
+      "/v1/regauge/attempt-coordinator/operations/authorizeCurrentWaveDrafts",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tenantId: "tenant-a",
+          campaignId: "campaign-a",
+          evidenceRefs: ["evidence:runner"],
+          idempotencyKey: "regauge-draft-authorize-expired",
+        }),
+      },
+    );
+    expect(response.status).toBe(403);
+    expect(authorize).not.toHaveBeenCalled();
+  });
+
   it("refuses enabled startup without server-owned gate authority", () => {
     const service = new TransformerPilotExecutionService(":memory:", { rawGateConfig: gate, environment: "test" });
     services.push(service);
@@ -88,6 +233,16 @@ describe("real Transformer multi-node coordinator", () => {
       store: service.store,
       now: () => coordinatorNow,
       gateConfig: gate,
+      draftAuthorization: {
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        environment: "test",
+        remoteRepositoryId: 84,
+        sourceRevision: revision("a"),
+        productionApprovalRef: draftApproval,
+        activationExpiresAt: new Date(Date.parse(coordinatorNow) + 4 * 60 * 60_000).toISOString(),
+        maximumDrafts: 1,
+      },
       observeCompletedAttempt: completedObserver,
       loadExactSource: () => ({ repositoryId: "repo-a", revision: revision("a"), digest: snapshotDigest, files, fileModes: { "package.json": "100644" } }),
       resolveDraftRepository: () => ({ owner: "acme", repo: "repo-a", baseBranch: "main", installationId: 42, remoteRepositoryId: 84 }),
@@ -100,7 +255,9 @@ describe("real Transformer multi-node coordinator", () => {
     expect(readyResponse.status).toBe(200);
     let loseCompletionResponse = true;
     let loseDraftCompletionResponse = true;
+    const draftAuthorizationRequests: unknown[] = [];
     const transport: TransformerMultinodeTransport = { request: async ({ path, body }) => {
+      if (path.endsWith("authorizeCurrentWaveDrafts")) draftAuthorizationRequests.push(body);
       const response = await app.request(path, { method: "POST", headers: { "content-type": "application/json", "x-test-tenant": "tenant-a" }, body: JSON.stringify(body) });
       const parsed = await response.json() as Record<string, unknown>;
       if (!response.ok) throw new Error(String(parsed.error));
@@ -148,9 +305,16 @@ describe("real Transformer multi-node coordinator", () => {
     expect(loseCompletionResponse).toBe(false);
     expect(service.store.getCampaign("tenant-a", "campaign-a")?.units[0]).toMatchObject({ candidateDigest: applied.outputDigest });
     await expect(runner.runOnce()).resolves.toMatchObject({ status: "idle" });
-    service.store.authorizeCurrentWaveDrafts({ tenantId: "tenant-a", campaignId: "campaign-a", observedAt: coordinatorNow, evidenceRefs: ["evidence:human-review"], idempotencyKey: "authorize-draft-a", gateConfig: gate });
     rmSync(join(root, "candidates"), { recursive: true, force: true });
     await expect(runner.runDeliveryOnce()).rejects.toThrow("simulated_scm_response_loss");
+    expect(draftAuthorizationRequests).toEqual([
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        evidenceRefs: ["evidence:runner"],
+        idempotencyKey: expect.stringMatching(/^regauge-draft-authorize-/),
+      }),
+    ]);
     await expect(runner.runDeliveryOnce()).resolves.toEqual({ status: "idle" });
     coordinatorNow = new Date(Date.parse(coordinatorNow) + 2 * 60 * 60 * 1_000).toISOString();
     const replacement = createTransformerMultinodeService({ ...runnerConfig, workerId: "worker-b" }, transport, artifactBackend);

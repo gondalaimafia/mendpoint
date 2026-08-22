@@ -181,6 +181,18 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
           tenantId: config.tenantId,
           campaignId: config.campaignId,
         });
+        await remote(
+          "/v1/regauge/attempt-coordinator/operations/authorizeCurrentWaveDrafts",
+          {
+            tenantId: config.tenantId,
+            campaignId: config.campaignId,
+            observedAt: observedAt("complete"),
+            evidenceRefs: config.evidenceRefs,
+            idempotencyKey: `regauge-draft-authorize-${campaignStable(
+              "draft-authorize",
+            ).slice(0, 32)}`,
+          },
+        );
         const deliveryLeaseToken = stable("draft-delivery-token");
         const claimIdempotencyKey = `${config.workerId}-draft-claim-${stable(
           `draft-claim:${serviceInstanceId}:${deliveryClaimOrdinal}`,

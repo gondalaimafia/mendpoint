@@ -2825,3 +2825,23 @@ secret-safe presentation layer over validateApiEnv (reusing RENAMED_ENV),
 covering only the self-serve capabilities validateApiEnv does not, and excluding
 billing and model tier. That is new work, scoped and titled as such, not a
 restoration.
+## 2026-08-21 ReGauge production draft handoff and activation
+
+- [x] Confirm the protected activation reached an exact durable `executed` unit on current production authority.
+- [x] Identify the first missing transition between verified execution and exact draft delivery.
+- [x] Add red tests proving the production worker presents the canary-scoped one-draft approval and authorizes the completed wave before claiming delivery.
+- [x] Make draft authorization replay-safe across worker restarts without widening merge or deploy authority.
+- [x] Add the coordinator operation and production profile wiring with exact approval validation.
+- [x] Run focused Transformer, worker, API, workflow, typecheck, build, GA, and dependency gates.
+- [ ] Strictly review the diff, commit, push, open and merge the PR only after checks pass.
+- [ ] Rerun the protected ReGauge activation, prove one real draft, readiness soak, containment, exact deployed revision, and evidence artifact.
+- [ ] Resume the preserved broader inventory after ReGauge activation: DeepSeek governed activation, learning, Graphify, and delegated proof finalization.
+
+### Review
+
+- RED: the existing store rejected exact draft-authorization replay, and the real multi-node worker returned idle because it never requested the transition.
+- GREEN: 68 focused tests pass across ReGauge state, worker service/CLI, and the authenticated coordinator integration.
+- Full ReGauge core package: 36 files, 442 tests pass. API and worker package timing failures reproduced only under concurrent full-suite load; every changed focused suite and the previously timed coordinator/preflight tests pass alone.
+- Full monorepo test command passes every workspace and the 73 script tests. The three affected package typechecks, full production build, GA gate, and production dependency audit also pass.
+- Strict review: no P0/P1. Server-owned authority binds the exact campaign, environment, one-unit limit, source revision, remote repository, protected approval, and expiry. Cross-workflow recovery reuses the exact pending draft read-only without rewriting its historical authorization; pause and lease races remain fenced.
+- Live binding: installation 151614362 now has account ID 273115720, selected repository access, and no suspension/deletion. No App settings mutation was needed.
