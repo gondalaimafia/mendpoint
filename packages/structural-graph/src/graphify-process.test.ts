@@ -132,6 +132,16 @@ describe("Graphify process supervisor", () => {
     await expect(operation.result).rejects.toThrow("GRAPHIFY_EXTRACTION_FAILURE");
   });
 
+  it("retains only bounded printable child diagnostics on failure", async () => {
+    const bridge = fixture("process.stderr.write('namespace denied\\n' + 'x'.repeat(1000)); process.exit(2);\n");
+    const operation = createGraphifyProcessPort({
+      executablePath: process.execPath,
+      bridgePath: bridge.path,
+      bridgeDigest: bridge.digest,
+    }).start(request());
+    await expect(operation.result).rejects.toThrow(/namespace denied x{1,500}$/u);
+  });
+
   it("stops reading when the child exceeds the output byte ceiling", async () => {
     const bridge = fixture("process.stdin.resume(); process.stdin.on('end', () => process.stdout.write('x'.repeat(100000)));\n");
     const operation = createGraphifyProcessPort({
