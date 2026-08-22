@@ -385,8 +385,13 @@ export function extractGovernedLesson(input: GovernedLearningEvent): GovernedLea
 // schema to admit failure — it types ok/exitCode as literals today — and producers
 // to admit non-merged outcomes). High precision, fail closed: an undetermined case
 // yields `none`, never a fabricated `model_behavior`. Of the eleven destinations
-// this map CAN emit, only `model_weight` has a downstream sink, and nothing routes
-// there in production. These facts are made observable and countable in
+// this map CAN emit, two now have a downstream sink — `model_weight` (governed
+// training corpus) and `retrieval` (the retrieval context-gap sink) — and nothing
+// routes to either in production today, for the same latency reason above: every
+// lesson is attributed `none`. The retrieval sink is live code with a real consumer
+// that reads its store; it simply receives nothing until a seam feeds
+// `deriveOutcomeAttribution` a genuine `failed` verification. The other nine
+// destinations have no sink. These facts are made observable and countable in
 // `lesson-routing.ts` (`summarizeLessonRouting`,
 // `assessProductionAttributionDiscrimination`); see
 // `docs/learning/LESSON_DESTINATION_ROUTING.md`.

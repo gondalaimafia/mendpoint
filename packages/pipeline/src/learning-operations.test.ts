@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   admitLearningRecord,
+  computeRetrievalContextGaps,
   createDb,
   deleteLearningRecord,
   grantLearningConsent,
@@ -278,7 +279,9 @@ describe("governed learning operations", () => {
     // always emit `none`), so it exercises the `model_weight` sink: it reached a sink
     // and none went nowhere. The attribution half reports its narrow measure —
     // `effectivelyConstant: false` because no producer hardcodes a same literal —
-    // which does NOT imply the producers discriminate; only one destination has a sink.
+    // which does NOT imply the producers discriminate. Two destinations now have a
+    // sink (`model_weight` and `retrieval`); nothing routes to either in production
+    // today because every producer-emitted lesson is attributed `none`.
     const status = getGovernedLearningStatus(db, "tenant-a", CREATED_AT);
     expect(status.lessonRouting.lessons).toEqual({
       classified: 1,
@@ -293,7 +296,7 @@ describe("governed learning operations", () => {
       effectivelyConstant: false,
       constant: null,
     });
-    expect(status.lessonRouting.destinations.sinkConsumes).toBe(1);
+    expect(status.lessonRouting.destinations.sinkConsumes).toBe(2);
     expect(status.lessonRouting.destinations.terminalNoAction).toBe(1);
     expect(status.lessonRouting.destinations.unrouted).toBe(status.lessonRouting.destinations.unroutedDestinations.length);
     expect(status.lessonRouting.destinations.unroutedDestinations).toContain("organization_memory");
@@ -302,6 +305,111 @@ describe("governed learning operations", () => {
         + status.lessonRouting.destinations.terminalNoAction
         + status.lessonRouting.destinations.unrouted,
     );
+  });
+
+  it("admits a retrieval-attributed lesson into the retrieval context-gap sink", () => {
+    const db = fixture();
+    grantLearningConsent(db, {
+      id: "consent-retrieval", tenantId: "tenant-a", consentVersion: 1, purpose: PURPOSE,
+      residencyRegion: "us-central", authorizedByPrincipalId: "human-a",
+      effectiveAt: "2026-08-14T18:00:00.000Z", reason: "Govern verified outcomes.",
+      idempotencyKey: "consent-retrieval", createdAt: CREATED_AT,
+    });
+    const ids = governedLearningAdmissionIds("tenant-a", "event-retrieval");
+    // A retrieval lesson, admitted DIRECTLY with attribution `retrieval` to exercise
+    // the sink. No production producer emits `retrieval` today (both pass
+    // `not_verified`, so the deriver returns `none` — see Count 2); this test drives
+    // the admission path with the attribution the deriver WILL emit once a `failed`
+    // verification with context `recorded_absent` (spec 17.4.2) becomes observable,
+    // proving the sink consumes it rather than dropping it. The governed event's
+    // verification.verdict is `passed` — that field carries whether the learning
+    // SIGNAL is authoritative (a hard authority), which is what lets `classify` emit
+    // the `retrieval` destination; the failed migration is the observedOutcome.status.
+    const event = {
+      schemaVersion: 1, eventId: "event-retrieval", product: "fettler", missionId: "run-retrieval",
+      repositoryId: "repository-a", taskType: "api_remediation", capability: "remediation_generation",
+      specialization: { provider: "stripe", framework: "hono", language: "typescript", runtime: "node-20", migrationFamily: "response-field-replacement", riskClass: "medium", splitGroupId: "repository-a:response-field-replacement" },
+      execution: { modelId: "model-a", adapterId: null, routerDecisionId: "router-a", fallback: false },
+      references: { graphContextArtifactId: null, inputArtifactId: ids.sourceArtifactId, proposedActionArtifactId: ids.redactedArtifactId },
+      prediction: { summary: "Use the replacement API field.", evidenceRefs: [ids.redactionEvidenceId] },
+      observedOutcome: { status: "failed", summary: "Required context was not supplied to the model.", attribution: "retrieval", evidenceRefs: [ids.verificationEvidenceId] },
+      verification: { verdict: "passed", evidenceRefs: [ids.verificationEvidenceId], authority: { signalClass: "hard", producedBy: "test_runner", producerModelId: null } },
+      reviewerDecision: { decision: "modified", evidenceRefs: [ids.reviewDecisionId] },
+      correction: { artifactId: ids.redactedArtifactId, substantive: true }, confidence: 0.9,
+      economics: { inputTokens: 1000, outputTokens: 200, latencyMs: 1200, costUsd: 0.01 },
+      governance: { tenantId: "tenant-a", residencyRegion: "us-central", consentId: "consent-retrieval", sourceClass: "production_verified", provenanceQualifiers: ["human_corrected", "deterministically_verified"], mayLeaveTenantBoundary: false },
+      createdAt: OBSERVED_AT,
+    } as const;
+    const input = {
+      tenantId: "tenant-a", purpose: PURPOSE, sourceObjectType: "fettler_agent_run", sourceObjectId: "run-retrieval",
+      event, actorPrincipalId: "human-a", idempotencyKey: "admit-retrieval", createdAt: CREATED_AT,
+    } as const;
+    const authority = {
+      resolve: () => ({ revision: "a".repeat(40), snapshotDigest: `sha256:${sha256("snapshot-retrieval")}`, scenarioId: null, syntheticFamilyId: null, outcomeAttribution: "retrieval" as const, verificationVerdict: "passed" as const, sourceClass: "production_verified" as const, provenanceQualifiers: ["human_corrected", "deterministically_verified"] as const, correctionSubstantive: true, reviewerPrincipalId: "human-a", reviewRationale: "Context missing.", contaminationFree: true }),
+      redact: (content: string) => ({ ok: true as const, content, redactionCount: 0 }),
+    };
+    const admitted = admitGovernedLearningEvent(db, input, authority);
+    // The retrieval lesson does not train weights (only model_weight does), but it
+    // now reaches a real sink instead of being dropped.
+    expect(admitted.lesson.destinations).toEqual([
+      { destination: "retrieval", rationale: "required_context_not_retrieved" },
+    ]);
+    expect(admitted.lesson.eligibleForModelTraining).toBe(false);
+
+    // DELETE-THE-CHECK TARGET. This is the single assertion that proves the sink
+    // genuinely consumes: the admitted retrieval lesson is projected into the store
+    // and read back by computeRetrievalContextGaps. Remove the recordRetrievalContextGap
+    // call in admitGovernedLearningEvent, or gut computeRetrievalContextGaps, and
+    // this line fails — the disposition flip to `sink_consumes` would be a lie.
+    const gaps = computeRetrievalContextGaps(db, { tenantId: "tenant-a" });
+    expect(gaps.totalGaps).toBe(1);
+    expect(gaps.byCapability).toEqual([{ key: "remediation_generation", gaps: 1 }]);
+    expect(gaps.byMigrationFamily).toEqual([{ key: "response-field-replacement", gaps: 1 }]);
+    expect(gaps.recent[0]).toMatchObject({
+      learningRecordId: admitted.learningRecordId,
+      eventId: "event-retrieval",
+      product: "fettler",
+    });
+
+    // Idempotent re-admission does not double count the gap.
+    expect(admitGovernedLearningEvent(db, input, authority)).toEqual(admitted);
+    expect(computeRetrievalContextGaps(db, { tenantId: "tenant-a" }).totalGaps).toBe(1);
+  });
+
+  it("does not record a retrieval gap for a model_behavior lesson", () => {
+    const db = fixture();
+    grantLearningConsent(db, {
+      id: "consent-model", tenantId: "tenant-a", consentVersion: 1, purpose: PURPOSE,
+      residencyRegion: "us-central", authorizedByPrincipalId: "human-a",
+      effectiveAt: "2026-08-14T18:00:00.000Z", reason: "Govern verified outcomes.",
+      idempotencyKey: "consent-model", createdAt: CREATED_AT,
+    });
+    const ids = governedLearningAdmissionIds("tenant-a", "event-model");
+    const event = {
+      schemaVersion: 1, eventId: "event-model", product: "fettler", missionId: "run-model",
+      repositoryId: "repository-a", taskType: "api_remediation", capability: "remediation_generation",
+      specialization: { provider: "stripe", framework: "hono", language: "typescript", runtime: "node-20", migrationFamily: "response-field-replacement", riskClass: "medium", splitGroupId: "repository-a:response-field-replacement" },
+      execution: { modelId: "model-a", adapterId: null, routerDecisionId: "router-a", fallback: false },
+      references: { graphContextArtifactId: null, inputArtifactId: ids.sourceArtifactId, proposedActionArtifactId: ids.redactedArtifactId },
+      prediction: { summary: "Use the replacement API field.", evidenceRefs: [ids.redactionEvidenceId] },
+      observedOutcome: { status: "corrected", summary: "The reviewer corrected the field and tests passed.", attribution: "model_behavior", evidenceRefs: [ids.verificationEvidenceId] },
+      verification: { verdict: "passed", evidenceRefs: [ids.verificationEvidenceId], authority: { signalClass: "hard", producedBy: "test_runner", producerModelId: null } },
+      reviewerDecision: { decision: "modified", evidenceRefs: [ids.reviewDecisionId] },
+      correction: { artifactId: ids.redactedArtifactId, substantive: true }, confidence: 0.91,
+      economics: { inputTokens: 1000, outputTokens: 200, latencyMs: 1200, costUsd: 0.01 },
+      governance: { tenantId: "tenant-a", residencyRegion: "us-central", consentId: "consent-model", sourceClass: "production_verified", provenanceQualifiers: ["human_corrected", "deterministically_verified"], mayLeaveTenantBoundary: false },
+      createdAt: OBSERVED_AT,
+    } as const;
+    const authority = {
+      resolve: () => ({ revision: "a".repeat(40), snapshotDigest: `sha256:${sha256("snapshot-model")}`, scenarioId: null, syntheticFamilyId: null, outcomeAttribution: "model_behavior" as const, verificationVerdict: "passed" as const, sourceClass: "production_verified" as const, provenanceQualifiers: ["human_corrected", "deterministically_verified"] as const, correctionSubstantive: true, reviewerPrincipalId: "human-a", reviewRationale: "Verified correction.", contaminationFree: true }),
+      redact: (content: string) => ({ ok: true as const, content, redactionCount: 0 }),
+    };
+    admitGovernedLearningEvent(db, {
+      tenantId: "tenant-a", purpose: PURPOSE, sourceObjectType: "fettler_agent_run", sourceObjectId: "run-model",
+      event, actorPrincipalId: "human-a", idempotencyKey: "admit-model", createdAt: CREATED_AT,
+    }, authority);
+    // A model_behavior lesson reaches the model_weight sink, not the retrieval sink.
+    expect(computeRetrievalContextGaps(db, { tenantId: "tenant-a" }).totalGaps).toBe(0);
   });
 
   it("rejects forged attribution before writing any learning authority", () => {

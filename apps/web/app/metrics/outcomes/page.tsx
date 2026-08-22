@@ -1,5 +1,6 @@
 import { apiGet } from "../../../lib/api";
 import { OutcomeMetricsView, type OutcomeMetrics } from "./outcome-metrics-view";
+import { RetrievalContextGapsView, type RetrievalContextGaps } from "./retrieval-gaps-view";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,14 @@ export default async function OutcomeMetricsPage() {
     m = await apiGet<OutcomeMetrics>("/metrics/outcomes");
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
+  }
+
+  let gaps: RetrievalContextGaps | null = null;
+  try {
+    gaps = await apiGet<RetrievalContextGaps>("/metrics/outcomes/retrieval-gaps");
+  } catch {
+    // The retrieval-gap surface is additive; if it is unavailable the rest of the
+    // page still renders. The primary error above already reports API health.
   }
 
   return (
@@ -26,6 +35,7 @@ export default async function OutcomeMetricsPage() {
         </div>
       )}
       {m && <OutcomeMetricsView m={m} />}
+      {gaps && <RetrievalContextGapsView g={gaps} />}
     </div>
   );
 }

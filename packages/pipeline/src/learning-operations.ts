@@ -13,6 +13,7 @@ import {
   insertReviewDecision,
   listAdmittableLearningRecords,
   listEligibleLearningDatasetMembers,
+  recordRetrievalContextGap,
   revokeLearningConsent,
   sealLearningDatasetVersion,
   type AppDb,
@@ -457,6 +458,28 @@ export function admitGovernedLearningEvent(
     });
     if (record.id !== ids.learningRecordId || record.content_sha256 !== sha256(document)) {
       throw new Error("learning_admission_record_mismatch");
+    }
+    // Retrieval sink: a lesson attributed to `retrieval` (verification failed AND
+    // the run confirmed the required context was absent — spec 17.4.2) is the one
+    // reachable destination that was formerly computed and dropped. Project it into
+    // the tenant-scoped `retrieval_context_gaps` store inside this same transaction
+    // so the gap is captured atomically with the learning record and read back by
+    // the outcome-metrics surface (`computeRetrievalContextGaps`). Mirrors the
+    // `model_weight` eligibility check: a pure destination test, no new evidence.
+    if (lesson.destinations.some(({ destination }) => destination === "retrieval")) {
+      recordRetrievalContextGap(db, {
+        learningRecordId: record.id,
+        tenantId: input.tenantId,
+        eventId: governed.event.eventId,
+        eventDigest: governed.digest,
+        product: governed.event.product,
+        capability: governed.event.capability,
+        taskType: governed.event.taskType,
+        migrationFamily: governed.event.specialization.migrationFamily,
+        repositoryId: governed.event.repositoryId,
+        observedAt: governed.event.createdAt,
+        createdAt: input.createdAt,
+      });
     }
     const result = deepFreeze({
       eventId: governed.event.eventId,

@@ -36,6 +36,7 @@ export * from "./warden-model-accounting.js";
 export * from "./external-baseline.js";
 export * from "./graphql-schema-version.js";
 export * from "./outcome-metrics.js";
+export * from "./retrieval-context-gap.js";
 export * from "./agent-run-meter.js";
 export * from "./fettler-delegation-evidence.js";
 export * from "./organization-memory.js";
@@ -1856,6 +1857,35 @@ CREATE TABLE IF NOT EXISTS fettler_ci_updates (
 );
 CREATE INDEX IF NOT EXISTS fettler_ci_updates_tenant_status_idx
   ON fettler_ci_updates(tenant_id, status, updated_at);
+
+-- Retrieval context-gap sink. One row per admitted governed-learning lesson whose
+-- attribution derived to retrieval (spec 17.4.2): objective verification failed AND
+-- the run's captured trajectory confirmed the context the model needed was
+-- recorded_absent. Every row therefore means required context was confirmed missing,
+-- never that the model was wrong; the salient fact is the retrieval gap. Written
+-- inside the admission transaction (packages/pipeline admitGovernedLearningEvent)
+-- and read by the outcome-metrics surface (computeRetrievalContextGaps), the
+-- downstream consumer that turns this destination from unrouted into a real sink.
+-- Keyed 1:1 by the learning_record_id so idempotent re-admission never double counts
+-- (INSERT OR IGNORE). A brand-new table: CREATE TABLE IF NOT EXISTS converges on both
+-- a fresh database and an upgrade, so no additive-column migration is needed.
+CREATE TABLE IF NOT EXISTS retrieval_context_gaps (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  learning_record_id TEXT NOT NULL REFERENCES learning_records(id),
+  event_id TEXT NOT NULL,
+  event_digest TEXT NOT NULL,
+  product TEXT NOT NULL CHECK (product IN ('fettler', 'regauge')),
+  capability TEXT NOT NULL,
+  task_type TEXT NOT NULL,
+  migration_family TEXT NOT NULL,
+  repository_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, learning_record_id)
+);
+CREATE INDEX IF NOT EXISTS retrieval_context_gaps_tenant_time_idx
+  ON retrieval_context_gaps(tenant_id, observed_at);
 `;
 
 

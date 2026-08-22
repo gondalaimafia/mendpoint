@@ -18,9 +18,13 @@ function lesson(destinations: readonly LearningDestination[]): Pick<GovernedLear
 const ALL_DESTINATIONS = Object.keys(LESSON_DESTINATION_DISPOSITIONS) as LearningDestination[];
 
 describe("lesson destination dispositions", () => {
-  it("marks model_weight as the only destination a sink consumes", () => {
+  it("marks model_weight and retrieval as the destinations a sink consumes", () => {
     const consuming = ALL_DESTINATIONS.filter((d) => dispositionForDestination(d) === "sink_consumes");
-    expect(consuming).toEqual(["model_weight"]);
+    // `model_weight` (governed training corpus) and `retrieval` (retrieval
+    // context-gap sink). `retrieval` was flipped from `unrouted` in the same change
+    // that added `computeRetrievalContextGaps`; if that consumer is removed, the
+    // flip is a lie and the sink test in retrieval-context-gap.test.ts fails.
+    expect(consuming.sort()).toEqual(["model_weight", "retrieval"]);
   });
 
   it("classifies no_action as the intentional terminal, never as a drop", () => {
@@ -29,12 +33,12 @@ describe("lesson destination dispositions", () => {
 
   it("classifies every other destination as unrouted so the drop is not silent", () => {
     const unrouted = ALL_DESTINATIONS.filter((d) => dispositionForDestination(d) === "unrouted");
-    // Ten sinkless destinations: the twelve minus model_weight (a sink) and
-    // no_action (intentional terminal). `organization_memory` is among them — it is
-    // named vocabulary with no sink. If a real sink is added without updating the
-    // disposition map, this count changes and the test fails loudly.
+    // Nine sinkless destinations: the twelve minus model_weight and retrieval (both
+    // sinks) and no_action (intentional terminal). `organization_memory` is among
+    // them — it is named vocabulary with no sink. If a real sink is added without
+    // updating the disposition map, this count changes and the test fails loudly.
     expect(unrouted.sort()).toEqual(
-      ["calibration", "deterministic_recipe", "graph", "organization_memory", "parser", "product_logic", "prompt", "retrieval", "router_policy", "tooling"],
+      ["calibration", "deterministic_recipe", "graph", "organization_memory", "parser", "product_logic", "prompt", "router_policy", "tooling"],
     );
   });
 
@@ -55,12 +59,23 @@ describe("lesson destination dispositions", () => {
     expect(summary.wentNowhere).toBe(false);
   });
 
+  it("counts a retrieval lesson as reaching a sink now that the sink exists", () => {
+    // Retrieval flipped from unrouted to sink_consumes when the retrieval
+    // context-gap sink was added. A retrieval lesson now reaches a sink and is no
+    // longer counted as gone nowhere.
+    const summary = summarizeLessonRouting(lesson(["retrieval"]));
+    expect(summary.sinkConsumes).toEqual(["retrieval"]);
+    expect(summary.reachedSink).toBe(true);
+    expect(summary.unroutedCount).toBe(0);
+    expect(summary.wentNowhere).toBe(false);
+  });
+
   it("counts a lesson routed to a sinkless destination as unrouted and gone nowhere", () => {
-    // This is the control: a `retrieval` lesson today reaches no sink. If the
+    // This is the control: a `graph` lesson still reaches no sink. If the
     // disposition map were weakened to hide that (marking it sink_consumes), this
     // assertion fails.
-    const summary = summarizeLessonRouting(lesson(["retrieval"]));
-    expect(summary.unrouted).toEqual(["retrieval"]);
+    const summary = summarizeLessonRouting(lesson(["graph"]));
+    expect(summary.unrouted).toEqual(["graph"]);
     expect(summary.unroutedCount).toBe(1);
     expect(summary.reachedSink).toBe(false);
     expect(summary.wentNowhere).toBe(true);
