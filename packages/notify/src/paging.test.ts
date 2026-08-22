@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearPagingDedupe,
   notifyPaging,
+  pageEgressReceiptFreshness,
+  pageEgressReceiptRenewalFailed,
   pageReadiness,
   pageWorkerHeartbeat,
+  pagingEventForEgressReceipt,
   pagingEventForReadiness,
   pagingEventForWorkerHeartbeat,
 } from "./index.js";
@@ -307,5 +310,98 @@ describe("paging best-effort wiring", () => {
     });
     if (!readiness || readiness.skipped) throw new Error("expected a delivery attempt");
     expect(readiness.ok).toBe(false);
+  });
+});
+
+describe("pagingEventForEgressReceipt", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  it("surfaces a critical page BEFORE expiry once inside the lead window", () => {
+    // now is strictly before expiry, but within the lead window: this is the
+    // "surfaced before expiry rather than after" control. Delete the lead-window
+    // comparison (return null unconditionally, or only page once expired) and
+    // this assertion dies.
+    const event = pagingEventForEgressReceipt({
+      expiresAt: "2026-08-21T12:00:00.000Z",
+      now: "2026-08-21T11:30:00.000Z", // 30 min before expiry
+      leadMs: HOUR, // 60 min lead
+    });
+    expect(event).not.toBeNull();
+    expect(event?.type).toBe("egress_receipt_expiring");
+    expect(event?.severity).toBe("critical");
+    expect(event?.details).toMatchObject({ lapsed: false });
+    expect(event?.summary).toContain("expires in");
+  });
+
+  it("stays silent while the receipt still has healthy margin", () => {
+    const event = pagingEventForEgressReceipt({
+      expiresAt: "2026-08-21T12:00:00.000Z",
+      now: "2026-08-21T08:00:00.000Z", // 4h before expiry
+      leadMs: HOUR,
+    });
+    expect(event).toBeNull();
+  });
+
+  it("still fires (fails closed) once the receipt has already lapsed", () => {
+    const event = pagingEventForEgressReceipt({
+      expiresAt: "2026-08-21T12:00:00.000Z",
+      now: "2026-08-21T13:00:00.000Z", // 1h after expiry
+      leadMs: HOUR,
+    });
+    expect(event).not.toBeNull();
+    expect(event?.details).toMatchObject({ lapsed: true });
+    expect(event?.summary).toContain("lapsed");
+  });
+
+  it("treats an unreadable expiry as a critical alarm, never as fresh", () => {
+    const event = pagingEventForEgressReceipt({
+      expiresAt: "not-a-timestamp",
+      now: "2026-08-21T13:00:00.000Z",
+      leadMs: HOUR,
+    });
+    expect(event).not.toBeNull();
+    expect(event?.severity).toBe("critical");
+    expect(event?.summary).toContain("unreadable");
+  });
+
+  it("pageEgressReceiptFreshness pages before expiry and no-ops when healthy", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const healthy = await pageEgressReceiptFreshness({
+      expiresAt: "2026-08-21T12:00:00.000Z",
+      now: "2026-08-21T08:00:00.000Z",
+      leadMs: HOUR,
+    });
+    expect(healthy).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const approaching = await pageEgressReceiptFreshness({
+      expiresAt: "2026-08-21T12:00:00.000Z",
+      now: "2026-08-21T11:30:00.000Z",
+      leadMs: HOUR,
+    });
+    if (!approaching || approaching.skipped) throw new Error("expected a delivery attempt");
+    expect(approaching.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("pageEgressReceiptRenewalFailed", () => {
+  it("pages critical on a failed renewal run", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await pageEgressReceiptRenewalFailed({
+      runUrl: "https://github.test/run/1",
+      detail: "mint step failed",
+    });
+    if (result.skipped) throw new Error("expected a delivery attempt");
+    expect(result.ok).toBe(true);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.type).toBe("egress_receipt_renewal_failed");
+    expect(body.severity).toBe("critical");
   });
 });
