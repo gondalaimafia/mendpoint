@@ -47,6 +47,8 @@ export type Mission = Readonly<{
   snapshotId: string | null;
   fettlerCampaignId: string | null;
   regaugeCampaignId: string | null;
+  graphVersionId: string | null;
+  policyEnvelopeVersion: string | null;
   ownerPrincipalId: string;
   revision: number;
   createdAt: string;
@@ -57,6 +59,7 @@ type MissionRow = {
   id: string; tenant_id: string; product: MissionProduct; state: MissionState;
   trigger_kind: MissionTriggerKind; objective: string; repository_id: string | null;
   snapshot_id: string | null; fettler_campaign_id: string | null; regauge_campaign_id: string | null;
+  graph_version_id: string | null; policy_envelope_version: string | null;
   owner_principal_id: string; revision: number; created_at: string; updated_at: string;
 };
 
@@ -79,6 +82,7 @@ function mission(row: MissionRow): Mission {
     triggerKind: row.trigger_kind, objective: row.objective, repositoryId: row.repository_id,
     snapshotId: row.snapshot_id, fettlerCampaignId: row.fettler_campaign_id,
     regaugeCampaignId: row.regauge_campaign_id,
+    graphVersionId: row.graph_version_id, policyEnvelopeVersion: row.policy_envelope_version,
     ownerPrincipalId: row.owner_principal_id, revision: row.revision,
     createdAt: row.created_at, updatedAt: row.updated_at,
   });
@@ -251,6 +255,88 @@ export function bindMissionScope(db: AppDb, input: {
     db.raw.exec("COMMIT");
     return value;
   } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
+}
+
+// Pin an execution-context version onto the mission SET-ONCE, with the same
+// optimistic-concurrency contract as bindMissionScope: a re-bind to the SAME
+// value is idempotent; a re-bind to a different value fails closed; and the
+// first bind bumps the revision and emits a domain event so a concurrent
+// transition cannot silently race it (spec §20.7.1). This is the persistence
+// primitive behind spec §11.10 (a running mission references an explicit graph
+// version and a graph update MUST NOT silently change its semantics) and §6.7 (a
+// long-running mission retains the policy version under which a decision was
+// made).
+function bindMissionExecutionVersion(db: AppDb, input: {
+  tenantId: string; missionId: string; column: "graph_version_id" | "policy_envelope_version";
+  value: string; requiredName: string; conflictError: string; eventType: string; payloadKey: string;
+  actorPrincipalId: string; eventId: string; idempotencyKey: string; correlationId: string;
+  causationId?: string | null; createdAt: string;
+}): Mission {
+  assertPrincipal(db, input.tenantId, input.actorPrincipalId);
+  const value = required(input.requiredName, input.value);
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const current = one<MissionRow>(db, `SELECT * FROM mission WHERE id = ? AND tenant_id = ?`,
+      [input.missionId, input.tenantId]);
+    if (!current) throw new Error("mission_not_found");
+    const existingValue = current[input.column];
+    if (existingValue === value) { db.raw.exec("COMMIT"); return mission(current); }
+    if (existingValue !== null) throw new Error(input.conflictError);
+    const changed = db.raw.prepare(`UPDATE mission
+      SET ${input.column} = ?, revision = revision + 1, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND revision = ? AND ${input.column} IS NULL`).run(
+      value, input.createdAt, input.missionId, input.tenantId, current.revision);
+    if (Number(changed.changes) !== 1) throw new Error("mission_revision_conflict");
+    event(db, { tenantId: input.tenantId, missionId: input.missionId,
+      actorPrincipalId: input.actorPrincipalId, eventId: input.eventId, eventType: input.eventType,
+      idempotencyKey: input.idempotencyKey, correlationId: input.correlationId,
+      causationId: input.causationId ?? null, createdAt: input.createdAt,
+      payload: { [input.payloadKey]: value, previousRevision: current.revision, revision: current.revision + 1 } });
+    const updated = mission(one<MissionRow>(db, `SELECT * FROM mission WHERE id = ? AND tenant_id = ?`,
+      [input.missionId, input.tenantId])!);
+    db.raw.exec("COMMIT");
+    return updated;
+  } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
+}
+
+/**
+ * Pin the Change Graph version this mission reasons over (spec §11.10). Set-once:
+ * later stages that advance the graph version are out of scope for this primitive
+ * and would need an explicit, audited advancement path, not a silent overwrite.
+ */
+export function bindMissionGraphVersion(db: AppDb, input: {
+  tenantId: string; missionId: string; graphVersionId: string; actorPrincipalId: string;
+  eventId: string; idempotencyKey: string; correlationId: string;
+  causationId?: string | null; createdAt: string;
+}): Mission {
+  return bindMissionExecutionVersion(db, {
+    tenantId: input.tenantId, missionId: input.missionId, column: "graph_version_id",
+    value: input.graphVersionId, requiredName: "mission_graph_version_id",
+    conflictError: "mission_graph_version_conflict", eventType: "mission.graph_version_bound",
+    payloadKey: "graphVersionId", actorPrincipalId: input.actorPrincipalId, eventId: input.eventId,
+    idempotencyKey: input.idempotencyKey, correlationId: input.correlationId,
+    causationId: input.causationId, createdAt: input.createdAt,
+  });
+}
+
+/**
+ * Pin the Policy Envelope version under which this mission's decisions are made
+ * (spec §6.7). Set-once: a policy upgrade during an active mission MUST be
+ * explicit and auditable (spec §6.7), not a silent rebind.
+ */
+export function bindMissionPolicyEnvelopeVersion(db: AppDb, input: {
+  tenantId: string; missionId: string; policyEnvelopeVersion: string; actorPrincipalId: string;
+  eventId: string; idempotencyKey: string; correlationId: string;
+  causationId?: string | null; createdAt: string;
+}): Mission {
+  return bindMissionExecutionVersion(db, {
+    tenantId: input.tenantId, missionId: input.missionId, column: "policy_envelope_version",
+    value: input.policyEnvelopeVersion, requiredName: "mission_policy_envelope_version",
+    conflictError: "mission_policy_envelope_version_conflict", eventType: "mission.policy_envelope_bound",
+    payloadKey: "policyEnvelopeVersion", actorPrincipalId: input.actorPrincipalId, eventId: input.eventId,
+    idempotencyKey: input.idempotencyKey, correlationId: input.correlationId,
+    causationId: input.causationId, createdAt: input.createdAt,
+  });
 }
 
 // Fettler/Warden linkage: the mission projects the campaign identity through the
