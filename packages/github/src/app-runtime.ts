@@ -23,6 +23,12 @@ import {
   type ExactDraftUpdateReconciliation,
   type ExactDraftUpdateResult,
 } from "./exact-draft-update.js";
+import {
+  cleanupExactDraftWithOctokit,
+  type ExactDraftCleanupEvidence,
+  type ExactDraftCleanupInput,
+  type ExactHeadRefCompareAndDeleteAuthority,
+} from "./exact-draft-cleanup.js";
 
 const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 const GITHUB_FILE_CONCURRENCY = 8;
@@ -396,6 +402,14 @@ export class GitHubAppDelivery implements GitHubDelivery {
 
   reconcileExactDraftUpdate(input: ExactDraftUpdateInput): Promise<ExactDraftUpdateReconciliation> {
     return this.withAuthRetry((octokit) => reconcileExactDraftUpdateWithOctokit(octokit, input));
+  }
+
+  cleanupExactDraft(
+    input: ExactDraftCleanupInput,
+    compareAndDeleteAuthority?: ExactHeadRefCompareAndDeleteAuthority,
+  ): Promise<ExactDraftCleanupEvidence> {
+    return this.withAuthRetry((octokit) =>
+      cleanupExactDraftWithOctokit(octokit, input, compareAndDeleteAuthority));
   }
 
   private async branchMatchesFiles(

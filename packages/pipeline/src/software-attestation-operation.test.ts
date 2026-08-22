@@ -24,6 +24,42 @@ function fixture(tenantId = "tenant-a") {
 }
 
 describe("software attestation operation", () => {
+  it("accepts only explicit delegated acceptance and GitHub observation artifact roles", async () => {
+    const { db, add } = fixture();
+    for (const [id, kind] of [
+      ["authority", "delegated_pr_acceptance_authority"],
+      ["task", "delegated_pr_task"],
+      ["source", "delegated_pr_source_tree"],
+      ["snapshot", "delegated_pr_source_snapshot"],
+      ["candidate", "delegated_pr_candidate"],
+      ["verification", "delegated_pr_verification_execution"],
+      ["policy", "delegated_pr_verification_policy"],
+      ["delivery", "delegated_pr_github_observation"],
+    ] as const) add(id, kind);
+    add("unrelated-observation", "repository_observation");
+    const keys = generateKeyPairSync("ed25519");
+    const deps = { enabled: true as const, authorizeScope: () => true,
+      signer: { keyId: "key-1", algorithm: "ed25519" as const,
+        sign: (bytes: Uint8Array) => new Uint8Array(sign(null, bytes, keys.privateKey)) } };
+    const input = { tenantId: "tenant-a", repositoryId: "repo", runId: "run",
+      correlationId: "corr", actorPrincipalId: "actor", idempotencyKey: "delegated-exact",
+      outcome: "passed" as const, issuedAt: "2026-08-12T12:00:01.000Z",
+      artifacts: { sourceIds: ["authority", "task", "source"], snapshotId: "snapshot",
+        candidateId: "candidate", verificationIds: ["verification"], policyId: "policy",
+        deliveryId: "delivery", rollbackId: null, waiverId: null } };
+
+    await expect(issueSoftwareAttestation(db, input, deps)).resolves.toMatchObject({
+      scope: { sourceArtifacts: expect.arrayContaining([
+        expect.objectContaining({ artifactId: "authority" }),
+        expect.objectContaining({ artifactId: "task" }),
+      ]), deliveryArtifact: expect.objectContaining({ artifactId: "delivery" }) },
+    });
+    await expect(issueSoftwareAttestation(db, {
+      ...input, idempotencyKey: "delegated-unrelated",
+      artifacts: { ...input.artifacts, deliveryId: "unrelated-observation" },
+    }, deps)).rejects.toThrow("software_attestation_artifact_not_authoritative");
+  });
+
   it("resolves tenant artifacts, signs, persists evidence and event, and replays idempotently", async () => {
     const { db, add } = fixture();
     for (const [id, kind] of [["source", "source"], ["snapshot", "snapshot"], ["candidate", "candidate"], ["verification", "verification"], ["policy", "policy"], ["delivery", "delivery"]] as const) add(id, kind);
