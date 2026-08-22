@@ -280,6 +280,25 @@
       "requiredQualifier": "Private preview application details",
       "lastVerifiedAt": "2026-08-01",
       "expiresAt": null
+    },
+    {
+      "id": "CLM-015",
+      "claimKind": "capability",
+      "requirementIds": ["ME-FND-002", "ME-FND-003"],
+      "surfaces": ["production readiness status"],
+      "surfacePaths": ["docs/PRODUCTION_GA.md"],
+      "wording": "The production readiness document positions the platform as a Private Design Partner Preview for self hosted pilot control plane deployments.",
+      "owner": "product operations",
+      "evidenceOwner": "engineering",
+      "state": "preview",
+      "scope": "Approved private pilot teams",
+      "evidence": [
+        { "id": "CLM-015-EV01", "type": "document", "locator": "docs/PRODUCTION_GA.md" }
+      ],
+      "limitations": ["General availability and public signup are not offered", "Pilot access is approved manually for private design partners"],
+      "requiredQualifier": "Private Design Partner Preview",
+      "lastVerifiedAt": "2026-08-21",
+      "expiresAt": null
     }
   ],
   "destinations": [
