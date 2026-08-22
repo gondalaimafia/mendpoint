@@ -22,4 +22,10 @@ describe("workspace navigation", () => {
     expect(html).toMatch(/nav-glyph[^>]*>F<\/span><span>Fettler runs<\/span>/);
     expect(html).toMatch(/nav-glyph[^>]*>R<\/span><span>Regauge<\/span>/);
   });
+
+  it("links the customer outcome metrics dashboard", () => {
+    const html = renderToStaticMarkup(<Nav />);
+    expect(html).toContain('href="/metrics/outcomes"');
+    expect(html).toMatch(/nav-glyph[^>]*>O<\/span><span>Outcomes<\/span>/);
+  });
 });

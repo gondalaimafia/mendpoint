@@ -30,6 +30,7 @@ const GROUPS = [
       { href: "/diagnostics", label: "Diagnostics", glyph: "D" },
       { href: "/applications", label: "Applications", glyph: "A" },
       { href: "/metrics", label: "Metrics", glyph: "M" },
+      { href: "/metrics/outcomes", label: "Outcomes", glyph: "O" },
       { href: "/platform", label: "Platform", glyph: "P" },
     ],
   },
