@@ -1,6 +1,6 @@
 # Lesson destination routing: what reaches a sink, what goes nowhere
 
-Updated: 2026-08-21
+Updated: 2026-08-22
 
 The lesson classifier (`classify` in `packages/pipeline/src/learning-event.ts`)
 assigns every validated lesson to one of eleven `LearningDestination` values it can
@@ -19,20 +19,46 @@ there today.
 
 ## The gap this makes visible
 
-**Exactly one destination — `model_weight` — has a downstream sink.** The governed
-training corpus reads it at `packages/pipeline/src/learning-operations.ts:707`
+**Two destinations have a downstream sink: `model_weight` and `retrieval`, but
+nothing routes to either in production today.** The governed training corpus reads
+`model_weight` at `packages/pipeline/src/learning-operations.ts:849`
 (`lesson.destinations.some(({ destination }) => destination === "model_weight")`).
-That line is the only consumer of `lesson.destinations` in the repository. A lesson
-classified to any of the other ten destinations (`router_policy`, `retrieval`,
-`graph`, `parser`, `tooling`, `deterministic_recipe`, `prompt`, `product_logic`,
-`calibration`, `no_action`) is computed, stored on the lesson object, and consumed
-by nothing. The twelfth value, `organization_memory`, is not even reachable from the
-classifier: it has no attribution that maps to it, so it is never emitted and, like
-the other ten, has no sink.
+The retrieval context-gap sink reads `retrieval` at admission time: a lesson whose
+destination is `retrieval` is projected into the tenant-scoped
+`retrieval_context_gaps` store (`packages/db/src/retrieval-context-gap.ts`,
+`recordRetrievalContextGap`), and `computeRetrievalContextGaps` serves the
+accumulated gaps on the outcome-metrics surface
+(`GET /metrics/outcomes/retrieval-gaps`, rendered on
+`apps/web/app/metrics/outcomes`). A lesson classified to any of the other nine
+emittable destinations (`router_policy`, `graph`, `parser`, `tooling`,
+`deterministic_recipe`, `prompt`, `product_logic`, `calibration`, `no_action`) is
+computed, stored on the lesson object, and consumed by nothing. The twelfth value,
+`organization_memory`, is not even reachable from the classifier: it has no
+attribution that maps to it, so it is never emitted and, like the other nine, has no
+sink.
 
-Until now that drop was silent: "we routed this lesson to `retrieval`" and "nothing
-acted on this lesson" were indistinguishable — the pipeline's dominant defect shape,
-where "we did not act on this" reads as "there was nothing to act on."
+`retrieval` is the destination whose consumer this change adds, but the flow into it
+is **latent, not live** — the same dormancy as the classifier itself (Count 2).
+`deriveOutcomeAttribution` (`apps/worker/src/outcome-attribution.ts`) is the only
+path to it: it maps a `failed` verification whose required context was
+`recorded_absent` to `retrieval` (spec 17.4.2). That `failed` branch is **not
+reachable in production today** — both production producers pass `not_verified` at
+their verification seam, so the derivation uniformly returns `none` and no lesson is
+attributed `retrieval` yet. The sink is therefore live code with a real consumer
+that genuinely reads its store, receiving nothing until (a) producers map observed
+verification failures (the reject-path records added in #322) into
+`verification: "failed"`, and (b) non-merged outcomes are admitted (#324). The other
+eight non-`model_weight` attribution-less destinations have no path to them at all —
+`deriveOutcomeAttribution` can only emit `model_behavior`, `retrieval`, or `none` —
+so they are named vocabulary, not live drops, and building a sink for one would be
+built-never-called code.
+
+The sink closes the drop ahead of the flow. Historically the risk was exactly this:
+once the derivation does begin emitting `retrieval`, "we routed this lesson to
+`retrieval`" and "nothing acted on this lesson" would be indistinguishable — the
+pipeline's dominant defect shape, where "we did not act on this" reads as "there was
+nothing to act on." With the consumer in place, the moment a retrieval lesson is
+admitted it is stored and counted rather than silently dropped.
 
 `packages/pipeline/src/lesson-routing.ts` names the drop, following the house
 pattern of `classifyGraphContextDelivery`
@@ -44,7 +70,8 @@ pattern of `classifyGraphContextDelivery`
 
 `summarizeLessonRouting(lesson)` partitions a lesson's destinations by disposition:
 
-- `sink_consumes` — a downstream sink actually reads it (today only `model_weight`);
+- `sink_consumes` — a downstream sink actually reads it (`model_weight` and
+  `retrieval`);
 - `terminal_no_action` — the classifier intentionally routed nowhere (`no_action`);
   this is not a drop;
 - `unrouted` — classified here, but nothing consumes it. The formerly-silent drop.
@@ -56,10 +83,12 @@ lessons to answer "how many lessons did we classify and then drop?"
 
 The single source of truth is `LESSON_DESTINATION_DISPOSITIONS`. A destination may
 be marked `sink_consumes` **only** in the same change that adds its real consumer.
-The map is deliberately conservative: over-reporting a drop is merely noisy;
-under-reporting one re-hides it, so the map fails toward visibility.
+`retrieval` was flipped from `unrouted` to `sink_consumes` in exactly the change
+that added `computeRetrievalContextGaps` and wired the admission-time projection,
+never before. The map is deliberately conservative: over-reporting a drop is merely
+noisy; under-reporting one re-hides it, so the map fails toward visibility.
 
-### Count 2 — the classifier is effectively a constant function in production
+### Count 2 — is the classifier effectively a constant function in production?
 
 This is the more important number. The eleven-destination taxonomy *looks* like it
 discriminates, but the classifier is a 1:1 map from `observedOutcome.attribution`,
@@ -93,9 +122,13 @@ code but latent — it stays dormant until a seam can observe a genuine verifica
 not this pipeline: the review-evidence schema cannot represent a *failed*
 verification (`ReviewedVerificationCommandSchema` types `ok`/`exitCode` as the
 literals `true`/`0`), so `VerificationOutcome` `"failed"` — and the `retrieval`
-attribution it alone reaches, and any real sink built downstream of it — is
-unreachable; and both producers admit only a *merged* delivery outcome, so a failure
-could not arrive here even if it were representable.
+attribution it alone reaches — is unreachable in production; and both producers admit
+only a *merged* delivery outcome, so a failure could not arrive here even if it were
+representable. The retrieval context-gap sink now built downstream of that
+attribution (`packages/db/src/retrieval-context-gap.ts`, wired at admission) is
+consequently live but dormant: a real consumer that reads its store, receiving no
+lesson until that path opens (#322 makes a failed verification representable; #324
+would admit non-merged outcomes).
 
 `assessProductionAttributionDiscrimination()` reports `effectivelyConstant: false`
 with `constant: null` — but read that literally: it detects ONLY the narrow

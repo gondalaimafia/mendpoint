@@ -107,4 +107,41 @@ describe("outcome metrics API route", () => {
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("outcome_window_invalid");
   });
+
+  it("requires authentication for the retrieval-gaps surface", async () => {
+    const { db } = fixture();
+    const res = await appFor(db).request("/metrics/outcomes/retrieval-gaps");
+    expect(res.status).toBe(401);
+  });
+
+  it("serves the tenant-scoped retrieval context-gap summary with no-store caching", async () => {
+    const { db, tenantA } = fixture();
+    const res = await appFor(db).request("/metrics/outcomes/retrieval-gaps", {
+      headers: { Authorization: `Bearer ${tenantA}` },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const body = (await res.json()) as {
+      tenantId: string;
+      totalGaps: number;
+      byCapability: unknown[];
+      recent: unknown[];
+    };
+    expect(body.tenantId).toBe("tenant-a");
+    // No gaps recorded in this fixture: an honest zero, not a placeholder.
+    expect(body.totalGaps).toBe(0);
+    expect(body.byCapability).toEqual([]);
+    expect(body.recent).toEqual([]);
+  });
+
+  it("rejects an invalid retrieval-gaps time window with 400", async () => {
+    const { db, tenantA } = fixture();
+    const res = await appFor(db).request(
+      "/metrics/outcomes/retrieval-gaps?since=2026-08-10T00:00:00.000Z&until=2026-08-01T00:00:00.000Z",
+      { headers: { Authorization: `Bearer ${tenantA}` } },
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("retrieval_gap_window_invalid");
+  });
 });

@@ -5,11 +5,18 @@
 // (The taxonomy defines a twelfth, `organization_memory`, that names where a
 // tenant convention belongs — spec §17.4/§17.4.3, ADR-0008 — but the classifier
 // never emits it and nothing consumes it; it is vocabulary, not a live route.)
-// Exactly one destination — `model_weight` — is actually consumed downstream: the
-// governed training corpus reads it at `learning-operations.ts:707`. A lesson
-// classified to any of the other ten is computed, stored on the lesson object, and
-// then consumed by nothing. Historically that drop was silent: "we routed this
-// lesson to `retrieval`" and "nothing acted on this lesson" were indistinguishable.
+// Two destinations have a downstream sink, but nothing routes to either in
+// production today (see fact 2 below). `model_weight` is read by the governed
+// training corpus at `learning-operations.ts:849`; `retrieval` is read by the
+// retrieval context-gap sink — `admitGovernedLearningEvent` projects a
+// retrieval-attributed lesson into `retrieval_context_gaps`
+// (`packages/db/src/retrieval-context-gap.ts`) and `computeRetrievalContextGaps`
+// serves it at `/metrics/outcomes/retrieval-gaps`. Both are live code with real
+// consumers that are fed nothing yet: every production lesson is attributed `none`,
+// so it routes to `no_action`. A lesson classified to any of the other nine
+// reachable destinations is computed, stored on the lesson object, and consumed by
+// nothing. Naming the drop keeps "we routed this to `retrieval`" distinguishable
+// from "nothing acted on it" for the day the flow opens.
 //
 // This module names the drop so it becomes observable and countable, following
 // the house pattern of `classifyGraphContextDelivery`
@@ -60,8 +67,11 @@ export type LessonDestinationDisposition =
  * Source of truth for which destinations have a real downstream sink.
  *
  * A destination may be marked `sink_consumes` ONLY when a consumer genuinely reads
- * it. Today that is `model_weight` alone, consumed by the governed training corpus
- * (`learning-operations.ts:707`). When a real sink is added for another
+ * it. Today that is `model_weight`, consumed by the governed training corpus
+ * (`learning-operations.ts:849`), and `retrieval`, consumed by the retrieval
+ * context-gap sink (`computeRetrievalContextGaps` in
+ * `packages/db/src/retrieval-context-gap.ts`, served at
+ * `/metrics/outcomes/retrieval-gaps`). When a real sink is added for another
  * destination, flip its entry here in the same change that adds the consumer — and
  * never the other way round. Over-reporting a drop (leaving a newly-sunk
  * destination as `unrouted`) is merely noisy; under-reporting one (marking an
@@ -73,7 +83,12 @@ export const LESSON_DESTINATION_DISPOSITIONS: Readonly<Record<LearningDestinatio
     model_weight: "sink_consumes",
     no_action: "terminal_no_action",
     router_policy: "unrouted",
-    retrieval: "unrouted",
+    // A retrieval-attributed lesson (verification failed AND required context
+    // confirmed absent, spec 17.4.2) is now consumed by the retrieval context-gap
+    // sink: `admitGovernedLearningEvent` projects it into `retrieval_context_gaps`
+    // and `computeRetrievalContextGaps` serves it at `/metrics/outcomes/retrieval-gaps`.
+    // Flipped from `unrouted` in the same change that added that consumer.
+    retrieval: "sink_consumes",
     graph: "unrouted",
     parser: "unrouted",
     tooling: "unrouted",
