@@ -4,16 +4,20 @@ import {
   getConsumer,
   getConsumerRepo,
   getJob,
+  getPrincipal,
   getProviderBySlug,
   getRepositorySnapshotPolicy,
+  getTenantMembership,
   listMonitoredForConsumer,
   listRepositorySnapshots,
   recordAudit,
   type AppDb,
 } from "@mendpoint/db";
 import { Hono, type Context } from "hono";
+import type { Principal } from "@mendpoint/platform";
 import type { ApiEnv } from "./auth.js";
 import { mappedErrorResponse, type PublicErrorRule } from "./error-boundary.js";
+import { isHumanWardenReviewer } from "./warden-review-auth.js";
 
 const MAX_BODY_BYTES = 8 * 1_024;
 const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
@@ -21,6 +25,7 @@ const ALLOWED_FIELDS = new Set(["providerSlug", "consumerId"]);
 
 const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "warden_pilot_authentication_required", publicCode: "unauthorized", status: 401 },
+  { internalCode: "warden_pilot_forbidden", publicCode: "forbidden", status: 403 },
   { internalCode: "warden_pilot_consumer_not_found", publicCode: "not_found", status: 404 },
   { internalCode: "warden_pilot_provider_not_found", publicCode: "not_found", status: 404 },
   { internalCode: "warden_pilot_idempotency_conflict", publicCode: "idempotency_conflict", status: 409 },
@@ -43,6 +48,60 @@ export type WardenPilotIntakeOptions = Readonly<{
   db: AppDb;
   now?: () => string;
 }>;
+
+type PilotWriterAuthority = Readonly<{
+  principal: Principal;
+  tenantId: string;
+  trustPrincipalId: string;
+  issuer: string;
+  subject: string;
+  evidenceId: string;
+}>;
+
+function membershipEvidenceId(tenantId: string, issuer: string, subject: string): string {
+  return `membership:${createHash("sha256")
+    .update(`${tenantId}\n${issuer}\n${subject}`, "utf8")
+    .digest("hex")}`;
+}
+
+function authorizePilotWriter(c: Context<ApiEnv>, db: AppDb) {
+  const principal = c.get("principal");
+  const tenantId = c.get("tenantId");
+  const trustPrincipalId = c.get("trustPrincipalId");
+  if (!principal || !tenantId || principal.tenantId !== tenantId || !trustPrincipalId) {
+    throw new Error("warden_pilot_authentication_required");
+  }
+  const trust = getPrincipal(db, tenantId, trustPrincipalId);
+  if (!isHumanWardenReviewer(principal, trust, tenantId, c.get("apiKeyId"))) {
+    throw new Error("warden_pilot_forbidden");
+  }
+  const issuer = trust?.audience ?? "";
+  const prefix = issuer ? `${issuer}|` : "";
+  const subject = trust?.subject.startsWith(prefix) ? trust.subject.slice(prefix.length) : "";
+  const evidenceId = issuer && subject ? membershipEvidenceId(tenantId, issuer, subject) : "";
+  const membership = issuer && subject ? getTenantMembership(db, tenantId, issuer, subject) : undefined;
+  if (c.get("authMethod") !== "oidc" || !membership || membership.status !== "active" ||
+      c.get("membershipEvidenceId") !== evidenceId) {
+    throw new Error("warden_pilot_forbidden");
+  }
+  return Object.freeze({ principal, tenantId, trustPrincipalId, issuer, subject, evidenceId });
+}
+
+function reverifyPilotWriter(
+  c: Context<ApiEnv>, db: AppDb, authority: PilotWriterAuthority, at: string,
+): void {
+  const trust = getPrincipal(db, authority.tenantId, authority.trustPrincipalId);
+  const atMs = Date.parse(at);
+  const trustActive = Boolean(trust && trust.kind === "human" && trust.tenant_id === authority.tenantId &&
+    trust.audience === authority.issuer && trust.subject === `${authority.issuer}|${authority.subject}` &&
+    trust.revoked_at === null && (!trust.expires_at || Date.parse(trust.expires_at) > atMs));
+  const membership = authority.issuer && authority.subject
+    ? getTenantMembership(db, authority.tenantId, authority.issuer, authority.subject) : undefined;
+  if (!Number.isFinite(atMs) || !trustActive || !membership || membership.status !== "active" ||
+      c.get("authMethod") !== "oidc" || c.get("membershipEvidenceId") !== authority.evidenceId) {
+    throw new Error("warden_pilot_forbidden");
+  }
+}
 
 function requiredText(value: unknown, code: string, maximum: number): string {
   if (typeof value !== "string") throw new Error(code);
@@ -84,12 +143,8 @@ export function createWardenPilotIntakeRoutes(options: WardenPilotIntakeOptions)
   const now = options.now ?? (() => new Date().toISOString());
   routes.post("/", async (c) => {
     try {
-      const principal = c.get("principal");
-      const tenantId = c.get("tenantId");
-      const trustPrincipalId = c.get("trustPrincipalId");
-      if (!principal || !tenantId || principal.tenantId !== tenantId || !trustPrincipalId) {
-        throw new Error("warden_pilot_authentication_required");
-      }
+      const auth = authorizePilotWriter(c, options.db);
+      const { principal, tenantId, trustPrincipalId } = auth;
       const input = await body(c);
       const idempotencyKey = c.req.header("Idempotency-Key")?.trim() ?? "";
       if (!SAFE_IDEMPOTENCY_KEY.test(idempotencyKey)) {
@@ -105,6 +160,8 @@ export function createWardenPilotIntakeRoutes(options: WardenPilotIntakeOptions)
         wardenPilot: true,
       };
       const payloadJson = JSON.stringify(payload);
+      const observedAt = now();
+      reverifyPilotWriter(c, options.db, auth, observedAt);
       const existing = getJob(options.db, jobId, tenantId);
       if (existing) {
         if (existing.type !== "pipeline.fanout" || existing.payload_json !== payloadJson) {
@@ -128,7 +185,6 @@ export function createWardenPilotIntakeRoutes(options: WardenPilotIntakeOptions)
       const snapshot = listRepositorySnapshots(options.db, tenantId, repo.connected_repository_id)
         .find((candidate) => candidate.id === repo.snapshot_id && candidate.resolved_sha === repo.exact_commit);
       if (!snapshot) throw new Error("warden_pilot_snapshot_not_ready");
-      const observedAt = now();
       if (!Number.isFinite(Date.parse(observedAt)) || Date.parse(snapshot.expires_at) <= Date.parse(observedAt)) {
         throw new Error("warden_pilot_snapshot_expired");
       }
