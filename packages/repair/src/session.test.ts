@@ -146,6 +146,11 @@ describe("repair session", () => {
     expect(result.ok).toBe(false);
     expect(result.simulated).toBe(false);
     expect(result.finalVerify?.output).toContain("failed closed");
+    // A refusal is distinct from a failing repair: the loop stops as not_verified
+    // (nothing to repair) rather than churning attempts against an unverifiable
+    // baseline. The finalVerify carries the third state explicitly.
+    expect(result.stopReason).toBe("not_verified");
+    expect(result.finalVerify?.notVerified).toBe(true);
   });
 
   it("marks a dry run as simulated and never claims verification", async () => {

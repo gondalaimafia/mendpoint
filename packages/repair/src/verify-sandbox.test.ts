@@ -3,9 +3,36 @@ import { Buffer } from "node:buffer";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockFlyClient } from "@mendpoint/platform";
+import {
+  createMockFlyClient,
+  type CreateSandboxOpts,
+  type SandboxHandle,
+  type SandboxRunResult,
+} from "@mendpoint/platform";
 import { runVerificationCommand } from "./verify.js";
-import { configuredSandboxKind } from "./verify-sandbox.js";
+import {
+  classifySandboxRunResult,
+  configuredSandboxKind,
+  runVerificationInSandbox,
+} from "./verify-sandbox.js";
+
+/**
+ * A sandbox handle whose isolated run returns exactly the {@link SandboxRunResult}
+ * the test supplies. It lets a test drive `runVerificationInSandbox` with a run
+ * whose reported backend differs from the forced `kind: "fly_machines"` config,
+ * so we can prove the recorded backend follows the RUN, not the configuration.
+ */
+function fakeSandbox(result: SandboxRunResult): (opts: CreateSandboxOpts) => SandboxHandle {
+  return (opts) => ({
+    id: "sbx_fake",
+    kind: opts.kind ?? "fly_machines",
+    root: "/workspace",
+    mocks: [],
+    dispose: () => {},
+    run: () => ({ ok: false, stdout: "", stderr: "sync run unsupported" }),
+    runIsolated: async () => result,
+  });
+}
 
 const dirs: string[] = [];
 
@@ -163,6 +190,66 @@ describe("verification sandbox routing", () => {
     expect(received).toHaveLength(binary.length);
   });
 
+  it("records the backend observed from the run (fly_machines) on a real sandbox exec", async () => {
+    const dir = tempRepo("mp-verify-sbx-observed-");
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "exit 0" } }));
+
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("MENDPOINT_SANDBOX_KIND", "fly_machines");
+    vi.stubEnv("MENDPOINT_SANDBOX_FLY_APP", "mendpoint-sandbox-test");
+    vi.stubEnv("MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION", "npm test");
+
+    const client = createMockFlyClient({ exec: () => ({ exit_code: 0, stdout: "ok", stderr: "" }) });
+    const result = await runVerificationCommand("npm test", dir, 60_000, undefined, {
+      flyClient: client,
+      tenantId: "tenant-a",
+    });
+
+    expect(result.ok).toBe(true);
+    // Observed from the run, not echoed from config plumbing.
+    expect(result.outcome).toBe("verified");
+    expect(result.sandboxBackend).toBe("fly_machines");
+  });
+
+  it("records not_verified (never verified) when the executor cannot name its backend", async () => {
+    const dir = tempRepo("mp-verify-sbx-unnamed-");
+    writeFileSync(join(dir, "package.json"), "{}\n");
+
+    // The run claims success but reports NO backend. An unreportable backend must
+    // fail closed to not_verified — never verified — even though ok is true.
+    const result = await runVerificationInSandbox({
+      command: "npm test",
+      repoRoot: dir,
+      timeoutMs: 60_000,
+      createSandboxImpl: fakeSandbox({ ok: true, stdout: "looks green", stderr: "", exitCode: 0 }),
+    });
+
+    expect(result.outcome).toBe("not_verified");
+    expect(result.sandboxBackend).toBeNull();
+    expect(result.ok).toBe(false);
+    expect(result.stderr).toMatch(/did not report which backend/i);
+  });
+
+  it("records the backend the run reports, not the configured one, when they differ", async () => {
+    const dir = tempRepo("mp-verify-sbx-differ-");
+    writeFileSync(join(dir, "package.json"), "{}\n");
+
+    // The function forces `kind: "fly_machines"` in its create opts, but the run
+    // REPORTS it executed under "local". The recorded backend must follow the run
+    // (local), proving it is observed, not read back from the configuration.
+    const result = await runVerificationInSandbox({
+      command: "npm test",
+      repoRoot: dir,
+      timeoutMs: 60_000,
+      createSandboxImpl: fakeSandbox({ ok: true, stdout: "ran", stderr: "", exitCode: 0, backend: "local" }),
+    });
+
+    expect(result.sandboxBackend).toBe("local");
+    expect(result.sandboxBackend).not.toBe("fly_machines");
+    expect(result.outcome).toBe("verified");
+    expect(result.ok).toBe(true);
+  });
+
   it("does not forward host secrets to the sandboxed Machine (env scrub holds)", async () => {
     const dir = tempRepo("mp-verify-sbx-scrub-");
     writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "exit 0" } }));
@@ -184,5 +271,40 @@ describe("verification sandbox routing", () => {
     expect(config.env).toBeUndefined();
     // And the secret did not smuggle in through the uploaded workspace files.
     expect(JSON.stringify(config.files ?? [])).not.toContain("sk-do-not-leak");
+  });
+});
+
+describe("classifySandboxRunResult reads the backend from the run", () => {
+  it("maps a passing run under a named backend to verified", () => {
+    const out = classifySandboxRunResult({ ok: true, stdout: "", stderr: "", exitCode: 0, backend: "fly_machines" });
+    expect(out.outcome).toBe("verified");
+    expect(out.sandboxBackend).toBe("fly_machines");
+    expect(out.ok).toBe(true);
+  });
+
+  it("maps a non-zero run under a named backend to failed (a real test failure)", () => {
+    const out = classifySandboxRunResult({ ok: false, stdout: "", stderr: "boom", exitCode: 1, backend: "fly_machines" });
+    expect(out.outcome).toBe("failed");
+    expect(out.sandboxBackend).toBe("fly_machines");
+    expect(out.ok).toBe(false);
+  });
+
+  it("fails closed to not_verified when the backend is absent, even if the run claims ok", () => {
+    const out = classifySandboxRunResult({ ok: true, stdout: "green", stderr: "", exitCode: 0 });
+    expect(out.outcome).toBe("not_verified");
+    expect(out.sandboxBackend).toBeNull();
+    expect(out.ok).toBe(false);
+  });
+
+  it("fails closed to not_verified when the backend is unrecognised", () => {
+    const out = classifySandboxRunResult({
+      ok: true,
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+      backend: "totally_made_up" as never,
+    });
+    expect(out.outcome).toBe("not_verified");
+    expect(out.sandboxBackend).toBeNull();
   });
 });

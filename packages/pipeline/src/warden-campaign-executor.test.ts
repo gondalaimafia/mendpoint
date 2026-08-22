@@ -23,6 +23,7 @@ import {
   createWardenSourceEnvelope,
   executeWardenCampaignTarget,
   recoverWardenCampaignTarget,
+  validateCheck,
   WardenCampaignExecutionError,
   type WardenCampaignExecutionDependencies,
   type WardenVerificationCheck,
@@ -137,8 +138,20 @@ function source(): UnifiedSourceArtifact {
   };
 }
 
-function check(command: string, status: "passed" | "failed", failures: string[] = []): WardenVerificationCheck {
-  return { command, status, failureFingerprints: failures, outputSha256: digest(`${command}:${status}`), durationMs: 4 };
+function check(
+  command: string,
+  status: "passed" | "failed" | "not_verified",
+  failures: string[] = [],
+): WardenVerificationCheck {
+  return {
+    command,
+    status,
+    failureFingerprints: failures,
+    outputSha256: digest(`${command}:${status}`),
+    durationMs: 4,
+    // A passed/failed check must name the observed backend; a refusal names none.
+    sandboxBackend: status === "not_verified" ? null : "fly_machines",
+  };
 }
 
 function dependencies(value: ReturnType<typeof fixture>, verify?: WardenCampaignExecutionDependencies["verify"]): WardenCampaignExecutionDependencies {
@@ -253,8 +266,35 @@ describe("Warden campaign executor", () => {
     expect(compareWardenVerificationRuns(base, post)).toEqual({
       ok: true, introducedFailures: [], resolvedFailures: [fixedFailure],
       baselineFailed: [oldFailure, fixedFailure].sort(), postEditFailed: [oldFailure],
+      notVerified: [],
     });
     expect(() => createWardenSourceEnvelope({ ...source(), contentSha256: "0".repeat(64) }))
       .toThrow("warden_source_hash_mismatch");
+  });
+
+  it("treats a not_verified check as inconclusive, never as a clean pass or a regression", () => {
+    const base: WardenVerificationRun = {
+      phase: "baseline", snapshotId: "snapshot-a", resolvedSha, manifestSha256,
+      commands: ["node check.mjs"], checks: [check("node check.mjs", "passed")],
+    };
+    // Post-edit could not be verified (containment refused). A refusal is not a
+    // regression, but it also must NOT read as a clean pass: the comparison is
+    // inconclusive and fails closed.
+    const post: WardenVerificationRun = {
+      ...base, phase: "post_edit", checks: [check("node check.mjs", "not_verified")],
+    };
+    const comparison = compareWardenVerificationRuns(base, post);
+    expect(comparison.notVerified).toEqual(["node check.mjs"]);
+    expect(comparison.introducedFailures).toEqual([]);
+    expect(comparison.ok).toBe(false);
+  });
+
+  it("rejects a check that names no backend for a passed/failed outcome (fail closed)", () => {
+    expect(() =>
+      validateCheck(
+        { command: "node check.mjs", status: "passed", failureFingerprints: [], outputSha256: digest("x"), durationMs: 1, sandboxBackend: null },
+        "node check.mjs",
+      ),
+    ).toThrow("warden_verification_result_invalid");
   });
 });
