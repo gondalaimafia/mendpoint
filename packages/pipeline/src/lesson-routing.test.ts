@@ -117,8 +117,8 @@ describe("production attribution discrimination", () => {
   it("names the exact classification seam for each production producer", () => {
     const references = GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS.filter((e) => e.role === "production").map((e) => e.reference);
     expect(references).toEqual([
-      "apps/worker/src/warden-learning-producer.ts:317",
-      "apps/worker/src/transformer-governed-learning-producer.ts:149",
+      "apps/worker/src/warden-learning-producer.ts:333",
+      "apps/worker/src/transformer-governed-learning-producer.ts:168",
     ]);
   });
 });

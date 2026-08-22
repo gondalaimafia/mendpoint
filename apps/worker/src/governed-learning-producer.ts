@@ -80,17 +80,25 @@ export type GovernedLearningOutcomeFacts = Readonly<{
     attribution: LearningOutcomeAttribution;
   }>;
   /**
-   * Provenance of the verification VERDICT, derived by the product producer from
-   * what actually ran (a deterministic command, a compiler, a human reviewer, or
-   * a model verifier). Recorded verbatim on the event so `strength()` and the
-   * weight-training admission gate can enforce hard-over-soft precedence instead
-   * of trusting the caller-asserted provenance qualifiers.
+   * Provenance of the correctness-verification VERDICT, derived by the product
+   * producer from what actually ran (a deterministic command, a compiler, a human
+   * reviewer, or a model verifier). Recorded verbatim on the event so `strength()`
+   * and the weight-training admission gate can enforce hard-over-soft precedence
+   * instead of trusting the caller-asserted provenance qualifiers.
+   *
+   * `null` is the explicit not-observed state, for a NON-success outcome (a
+   * delivered PR closed unmerged or reverted) whose repair correctness was never
+   * objectively verified: the negative outcome is recorded honestly in
+   * {@link GovernedLearningOutcomeFacts.outcome}`.status`, while the correctness
+   * verdict stays `inconclusive` with no authority attached. It is the not-observed
+   * state, never a reassuring default — a producer must not synthesize a
+   * `model_verifier` (or any) producer that did not run.
    */
   verificationAuthority: Readonly<{
     signalClass: LearningSignalClass;
     producedBy: LearningVerificationProducer;
     producerModelId: string | null;
-  }>;
+  }> | null;
   reviewerDecision: "accepted" | "modified" | "merged";
   correctionSubstantive: boolean;
   /**
@@ -191,15 +199,25 @@ export function admitGovernedLearningOutcome(
     }
 
     // Derive the verification verdict from the recorded authority's signal class
-    // rather than asserting a literal: a soft (model-verifier) authority yields
-    // `inconclusive`, never `passed`, so `strength()` classifies the lesson as
-    // insufficient and it can never train weights. Only a hard authority
-    // (deterministic test/compiler/sandbox, graph invariant, runtime evidence, or
-    // human correction) yields `passed`. Both the event field and the resolve
-    // authority take this one derived value, so the admission binding check that
-    // requires them to match holds by construction.
+    // AND the observed outcome, rather than asserting a literal. "hard" is the
+    // signal's AUTHORITY (objective, not a model's opinion), not a claim that the
+    // repair passed: a `passed` verdict requires a hard authority that established
+    // a SUCCESSFUL outcome. A non-success outcome (a delivered PR closed unmerged
+    // or reverted) caps the verdict below `passed` no matter what authority is
+    // recorded, so a hard runtime signal that a repair was NOT accepted becomes a
+    // hard `failed` verdict and can never launder into `passed` and onto the
+    // weight path. A soft or absent (null) authority yields `inconclusive` for any
+    // outcome. Because `extractGovernedLesson` gates weight eligibility on
+    // `verdict === "passed"`, this makes admitting a failure fail-closed at the
+    // helper: it can never be trained on, without trusting the caller to withhold
+    // a hard authority. Both the event field and the resolve authority take this
+    // one derived value, so the admission binding check that requires them to
+    // match holds by construction.
+    const outcomeSucceeded = facts.outcome.status === "succeeded" || facts.outcome.status === "corrected";
     const verificationVerdict: GovernedLearningEventV1["verification"]["verdict"] =
-      facts.verificationAuthority.signalClass === "hard" ? "passed" : "inconclusive";
+      facts.verificationAuthority?.signalClass === "hard"
+        ? (outcomeSucceeded ? "passed" : "failed")
+        : "inconclusive";
 
     const eventId = `governed_learning_${sha256Hex(`${facts.tenantId}\0${facts.sourceObjectType}\0${facts.sourceObjectId}`)}`;
     const ids = governedLearningAdmissionIds(facts.tenantId, eventId);
@@ -254,7 +272,10 @@ export function admitGovernedLearningOutcome(
       verification: {
         verdict: verificationVerdict,
         evidenceRefs: [ids.verificationEvidenceId],
-        authority: facts.verificationAuthority,
+        // Omit the key entirely when not observed (a null value is rejected by the
+        // schema; an absent key is the dual-read not-observed state). A merged
+        // outcome always carries its authority; a failure records none.
+        ...(facts.verificationAuthority !== null ? { authority: facts.verificationAuthority } : {}),
       },
       reviewerDecision: {
         decision: facts.reviewerDecision,

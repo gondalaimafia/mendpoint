@@ -605,7 +605,8 @@ export async function runTransformerAdaptiveDelivery(
           candidate,
           artifact,
           // At the delivery seam the outcome is always null (pending); the producer
-          // refuses to admit until it resolves to "merged".
+          // refuses to admit until it resolves to a terminal outcome (merged as a
+          // success, closed_unmerged/reverted as an honestly recorded failure).
           deliveryOutcome: delivery.outcome,
           now: completedAt,
           env: input.artifactEnv ?? process.env,
