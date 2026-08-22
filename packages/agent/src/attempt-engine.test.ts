@@ -949,6 +949,34 @@ describe("Warden attempt engine", { timeout: 15_000 }, () => {
     expect(Object.isFrozen(result.artifacts)).toBe(true);
   });
 
+  it("records a failed verification on the reject path instead of dropping it", async () => {
+    const value = fixture("reject-verification-failure");
+    // The agent runs and passes the target on the repaired candidate, so it
+    // produces a candidate and the engine reaches its own regression gate. That
+    // regression verifier passes on the still-broken source (baseline) but fails
+    // on the repaired candidate, so the attempt rejects at the regression gate
+    // with a genuine failed verification the reject path must record.
+    writeFileSync(join(value.sourceRoot, "check-regression.mjs"), [
+      "import { path } from './client.js';",
+      "if (path === '/v1/charges') process.exit(1);",
+      "",
+    ].join("\n"), "utf8");
+
+    const result = await runWardenAttempt(input(value));
+
+    expect(result).toMatchObject({ status: "rejected", code: "warden_attempt_regression_failed" });
+    const verifications = result.capture?.verifications ?? [];
+    // The observed failure is durably captured, not lost: the reject path carries
+    // the regression verification with its three-state verdict and real exit code,
+    // alongside the target it did pass.
+    const target = verifications.find((entry) => entry.command === "node check.mjs");
+    expect(target?.verdict).toBe("passed");
+    const regression = verifications.find((entry) => entry.command === "npm run typecheck");
+    expect(regression).toBeDefined();
+    expect(regression?.verdict).toBe("failed");
+    expect(regression?.exitCode).toBe(1);
+  });
+
   it("rejects a changed file that cannot fit the review and seal contract", async () => {
     const value = fixture("changed-file-review-limit");
 

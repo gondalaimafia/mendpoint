@@ -139,6 +139,28 @@ describe("adaptive-candidate seal", () => {
     });
   });
 
+  it("refuses to seal a candidate whose verification did not pass", () => {
+    // The sealing guarantee: an approved (sealed) candidate must have passed its
+    // verification. Making a FAILED verification representable elsewhere must not
+    // open a path to seal one here. A review whose verification.passed is not
+    // literally true is rejected, so a failed artifact can never seal.
+    const env = { MENDPOINT_DATA_DIR: dataDir() } as NodeJS.ProcessEnv;
+    const base = baseInput(env);
+    // The input type also forbids `passed: false` at compile time (defense in
+    // depth); the cast reaches past that to prove the RUNTIME normalizer still
+    // fails closed, which is what protects a dynamically-shaped persisted record.
+    const failed = {
+      ...base,
+      review: {
+        ...base.review,
+        verification: { ...base.review.verification, passed: false },
+      },
+    } as unknown as Parameters<typeof sealAdaptiveCandidate>[0];
+    expect(() => sealAdaptiveCandidate(failed)).toThrow(
+      "adaptive_candidate_review_verification_invalid",
+    );
+  });
+
   it("fails closed for legacy schema 4 seals without semantic review evidence", () => {
     const env = { MENDPOINT_DATA_DIR: dataDir() } as NodeJS.ProcessEnv;
     const seal = sealAdaptiveCandidate(baseInput(env));
