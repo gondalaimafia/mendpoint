@@ -227,12 +227,12 @@ describe("evidence reachability — real register invariants", () => {
   });
 
   it("exposes both traceability deliverables without collapsing not-determined into fine", () => {
-    expect(report.verifiedTotal).toBe(41);
+    expect(report.verifiedTotal).toBe(39);
     // Document-only ME-FND requirements have no code path to trace.
     expect(report.verifiedWithoutLivePath).toContain("ME-FND-001");
-    // Verified requirements resting partly on proven-dead tests.
-    expect(report.verifiedCitingUnreachable).toEqual(
-      expect.arrayContaining(["ME-SCM-006", "ME-GRF-006"]),
-    );
+    // ME-SCM-006 and ME-GRF-006 were downgraded to partial and their
+    // proven-dead citations removed, so no verified requirement now rests on a
+    // proven-unreachable test.
+    expect(report.verifiedCitingUnreachable).toEqual([]);
   });
 });
