@@ -87,3 +87,54 @@ to complete a live, cost-attributed call.
 The provider gateway selects *which model backend* a run uses. It is independent
 of the policy router (`routed-agent.ts`), which selects *which executor* handles a
 run. Both remain in force; provider selection does not change executor routing.
+
+## The independent verifier — a second model egress boundary
+
+The gateway above is **not** the only path that sends data to an external model.
+The independent software verifier (the "Muse DeepSeek verifier") is a **separate
+live-model egress boundary** with its own credential, base URL, model, and price
+table — none of them shared with the Fettler gateway providers listed above. A
+document that enumerated only the gateway would read as exhaustive and be wrong,
+so it is recorded here. This describes what is *configured*, not what is planned.
+
+- **Where it is configured.** The transformer/ReGauge production profile pins
+  `DEEPSEEK_VERIFIER_ENABLED = "true"` and
+  `MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE = "shadow"`
+  (`apps/worker/src/transformer-production-profile.ts:240-241`). Rollout modes are
+  `off` / `offline` / `shadow`; `offline` opens no network transport and performs
+  no egress, and only `shadow` builds a live transport
+  (`apps/worker/src/verifier-shadow.ts:38-52`). So in the configured production
+  profile the verifier runs as a **shadow** observer against a live model.
+
+- **Its own credential.** The verifier authenticates with `DEEPSEEK_API_KEY` — a
+  fixed env name (`packages/verifier/src/policy.ts:12,67`), distinct from the
+  gateway's `OPENAI_API_KEY` / `XAI_API_KEY`. It is fetched through a
+  `CredentialBroker` under credential id `deepseek-v4-flash-verifier` and audience
+  `deepseek-verifier` (`apps/worker/src/verifier-shadow.ts:66-73`), and the
+  production profile refuses to boot if `DEEPSEEK_API_KEY` is empty
+  (`transformer-production-profile.ts:250-252`).
+
+- **Its own endpoint and model.** Base URL defaults to `https://api.deepseek.com`
+  and is env-overridable (`packages/verifier/src/policy.ts:43`,
+  `packages/verifier/src/deepseek.ts:24,46-59`); the wire format is
+  OpenAI-compatible `/chat/completions` (`deepseek.ts:57`); the model is
+  `deepseek-v4-flash` (`policy.ts:10,65`, `deepseek.ts:25`, backend revision
+  `official-chat-completions-2026-08-17.v1` at `deepseek.ts:117-120`).
+
+- **Its own price table.** Cost is attributed from
+  `MENDPOINT_AGENT_VERIFIER_PRICING_JSON`, whose shape is strictly validated in
+  the production profile: currency `USD`, `version` prefixed `deepseek-v4-flash-`,
+  and the exact rates `inputPerMillion = 0.14`, `cachedInputPerMillion = 0.0028`,
+  `outputPerMillion = 0.28` (`transformer-production-profile.ts:279-290`). These
+  rates are not part of any gateway provider table above.
+
+- **Same shared egress control.** The verifier deliberately routes its request
+  through the same shared egress control the other model paths use
+  (`packages/verifier/src/deepseek.ts:58-59`), so it is subject to the sandbox
+  egress attestation boundary as well — but it remains a distinct credential and
+  endpoint from the Fettler gateway.
+
+Two honest caveats, checkable only against operational state and not the repo:
+whether the `DEEPSEEK_API_KEY` secret is actually set on the transformer app, and
+whether that app is running the transformer profile at any given time. The
+config-level requirement and the shadow rollout are what the code enforces.

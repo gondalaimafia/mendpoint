@@ -191,6 +191,7 @@ function verifierDigest(value: string): string {
 }
 import { runWardenCandidateObservation } from "./warden-candidate-observation.js";
 import { runWardenCiRepairDispatch } from "./warden-ci-repair-dispatch.js";
+import { runFettlerPrReviewDispatch } from "./fettler-pr-review-dispatch.js";
 import { runWardenCandidateUpdate } from "./warden-candidate-update.js";
 import { createWardenCiEvidenceStore } from "./warden-ci-evidence.js";
 import { materializeWardenCiHead } from "./warden-ci-materializer.js";
@@ -2495,7 +2496,7 @@ async function processJobsOnceUnfenced(
   for (; result.claimed < maxJobs && opts.shouldContinue?.() !== false; ) {
     const claimedTypes = ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
       "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
-      "transformer.adaptive.deliver"];
+      "fettler.pr.review", "transformer.adaptive.deliver"];
     if (delegatedPrVerification?.candidateDependencies.enabled === true &&
         delegatedPrVerification.verificationDependencies.enabled === true) {
       claimedTypes.push(DELEGATED_PR_VERIFICATION_JOB_TYPE);
@@ -2638,6 +2639,21 @@ async function processJobsOnceUnfenced(
         await runWardenCiRepairDispatch({ db, job,
           readEvidence: ({ tenantId, artifactId, expectedDigest }) =>
             evidence.read(tenantId, artifactId, expectedDigest),
+          materializeHead: async (authority) => materializeWardenCiHead({ db,
+            source: await createWardenCiRepositorySource({ db, ...authority, env: workerEnv }),
+            tenantId: authority.tenantId, repositoryId: authority.repositoryId,
+            remoteRepositoryId: authority.remoteRepositoryId, headSha: authority.headSha,
+            repositoriesRoot, nodeEnv: workerEnv.NODE_ENV }),
+        });
+        result.succeeded++;
+        continue;
+      }
+      if (job.type === "fettler.pr.review") {
+        const repositoriesRoot = workerEnv.MENDPOINT_REPOS_DIR;
+        if (!repositoriesRoot || !isAbsolute(repositoriesRoot)) {
+          throw new Error("MENDPOINT_REPOS_DIR is required for Fettler PR review");
+        }
+        await runFettlerPrReviewDispatch({ db, job,
           materializeHead: async (authority) => materializeWardenCiHead({ db,
             source: await createWardenCiRepositorySource({ db, ...authority, env: workerEnv }),
             tenantId: authority.tenantId, repositoryId: authority.repositoryId,

@@ -88,6 +88,7 @@ import {
   consumeGitHubInstallState,
   completeGitHubInstallState,
   recordGitHubWebhookDelivery,
+  recordFettlerPrReviewEvent,
   completeGitHubWebhookDelivery,
   failGitHubWebhookDelivery,
   githubInstallationToApi,
@@ -131,6 +132,7 @@ import {
   resolveGitHubTenantAccountBinding,
 } from "@mendpoint/github";
 import { wakeFettlerReviewFromWebhook } from "./warden-review-webhook.js";
+import { dispatchFettlerPrReviewFromWebhook } from "./fettler-pr-review-webhook.js";
 import {
   listBrandPacks,
   getBrandPack,
@@ -2547,6 +2549,90 @@ app.post("/webhooks/github", async (c) => {
   }
 
   if (event.type === "pull_request") {
+    // A customer opening or updating their own pull request enqueues a Fettler
+    // analysis run. This path only ever queues analysis; it never approves,
+    // merges, or pushes. The remaining `pull_request` handling below records
+    // close/merge feedback on PRs the product itself delivered.
+    if (event.action === "opened" || event.action === "synchronize") {
+      if (!wh.delivery) return c.json({ error: "delivery id required" }, 400);
+      try {
+        const result = dispatchFettlerPrReviewFromWebhook({
+          db,
+          event,
+          deliveryId: wh.delivery,
+          observedAt: nowIso(),
+        });
+        const auditTenantId =
+          result.status === "enqueued" || result.status === "duplicate"
+            ? result.tenantId
+            : "tenant_system_unassigned";
+        recordAudit(db, {
+          tenantId: auditTenantId,
+          actor: "github_webhook",
+          action: `fettler.pr.${event.action}.${result.status}`,
+          resourceType: "fettler_pr_review",
+          resourceId:
+            result.status === "enqueued" || result.status === "duplicate"
+              ? result.dispatchJobId
+              : undefined,
+          requestId: c.get("requestId"),
+          metadata: {
+            delivery: wh.delivery,
+            repositoryId: event.repositoryId,
+            installationId: event.installationId,
+            accountId: event.accountId,
+            pullRequestNumber: event.number,
+            headSha: event.headSha,
+            reason: "reason" in result ? result.reason : null,
+          },
+        });
+        if (result.status === "refused") {
+          return c.json(
+            { ok: false, type: event.type, action: event.action, outcome: "refused", reason: result.reason },
+            403,
+          );
+        }
+        if (result.status === "ignored") {
+          return c.json({
+            ok: true,
+            type: event.type,
+            action: event.action,
+            outcome: "ignored",
+            reason: result.reason,
+          });
+        }
+        return c.json(
+          {
+            ok: true,
+            type: event.type,
+            action: event.action,
+            outcome: result.status,
+            dispatchJobId: result.dispatchJobId,
+          },
+          202,
+        );
+      } catch (error) {
+        // Fail closed: record the failure distinctly from a deliberate ignore,
+        // then return 500 so GitHub retries under a fresh delivery id.
+        try {
+          recordFettlerPrReviewEvent(db, {
+            deliveryId: wh.delivery,
+            outcome: "failed",
+            reason: error instanceof Error ? error.message.slice(0, 200) : "dispatch_failed",
+            action: event.action,
+            pullRequestNumber: Number.isSafeInteger(event.number) ? event.number : null,
+            headSha: event.headSha ?? null,
+            installationId: event.installationId ? String(event.installationId) : null,
+            remoteRepositoryId: event.repositoryId ? String(event.repositoryId) : null,
+            createdAt: nowIso(),
+          });
+        } catch {
+          // The helper already recorded the failure for this delivery id; the
+          // INSERT OR IGNORE above is a no-op in that case.
+        }
+        return internalErrorResponse(c, error);
+      }
+    }
     const outcome = prFeedbackFromWebhook(event);
     if (!outcome) {
       return c.json({ ok: true, ignored: event.action });

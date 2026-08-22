@@ -103,7 +103,7 @@ describe("harness", () => {
     expect(r2.plan.steps[0]?.status).toBe("failed");
   });
 
-  it("appends dogfood ledger and aggregates 30-run report", async () => {
+  it("aggregates seeded runs but marks them synthetic and keeps them out of the real figures", async () => {
     const base = mkdtempSync(join(tmpdir(), "harness-dog-"));
     dirs.push(base);
     await helloWorldRun(base);
@@ -113,13 +113,35 @@ describe("harness", () => {
     });
     expect(seeded).toHaveLength(DOGFOOD_TARGET_RUNS);
     const report = collectDogfood(base);
-    expect(report.totalRuns).toBeGreaterThanOrEqual(DOGFOOD_TARGET_RUNS);
-    expect(report.meetsVolume).toBe(true);
-    expect(report.meetsOkRate).toBe(true);
-    expect(report.day90Ready).toBe(true);
-    const path = writeDogfoodReport(base, report);
-    expect(readFileSync(path, "utf8")).toContain("day90Ready");
+    // Fabricated records are recorded and surfaced explicitly ...
+    expect(report.syntheticRuns).toBe(DOGFOOD_TARGET_RUNS);
+    expect(report.synthetic).toBe(true);
+    // ... but excluded from the real figures: only the one real helloWorldRun counts.
+    expect(report.totalRuns).toBe(1);
+    expect(report.meetsVolume).toBe(false);
+    expect(report.day90Ready).toBe(false);
+    const written = readFileSync(writeDogfoodReport(base, report), "utf8");
+    expect(written).toContain("day90Ready");
+    expect(written).toContain("syntheticRuns");
+    // The synthetic marker survives into the human-readable summary.
+    expect(formatDogfoodReport(report)).toMatch(/SYNTHETIC/);
     expect(formatDogfoodReport(report)).toMatch(/Dogfood/);
+  });
+
+  it("does not count a synthetic dogfood record as a real one (integrity control)", async () => {
+    // This is the control for the fabrication guard. If the synthetic marker or the
+    // real-vs-synthetic segregation in collectDogfood is removed, these fabricated
+    // OK runs would satisfy the day-90 gate and this test dies.
+    const base = mkdtempSync(join(tmpdir(), "harness-dog-control-"));
+    dirs.push(base);
+    seedDogfoodScores(base, DOGFOOD_TARGET_RUNS + 5, { okRate: 1, prefix: "seed" });
+    const report = collectDogfood(base);
+    expect(report.totalRuns).toBe(0);
+    expect(report.okRate).toBe(0);
+    expect(report.meetsVolume).toBe(false);
+    expect(report.day90Ready).toBe(false);
+    expect(report.synthetic).toBe(true);
+    expect(report.syntheticRuns).toBe(DOGFOOD_TARGET_RUNS + 5);
   });
 
   it("views trajectories", async () => {

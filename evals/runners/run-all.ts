@@ -15,14 +15,14 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { CORPUS_ROOT, SCENARIOS, type ScenarioConfig } from "../scenarios/index.js";
+import { CORPUS_ROOT, CORPUS_ROOT_CONFIGURED, SCENARIOS, type ScenarioConfig } from "../scenarios/index.js";
 import { resolveScenarios, type RunnableScenario } from "../scenarios/resolve.js";
 import { loadGroundTruth } from "../ground-truth/load.js";
 import type { GroundTruth } from "../ground-truth/schema.js";
 import { runFettler, runFettlerDirectDeterministic } from "./fettler-runner.js";
 import { runRegauge } from "./regauge-runner.js";
 import { renderLatestReport, renderFailuresBacklog, type ScoredRun } from "./report.js";
-import { assertCorpusIsolation } from "./isolation.js";
+import { assertCorpusRunIsolation } from "./isolation.js";
 import { evaluateReadiness, loadReadinessGates, type AbsentScenario } from "../readiness.js";
 import { renderScorecard } from "../scorecard.js";
 import type { RunRecord } from "./types.js";
@@ -219,11 +219,18 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Answer-key isolation invariant (spec §18.3): the corpus MUST resolve outside
-  // the repo that holds the ground truth. Assert it before anything runs, so
-  // committing the corpus or a misconfigured MENDPOINT_CORPUS_ROOT fails loudly
-  // instead of silently letting a staged product read its own answer key.
-  assertCorpusIsolation(CORPUS_ROOT, REPO_ROOT);
+  // Answer-key isolation invariant (spec §18.3): every corpus repo the product
+  // stages MUST resolve outside the repo that holds the ground truth. Assert it
+  // before anything runs, so committing the corpus or a misconfigured
+  // MENDPOINT_CORPUS_ROOT fails loudly instead of silently letting a staged
+  // product read its own answer key. A runner with no corpus present has nothing
+  // to assert and degrades to the generated suite (never a false positive).
+  assertCorpusRunIsolation({
+    corpusRoot: CORPUS_ROOT,
+    configured: CORPUS_ROOT_CONFIGURED,
+    corpusRepoPaths: SCENARIOS.map((s) => s.repoPath),
+    repoRoot: REPO_ROOT,
+  });
 
   let scenarios: RunnableScenario[] = resolveScenarios();
   if (args.only) scenarios = scenarios.filter((s) => s.scenario_id === args.only);

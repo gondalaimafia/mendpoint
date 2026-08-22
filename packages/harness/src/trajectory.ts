@@ -33,6 +33,12 @@ export type RunScore = {
   costUsd?: number;
   planId?: string;
   tenantId?: string;
+  /**
+   * Set ONLY by seedDogfoodScores. A real harness run never writes this. It is
+   * the structural marker that lets a program (not a human eyeballing run ids)
+   * refuse to count a fabricated score toward a real dogfood figure.
+   */
+  synthetic?: boolean;
 };
 
 export type RunPaths = {

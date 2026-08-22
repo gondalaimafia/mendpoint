@@ -53,6 +53,7 @@ export type TransformerPilotLaneResult = Readonly<{
   adaptiveModelEvidence?: readonly TransformerAdaptiveModelEvidenceSummary[];
   adaptiveRecovered?: number;
   regenerationBlocked?: number;
+  regenerationIndeterminate?: number;
   regenerationScheduled?: number;
   regenerationFailed?: number;
   errors: readonly string[];
@@ -385,6 +386,7 @@ export async function runTransformerPilotLaneOnce(
   let routingSettled = 0;
   let adaptiveRecovered = 0;
   let regenerationBlocked = 0;
+  let regenerationIndeterminate = 0;
   let regenerationScheduled = 0;
   let regenerationFailed = 0;
   const adaptiveModelEvidence: TransformerAdaptiveModelEvidenceSummary[] = [];
@@ -397,6 +399,7 @@ export async function runTransformerPilotLaneOnce(
       observedAt: now(),
     });
     regenerationBlocked = regeneration.blocked;
+    regenerationIndeterminate = regeneration.indeterminate;
     regenerationScheduled = regeneration.scheduled;
     regenerationFailed = regeneration.failed;
     errors.push(...regeneration.errors);
@@ -582,6 +585,7 @@ export async function runTransformerPilotLaneOnce(
       ...(routingSettled ? { routingSettled } : {}),
       ...(adaptiveRecovered ? { adaptiveRecovered } : {}),
       ...(regenerationBlocked ? { regenerationBlocked } : {}),
+      ...(regenerationIndeterminate ? { regenerationIndeterminate } : {}),
       ...(regenerationScheduled ? { regenerationScheduled } : {}),
       ...(regenerationFailed ? { regenerationFailed } : {}),
       errors: Object.freeze([...new Set(errors)].slice(0, 25)),
@@ -1057,6 +1061,7 @@ export async function runTransformerPilotLaneOnce(
     ...(routingSettled ? { routingSettled } : {}),
     ...(adaptiveRecovered ? { adaptiveRecovered } : {}),
     ...(regenerationBlocked ? { regenerationBlocked } : {}),
+    ...(regenerationIndeterminate ? { regenerationIndeterminate } : {}),
     ...(regenerationScheduled ? { regenerationScheduled } : {}),
     ...(regenerationFailed ? { regenerationFailed } : {}),
     ...(handoff ? { handoff } : {}),
