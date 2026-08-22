@@ -122,7 +122,7 @@ describe("the stateless arm cannot recover persistent context by any route", () 
     const staged = stageBenchmark(COHORT);
     const report = gradeBenchmark(COHORT, staged, SEALED_KEY);
     // Forge a leak: give a stateless choice a persistent item id in its reach.
-    const persistentId = "s3-p-auth"; // a known persistent item from scenario 1
+    const persistentId = "s2-p-id"; // a known persistent item from scenario 1 (stage 2)
     const forged: StagedBenchmark = {
       ...staged,
       choices: staged.choices.map((c, idx) =>
@@ -366,12 +366,18 @@ describe("the accounting gate can fail, and the cohort/key are cryptographically
 describe("the full-cohort result is stable and honest", () => {
   it("reproduces the headline the research doc records", () => {
     const report = run(COHORT, SEALED_KEY);
+    // The deterministic ceiling: the modeled stateless agent repeats every one of
+    // the six previously-resolved arbitrary conventions; the persistent arm repeats
+    // none. (Headline denominator: 5 in scenario 1 stage 2 + 1 in scenario 2.)
     expect(report.headline.statelessRepeatedMistakeRate).toEqual({ measured: true, value: 1 });
     expect(report.headline.persistentRepeatedMistakeRate).toEqual({ measured: true, value: 0 });
-    expect(report.headline.repeatsAvoidedByPersistentContext).toEqual({ measured: true, value: 3 });
+    expect(report.headline.repeatsAvoidedByPersistentContext).toEqual({ measured: true, value: 6 });
     // Persistent is better overall but NOT perfect: it loses the conflicting scenario.
-    expect(report.arms.persistent.taskCorrectness).toEqual({ measured: true, value: 11 / 12 });
-    expect(report.arms.stateless.taskCorrectness).toEqual({ measured: true, value: 5 / 12 });
+    // 14 hazards total: persistent gets 13 (loses only conflicting-context-harm);
+    // stateless gets 7 (the six established/immediate hazards + the conflicting
+    // scenario's naive default, which happens to be correct).
+    expect(report.arms.persistent.taskCorrectness).toEqual({ measured: true, value: 13 / 14 });
+    expect(report.arms.stateless.taskCorrectness).toEqual({ measured: true, value: 7 / 14 });
     // Persistent pays for it in tokens.
     expect(report.arms.persistent.contextTokens).toBeGreaterThan(report.arms.stateless.contextTokens);
     // The full-cohort gates pass.

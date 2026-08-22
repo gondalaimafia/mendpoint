@@ -73,6 +73,6 @@ function run(title: string, scenarios: readonly BenchmarkScenario[], key: Sealed
 }
 
 run("FULL COHORT", COHORT, SEALED_KEY);
-run("CONTROLLED: memory-oauth (Mission 1 -> Mission 2)", [MEMORY_CONTROLLED_SCENARIO], sealedKeyFor([MEMORY_CONTROLLED_SCENARIO]));
+run("CONTROLLED: memory-convention (Mission 1 -> Mission 2)", [MEMORY_CONTROLLED_SCENARIO], sealedKeyFor([MEMORY_CONTROLLED_SCENARIO]));
 run("CONTROL: context inflation (more context, no better outcome)", [CONTEXT_INFLATION_SCENARIO], sealedKeyFor([CONTEXT_INFLATION_SCENARIO]));
 run("CONTROL: conflicting context (persistent context is worse)", [CONFLICTING_CONTEXT_SCENARIO], sealedKeyFor([CONFLICTING_CONTEXT_SCENARIO]));

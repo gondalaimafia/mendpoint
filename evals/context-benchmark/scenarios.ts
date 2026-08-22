@@ -1,29 +1,63 @@
 /**
  * The benchmark cohort. Deliberately mixed so the harness cannot flatter
- * persistent context:
+ * persistent context.
  *
- *   1. regauge-multistage-migration  — a 4-stage ReGauge migration carrying all
- *      six required elements (initial architecture decision, an exception found
- *      partway, a reviewer correction, a stage dependency, a verification result
- *      that gates the next stage, and an organization rule). Prior resolutions
- *      naturally live in mission history, so persistent context helps here.
- *   2. memory-oauth-controlled       — the memory-specific controlled case:
- *      Mission 1 a reviewer corrects direct OAuth to the internal auth client;
- *      Mission 2, same organization, similar task. Without org memory vs with
- *      confirmed org memory.
- *   3. context-inflation-control     — one real hazard buried in irrelevant,
- *      stale, and duplicated persistent items. Persistent context changes no
- *      outcome here but inflates tokens: "more context" must look like cost,
- *      not benefit.
- *   4. conflicting-context-harm      — a confirmed-but-wrong org memory. The
- *      persistent arm follows it and does WORSE than the stateless arm. The
- *      harness must be able to show persistent context being harmful.
+ * WHY THE SCENARIOS LOOK THE WAY THEY DO (the discriminating-fact redesign).
+ * -------------------------------------------------------------------------
+ * An earlier cohort encoded decisions that were good engineering DEFAULTS
+ * (internal-auth-client over direct-oauth, the adapter pattern over an inline
+ * switch, a retry wrapper over a circuit breaker). A capable model reaches those
+ * unaided, so the live run measured the model's PRIORS, not the value of
+ * inherited context: the stateless arm repeated 0 of 3 previously-resolved
+ * mistakes, collapsing the headline (docs research §5.2).
  *
- * The naive default for every persistent-only hazard is a WRONG option: that is
- * what a stateless agent actually does when the resolving knowledge is not in
- * front of it. It is not a tuning knob; it is the definition of the cost of
- * statelessness. The correct options and the previously-resolved flags live in
- * TRUTH below, which the agent never sees.
+ * These scenarios instead turn on ARBITRARY organizational conventions. For each
+ * headline hazard, both options are real, roughly equally defensible engineering
+ * choices, and only the organization's prior decision separates them. The
+ * distinguishing fact is not recoverable from the immediate context: calibration
+ * (evals/context-benchmark/calibrate.ts) put each stateless prompt to the real
+ * model `muse-spark-1.2-contributor` eight times and recorded how often it picked
+ * the option the organization actually chose:
+ *
+ *   primary-id-format   -> ulid       stateless P(resolved) 0.000 (model prefers uuid-v7)
+ *   json-field-naming   -> snake_case stateless P(resolved) 0.000 (model prefers camelCase)
+ *   default-cloud-region-> eu-west-1  stateless P(resolved) 0.000 (model prefers us-east-1)
+ *   uuid-db-storage     -> text-36    stateless P(resolved) 0.125 (model prefers binary-16)
+ *   service-config-format-> toml      stateless P(resolved) 0.250 (model prefers yaml)
+ *
+ * In every case the persistent prompt (the convention rendered by the real
+ * compiler) was followed 8/8 (P(resolved) 1.000), so the persistent arm is not
+ * itself guessing. The model tracked option POPULARITY, not the organization's
+ * decision, which is exactly why a stateless agent cannot recover an arbitrary
+ * convention and why inheriting it has value. Candidates the model already
+ * recovered unaided (timestamp iso 0.875, enum string-label 0.875, soft-delete
+ * timestamp 1.000, api-version url-path 1.000) were DISCARDED as non-arbitrary /
+ * non-discriminating; see the research doc for the full calibration table.
+ *
+ *   1. regauge-convention-migration — a ReGauge internal modernization. Stage 1
+ *      establishes five arbitrary conventions via immediate reviewer corrections,
+ *      mission decisions, and a residency policy (both arms see them). Stage 2
+ *      re-applies the SAME five conventions downstream, where the resolving
+ *      knowledge lives ONLY in the persistent envelope. A stateless agent
+ *      re-decides from its priors and, for an arbitrary convention, picks the
+ *      option the organization did not choose.
+ *   2. memory-convention-controlled — the memory-specific controlled case:
+ *      Mission 1 a reviewer records the id-format convention (ulid); Mission 2,
+ *      same organization, a similar task. Without org memory vs with confirmed
+ *      org memory, isolated to one hazard.
+ *   3. context-inflation-control — one real hazard buried in irrelevant, stale,
+ *      and duplicated persistent items. Persistent context changes no outcome
+ *      here but inflates tokens: "more context" must look like cost, not benefit.
+ *   4. conflicting-context-harm — a confirmed-but-wrong org memory. The persistent
+ *      arm follows it and does WORSE than the stateless arm. Kept unchanged: the
+ *      real compiler applies that memory too, so it is faithful behaviour, not an
+ *      artifact.
+ *
+ * The naive default for every persistent-only hazard is a WRONG option (the
+ * option the organization did NOT choose): that is what a stateless agent does
+ * when the resolving knowledge is not in front of it. It is not a tuning knob; it
+ * is the definition of the cost of statelessness. The correct options and the
+ * previously-resolved flags live in TRUTH below, which the agent never sees.
  */
 import {
   cohortDigest,
@@ -48,105 +82,95 @@ function hazard(hazardId: string, resolutionKey: string, options: string[], naiv
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 1: regauge-multistage-migration
+// Scenario 1: regauge-convention-migration
+//
+// Five arbitrary conventions, each established immediately in stage 1 (both arms
+// resolve) and re-applied in stage 2 where the resolving item is persistent-only
+// (only the persistent arm resolves; the stateless arm falls to the wrong naive
+// default). Every stage-2 hazard is a previously-resolved mistake (the headline
+// denominator). Options are calibrated to be arbitrary — see the header table.
 // ---------------------------------------------------------------------------
 
 const MIGRATION_SCENARIO: BenchmarkScenario = {
-  scenarioId: "regauge-multistage-migration",
+  scenarioId: "regauge-convention-migration",
   tenantId: TENANT,
   description:
-    "A ReGauge internal modernization migrated across four stages. The architecture decision was set by a reviewer correction in stage 1; an exemption exception was found in stage 2; a reviewer corrected the auth abstraction in stage 2; stage 3 depends on the stage-1 architecture and on a stage-2 verification result; stage 4 must honor an organization timestamp rule.",
+    "A ReGauge internal modernization migrated across two stages. Stage 1 establishes five arbitrary organizational conventions (id format, JSON field naming, config format, UUID column storage, and a data-residency region policy) via immediate reviewer corrections, mission decisions, and a hard policy. Stage 2 re-applies the same five conventions downstream, where the resolving knowledge lives only in the persistent envelope; a stateless agent re-decides from its priors and picks the option the organization did not choose.",
   tasks: [
     {
-      // Stage 1: the architecture decision is ESTABLISHED via a reviewer
-      // correction (inline-switch -> adapter-per-provider). Both arms resolve it
-      // because the correction is immediate to this stage.
-      taskId: "stage1-establish-architecture",
+      // Stage 1: the five conventions are ESTABLISHED via immediate context, so
+      // BOTH arms resolve them here. None is a previously-resolved mistake yet.
+      taskId: "stage1-establish-conventions",
       stage: 1,
-      instructionTokens: 220,
-      hazards: [hazard("h1-arch-decision", "arch-adapter-pattern", ["adapter-per-provider", "inline-switch"], "inline-switch", "adapter")],
-      context: [immediate("s1-i-arch", "arch-adapter-pattern", "adapter-per-provider", "mission_decision", 60)],
-    },
-    {
-      // Stage 2: an exemption exception is discovered, and a reviewer corrects
-      // the auth abstraction. Both immediate to this stage, so both arms resolve.
-      taskId: "stage2-exception-and-correction",
-      stage: 2,
       instructionTokens: 240,
       hazards: [
-        hazard("h2-exempt-discovery", "legacy-module-exempt", ["migrate-billing-legacy", "skip-billing-legacy"], "migrate-billing-legacy"),
-        hazard("h3-auth-correction", "oauth-abstraction", ["internal-auth-client", "direct-oauth"], "direct-oauth"),
+        hazard("h1-id", "primary-id-format", ["ulid", "uuid-v7"], "uuid-v7", "id-scheme"),
+        hazard("h2-jsoncase", "json-field-naming", ["camelCase", "snake_case"], "camelCase"),
+        hazard("h3-config", "service-config-format", ["toml", "yaml"], "yaml"),
+        hazard("h4-uuidstore", "uuid-db-storage", ["binary-16", "text-36"], "binary-16"),
+        hazard("h5-region", "default-cloud-region", ["eu-west-1", "us-east-1"], "us-east-1"),
       ],
       context: [
-        immediate("s2-i-exempt", "legacy-module-exempt", "skip-billing-legacy", "mission_decision", 55),
-        immediate("s2-i-auth", "oauth-abstraction", "internal-auth-client", "confirmed_org_memory", 58),
+        immediate("s1-i-id", "primary-id-format", "ulid", "confirmed_org_memory", 58),
+        immediate("s1-i-jsoncase", "json-field-naming", "snake_case", "mission_decision", 56),
+        immediate("s1-i-config", "service-config-format", "toml", "mission_decision", 55),
+        immediate("s1-i-uuidstore", "uuid-db-storage", "text-36", "confirmed_org_memory", 57),
+        immediate("s1-i-region", "default-cloud-region", "eu-west-1", "hard_policy", 62),
       ],
     },
     {
-      // Stage 3: depends on the stage-1 architecture, on the stage-2 auth
-      // correction, and on a stage-2 verification result. All of that lives ONLY
-      // in the persistent envelope. A stateless agent re-decides from scratch.
+      // Stage 2: the SAME five conventions re-appear downstream. The resolving
+      // items live ONLY in the persistent envelope, so a stateless agent
+      // re-decides from scratch. Each is a previously-resolved mistake (headline).
+      // The id hazard shares the "id-scheme" consistency group with stage 1.
       taskId: "stage3-depends-on-prior",
-      stage: 3,
+      stage: 2,
       instructionTokens: 260,
       hazards: [
-        hazard("h4-auth-repeat", "oauth-abstraction", ["internal-auth-client", "direct-oauth"], "direct-oauth"),
-        hazard("h5-arch-repeat", "arch-adapter-pattern", ["adapter-per-provider", "inline-switch"], "inline-switch", "adapter"),
-        hazard("h6-verified-variant", "retry-wrapper-verified", ["use-retry-wrapper", "use-circuit-breaker"], "use-circuit-breaker"),
+        hazard("h6-id-repeat", "primary-id-format", ["ulid", "uuid-v7"], "uuid-v7", "id-scheme"),
+        hazard("h7-jsoncase-repeat", "json-field-naming", ["camelCase", "snake_case"], "camelCase"),
+        hazard("h8-config-repeat", "service-config-format", ["toml", "yaml"], "yaml"),
+        hazard("h9-uuidstore-repeat", "uuid-db-storage", ["binary-16", "text-36"], "binary-16"),
+        hazard("h10-region-repeat", "default-cloud-region", ["eu-west-1", "us-east-1"], "us-east-1"),
       ],
       context: [
-        persistent("s3-p-auth", "oauth-abstraction", "internal-auth-client", "confirmed_org_memory", 62),
-        persistent("s3-p-arch", "arch-adapter-pattern", "adapter-per-provider", "mission_decision", 60),
-        persistent("s3-p-verify", "retry-wrapper-verified", "use-retry-wrapper", "mission_decision", 64),
-      ],
-    },
-    {
-      // Stage 4: must honor the stage-2 exemption exception and an organization
-      // timestamp rule (a hard policy). Both live only in the persistent
-      // envelope; a stateless agent re-migrates the exempt module and violates
-      // the policy it never saw.
-      taskId: "stage4-exception-and-policy",
-      stage: 4,
-      instructionTokens: 250,
-      hazards: [
-        hazard("h7-exempt-repeat", "legacy-module-exempt", ["migrate-billing-legacy", "skip-billing-legacy"], "migrate-billing-legacy"),
-        hazard("h8-timestamp-policy", "timestamp-storage-format", ["text-iso", "epoch-int"], "epoch-int"),
-      ],
-      context: [
-        persistent("s4-p-exempt", "legacy-module-exempt", "skip-billing-legacy", "mission_decision", 56),
-        persistent("s4-p-timestamp", "timestamp-storage-format", "text-iso", "hard_policy", 66),
+        persistent("s2-p-id", "primary-id-format", "ulid", "confirmed_org_memory", 60),
+        persistent("s2-p-jsoncase", "json-field-naming", "snake_case", "mission_decision", 58),
+        persistent("s2-p-config", "service-config-format", "toml", "mission_decision", 57),
+        persistent("s2-p-uuidstore", "uuid-db-storage", "text-36", "confirmed_org_memory", 59),
+        persistent("s2-p-region", "default-cloud-region", "eu-west-1", "hard_policy", 64),
       ],
     },
   ],
 };
 
 // ---------------------------------------------------------------------------
-// Scenario 2: memory-oauth-controlled (the memory-specific controlled case)
+// Scenario 2: memory-convention-controlled (the memory-specific controlled case)
 // ---------------------------------------------------------------------------
 
 const MEMORY_CONTROLLED_SCENARIO: BenchmarkScenario = {
-  scenarioId: "memory-oauth-controlled",
+  scenarioId: "memory-convention-controlled",
   tenantId: TENANT,
   description:
-    "Mission 1: a reviewer corrects a direct OAuth implementation to the internal auth client. Mission 2: the same organization, a similar task. The persistent arm carries the Mission-1 correction as confirmed Organization Memory; the stateless arm does not.",
+    "Mission 1: a reviewer records the organization's id-format convention (ulid, chosen over the more common uuid-v7). Mission 2: the same organization, a similar task. The persistent arm carries the Mission-1 decision as confirmed Organization Memory; the stateless arm does not and re-decides from its priors.",
   tasks: [
     {
-      // Mission 1: the correction is made here (immediate to the mission).
+      // Mission 1: the convention is recorded here (immediate to the mission).
       taskId: "mission1-correction",
       stage: 1,
       instructionTokens: 210,
-      hazards: [hazard("m1-auth", "auth-abstraction", ["internal-auth-client", "direct-oauth"], "direct-oauth")],
-      context: [immediate("m1-i-auth", "auth-abstraction", "internal-auth-client", "confirmed_org_memory", 57)],
+      hazards: [hazard("m1-id", "primary-id-format", ["ulid", "uuid-v7"], "uuid-v7")],
+      context: [immediate("m1-i-id", "primary-id-format", "ulid", "confirmed_org_memory", 57)],
     },
     {
-      // Mission 2: same hazard. Without org memory (stateless) the agent repeats
-      // the direct-OAuth mistake and needs the same correction again. With
-      // confirmed org memory (persistent) it chooses the internal auth client.
+      // Mission 2: same hazard. Without org memory (stateless) the agent re-decides
+      // from its priors (uuid-v7) and needs the convention re-issued. With
+      // confirmed org memory (persistent) it chooses ulid.
       taskId: "mission2-similar-task",
       stage: 2,
       instructionTokens: 205,
-      hazards: [hazard("m2-auth", "auth-abstraction", ["internal-auth-client", "direct-oauth"], "direct-oauth")],
-      context: [persistent("m2-p-auth", "auth-abstraction", "internal-auth-client", "confirmed_org_memory", 59)],
+      hazards: [hazard("m2-id", "primary-id-format", ["ulid", "uuid-v7"], "uuid-v7")],
+      context: [persistent("m2-p-id", "primary-id-format", "ulid", "confirmed_org_memory", 59)],
     },
   ],
 };
@@ -225,21 +249,26 @@ export {
 // The sealed answer key. Held separate from the cohort so the cohort carries no
 // answer material. `priorMistakeResolved` marks the hazards that make up the
 // headline denominator (a mistake the organization already paid to resolve).
+// The correctOption is always the organization's ACTUAL decision (a calibrated
+// arbitrary convention), never "the option we prefer".
 // ---------------------------------------------------------------------------
 
 const TRUTH: Record<string, Omit<HazardTruth, "hazardId">> = {
-  // Scenario 1.
-  "h1-arch-decision": { correctOption: "adapter-per-provider", priorMistakeResolved: false, policyGoverned: false },
-  "h2-exempt-discovery": { correctOption: "skip-billing-legacy", priorMistakeResolved: false, policyGoverned: false },
-  "h3-auth-correction": { correctOption: "internal-auth-client", priorMistakeResolved: false, policyGoverned: false },
-  "h4-auth-repeat": { correctOption: "internal-auth-client", priorMistakeResolved: true, policyGoverned: false },
-  "h5-arch-repeat": { correctOption: "adapter-per-provider", priorMistakeResolved: true, policyGoverned: false },
-  "h6-verified-variant": { correctOption: "use-retry-wrapper", priorMistakeResolved: false, policyGoverned: false },
-  "h7-exempt-repeat": { correctOption: "skip-billing-legacy", priorMistakeResolved: false, policyGoverned: false },
-  "h8-timestamp-policy": { correctOption: "text-iso", priorMistakeResolved: false, policyGoverned: true },
+  // Scenario 1 stage 1 (established immediately; both arms resolve; not headline).
+  "h1-id": { correctOption: "ulid", priorMistakeResolved: false, policyGoverned: false },
+  "h2-jsoncase": { correctOption: "snake_case", priorMistakeResolved: false, policyGoverned: false },
+  "h3-config": { correctOption: "toml", priorMistakeResolved: false, policyGoverned: false },
+  "h4-uuidstore": { correctOption: "text-36", priorMistakeResolved: false, policyGoverned: false },
+  "h5-region": { correctOption: "eu-west-1", priorMistakeResolved: false, policyGoverned: false },
+  // Scenario 1 stage 2 (resolved only in the persistent envelope; HEADLINE).
+  "h6-id-repeat": { correctOption: "ulid", priorMistakeResolved: true, policyGoverned: false },
+  "h7-jsoncase-repeat": { correctOption: "snake_case", priorMistakeResolved: true, policyGoverned: false },
+  "h8-config-repeat": { correctOption: "toml", priorMistakeResolved: true, policyGoverned: false },
+  "h9-uuidstore-repeat": { correctOption: "text-36", priorMistakeResolved: true, policyGoverned: false },
+  "h10-region-repeat": { correctOption: "eu-west-1", priorMistakeResolved: true, policyGoverned: true },
   // Scenario 2.
-  "m1-auth": { correctOption: "internal-auth-client", priorMistakeResolved: false, policyGoverned: false },
-  "m2-auth": { correctOption: "internal-auth-client", priorMistakeResolved: true, policyGoverned: false },
+  "m1-id": { correctOption: "ulid", priorMistakeResolved: false, policyGoverned: false },
+  "m2-id": { correctOption: "ulid", priorMistakeResolved: true, policyGoverned: false },
   // Scenario 3.
   "i1-naming": { correctOption: "snake-case", priorMistakeResolved: false, policyGoverned: false },
   // Scenario 4.

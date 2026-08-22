@@ -248,8 +248,8 @@ describe("live context arm reproduces the ceiling under perfect attention", () =
       expect(liveReport.arms[arm].repeatedMistakeRate).toEqual(deterministicReport.arms[arm].repeatedMistakeRate);
       expect(liveReport.arms[arm].verificationSuccess).toEqual(deterministicReport.arms[arm].verificationSuccess);
     }
-    // One call per (arm, hazard): 12 hazards x 2 arms = 24.
-    expect(count()).toBe(24);
+    // One call per (arm, hazard): 14 hazards x 2 arms = 28.
+    expect(count()).toBe(28);
   });
 });
 

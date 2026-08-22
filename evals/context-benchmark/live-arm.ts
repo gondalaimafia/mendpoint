@@ -112,6 +112,25 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 32_768;
 
 /**
+ * Resolve the per-call transport timeout. Defaults to 30s (unchanged), but
+ * `muse-spark-1.2-contributor` is a reasoning model that can, under load, spend
+ * well over 30s on a single call's hidden reasoning at the 4096-token budget; a
+ * single such timeout aborts the whole run (a partial cohort is not gradable).
+ * `MENDPOINT_LIVE_REQUEST_TIMEOUT_MS` lets an operator raise the transport
+ * timeout for a slow endpoint. This is purely a network deadline: it changes no
+ * prompt, option, sealed truth, or grade, and can only let a legitimate slow
+ * call complete rather than abort — it cannot bias any measured value. Invalid
+ * or absent values fall back to the 30s default.
+ */
+function resolveRequestTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.MENDPOINT_LIVE_REQUEST_TIMEOUT_MS;
+  if (raw === undefined) return DEFAULT_REQUEST_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_REQUEST_TIMEOUT_MS;
+  return Math.floor(parsed);
+}
+
+/**
  * The sentinel a hazard's choice takes when the model produced no valid option
  * (unparseable output, or a string outside the hazard's option set). It can
  * never equal a real option or a correct option, so it grades as wrong and a
@@ -225,7 +244,7 @@ export function resolveLiveContextArmConfig(
     endpoint,
     budgetUsd: budget,
     maxOutputTokens: DEFAULT_LIVE_CONTEXT_MAX_OUTPUT_TOKENS,
-    requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    requestTimeoutMs: resolveRequestTimeoutMs(env),
     maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES,
   };
 }
