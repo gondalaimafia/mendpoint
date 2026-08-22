@@ -73,6 +73,10 @@ export type NormalizedWebhookAction =
       title: string;
       htmlUrl: string;
       headRef?: string;
+      headSha?: string;
+      baseRef?: string;
+      draft: boolean;
+      authorType?: string;
       labels: string[];
     }
   | {
@@ -150,7 +154,10 @@ export function normalizeGitHubEvent(
       state?: string;
       title?: string;
       html_url?: string;
-      head?: { ref?: string };
+      draft?: boolean;
+      head?: { ref?: string; sha?: string };
+      base?: { ref?: string };
+      user?: { type?: string };
       labels?: Array<{ name?: string }>;
     };
     const repo = payload.repository as {
@@ -182,6 +189,10 @@ export function normalizeGitHubEvent(
       title: String(pr?.title ?? ""),
       htmlUrl: String(pr?.html_url ?? ""),
       headRef: pr?.head?.ref,
+      ...(pr?.head?.sha ? { headSha: String(pr.head.sha).toLowerCase() } : {}),
+      ...(pr?.base?.ref ? { baseRef: String(pr.base.ref) } : {}),
+      draft: Boolean(pr?.draft),
+      ...(pr?.user?.type ? { authorType: String(pr.user.type) } : {}),
       labels: (pr?.labels ?? []).map((l) => l.name ?? "").filter(Boolean),
     };
   }

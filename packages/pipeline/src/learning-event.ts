@@ -59,7 +59,16 @@ export type LearningDestination =
   | "prompt"
   | "product_logic"
   | "calibration"
-  | "no_action";
+  | "no_action"
+  // The tenant-private convention destination. Names where an organization-specific
+  // convention belongs (spec §17.4/§17.4.3), realised by the Organization Memory
+  // store (`packages/db/src/organization-memory.ts`, ADR-0008). Purely vocabulary:
+  // `classify` below never routes here, because no attribution value means
+  // "organizational convention" and both production producers hardcode
+  // `model_behavior` (see the classify comment and lesson-routing.ts). It is a
+  // reachable value with no live route; the upstream gap is recorded in
+  // docs/learning/LESSON_DESTINATION_ROUTING.md.
+  | "organization_memory";
 
 export type GovernedLearningEventV1 = Readonly<{
   schemaVersion: 1;
