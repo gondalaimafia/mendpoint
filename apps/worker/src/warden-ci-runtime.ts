@@ -129,6 +129,7 @@ export function createWardenCiGitHubRuntime(input: Readonly<{
     observeExactDraft: github.observeExactDraft.bind(github),
     updateExactDraft: github.updateExactDraft.bind(github),
     reconcileExactDraftUpdate: github.reconcileExactDraftUpdate.bind(github),
+    cleanupExactDraft: github.cleanupExactDraft.bind(github),
   });
 }
 

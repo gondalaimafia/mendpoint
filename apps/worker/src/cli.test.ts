@@ -723,6 +723,20 @@ describe("worker runtime", () => {
     db.raw.close();
   });
 
+  it("leaves delegated cleanup handoffs pending while cleanup authority is disabled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-worker-cleanup-disabled-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    enqueueJob(db, { id: "cleanup-disabled", tenantId: "tenant-a", type: "warden.candidate.cleanup",
+      createdAt: nowIso(), payload: { schemaVersion: 1, cycleId: "cycle-a" } });
+    await expect(processJobsOnce(db, { tenantId: "tenant-a", maxJobs: 1,
+      runWardenMaintenance: false, wardenEnv: {} })).resolves.toEqual({
+      claimed: 0, succeeded: 0, failed: 0, retried: 0,
+    });
+    expect(getJob(db, "cleanup-disabled", "tenant-a")).toMatchObject({ status: "pending" });
+    db.raw.close();
+  });
+
   it("does not claim customer jobs while the global backup fence is active", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-worker-backup-fence-"));
     dirs.push(dir);
@@ -1763,6 +1777,23 @@ describe("worker runtime", () => {
     ]));
     expect(validateWorkerProductionEnv({ ...base, DEEPSEEK_API_KEY: "configured", MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "{}", MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "selective" }))
       .toContain("The first verifier release permits only offline or shadow rollout");
+  });
+
+  it("fails production startup before claiming cleanup work when signing authority is incomplete", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-cleanup-env-"));
+    dirs.push(root);
+    const errors = validateWorkerProductionEnv({
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      GITHUB_MODE: "mock",
+      MENDPOINT_SANDBOX_KIND: "local",
+      MENDPOINT_DATA_DIR: root,
+      MENDPOINT_REPOS_DIR: root,
+      MENDPOINT_DELEGATED_PR_CLEANUP_ENABLED: "1",
+    });
+    expect(errors).toContain(
+      "Delegated PR cleanup authority invalid: delegated_pr_cleanup_runtime_config_invalid",
+    );
   });
 
   it("cryptographically validates Fly sandbox egress authority during production startup", () => {
