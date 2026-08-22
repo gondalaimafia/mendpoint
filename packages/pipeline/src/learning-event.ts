@@ -374,15 +374,19 @@ export function extractGovernedLesson(input: GovernedLearningEvent): GovernedLea
 }
 
 // This 1:1 map from `attribution` to `LearningDestination` is only as
-// discriminating as the `attribution` it is handed. It once received a constant:
-// every governed-learning producer hardcoded `attribution: "model_behavior"`, so
-// this function was effectively constant and only `model_weight` was ever emitted.
-// Both production producers now DERIVE attribution from run evidence
-// (`deriveOutcomeAttribution` in `apps/worker/src/outcome-attribution.ts`), so the
-// input discriminates again — high precision, low coverage: an undetermined case
+// discriminating as the `attribution` it is handed, and in production it is handed
+// a constant. Both production producers call `deriveOutcomeAttribution`
+// (`apps/worker/src/outcome-attribution.ts`) rather than hardcoding a literal, but
+// each can only feed it `not_verified` today (Warden has no independent verifier;
+// ReGauge's "passed" flag is tautological and it has no verifier), so both always
+// emit `none` and this map only ever selects `no_action`. Its eleven-way
+// discrimination is therefore real in the code but LATENT: it stays dormant until a
+// seam can observe a genuine verification outcome (which needs the review-evidence
+// schema to admit failure — it types ok/exitCode as literals today — and producers
+// to admit non-merged outcomes). High precision, fail closed: an undetermined case
 // yields `none`, never a fabricated `model_behavior`. Of the eleven destinations
-// this map CAN emit, only `model_weight` still has a downstream sink; the other
-// ten are computed and dropped. Both facts are made observable and countable in
+// this map CAN emit, only `model_weight` has a downstream sink, and nothing routes
+// there in production. These facts are made observable and countable in
 // `lesson-routing.ts` (`summarizeLessonRouting`,
 // `assessProductionAttributionDiscrimination`); see
 // `docs/learning/LESSON_DESTINATION_ROUTING.md`.

@@ -67,7 +67,12 @@ describe("Warden verification authority is derived from what actually ran", () =
     });
   });
 
-  it("marks an independently verified edit as hard when deterministic commands passed", () => {
+  it("marks an independently verified edit as hard — forward-compatible only; production never emits verifier", () => {
+    // `assessmentSource: "verifier"` is unsatisfiable in production: production emits
+    // V2 review evidence whose enum is ["planner", "heuristic"], and nothing
+    // constructs V1 evidence carrying "verifier". This exercises the forward-compat
+    // hard branch on the only shape that can reach it — V1 evidence — and documents
+    // that no real Warden event ever does.
     expect(deriveWardenVerificationAuthority(review("verifier"))).toEqual({
       signalClass: "hard",
       producedBy: "sandbox_command",
@@ -307,15 +312,19 @@ describe("admitWardenGovernedLearningEvent records why graphContextArtifactId is
   });
 });
 
-// --- Evidence-derived outcome attribution ----------------------------------
+// --- Outcome attribution is `none` for every production Warden event ---------
 //
-// The producer no longer hardcodes `attribution: "model_behavior"`; it derives
-// the attribution from the run's evidence (the verification authority and the
-// graph-context delivery). These tests read the admitted event back out of the
-// redacted lesson document and prove the producer is no longer a constant
-// function: an objectively verified (hard) outcome attributes to the model and is
-// training-eligible, while an unverified (soft) outcome is undetermined (`none`)
-// and can never train weights.
+// The producer calls `deriveOutcomeAttribution` but always passes
+// `verification: "not_verified"`: it does NOT map `authority.signalClass` onto a
+// verification outcome (that conflates "who produced the signal" with "what it
+// concluded"), and no production evidence can make the authority hard anyway (no
+// path emits `assessmentSource: "verifier"`). So the honest attribution is `none`
+// for every production-representable review, and the record can never train
+// weights. These tests read the admitted event back out of the redacted lesson
+// document and assert exactly that — including for the fictional `review("verifier")`
+// (V1 evidence production never emits), which is the regression guard: if the
+// producer ever again derived `verified` -> `model_behavior` from the authority,
+// that case would flip to `model_behavior` and fail here.
 
 type StoredLesson = {
   event: { observedOutcome: { attribution: string } };
@@ -327,31 +336,10 @@ function storedLesson(db: AppDb, recordId: string, tenantId = TENANT): StoredLes
   return content ? (JSON.parse(content) as StoredLesson) : undefined;
 }
 
-describe("admitWardenGovernedLearningEvent derives attribution from run evidence", () => {
-  it("an objectively verified (hard) merged repair attributes to model_behavior and is training-eligible", () => {
-    const db = setup();
-    seedTrajectory(db); // recorded_absent; a verified success is model_behavior regardless
-
-    const result = admitWardenGovernedLearningEvent({
-      db,
-      delivery: delivery(),
-      run: agentRun(),
-      reviewEvidence: review("verifier"), // every edit independently assessed -> hard
-      now: NOW,
-      env: ENV,
-    });
-    expect(result.admitted).toBe(true);
-
-    const doc = storedLesson(db, result.recordId!);
-    expect(doc?.event.observedOutcome.attribution).toBe("model_behavior");
-    expect(doc?.lesson.eligibleForModelTraining).toBe(true);
-    expect(doc?.lesson.destinations.map((d) => d.destination)).toContain("model_weight");
-  });
-
-  it("an unverified (soft) merged repair is undetermined none and never training-eligible", () => {
-    // The control that proves the producer is no longer constant: before this
-    // change it emitted model_behavior here too. A soft verdict establishes nothing
-    // objective, so the honest attribution is `none`, not the model.
+describe("admitWardenGovernedLearningEvent attributes every production event to none", () => {
+  it("a model-self-assessed (planner) merged repair is undetermined none and never training-eligible", () => {
+    // The production shape: edits are model-self-selected (planner/heuristic), so
+    // the authority is soft and the attribution is the honest `none`.
     const db = setup();
     seedTrajectory(db);
 
@@ -359,7 +347,35 @@ describe("admitWardenGovernedLearningEvent derives attribution from run evidence
       db,
       delivery: delivery(),
       run: agentRun(),
-      reviewEvidence: review("planner"), // model self-assessed -> soft
+      reviewEvidence: review("planner"),
+      now: NOW,
+      env: ENV,
+    });
+    expect(result.admitted).toBe(true);
+
+    const doc = storedLesson(db, result.recordId!);
+    expect(doc?.event.observedOutcome.attribution).toBe("none");
+    expect(doc?.event.observedOutcome.attribution).not.toBe("model_behavior");
+    expect(doc?.lesson.eligibleForModelTraining).toBe(false);
+    expect(doc?.lesson.destinations.map((d) => d.destination)).not.toContain("model_weight");
+  });
+
+  it("stays none even for the fictional verifier evidence: attribution is not derived from signalClass", () => {
+    // Regression guard for defects (1) and (3). `review("verifier")` is V1 evidence
+    // production never emits, and it would make `deriveWardenVerificationAuthority`
+    // return hard. If the producer reverted to mapping
+    // `authority.signalClass === "hard" ? "verified" : "not_verified"` into the
+    // deriver — conflating the authority axis with a verification outcome — this
+    // event would become `model_behavior` and train weights. It must stay `none`:
+    // the seam does not attest verification, whatever the authority.
+    const db = setup();
+    seedTrajectory(db);
+
+    const result = admitWardenGovernedLearningEvent({
+      db,
+      delivery: delivery(),
+      run: agentRun(),
+      reviewEvidence: review("verifier"),
       now: NOW,
       env: ENV,
     });

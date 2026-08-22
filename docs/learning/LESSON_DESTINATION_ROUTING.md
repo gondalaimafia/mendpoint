@@ -63,28 +63,53 @@ under-reporting one re-hides it, so the map fails toward visibility.
 
 This is the more important number. The eleven-destination taxonomy *looks* like it
 discriminates, but the classifier is a 1:1 map from `observedOutcome.attribution`,
-and **in production every governed-learning producer hardcodes
-`attribution: "model_behavior"`**:
+and **in production both governed-learning producers emit a constant
+`attribution: "none"`** — not by hardcoding a literal, but by feeding the shared
+deriver a constant input:
 
-- `apps/worker/src/warden-learning-producer.ts:273` (Warden / Fettler) — hardcoded;
-- `apps/worker/src/transformer-governed-learning-producer.ts:136` (Transformer /
-  ReGauge) — hardcoded;
-- `apps/worker/src/governed-learning-producer.ts:251` (generic base producer) —
-  forwards its caller's value, and its only production callers are the two hardcoded
-  producers above.
+- `apps/worker/src/warden-learning-producer.ts` (Warden / Fettler) — calls
+  `deriveOutcomeAttribution`, but always passes `verification: "not_verified"`. Its
+  authority is always soft because the independent-verifier predicate is
+  *unsatisfiable*: no production path writes `assessmentSource: "verifier"`
+  (production emits V2 review evidence whose enum is `["planner", "heuristic"]`;
+  "verifier" is forbidden there and nothing constructs V1 evidence carrying it).
+- `apps/worker/src/transformer-governed-learning-producer.ts` (Transformer /
+  ReGauge) — calls `deriveOutcomeAttribution`, but always passes
+  `verification: "not_verified"`. It formerly derived `verified` from
+  `review.verification.passed === true`, a *tautology*: sealing guarantees
+  `passed: true`, so both sides of the comparison traced to the same input and it
+  always yielded `model_behavior` — the one attribution that feeds the training
+  corpus. That comparison is removed; the seam has no independent verifier and
+  cannot honestly attest verification.
+- `apps/worker/src/governed-learning-producer.ts` (generic base producer) — forwards
+  its caller's value, and its only production callers are the two above.
 
-So attribution is never derived from what actually happened. Every lesson arrives
-attributed to `model_behavior`, routes to `model_weight`, and the taxonomy's
-discrimination is inert before it ever reaches routing.
+So `deriveOutcomeAttribution` is honest, but in production it is only ever handed
+`not_verified`, and `not_verified -> none`. Every lesson arrives attributed to
+`none`, routes to `no_action`, and **nothing reaches `model_weight`: the training
+corpus is fed by nothing.** The taxonomy's eleven-way discrimination is real in the
+code but latent — it stays dormant until a seam can observe a genuine verification
+*outcome*. Two upstream facts keep it dormant, and both are decisions for the owner,
+not this pipeline: the review-evidence schema cannot represent a *failed*
+verification (`ReviewedVerificationCommandSchema` types `ok`/`exitCode` as the
+literals `true`/`0`), so `VerificationOutcome` `"failed"` — and the `retrieval`
+attribution it alone reaches, and any real sink built downstream of it — is
+unreachable; and both producers admit only a *merged* delivery outcome, so a failure
+could not arrive here even if it were representable.
 
-`assessProductionAttributionDiscrimination()` reports this as
-`effectivelyConstant: true` with `constant: "model_behavior"`, and
-`GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS` records the exact `file:line` each
-attribution is decided at. `apps/worker/src/governed-learning-attribution.test.ts`
-reads the producer source and fails if any producer's attribution drifts from that
-registry, so the count cannot silently become a lie. The assessment fails closed: if
-any production producer forwarded a caller value, `effectivelyConstant` would be
-false — it never asserts discrimination that has not been demonstrated.
+`assessProductionAttributionDiscrimination()` reports `effectivelyConstant: false`
+with `constant: null` — but read that literally: it detects ONLY the narrow
+degeneracy where every production producer hardcodes the *same literal*, and neither
+does now. **It does not, and structurally cannot, detect the degeneracy described
+above** — a producer that is evidence-derived in shape yet handed constant evidence
+by an unsatisfiable or tautological predicate. Proving that needs cross-file
+reasoning about what evidence each run can produce, which a static registry does not
+model, so the limitation is stated in the check's own doc rather than falsely
+reported as caught. What the check still does honestly: `GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS`
+records the exact `file:line` each attribution is decided at, and
+`apps/worker/src/governed-learning-attribution.test.ts` reads the producer source
+and fails if any producer slides back to a hardcoded literal — the regression it can
+prove.
 
 ## Two lesson taxonomies, deliberately separate — do not merge
 
@@ -151,7 +176,7 @@ The three blockers that keep anything from being classified there are untouched:
 
 2. **A producer that emits that value only on genuine evidence** — a reviewer
    *repeatedly* making the same change to a *non-defect*. No producer emits it today;
-   all three hardcode or forward `model_behavior` (see Count 2). Adding the
+   both production producers can only emit `none` (see Count 2). Adding the
    attribution value without a producer that honestly sets it yields a
    built-never-called sink.
 

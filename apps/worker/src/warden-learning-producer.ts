@@ -66,23 +66,51 @@ function minConfidence(review: CandidateReviewEvidence): number | null {
 /**
  * Derive the verification VERDICT's authority from what the review evidence
  * actually records, rather than asserting `deterministically_verified` as a
- * literal. The verdict is HARD only when a deterministic command genuinely ran
- * and passed AND every reviewed edit was assessed by an independent verifier.
+ * literal. A HARD verdict would require a deterministic command that genuinely ran
+ * and passed AND every reviewed edit assessed by an independent verifier, so a
+ * model's own opinion can never be laundered into a deterministic label.
  *
- * `assessmentSource` is stamped by the runtime and cannot be self-attributed by a
- * planner (packages/agent/src/types.ts): "verifier" is the only value meaning an
- * independent verifier graded the edit. "planner" (the model grading its own
- * work), "unavailable", and "heuristic" are soft. Fail closed: a single
- * non-verifier edit makes the whole event soft even when the commands passed, so
- * a model's own opinion can never be laundered into a deterministic label.
+ * BOTH conditions are degenerate on every PRODUCTION path today, so this function
+ * returns SOFT for every real Warden event. This is a fact about the system, not a
+ * runtime accident, and is stated plainly here so the code is not read as a live
+ * discrimination of a capability that does not exist:
+ *
+ *   - `independentlyAssessed` is UNSATISFIABLE in production. No code writes
+ *     `assessmentSource: "verifier"`. Production Warden agents emit V2 review
+ *     evidence (`CandidateReviewEvidenceV2Schema`, packages/shared), whose
+ *     `assessmentSource` enum is `["planner", "heuristic"]` — "verifier" is not a
+ *     valid V2 value. The runtime stamps intents only "model"/"heuristic"
+ *     (packages/agent/src/types.ts), which the attempt engine maps to
+ *     "planner"/"heuristic" (packages/agent/src/attempt-engine.ts). The V1 schema's
+ *     enum does list "verifier", but nothing constructs V1 evidence carrying it. No
+ *     independent verifier grades Warden edits — that capability does not exist.
+ *   - `deterministic` is TAUTOLOGICAL. `ReviewedVerificationCommandSchema` types
+ *     `ok` as `z.literal(true)` and `exitCode` as `z.literal(0)`, so a failed
+ *     command cannot parse into the evidence at all; a passing command is the only
+ *     representable state and the comparison carries no discriminating information.
+ *     (This is the same schema-level absence of failure that makes the
+ *     `VerificationOutcome` `"failed"` state unreachable — see the call sites'
+ *     defect-3 note and outcome-attribution.ts.)
+ *
+ * The HARD branch is retained ONLY as forward-compatible recognition, honestly
+ * labelled: if an independent verifier is ever wired in and records
+ * `assessmentSource: "verifier"` (on V1 evidence, or a widened V2 enum), this
+ * yields the hard authority it would then deserve. It cannot fire today. This
+ * mirrors the house pattern of `classifyGraphContextDelivery` below, whose
+ * `recorded_present` state is likewise documented as unreachable on the Fettler
+ * path today but reported honestly if it ever occurs.
  */
 export function deriveWardenVerificationAuthority(review: CandidateReviewEvidence): Readonly<{
   signalClass: LearningSignalClass;
   producedBy: LearningVerificationProducer;
   producerModelId: string | null;
 }> {
+  // Tautological in production (schema types ok/exitCode as the literals true/0);
+  // kept as the forward-compatible half of the hard condition. See the header.
   const deterministic = review.verification.commands.length > 0
     && review.verification.commands.every((command) => command.ok === true && command.exitCode === 0);
+  // Unsatisfiable in production: no path emits `assessmentSource: "verifier"` (V2
+  // forbids the value; nothing constructs V1 evidence carrying it). See the header.
   const independentlyAssessed = review.edits.length > 0
     && review.edits.every((edit) => edit.assessmentSource === "verifier");
   if (deterministic && independentlyAssessed) {
@@ -274,14 +302,37 @@ export function admitWardenGovernedLearningEvent(
     // Resolve the run's trajectory ONCE (never throwing into admission) so both the
     // attribution derivation and the graph-context audit read the same observation.
     const trajectory = resolveRunTrajectory(db, delivery.tenantId, run.id);
-    // Derive the outcome attribution from evidence, not a constant. A hard verdict
-    // means objective verification actually established the outcome (verify.ts
-    // `verified`); a soft verdict established nothing objective and is `not_verified`
-    // — never laundered into a test failure. Graph-context delivery only narrows a
-    // failure; a verified success is model_behavior regardless. See
-    // deriveOutcomeAttribution for the full precision-first rationale.
+    // The VerificationOutcome this seam can honestly attest is `not_verified`, and
+    // it is passed as such rather than derived from `authority.signalClass`. Three
+    // reasons, none of which a reassuring default may paper over:
+    //
+    //   - `signalClass` ("hard" | "soft") answers WHO produced a signal
+    //     (sandbox_command vs model_verifier), NOT WHAT it concluded. Mapping it to
+    //     a VerificationOutcome ("verified" | "failed" | "not_verified") conflates
+    //     an authority axis with a conclusion axis — that conflation is defect (3).
+    //     And in production `signalClass` is always "soft" anyway
+    //     (deriveWardenVerificationAuthority above: no path emits "verifier").
+    //   - `"verified"` requires objective verification to have concluded the model's
+    //     action correct. No independent verifier assesses Warden edits (they are
+    //     model-self-selected: assessmentSource "planner"/"heuristic"), and the
+    //     deterministic command's "passed" is tautological (schema forbids a failed
+    //     command), so nothing here establishes `verified`.
+    //   - `"failed"` is structurally UNREPRESENTABLE: ReviewedVerificationCommandSchema
+    //     types ok/exitCode as the literals true/0, so a failed verification cannot
+    //     parse into the evidence at all. Admission is also restricted to a merged
+    //     delivery outcome (above), so a failure could not reach this deriver even
+    //     if it were representable. `"failed"` is therefore never passed — see
+    //     outcome-attribution.ts, whose `failed`/`retrieval` branches stay dormant.
+    //
+    // So `deriveOutcomeAttribution` receives `not_verified` and returns `none`
+    // (undetermined) for every production Warden event: high precision, fail closed,
+    // never a fabricated `model_behavior`. `contextDelivery` is still resolved and
+    // recorded honestly (it does not change `none`, but a `not_verified` outcome
+    // makes it moot regardless — the deriver short-circuits `not_verified` to
+    // `none`). Making failure representable, and admitting non-merged outcomes, are
+    // decisions for the owner; until then this cannot discriminate.
     const attribution = deriveOutcomeAttribution({
-      verification: authority.signalClass === "hard" ? "verified" : "not_verified",
+      verification: "not_verified",
       contextDelivery: classifyGraphContextDelivery(trajectory),
     });
 

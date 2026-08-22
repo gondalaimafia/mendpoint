@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildLearningCorpus,
   createDb,
+  getLearningRecordRedactedContent,
   grantLearningConsent,
   insertPrincipal,
   insertTenant,
@@ -216,6 +217,63 @@ function admitFettlerGoverned(db: AppDb, consentId: string, runId: string, repos
   });
 }
 
+// A ReGauge governed record admitted DIRECTLY with a genuinely-verified outcome, so
+// the governed corpus has an eligible `regauge` member. The real
+// `admitTransformerGovernedLearningEvent` can no longer produce an eligible record —
+// it honestly emits `none` (see the isolation test below) — so this hypothetical
+// stands in for a future seam that can attest verification. It mirrors what that
+// producer passes (product/source/task), differing only in the outcome it could
+// not honestly attest today.
+function admitRegaugeGoverned(db: AppDb, consentId: string, candidateId: string) {
+  return admitGovernedLearningOutcome({
+    db,
+    tenantId: TENANT,
+    consentId,
+    residencyRegion: RESIDENCY,
+    product: "regauge",
+    sourceObjectType: "transformer_adaptive_candidate",
+    sourceObjectId: candidateId,
+    repositoryId: "regauge-repo-1",
+    taskType: "legacy_migration",
+    capability: "remediation_generation",
+    specialization: {
+      provider: "stripe",
+      framework: "hono",
+      language: null,
+      runtime: null,
+      migrationFamily: "adaptive_repair",
+      riskClass: "low",
+    },
+    execution: { modelId: null, adapterId: null, routerDecisionId: `transformer_route_${candidateId}`, fallback: false },
+    predictionSummary: "Adaptive repair candidate.",
+    outcome: { status: "corrected", summary: "The repair passed objective verification.", attribution: "model_behavior" },
+    reviewerDecision: "accepted",
+    correctionSubstantive: true,
+    contaminationFree: true,
+    confidence: 0.9,
+    verificationAuthority: { signalClass: "hard", producedBy: "sandbox_command", producerModelId: null },
+    economics: { inputTokens: 0, outputTokens: 0, latencyMs: 0, costUsd: 0 },
+    sourceClass: "design_partner_verified",
+    provenanceQualifiers: ["deterministically_verified", "reviewer_accepted"],
+    mayLeaveTenantBoundary: false,
+    revision: "b".repeat(40),
+    snapshotDigest: `sha256:${"d".repeat(64)}`,
+    scenarioId: null,
+    syntheticFamilyId: null,
+    reviewerPrincipalId: HUMAN,
+    reviewRationale: "Approved in adaptive review.",
+    observedAt: OBSERVED,
+    now: NOW,
+  });
+}
+
+function recordAttribution(db: AppDb, recordId: string): string | undefined {
+  const content = getLearningRecordRedactedContent(db, TENANT, recordId);
+  if (!content) return undefined;
+  return (JSON.parse(content) as { event: { observedOutcome: { attribution: string } } })
+    .event.observedOutcome.attribution;
+}
+
 function memberRecordIds(db: AppDb, datasetVersionId: string): Set<string> {
   const rows = db.raw
     .prepare("SELECT learning_record_id FROM learning_dataset_members WHERE tenant_id = ? AND dataset_version_id = ?")
@@ -256,9 +314,12 @@ describe("legacy and governed learning corpora stay isolated", () => {
     expect(legacy.admitted).toBe(true);
     const legacyRecordId = legacy.recordId!;
 
-    // Governed ReGauge record ADDITIVELY, from the SAME source, under the governed
-    // purpose. Distinct record; proves the additive dual-emission.
-    const governedRegauge = admitTransformerGovernedLearningEvent({
+    // The REAL governed ReGauge producer, from the SAME source, under the governed
+    // purpose. It is admitted ADDITIVELY as a distinct record (proving the additive
+    // dual-emission), but it honestly attributes the outcome to `none` — it has no
+    // independent verifier and cannot attest verification — so it is NOT
+    // corpus-eligible and must never enter the governed training corpus.
+    const governedRegaugeReal = admitTransformerGovernedLearningEvent({
       db,
       tenantId: TENANT,
       candidate: candidate("regauge-cand-1"),
@@ -268,8 +329,16 @@ describe("legacy and governed learning corpora stay isolated", () => {
       now: NOW,
       env: ON,
     });
+    expect(governedRegaugeReal.admitted).toBe(true);
+    expect(governedRegaugeReal.recordId).not.toBe(legacyRecordId);
+    expect(recordAttribution(db, governedRegaugeReal.recordId!)).toBe("none");
+    const ineligibleRegaugeRecordId = governedRegaugeReal.recordId!;
+
+    // An eligible ReGauge governed member for the corpus, admitted directly with a
+    // genuinely-verified outcome (a hypothetical stand-in the real producer cannot
+    // honestly emit today). This is what gives the corpus its `regauge` product.
+    const governedRegauge = admitRegaugeGoverned(db, "consent-governed", "regauge-cand-eligible");
     expect(governedRegauge.admitted).toBe(true);
-    expect(governedRegauge.recordId).not.toBe(legacyRecordId);
 
     // Governed Fettler record, so the materializer receives BOTH products. Its
     // split group lands in the train split so materialization has a training set.
@@ -317,6 +386,8 @@ describe("legacy and governed learning corpora stay isolated", () => {
     const governedMembers = memberRecordIds(db, governedCorpus.datasetVersionId);
     expect(governedMembers.has(legacyRecordId)).toBe(false);
     expect([...governedRecordIds].every((id) => governedMembers.has(id))).toBe(true);
+    // The real ReGauge producer's `none` record is admitted but never corpus-eligible.
+    expect(governedMembers.has(ineligibleRegaugeRecordId)).toBe(false);
 
     // Both products flow into the governed corpus; the legacy one carries neither
     // a governed lesson nor a mixed product set.

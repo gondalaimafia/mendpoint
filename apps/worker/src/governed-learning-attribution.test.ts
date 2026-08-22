@@ -16,12 +16,16 @@ import {
 // its registry entry — including a drift in the referenced line number.
 //
 // The old truth this asserted was that both production producers HARDCODED
-// `attribution: "model_behavior"`, collapsing the classifier to a constant. The
-// new truth is that both production producers DERIVE attribution from run evidence
-// via `deriveOutcomeAttribution`. This guard now asserts that new truth, and — the
-// point of the guard — it still fails if a producer regresses to a hardcoded
-// constant: reintroducing an `attribution: "<literal>"` line, or dropping the
-// derivation call, breaks the `evidence_derived` checks below.
+// `attribution: "model_behavior"`, collapsing the classifier to a constant. Both
+// production producers now DERIVE attribution via `deriveOutcomeAttribution` — that
+// is their SHAPE, and this guard asserts it. It does NOT claim the producers
+// discriminate: each feeds the deriver a constant `not_verified`, so both always
+// emit `none` (Warden's verifier is unsatisfiable; ReGauge's `passed` flag is
+// tautological). The guard still fails if a producer regresses to a hardcoded
+// constant (reintroducing `attribution: "<literal>"`, or dropping the derivation
+// call), AND — added below — if a producer reintroduces the tautological
+// `verification.passed === true` check or the `signalClass -> "verified"`
+// conflation that once fabricated `model_behavior`.
 
 function readProducerLines(entry: (typeof GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS)[number]): {
   source: string;
@@ -76,11 +80,32 @@ describe("governed-learning producer attribution registry stays true to source",
     expect(referencedLine).toBe("attribution: facts.outcome.attribution,");
   });
 
-  it("the source-derived reality matches the assessed discrimination: no longer constant", () => {
-    // Cross-check: the registry the source validates is the same registry the
-    // discrimination assessment reads, so "no longer constant" reflects the code.
+  it("the assessment reports its narrow degeneracy honestly: no hardcoded-same-literal collapse", () => {
+    // `effectivelyConstant` detects ONLY the same-hardcoded-literal collapse, and
+    // neither producer hardcodes, so it is false. This does NOT mean the classifier
+    // discriminates in production — both producers feed the deriver a constant
+    // `not_verified` and always emit `none`, a degeneracy this static check cannot
+    // see (see assessProductionAttributionDiscrimination's own doc). The value below
+    // is the honest report of the narrow thing the check measures.
     const assessment = assessProductionAttributionDiscrimination();
     expect(assessment.effectivelyConstant).toBe(false);
     expect(assessment.constant).toBeNull();
+  });
+
+  it("neither production producer reintroduces the tautology or the signalClass->verified conflation", () => {
+    // The delete-the-check guard for defects (2) and (3). Reverting either fix
+    // reintroduces one of these source patterns and fabricates `model_behavior`:
+    //   - `verification.passed === true`  — ReGauge's tautology (sealing guarantees
+    //     `passed: true`, so both sides trace to the same input).
+    //   - `signalClass === "hard" ? "verified"` — conflating the producer-authority
+    //     axis with a verification outcome at the deriver call.
+    // Both production producers must instead pass the literal `verification:
+    // "not_verified"` into `deriveOutcomeAttribution`.
+    for (const entry of GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS.filter((e) => e.role === "production")) {
+      const { source } = readProducerLines(entry);
+      expect(/verification\.passed\s*===\s*true/.test(source)).toBe(false);
+      expect(/signalClass\s*===\s*"hard"\s*\?\s*"verified"/.test(source)).toBe(false);
+      expect(source.includes('verification: "not_verified"')).toBe(true);
+    }
   });
 });

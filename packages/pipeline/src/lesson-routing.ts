@@ -20,16 +20,21 @@
 //   1. Per lesson: which of its destinations reach a sink, which are the
 //      intentional `no_action` terminal, and which are UNROUTED — classified to a
 //      destination nothing consumes (`summarizeLessonRouting`).
-//   2. Across the pipeline: whether the classifier is effectively a CONSTANT
-//      function, because its input `attribution` is degenerate
-//      (`assessProductionAttributionDiscrimination`). It once was: every
-//      governed-learning producer hardcoded `attribution: "model_behavior"`. Both
-//      production producers now DERIVE attribution from evidence the run produced
-//      (`deriveOutcomeAttribution` in `apps/worker/src/outcome-attribution.ts`),
-//      so the assessment reports `effectivelyConstant: false` — the classifier is
-//      handed a discriminating input again. The assessment fails closed: it
-//      asserts degeneracy only when every production producer hardcodes the SAME
-//      single constant, never otherwise.
+//   2. Across the pipeline: whether the classifier collapses to a CONSTANT because
+//      every production producer hardcodes the SAME attribution literal
+//      (`assessProductionAttributionDiscrimination`). Read its scope precisely:
+//      that is the ONLY degeneracy this static check can see, and it reports
+//      `effectivelyConstant: false` today because neither production producer
+//      hardcodes a literal — both call `deriveOutcomeAttribution`. But `false` here
+//      does NOT mean the classifier discriminates in practice. It does not: both
+//      producers feed the deriver a constant `not_verified` (Warden's independent
+//      verifier is unsatisfiable; ReGauge's "passed" flag is tautological and it
+//      has no verifier), so both always emit `none` -> `no_action`, and no
+//      production lesson ever reaches `model_weight`. That degeneracy — a producer
+//      evidence-derived in SHAPE but handed constant evidence — is invisible to
+//      this check, because proving it needs cross-file reasoning about what
+//      evidence each run can actually produce, which a static registry cannot do.
+//      See `assessProductionAttributionDiscrimination` and the doc's Count 2.
 //
 // See `docs/learning/LESSON_DESTINATION_ROUTING.md` for what each count means, the
 // two-taxonomy layering decision, and the upstream blocker that must be closed
@@ -179,14 +184,14 @@ export const GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS: readonly GovernedLearningP
     role: "production" as const,
     attributionSource: "evidence_derived" as const,
     constantValue: null,
-    reference: "apps/worker/src/warden-learning-producer.ts:317",
+    reference: "apps/worker/src/warden-learning-producer.ts:368",
   }),
   Object.freeze({
     producer: "apps/worker/src/transformer-governed-learning-producer.ts",
     role: "production" as const,
     attributionSource: "evidence_derived" as const,
     constantValue: null,
-    reference: "apps/worker/src/transformer-governed-learning-producer.ts:149",
+    reference: "apps/worker/src/transformer-governed-learning-producer.ts:161",
   }),
   Object.freeze({
     producer: "apps/worker/src/governed-learning-producer.ts",
@@ -198,19 +203,35 @@ export const GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS: readonly GovernedLearningP
 ]);
 
 /**
- * The honest assessment of whether the classifier discriminates in production.
- * `effectivelyConstant` is true only when EVERY production producer hardcodes the
- * SAME single attribution, so the eleven-way taxonomy collapses to one branch
- * before it ever reaches routing. It fails closed: if any production producer
- * derives its attribution from evidence (`evidence_derived`) or forwards a caller
- * value (`caller_supplied`), we cannot prove the input is degenerate, so
- * `effectivelyConstant` is false — never asserting a degeneracy that no longer
- * holds. With both production producers now `evidence_derived`, it reports false.
+ * A NARROW, honest assessment with a limit this comment states plainly so the
+ * result is not over-read. `effectivelyConstant` is true only when EVERY production
+ * producer hardcodes the SAME single attribution LITERAL, the one degeneracy a
+ * static registry can prove. It fails closed: if any production producer derives
+ * its attribution from evidence (`evidence_derived`) or forwards a caller value
+ * (`caller_supplied`), this cannot prove the input is degenerate, so
+ * `effectivelyConstant` is false. Both production producers are `evidence_derived`,
+ * so it reports false.
+ *
+ * `effectivelyConstant: false` therefore does NOT mean the classifier discriminates
+ * in production, and this check must not be read as though it would catch that. It
+ * would not, and cannot: a producer that is `evidence_derived` in shape can still
+ * be constant in practice by handing `deriveOutcomeAttribution` a constant input —
+ * an unsatisfiable predicate (Warden's independent-verifier check, which no
+ * production evidence can satisfy) or a tautological one (ReGauge's former
+ * `passed === true`, guaranteed by sealing). BOTH production producers are that
+ * case today: each feeds a constant `not_verified` and so always emits `none`, and
+ * no production lesson reaches `model_weight`. Detecting that class needs cross-file
+ * reasoning about what evidence each run can actually produce, which this registry
+ * does not model — so it is documented here rather than falsely reported as caught.
+ * The check retains real value as the regression guard against a producer sliding
+ * BACK to a hardcoded literal (`governed-learning-attribution.test.ts`).
  */
 export type ProductionAttributionDiscrimination = Readonly<{
   productionProducers: number;
   hardcodedProductionProducers: number;
   distinctProductionConstants: readonly LearningOutcomeAttribution[];
+  // True only for the same-hardcoded-literal collapse above; false does NOT imply
+  // the classifier discriminates in production. See the type doc.
   effectivelyConstant: boolean;
   constant: LearningOutcomeAttribution | null;
 }>;

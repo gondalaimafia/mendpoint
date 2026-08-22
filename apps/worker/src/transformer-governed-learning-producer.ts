@@ -86,30 +86,42 @@ export function admitTransformerGovernedLearningEvent(
       .update([tenantId, candidate.repositoryId, candidate.snapshotId, candidate.expectedBaseRevision].join("\0"), "utf8")
       .digest("hex")}`;
 
-    // The adaptive review carries a deterministic objective-verification command
-    // (`review.verification.passed` is set only when a real command exited zero),
-    // so the VERDICT is hard. The overall `confidence` below remains the model's
-    // own number: the adaptive review has no per-edit assessmentSource, so its
-    // confidence is intrinsically a model self-score. It is recorded as-is but
-    // never contributes to evidence strength or weight eligibility — only the
-    // recorded signal class does.
-    const deterministic = artifact.review.verification.passed === true;
-    const authority = deterministic
-      ? Object.freeze({ signalClass: "hard" as const, producedBy: "sandbox_command" as const, producerModelId: null })
-      : Object.freeze({ signalClass: "soft" as const, producedBy: "model_verifier" as const, producerModelId: null });
-    const provenanceQualifiers: readonly LearningProvenanceQualifier[] = authority.signalClass === "hard"
-      ? ["deterministically_verified", "reviewer_accepted"]
-      : ["reviewer_accepted"];
+    // This seam records a SOFT verdict, and does NOT test `review.verification.passed`
+    // to decide it. `passed` is tautologically guaranteed `true` here: sealing
+    // (packages/transformer/src/adaptive-candidate.ts) rejects any artifact whose
+    // `verification.passed !== true` and then normalizes the field to the literal
+    // `true`, so an artifact reaching this producer always carries `passed: true`.
+    // Comparing `passed === true` would be a check whose two sides trace to the same
+    // guaranteed input — a tautology that always yields "hard" — so it is removed
+    // rather than dressed up as verification. What is genuinely true is only that a
+    // deterministic command ran; the adaptive review has NO per-edit
+    // assessmentSource, so its edits are model-self-selected and no independent
+    // verifier graded them. By the same precision-first rule the Warden producer
+    // applies (a model's own opinion is never laundered into a deterministic label),
+    // the honest verdict is SOFT. The overall `confidence` below likewise remains
+    // the model's own number, recorded as-is but never contributing to evidence
+    // strength or weight eligibility.
+    const authority = Object.freeze({ signalClass: "soft" as const, producedBy: "model_verifier" as const, producerModelId: null });
+    // A soft verdict earns only `reviewer_accepted`; `deterministically_verified`
+    // is withheld because no independent verifier graded these model-selected edits.
+    const provenanceQualifiers: readonly LearningProvenanceQualifier[] = ["reviewer_accepted"];
 
-    // Derive the outcome attribution from evidence, not a constant. A hard verdict
-    // means the deterministic verification command actually established the outcome
-    // (verify.ts `verified`); a soft verdict established nothing objective and is
-    // `not_verified`. This seam observes no graph-context delivery — there is no
-    // trajectory-by-run link on the adaptive candidate path — so `contextDelivery`
-    // is the honest `unrecorded`; it only narrows a failure and never a verified
-    // success. See deriveOutcomeAttribution for the precision-first rationale.
+    // The VerificationOutcome this seam can honestly attest is `not_verified`, so
+    // that is what is passed — never `verified` derived from the tautology above.
+    // `"verified"` would require objective verification to have concluded the model's
+    // action correct; the only signal here is a `passed` flag that cannot vary (see
+    // above), assessing model-self-selected edits, so nothing establishes it.
+    // `"failed"` is structurally unrepresentable (ReviewedVerificationCommandSchema
+    // types ok/exitCode as the literals true/0) and admission is restricted to a
+    // merged outcome anyway, so failure never reaches the deriver. This seam also
+    // observes no graph-context delivery — there is no trajectory-by-run link on the
+    // adaptive candidate path — so `contextDelivery` is the honest `unrecorded`.
+    // `deriveOutcomeAttribution` therefore returns `none` (undetermined) for every
+    // production ReGauge event: it cannot discriminate here, and does not pretend to.
+    // Making failure representable, and observing a genuine verification outcome at
+    // this seam, are decisions for the owner. See deriveOutcomeAttribution.
     const attribution = deriveOutcomeAttribution({
-      verification: authority.signalClass === "hard" ? "verified" : "not_verified",
+      verification: "not_verified",
       contextDelivery: "unrecorded",
     });
 
