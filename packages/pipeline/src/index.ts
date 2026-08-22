@@ -92,6 +92,7 @@ export * from "./verifier-learning.js";
 export * from "./organization-memory-precedence.js";
 export * from "./mission-context-compiler.js";
 export * from "./verifier-telemetry.js";
+export * from "./calibration-report.js";
 import {
   getGraphLearnDb,
   ingestControlPlane,
