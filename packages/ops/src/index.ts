@@ -10,8 +10,11 @@ export {
   deploymentProfile,
   validateApiEnv,
   assertApiEnvOrExit,
+  assessCustomerReadiness,
   type EnvReport,
   type DeploymentProfile,
+  type CustomerReadinessStatus,
+  type CustomerReadinessAssessment,
 } from "./env.js";
 export {
   rateLimit,
@@ -58,6 +61,12 @@ export {
   type PilotTransformerEnablementOptions,
 } from "./transformer-enablement.js";
 export { liveness, readiness, type ProbeResult } from "./readiness.js";
+export {
+  resolveSandboxEgressRotationTargets,
+  parseFlyAppListing,
+  type FlyAppListing,
+  type SandboxEgressRotationConfig,
+} from "./sandbox-egress-rotation.js";
 export {
   DISASTER_RECOVERY_POLICY_SCHEMA_VERSION,
   BACKUP_MANIFEST_SCHEMA_VERSION,
