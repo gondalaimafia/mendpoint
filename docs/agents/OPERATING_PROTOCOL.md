@@ -400,5 +400,39 @@ Working code without peer review is not complete.
 - Run verification gates in-band and read the output directly. Do not background a long-running gate (`npm install`, `npm run typecheck`, `npm test`, a suite) and end the turn waiting for a completion notice — the notice does not usefully arrive, and the turn stalls.
 - Use a dedicated worktree per concurrent agent, always — even for a single-file change, and even when it costs a cold `npm install`. Branch isolation is not enough: the working directory is the shared resource, and two agents in one tree corrupt each other's commits and pushes. Reuse an existing installed worktree only when you can confirm no other agent is active in it. If you find a shared tree on an unexpected branch mid-task, stop and report rather than committing — that is the signal someone else is in it.
 - Rebase onto current `main` and re-run the gates against the rebased tree before declaring done. `main` moves during a task; an earlier clean run on a stale tree does not certify the merge.
+- Run the gate over the same scope CI runs. `scripts/` and `evals/` are real code but are **not** npm workspaces, so a command scoped to `packages/` and `apps/` silently skips them. A local gate that passes on a narrower scope than CI is not evidence the change is safe — it is evidence the gate was pointed somewhere else.
 
 A stale reused tree can also fail gates for reasons unrelated to the change: a long-lived checkout's `node_modules` drifts from the current tree — for example, missing workspace symlinks for packages added since it was installed — so a fresh worktree is the safer default.
+
+### 18.1 Operator-provisioned configuration is not yours to retire
+
+Before removing, renaming, or retiring any environment variable, establish **who sets it**. Two categories look identical in the source and behave oppositely:
+
+- **Repo- or CI-controlled**: set in a committed config, a workflow, or a script in this repository. Retiring it is a code change, and the repository is the authority.
+- **Operator-provisioned**: set per deployment by whoever runs the app — a Fly secret, a per-customer provisioning step, an org-scoped token. The repository never sees the value and cannot grep for its use. Retiring it removes support for a name a live deployment is **already** setting, and the failure lands at customer boot, not in CI.
+
+The tell is that the repository contains readers but no writer. Absence of a writer is not evidence the variable is unused — for operator-provisioned config it is exactly what you expect to see.
+
+A change that retired two per-customer backup path variables reached review before this was caught. Its own loud-failure guard would have refused boot for any customer who had set them, which is the guard working correctly against a change that should not have been made.
+
+When in doubt, keep reading the old name. A retained alias costs a lookup; a retired one costs a customer outage.
+
+### 18.2 A search that returns nothing may not have searched
+
+On the Windows host, Git Bash rewrites arguments that look like paths before the
+command sees them (MSYS path conversion). A pattern containing `="/` — for example
+`href="/metrics` — matches the `key=/path` rule, so `git grep` silently searches for
+a rewritten string and reports **no matches**. Zero results from a mangled pattern
+is indistinguishable from zero results from an honest search, and "nothing links to
+this" is exactly the kind of conclusion that gets acted on.
+
+Two rules follow:
+
+- Prefix any search whose pattern contains a slash with `MSYS_NO_PATHCONV=1`, or
+  write the pattern so no slash follows `=` or a quote.
+- Before reporting a negative result as a finding, confirm the search can find
+  something. Run it against a string you know is present in the same file. A search
+  that cannot produce a hit has not established an absence.
+
+This is the third-state defect in the tooling rather than the product: "the query
+did not run correctly" collapsed into "there is nothing there."
