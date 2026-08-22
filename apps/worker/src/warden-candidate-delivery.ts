@@ -24,6 +24,7 @@ import {
   type CandidateReviewEvidence,
 } from "@mendpoint/shared";
 import { admitWardenGovernedLearningEvent } from "./warden-learning-producer.js";
+import type { GovernedLearningAdmissionResult } from "./governed-learning-producer.js";
 
 const JOB_TYPE = "warden.candidate.deliver";
 
@@ -362,5 +363,53 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
       if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
       throw settlementError;
     }
+  }
+}
+
+export type ResolvedOutcomeLearningInput = Readonly<{
+  db: AppDb;
+  tenantId: string;
+  deliveryId: string;
+  artifactEnv?: NodeJS.ProcessEnv;
+  now?: () => string;
+}>;
+
+/**
+ * Re-invoke the governed learning producer for a delivered Fettler candidate whose
+ * pull request has reached a terminal outcome (merged / closed_unmerged), recorded
+ * on the delivery row by the GitHub outcome webhook. The delivery seam admits
+ * nothing because `delivery.outcome` is null there; this seam reloads the durably
+ * delivered run and re-verifies its sealed, approved review evidence, then invokes
+ * the producer with the observed outcome. The outcome is read only from the
+ * delivery row (never inferred), the producer refuses anything but `merged`, and
+ * admission is idempotent on the run — so a redelivered webhook or retried job
+ * admits at most once. Best-effort: it never throws.
+ */
+export function admitWardenLearningForResolvedOutcome(
+  input: ResolvedOutcomeLearningInput,
+): GovernedLearningAdmissionResult {
+  const now = input.now ?? (() => new Date().toISOString());
+  try {
+    const delivery = getWardenCandidateDelivery(input.db, input.tenantId, input.deliveryId);
+    if (!delivery) return Object.freeze({ admitted: false, reason: "delivery_not_found" });
+    const run = getAgentRun(input.db, delivery.runId, input.tenantId);
+    if (!run) return Object.freeze({ admitted: false, reason: "run_not_found" });
+    const artifact = readWardenApprovalArtifact({
+      tenantId: input.tenantId, path: delivery.sealedPath, sha256: delivery.sealedSha256, env: input.artifactEnv,
+    });
+    assertArtifact(delivery, artifact);
+    return admitWardenGovernedLearningEvent({
+      db: input.db,
+      delivery,
+      run,
+      reviewEvidence: reviewEvidence(artifact),
+      now: now(),
+      env: input.artifactEnv ?? process.env,
+    });
+  } catch (error) {
+    return Object.freeze({
+      admitted: false,
+      reason: `error:${error instanceof Error ? error.message : String(error)}`,
+    });
   }
 }

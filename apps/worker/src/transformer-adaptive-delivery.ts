@@ -4,6 +4,7 @@ import {
   completeJob,
   failJob,
   getAdaptiveCandidate,
+  getAdaptiveDelivery,
   getAdaptiveDeliveryByCandidate,
   promoteAdaptiveCandidate,
   recordAudit,
@@ -23,6 +24,7 @@ import {
   admitApprovedOutcomeLearningRecord,
 } from "./transformer-learning-producer.js";
 import { admitTransformerGovernedLearningEvent } from "./transformer-governed-learning-producer.js";
+import type { GovernedLearningAdmissionResult } from "./governed-learning-producer.js";
 import type {
   ExactDraftDeliveryInput,
   ExactDraftDeliveryResult,
@@ -637,5 +639,54 @@ export async function runTransformerAdaptiveDelivery(
       throw error;
     }
     return settleFailure(input, delivery, candidateId, classifyFailure(error));
+  }
+}
+
+export type ResolvedOutcomeLearningInput = Readonly<{
+  db: AppDb;
+  tenantId: string;
+  deliveryId: string;
+  artifactEnv?: NodeJS.ProcessEnv;
+  now?: () => string;
+}>;
+
+/**
+ * Re-invoke the governed learning producer for a delivered ReGauge adaptive
+ * candidate whose pull request has reached a terminal outcome (merged /
+ * closed_unmerged), recorded on the delivery row by the GitHub outcome webhook. The
+ * delivery seam admits nothing because `delivery.outcome` is null there; this seam
+ * reloads the delivered candidate and re-verifies its sealed artifact, then invokes
+ * the producer with the observed outcome. The outcome is read only from the
+ * delivery row (never inferred), the producer refuses anything but `merged`, and
+ * admission is idempotent on the candidate — so a redelivered webhook or retried
+ * job admits at most once. Best-effort: it never throws.
+ */
+export function admitTransformerLearningForResolvedOutcome(
+  input: ResolvedOutcomeLearningInput,
+): GovernedLearningAdmissionResult {
+  const now = input.now ?? (() => new Date().toISOString());
+  try {
+    const delivery = getAdaptiveDelivery(input.db, input.tenantId, input.deliveryId);
+    if (!delivery) return Object.freeze({ admitted: false, reason: "delivery_not_found" });
+    const candidate = getAdaptiveCandidate(input.db, input.tenantId, delivery.candidateId);
+    if (!candidate) return Object.freeze({ admitted: false, reason: "candidate_not_found" });
+    const artifact = readAdaptiveCandidateArtifact({
+      tenantId: input.tenantId, path: candidate.sealedPath, sha256: candidate.sealedSha256, env: input.artifactEnv,
+    });
+    assertCandidateArtifactBinding(candidate, artifact);
+    return admitTransformerGovernedLearningEvent({
+      db: input.db,
+      tenantId: input.tenantId,
+      candidate,
+      artifact,
+      deliveryOutcome: delivery.outcome,
+      now: now(),
+      env: input.artifactEnv ?? process.env,
+    });
+  } catch (error) {
+    return Object.freeze({
+      admitted: false,
+      reason: `error:${error instanceof Error ? error.message : String(error)}`,
+    });
   }
 }
