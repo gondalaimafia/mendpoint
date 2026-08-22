@@ -1,0 +1,56 @@
+# CODEOWNERS — required review ownership for security-sensitive surfaces.
+#
+# WHAT THIS FILE DOES: it requires the listed owner's review before a pull
+# request that touches a matching path can merge (when "Require review from Code
+# Owners" is enabled as a branch-protection rule on the protected branch). It is
+# a review gate on changes to these files.
+#
+# WHAT THIS FILE DOES NOT DO: it does NOT restrict which git ref a
+# `workflow_dispatch` run may execute from. `workflow_dispatch` resolves the
+# workflow definition from the dispatched ref, so anyone with write access can
+# still push a branch with the egress-probe steps deleted and run the signing
+# workflow from it, minting a receipt, without any CODEOWNERS review of that
+# branch. Closing that hole requires a deployment-branch restriction on the
+# `sandbox-production` environment (GitHub environment settings, outside this
+# repository) — the owner's action, not this file's.
+#
+# Owner handle is the repository owner; replace with a team (@org/team) if one
+# is created.
+
+# CI, deployment, and signing workflows (includes the egress-attestation job).
+/.github/                                       @gondalaimafia
+
+# Sandbox isolation boundary and egress attestation.
+/packages/platform/src/sandbox.ts               @gondalaimafia
+/packages/platform/src/fly-sandbox.ts           @gondalaimafia
+/packages/platform/src/live-sandbox.ts          @gondalaimafia
+/packages/platform/src/sandbox-egress-attestation.ts @gondalaimafia
+/packages/repair/src/verify-sandbox.ts          @gondalaimafia
+/apps/api/src/platform-sandbox.ts               @gondalaimafia
+/apps/worker/src/delegated-pr-sandbox-verifier.ts @gondalaimafia
+/scripts/customer-warden-profile.ts             @gondalaimafia
+/scripts/build-sandbox-image.mjs                @gondalaimafia
+/scripts/start-sandbox-entrypoint.sh            @gondalaimafia
+/scripts/create-sandbox-egress-attestation.ts   @gondalaimafia
+/packages/contract/src/security-attestation.ts  @gondalaimafia
+/packages/contract/src/software-attestation.ts  @gondalaimafia
+/packages/pipeline/src/software-attestation-operation.ts @gondalaimafia
+/Dockerfile.sandbox                             @gondalaimafia
+/fly.toml                                        @gondalaimafia
+/fly.customer-warden.toml                        @gondalaimafia
+/fly.transformer.toml                            @gondalaimafia
+/fly.sandbox.toml                                @gondalaimafia
+
+# Consent and tenant-scope enforcement.
+/apps/api/src/learning-consent-routes.ts        @gondalaimafia
+/packages/pipeline/src/learning-event.ts        @gondalaimafia
+/packages/agent/src/model-tenant-routing.ts     @gondalaimafia
+/packages/db/src/tenant-scope.ts                @gondalaimafia
+/packages/graph-learn/src/tenant-scope.ts       @gondalaimafia
+
+# Requirement and claims registries.
+/docs/PRODUCT_REQUIREMENTS.json                 @gondalaimafia
+/evals/readiness-gates.json                     @gondalaimafia
+/docs/PUBLIC_CLAIMS.json                        @gondalaimafia
+/docs/WARDEN_CLAIMS.md                          @gondalaimafia
+/packages/contract/src/public-claims.ts         @gondalaimafia

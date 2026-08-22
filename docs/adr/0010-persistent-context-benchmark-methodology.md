@@ -87,8 +87,13 @@ mechanism**, not a live product measurement.
   require a live model.
 - The natural successor is a live-model lane that reuses this cohort and sealed
   key unchanged and measures realized (not ceiling) repeat avoidance, plus real
-  time and cost. That lane is out of scope here and is not a precondition for
-  this benchmark existing.
+  time and cost. That lane was out of scope for this decision and is not a
+  precondition for this benchmark existing.
+  **Update (2026-08-21):** that lane has since landed and run, in commit
+  `0f66bde` (PR #276, "Pin the live host out-of-band, and measure the compiler
+  against a real model"): `evals/context-benchmark/live-arm.ts` reuses the same
+  `COHORT`, `SEALED_KEY`, and grader (`live-arm.ts:5,13,102`) and is driven by
+  `evals/context-benchmark/run-live.ts`.
 - The frozen acceptance gates (`docs/PRODUCT_REQUIREMENTS.json`,
   `evals/readiness-gates.json`) are untouched; this benchmark defines its own
   gates in its own module.
