@@ -25,8 +25,10 @@ export {
   validateVerificationCommands,
   type VerificationExecution,
   type VerificationInvocation,
+  type VerificationOutcome,
 } from "./verify.js";
 export {
+  classifySandboxRunResult,
   configuredSandboxKind,
   runVerificationInSandbox,
   type VerificationSandboxOptions,

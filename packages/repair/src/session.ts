@@ -112,8 +112,10 @@ function dedupeObservations(observations: FailureObservation[]): FailureObservat
 
 async function runVerify(repoRoot: string, commands: string[]): Promise<VerifyResult> {
   if (!commands.length) {
+    // No command to run means nothing was verified — a refusal, not a failure.
     return {
       ok: false,
+      notVerified: true,
       commands,
       output: "verification failed closed: no approved command profile configured",
       failures: [
@@ -132,6 +134,24 @@ async function runVerify(repoRoot: string, commands: string[]): Promise<VerifyRe
     } else {
       const combined = `${execution.stdout}\n${execution.stderr}\n${execution.error ?? ""}`;
       outputs.push(`$ ${command}\n${combined}`);
+      // A refusal (containment could not be established, approval gate, or an
+      // unsupported command) is `not_verified`: there is no failing test to
+      // diagnose or repair. Surface it as its own state rather than mining the
+      // refusal message for phantom failure observations.
+      if (execution.outcome === "not_verified") {
+        return {
+          ok: false,
+          notVerified: true,
+          commands,
+          output: outputs.join("\n---\n").slice(0, 12_000),
+          failures: [
+            {
+              kind: "unknown",
+              message: execution.error ?? "Verification could not run under the required containment.",
+            },
+          ],
+        };
+      }
       return {
         ok: false,
         commands,
@@ -354,6 +374,10 @@ export async function runRepairSession(
     if (!leaseActive()) return fail("lease_lost", "Worker lease was lost before verification");
     finalVerify = await runVerify(input.repoRoot, verifyCommands);
     if (!leaseActive()) return fail("lease_lost", "Worker lease was lost during verification");
+    if (finalVerify.notVerified) {
+      // Nothing was learned about the code, so there is nothing to repair.
+      return fail("not_verified", "Verification could not run; refusing to repair against an unverifiable baseline");
+    }
     if (!finalVerify.ok) {
       observations = dedupeObservations([...observations, ...finalVerify.failures]);
     } else if (!observations.length) {
@@ -448,6 +472,11 @@ export async function runRepairSession(
       if (!leaseActive()) return fail("lease_lost", "Worker lease was lost after mutation");
       finalVerify = await runVerify(input.repoRoot, verifyCommands);
       if (!leaseActive()) return fail("lease_lost", "Worker lease was lost during verification");
+      if (finalVerify.notVerified) {
+        // A post-repair refusal means we can no longer tell whether the edits
+        // help; stop rather than churn against an unverifiable baseline.
+        return fail("not_verified", "Verification could not run after repair; the result is unverifiable");
+      }
       const remaining = diagnoseWorkingTree(
         repairFiles(),
         input.renameMap,

@@ -10,8 +10,9 @@ MCUs, 150 MCUs/seat/month, metered billing" claim true for admitted runs.
 ## What this does NOT do
 
 - No payment processor integration. Nothing charges a card, wallet, or bank account.
-- No automatic invoicing, dunning, or settlement to payment. Invoice/settlement
-  semantics in `packages/billing/src/invoice-boundary.ts` are unchanged.
+- No automatic invoicing, dunning, or settlement to payment. There is no
+  invoice or settlement pipeline on main (the unreachable `@mendpoint/billing`
+  package was removed; see `docs/adr/0012-remove-unreachable-billing-and-config-subsystems.md`).
 - No change to security classification, mutation fencing, or the human-review /
   no-auto-merge model.
 

@@ -688,6 +688,10 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
             stderr: `fly_machines: run exceeded cap ${capMs}ms; Machine ${machine.id} killed`,
             exitCode: 124,
             timedOut: true,
+            // Containment was established and the command was dispatched into the
+            // Machine before the cap killed it: the backend is observed, so this
+            // is a failed run, not a refusal.
+            backend: "fly_machines",
           };
         } else {
           const exec = capped.value;
@@ -697,6 +701,11 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
             stdout: clip(exec.stdout, 8000),
             stderr: clip(exec.stderr, 4000),
             exitCode: exec.exit_code,
+            // Observed from the run: the customer command actually executed inside
+            // this Machine. Set ONLY here and on the timeout branch above — every
+            // fail-closed return in this function leaves it absent so a refusal is
+            // never mistaken for a real backend.
+            backend: "fly_machines",
           };
         }
       }
