@@ -163,6 +163,7 @@ export function createGraphifyProcessPort(config: GraphifyProcessConfig): Graphi
       stdio: ["pipe", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let forcedFailure: Error | undefined;
@@ -186,7 +187,9 @@ export function createGraphifyProcessPort(config: GraphifyProcessConfig): Graphi
       stderrBytes += chunk.byteLength;
       if (stderrBytes > STDERR_LIMIT_BYTES) {
         failAndStop(structuralFailure("GRAPHIFY_PERFORMANCE_FAILURE", "Graphify bridge diagnostics exceeded their byte ceiling"));
+        return;
       }
+      stderr.push(Buffer.from(chunk));
     });
     child.once("error", (error) => {
       forcedFailure ??= structuralFailure("GRAPHIFY_EXTRACTION_FAILURE", `Graphify process failed to start: ${error.message}`);
@@ -207,7 +210,14 @@ export function createGraphifyProcessPort(config: GraphifyProcessConfig): Graphi
           return;
         }
         if (code !== 0) {
-          rejectResult(structuralFailure("GRAPHIFY_EXTRACTION_FAILURE", `Graphify process exited unsuccessfully (${code ?? signal ?? "unknown"})`));
+          const diagnostic = Buffer.concat(stderr).toString("utf8")
+            .replace(/[^\x20-\x7e]+/gu, " ")
+            .trim()
+            .slice(0, 512);
+          rejectResult(structuralFailure(
+            "GRAPHIFY_EXTRACTION_FAILURE",
+            `Graphify process exited unsuccessfully (${code ?? signal ?? "unknown"})${diagnostic ? `: ${diagnostic}` : ""}`,
+          ));
           return;
         }
         try {

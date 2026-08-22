@@ -35,7 +35,7 @@ jobs:
           .graphify-venv/bin/python -m pip install --disable-pip-version-check --requirement packages/structural-graph/python/requirements.lock
           test "$(.graphify-venv/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("graphifyy"))')" = "0.9.46"
       - name: Run namespace isolated process smoke
-        run: npm run graphify:process:smoke
+        run: sudo --preserve-env=PATH,GRAPHIFY_PYTHON,GRAPHIFY_SMOKE_OUTPUT npm run graphify:process:smoke
         env:
           GRAPHIFY_PYTHON: ${{ github.workspace }}/.graphify-venv/bin/python
           GRAPHIFY_SMOKE_OUTPUT: ${{ runner.temp }}/graphify-process-smoke.json
