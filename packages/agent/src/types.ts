@@ -355,7 +355,12 @@ export type AgentExecutionMetrics = Readonly<{
 export type AgentVerifierState = {
   command?: string;
   source: "provided" | "discovered" | "none";
-  status: "not_run" | "passed" | "failed" | "simulated" | "invalid";
+  /**
+   * `not_verified` means verification was attempted but could not run (containment
+   * refused or approval gate) — distinct from `failed` (the command ran and did
+   * not pass) and from `not_run` (verification was never attempted).
+   */
+  status: "not_run" | "passed" | "failed" | "simulated" | "invalid" | "not_verified";
   output?: string;
 };
 

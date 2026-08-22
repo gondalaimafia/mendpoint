@@ -23,10 +23,10 @@ import {
   sep,
 } from "node:path";
 import {
-  configuredSandboxKind,
   runVerificationCommand,
   validateVerificationCommands,
   type VerificationExecution,
+  type VerificationOutcome,
 } from "@mendpoint/repair";
 import {
   buildWardenAttemptCapture,
@@ -212,6 +212,16 @@ type VerificationRecord = Readonly<{
   ok: boolean;
   exitCode: number;
   outputSha256: string;
+  /**
+   * Three-state result carried from the execution (verified / failed /
+   * not_verified). A refusal is `not_verified`, never collapsed into `failed`.
+   */
+  outcome: VerificationOutcome;
+  /**
+   * The backend that actually ran this command, observed from the execution
+   * (never the configured backend). `null` when nothing ran (`not_verified`).
+   */
+  sandboxBackend: VerificationExecution["sandboxBackend"];
 }>;
 
 class AttemptError extends Error {
@@ -708,16 +718,27 @@ async function verify(
         env: wardenNpmFallbackEnvironment(process.env),
       }, (npmError, stdout, stderr) => {
         if (!npmError) {
-          resolveExecution({ ok: true, stdout: String(stdout), stderr: String(stderr), exitCode: 0 });
+          // The npm fallback runs on the host workdir (no isolation): backend "local".
+          resolveExecution({
+            ok: true,
+            stdout: String(stdout),
+            stderr: String(stderr),
+            exitCode: 0,
+            outcome: "verified",
+            sandboxBackend: "local",
+          });
           return;
         }
         const npmFailure = npmError as Error & { code?: number | string };
+        // The command ran on the host and exited non-zero: a real test failure.
         resolveExecution({
           ok: false,
           stdout: String(stdout),
           stderr: String(stderr),
           exitCode: Number.isInteger(npmFailure.code) ? Number(npmFailure.code) : 1,
           error: npmFailure.message,
+          outcome: "failed",
+          sandboxBackend: "local",
         });
       });
     });
@@ -729,6 +750,10 @@ async function verify(
       ok: execution.ok,
       exitCode: execution.exitCode,
       outputSha256: sha256(`${execution.stdout}\0${execution.stderr}\0${execution.error ?? ""}`),
+      // Carry the three-state outcome and the OBSERVED backend through the record
+      // so a refusal stays distinguishable from a failure at every reader.
+      outcome: execution.outcome,
+      sandboxBackend: execution.sandboxBackend,
     }),
   };
 }
@@ -745,6 +770,27 @@ async function verifyAll(
     if (!result.execution.ok) return { ok: false, records: Object.freeze(records) };
   }
   return { ok: true, records: Object.freeze(records) };
+}
+
+/**
+ * The first command in a verify group whose verification could not run
+ * (`not_verified`), or undefined if every command that ran produced a real
+ * pass/fail. Lets the baseline gates tell a containment refusal apart from a
+ * genuine regression/security failure instead of collapsing both into `!ok`.
+ */
+function firstNotVerified(
+  result: { records: readonly VerificationRecord[] },
+): VerificationRecord | undefined {
+  return result.records.find((record) => record.outcome === "not_verified");
+}
+
+/** Fold the observed backend from a verify group's records (last non-null wins). */
+function observedBackendOf(
+  result: { records: readonly VerificationRecord[] },
+): VerificationExecution["sandboxBackend"] {
+  let observed: VerificationExecution["sandboxBackend"] = null;
+  for (const record of result.records) observed = record.sandboxBackend ?? observed;
+  return observed;
 }
 
 function verifierPaths(manifest: TreeManifest): string[] {
@@ -813,7 +859,16 @@ function reviewEvidence(
   if (!objective) throw new Error("warden_attempt_review_objective_invalid");
   const verification = {
     summary: `All ${commands.length} configured verification commands passed on the exact candidate.`,
-    commands: commands.map((command) => ({ ...command, ok: true as const, exitCode: 0 as const })),
+    // Select the review-contract fields explicitly rather than spreading the
+    // record: the record now also carries `outcome`/`sandboxBackend`, and the
+    // customer review evidence is a hash-covered contract that must stay
+    // byte-identical. This path only runs once every command is `verified`.
+    commands: commands.map((command) => ({
+      command: command.command,
+      ok: true as const,
+      exitCode: 0 as const,
+      outputSha256: command.outputSha256,
+    })),
   };
   const intentsByPath = new Map<string, Array<NonNullable<AgentRunResult["steps"][number]["call"]["intent"]>>>();
   for (const step of agent.steps) {
@@ -973,6 +1028,11 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
   let agentResult: AgentRunResult | undefined;
   let capture: WardenAttemptCapture | undefined;
   let resolvedMode: AgentTaskMode = input.mode ?? input.task.taskMode ?? "repair";
+  // The backend that a verification was actually OBSERVED to run under, hoisted so
+  // a rejection path records what really ran instead of echoing the configured
+  // backend. Stays null until a command executes under a real backend; a refusal
+  // (not_verified) never sets it. Updated after each target verification below.
+  let observedSandboxBackend: VerificationExecution["sandboxBackend"] = null;
   const captureAvailableTools = wardenAvailableTools({
     allowNetwork: false,
     dryRun: input.task.dryRun,
@@ -1029,7 +1089,12 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       input.limits.verificationTimeoutMs,
     );
     assertAttemptContinues(input);
-    if (baselineTarget.execution.exitCode === 126) {
+    observedSandboxBackend = baselineTarget.record.sandboxBackend ?? observedSandboxBackend;
+    // A verifier that could not run (approval-gate exit 126, or any sandbox
+    // containment refusal) is `not_verified`: nothing was learned, so it must not
+    // flow on as if the baseline "failed". The exitCode === 126 check alone missed
+    // sandbox refusals (exit -1); keying on the outcome catches every refusal.
+    if (baselineTarget.execution.outcome === "not_verified") {
       fail(
         "warden_attempt_verifier_unavailable",
         baselineTarget.execution.error ?? "The target verifier is unavailable under production policy.",
@@ -1047,6 +1112,22 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       input.limits.verificationTimeoutMs,
     );
     assertAttemptContinues(input);
+    observedSandboxBackend =
+      observedBackendOf(baselineSecurity) ??
+      observedBackendOf(baselineRegression) ??
+      observedSandboxBackend;
+    // A regression/security verifier that could not run is a refusal, not a
+    // pre-existing failure: distinguish it before the feature/repair gates below
+    // read `!ok` as "a baseline check failed".
+    const baselineRefusal = firstNotVerified(baselineRegression) ?? firstNotVerified(baselineSecurity);
+    if (baselineRefusal) {
+      fail(
+        "warden_attempt_verifier_unavailable",
+        baselineRefusal.command
+          ? `A baseline verifier could not run under containment: ${baselineRefusal.command}.`
+          : "A baseline verifier could not run under containment.",
+      );
+    }
     if (validated.mode === "feature") {
       if (!baselineTarget.execution.ok || !baselineRegression.ok || !baselineSecurity.ok) {
         fail(
@@ -1221,6 +1302,15 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       input.limits.verificationTimeoutMs,
     );
     assertAttemptContinues(input);
+    observedSandboxBackend = target.record.sandboxBackend ?? observedSandboxBackend;
+    // A post-edit refusal (not_verified) means the verifier could not run, which is
+    // NOT the same as the candidate failing the target. Keep the two apart.
+    if (target.execution.outcome === "not_verified") {
+      fail(
+        "warden_attempt_verifier_unavailable",
+        target.execution.error ?? "The target verifier could not run on the candidate.",
+      );
+    }
     if (!target.execution.ok) {
       fail("warden_attempt_target_failed", "The repaired candidate does not pass the target verifier.");
     }
@@ -1230,6 +1320,14 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       input.limits.verificationTimeoutMs,
     );
     assertAttemptContinues(input);
+    observedSandboxBackend = observedBackendOf(regression) ?? observedSandboxBackend;
+    const regressionRefusal = firstNotVerified(regression);
+    if (regressionRefusal) {
+      fail(
+        "warden_attempt_verifier_unavailable",
+        `A regression verifier could not run on the candidate: ${regressionRefusal.command}.`,
+      );
+    }
     if (!regression.ok) {
       fail("warden_attempt_regression_failed", "The repaired candidate fails a regression verifier.");
     }
@@ -1239,6 +1337,14 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       input.limits.verificationTimeoutMs,
     );
     assertAttemptContinues(input);
+    observedSandboxBackend = observedBackendOf(security) ?? observedSandboxBackend;
+    const securityRefusal = firstNotVerified(security);
+    if (securityRefusal) {
+      fail(
+        "warden_attempt_verifier_unavailable",
+        `A security verifier could not run on the candidate: ${securityRefusal.command}.`,
+      );
+    }
     if (!security.ok) {
       fail("warden_attempt_security_failed", "The repaired candidate fails a security verifier.");
     }
@@ -1359,16 +1465,24 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
             await execution.finalize(outcome);
         })()
       : undefined;
-    const sandboxBackend = configuredSandboxKind();
     const verifications: WardenCaptureVerification[] = [
       target.record,
       ...regression.records,
       ...security.records,
     ].map((record) => ({
-      verdict: record.ok ? "passed" : "failed",
+      // Three-state verdict and the OBSERVED backend, per record — never the
+      // configured backend echoed uniformly across every command. The existing
+      // "passed"/"failed" observation vocabulary is preserved and the third state
+      // is added as "not_verified" so a refusal never reads as a test failure.
+      verdict:
+        record.outcome === "verified"
+          ? "passed"
+          : record.outcome === "failed"
+            ? "failed"
+            : "not_verified",
       exitCode: record.exitCode,
       command: record.command,
-      sandboxBackend,
+      sandboxBackend: record.sandboxBackend,
     }));
     capture = buildWardenAttemptCapture({
       agent,
@@ -1378,7 +1492,9 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
       verifyCommand: input.verification.targetCommand,
       availableTools: captureAvailableTools,
       runId: input.task.sessionId ?? null,
-      sandboxBackend,
+      // Run-level backend observed from the verifications that actually ran, not
+      // read back from configuredSandboxKind().
+      sandboxBackend: observedSandboxBackend,
       status: "succeeded",
       changedPaths: difference.changedPaths,
       candidateDigest: candidateManifest.digest,
@@ -1426,7 +1542,11 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
           verifyCommand: input.verification.targetCommand,
           availableTools: captureAvailableTools,
           runId: input.task.sessionId ?? null,
-          sandboxBackend: configuredSandboxKind(),
+          // Observed from the run, not echoed from configuration: null until a
+          // verification actually ran under a real backend. A rejection caused by
+          // a refusal (nothing ran) therefore records no backend rather than
+          // claiming the configured one.
+          sandboxBackend: observedSandboxBackend,
           status: "rejected",
           code: rejectionCode,
         })

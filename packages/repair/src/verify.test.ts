@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { verifierProtectedPaths } from "./verify.js";
+import { runVerificationCommand, verifierProtectedPaths } from "./verify.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -42,5 +43,62 @@ describe("verifierProtectedPaths covers every verification profile", () => {
 
   it("contributes nothing for an unrecognized command", () => {
     expect(verifierProtectedPaths("rm -rf /", root)).toEqual([]);
+  });
+});
+
+describe("runVerificationCommand distinguishes a refusal from a test failure", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  function tempRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), "mp-verify-outcome-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  it("records a production approval-gate refusal as not_verified (never failed)", async () => {
+    const dir = tempRepo();
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "exit 1" } }));
+    vi.stubEnv("NODE_ENV", "production");
+    // No MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION: the command is not approved, so
+    // it must be refused (never run) rather than reported as a failing test.
+    vi.stubEnv("MENDPOINT_ALLOW_UNSANDBOXED_VERIFICATION", undefined);
+
+    const result = await runVerificationCommand("npm test", dir);
+
+    expect(result.outcome).toBe("not_verified");
+    expect(result.sandboxBackend).toBeNull();
+    expect(result.exitCode).toBe(126);
+    // Fail closed: a refusal is not a pass.
+    expect(result.ok).toBe(false);
+  });
+
+  it("records an unsupported command as not_verified", async () => {
+    const dir = tempRepo();
+    const result = await runVerificationCommand("definitely not a verifier", dir);
+    expect(result.outcome).toBe("not_verified");
+    expect(result.sandboxBackend).toBeNull();
+    expect(result.exitCode).toBe(126);
+  });
+
+  it("records a genuine host test failure as failed under the local backend", async () => {
+    const dir = tempRepo();
+    // A node-check that exits non-zero: it truly runs and fails (not a refusal).
+    writeFileSync(join(dir, "check.mjs"), "process.exit(1)\n", "utf8");
+    const result = await runVerificationCommand("node check.mjs", dir);
+    expect(result.outcome).toBe("failed");
+    expect(result.sandboxBackend).toBe("local");
+    expect(result.ok).toBe(false);
+  });
+
+  it("records a passing host verification as verified under the local backend", async () => {
+    const dir = tempRepo();
+    writeFileSync(join(dir, "check.mjs"), "process.exit(0)\n", "utf8");
+    const result = await runVerificationCommand("node check.mjs", dir);
+    expect(result.outcome).toBe("verified");
+    expect(result.sandboxBackend).toBe("local");
+    expect(result.ok).toBe(true);
   });
 });
