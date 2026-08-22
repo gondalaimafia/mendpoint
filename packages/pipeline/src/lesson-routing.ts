@@ -199,21 +199,21 @@ export const GOVERNED_LEARNING_PRODUCER_ATTRIBUTIONS: readonly GovernedLearningP
     role: "production" as const,
     attributionSource: "evidence_derived" as const,
     constantValue: null,
-    reference: "apps/worker/src/warden-learning-producer.ts:368",
+    reference: "apps/worker/src/warden-learning-producer.ts:389",
   }),
   Object.freeze({
     producer: "apps/worker/src/transformer-governed-learning-producer.ts",
     role: "production" as const,
     attributionSource: "evidence_derived" as const,
     constantValue: null,
-    reference: "apps/worker/src/transformer-governed-learning-producer.ts:161",
+    reference: "apps/worker/src/transformer-governed-learning-producer.ts:179",
   }),
   Object.freeze({
     producer: "apps/worker/src/governed-learning-producer.ts",
     role: "generic" as const,
     attributionSource: "caller_supplied" as const,
     constantValue: null,
-    reference: "apps/worker/src/governed-learning-producer.ts:251",
+    reference: "apps/worker/src/governed-learning-producer.ts:269",
   }),
 ]);
 

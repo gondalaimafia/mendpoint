@@ -327,8 +327,11 @@ describe("admitWardenGovernedLearningEvent records why graphContextArtifactId is
 // that case would flip to `model_behavior` and fail here.
 
 type StoredLesson = {
-  event: { observedOutcome: { attribution: string } };
-  lesson: { eligibleForModelTraining: boolean; destinations: Array<{ destination: string }> };
+  event: {
+    observedOutcome: { status: string; attribution: string };
+    verification: { verdict: string; authority?: { signalClass: string } };
+  };
+  lesson: { eligibleForModelTraining: boolean; evidenceStrength: string; destinations: Array<{ destination: string }> };
 };
 
 function storedLesson(db: AppDb, recordId: string, tenantId = TENANT): StoredLesson | undefined {
@@ -386,5 +389,113 @@ describe("admitWardenGovernedLearningEvent attributes every production event to 
     expect(doc?.event.observedOutcome.attribution).not.toBe("model_behavior");
     expect(doc?.lesson.eligibleForModelTraining).toBe(false);
     expect(doc?.lesson.destinations.map((d) => d.destination)).not.toContain("model_weight");
+  });
+});
+
+// --- Learning from failed outcomes -----------------------------------------
+//
+// The admission gate now admits non-merged terminal outcomes so the corpus
+// carries real outcome variance, but a failure is recorded honestly and can never
+// train weights: its status is a non-success member, it carries no
+// correctness-verification authority, its verdict is `inconclusive`, and it routes
+// only to `no_action`.
+
+/** A delivery with a terminal outcome other than the default "merged". */
+function deliveryWithOutcome(outcome: "closed_unmerged" | "reverted", runId = RUN_ID): WardenCandidateDeliveryRecord {
+  return { ...delivery(TENANT, runId), outcome } as WardenCandidateDeliveryRecord;
+}
+
+describe("admitWardenGovernedLearningEvent records failed outcomes honestly and off the weight path", () => {
+  it("admits a closed_unmerged outcome as `failed`, inconclusive, and never training-eligible", () => {
+    const db = setup();
+    seedTrajectory(db); // recorded_present would attribute to the model on a failure; still inert here
+
+    const result = admitWardenGovernedLearningEvent({
+      db,
+      delivery: deliveryWithOutcome("closed_unmerged"),
+      run: agentRun(),
+      reviewEvidence: review("verifier"), // a hard delivery-time authority — must NOT launder into "passed"
+      now: NOW,
+      env: ENV,
+    });
+    expect(result.admitted).toBe(true);
+
+    const doc = storedLesson(db, result.recordId!);
+    expect(doc?.event.observedOutcome.status).toBe("failed");
+    // No correctness-verification authority is recorded for a non-success outcome.
+    expect(doc?.event.verification.authority).toBeUndefined();
+    expect(doc?.event.verification.verdict).toBe("inconclusive");
+    expect(doc?.event.verification.verdict).not.toBe("passed");
+    expect(doc?.lesson.evidenceStrength).toBe("insufficient");
+    expect(doc?.lesson.eligibleForModelTraining).toBe(false);
+    expect(doc?.lesson.destinations.map((d) => d.destination)).not.toContain("model_weight");
+    expect(doc?.lesson.destinations.map((d) => d.destination)).toEqual(["no_action"]);
+  });
+
+  it("admits a reverted outcome as `rolled_back` and never training-eligible", () => {
+    const db = setup();
+    seedTrajectory(db);
+
+    const result = admitWardenGovernedLearningEvent({
+      db,
+      delivery: deliveryWithOutcome("reverted"),
+      run: agentRun(),
+      reviewEvidence: review("verifier"),
+      now: NOW,
+      env: ENV,
+    });
+    expect(result.admitted).toBe(true);
+
+    const doc = storedLesson(db, result.recordId!);
+    expect(doc?.event.observedOutcome.status).toBe("rolled_back");
+    expect(doc?.event.verification.verdict).toBe("inconclusive");
+    expect(doc?.lesson.eligibleForModelTraining).toBe(false);
+  });
+
+  it("leaves the merged outcome path identical to the baseline: corrected, passed, hard authority recorded", () => {
+    // Regression guard for the widened gate: my failure-branch must not alter the
+    // merged path. It stays `corrected`, records its hard verification authority
+    // (the `succeeded ? authority : null` branch keeps it on the success path), and
+    // derives a `passed` verdict. Weight eligibility is governed by attribution,
+    // which #323 attributes to `none` for every production Warden event (the seam's
+    // verification is tautological), so the merged path routes to `no_action` and is
+    // not weight-eligible — that is the #323 baseline, carried through unchanged by
+    // this change (attribution logic is untouched here).
+    const db = setup();
+    seedTrajectory(db);
+
+    const result = admitWardenGovernedLearningEvent({
+      db,
+      delivery: delivery(), // outcome "merged"
+      run: agentRun(),
+      reviewEvidence: review("verifier"), // hard authority (forward-compatible; production never emits verifier)
+      now: NOW,
+      env: ENV,
+    });
+    expect(result.admitted).toBe(true);
+
+    const doc = storedLesson(db, result.recordId!);
+    expect(doc?.event.observedOutcome.status).toBe("corrected");
+    expect(doc?.event.verification.verdict).toBe("passed");
+    expect(doc?.event.verification.authority?.signalClass).toBe("hard");
+    // Unchanged by this change: #323's honest `none` attribution keeps the merged
+    // path off the weight path.
+    expect(doc?.event.observedOutcome.attribution).toBe("none");
+    expect(doc?.lesson.eligibleForModelTraining).toBe(false);
+    expect(doc?.lesson.destinations.map((d) => d.destination)).not.toContain("model_weight");
+  });
+
+  it("still skips a pending (null) outcome without admitting anything", () => {
+    const db = setup();
+    const result = admitWardenGovernedLearningEvent({
+      db,
+      delivery: { ...delivery(), outcome: null } as WardenCandidateDeliveryRecord,
+      run: agentRun(),
+      reviewEvidence: review("verifier"),
+      now: NOW,
+      env: ENV,
+    });
+    expect(result.admitted).toBe(false);
+    expect(result.reason).toBe("outcome_pending");
   });
 });
