@@ -132,6 +132,17 @@ function event(db: AppDb, input: { tenantId: string; campaignId: string; actorPr
     payload: input.payload, createdAt: input.createdAt });
 }
 
+/**
+ * Tenant-scoped read of a single campaign. The tenant predicate is mandatory:
+ * a campaign from another tenant returns undefined (indistinguishable from "no
+ * such campaign"), so existence never leaks across the tenant boundary.
+ */
+export function getWardenCampaign(db: AppDb, tenantId: string, id: string): WardenCampaign | undefined {
+  const row = one<CampaignRow>(db, `SELECT * FROM fettler_campaigns WHERE id = ? AND tenant_id = ?`,
+    [required("warden_campaign_id", id), required("tenant_id", tenantId)]);
+  return row ? campaign(row) : undefined;
+}
+
 export function createWardenCampaign(db: AppDb, input: {
   id: string; tenantId: string; name: string; ownerPrincipalId: string; concurrencyLimit: number;
   completionPolicy: "all" | "continue_on_failure"; eventId: string; idempotencyKey: string;

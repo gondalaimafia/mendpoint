@@ -2500,7 +2500,10 @@ PROMPT
 PRODUCT_LOGIC
 CALIBRATION
 NO_ACTION
+ORGANIZATION_MEMORY
 ```
+
+`ORGANIZATION_MEMORY` names the destination for a tenant-specific convention (see §17.4.3). Naming it does not mean the classifier routes to it: no attribution value yet means "organizational convention," so nothing is classified there today.
 
 Examples:
 
@@ -2570,6 +2573,8 @@ organization-specific convention → tenant-private graph/rules/context
 routing evidence → router policy
 verification disagreement → verifier calibration/eval
 ```
+
+The tenant-private rules/context form named above is implemented by the Organization Memory store (ADR-0008), a governed, tenant-scoped, inspectable store for organizational conventions and preferences. Its taxonomy destination is `ORGANIZATION_MEMORY` (§17.4). This names where such a convention belongs; it is not a claim that the lesson pipeline routes to it yet. Routing requires an attribution value meaning "organizational convention" and a producer that emits it only on repeated reviewer correction of a non-defect, neither of which exists today.
 
 ## 17.5 Dataset lifecycle
 

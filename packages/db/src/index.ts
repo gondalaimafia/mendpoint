@@ -519,6 +519,31 @@ CREATE TABLE IF NOT EXISTS github_webhook_deliveries (
   last_error TEXT
 );
 
+-- Durable per-delivery record of how an inbound customer pull_request
+-- (opened/synchronize) webhook was handled. One row per GitHub delivery id.
+-- The outcome column is the single source of truth that keeps the three states
+-- distinguishable forever: a run was enqueued, the event was deliberately
+-- ignored (draft/bot/out-of-scope), it was refused (unknown/unauthorized
+-- installation, malformed path), it deduplicated to an existing run, or it
+-- failed to process. tenant_id is nullable because an unknown installation has
+-- no resolved tenant, yet the refusal must still be recorded, never dropped.
+CREATE TABLE IF NOT EXISTS fettler_pr_review_events (
+  delivery_id TEXT PRIMARY KEY,
+  tenant_id TEXT,
+  installation_id TEXT,
+  remote_repository_id TEXT,
+  pull_request_number INTEGER,
+  head_sha TEXT,
+  action TEXT,
+  outcome TEXT NOT NULL
+    CHECK (outcome IN ('enqueued', 'duplicate', 'ignored', 'refused', 'failed')),
+  reason TEXT,
+  dispatch_job_id TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS fettler_pr_review_events_tenant_idx
+  ON fettler_pr_review_events(tenant_id, created_at);
+
 CREATE TABLE IF NOT EXISTS principals (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -3922,6 +3947,7 @@ export {
   autoEnrollWardenCampaignOrg,
   claimReadyWardenTargets,
   createWardenCampaign,
+  getWardenCampaign,
   getWardenRolloutDecision,
   listWardenCampaignTargets,
   planWardenRollout,
@@ -6605,6 +6631,132 @@ export function failGitHubWebhookDelivery(
     )
     .run(failedAt, error.slice(0, 1000), deliveryId);
   return Number(result.changes) === 1;
+}
+
+export type FettlerPrReviewOutcome =
+  | "enqueued"
+  | "duplicate"
+  | "ignored"
+  | "refused"
+  | "failed";
+
+export type FettlerPrReviewEventRow = {
+  delivery_id: string;
+  tenant_id: string | null;
+  installation_id: string | null;
+  remote_repository_id: string | null;
+  pull_request_number: number | null;
+  head_sha: string | null;
+  action: string | null;
+  outcome: FettlerPrReviewOutcome;
+  reason: string | null;
+  dispatch_job_id: string | null;
+  created_at: string;
+};
+
+/**
+ * Records how a single inbound customer pull_request webhook delivery was
+ * handled. Keyed on the GitHub delivery id and written INSERT OR IGNORE so a
+ * literal redelivery of the same delivery id never overwrites the first
+ * verdict. Returns whether this call wrote the row (false means the delivery id
+ * was already recorded). The outcome is what keeps enqueued / ignored / refused
+ * / duplicate / failed distinguishable in the durable record.
+ */
+export function recordFettlerPrReviewEvent(
+  db: AppDb,
+  input: {
+    deliveryId: string;
+    tenantId?: string | null;
+    installationId?: string | null;
+    remoteRepositoryId?: string | null;
+    pullRequestNumber?: number | null;
+    headSha?: string | null;
+    action?: string | null;
+    outcome: FettlerPrReviewOutcome;
+    reason?: string | null;
+    dispatchJobId?: string | null;
+    createdAt: string;
+  },
+): boolean {
+  const result = db.raw
+    .prepare(
+      `INSERT OR IGNORE INTO fettler_pr_review_events
+         (delivery_id, tenant_id, installation_id, remote_repository_id,
+          pull_request_number, head_sha, action, outcome, reason, dispatch_job_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.deliveryId,
+      input.tenantId ?? null,
+      input.installationId ?? null,
+      input.remoteRepositoryId ?? null,
+      input.pullRequestNumber ?? null,
+      input.headSha ?? null,
+      input.action ?? null,
+      input.outcome,
+      input.reason ?? null,
+      input.dispatchJobId ?? null,
+      input.createdAt,
+    );
+  return Number(result.changes) === 1;
+}
+
+export function getFettlerPrReviewEvent(
+  db: AppDb,
+  deliveryId: string,
+): FettlerPrReviewEventRow | undefined {
+  return get(
+    db,
+    `SELECT * FROM fettler_pr_review_events WHERE delivery_id = ?`,
+    [deliveryId],
+  );
+}
+
+/**
+ * Resolves the tenant-owned connected repository for a GitHub remote repository
+ * id, but only through the same non-revoked installation the webhook arrived on.
+ * Never widens beyond granted access: the join to scm_connections on
+ * external_account_id is what binds the repository to the installation. Returns
+ * undefined when the tenant has not connected this repository through this
+ * installation.
+ */
+export function getConnectedRepositoryIdByRemote(
+  db: AppDb,
+  input: { tenantId: string; remoteId: string; installationId: string },
+): string | undefined {
+  const row = get<{ id: string }>(
+    db,
+    `SELECT cr.id AS id
+       FROM connected_repositories cr
+       JOIN scm_connections sc ON sc.id = cr.connection_id
+      WHERE cr.tenant_id = ? AND cr.remote_id = ? AND cr.status != 'revoked'
+        AND sc.provider = 'github' AND sc.external_account_id = ? AND sc.revoked_at IS NULL
+      LIMIT 1`,
+    [input.tenantId, input.remoteId, input.installationId],
+  );
+  return row?.id;
+}
+
+/**
+ * Resolves the consumer that monitors a tenant-owned connected repository, or
+ * undefined when no consumer is wired to it. Used to bind the enqueued review
+ * run to a consumer for tenant scoping and budget accounting.
+ */
+export function getMonitoringConsumerIdForRepository(
+  db: AppDb,
+  input: { tenantId: string; connectedRepositoryId: string },
+): string | undefined {
+  const row = get<{ id: string }>(
+    db,
+    `SELECT cons.id AS id
+       FROM consumer_repos crp
+       JOIN consumers cons ON cons.id = crp.consumer_id
+      WHERE cons.tenant_id = ? AND crp.connected_repository_id = ?
+      ORDER BY crp.created_at, crp.id
+      LIMIT 1`,
+    [input.tenantId, input.connectedRepositoryId],
+  );
+  return row?.id;
 }
 
 export function prToApi(p: MigrationPrRow) {
