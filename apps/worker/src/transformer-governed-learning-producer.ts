@@ -11,6 +11,7 @@ import {
   temporalContaminationFree,
   type GovernedLearningAdmissionResult,
 } from "./governed-learning-producer.js";
+import { deriveOutcomeAttribution } from "./outcome-attribution.js";
 import type { AdmitApprovedOutcomeInput } from "./transformer-learning-producer.js";
 
 /**
@@ -100,6 +101,18 @@ export function admitTransformerGovernedLearningEvent(
       ? ["deterministically_verified", "reviewer_accepted"]
       : ["reviewer_accepted"];
 
+    // Derive the outcome attribution from evidence, not a constant. A hard verdict
+    // means the deterministic verification command actually established the outcome
+    // (verify.ts `verified`); a soft verdict established nothing objective and is
+    // `not_verified`. This seam observes no graph-context delivery — there is no
+    // trajectory-by-run link on the adaptive candidate path — so `contextDelivery`
+    // is the honest `unrecorded`; it only narrows a failure and never a verified
+    // success. See deriveOutcomeAttribution for the precision-first rationale.
+    const attribution = deriveOutcomeAttribution({
+      verification: authority.signalClass === "hard" ? "verified" : "not_verified",
+      contextDelivery: "unrecorded",
+    });
+
     return admitGovernedLearningOutcome({
       db,
       tenantId,
@@ -133,7 +146,7 @@ export function admitTransformerGovernedLearningEvent(
       outcome: {
         status: "corrected",
         summary: boundedLine(artifact.review.verification.summary, 4000, "The repair passed objective verification."),
-        attribution: "model_behavior",
+        attribution,
       },
       reviewerDecision: "accepted",
       // A correction is substantive when the reviewed repair actually carries

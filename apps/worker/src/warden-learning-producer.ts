@@ -23,6 +23,7 @@ import {
   temporalContaminationFree,
   type GovernedLearningAdmissionResult,
 } from "./governed-learning-producer.js";
+import { deriveOutcomeAttribution } from "./outcome-attribution.js";
 
 export type AdmitWardenGovernedLearningInput = Readonly<{
   db: AppDb;
@@ -152,12 +153,41 @@ export function classifyGraphContextDelivery(
  * diagnose and swallowed. The audit id is deterministic on the event id, so a
  * re-admission (idempotent upstream) records the same attribution once.
  */
+/**
+ * Resolve the run's captured trajectory without ever throwing into the admission
+ * path. A trajectory lookup failure is observation we do not have, not a reason to
+ * block admission or to attribute a missed relationship to the model — the caller
+ * treats `undefined` as {@link GraphContextDelivery} `unrecorded`, the honest
+ * third state. Tenant-scoped by {@link getTrajectoryByRun}.
+ */
+function resolveRunTrajectory(
+  db: AppDb,
+  tenantId: string,
+  runId: string,
+): Trajectory | undefined {
+  try {
+    return getTrajectoryByRun(db, tenantId, runId);
+  } catch (error) {
+    console.error(
+      `warden trajectory resolution failed tenant=${tenantId} run=${runId}: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+    return undefined;
+  }
+}
+
 function recordGraphContextAttribution(
   db: AppDb,
-  input: Readonly<{ tenantId: string; runId: string; eventId: string; requesterPrincipalId: string }>,
+  input: Readonly<{
+    tenantId: string;
+    runId: string;
+    eventId: string;
+    requesterPrincipalId: string;
+    trajectory: Trajectory | undefined;
+  }>,
 ): void {
   try {
-    const trajectory = getTrajectoryByRun(db, input.tenantId, input.runId);
+    const trajectory = input.trajectory;
     const delivery = classifyGraphContextDelivery(trajectory);
     recordAudit(db, {
       id: `audit-learning-graphctx-${input.eventId}`,
@@ -241,6 +271,20 @@ export function admitWardenGovernedLearningEvent(
       ? ["deterministically_verified", "reviewer_accepted"]
       : ["reviewer_accepted"];
 
+    // Resolve the run's trajectory ONCE (never throwing into admission) so both the
+    // attribution derivation and the graph-context audit read the same observation.
+    const trajectory = resolveRunTrajectory(db, delivery.tenantId, run.id);
+    // Derive the outcome attribution from evidence, not a constant. A hard verdict
+    // means objective verification actually established the outcome (verify.ts
+    // `verified`); a soft verdict established nothing objective and is `not_verified`
+    // — never laundered into a test failure. Graph-context delivery only narrows a
+    // failure; a verified success is model_behavior regardless. See
+    // deriveOutcomeAttribution for the full precision-first rationale.
+    const attribution = deriveOutcomeAttribution({
+      verification: authority.signalClass === "hard" ? "verified" : "not_verified",
+      contextDelivery: classifyGraphContextDelivery(trajectory),
+    });
+
     const admission = admitGovernedLearningOutcome({
       db,
       tenantId: delivery.tenantId,
@@ -270,7 +314,7 @@ export function admitWardenGovernedLearningEvent(
       outcome: {
         status: "corrected",
         summary: boundedLine(reviewEvidence.verification.summary, 4000, "The repair passed objective verification."),
-        attribution: "model_behavior",
+        attribution,
       },
       reviewerDecision: "accepted",
       // A correction is substantive when the reviewed repair actually carries
@@ -312,6 +356,7 @@ export function admitWardenGovernedLearningEvent(
         runId: run.id,
         eventId: admission.eventId,
         requesterPrincipalId: delivery.requesterPrincipalId,
+        trajectory,
       });
     }
 
