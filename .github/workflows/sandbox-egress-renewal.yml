@@ -1,0 +1,56 @@
+name: Sandbox egress receipt renewal
+
+# Two ways to mint and rotate the egress receipt, both delegating the probe,
+# mint, and rotation to the reusable engine in sandbox-egress-acceptance.yml so
+# the containment probe exists in ONE place and cannot drift between paths.
+#
+#   manual    - on demand. Runs under the `sandbox-production` environment, whose
+#               required reviewer is preserved, and requires the human-typed
+#               confirmation string. Use to mint out of the schedule's cadence.
+#   scheduled - unattended renewal every 6 hours. The receipt lives <24h, so a
+#               6h cadence keeps a fresh receipt well ahead of expiry and gives
+#               ~3 attempts per lifetime. It runs under a deployment-branch
+#               restricted environment (default branch only): the reviewed probe
+#               steps on that branch are guaranteed to run and gate the mint, so
+#               no human types a string, yet a receipt still cannot be minted
+#               without the probe genuinely passing on a trusted ref.
+#
+# The human control that was removed is the per-renewal human action (running the
+# workflow and typing the string). The human control that REMAINS: the manual
+# path's required reviewer + confirmation string; and, for BOTH paths, that the
+# probe/mint logic lives on the default branch and can only change through a
+# CODEOWNERS-reviewed PR, plus the environment deployment-branch restrictions
+# that stop any pushed branch from minting. See docs/SANDBOX_VERIFIER.md.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type SANDBOX_EGRESS_ACCEPTED to authorize one proof and receipt rotation
+        required: true
+        type: string
+  schedule:
+    # Every 6 hours; the receipt lifetime is <24h, so a single failed run still
+    # leaves margin and further scheduled attempts before it lapses.
+    - cron: "0 */6 * * *"
+
+jobs:
+  manual:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/sandbox-egress-acceptance.yml
+    secrets: inherit
+    with:
+      environment: sandbox-production
+      require_confirmation: true
+      confirmation: ${{ inputs.confirmation }}
+
+  scheduled:
+    if: ${{ github.event_name == 'schedule' }}
+    uses: ./.github/workflows/sandbox-egress-acceptance.yml
+    secrets: inherit
+    with:
+      environment: sandbox-production-renewal
+      require_confirmation: false
