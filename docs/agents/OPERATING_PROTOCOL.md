@@ -128,9 +128,10 @@ Product behavior is governed, in order, by:
 3. repository interfaces, schemas, and compatibility contracts
 4. task-specific acceptance criteria
 
-The single canonical specification is `docs/product/mendpoint-product-platform-specification-v3.md` (the v3.0 platform specification). The owner resolved this on 2026-08-18, recorded in `docs/adr/0004-canonical-product-specification-v3.md`, which supersedes `docs/adr/0001-canonical-product-specification.md`:
+The single canonical specification is `docs/product/mendpoint-product-platform-specification-v4.md` (the v4.0 platform specification). The owner resolved this on 2026-08-22, recorded in `docs/adr/2026-08-22-adopt-v4-product-specification.md`, which supersedes `docs/adr/0004-canonical-product-specification-v3.md`:
 
-- `docs/product/mendpoint-product-platform-specification-v3.md` (v3.0) is the canonical product and platform specification and the release contract. The requirement register `docs/PRODUCT_REQUIREMENTS.json` is pinned to it and validated by the `npm run spec:check` gate. v3.0 is a development baseline: unimplemented detail is forward-looking contract, not a claim about current behavior.
+- `docs/product/mendpoint-product-platform-specification-v4.md` (v4.0) is the canonical product and platform specification and the release contract. The requirement register `docs/PRODUCT_REQUIREMENTS.json` is pinned to it and validated by the `npm run spec:check` gate. v4.0 is a development baseline: unimplemented detail is forward-looking contract, not a claim about current behavior.
+- `docs/product/mendpoint-product-platform-specification-v3.md` (v3.0) is superseded by v4.0. It is retained unchanged only as history and no longer carries repository authority.
 - `docs/product/mendpoint-product-platform-specification.md` (v2.0) is superseded. It is retained unchanged only as history and no longer carries repository authority.
 - `docs/FOUNDATIONAL_PRODUCT_SPEC.md` (v1.0) is superseded. It is retained only as history and no longer carries repository authority.
 
