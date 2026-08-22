@@ -124,6 +124,7 @@ export {
   authorFactoryRecipe,
   classifyRecipeContract,
   classifyRecipeReference,
+  containsForbiddenPathChar,
   createInternalApiRenameRecipe,
   createInternalApiTypeRenameRecipe,
   getRecipe,
