@@ -13,22 +13,12 @@
  */
 import { resolve } from "node:path";
 import type { Product } from "../ground-truth/schema.js";
+// The corpus root is resolved in one place so this reader and
+// `scripts/impact-grade.ts` cannot diverge in how they treat an empty/unset
+// MENDPOINT_CORPUS_ROOT (see corpus-root.ts for the footgun this closes).
+import { CORPUS_ROOT, CORPUS_ROOT_CONFIGURED } from "./corpus-root.js";
 
-// A GitHub-hosted runner passes `MENDPOINT_CORPUS_ROOT: ${{ vars.MENDPOINT_CORPUS_ROOT }}`,
-// which is the EMPTY STRING when the repository variable is unset — not undefined.
-// `?? default` only falls back on null/undefined, so an empty string would survive
-// and `resolve("")` collapses to `process.cwd()` (the repo root), which then trips
-// the answer-key isolation guard even though no corpus is present. Treat an empty or
-// whitespace-only value as unset so it degrades to the default / clean skip instead.
-const corpusRootEnv = process.env.MENDPOINT_CORPUS_ROOT?.trim();
-
-/** True when an operator explicitly configured a corpus root via the environment. */
-export const CORPUS_ROOT_CONFIGURED = corpusRootEnv !== undefined && corpusRootEnv.length > 0;
-
-/** Root under which the synthetic corpus repositories live. */
-export const CORPUS_ROOT = resolve(
-  CORPUS_ROOT_CONFIGURED ? corpusRootEnv! : "C:/Users/Talal/dev",
-);
+export { CORPUS_ROOT, CORPUS_ROOT_CONFIGURED };
 
 export interface ScenarioConfig {
   scenario_id: string;

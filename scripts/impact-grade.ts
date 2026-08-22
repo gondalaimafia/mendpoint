@@ -29,6 +29,11 @@ import { join, resolve } from "node:path";
 import { normalizeChange } from "@mendpoint/change-intel";
 import { analyzeImpact } from "@mendpoint/code-impact";
 import type { ImpactReport } from "@mendpoint/shared";
+// Resolve the corpus root through the shared resolver rather than reading
+// MENDPOINT_CORPUS_ROOT here: `resolve(process.env.X ?? "...")` silently
+// collapses an empty (unset repository) variable onto process.cwd(), pointing
+// the grader at this repo instead of the corpus. See evals/scenarios/corpus-root.ts.
+import { CORPUS_ROOT as DEV } from "../evals/scenarios/corpus-root.js";
 
 export type GradeResult = {
   repo: string;
@@ -127,8 +132,6 @@ export function printResult(r: GradeResult): void {
 }
 
 type CorpusEntry = { path: string; slug?: string; expected: string[] };
-
-const DEV = resolve(process.env.MENDPOINT_CORPUS_ROOT ?? "C:/Users/Talal/dev");
 
 const CORPUS: CorpusEntry[] = [
   {
