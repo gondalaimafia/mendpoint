@@ -287,7 +287,7 @@ export function createPinnedGraphifyProcessPort(input: {
     executablePath: unshareExecutablePath,
     bridgePath: input.bridgePath,
     bridgeDigest: GRAPHIFY_BRIDGE_PIN.digest,
-    argumentsBeforeBridge: ["--user", "--map-root-user", "--net", "--mount-proc", "--", pythonExecutablePath],
+    argumentsBeforeBridge: ["--user", "--map-root-user", "--net", "--", pythonExecutablePath],
     parentNetworkNamespace,
   });
 }
