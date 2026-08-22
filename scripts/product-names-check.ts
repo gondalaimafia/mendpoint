@@ -144,7 +144,7 @@ export const PRODUCT_NAME_COMPATIBILITY_EXCEPTIONS = Object.freeze([
   },
   {
     path: "apps/worker/src/cli.ts",
-    sourceText: "Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals]\n  poll-once [--local] [--no-pipeline] [--slug acme-payments]\n  poll [--local] [--interval 60000]\n  process-jobs\n  run-jobs [--interval 5000]\n  run-service [--interval 5000]\n  run-transformer-service\n  sdk-signals [--local]",
+    sourceText: "Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals|reconcile-installations]\n  poll-once [--local] [--no-pipeline] [--slug acme-payments]\n  poll [--local] [--interval 60000]\n  process-jobs\n  run-jobs [--interval 5000]\n  run-service [--interval 5000]\n  run-transformer-service\n  sdk-signals [--local]\n  reconcile-installations [--tenant tenant_default] [--installation 151614362]",
     reason: "run-transformer-service is the existing CLI compatibility command.",
   },
 ] satisfies readonly ProductNameCompatibilityException[]);
