@@ -64,10 +64,10 @@ export type LearningDestination =
   // convention belongs (spec §17.4/§17.4.3), realised by the Organization Memory
   // store (`packages/db/src/organization-memory.ts`, ADR-0008). Purely vocabulary:
   // `classify` below never routes here, because no attribution value means
-  // "organizational convention" and both production producers hardcode
-  // `model_behavior` (see the classify comment and lesson-routing.ts). It is a
-  // reachable value with no live route; the upstream gap is recorded in
-  // docs/learning/LESSON_DESTINATION_ROUTING.md.
+  // "organizational convention" — the producers now derive attribution from run
+  // evidence but no derivation yields this destination (see the classify comment
+  // and lesson-routing.ts). It is a reachable value with no live route; the
+  // upstream gap is recorded in docs/learning/LESSON_DESTINATION_ROUTING.md.
   | "organization_memory";
 
 export type GovernedLearningEventV1 = Readonly<{
@@ -374,16 +374,18 @@ export function extractGovernedLesson(input: GovernedLearningEvent): GovernedLea
 }
 
 // This 1:1 map from `attribution` to `LearningDestination` is only as
-// discriminating as the `attribution` it is handed. In production it is handed a
-// constant: every governed-learning producer hardcodes
-// `attribution: "model_behavior"` (warden-learning-producer.ts:273,
-// transformer-governed-learning-producer.ts:136), so this function is effectively
-// a constant function there and only `model_weight` is ever emitted. And of the
-// eleven destinations it CAN emit, only `model_weight` has a downstream sink; the
-// other ten are computed and dropped. Both facts are made observable and countable
-// in `lesson-routing.ts` (`summarizeLessonRouting`,
-// `assessProductionAttributionDiscrimination`); the upstream blocker that keeps
-// attribution constant is documented in `docs/learning/LESSON_DESTINATION_ROUTING.md`.
+// discriminating as the `attribution` it is handed. It once received a constant:
+// every governed-learning producer hardcoded `attribution: "model_behavior"`, so
+// this function was effectively constant and only `model_weight` was ever emitted.
+// Both production producers now DERIVE attribution from run evidence
+// (`deriveOutcomeAttribution` in `apps/worker/src/outcome-attribution.ts`), so the
+// input discriminates again — high precision, low coverage: an undetermined case
+// yields `none`, never a fabricated `model_behavior`. Of the eleven destinations
+// this map CAN emit, only `model_weight` still has a downstream sink; the other
+// ten are computed and dropped. Both facts are made observable and countable in
+// `lesson-routing.ts` (`summarizeLessonRouting`,
+// `assessProductionAttributionDiscrimination`); see
+// `docs/learning/LESSON_DESTINATION_ROUTING.md`.
 function classify(event: GovernedLearningEventV1): Array<Readonly<{ destination: LearningDestination; rationale: string }>> {
   const attribution = event.observedOutcome.attribution;
   const mapped: Record<LearningOutcomeAttribution, Readonly<{ destination: LearningDestination; rationale: string }>> = {

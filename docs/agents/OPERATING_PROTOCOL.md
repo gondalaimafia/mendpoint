@@ -394,3 +394,11 @@ A task is complete only when:
 - PR is merge-ready
 
 Working code without peer review is not complete.
+
+## 18. Running Verification Gates
+
+- Run verification gates in-band and read the output directly. Do not background a long-running gate (`npm install`, `npm run typecheck`, `npm test`, a suite) and end the turn waiting for a completion notice — the notice does not usefully arrive, and the turn stalls.
+- Use a dedicated worktree per concurrent agent, always — even for a single-file change, and even when it costs a cold `npm install`. Branch isolation is not enough: the working directory is the shared resource, and two agents in one tree corrupt each other's commits and pushes. Reuse an existing installed worktree only when you can confirm no other agent is active in it. If you find a shared tree on an unexpected branch mid-task, stop and report rather than committing — that is the signal someone else is in it.
+- Rebase onto current `main` and re-run the gates against the rebased tree before declaring done. `main` moves during a task; an earlier clean run on a stale tree does not certify the merge.
+
+A stale reused tree can also fail gates for reasons unrelated to the change: a long-lived checkout's `node_modules` drifts from the current tree — for example, missing workspace symlinks for packages added since it was installed — so a fresh worktree is the safer default.
