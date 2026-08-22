@@ -3259,7 +3259,7 @@ Objective: finish only the internal evaluation lane authorized by ADR-0006. Buil
 ### Review
 
 - The official PyPI JSON record independently matches the compiled `graphifyy-0.9.46-py3-none-any.whl` SHA-256 pin.
-- Red first process tests failed before the concrete supervisor existed. Six supervisor regressions and the existing 49 contract and benchmark tests now pass.
+- Red first process tests failed before the concrete supervisor existed. Seven supervisor regressions and the existing 49 contract and benchmark tests now pass.
 - The bridge syntax check, full workspace typecheck, root script typecheck, workflow pin check, YAML parse, and strict diff whitespace check pass.
 - Windows cannot prove the Linux network namespace boundary and this machine has no WSL or Docker. The pull-request workflow is therefore the first eligible real process smoke; no local execution is represented as containment evidence.
 - Production selection remains impossible: the process factory is absent from the package root, there is no environment selector or caller, and the adoption decision remains internal only.
