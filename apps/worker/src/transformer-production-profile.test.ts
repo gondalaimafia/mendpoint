@@ -55,7 +55,7 @@ describe("Transformer production profile", () => {
     });
   });
 
-  it("requires the bounded DeepSeek verifier shadow profile", () => {
+  it("requires the bounded DeepSeek verifier production advisory profile", () => {
     for (const [name, value] of [
       ["DEEPSEEK_VERIFIER_ENABLED", "false"],
       ["DEEPSEEK_API_KEY", ""],
@@ -221,7 +221,7 @@ describe("Transformer production profile", () => {
 function environment(): NodeJS.ProcessEnv {
   return {
     NODE_ENV: "production", API_AUTH: "required", API_HOST: "0.0.0.0", GITHUB_MODE: "real",
-    MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot", MENDPOINT_DEPLOYMENT_CLASS: "customer", MENDPOINT_REGAUGE_ENABLED: "1",
+    MENDPOINT_DEPLOYMENT_PROFILE: "regauge_production", MENDPOINT_DEPLOYMENT_CLASS: "customer", MENDPOINT_REGAUGE_ENABLED: "1",
     MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED: "1", MENDPOINT_REGAUGE_MULTINODE_ENABLED: "1",
     MENDPOINT_REGAUGE_ARTIFACT_BACKEND: "s3", MENDPOINT_PILOT_SEED: "0", MENDPOINT_FEED_POLLING_ENABLED: "0",
     MENDPOINT_REGAUGE_TENANT_ID: "tenant-a", MENDPOINT_REGAUGE_CAMPAIGN_ID: "campaign-a", MENDPOINT_REGAUGE_ENVIRONMENT: "production",
@@ -242,7 +242,7 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() + 60 * 60_000).toISOString(),
     DEEPSEEK_VERIFIER_ENABLED: "true",
     DEEPSEEK_API_KEY: "deepseek-secret",
-    MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+    MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
     MENDPOINT_AGENT_VERIFIER_SCORING_MODE: "nonthinking_logprobs",
     MENDPOINT_AGENT_VERIFIER_EVALUATIONS: "1",
     MENDPOINT_AGENT_VERIFIER_PIVOTS: "1",

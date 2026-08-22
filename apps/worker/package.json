@@ -19,8 +19,8 @@
     "./transformer-snapshot-loader": "./src/transformer-snapshot-loader.ts",
     "./transformer-s3-transport": "./src/transformer-s3-transport.ts",
     "./transformer-production-profile": "./src/transformer-production-profile.ts",
-    "./verifier-shadow": "./src/verifier-shadow.ts",
-    "./verifier-product-shadow": "./src/verifier-product-shadow.ts",
+    "./verifier-advisory": "./src/verifier-advisory.ts",
+    "./verifier-product-advisory": "./src/verifier-product-advisory.ts",
     "./warden-candidate-delivery": "./src/warden-candidate-delivery.ts",
     "./delegated-pr-verification-job": "./src/delegated-pr-verification-job.ts"
   },

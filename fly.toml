@@ -12,10 +12,13 @@ kill_timeout = 30
   API_AUTH = "required"
   API_HOST = "127.0.0.1"
   API_PORT = "3001"
-  MENDPOINT_DEPLOYMENT_PROFILE = "demo"
+  MENDPOINT_DEPLOYMENT_PROFILE = "customer"
+  MENDPOINT_DEPLOYMENT_CLASS = "customer"
+  MENDPOINT_CUSTOMER_TOPOLOGY = "single_node"
+  MENDPOINT_CUSTOMER_MAX_MACHINES = "1"
   HOSTNAME = "0.0.0.0"
   PORT = "3000"
-  GITHUB_MODE = "mock"
+  GITHUB_MODE = "real"
   MENDPOINT_DATA_DIR = "/data/db"
   MENDPOINT_REPOS_DIR = "/data/repos"
   MENDPOINT_WORKER_HEARTBEAT_PATH = "/data/state/worker-heartbeat.json"
@@ -23,7 +26,7 @@ kill_timeout = 30
   GRAPH_LEARN_DB = "/data/db/graph-learn.sqlite"
   MENDPOINT_ALERTS_PATH = "/data/state/alerts.jsonl"
   MENDPOINT_API_URL = "http://127.0.0.1:3001"
-  MENDPOINT_PILOT_SEED = "1"
+  MENDPOINT_PILOT_SEED = "0"
   MENDPOINT_VERIFY_FIRST = "1"
   MENDPOINT_APPROVED_VERIFIER_SHA256S = "644da6b3198cc32ca95595c7a3af09c9a8444cedd27917a03c3d3bcc775a4a7d"
   # Route verification through an ephemeral Fly Machine instead of host execFile
@@ -39,21 +42,35 @@ kill_timeout = 30
   # review or reproducibility). An unpinned or empty value FAILS CLOSED:
   # packages/platform/src/fly-sandbox.ts refuses to run and never falls back to
   # the host (sandbox_image_unresolved / sandbox_image_not_pinned).
-  # Pinned 2026-08-18 to the digest the sandbox image push printed, reviewed
+  # Pinned 2026-08-22 to the digest bound by the protected sandbox-production
+  # environment, reviewed
   # here in config so a change to the isolation boundary is diffable. Rotate by
   # pushing a new image, capturing its digest, and editing the line below.
   # NOTE: a MENDPOINT_SANDBOX_FLY_IMAGE Fly secret, if set, overrides this value
   # and is invisible to review -- prefer the reviewed config here.
   # See docs/SANDBOX_IMAGE.md ("Pin production to an immutable reference").
-  MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:58a68f6680467330d10a4f76308a0bd12356d219a027fc4a4e482166c44e6684"
+  MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:3aadc8555de5bc2fc4b03f0c135c4b4a845d5a21de9fffd3a0056b98f062f15a"
   AGENTIC_REPAIR = "1"
   MENDPOINT_MODEL_PROVIDER = "muse-spark"
   LLM_AGENT_MODEL = "muse-spark-1.2-contributor"
   LLM_CONFIRM_MODEL = "muse-spark-1.2-contributor"
   MENDPOINT_LIVE_APPROVED_MODEL = "muse-spark-1.2-contributor"
   MENDPOINT_CHANGE_GRAPH_BENCHMARK_APPROVED_MODEL = "muse-spark-1.2-contributor"
-  POLL_LOCAL_ONLY = "1"
-  MENDPOINT_FEED_POLLING_ENABLED = "0"
+  POLL_LOCAL_ONLY = "0"
+  MENDPOINT_FEED_POLLING_ENABLED = "1"
+  MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED = "1"
+  MENDPOINT_FETTLER_EXTERNAL_PROCESSING_ALLOWED = "1"
+  MENDPOINT_BACKUP_TRANSPORT = "rclone_s3"
+  MENDPOINT_BACKUP_OUTPUT_ROOT = "/tmp/mendpoint-backup-staging"
+  MENDPOINT_BACKUP_STAGING_ROOT = "/tmp/mendpoint-backup-staging"
+  MENDPOINT_BACKUP_OBJECT_PREFIX = "backups"
+  MENDPOINT_BACKUP_OPERATION_TIMEOUT_MS = "14400000"
+  MENDPOINT_BACKUP_STORAGE_CLASS = "object_store_publish"
+  AWS_REGION = "auto"
+  # ReGauge has a dedicated production deployment and must never run inside
+  # this single-node Fettler service.
+  MENDPOINT_REGAUGE_ENABLED = "0"
+  MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED = "0"
   POLL_INTERVAL_MS = "5000"
   JOB_LEASE_MS = "30000"
   MENDPOINT_JOB_CONCURRENCY = "2"
@@ -86,5 +103,5 @@ kill_timeout = 30
     timeout = "5s"
 
 [[vm]]
-  size = "shared-cpu-2x"
-  memory = "2gb"
+  size = "performance-4x"
+  memory = "8gb"

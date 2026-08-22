@@ -54,13 +54,14 @@ kill_timeout = 30
   # review or reproducibility). An unpinned or empty value FAILS CLOSED:
   # packages/platform/src/fly-sandbox.ts refuses to run and never falls back to
   # the host (sandbox_image_unresolved / sandbox_image_not_pinned).
-  # Pinned 2026-08-18 to the digest the sandbox image push printed, reviewed
+  # Pinned 2026-08-22 to the digest bound by the protected sandbox-production
+  # environment, reviewed
   # here in config so a change to the isolation boundary is diffable. Rotate by
   # pushing a new image, capturing its digest, and editing the line below.
   # NOTE: a MENDPOINT_SANDBOX_FLY_IMAGE Fly secret, if set, overrides this value
   # and is invisible to review -- prefer the reviewed config here.
   # See docs/SANDBOX_IMAGE.md ("Pin production to an immutable reference").
-  MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:58a68f6680467330d10a4f76308a0bd12356d219a027fc4a4e482166c44e6684"
+  MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:3aadc8555de5bc2fc4b03f0c135c4b4a845d5a21de9fffd3a0056b98f062f15a"
   AGENTIC_REPAIR = "1"
   POLL_LOCAL_ONLY = "0"
   MENDPOINT_FEED_POLLING_ENABLED = "1"

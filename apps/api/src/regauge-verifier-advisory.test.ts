@@ -16,11 +16,11 @@ import {
   recipeReference,
   type TransformerAttemptCheckpointCompletionResult,
 } from "@mendpoint/transformer";
-import { VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE } from "@mendpoint/worker/verifier-product-shadow";
+import { VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE } from "@mendpoint/worker/verifier-product-advisory";
 import {
   buildDedicatedRegaugeCompletionInput,
-  observeDedicatedRegaugeCompletionInShadow,
-} from "./regauge-verifier-shadow.js";
+  observeDedicatedRegaugeCompletionForAdvisory,
+} from "./regauge-verifier-advisory.js";
 
 const roots: string[] = [];
 const dbs: AppDb[] = [];
@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 function db(): AppDb {
-  const root = mkdtempSync(join(tmpdir(), "regauge-verifier-shadow-"));
+  const root = mkdtempSync(join(tmpdir(), "regauge-verifier-advisory-"));
   roots.push(root);
   const value = createDb(join(root, "app.sqlite"));
   dbs.push(value);
@@ -89,7 +89,7 @@ function env(): Record<string, string> {
   return {
     DEEPSEEK_VERIFIER_ENABLED: "true",
     DEEPSEEK_API_KEY: "secret",
-    MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+    MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
     MENDPOINT_AGENT_VERIFIER_EVALUATIONS: "1",
     MENDPOINT_AGENT_VERIFIER_PIVOTS: "1",
     MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES: "1",
@@ -102,7 +102,7 @@ function env(): Record<string, string> {
   };
 }
 
-describe("dedicated ReGauge verifier shadow", () => {
+describe("dedicated ReGauge verifier production advisory", () => {
   it("derives the shadow input only from the exact completed campaign and receipt", () => {
     expect(buildDedicatedRegaugeCompletionInput(completed())).toEqual({
       tenantId: "tenant_regauge_canary",
@@ -133,7 +133,7 @@ describe("dedicated ReGauge verifier shadow", () => {
       { ...value, campaign: { ...value.campaign, units: [{ ...value.campaign.units[0]!, verificationPassed: false }] } },
     ] as unknown as TransformerAttemptCheckpointCompletionResult[]) {
       expect(() => buildDedicatedRegaugeCompletionInput(changed))
-        .toThrow("regauge_verifier_shadow_completion_invalid");
+        .toThrow("regauge_verifier_advisory_completion_invalid");
     }
   });
 
@@ -143,8 +143,8 @@ describe("dedicated ReGauge verifier shadow", () => {
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: { id: "response-a", model: "deepseek-v4-flash", choices: [{ finish_reason: "stop", message: { content: "<score>A</score>" }, logprobs: { content: [{ token: "A", logprob: -0.1, top_logprobs: [{ token: "A", logprob: -0.1 }, { token: "T", logprob: -2 }] }] } }], usage: { prompt_tokens: 10, completion_tokens: 1 } } }));
     const request = { db: store, env: env(), completion: completed(), transport: { request: transport } } as const;
 
-    await observeDedicatedRegaugeCompletionInShadow(request);
-    await observeDedicatedRegaugeCompletionInShadow(request);
+    await observeDedicatedRegaugeCompletionForAdvisory(request);
+    await observeDedicatedRegaugeCompletionForAdvisory(request);
 
     expect(transport).toHaveBeenCalledTimes(1);
     expect(listArtifactManifests(store, "tenant_regauge_canary", "agent_verifier_telemetry")).toHaveLength(1);
@@ -157,7 +157,7 @@ describe("dedicated ReGauge verifier shadow", () => {
     denied.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON = JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant_regauge_canary", products: ["regauge"], dataClassification: "confidential", requiredRegion: "cn", processingRegion: "cn", consentId: "pending-durable-consent", evidenceRef: "github-environment:regauge-production", externalModelAllowed: false, mayLeaveTenantBoundary: false, consentActive: false }] });
     const transport = vi.fn();
 
-    await expect(observeDedicatedRegaugeCompletionInShadow({
+    await expect(observeDedicatedRegaugeCompletionForAdvisory({
       db: store,
       env: denied,
       completion: completed(),

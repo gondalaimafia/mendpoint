@@ -16,7 +16,7 @@ import { createTransformerMultinodeService, type TransformerMultinodeTransport }
 import type { ApiEnv } from "./auth.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
-import { buildDedicatedRegaugeCompletionInput } from "./regauge-verifier-shadow.js";
+import { buildDedicatedRegaugeCompletionInput } from "./regauge-verifier-advisory.js";
 
 const roots: string[] = [];
 const services: TransformerPilotExecutionService[] = [];
@@ -225,7 +225,7 @@ describe("real Transformer multi-node coordinator", () => {
         candidateDigest: applied.outputDigest,
         deterministicEvidenceDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       });
-      throw new Error("shadow_observer_unavailable");
+      throw new Error("advisory_observer_unavailable");
     });
     app.use("*", async (c, next) => { c.set("requestId", "request-real"); c.set("principal", { id: "api-key:worker", tenantId: c.req.header("x-test-tenant") ?? "tenant-a", role: "agent" }); c.set("authScopes", ["transformer:worker"]); await next(); });
     app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({

@@ -186,7 +186,7 @@ import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
 import { persistWardenTrajectory } from "./warden-trajectory.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
-import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
+import { observeProductCompletionForAdvisory } from "./verifier-product-advisory.js";
 import { buildVerifierRepositoryExcerpt } from "./verifier-repository-excerpt.js";
 import {
   delegatedPrCleanupRuntimeConfigFromEnv,
@@ -1720,9 +1720,9 @@ export function validateWorkerProductionEnv(
     errors.push("DEEPSEEK_VERIFIER_ENABLED must be exactly true or false");
   }
   if (verifierEnabled === "true") {
-    const rollout = env.MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE?.trim() || "shadow";
-    if (rollout !== "shadow" && rollout !== "offline") {
-      errors.push("The first verifier release permits only offline or shadow rollout");
+    const rollout = env.MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE?.trim();
+    if (rollout !== "advisory") {
+      errors.push("Production verification requires advisory rollout");
     }
     if (!env.DEEPSEEK_API_KEY?.trim()) errors.push("DEEPSEEK_API_KEY is required when independent verification is enabled");
     if (!env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON?.trim()) errors.push("MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON is required when independent verification is enabled");
@@ -3382,7 +3382,7 @@ async function processJobsOnceUnfenced(
               candidateWorkspace: attempt.artifacts.candidateWorkspace,
               changedPaths: attempt.changedPaths,
             });
-            await observeProductCompletionInShadow({
+            await observeProductCompletionForAdvisory({
               db,
               env: workerEnv,
               completion: {
@@ -3409,7 +3409,7 @@ async function processJobsOnceUnfenced(
               },
             });
           } catch {
-            console.error("verifier_shadow_failed:fettler");
+            console.error("verifier_advisory_failed:fettler");
           }
         }
         result.succeeded++;
@@ -4013,7 +4013,7 @@ async function runService(intervalMs: number) {
           shouldContinue: () => !shutdown.signal.aborted,
           adaptiveCandidateDataRoot: dataRoot,
           onVerifiedCandidateCompleted: async ({ lease, execution, artifact, observedAt }) => {
-            await observeProductCompletionInShadow({
+            await observeProductCompletionForAdvisory({
               db: transformerDb,
               env: process.env,
               completion: {

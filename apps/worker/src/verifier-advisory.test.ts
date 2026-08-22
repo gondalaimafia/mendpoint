@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createVerifierEvidencePack, type VerifierEvidencePackInput } from "@mendpoint/verifier";
-import { createVerifierShadowRuntime } from "./verifier-shadow.js";
+import { createVerifierAdvisoryRuntime } from "./verifier-advisory.js";
 
 const digest = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 function pack(): VerifierEvidencePackInput {
@@ -18,14 +18,14 @@ function pack(): VerifierEvidencePackInput {
 
 const pricing = { version: "deepseek-2026-08-17", currency: "USD" as const, effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0.3, cachedInputPerMillion: 0.03, outputPerMillion: 2.5 };
 
-describe("worker verifier shadow runtime", () => {
+describe("worker verifier production advisory runtime", () => {
   it("stays absent and never reads a credential while the kill switch is off", () => {
     const env: Record<string, string | undefined> = {};
     Object.defineProperty(env, "DEEPSEEK_API_KEY", { get: () => { throw new Error("secret_read"); } });
-    expect(createVerifierShadowRuntime({ env, pricing, persistTelemetry: async () => undefined, auditCredentialAccess: async () => undefined })).toBeNull();
+    expect(createVerifierAdvisoryRuntime({ env, pricing, persistTelemetry: async () => undefined, auditCredentialAccess: async () => undefined })).toBeNull();
   });
 
-  it("uses the credential broker, persists soft telemetry, and cannot change the incumbent in shadow mode", async () => {
+  it("uses the credential broker, persists soft telemetry, and cannot change the incumbent in advisory mode", async () => {
     const audit = vi.fn(async () => undefined);
     const persist = vi.fn(async () => undefined);
     const transport = vi.fn(async (request: { body: Readonly<Record<string, unknown>> }) => {
@@ -44,8 +44,8 @@ describe("worker verifier shadow runtime", () => {
         },
       };
     });
-    const runtime = createVerifierShadowRuntime({
-      env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow", DEEPSEEK_API_KEY: "deepseek-secret" },
+    const runtime = createVerifierAdvisoryRuntime({
+      env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory", DEEPSEEK_API_KEY: "deepseek-secret" },
       pricing,
       persistTelemetry: persist,
       auditCredentialAccess: audit,
@@ -64,35 +64,35 @@ describe("worker verifier shadow runtime", () => {
 
   it("performs no observation and no network egress in offline mode", () => {
     // Offline is documented as "fixture and retained benchmark evaluation only"
-    // and must never open a live transport. This production shadow runtime has no
+    // and must never open a live transport. This production advisory runtime has no
     // fixture source, so offline refuses: the runtime is null (observe is
     // unreachable) whether or not a transport is injected, and no live fetch
     // transport is ever constructed. An injected transport is never invoked.
     const transport = vi.fn(async () => { throw new Error("provider_called"); });
-    expect(createVerifierShadowRuntime({
+    expect(createVerifierAdvisoryRuntime({
       env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "offline", DEEPSEEK_API_KEY: "deepseek-secret" },
       pricing, persistTelemetry: async () => undefined, auditCredentialAccess: async () => undefined,
       transport: { request: transport },
     })).toBeNull();
-    expect(createVerifierShadowRuntime({
+    expect(createVerifierAdvisoryRuntime({
       env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "offline", DEEPSEEK_API_KEY: "deepseek-secret" },
       pricing, persistTelemetry: async () => undefined, auditCredentialAccess: async () => undefined,
     })).toBeNull();
     expect(transport).not.toHaveBeenCalled();
   });
 
-  it("rejects non shadow rollout and invalid pricing before any external request", () => {
-    expect(() => createVerifierShadowRuntime({ env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "selective", DEEPSEEK_API_KEY: "secret" }, pricing, persistTelemetry: async () => undefined, auditCredentialAccess: async () => undefined }))
-      .toThrow("verifier_shadow_rollout_invalid");
-    expect(() => createVerifierShadowRuntime({ env: { DEEPSEEK_VERIFIER_ENABLED: "true", DEEPSEEK_API_KEY: "secret" }, pricing: { ...pricing, outputPerMillion: -1 }, persistTelemetry: async () => undefined, auditCredentialAccess: async () => undefined }))
-      .toThrow("verifier_shadow_pricing_invalid");
+  it("rejects behavior changing rollout and invalid pricing before any external request", () => {
+    expect(() => createVerifierAdvisoryRuntime({ env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "selective", DEEPSEEK_API_KEY: "secret" }, pricing, persistTelemetry: async () => undefined, auditCredentialAccess: async () => undefined }))
+      .toThrow("verifier_advisory_rollout_invalid");
+    expect(() => createVerifierAdvisoryRuntime({ env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory", DEEPSEEK_API_KEY: "secret" }, pricing: { ...pricing, outputPerMillion: -1 }, persistTelemetry: async () => undefined, auditCredentialAccess: async () => undefined }))
+      .toThrow("verifier_advisory_pricing_invalid");
   });
 
   it("rejects a tampered evidence pack before reading credentials or calling the provider", async () => {
     const audit = vi.fn(async () => undefined);
     const transport = vi.fn(async () => { throw new Error("provider_called"); });
-    const runtime = createVerifierShadowRuntime({
-      env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow", DEEPSEEK_API_KEY: "deepseek-secret" },
+    const runtime = createVerifierAdvisoryRuntime({
+      env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory", DEEPSEEK_API_KEY: "deepseek-secret" },
       pricing,
       persistTelemetry: async () => undefined,
       auditCredentialAccess: audit,

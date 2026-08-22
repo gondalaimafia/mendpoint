@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { getPrincipalBySubject, type AppDb } from "@mendpoint/db";
 import type { TransformerAttemptCheckpointCompletionResult } from "@mendpoint/transformer";
 import {
-  observeProductCompletionInShadow,
-  type ProductCompletionShadowInput,
-} from "@mendpoint/worker/verifier-product-shadow";
+  observeProductCompletionForAdvisory,
+  type ProductCompletionAdvisoryInput,
+} from "@mendpoint/worker/verifier-product-advisory";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
@@ -12,7 +12,7 @@ const BOOTSTRAP_PRINCIPAL_SUBJECT = "service:regauge-production-bootstrap";
 
 export function buildDedicatedRegaugeCompletionInput(
   result: TransformerAttemptCheckpointCompletionResult,
-): ProductCompletionShadowInput {
+): ProductCompletionAdvisoryInput {
   const { campaign, receipt } = result;
   const units = campaign.units.filter((candidate) => candidate.id === receipt.unitId);
   const unit = units[0];
@@ -24,7 +24,7 @@ export function buildDedicatedRegaugeCompletionInput(
       !ID.test(unit.snapshot.repositoryId) || !DIGEST.test(unit.snapshot.digest) ||
       !DIGEST.test(unit.candidateDigest) || !DIGEST.test(receipt.completionDigest) ||
       unit.changedPaths.length === 0 || unit.executionEvidenceRefs.length === 0) {
-    throw new Error("regauge_verifier_shadow_completion_invalid");
+    throw new Error("regauge_verifier_advisory_completion_invalid");
   }
   const taskId = `${campaign.campaignId}:${unit.id}`;
   const candidateId = `regauge_${createHash("sha256")
@@ -51,13 +51,13 @@ export function buildDedicatedRegaugeCompletionInput(
   });
 }
 
-export async function observeDedicatedRegaugeCompletionInShadow(input: Readonly<{
+export async function observeDedicatedRegaugeCompletionForAdvisory(input: Readonly<{
   db: AppDb;
   env?: Readonly<Record<string, string | undefined>>;
   completion: TransformerAttemptCheckpointCompletionResult;
-  transport?: Parameters<typeof observeProductCompletionInShadow>[0]["transport"];
-  observer?: typeof observeProductCompletionInShadow;
-}>): ReturnType<typeof observeProductCompletionInShadow> {
+  transport?: Parameters<typeof observeProductCompletionForAdvisory>[0]["transport"];
+  observer?: typeof observeProductCompletionForAdvisory;
+}>): ReturnType<typeof observeProductCompletionForAdvisory> {
   const completion = buildDedicatedRegaugeCompletionInput(input.completion);
   const principal = getPrincipalBySubject(
     input.db,
@@ -68,9 +68,9 @@ export async function observeDedicatedRegaugeCompletionInShadow(input: Readonly<
   if (!principal || principal.revoked_at && principal.revoked_at <= completion.observedAt ||
       principal.expires_at && principal.expires_at <= completion.observedAt ||
       principal.created_at > completion.observedAt) {
-    throw new Error("regauge_verifier_shadow_principal_invalid");
+    throw new Error("regauge_verifier_advisory_principal_invalid");
   }
-  const observer = input.observer ?? observeProductCompletionInShadow;
+  const observer = input.observer ?? observeProductCompletionForAdvisory;
   return await observer({
     db: input.db,
     env: Object.freeze({

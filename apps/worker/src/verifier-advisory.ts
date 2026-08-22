@@ -16,7 +16,7 @@ import {
   type VerifierTelemetry,
 } from "@mendpoint/verifier";
 
-export type VerifierShadowRuntime = Readonly<{
+export type VerifierAdvisoryRuntime = Readonly<{
   observe(input: Readonly<{
     pack: VerifierEvidencePack;
     incumbentCandidateId: string;
@@ -26,32 +26,34 @@ export type VerifierShadowRuntime = Readonly<{
   }>): Promise<AgentVerifierResult>;
 }>;
 
-export function createVerifierShadowRuntime(input: Readonly<{
+export function createVerifierAdvisoryRuntime(input: Readonly<{
   env?: Readonly<Record<string, string | undefined>>;
   pricing: VerifierPricing;
   persistTelemetry(telemetry: VerifierTelemetry): Promise<void>;
   auditCredentialAccess: CredentialAccessAudit;
   transport?: VerifierHttpTransport;
   actorId?: string;
-}>): VerifierShadowRuntime | null {
+}>): VerifierAdvisoryRuntime | null {
   const env = input.env ?? process.env;
   const config = resolveVerifierRuntimeConfig(env);
   if (!config.enabled || config.rolloutMode === "off") return null;
-  if (config.rolloutMode !== "offline" && config.rolloutMode !== "shadow") fail("verifier_shadow_rollout_invalid");
+  if (config.rolloutMode !== "offline" && config.rolloutMode !== "advisory") fail("verifier_advisory_rollout_invalid");
   // `offline` is documented (docs/agents/MUSE_DEEPSEEK_VERIFIER_DESIGN.md) as
   // "fixture and retained benchmark evaluation only" and must never open a live
-  // network transport. This worker shadow runtime is a production egress path
+  // network transport. This worker advisory runtime is a production egress path
   // with no retained-artifact source of its own, so a fixture is never available
   // here for a live completion: offline therefore performs no observation and no
   // egress. Refusing is the "no action" / fail-closed effect the design assigns
   // to an unavailable transport; silently falling back to the live fetch
   // transport (the prior behavior) is exactly what the offline contract forbids.
   // Fixture and benchmark evaluation run through createAgentVerifier directly in
-  // the eval harness, not through this runtime. Only shadow builds a live
-  // transport below.
+  // the eval harness, not through this runtime. Only advisory builds a live
+  // transport below. Production uses advisory so the result is visible as an
+  // independent signal but can never replace deterministic evidence or select
+  // a different candidate.
   if (config.rolloutMode === "offline") return null;
   validatePricing(input.pricing);
-  if (typeof input.persistTelemetry !== "function" || typeof input.auditCredentialAccess !== "function") fail("verifier_shadow_ports_invalid");
+  if (typeof input.persistTelemetry !== "function" || typeof input.auditCredentialAccess !== "function") fail("verifier_advisory_ports_invalid");
   const persistTelemetry = input.persistTelemetry.bind(input);
   const broker = new CredentialBroker({
     providers: [new EnvSecretProvider(env)],
@@ -105,7 +107,7 @@ function validatePricing(input: VerifierPricing): void {
   if (!input || input.currency !== "USD" || typeof input.version !== "string" || !input.version.trim() ||
     !Number.isFinite(Date.parse(input.effectiveAt)) || new Date(Date.parse(input.effectiveAt)).toISOString() !== input.effectiveAt ||
     [input.inputPerMillion, input.cachedInputPerMillion, input.outputPerMillion].some((value) => !Number.isFinite(value) || value < 0)) {
-    fail("verifier_shadow_pricing_invalid");
+    fail("verifier_advisory_pricing_invalid");
   }
 }
 

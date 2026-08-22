@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { findActiveLearningConsent, recordAudit, type AppDb } from "@mendpoint/db";
-import { claimVerifierShadowAttempt, persistVerifierTelemetry } from "@mendpoint/pipeline";
+import { claimVerifierAdvisoryAttempt, persistVerifierTelemetry } from "@mendpoint/pipeline";
 import {
   createCompletionVerifierEvidencePack,
   resolveVerifierRuntimeConfig,
@@ -11,7 +11,7 @@ import {
   type VerifierProduct,
   type VerifierRisk,
 } from "@mendpoint/verifier";
-import { createVerifierShadowRuntime } from "./verifier-shadow.js";
+import { createVerifierAdvisoryRuntime } from "./verifier-advisory.js";
 
 // The verifier sends tenant repository content to an EXTERNAL third-party model
 // (DeepSeek) for independent scoring. That egress is a categorically different
@@ -22,7 +22,7 @@ import { createVerifierShadowRuntime } from "./verifier-shadow.js";
 // consent purpose keeps the two authorizations separate.
 export const VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE = "verifier-external-model-egress";
 
-export type ProductCompletionShadowInput = Readonly<{
+export type ProductCompletionAdvisoryInput = Readonly<{
   tenantId: string;
   missionId: string;
   taskId: string;
@@ -46,16 +46,16 @@ export type ProductCompletionShadowInput = Readonly<{
   observedAt: string;
 }>;
 
-export async function observeProductCompletionInShadow(input: Readonly<{
+export async function observeProductCompletionForAdvisory(input: Readonly<{
   db: AppDb;
   env?: Readonly<Record<string, string | undefined>>;
-  completion: ProductCompletionShadowInput;
+  completion: ProductCompletionAdvisoryInput;
   transport?: VerifierHttpTransport;
 }>): Promise<AgentVerifierResult | null> {
   const env = input.env ?? process.env;
   const runtimeConfig = resolveVerifierRuntimeConfig(env);
   // `off` never observes; `offline` never egresses from this production path
-  // (see createVerifierShadowRuntime). Refuse both before building an evidence
+  // (see createVerifierAdvisoryRuntime). Refuse both before building an evidence
   // pack or claiming an attempt, so offline never even prepares tenant content.
   if (!runtimeConfig.enabled || runtimeConfig.rolloutMode === "off" || runtimeConfig.rolloutMode === "offline") return null;
   const governance = resolveGovernance(env, input.completion.tenantId, input.completion.product);
@@ -91,14 +91,14 @@ export async function observeProductCompletionInShadow(input: Readonly<{
     assemblerVersion: "mendpoint-worker-completion-verifier/1",
   });
   const verificationAttemptId = `completion_${input.completion.taskId}`;
-  if (!claimVerifierShadowAttempt(input.db, {
+  if (!claimVerifierAdvisoryAttempt(input.db, {
     tenantId: input.completion.tenantId,
     verificationAttemptId,
     evidencePackDigest: pack.packDigest,
     observedAt: input.completion.observedAt,
     producerPrincipalId: principalId,
   })) return null;
-  const runtime = createVerifierShadowRuntime({
+  const runtime = createVerifierAdvisoryRuntime({
     env,
     pricing,
     ...(input.transport ? { transport: input.transport } : {}),

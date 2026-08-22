@@ -21,10 +21,10 @@ describe("verifier runtime configuration", () => {
     expect(resolveVerifierRuntimeConfig(env)).toEqual({ enabled: false, rolloutMode: "off" });
   });
 
-  it("resolves an exact versioned shadow configuration without carrying a secret", () => {
+  it("resolves an exact versioned production advisory configuration without carrying a secret", () => {
     const config = resolveVerifierRuntimeConfig({
       DEEPSEEK_VERIFIER_ENABLED: "true",
-      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
       MENDPOINT_AGENT_VERIFIER_EVALUATIONS: "4",
       MENDPOINT_AGENT_VERIFIER_PIVOTS: "2",
       MENDPOINT_AGENT_VERIFIER_SCORING_MODE: "nonthinking_logprobs",
@@ -34,10 +34,15 @@ describe("verifier runtime configuration", () => {
       MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES: "1",
     });
     expect(config).toMatchObject({
-      enabled: true, rolloutMode: "shadow", provider: "deepseek", model: "deepseek-v4-flash",
+      enabled: true, rolloutMode: "advisory", provider: "deepseek", model: "deepseek-v4-flash",
       evaluations: 4, pivots: 2, scoringMode: "nonthinking_logprobs", credentialEnvName: "DEEPSEEK_API_KEY", maximumCostUsd: 0.10,
     });
     expect(JSON.stringify(config)).not.toContain("apiKey");
+  });
+
+  it("requires an explicit rollout when external verification is enabled", () => {
+    expect(() => resolveVerifierRuntimeConfig({ DEEPSEEK_VERIFIER_ENABLED: "true" }))
+      .toThrow("verifier_config_rollout_required");
   });
 });
 

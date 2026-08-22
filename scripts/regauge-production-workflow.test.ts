@@ -169,7 +169,7 @@ describe("Regauge production workflow", () => {
     ]) expect(stage).toContain(`${name}=\"$${name}\"`);
   });
 
-  it("stages only the bounded DeepSeek shadow verifier authority", () => {
+  it("stages only the bounded DeepSeek production advisory authority", () => {
     const source = readFileSync(".github/workflows/regauge-production.yml", "utf8");
     const workflow = parse(source) as Record<string, any>;
     const env = workflow.jobs.deploy.env;
@@ -186,7 +186,7 @@ describe("Regauge production workflow", () => {
       'MENDPOINT_APPLICATION_DATA_KEY="$MENDPOINT_APPLICATION_DATA_KEY"',
       "DEEPSEEK_VERIFIER_ENABLED=true",
       "DEEPSEEK_API_KEY=\"$DEEPSEEK_API_KEY\"",
-      "MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=shadow",
+      "MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=advisory",
       "MENDPOINT_AGENT_VERIFIER_SCORING_MODE=nonthinking_logprobs",
       "MENDPOINT_AGENT_VERIFIER_EVALUATIONS=1",
       "MENDPOINT_AGENT_VERIFIER_PIVOTS=1",
@@ -199,7 +199,8 @@ describe("Regauge production workflow", () => {
     ]) expect(stage).toContain(binding);
     expect(source).not.toContain('echo "$MENDPOINT_APPLICATION_DATA_KEY"');
     expect(source).not.toContain('printf \'%s\\n\' "$MENDPOINT_APPLICATION_DATA_KEY"');
-    expect(stage).not.toContain("MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=active");
+    expect(stage).not.toContain("MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=selective");
+    expect(stage).not.toContain("MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=automated");
   });
 
   it("contains the delivery worker after every activation outcome", () => {

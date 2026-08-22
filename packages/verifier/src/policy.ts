@@ -53,7 +53,9 @@ export function resolveVerifierRuntimeConfig(env: Readonly<Record<string, string
   const enabled = env.DEEPSEEK_VERIFIER_ENABLED?.trim();
   if (enabled === undefined || enabled === "" || enabled === "false") return Object.freeze({ enabled: false, rolloutMode: "off" });
   if (enabled !== "true") fail("verifier_config_enabled_invalid");
-  const rolloutMode = (env.MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE?.trim() || "shadow") as VerifierRolloutMode;
+  const rawRolloutMode = env.MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE?.trim();
+  if (!rawRolloutMode) fail("verifier_config_rollout_required");
+  const rolloutMode = rawRolloutMode as VerifierRolloutMode;
   if (!["off", "offline", "shadow", "advisory", "selective", "automated"].includes(rolloutMode)) fail("verifier_config_rollout_invalid");
   const scoringMode = (env.MENDPOINT_AGENT_VERIFIER_SCORING_MODE?.trim() || "nonthinking_logprobs") as Exclude<VerifierScoringMode, "muse_self">;
   if (scoringMode !== "nonthinking_logprobs" && scoringMode !== "upstream_thinking_logprobs") fail("verifier_config_scoring_mode_invalid");

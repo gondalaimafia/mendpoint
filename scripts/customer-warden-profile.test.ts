@@ -47,6 +47,23 @@ function customerRuntime(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 describe("Fettler-only customer Fly profile", () => {
+  it("uses the customer production profile for the primary deployed app", () => {
+    const manifest = readFileSync(resolve(import.meta.dirname, "../fly.toml"), "utf8");
+    for (const setting of [
+      'MENDPOINT_DEPLOYMENT_PROFILE = "customer"',
+      'MENDPOINT_DEPLOYMENT_CLASS = "customer"',
+      'GITHUB_MODE = "real"',
+      'MENDPOINT_PILOT_SEED = "0"',
+      'POLL_LOCAL_ONLY = "0"',
+      'MENDPOINT_FEED_POLLING_ENABLED = "1"',
+    ]) expect(manifest).toContain(setting);
+    for (const forbidden of [
+      'MENDPOINT_DEPLOYMENT_PROFILE = "demo"',
+      'GITHUB_MODE = "mock"',
+      'MENDPOINT_PILOT_SEED = "1"',
+    ]) expect(manifest).not.toContain(forbidden);
+  });
+
   it("declares a single-node Fettler-only production topology without embedding secrets", () => {
     const manifest = readFileSync(manifestPath, "utf8");
     const dockerfile = readFileSync(resolve(import.meta.dirname, "../Dockerfile"), "utf8");

@@ -1776,7 +1776,7 @@ describe("worker runtime", () => {
       expect.stringContaining("MENDPOINT_AGENT_VERIFIER_PRICING_JSON"),
     ]));
     expect(validateWorkerProductionEnv({ ...base, DEEPSEEK_API_KEY: "configured", MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "{}", MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "selective" }))
-      .toContain("The first verifier release permits only offline or shadow rollout");
+      .toContain("Production verification requires advisory rollout");
   });
 
   it("fails production startup before claiming cleanup work when signing authority is incomplete", () => {

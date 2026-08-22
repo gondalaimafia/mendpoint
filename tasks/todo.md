@@ -2859,17 +2859,23 @@ restoration.
 
 ## 2026-08-22 Production-only product promotion
 
-- [ ] Inventory every runtime, workflow, environment, route, worker, public claim, and release artifact that is pilot, shadow, demo, mock, default off, inactive, or evidence only.
-- [ ] Classify each surface as promotion ready, code incomplete, evidence blocked, or authority blocked, with an exact source and production proof pointer.
+- [x] Inventory every runtime, workflow, environment, route, worker, public claim, and release artifact that is pilot, shadow, demo, mock, default off, inactive, or evidence only.
+- [x] Classify each surface as promotion ready, code incomplete, evidence blocked, or authority blocked, with an exact source and production proof pointer.
 - [ ] Restore the shared production foundation before merging any change that would trigger deployment.
 - [ ] Promote eligible capabilities in dependency order without weakening tenant consent, source control authorization, sandbox egress, reviewer approval, or rollback controls.
 - [ ] Run focused regressions, full tests, all workspace typechecks, production build, GA and governance checks, dependency audit, container startup, deployment E2E, exact live probes, restart recovery, and authenticated browser verification.
 - [ ] Merge only green protected changes, verify the exact deployed revision, and remove pilot, shadow, demo, mock, and inactive claims only where production evidence exists.
-- [ ] Record any remaining external authority or evidence blockers as blockers, not as production functionality.
+- [x] Record any remaining external authority or evidence blockers as blockers, not as production functionality.
 
 ### Review
 
 In progress. The target state is production operation with retained safety controls, not global flag deletion or terminology-only renaming. A capability remains incomplete until its real production path, rollback, observability, and exact live evidence pass.
+
+Promotion implemented on the combined branch: the primary `fly.toml` now selects the validated customer profile, customer deployment class, real GitHub, live feed polling, no fixture seed, production backup transport, production sizing, and the protected sandbox image digest. ReGauge now requires the canonical `regauge_production` profile. The active DeepSeek completion lane is named and configured as production advisory, requires an explicit rollout, remains soft-signal-only, and cannot select a different candidate or override deterministic evidence.
+
+Verification: 68 focused production-profile and advisory tests pass. The full monorepo test command passes every workspace and all root script tests. Every workspace and the root scripts typecheck, the production build passes, the GA/governance suite passes, the production dependency audit reports zero vulnerabilities, and strict diff checks pass.
+
+Production blockers remain external or evidence-bound. The main app is stopped because its signed sandbox egress receipt expired. Manual renewal still lacks an organization-scoped 90-day `ROTATION_FLY_API_TOKEN` and an approved paging sink; the scheduled environment also lacks its required role secrets. `MENDPOINT_CUSTOMER_READY` cannot be set to `1` before receipt renewal and successful live validation. ReGauge still uses the existing pilot-named Fly resource, one-draft authorization, and a contained zero-worker steady state; a new hostname, state/secret migration, and broader delivery authority are required for an always-on production cutover. DeepSeek egress is denied by the current ReGauge governance record and has no active durable tenant consent. Graphify has a contained process proof but no sealed A/B/C benchmark or ADOPT decision. The product contract still records 39 verified, 44 partial, 2 scaffolded, 1 externally blocked, and 7 unimplemented requirements, so the remaining surfaces cannot be truthfully relabeled as production.
 
 ## 2026-08-22 Non-ReGauge outstanding inventory
 

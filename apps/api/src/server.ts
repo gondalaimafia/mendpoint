@@ -311,7 +311,7 @@ import { createOrganizationMemoryRoutes } from "./organization-memory-routes.js"
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
-import { observeDedicatedRegaugeCompletionInShadow } from "./regauge-verifier-shadow.js";
+import { observeDedicatedRegaugeCompletionForAdvisory } from "./regauge-verifier-advisory.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
 import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
 import {
@@ -851,7 +851,7 @@ const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorR
   store: transformerExecutions.store,
   gateConfig: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
   ...(transformerDraftAuthorization ? { draftAuthorization: transformerDraftAuthorization } : {}),
-  observeCompletedAttempt: (completion) => observeDedicatedRegaugeCompletionInShadow({
+  observeCompletedAttempt: (completion) => observeDedicatedRegaugeCompletionForAdvisory({
     db,
     env: process.env,
     completion,

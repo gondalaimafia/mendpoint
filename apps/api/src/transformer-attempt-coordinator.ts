@@ -171,8 +171,8 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
         await options.observeCompletedAttempt(result as TransformerAttemptCheckpointCompletionResult);
       } catch (error) {
         console.error(JSON.stringify({
-          event: "regauge_verifier_shadow_observation_failed",
-          code: error instanceof Error ? error.message : "verifier_shadow_unknown",
+          event: "regauge_verifier_advisory_observation_failed",
+          code: error instanceof Error ? error.message : "verifier_advisory_unknown",
           observedAt,
         }));
       }

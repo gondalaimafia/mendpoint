@@ -8,7 +8,7 @@ export type PersistedVerifierTelemetry = Readonly<{
   telemetryDigest: string;
 }>;
 
-export function claimVerifierShadowAttempt(db: AppDb, input: Readonly<{
+export function claimVerifierAdvisoryAttempt(db: AppDb, input: Readonly<{
   tenantId: string;
   verificationAttemptId: string;
   evidencePackDigest: string;

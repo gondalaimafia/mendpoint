@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDb, grantLearningConsent, insertPrincipal, insertTenant, listArtifactManifests, revokeLearningConsent, type AppDb } from "@mendpoint/db";
-import { observeProductCompletionInShadow, VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE } from "./verifier-product-shadow.js";
+import { observeProductCompletionForAdvisory, VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE } from "./verifier-product-advisory.js";
 
 const roots: string[] = [];
 const dbs: AppDb[] = [];
 const digest = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 afterEach(() => { while (dbs.length) dbs.pop()!.raw.close(); while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
-function setup(): AppDb { const root = mkdtempSync(join(tmpdir(), "verifier-product-shadow-")); roots.push(root); const db = createDb(join(root, "app.sqlite")); dbs.push(db); insertTenant(db, { id: "tenant_a", slug: "tenant-a", name: "Tenant A", createdAt: "2026-08-17T12:00:00.000Z" }); insertPrincipal(db, { id: "worker_a", tenantId: "tenant_a", kind: "service", subject: "worker", displayName: "Worker", createdAt: "2026-08-17T12:00:00.000Z" }); insertPrincipal(db, { id: "human_a", tenantId: "tenant_a", kind: "human", subject: "human@example.com", displayName: "Human", createdAt: "2026-08-17T12:00:00.000Z" }); return db; }
+function setup(): AppDb { const root = mkdtempSync(join(tmpdir(), "verifier-product-advisory-")); roots.push(root); const db = createDb(join(root, "app.sqlite")); dbs.push(db); insertTenant(db, { id: "tenant_a", slug: "tenant-a", name: "Tenant A", createdAt: "2026-08-17T12:00:00.000Z" }); insertPrincipal(db, { id: "worker_a", tenantId: "tenant_a", kind: "service", subject: "worker", displayName: "Worker", createdAt: "2026-08-17T12:00:00.000Z" }); insertPrincipal(db, { id: "human_a", tenantId: "tenant_a", kind: "human", subject: "human@example.com", displayName: "Human", createdAt: "2026-08-17T12:00:00.000Z" }); return db; }
 
 // Grant an active external-model verifier consent for tenant_a in the append-only
 // learning_consents table. effectiveAt/expiresAt bound the validity window; the
@@ -27,10 +27,10 @@ function grantVerifierConsent(db: AppDb, over: { effectiveAt?: string; expiresAt
 }
 function completion() { return { tenantId: "tenant_a", missionId: "mission_a", taskId: "task_a", product: "fettler" as const, repositoryId: "repo_a", snapshotDigest: digest("snapshot"), objective: "Migrate the API.", risk: "medium" as const, allowedChangedPaths: ["src/api.ts"], candidateId: "candidate_a", candidateDigest: digest("candidate"), changedPaths: ["src/api.ts"], observableSummary: "The candidate passed exact verification.", deterministicEvidenceDigest: digest("evidence"), deterministicEvidenceRefs: ["tests"], observedAt: "2026-08-17T12:01:00.000Z" }; }
 
-describe("product verifier shadow adapter", () => {
+describe("product verifier production advisory adapter", () => {
   it("is a no operation when the kill switch is off", async () => {
     const db = setup();
-    expect(await observeProductCompletionInShadow({ db, env: {}, completion: completion() })).toBeNull();
+    expect(await observeProductCompletionForAdvisory({ db, env: {}, completion: completion() })).toBeNull();
     expect(listArtifactManifests(db, "tenant_a", "agent_verifier_telemetry")).toHaveLength(0);
   });
 
@@ -39,7 +39,7 @@ describe("product verifier shadow adapter", () => {
     grantVerifierConsent(db);
     const env = {
       DEEPSEEK_VERIFIER_ENABLED: "true",
-      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
       DEEPSEEK_API_KEY: "secret",
       MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID: "worker_a",
       MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant_a", products: ["fettler"], dataClassification: "confidential", requiredRegion: "us", processingRegion: "us", consentId: "consent_a", evidenceRef: "approval:verifier-a", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
@@ -56,13 +56,13 @@ describe("product verifier shadow adapter", () => {
       completion: completion(),
       transport: { request: transport },
     } as const;
-    const result = await observeProductCompletionInShadow(request);
+    const result = await observeProductCompletionForAdvisory(request);
     expect(result?.status).toBe("verified");
     expect(result?.behaviorChanged).toBe(false);
     expect(listArtifactManifests(db, "tenant_a", "agent_verifier_telemetry")).toHaveLength(1);
     const callCount = transport.mock.calls.length;
     expect(callCount).toBeGreaterThan(0);
-    expect(await observeProductCompletionInShadow(request)).toBeNull();
+    expect(await observeProductCompletionForAdvisory(request)).toBeNull();
     expect(transport).toHaveBeenCalledTimes(callCount);
     const audit = db.raw.prepare("SELECT action, metadata_json FROM audit_events WHERE tenant_id = ? AND action = ?").get("tenant_a", "verifier.credential_access") as { action: string; metadata_json: string };
     expect(audit.action).toBe("verifier.credential_access");
@@ -71,7 +71,7 @@ describe("product verifier shadow adapter", () => {
 
   it("fails closed before a request when tenant governance is absent", async () => {
     const db = setup();
-    await expect(observeProductCompletionInShadow({ db, env: { DEEPSEEK_VERIFIER_ENABLED: "true", DEEPSEEK_API_KEY: "secret", MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 }) }, completion: completion() }))
+    await expect(observeProductCompletionForAdvisory({ db, env: { DEEPSEEK_VERIFIER_ENABLED: "true", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory", DEEPSEEK_API_KEY: "secret", MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 }) }, completion: completion() }))
       .rejects.toThrow("verifier_governance_configuration_required");
   });
 
@@ -80,13 +80,13 @@ describe("product verifier shadow adapter", () => {
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
     const env = {
       DEEPSEEK_VERIFIER_ENABLED: "true",
-      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
       DEEPSEEK_API_KEY: "secret",
       MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID: "worker_a",
       MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant_a", products: ["fettler"], dataClassification: "confidential", requiredRegion: "us", processingRegion: "us", consentId: "consent_a", evidenceRef: "approval:verifier-a", externalModelAllowed: false, mayLeaveTenantBoundary: true, consentActive: true }] }),
       MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 }),
     };
-    await expect(observeProductCompletionInShadow({ db, env, completion: completion(), transport: { request: transport } }))
+    await expect(observeProductCompletionForAdvisory({ db, env, completion: completion(), transport: { request: transport } }))
       .rejects.toThrow("verifier_governance_external_model_denied");
     expect(transport).not.toHaveBeenCalled();
   });
@@ -97,13 +97,13 @@ describe("product verifier shadow adapter", () => {
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
     const env = {
       DEEPSEEK_VERIFIER_ENABLED: "true",
-      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
       DEEPSEEK_API_KEY: "secret",
       MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID: "worker_a",
       MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant_a", products: ["fettler"], dataClassification: "restricted", requiredRegion: "us", processingRegion: "us", consentId: "consent_a", evidenceRef: "approval:verifier-a", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
       MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 }),
     };
-    await expect(observeProductCompletionInShadow({ db, env, completion: completion(), transport: { request: transport } }))
+    await expect(observeProductCompletionForAdvisory({ db, env, completion: completion(), transport: { request: transport } }))
       .rejects.toThrow("verifier_governance_restricted_egress_denied");
     expect(transport).not.toHaveBeenCalled();
   });
@@ -114,7 +114,7 @@ describe("product verifier shadow adapter", () => {
   function grantedEnv(over: Record<string, unknown> = {}): Record<string, string> {
     return {
       DEEPSEEK_VERIFIER_ENABLED: "true",
-      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
       DEEPSEEK_API_KEY: "secret",
       MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID: "worker_a",
       MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant_a", products: ["fettler"], dataClassification: "confidential", requiredRegion: "us", processingRegion: "us", consentId: "consent_a", evidenceRef: "approval:verifier-a", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true, ...over }] }),
@@ -125,7 +125,7 @@ describe("product verifier shadow adapter", () => {
   it("refuses external egress when the tenant has no consent record", async () => {
     const db = setup();
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
-    await expect(observeProductCompletionInShadow({ db, env: grantedEnv(), completion: completion(), transport: { request: transport } }))
+    await expect(observeProductCompletionForAdvisory({ db, env: grantedEnv(), completion: completion(), transport: { request: transport } }))
       .rejects.toThrow("verifier_governance_consent_inactive");
     expect(transport).not.toHaveBeenCalled();
   });
@@ -135,7 +135,7 @@ describe("product verifier shadow adapter", () => {
     grantVerifierConsent(db);
     revokeLearningConsent(db, { id: "consent_v2", tenantId: "tenant_a", consentId: "consent_v1", consentVersion: 2, authorizedByPrincipalId: "human_a", reason: "revoked", idempotencyKey: "revoke_v1", createdAt: "2026-08-17T00:30:00.000Z" });
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
-    await expect(observeProductCompletionInShadow({ db, env: grantedEnv(), completion: completion(), transport: { request: transport } }))
+    await expect(observeProductCompletionForAdvisory({ db, env: grantedEnv(), completion: completion(), transport: { request: transport } }))
       .rejects.toThrow("verifier_governance_consent_inactive");
     expect(transport).not.toHaveBeenCalled();
   });
@@ -145,7 +145,7 @@ describe("product verifier shadow adapter", () => {
     // Window closes at 11:00, before the completion's 12:01 observedAt.
     grantVerifierConsent(db, { expiresAt: "2026-08-17T11:00:00.000Z" });
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
-    await expect(observeProductCompletionInShadow({ db, env: grantedEnv(), completion: completion(), transport: { request: transport } }))
+    await expect(observeProductCompletionForAdvisory({ db, env: grantedEnv(), completion: completion(), transport: { request: transport } }))
       .rejects.toThrow("verifier_governance_consent_inactive");
     expect(transport).not.toHaveBeenCalled();
   });
@@ -159,7 +159,7 @@ describe("product verifier shadow adapter", () => {
       { token: "</score>", logprob: -0.1, top_logprobs: [{ token: "</score>", logprob: -0.1 }] },
     ] } }], usage: { prompt_tokens: 10, completion_tokens: 1 } } }));
     const excerpt = "export const endpoint = '/v1/responses';\n";
-    const result = await observeProductCompletionInShadow({
+    const result = await observeProductCompletionForAdvisory({
       db,
       env: grantedEnv(),
       completion: {
@@ -183,7 +183,7 @@ describe("product verifier shadow adapter", () => {
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
     // Tenant consent is active, but the operator has globally disabled external
     // processing: the operator switch is evaluated before consent and refuses.
-    await expect(observeProductCompletionInShadow({ db, env: grantedEnv({ externalModelAllowed: false }), completion: completion(), transport: { request: transport } }))
+    await expect(observeProductCompletionForAdvisory({ db, env: grantedEnv({ externalModelAllowed: false }), completion: completion(), transport: { request: transport } }))
       .rejects.toThrow("verifier_governance_external_model_denied");
     expect(transport).not.toHaveBeenCalled();
   });
