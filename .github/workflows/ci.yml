@@ -15,6 +15,11 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # revert-obligation-check (in npm test and ga:check) needs full
+          # history to see reverts and their re-lands; a shallow clone
+          # correctly fails closed. See scripts/revert-obligation-check.ts.
+          fetch-depth: 0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
