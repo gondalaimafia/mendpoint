@@ -1,20 +1,20 @@
-# Fettler / Mendpoint — Production GA 1.0
+# Fettler / Mendpoint — Production Readiness (Private Design Partner Preview)
 
-**Status:** General Availability (self-hosted + API-key multi-tenant control plane)  
-**Version:** `1.0.0` · channel `ga` · product **Fettler** on platform **Mendpoint**  
+**Status:** Private Design Partner Preview (self-hosted pilot control plane for approved private pilot teams)  
+**Version:** `1.0.0-preview` · channel `preview` · product **Fettler** on platform **Mendpoint**  
 **Date:** 2026-07-27
 
-This document is the **production GA story**: what is in, what is out, how to run it, and what you may claim.
+This document is the **production readiness story**: what is in, what is out, how to run it, and what you may claim.
 
 ---
 
-## One-liner (GA)
+## One-liner (Preview)
 
 **Fettler** opens **reviewable migration PRs** when APIs change: OpenAPI-aware impact analysis on connected codebases, graph-backed blast radius, contract gates, and an on-demand debug loop — **never auto-merges by default**.
 
 ---
 
-## What GA 1.0 includes (customer-facing)
+## What the Preview includes (customer-facing)
 
 | Capability | Evidence |
 |------------|----------|
@@ -36,7 +36,7 @@ This document is the **production GA story**: what is in, what is out, how to ru
 
 ---
 
-## Explicitly **not** GA (experimental)
+## Explicitly **out of scope** (experimental)
 
 | Capability | How to enable (if at all) |
 |------------|---------------------------|
@@ -45,7 +45,7 @@ This document is the **production GA story**: what is in, what is out, how to ru
 | Kùzu native graph store | `npm i kuzu` |
 | GNN training | offline; export only in-repo |
 | Low-risk auto-merge | experimental policy only |
-| Whole-repo LLM scan | never GA; slices only |
+| Whole-repo LLM scan | not planned; slices only |
 
 ---
 
@@ -92,12 +92,12 @@ npm run build -w @mendpoint/web && npm run start -w @mendpoint/web
 | `GET /live` | Liveness (process up) |
 | `GET /ready` | Readiness (env + DB ping) — 503 if fail |
 | `GET /health` | Human-readable health + version |
-| `GET /status` | Full GA status + feature lists |
+| `GET /status` | Full status + feature lists |
 | `GET /version` | Release + feature matrix |
 
 ---
 
-## SLOs (operational targets for self-hosted GA)
+## SLOs (operational targets for self-hosted pilot)
 
 | Signal | Target |
 |--------|--------|
@@ -119,13 +119,13 @@ npm run build -w @mendpoint/web && npm run start -w @mendpoint/web
 
 ---
 
-## YC / partner demo spine (GA story)
+## YC / partner demo spine (Preview story)
 
 1. Problem: API breaks → consumers break silently  
 2. `npm run demo` → PR with evidence  
 3. Registry / graph blast radius  
 4. Optional Fettler agent on fixture  
-5. Open `/status` → **GA 1.0 operational**  
+5. Open `/status` → **Preview 1.0 operational**  
 6. Ask: design partners / self-host pilots — **not** “finish Firecracker”
 
 ---
@@ -134,4 +134,4 @@ npm run build -w @mendpoint/web && npm run start -w @mendpoint/web
 
 See `docs/WARDEN_CLAIMS.md`. Preferred public line:
 
-> Fettler is generally available for self-hosted and API-key multi-tenant control planes: review-first migration PRs from OpenAPI changes, graph-backed impact, and an on-demand API debug loop. Continuous multi-repo “unprompted” hunting and public leaderboard benchmarks remain design-partner track.
+> Fettler is available as a Private Design Partner Preview for self-hosted pilot control planes: review-first migration PRs from OpenAPI changes, graph-backed impact, and an on-demand API debug loop. Continuous multi-repo “unprompted” hunting and public leaderboard benchmarks remain design-partner track.

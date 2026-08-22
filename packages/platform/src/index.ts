@@ -288,21 +288,13 @@ export {
 } from "./router-adaptive.js";
 
 export {
-  InMemoryRouterEvidenceStore,
-  JsonlRouterEvidenceStore,
-  PolicyRouterRuntime,
   type PersistedRouterTaskSpec,
-  type PrepareRouterRuntimeInput,
   type RouterActualOutcomeInput,
   type RouterAttemptEvidence,
   type RouterDispatch,
-  type RouterEvidenceEnvelope,
   type RouterEvidenceEvent,
-  type RouterEvidenceStore,
-  type RouterFinalOutcome,
   type RouterPreparedEnvelope,
   type RouterRetryPolicy,
-  type RouterRuntimeDisposition,
   type RouterVerificationEvidence,
 } from "./router-runtime.js";
 

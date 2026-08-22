@@ -884,7 +884,28 @@ export async function executeToolAsync(
         ok: true,
         tool: "run_command",
         summary: `exit 0: ${cmd}`,
-        data: { stdout: execution.stdout.slice(0, 8000), exitCode: 0 },
+        data: { stdout: execution.stdout.slice(0, 8000), exitCode: 0, outcome: execution.outcome },
+      };
+    }
+    // A refusal (containment could not be established, approval gate, or an
+    // unsupported command) is not_verified — the command never ran, so it must
+    // not be reported to the agent as if the command executed and failed.
+    if (execution.outcome === "not_verified") {
+      return {
+        ok: false,
+        tool: "run_command",
+        summary: `not verified (command did not run): ${cmd}`,
+        error: (
+          execution.error ||
+          execution.stderr ||
+          "verification could not run under the required containment"
+        ).slice(0, 4000),
+        data: {
+          stdout: execution.stdout.slice(0, 4000),
+          stderr: execution.stderr.slice(0, 4000),
+          exitCode: execution.exitCode,
+          outcome: execution.outcome,
+        },
       };
     }
     return {
@@ -901,6 +922,7 @@ export async function executeToolAsync(
         stdout: execution.stdout.slice(0, 4000),
         stderr: execution.stderr.slice(0, 4000),
         exitCode: execution.exitCode,
+        outcome: execution.outcome,
       },
     };
   }
