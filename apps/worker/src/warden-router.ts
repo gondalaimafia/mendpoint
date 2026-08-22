@@ -621,7 +621,14 @@ export function synthesizeWardenRun(
     verifier: {
       command: undefined,
       source: "provided",
-      status: ok ? "passed" : "failed",
+      // A rejection because the verifier could not run is not_verified, never
+      // failed: the attempt engine raises warden_attempt_verifier_unavailable
+      // for every refusal (approval gate exit 126 or sandbox containment refusal).
+      status: ok
+        ? "passed"
+        : attempt.status === "rejected" && attempt.code === "warden_attempt_verifier_unavailable"
+          ? "not_verified"
+          : "failed",
       output: attempt.summary,
     },
     rollback: { performed: false, restoredFiles: [], failedFiles: [] },

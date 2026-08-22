@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import type { SandboxKind } from "@mendpoint/platform";
 import {
   configuredSandboxKind,
   runVerificationInSandbox,
@@ -26,12 +27,39 @@ export type VerificationInvocation = {
     | "rspec";
 };
 
+/**
+ * The three genuinely-distinct outcomes of a verification run. This is the
+ * repository's signature defect made unrepresentable: a run is never just
+ * pass/fail, because "we could not check" is a third fact that must not collapse
+ * into "the tests failed".
+ *
+ * - `verified`     — containment was established, the command ran, it passed.
+ * - `failed`       — containment was established, the command ran, it failed.
+ * - `not_verified` — containment could NOT be established (or the command never
+ *   ran, or the executor could not name the backend it used), so nothing was
+ *   learned about the tests. This is NOT a test failure.
+ */
+export type VerificationOutcome = "verified" | "failed" | "not_verified";
+
 export type VerificationExecution = {
   ok: boolean;
   stdout: string;
   stderr: string;
   exitCode: number;
   error?: string;
+  /**
+   * Three-state result. `ok` stays `true` iff `outcome === "verified"`, so every
+   * legacy reader that only checks `ok` still fails closed on `not_verified`;
+   * readers that must tell a refusal apart from a failure read `outcome`.
+   */
+  outcome: VerificationOutcome;
+  /**
+   * The sandbox backend that ACTUALLY ran the command, observed from the run
+   * (never echoed from configuration). `null` whenever `outcome` is
+   * `not_verified` — a refusal establishes no backend. A non-null value is proof
+   * the command executed under that backend.
+   */
+  sandboxBackend: SandboxKind | null;
 };
 
 const SIMPLE_TOKEN = /^[A-Za-z0-9_./:@+-]+$/;
@@ -298,12 +326,15 @@ export async function runVerificationCommand(
 ): Promise<VerificationExecution> {
   const invocation = parseVerificationCommand(command, repoRoot);
   if (!invocation) {
+    // Nothing ran, so nothing was learned: not_verified, never a test failure.
     return {
       ok: false,
       stdout: "",
       stderr: "",
       exitCode: 126,
       error: `Unsupported verification command: ${command}`,
+      outcome: "not_verified",
+      sandboxBackend: null,
     };
   }
   const boundedTimeout = Math.max(1_000, Math.min(timeoutMs, 300_000));
@@ -318,12 +349,15 @@ export async function runVerificationCommand(
         .update(readFileSync(verifierPath))
         .digest("hex");
       if (!approvedVerifierHashes().has(verifierHash)) {
+        // Approval-gate refusal: the verifier never ran. not_verified, not failed.
         return {
           ok: false,
           stdout: "",
           stderr: "",
           exitCode: 126,
           error: "Production node-check verifier content is not approved",
+          outcome: "not_verified",
+          sandboxBackend: null,
         };
       }
     } else if (!approvedOperatorCommands().has(normalizeVerificationCommand(command))) {
@@ -339,6 +373,10 @@ export async function runVerificationCommand(
           `Production verification refused: "${normalizeVerificationCommand(command)}" is not an ` +
           `approved verifier. An operator must add this exact command to ${APPROVED_COMMANDS_ENV}, ` +
           `or use the node-check profile with an approved hash in ${APPROVED_HASHES_ENV}.`,
+        // The canonical refusal from CURRENT_STATE.md: an approval-gate exit 126
+        // means the command was never run, so it is not_verified — never failed.
+        outcome: "not_verified",
+        sandboxBackend: null,
       };
     }
   }
@@ -411,21 +449,27 @@ export async function runVerificationCommand(
       signal,
     }, (error, stdout, stderr) => {
       if (!error) {
+        // The command genuinely ran on the host (no isolation): backend "local".
         resolveExecution({
           ok: true,
           stdout: String(stdout),
           stderr: String(stderr),
           exitCode: 0,
+          outcome: "verified",
+          sandboxBackend: "local",
         });
         return;
       }
       const failure = error as Error & { code?: number | string };
+      // The command ran on the host and exited non-zero: a real test failure.
       resolveExecution({
         ok: false,
         stdout: String(stdout),
         stderr: String(stderr),
         exitCode: Number.isInteger(failure.code) ? Number(failure.code) : 1,
         error: failure.message,
+        outcome: "failed",
+        sandboxBackend: "local",
       });
     });
   });

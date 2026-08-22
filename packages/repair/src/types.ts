@@ -98,6 +98,13 @@ export type VerifyResult = {
   commands: string[];
   output: string;
   failures: FailureObservation[];
+  /**
+   * True when verification could not run at all (containment refused, approval
+   * gate, or an unsupported command) — nothing was learned about the code. This
+   * is NOT a test failure: the repair loop must stop rather than try to "fix" a
+   * refusal, and callers must not read `!ok` here as "the tests failed".
+   */
+  notVerified?: boolean;
 };
 
 export type RepairSessionResult = {
@@ -115,7 +122,9 @@ export type RepairSessionResult = {
     | "repeated_actions"
     | "max_attempts"
     | "policy_violation"
-    | "lease_lost";
+    | "lease_lost"
+    /** Verification could not run (containment refused / approval gate); nothing was learned. */
+    | "not_verified";
   attempts: number;
   maxAttempts: number;
   plans: RepairPlan[];
