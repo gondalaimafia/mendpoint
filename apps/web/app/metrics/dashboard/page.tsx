@@ -1,4 +1,4 @@
-import { apiBase, apiGet } from "../../../lib/api";
+import { apiGet } from "../../../lib/api";
 import { DashboardView, type SelfServeDashboard } from "./dashboard-view";
 
 export const dynamic = "force-dynamic";
@@ -21,10 +21,10 @@ export default async function SelfServeDashboardPage() {
         instrumented, never zero-filled or estimated. Pull your own numbers with the exports below.
       </p>
       <p className="command-actions" aria-label="Exports">
-        <a className="btn" href={`${apiBase()}/metrics/dashboard/export?format=csv`}>
+        <a className="btn" href="/api/metrics/dashboard/export?format=csv">
           Export CSV
         </a>
-        <a className="btn" href={`${apiBase()}/metrics/dashboard/export?format=json`}>
+        <a className="btn" href="/api/metrics/dashboard/export?format=json">
           Export JSON
         </a>
       </p>

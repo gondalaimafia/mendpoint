@@ -25,8 +25,7 @@ seed failure log / tree scan
 
 | Package | Role |
 |---------|------|
-| `@mendpoint/repair` | Core session + agentic loop |
-| `@mendpoint/ci-loop` | Verify / comment scaffold |
+| `@mendpoint/repair` | Core repair session (`runRepairSession`) |
 | `@mendpoint/pipeline` | Optional pre-PR repair (`AGENTIC_REPAIR=1`) |
 
 ## API
@@ -39,8 +38,7 @@ POST /repair/sessions
   "verifyCommands": [],
   "maxAttempts": 3,
   "dryRun": false,
-  "useLlm": false,
-  "agenticLoop": false
+  "useLlm": false
 }
 
 GET /repair/sessions
