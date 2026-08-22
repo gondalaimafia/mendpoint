@@ -2895,3 +2895,23 @@ DeepSeek review: the dedicated coordinator has the key and exact shadow configur
 Delegated cleanup review: the inert `warden.candidate.cleanup` handoff now has an exact consumer. It re-resolves the current service principal, verification, candidate, snapshot, delivery, observation, installation, repository, pull request, base and head authority; materializes content-addressed task and retain-only policy artifacts; runs the GitHub App cleanup port; signs the durable cleanup evidence; and completes the fenced lease. The branch disposition is hard-coded to `retain_exact`; delete, merge, and deploy authority are explicitly false. The dispatcher leaves cleanup jobs pending when disabled and validates a current matching Ed25519 key pair before it will claim them. It rechecks the key window at authority resolution and again at the signing instant, while job completion uses a fresh timestamp so an expired lease cannot be completed after a slow remote call. Twelve focused authority and job tests, 62 worker dispatcher tests, seven pipeline authority and attestation tests, and 50 GitHub runtime and exact cleanup tests pass. The complete monorepo test command, full workspace typecheck, production build, GA gate, dependency audit, and strict diff check also pass; the audit reports 0 vulnerabilities. The main Fly app has none of the `MENDPOINT_DELEGATED_PR_ATTESTATION_*` bindings or `MENDPOINT_DELEGATED_PR_CLEANUP_ENABLED`, so live activation remains correctly off and requires a dedicated protected key and nonsecret trust bindings. No secret value was read.
 
 Small-gap reconciliation: outcomes navigation shipped in #317, the ReGauge live-eval alias retired in #308, adaptive routing now refuses activation while its sole aggregate producer remains intentionally unwired in #315, and dated ADR identifiers plus the collision check shipped in #311. The remaining Fettler pilot intake asymmetry is now closed: API keys, non-OIDC sessions, missing or mismatched membership evidence, offboarded memberships, cross-tenant trust, and revoked or expired human trust principals are refused before a job can be replayed or enqueued. The current trust and membership rows are rechecked immediately before the write. The red regression observed the old 202 and cross-tenant 404 behavior; all eight focused intake tests and API typecheck pass after the fix.
+
+## 2026-08-22 Graphify pinned process and benchmark
+
+Objective: finish only the internal evaluation lane authorized by ADR-0006. Build a pinned, killable, zero-network Graphify process over copied immutable bytes; measure it against the current extractor with sealed labels; and keep production selection impossible unless the evidence clears every adoption gate.
+
+- [x] Re-read the checked-in Graphify authority, ADR, adapter contract, benchmark contract, and exact upstream `0.9.46` source at `558df6d57d61cb6ef79c740ec7473c6d953d79a7`.
+- [x] Add red tests for process identity, private working directory, exact byte materialization, protocol bounds, output coverage, timeout termination, memory enforcement, and zero-network authority.
+- [x] Implement the private Python process bridge and Node supervisor without exporting Graphify process types or adding a production environment selector.
+- [x] Pin the evaluation dependency and retained license materials, then verify the installed artifact against the recorded digest before execution.
+- [ ] Build the 18-case A/B/C cohort, stage predictions before labels, grade with a separately supplied sealed key, and measure direct, indirect, trap, incremental, and four size tiers.
+- [ ] Record the exact result and adoption blockers without converting internal evidence into a product claim.
+- [ ] Run focused suites, workspace typechecks, production build, GA checks, dependency audit, container checks, and strict diff review before publishing a separate pull request.
+
+### Review
+
+- The official PyPI JSON record independently matches the compiled `graphifyy-0.9.46-py3-none-any.whl` SHA-256 pin.
+- Red first process tests failed before the concrete supervisor existed. Six supervisor regressions and the existing 49 contract and benchmark tests now pass.
+- The bridge syntax check, full workspace typecheck, root script typecheck, workflow pin check, YAML parse, and strict diff whitespace check pass.
+- Windows cannot prove the Linux network namespace boundary and this machine has no WSL or Docker. The pull-request workflow is therefore the first eligible real process smoke; no local execution is represented as containment evidence.
+- Production selection remains impossible: the process factory is absent from the package root, there is no environment selector or caller, and the adoption decision remains internal only.

@@ -36,4 +36,4 @@ For a language to qualify, structural edge precision must be at least 0.90 and r
 
 ## Recorded run status
 
-No real pinned Graphify child process, sealed external holdout, or four-tier performance run was completed in this change. Upstream's benchmark artifacts are not reproducible from release `0.9.46`. The repository unit cohort validates the scoring contract only. Therefore no quality, latency, memory, or economics number is represented as product evidence, and the decision remains **KEEP AS INTERNAL TOOL ONLY**.
+A real pinned Graphify child process and pull-request smoke are now implemented, but the Linux smoke has not yet produced retained evidence. No sealed external holdout or four-tier performance run was completed. Upstream's benchmark artifacts are not reproducible from release `0.9.46`. The repository unit cohort validates the scoring contract only. Therefore no quality, latency, memory, or economics number is represented as product evidence, and the decision remains **KEEP AS INTERNAL TOOL ONLY**.
