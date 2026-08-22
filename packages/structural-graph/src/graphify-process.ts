@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { lstatSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { extname, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import {
   GRAPHIFY_EVALUATION_PIN,
@@ -143,7 +143,9 @@ export function createGraphifyProcessPort(config: GraphifyProcessConfig): Graphi
     const responseLimit = request.limits.maxOutputBytes +
       request.limits.maxFiles * RESPONSE_METADATA_BYTES_PER_FILE + RESPONSE_FIXED_OVERHEAD_BYTES;
     const workingDirectory = mkdtempSync(resolve(tmpdir(), "mendpoint-graphify-process-"));
-    const child = spawn(executablePath, [...(config.argumentsBeforeBridge ?? []), bridgePath], {
+    const runtimeBridgePath = resolve(workingDirectory, `bridge${extname(bridgePath)}`);
+    writeFileSync(runtimeBridgePath, readFileSync(bridgePath), { mode: 0o400 });
+    const child = spawn(executablePath, [...(config.argumentsBeforeBridge ?? []), runtimeBridgePath], {
       cwd: workingDirectory,
       env: {
         PATH: process.env.PATH ?? "",
