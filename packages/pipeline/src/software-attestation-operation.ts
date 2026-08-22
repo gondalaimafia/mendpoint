@@ -223,8 +223,11 @@ function resolveScope(db: AppDb, input: IssueSoftwareAttestationInput): Software
 
 function artifactKindMatches(kind: string, role: string): boolean {
   const normalized = kind.toLowerCase();
+  if (role === "source" && (normalized === "delegated_pr_acceptance_authority" ||
+      normalized === "delegated_pr_task")) return true;
   if (role === "policy") return normalized.includes("policy") || normalized.includes("gate");
-  if (role === "delivery") return normalized.includes("delivery") || normalized.includes("package");
+  if (role === "delivery") return normalized === "delegated_pr_github_observation" ||
+    normalized.includes("delivery") || normalized.includes("package");
   return normalized.includes(role);
 }
 

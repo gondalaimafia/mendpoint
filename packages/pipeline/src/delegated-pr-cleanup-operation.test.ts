@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Octokit } from "@octokit/rest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDb, insertArtifactManifest, insertPrincipal } from "@mendpoint/db";
-import { exactDraftCleanupOperationId } from "@mendpoint/github";
+import { cleanupExactDraftWithOctokit, exactDraftCleanupOperationId } from "@mendpoint/github";
 import {
   recordDelegatedPrCleanup,
   getVerifiedFettlerDelegationEvidence,
@@ -69,8 +69,9 @@ function fixture() {
     });
   };
   for (const [id, kind] of [
-    ["source", "source"], ["snapshot", "snapshot"], ["candidate", "candidate"],
-    ["verification", "verification"], ["policy", "policy"], ["delivery-artifact", "delivery"],
+    ["source", "delegated_pr_task"], ["snapshot", "snapshot"], ["candidate", "candidate"],
+    ["verification", "verification"], ["policy", "delegated_pr_cleanup_policy"],
+    ["delivery-artifact", "delegated_pr_github_observation"],
   ] as const) add(id, kind);
 
   let state: "open" | "closed" = "open";
@@ -122,7 +123,10 @@ function fixture() {
     },
   };
   const dependencies = {
-    enabled: true as const, octokit, signer, authorizeActor: () => true,
+    enabled: true as const,
+    cleanupExactDraft: (cleanupInput: Parameters<typeof cleanupExactDraftWithOctokit>[1], authority?: Parameters<typeof cleanupExactDraftWithOctokit>[2]) =>
+      cleanupExactDraftWithOctokit(octokit, cleanupInput, authority),
+    signer, authorizeActor: () => true,
     producerService: "mendpoint-delegated-cleanup",
   };
   return { db, input, dependencies, trustPolicy, octokit };

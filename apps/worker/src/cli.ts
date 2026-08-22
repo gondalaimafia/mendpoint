@@ -203,6 +203,11 @@ import {
 } from "./verifier-product-shadow.js";
 import { runVerifierAdvisoryJob } from "./verifier-advisory-job.js";
 import { buildVerifierRepositoryExcerpt } from "./verifier-repository-excerpt.js";
+import {
+  delegatedPrCleanupRuntimeConfigFromEnv,
+  runDelegatedPrCleanupJob,
+  type DelegatedPrCleanupRuntimeConfig,
+} from "./delegated-pr-cleanup-job.js";
 
 function verifierDigest(value: string): string {
   if (/^sha256:[a-f0-9]{64}$/.test(value)) return value;
@@ -1777,6 +1782,11 @@ export function validateWorkerProductionEnv(
     }
   }
   errors.push(...validateDelegatedPrVerificationEnvironment(env));
+  try {
+    delegatedPrCleanupRuntimeConfigFromEnv(env);
+  } catch (error) {
+    errors.push(`Delegated PR cleanup authority invalid: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const verifierEnabled = env.DEEPSEEK_VERIFIER_ENABLED?.trim();
   if (verifierEnabled && verifierEnabled !== "true" && verifierEnabled !== "false") {
     errors.push("DEEPSEEK_VERIFIER_ENABLED must be exactly true or false");
@@ -2587,6 +2597,7 @@ async function processJobsOnceUnfenced(
       candidateDependencies: DelegatedPrCandidateOperationDependencies;
       verificationDependencies: DelegatedPrVerificationDependencies;
     }>;
+    delegatedPrCleanup?: DelegatedPrCleanupRuntimeConfig;
     onActiveJob?: (
       job: { id: string; type: string; leaseGeneration: number } | null,
     ) => void;
@@ -2599,6 +2610,8 @@ async function processJobsOnceUnfenced(
     ? undefined
     : opts.delegatedPrVerification ??
       delegatedPrVerificationRuntimeFromEnv(db, workerEnv, workerId);
+  const delegatedPrCleanup = opts.delegatedPrCleanup ??
+    delegatedPrCleanupRuntimeConfigFromEnv(workerEnv);
   const leaseMs = parseLeaseMs(opts.leaseMs ?? process.env.JOB_LEASE_MS);
   const maxJobs = Math.max(1, Math.min(opts.maxJobs ?? 25, 100));
   const result: JobDrainResult = {
@@ -2635,6 +2648,9 @@ async function processJobsOnceUnfenced(
   if (delegatedPrVerification?.candidateDependencies.enabled === true &&
       delegatedPrVerification.verificationDependencies.enabled === true) {
     supportedTypes.push(DELEGATED_PR_VERIFICATION_JOB_TYPE);
+  }
+  if (delegatedPrCleanup) {
+    supportedTypes.push("warden.candidate.cleanup");
   }
   // Only claim campaign-execute jobs when this worker has the production
   // execution dependencies; otherwise leave them for a worker that does.
@@ -2737,7 +2753,21 @@ async function processJobsOnceUnfenced(
         result.succeeded++;
         continue;
       }
-      if (job.type === DELEGATED_PR_VERIFICATION_JOB_TYPE) {
+if (job.type === "warden.candidate.cleanup") {
+        if (!delegatedPrCleanup) throw new Error("delegated_pr_cleanup_disabled");
+        const cycle = wardenCiCycleForJob(db, job);
+        const runtime = createWardenCiGitHubRuntime({ db, tenantId: cycle.tenantId,
+          repositoryId: cycle.repositoryId, remoteRepositoryId: cycle.remoteRepositoryId,
+          installationId: cycle.installationId, env: workerEnv });
+        await runDelegatedPrCleanupJob(db, job, {
+          ...delegatedPrCleanup,
+          cleanupExactDraft: runtime.cleanupExactDraft,
+          resolveRepository: () => Object.freeze({ owner: runtime.owner, repo: runtime.repo }),
+        });
+        result.succeeded++;
+        continue;
+      }
+            if (job.type === DELEGATED_PR_VERIFICATION_JOB_TYPE) {
         if (!delegatedPrVerification) throw new Error("delegated_pr_verification_disabled");
         const verification = await runDelegatedPrVerificationJob(db, {
           job,
