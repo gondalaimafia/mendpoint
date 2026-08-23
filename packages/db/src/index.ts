@@ -49,6 +49,7 @@ export * from "./mission-verification.js";
 export * from "./mission-artifacts.js";
 export * from "./mission-timeline.js";
 export * from "./mission-handoff.js";
+export * from "./policy-envelope.js";
 export * from "./task-ownership.js";
 
 export type AppDb = {
@@ -872,6 +873,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS mission_fettler_campaign_uidx
   ON mission(tenant_id, fettler_campaign_id) WHERE fettler_campaign_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS mission_regauge_campaign_uidx
   ON mission(tenant_id, regauge_campaign_id) WHERE regauge_campaign_id IS NOT NULL;
+
+-- Policy Envelope store (spec §6.7 / §8.18). Versioned, tenant-scoped, and
+-- IMMUTABLE by (tenant_id, version): the envelope text a mission pinned through
+-- mission.policy_envelope_version must never change under it. The envelope body
+-- is stored as opaque canonical JSON (owned/parsed by @mendpoint/policy), with a
+-- content digest so a re-create of the same (tenant, version) is idempotent and a
+-- conflicting re-create fails closed. Brand-new table, so it converges on fresh
+-- AND pre-change databases through CREATE TABLE IF NOT EXISTS with no ALTER.
+CREATE TABLE IF NOT EXISTS policy_envelopes (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  version INTEGER NOT NULL CHECK (version > 0),
+  policy_envelope_id TEXT NOT NULL,
+  envelope_json TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, version)
+);
+CREATE TRIGGER IF NOT EXISTS policy_envelopes_immutable
+  BEFORE UPDATE ON policy_envelopes
+  BEGIN SELECT RAISE(ABORT, 'policy_envelope_immutable'); END;
+CREATE TRIGGER IF NOT EXISTS policy_envelopes_no_delete
+  BEFORE DELETE ON policy_envelopes
+  BEGIN SELECT RAISE(ABORT, 'policy_envelope_immutable'); END;
 
 -- Mission durable records (spec 6.1 / 8.6 companion to the mission primitive
 -- above). Three append-only, tenant-content-addressed stores that let a later
