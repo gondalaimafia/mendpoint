@@ -328,22 +328,95 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
-        with:
-          version: "0.4.79"
-      - name: Deploy verified revision
-        run: flyctl deploy --remote-only --app mendpoint-talal
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-      - name: Verify production health
+      # Re-assert, at the front of the deploy, that this run still ships the
+      # current tip of main. A deploy job that waited in the mendpoint-production
+      # concurrency queue can start after newer commits have merged; shipping a
+      # superseded commit and reporting success would silently overwrite newer
+      # main with older code. When superseded, skip honestly -- the newer
+      # commit's own run deploys it -- so this shows as a visible SKIP, distinct
+      # from a successful deploy and from a failed one. Fail-safe: if the current
+      # head cannot be determined, proceed with the deploy rather than skip,
+      # because "main is not deployed" is the exact state we are eliminating.
+      - name: Re-assert this run deploys current main head
+        id: head
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in {1..60}; do
-            if curl --fail --silent https://mendpoint-talal.fly.dev/livez >/dev/null; then
-              break
+          expected="${{ github.sha }}"
+          head_sha="$(git ls-remote origin refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}' || true)"
+          if [ -z "$head_sha" ]; then
+            echo "::notice::Could not determine current main head; proceeding with deploy (fail-safe)."
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          elif [ "$head_sha" != "$expected" ]; then
+            echo "::notice::Deploy skipped: commit ${expected} was superseded by newer main head ${head_sha}. The newer commit's deploy run is responsible for shipping it."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "This run deploys the current main head ${expected}."
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        if: steps.head.outputs.superseded != 'true'
+        with:
+          version: "0.4.79"
+      # MENDPOINT_RELEASE_REVISION stamps the immutable git sha onto the running
+      # app so /version can report exactly what is deployed. Without it,
+      # /version.revision is null and a revision check would compare null to null
+      # and pass -- the verify step below treats an absent revision as a FAILURE,
+      # never a match, which is the whole point of the third state.
+      - name: Deploy verified revision
+        if: steps.head.outputs.superseded != 'true'
+        run: flyctl deploy --remote-only --app mendpoint-talal --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      # Bounded health verification. Every curl carries --max-time, so a hung or
+      # unresponsive endpoint fails fast and loud instead of blocking until the
+      # job's 25-minute timeout (which GitHub records, misleadingly, as
+      # "cancelled"). The whole retry loop is bounded by an explicit deadline so
+      # the step can never approach that timeout. It asserts BOTH that the
+      # revision the app is serving equals this commit AND that the app is
+      # actually up, and on failure prints the HTTP code, bytes received, and
+      # deployed-vs-expected revision so the state is diagnosable without opening
+      # Fly.
+      - name: Verify deployed revision and production health
+        if: steps.head.outputs.superseded != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ github.sha }}"
+          revision=""
+          ver_code=000
+          ver_bytes=0
+          live_code=000
+          live_bytes=0
+          health_code=000
+          health_bytes=0
+          deadline=$(( $(date +%s) + 300 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            ver_code="$(curl -sS -o version.json -w '%{http_code}' --max-time 10 https://mendpoint-talal.fly.dev/version || echo 000)"
+            ver_bytes="$(wc -c <version.json 2>/dev/null || echo 0)"
+            live_code="$(curl -sS -o livez.json -w '%{http_code}' --max-time 10 https://mendpoint-talal.fly.dev/livez || echo 000)"
+            live_bytes="$(wc -c <livez.json 2>/dev/null || echo 0)"
+            health_code="$(curl -sS -o healthz.json -w '%{http_code}' --max-time 10 https://mendpoint-talal.fly.dev/healthz || echo 000)"
+            health_bytes="$(wc -c <healthz.json 2>/dev/null || echo 0)"
+            revision=""
+            if [ "$ver_code" = "200" ]; then
+              revision="$(jq -r '.revision // empty' version.json 2>/dev/null || true)"
             fi
-            test "$attempt" -lt 60
-            sleep 2
+            if [ "$revision" = "$expected" ] && [ "$live_code" = "200" ] && [ "$health_code" = "200" ]; then
+              echo "Production is live and serving the expected revision ${expected}."
+              exit 0
+            fi
+            sleep 5
           done
-          curl --fail --silent https://mendpoint-talal.fly.dev/healthz >/dev/null
+          echo "::error::Production verification failed for revision ${expected} (deployed, but not confirmed live on current main)."
+          echo "  /version -> http ${ver_code}, ${ver_bytes} bytes, revision=$([ -n "${revision}" ] && echo "${revision}" || echo "<absent>")"
+          echo "  /livez   -> http ${live_code}, ${live_bytes} bytes"
+          echo "  /healthz -> http ${health_code}, ${health_bytes} bytes"
+          if [ -z "${revision}" ]; then
+            echo "  Deployed revision could not be determined (absent). This is a FAILURE, not a match."
+          elif [ "${revision}" != "${expected}" ]; then
+            echo "  Deployed revision ${revision} does not match expected ${expected}."
+          else
+            echo "  Revision matched but the app never reported healthy (/livez and /healthz must both be 200)."
+          fi
+          exit 1
