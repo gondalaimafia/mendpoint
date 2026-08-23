@@ -367,6 +367,22 @@ export const ANALYSIS_CORE_ARM: ArmDescriptor = Object.freeze({
   contextSource: "raw-retrieval",
   modelConfiguration: "analysis-core",
 });
+/**
+ * The measured deterministic representation counterpart of `det`: the Change
+ * Graph projection with the model off. `det` vs `B0` isolates the representation
+ * variable (raw retrieval vs graph projection) on the deterministic core, holding
+ * the model constant at "off" — the honestly measurable half of the §11.21
+ * experiment (arms B and C still need the live model / verifier). It is measured
+ * per scenario ONLY where the Change Graph resolves the changed endpoint; where
+ * the graph has no coverage the scenario reports not-measured with a reason, so a
+ * missing graph is never averaged in as a zero.
+ */
+export const ARM_B0_GRAPH_ANALYSIS_CORE: ArmDescriptor = Object.freeze({
+  id: "B0",
+  label: "Change Graph projection + analysis core (Muse off)",
+  contextSource: "change-graph-projection",
+  modelConfiguration: "analysis-core",
+});
 export const ARM_A_RAW_MUSE: ArmDescriptor = Object.freeze({
   id: "A",
   label: "raw retrieval + Muse",
@@ -389,6 +405,7 @@ export const ARM_C_GRAPH_MUSE_VERIFIER: ArmDescriptor = Object.freeze({
 /** The full declared arm set for the §11.21 experiment, in report order. */
 export const REPRESENTATION_ARMS: readonly ArmDescriptor[] = Object.freeze([
   ANALYSIS_CORE_ARM,
+  ARM_B0_GRAPH_ANALYSIS_CORE,
   ARM_A_RAW_MUSE,
   ARM_B_GRAPH_MUSE,
   ARM_C_GRAPH_MUSE_VERIFIER,

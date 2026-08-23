@@ -32,11 +32,13 @@ import {
 import { CORPUS_ROOT, CORPUS_ROOT_CONFIGURED, SCENARIOS } from "../scenarios/index.js";
 import { resolveScenarios } from "../scenarios/resolve.js";
 import { runFettler } from "./fettler-runner.js";
+import { runFettlerWithGraphProjection } from "./fettler-graph-runner.js";
 import { assertCorpusRunIsolation } from "./isolation.js";
 import { buildLiveResult, scoreRun, skippedLiveResult } from "./live-lane.js";
 import {
   ANALYSIS_CORE_ARM,
   ARM_A_RAW_MUSE,
+  ARM_B0_GRAPH_ANALYSIS_CORE,
   ARM_B_GRAPH_MUSE,
   ARM_C_GRAPH_MUSE_VERIFIER,
   REPRESENTATION_ARMS,
@@ -54,7 +56,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../..");
 
 const ARM_B_BLOCKER =
-  "the Change Graph projection is now wired into packages/code-impact (analyzeImpactWithSoftwareGraph at packages/code-impact/src/index.ts:605, over @mendpoint/graph-learn), but this runner does not yet route Fettler through it: arm B still needs a runFettler path that consumes the software-graph projection instead of raw retrieval, and — like arm A — the live Muse lane";
+  "the Change Graph projection is now routed through this runner as arm B0 (graph projection + analysis core, model off) via runFettlerWithGraphProjection over analyzeImpactWithSoftwareGraph; arm B is that same projection WITH Muse, so it additionally needs the live Muse lane (like arm A). Arm B0 measures the deterministic representation comparison (det vs B0) today, per scenario, only where the graph resolves the changed endpoint";
 const ARM_C_BLOCKER =
   "the independent verifier (packages/verifier) is not on main yet (arrives with PR #182); arm C also depends on the arm B projection";
 
@@ -139,8 +141,19 @@ async function main(): Promise<void> {
         armA = liveResultAsArmResult(skippedLiveResult(armAReason));
       }
 
+      // Arm B0 — Change Graph projection with the model off. Routed through
+      // analyzeImpactWithSoftwareGraph; measured only where the graph resolves
+      // the changed endpoint, else honestly not-measured with a reason.
+      process.stdout.write(`running ${rs.scenario_id} (arm B0: graph projection, Muse off) ... `);
+      const graphRun = await runFettlerWithGraphProjection(prepared.config, rs.gt, ctx);
+      const armB0 = graphRun.measured
+        ? analysisCoreArmResult(scoreRun(graphRun.record, rs.gt))
+        : notMeasuredArmResult(graphRun.reason);
+      process.stdout.write(`${graphRun.measured ? "MEASURED" : "not measured"}\n`);
+
       const results: Record<string, ArmScenarioResult> = {
         [ANALYSIS_CORE_ARM.id]: analysisCoreArmResult(detScore),
+        [ARM_B0_GRAPH_ANALYSIS_CORE.id]: armB0,
         [ARM_A_RAW_MUSE.id]: armA,
         [ARM_B_GRAPH_MUSE.id]: notMeasuredArmResult(ARM_B_BLOCKER),
         [ARM_C_GRAPH_MUSE_VERIFIER.id]: notMeasuredArmResult(ARM_C_BLOCKER),
@@ -163,6 +176,7 @@ async function main(): Promise<void> {
 
   console.log("");
   console.log(`declared arms: ${REPRESENTATION_ARMS.map((a) => a.id).join(", ")}`);
+  console.log(`arm B0 (Change Graph projection + analysis core, Muse off): MEASURED where the graph resolves the changed endpoint, else not-measured per scenario`);
   console.log(`arm A (raw retrieval + Muse): ${approved ? "MEASURED" : "NOT MEASURED — " + armAReason}`);
   console.log(`arm B (Change Graph projection + Muse): NOT MEASURED — ${ARM_B_BLOCKER}`);
   console.log(`arm C (+ independent verifier): NOT MEASURED — ${ARM_C_BLOCKER}`);
