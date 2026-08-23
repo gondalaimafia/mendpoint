@@ -342,6 +342,22 @@ Merge requires:
 - branch/current-base requirements satisfied
 - human merge decision unless explicitly delegated by repository policy
 
+### 14.1 Check for stacked PRs before deleting a merged branch
+
+`gh pr merge --delete-branch` removes the head branch. **GitHub automatically closes any open pull request whose base branch is deleted**, and a PR closed this way cannot simply be reopened — its base is gone, so `gh pr reopen` and `gh pr edit --base` both fail. The work is not lost (the head branch survives), but the review thread, its history, and its number are, and the closure looks indistinguishable from a deliberate rejection to anyone reading later.
+
+Before merging with `--delete-branch`, check whether anything is stacked on the branch:
+
+```
+gh pr list --repo <repo> --base <branch-about-to-be-deleted>
+```
+
+If a stacked PR exists, retarget it to `main` **first** (`gh pr edit <n> --base main`), then merge and delete. Retargeting is only possible while the child is still open.
+
+When it has already happened, the recovery is to cherry-pick the child's own commits onto `main` in a fresh branch and open a replacement PR — the parent's commits will already be present, so only the child's are needed. Say plainly in the new PR that it recovers the closed one and why it was closed, so the closure is not later read as a rejection on the merits.
+
+This was learned by closing a reviewed, gate-passing PR this way and having to reconstruct it.
+
 ## 15. Credentials and Production Safety
 
 Agents may use approved development and staging credentials.
