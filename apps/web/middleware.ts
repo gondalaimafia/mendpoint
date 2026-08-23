@@ -33,6 +33,7 @@ function publicPath(pathname: string): boolean {
     pathname === "/api/saml/jwks" ||
     pathname === "/livez" ||
     pathname === "/healthz" ||
+    pathname === "/version" ||
     pathname === "/icon.svg" ||
     pathname === "/login" ||
     pathname === "/opengraph-image" ||
