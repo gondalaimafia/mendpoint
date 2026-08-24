@@ -1792,7 +1792,12 @@ export function validateWorkerProductionEnv(
     if (!env.DEEPSEEK_API_KEY?.trim()) errors.push("DEEPSEEK_API_KEY is required when independent verification is enabled");
     if (!env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON?.trim()) errors.push("MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON is required when independent verification is enabled");
     if (!env.MENDPOINT_AGENT_VERIFIER_PRICING_JSON?.trim()) errors.push("MENDPOINT_AGENT_VERIFIER_PRICING_JSON is required when independent verification is enabled");
-    if (rollout === "advisory" && !env.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON?.trim()) {
+    const regaugeAdvisory = rollout === "advisory" && (
+      env.MENDPOINT_REGAUGE_ENABLED?.trim() === "1" ||
+      env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() === "transformer_pilot" ||
+      env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() === "regauge_production"
+    );
+    if (regaugeAdvisory && !env.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON?.trim()) {
       errors.push("MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON is required for advisory verification");
     }
   }

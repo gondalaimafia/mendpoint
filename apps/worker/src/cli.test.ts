@@ -1767,8 +1767,13 @@ describe("worker runtime", () => {
       expect.stringContaining("MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON"),
       expect.stringContaining("MENDPOINT_AGENT_VERIFIER_PRICING_JSON"),
     ]));
-    expect(validateWorkerProductionEnv({ ...base, DEEPSEEK_API_KEY: "configured", MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "{}", MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "selective" }))
-      .toContain("The first verifier release permits only offline or shadow rollout");
+    const advisory = { ...base, DEEPSEEK_API_KEY: "configured", MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "{}", MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory" };
+    expect(validateWorkerProductionEnv({ ...advisory, MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "selective" }))
+      .toContain("The production verifier permits only offline or advisory rollout");
+    expect(validateWorkerProductionEnv(advisory))
+      .not.toContain("MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON is required for advisory verification");
+    expect(validateWorkerProductionEnv({ ...advisory, MENDPOINT_REGAUGE_ENABLED: "1" }))
+      .toContain("MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON is required for advisory verification");
   });
 
   it("cryptographically validates Fly sandbox egress authority during production startup", () => {
