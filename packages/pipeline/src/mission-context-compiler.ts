@@ -42,6 +42,7 @@ import {
   compileFettlerImpactContext,
   type FettlerEndpointImpactResult,
 } from "@mendpoint/graph-learn";
+import { parsePolicyEnvelope, type PolicyEnvelope } from "@mendpoint/policy";
 import { createHash } from "node:crypto";
 import {
   organizationMemoryPrecedenceLayer,
@@ -252,6 +253,49 @@ export type DirectiveInput = Readonly<{
   directive: string;
   source: string;
 }>;
+
+/**
+ * Translate a Mission's inherited Policy Envelope into hard-policy directives for
+ * the context compiler (spec §6.10: the compiled context SHOULD include the
+ * Policy Envelope; §28.1.0: policy is inherited). Only ACTUALLY-constraining
+ * dimensions are emitted, so the permissive default envelope contributes its real
+ * constraints (review required, no deploy, no training) and nothing else — the
+ * prompt is not grown with "unrestricted" noise. These directives are also the
+ * top precedence layer (`hard_policy`), so a memory that contradicts policy is
+ * recorded as overridden, never applied. The envelope JSON is parsed and
+ * validated (`parsePolicyEnvelope`); a malformed row yields no directives rather
+ * than leaking a partial policy.
+ */
+export function policyEnvelopeDirectives(
+  tenantId: string,
+  envelopeJson: string,
+  version: number,
+): DirectiveInput[] {
+  let envelope: PolicyEnvelope;
+  try {
+    envelope = parsePolicyEnvelope(JSON.parse(envelopeJson));
+  } catch {
+    return [];
+  }
+  const source = `policy_envelope:v${version}`;
+  const out: DirectiveInput[] = [];
+  const push = (key: string, directive: string) =>
+    out.push({ tenantId, id: `policy:v${version}:${key}`, subjectKey: `policy:${key}`, directive, source });
+
+  if (envelope.reviewRequired) push("review", "Human review is required before delivery.");
+  if (!envelope.deploymentAllowed) push("deployment", "Deployment is not permitted by policy.");
+  if (!envelope.externalProcessingAllowed) push("external_processing", "External processing/models are not permitted by policy.");
+  if (!envelope.trainingDataAllowed) push("training", "Training-data capture is not permitted by policy.");
+  if (envelope.riskCeiling !== "critical") push("risk_ceiling", `Risk ceiling: ${envelope.riskCeiling}.`);
+  if (envelope.repositoryScope.length > 0) push("repository_scope", `Repositories limited to: ${[...envelope.repositoryScope].sort().join(", ")}.`);
+  if (envelope.branchScope.length > 0) push("branch_scope", `Branches limited to: ${[...envelope.branchScope].sort().join(", ")}.`);
+  if (envelope.allowedTools.length > 0) push("tool_scope", `Tools limited to: ${[...envelope.allowedTools].sort().join(", ")}.`);
+  if (envelope.allowedModelClasses.length > 0) push("model_scope", `Model classes limited to: ${[...envelope.allowedModelClasses].sort().join(", ")}.`);
+  for (const zone of [...envelope.forbiddenZones].sort()) {
+    push(`forbidden_zone:${zone}`, `Do not edit under ${zone} (forbidden zone).`);
+  }
+  return out;
+}
 
 export type MissionDecisionInput = Readonly<{
   tenantId: string;

@@ -20,6 +20,7 @@ import {
   classifyMissionVerificationEvidence,
   evaluateMissionExceptions,
   getActiveMissionDecisions,
+  getMissionPolicyEnvelope,
   listMissionVerifications,
   listOrganizationMemory,
   listTrajectories,
@@ -30,6 +31,7 @@ import {
 } from "@mendpoint/db";
 import {
   compileAndRenderMissionContext,
+  policyEnvelopeDirectives,
   type CompiledMissionContext,
   type InheritedContextEnvelope,
   type MissionContextInput,
@@ -167,6 +169,18 @@ export function buildMissionContext(
     };
   })();
 
+  // The Mission's inherited Policy Envelope (spec §6.7) becomes the hard-policy
+  // layer: its real constraints are rendered and outrank organization memory in
+  // precedence. When the mission pins no envelope (legacy missions predating
+  // set-once binding at creation), the policy store is honestly not consulted.
+  const policyEnvelope = mission ? getMissionPolicyEnvelope(db, tenantId, mission.id) : null;
+  const hardPolicies: MissionContextInput["hardPolicies"] = policyEnvelope
+    ? {
+        consulted: true,
+        records: policyEnvelopeDirectives(tenantId, policyEnvelope.envelopeJson, policyEnvelope.version),
+      }
+    : { consulted: false, reason: "store_not_available" };
+
   const history: MissionContextInput["history"] = mission
     ? {
         consulted: true,
@@ -192,11 +206,11 @@ export function buildMissionContext(
       graphVersionId: null,
     },
     task: params.task,
-    // No tenant hard-policy store exists on main (policy is synthesized per call,
-    // not persisted per tenant), so policy constraints are honestly not_consulted
-    // rather than fabricated. The precedence machinery is exercised whenever a
-    // mission decision and a memory share a scope.
-    hardPolicies: { consulted: false, reason: "store_not_available" },
+    // Policy constraints come from the mission's inherited Policy Envelope
+    // (spec §6.7). When no envelope is pinned, the section is honestly not
+    // consulted rather than fabricated. The precedence machinery is exercised
+    // whenever a policy directive, mission decision, and memory share a scope.
+    hardPolicies,
     missionDecisions,
     organizationMemory,
     userPreferences: { consulted: false, reason: "store_not_available" },

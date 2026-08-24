@@ -18,13 +18,55 @@ import type { FettlerEndpointImpactResult } from "@mendpoint/graph-learn";
 import {
   compileMissionContext,
   MISSION_CONTEXT_BOUNDS,
+  policyEnvelopeDirectives,
   renderMissionContext,
   type MissionContextInput,
   type MissionVerificationState,
 } from "./mission-context-compiler.js";
+import {
+  canonicalPolicyEnvelopeJson,
+  defaultPolicyEnvelope,
+  type PolicyEnvelope,
+} from "@mendpoint/policy";
 
 const T0 = "2026-01-01T00:00:00.000Z";
 const opened: Array<{ db: AppDb; dir: string }> = [];
+
+describe("policyEnvelopeDirectives", () => {
+  it("emits only the constraining dimensions of the default envelope", () => {
+    const envelope = defaultPolicyEnvelope({ tenantId: "t1", policyEnvelopeId: "pe-1", createdAt: T0 });
+    const directives = policyEnvelopeDirectives("t1", canonicalPolicyEnvelopeJson(envelope), 1);
+    const subjects = directives.map((d) => d.subjectKey).sort();
+    // Default: review required, no deploy, no training — and nothing else.
+    expect(subjects).toEqual(["policy:deployment", "policy:review", "policy:training"]);
+    expect(directives.every((d) => d.source === "policy_envelope:v1" && d.tenantId === "t1")).toBe(true);
+  });
+
+  it("emits scope, zone, risk, and external-processing directives when restricted", () => {
+    const restricted: PolicyEnvelope = {
+      ...defaultPolicyEnvelope({ tenantId: "t1", policyEnvelopeId: "pe-1", createdAt: T0 }),
+      repositoryScope: ["repo-a"],
+      forbiddenZones: ["src/generated"],
+      allowedTools: ["codemod"],
+      allowedModelClasses: ["owned"],
+      externalProcessingAllowed: false,
+      riskCeiling: "medium",
+    };
+    const subjects = policyEnvelopeDirectives("t1", canonicalPolicyEnvelopeJson(restricted), 2)
+      .map((d) => d.subjectKey);
+    expect(subjects).toContain("policy:repository_scope");
+    expect(subjects).toContain("policy:forbidden_zone:src/generated");
+    expect(subjects).toContain("policy:tool_scope");
+    expect(subjects).toContain("policy:model_scope");
+    expect(subjects).toContain("policy:external_processing");
+    expect(subjects).toContain("policy:risk_ceiling");
+  });
+
+  it("returns no directives for a malformed envelope rather than leaking a partial policy", () => {
+    expect(policyEnvelopeDirectives("t1", "{not json", 1)).toEqual([]);
+    expect(policyEnvelopeDirectives("t1", JSON.stringify({ version: "x" }), 1)).toEqual([]);
+  });
+});
 
 afterEach(() => {
   for (const { db, dir } of opened.splice(0)) {

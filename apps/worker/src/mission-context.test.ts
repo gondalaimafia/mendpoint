@@ -23,6 +23,7 @@ import {
   recordTrajectory,
   type AppDb,
 } from "@mendpoint/db";
+import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 
 const T0 = "2026-01-01T00:00:00.000Z";
@@ -182,6 +183,25 @@ describe("worker mission-context producer (real stores)", () => {
     expect(kinds.has("mission_decision")).toBe(true);
     expect(kinds.has("verification")).toBe(true);
     expect(kinds.has("exception")).toBe(true);
+  });
+
+  it("renders the mission's inherited Policy Envelope as consulted hard-policy constraints", () => {
+    const db = fixture();
+    ensureDefaultPolicyEnvelopeBinding(db, {
+      tenantId: "t1", missionId: "m1", actorPrincipalId: "p1", correlationId: "corr", createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    expect(compiled.envelope.policyConstraints.status).toBe("consulted");
+    if (compiled.envelope.policyConstraints.status !== "consulted") throw new Error("unreachable");
+    const subjects = compiled.envelope.policyConstraints.entries.map((e) => e.subjectKey).sort();
+    expect(subjects).toEqual(["policy:deployment", "policy:review", "policy:training"]);
+    expect(compiled.injection.promptBody).toContain("Human review is required before delivery.");
   });
 
   it("with no mission bound, tenant organization memory still applies and mission-scoped sections report no_mission_bound", () => {
