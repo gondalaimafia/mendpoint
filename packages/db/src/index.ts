@@ -3882,6 +3882,8 @@ export type { ProductMetrics } from "./metrics.js";
 
 export { buildExposureReport } from "./exposure.js";
 export type { ExposureReport } from "./exposure.js";
+export { summarizeChangeImpactCoverage } from "./change-impact-coverage.js";
+export type { ChangeImpactCoverage } from "./change-impact-coverage.js";
 
 export {
   appendDomainEvent,
