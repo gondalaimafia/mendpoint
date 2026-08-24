@@ -4,7 +4,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentPlan, PlanStep } from "@mendpoint/orchestrator";
-import { runDir, savePlan, loadPlan } from "./trajectory.js";
+import { runDir, runsDir, savePlan, loadPlan, type HarnessTenantScope } from "./trajectory.js";
 
 export type PlanPatch = {
   title?: string;
@@ -21,13 +21,16 @@ export type PlanPatch = {
   addSteps?: Array<Partial<PlanStep> & { title: string; action: string }>;
 };
 
-export function listPlans(baseDir: string): Array<{ runId: string; title?: string; steps: number }> {
-  const root = join(baseDir, "runs");
+export function listPlans(
+  baseDir: string,
+  scope?: HarnessTenantScope,
+): Array<{ runId: string; title?: string; steps: number }> {
+  const root = runsDir(baseDir, scope);
   if (!existsSync(root)) return [];
   return readdirSync(root, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .flatMap((d) => {
-      const p = runDir(baseDir, d.name).planPath;
+      const p = runDir(baseDir, d.name, scope).planPath;
       if (!existsSync(p)) return [];
       try {
         const plan = JSON.parse(readFileSync(p, "utf8")) as AgentPlan;
@@ -42,8 +45,12 @@ export function listPlans(baseDir: string): Array<{ runId: string; title?: strin
     });
 }
 
-export function getPlan(baseDir: string, runId: string): AgentPlan {
-  return loadPlan(runDir(baseDir, runId));
+export function getPlan(
+  baseDir: string,
+  runId: string,
+  scope?: HarnessTenantScope,
+): AgentPlan {
+  return loadPlan(runDir(baseDir, runId, scope));
 }
 
 export function applyPlanPatch(
@@ -92,8 +99,9 @@ export function savePlanHitl(
   baseDir: string,
   runId: string,
   patch: PlanPatch,
+  scope?: HarnessTenantScope,
 ): AgentPlan {
-  const paths = runDir(baseDir, runId);
+  const paths = runDir(baseDir, runId, scope);
   const plan = applyPlanPatch(loadPlan(paths), patch);
   savePlan(paths, plan);
   // audit trail
@@ -113,9 +121,10 @@ export function createDraftPlan(
   baseDir: string,
   plan: AgentPlan,
   runId?: string,
+  scope?: HarnessTenantScope,
 ): { runId: string; plan: AgentPlan } {
   const id = runId ?? plan.id ?? `plan-${Date.now().toString(36)}`;
-  const paths = runDir(baseDir, id);
+  const paths = runDir(baseDir, id, scope);
   mkdirSync(paths.root, { recursive: true });
   savePlan(paths, { ...plan, id: plan.id ?? id });
   return { runId: id, plan: { ...plan, id: plan.id ?? id } };

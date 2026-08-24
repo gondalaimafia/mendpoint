@@ -120,6 +120,7 @@ describe("checkAuditIntegrityForAllTenants", () => {
     expect(alerts[0]).toMatchObject({
       severity: "critical",
       source: "audit-integrity",
+      tenantId: "tenant-a",
     });
     expect(alerts[0].message).toContain("tenant-a");
   });

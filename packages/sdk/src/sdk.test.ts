@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 import { createPlatform, planFromOpenApiPair } from "./index.js";
 import { wardenSpecDiffStub } from "./specialists/warden-stub.js";
 import { transformerCampaignStub } from "./specialists/transformer-stub.js";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -83,6 +84,24 @@ describe("platform SDK", () => {
       firstA.dispose();
       secondA.dispose();
       firstB.dispose();
+    }
+  });
+
+  it("threads client tenant scope through harness execution and plan access", async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), "sdk-harness-scope-"));
+    try {
+      const tenantA = createPlatform({ tenantId: "sdk-harness-a" });
+      const tenantB = createPlatform({ tenantId: "sdk-harness-b" });
+      const a = await tenantA.executeHello(baseDir);
+      const b = await tenantB.executeHello(baseDir);
+
+      expect(a.paths.root).not.toBe(b.paths.root);
+      expect(a.score.tenantId).toBe("sdk-harness-a");
+      expect(b.score.tenantId).toBe("sdk-harness-b");
+      expect(tenantA.listPlans(baseDir).map((plan) => plan.runId)).toEqual([a.runId]);
+      expect(tenantB.listPlans(baseDir).map((plan) => plan.runId)).toEqual([b.runId]);
+    } finally {
+      rmSync(baseDir, { recursive: true, force: true });
     }
   });
 });

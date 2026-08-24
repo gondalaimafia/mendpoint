@@ -154,6 +154,18 @@ describe("vm + cost + rbac + scm + alerts", () => {
     expect(recentAlerts().length).toBeGreaterThanOrEqual(1);
   });
 
+  it("filters persisted alerts by exact tenant while retaining legacy unscoped alerts", () => {
+    clearAlerts({ wipeFile: true });
+    emitAlert({ severity: "info", source: "test", message: "legacy" });
+    emitAlert({ severity: "warn", source: "test", message: "a", tenantId: "tenant-a" });
+    emitAlert({ severity: "critical", source: "test", message: "b", tenantId: "tenant-b" });
+
+    expect(recentAlerts(50, { tenantId: "tenant-a" }).map((alert) => alert.message)).toEqual(["a"]);
+    expect(recentAlerts(50, { tenantId: "tenant-a", includeUnscoped: true }).map((alert) => alert.message)).toEqual(["legacy", "a"]);
+    expect(() => recentAlerts(50, { tenantId: " " })).toThrow(/tenant scope required/i);
+    expect(() => emitAlert({ severity: "info", source: "test", message: "blank", tenantId: " " })).toThrow(/tenant scope required/i);
+  });
+
   it("starts live sandbox and probes health", async () => {
     const live = await startLiveSandbox();
     try {

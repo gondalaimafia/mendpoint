@@ -2,9 +2,8 @@
  * Trajectory viewer — list runs and pretty-print plan/trace/score.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { listRunIds, loadRunScore } from "./dogfood.js";
-import { runDir } from "./trajectory.js";
+import { runDir, runsDir, type HarnessTenantScope } from "./trajectory.js";
 
 export type RunListItem = {
   runId: string;
@@ -14,15 +13,18 @@ export type RunListItem = {
   hasPlan: boolean;
 };
 
-export function listTrajectories(baseDir: string): RunListItem[] {
-  const root = join(baseDir, "runs");
+export function listTrajectories(
+  baseDir: string,
+  scope?: HarnessTenantScope,
+): RunListItem[] {
+  const root = runsDir(baseDir, scope);
   if (!existsSync(root)) return [];
   const dirs = readdirSync(root, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => d.name);
   return dirs.map((runId) => {
-    const paths = runDir(baseDir, runId);
-    const score = loadRunScore(baseDir, runId);
+    const paths = runDir(baseDir, runId, scope);
+    const score = loadRunScore(baseDir, runId, scope);
     return {
       runId,
       ok: score?.ok,
@@ -37,8 +39,9 @@ export function viewTrajectory(
   baseDir: string,
   runId: string,
   opts?: { maxTraceLines?: number },
+  scope?: HarnessTenantScope,
 ): string {
-  const paths = runDir(baseDir, runId);
+  const paths = runDir(baseDir, runId, scope);
   if (!existsSync(paths.root)) {
     return `run not found: ${runId}`;
   }
@@ -84,8 +87,8 @@ export function viewTrajectory(
   return lines.join("\n");
 }
 
-export function formatRunList(baseDir: string): string {
-  const items = listTrajectories(baseDir);
+export function formatRunList(baseDir: string, scope?: HarnessTenantScope): string {
+  const items = listTrajectories(baseDir, scope);
   if (!items.length) return "No runs/ trajectories found.";
   const lines = [`### Trajectories (${items.length})`];
   for (const r of items.slice(0, 50)) {
@@ -96,7 +99,7 @@ export function formatRunList(baseDir: string): string {
   }
   if (items.length > 50) lines.push(`… ${items.length - 50} more`);
   // also listRunIds with scores for dogfood alignment
-  const scored = listRunIds(baseDir).length;
+  const scored = listRunIds(baseDir, scope).length;
   lines.push(`scored: ${scored}`);
   return lines.join("\n");
 }

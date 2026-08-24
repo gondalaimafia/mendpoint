@@ -1,4 +1,4 @@
-export type { TraceEvent, RunScore, RunPaths } from "./trajectory.js";
+export type { TraceEvent, RunScore, RunPaths, HarnessTenantScope } from "./trajectory.js";
 export {
   runDir,
   initRun,
@@ -7,6 +7,7 @@ export {
   loadPlan,
   savePlan,
   runExists,
+  runsDir,
 } from "./trajectory.js";
 
 export type { ExecuteOptions, ExecuteResult } from "./executor.js";
