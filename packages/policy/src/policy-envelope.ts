@@ -216,6 +216,48 @@ export function parsePolicyEnvelope(value: unknown): PolicyEnvelope {
   });
 }
 
+/** The residency sentinel a task carries when the tenant has no explicit region. */
+export const DEFAULT_RESIDENCY = "default";
+
+/**
+ * Build the permissive-but-explicit default Policy Envelope every Mission pins
+ * when a tenant has not authored a stricter one (spec §6.7: "Every Mission MUST
+ * reference a versioned Policy Envelope"). The defaults are deliberately chosen
+ * to keep the product's own invariants true rather than to be maximally open:
+ * review is required and deployment/training are denied by default (spec §0.3
+ * review-first + governed learning), while repository/branch/tool/model scopes
+ * are unrestricted (empty allowlists) so existing execution is not blocked until
+ * a tenant opts into a narrower envelope. Enforcement (evaluatePolicyEnvelope)
+ * therefore fails closed only on the dimensions this default intentionally
+ * closes, never on scope until a tenant restricts it.
+ */
+export function defaultPolicyEnvelope(input: {
+  tenantId: string;
+  policyEnvelopeId: string;
+  createdAt: string;
+  version?: number;
+  residency?: string;
+}): PolicyEnvelope {
+  return Object.freeze({
+    policyEnvelopeId: input.policyEnvelopeId,
+    tenantId: input.tenantId,
+    version: input.version ?? 1,
+    repositoryScope: Object.freeze([]),
+    branchScope: Object.freeze([]),
+    forbiddenZones: Object.freeze([]),
+    allowedTools: Object.freeze([]),
+    allowedModelClasses: Object.freeze([]),
+    externalProcessingAllowed: true,
+    residency: input.residency ?? DEFAULT_RESIDENCY,
+    riskCeiling: "critical",
+    reviewRequired: true,
+    deploymentAllowed: false,
+    trainingDataAllowed: false,
+    retentionDays: null,
+    createdAt: input.createdAt,
+  });
+}
+
 /** Canonical JSON with sorted keys, so an envelope's stored text is stable. */
 export function canonicalPolicyEnvelopeJson(envelope: PolicyEnvelope): string {
   return JSON.stringify({
